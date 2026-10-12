@@ -8,9 +8,12 @@ async function release(repo) {
 }
 
 export class CloudflareArtifactStore {
-  constructor(artifacts) {
+  // git/http are injectable for tests only; production lazily loads isomorphic-git.
+  constructor(artifacts, { git, http } = {}) {
     if (!artifacts) throw new Error('Missing ARTIFACTS binding: check wrangler.jsonc and Cloudflare account access.');
     this.artifacts = artifacts;
+    this.git = git;
+    this.http = http;
   }
   async create(name, description) {
     const created = await this.artifacts.create(name, { description, readOnly: false, setDefaultBranch: 'main' });
@@ -24,17 +27,17 @@ export class CloudflareArtifactStore {
       return blob ? await blob.text() : null;
     } finally { await release(repo); }
   }
-  async write({ name, remote, path, content, hasCommits, actor }) {
-    return this.writeMany({ name, remote, files: [{ path, content }], hasCommits, actor });
+  async write({ name, remote, path, content, actor }) {
+    return this.writeMany({ name, remote, files: [{ path, content }], actor });
   }
   // One agent turn = one commit and one push, however many files it changed.
-  async writeMany({ name, remote, files, hasCommits, actor }) {
+  async writeMany({ name, remote, files, actor }) {
     if (!Array.isArray(files) || !files.length) throw new Error('No files to write');
     for (const f of files) if (!isPath(f.path)) throw new Error(`Unsafe artifact path: ${f.path}`);
     // isomorphic-git is used ONLY as a byte-level storage adapter. Agents never
     // consume Git history, negotiate merges, or decide when to push.
-    const git = (await import('isomorphic-git')).default;
-    const http = (await import('isomorphic-git/http/web')).default;
+    const git = this.git || (await import('isomorphic-git')).default;
+    const http = this.http || (await import('isomorphic-git/http/web')).default;
     const repo = await this.artifacts.get(name);
     let token;
     try {
@@ -47,11 +50,18 @@ export class CloudflareArtifactStore {
     const dir = '/workspace';
     const onAuth = () => ({ username: 'x', password: secret });
     const label = files.length === 1 ? files[0].path : `${files.length} files`;
-    let phase = hasCommits ? 'clone' : 'init';
+    let phase = 'refs';
     try {
-      if (hasCommits) {
+      // The Artifacts repo, not SQLite, says whether main has history. Read the
+      // same v1 receive-pack advertisement push reads; an empty repo lists no
+      // refs. (listServerRefs v1 falls through to a v2 POST on an empty repo.)
+      const info = await git.getRemoteInfo2({ http, url: remote, forPush: true, protocolVersion: 1, onAuth });
+      if (!Array.isArray(info?.refs)) throw new Error(`remote did not advertise its refs (Git protocol v${info?.protocolVersion})`);
+      if (info.refs.some(r => r.ref === 'refs/heads/main')) {
+        phase = 'clone';
         await git.clone({ fs, http, dir, url: remote, ref: 'main', singleBranch: true, depth: 1, onAuth });
       } else {
+        phase = 'init';
         await git.init({ fs, dir, defaultBranch: 'main' });
       }
       for (const f of files) {
