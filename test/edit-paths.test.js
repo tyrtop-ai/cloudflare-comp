@@ -40,6 +40,10 @@ test('F3: a bare path find is widened to the module specifier literal that holds
   // The same specifier used twice is one rename, applied at both.
   const twice="const { a } = require('../statusFilter');\nconst { b } = require('../statusFilter');\nmodule.exports = { a, b };\n";
   assert.equal(L.applyEdits(twice,[{find:'../statusFilter',replace:'../implement--9b11f5c4/statusFilter'}]).content.split("'../implement--9b11f5c4/statusFilter'").length,3);
+  // Half-quoted edits name the same literal.
+  const one="const a = require('../a');\nmodule.exports = a;\n";
+  for(const [find,replace] of [['../a',"'../x/a'"],["'../a'",'../x/a']])
+    assert.equal(L.applyEdits(one,[{find,replace}]).content,"const a = require('../x/a');\nmodule.exports = a;\n",find);
 });
 
 test('F3: a bare find is never widened into an ordinary string or past a whole-token match',()=>{
@@ -81,6 +85,10 @@ test('F6: a path written from the wrong directory or without nested components/ 
   assert.deepEqual(L.unresolvedImports(new Map([[tracker,out.content],[model,'module.exports = class Ticket {};']])),[]);
   // A quoted string as the whole replacement is the specifier.
   assert.equal(L.normalizeEditPaths({file:app,find:"'./ticketService'",replace:"'./ticket-ser-f17f9f79/ticketService.js'"},[app,svc]).replace,"'../ticket-ser-f17f9f79/ticketService.js'");
+  // Half-quoted and undotted forms of the same edit.
+  const mod="const ticketService = require('./ticketService');\nmodule.exports = ticketService;\n";
+  for(const [find,replace] of [['./ticketService','ticket-ser-f17f9f79/ticketService.js'],["'./ticketService'",'./ticket-ser-f17f9f79/ticketService.js'],['./ticketService',"'./ticket-ser-f17f9f79/ticketService.js'"]])
+    assert.equal(L.applyEdits(mod,[L.normalizeEditPaths({file:app,find,replace},[app,svc])]).content,mod.replace('./ticketService','../ticket-ser-f17f9f79/ticketService.js'),find+' → '+replace);
 });
 
 test('F6: ambiguous, resolving, built-in and non-specifier strings are left alone',()=>{
@@ -92,6 +100,20 @@ test('F6: ambiguous, resolving, built-in and non-specifier strings are left alon
   same({file:apply,find:"require('./x')",replace:"require('fs')"});
   same({file:apply,find:"log('x')",replace:"log('./implement--9b11f5c4/statusFilter')"});
   same({file:apply,find:'parseFilters',replace:'combineFilters'});
+  // A built-in wins over a module of the same name, and a file never names itself.
+  const own=['components/x-1/util.js','components/a-1/store.js'];
+  for(const edit of [{file:own[1],find:"require('./x')",replace:"require('util')"},{file:own[1],find:"require('./x')",replace:"require('./a-1/store')"}])
+    assert.equal(L.normalizeEditPaths(edit,own),edit);
+  // Strings the model kept are not rewritten, even when they do not resolve.
+  const mods=['components/a-1/app.js','components/store-2/store.js','components/ids-3/uuid.js','components/data-3/data.js','components/x-1/helpers.js','components/t-4/ticket.js'];
+  const kept=L.normalizeEditPaths({file:mods[0],find:"const uuid = require('uuid');\nconst h = require('./helpers');\nconst store = require('./store'); log(\"from './data'\");",
+    replace:"const uuid = require('uuid');\nconst h = require('./helpers');\nconst store = require('./store-2/store.js'); log(\"from './data'\");"},mods);
+  assert.equal(kept.replace,"const uuid = require('uuid');\nconst h = require('./helpers');\nconst store = require('../store-2/store.js'); log(\"from './data'\");");
+  const noop={file:mods[0],find:"'ticket'",replace:"'ticket'"};
+  assert.equal(L.normalizeEditPaths(noop,mods),noop);
+  const app='components/applicatio-f07f9de6/module.js',key={file:app,find:"const { view } = require('ticketService');",replace:"const { read: view } = require('ticketService');"};
+  assert.equal(L.normalizeEditPaths(key,[app,'components/ticket-ser-f17f9f79/ticketService.js']),key);
+  assert.equal(L.applyEdits("const { view } = require('ticketService');\nmodule.exports = { start: () => view() };\n",[key],{knownNames:new Set(['read'])}).applied.length,1);
   // A json file resolves through the bundle's full file set.
   const files=new Map([...e89.map(p=>[p,'']),['components/issuetrack-f57fa5c5/statusFilter.json','{}']]);
   const edit={file:tracker,find:"require('./x')",replace:"require('./statusFilter')"};

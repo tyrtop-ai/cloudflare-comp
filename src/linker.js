@@ -399,14 +399,16 @@ export function applyEdits(content, edits, {knownNames=null}={}) {
       return hits;
     };
     let hits=hitsOf(find);
+    const quoted=/^(['"])[^'"\n]*\1$/;
     // A bare path ("../statusFilter") lies inside a string token. When it is
     // the whole value of module specifiers, and of no other string, the edit
-    // means those specifiers: widen find and replace to their quotes.
+    // means those specifiers: widen find and replace to their quotes. A quoted
+    // find replaced by a bare relative path means the same literal.
     if(!hits.length) {
       const lits=list.flatMap((t,i)=>t.type.label==='string'&&current.slice(t.start+1,t.end-1)===find?[i]:[]);
       const q=lits.length?current[list[lits[0]].start]:'';
-      if(lits.length&&lits.every(i=>specifierPosition(list,i)&&current[list[i].start]===q)){find=q+find+q;replace=q+replace+q;hits=hitsOf(find);}
-    }
+      if(lits.length&&lits.every(i=>specifierPosition(list,i)&&current[list[i].start]===q)){find=q+find+q;if(!quoted.test(replace))replace=q+replace+q;hits=hitsOf(find);}
+    } else if(quoted.test(find)&&/^\.{1,2}\/[^'"`\s]*$/.test(replace))replace=find[0]+replace+find[0];
     if(!hits.length){rejected.push({edit,reason:'find text does not match whole tokens'});continue;}
     let next='',last=0;
     for(const at of hits){next+=current.slice(last,at)+replace;last=at+find.length;}
@@ -497,19 +499,21 @@ export function normalizeEditPaths(edit, allPaths, files=null) {
       }
     }
   }
-  const known=files||new Set(allPaths);
+  const known=files||new Set(allPaths),find=String(edit.find??'');
   const parts=p=>p.replace(/\.(?:js|mjs|cjs)$/i,'').split('/').filter(s=>s&&s!=='.'&&s!=='..'&&s!=='components').join('/');
   const fix=spec=>{
-    if(isBuiltin(spec)||resolveLocal(edit.file,spec,known).path)return spec;
+    // A string the find already has is one the model kept, not one it wrote.
+    if(find===spec||find.includes(`'${spec}'`)||find.includes(`"${spec}"`)||isBuiltin(spec)||resolveLocal(edit.file,spec,known).path)return spec;
     const want=parts(spec);
     const hits=want?allPaths.filter(p=>p!==edit.file&&('/'+parts(p)).endsWith('/'+want)):[];
     return hits.length===1?relativeSpecifier(edit.file,hits[0]):spec;
   };
-  // Only specifier positions; a replacement that is one string or one bare
-  // relative path is the specifier itself (applyEdits adds the quotes).
+  // Only specifier positions; a replacement that is one string, or one bare
+  // path standing for a relative path, is the specifier itself (applyEdits
+  // adds the quotes).
   const whole=/^(['"])([^'"\n]+)\1$/.exec(replace);
   if(whole)replace=whole[1]+fix(whole[2])+whole[1];
-  else if(/^\.{1,2}\/[^'"`\s]+$/.test(replace))replace=fix(replace);
+  else if(/^[^'"`\s]+$/.test(replace)&&[replace,find].some(s=>/^(['"]?)\.{1,2}\/[^'"`\s]+\1$/.test(s)))replace=fix(replace);
   else replace=replace.replace(/(\b(?:require|import)\s*\(\s*|\bfrom\s*|\bimport\s*)(['"])([^'"\n]+)\2/g,(m,pre,q,spec)=>pre+q+fix(spec)+q);
   return replace===edit.replace?edit:{...edit,replace};
 }
