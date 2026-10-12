@@ -722,6 +722,12 @@ test('shape: the builder\'s own proposals from run e89dba35 are accepted only wh
   const blind=liveFilters[PARSED].replace("'../parse-stat-9c511f48/parseStatus'","'./statusParser'");
   const combined=L.applyEdits(blind,[{find:"const { parseStatus } = require('./statusParser');",replace:"const parseStatus = require('../parse-stat-9c511f48/parseStatus');"}],{shapes:{path:PARSED,files,surfaces:sur}});
   assert.equal(combined.applied.length,1,JSON.stringify(combined.rejected));
+  const tight=L.applyEdits(liveFilters[COMBINE],[{find:"const { isStatusMatch } = require('../implement--9b11f5c4/statusFilter');",replace:"const isStatusMatch=require('../implement--9b11f5c4/statusFilter');"},
+    {find:"const { isPriorityMatch } = require('../implement--9c11f757/priorityFilter');",replace:"const {isPriorityMatch} = require('../implement--9c11f757/priorityFilter');"}],{shapes});
+  assert.equal(tight.applied.length,2,'spacing in or around the binding does not matter: '+JSON.stringify(tight.rejected));
+  const whole=liveFilters[COMBINE].replace('const { isPriorityMatch }','const isPriorityMatch');
+  const alias=L.applyEdits(whole,[{find:'const isPriorityMatch =',replace:'const { isPriorityMatch: match } ='}],{shapes});
+  assert.match(alias.rejected[0].reason,/how "\{ isPriorityMatch: match \}" is bound, but the runtime binds it as "\{ isPriorityMatch \}"/);
   const wrong=L.applyEdits(blind,[{find:"const { parseStatus } = require('./statusParser');",replace:"const parseStatus = require('../../../implement--9b11f5c4/statusFilter');"}],{shapes:{path:PARSED,files,surfaces:sur}});
   assert.equal(wrong.applied.length,0,'statusFilter exports isStatusMatch, not parseStatus');
 });
@@ -737,6 +743,7 @@ test('shape: a module bound whole and only called is destructured when it export
   const set=(extra)=>{const m=new Map([...files,[COMBINE,rev+extra]]);return L.shapeFixes(m,surfacesOf(m)).filter(e=>e.file===COMBINE);};
   assert.equal(set('isPriorityMatch.isPriorityMatch(1);\n').length,0,'x.member');
   assert.equal(set('new isPriorityMatch.Thing();\n').length,0,'new x.member');
+  assert.equal(set("new isPriorityMatch['Thing']();\n").length,0,'new x[key]');
   assert.equal(set('module.exports.match = isPriorityMatch;\n').length,0,'passed on as a value');
   assert.equal(set('function inner(isPriorityMatch) { return isPriorityMatch(1); }\n').length,0,'shadowed');
   assert.equal(set('new isPriorityMatch(1);\n').length,1,'new x() is still a call');
@@ -761,6 +768,8 @@ test('shape: a binding read as a namespace, or a name the export itself carries,
   const fixes=(app,target,file='components/b/x.js')=>{const m=new Map([['components/a/app.js',app],[file,target]]);return L.shapeFixes(m,surfacesOf(m)).map(e=>e.replace);};
   const svc="const { ticketService } = require('../b/x');\nmodule.exports = { go(){ return ticketService.create({}); } };\n";
   assert.deepEqual(fixes(svc,'module.exports = function ticketService(){ return 1; };\n'),[],'x.member on a single function');
+  assert.deepEqual(fixes("const { ticketService } = require('../b/x');\nconst { create } = ticketService;\nmodule.exports = () => create();\n",'module.exports = function ticketService(){ return 1; };\n'),[],'or destructured off it');
+  assert.deepEqual(fixes("const { ticketService } = require('../b/x');\nlet create;\n({ create } = ticketService);\nmodule.exports = () => create();\n",'module.exports = function ticketService(){ return 1; };\n'),[],'by assignment too');
   const m=new Map([['components/a/app.js',svc],['components/b/x.js','module.exports = function ticketService(){ return 1; };\n']]);
   assert.match(L.importMismatches(m,surfacesOf(m))[0].detail,/exports a single function/,'and the static check still reports it');
   const esm=new Map([['components/a/app.mjs',"import { svc } from '../b/svc.mjs';\nexport function go(){ return svc.create(); }\n"],['components/b/svc.mjs','export default function svc(){ return 1; }\n']]);
@@ -772,6 +781,7 @@ test('shape: a binding read as a namespace, or a name the export itself carries,
   const call="const { parse } = require('../b/parse');\nmodule.exports = (s) => parse(s);\n";
   assert.deepEqual(fixes("const { ticket } = require('../b/ticket');\nmodule.exports = () => ticket('x');\n","class Ticket { static ticket(t){ return new Ticket(t); } constructor(t){ this.t = t; } }\nmodule.exports = Ticket;\n",'components/b/ticket.js'),[],'a static method of that name');
   assert.deepEqual(fixes(call,'module.exports = class { static parse(s){ return s; } };\n','components/b/parse.js'),[],'an anonymous class with one');
+  assert.deepEqual(fixes(call,"const Base = require('../c/base');\nclass Parse extends Base {}\nmodule.exports = Parse;\n",'components/b/parse.js'),[],'a class that may inherit one');
   assert.deepEqual(fixes(call,'function parse(s){ return { s }; }\nparse.parse = (s) => s;\nmodule.exports = parse;\n','components/b/parse.js'),[],'a property assigned to the function');
   assert.deepEqual(fixes(call,"function parse(s){ return { s }; }\nObject.defineProperty(parse, 'parse', { value: (s) => s });\nmodule.exports = parse;\n",'components/b/parse.js'),[],'or defined on it');
   assert.deepEqual(fixes(call,'module.exports = function parse(s){ return JSON.parse(s); };\n','components/b/parse.js'),["const parse = require('../b/parse');"],'reading JSON.parse defines nothing');
@@ -830,6 +840,9 @@ test('name fallback: ambiguous or loose name matches pick nothing, and a provide
   assert.deepEqual(pick([['components/a/ticketServiceImpl.js',"module.exports = { read(){} };\n"]]),[],'a loose match that exports none of them');
   assert.deepEqual(pick([['components/a/ticketServiceImpl.js',svc]],'branch'),[],'a branch accepts only an exact name');
   assert.deepEqual(pick([['components/a/ticketService.js','module.exports = { slugify(){} };\n']],'branch'),[],'and only one that exports a name the file uses: the real module may be in another branch');
+  assert.deepEqual(pick([['components/a/ticketService.js','module.exports = { slugify(){} };\n']]),[],'at Root too');
+  assert.deepEqual(pick([['components/a/ticketService.js','module.exports = function ticketService(store){ return store; };\n']]),[],'a same-named function the file reads members off');
+  assert.deepEqual(pick([['components/a/ticketService.js','module.exports = { slugify(){} };\n'],['components/b/ticketServiceImpl.js',svc]]),['components/b/ticketServiceImpl.js'],'an exact name that exports none of them does not beat a loose one that does');
   const lone=new Map([['components/c/combine.js',"const { isStatusMatch } = require('./statusFilter');\nmodule.exports = (t) => isStatusMatch(t);\n"],['components/s/statusFilter.js',liveFilters[F+'implement--9b11f5c4/statusFilter.js']]]);
   assert.deepEqual(L.autoLink(lone,surfacesOf(lone),{scope:'branch'}).map(e=>e.target),['components/s/statusFilter.js'],'a lone function counts by its name');
   assert.deepEqual(pick([['components/a/ticketService.js',svc],['components/b/viewer.js','module.exports = { view(){}, list(){} };\n']]),['components/b/viewer.js'],'the only module exporting every name wins over the name');
@@ -901,8 +914,9 @@ test('room: the live e89dba35 filter branch links without the model; the runtime
   const events=room.snapshot().events;
   assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
   assert.equal(calls.link.length,0,'no model call: every path and binding was mechanical');
-  assert.match(events.find(e=>e.kind==='link_auto').body,/^Resolved 5 import\(s\)/);
+  assert.match(events.find(e=>e.kind==='link_auto').body,/^Applied 3 rename\(s\) and 2 import binding fix\(es\) without the model/);
   assert.match(events.find(e=>e.kind==='link_renamed').body,/^Applied 3 rename\(s\) and 2 import binding fix\(es\) in 1 module\(s\)/);
+  assert.match(events.find(e=>e.kind==='link_done').body,/ with 3 rename\(s\) and 2 import binding fix\(es\)\./);
   const rel=p=>L.relativeSpecifier(combine,p);
   const linked=await store.read(room.node(builder.id).repo_name,combine);
   assert.equal(linked,liveFilters[COMBINE].replace("{ isStatusMatch } = require('../implement--9b11f5c4/statusFilter')",`isStatusMatch = require('${rel(status)}')`)

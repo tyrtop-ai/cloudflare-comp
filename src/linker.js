@@ -606,11 +606,11 @@ export function importRefs(path, content) {
 // Point an import that resolves nowhere at the one module that clearly
 // provides it: the only module exporting every name the file uses from it,
 // or (at Root) the only module whose file or class name matches the path.
-// When no module exports every name, the name match still decides, and the
-// static check then names the members that differ. An exact name beats a
-// looser one, and a looser one must export at least one of those names. A
-// branch builder only accepts an exact name match that does too, since the
-// real module may live in a branch it cannot see.
+// When no module exports every name, the name match still decides if that
+// module exports at least one of them, and the static check then names the
+// members that differ. An exact name beats a looser one. A branch builder
+// only accepts an exact name match, since the real module may live in a
+// branch it cannot see.
 export function autoLink(files, surfaces, {scope='application'}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
@@ -628,14 +628,14 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
         return scope==='application'&&key.length>=5&&(file.includes(key)||key.includes(file)&&file.length>=5||(cls&&cls.includes(key)));
       };
       const byName=(loose=nameMatch)=>{
-        const exact=others.filter(t=>{const cls=normName(surfaces.get(t)?.default?.name);return (normName(t.split('/').pop())===key||(cls&&cls===key))&&(scope==='application'||!wanted.size||shares(t));});
+        const exact=others.filter(t=>{const cls=normName(surfaces.get(t)?.default?.name);return (normName(t.split('/').pop())===key||(cls&&cls===key))&&(!wanted.size||shares(t));});
         const pool=exact.length?exact:others.filter(loose);
         return pool.length===1?pool[0]:null;
       };
       const provides=t=>{const {names}=exportNames(surfaces.get(t));return [...wanted].every(n=>names.has(n));};
-      // A loose name match must also export something the file uses
-      // (createTicket is not ticket.js); a lone function or class counts by
-      // its name and methods.
+      // A name match must also export something the file uses (createTicket
+      // is not ticket.js); a lone function or class counts by its name and
+      // methods.
       const shares=t=>{const {names}=exportNames(surfaces.get(t)),d=surfaces.get(t)?.default;if(d?.type==='function'||d?.type==='class')for(const n of [d.name,...(d.methods||[]).map(methodName)])names.add(n);return [...wanted].some(n=>names.has(n));};
       let pick=null,why='';
       if(wanted.size) {
@@ -682,20 +682,27 @@ function soleExport(surface, path, name, source, content, local) {
   return [...memberReads(content,local)].every(m=>statics.has(m));
 }
 // Anything in the module gets a member called name: a method or field, an
-// object key, x.name = …, or the string 'name' (defineProperty).
+// object key, x.name = …, the string 'name' (defineProperty), or a class
+// that extends another and may inherit one.
 function definesMember(source, name) {
   let found=false;
   try {walk(parseSource(source).ast,(node,parent)=>{
     if(['MethodDefinition','PropertyDefinition','Property'].includes(node.type)&&!node.computed&&nameOf(node.key)===name)found=true;
     else if(node.type==='MemberExpression'&&parent?.type==='AssignmentExpression'&&parent.left===node&&nameOf(node.property)===name)found=true;
     else if(node.type==='Literal'&&node.value===name)found=true;
+    else if((node.type==='ClassDeclaration'||node.type==='ClassExpression')&&node.superClass)found=true;
   });} catch {return true;}
   return found;
 }
-// The members a file reads off name (null for name[key]).
+// The members a file reads off name, as name.member or by destructuring it
+// (null for name[key], a computed key or ...rest).
 function memberReads(content, name) {
-  const out=new Set();
-  try {walk(parseSource(content).ast,node=>{if(node.type==='MemberExpression'&&node.object.type==='Identifier'&&node.object.name===name)out.add(node.computed?null:nameOf(node.property));});} catch {out.add(null);}
+  const out=new Set(),is=n=>n?.type==='Identifier'&&n.name===name;
+  try {walk(parseSource(content).ast,node=>{
+    if(node.type==='MemberExpression'&&is(node.object))out.add(node.computed?null:nameOf(node.property));
+    const pattern=node.type==='VariableDeclarator'&&is(node.init)?node.id:['AssignmentExpression','AssignmentPattern'].includes(node.type)&&is(node.right)?node.left:null;
+    if(pattern?.type==='ObjectPattern')for(const p of pattern.properties)out.add(p.type==='Property'&&!p.computed?nameOf(p.key):null);
+  });} catch {out.add(null);}
   return out;
 }
 // The module exports an object, or a named set, holding name as something callable.
@@ -706,7 +713,7 @@ function holds(surface, name) {
   return !!m&&m.type!=='object'&&m.type!=='instance';
 }
 // Every use of name other than its one declaration calls it, name(...) or
-// new name(...): never name.member, and never passed on as a value.
+// new name(...): never name.member or name[key], and never passed on as a value.
 function onlyCalled(content, name) {
   let text,f,list;
   try {text=canonicalize(content);f=nameFacts(text);list=tokens(text,f.sourceType);} catch {return false;}
@@ -714,7 +721,7 @@ function onlyCalled(content, name) {
   list.forEach((t,i)=>{
     if(t.type.label!=='name'||t.value!==name||f.memberStarts.has(t.start)||f.keyStarts.has(t.start))return;
     const prev=list[i-1],next=list[i+1];
-    if(next?.type.label==='('&&prev?.type.keyword!=='function'&&prev?.type.label!=='*'||prev?.type.keyword==='new'&&next?.type.label!=='.')calls++;
+    if(next?.type.label==='('&&prev?.type.keyword!=='function'&&prev?.type.label!=='*'||prev?.type.keyword==='new'&&!['.','['].includes(next?.type.label))calls++;
     else other++;
   });
   return calls>0&&other===1;
@@ -759,8 +766,8 @@ export function shapeFixes(files, surfaces) {
     for(const {file,find,replace,reason,target} of shapeFixesIn(path,set.get(path),set,surfaces))edits.push({file,find,replace,reason,target});
   return edits;
 }
-// An edit that is not rename-only is accepted only when its result is, byte
-// for byte, the runtime's shape fix of each import whose binding it changes
+// An edit that is not rename-only is accepted only when its result is, token
+// for token, the runtime's shape fix of each import whose binding it changes
 // (one, or the same statement repeated), after any renames the same edit
 // makes (which must pass renameOnlyError on their own).
 const NOT_SHAPE='edit does not change how an import is bound';
@@ -777,5 +784,9 @@ export function shapeEditError(before, after, {path, files, surfaces, knownNames
   const fixes=new Map(shapeFixesIn(path,mid,set,surfaces).map(f=>[f.at,f])),m=bindingSites(mid);
   let fixed=mid;
   for(const i of changed){const f=fixes.get(m[i]?.start);if(f)fixed=fixed.slice(0,f.at)+f.text+fixed.slice(f.end);}
-  return fixed===after?null:`edit changes how ${changed.map(i=>JSON.stringify(after.slice(b[i].start,b[i].end))).join(', ')} is bound, which the target module's exports do not call for`;
+  let same=fixed===after;
+  if(!same)try {const st=parseSource(after).sourceType,x=tokens(fixed,st),y=tokens(after,st);same=x.length===y.length&&x.every((t,i)=>sameToken(t,y[i]));} catch {}
+  if(same)return null;
+  const runtime=changed.map(i=>fixes.get(m[i]?.start)?.text.trim()).filter(Boolean);
+  return `edit changes how ${changed.map(i=>JSON.stringify(after.slice(b[i].start,b[i].end))).join(', ')} is bound, `+(runtime.length?`but the runtime binds it as ${runtime.map(t=>JSON.stringify(t)).join(', ')}`:`which the target module's exports do not call for`);
 }

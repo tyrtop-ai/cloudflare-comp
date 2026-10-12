@@ -18,6 +18,8 @@ const json = (body, status = 200) => Response.json(body, { status, headers: { 'c
 const parse = (value, otherwise) => { try { return JSON.parse(value); } catch { return otherwise; } };
 const isAssumption = key => /^assum(?:ed|ption)[_ /:-]/i.test(key);
 const topicSlug = label => String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,24)||'component';
+// A linker edit is a rename, or the runtime's fix of how an import binds.
+const linkEdits = applied => { const shaped=applied.filter(e=>e.shape).length; return `${applied.length-shaped} rename(s)`+(shaped?` and ${shaped} import binding fix(es)`:''); };
 // A scoped public key must survive repeated manager hops without collisions.
 // Strip the child's existing assumption prefix so only ONE prefix remains per
 // hop. For long hierarchical keys, use a digest of the FULL untruncated key.
@@ -1076,7 +1078,7 @@ export class ControlRoom extends DurableObject {
     };
     const autoApplied=applyAuto(files,autoLink(files,surfaces,{scope:isRoot?'application':'branch'}));
     autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
-    if(autoApplied.length)this.event(builderId,'link_auto',`Resolved ${autoApplied.length} import(s) without the model: `+
+    if(autoApplied.length)this.event(builderId,'link_auto',`Applied ${linkEdits(autoApplied)} without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
     // Only files with an import that does not resolve inside this manager's
     // children (or files named by a previous error) need renaming here. Every
@@ -1118,8 +1120,7 @@ export class ControlRoom extends DurableObject {
     if(edits.size)applied.push(...applyAuto(linked,shapeFixes(linked,surfaces)));
     for(const r of rejected.slice(0,12))
       this.event(builderId,'link_edit_rejected',clip(`${r.edit.file}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
-    const shaped=applied.filter(e=>e.shape).length;
-    if(applied.length)this.event(builderId,'link_renamed',`Applied ${applied.length-shaped} rename(s)${shaped?` and ${shaped} import binding fix(es)`:''} in ${new Set(applied.map(e=>e.file)).size} module(s): `+
+    if(applied.length)this.event(builderId,'link_renamed',`Applied ${linkEdits(applied)} in ${new Set(applied.map(e=>e.file)).size} module(s): `+
       clip(applied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace}`).join('; '),900));
     let entry=null;
     if(isRoot) {
@@ -1273,7 +1274,7 @@ export class ControlRoom extends DurableObject {
       await this.publishLinked(id,link,sources,{isRoot:false});
       this.set(`linked:${manager}`,fingerprint);
       const outside=new Set(link.unresolved.map(u=>u.specifier)).size;
-      const summary=`Linked ${sources.length} file(s) for ${this.node(manager)?.label||manager} with ${link.applied.length} rename(s)`+(outside?`; ${outside} import(s) point outside this branch and are left for the builder above.`:'.');
+      const summary=`Linked ${sources.length} file(s) for ${this.node(manager)?.label||manager} with ${linkEdits(link.applied)}`+(outside?`; ${outside} import(s) point outside this branch and are left for the builder above.`:'.');
       this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
       this.event(id,'link_done',summary);
       this.wake(manager);
@@ -1335,7 +1336,7 @@ export class ControlRoom extends DurableObject {
         this.save('run_passed:root',record);this.save('build_passed:root',record);
         this.save('build_failure:root',null);this.save('link_routed',null);this.save('link_state',null);
         this.save('build_blocked:root',null);this.set('build_infrastructure:root','');
-        const summary=`Linked ${sources.length} file(s) with ${link.applied.length} rename(s); the runner's test passed in the container.`;
+        const summary=`Linked ${sources.length} file(s) with ${linkEdits(link.applied)}; the runner's test passed in the container.`;
         this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
         this.event(id,'run_passed',`Runner test passed against snapshot ${outcome.digest.slice(0,14)}.`+(link.issues.length?` Builder notes not needed for this goal: ${clip(link.issues.map(x=>x.detail).join('; '),500)}`:''));
         this.wake(manager);
