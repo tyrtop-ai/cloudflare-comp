@@ -385,16 +385,27 @@ export function applyEdits(content, edits, {knownNames=null}={}) {
   let current=String(content);
   const applied=[],rejected=[];
   for(const edit of edits) {
-    const find=String(edit?.find??''),replace=String(edit?.replace??'');
+    let find=String(edit?.find??''),replace=String(edit?.replace??'');
     if(!find){rejected.push({edit,reason:'empty find text'});continue;}
     if(find===replace)continue;
     if(!current.includes(find)){rejected.push({edit,reason:'find text is not in the file'});continue;}
     let list;
     try {list=tokens(current,parseSource(current).sourceType);} catch(e) {rejected.push({edit,reason:'file cannot be tokenized: '+e.message});continue;}
     const starts=new Set(list.map(t=>t.start)),ends=new Set(list.map(t=>t.end));
-    const hits=[];
-    for(let at=current.indexOf(find);at>=0;at=current.indexOf(find,at+1)) {
-      if(starts.has(at)&&ends.has(at+find.length)&&(!hits.length||at>=hits.at(-1)+find.length))hits.push(at);
+    const hitsOf=f=>{
+      const hits=[];
+      for(let at=current.indexOf(f);at>=0;at=current.indexOf(f,at+1))
+        if(starts.has(at)&&ends.has(at+f.length)&&(!hits.length||at>=hits.at(-1)+f.length))hits.push(at);
+      return hits;
+    };
+    let hits=hitsOf(find);
+    // A bare path ("../statusFilter") lies inside a string token. When it is
+    // the whole value of module specifiers, and of no other string, the edit
+    // means those specifiers: widen find and replace to their quotes.
+    if(!hits.length) {
+      const lits=list.flatMap((t,i)=>t.type.label==='string'&&current.slice(t.start+1,t.end-1)===find?[i]:[]);
+      const q=lits.length?current[list[lits[0]].start]:'';
+      if(lits.length&&lits.every(i=>specifierPosition(list,i)&&current[list[i].start]===q)){find=q+find+q;replace=q+replace+q;hits=hitsOf(find);}
     }
     if(!hits.length){rejected.push({edit,reason:'find text does not match whole tokens'});continue;}
     let next='',last=0;
@@ -471,7 +482,11 @@ export function relativeSpecifier(from, to) {
   const rest=b.slice(i).join('/');
   return (up?'../'.repeat(up):'./')+rest;
 }
-export function normalizeEditPaths(edit, allPaths) {
+// A path that does not resolve because it was written from the wrong
+// directory ('./ticket-ser-f17f9f79/ticketService.js' from a sibling) or
+// without the nested components/ levels names the one module whose path ends
+// in the same segments. files (all paths in the bundle) decides what resolves.
+export function normalizeEditPaths(edit, allPaths, files=null) {
   let replace=String(edit.replace??'');
   for(const target of allPaths) {
     const bare=target.replace(/\.(?:js|mjs|cjs)$/,'');
@@ -482,6 +497,20 @@ export function normalizeEditPaths(edit, allPaths) {
       }
     }
   }
+  const known=files||new Set(allPaths);
+  const parts=p=>p.replace(/\.(?:js|mjs|cjs)$/i,'').split('/').filter(s=>s&&s!=='.'&&s!=='..'&&s!=='components').join('/');
+  const fix=spec=>{
+    if(isBuiltin(spec)||resolveLocal(edit.file,spec,known).path)return spec;
+    const want=parts(spec);
+    const hits=want?allPaths.filter(p=>p!==edit.file&&('/'+parts(p)).endsWith('/'+want)):[];
+    return hits.length===1?relativeSpecifier(edit.file,hits[0]):spec;
+  };
+  // Only specifier positions; a replacement that is one string or one bare
+  // relative path is the specifier itself (applyEdits adds the quotes).
+  const whole=/^(['"])([^'"\n]+)\1$/.exec(replace);
+  if(whole)replace=whole[1]+fix(whole[2])+whole[1];
+  else if(/^\.{1,2}\/[^'"`\s]+$/.test(replace))replace=fix(replace);
+  else replace=replace.replace(/(\b(?:require|import)\s*\(\s*|\bfrom\s*|\bimport\s*)(['"])([^'"\n]+)\2/g,(m,pre,q,spec)=>pre+q+fix(spec)+q);
   return replace===edit.replace?edit:{...edit,replace};
 }
 // When no module exports start() or composes the others, the worker most
