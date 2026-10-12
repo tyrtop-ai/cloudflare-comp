@@ -364,6 +364,9 @@ export function renameOnlyError(before, after, {knownNames=null}={}) {
     if(knownNames&&!knownNames.has(y.value))return `edit renames ${show(x)} to ${show(y)}, which no other module defines or uses, at ${where}`;
     const prior=bindingMap.get(x.value);
     if(prior&&prior!==y.value)return `edit renames ${show(x)} two different ways`;
+    // Two bindings renamed to one name would become one variable.
+    const merged=[...bindingMap].find(([from,to])=>to===y.value&&from!==x.value);
+    if(merged)return `edit renames ${show(x)} and ${JSON.stringify(merged[0])} to the same name ${show(y)}`;
     bindingMap.set(x.value,y.value);
   }
   // A rename must be complete: every use of a renamed binding changes, and a
@@ -382,14 +385,22 @@ export function renameOnlyError(before, after, {knownNames=null}={}) {
 export function tokenNames(text) {return knownNamesFrom([text]);}
 // Replace only occurrences that start and end on token boundaries, so a find
 // text never rewrites part of a longer name or the inside of a string.
-export function applyEdits(content, edits, {knownNames=null}={}) {
+// original: the worker's text. An edit is also accepted when the whole file
+// is still a rename of it, so a relink can undo a rename it accepted before.
+// check: a further per-edit test of the edited text (an error, or null).
+// done: edits an earlier relink applied to this file; one sent again is
+// already in place, not missing.
+export function applyEdits(content, edits, {knownNames=null,original=null,check=null,done=[]}={}) {
   let current=String(content);
   const applied=[],rejected=[];
   for(const edit of edits) {
     let find=String(edit?.find??''),replace=String(edit?.replace??'');
     if(!find){rejected.push({edit,reason:'empty find text'});continue;}
     if(find===replace)continue;
-    if(!current.includes(find)){rejected.push({edit,reason:'find text is not in the file'});continue;}
+    if(!current.includes(find)) {
+      if(!(current.includes(replace)&&done.some(d=>d.find===find&&d.replace===replace)))rejected.push({edit,reason:'find text is not in the file'});
+      continue;
+    }
     let list;
     try {list=tokens(current,parseSource(current).sourceType);} catch(e) {rejected.push({edit,reason:'file cannot be tokenized: '+e.message});continue;}
     const starts=new Set(list.map(t=>t.start)),ends=new Set(list.map(t=>t.end));
@@ -414,11 +425,22 @@ export function applyEdits(content, edits, {knownNames=null}={}) {
     let next='',last=0;
     for(const at of hits){next+=current.slice(last,at)+replace;last=at+find.length;}
     next+=current.slice(last);
-    const error=renameOnlyError(current,next,{knownNames});
+    const step=renameOnlyError(current,next,{knownNames});
+    const error=(step&&original!=null&&!renameOnlyError(original,next,{knownNames})?null:step)||check?.(next);
     if(error){rejected.push({edit,reason:error});continue;}
     current=next;applied.push(edit);
   }
   return {content:current,applied,rejected};
+}
+
+// The renames that turn a worker's text into its linked copy, as 'from → to'.
+export function linkRenames(before, after) {
+  try {
+    const A=canonicalize(before),B=canonicalize(after),type=parseSource(A).sourceType,a=tokens(A,type),b=tokens(B,type);
+    if(a.length!==b.length)return [];
+    const show=t=>t.type.label==='string'?`'${t.value}'`:String(t.value);
+    return [...new Set(a.flatMap((x,i)=>sameToken(x,b[i])?[]:[`${show(x)} → ${show(b[i])}`]))];
+  } catch {return [];}
 }
 
 export const tokenEstimate=text=>Math.ceil(String(text||'').length/3)+40;
