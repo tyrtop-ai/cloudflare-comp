@@ -784,6 +784,8 @@ test('shape: a binding read as a namespace, or a name the export itself carries,
   assert.deepEqual(fixes(call,"const Base = require('../c/base');\nclass Parse extends Base {}\nmodule.exports = Parse;\n",'components/b/parse.js'),[],'a class that may inherit one');
   assert.deepEqual(fixes(call,'function parse(s){ return { s }; }\nparse.parse = (s) => s;\nmodule.exports = parse;\n','components/b/parse.js'),[],'a property assigned to the function');
   assert.deepEqual(fixes(call,"function parse(s){ return { s }; }\nObject.defineProperty(parse, 'parse', { value: (s) => s });\nmodule.exports = parse;\n",'components/b/parse.js'),[],'or defined on it');
+  for(const [how,line] of [['copied onto it','Object.assign(parse, helpers);'],['under a computed key','for (const k of Object.keys(helpers)) parse[k] = helpers[k];'],['inherited from a prototype','Object.setPrototypeOf(parse, helpers);'],['or from __proto__','parse.__proto__ = helpers;']])
+    assert.deepEqual(fixes(call,`const helpers = require('../c/helpers');\nfunction parse(s){ return { s }; }\n${line}\nmodule.exports = parse;\n`,'components/b/parse.js'),[],'a member it may get at runtime, '+how);
   assert.deepEqual(fixes(call,'module.exports = function parse(s){ return JSON.parse(s); };\n','components/b/parse.js'),["const parse = require('../b/parse');"],'reading JSON.parse defines nothing');
 });
 
@@ -809,6 +811,14 @@ test('shape: ESM named and default imports are fixed the same way',()=>{
   assert.deepEqual(L.shapeFixes(files,sur).map(e=>e.replace),["import parse from '../b/parseStatus.mjs';","import { isOpen } from '../c/filters.mjs';"],'store is used as a namespace (store.all), so it stays');
   fixAll(files,sur);
   assert.ok(!L.importMismatches(files,surfacesOf(files)).some(m=>m.name==='parseStatus'),'the fixed named import is no longer reported (default imports are not checked statically)');
+  // export { default } from … is a default export, though the surface lists it by name.
+  for(const line of ["export { default } from './impl.mjs';","export { real as default } from './impl.mjs';"]) {
+    const app="import parse from '../b/index.mjs';\nexport function start(){ return parse('x'); }\n";
+    const barrel=new Map([['components/a/app.mjs',app],['components/b/index.mjs',line+"\nexport function parse(s){ return 'named:'+s; }\n"],['components/b/impl.mjs',"export default function parse(s){ return 'default:'+s; }\nexport function real(s){ return s; }\n"]]);
+    const bs=surfacesOf(barrel);
+    assert.deepEqual(L.shapeFixes(barrel,bs),[],line);
+    assert.equal(L.applyEdits(app,[{find:'import parse from',replace:'import { parse } from'}],{shapes:{path:'components/a/app.mjs',files:barrel,surfaces:bs}}).applied.length,0,'nor from the model: '+line);
+  }
 });
 
 const liveTicketService="let tickets = [];\nlet nextId = 1;\n\nfunction create(ticket) {\n  const newTicket = { ...ticket, id: nextId++ };\n  tickets.push(newTicket);\n  return newTicket;\n}\n\nfunction read(id) {\n  return tickets.find(t => t.id === id);\n}\n\nfunction update(id, updates) {\n  const ticket = tickets.find(t => t.id === id);\n  if (!ticket) return null;\n  Object.assign(ticket, updates);\n  return ticket;\n}\n\nfunction del(id) {\n  const index = tickets.findIndex(t => t.id === id);\n  if (index === -1) return false;\n  tickets.splice(index, 1);\n  return true;\n}\n\nmodule.exports = { create, read, update, del };\n";
@@ -842,6 +852,20 @@ test('name fallback: ambiguous or loose name matches pick nothing, and a provide
   assert.deepEqual(pick([['components/a/ticketService.js','module.exports = { slugify(){} };\n']],'branch'),[],'and only one that exports a name the file uses: the real module may be in another branch');
   assert.deepEqual(pick([['components/a/ticketService.js','module.exports = { slugify(){} };\n']]),[],'at Root too');
   assert.deepEqual(pick([['components/a/ticketService.js','module.exports = function ticketService(store){ return store; };\n']]),[],'a same-named function the file reads members off');
+  // A name read off the binding must be one the static check can hold the
+  // module to afterwards: not a function's own name, nor a class's method.
+  const live=(target,scope)=>{const files=new Map([['components/applicatio-f07f9de6/module.js',liveEntry],['components/ticket-ser-f17f9f79/ticketService.js',target]]);return L.autoLink(files,surfacesOf(files),{scope}).map(e=>e.target);};
+  const svcClass="class TicketService {\n  constructor() { this.tickets = []; }\n  create(ticket) { this.tickets.push(ticket); return ticket; }\n  read(id) { return this.tickets.find(t => t.id === id); }\n  update(id, updates) { return Object.assign(this.read(id), updates); }\n  del(id) { this.tickets = this.tickets.filter(t => t.id !== id); return true; }\n}\n\nmodule.exports = TicketService;\n";
+  for(const scope of ['application','branch']) {
+    assert.deepEqual(live(svcClass,scope),[],'the 5f85e12b entry and a class with instance methods of those names: '+scope);
+    assert.deepEqual(live('module.exports = function create(ticket){ return ticket; };\n',scope),[],'a function named like one of them: '+scope);
+  }
+  const repo=new Map([['components/app-1/app.js',"const repo = require('./ticketRepository');\nmodule.exports = { start(){ return { save: (t) => repo.save(t), find: (id) => repo.findById(id) }; } };\n"],
+    ['components/model-2/ticket.js',"class Ticket {\n  constructor(title){ this.title = title; }\n  save(){ return this; }\n}\nmodule.exports = Ticket;\n"],
+    ['components/store-3/ticketStore.js',"const rows = new Map();\nmodule.exports = { saveTicket(t){ rows.set(t.id, t); return t; }, getTicket(id){ return rows.get(id); } };\n"]]);
+  assert.deepEqual(L.autoLink(repo,surfacesOf(repo),{scope:'application'}),[],'ticketRepository is not ticket.js because Ticket has a save() method');
+  const esm=new Map([['components/a/app.mjs',"import svc from './ticketService.mjs';\nexport function start(){ return { create: svc.create, view: svc.view }; }\n"],['components/b/ticketService.mjs','export default { create(t){ return t; }, read(id){ return id; } };\n']]);
+  assert.deepEqual(L.autoLink(esm,surfacesOf(esm),{scope:'branch'}),[],'nor an import the static check does not read (members of a default import)');
   assert.deepEqual(pick([['components/a/ticketService.js','module.exports = { slugify(){} };\n'],['components/b/ticketServiceImpl.js',svc]]),['components/b/ticketServiceImpl.js'],'an exact name that exports none of them does not beat a loose one that does');
   const lone=new Map([['components/c/combine.js',"const { isStatusMatch } = require('./statusFilter');\nmodule.exports = (t) => isStatusMatch(t);\n"],['components/s/statusFilter.js',liveFilters[F+'implement--9b11f5c4/statusFilter.js']]]);
   assert.deepEqual(L.autoLink(lone,surfacesOf(lone),{scope:'branch'}).map(e=>e.target),['components/s/statusFilter.js'],'a lone function counts by its name');

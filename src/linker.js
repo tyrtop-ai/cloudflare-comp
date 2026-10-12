@@ -607,8 +607,8 @@ export function importRefs(path, content) {
 // provides it: the only module exporting every name the file uses from it,
 // or (at Root) the only module whose file or class name matches the path.
 // When no module exports every name, the name match still decides if that
-// module exports at least one of them, and the static check then names the
-// members that differ. An exact name beats a looser one. A branch builder
+// module exports at least one of them and the static check then names what
+// differs. An exact name beats a looser one. A branch builder
 // only accepts an exact name match, since the real module may live in a
 // branch it cannot see.
 export function autoLink(files, surfaces, {scope='application'}={}) {
@@ -634,15 +634,19 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
       };
       const provides=t=>{const {names}=exportNames(surfaces.get(t));return [...wanted].every(n=>names.has(n));};
       // A name match must also export something the file uses (createTicket
-      // is not ticket.js); a lone function or class counts by its name and
-      // methods.
-      const shares=t=>{const {names}=exportNames(surfaces.get(t)),d=surfaces.get(t)?.default;if(d?.type==='function'||d?.type==='class')for(const n of [d.name,...(d.methods||[]).map(methodName)])names.add(n);return [...wanted].some(n=>names.has(n));};
+      // is not ticket.js). A name read off the binding counts only if it is
+      // exported by name or as a member; a destructured one may also be a
+      // lone function or class, or one of its methods.
+      const shares=t=>{const {names}=exportNames(surfaces.get(t)),d=surfaces.get(t)?.default,lone=new Set(d?.type==='function'||d?.type==='class'?[d.name,...(d.methods||[]).map(methodName)]:[]);return [...wanted].some(n=>names.has(n)||ref.names.has(n)&&lone.has(n));};
+      // Without the static check naming what differs, the file would leave
+      // the linker's view still wrong.
+      const flagged=t=>t&&importMismatches(new Map([[path,content.slice(0,ref.start+1)+relativeSpecifier(path,t)+content.slice(ref.end-1)],[t,set.get(t)]]),surfaces).some(m=>m.target===t)?t:null;
       let pick=null,why='';
       if(wanted.size) {
         const pool=others.filter(provides);
         if(pool.length===1){pick=pool[0];why=`only module exporting ${[...wanted].join(', ')}`;}
         else if(pool.length>1){const both=pool.filter(nameMatch);if(both.length===1){pick=both[0];why=`exports ${[...wanted].join(', ')} and matches the name`;}}
-        else if((pick=byName(t=>nameMatch(t)&&shares(t))))why=`only module whose name matches; none exports all of ${[...wanted].join(', ')}`;
+        else if((pick=flagged(byName(t=>nameMatch(t)&&shares(t)))))why=`only module whose name matches; none exports all of ${[...wanted].join(', ')}`;
       } else if((pick=byName()))why='only module whose name matches';
       if(!pick)continue;
       const raw=content.slice(ref.start,ref.end),quote=raw[0];
@@ -677,20 +681,24 @@ function bindingSites(content) {
 // methods: anything else means it wanted a namespace.
 function soleExport(surface, path, name, source, content, local) {
   const d=surface?.default;
-  if(!d||(d.type!=='function'&&d.type!=='class')||surface.named.length||normName(d.name||path.split('/').pop())!==normName(name)||definesMember(source,name))return false;
+  if(!d||(d.type!=='function'&&d.type!=='class')||surface.named.length||normName(d.name||path.split('/').pop())!==normName(name)||definesMember(source,name,d.name))return false;
   const statics=new Set((d.methods||[]).filter(m=>m.name.startsWith('static ')).map(m=>methodName({name:m.name.slice(7)})));
   return [...memberReads(content,local)].every(m=>statics.has(m));
 }
 // Anything in the module gets a member called name: a method or field, an
 // object key, x.name = …, the string 'name' (defineProperty), or a class
-// that extends another and may inherit one.
-function definesMember(source, name) {
+// that extends another and may inherit one. The export (local, or
+// module.exports) may get any member when it is assigned a computed key or
+// a prototype, or passed to a call (Object.assign, setPrototypeOf, …).
+function definesMember(source, name, local) {
   let found=false;
+  const isExport=n=>n?.type==='Identifier'&&!!local&&n.name===local||isModuleExports(n);
   try {walk(parseSource(source).ast,(node,parent)=>{
     if(['MethodDefinition','PropertyDefinition','Property'].includes(node.type)&&!node.computed&&nameOf(node.key)===name)found=true;
-    else if(node.type==='MemberExpression'&&parent?.type==='AssignmentExpression'&&parent.left===node&&nameOf(node.property)===name)found=true;
+    else if(node.type==='MemberExpression'&&parent?.type==='AssignmentExpression'&&parent.left===node&&(nameOf(node.property)===name||isExport(node.object)&&(node.computed||nameOf(node.property)==='__proto__')))found=true;
     else if(node.type==='Literal'&&node.value===name)found=true;
     else if((node.type==='ClassDeclaration'||node.type==='ClassExpression')&&node.superClass)found=true;
+    else if(node.type==='CallExpression'&&node.arguments.some(isExport))found=true;
   });} catch {return true;}
   return found;
 }
@@ -747,7 +755,7 @@ function shapeFixesIn(path, content, files, surfaces) {
     if(s.shape==='ObjectPattern'&&surface.kind==='cjs'&&p?.type==='Property'&&!p.computed&&p.key.type==='Identifier'&&p.value.type==='Identifier'&&soleExport(surface,target,p.key.name,files.get(target),content,p.value.name)){text=p.value.name;reason=`${target} exports a single ${surface.default.type} as module.exports`;}
     else if(s.shape==='Identifier'&&surface.kind==='cjs'&&holds(surface,id.name)&&onlyCalled(content,id.name)){text=`{ ${id.name} }`;reason=`${target} exports ${id.name} inside an object and this file only calls it`;}
     else if(s.shape==='ImportSpecifier'&&sp.imported.type==='Identifier'&&soleExport(surface,target,sp.imported.name,files.get(target),content,sp.local.name)){text=sp.local.name;reason=`${target} has only a default ${surface.default.type}`;}
-    else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&holds(surface,sp.local.name)&&onlyCalled(content,sp.local.name)){text=`{ ${sp.local.name} }`;reason=`${target} has no default export, only a named ${sp.local.name} that this file calls`;}
+    else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&!surface.named.some(n=>n.name==='default')&&holds(surface,sp.local.name)&&onlyCalled(content,sp.local.name)){text=`{ ${sp.local.name} }`;reason=`${target} has no default export, only a named ${sp.local.name} that this file calls`;}
     if(text===null)continue;
     const gap=(x,y)=>/[\w$]/.test(x||'')&&/[\w$]/.test(y||'')?' ':'';
     text=gap(content[s.start-1],text[0])+text+gap(text.at(-1),content[s.end]);
