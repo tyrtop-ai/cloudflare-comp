@@ -1118,7 +1118,8 @@ export class ControlRoom extends DurableObject {
     if(edits.size)applied.push(...applyAuto(linked,shapeFixes(linked,surfaces)));
     for(const r of rejected.slice(0,12))
       this.event(builderId,'link_edit_rejected',clip(`${r.edit.file}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
-    if(applied.length)this.event(builderId,'link_renamed',`Applied ${applied.length} rename(s) in ${new Set(applied.map(e=>e.file)).size} module(s): `+
+    const shaped=applied.filter(e=>e.shape).length;
+    if(applied.length)this.event(builderId,'link_renamed',`Applied ${applied.length-shaped} rename(s)${shaped?` and ${shaped} import binding fix(es)`:''} in ${new Set(applied.map(e=>e.file)).size} module(s): `+
       clip(applied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace}`).join('; '),900));
     let entry=null;
     if(isRoot) {
@@ -1135,7 +1136,7 @@ export class ControlRoom extends DurableObject {
       if(stored!==content)await this.putFile(builderId,source.destination,content,{materialized:true});
     }
     const manifest=JSON.stringify({format:'recursive-assembly-v2',
-      note:'Each component is a copy of a worker publication or of a child manager\'s linked bundle. renamed=true means this builder changed only import paths or identifier names; the runtime verified that token by token.',
+      note:'Each component is a copy of a worker publication or of a child manager\'s linked bundle. renamed=true means this builder changed only import paths, identifier names, or how an import binds a module whose exports call for it; the runtime verified that token by token.',
       entry:link.entry||null,
       sources:await Promise.all([...sources].sort((a,b)=>a.destination.localeCompare(b.destination)).map(async s=>({
         branch:s.branch,source:s.source_path,destination:s.destination,sha256:s.digest,

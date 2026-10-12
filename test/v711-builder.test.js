@@ -712,9 +712,10 @@ test('shape: the builder\'s own proposals from run e89dba35 are accepted only wh
     {find:"const { isStatusMatch } = require('../implement--9b11f5c4/statusFilter');",replace:"const isStatusMatch = require('../implement--9b11f5c4/statusFilter');"},
     {find:"const { isPriorityMatch } = require('../implement--9c11f757/priorityFilter');",replace:"const isPriorityMatch = require('../implement--9c11f757/priorityFilter');"},
     {find:"const { isAssigneeMatch } = require('../implement--9911f29e/assigneeFilter');",replace:"const assigneeMatch = require('../implement--9911f29e/assigneeFilter');"}],{shapes});
-  assert.deepEqual(r.applied.map(e=>e.replace.split(' ')[1]),['isStatusMatch']);
-  assert.match(r.rejected[0].reason,/adds or removes code/,'priorityFilter exports an object: binding it whole would break the calls');
+  assert.deepEqual(r.applied.map(e=>[e.replace.split(' ')[1],e.shape]),[['isStatusMatch',true]]);
+  assert.match(r.rejected[0].reason,/how "isPriorityMatch" is bound, which the target module's exports do not call for/,'priorityFilter exports an object: binding it whole would break the calls');
   assert.equal(r.rejected.length,2,'a proposal that differs from the runtime fix (here a half-renamed binding) is not admitted');
+  assert.match(r.rejected[1].reason,/how "assigneeMatch" is bound/);
   assert.equal(L.applyEdits(liveFilters[COMBINE],[{find:"const { isStatusMatch }",replace:"const isStatusMatch"}]).applied.length,0,'without shapes, rename-only is unchanged');
   // An unlinked path and its binding fixed in one edit: the path part must be
   // a valid rename and the binding part the runtime fix for the new target.
@@ -756,6 +757,37 @@ test('shape: ambiguous imports are left for the worker',()=>{
   assert.deepEqual(L.shapeFixes(tight,surfacesOf(tight)).map(e=>e.replace),["const parse=require('../b/parse.js');"],'no tokens run together');
 });
 
+test('shape: a binding read as a namespace, or a name the export itself carries, is left for the worker',()=>{
+  const fixes=(app,target,file='components/b/x.js')=>{const m=new Map([['components/a/app.js',app],[file,target]]);return L.shapeFixes(m,surfacesOf(m)).map(e=>e.replace);};
+  const svc="const { ticketService } = require('../b/x');\nmodule.exports = { go(){ return ticketService.create({}); } };\n";
+  assert.deepEqual(fixes(svc,'module.exports = function ticketService(){ return 1; };\n'),[],'x.member on a single function');
+  const m=new Map([['components/a/app.js',svc],['components/b/x.js','module.exports = function ticketService(){ return 1; };\n']]);
+  assert.match(L.importMismatches(m,surfacesOf(m))[0].detail,/exports a single function/,'and the static check still reports it');
+  const esm=new Map([['components/a/app.mjs',"import { svc } from '../b/svc.mjs';\nexport function go(){ return svc.create(); }\n"],['components/b/svc.mjs','export default function svc(){ return 1; }\n']]);
+  assert.deepEqual(L.shapeFixes(esm,surfacesOf(esm)),[],'the same for ESM');
+  const ticket="class Ticket { static create(t){ return new Ticket(t); } constructor(t){ this.t = t; } }\nmodule.exports = Ticket;\n";
+  assert.deepEqual(fixes("const { Ticket } = require('../b/x');\nmodule.exports = () => Ticket.create('x');\n",ticket),["const Ticket = require('../b/x');"],'a static method of the class is fine');
+  assert.deepEqual(fixes("const { Ticket } = require('../b/x');\nmodule.exports = () => Ticket.make('x');\n",ticket),[],'anything else is not');
+  // const { ticket } = require(p) reads p.ticket: if the export has one, the import may be right.
+  const call="const { parse } = require('../b/parse');\nmodule.exports = (s) => parse(s);\n";
+  assert.deepEqual(fixes("const { ticket } = require('../b/ticket');\nmodule.exports = () => ticket('x');\n","class Ticket { static ticket(t){ return new Ticket(t); } constructor(t){ this.t = t; } }\nmodule.exports = Ticket;\n",'components/b/ticket.js'),[],'a static method of that name');
+  assert.deepEqual(fixes(call,'module.exports = class { static parse(s){ return s; } };\n','components/b/parse.js'),[],'an anonymous class with one');
+  assert.deepEqual(fixes(call,'function parse(s){ return { s }; }\nparse.parse = (s) => s;\nmodule.exports = parse;\n','components/b/parse.js'),[],'a property assigned to the function');
+  assert.deepEqual(fixes(call,"function parse(s){ return { s }; }\nObject.defineProperty(parse, 'parse', { value: (s) => s });\nmodule.exports = parse;\n",'components/b/parse.js'),[],'or defined on it');
+  assert.deepEqual(fixes(call,'module.exports = function parse(s){ return JSON.parse(s); };\n','components/b/parse.js'),["const parse = require('../b/parse');"],'reading JSON.parse defines nothing');
+});
+
+test('shape: an import repeated in one file is fixed at every copy, by the runtime or the model',()=>{
+  const app="function f(){ const { parse } = require('../b/parse'); return parse(1); }\nfunction g(){ const { parse } = require('../b/parse'); return parse(2); }\nmodule.exports = { f, g };\n";
+  const files=new Map([['components/a/app.js',app],['components/b/parse.js','module.exports = function parse(x){ return x; };\n']]),sur=surfacesOf(files);
+  const shapes={path:'components/a/app.js',files,surfaces:sur},fixed=app.replaceAll('const { parse }','const parse');
+  const runtime=L.applyEdits(app,L.shapeFixes(files,sur),{shapes});
+  assert.equal(runtime.content,fixed);
+  assert.equal(L.applyEdits(app,[{find:"const { parse } = require('../b/parse');",replace:"const parse = require('../b/parse');"}],{shapes}).content,fixed);
+  const half=app.replace('const { parse }','const parse');
+  assert.equal(L.applyEdits(half,[{find:"const { parse } = require('../b/parse');",replace:"const parse = require('../b/parse');"}],{shapes}).content,fixed);
+});
+
 test('shape: ESM named and default imports are fixed the same way',()=>{
   const files=new Map([
     ['components/a/app.mjs',"import { parseStatus as parse } from '../b/parseStatus.mjs';\nimport isOpen from '../c/filters.mjs';\nimport store from '../d/store.mjs';\nexport function start(){ return { parse, open: (t) => isOpen(t), all: () => store.all() }; }\n"],
@@ -766,7 +798,7 @@ test('shape: ESM named and default imports are fixed the same way',()=>{
   assert.ok(L.importMismatches(files,sur).some(m=>m.name==='parseStatus'));
   assert.deepEqual(L.shapeFixes(files,sur).map(e=>e.replace),["import parse from '../b/parseStatus.mjs';","import { isOpen } from '../c/filters.mjs';"],'store is used as a namespace (store.all), so it stays');
   fixAll(files,sur);
-  assert.deepEqual(L.importMismatches(files,surfacesOf(files)),[]);
+  assert.ok(!L.importMismatches(files,surfacesOf(files)).some(m=>m.name==='parseStatus'),'the fixed named import is no longer reported (default imports are not checked statically)');
 });
 
 const liveTicketService="let tickets = [];\nlet nextId = 1;\n\nfunction create(ticket) {\n  const newTicket = { ...ticket, id: nextId++ };\n  tickets.push(newTicket);\n  return newTicket;\n}\n\nfunction read(id) {\n  return tickets.find(t => t.id === id);\n}\n\nfunction update(id, updates) {\n  const ticket = tickets.find(t => t.id === id);\n  if (!ticket) return null;\n  Object.assign(ticket, updates);\n  return ticket;\n}\n\nfunction del(id) {\n  const index = tickets.findIndex(t => t.id === id);\n  if (index === -1) return false;\n  tickets.splice(index, 1);\n  return true;\n}\n\nmodule.exports = { create, read, update, del };\n";
@@ -797,6 +829,9 @@ test('name fallback: ambiguous or loose name matches pick nothing, and a provide
   assert.deepEqual(pick([['components/a/ticketServiceImpl.js',svc]]),['components/a/ticketServiceImpl.js'],'one loose match at Root that exports some of the names');
   assert.deepEqual(pick([['components/a/ticketServiceImpl.js',"module.exports = { read(){} };\n"]]),[],'a loose match that exports none of them');
   assert.deepEqual(pick([['components/a/ticketServiceImpl.js',svc]],'branch'),[],'a branch accepts only an exact name');
+  assert.deepEqual(pick([['components/a/ticketService.js','module.exports = { slugify(){} };\n']],'branch'),[],'and only one that exports a name the file uses: the real module may be in another branch');
+  const lone=new Map([['components/c/combine.js',"const { isStatusMatch } = require('./statusFilter');\nmodule.exports = (t) => isStatusMatch(t);\n"],['components/s/statusFilter.js',liveFilters[F+'implement--9b11f5c4/statusFilter.js']]]);
+  assert.deepEqual(L.autoLink(lone,surfacesOf(lone),{scope:'branch'}).map(e=>e.target),['components/s/statusFilter.js'],'a lone function counts by its name');
   assert.deepEqual(pick([['components/a/ticketService.js',svc],['components/b/viewer.js','module.exports = { view(){}, list(){} };\n']]),['components/b/viewer.js'],'the only module exporting every name wins over the name');
   // Run e89dba35: "createTicket" loosely contains "ticket", but ticket.js exports only Ticket.
   const app="const { createTicket } = require('./createTicket');\nmodule.exports = { createTicket: (ticketData) => createTicket(ticketData) };\n";
@@ -834,4 +869,73 @@ test('room: the live 5f85e12b link resolves its path without the model; the mode
   assert.equal(calls.link[0].known_mismatches.length,2);
   assert.match(calls.link[0].known_mismatches.join('\n'),/reads 'view'[\s\S]*reads 'delete'/);
   assert.ok(!events.some(e=>e.kind==='link_retry'||e.kind==='sent_to_workers'));
+});
+
+// A branch builder over the workers of one manager in run e89dba35 (labels and
+// sources from the live run; the paths are this room's own).
+async function liveBranch(room,workers) {
+  const goal='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
+  await room.provision('root',null,'Root objective',goal);
+  room.set('goal',goal);
+  await room.spawn('root',[{label:'Filter Application Logic',task:'Filter tickets by status, priority and assignee'}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  await room.spawn('root.1',workers.map(([label,file])=>({label,task:'Write '+file})));
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root.1'");
+  const ids=workers.map((_,i)=>`root.1.${i+1}`),list=ids.map(id=>`'${id}'`).join(',');
+  room.db().exec(`UPDATE agents SET phase='implement' WHERE id IN (${list})`);
+  for(const [i,[,file,content]] of workers.entries())await room.putFile(ids[i],file,content);
+  room.db().exec(`UPDATE agents SET status='done' WHERE id IN (${list})`);
+  const builder=await room.scheduleAssembly('root.1');
+  await room.turn(builder.id);
+  return {builder,paths:workers.map(([label,file],i)=>materializedPath(label,file,ids[i]))};
+}
+
+test('room: the live e89dba35 filter branch links without the model; the runtime fixes the bindings',async()=>{
+  const {room,store,calls}=liveRoom();
+  const v1=liveFilters[COMBINE].replace('../implement--9b11f5c4/statusFilter','./statusFilter').replace('../implement--9c11f757/priorityFilter','./priorityFilter').replace('../implement--9911f29e/assigneeFilter','./assigneeFilter');
+  const {builder,paths:[status,priority,assignee,combine]}=await liveBranch(room,[
+    ['Implement status filter','statusFilter.js',liveFilters[F+'implement--9b11f5c4/statusFilter.js']],
+    ['Implement priority filter','priorityFilter.js',liveFilters[F+'implement--9c11f757/priorityFilter.js']],
+    ['Implement assignee filter','assigneeFilter.js',liveFilters[F+'implement--9911f29e/assigneeFilter.js']],
+    ['Combine multiple filters','combineFilters.js',v1]]);
+  const events=room.snapshot().events;
+  assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
+  assert.equal(calls.link.length,0,'no model call: every path and binding was mechanical');
+  assert.match(events.find(e=>e.kind==='link_auto').body,/^Resolved 5 import\(s\)/);
+  assert.match(events.find(e=>e.kind==='link_renamed').body,/^Applied 3 rename\(s\) and 2 import binding fix\(es\) in 1 module\(s\)/);
+  const rel=p=>L.relativeSpecifier(combine,p);
+  const linked=await store.read(room.node(builder.id).repo_name,combine);
+  assert.equal(linked,liveFilters[COMBINE].replace("{ isStatusMatch } = require('../implement--9b11f5c4/statusFilter')",`isStatusMatch = require('${rel(status)}')`)
+    .replace("'../implement--9c11f757/priorityFilter'",`'${rel(priority)}'`).replace("{ isAssigneeMatch } = require('../implement--9911f29e/assigneeFilter')",`isAssigneeMatch = require('${rel(assignee)}')`));
+  const manifest=JSON.parse(await store.read(room.node(builder.id).repo_name,'assembly.manifest.json'));
+  assert.equal(manifest.sources.find(s=>s.destination===combine).renamed,true);
+  assert.match(manifest.note,/how an import binds a module/);
+});
+
+test('room: after the model fixes only a path, the runtime fixes that import\'s binding; a model edit that does both is admitted',async()=>{
+  // Run e89dba35, root.3.4.1: the builder fixed the two paths and left the
+  // destructuring, which then failed at every level above.
+  const parsed=liveFilters[PARSED].replace('../parse-stat-9c511f48/parseStatus','./statusParser').replace('../parse-prio-9f512401/parsePriority','./priorityParser');
+  let paths;
+  const {room,store,calls}=liveRoom({link:(user)=>{
+    const file=user.your_files[0]?.path;
+    return {edits:file?[
+      {file,find:"const { parseStatus } = require('./statusParser');",replace:`const { parseStatus } = require('${paths[0]}');`},
+      {file,find:"const { parsePriority } = require('./priorityParser');",replace:`const parsePriority = require('${paths[1]}');`}]:[],entry:null,issues:[]};
+  }});
+  const P=F+'parse-filt-a1512727/components/';
+  const workers=[['Parse status filter','parseStatus.js',liveFilters[P+'parse-stat-9c511f48/parseStatus.js']],['Parse priority filter','parsePriority.js',liveFilters[P+'parse-prio-9f512401/parsePriority.js']],['Combine filters','combineFilters.js',parsed]];
+  paths=workers.map(([label,file],i)=>materializedPath(label,file,`root.1.${i+1}`));
+  const {builder}=await liveBranch(room,workers);
+  const events=room.snapshot().events;
+  assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
+  assert.equal(calls.link.length,1);
+  assert.deepEqual(calls.link[0].your_files.map(f=>f.path),[paths[2]]);
+  assert.equal(calls.link[0].known_mismatches,undefined,'nothing resolves yet, so nothing is known to mismatch');
+  assert.ok(!events.some(e=>e.kind==='link_edit_rejected'),events.filter(e=>e.kind==='link_edit_rejected').map(e=>e.body).join('\n'));
+  assert.match(events.find(e=>e.kind==='link_renamed').body,/^Applied 1 rename\(s\) and 2 import binding fix\(es\)/);
+  const rel=p=>L.relativeSpecifier(paths[2],p);
+  assert.equal(await store.read(room.node(builder.id).repo_name,paths[2]),liveFilters[PARSED]
+    .replace("{ parseStatus } = require('../parse-stat-9c511f48/parseStatus')",`parseStatus = require('${rel(paths[0])}')`)
+    .replace("{ parsePriority } = require('../parse-prio-9f512401/parsePriority')",`parsePriority = require('${rel(paths[1])}')`));
 });
