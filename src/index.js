@@ -1057,8 +1057,11 @@ export class ControlRoom extends DurableObject {
     }
     return sources;
   }
-  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false}={}) {
-    const files=new Map(sources.map(s=>[s.destination,s.content]));
+  // current: the previous relink's linked files. A relink edits those, so
+  // renames accepted earlier in the turn are kept and the model edits what
+  // it was shown; sources keep the worker originals for the manifest.
+  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false,current=null}={}) {
+    const files=new Map(sources.map(s=>[s.destination,current?.get(s.destination)??s.content]));
     const js=sources.filter(s=>LINKABLE.test(s.destination)).map(s=>s.destination);
     const surfaces=new Map(js.map(p=>[p,exportSurface(p,files.get(p))]));
     // Mechanical path fixes first, with no model call: an import that resolves
@@ -1275,9 +1278,11 @@ export class ControlRoom extends DurableObject {
     let state=this.read('link_state',null);
     if(state?.fingerprint!==fingerprint)state={fingerprint,relinks:0,diagnostic:''};
     const goal=this.get('goal')||this.node('root')?.task||'';
+    let current=null,renames=0;
     for(;;) {
       this.event(id,'working',`Linking ${sources.length} file(s)${state.relinks?`; relink ${state.relinks} with the previous error`:''}.`);
-      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true});
+      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current});
+      current=link.files;renames+=link.applied.length;
       await this.publishLinked(id,link,sources,{isRoot:true});
       const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
       const local=[...link.unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
@@ -1327,7 +1332,7 @@ export class ControlRoom extends DurableObject {
         this.save('run_passed:root',record);this.save('build_passed:root',record);
         this.save('build_failure:root',null);this.save('link_routed',null);this.save('link_state',null);
         this.save('build_blocked:root',null);this.set('build_infrastructure:root','');
-        const summary=`Linked ${sources.length} file(s) with ${link.applied.length} rename(s); the runner's test passed in the container.`;
+        const summary=`Linked ${sources.length} file(s) with ${renames} rename(s); the runner's test passed in the container.`;
         this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
         this.event(id,'run_passed',`Runner test passed against snapshot ${outcome.digest.slice(0,14)}.`+(link.issues.length?` Builder notes not needed for this goal: ${clip(link.issues.map(x=>x.detail).join('; '),500)}`:''));
         this.wake(manager);
