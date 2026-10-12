@@ -31,6 +31,16 @@ Root's split prompt asks for exactly one child to own the application entry modu
 6. At Root, unresolved imports, static name mismatches or a missing entry trigger up to two relinks with the exact problem. The Container then parses every file, loads the entry module graph, and calls `start()`. A load error that looks like a name or path mismatch (`Cannot find module`, `does not provide an export named`, `is not a function`) also gets up to two relinks.
 7. Anything left goes back to the owning worker through `builder_sources` and the hop-by-hop `[build:repair]` routing, following provenance through nested builders to the original worker. The message tells the worker that the builder can only rename, so the fix is in its code. When the worker finishes again, its branch builder relinks, its manager finishes, and Root relinks.
 
+### One commit per agent turn
+
+Every file an agent writes during a turn is staged in SQLite and pushed to Artifacts as one commit (one clone, one commit, one push) when the turn ends. Before this, every file was its own clone, commit and push; in run d0509382 the builder spent about 2.6 seconds per file, and nested bundles would have pushed each leaf file again at every manager level. `CloudflareArtifactStore.writeMany` does the single push. A file whose content did not change is not committed at all.
+
+For a worker's action, all writes (ownership notes, `remember`, exports, imports and source files) now run first, then the one commit, then messages, answers and the completion report. No message leaves an agent before its files are in Artifacts. If the push fails, the staged files are rolled back from `staged_writes` and the action replays from its first write; nothing is sent twice. Managers and builders push once at the end of their turn; a failed push there leaves the files staged and they are retried at the next flush, including when a run pauses or Continue starts.
+
+### Deterministic linking
+
+Before any model call, each builder points an import that resolves nowhere at the one module that clearly provides it: the only module exporting every name the file uses from that import, or, at Root, the only module whose file name or class name matches the import path. A branch builder accepts only an exact name match, since the real module may be in a branch it cannot see. These are ordinary edits and pass the same rename check. A static check then finds calls on a resolved import, or on an instance of an imported class, that use a name the target does not define (for example `repo.get()` when the class defines `read`), and gives that list to the model with the file. The model is called only for files that still need it, and not at all when nothing does.
+
 ### Runner
 
 1. The Container's new `api-surface` stage calls `start()` and prints what it returned: member names, kinds and parameter names, never source. A large result is described at a smaller depth instead of being cut off.
@@ -59,15 +69,16 @@ When a worker is at `max_agents` or `max_depth`, Clef is now asked first. If Cle
 
 ## Tests
 
-183 local tests pass (`npm test`). The new file `test/v711-builder.test.js` runs the real Container build runner in Node as the executor, so module loading, `start()`, the API description and the runner test all execute. Its room-level tests drive full runs with a fake model:
+184 local tests pass (`npm test`). The new file `test/v711-builder.test.js` runs the real Container build runner in Node as the executor, so module loading, `start()`, the API description and the runner test all execute. Its room-level tests drive full runs with a fake model:
 
 1. A two-worker run links once, passes the runner test and completes.
 2. A run with a broken `delete` in a nested worker fails the runner test, is triaged to that worker, is routed through its manager, gets a fixed revision, and is relinked by the branch builder and by Root before it completes.
-3. A run with a branch manager gets two builders: the branch builder renames the import inside the branch, and Root renames only the import that crosses into the branch's nested bundle.
+3. A run with a branch manager gets two builders: the branch builder renames the import inside the branch with the model, and Root resolves the import that crosses into the branch's nested bundle without a model call.
+4. A full run checks that no agent pushes more than once per turn, that a worker's two files and its knowledge note land in one commit, that the Root builder pushes once for its whole turn, and that a worker's completion report follows its commit.
 
 Other tests cover the rename rules, including the cases an independent review found: files with regex literals that could not be linked, partial-word replacement, and accepted behavior changes such as `.push` to `.pop`, swapped variables, `require` to `eval`, and renaming a method definition without its uses, the static name check, infrastructure blocking, Continue after an unchanged repair, a runner test that swallows its own failure, a runner that cannot write a test, `start()` returning nothing, and the worker parse check.
 
-29 tests for the retired design were removed: `glue/wiring.js` generation and repair, provisional builder turns, the old subtree builder delegation, and baseline diagnostic builds. That includes deleting `test/builder-joints.test.js` and `test/builder-replan.test.js`. Three decomposition tests that expected Root to divert an assembly child to the builder were replaced by two that expect the composing child to stay a worker and the split prompt to ask for an entry module. Prompt and leaf-dependency tests were updated to the new import rule, with added tests for the parse check, and the capacity test now expects Clef to be asked first.
+29 tests for the retired design were removed: `glue/wiring.js` generation and repair, provisional builder turns, the old subtree builder delegation, and baseline diagnostic builds. That includes deleting `test/builder-joints.test.js` and `test/builder-replan.test.js`. Three decomposition tests that expected Root to divert an assembly child to the builder were replaced by two that expect the composing child to stay a worker and the split prompt to ask for an entry module. Prompt and leaf-dependency tests were updated to the new import rule, with added tests for the parse check, and the capacity test now expects Clef to be asked first. Two recovery tests now expect a worker's message to wait for its commit, and a failed commit to roll back and replay from the first write. A separate check with isomorphic-git confirmed that four files in nested folders stage and commit as one commit in `MemoryFS`; the push itself is unchanged from the single-file path and was not run against Artifacts.
 
 Live Cloudflare deployment is not verified. The mock (`MOCK_AI=true`) mode still uses the older builder path.
 

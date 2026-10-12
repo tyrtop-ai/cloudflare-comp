@@ -50,7 +50,7 @@ test('malformed model decision does not acknowledge incoming messages or consume
   assert.equal(room.snapshot().events.filter(x=>x.actor==='root.1'&&x.kind==='received').length,1);
 });
 
-test('failed file write resumes accepted action without resending messages, losing the inbox or redeciding',async()=>{
+test('failed commit resumes accepted action without sending messages early, losing the inbox or redeciding',async()=>{
   const {room,env,artifacts,drain}=await bootstrap();
   await room.start('Build a project from small independent agent strands',1);await drain();
   assert.equal(room.send('root.2','root.1','API shape agreed'),true);
@@ -69,13 +69,14 @@ test('failed file write resumes accepted action without resending messages, losi
   assert.equal(files,1);
   assert.equal(room.receive('root.1').length,1,'input remains unacknowledged until all actions apply');
   const messages=()=>room.snapshot().events.filter(x=>x.actor==='root.1'&&x.kind==='message'&&x.recipient==='root');
-  assert.equal(messages().length,1);
+  assert.equal(messages().length,0,'v7.11: no message leaves the agent before its files are committed');
+  assert.ok(!room.snapshot().files.some(x=>x.agent==='root.1'&&x.path==='app.js'),'the staged file was rolled back');
   assert.equal(room.db().exec('SELECT COUNT(*) AS n FROM pending_turns').toArray()[0].n,1);
   room.save('queue',['root.1']); // Next scheduled turn is the suspended action.
   await room.resume(1);await drain();
   assert.equal(decisions,1,'no duplicate inference after accepting an action');
-  assert.equal(files,2,'retry just the file that failed');
-  assert.equal(messages().length,1,'already-sent peer message is not resent');
+  assert.equal(files,2,'retry rewrites the rolled-back file');
+  assert.equal(messages().length,1,'the message is sent exactly once, after the commit');
   assert.equal(room.receive('root.1').length,0);
   assert.equal(room.db().exec('SELECT COUNT(*) AS n FROM pending_turns').toArray()[0].n,0);
   assert.ok(room.snapshot().files.some(x=>x.agent==='root.1'&&x.path==='app.js'));
@@ -130,7 +131,8 @@ test('an unfinished action survives DO eviction and resumes from its saved curso
   artifacts.failNextWrite=true;
   await room.resume(1);await drain();
   assert.equal(decisions,1);
-  assert.equal(room.db().exec('SELECT cursor FROM pending_turns WHERE agent=?','root.1').toArray()[0].cursor,2);
+  // v7.11: a failed commit resets the cursor to the first write (after the report).
+  assert.equal(room.db().exec('SELECT cursor FROM pending_turns WHERE agent=?','root.1').toArray()[0].cursor,1);
   // Simulate eviction after persisting a running status but before the action finished.
   room.set('status','running');
   room.save('queue',[]);

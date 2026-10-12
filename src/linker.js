@@ -515,7 +515,7 @@ export function importMismatches(files, surfaces) {
     let ast;try {ast=parseSource(content).ast;} catch {continue;}
     const target=spec=>{if(typeof spec!=='string'||!spec.startsWith('.'))return null;const r=resolveLocal(path,spec,set);return r.path&&surfaces.get(r.path)?r.path:null;};
     const listOf=names=>[...names].slice(0,14).join(', ')||'nothing by name';
-    const bindings=new Map();
+    const bindings=new Map(),classes=new Map();
     const check=(name,to,how)=>{
       const {names}=exportNames(surfaces.get(to));
       if(name&&!names.has(name))out.push({path,target:to,name,detail:`${how} '${name}' from ${to}, which exports: ${listOf(names)}`});
@@ -528,6 +528,7 @@ export function importMismatches(files, surfaces) {
           if(defaultKind==='function'||defaultKind==='class') {out.push({path,target:to,name:'',detail:`destructures names from ${to}, which exports a single ${defaultKind} as module.exports`});return;}
           for(const p of node.id.properties)if(p.type==='Property'&&!p.computed)check(nameOf(p.key),to,'destructures');
         } else if(node.id.type==='Identifier'&&(defaultKind==='object'||defaultKind==='instance'||(!defaultKind&&names.size)))bindings.set(node.id.name,to);
+        else if(node.id.type==='Identifier'&&defaultKind==='class')classes.set(node.id.name,to);
       }
       if(node.type==='ImportDeclaration'&&node.source?.type==='Literal') {
         const to=target(node.source.value);if(!to)return;
@@ -541,7 +542,97 @@ export function importMismatches(files, surfaces) {
       if(node.type==='MemberExpression'&&!node.computed&&node.object.type==='Identifier'&&bindings.has(node.object.name))
         check(nameOf(node.property),bindings.get(node.object.name),'reads');
     });
+    // const repo = new Repo() where Repo is a required class: calls on repo
+    // must be methods the class defines.
+    if(classes.size) {
+      const instances=new Map();
+      walk(ast,node=>{
+        if(node.type==='VariableDeclarator'&&node.id.type==='Identifier'&&node.init?.type==='NewExpression'&&node.init.callee.type==='Identifier'&&classes.has(node.init.callee.name))
+          instances.set(node.id.name,classes.get(node.init.callee.name));
+      });
+      if(instances.size)walk(ast,node=>{
+        if(node.type!=='MemberExpression'||node.computed||node.object.type!=='Identifier'||!instances.has(node.object.name))return;
+        const to=instances.get(node.object.name),d=surfaces.get(to)?.default;
+        const methods=new Set((d?.methods||[]).map(m=>String(m.name).replace(/^(?:static |get |set )/,'')));
+        const name=nameOf(node.property);
+        if(name&&!methods.has(name))out.push({path,target:to,name,detail:`calls .${name}() on an instance of the class from ${to}, which defines: ${[...methods].filter(m=>m!=='constructor').slice(0,14).join(', ')||'no methods'}`});
+      });
+    }
   }
   const seen=new Set();
   return out.filter(x=>{const k=x.path+'|'+x.target+'|'+x.name;if(seen.has(k))return false;seen.add(k);return true;});
+}
+
+// ---------- deterministic linking: no model call when the answer is mechanical ----------
+const normName=s=>String(s||'').toLowerCase().replace(/\.(?:m|c)?js$/,'').replace(/[^a-z0-9]/g,'');
+const methodName=m=>String(m.name).replace(/^(?:static |get |set )/,'');
+// Every relative import in a file, with the names the file expects from it.
+export function importRefs(path, content) {
+  let ast;try {ast=parseSource(content).ast;} catch {return [];}
+  const refs=[],byBinding=new Map();
+  const add=(lit,binding)=>{const ref={specifier:lit.value,start:lit.start,end:lit.end,names:new Set(),members:new Set(),isNew:false};refs.push(ref);if(binding)byBinding.set(binding,ref);return ref;};
+  const isRequire=n=>n?.type==='CallExpression'&&n.callee?.type==='Identifier'&&n.callee.name==='require'&&n.arguments[0]?.type==='Literal'&&typeof n.arguments[0].value==='string';
+  const seen=new Set();
+  walk(ast,node=>{
+    if(node.type==='VariableDeclarator'&&isRequire(node.init)) {
+      const lit=node.init.arguments[0];seen.add(lit.start);
+      const ref=add(lit,node.id.type==='Identifier'?node.id.name:null);
+      if(node.id.type==='ObjectPattern')for(const p of node.id.properties)if(p.type==='Property'&&!p.computed)ref.names.add(nameOf(p.key));
+    } else if(node.type==='ImportDeclaration'&&typeof node.source?.value==='string') {
+      const ref=add(node.source,null);seen.add(node.source.start);
+      for(const sp of node.specifiers) {
+        if(sp.type==='ImportSpecifier')ref.names.add(nameOf(sp.imported));
+        else byBinding.set(sp.local.name,ref);
+      }
+    } else if(node.type==='MemberExpression'&&!node.computed&&isRequire(node.object)) {
+      const lit=node.object.arguments[0];seen.add(lit.start);
+      add(lit,null).members.add(nameOf(node.property));
+    }
+  });
+  walk(ast,node=>{
+    if(isRequire(node)&&!seen.has(node.arguments[0].start)){seen.add(node.arguments[0].start);add(node.arguments[0],null);}
+  });
+  walk(ast,node=>{
+    if(node.type==='MemberExpression'&&!node.computed&&node.object.type==='Identifier'&&byBinding.has(node.object.name))byBinding.get(node.object.name).members.add(nameOf(node.property));
+    if(node.type==='NewExpression'&&node.callee.type==='Identifier'&&byBinding.has(node.callee.name))byBinding.get(node.callee.name).isNew=true;
+  });
+  return refs.filter(r=>r.specifier.startsWith('.'));
+}
+// Point an import that resolves nowhere at the one module that clearly
+// provides it: the only module exporting every name the file uses from it,
+// or (at Root) the only module whose file or class name matches the path.
+// A branch builder only accepts an exact name match, since the real module
+// may live in a branch it cannot see.
+export function autoLink(files, surfaces, {scope='application'}={}) {
+  const set=files instanceof Map?files:new Map(Object.entries(files));
+  const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
+  const edits=[];
+  for(const path of js) {
+    const content=set.get(path);
+    for(const ref of importRefs(path,content)) {
+      if(!resolveLocal(path,ref.specifier,set).error)continue;
+      const others=js.filter(t=>t!==path&&surfaces.get(t));
+      const wanted=new Set([...ref.names,...ref.members].filter(Boolean));
+      const key=normName(ref.specifier.split('/').pop());
+      const nameMatch=t=>{
+        const file=normName(t.split('/').pop()),cls=normName(surfaces.get(t)?.default?.name);
+        if(file===key||(cls&&cls===key))return true;
+        return scope==='application'&&key.length>=5&&(file.includes(key)||key.includes(file)&&file.length>=5||(cls&&cls.includes(key)));
+      };
+      const provides=t=>{const {names}=exportNames(surfaces.get(t));return [...wanted].every(n=>names.has(n));};
+      let pick=null,why='';
+      if(wanted.size) {
+        const pool=others.filter(provides);
+        if(pool.length===1){pick=pool[0];why=`only module exporting ${[...wanted].join(', ')}`;}
+        else if(pool.length>1){const both=pool.filter(nameMatch);if(both.length===1){pick=both[0];why=`exports ${[...wanted].join(', ')} and matches the name`;}}
+      } else {
+        const pool=others.filter(nameMatch);
+        if(pool.length===1){pick=pool[0];why='only module whose name matches';}
+      }
+      if(!pick)continue;
+      const raw=content.slice(ref.start,ref.end),quote=raw[0];
+      edits.push({file:path,find:raw,replace:quote+relativeSpecifier(path,pick)+quote,reason:why,target:pick});
+    }
+  }
+  return edits;
 }

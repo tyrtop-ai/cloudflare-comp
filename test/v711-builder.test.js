@@ -268,15 +268,17 @@ test('room: a non-rename edit is rejected and the remaining mismatch goes back t
   let paths;
   const {room,calls}=liveRoom({link:(user)=>{
     const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
-    // The model tries to write an adapter instead of renaming.
-    return {edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:"require('./ticketRepository') || {}"}]:[],entry:app?.path??null,issues:[]};
+    // The model tries to write an adapter instead of renaming the method.
+    return {edits:app?[{file:app.path,find:'repo.get(id)',replace:'(repo.get || repo.read).call(repo, id)'}]:[],entry:app?.path??null,issues:[]};
   }});
   paths=await twoWorkers(room);
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
-  assert.equal(calls.link.length,3,'one link plus two relinks with the unresolved import');
+  assert.equal(calls.link.length,3,'one link plus two relinks with the remaining mismatch');
+  assert.ok(room.snapshot().events.some(e=>e.kind==='link_auto'),'the path itself was fixed without the model');
   assert.ok(room.snapshot().events.some(e=>e.kind==='link_edit_rejected'&&/adds or removes code/.test(e.body)));
-  assert.match(calls.link[1].previous_attempt_error,/does not match any published module/);
+  assert.match(calls.link[0].known_mismatches.join(' '),/calls \.get\(\) on an instance/,'the static check told the model what is wrong');
+  assert.match(calls.link[1].previous_attempt_error,/calls \.get\(\)/);
   assert.equal(room.node(builder.id).status,'waiting');
   const failure=room.read('build_failure:root',null);
   assert.equal(failure.issues[0].path,paths.appPath);
@@ -600,8 +602,67 @@ test('end to end: each manager gets its own builder; the branch links inside its
   const branchCall=linkCalls.find(c=>c.scope==='branch');
   assert.ok(branchCall,'the branch builder called the linker');
   assert.deepEqual(branchCall.your_files.map(f=>f.path.split('/').pop()),['ticketService.js'],'only the file with an in-branch import to resolve');
-  const rootCall=linkCalls.find(c=>c.scope==='application');
-  assert.deepEqual(rootCall.your_files.map(f=>f.path.split('/').pop()),['app.js'],'Root links only the cross-branch import');
-  assert.ok(rootCall.all_module_paths.some(p=>/^components\/storage-br-[0-9a-f]+\/components\//.test(p)),'Root sees the branch as a nested linked bundle');
+  assert.equal(linkCalls.filter(c=>c.scope==='application').length,0,'Root resolves the cross-branch import without the model');
+  const rootBuilder=builders.find(b=>b.parent==='root').id;
+  const auto=events.find(e=>e.kind==='link_auto'&&e.actor===rootBuilder);
+  assert.ok(auto,'Root used deterministic linking');
+  assert.match(auto.body,/\.\.\/storage-br-[0-9a-f]+\/components\/ticket-ser-[0-9a-f]+\/ticketService\.js/,'into the branch\'s nested linked bundle');
+  assert.match(auto.body,/only module exporting add, find, all, change, remove/);
   assert.ok(events.some(e=>e.kind==='link_done'&&e.actor===builders.find(b=>b.parent==='root.1').id));
+});
+
+
+test('one commit per agent turn: every agent pushes at most once per turn, and messages wait for the commit',async()=>{
+  class CountingStore extends Store {
+    constructor(){super();this.pushes=[];}
+    async write(){throw new Error('turn writes must go through writeMany');}
+    async writeMany({name,files,actor}){for(const f of files)this.repos.get(name).set(f.path,f.content);this.pushes.push({actor,files:files.map(f=>f.path)});return {commit:'d'.repeat(40)};}
+  }
+  const store=new CountingStore();
+  const pending=[];
+  const AI={run:async(_model,params)=>{
+    if(params.questions) {
+      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|entry module/i.test(params.state.assigned_behavior)?0.05:0.95}}};
+      return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
+    }
+    const system=params.messages[0].content,user=JSON.parse(params.messages[1].content);
+    if(system.startsWith('You are a CODE SPLITTER'))return {response:JSON.stringify({summary:'Two',spawn:[
+      {label:'Ticket repository',task:'Write an in-memory ticket repository class'},{label:'Application entry',task:'Write the application entry module exporting start()'}]})};
+    if(system.includes('LEAF CODE WRITER')) {
+      const entry=/entry module/i.test(user.your_responsibility);
+      // Two files and a public assumption in one answer: still one push.
+      return {response:JSON.stringify({summary:'done',done:true,
+        remember:[{visibility:'public',key:'assumed_ticket_store',value:'A repository class with create/read/update/delete/getAll'}],
+        files:entry?[{path:'app.js',content:appSource},{path:'notes.js',content:'module.exports = { version: 1 };\n'}]:[{path:'in-memory-ticket-repository.js',content:repoSource}]})};
+    }
+    if(system.startsWith('You are a LINKER')) {
+      const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
+      return {response:JSON.stringify({edits:app?[{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:null,issues:[]})};
+    }
+    if(system.startsWith('You are the RUNNER'))return {response:runnerTest};
+    throw new Error('unexpected model request: '+system.slice(0,80));
+  }};
+  const exec={build:async({fingerprint,files})=>verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files})};
+  const room=new ControlRoom({storage:{sql:new Sql()},waitUntil:p=>pending.push(p)},{MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec}});
+  await room.start('Build a small issue tracker that lets someone create, view, update, and delete tickets.',20,{},'e2e-room-0004');
+  while(pending.length)await Promise.all(pending.splice(0));
+  const events=room.snapshot().events;
+  assert.equal(room.get('status'),'complete',events.slice(-12).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,120)}`).join('\n'));
+  // Count commit events inside each agent turn.
+  const open=new Map();
+  for(const e of events) {
+    if(e.kind==='turn_start')open.set(e.actor,0);
+    if(e.kind==='commit')open.set(e.actor,(open.get(e.actor)||0)+1);
+    if(e.kind==='turn_end')assert.ok((open.get(e.actor)||0)<=1,`${e.actor} pushed more than once in one turn`);
+  }
+  const entryPush=store.pushes.find(p=>p.files.includes('app.js'));
+  assert.deepEqual(entryPush.files.sort(),['app.js','memory/public/knowledge.json','notes.js'],'both files and the knowledge note in one commit');
+  const builder=room.allNodes().find(n=>n.label==='Temporary builder');
+  const builderPushes=store.pushes.filter(p=>p.actor===builder.id);
+  assert.equal(builderPushes.length,1,'the Root builder pushes once for its whole turn');
+  assert.ok(builderPushes[0].files.includes('glue/index.js')&&builderPushes[0].files.includes('glue/smoke.js')&&builderPushes[0].files.some(f=>f.endsWith('/app.js')));
+  // The entry worker's completion report is sent only after its commit.
+  const commitAt=events.findIndex(e=>e.actor==='root.2'&&e.kind==='commit');
+  const returnAt=events.findIndex(e=>e.actor==='root.2'&&e.kind==='return');
+  assert.ok(commitAt>=0&&commitAt<returnAt);
 });

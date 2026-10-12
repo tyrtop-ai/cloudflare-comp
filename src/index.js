@@ -8,7 +8,7 @@ import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, pr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, importMismatches, applyEdits, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, importMismatches, autoLink, applyEdits, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -92,6 +92,10 @@ export class ControlRoom extends DurableObject {
     super(ctx, env);
     this.busy = false;
     this.activeTurns = new Set();
+    // v7.11: agents whose turn is running. Their file writes are staged in
+    // SQLite and pushed to Artifacts as ONE commit when the turn ends.
+    this.batching = new Set();
+    this.pendingWakes = new Map();
     this.turnSteps = new Map();
     const db = ctx.storage.sql;
     db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
@@ -111,6 +115,9 @@ export class ControlRoom extends DurableObject {
     db.exec('CREATE TABLE IF NOT EXISTS exposed_files (owner TEXT NOT NULL, path TEXT NOT NULL, source TEXT NOT NULL, source_path TEXT NOT NULL, PRIMARY KEY(owner,path))');
     db.exec('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL, recipient TEXT NOT NULL, body TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)');
     db.exec('CREATE TABLE IF NOT EXISTS pending_turns (agent TEXT PRIMARY KEY, payload TEXT NOT NULL, cursor INTEGER NOT NULL DEFAULT 0)');
+    // v7.11: the state of each file before this turn staged a new version, so
+    // a failed commit can be rolled back.
+    db.exec('CREATE TABLE IF NOT EXISTS staged_writes (agent TEXT NOT NULL, path TEXT NOT NULL, existed INTEGER NOT NULL, prior_revision INTEGER, prior_commit TEXT, prior_updated INTEGER, prior_content TEXT, PRIMARY KEY(agent,path))');
     db.exec('CREATE TABLE IF NOT EXISTS manager_routes (manager TEXT NOT NULL, requester TEXT NOT NULL, topic TEXT NOT NULL, child TEXT NOT NULL, question TEXT NOT NULL, PRIMARY KEY(manager,requester,topic))');
     // Request IDs are opaque. A manager sees its own next hop, never a remote subtree.
     db.exec('CREATE TABLE IF NOT EXISTS route_hops (request_id TEXT NOT NULL, manager TEXT NOT NULL, requester TEXT NOT NULL, topic TEXT NOT NULL, question TEXT NOT NULL, target TEXT NOT NULL DEFAULT \'\', PRIMARY KEY(request_id,manager))');
@@ -1054,6 +1061,18 @@ export class ControlRoom extends DurableObject {
     const files=new Map(sources.map(s=>[s.destination,s.content]));
     const js=sources.filter(s=>LINKABLE.test(s.destination)).map(s=>s.destination);
     const surfaces=new Map(js.map(p=>[p,exportSurface(p,files.get(p))]));
+    // Mechanical path fixes first, with no model call: an import that resolves
+    // nowhere is pointed at the one module that clearly provides it.
+    const autoApplied=[];
+    const autoByFile=new Map();
+    for(const edit of autoLink(files,surfaces,{scope:isRoot?'application':'branch'}))autoByFile.set(edit.file,[...(autoByFile.get(edit.file)||[]),edit]);
+    for(const [file,list] of autoByFile) {
+      const result=applyEdits(files.get(file),list);
+      files.set(file,result.content);
+      autoApplied.push(...result.applied.map(e=>({...e,file,auto:true})));
+    }
+    if(autoApplied.length)this.event(builderId,'link_auto',`Resolved ${autoApplied.length} import(s) without the model: `+
+      clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
     // Only files with an import that does not resolve inside this manager's
     // children (or files named by a previous error) need renaming here. Every
     // other module is shown by its export names only.
@@ -1081,7 +1100,7 @@ export class ControlRoom extends DurableObject {
       if(out.entry&&files.has(out.entry))proposals.push(out.entry);
     } else this.event(builderId,'link_started',`Linking ${label}: every import already resolves; no renaming needed at this level.`);
     const namesByFile=new Map(js.map(p=>[p,tokenNames(files.get(p))]));
-    const linked=new Map(files),applied=[];
+    const linked=new Map(files),applied=[...autoApplied];
     for(const [file,list] of edits) {
       const knownNames=new Set();
       for(const [p,names] of namesByFile)if(p!==file)for(const n of names)knownNames.add(n);
@@ -1425,13 +1444,23 @@ export class ControlRoom extends DurableObject {
       this.event(id,'glue_unchanged',`Skipped unchanged linker source ${path}.`);
       return;
     }
-    const hasCommits = query(db,'SELECT COUNT(*) as n FROM artifact_files WHERE agent=?',id)[0].n > 0;
-    // The external Artifacts push must succeed before the coordinator claims a file.
-    const saved = await this.store().write({ name:n.repo_name, remote:n.remote, actor:id, path, content, hasCommits });
+    if(existing && await this.indexedContent(id,path)===content)return; // nothing changed; no commit
+    const batched=this.batching.has(id);
+    let commit='pending';
+    if(!batched) {
+      // Outside a turn the Artifacts push must succeed before the coordinator claims a file.
+      const hasCommits = query(db,"SELECT COUNT(*) as n FROM artifact_files WHERE agent=? AND commit_hash<>'pending'",id)[0].n > 0;
+      commit=(await this.store().write({ name:n.repo_name, remote:n.remote, actor:id, path, content, hasCommits })).commit;
+    }
+    if(batched && !query(db,'SELECT path FROM staged_writes WHERE agent=? AND path=?',id,path).length) {
+      const prior=existing?query(db,'SELECT f.revision AS revision,f.commit_hash AS commit_hash,f.updated_at AS updated_at,c.content AS content FROM artifact_files f LEFT JOIN artifact_contents c ON c.agent=f.agent AND c.path=f.path WHERE f.agent=? AND f.path=?',id,path)[0]:null;
+      db.exec('INSERT INTO staged_writes(agent,path,existed,prior_revision,prior_commit,prior_updated,prior_content) VALUES (?,?,?,?,?,?,?)',
+        id,path,prior?1:0,prior?.revision??null,prior?.commit_hash??null,prior?.updated_at??null,prior?.content??null);
+    }
     const revision = (existing?.revision || 0) + 1;
-    db.exec('INSERT INTO artifact_files(agent,path,revision,commit_hash,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(agent,path) DO UPDATE SET revision=excluded.revision,commit_hash=excluded.commit_hash,updated_at=excluded.updated_at', id,path,revision,saved.commit,Date.now());
+    db.exec('INSERT INTO artifact_files(agent,path,revision,commit_hash,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(agent,path) DO UPDATE SET revision=excluded.revision,commit_hash=excluded.commit_hash,updated_at=excluded.updated_at', id,path,revision,commit,Date.now());
     db.exec('INSERT INTO artifact_contents(agent,path,content) VALUES (?,?,?) ON CONFLICT(agent,path) DO UPDATE SET content=excluded.content',id,path,content);
-    this.event(id,existing?'revision':'write',`${n.repo_name}/${path}: revision ${revision}; commit ${saved.commit.slice(0,12)}`,'',`${id}/${path}`);
+    this.event(id,existing?'revision':'write',batched?`${n.repo_name}/${path}: revision ${revision}; staged for this turn's single commit`:`${n.repo_name}/${path}: revision ${revision}; commit ${commit.slice(0,12)}`,'',`${id}/${path}`);
     // Certificates attest the complete bundle bytes, not only leaf revisions.
     // Even a late glue-only edit must force another actual container build.
     if(((n.label==='Temporary builder'&&n.parent==='root')||(id==='root'&&!this.manager('root')&&!path.startsWith('memory/')))
@@ -1440,10 +1469,63 @@ export class ControlRoom extends DurableObject {
       this.event('root','build_invalidated',`Accepted build invalidated by change to ${path}; new container build required.`,id);
       this.wake(id);
     }
-    if(n.parent && (!path.startsWith('memory/') || path===PUBLIC_KNOWLEDGE))
-      this.wake(n.parent);
-    else if(n.parent && query(db,'SELECT request_id FROM route_hops WHERE manager=? AND target=? LIMIT 1',n.parent,id).length)
-      this.wake(n.parent);
+    const wakeParent=n.parent && ((!path.startsWith('memory/') || path===PUBLIC_KNOWLEDGE) ||
+      query(db,'SELECT request_id FROM route_hops WHERE manager=? AND target=? LIMIT 1',n.parent,id).length);
+    if(wakeParent) {
+      // During a turn the owner is woken once, after the turn's commit.
+      if(batched)this.pendingWakes.set(id,new Set([...(this.pendingWakes.get(id)||[]),n.parent]));
+      else this.wake(n.parent);
+    }
+  }
+  // Push every staged file of this agent as one commit. A failed push leaves
+  // the files staged (commit_hash 'pending'); the next flush retries them.
+  async flushWrites(id) {
+    const n=this.node(id);
+    const wakes=this.pendingWakes.get(id)||new Set();
+    this.pendingWakes.delete(id);
+    if(!n)return;
+    const db=this.db();
+    const pending=query(db,"SELECT f.path AS path,c.content AS content FROM artifact_files f JOIN artifact_contents c ON c.agent=f.agent AND c.path=f.path WHERE f.agent=? AND f.commit_hash='pending' ORDER BY f.path",id);
+    try {
+      if(pending.length) {
+        const hasCommits=query(db,"SELECT COUNT(*) AS n FROM artifact_files WHERE agent=? AND commit_hash<>'pending'",id)[0].n>0;
+        const store=this.store();
+        let commit;
+        if(typeof store.writeMany==='function')
+          commit=(await store.writeMany({name:n.repo_name,remote:n.remote,files:pending,hasCommits,actor:id})).commit;
+        else for(const [i,f] of pending.entries())
+          commit=(await store.write({name:n.repo_name,remote:n.remote,actor:id,path:f.path,content:f.content,hasCommits:hasCommits||i>0})).commit;
+        db.exec("UPDATE artifact_files SET commit_hash=? WHERE agent=? AND commit_hash='pending'",commit,id);
+        db.exec('DELETE FROM staged_writes WHERE agent=?',id);
+        this.event(id,'commit',`Pushed ${pending.length} file(s) in one commit ${String(commit).slice(0,12)}: ${clip(pending.map(f=>f.path).join(', '),600)}`);
+      }
+    } finally {
+      for(const parent of wakes)this.wake(parent);
+    }
+  }
+  // Undo every file this agent staged in the current turn.
+  rollbackStaged(id) {
+    const db=this.db();
+    for(const row of query(db,'SELECT path,existed,prior_revision,prior_commit,prior_updated,prior_content FROM staged_writes WHERE agent=?',id)) {
+      if(row.existed) {
+        db.exec('UPDATE artifact_files SET revision=?,commit_hash=?,updated_at=? WHERE agent=? AND path=?',row.prior_revision,row.prior_commit,row.prior_updated,id,row.path);
+        if(row.prior_content!==null)db.exec('UPDATE artifact_contents SET content=? WHERE agent=? AND path=?',row.prior_content,id,row.path);
+      } else {
+        db.exec('DELETE FROM artifact_files WHERE agent=? AND path=?',id,row.path);
+        db.exec('DELETE FROM artifact_contents WHERE agent=? AND path=?',id,row.path);
+      }
+    }
+    db.exec('DELETE FROM staged_writes WHERE agent=?',id);
+    this.pendingWakes.delete(id);
+    this.event(id,'commit_rolled_back','The Artifacts commit failed; files staged in this turn were rolled back.');
+  }
+  async flushAllPending() {
+    const agents=query(this.db(),"SELECT DISTINCT agent FROM artifact_files WHERE commit_hash='pending'").map(r=>r.agent);
+    for(const agent of agents) {
+      if(this.activeTurns.has(agent))continue;
+      try {await this.flushWrites(agent);}
+      catch(e) {this.event(agent,'commit_failed',`Artifacts push failed; files stay staged and are retried: ${clip(e?.message||e,600)}`);}
+    }
   }
   async importFile(id, from, path, dest) {
     if (this.manager(id)) {
@@ -2354,7 +2436,10 @@ export class ControlRoom extends DurableObject {
       saved = { cursor:0 };
     }
     const {action,inbox,nextPhase,assemblyFingerprint} = plan;
-    const operations = [
+    // v7.11: every file write of this action is staged, then pushed as ONE
+    // commit before any message leaves this agent. A failed push rolls the
+    // staged files back and replays from the first write.
+    const before=[
       ...(nextPhase ? [async () => { this.db().exec('UPDATE agents SET phase=? WHERE id=?',nextPhase,id); }] : []),
       async () => {
         this.db().exec('UPDATE agents SET summary=? WHERE id=?',action.summary,id);
@@ -2374,34 +2459,14 @@ export class ControlRoom extends DurableObject {
         }
       }] : []),
       ...action.retire.map(child => async () => { this.retire(id,child); }),
+    ];
+    const writes=[
       ...(action.spawn.length || action.retire.length ? [async () => { if(this.children(id).length) await this.syncOwnership(id); }] : []),
       // Keep answers before questions: a response becomes public reusable knowledge
       // before notifying the requester. Retry cursors preserve this ordering.
       ...(action.remember.length || action.answers.length ? [async () => {
         await this.remember(id,[...action.remember,...action.answers.map(a=>({visibility:'public',key:a.key,value:a.value}))]);
       }] : []),
-      ...action.answers.map(a => async () => {
-        if(this.env.MOCK_AI!=='true' && !this.manager(id) && a.to!=='parent' && a.to!==this.node(id)?.parent) {
-          this.event(id,'blocked','Worker can only publish knowledge through its manager.');return;
-        }
-        if (!this.send(id,a.to,`[knowledge:${a.key}] ${a.value}`)) throw new Error('Answer recipient is not adjacent');
-      }),
-      ...action.ask.map(a => async () => {
-        // Legacy deterministic fixture still exercises the historical adjacent
-        // owner protocol; real inference uses manager-only opaque requests.
-        if(this.env.MOCK_AI==='true' && a.to!=='parent' && a.to!==this.node(id)?.parent) {
-          if(!await this.askKnowledge(id,a.to,a.key,a.question)) throw new Error('Mock adjacency lookup failed');
-        } else if(!this.askManager(id,a.key,a.question)) throw new Error('Worker has no available manager');
-      }),
-      ...action.recall.map(r => async () => { await this.recall(id,r.visibility,r.key); }),
-      ...action.messages.map(m => async () => {
-        // Ordinary Qwen implementers cannot navigate sideways/downward to search.
-        // Builders are the single intentional integration exception.
-        if(this.env.MOCK_AI!=='true' && !this.manager(id) && this.node(id)?.label!=='Temporary builder' && m.to!=='parent' && m.to!==this.node(id)?.parent) {
-          this.event(id,'blocked','Worker messages must go to its manager.');return;
-        }
-        this.send(id,m.to,m.body);
-      }),
       ...(action.exports?.length ? [async () => {await this.publishExports(id,action.exports);}] : []),
       ...action.imports.map(f => async () => {
         if (f.as.startsWith('memory/')) { this.event(id,'memory_skipped',`Skipped invalid persisted notebook import ${f.as}; use remember.`); return; }
@@ -2452,6 +2517,30 @@ export class ControlRoom extends DurableObject {
           }
         }
         if(diagnostic)throw new Error('Unable to produce valid linker source after 3 bounded repairs: '+diagnostic);
+      }),
+    ];
+    const after=[
+      ...action.answers.map(a => async () => {
+        if(this.env.MOCK_AI!=='true' && !this.manager(id) && a.to!=='parent' && a.to!==this.node(id)?.parent) {
+          this.event(id,'blocked','Worker can only publish knowledge through its manager.');return;
+        }
+        if (!this.send(id,a.to,`[knowledge:${a.key}] ${a.value}`)) throw new Error('Answer recipient is not adjacent');
+      }),
+      ...action.ask.map(a => async () => {
+        // Legacy deterministic fixture still exercises the historical adjacent
+        // owner protocol; real inference uses manager-only opaque requests.
+        if(this.env.MOCK_AI==='true' && a.to!=='parent' && a.to!==this.node(id)?.parent) {
+          if(!await this.askKnowledge(id,a.to,a.key,a.question)) throw new Error('Mock adjacency lookup failed');
+        } else if(!this.askManager(id,a.key,a.question)) throw new Error('Worker has no available manager');
+      }),
+      ...action.recall.map(r => async () => { await this.recall(id,r.visibility,r.key); }),
+      ...action.messages.map(m => async () => {
+        // Ordinary Qwen implementers cannot navigate sideways/downward to search.
+        // Builders are the single intentional integration exception.
+        if(this.env.MOCK_AI!=='true' && !this.manager(id) && this.node(id)?.label!=='Temporary builder' && m.to!=='parent' && m.to!==this.node(id)?.parent) {
+          this.event(id,'blocked','Worker messages must go to its manager.');return;
+        }
+        this.send(id,m.to,m.body);
       }),
       async () => { this.acknowledge(id,inbox); },
       async () => {
@@ -2568,6 +2657,15 @@ export class ControlRoom extends DurableObject {
         }
       }
     ];
+    const firstWrite=before.length;
+    const operations=[...before,...writes,async () => {
+      try {await this.flushWrites(id);}
+      catch(e) {
+        this.rollbackStaged(id);
+        this.db().exec('UPDATE pending_turns SET cursor=? WHERE agent=?',firstWrite,id);
+        throw new Error('Artifacts commit failed; staged files rolled back and will be rewritten: '+(e?.message||e));
+      }
+    },...after];
     for (let i=saved.cursor; i<operations.length; i++) {
       try {
         await operations[i]();
@@ -2678,9 +2776,13 @@ export class ControlRoom extends DurableObject {
     this.turnSteps.set(id,step);
     const started=Date.now();
     this.event(id,'turn_start',`Started turn concurrently with ${this.activeTurns.size-1} other agent(s).`);
+    this.batching.add(id);
     try { await this.turn(id); }
     catch (e) { this.event(id,'error',clip(e?.message||e,1300)); this.incrementFailures(id); }
     finally {
+      this.batching.delete(id);
+      try {await this.flushWrites(id);}
+      catch(e) {this.event(id,'commit_failed',`Artifacts push failed; files stay staged and are retried: ${clip(e?.message||e,600)}`);}
       if(this.node(id)?.label==='Temporary builder' && this.wakeGeneration(id)!==observedWake &&
          !['retired','failed'].includes(this.node(id)?.status)) {
         this.event(id,'builder_wake_recovered','Builder received integration revision or finalization while inference was running; queuing another turn.');
@@ -2719,6 +2821,7 @@ export class ControlRoom extends DurableObject {
         if (!active.size) break;
         await Promise.race(active);
       }
+      await this.flushAllPending();
       const nodes=this.allNodes();
       const finished=allFinished(nodes) && nodes.some(n=>n.id==='root');
       const failed=nodes.some(n=>n.status==='failed');
@@ -2730,7 +2833,7 @@ export class ControlRoom extends DurableObject {
   }
   async start(goal,budget,settings = {},roomId='') {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
-    for (const table of ['wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','meta']) this.db().exec(`DELETE FROM ${table}`);
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
     // A fresh experiment must never reuse manager DO state from an older run.
@@ -2787,7 +2890,7 @@ export class ControlRoom extends DurableObject {
     }
     this.busy=true;this.set('status','running');this.event('system','resume',`Continue for up to ${budget} turns.`);
     this.ctx.waitUntil((async()=>{
-      try {await this.retryBlockedBuild();await this.drive(budget);}
+      try {await this.flushAllPending();await this.retryBlockedBuild();await this.drive(budget);}
       catch(error) {
         this.set('status','error');this.busy=false;
         this.event('system','error',clip(error?.message||error,1300));
@@ -2797,7 +2900,7 @@ export class ControlRoom extends DurableObject {
   }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
-    for (const name of ['wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','meta']) this.db().exec(`DELETE FROM ${name}`);
     return this.snapshot();
   }
 }

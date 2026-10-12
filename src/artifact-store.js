@@ -25,7 +25,12 @@ export class CloudflareArtifactStore {
     } finally { await release(repo); }
   }
   async write({ name, remote, path, content, hasCommits, actor }) {
-    if (!isPath(path)) throw new Error(`Unsafe artifact path: ${path}`);
+    return this.writeMany({ name, remote, files: [{ path, content }], hasCommits, actor });
+  }
+  // One agent turn = one commit and one push, however many files it changed.
+  async writeMany({ name, remote, files, hasCommits, actor }) {
+    if (!Array.isArray(files) || !files.length) throw new Error('No files to write');
+    for (const f of files) if (!isPath(f.path)) throw new Error(`Unsafe artifact path: ${f.path}`);
     // isomorphic-git is used ONLY as a byte-level storage adapter. Agents never
     // consume Git history, negotiate merges, or decide when to push.
     const git = (await import('isomorphic-git')).default;
@@ -41,6 +46,7 @@ export class CloudflareArtifactStore {
     const fs = new MemoryFS();
     const dir = '/workspace';
     const onAuth = () => ({ username: 'x', password: secret });
+    const label = files.length === 1 ? files[0].path : `${files.length} files`;
     let phase = hasCommits ? 'clone' : 'init';
     try {
       if (hasCommits) {
@@ -48,13 +54,15 @@ export class CloudflareArtifactStore {
       } else {
         await git.init({ fs, dir, defaultBranch: 'main' });
       }
-      phase = 'write';
-      await fs.promises.writeFile(`${dir}/${path}`, content);
-      phase = 'stage';
-      await git.add({ fs, dir, filepath: path });
+      for (const f of files) {
+        phase = 'write';
+        await fs.promises.writeFile(`${dir}/${f.path}`, f.content);
+        phase = 'stage';
+        await git.add({ fs, dir, filepath: f.path });
+      }
       phase = 'commit';
       const commit = await git.commit({
-        fs, dir, message: `Update ${path} (${actor})`,
+        fs, dir, message: files.length === 1 ? `Update ${files[0].path} (${actor})` : `Update ${files.length} files (${actor})\n\n${files.map(f => f.path).join('\n')}`,
         author: { name: actor, email: `${actor}@control-plane.invalid` }
       });
       phase = 'push';
@@ -66,7 +74,7 @@ export class CloudflareArtifactStore {
     } catch (err) {
       // Expose the failing step, but never put scoped Artifacts credentials in a response.
       const message = String(err?.message || err).replaceAll(secret, '[redacted]');
-      throw new Error(`Artifacts ${phase} failed for ${name}/${path}: ${message}`, { cause: err });
+      throw new Error(`Artifacts ${phase} failed for ${name}/${label}: ${message}`, { cause: err });
     }
   }
 }
