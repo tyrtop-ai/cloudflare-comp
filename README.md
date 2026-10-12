@@ -12,8 +12,8 @@ The usual multi-agent design puts one large orchestrator in charge. It reads the
 
 This project makes the opposite bet: **many small agents with small, bounded context beat one big orchestrator agent with limited context.**
 
-- **Bounded context.** An agent sees its own assignment, its own repository and messages from its direct manager. No agent holds the whole project, so no single context window caps the size of the project.
-- **Each inference tree works only on its own scope.** Ownership works like functional programming. A subtree owns its assignment, writes only to its own repositories and shares no mutable state with its siblings. Two subtrees never edit the same file, so there is nowhere for duplicate or conflicting work to land.
+- **Bounded context.** A worker sees its own assignment, its own repository and messages from its direct manager. A manager sees its direct children, never their descendants. No worker or manager holds the whole project. The exception is Root's builder: when an import still needs a rename at Root, one model call gets every module of the application, most of them only as export names, so that call is the remaining limit on project size (see [Known limitations](#known-limitations)).
+- **Each inference tree works only on its own scope.** Ownership works like functional programming. A subtree owns its assignment, writes only to its own repositories and shares no mutable state with its siblings. Two subtrees never write to the same repository, so there is nothing to merge and nothing to conflict. Scope is fixed when work is split, which is meant to keep pieces from overlapping; the runtime itself does not deduplicate work (see [Known limitations](#known-limitations)).
 - **Minimal tape.** Independent agents with well-scoped pieces of the same goal converge on code that is close enough to join with very little glue, and here the glue is literally minimal. The builder that joins modules **can only rename import paths and identifiers**. If two modules disagree in a way a rename cannot fix, the problem goes back to the agent that owns the code.
 
 ## GitHub, rethought
@@ -26,7 +26,7 @@ This project makes the opposite bet: **many small agents with small, bounded con
 | Merge | Each manager has a *builder* that links its children's finished modules. A builder may change only import paths and identifier names. The runtime compares the Acorn token streams before and after every edit and rejects any edit that changes something else. |
 | Pull request review | Mechanical gates replace reviewers. Clef admits each proposed child against the Root goal and its parent's assignment. Each worker file must parse before it is committed. Builder edits must be pure renames. At Root, the linked application must load, start and pass a test written by a separate runner. |
 | CODEOWNERS and blame | Provenance. Every linked file records which worker wrote it, through any number of nested builders, and a failure is routed back to that worker one hop at a time. |
-| Issues and discussion | Ownership routing. A worker asks only its manager. A manager answers from public Artifacts knowledge or routes the question to the branch that owns the answer. |
+| Issues and discussion | Ownership routing. A worker asks only its manager. A manager answers from public Artifacts knowledge, confirms which branch owns the behavior, or forwards the question to its own parent. |
 | CI | At Root, a Cloudflare Container runs the linked application and the runner's test. |
 
 ## Architecture
@@ -85,9 +85,9 @@ Repairs are bounded. Root fails after eight rounds of problems sent back to work
 
 The author describes this as BGP-like route discovery. In the code it works like this:
 
-- **No global directory.** An agent knows its parent and its direct children. A live worker can message only its manager, and the runtime refuses messages that would reveal a hidden descendant's ID.
+- **No global directory.** A worker sees only its manager. An agent that is still splitting also sees its parent, its siblings' public summaries and its direct children, never their descendants. A live worker can message only its manager, and the runtime refuses messages that would reveal a hidden descendant's ID.
 - **Advertisement.** Each manager republishes its direct children's public files under aliases of its own, and their `assumed_*` knowledge under scoped keys, in its own Artifacts repository. A parent sees what a subtree offers without learning which agent inside it wrote it, much like route aggregation.
-- **Discovery.** A worker blocked on an outside interface asks its manager, using an opaque request ID. The manager checks, in order: its own public knowledge, its children's public knowledge, its children's published source, HTTP routes recognized in that source, and then Clef to pick the owning direct child. If nothing fits, it forwards the request to its own parent and records the next hop in its ManagerShard Durable Object. Answers retrace the recorded hops, and each manager on the way caches them as public knowledge.
+- **Discovery.** A worker blocked on an outside interface asks its manager, using an opaque request ID. The manager checks, in order: its own public knowledge, its children's public knowledge, its children's published source, HTTP routes recognized in that source, and then a keyword match, with Clef when that is ambiguous, to pick the owning direct child. If nothing fits, it forwards the request to its own parent and records the next hop in its ManagerShard Durable Object. Answers retrace the recorded hops, and each manager on the way caches them as public knowledge.
 - **Knowing the owner is enough.** When a manager finds the branch that owns a behavior, it tells the worker to proceed with its assumed interface; the builder will rename later. Non-blocking questions are dropped and the worker keeps its assumption. An explicitly named owner that does not exist stops the worker as out of scope, while a low-confidence route waits rather than failing.
 - **Repairs use the same paths.** A `[build:repair]` ticket travels from Root down the tree, one direct child at a time, to the owning worker.
 
@@ -116,7 +116,6 @@ git clone https://github.com/tyrtop-ai/cloudflare-comp.git
 cd cloudflare-comp
 npm ci
 npx wrangler login
-npx wrangler artifacts namespaces get default   # the ARTIFACTS binding uses namespace "default"
 docker info                                     # must succeed; deploy builds the Container image
 npm run deploy
 npx wrangler secret put APP_TOKEN               # any long random string
@@ -137,14 +136,19 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 ## Status
 
 - **Local:** 184 of 184 tests pass with `npm test`.
-- **Live:** v7.11 runs on a real account (Qwen3-30B-A3B and Clef-flash, issue-tracker goal) have exercised the split gate, scope checks, recursive decomposition (28 workers and managers plus 7 builders, four levels deep, in one run), per-manager builders applying verified renames, and repair tickets routed down to the owning workers. No v7.11 live run has completed yet. None has reached the Root Container check or the runner test; both are covered only by the local tests so far. Earlier versions did run the Container live, and the failures seen there shaped v7.11.
+- **Live:** two v7.11 runs on a real account (Qwen3-30B-A3B and Clef-flash, issue-tracker goal). Neither completed.
+  - The larger run used an earlier v7.11 build that committed every file separately. It exercised the split gate, scope checks, recursive decomposition (28 workers and managers plus 7 builders, four levels deep), per-manager builders applying verified renames, and repair tickets routed down to the owning workers.
+  - The only run on the current code, with one commit per agent turn, paused after 80 seconds. Root's builder could not fix one of the entry module's imports by renaming and sent it back to the entry worker, whose only file is that module. Artifacts rejected the worker's repair commit three times as not a fast-forward (the first of the [known limitations](#known-limitations)).
 
-Known limitations:
+  Neither run reached the Root Container check or the runner test; both are covered only by the local tests so far. Earlier versions did run the Container live, and the failures seen there shaped v7.11.
 
+### Known limitations
+
+- An agent whose turn rewrites every file it has committed, such as a single-file worker repairing its module, cannot push. The store then starts a new history instead of cloning the repository, and Artifacts rejects the push as not a fast-forward. Retries and **Continue** hit the same error.
 - A branch builder can pick the wrong module inside its branch for an import that really belongs to another branch. Root does not re-examine an import that already resolves unless the static name check or a runtime error points at it.
-- Linker input at one level is not split when it exceeds the model's context. The builder logs a `link_oversize` event instead.
+- Linker input at one level is not split when it exceeds the model's context. The builder logs a `link_oversize` event instead. Root's builder gets every module of the application in that call, most only as export names, so this is where project size is limited.
 - Workers write plain JavaScript (`.js`, `.mjs`, `.cjs`) using Node built-ins: no npm packages, TypeScript or JSX.
-- The runtime does not deduplicate work across sibling subtrees. This is by design: scope is enforced when work is split. The splitter is asked for non-overlapping pieces, and Clef checks each child against the goal and its parent's assignment.
+- The runtime does not deduplicate work across sibling subtrees. Scope is meant to be fixed when work is split: the splitter is asked for non-overlapping pieces, Clef checks each child against the goal and its parent's assignment, and a split with two identical tasks is refused. Nothing else compares siblings, and in the larger live run two sibling workers each wrote an almost identical `TicketRepository` class, which the builders carried side by side up to Root.
 - `MOCK_AI=true` still uses the older builder path. It exists for the regression tests and is not a demo mode.
 - The app never deletes Artifacts repositories. Each run creates one per agent (see [cleanup](INSTALL-CLOUDFLARE.md#costs-and-cleanup)).
 

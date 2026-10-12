@@ -38,14 +38,18 @@ Every agent's git repository is created in the Artifacts namespace named in `wra
 "artifacts": [{ "binding": "ARTIFACTS", "namespace": "default" }]
 ```
 
-Check that it exists:
+Cloudflare's [Artifacts documentation](https://developers.cloudflare.com/artifacts/concepts/namespaces/) says that creating a repository under a namespace that does not exist creates the namespace. A missing `default` should therefore appear when the first run creates Root's repository. Wrangler 4.149 can list and inspect namespaces but has no command to create one. This guide follows the documentation here; implicit creation has not been tested on a fresh account.
+
+To confirm before a run that your account can create repositories in `default` (and to create the namespace if it is missing), create and delete a probe repository:
 
 ```bash
 npx wrangler artifacts namespaces list
+npx wrangler artifacts repos create artifacts-probe --namespace default
+npx wrangler artifacts repos delete artifacts-probe --namespace default
 npx wrangler artifacts namespaces get default
 ```
 
-If `default` is missing, either change `namespace` in `wrangler.jsonc` to one that `namespaces list` shows, or set up a `default` namespace for your account in the Cloudflare dashboard. Wrangler 4.149 can list and inspect namespaces but cannot create them.
+If `repos create` fails, every run would also fail when it creates Root's repository: check that Artifacts is enabled for the account you deploy to. To use another namespace, change `namespace` in `wrangler.jsonc` before you deploy, and use that name in the commands in this guide.
 
 ## 4. Deploy
 
@@ -107,7 +111,7 @@ npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave runni
 
 5. Press **Start new experiment**. This clears the room's state and creates Root.
 
-The dashboard refreshes every 3 seconds. It shows the ownership tree, agent traffic (the latest 300 events), committed files (click one to read it from Artifacts), and the **Container build** panel with the latest Container report.
+The dashboard refreshes every 3 seconds. It shows the ownership tree, agent traffic (the latest 300 events), the files the room has recorded, committed or staged for the current turn's commit (click one to read its content from the room's index of Artifacts writes), and the **Container build** panel with the latest Container report.
 
 A run ends **complete** when Root's runner test passes, **failed** when an agent fails for good, or **paused** when the budget is spent or every remaining agent is waiting. **Continue** resumes a paused run with a new budget. It also:
 
@@ -121,7 +125,7 @@ A run ends **complete** when Root's runner test passes, **failed** when an agent
 
 ## 8. Export a run
 
-**Export observation JSON** downloads `recursive-control-plane-<room>.json` from `/api/export`. It contains the room snapshot, every agent, every committed file with its content, and up to 20,000 events. The agents' Artifacts remote URLs include your account ID, so review an export before you share it.
+**Export observation JSON** downloads `recursive-control-plane-<first 8 characters of the room>.json` from `/api/export`. It contains the room snapshot, every agent, every file the room has recorded with its content, and up to 20,000 events. The agents' Artifacts remote URLs include your account ID, so review an export before you share it.
 
 ### Using the API directly
 
@@ -131,7 +135,7 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 |---|---|
 | `GET /api/state?room=` | Dashboard snapshot |
 | `GET /api/export?room=` | Full export |
-| `GET /api/file?room=&agent=&path=` | One file from an agent's repository |
+| `GET /api/file?room=&agent=&path=` | One file an agent wrote, from the room's index of its Artifacts writes |
 | `POST /api/run` | `{room, goal, budget, settings}`: start a new run. The goal must be 8–1800 characters. |
 | `POST /api/continue` | `{room, budget, settings}`: resume a run |
 | `POST /api/reset` | `{room}`: clear the room's state |
@@ -153,7 +157,8 @@ curl -sS "$URL/api/export?room=demo-room-0001" -H "Authorization: Bearer $APP_TO
 - **Build panel shows EXECUTOR UNAVAILABLE, or a `build_infrastructure` event appears**: the Container is not ready or failed to start. The Worker can be live before its Container is provisioned. Check `npx wrangler containers list`, and watch `wrangler tail` for `Build container exec not ready`, `Build container command exceeded` or `Build process termination failed`. An infrastructure failure blames no worker; once the Container is up, **Continue** clears the block and Root's builder relinks and reruns the current source.
 - **`split_capacity_blocked`**: Clef chose to split, but the room has no agent slots or depth left. Raise **Total agents** or **Recursion depth** and press **Continue**.
 - **`paused` event, "Stopped automatic retries after 3 failures"**: the agent failed three turns in a row; the `error` events before it give the reason. **Continue** retries it.
-- **`Artifacts ... failed for rc-...`**: a git clone, commit or push to that agent's repository failed. For a worker, the files staged in that turn are rolled back and the action replays from its first write. For a manager or builder, the files stay staged and are pushed at the next flush (a `commit_failed` event). Three failures in a row pause a worker, and **Continue** retries it. Check that the Artifacts namespace from step 3 exists.
+- **`Artifacts ... failed for rc-...`**: a git clone, commit or push to that agent's repository failed. For a worker, the files staged in that turn are rolled back and the action replays from its first write. For a manager or builder, the files stay staged and are pushed at the next flush (a `commit_failed` event). Three failures in a row pause a worker, and **Continue** retries it. If every write fails, run the probe from step 3.
+- **`Push rejected because it was not a simple fast-forward`**: a known limitation of this version (see [Known limitations](README.md#known-limitations)). It happens when one turn rewrites every file an agent has committed, for example a single-file worker's repair. Every retry fails the same way and **Continue** does not clear it.
 - **`recovered` event, "Durable Object restarted during a run"**: the room was evicted mid-run and is now paused. **Continue** resumes interrupted turns from their saved position.
 - **`Experiment already running`**: a run is in progress in this room. Wait for it to pause, or use another room.
 - **Status stays paused with builders `waiting`**: problems were sent back to workers and nothing has changed yet, or the runner could not write a valid test. **Continue** relinks with a fresh relink budget.
