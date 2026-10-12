@@ -483,13 +483,21 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
   return {content:current,applied,rejected};
 }
 
-// The renames that turn a worker's text into its linked copy, as 'from → to'.
+// The renames that turn a worker's text into its linked copy, as 'from → to',
+// then each import whose binding shape changed: compared with the worker's
+// binding put back, so a shape fix does not hide the renames around it.
 export function linkRenames(before, after) {
   try {
-    const A=canonicalize(before),B=canonicalize(after),type=parseSource(A).sourceType,a=tokens(A,type),b=tokens(B,type);
+    const x=bindingSites(before),y=bindingSites(after),shapes=[];
+    let mid=after;
+    if(x.length===y.length)for(let i=x.length-1;i>=0;i--)if(x[i].shape!==y[i].shape) {
+      shapes.unshift(`${before.slice(x[i].start,x[i].end)} → ${after.slice(y[i].start,y[i].end)}`);
+      mid=mid.slice(0,y[i].start)+before.slice(x[i].start,x[i].end)+mid.slice(y[i].end);
+    }
+    const A=canonicalize(before),B=canonicalize(mid),type=parseSource(A).sourceType,a=tokens(A,type),b=tokens(B,type);
     if(a.length!==b.length)return [];
     const show=t=>t.type.label==='string'?`'${t.value}'`:String(t.value);
-    return [...new Set(a.flatMap((x,i)=>sameToken(x,b[i])?[]:[`${show(x)} → ${show(b[i])}`]))];
+    return [...new Set([...a.flatMap((t,i)=>sameToken(t,b[i])?[]:[`${show(t)} → ${show(b[i])}`]),...shapes.map(s=>'binding '+s)])];
   } catch {return [];}
 }
 

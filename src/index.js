@@ -8,7 +8,7 @@ import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, pr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, exportNames, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -916,23 +916,26 @@ export class ControlRoom extends DurableObject {
     }
     return true;
   }
-  // the original implementation worker, not the intermediate sub-builder.
-  resolveBuildSourceOwner(builder,path) {
+  // The worker publication a builder's linked path was copied from, through
+  // every branch builder below: the original implementation worker, not the
+  // intermediate sub-builder, and the digest of the text that was linked.
+  buildSourceOrigin(builder,path) {
     let currentBuilder=builder, currentPath=String(path||'').replace(/^\.\//,'');
     const visited=new Set();
     for(let depth=0;depth<=this.settings().max_depth+2;depth++) {
       const key=currentBuilder+'|'+currentPath;
       if(visited.has(key))break;
       visited.add(key);
-      const row=query(this.db(),'SELECT child,source_path FROM builder_sources WHERE builder=? AND destination=?',currentBuilder,currentPath)[0];
+      const row=query(this.db(),'SELECT child,source_path,digest FROM builder_sources WHERE builder=? AND destination=?',currentBuilder,currentPath)[0];
       if(!row)return null;
       const n=this.node(row.child);
       if(!n)return null;
-      if(n.label!=='Temporary builder')return n.id;
+      if(n.label!=='Temporary builder')return {owner:n.id,path:row.source_path,digest:row.digest};
       currentBuilder=n.id;currentPath=row.source_path;
     }
     return null;
   }
+  resolveBuildSourceOwner(builder,path) {return this.buildSourceOrigin(builder,path)?.owner||null;}
   // Root routes failed paths via provenance, one manager boundary at a time.
   // Root never rewrites child-owned implementations or manufactures replacements.
   async routeBuildFailures() {
@@ -1131,6 +1134,28 @@ export class ControlRoom extends DurableObject {
     }
     // A path the model just resolved may still bind its module the wrong way round.
     if(edits.size)applied.push(...applyAuto(linked,shapeFixes(linked,surfaces)));
+    // A rename may not break an import that already matched. When the model's
+    // edits leave a module reading a name its target exported before them, the
+    // file whose edits did it (the target, else the reader) goes back to its
+    // text from before the model.
+    if(edits.size) {
+      const key=m=>m.path+'|'+m.target+'|'+m.name,known=new Set(mismatchesBefore.map(key)),auto=new Set(autoApplied);
+      const reached=new Map(js.map(p=>[p,new Set(componentImports(p,files.get(p),files).map(r=>r.target))]));
+      for(let round=0;round<js.length;round++) {
+        const now=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))])),undo=new Map();
+        for(const m of importMismatches(linked,now)) {
+          if(!reached.get(m.path)?.has(m.target)||known.has(key(m)))continue;
+          const file=linked.get(m.target)!==files.get(m.target)&&exportNames(surfaces.get(m.target)).names.has(m.name)?m.target:linked.get(m.path)!==files.get(m.path)?m.path:null;
+          if(file&&!undo.has(file))undo.set(file,m);
+        }
+        if(!undo.size)break;
+        for(const [file,m] of undo) {
+          linked.set(file,files.get(file));
+          for(const e of applied.filter(e=>e.file===file&&!e.auto))rejected.push({edit:e,reason:`it breaks an import that matched before: ${m.path} ${m.detail}`});
+          applied.splice(0,applied.length,...applied.filter(e=>e.file!==file||auto.has(e)));
+        }
+      }
+    }
     for(const r of rejected.slice(0,12))
       this.event(builderId,'link_edit_rejected',clip(`${r.edit.file}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
     if(applied.length)this.event(builderId,'link_renamed',`Applied ${linkEdits(applied)} in ${new Set(applied.map(e=>e.file)).size} module(s): `+
@@ -1297,13 +1322,33 @@ export class ControlRoom extends DurableObject {
     let state=this.read('link_state',null);
     if(state?.fingerprint!==fingerprint)state={fingerprint,relinks:0,diagnostic:''};
     const goal=this.get('goal')||this.node('root')?.task||'';
-    // A problem in a file the builder renamed goes back with those renames, so
-    // a name that only a builder rename put in the failing copy is not taken
-    // for the worker's own.
-    const routed=(link,issues)=>[...new Set(issues.map(x=>x.path))].flatMap(p=>{
-      const source=sources.find(s=>s.destination===p),renames=source&&link.files.get(p)!==source.content?linkRenames(source.content,link.files.get(p)):[];
-      return renames.length?[{path:p,detail:`Builder renames in the linked copy that failed (your source does not have them): ${renames.join(', ')}.`}]:[];
-    }).concat(issues);
+    // A problem in a file a builder renamed goes back with those renames, so a
+    // name that only a builder rename put in the failing copy is not taken for
+    // the worker's own. They are every builder's renames since the worker's
+    // publication, and also those in the module a mismatch reads from, and
+    // they ride in the problem's own detail, so they never crowd problems out.
+    const workerText=async p=>{
+      const origin=this.buildSourceOrigin(id,p);
+      let text=null;
+      try {text=origin?await this.indexedContent(origin.owner,origin.path):null;} catch {}
+      return text!==null&&await sha256(text)===origin.digest?text:sources.find(s=>s.destination===p)?.content??null;
+    };
+    const routed=async(link,issues)=>{
+      const renames=new Map();
+      for(const p of new Set(issues.flatMap(x=>[x.path,x.target]).filter(p=>link.files.has(p)))) {
+        const text=await workerText(p);
+        renames.set(p,text!==null&&text!==link.files.get(p)?linkRenames(text,link.files.get(p)):[]);
+      }
+      const told=new Set();
+      return issues.map(x=>{
+        const notes=[];
+        if(renames.get(x.path)?.length&&!told.has(x.path)){told.add(x.path);notes.push(`Builder renames in the linked copy that failed (your source does not have them): ${renames.get(x.path).join(', ')}.`);}
+        if(x.target&&x.target!==x.path&&renames.get(x.target)?.length)notes.push(`Builder renames in ${x.target} (its worker's source does not have them): ${renames.get(x.target).join(', ')}.`);
+        if(!notes.length)return {path:x.path,detail:x.detail};
+        const note=clip(notes.join(' '),500),detail=clip(x.detail,946-note.length).trimEnd();
+        return {path:x.path,detail:detail+(/[.!?]$/.test(detail)?' ':'. ')+note};
+      });
+    };
     let last=null,done=[],failed=null;
     for(;;) {
       this.event(id,'working',`Linking ${sources.length} file(s)${state.relinks?`; relink ${state.relinks} with the previous error`:''}.`);
@@ -1314,7 +1359,7 @@ export class ControlRoom extends DurableObject {
       await this.publishLinked(id,link,sources,{isRoot:true});
       const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
       const local=[...link.unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
-        ...link.mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`}))];
+        ...link.mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`,target:m.target}))];
       if(!link.entry)local.push({path:entryCandidate(link.files)||'',detail:'No application entry: no module exports start() or imports the other modules to compose the application. This module is the closest candidate: import the other modules it needs by relative path and export start(), returning an object whose methods perform the operations the goal requests.'});
       if(local.length) {
         if(state.relinks<2) {
@@ -1323,7 +1368,7 @@ export class ControlRoom extends DurableObject {
           this.event(id,'link_retry',clip(state.diagnostic,900));
           continue;
         }
-        return this.sendBackToWorkers(id,fingerprint,routed(link,[...local,...link.issues]),'link');
+        return this.sendBackToWorkers(id,fingerprint,await routed(link,[...local,...link.issues]),'link');
       }
       if(same) {
         if(state.relinks<2) {
@@ -1332,7 +1377,7 @@ export class ControlRoom extends DurableObject {
           this.event(id,'link_retry','The relink changed nothing, so the container is not run again; relinking with the same error.');
           continue;
         }
-        return this.sendBackToWorkers(id,fingerprint,routed(link,[...failed.issues,...link.issues]),failed.stage);
+        return this.sendBackToWorkers(id,fingerprint,await routed(link,[...failed.issues,...link.issues]),failed.stage);
       }
       const files=new Map([...link.files,['glue/index.js',entryLoader(link.entry)],['package.json',RUNTIME_PACKAGE]]);
       const check=await this.containerRun(id,`link:${fingerprint}:${state.relinks}`,files);
@@ -1347,14 +1392,14 @@ export class ControlRoom extends DurableObject {
           this.event(id,'link_retry','Load error looks like a name or path mismatch; relinking with the error.');
           continue;
         }
-        return this.sendBackToWorkers(id,fingerprint,routed(link,[...check.report.issues,...link.issues]),'build');
+        return this.sendBackToWorkers(id,fingerprint,await routed(link,[...check.report.issues,...link.issues]),'build');
       }
       const api=check.report.api_surface||'';
       this.event(id,'build_checked',`Linked source parsed, loaded and started in the container. start() returned: ${clip(api||'(no description)',900)}`);
       let described=null;
       try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
       if(!described || ['undefined','null'].includes(described.type) || described.error) {
-        return this.sendBackToWorkers(id,fingerprint,routed(link,[{path:link.entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}.`},...link.issues]),'run');
+        return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:link.entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}.`},...link.issues]),'run');
       }
       const outcome=await this.runApplication(id,fingerprint,files,api,goal,link);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);
@@ -1384,7 +1429,7 @@ export class ControlRoom extends DurableObject {
         this.event(id,'link_retry','Run error looks like a name mismatch between modules; relinking with the error.');
         continue;
       }
-      return this.sendBackToWorkers(id,fingerprint,routed(link,[...outcome.issues,...link.issues]),'run');
+      return this.sendBackToWorkers(id,fingerprint,await routed(link,[...outcome.issues,...link.issues]),'run');
     }
   }
   async managerRouteOwner(id, question, candidates, strict=false) {
