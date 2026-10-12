@@ -8,7 +8,7 @@ import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, pr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, autoLink, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -18,6 +18,8 @@ const json = (body, status = 200) => Response.json(body, { status, headers: { 'c
 const parse = (value, otherwise) => { try { return JSON.parse(value); } catch { return otherwise; } };
 const isAssumption = key => /^assum(?:ed|ption)[_ /:-]/i.test(key);
 const topicSlug = label => String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,24)||'component';
+// A linker edit is a rename, or the runtime's fix of how an import binds.
+const linkEdits = applied => { const shaped=applied.filter(e=>e.shape).length; return `${applied.length-shaped} rename(s)`+(shaped?` and ${shaped} import binding fix(es)`:''); };
 // A scoped public key must survive repeated manager hops without collisions.
 // Strip the child's existing assumption prefix so only ONE prefix remains per
 // hop. For long hierarchical keys, use a digest of the FULL untruncated key.
@@ -1068,17 +1070,22 @@ export class ControlRoom extends DurableObject {
     const surfaces=new Map(js.map(p=>[p,exportSurface(p,files.get(p))]));
     // Mechanical path fixes first, with no model call: an import that resolves
     // nowhere is pointed at the one module that clearly provides it. The worker
-    // originals decide which, never a rename an earlier relink accepted.
-    const autoApplied=[];
-    const autoByFile=new Map();
+    // originals decide which, never a rename an earlier relink accepted. Then a
+    // resolved import bound the wrong way round gets its binding shape fixed.
+    const applyAuto=(map,list)=>{
+      const byFile=new Map(),done=[];
+      for(const edit of list)byFile.set(edit.file,[...(byFile.get(edit.file)||[]),edit]);
+      for(const [file,group] of byFile) {
+        const result=applyEdits(map.get(file),group,{shapes:{path:file,files:map,surfaces}});
+        map.set(file,result.content);
+        done.push(...result.applied.map(e=>({...e,file,auto:true})));
+      }
+      return done;
+    };
     const originalSurfaces=current?new Map(js.map(p=>[p,exportSurface(p,originals.get(p))])):surfaces;
-    for(const edit of autoLink(originals,originalSurfaces,{scope:isRoot?'application':'branch'}))autoByFile.set(edit.file,[...(autoByFile.get(edit.file)||[]),edit]);
-    for(const [file,list] of autoByFile) {
-      const result=applyEdits(files.get(file),list);
-      files.set(file,result.content);
-      autoApplied.push(...result.applied.map(e=>({...e,file,auto:true})));
-    }
-    if(autoApplied.length)this.event(builderId,'link_auto',`Resolved ${autoApplied.length} import(s) without the model: `+
+    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:isRoot?'application':'branch'}));
+    autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
+    if(autoApplied.length)this.event(builderId,'link_auto',`Applied ${linkEdits(autoApplied)} without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
     // Only files with an import that does not resolve inside this manager's
     // children (or files named by a previous error) need renaming here. Every
@@ -1117,14 +1124,16 @@ export class ControlRoom extends DurableObject {
       // carry into the next relink and go to the worker as if it were theirs.
       const had=new Set(componentImports(file,linked.get(file),linked).map(r=>r.specifier));
       const check=next=>{const bad=componentImports(file,next,linked).find(r=>r.error&&!had.has(r.specifier));return bad?`the new import path '${bad.specifier}' resolves to no module`:null;};
-      const result=applyEdits(linked.get(file),list,{knownNames,original:originals.get(file),check,done:done.filter(e=>e.file===file)});
+      const result=applyEdits(linked.get(file),list,{knownNames,original:originals.get(file),check,done:done.filter(e=>e.file===file),shapes:{path:file,files:linked,surfaces}});
       linked.set(file,result.content);
       applied.push(...result.applied.map(e=>({...e,file})));
       rejected.push(...result.rejected.map(r=>({...r,edit:{...r.edit,file}})));
     }
+    // A path the model just resolved may still bind its module the wrong way round.
+    if(edits.size)applied.push(...applyAuto(linked,shapeFixes(linked,surfaces)));
     for(const r of rejected.slice(0,12))
       this.event(builderId,'link_edit_rejected',clip(`${r.edit.file}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
-    if(applied.length)this.event(builderId,'link_renamed',`Applied ${applied.length} rename(s) in ${new Set(applied.map(e=>e.file)).size} module(s): `+
+    if(applied.length)this.event(builderId,'link_renamed',`Applied ${linkEdits(applied)} in ${new Set(applied.map(e=>e.file)).size} module(s): `+
       clip(applied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace}`).join('; '),900));
     let entry=null;
     if(isRoot) {
@@ -1141,7 +1150,7 @@ export class ControlRoom extends DurableObject {
       if(stored!==content)await this.putFile(builderId,source.destination,content,{materialized:true});
     }
     const manifest=JSON.stringify({format:'recursive-assembly-v2',
-      note:'Each component is a copy of a worker publication or of a child manager\'s linked bundle. renamed=true means this builder changed only import paths or identifier names; the runtime verified that token by token.',
+      note:'Each component is a copy of a worker publication or of a child manager\'s linked bundle. renamed=true means this builder changed only import paths, identifier names, or how an import binds a module whose exports call for it; the runtime verified that token by token.',
       entry:link.entry||null,
       sources:await Promise.all([...sources].sort((a,b)=>a.destination.localeCompare(b.destination)).map(async s=>({
         branch:s.branch,source:s.source_path,destination:s.destination,sha256:s.digest,
@@ -1278,7 +1287,7 @@ export class ControlRoom extends DurableObject {
       await this.publishLinked(id,link,sources,{isRoot:false});
       this.set(`linked:${manager}`,fingerprint);
       const outside=new Set(link.unresolved.map(u=>u.specifier)).size;
-      const summary=`Linked ${sources.length} file(s) for ${this.node(manager)?.label||manager} with ${link.applied.length} rename(s)`+(outside?`; ${outside} import(s) point outside this branch and are left for the builder above.`:'.');
+      const summary=`Linked ${sources.length} file(s) for ${this.node(manager)?.label||manager} with ${linkEdits(link.applied)}`+(outside?`; ${outside} import(s) point outside this branch and are left for the builder above.`:'.');
       this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
       this.event(id,'link_done',summary);
       this.wake(manager);

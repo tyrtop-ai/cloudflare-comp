@@ -143,11 +143,13 @@ test('room: linkSnapshot applies the live bare and sibling path edits and nothin
   room.db().exec("UPDATE agents SET phase='implement' WHERE id IN ('root.1','root.2','root.3')");
   await room.putFile('root.1','ticket.js','class Ticket {}\nmodule.exports = Ticket;\n');
   await room.putFile('root.2','ticketService.js','let tickets = [];\nfunction create(t) { tickets.push(t); return t; }\nfunction read(id) { return tickets.find(t => t.id === id); }\nmodule.exports = { create, read };\n');
-  await room.putFile('root.3','module.js',"const ticketService = require('./ticketService');\n\nfunction start() {\n  return {\n    create: ticketService.create,\n    view: ticketService.view\n  };\n}\n\nmodule.exports = { start };\n");
+  // './ticketSvc' names no module, so the runtime cannot link it by name and
+  // the model's sibling path (run 5f85e12b's) is what links it.
+  await room.putFile('root.3','module.js',"const ticketService = require('./ticketSvc');\n\nfunction start() {\n  return {\n    create: ticketService.create,\n    view: ticketService.view\n  };\n}\n\nmodule.exports = { start };\n");
   room.db().exec("UPDATE agents SET status='done' WHERE id IN ('root.1','root.2','root.3')");
   const app=materializedPath('Application Entry','module.js','root.3');
   assert.equal(app,'components/applicatio-f07f9de6/module.js','the live run\'s path');
-  edits.set(app,[{file:app,find:"const ticketService = require('./ticketService');",replace:"const ticketService = require('./ticket-ser-f17f9f79/ticketService.js');"},
+  edits.set(app,[{file:app,find:"const ticketService = require('./ticketSvc');",replace:"const ticketService = require('./ticket-ser-f17f9f79/ticketService.js');"},
     {file:app,find:'view: ticketService.view',replace:'view: ticketService.read'}]);
   const builder=await room.scheduleAssembly('root');
   const live=await room.linkSnapshot(builder.id,await room.collectLinkSources(builder.id),'',{isRoot:true});
@@ -166,9 +168,15 @@ test('room: linkSnapshot applies the live bare and sibling path edits and nothin
     [tracker,"const { createTicket } = require('./createTicket');\nconst labels = require('./x');\nmodule.exports = { start: () => ({ createTicket, labels }) };\n"],[model,'class Ticket {}\nmodule.exports = Ticket;\n'],[json,'{"open":"Open"}\n']];
   const deep=await room.linkSnapshot(builder.id,src.map(([destination,content])=>({destination,content})),'',{isRoot:true});
   assert.deepEqual(deep.rejected,[]);
-  assert.equal(deep.applied.length,4);
+  // The runtime now links combineFilters.js itself (paths, then binding shape),
+  // before the model is asked; the tracker's two edits still come from the model.
+  assert.equal(deep.applied.length,6);
+  assert.deepEqual(deep.applied.filter(e=>e.auto).map(e=>e.file),[combine,combine,combine,combine]);
+  assert.equal(deep.applied.filter(e=>e.shape).length,2);
   assert.deepEqual(deep.unresolved,[]);
-  assert.match(deep.files.get(combine),/require\('\.\.\/implement--9b11f5c4\/statusFilter'\)/);
+  assert.deepEqual(deep.mismatches.filter(m=>m.path===combine),[]);
+  assert.match(deep.files.get(combine),/const isStatusMatch = require\('\.\.\/implement--9b11f5c4\/statusFilter\.js'\);/);
+  assert.match(deep.files.get(combine),/const isAssigneeMatch = require\('\.\.\/implement--9911f29e\/assigneeFilter\.js'\);/);
   assert.match(deep.files.get(tracker),/require\('\.\.\/createtick-d3f57ed3\/components\/define-tic-d9f58845\/ticketModel\.js'\)/);
   assert.match(deep.files.get(tracker),/const labels = require\('\.\/statusFilter'\);/);
 });
