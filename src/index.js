@@ -1449,8 +1449,7 @@ export class ControlRoom extends DurableObject {
     let commit='pending';
     if(!batched) {
       // Outside a turn the Artifacts push must succeed before the coordinator claims a file.
-      const hasCommits = query(db,"SELECT COUNT(*) as n FROM artifact_files WHERE agent=? AND commit_hash<>'pending'",id)[0].n > 0;
-      commit=(await this.store().write({ name:n.repo_name, remote:n.remote, actor:id, path, content, hasCommits })).commit;
+      commit=(await this.store().write({ name:n.repo_name, remote:n.remote, actor:id, path, content })).commit;
     }
     if(batched && !query(db,'SELECT path FROM staged_writes WHERE agent=? AND path=?',id,path).length) {
       const prior=existing?query(db,'SELECT f.revision AS revision,f.commit_hash AS commit_hash,f.updated_at AS updated_at,c.content AS content FROM artifact_files f LEFT JOIN artifact_contents c ON c.agent=f.agent AND c.path=f.path WHERE f.agent=? AND f.path=?',id,path)[0]:null;
@@ -1488,13 +1487,14 @@ export class ControlRoom extends DurableObject {
     const pending=query(db,"SELECT f.path AS path,c.content AS content FROM artifact_files f JOIN artifact_contents c ON c.agent=f.agent AND c.path=f.path WHERE f.agent=? AND f.commit_hash='pending' ORDER BY f.path",id);
     try {
       if(pending.length) {
-        const hasCommits=query(db,"SELECT COUNT(*) AS n FROM artifact_files WHERE agent=? AND commit_hash<>'pending'",id)[0].n>0;
+        // The store asks Artifacts whether main has history: a repair turn may
+        // rewrite every file, so no SQLite row proves the repo is non-empty.
         const store=this.store();
         let commit;
         if(typeof store.writeMany==='function')
-          commit=(await store.writeMany({name:n.repo_name,remote:n.remote,files:pending,hasCommits,actor:id})).commit;
-        else for(const [i,f] of pending.entries())
-          commit=(await store.write({name:n.repo_name,remote:n.remote,actor:id,path:f.path,content:f.content,hasCommits:hasCommits||i>0})).commit;
+          commit=(await store.writeMany({name:n.repo_name,remote:n.remote,files:pending,actor:id})).commit;
+        else for(const f of pending)
+          commit=(await store.write({name:n.repo_name,remote:n.remote,actor:id,path:f.path,content:f.content})).commit;
         db.exec("UPDATE artifact_files SET commit_hash=? WHERE agent=? AND commit_hash='pending'",commit,id);
         db.exec('DELETE FROM staged_writes WHERE agent=?',id);
         this.event(id,'commit',`Pushed ${pending.length} file(s) in one commit ${String(commit).slice(0,12)}: ${clip(pending.map(f=>f.path).join(', '),600)}`);

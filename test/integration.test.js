@@ -14,16 +14,24 @@ class Sql {
   }
 }
 class FakeArtifacts {
-  constructor(){this.repos=new Map();this.failNextWrite=false;}
+  constructor(){this.repos=new Map();this.failNextWrite=false;this.loseNextResponse=false;}
   async create(name){this.repos.set(name,{files:new Map(),commits:[]});return {name,remote:`https://example.artifacts.cloudflare.net/git/default/${name}.git`,branch:'main'};}
   async read(name,path){const repo=this.repos.get(name);if(!repo)throw Error('missing repo');return repo.files.get(path)??null;}
-  async write({name,path,content,hasCommits}){
+  async write({name,path,content,hasCommits}){return this.push(name,[{path,content}],hasCommits);}
+  // Like Artifacts, the repo's own history is the base of the next commit. A
+  // caller that still forces the base (pre-F1 hasCommits) gets what Artifacts
+  // did with it: a history-less init commit cannot fast-forward a non-empty main.
+  push(name,files,hasCommits=this.repos.get(name)?.commits.length>0){
     if(this.failNextWrite){this.failNextWrite=false;throw Error('simulated push rejection');}
     const repo=this.repos.get(name);if(!repo)throw Error('no repo');
-    if(Boolean(repo.commits.length)!==hasCommits)throw Error('wrong revision state');
-    const commit=String(repo.commits.length+1).padStart(40,'f');repo.files.set(path,content);repo.commits.push(commit);return {commit};
+    if(!hasCommits&&repo.commits.length)throw Error('Push rejected because it was not a simple fast-forward. Use "force: true" to override.');
+    if(hasCommits&&!repo.commits.length)throw Error('Could not find main to clone');
+    const commit=String(repo.commits.length+1).padStart(40,'f');for(const f of files)repo.files.set(f.path,f.content);repo.commits.push(commit);
+    if(this.loseNextResponse){this.loseNextResponse=false;throw Error('simulated network loss after the push landed');}
+    return {commit};
   }
 }
+class OneCommitArtifacts extends FakeArtifacts {async writeMany({name,files,hasCommits}){return this.push(name,files,hasCommits);}}
 async function setup(){
   const {ControlRoom}=await import('../src/index.js');
   const pending=[];const store=new FakeArtifacts();
@@ -249,4 +257,50 @@ test('a manager never invokes a generative decision even if that model would wri
   assert.equal(room.files('root').some(f=>f.path==='index.html'),false);
   assert.ok(room.snapshot().events.some(e=>e.actor==='root' && e.kind==='waiting' && e.body.includes('routing')));
   assert.notEqual(room.node('root').status,'done');
+});
+
+// Live run 5f85e12b: root.3's repair turn rewrote module.js, the only file it
+// owned, so no SQLite row was committed, the store ran git init, and Artifacts
+// rejected the push as not a fast-forward three times until the room paused.
+async function rewriteFixture(store) {
+  const {ControlRoom}=await import('../src/index.js');
+  const pending=[],env={MOCK_AI:'true',TEST_ARTIFACT_STORE:store};
+  const room=new ControlRoom({storage:{sql:new Sql()},waitUntil:p=>pending.push(p)},env);
+  const drain=async()=>{await Promise.all(pending.splice(0));};
+  await room.start('Build a project from small independent agent strands',1);await drain();
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1'");
+  env.MOCK_AI='false';
+  let version=0;
+  env.AI={run:async()=>{version++;return {response:JSON.stringify({summary:'module',done:true,files:[
+    {path:'module.js',content:`export const version = ${version};\n`},{path:'notes.js',content:`export const notes = ${version};\n`}]})};}};
+  const turn=async body=>{room.send('root','root.1',body);room.save('queue',['root.1']);await room.resume(1);await drain();};
+  const failures=()=>room.snapshot().events.filter(e=>e.actor==='root.1'&&['commit_rolled_back','commit_failed','error'].includes(e.kind));
+  return {room,turn,drain,failures,repo:()=>store.repos.get(room.node('root.1').repo_name)};
+}
+
+test('a turn that rewrites every file it owns commits on top of the Artifacts history',async()=>{
+  for(const store of [new FakeArtifacts(),new OneCommitArtifacts()]) {
+    const {room,turn,failures,repo}=await rewriteFixture(store);
+    await turn('Implement the module');
+    assert.ok(repo().commits.length,store.constructor.name);
+    await turn('Repair: fix the import path for ticketService');
+    assert.deepEqual(failures().map(e=>e.body),[],store.constructor.name);
+    const owned=room.snapshot().files.filter(f=>f.agent==='root.1');
+    assert.deepEqual(owned.map(f=>[f.path,f.revision]).sort(),[['module.js',2],['notes.js',2]],'the repair rewrote every file it owns');
+    assert.ok(owned.every(f=>f.commit_hash===repo().commits.at(-1)),'files carry the real Artifacts commit, not pending');
+    assert.equal(repo().files.get('module.js'),'export const version = 2;\n');
+  }
+});
+
+test('a push that landed but lost its response is rebased on replay, not re-initialized',async()=>{
+  const store=new OneCommitArtifacts();
+  const {room,turn,drain,failures,repo}=await rewriteFixture(store);
+  store.loseNextResponse=true;
+  await turn('Implement the module');
+  assert.ok(failures().some(e=>e.kind==='commit_rolled_back'));
+  assert.equal(repo().commits.length,1,'Artifacts kept the commit SQLite rolled back');
+  room.save('queue',['root.1']);await room.resume(1);await drain();
+  const owned=room.snapshot().files.filter(f=>f.agent==='root.1');
+  assert.equal(repo().commits.length,2,'the replay committed on top of the landed push');
+  assert.deepEqual(owned.map(f=>f.commit_hash),[repo().commits[1],repo().commits[1]]);
 });
