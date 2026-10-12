@@ -44,6 +44,9 @@ test('F3: a bare path find is widened to the module specifier literal that holds
   const one="const a = require('../a');\nmodule.exports = a;\n";
   for(const [find,replace] of [['../a',"'../x/a'"],["'../a'",'../x/a']])
     assert.equal(L.applyEdits(one,[{find,replace}]).content,"const a = require('../x/a');\nmodule.exports = a;\n",find);
+  // An edit that is a no-op once quoted is skipped, not counted as a rename.
+  for(const [find,replace] of [['../a',"'../a'"],["'../a'",'../a']])
+    assert.deepEqual(L.applyEdits(one,[{find,replace}]),{content:one,applied:[],rejected:[]},find);
 });
 
 test('F3: a bare find is never widened into an ordinary string or past a whole-token match',()=>{
@@ -154,15 +157,18 @@ test('room: linkSnapshot applies the live bare and sibling path edits and nothin
   assert.equal(live.entry,app);
   // Run e89dba35's rejected bare edits, through the same path.
   edits.set(combine,[{file:combine,find:'../statusFilter',replace:'../implement--9b11f5c4/statusFilter'},{file:combine,find:'../assigneeFilter',replace:'../implement--9911f29e/assigneeFilter'}]);
-  edits.set(tracker,[{file:tracker,find:'./createTicket',replace:'./createtick-d3f57ed3/components/define-tic-d9f58845/ticketModel'}]);
+  // './statusFilter' resolves to the tracker's own json file, so it is kept.
+  const json='components/issuetrack-f57fa5c5/statusFilter.json';
+  edits.set(tracker,[{file:tracker,find:'./createTicket',replace:'./createtick-d3f57ed3/components/define-tic-d9f58845/ticketModel'},{file:tracker,find:"require('./x')",replace:"require('./statusFilter')"}]);
   const src=[[combine,"const { isStatusMatch } = require('../statusFilter');\nconst { isAssigneeMatch } = require('../assigneeFilter');\nmodule.exports = { combineFilters: t => isStatusMatch(t) && isAssigneeMatch(t) };\n"],
     [status,'module.exports = function isStatusMatch(ticket, filter) { return ticket.status === filter.status; };\n'],
     [assignee,'function isAssigneeMatch(ticket, assigneeFilter) {\n  return ticket.assignee === assigneeFilter;\n}\n\nmodule.exports = isAssigneeMatch;\n'],
-    [tracker,"const { createTicket } = require('./createTicket');\nmodule.exports = { start: () => ({ createTicket }) };\n"],[model,'class Ticket {}\nmodule.exports = Ticket;\n']];
+    [tracker,"const { createTicket } = require('./createTicket');\nconst labels = require('./x');\nmodule.exports = { start: () => ({ createTicket, labels }) };\n"],[model,'class Ticket {}\nmodule.exports = Ticket;\n'],[json,'{"open":"Open"}\n']];
   const deep=await room.linkSnapshot(builder.id,src.map(([destination,content])=>({destination,content})),'',{isRoot:true});
   assert.deepEqual(deep.rejected,[]);
-  assert.equal(deep.applied.length,3);
+  assert.equal(deep.applied.length,4);
   assert.deepEqual(deep.unresolved,[]);
   assert.match(deep.files.get(combine),/require\('\.\.\/implement--9b11f5c4\/statusFilter'\)/);
   assert.match(deep.files.get(tracker),/require\('\.\.\/createtick-d3f57ed3\/components\/define-tic-d9f58845\/ticketModel\.js'\)/);
+  assert.match(deep.files.get(tracker),/const labels = require\('\.\/statusFilter'\);/);
 });

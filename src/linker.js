@@ -228,6 +228,7 @@ function tokens(text, sourceType) {
 }
 const wordLike=t=>t&&(t.type.label==='name'||t.type.label==='privateId'||typeof t.type.keyword==='string');
 const isSpecifier=v=>typeof v==='string'&&/^\.{1,2}\//.test(v);
+const quotedString=/^(['"])([^'"\n]*)\1$/;
 const sameToken=(x,y)=>x.type===y.type&&(x.type.label==='regexp'
   ? x.value?.pattern===y.value?.pattern&&x.value?.flags===y.value?.flags
   : x.value===y.value);
@@ -399,7 +400,6 @@ export function applyEdits(content, edits, {knownNames=null}={}) {
       return hits;
     };
     let hits=hitsOf(find);
-    const quoted=/^(['"])[^'"\n]*\1$/;
     // A bare path ("../statusFilter") lies inside a string token. When it is
     // the whole value of module specifiers, and of no other string, the edit
     // means those specifiers: widen find and replace to their quotes. A quoted
@@ -407,8 +407,9 @@ export function applyEdits(content, edits, {knownNames=null}={}) {
     if(!hits.length) {
       const lits=list.flatMap((t,i)=>t.type.label==='string'&&current.slice(t.start+1,t.end-1)===find?[i]:[]);
       const q=lits.length?current[list[lits[0]].start]:'';
-      if(lits.length&&lits.every(i=>specifierPosition(list,i)&&current[list[i].start]===q)){find=q+find+q;if(!quoted.test(replace))replace=q+replace+q;hits=hitsOf(find);}
-    } else if(quoted.test(find)&&/^\.{1,2}\/[^'"`\s]*$/.test(replace))replace=find[0]+replace+find[0];
+      if(lits.length&&lits.every(i=>specifierPosition(list,i)&&current[list[i].start]===q)){find=q+find+q;if(!quotedString.test(replace))replace=q+replace+q;hits=hitsOf(find);}
+    } else if(quotedString.test(find)&&/^\.{1,2}\/[^'"`\s]*$/.test(replace))replace=find[0]+replace+find[0];
+    if(find===replace)continue;
     if(!hits.length){rejected.push({edit,reason:'find text does not match whole tokens'});continue;}
     let next='',last=0;
     for(const at of hits){next+=current.slice(last,at)+replace;last=at+find.length;}
@@ -511,7 +512,7 @@ export function normalizeEditPaths(edit, allPaths, files=null) {
   // Only specifier positions; a replacement that is one string, or one bare
   // path standing for a relative path, is the specifier itself (applyEdits
   // adds the quotes).
-  const whole=/^(['"])([^'"\n]+)\1$/.exec(replace);
+  const whole=quotedString.exec(replace);
   if(whole)replace=whole[1]+fix(whole[2])+whole[1];
   else if(/^[^'"`\s]+$/.test(replace)&&[replace,find].some(s=>/^(['"]?)\.{1,2}\/[^'"`\s]+\1$/.test(s)))replace=fix(replace);
   else replace=replace.replace(/(\b(?:require|import)\s*\(\s*|\bfrom\s*|\bimport\s*)(['"])([^'"\n]+)\2/g,(m,pre,q,spec)=>pre+q+fix(spec)+q);
