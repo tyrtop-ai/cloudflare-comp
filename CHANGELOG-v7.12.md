@@ -2,7 +2,7 @@
 
 ## What changed
 
-Two live v7.11 runs on a real Cloudflare account stopped before Root's Container check. Run 5f85e12b paused after 80 seconds, and the larger run e89dba35 never linked at Root. v7.12 fixes what stopped them. Five fix branches were merged on top of v7.11, and a review of the merged tree led to three more commits.
+Two live v7.11 runs on a real Cloudflare account stopped before Root's Container check. Run 5f85e12b paused after 80 seconds, and the larger run e89dba35 never linked at Root. v7.12 fixes what stopped them. Five fix branches were merged on top of v7.11, a review of the merged tree led to three more commits, and a review of those led to two more.
 
 The design is unchanged, with one deliberate exception. A builder may now change how an import binds its module, as well as rename. It may do this only in four forms, and only when the target's exports decide which form is right. Everything below is verified locally. No live run has used v7.12 yet.
 
@@ -95,26 +95,49 @@ A review of the five merged branches together found defects where they interact,
 
 **Problems carry every builder's renames (218e3d1).**
 - When relinks run out, the renames a worker hears are now compared against the worker's own publication. The runtime finds it by following `builder_sources` down through every branch builder and checks it against the recorded SHA-256. Before, Root compared only against its own input, so a rename made by a branch builder was presented as the worker's code.
-- A name mismatch also lists the builder renames in the module it reads from.
-- The renames ride inside each problem's detail, clipped so both fit, instead of as separate entries ahead of the problems. The 12-problem cap no longer drops a real problem to make room for a note.
+- A name mismatch also lists the names a builder renamed in the module it reads from, once per module it reads.
+- The renames ride inside each problem's detail instead of as separate entries ahead of the problems. The problem keeps its whole text and the renames get the room it leaves. The 12-problem cap no longer drops a real problem to make room for a note.
 - At each import whose binding changed, `linkRenames` puts the worker's binding back before it compares tokens. Before, it returned nothing whenever the token counts differed, so a binding fix hid every rename in that file. It also lists the binding change itself, for example `binding { makeStore } → makeStore`.
 
 **A model rename that breaks an import that matched is undone (218e3d1).**
-- After the model's edits, the runtime checks whether a module now reads a name that its target exported before those edits. If so, the file whose edits caused it goes back to its text from before the model. That is the target if its exported name was renamed, and otherwise the reader.
+- After the model's edits, the runtime checks whether a module now reads a name that its target provided before those edits: an export name, or a method of a class the module exports. If so, the file whose edits caused it goes back to its text from before the model. That is the target when the reader still reads the name and the target no longer provides it, and otherwise the reader, when its own rename replaced a name that matched. A rename from one wrong name to another breaks nothing and is kept. A file whose model renames pair with the undone target's (the same old and new name) goes back with it.
 - The undone edits are reported as rejected ("it breaks an import that matched before: ..."). The caller's worker is no longer blamed when the builder renames a definition the caller uses.
 
 **The rename check sees scope (5f98be7).**
 - A variable is not renamed when the file also reads the same name where that variable is not in scope, such as a global `performance`, or an `atob` that a parameter shadows elsewhere in the file. A scope walk over the Acorn AST decides, so shadowed, hoisted, block and catch bindings can still be renamed.
-- A member the file defines is not renamed when the file names it in a string or template, or reads its holder by a computed key (`handlers[op]`, `this[name]`).
+- A member the file defines is not renamed when the file names it as a string key or reaches an object that can hold it by a key decided at run time (`handlers[op]`). The second review made this check find every such object; see below.
 - A module whose export gets members through an alias (`const api = parse; api[k] = ...`) is no longer taken for a lone function, so a destructured import of it is left alone.
 - A relink can undo an accepted rename in a file that the runtime also binding-fixed. The undo is also judged against the worker's original plus the runtime's own binding fix.
 
 **Root asks for the entry instead of guessing (7c5fe8f).**
 - Live evidence, run e89dba35: no module exported `start()`, and on the third attempt of one Root link the model named no usable entry. v7.11 then took the module that imports the most others and is imported by none. That was `combineFilters.js`, a filter combinator.
-- With no module exporting `start()` and no proposal from the model, there is now no entry. Root calls the model even when every import resolves, and the linker prompt lets the model name the entry from any listed module, not only the files it was sent in full.
-- The "No application entry" problem goes first to a module whose file name marks it as the application (`app.js`, `main-app.js`, `issueTrackerApp.js`), nearest Root first. Only if there is none does it go to the module that imports the most others.
+- With no module exporting `start()` and no proposal from the model on any attempt, there is now no entry. Root calls the model even when every import resolves, and the linker prompt lets the model name the entry from any listed module, not only the files it was sent in full.
+- The "No application entry" problem goes to a module that no other module imports. Among those, a module whose file name marks it as the application (`app.js`, `main-app.js`, `issueTrackerApp.js`) comes first, nearest Root first. Only if there is none does it go to the one that imports the most others.
 
 **An exact name blocks a lone provider (7c5fe8f).** In a local replay of run e89dba35's Root inputs, v7.11's `autoLink` pointed `ticket.js`'s `./ticketStore` at `issueTrackerApp.js`, the only module exporting `createTicket`, although `ticketStore.js` matches the path exactly. Now, when another module is named exactly like the path, the only provider is not picked, and the model decides.
+
+### Fixes from the review of those commits
+
+A second review tested the three commits above, mostly with room-level scenarios run through the real Container runner script. Two more commits fix what it found.
+
+**The rename check finds every object that can hold a member (a1f0a85).**
+- 5f98be7 recognized two holder shapes only: `const handlers = { ... }` read as `handlers[op]`, and `this[op]`. Every other way to reach a member by key was still renamed and broke at run time: a table kept in `this.routes`, a frozen or copied object, `module.exports[op]`, an instance, a class's static methods, a nested holder, `const { [op]: fn } = handlers` and `Object.keys(commands)`. In a room test, Root's builder renamed a router's `create` route to `add` to match the service. The Container test failed with "Unknown command: create", and the router's worker was blamed.
+- The check is now a small points-to pass over the file. It follows object literals, classes and their instances, `module.exports`, variables resolved through the file's scopes, members, `this`, calls to the file's own functions and their results, `Object.assign`, `Object.freeze`, spreads and `extends`. A computed read, a computed destructuring, `in`, `for...in` or `Object.keys`, `values` or `entries` on any object that can hold the member refuses the rename.
+- 5f98be7 was also too strict, file-wide. Any `this[k]`, even a write in another class, blocked every member rename, and so did any string equal to the member's name, such as an audit label `'create'`. Now a plain write `obj[k] = v` and `Object.keys(obj).length` do not count, `this` means the class or object it appears in, and a string counts only as a key: `x['m']`, `'m' in x`, or a key argument of `Object.defineProperty` or `hasOwnProperty`.
+- A member assigned to a variable of the file (`api.create = ...`, `Store.prototype.add = ...`) counts as defined there. A rename of its definition alone is refused, as for an object key.
+- A member is not renamed onto a key that its object or class already has. Before, `{ read: read, view: view }` could become `{ read: read, read: view }`, so `read` ran `view`.
+- Variable scopes: a parameter default no longer sees the body's `var`s, a function declared in a block stays in the block in strict code, and a static block's `var`s stay in it. A file that uses `with` or `eval` gets no variable or member rename. A function or class is not renamed when the file reads `.name` and also writes the old name as a string, as in `e.name === 'NotFoundError'`.
+- Checked against the same corpora as the review. All 874 whole-token renames in the 35 live-run files get the same verdict as before 5f98be7. Of 871 sampled variable renames in this repository's sources and some packages, one more is refused than before 5f98be7: `budget` in `src/index.js`, which `ROOM_LIMITS[key]` reaches. 5f98be7 refused 7 of them, each for an equal string. Of 569 member renames there, 6 more are refused than before 5f98be7, each where the file really reaches the member by key, such as `ROOM_LIMITS[key]` or `'summary' in output`. 18 that 5f98be7 refused for an equal string are accepted again.
+
+**Root keeps the entry, undoes the right file and keeps problems whole (870c05f).**
+- An entry the model named on any attempt for the same source is kept when a later attempt names none. Live, run e89dba35's Root builder named `issueTrackerApp.js` at events 838 and 848 but no usable entry on the third attempt (event 857, where v7.11 fell back to `combineFilters.js`). With 7c5fe8f alone, a relink that fixed the real error but named no entry sent "No application entry" to a worker, and the fixed application never ran.
+- The undo compares each read with the names its target provided before, including the methods of a class the target exports. Before, `module.exports = Repo` hid the methods from the test. A method the builder renamed under a caller that matched was kept, and the caller's own correct rename was undone instead. The caller's worker was then blamed for the builder's rename.
+- A reader renamed from one wrong name to another is no longer undone, so its correct renames in the same file stay. A use renamed together with an undone definition, such as `repo.read(id)` to `repo.get(id)` beside `read(id)` to `get(id)`, goes back with it. Before, the use kept the new name and called a method that no longer existed.
+- A problem keeps its whole text, and the builder renames get only the room left. Runner triage now puts the builder's verdict before the runner output. Before, a long assertion diff plus the rename note cut the verdict off.
+- The note about the module a mismatch reads from lists only names, once per file and module. Before, it repeated that module's own import path changes after every mismatch, and the worker's repair message lost its last problems.
+- A module that another module imports is no longer asked to compose the application, unless every module is imported. A file name marks the application only as a whole name (`app.js`, `main.js`) or a final `App` or `Application`. Before, `changeTracker.js` or `searchIndex.js` was asked to compose an application that imports it.
+- A default class with a static `start()` counts as exporting `start()`, as the runtime loader calls it. Before, such an entry cost three linker calls, and its worker heard that no module exports `start()`.
+- Local replays of runs e89dba35 and 5f85e12b give the same results as before these two commits.
 
 ### Replay of run e89dba35 at Root
 
@@ -150,14 +173,14 @@ These are Root's inputs at step 101 of run e89dba35, replayed locally with a mod
 
 ## Tests
 
-229 local tests pass (`npm test`), up from 184 in v7.11. The new tests are:
+242 local tests pass (`npm test`), up from 184 in v7.11. The new tests are:
 
 - `test/artifact-store.test.js` (4 tests): an empty repository is initialized and never cloned, and a repository with `main` is cloned and never initialized. Ref discovery is checked against the real isomorphic-git parser for three advertisements. Each failure names its phase and never exposes the write token.
 - `test/integration.test.js` (2 tests): the fake Artifacts store now rejects a push with no history onto a non-empty repository, as the live run did. A turn that rewrites every file it owns commits on top of the history, and a push that landed but lost its response is committed on top on replay.
 - `test/edit-paths.test.js` (5 tests): bare and sibling path edits from the live runs, the negative cases, and a room test that applies the live edits.
-- `test/v711-builder.test.js` (34 tests): relinks that accumulate, undo and reject unresolvable paths; binding fixes in all four forms and the cases they must refuse; the name fallback; the scope, string-key and alias guards; the renames workers hear and the 12-problem cap; undoing a rename that breaks an import; and entry choice. Several room tests use the sources of runs 5f85e12b and e89dba35 with the real Container runner script.
+- `test/v711-builder.test.js` (47 tests): relinks that accumulate, undo and reject unresolvable paths; binding fixes in all four forms and the cases they must refuse; the name fallback; the scope, string-key and alias guards; every holder a member can be reached through by key, and the strings and computed keys that do not block a rename; members defined by assignment, reflected class names and merged keys; the renames workers hear, once and without cutting the problem, and the 12-problem cap; undoing a rename that breaks an import, by the right file and with its paired use; and entry choice, including an entry kept across relinks and a class with a static `start()`. Several room tests use the sources of runs 5f85e12b and e89dba35 with the real Container runner script.
 
-Six existing tests that encoded the old behavior were updated. They covered the separate rename note, the entry fallback to the biggest importer, and a provider winning over an exact name. Two more tests were adjusted when the F2 and F4/F5 branches were merged (c78df0f), so that each still exercises what it was written for. Each of the 12 tests added by the review commits fails when `src/` is put back to the merged tree before those commits.
+Six existing tests that encoded the old behavior were updated. They covered the separate rename note, the entry fallback to the biggest importer, and a provider winning over an exact name. Two more tests were adjusted when the F2 and F4/F5 branches were merged (c78df0f), so that each still exercises what it was written for. Each of the 12 tests added by the review commits fails when `src/` is put back to the merged tree before those commits. Each of the 13 tests added after the second review fails on the `src/` of e0d226a, and so does the one string-key test it changed, which now expects the computed-key reason.
 
 Live Cloudflare deployment of v7.12 is not verified.
 
@@ -166,8 +189,9 @@ Live Cloudflare deployment of v7.12 is not verified.
 - The rename check compares tokens, not line breaks. An edit that only adds or moves a line break, such as splitting `return m.value` after `return`, is accepted and can change behavior through automatic semicolon insertion.
 - A model path edit that points an import at the wrong module is kept if the path resolves. In the e89dba35 replay, the model pointed `issueTrackerApp.js`'s `./createTicket` at `ticketModel.js`, and the entry module's worker then heard a mismatch against the builder's pick. A branch builder can likewise pick the wrong module inside its branch, and Root does not re-examine an import that already resolves unless the static name check or a runtime error points at it.
 - The runtime undoes a rename that breaks an import only when the static name check can see the break. A member read off a value that a factory returns is not visible to that check. The undo also restores the whole file, so a good rename in it must be proposed again on the next relink.
+- The check for a member reached by key follows values within one file, and not through arrays or callbacks. A holder put in an array, or passed to a callback or to another module that reads it by key, is not seen.
 - Member mismatches such as `delete` against `del` still need a model rename. The runtime has no deterministic member rename.
-- The splitter asks one Root child to own the entry, but the runtime does not record which child. The "No application entry" problem goes to a module chosen by its file name.
+- The splitter asks one Root child to own the entry, but the runtime does not record which child. The "No application entry" problem goes to a module chosen by its imports and file name.
 - A module named in the previous error is sent to the model in full, even when it is only the provider, as `ticketService.js` was in the 5f85e12b replay.
 - Model prompts outside the linker still describe the builder as rename-only: the worker repair message, the splitter prompt and the worker dependency rule. Workers should code to that rule, because binding fixes are applied before any problem is routed. Still, the wording is narrower than what the runtime does.
 - Linker input at one level is not split when it exceeds the model's context.
