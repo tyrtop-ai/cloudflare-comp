@@ -116,7 +116,7 @@ test('export surface lists names and parameters only',()=>{
   assert.doesNotMatch(L.surfaceText(cls),/\{\}/,'bodies are never included');
 });
 
-test('entry choice prefers the module that exports start, then the composition root',()=>{
+test('entry choice prefers the module that exports start, then the builder\'s proposal, and never guesses',()=>{
   const files=new Map([
     ['components/r/repo.js','module.exports=class R{}'],
     ['components/a/app.js',"const R=require('../r/repo.js');module.exports={start(){return new R();}}"],
@@ -126,7 +126,10 @@ test('entry choice prefers the module that exports start, then the composition r
   assert.equal(L.chooseEntry(files,surfaces,['components/m/main.js']),'components/a/app.js','the one module exporting start beats a proposal that does not');
   files.set('components/a/app.js',"const R=require('../r/repo.js');module.exports=()=>new R();");
   const s2=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
-  assert.equal(L.chooseEntry(files,s2,[]),'components/m/main.js','largest importer that nobody imports');
+  // Run e89dba35: with no start() anywhere, the biggest importer nobody
+  // imports was a filter combinator. Only the builder's proposal names it.
+  assert.equal(L.chooseEntry(files,s2,[]),null,'no start() and no proposal: no entry, not the largest importer');
+  assert.equal(L.chooseEntry(files,s2,['components/m/main.js']),'components/m/main.js');
 });
 
 test('a full components/ path in a proposed rename becomes the correct relative path',()=>{
@@ -1140,7 +1143,10 @@ test('name fallback: ambiguous or loose name matches pick nothing, and a provide
   assert.deepEqual(pick([['components/a/ticketService.js','module.exports = { slugify(){} };\n'],['components/b/ticketServiceImpl.js',svc]]),['components/b/ticketServiceImpl.js'],'an exact name that exports none of them does not beat a loose one that does');
   const lone=new Map([['components/c/combine.js',"const { isStatusMatch } = require('./statusFilter');\nmodule.exports = (t) => isStatusMatch(t);\n"],['components/s/statusFilter.js',liveFilters[F+'implement--9b11f5c4/statusFilter.js']]]);
   assert.deepEqual(L.autoLink(lone,surfacesOf(lone),{scope:'branch'}).map(e=>e.target),['components/s/statusFilter.js'],'a lone function counts by its name');
-  assert.deepEqual(pick([['components/a/ticketService.js',svc],['components/b/viewer.js','module.exports = { view(){}, list(){} };\n']]),['components/b/viewer.js'],'the only module exporting every name wins over the name');
+  assert.deepEqual(pick([['components/a/ticketServ.js',svc],['components/b/viewer.js','module.exports = { view(){}, list(){} };\n']]),['components/b/viewer.js'],'the only module exporting every name wins over a loose name');
+  // Run e89dba35: ticket.js's './ticketStore' (createTicket) went to the
+  // application entry, the only module exporting createTicket, past ticketStore.js.
+  assert.deepEqual(pick([['components/a/ticketService.js',svc],['components/b/viewer.js','module.exports = { view(){}, list(){} };\n']]),[],'a module named exactly as the path makes the only provider ambiguous; the model decides');
   // Run e89dba35: "createTicket" loosely contains "ticket", but ticket.js exports only Ticket.
   const app="const { createTicket } = require('./createTicket');\nmodule.exports = { createTicket: (ticketData) => createTicket(ticketData) };\n";
   const ticket="class Ticket {\n  constructor(id, title, status, description) {\n    this.id = id;\n  }\n}\n\nmodule.exports = { Ticket };\n";
@@ -1397,4 +1403,51 @@ test('room: a binding-shape fix does not hide the builder rename that broke the 
   assert.equal(failure.stage,'run');
   const issue=failure.issues.find(i=>i.path===paths[2]);
   assert.match(issue.detail,/svc\.get is not a function[^]*Builder renames in the linked copy that failed[^]*: '\.\/store' → '\.\.\/record-sto-[0-9a-f]+\/store\.js', view → get, binding \{ makeStore \} → makeStore\.$/);
+});
+
+test('autoLink: a module named exactly as the path makes the only provider ambiguous (run e89dba35 ticket.js)',()=>{
+  const files=new Map([['components/v/components/d/ticket.js',"const { createTicket } = require('./ticketStore');\nmodule.exports = { make: (d) => createTicket(d) };\n"],
+    ['components/i/issueTrackerApp.js',"function createTicket(d) { return d; }\nmodule.exports = { createTicket };\n"],
+    ['components/c/components/p/ticketStore.js',"module.exports = { saveTicket(t) { return t; } };\n"]]);
+  assert.deepEqual(L.autoLink(files,surfacesOf(files),{scope:'application'}),[],'not the application entry');
+  files.delete('components/c/components/p/ticketStore.js');
+  assert.deepEqual(L.autoLink(files,surfacesOf(files),{scope:'application'}).map(e=>e.target),['components/i/issueTrackerApp.js']);
+});
+
+test('with no entry, a module named as the application is asked to compose it before the biggest importer (run e89dba35)',()=>{
+  const files=new Map([['components/v/components/f/combineFilters.js',"const a = require('../s/statusFilter.js');\nconst b = require('../p/priorityFilter.js');\nmodule.exports = { combineFilters: (t) => a(t) && b(t) };\n"],
+    ['components/v/components/s/statusFilter.js','module.exports = (t) => true;\n'],['components/v/components/p/priorityFilter.js','module.exports = (t) => true;\n'],
+    ['components/i/issueTrackerApp.js','module.exports = { createTicket(d) { return d; } };\n']]);
+  assert.equal(L.entryCandidate(files),'components/i/issueTrackerApp.js');
+  files.set('components/v/components/f/filterApp.js','module.exports = {};\n');
+  assert.equal(L.entryCandidate(files),'components/i/issueTrackerApp.js','the one nearest Root');
+});
+
+test('room: with no module exporting start(), Root asks the model for the entry instead of taking the biggest importer',async()=>{
+  const status="module.exports = { isOpen: (t) => !!t && t.status !== 'closed' };\n";
+  const combine="const { isOpen } = require('./statusFilter');\nconst { read } = require('./store');\nmodule.exports = { combine: (id) => isOpen(read(id)) };\n";
+  const app="const svc = require('./store');\nmodule.exports = { createTicket: (d) => svc.create(d), viewTicket: (id) => svc.read(id) };\n";
+  const W=[['Record store','store.js',recordStore],['Status filter','statusFilter.js',status],['Combine filters','combine.js',combine],['Application','app.js',app]];
+  for(const propose of [true,false]) {
+    let paths;
+    const {room,calls}=liveRoom({link:()=>({edits:[],entry:propose?paths[3]:null,issues:[]}),runner:()=>viewTest});
+    paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',W);
+    const builder=await room.scheduleAssembly('root');
+    await room.turn(builder.id);
+    const events=room.snapshot().events;
+    assert.match(events.find(e=>e.kind==='link_auto').body,/^Applied 3 rename\(s\)/,'every import resolves without the model');
+    assert.deepEqual(calls.link[0].your_files,[]);
+    assert.ok(calls.link[0].other_modules_exports.some(t=>t.startsWith(paths[3])));
+    if(propose) {
+      assert.equal(room.node(builder.id).status,'done',events.slice(-6).map(e=>e.kind+': '+e.body).join('\n'));
+      assert.equal(calls.link.length,1);
+      assert.equal(room.read('link_state',null),null);
+      assert.ok(events.some(e=>e.kind==='link_entry'&&e.body===`Application entry: ${paths[3]}.`));
+    } else {
+      const failure=room.read('build_failure:root',null);
+      assert.equal(failure.stage,'link');
+      assert.deepEqual(failure.issues.map(i=>i.path),[paths[3]],'the module named as the application, not combine.js');
+      assert.match(failure.issues[0].detail,/^No application entry/);
+    }
+  }
 });

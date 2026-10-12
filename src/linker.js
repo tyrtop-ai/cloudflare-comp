@@ -512,15 +512,11 @@ export function chooseEntry(files, surfaces, proposals=[]) {
   if(proposedStarter)return proposedStarter;
   if(starters.length===1)return starters[0];
   if(proposed.length)return proposed[0];
-  const importedBy=new Map(js.map(p=>[p,0])),outDegree=new Map(js.map(p=>[p,0]));
-  for(const p of js) for(const ref of componentImports(p,files.get(p),files)) {
-    if(ref.target&&importedBy.has(ref.target)){importedBy.set(ref.target,importedBy.get(ref.target)+1);outDegree.set(p,outDegree.get(p)+1);}
-  }
-  const roots=js.filter(p=>importedBy.get(p)===0);
-  const ranked=(starters.length?starters:roots).sort((a,b)=>outDegree.get(b)-outDegree.get(a)||a.localeCompare(b));
-  if(!ranked.length)return null;
-  if(!starters.length&&outDegree.get(ranked[0])===0)return null;
-  return ranked[0];
+  // With no module exporting start(), only the model's proposal names the
+  // application; the biggest importer may be a helper (run e89dba35).
+  if(!starters.length)return null;
+  const outDegree=new Map(starters.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>js.includes(r.target)).length]));
+  return starters.sort((a,b)=>outDegree.get(b)-outDegree.get(a)||a.localeCompare(b))[0];
 }
 export function entryLoader(entry) {
   const spec=JSON.stringify('../'+entry);
@@ -599,15 +595,20 @@ export function normalizeEditPaths(edit, allPaths, files=null) {
   return replace===edit.replace?edit:{...edit,replace};
 }
 // When no module exports start() or composes the others, the worker most
-// likely to own composition is asked to do it: the biggest importer, else a
-// module whose name says it is the application, else the first module.
+// likely to own composition is asked to do it: a module whose name says it
+// is the application (app.js, main-app.js, issueTrackerApp.js), the one
+// nearest Root first, else the biggest importer, else the first module.
+const APP_WORD='app|main|index|entry|cli|server|tracker|application';
+const appNamed=p=>{const base=p.split('/').pop().replace(/\.(?:m|c)?js$/i,'');return new RegExp(`(?:^|[-_.])(?:${APP_WORD})(?![a-z])`,'i').test(base)||new RegExp(`[a-z0-9](?:${APP_WORD.replace(/\b\w/g,c=>c.toUpperCase())})(?![a-z])`).test(base);};
 export function entryCandidate(files) {
   const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
   if(!js.length)return null;
+  const depth=p=>p.split('/').filter(s=>s==='components').length;
+  const named=js.filter(appNamed).sort((x,y)=>depth(x)-depth(y));
+  if(named.length)return named[0];
   const out=new Map(js.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>r.target).length]));
   const best=[...js].sort((x,y)=>out.get(y)-out.get(x))[0];
-  if(out.get(best)>0)return best;
-  return js.find(p=>/(?:^|[\/-])(?:app|main|index|entry|cli|server|tracker|application)[^\/]*$/i.test(p))||js[0];
+  return out.get(best)>0?best:js[0];
 }
 
 // ---------- static name check on imports that already resolve ----------
@@ -713,8 +714,10 @@ export function importRefs(path, content) {
   return refs.filter(r=>r.specifier.startsWith('.'));
 }
 // Point an import that resolves nowhere at the one module that clearly
-// provides it: the only module exporting every name the file uses from it,
-// or (at Root) the only module whose file or class name matches the path.
+// provides it: the only module exporting every name the file uses from it
+// (unless another module is named exactly as the path: the two disagree, so
+// the model decides), or (at Root) the only module whose file or class name
+// matches the path.
 // When no module exports every name, the name match still decides if that
 // module exports at least one of them and the static check then names what
 // differs. An exact name beats a looser one. A branch builder
@@ -731,13 +734,14 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
       const others=js.filter(t=>t!==path&&surfaces.get(t));
       const wanted=new Set([...ref.names,...ref.members].filter(Boolean));
       const key=normName(ref.specifier.split('/').pop());
+      const exactName=t=>{const cls=normName(surfaces.get(t)?.default?.name);return normName(t.split('/').pop())===key||!!cls&&cls===key;};
       const nameMatch=t=>{
         const file=normName(t.split('/').pop()),cls=normName(surfaces.get(t)?.default?.name);
-        if(file===key||(cls&&cls===key))return true;
+        if(exactName(t))return true;
         return scope==='application'&&key.length>=5&&(file.includes(key)||key.includes(file)&&file.length>=5||(cls&&cls.includes(key)));
       };
       const byName=(loose=nameMatch)=>{
-        const exact=others.filter(t=>{const cls=normName(surfaces.get(t)?.default?.name);return (normName(t.split('/').pop())===key||(cls&&cls===key))&&(!wanted.size||shares(t));});
+        const exact=others.filter(t=>exactName(t)&&(!wanted.size||shares(t)));
         const pool=exact.length?exact:others.filter(loose);
         return pool.length===1?pool[0]:null;
       };
@@ -753,7 +757,7 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
       let pick=null,why='';
       if(wanted.size) {
         const pool=others.filter(provides);
-        if(pool.length===1){pick=pool[0];why=`only module exporting ${[...wanted].join(', ')}`;}
+        if(pool.length===1){if(!others.some(t=>t!==pool[0]&&exactName(t))){pick=pool[0];why=`only module exporting ${[...wanted].join(', ')}`;}}
         else if(pool.length>1){const both=pool.filter(nameMatch);if(both.length===1){pick=both[0];why=`exports ${[...wanted].join(', ')} and matches the name`;}}
         else if((pick=flagged(byName(t=>nameMatch(t)&&shares(t)))))why=`only module whose name matches; none exports all of ${[...wanted].join(', ')}`;
       } else if((pick=byName()))why='only module whose name matches';

@@ -8,7 +8,7 @@ import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, pr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, exportNames, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, exportNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -1099,11 +1099,14 @@ export class ControlRoom extends DurableObject {
     for(const p of js)if(diagnostic&&diagnostic.includes(p))needs.add(p);
     const label=this.node(this.node(builderId).parent)?.label||'manager';
     const edits=new Map(),issues=[],proposals=[],rejected=[];
-    if(needs.size) {
+    // Which module is the application is not mechanical when none exports
+    // start(): Root asks the model to name it even if every import resolves.
+    const askEntry=isRoot&&!js.some(p=>exportsStart(surfaces.get(p)));
+    if(needs.size||askEntry) {
       const own=[...needs].filter(p=>files.has(p));
       const interfaces=js.filter(p=>!needs.has(p)).map(p=>surfaceText(surfaces.get(p)));
       const estimate=1800+own.reduce((n,p)=>n+tokenEstimate(p+files.get(p)),0)+interfaces.reduce((n,t)=>n+tokenEstimate(t),0);
-      this.event(builderId,'link_started',`Linking ${label}: ${own.length} module(s) with imports to resolve sent in full, ${interfaces.length} shown by export names only (about ${estimate} tokens).`);
+      this.event(builderId,'link_started',`Linking ${label}: ${own.length} module(s) with imports to resolve sent in full, ${interfaces.length} shown by export names only${askEntry?'; no module exports start(), so the builder names the entry':''} (about ${estimate} tokens).`);
       if(estimate>BUILDER_CONTEXT_BUDGET)this.event(builderId,'link_oversize',`Linker input is about ${estimate} tokens, over ${BUILDER_CONTEXT_BUDGET}; the model may truncate it.`);
       const out=await linkComponents(this.inferenceEnv(),{goal:this.get('goal')||this.node('root')?.task||'',
         files:own.map(p=>({path:p,content:files.get(p)})),interfaces,allPaths:js,diagnostic,
