@@ -387,27 +387,26 @@ export function tokenNames(text) {return knownNamesFrom([text]);}
 // original: the worker's text. An edit is also accepted when the whole file
 // is still a rename of it, so a relink can undo a rename it accepted before.
 // check: a further per-edit test of the edited text (an error, or null).
-export function applyEdits(content, edits, {knownNames=null,original=null,check=null}={}) {
+// done: edits an earlier relink applied to this file; one sent again is
+// already in place, not missing.
+export function applyEdits(content, edits, {knownNames=null,original=null,check=null,done=[]}={}) {
   let current=String(content);
   const applied=[],rejected=[];
   for(const edit of edits) {
     const find=String(edit?.find??''),replace=String(edit?.replace??'');
     if(!find){rejected.push({edit,reason:'empty find text'});continue;}
     if(find===replace)continue;
-    if(!current.includes(find)&&!(replace&&current.includes(replace))){rejected.push({edit,reason:'find text is not in the file'});continue;}
+    if(!current.includes(find)) {
+      if(!(current.includes(replace)&&done.some(d=>d.find===find&&d.replace===replace)))rejected.push({edit,reason:'find text is not in the file'});
+      continue;
+    }
     let list;
     try {list=tokens(current,parseSource(current).sourceType);} catch(e) {rejected.push({edit,reason:'file cannot be tokenized: '+e.message});continue;}
     const starts=new Set(list.map(t=>t.start)),ends=new Set(list.map(t=>t.end));
-    const whole=text=>{
-      const hits=[];
-      for(let at=current.indexOf(text);at>=0;at=current.indexOf(text,at+1)) {
-        if(starts.has(at)&&ends.has(at+text.length)&&(!hits.length||at>=hits.at(-1)+text.length))hits.push(at);
-      }
-      return hits;
-    };
-    // An edit sent again after an earlier relink applied it is already in place.
-    if(!current.includes(find)){if(!whole(replace).length)rejected.push({edit,reason:'find text is not in the file'});continue;}
-    const hits=whole(find);
+    const hits=[];
+    for(let at=current.indexOf(find);at>=0;at=current.indexOf(find,at+1)) {
+      if(starts.has(at)&&ends.has(at+find.length)&&(!hits.length||at>=hits.at(-1)+find.length))hits.push(at);
+    }
     if(!hits.length){rejected.push({edit,reason:'find text does not match whole tokens'});continue;}
     let next='',last=0;
     for(const at of hits){next+=current.slice(last,at)+replace;last=at+find.length;}
@@ -418,6 +417,16 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
     current=next;applied.push(edit);
   }
   return {content:current,applied,rejected};
+}
+
+// The renames that turn a worker's text into its linked copy, as 'from → to'.
+export function linkRenames(before, after) {
+  try {
+    const A=canonicalize(before),B=canonicalize(after),type=parseSource(A).sourceType,a=tokens(A,type),b=tokens(B,type);
+    if(a.length!==b.length)return [];
+    const show=t=>t.type.label==='string'?`'${t.value}'`:String(t.value);
+    return [...new Set(a.flatMap((x,i)=>sameToken(x,b[i])?[]:[`${show(x)} → ${show(b[i])}`]))];
+  } catch {return [];}
 }
 
 export const tokenEstimate=text=>Math.ceil(String(text||'').length/3)+40;

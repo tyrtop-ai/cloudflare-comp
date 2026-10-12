@@ -48,9 +48,13 @@ test('rename-only check: two bindings never merge into one name, in one link or 
   assert.equal(second.content,first.content);
   assert.match(second.rejected[0]?.reason,/a name the file already uses/);
   assert.match(L.renameOnlyError(clamp,clamp.replace(/\blimit\b|\bn\b/g,'value'),{knownNames}),/renames "n" and "limit" to the same name "value"/);
-  // An edit sent again after an earlier relink applied it is already in place.
-  const again=L.applyEdits(first.content,[both[0]],{knownNames,original:clamp});
+  // An edit sent again after an earlier relink applied it is already in place;
+  // one that was never applied is still missing, wherever its replace text occurs.
+  const again=L.applyEdits(first.content,[both[0]],{knownNames,original:clamp,done:[both[0]]});
   assert.deepEqual([again.applied.length,again.rejected.length,again.content],[0,0,first.content]);
+  assert.match(L.applyEdits(first.content,[both[0]],{knownNames,original:clamp}).rejected[0]?.reason,/find text is not in the file/);
+  const svc="const svc = require('./s');\nmodule.exports = {\n  get: (id) => svc.read(id),\n  show: (id) => svc.view(id)\n};\n";
+  assert.match(L.applyEdits(svc,[{find:'svc.view(ticketId)',replace:'svc.read(id)'}],{knownNames:new Set(['read','view']),original:svc}).rejected[0]?.reason,/find text is not in the file/);
 });
 
 test('review fixes: regex literals, whole-token matching, and names that change behavior',()=>{
@@ -463,29 +467,82 @@ test('room: a path rename that resolves nowhere is rejected, so the worker is se
   assert.equal(builds.length,0);
   assert.equal(room.node(builder.id).status,'waiting');
   const failure=room.read('build_failure:root',null);
-  assert.equal(failure.issues[0].path,paths.appPath);
-  assert.match(failure.issues[0].detail,/^Import '\.\/ticketService' does not match/);
+  assert.deepEqual(failure.issues.map(i=>i.path),[paths.appPath,paths.appPath]);
+  assert.equal(failure.issues[0].detail,'Builder renames in the linked copy that failed (your source does not have them): view → read.');
+  assert.match(failure.issues[1].detail,/^Import '\.\/ticketService' does not match/);
 });
 
-test('room: when relinks run out, the worker is sent its own import, not a wrong rename an earlier relink kept',async()=>{
+test('room: when relinks run out, the worker hears what still fails in the linked copy and the builder renames in it',async()=>{
+  // Relink 1 fixes the path but renames .view to the audit log's get(); nothing later undoes it.
+  // Or, as in run 5f85e12b: .view -> .read, then the path; .delete is still not exported.
+  for(const [audit,app,first,second,remains,renames] of [
+    [auditLog.replace('read(n)','get(n)'),serviceApp,'ticketService.get(id)',null,/^The module reads 'get' from components\/record-sto-[0-9a-f]+\/store\.js, which exports: create, read\.$/,/view → get/],
+    [auditLog,serviceApp.replace('    viewTicket','    removeTicket: (id) => ticketService.delete(id),\n    viewTicket'),'ticketService.read(id)',true,
+      /^The module reads 'delete' from components\/record-sto-[0-9a-f]+\/store\.js, which exports: create, read, update, del\.$/,/view → read/]]) {
+    let paths;
+    const {room,calls,builds}=liveRoom({link:(user,n)=>{
+      const own=user.your_files.find(f=>f.path===paths.appPath);
+      const path={file:paths.appPath,find:"require('./ticketService')",replace:`require(${paths.storeSpec})`};
+      const edits=!own?[]:n===1?[...second?[]:[path],{file:own.path,find:'ticketService.view(id)',replace:first}]:n===2&&second?[path]:[];
+      return {edits,entry:own?.path??null,issues:[]};
+    },runner:()=>viewTest});
+    const store=recordStore.replace('\n};\n',',\n  update(id, data) { return null; },\n  del(id) { return rows.delete(id); }\n};\n');
+    paths=await threeWorkers(room,{audit,app,store:second?store:recordStore});
+    const builder=await room.scheduleAssembly('root');
+    await room.turn(builder.id);
+    assert.equal(calls.link.length,3);
+    assert.equal(builds.length,0);
+    const failure=room.read('build_failure:root',null);
+    assert.equal(failure.stage,'link');
+    assert.deepEqual(failure.issues.map(i=>i.path),[paths.appPath,paths.appPath]);
+    assert.match(failure.issues[0].detail,renames);
+    assert.ok(failure.issues[0].detail.includes(`'./ticketService' → ${paths.storeSpec}`));
+    assert.match(failure.issues[1].detail,remains);
+  }
+});
+
+test('room: autoLink in a relink follows the worker\'s own names, not a member rename an earlier attempt accepted',async()=>{
   let paths;
-  const {room,calls,builds}=liveRoom({link:(user,n)=>{
+  const {room,store,calls,builds}=liveRoom({link:(user,n)=>{
     const app=user.your_files.find(f=>f.path===paths.appPath);
-    // Relink 1 fixes the path but renames .view to the audit log's get(); nothing later undoes it.
-    const edits=!app||n!==1?[]:[{file:app.path,find:"require('./ticketService')",replace:`require(${paths.storeSpec})`},
-      {file:app.path,find:'ticketService.view(id)',replace:'ticketService.get(id)'}];
+    // .view -> .get makes the audit log the only module exporting create and get.
+    const edits=!app||n!==1?[]:[{file:app.path,find:'ticketService.view(id)',replace:'ticketService.get(id)'}];
     return {edits,entry:app?.path??null,issues:[]};
   },runner:()=>viewTest});
   paths=await threeWorkers(room,{audit:auditLog.replace('read(n)','get(n)')});
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
+  assert.ok(!room.snapshot().events.some(e=>e.kind==='link_auto'));
   assert.equal(calls.link.length,3);
-  assert.match(calls.link[2].your_files[0].content,/ticketService\.get\(id\)/,'the wrong rename is kept across relinks');
   assert.equal(builds.length,0);
+  assert.match(await store.read(room.node(builder.id).repo_name,paths.appPath),/require\('\.\/ticketService'\)/);
   const failure=room.read('build_failure:root',null);
-  assert.deepEqual(failure.issues.map(i=>i.path),[paths.appPath]);
-  assert.match(failure.issues[0].detail,/^Import '\.\/ticketService' does not match/);
-  assert.doesNotMatch(failure.issues[0].detail,/'get'/);
+  assert.deepEqual(failure.issues.map(i=>i.detail.slice(0,40)),['Builder renames in the linked copy that ',"Import './ticketService' does not match "]);
+});
+
+test('room: a relink that changes nothing after a failed run is not run again, and the worker hears the builder renames',async()=>{
+  const factoryStore=recordStore.replace('module.exports = {','module.exports = function makeStore() { return {').replace(/\n};\n$/,'\n}; };\n');
+  const factoryApp=serviceApp.replace("const ticketService = require('./ticketService');","const makeService = require('./ticketService');")
+    .replace('  return {','  const svc = makeService();\n  return {').replace(/ticketService\./g,'svc.');
+  let paths;
+  const {room,calls,builds}=liveRoom({link:(user,n)=>{
+    const own=user.your_files.find(f=>f.path===paths.appPath);
+    // Attempt 1 fixes the path and renames svc.view to the audit log's get(); later attempts change nothing.
+    const edits=!own||n!==1?[]:[{file:own.path,find:"require('./ticketService')",replace:`require(${paths.storeSpec})`},{file:own.path,find:'svc.view',replace:'svc.get'}];
+    return {edits,entry:own?.path??null,issues:[]};
+  },runner:()=>viewTest});
+  paths=await threeWorkers(room,{store:factoryStore,app:factoryApp,audit:auditLog.replace('read(n)','get(n)')});
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  assert.equal(calls.link.length,3);
+  assert.equal(builds.length,2,'one load/describe build and one run build; identical relinks are not rerun');
+  assert.equal(room.snapshot().events.filter(e=>e.kind==='link_retry'&&/changed nothing/.test(e.body)).length,1);
+  assert.match(calls.link[2].previous_attempt_error,/^Running the application failed after your renames: [^]*svc\.get is not a function[^]*Your last relink changed nothing/);
+  const failure=room.read('build_failure:root',null);
+  assert.equal(failure.stage,'run');
+  assert.equal(failure.issues[0].path,paths.appPath);
+  assert.match(failure.issues[0].detail,/^Builder renames in the linked copy that failed[^]*view → get/);
+  assert.ok(failure.issues.some(i=>i.path===paths.appPath&&/svc\.get is not a function/.test(i.detail)));
 });
 
 test('room: a branch builder leaves an import that points outside its branch for the builder above',async()=>{

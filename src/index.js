@@ -8,7 +8,7 @@ import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, pr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, autoLink, applyEdits, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, autoLink, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -1060,15 +1060,19 @@ export class ControlRoom extends DurableObject {
   // current: the previous relink's linked files. A relink edits those, so
   // renames accepted earlier in the turn are kept and the model edits what
   // it was shown; sources keep the worker originals for the manifest.
-  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false,current=null}={}) {
+  // done: the edits earlier relinks in this turn applied.
+  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false,current=null,done=[]}={}) {
+    const originals=new Map(sources.map(s=>[s.destination,s.content]));
     const files=new Map(sources.map(s=>[s.destination,current?.get(s.destination)??s.content]));
     const js=sources.filter(s=>LINKABLE.test(s.destination)).map(s=>s.destination);
     const surfaces=new Map(js.map(p=>[p,exportSurface(p,files.get(p))]));
     // Mechanical path fixes first, with no model call: an import that resolves
-    // nowhere is pointed at the one module that clearly provides it.
+    // nowhere is pointed at the one module that clearly provides it. The worker
+    // originals decide which, never a rename an earlier relink accepted.
     const autoApplied=[];
     const autoByFile=new Map();
-    for(const edit of autoLink(files,surfaces,{scope:isRoot?'application':'branch'}))autoByFile.set(edit.file,[...(autoByFile.get(edit.file)||[]),edit]);
+    const originalSurfaces=current?new Map(js.map(p=>[p,exportSurface(p,originals.get(p))])):surfaces;
+    for(const edit of autoLink(originals,originalSurfaces,{scope:isRoot?'application':'branch'}))autoByFile.set(edit.file,[...(autoByFile.get(edit.file)||[]),edit]);
     for(const [file,list] of autoByFile) {
       const result=applyEdits(files.get(file),list);
       files.set(file,result.content);
@@ -1104,7 +1108,6 @@ export class ControlRoom extends DurableObject {
     } else this.event(builderId,'link_started',`Linking ${label}: every import already resolves; no renaming needed at this level.`);
     // Known names come from the worker originals, never from earlier renames,
     // so a name copied into another file by a relink does not become known.
-    const originals=new Map(sources.map(s=>[s.destination,s.content]));
     const namesByFile=new Map(js.map(p=>[p,tokenNames(originals.get(p))]));
     const linked=new Map(files),applied=[...autoApplied];
     for(const [file,list] of edits) {
@@ -1114,7 +1117,7 @@ export class ControlRoom extends DurableObject {
       // carry into the next relink and go to the worker as if it were theirs.
       const had=new Set(componentImports(file,linked.get(file),linked).map(r=>r.specifier));
       const check=next=>{const bad=componentImports(file,next,linked).find(r=>r.error&&!had.has(r.specifier));return bad?`the new import path '${bad.specifier}' resolves to no module`:null;};
-      const result=applyEdits(linked.get(file),list,{knownNames,original:originals.get(file),check});
+      const result=applyEdits(linked.get(file),list,{knownNames,original:originals.get(file),check,done:done.filter(e=>e.file===file)});
       linked.set(file,result.content);
       applied.push(...result.applied.map(e=>({...e,file})));
       rejected.push(...result.rejected.map(r=>({...r,edit:{...r.edit,file}})));
@@ -1129,8 +1132,7 @@ export class ControlRoom extends DurableObject {
       entry=chooseEntry(linked,linkedSurfaces,proposals);
     }
     const linkedSurfacesAll=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
-    return {files:linked,entry,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfacesAll),applied,rejected,
-      before:{unresolved:unresolvedBefore,mismatches:mismatchesBefore}};
+    return {files:linked,entry,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfacesAll),applied,rejected};
   }
   async publishLinked(builderId, link, sources, {isRoot=false}={}) {
     for(const source of sources) {
@@ -1286,16 +1288,24 @@ export class ControlRoom extends DurableObject {
     let state=this.read('link_state',null);
     if(state?.fingerprint!==fingerprint)state={fingerprint,relinks:0,diagnostic:''};
     const goal=this.get('goal')||this.node('root')?.task||'';
-    let current=null,first=null;
-    const problems=({unresolved,mismatches})=>[...unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
-      ...mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`}))];
+    // A problem in a file the builder renamed goes back with those renames, so
+    // a name that only a builder rename put in the failing copy is not taken
+    // for the worker's own.
+    const routed=(link,issues)=>[...new Set(issues.map(x=>x.path))].flatMap(p=>{
+      const source=sources.find(s=>s.destination===p),renames=source&&link.files.get(p)!==source.content?linkRenames(source.content,link.files.get(p)):[];
+      return renames.length?[{path:p,detail:`Builder renames in the linked copy that failed (your source does not have them): ${renames.join(', ')}.`}]:[];
+    }).concat(issues);
+    let last=null,done=[],failed=null;
     for(;;) {
       this.event(id,'working',`Linking ${sources.length} file(s)${state.relinks?`; relink ${state.relinks} with the previous error`:''}.`);
-      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current});
-      current=link.files;first??=link;
+      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current:last?.files,done});
+      // A relink after a container failure that changed nothing would fail it the same way.
+      const same=failed&&link.entry===last.entry&&[...link.files].every(([p,c])=>last.files.get(p)===c);
+      last=link;done=[...done,...link.applied];
       await this.publishLinked(id,link,sources,{isRoot:true});
       const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
-      const linked=problems(link),local=[...linked];
+      const local=[...link.unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
+        ...link.mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`}))];
       if(!link.entry)local.push({path:entryCandidate(link.files)||'',detail:'No application entry: no module exports start() or imports the other modules to compose the application. This module is the closest candidate: import the other modules it needs by relative path and export start(), returning an object whose methods perform the operations the goal requests.'});
       if(local.length) {
         if(state.relinks<2) {
@@ -1304,10 +1314,16 @@ export class ControlRoom extends DurableObject {
           this.event(id,'link_retry',clip(state.diagnostic,900));
           continue;
         }
-        // A file that still fails goes back described as its worker wrote it:
-        // renames kept from earlier relinks may be the builder's own mistake.
-        const own=problems(first.before).filter(x=>linked.some(l=>l.path===x.path));
-        return this.sendBackToWorkers(id,fingerprint,[...own,...local.filter(x=>!linked.includes(x)||!own.some(o=>o.path===x.path)),...link.issues],'link');
+        return this.sendBackToWorkers(id,fingerprint,routed(link,[...local,...link.issues]),'link');
+      }
+      if(same) {
+        if(state.relinks<2) {
+          state.relinks++;state.diagnostic=clip(`${failed.error} Your last relink changed nothing.${rejectedNote}`,2400);
+          this.save('link_state',state);
+          this.event(id,'link_retry','The relink changed nothing, so the container is not run again; relinking with the same error.');
+          continue;
+        }
+        return this.sendBackToWorkers(id,fingerprint,routed(link,[...failed.issues,...link.issues]),failed.stage);
       }
       const files=new Map([...link.files,['glue/index.js',entryLoader(link.entry)],['package.json',RUNTIME_PACKAGE]]);
       const check=await this.containerRun(id,`link:${fingerprint}:${state.relinks}`,files);
@@ -1316,19 +1332,20 @@ export class ControlRoom extends DurableObject {
       if(!check.report.passed) {
         this.event(id,'build_failed',`Linked source failed to load or start: ${clip(checkDetail,1000)}`);
         if(state.relinks<2 && isInterfaceError(checkDetail)) {
-          state.relinks++;state.diagnostic=clip(`The container failed after your renames: ${checkDetail}${rejectedNote}`,2400);
+          failed={stage:'build',issues:check.report.issues,error:`The container failed after your renames: ${checkDetail}`};
+          state.relinks++;state.diagnostic=clip(failed.error+rejectedNote,2400);
           this.save('link_state',state);
           this.event(id,'link_retry','Load error looks like a name or path mismatch; relinking with the error.');
           continue;
         }
-        return this.sendBackToWorkers(id,fingerprint,[...check.report.issues,...link.issues],'build');
+        return this.sendBackToWorkers(id,fingerprint,routed(link,[...check.report.issues,...link.issues]),'build');
       }
       const api=check.report.api_surface||'';
       this.event(id,'build_checked',`Linked source parsed, loaded and started in the container. start() returned: ${clip(api||'(no description)',900)}`);
       let described=null;
       try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
       if(!described || ['undefined','null'].includes(described.type) || described.error) {
-        return this.sendBackToWorkers(id,fingerprint,[{path:link.entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}.`},...link.issues],'run');
+        return this.sendBackToWorkers(id,fingerprint,routed(link,[{path:link.entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}.`},...link.issues]),'run');
       }
       const outcome=await this.runApplication(id,fingerprint,files,api,goal,link);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);
@@ -1352,12 +1369,13 @@ export class ControlRoom extends DurableObject {
         return;
       }
       if(state.relinks<2 && isInterfaceError(outcome.detail) && outcome.issues.some(x=>String(x.path).startsWith('components/'))) {
-        state.relinks++;state.diagnostic=clip(`Running the application failed after your renames: ${outcome.detail}${rejectedNote}`,2400);
+        failed={stage:'run',issues:outcome.issues,error:`Running the application failed after your renames: ${outcome.detail}`};
+        state.relinks++;state.diagnostic=clip(failed.error+rejectedNote,2400);
         this.save('link_state',state);
         this.event(id,'link_retry','Run error looks like a name mismatch between modules; relinking with the error.');
         continue;
       }
-      return this.sendBackToWorkers(id,fingerprint,[...outcome.issues,...link.issues],'run');
+      return this.sendBackToWorkers(id,fingerprint,routed(link,[...outcome.issues,...link.issues]),'run');
     }
   }
   async managerRouteOwner(id, question, candidates, strict=false) {
