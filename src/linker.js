@@ -381,7 +381,10 @@ export function renameOnlyError(before, after, {knownNames=null}={}) {
 export function tokenNames(text) {return knownNamesFrom([text]);}
 // Replace only occurrences that start and end on token boundaries, so a find
 // text never rewrites part of a longer name or the inside of a string.
-export function applyEdits(content, edits, {knownNames=null}={}) {
+// original: the worker's text. An edit is also accepted when the whole file
+// is still a rename of it, so a relink can undo a rename it accepted before.
+// check: a further per-edit test of the edited text (an error, or null).
+export function applyEdits(content, edits, {knownNames=null,original=null,check=null}={}) {
   let current=String(content);
   const applied=[],rejected=[];
   for(const edit of edits) {
@@ -400,7 +403,8 @@ export function applyEdits(content, edits, {knownNames=null}={}) {
     let next='',last=0;
     for(const at of hits){next+=current.slice(last,at)+replace;last=at+find.length;}
     next+=current.slice(last);
-    const error=renameOnlyError(current,next,{knownNames});
+    const step=renameOnlyError(current,next,{knownNames});
+    const error=(step&&original!=null&&!renameOnlyError(original,next,{knownNames})?null:step)||check?.(next);
     if(error){rejected.push({edit,reason:error});continue;}
     current=next;applied.push(edit);
   }

@@ -8,7 +8,7 @@ import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, pr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, importMismatches, autoLink, applyEdits, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, autoLink, applyEdits, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -1102,12 +1102,19 @@ export class ControlRoom extends DurableObject {
       for(const issue of out.issues)if(files.has(issue.file))issues.push({path:issue.file,detail:'Builder: '+issue.problem});
       if(out.entry&&files.has(out.entry))proposals.push(out.entry);
     } else this.event(builderId,'link_started',`Linking ${label}: every import already resolves; no renaming needed at this level.`);
-    const namesByFile=new Map(js.map(p=>[p,tokenNames(files.get(p))]));
+    // Known names come from the worker originals, never from earlier renames,
+    // so a name copied into another file by a relink does not become known.
+    const originals=new Map(sources.map(s=>[s.destination,s.content]));
+    const namesByFile=new Map(js.map(p=>[p,tokenNames(originals.get(p))]));
     const linked=new Map(files),applied=[...autoApplied];
     for(const [file,list] of edits) {
       const knownNames=new Set();
       for(const [p,names] of namesByFile)if(p!==file)for(const n of names)knownNames.add(n);
-      const result=applyEdits(linked.get(file),list,{knownNames});
+      // A new import path must reach a module; one that resolves nowhere would
+      // carry into the next relink and go to the worker as if it were theirs.
+      const had=new Set(componentImports(file,linked.get(file),linked).map(r=>r.specifier));
+      const check=next=>{const bad=componentImports(file,next,linked).find(r=>r.error&&!had.has(r.specifier));return bad?`the new import path '${bad.specifier}' resolves to no module`:null;};
+      const result=applyEdits(linked.get(file),list,{knownNames,original:originals.get(file),check});
       linked.set(file,result.content);
       applied.push(...result.applied.map(e=>({...e,file})));
       rejected.push(...result.rejected.map(r=>({...r,edit:{...r.edit,file}})));
