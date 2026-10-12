@@ -8,7 +8,7 @@ import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, pr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, exportNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -1066,7 +1066,8 @@ export class ControlRoom extends DurableObject {
   // renames accepted earlier in the turn are kept and the model edits what
   // it was shown; sources keep the worker originals for the manifest.
   // done: the edits earlier relinks in this turn applied.
-  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false,current=null,done=[]}={}) {
+  // entries: modules the model named as the entry on earlier attempts.
+  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false,current=null,done=[],entries=[]}={}) {
     const originals=new Map(sources.map(s=>[s.destination,s.content]));
     const files=new Map(sources.map(s=>[s.destination,current?.get(s.destination)??s.content]));
     const js=sources.filter(s=>LINKABLE.test(s.destination)).map(s=>s.destination);
@@ -1138,24 +1139,45 @@ export class ControlRoom extends DurableObject {
     // A path the model just resolved may still bind its module the wrong way round.
     if(edits.size)applied.push(...applyAuto(linked,shapeFixes(linked,surfaces)));
     // A rename may not break an import that already matched. When the model's
-    // edits leave a module reading a name its target exported before them, the
-    // file whose edits did it (the target, else the reader) goes back to its
-    // text from before the model.
+    // edits leave a module reading a name its target provided before them,
+    // the file whose edits did it goes back to its text from before the
+    // model: the target, when the reader still reads that name and the
+    // target no longer provides it; else the reader, when its own rename
+    // replaced a name that matched (a rename from one wrong name to another
+    // breaks nothing). A file whose model renames pair with an undone
+    // target's (the same old → new name) goes back with it.
     if(edits.size) {
-      const key=m=>m.path+'|'+m.target+'|'+m.name,known=new Set(mismatchesBefore.map(key)),auto=new Set(autoApplied);
+      const auto=new Set(autoApplied),before=importReads(files,surfaces);
       const reached=new Map(js.map(p=>[p,new Set(componentImports(p,files.get(p),files).map(r=>r.target))]));
+      const changed=p=>linked.get(p)!==files.get(p),readsOf=(list,m)=>list.filter(r=>r.path===m.path&&r.target===m.target);
+      const namesRenamed=p=>linkRenames(files.get(p),linked.get(p)).filter(r=>!r.startsWith("'")&&!r.startsWith('binding '));
+      const revert=(file,reason)=>{
+        linked.set(file,files.get(file));
+        for(const e of applied.filter(e=>e.file===file&&!e.auto))rejected.push({edit:e,reason});
+        applied.splice(0,applied.length,...applied.filter(e=>e.file!==file||auto.has(e)));
+      };
       for(let round=0;round<js.length;round++) {
-        const now=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))])),undo=new Map();
-        for(const m of importMismatches(linked,now)) {
-          if(!reached.get(m.path)?.has(m.target)||known.has(key(m)))continue;
-          const file=linked.get(m.target)!==files.get(m.target)&&exportNames(surfaces.get(m.target)).names.has(m.name)?m.target:linked.get(m.path)!==files.get(m.path)?m.path:null;
+        const now=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))])),after=importReads(linked,now),undo=new Map();
+        for(const m of after) {
+          if(m.ok||!reached.get(m.path)?.has(m.target))continue;
+          const was=readsOf(before,m);
+          let file=null;
+          if(was.some(r=>r.name===m.name&&r.ok))
+            file=changed(m.target)&&providedNames(surfaces.get(m.target)).has(m.name)&&!providedNames(now.get(m.target)).has(m.name)?m.target:changed(m.path)?m.path:null;
+          else if(!was.some(r=>r.name===m.name)&&changed(m.path)) {
+            const is=readsOf(after,m),replaced=is.length===was.length?was.filter((r,i)=>is[i].name===m.name&&r.name!==m.name):null;
+            if(!replaced||replaced.some(r=>r.ok))file=m.path;
+          }
           if(file&&!undo.has(file))undo.set(file,m);
         }
         if(!undo.size)break;
         for(const [file,m] of undo) {
-          linked.set(file,files.get(file));
-          for(const e of applied.filter(e=>e.file===file&&!e.auto))rejected.push({edit:e,reason:`it breaks an import that matched before: ${m.path} ${m.detail}`});
-          applied.splice(0,applied.length,...applied.filter(e=>e.file!==file||auto.has(e)));
+          const pairs=file===m.target?namesRenamed(file):[];
+          revert(file,`it breaks an import that matched before: ${m.path} ${m.detail}`);
+          for(const p of js)if(p!==file&&changed(p)&&applied.some(e=>e.file===p&&!e.auto)) {
+            const pair=namesRenamed(p).find(r=>pairs.includes(r));
+            if(pair)revert(p,`it renames ${pair} to match ${file}, whose rename was undone because it breaks an import that matched before (${m.path})`);
+          }
         }
       }
     }
@@ -1166,10 +1188,10 @@ export class ControlRoom extends DurableObject {
     let entry=null;
     if(isRoot) {
       const linkedSurfaces=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
-      entry=chooseEntry(linked,linkedSurfaces,proposals);
+      entry=chooseEntry(linked,linkedSurfaces,[...proposals,...entries]);
     }
     const linkedSurfacesAll=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
-    return {files:linked,entry,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfacesAll),applied,rejected};
+    return {files:linked,entry,proposals,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfacesAll),applied,rejected};
   }
   async publishLinked(builderId, link, sources, {isRoot=false}={}) {
     for(const source of sources) {
@@ -1270,7 +1292,9 @@ export class ControlRoom extends DurableObject {
           this.event(builderId,'run_triage',`Builder says the runner's test is wrong: ${clip(verdict.problem,700)}`);
         } else if(verdict && link.files.has(verdict.file)) {
           this.event(builderId,'run_triage',`Builder attributes the failed run to ${verdict.file}: ${clip(verdict.problem,700)}`);
-          issues=[{path:verdict.file,detail:`The runner's test failed: ${clip(detail,700)}. Builder triage: ${verdict.problem}`}];
+          // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
+          const problem=clip(verdict.problem,400).trim();
+          issues=[{path:verdict.file,detail:`Builder triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} The runner's test failed: ${clip(detail,700)}`}];
         }
       }
       this.event(builderId,'run_failed',`Runner attempt ${attempt+1}: ${kind==='runner'?'the test itself was wrong':'the application failed the test'}. ${clip(detail,900)}`);
@@ -1328,8 +1352,11 @@ export class ControlRoom extends DurableObject {
     // A problem in a file a builder renamed goes back with those renames, so a
     // name that only a builder rename put in the failing copy is not taken for
     // the worker's own. They are every builder's renames since the worker's
-    // publication, and also those in the module a mismatch reads from, and
-    // they ride in the problem's own detail, so they never crowd problems out.
+    // publication, and the names renamed in the module a mismatch reads from
+    // (its own import paths say nothing about its names). They ride in the
+    // problem's own detail, so they never crowd problems out: the problem
+    // keeps its whole text, each note is told once per file and once per
+    // module read, and a note gets only the room the problem leaves.
     const workerText=async p=>{
       const origin=this.buildSourceOrigin(id,p);
       let text=null;
@@ -1344,18 +1371,22 @@ export class ControlRoom extends DurableObject {
       }
       const told=new Set();
       return issues.map(x=>{
-        const notes=[];
-        if(renames.get(x.path)?.length&&!told.has(x.path)){told.add(x.path);notes.push(`Builder renames in the linked copy that failed (your source does not have them): ${renames.get(x.path).join(', ')}.`);}
-        if(x.target&&x.target!==x.path&&renames.get(x.target)?.length)notes.push(`Builder renames in ${x.target} (its worker's source does not have them): ${renames.get(x.target).join(', ')}.`);
-        if(!notes.length)return {path:x.path,detail:x.detail};
-        const note=clip(notes.join(' '),500),detail=clip(x.detail,946-note.length).trimEnd();
-        return {path:x.path,detail:detail+(/[.!?]$/.test(detail)?' ':'. ')+note};
+        const own=renames.get(x.path)||[],names=x.target&&x.target!==x.path?(renames.get(x.target)||[]).filter(r=>!r.startsWith("'")&&!r.startsWith('binding ')):[],notes=[];
+        if(own.length&&!told.has(x.path))notes.push([x.path,`Builder renames in the linked copy that failed (your source does not have them): ${own.join(', ')}.`]);
+        if(names.length&&!told.has(x.path+'|'+x.target))notes.push([x.path+'|'+x.target,`Builder renames in ${x.target} (its worker's source does not have them): ${names.join(', ')}.`]);
+        const detail=clip(x.detail,946).trimEnd(),room=946-detail.length-2;
+        if(!notes.length||room<80)return {path:x.path,detail:x.detail};
+        for(const [k] of notes)told.add(k);
+        return {path:x.path,detail:detail+(/[.!?]$/.test(detail)?' ':'. ')+clip(notes.map(n=>n[1]).join(' '),Math.min(500,room))};
       });
     };
     let last=null,done=[],failed=null;
     for(;;) {
       this.event(id,'working',`Linking ${sources.length} file(s)${state.relinks?`; relink ${state.relinks} with the previous error`:''}.`);
-      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current:last?.files,done});
+      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current:last?.files,done,entries:state.entries||[]});
+      // An entry the model named on an earlier attempt still counts when a
+      // later attempt names none.
+      if(link.proposals.some(p=>!state.entries?.includes(p))){state.entries=[...new Set([...link.proposals,...(state.entries||[])])];this.save('link_state',state);}
       // A relink after a container failure that changed nothing would fail it the same way.
       const same=failed&&link.entry===last.entry&&[...link.files].every(([p,c])=>last.files.get(p)===c);
       last=link;done=[...done,...link.applied];

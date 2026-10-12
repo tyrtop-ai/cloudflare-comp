@@ -1537,3 +1537,143 @@ test('room: with no module exporting start(), Root asks the model for the entry 
     }
   }
 });
+
+test('room: an entry the model named on an earlier attempt still counts when a relink names none (run e89dba35)',async()=>{
+  const store="module.exports = function makeStore() {\n  const rows = new Map();\n  let next = 1;\n  return {\n    create(data) { const t = { id: next++, ...data }; rows.set(t.id, t); return { ...t }; },\n    read(id) { const t = rows.get(id); return t ? { ...t } : null; }\n  };\n};\n";
+  const app="const makeStore = require('./store');\nconst svc = makeStore();\nmodule.exports = {\n  createTicket: (data) => svc.create(data),\n  viewTicket: (id) => svc.view(id)\n};\n";
+  let paths;
+  const {room,calls}=liveRoom({runner:()=>viewTest,link:(user,n)=>{
+    const own=user.your_files.some(f=>f.path===paths[1]);
+    // The first attempt names the entry; the relink fixes the member and names none.
+    return n===1?{edits:[],entry:paths[1],issues:[]}:{edits:own?[{file:paths[1],find:'svc.view(id)',replace:'svc.read(id)'}]:[],entry:null,issues:[]};
+  }});
+  paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',store],['Application','app.js',app]]);
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  const events=room.snapshot().events;
+  assert.equal(calls.link.length,2);
+  assert.equal(room.node(builder.id).status,'done',events.slice(-5).map(e=>e.kind+': '+e.body).join('\n'));
+  assert.equal(room.read('build_failure:root',null),null);
+  assert.equal(events.filter(e=>e.kind==='link_entry').length,2);
+});
+
+test('room: a definition renamed under a class caller is undone, and the caller\'s own correct rename is kept',async()=>{
+  const repo="class Repo {\n  constructor() { this.rows = new Map(); this.next = 1; }\n  create(d) { const t = { id: this.next++, ...d }; this.rows.set(t.id, t); return t; }\n  read(id) { return this.rows.get(id) || null; }\n}\nmodule.exports = Repo;\n";
+  const make="const Repo = require('./repo');\nconst repo = new Repo();\n";
+  const app=make+"const audit = require('./audit');\nfunction start() {\n  return { createTicket: (d) => { audit.write(d); return repo.create(d); }, viewTicket: (id) => repo.read(id) };\n}\nmodule.exports = { start };\n";
+  const report=make+"module.exports = { show: (id) => repo.get(id) };\n";
+  let reply;
+  const {room}=liveRoom({link:()=>reply});
+  const [repoPath,auditPath,appPath,reportPath]=await workersUnder(room,'Build a small issue tracker.',[['Repository','repo.js',repo],['Audit','audit.js',"module.exports = { log(e) { return e; } };\n"],['Application','app.js',app],['Report','report.js',report]]);
+  const builder=await room.scheduleAssembly('root');
+  const sources=await room.collectLinkSources(builder.id);
+  reply={edits:[{file:repoPath,find:'read(id) {',replace:'get(id) {'},{file:appPath,find:'audit.write(d)',replace:'audit.log(d)'}],entry:appPath,issues:[]};
+  const link=await room.linkSnapshot(builder.id,sources,`${reportPath}: reads 'get' from ${repoPath}; ${appPath}: reads 'write' from ${auditPath}`,{isRoot:true});
+  assert.match(link.files.get(repoPath),/read\(id\) \{/,'the builder\'s rename of the definition is undone');
+  assert.match(link.files.get(appPath),/audit\.log\(d\)/,'the caller\'s correct rename is kept');
+  assert.deepEqual(link.rejected.map(r=>[r.edit.file,r.reason.replace(/:.*/s,'')]),[[repoPath,'it breaks an import that matched before']]);
+  assert.match(link.rejected[0].reason,/app\.js calls \.read\(\) on an instance of the class from [^]*repo\.js/);
+  assert.deepEqual(link.mismatches.map(m=>[m.path,m.name]),[[reportPath,'get']],'the problem stays with the module that read the wrong name');
+});
+
+test('room: a reader renamed from one wrong name to another is not undone, so its correct renames stay',async()=>{
+  const audit="const list = [];\nmodule.exports = { log(e) { list.push(e); return list.length; }, entries() { return list; } };\n";
+  const app="const svc = require('./store');\nconst audit = require('./audit');\nfunction start() {\n  return {\n    createTicket: (d) => { audit.write(d); return svc.create(d); },\n    viewTicket: (id) => svc.view(id),\n    history: () => audit.entries()\n  };\n}\nmodule.exports = { start };\n";
+  let paths;
+  const {room}=liveRoom({link:()=>({edits:[{file:paths[2],find:'audit.write(d)',replace:'audit.log(d)'},{file:paths[2],find:'svc.view(id)',replace:'svc.show(id)'}],entry:paths[2],issues:[]})});
+  paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',recordStore],['Audit log','audit.js',audit],['Application entry','app.js',app],['Report','report.js',"module.exports = { show(t) { return String(t); } };\n"]]);
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  assert.ok(!room.snapshot().events.some(e=>e.kind==='link_edit_rejected'&&/breaks an import that matched/.test(e.body)));
+  const failure=room.read('build_failure:root',null);
+  assert.deepEqual(failure.issues.map(i=>i.detail.replace(/ which exports.*/s,'')),[`The module reads 'show' from ${paths[0]},`]);
+  assert.match(failure.issues[0].detail,/Builder renames in the linked copy that failed[^]*write → log, view → show\.$/);
+});
+
+test('room: a use renamed together with an undone definition goes back with it',async()=>{
+  const store="const rows = new Map();\nlet next = 1;\nmodule.exports = {\n  create(d) { const t = { id: next++, ...d }; rows.set(t.id, t); return t; },\n  read(id) { return rows.get(id) || null; }\n};\n";
+  const app="const store = require('./store');\nconst { fetchAll } = require('./missingHelper');\nfunction look(repo, id) { return repo.read(id); }\nfunction start() {\n  return { createTicket: (d) => store.create(d), viewTicket: (id) => look(store, id) };\n}\nmodule.exports = { start };\n";
+  const report="const store = require('./store');\nmodule.exports = { show: (id) => store.read(id), count: () => store.get(0) };\n";
+  let reply;
+  const {room}=liveRoom({link:()=>reply});
+  const P=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',store],['Application entry','app.js',app],['Report','report.js',report]]);
+  const builder=await room.scheduleAssembly('root');
+  const sources=await room.collectLinkSources(builder.id);
+  reply={edits:[{file:P[0],find:'read(id) {',replace:'get(id) {'},{file:P[1],find:'repo.read(id)',replace:'repo.get(id)'}],entry:P[1],issues:[]};
+  const link=await room.linkSnapshot(builder.id,sources,`${P[0]} ${P[2]}: reads get`,{isRoot:true});
+  assert.match(link.files.get(P[0]),/read\(id\) \{/);
+  assert.match(link.files.get(P[1]),/repo\.read\(id\)/,'the paired use is undone too, so app.js still calls a method the store has');
+  assert.deepEqual(link.rejected.map(r=>r.edit.file),[P[0],P[1]]);
+  assert.match(link.rejected[1].reason,/^it renames read → get to match [^]*store\.js, whose rename was undone/);
+});
+
+test('room: a long runner failure keeps the builder\'s triage verdict, and the worker hears it',async()=>{
+  const mods=['validation','notifications','permissions','history','search'];
+  const app="const store = require('./ticketStore');\n"+mods.map(n=>`const ${n} = require('./${n}Service');\n`).join('')+
+    `function start() {\n  return {\n    createTicket: (d) => { ${mods.map(n=>`${n}.${n}Check(d);`).join(' ')} return store.create(d); },\n    viewTicket: (id) => store.read(id)\n  };\n}\nmodule.exports = { start };\n`;
+  const store="module.exports = {\n  create(data) { return { id: 1, ...data }; },\n  read(id) { return { id, title: 'wrong' }; }\n};\n";
+  const test=`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.createTicket({ title: 'Printer jam on the third floor near the east stairwell' });\n  assert.deepEqual(await app.viewTicket(t.id), { id: t.id, title: 'Printer jam on the third floor near the east stairwell', status: 'open', priority: 'normal', assignee: null, history: [] });\n})().catch(e => { console.error(e); process.exitCode = 1; });\n`;
+  const verdict='TRIAGE: ticketStore.read returns a fixed title instead of the stored ticket.';
+  let paths;
+  const {room}=liveRoom({runner:()=>test,triage:()=>({file:paths.at(-1),problem:verdict}),link:()=>({edits:[],entry:paths.at(-1),issues:[]})});
+  paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Ticket store','ticketStore.js',store],...mods.map(n=>[`${n} service`,`${n}Service.js`,`module.exports = { ${n}Check(t) { return true; } };\n`]),['Application entry','app.js',app]]);
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  const failure=room.read('build_failure:root',null);
+  assert.equal(failure.stage,'run');
+  assert.deepEqual(failure.issues.map(i=>i.path),[paths.at(-1)]);
+  assert.ok(failure.issues[0].detail.startsWith('Builder triage: '+verdict+' The runner\'s test failed: '),failure.issues[0].detail);
+  assert.ok(failure.issues[0].detail.length<=950);
+  await room.routeBuildFailures();
+  const inbox=room.receive('root.7');
+  assert.ok(room.buildRepairMessage(inbox[0].body.split(' ')[1]).includes(verdict));
+});
+
+test('room: a note about the module a file reads from is told once and names only renamed names',async()=>{
+  const ids="module.exports = { nextId: (() => { let n = 0; return () => ++n; })() };\n";
+  const clock="module.exports = { now() { return 1; } };\n";
+  const journal="const list = [];\nmodule.exports = { record(e) { list.push(e); } };\n";
+  const store="const { makeId } = require('./idGenerator');\nconst { now } = require('./systemClock');\nconst { record } = require('./eventJournal');\nconst rows = new Map();\nmodule.exports = {\n  create(d) { const t = { id: makeId(), at: now(), ...d }; rows.set(t.id, t); record(t); return t; },\n  read(id) { return rows.get(id) || null; },\n  all() { return [...rows.values()]; },\n  edit(id, d) { const t = { ...rows.get(id), ...d }; rows.set(id, t); return t; },\n  del(id) { return rows.delete(id); }\n};\n";
+  const app="const store = require('./ticketStore');\nfunction start() {\n  return {\n    createTicket: (d) => store.create(d),\n    viewTicket: (id) => store.get(id),\n    listTickets: () => store.list(),\n    updateTicket: (id, d) => store.update(id, d),\n    deleteTicket: (id) => store.remove(id)\n  };\n}\nmodule.exports = { start };\n";
+  let paths;
+  // The model fixes the store's own import, path and name.
+  const {room}=liveRoom({link:(user)=>({edits:user.your_files.some(f=>f.path===paths[0])?[{file:paths[0],find:"'./idGenerator'",replace:`'${L.relativeSpecifier(paths[0],paths[1])}'`},{file:paths[0],find:'makeId',replace:'nextId'}]:[],entry:paths[4],issues:[]})});
+  paths=await workersUnder(room,'Build a small issue tracker that lets someone create, view, list, update, and delete tickets.',[['Ticket store','ticketStore.js',store],['Identifier generator','idGenerator.js',ids],['System clock','systemClock.js',clock],['Event journal','eventJournal.js',journal],['Application entry','app.js',app]]);
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  const failure=room.read('build_failure:root',null);
+  assert.equal(failure.stage,'link');
+  assert.deepEqual(failure.issues.map(i=>i.detail.match(/reads '(\w+)'/)?.[1]),['get','list','update','remove']);
+  const notes=failure.issues.map(i=>i.detail.match(/Builder renames in components\/\S+ \(its worker's source does not have them\): (.*)$/)?.[1]??null);
+  assert.deepEqual(notes,['makeId → nextId.',null,null,null],'once per module read, and only names, not its own import paths');
+  await room.routeBuildFailures();
+  const message=room.buildRepairMessage(room.receive('root.5')[0].body.split(' ')[1]);
+  for(const n of ['get','list','update','remove'])assert.ok(message.includes(`reads '${n}'`),n);
+});
+
+test('with no entry, a module another module imports is never asked to compose the application',()=>{
+  const store="module.exports = { create(d) { return d; }, read(id) { return id; } };\n";
+  const helper="module.exports = { recordChange() {}, changesFor() { return []; } };\n";
+  for(const name of ['changeTracker','searchIndex','mockServer','ticketEntry']) {
+    const files=new Map([['components/s/store.js',store],[`components/h/${name}.js`,helper],
+      ['components/t/ticketService.js',`const store = require('../s/store.js');\nconst { recordChange } = require('../h/${name}.js');\nmodule.exports = { createTicket(d) { recordChange(); return store.create(d); } };\n`]]);
+    assert.equal(L.entryCandidate(files),'components/t/ticketService.js',name);
+  }
+  // A file name marks the application only as the whole name or a final App.
+  const orphans=new Map([['components/a/searchIndex.js','module.exports = {};\n'],['components/b/ticketService.js',"const x = require('../c/store.js');\nmodule.exports = {};\n"],['components/c/store.js','module.exports = {};\n']]);
+  assert.equal(L.entryCandidate(orphans),'components/b/ticketService.js');
+  orphans.set('components/d/ticketApp.js','module.exports = {};\n');
+  assert.equal(L.entryCandidate(orphans),'components/d/ticketApp.js');
+});
+
+test('entry: a default class with a static start() is an entry, as the runtime loader starts it',async()=>{
+  const app="class IssueTrackerApp {\n  static start() { return { ping: () => 'pong' }; }\n}\nmodule.exports = IssueTrackerApp;\n";
+  const files=new Map([['components/a/app.js',app],['components/s/store.js','module.exports = { read() {} };\n']]);
+  const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
+  assert.equal(L.exportsStart(surfaces.get('components/a/app.js')),true);
+  assert.equal(L.chooseEntry(files,surfaces,[]),'components/a/app.js');
+  assert.equal(L.exportsStart(L.exportSurface('x.js',"class App { start() {} }\nmodule.exports = App;\n")),false,'an instance method is not called by the loader');
+  const report=await execVerify({'components/a/app.js':app,'glue/index.js':L.entryLoader('components/a/app.js'),'package.json':L.RUNTIME_PACKAGE});
+  assert.equal(report.passed,true);
+  assert.match(report.api_surface,/ping/);
+});

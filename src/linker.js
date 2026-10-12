@@ -180,6 +180,8 @@ export function exportsStart(surface) {
   if(d.type==='function'&&d.name==='start')return true;
   if(d.type==='object'&&d.members.some(m=>m.name==='start'))return true;
   if(d.type==='instance'&&d.methods.some(m=>m.name==='start'))return true;
+  // The runtime loader calls a default class's static start().
+  if(d.type==='class'&&d.methods.some(m=>m.name==='static start'))return true;
   return false;
 }
 
@@ -813,20 +815,24 @@ export function normalizeEditPaths(edit, allPaths, files=null) {
   return replace===edit.replace?edit:{...edit,replace};
 }
 // When no module exports start() or composes the others, the worker most
-// likely to own composition is asked to do it: a module whose name says it
-// is the application (app.js, main-app.js, issueTrackerApp.js), the one
-// nearest Root first, else the biggest importer, else the first module.
-const APP_WORD='app|main|index|entry|cli|server|tracker|application';
-const appNamed=p=>{const base=p.split('/').pop().replace(/\.(?:m|c)?js$/i,'');return new RegExp(`(?:^|[-_.])(?:${APP_WORD})(?![a-z])`,'i').test(base)||new RegExp(`[a-z0-9](?:${APP_WORD.replace(/\b\w/g,c=>c.toUpperCase())})(?![a-z])`).test(base);};
+// likely to own composition is asked to do it. A module another module
+// imports is a helper, so only the others count, unless every module is
+// imported: among them, one whose file name says it is the application
+// (app.js, main.js, main-app.js, issueTrackerApp.js), the one nearest Root
+// first, else the one that imports the most others, else the first.
+const appNamed=p=>{
+  const base=p.split('/').pop().replace(/\.(?:m|c)?js$/i,'');
+  return /^(?:app|main|index|entry|cli|server|tracker|application)$/i.test(base)||/[-_.](?:app|application)$/i.test(base)||/[a-z0-9](?:App|Application)$/.test(base);
+};
 export function entryCandidate(files) {
   const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
   if(!js.length)return null;
+  const imports=new Map(js.map(p=>[p,componentImports(p,files.get(p),files).map(r=>r.target).filter(t=>t&&t!==p&&js.includes(t))]));
+  const imported=new Set([...imports.values()].flat()),roots=js.filter(p=>!imported.has(p)),pool=roots.length?roots:js;
   const depth=p=>p.split('/').filter(s=>s==='components').length;
-  const named=js.filter(appNamed).sort((x,y)=>depth(x)-depth(y));
+  const named=pool.filter(appNamed).sort((x,y)=>depth(x)-depth(y));
   if(named.length)return named[0];
-  const out=new Map(js.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>r.target).length]));
-  const best=[...js].sort((x,y)=>out.get(y)-out.get(x))[0];
-  return out.get(best)>0?best:js[0];
+  return [...pool].sort((x,y)=>imports.get(y).length-imports.get(x).length)[0];
 }
 
 // ---------- static name check on imports that already resolve ----------
@@ -840,7 +846,16 @@ export function exportNames(surface) {
   if(d?.type==='instance')for(const m of d.methods)names.add(m.name);
   return {names,defaultKind:d?.type||null};
 }
-export function importMismatches(files, surfaces) {
+// The names that an import of the module may read: its export names, and a
+// default class's methods (what an instance is checked against).
+export function providedNames(surface) {
+  const {names}=exportNames(surface),d=surface?.default;
+  if(d?.type==='class')for(const m of d.methods||[])names.add(methodName(m));
+  return names;
+}
+// Every name a module reads from an import that resolves, in source order,
+// with ok=false where the target does not export it.
+export function importReads(files, surfaces) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const out=[];
   for(const [path,content] of set) {
@@ -851,14 +866,14 @@ export function importMismatches(files, surfaces) {
     const bindings=new Map(),classes=new Map();
     const check=(name,to,how)=>{
       const {names}=exportNames(surfaces.get(to));
-      if(name&&!names.has(name))out.push({path,target:to,name,detail:`${how} '${name}' from ${to}, which exports: ${listOf(names)}`});
+      if(name)out.push({path,target:to,name,ok:names.has(name),detail:`${how} '${name}' from ${to}, which exports: ${listOf(names)}`});
     };
     walk(ast,node=>{
       if(node.type==='VariableDeclarator'&&node.init?.type==='CallExpression'&&node.init.callee?.type==='Identifier'&&node.init.callee.name==='require'&&node.init.arguments[0]?.type==='Literal') {
         const to=target(node.init.arguments[0].value);if(!to)return;
         const {names,defaultKind}=exportNames(surfaces.get(to));
         if(node.id.type==='ObjectPattern') {
-          if(defaultKind==='function'||defaultKind==='class') {out.push({path,target:to,name:'',detail:`destructures names from ${to}, which exports a single ${defaultKind} as module.exports`});return;}
+          if(defaultKind==='function'||defaultKind==='class') {out.push({path,target:to,name:'',ok:false,detail:`destructures names from ${to}, which exports a single ${defaultKind} as module.exports`});return;}
           for(const p of node.id.properties)if(p.type==='Property'&&!p.computed)check(nameOf(p.key),to,'destructures');
         } else if(node.id.type==='Identifier'&&(defaultKind==='object'||defaultKind==='instance'||(!defaultKind&&names.size)))bindings.set(node.id.name,to);
         else if(node.id.type==='Identifier'&&defaultKind==='class')classes.set(node.id.name,to);
@@ -888,12 +903,15 @@ export function importMismatches(files, surfaces) {
         const to=instances.get(node.object.name),d=surfaces.get(to)?.default;
         const methods=new Set((d?.methods||[]).map(m=>String(m.name).replace(/^(?:static |get |set )/,'')));
         const name=nameOf(node.property);
-        if(name&&!methods.has(name))out.push({path,target:to,name,detail:`calls .${name}() on an instance of the class from ${to}, which defines: ${[...methods].filter(m=>m!=='constructor').slice(0,14).join(', ')||'no methods'}`});
+        if(name)out.push({path,target:to,name,ok:methods.has(name),detail:`calls .${name}() on an instance of the class from ${to}, which defines: ${[...methods].filter(m=>m!=='constructor').slice(0,14).join(', ')||'no methods'}`});
       });
     }
   }
+  return out;
+}
+export function importMismatches(files, surfaces) {
   const seen=new Set();
-  return out.filter(x=>{const k=x.path+'|'+x.target+'|'+x.name;if(seen.has(k))return false;seen.add(k);return true;});
+  return importReads(files,surfaces).filter(x=>{const k=x.path+'|'+x.target+'|'+x.name;if(x.ok||seen.has(k))return false;seen.add(k);return true;}).map(({ok,...x})=>x);
 }
 
 // ---------- deterministic linking: no model call when the answer is mechanical ----------
