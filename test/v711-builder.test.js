@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {register} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
 import {tmpdir} from 'node:os';
+import vm from 'node:vm';
 process.env.BUILD_RUNNER_WORKDIR=tmpdir();
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../src/index.js');
@@ -1277,13 +1278,98 @@ test('rename-only check: a binding rename may not rename a global read where tha
     assert.deepEqual(L.applyEdits(rich,[{find,replace}],{knownNames:new Set([replace])}).rejected,[],find);
 });
 
+// Loads a CommonJS module in a fresh context, so a test can compare what a
+// file does before and after an edit.
+const loadCjs=code=>{const module={exports:{}};vm.runInContext(code,vm.createContext({module,exports:module.exports,performance:{now:()=>42}}));return module.exports;};
+const plain=x=>JSON.parse(JSON.stringify(x));
+const renameVerdict=(code,find,replace)=>{const r=L.applyEdits(code,[{find,replace}],{knownNames:new Set(replace.match(/[\w$]+/g))});return r.applied.length?{ok:true,content:r.content}:{ok:false,reason:r.rejected[0]?.reason};};
+
 test('rename-only check: a member this file defines may not be renamed where a string or computed key reaches it',()=>{
   const svc="const handlers = {\n  create(d) { return { id: 1, ...d }; },\n  read(id) { return { id }; }\n};\nfunction dispatch(op, arg) { return handlers[op](arg); }\nmodule.exports = { start() { return { createTicket: (d) => dispatch('create', d) }; } };\n";
-  assert.match(L.applyEdits(svc,[{find:'create(d)',replace:'add(d)'}],{knownNames:new Set(['add'])}).rejected[0]?.reason,/also names in a string/);
-  const external=svc.replace("createTicket: (d) => dispatch('create', d)","run: dispatch");
-  assert.match(L.applyEdits(external,[{find:'create(d)',replace:'add(d)'}],{knownNames:new Set(['add'])}).rejected[0]?.reason,/reads by a computed key/);
+  assert.match(L.applyEdits(svc,[{find:'create(d)',replace:'add(d)'}],{knownNames:new Set(['add'])}).rejected[0]?.reason,/also reads an object that holds it by a computed key \("handlers\[op\]"\)/);
   const plain=svc.replace('handlers[op](arg)','handlers.create(arg)');
   assert.equal(L.applyEdits(plain.replace("'create', ",''),[{find:'create',replace:'add'}],{knownNames:new Set(['add'])}).applied.length,1,'reached only by name');
+});
+
+test('rename-only check: every object that can hold the member counts, whatever reaches it by key',()=>{
+  const dispatch=(holder,read)=>`${holder}\nfunction dispatch(op, arg) { return ${read}(arg); }\nmodule.exports = { dispatch };\n`;
+  const cases=[
+    ['a class keeping a handler table in this.routes',"class Router {\n  constructor() { this.routes = { create: (d) => ({ id: 1, ...d }), list: () => [] }; }\n  handle(op, d) { const route = this.routes[op]; if (!route) throw new Error('Unknown command: ' + op); return route(d); }\n}\nconst router = new Router();\nmodule.exports = { dispatch: (op, d) => router.handle(op, d) };\n"],
+    ['Object.freeze',dispatch("const handlers = Object.freeze({ create(d) { return { id: 1, ...d }; } });",'handlers[op]')],
+    ['Object.assign into {}',dispatch("const base = { create(d) { return { id: 1, ...d }; } };\nconst handlers = Object.assign({}, base);",'handlers[op]')],
+    ['a spread copy',dispatch("const base = { create(d) { return { id: 1, ...d }; } };\nconst handlers = { ...base };",'handlers[op]')],
+    ['module.exports',"module.exports = {\n  create(d) { return { id: 1, ...d }; },\n  dispatch(op, d) { return module.exports[op](d); }\n};\n"],
+    ['exports',"exports.create = (d) => ({ id: 1, ...d });\nexports.dispatch = (op, d) => exports[op](d);\n"],
+    ['an instance of a class in the file',dispatch("class Service { create(d) { return { id: 1, ...d }; } }\nconst service = new Service();",'service[op]')],
+    ['a class\'s static methods',dispatch("class Handlers { static create(d) { return { id: 1, ...d }; } }",'Handlers[op]')],
+    ['a nested holder',dispatch("const api = { handlers: { create(d) { return { id: 1, ...d }; } } };",'api.handlers[op]')],
+    ['members assigned to an empty object',dispatch("const api = {};\napi.create = (d) => ({ id: 1, ...d });",'api[op]')],
+    ['a prototype method',dispatch("function Service() {}\nService.prototype.create = function (d) { return { id: 1, ...d }; };\nconst service = new Service();",'service[op]')],
+    ['a holder passed to a function in the file',"const handlers = { create(d) { return { id: 1, ...d }; } };\nfunction call(table, op, d) { return table[op](d); }\nmodule.exports = { dispatch: (op, d) => call(handlers, op, d) };\n"],
+    ['a holder a factory returns',dispatch("function makeHandlers() { return { create(d) { return { id: 1, ...d }; } }; }\nconst handlers = makeHandlers();",'handlers[op]')],
+    ['a computed destructuring',"const handlers = { create(d) { return { id: 1, ...d }; } };\nfunction dispatch(op, d) { const { [op]: fn } = handlers; return fn(d); }\nmodule.exports = { dispatch };\n"],
+    ['a key listing',"const handlers = { create(d) { return { id: 1, ...d }; } };\nfunction dispatch(op, d) { for (const k of Object.keys(handlers)) if (k === op) return handlers.create(d); }\nmodule.exports = { dispatch };\n"],
+    ['for...in',"const handlers = { create(d) { return { id: 1, ...d }; } };\nfunction dispatch(op, d) { for (const k in handlers) if (k === op) return handlers.create(d); }\nmodule.exports = { dispatch };\n"],
+    ['in',"const handlers = { create(d) { return { id: 1, ...d }; } };\nfunction dispatch(op, d) { return op in handlers ? handlers.create(d) : null; }\nmodule.exports = { dispatch };\n"],
+    ['a string key',"const handlers = { create(d) { return { id: 1, ...d }; } };\nmodule.exports = { dispatch: (op, d) => handlers['create'](d) };\n"],
+    ['hasOwnProperty',"const handlers = { create(d) { return { id: 1, ...d }; } };\nmodule.exports = { dispatch: (op, d) => Object.prototype.hasOwnProperty.call(handlers, 'create') ? handlers.create(d) : null };\n"]];
+  for(const [label,code] of cases) {
+    assert.deepEqual(plain(loadCjs(code).dispatch('create',{t:1})),{id:1,t:1},label);
+    const v=renameVerdict(code,'create','add');
+    assert.equal(v.ok,false,label);
+    assert.match(v.reason,/^edit renames member "create", which this file defines and also (reads an object that holds it by a computed key|destructures an object that holds it|lists the keys of an object that holds it|tests for it with in|names it as a string key)/,label);
+  }
+});
+
+test('rename-only check: a computed key or string elsewhere in the file does not block a member rename',()=>{
+  const cases=[
+    ['this[key] = … in the class itself',"class TicketStore {\n  constructor(options = {}) { for (const key of Object.keys(options)) this[key] = options[key]; this.tickets = []; }\n  add(t) { this.tickets.push(t); return t; }\n  getAll() { return this.tickets.slice(); }\n}\nmodule.exports = { all: (o) => { const s = new TicketStore(o); s.add({ id: 1 }); return s.getAll(); } };\n",'getAll','list',m=>m.all({owner:'x'})],
+    ['this[k] = … in another class',"class Ticket { constructor(data) { Object.keys(data).forEach((k) => { this[k] = data[k]; }); } }\nfunction createTicket(data) { return new Ticket(data); }\nmodule.exports = { Ticket, addTicket: createTicket };\n",'addTicket: createTicket','createTicket: createTicket',m=>(m.addTicket||m.createTicket)({title:'a'}).title],
+    ['an audit label',"const audit = [];\nfunction create(d) { audit.push({ action: 'create' }); return d; }\nmodule.exports = { create, audit };\n",'create','add',m=>[(m.create||m.add)(1),m.audit]],
+    ['a status value',"class Ticket { constructor() { this.state = 'open'; } close() { this.state = 'close'; return this.state; } }\nmodule.exports = { Ticket };\n",'close()','resolve()',m=>{const t=new m.Ticket();return (t.close||t.resolve).call(t);}],
+    ['an event name',"const listeners = {};\nfunction emit(event, value) { (listeners[event] || []).forEach((fn) => fn(value)); }\nconst service = { update(t) { emit('update', t); return t; } };\nmodule.exports = { service };\n",'update(t)','updateTicket(t)',m=>(m.service.update||m.service.updateTicket)({id:1})],
+    ['arrays and parameters read by key',"const tickets = [{ id: 1 }];\nfunction update(id, changes) { const i = tickets.findIndex((t) => t.id === id); for (const key of Object.keys(changes)) tickets[i][key] = changes[key]; return tickets[i]; }\nfunction remove(id) { return tickets.length; }\nmodule.exports = { update, remove };\n",'remove','deleteTicket',m=>m.update(1,{s:2})],
+    ['a key count (run e89dba35 validation)',"exports.validate = function (t) {\n  const errors = {};\n  if (!t.title) errors.title = 'Title is required.';\n  return Object.keys(errors).length === 0 ? t : errors;\n};\n",'title','name',m=>m.validate({title:'x',name:'x'})]];
+  for(const [label,code,find,replace,probe] of cases) {
+    const v=renameVerdict(code,find,replace);
+    assert.equal(v.ok,true,`${label}: ${v.reason}`);
+    assert.deepEqual(plain(probe(loadCjs(v.content))),plain(probe(loadCjs(code))),label);
+  }
+});
+
+test('rename-only check: a member defined by assignment changes at its definition and every use together',()=>{
+  const api="const api = {};\napi.create = (d) => ({ id: 1, ...d });\napi.createMany = (list) => list.map((d) => api.create(d));\nmodule.exports = api;\n";
+  assert.match(renameVerdict(api,'api.create =','api.add =').reason,/renames member "create", which this file defines, at its definition or some uses but not/);
+  const proto="function TicketStore() { this.tickets = []; }\nTicketStore.prototype.add = function (t) { this.tickets.push(t); return t; };\nTicketStore.prototype.addMany = function (list) { return list.map((t) => this.add(t)); };\nmodule.exports = TicketStore;\n";
+  assert.match(renameVerdict(proto,'TicketStore.prototype.add =','TicketStore.prototype.insert =').reason,/renames member "add", which this file defines, at its definition or some uses but not/);
+  const whole=renameVerdict(proto,'add','insert');
+  assert.equal(whole.ok,true,whole.reason);
+  assert.deepEqual(plain(new (loadCjs(whole.content))().addMany([1,2])),[1,2]);
+});
+
+test('rename-only check: a variable rename respects parameter scope, strict blocks, static blocks, with and eval',()=>{
+  const performanceCases=[
+    "function stamp(t = performance.now()) {\n  var performance = { now: () => 0 };\n  return t + performance.now();\n}\nmodule.exports = { stamp };\n",
+    "export function elapsed(t0) {\n  if (t0 < 0) { function performance() { return 0; } return performance(); }\n  return typeof performance;\n}\n",
+    "'use strict';\nfunction elapsed(t0) {\n  if (t0 < 0) { function performance() { return 0; } return performance(); }\n  return typeof performance;\n}\nmodule.exports = { elapsed };\n",
+    "class Config { static { var performance = { now: () => 7 }; Config.t = performance.now(); } }\nfunction elapsed() { return performance.now(); }\nmodule.exports = { elapsed, Config };\n"];
+  for(const code of performanceCases)assert.match(renameVerdict(code,'performance','clock').reason,/"performance", which the file also reads as a global/,code);
+  // Sloppy code: a block function is also the function's variable, so every use sees it.
+  assert.equal(renameVerdict("function elapsed(t0) {\n  if (t0 < 0) { function performance() { return 0; } }\n  return performance();\n}\nmodule.exports = { elapsed };\n",'performance','clock').ok,true);
+  const withCode="const source = { label: 'from object' };\nfunction describe() { var label = 'local'; with (source) { return label; } }\nmodule.exports = { describe };\n";
+  assert.match(renameVerdict(withCode,'label','title').reason,/uses with or eval/);
+  assert.match(renameVerdict("function total(items) { const sum = items.reduce((a, b) => a + b, 0); return eval('sum * 2'); }\nmodule.exports = { total };\n",'sum','amount').reason,/uses with or eval/);
+  assert.match(renameVerdict("const handlers = { create(d) { return d; } };\nmodule.exports = { run: (op, d) => eval('handlers.' + op)(d) };\n",'create','add').reason,/"create", but the file uses with or eval/,'members too');
+});
+
+test('rename-only check: a reflected class name and a key merged onto another are refused',()=>{
+  const errors="class NotFoundError extends Error {\n  constructor(message) { super(message); this.name = this.constructor.name; }\n}\nfunction find(list, id) { const t = list.find((x) => x.id === id); if (!t) throw new NotFoundError('Ticket ' + id + ' not found'); return t; }\nfunction safeFind(list, id) { try { return find(list, id); } catch (e) { if (e.name === 'NotFoundError') return null; throw e; } }\nmodule.exports = { find, safeFind };\n";
+  assert.equal(loadCjs(errors).safeFind([],1),null);
+  assert.match(renameVerdict(errors,'NotFoundError','TicketNotFoundError').reason,/"NotFoundError", a function or class whose name the file reads/);
+  assert.equal(renameVerdict(errors.replace("e.name === 'NotFoundError'",'e instanceof NotFoundError'),'NotFoundError','TicketNotFoundError').ok,true,'no string names it');
+  const merge="function read(id) { return { id, from: 1 }; }\nfunction view(id) { return { id, from: 2 }; }\nmodule.exports = { read: read, view: view };\n";
+  assert.match(renameVerdict(merge,'view: view','read: view').reason,/renames a member onto "read", which the same object or class already defines/);
+  assert.equal(renameVerdict("class C { get x() { return 1; } set y(v) {} }\nmodule.exports = C;\n",'y(v)','x(v)').ok,true,'a getter and setter pair is one member');
 });
 
 test('shape: an export that gets members through an alias is not taken for a lone function',()=>{

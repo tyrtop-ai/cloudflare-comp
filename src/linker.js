@@ -275,13 +275,13 @@ function patternNames(p,out) {
 // to decide which names exist elsewhere in the system.
 export function nameFacts(text) {
   const {ast,sourceType}=parseSource(text);
-  const keyStarts=new Set(),memberStarts=new Set(),selfStarts=new Set(),declared=new Set(),definedMembers=new Set(),usedMembers=new Set(),patternKeys=new Set();
+  const keyStarts=new Set(),memberStarts=new Set(),selfStarts=new Set(),declared=new Set(),definedMembers=new Set(),usedMembers=new Set(),patternKeys=new Set(),callables=new Set(),assigned=[];
   walk(ast,(node,parent)=>{
     switch(node.type) {
       case 'MemberExpression':
         if(!node.computed){const n=nameOf(node.property);if(n){memberStarts.add(node.property.start);usedMembers.add(n);
           if(node.object.type==='ThisExpression'||nameOf(node.object)==='exports'||isModuleExports(node.object))selfStarts.add(node.property.start);
-          if(parent?.type==='AssignmentExpression'&&parent.left===node&&(node.object.type==='ThisExpression'||nameOf(node.object)==='exports'||(node.object.type==='MemberExpression'&&nameOf(node.object.object)==='module')))definedMembers.add(n);}}
+          if(parent?.type==='AssignmentExpression'&&parent.left===node)assigned.push(node);}}
         break;
       case 'Property':
         if(!node.computed&&nameOf(node.key)){keyStarts.add(node.key.start);
@@ -294,43 +294,70 @@ export function nameFacts(text) {
       case 'ImportSpecifier': keyStarts.add(node.imported.start);patternKeys.add(nameOf(node.imported));declared.add(node.local.name);break;
       case 'ImportDefaultSpecifier': case 'ImportNamespaceSpecifier': declared.add(node.local.name);break;
       case 'ExportSpecifier': keyStarts.add(node.exported.start);definedMembers.add(nameOf(node.exported));selfStarts.add(node.exported.start);break;
-      case 'VariableDeclarator': patternNames(node.id,declared);break;
+      case 'VariableDeclarator': patternNames(node.id,declared);
+        if(node.id.type==='Identifier'&&/^(?:Function|ArrowFunction|Class)Expression$/.test(node.init?.type||''))callables.add(node.id.name);
+        break;
       case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
-        if(node.id)declared.add(node.id.name);for(const p of node.params)patternNames(p,declared);break;
-      case 'ClassDeclaration': case 'ClassExpression': if(node.id)declared.add(node.id.name);break;
+        if(node.id){declared.add(node.id.name);callables.add(node.id.name);}for(const p of node.params)patternNames(p,declared);break;
+      case 'ClassDeclaration': case 'ClassExpression': if(node.id){declared.add(node.id.name);callables.add(node.id.name);}break;
       case 'CatchClause': patternNames(node.param,declared);break;
     }
   });
-  return {sourceType,keyStarts,memberStarts,selfStarts,declared,definedMembers,usedMembers,patternKeys};
+  // x.m = … defines m when x is this, the module's exports or a name this
+  // file declares (api.m = …, Store.prototype.m = …, this.routes.m = …).
+  for(const node of assigned) {
+    let root=node.object;
+    while(root.type==='MemberExpression')root=root.object;
+    if(root.type==='ThisExpression'||root.type==='Identifier'&&(declared.has(root.name)||root.name==='exports'||root.name==='module')) {
+      definedMembers.add(nameOf(node.property));selfStarts.add(node.property.start);
+    }
+  }
+  return {sourceType,keyStarts,memberStarts,selfStarts,declared,definedMembers,usedMembers,patternKeys,callables};
 }
-// Names the file reads where no enclosing scope declares them: globals, or
-// undefined names. A binding of the same name elsewhere in the file is a
-// different variable, so renaming it may not rename these.
+// ---------- scopes ----------
 const SCOPE_NODES=new Set(['Program','FunctionDeclaration','FunctionExpression','ArrowFunctionExpression','BlockStatement','StaticBlock','ForStatement','ForInStatement','ForOfStatement','SwitchStatement','CatchClause','ClassDeclaration','ClassExpression']);
 const notReference=(node,parent)=>parent&&((parent.type==='MemberExpression'&&parent.property===node&&!parent.computed)||
   (['Property','MethodDefinition','PropertyDefinition'].includes(parent.type)&&parent.key===node&&!parent.computed)||
   ['LabeledStatement','BreakStatement','ContinueStatement','ExportSpecifier','ImportSpecifier','MetaProperty'].includes(parent.type));
-function freeNames(text) {
-  const {ast}=parseSource(text),declared=new Map(),refs=[];
+const useStrict=body=>Array.isArray(body)&&body.some(s=>s.directive==='use strict');
+// Resolves every variable reference and declaration in an AST to the scope
+// node that declares it (null: a global or undefined name). dynamic: the
+// file uses with or a direct eval, which read variables by name.
+function scopeOf(ast, sourceType) {
+  const declared=new Map(),refs=[],bodies=new Set();
+  let dynamic=false;
   const add=(scope,p)=>{if(!scope||!p)return;if(!declared.has(scope))declared.set(scope,new Set());patternNames(p,declared.get(scope));};
-  const go=(node,parent,scopes)=>{
-    const block=scopes.at(-1),fn=scopes.findLast(s=>s.type==='Program'||s.type.includes('Function'));
+  const go=(node,parent,scopes,strict)=>{
+    // A function's var scope is its body: parameter defaults cannot see it.
+    const block=scopes.at(-1),fn=scopes.findLast(s=>s.type==='Program'||s.type==='StaticBlock'||bodies.has(s));
+    if(node.type==='WithStatement'||node.type==='CallExpression'&&node.callee.type==='Identifier'&&node.callee.name==='eval')dynamic=true;
     if(node.type==='VariableDeclaration')for(const d of node.declarations)add(node.kind==='var'?fn:block,d.id);
-    else if(node.type==='FunctionDeclaration'){add(block,node.id);add(fn,node.id);}
+    // In strict code a function declared in a block belongs to that block only.
+    else if(node.type==='FunctionDeclaration'){add(block,node.id);if(!strict)add(fn,node.id);}
     else if(node.type==='ClassDeclaration')add(block,node.id);
     else if(node.type.startsWith('Import')&&node.local)add(scopes[0],node.local);
-    else if(node.type==='Identifier'&&!notReference(node,parent))refs.push([node.name,scopes]);
+    else if(node.type==='Identifier'&&!notReference(node,parent))refs.push([node,scopes]);
     if(node.type.includes('Function')){if(node.type!=='FunctionDeclaration')add(node,node.id);for(const p of node.params)add(node,p);}
     if(node.type==='ClassExpression')add(node,node.id);
     if(node.type==='CatchClause')add(node,node.param);
+    if(node.type==='Program')strict=sourceType==='module'||useStrict(node.body);
+    if(node.type.includes('Function')&&node.body.type==='BlockStatement'){bodies.add(node.body);strict||=useStrict(node.body.body);}
+    if(node.type==='ClassDeclaration'||node.type==='ClassExpression')strict=true;
     const inner=SCOPE_NODES.has(node.type)?[...scopes,node]:scopes;
     for(const [key,value] of Object.entries(node)) {
       if(key==='loc'||key==='start'||key==='end')continue;
-      for(const v of Array.isArray(value)?value:[value])if(v&&typeof v.type==='string')go(v,node,inner);
+      for(const v of Array.isArray(value)?value:[value])if(v&&typeof v.type==='string')go(v,node,inner,strict);
     }
   };
-  go(ast,null,[]);
-  return new Set(refs.filter(([name,scopes])=>!scopes.some(s=>declared.get(s)?.has(name))).map(([name])=>name));
+  go(ast,null,[],false);
+  return {bindingOf:new Map(refs.map(([node,scopes])=>[node,scopes.findLast(s=>declared.get(s)?.has(node.name))??null])),dynamic};
+}
+// Names the file reads where no enclosing scope declares them: globals, or
+// undefined names. A binding of the same name elsewhere in the file is a
+// different variable, so renaming it may not rename these.
+function freeNames(text) {
+  const {ast,sourceType}=parseSource(text),{bindingOf,dynamic}=scopeOf(ast,sourceType);
+  return {free:new Set([...bindingOf].filter(([,scope])=>!scope).map(([node])=>node.name)),dynamic};
 }
 // Names that exist somewhere else in the system: declared, defined as a
 // member, destructured from another module, or called on another object
@@ -411,18 +438,209 @@ export function renameOnlyError(before, after, {knownNames=null}={}) {
       return `edit renames member ${JSON.stringify(x.value)}, which this file defines, at its definition or some uses but not at token ${i+1}`;
   }
   // A use the token walk cannot see: a global read where no binding of that
-  // name is in scope, or a member reached by a string or computed key.
-  if(bindingMap.size){const free=freeNames(A),hit=[...bindingMap.keys()].find(n=>free.has(n));if(hit)return `edit renames ${JSON.stringify(hit)}, which the file also reads as a global or undefined name where no binding of it is in scope`;}
-  for(const from of memberMap.keys())if(a.some(t=>['string','template'].includes(t.type.label)&&t.value===from))return `edit renames member ${JSON.stringify(from)}, which this file defines and also names in a string`;
-  if(memberMap.size&&readByKey(A,new Set(memberMap.keys())))return `edit renames member ${[...memberMap.keys()].map(n=>JSON.stringify(n)).join(', ')}, which this file defines and also reads by a computed key`;
+  // name is in scope, a name read through with or eval, a function or class
+  // name the file reads back (.name) and compares with a string, or a member
+  // reached by a key decided at run time.
+  try {return hiddenUseError(A,B,a,fa,bindingMap,memberMap);}
+  catch(e) {return 'edited file cannot be analyzed: '+e.message;}
+}
+function hiddenUseError(A, B, a, fa, bindingMap, memberMap) {
+  if(bindingMap.size||memberMap.size) {
+    const {free,dynamic}=freeNames(A),hit=[...bindingMap.keys()].find(n=>free.has(n));
+    if(hit)return `edit renames ${JSON.stringify(hit)}, which the file also reads as a global or undefined name where no binding of it is in scope`;
+    if(dynamic)return `edit renames ${JSON.stringify([...bindingMap.keys(),...memberMap.keys()][0])}, but the file uses with or eval, which can reach any name at run time`;
+  }
+  if(bindingMap.size) {
+    const named=fa.usedMembers.has('name')&&[...bindingMap.keys()].find(n=>fa.callables.has(n)&&a.some(t=>['string','template'].includes(t.type.label)&&t.value===n));
+    if(named)return `edit renames ${JSON.stringify(named)}, a function or class whose name the file reads (.name) and also writes as a string`;
+  }
+  if(memberMap.size) {
+    const before=duplicateKeys(A),after=duplicateKeys(B),i=after.findIndex((d,i)=>[...d].some(n=>!before[i]?.has(n)));
+    if(i>=0)return `edit renames a member onto ${JSON.stringify([...after[i]].find(n=>!before[i]?.has(n)))}, which the same object or class already defines`;
+    const why=keyReach(A,new Set(memberMap.keys()));
+    if(why)return `edit renames member ${[...memberMap.keys()].map(n=>JSON.stringify(n)).join(', ')}, which this file defines and also ${why}`;
+  }
   return null;
 }
-// handlers[op] or this[name], where handlers is an object literal defining
-// one of names: the key decides at run time which member it reaches.
-function readByKey(text, names) {
-  const {ast}=parseSource(text),holders=new Set();let found=false;
-  walk(ast,node=>{if(node.type==='VariableDeclarator'&&node.id.type==='Identifier'&&node.init?.type==='ObjectExpression'&&node.init.properties.some(p=>p.type==='Property'&&!p.computed&&names.has(nameOf(p.key))))holders.add(node.id.name);});
-  walk(ast,node=>{if(node.type==='MemberExpression'&&node.computed&&node.property.type!=='Literal'&&(node.object.type==='ThisExpression'||holders.has(node.object.name)))found=true;});
+// For each object literal and class body, the names it defines more than
+// once (a getter and setter pair counts once).
+function duplicateKeys(text) {
+  const out=[];
+  walk(parseSource(text).ast,node=>{
+    const list=node.type==='ObjectExpression'?node.properties:node.type==='ClassBody'?node.body:null;
+    if(!list)return;
+    const seen=new Map(),dup=new Set();
+    for(const p of list) {
+      if(!['Property','MethodDefinition','PropertyDefinition'].includes(p.type)||p.computed)continue;
+      const name=(p.static?'static ':'')+keyName(p.key),kind=p.kind==='get'||p.kind==='set'?p.kind:'value',kinds=seen.get(name)||[];
+      if(name==='__proto__')continue;
+      if(kinds.length&&(kind==='value'||kinds.includes('value')||kinds.includes(kind)))dup.add(name);
+      seen.set(name,[...kinds,kind]);
+    }
+    out.push(dup);
+  });
+  return out;
+}
+// ---------- members reached by a key decided at run time ----------
+// Which objects in one file can hold a member, by a small points-to pass.
+// The abstract objects are each object literal ('o@start'), each function or
+// class and its instances ('c:key', 'i:key') and module.exports ('exports').
+// Variables are resolved through the file's scopes and members by key; a
+// call to a function in this file carries arguments into its parameters and
+// its return value out, and Object.assign, Object.freeze, spreads and
+// extends carry members. A member is reached by key when the file reads by
+// a computed key, destructures with a computed key, lists the keys of, or
+// tests with 'in' an object that can hold it (a plain write obj[k] = v and
+// Object.keys(obj).length do not count), or names the member as a string key
+// anywhere (x['m'], 'm' in x, Object.defineProperty(x, 'm'), hasOwnProperty('m')).
+// Arrays, callbacks and other modules are not followed.
+const FUNCTIONS=new Set(['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression']);
+const KEY_LISTS=/^(?:Object\.(?:keys|values|entries|getOwnPropertyNames|getOwnPropertyDescriptors)|Reflect\.ownKeys)$/;
+const KEY_ARGS=/^(?:(?:Object|Reflect)\.(?:hasOwn|defineProperty|defineProperties|getOwnPropertyDescriptor|get|set|has|deleteProperty)|.*\.(?:hasOwnProperty|propertyIsEnumerable|__(?:define|lookup)[GS]etter__)(?:\.call|\.apply)?)$/;
+const COPIES=/^Object\.(?:freeze|seal|preventExtensions|create|assign|setPrototypeOf)$/;
+const stringValue=n=>n?.type==='Literal'&&typeof n.value==='string'?n.value:n?.type==='TemplateLiteral'&&!n.expressions.length?n.quasis[0].value.cooked:null;
+function keyReach(text, names) {
+  const {ast,sourceType}=parseSource(text),{bindingOf}=scopeOf(ast,sourceType),scopeIds=new Map();
+  // One key per variable: its name and the scope that declares it.
+  const varKey=n=>{const s=bindingOf.get(n)??null;if(!scopeIds.has(s))scopeIds.set(s,scopeIds.size);return n.name+'#'+scopeIds.get(s);};
+  const parents=new Map(),keyOf=new Map();
+  walk(ast,(node,parent)=>{
+    parents.set(node,parent);
+    if(FUNCTIONS.has(node.type)||node.type==='ClassDeclaration'||node.type==='ClassExpression')
+      keyOf.set(node,node.id?.name||(parent?.type==='VariableDeclarator'&&parent.init===node&&parent.id.type==='Identifier'?parent.id.name:'@'+node.start));
+  });
+  const vars=new Map(),fields=new Map(),copies=new Map(),params=new Map();
+  let grew=false,found=null;
+  const into=(map,k,values)=>{let s=map.get(k);if(!s){map.set(k,s=new Set());grew=true;}for(const v of values)if(!s.has(v)){s.add(v);grew=true;}};
+  const setField=(sites,k,values)=>{for(const s of sites){if(!fields.has(s))fields.set(s,new Map());into(fields.get(s),k,values);}};
+  const closure=sites=>{const out=new Set(),todo=[...sites];while(todo.length){const s=todo.pop();if(!out.has(s)){out.add(s);todo.push(...(copies.get(s)||[]));}}return out;};
+  const lookup=(sites,k)=>{const out=new Set();for(const s of closure(sites))for(const [key,v] of fields.get(s)||[])if(k===null||key===k)v.forEach(x=>out.add(x));return out;};
+  const holds=sites=>[...closure(sites)].some(s=>[...names].some(n=>fields.get(s)?.has(n)));
+  const instances=sites=>new Set([...sites].filter(s=>s.startsWith('c:')).map(s=>'i:'+s.slice(2)));
+  const exportsSites=()=>new Set(['exports',...(vars.get('#exports')||[])]);
+  const union=(...sets)=>new Set(sets.flatMap(s=>[...s]));
+  const valueOf=(n,self)=>{
+    switch(n?.type) {
+      case 'Identifier': return n.name==='exports'&&!bindingOf.get(n)?exportsSites():new Set(vars.get(varKey(n))||[]);
+      case 'ThisExpression': return self;
+      case 'MemberExpression': {
+        if(isModuleExports(n))return exportsSites();
+        const k=n.computed?stringValue(n.property):nameOf(n.property);
+        return lookup(valueOf(n.object,self),k);
+      }
+      case 'ObjectExpression': return new Set(['o@'+n.start]);
+      case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression': case 'ClassDeclaration': case 'ClassExpression': return new Set(['c:'+keyOf.get(n)]);
+      case 'NewExpression': return instances(valueOf(n.callee,self));
+      case 'CallExpression': {
+        if(COPIES.test(calleeName(n.callee)))return valueOf(n.arguments[0],self);
+        return new Set([...valueOf(n.callee,self)].flatMap(s=>s.startsWith('c:')?[...(vars.get('#return:'+s.slice(2))||[])]:[]));
+      }
+      case 'ConditionalExpression': return union(valueOf(n.consequent,self),valueOf(n.alternate,self));
+      case 'LogicalExpression': return union(valueOf(n.left,self),valueOf(n.right,self));
+      case 'SequenceExpression': return valueOf(n.expressions.at(-1),self);
+      case 'AssignmentExpression': return valueOf(n.right,self);
+      case 'AwaitExpression': return valueOf(n.argument,self);
+      case 'ChainExpression': return valueOf(n.expression,self);
+      default: return new Set();
+    }
+  };
+  const bind=(pattern,sites)=>{
+    if(pattern?.type==='Identifier')into(vars,varKey(pattern),sites);
+    else if(pattern?.type==='AssignmentPattern')bind(pattern.left,sites);
+    else if(pattern?.type==='RestElement')bind(pattern.argument,sites);
+    else if(pattern?.type==='ObjectPattern')for(const p of pattern.properties)
+      bind(p.type==='RestElement'?p.argument:p.value,p.type==='RestElement'?sites:lookup(sites,p.computed?stringValue(p.key):nameOf(p.key)));
+  };
+  // What this means inside a function, class field or static block.
+  const selfOf=(node,self)=>{
+    const parent=parents.get(node),owner=parent?.type==='ClassBody'?parents.get(parent):parents.get(parents.get(parent));
+    if(node.type==='StaticBlock'||node.type==='PropertyDefinition')return new Set([(node.static||node.type==='StaticBlock'?'c:':'i:')+keyOf.get(parents.get(parent))]);
+    if(parent?.type==='MethodDefinition')return new Set([(parent.static?'c:':'i:')+keyOf.get(owner)]);
+    if(parent?.type==='Property'&&parent.value===node)return new Set(['o@'+parents.get(parent).start]);
+    if(parent?.type==='AssignmentExpression'&&parent.right===node&&parent.left.type==='MemberExpression')return valueOf(parent.left.object,self);
+    if(node.type==='FunctionDeclaration'||parent?.type==='VariableDeclarator')return new Set(['i:'+keyOf.get(node)]);
+    return new Set();
+  };
+  const hit=(node,how)=>{found??=`${how} (${JSON.stringify(text.slice(node.start,Math.min(node.end,node.start+60)))})`;};
+  const visit=(node,parent,self,fn,check)=>{
+    if(!node||typeof node.type!=='string')return;
+    if(FUNCTIONS.has(node.type)) {
+      fn=keyOf.get(node);
+      if(node.type!=='ArrowFunctionExpression'){self=selfOf(node,self);setField(['c:'+fn],'prototype',['i:'+fn]);}
+      if(!params.has(fn))params.set(fn,node.params);
+      if(node.expression)into(vars,'#return:'+fn,valueOf(node.body,self));
+      if(node.type==='FunctionDeclaration')into(vars,varKey(node.id),['c:'+fn]);
+    }
+    if(node.type==='StaticBlock'||node.type==='PropertyDefinition')self=selfOf(node,self);
+    switch(node.type) {
+      case 'VariableDeclarator': if(node.init)bind(node.id,valueOf(node.init,self));break;
+      case 'AssignmentExpression':
+        if(['=','||=','&&=','??='].includes(node.operator)) {
+          const v=valueOf(node.right,self),left=node.left;
+          if(isModuleExports(left))into(vars,'#exports',v);
+          else if(left.type==='MemberExpression'){const k=left.computed?stringValue(left.property):nameOf(left.property);if(k!==null)setField(valueOf(left.object,self),k,v);}
+          else bind(left,v);
+        }
+        break;
+      case 'ReturnStatement': if(fn&&node.argument)into(vars,'#return:'+fn,valueOf(node.argument,self));break;
+      case 'ObjectExpression':
+        for(const p of node.properties) {
+          if(p.type==='SpreadElement'){into(copies,'o@'+node.start,valueOf(p.argument,self));continue;}
+          const k=p.computed?stringValue(p.key):nameOf(p.key);
+          if(k!==null)setField(['o@'+node.start],k,valueOf(p.value,self));
+        }
+        break;
+      case 'ClassDeclaration': case 'ClassExpression': {
+        const key=keyOf.get(node),c='c:'+key,i='i:'+key;
+        setField([c],'prototype',[i]);
+        if(node.type==='ClassDeclaration')into(vars,varKey(node.id),[c]);
+        if(node.superClass){const sup=valueOf(node.superClass,self);into(copies,c,sup);into(copies,i,instances(sup));}
+        for(const m of node.body.body) {
+          if(m.kind==='constructor'){params.set(key,m.value.params);continue;}
+          const k=m.type==='MethodDefinition'||m.type==='PropertyDefinition'?m.computed?stringValue(m.key):nameOf(m.key):null;
+          if(k!==null)setField([m.static?c:i],k,valueOf(m.value,m.type==='MethodDefinition'?self:new Set([m.static?c:i])));
+        }
+        break;
+      }
+      case 'CallExpression': case 'NewExpression': {
+        const args=node.arguments;
+        if(node.type==='CallExpression'&&COPIES.test(calleeName(node.callee))&&args.length>1)
+          for(const s of valueOf(args[0],self))for(const a of args.slice(1))into(copies,s,valueOf(a,self));
+        for(const s of valueOf(node.callee,self))if(s.startsWith('c:'))
+          (params.get(s.slice(2))||[]).forEach((p,i)=>{if(args[i]&&args[i].type!=='SpreadElement')bind(p,valueOf(args[i],self));});
+        break;
+      }
+    }
+    if(check) {
+      const keyed=s=>s!==null&&names.has(s);
+      if(node.type==='MemberExpression'&&node.computed) {
+        const s=stringValue(node.property);
+        if(s!==null){if(keyed(s))hit(node,'names it as a string key');}
+        else if(!(parent?.type==='AssignmentExpression'&&parent.operator==='='&&parent.left===node)&&holds(valueOf(node.object,self)))hit(node,'reads an object that holds it by a computed key');
+      }
+      if(['Property','MethodDefinition','PropertyDefinition'].includes(node.type)&&node.computed&&keyed(stringValue(node.key)))hit(node,'names it as a string key');
+      if(node.type==='ObjectPattern'&&node.properties.some(p=>p.type==='Property'&&p.computed&&stringValue(p.key)===null)) {
+        const from=parent?.type==='VariableDeclarator'&&parent.id===node?parent.init:parent?.type==='AssignmentExpression'&&parent.left===node?parent.right:null;
+        if(from&&holds(valueOf(from,self)))hit(node,'destructures an object that holds it by a computed key');
+      }
+      if(node.type==='ForInStatement'&&holds(valueOf(node.right,self)))hit(node,'lists the keys of an object that holds it');
+      if(node.type==='CallExpression') {
+        const callee=calleeName(node.callee);
+        const counted=parent?.type==='MemberExpression'&&parent.object===node&&!parent.computed&&nameOf(parent.property)==='length';
+        if(KEY_LISTS.test(callee)&&!counted&&holds(valueOf(node.arguments[0],self)))hit(node,'lists the keys of an object that holds it');
+        if(KEY_ARGS.test(callee)&&node.arguments.some(x=>keyed(stringValue(x))))hit(node,'names it as a string key');
+      }
+      if(node.type==='BinaryExpression'&&node.operator==='in'&&(stringValue(node.left)!==null?keyed(stringValue(node.left)):holds(valueOf(node.right,self))))hit(node,'tests for it with in');
+    }
+    for(const [key,value] of Object.entries(node)) {
+      if(key==='loc'||key==='start'||key==='end')continue;
+      for(const v of Array.isArray(value)?value:[value])if(v&&typeof v.type==='string')visit(v,node,self,fn,check);
+    }
+  };
+  const top=new Set(sourceType==='module'?[]:['exports']);
+  // Facts only grow and are finite, so this reaches a fixed point.
+  do {grew=false;visit(ast,null,top,null,false);} while(grew);
+  visit(ast,null,top,null,true);
   return found;
 }
 export function tokenNames(text) {return knownNamesFrom([text]);}
