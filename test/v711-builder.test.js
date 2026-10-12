@@ -37,6 +37,22 @@ test('rename-only check allows import paths, identifiers and property names, not
   assert.match(content,/repo\.get\(id\)/,'the rejected edit left the file unchanged');
 });
 
+test('rename-only check: two bindings never merge into one name, in one link or across relinks',()=>{
+  const clamp="const limit = 10;\nfunction clamp(n) { return n > limit ? limit : n; }\nmodule.exports = { clamp };";
+  const knownNames=new Set(['value']),both=[{find:'limit',replace:'value'},{find:'n',replace:'value'}];
+  const once=L.applyEdits(clamp,both,{knownNames,original:clamp});
+  assert.equal(once.applied.length,1);
+  assert.match(once.rejected[0]?.reason,/a name the file already uses/);
+  const first=L.applyEdits(clamp,[both[0]],{knownNames,original:clamp});
+  const second=L.applyEdits(first.content,[both[1]],{knownNames,original:clamp});
+  assert.equal(second.content,first.content);
+  assert.match(second.rejected[0]?.reason,/a name the file already uses/);
+  assert.match(L.renameOnlyError(clamp,clamp.replace(/\blimit\b|\bn\b/g,'value'),{knownNames}),/renames "n" and "limit" to the same name "value"/);
+  // An edit sent again after an earlier relink applied it is already in place.
+  const again=L.applyEdits(first.content,[both[0]],{knownNames,original:clamp});
+  assert.deepEqual([again.applied.length,again.rejected.length,again.content],[0,0,first.content]);
+});
+
 test('review fixes: regex literals, whole-token matching, and names that change behavior',()=>{
   const withRegex="const TITLE=/^\\S.{0,80}$/;\nconst R=require('./ticketRepository');\nmodule.exports={ok:t=>TITLE.test(t)&&R};";
   const known=new Set(['read','InMemoryTicketRepository','addTicket','create']);
@@ -312,14 +328,14 @@ const { start } = require('./index.js');
   assert.equal((await app.viewTicket(t.id)).title, 'Printer jam');
 })().catch(e => { console.error(e); process.exitCode = 1; });
 `;
-async function threeWorkers(room,{store=recordStore,app=serviceApp}={}) {
+async function threeWorkers(room,{store=recordStore,app=serviceApp,audit=auditLog}={}) {
   await room.provision('root',null,'Root objective','Build a small issue tracker that lets someone create and view tickets.');
   room.set('goal','Build a small issue tracker that lets someone create and view tickets.');
   await room.spawn('root',[{label:'Record store',task:'Write an in-memory record store'},{label:'Audit log',task:'Write an audit log'},{label:'Application entry',task:'Write the entry module exporting start()'}]);
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   room.db().exec("UPDATE agents SET phase='implement' WHERE id IN ('root.1','root.2','root.3')");
   await room.putFile('root.1','store.js',store);
-  await room.putFile('root.2','audit.js',auditLog);
+  await room.putFile('root.2','audit.js',audit);
   await room.putFile('root.3','app.js',app);
   room.db().exec("UPDATE agents SET status='done' WHERE id IN ('root.1','root.2','root.3')");
   const storePath=materializedPath('Record store','store.js','root.1');
@@ -352,7 +368,7 @@ test('room: a relink edits the previous attempt\'s linked files, so accepted ren
   assert.equal(app.sha256,await sha256(serviceApp),'the manifest records the worker\'s original');
   assert.equal(app.linked_sha256,await sha256(linked));
   assert.equal(manifest.sources.find(s=>s.destination===paths.storePath).renamed,false);
-  assert.match(room.node(builder.id).summary,/with 2 rename\(s\)/);
+  assert.match(room.node(builder.id).summary,/3 file\(s\), 1 of them renamed/);
 });
 
 test('room: a relink after a container load error or a failed run keeps the path fixed by the previous attempt',async()=>{
@@ -449,6 +465,41 @@ test('room: a path rename that resolves nowhere is rejected, so the worker is se
   const failure=room.read('build_failure:root',null);
   assert.equal(failure.issues[0].path,paths.appPath);
   assert.match(failure.issues[0].detail,/^Import '\.\/ticketService' does not match/);
+});
+
+test('room: when relinks run out, the worker is sent its own import, not a wrong rename an earlier relink kept',async()=>{
+  let paths;
+  const {room,calls,builds}=liveRoom({link:(user,n)=>{
+    const app=user.your_files.find(f=>f.path===paths.appPath);
+    // Relink 1 fixes the path but renames .view to the audit log's get(); nothing later undoes it.
+    const edits=!app||n!==1?[]:[{file:app.path,find:"require('./ticketService')",replace:`require(${paths.storeSpec})`},
+      {file:app.path,find:'ticketService.view(id)',replace:'ticketService.get(id)'}];
+    return {edits,entry:app?.path??null,issues:[]};
+  },runner:()=>viewTest});
+  paths=await threeWorkers(room,{audit:auditLog.replace('read(n)','get(n)')});
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  assert.equal(calls.link.length,3);
+  assert.match(calls.link[2].your_files[0].content,/ticketService\.get\(id\)/,'the wrong rename is kept across relinks');
+  assert.equal(builds.length,0);
+  const failure=room.read('build_failure:root',null);
+  assert.deepEqual(failure.issues.map(i=>i.path),[paths.appPath]);
+  assert.match(failure.issues[0].detail,/^Import '\.\/ticketService' does not match/);
+  assert.doesNotMatch(failure.issues[0].detail,/'get'/);
+});
+
+test('room: a branch builder leaves an import that points outside its branch for the builder above',async()=>{
+  let reply;
+  const {room}=liveRoom({link:()=>reply});
+  const paths=await threeWorkers(room);
+  const builder=await room.scheduleAssembly('root');
+  // As if the branch held only the entry: the store lies outside it.
+  const sources=(await room.collectLinkSources(builder.id)).filter(s=>s.destination===paths.appPath);
+  reply={edits:[{file:paths.appPath,find:"require('./ticketService')",replace:`require(${paths.storeSpec})`}],entry:null,issues:[]};
+  const link=await room.linkSnapshot(builder.id,sources,'',{isRoot:false});
+  assert.match(link.rejected[0]?.reason,/resolves to no module/);
+  assert.equal(link.files.get(paths.appPath),serviceApp);
+  assert.deepEqual(link.unresolved.map(u=>u.specifier),['./ticketService']);
 });
 
 test('room: an assertion failure with no component frame is triaged by the builder to the owning worker',async()=>{

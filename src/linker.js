@@ -363,6 +363,9 @@ export function renameOnlyError(before, after, {knownNames=null}={}) {
     if(knownNames&&!knownNames.has(y.value))return `edit renames ${show(x)} to ${show(y)}, which no other module defines or uses, at ${where}`;
     const prior=bindingMap.get(x.value);
     if(prior&&prior!==y.value)return `edit renames ${show(x)} two different ways`;
+    // Two bindings renamed to one name would become one variable.
+    const merged=[...bindingMap].find(([from,to])=>to===y.value&&from!==x.value);
+    if(merged)return `edit renames ${show(x)} and ${JSON.stringify(merged[0])} to the same name ${show(y)}`;
     bindingMap.set(x.value,y.value);
   }
   // A rename must be complete: every use of a renamed binding changes, and a
@@ -391,14 +394,20 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
     const find=String(edit?.find??''),replace=String(edit?.replace??'');
     if(!find){rejected.push({edit,reason:'empty find text'});continue;}
     if(find===replace)continue;
-    if(!current.includes(find)){rejected.push({edit,reason:'find text is not in the file'});continue;}
+    if(!current.includes(find)&&!(replace&&current.includes(replace))){rejected.push({edit,reason:'find text is not in the file'});continue;}
     let list;
     try {list=tokens(current,parseSource(current).sourceType);} catch(e) {rejected.push({edit,reason:'file cannot be tokenized: '+e.message});continue;}
     const starts=new Set(list.map(t=>t.start)),ends=new Set(list.map(t=>t.end));
-    const hits=[];
-    for(let at=current.indexOf(find);at>=0;at=current.indexOf(find,at+1)) {
-      if(starts.has(at)&&ends.has(at+find.length)&&(!hits.length||at>=hits.at(-1)+find.length))hits.push(at);
-    }
+    const whole=text=>{
+      const hits=[];
+      for(let at=current.indexOf(text);at>=0;at=current.indexOf(text,at+1)) {
+        if(starts.has(at)&&ends.has(at+text.length)&&(!hits.length||at>=hits.at(-1)+text.length))hits.push(at);
+      }
+      return hits;
+    };
+    // An edit sent again after an earlier relink applied it is already in place.
+    if(!current.includes(find)){if(!whole(replace).length)rejected.push({edit,reason:'find text is not in the file'});continue;}
+    const hits=whole(find);
     if(!hits.length){rejected.push({edit,reason:'find text does not match whole tokens'});continue;}
     let next='',last=0;
     for(const at of hits){next+=current.slice(last,at)+replace;last=at+find.length;}

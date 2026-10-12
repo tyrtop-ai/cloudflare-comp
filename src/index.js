@@ -1129,7 +1129,8 @@ export class ControlRoom extends DurableObject {
       entry=chooseEntry(linked,linkedSurfaces,proposals);
     }
     const linkedSurfacesAll=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
-    return {files:linked,entry,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfacesAll),applied,rejected};
+    return {files:linked,entry,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfacesAll),applied,rejected,
+      before:{unresolved:unresolvedBefore,mismatches:mismatchesBefore}};
   }
   async publishLinked(builderId, link, sources, {isRoot=false}={}) {
     for(const source of sources) {
@@ -1285,15 +1286,16 @@ export class ControlRoom extends DurableObject {
     let state=this.read('link_state',null);
     if(state?.fingerprint!==fingerprint)state={fingerprint,relinks:0,diagnostic:''};
     const goal=this.get('goal')||this.node('root')?.task||'';
-    let current=null,renames=0;
+    let current=null,first=null;
+    const problems=({unresolved,mismatches})=>[...unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
+      ...mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`}))];
     for(;;) {
       this.event(id,'working',`Linking ${sources.length} file(s)${state.relinks?`; relink ${state.relinks} with the previous error`:''}.`);
       const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current});
-      current=link.files;renames+=link.applied.length;
+      current=link.files;first??=link;
       await this.publishLinked(id,link,sources,{isRoot:true});
       const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
-      const local=[...link.unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
-        ...link.mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`}))];
+      const linked=problems(link),local=[...linked];
       if(!link.entry)local.push({path:entryCandidate(link.files)||'',detail:'No application entry: no module exports start() or imports the other modules to compose the application. This module is the closest candidate: import the other modules it needs by relative path and export start(), returning an object whose methods perform the operations the goal requests.'});
       if(local.length) {
         if(state.relinks<2) {
@@ -1302,7 +1304,10 @@ export class ControlRoom extends DurableObject {
           this.event(id,'link_retry',clip(state.diagnostic,900));
           continue;
         }
-        return this.sendBackToWorkers(id,fingerprint,[...local,...link.issues],'link');
+        // A file that still fails goes back described as its worker wrote it:
+        // renames kept from earlier relinks may be the builder's own mistake.
+        const own=problems(first.before).filter(x=>linked.some(l=>l.path===x.path));
+        return this.sendBackToWorkers(id,fingerprint,[...own,...local.filter(x=>!linked.includes(x)||!own.some(o=>o.path===x.path)),...link.issues],'link');
       }
       const files=new Map([...link.files,['glue/index.js',entryLoader(link.entry)],['package.json',RUNTIME_PACKAGE]]);
       const check=await this.containerRun(id,`link:${fingerprint}:${state.relinks}`,files);
@@ -1339,7 +1344,8 @@ export class ControlRoom extends DurableObject {
         this.save('run_passed:root',record);this.save('build_passed:root',record);
         this.save('build_failure:root',null);this.save('link_routed',null);this.save('link_state',null);
         this.save('build_blocked:root',null);this.set('build_infrastructure:root','');
-        const summary=`Linked ${sources.length} file(s) with ${renames} rename(s); the runner's test passed in the container.`;
+        const renamed=sources.filter(s=>link.files.get(s.destination)!==s.content).length;
+        const summary=`Linked ${sources.length} file(s), ${renamed} of them renamed; the runner's test passed in the container.`;
         this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
         this.event(id,'run_passed',`Runner test passed against snapshot ${outcome.digest.slice(0,14)}.`+(link.issues.length?` Builder notes not needed for this goal: ${clip(link.issues.map(x=>x.detail).join('; '),500)}`:''));
         this.wake(manager);
