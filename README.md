@@ -4,7 +4,7 @@ A multi-agent code-writing control plane that runs entirely on Cloudflare. You g
 
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
-> **Status:** the full local test suite passes. Live end-to-end runs on Cloudflare are still being verified, and no live run has yet finished with a passing application test. See [Status](#status).
+> **Status:** this is v7.12, and the full local test suite passes. Live end-to-end runs on Cloudflare are still being verified, and no live run has yet finished with a passing application test. The v7.12 fixes answer what stopped the two live v7.11 runs, and so far they have been checked only locally. See [Status](#status) and [CHANGELOG-v7.12.md](CHANGELOG-v7.12.md).
 
 ## The idea
 
@@ -12,9 +12,9 @@ The usual multi-agent design puts one large orchestrator in charge. It reads the
 
 This project makes the opposite bet: **many small agents with small, bounded context beat one big orchestrator agent with limited context.**
 
-- **Bounded context.** On the turn Clef makes an agent a worker, the worker writes its code seeing its own assignment, its parent's assignment, its direct siblings' assignments and published file names, and the recent public knowledge of its parent and siblings, never their descendants or the wider tree. On later turns, such as retries and repairs, its parent appears only as "Manager" and it sees no other agent's assignment or knowledge. A manager sees its direct children, never their descendants. No worker or manager holds the whole project. The exception is Root's builder: when an import still needs a rename at Root, one model call gets every module of the application, most of them only as export names, so that call is the remaining limit on project size (see [Known limitations](#known-limitations)).
+- **Bounded context.** On the turn Clef makes an agent a worker, the worker writes its code seeing its own assignment, its parent's assignment, its direct siblings' assignments and published file names, and the recent public knowledge of its parent and siblings, never their descendants or the wider tree. On later turns, such as retries and repairs, its parent appears only as "Manager" and it sees no other agent's assignment or knowledge. A manager sees its direct children, never their descendants. No worker or manager holds the whole project. The exception is Root's builder. When an import still needs a rename at Root, or no module exports `start()`, one model call gets every module of the application, most of them only as export names. That call is the remaining limit on project size (see [Known limitations](#known-limitations)).
 - **Each inference tree works only on its own scope.** Ownership works like functional programming. A subtree owns its assignment, writes only to its own repositories and shares no mutable state with its siblings. Two subtrees never write to the same repository, so there is nothing to merge and nothing to conflict. Scope is fixed when work is split, which is meant to keep pieces from overlapping; the runtime itself does not deduplicate work (see [Known limitations](#known-limitations)).
-- **Minimal tape.** Independent agents with well-scoped pieces of the same goal converge on code that is close enough to join with very little glue, and here the glue is literally minimal. The builder that joins modules **may only rename import paths and identifiers**, and the runtime checks every edit it makes token by token (line breaks are not checked yet; see [Known limitations](#known-limitations)). If two modules disagree in a way a rename cannot fix, the problem goes back to the agent that owns the code.
+- **Minimal tape.** Independent agents with well-scoped pieces of the same goal converge on code that is close enough to join with very little glue, and here the glue is literally minimal. The builder that joins modules **may only rename import paths and identifiers, and change how an import binds its module when the target's exports call for it** (for example `const { f } = require(p)` becomes `const f = require(p)` when `p` exports the single function `f`). The runtime checks every edit token by token (line breaks are not checked yet; see [Known limitations](#known-limitations)). [What a builder may change](#what-a-builder-may-change) gives the exact rule. If two modules disagree in a way these edits cannot fix, the problem goes back to the agent that owns the code.
 
 ## GitHub, rethought
 
@@ -23,9 +23,9 @@ This project makes the opposite bet: **many small agents with small, bounded con
 | A shared repository | Every agent owns a private Cloudflare Artifacts git repository, created when the agent is spawned. Builders get one too. |
 | Branches and merge conflicts | Agents share no branch. An agent commits only to its own repository, so there is no shared branch to merge into and nothing to conflict. |
 | Commits | One Artifacts commit per agent turn. Everything an agent writes in a turn is staged and pushed together, and a worker's messages leave only after its commit. |
-| Merge | Each manager has a *builder* that links its children's finished modules. A builder may change only import paths and identifier names. The runtime compares the Acorn token streams before and after every edit (whitespace and comments are not compared) and rejects any edit that changes a token other than an import path or a name. |
-| Pull request review | Mechanical gates replace reviewers. Clef admits each proposed child against the Root goal and its parent's assignment. Each worker file must parse before it is committed. Builder edits may change no token except an import path or a name. At Root, the linked application must load, start and pass a test written by a separate runner. |
-| CODEOWNERS and blame | Provenance. Every linked file records which worker wrote it, through any number of nested builders, and a failure is routed back to that worker one hop at a time. |
+| Merge | Each manager has a *builder* that links its children's finished modules. A builder may change import paths and identifier names, and how one import binds its module when the target's exports call for it. The runtime compares the Acorn token streams before and after every edit (whitespace and comments are not compared). It rejects any edit that changes another token, unless the result is, token for token, the runtime's own binding fix. |
+| Pull request review | Mechanical gates replace reviewers. Clef admits each proposed child against the Root goal and its parent's assignment. Each worker file must parse before it is committed. Builder edits may change no token except an import path, a name, or an import's binding where the target's exports call for it. At Root, the linked application must load, start and pass a test written by a separate runner. |
+| CODEOWNERS and blame | Provenance. Every linked file records which worker wrote it, through any number of nested builders, and a failure is routed back to that worker one hop at a time. The problem carries the renames every builder made in that file since the worker published it, so a builder's rename is not mistaken for the worker's own code. |
 | Issues and discussion | Ownership routing. A worker asks only its manager. A manager answers from public Artifacts knowledge, confirms which branch owns the behavior, or forwards the question up to its own parent or, for a plain question, down to the direct child that owns it. |
 | CI | At Root, a Cloudflare Container runs the linked application and the runner's test. |
 
@@ -58,7 +58,7 @@ flowchart TD
   write --> parse{"Parses with Acorn,<br/>no packages?"}
   parse -->|"no"| write
   parse -->|"yes"| commit["One commit to<br/>the worker's repo"]
-  commit --> link["Manager's builder links:<br/>rename-only edits"]
+  commit --> link["Manager's builder links:<br/>renames and import binding fixes"]
   link -->|"branch"| link
   link -->|"Root"| run["Container: load entry,<br/>call start()"]
   run --> test["Runner writes and runs<br/>glue/smoke.js"]
@@ -74,12 +74,33 @@ flowchart TD
 4. **Workers write.** When Clef says NO, the agent is a worker and Qwen writes its code in the same turn. A worker imports code it does not own by the relative path and name it expects, for example `require('./ticketStore')`, and is asked to publish that expectation as `assumed_*` knowledge. Only Node built-ins are allowed; third-party packages are rejected.
 5. **Parse check.** Every file must contain executable code, parse with Acorn as CommonJS or as an ES module, and import no packages before it is committed. A failure goes back to the same worker in the same turn with the parser message.
 6. **Commit.** The worker's files for the turn are pushed as one commit, and then its completion report goes to its manager.
-7. **Builder link.** When every agent under a manager is done, that manager's builder starts. First, with no model call, it points each import that resolves nowhere at the one module that clearly provides it. Files that still have unresolved imports or mismatched names go to Qwen in full; every other module is shown only by its export names. Qwen returns `find`/`replace` edits, and the runtime keeps only edits that change no token except import paths and names. A branch builder hands its linked bundle to the builder above and leaves imports it cannot match for that builder.
-8. **Container check at Root.** Root's builder picks the entry module, writes a fixed loader (`glue/index.js`) and `package.json`, and sends the snapshot to the Container. The Container parses every file, loads the entry module graph, calls `start()`, and describes the API it returned: member names, kinds and parameter names, never source.
+7. **Builder link.** When every agent under a manager is done, that manager's builder starts. First, with no model call, the runtime points each import that resolves nowhere at the one module that clearly provides it. It picks the only module exporting every name the file uses from the import. When no module exports them all, it picks the only module whose file or class name matches the import path and that exports at least one of them (a branch builder accepts only an exact name). When these rules disagree or match several modules, the import is left for the model. The runtime then fixes the binding of each resolved import that is bound the wrong way round for its target. Files that still have unresolved imports or mismatched names go to Qwen in full; every other module is shown only by its export names. Qwen returns `find`/`replace` edits. The runtime keeps an edit only if it changes nothing but import paths and identifier names, or if its result is exactly the runtime's own binding fix ([What a builder may change](#what-a-builder-may-change)). It undoes a model rename that breaks an import that matched before. A branch builder hands its linked bundle to the builder above and leaves imports it cannot match for that builder.
+8. **Container check at Root.** Root's builder picks the entry module: the one module that exports `start()`, or, if several do, the one the model named, else the one that imports the most others. When no module exports `start()`, Root asks the model to name the entry even if every import resolves. If it still names none after the relinks, a "No application entry" problem goes to the worker of the module whose file name marks it as the application (else the module that imports the most others). Root's builder writes a fixed loader (`glue/index.js`) and `package.json`, and sends the snapshot to the Container. The Container parses every file, loads the entry module graph, calls `start()`, and describes the API it returned: member names, kinds and parameter names, never source.
 9. **Runner test.** A separate Qwen call writes `glue/smoke.js` from the Root goal and that API description alone. The Container runs it. When it passes, Root completes.
-10. **Repair routing.** Anything renaming cannot fix goes back to the worker that owns it, following provenance through nested builders one manager at a time. The worker fixes its code; its branch builder relinks, its manager finishes again, and Root relinks and reruns. Path and name errors first get up to two relinks. When the runner's own test is wrong, the runner rewrites the test instead of blaming a worker.
+10. **Repair routing.** Anything the builder cannot fix goes back to the worker that owns it, following provenance through nested builders one manager at a time. The worker fixes its code; its branch builder relinks, its manager finishes again, and Root relinks and reruns. Path and name errors first get up to two relinks. Each relink edits the previous attempt's linked files, so renames it accepted are kept, and a relink can also undo one. A problem sent back carries the renames the builders made in the worker's file since it was published, and in the module a name mismatch reads from. When the runner's own test is wrong, the runner rewrites the test instead of blaming a worker.
 
 Repairs are bounded. Root fails after eight rounds of problems sent back to workers, and an agent that fails three turns in a row pauses until you press **Continue**.
+
+### What a builder may change
+
+A builder's edits are `find`/`replace` text. The runtime decides whether to keep each one by comparing the Acorn token streams of the file before and after the edit (whitespace and comments are not compared). An edit is kept when every token it changes is one of these:
+
+- **An import path:** a relative module path in a `require`, `import` or `from` position. No other string may change.
+- **A variable name:** a variable this file declares, renamed at every use, to a name the file does not already use and that some other module defines or uses. Two variables may not be renamed to one name, and a variable is not renamed if the file also reads the same name where that variable is not in scope (a global of the same name).
+- **A member or key name:** renamed to a name some other module defines or uses. A member this file defines changes at its definition and at every use together, and it cannot be renamed if the file also reaches it through a string or a computed key.
+
+Built-in names such as `require`, `eval` or `Math` are never renamed, and neither is a built-in method call such as `.push` that no module defines. The edited file must still parse.
+
+The one change that is not a rename is how a single import binds its module. It is allowed only for these four forms, and only when the target's exports call for it:
+
+| The worker wrote | Becomes | Only when |
+|---|---|---|
+| `const { f } = require(p)` | `const f = require(p)` | `p`'s `module.exports` is a single function or class named `f`, nothing in `p` gives it a member `f`, and the file reads nothing off `f` except a class's static methods |
+| `const f = require(p)` | `const { f } = require(p)` | `p` exports an object holding a function `f`, and the file only calls `f` |
+| `import { f } from p` | `import f from p` | `p`'s only export is a default function or class named `f`, under the same conditions as the first row |
+| `import f from p` | `import { f } from p` | `p` is an ES module with no default export, it exports a function `f`, and the file only calls `f` |
+
+The runtime makes these fixes itself, before the model is called and again after the model's edits. A model edit that changes how an import binds is kept only if, apart from renames, its result is exactly the runtime's own fix, compared token for token. Anything else, such as several names destructured from a module that exports a single function, goes back to the worker.
 
 ### Ownership routing
 
@@ -94,7 +115,7 @@ The author describes this as BGP-like route discovery. In the code it works like
 
 ### Builders are the bottleneck, so every manager has one
 
-Linking is the one place where independent work meets, which makes it the natural bottleneck. Every manager gets its own builder, which starts as soon as that manager's subtree has finished and no repair is in flight there, even while other branches are still working. A builder links only what crosses between its own children, and a child manager is represented by its builder's linked output. When every import resolves, every imported name exists in its target and no earlier error names a module, a builder makes no model call to link. Root's builder works on bundles that lower builders have already linked.
+Linking is the one place where independent work meets, which makes it the natural bottleneck. Every manager gets its own builder, which starts as soon as that manager's subtree has finished and no repair is in flight there, even while other branches are still working. A builder links only what crosses between its own children, and a child manager is represented by its builder's linked output. When, after the runtime's own path and binding fixes, every import resolves, every imported name exists in its target and no earlier error names a module, a builder makes no model call to link. At Root, some module must also export `start()`. Root's builder works on bundles that lower builders have already linked.
 
 ## Cloudflare products used
 
@@ -128,7 +149,7 @@ Open the `workers.dev` URL Wrangler prints, paste the token, and press **Start n
 
 ```bash
 npm ci
-npm run check   # node --check on every .js/.mjs file in src/, public/, container/ and test/
+npm run check   # node --check on every .js/.mjs/.cjs file in src/, public/, container/ and test/
 npm test        # node --test test/*.test.js
 ```
 
@@ -136,18 +157,22 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Local:** the full suite passes with `npm test`.
-- **Live:** two v7.11 runs on a real account (Qwen3-30B-A3B and Clef-flash, issue-tracker goal). Neither completed.
-  - The larger run used an earlier v7.11 build that committed every file separately. It exercised the split gate, scope checks, recursive decomposition (28 workers and managers plus 7 builders, four levels deep), per-manager builders applying verified renames, and repair tickets routed down to the owning workers.
-  - The only run with one commit per agent turn paused after 80 seconds. Root's builder did not manage to link one of the entry module's imports in three attempts, although renames alone would have fixed it: the path needed `../` where the builder wrote `./`, and the entry used `ticketService.view` and `ticketService.delete` where the service exports `read` and `del`. Each relink started again from the workers' original files, so earlier renames were lost (still one of the [known limitations](#known-limitations)). The builder sent the import back to the entry worker, whose only file is that module, and Artifacts rejected the worker's repair commit three times as not a fast-forward. Two of these causes have since been fixed: a builder path edit written from the wrong directory is now rewritten to the correct relative path when it matches exactly one module, and the Artifacts store asks the repository whether `main` exists before it clones or starts a new history.
+- **Local:** the full suite passes with `npm test`. This is v7.12. [CHANGELOG-v7.12.md](CHANGELOG-v7.12.md) lists what changed since v7.11 and the live-run evidence behind each fix.
+- **Live:** two v7.11 runs on a real account (Qwen3-30B-A3B and Clef-flash, issue-tracker goal). Neither completed, and both predate v7.12.
+  - The larger run (e89dba35) used an earlier v7.11 build that committed every file separately. It exercised the split gate, scope checks, recursive decomposition (28 workers and managers plus 7 builders, four levels deep), per-manager builders applying verified renames, and repair tickets routed down to the owning workers. Its Root builder lost many of its edits on form: in one attempt ten path edits were rejected because they were written without their quotes, and binding fixes such as `const { isStatusMatch } = require(...)` to `const isStatusMatch = require(...)` were rejected as adding or removing code. On one link no module exported `start()`, and the builder took a filter combinator as the application entry. v7.12 reads quote-less path edits as the import paths they name, makes the binding fixes itself when the target's exports call for them, and asks the model for the entry instead of guessing.
+  - The only run with one commit per agent turn (5f85e12b) paused after 80 seconds. Root's builder did not manage to link one of the entry module's imports in three attempts, although renames alone would have fixed it: the path needed `../` where the builder wrote `./`, and the entry used `ticketService.view` and `ticketService.delete` where the service exports `read` and `del`. Each relink started again from the workers' original files, so the `view` to `read` rename accepted in the first attempt was lost. The builder sent the import back to the entry worker, whose only file is that module, and Artifacts rejected the worker's repair commit three times as not a fast-forward. v7.12 addresses all three causes:
+    - Relinks edit the previous attempt's linked files, so accepted renames are kept, and a relink can undo one.
+    - The import now resolves with no model call, because `ticketService.js` is the only module named like it. A path the builder writes from the wrong directory is also rewritten to the one module it names.
+    - The Artifacts store asks the repository whether `main` exists before it clones or starts a new history.
 
-  Both runs predate these fixes. Neither reached the Root Container check or the runner test; both are covered only by the local tests so far. Earlier versions did run the Container live, and the failures seen there shaped v7.11.
+  A test in the suite feeds that run's three worker files to Root's builder, with a scripted model. The path resolves without the model, and one model call renames `view` and `delete` to `read` and `del`. The linked application then loads and passes a scripted runner test in the real Container runner script, run locally in Node. Neither live run reached the Root Container check or the runner test, and no live run has verified the v7.12 fixes yet. Earlier versions did run the Container live, and the failures seen there shaped v7.11.
 
 ### Known limitations
 
-- Each relink at Root starts again from the inputs the builder collected (worker files and branch builders' linked bundles), not from the previous relink's output, so a rename accepted in one relink is not kept for the next, even though the retry diagnostic tells the model the problems remain "after your renames".
-- The rename-only check compares tokens, not the line breaks between them. An edit that changes no token but adds or moves a line break, such as splitting `return m.value` after `return`, is accepted, and through automatic semicolon insertion it can change what the code does.
-- A branch builder can pick the wrong module inside its branch for an import that really belongs to another branch. Root does not re-examine an import that already resolves unless the static name check or a runtime error points at it.
+- The rename check compares tokens, not the line breaks between them. An edit that changes no token but adds or moves a line break, such as splitting `return m.value` after `return`, is accepted, and through automatic semicolon insertion it can change what the code does.
+- A model path edit that points an import at the wrong module is kept if the path resolves. A branch builder can likewise pick the wrong module inside its branch for an import that really belongs to another branch. Root does not re-examine an import that already resolves unless the static name check or a runtime error points at it. When the picked module does not fit, the worker hears the problem against that module, with the builder's path change listed beside it.
+- A model rename that breaks an import that matched before is undone only when the static name check can see the break. A member read off a value that a factory returns is not visible to it, so such a break shows up only when the application runs; the worker then gets the error along with the builder's renames in its file. The undo restores the whole file to its text from before the model, so a good rename in the same file must be proposed again on the next relink.
+- Root's splitter asks one child to own the entry module, but the runtime does not record which child that is. When no module exports `start()` and the model names no entry, the "No application entry" problem goes to the module whose file name marks it as the application, nearest Root first, else to the module that imports the most others.
 - Linker input at one level is not split when it exceeds the model's context. The builder logs a `link_oversize` event instead. Root's builder gets every module of the application in that call, most only as export names, so this is where project size is limited.
 - Workers write plain JavaScript (`.js`, `.mjs`, `.cjs`) using Node built-ins: no npm packages, TypeScript or JSX.
 - The runtime does not deduplicate work across sibling subtrees. Scope is meant to be fixed when work is split: the splitter is asked for non-overlapping pieces, Clef checks each child against the goal and its parent's assignment, and a split with two identical tasks is refused. Nothing else compares siblings, and in the larger live run two sibling workers each wrote an almost identical `TicketRepository` class, which the builders carried side by side up to Root.
@@ -159,25 +184,26 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 | Path | Contents |
 |---|---|
 | `src/index.js` | Worker entry and the `ControlRoom` Durable Object: agent tree, scheduler, agent turns, routing, builders, runner and repair routing |
-| `src/linker.js` | Acorn-based export surfaces, unresolved-import and name-mismatch checks, `autoLink`, rename-only edit verification, entry choice and loader |
+| `src/linker.js` | Acorn-based export surfaces, unresolved-import and name-mismatch checks, `autoLink` and import binding fixes, verification of builder edits (renames and binding fixes only), entry choice and loader |
 | `src/model.js` | Workers AI calls and prompts: Clef gates, and the Qwen splitter, worker, linker, triage and runner |
 | `src/manager-shard.js` | `ManagerShard` Durable Object: per-manager route hops, inbox, lifecycle, alias planning, Clef owner selection |
 | `src/artifact-store.js`, `src/memory-fs.js` | Artifacts adapter: isomorphic-git over an in-memory filesystem, one commit per call |
 | `src/build-executor.js`, `src/build-verification.js` | `BuildExecutor` Container driver; snapshot hashing, attestation and repair addressing |
 | `src/code-work.js`, `src/assembly.js`, `src/assembly-gate.js` | Worker output rules, `components/...` bundle paths, source and builder-file gates |
-| `src/baseline-linker.js` | Diagnostic linker from the v7.7–v7.10 builder; the v7.11 builder does not use it |
+| `src/baseline-linker.js` | Diagnostic linker from the v7.7–v7.10 builder; builders since v7.11 do not use it |
 | `src/knowledge.js`, `src/protocol.js` | Public and private knowledge files, action parsing, contact rules |
 | `src/vendor/acorn.mjs` | Vendored Acorn parser (MIT, see `src/vendor/ACORN-LICENSE`) |
 | `container/` | Container image (`Dockerfile`) and `build-runner.mjs` |
 | `public/` | Dashboard |
 | `test/` | `node --test` suite with fake Workers AI and Artifacts |
 | `scripts/check.mjs` | Syntax check behind `npm run check` |
-| `docs/history/` | Changelogs for each version, plus the earlier README and install guide |
-| `wrangler.jsonc` | Worker name, bindings (AI, Artifacts, Durable Objects, Container, static assets) and model variable |
+| `CHANGELOG-v7.12.md` | What changed in this release, with the live-run evidence for each fix |
+| `docs/history/` | Changelogs for each earlier version, plus the earlier README and install guide |
+| `wrangler.jsonc` | Worker name, bindings (AI, Artifacts, Durable Objects, Container, static assets) and the `MOCK_AI` switch. Rooms do not read its `MODEL_NAME` variable: the model is chosen per room, in the dashboard or with `settings.model` in the API |
 
 ## History
 
-The design reached this shape over many versions, from routers with a single Root builder to per-manager, rename-only builders. [docs/history/CHANGELOG-v7.11.md](docs/history/CHANGELOG-v7.11.md) documents the current design in detail. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](docs/history/).
+The design reached this shape over many versions, from routers with a single Root builder to per-manager builders that may only rename, plus, since v7.12, fix how an import binds its module. [docs/history/CHANGELOG-v7.11.md](docs/history/CHANGELOG-v7.11.md) documents the v7.11 design this release builds on, and [CHANGELOG-v7.12.md](CHANGELOG-v7.12.md) what changed since. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](docs/history/).
 
 ## License
 

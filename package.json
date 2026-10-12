@@ -1,12 +1,12 @@
 {
   "name": "qwen-recursive-control-plane",
   "private": true,
-  "version": "7.11.0",
+  "version": "7.12.0",
   "type": "module",
   "engines": {
     "node": ">=22.13"
   },
-  "description": "Cloudflare recursive code writing: independent workers write modules blind, a rename-only builder links them, and a separate runner tests the application",
+  "description": "Cloudflare recursive code writing: independent workers write modules blind, builders link them by renaming import paths and identifiers (and fixing how an import binds when the target's exports call for it), and a separate runner tests the application",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

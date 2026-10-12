@@ -109,6 +109,8 @@ npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave runni
    | Split decision model | Clef-flash | Clef-flash, Clef | Answers the split, scope and routing YES/NO questions. |
    | Minimum YES probability | 50% | 20–80% | Clef split threshold. |
 
+   The generative model is chosen here, per room, or with `settings.model` in the API. Rooms do not read the `MODEL_NAME` variable in `wrangler.jsonc`, so editing it does not change the model.
+
 5. Press **Start new experiment**. This clears the room's state and creates Root.
 
 The dashboard refreshes every 3 seconds. It shows the ownership tree, agent traffic (the latest 300 events), the files the room has recorded, committed or staged for the current turn's commit (click one to read its content from the room's index of Artifacts writes), and the **Container build** panel with the latest Container report.
@@ -142,6 +144,7 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 
 ```bash
 URL=https://qwen-control-plane-v4.<your-subdomain>.workers.dev
+APP_TOKEN='<the value you stored with wrangler secret put>'
 curl -sS -X POST "$URL/api/run" -H "Authorization: Bearer $APP_TOKEN" -H 'content-type: application/json' \
   -d '{"room":"demo-room-0001","goal":"Build a small issue tracker that lets someone create, view, update, and delete tickets.","budget":100,"settings":{"parallel":16,"max_agents":64,"max_depth":10}}'
 curl -sS "$URL/api/export?room=demo-room-0001" -H "Authorization: Bearer $APP_TOKEN" > run.json
@@ -157,7 +160,7 @@ curl -sS "$URL/api/export?room=demo-room-0001" -H "Authorization: Bearer $APP_TO
 - **Build panel shows EXECUTOR UNAVAILABLE, or a `build_infrastructure` event appears**: the Container is not ready or failed to start. The Worker can be live before its Container is provisioned. Check `npx wrangler containers list`, and watch `wrangler tail` for `Build container exec not ready`, `Build container command exceeded` or `Build process termination failed`. An infrastructure failure blames no worker; once the Container is up, **Continue** clears the block and Root's builder relinks and reruns the current source.
 - **`split_capacity_blocked`**: Clef chose to split, but the room has no agent slots or depth left. Raise **Total agents** or **Recursion depth** and press **Continue**.
 - **`paused` event, "Stopped automatic retries after 3 failures"**: the agent failed three turns in a row; the `error` events before it give the reason. **Continue** retries it.
-- **`Artifacts ... failed for rc-...`**: a git clone, commit or push to that agent's repository failed. For a worker, the files staged in that turn are rolled back and the action replays from its first write. For a manager or builder, the files stay staged and are pushed at the next flush (a `commit_failed` event). Three failures in a row pause a worker, and **Continue** retries it. If every write fails, run the probe from step 3.
+- **`Artifacts ... failed for rc-...`**: a git step on that agent's repository failed. The word after `Artifacts` names the step: `refs` (asking the repository whether `main` exists), `clone`, `init`, `write`, `stage`, `commit` or `push`. For a worker, the files staged in that turn are rolled back and the action replays from its first write. For a manager or builder, the files stay staged and are pushed at the next flush (a `commit_failed` event). Three failures in a row pause a worker, and **Continue** retries it. If every write fails, run the probe from step 3.
 - **`recovered` event, "Durable Object restarted during a run"**: the room was evicted mid-run and is now paused. **Continue** resumes interrupted turns from their saved position.
 - **`Experiment already running`**: a run is in progress in this room. Wait for it to pause, or use another room.
 - **Status stays paused with builders `waiting`**: problems were sent back to workers and nothing has changed yet, or the runner could not write a valid test. **Continue** relinks with a fresh relink budget.
