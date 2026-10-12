@@ -4,7 +4,7 @@ A multi-agent code-writing control plane that runs entirely on Cloudflare. You g
 
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
-> **Status:** the local suite (184 tests) passes. Live end-to-end runs on Cloudflare are still being verified, and no live run has yet finished with a passing application test. See [Status](#status).
+> **Status:** the full local test suite passes. Live end-to-end runs on Cloudflare are still being verified, and no live run has yet finished with a passing application test. See [Status](#status).
 
 ## The idea
 
@@ -12,7 +12,7 @@ The usual multi-agent design puts one large orchestrator in charge. It reads the
 
 This project makes the opposite bet: **many small agents with small, bounded context beat one big orchestrator agent with limited context.**
 
-- **Bounded context.** A worker sees its own assignment, its own repository and messages from its direct manager. A manager sees its direct children, never their descendants. No worker or manager holds the whole project. The exception is Root's builder: when an import still needs a rename at Root, one model call gets every module of the application, most of them only as export names, so that call is the remaining limit on project size (see [Known limitations](#known-limitations)).
+- **Bounded context.** On the turn Clef makes an agent a worker, the worker writes its code seeing its own assignment, its parent's assignment, its direct siblings' assignments and published file names, and the recent public knowledge of its parent and siblings, never their descendants or the wider tree. On later turns, such as retries and repairs, its parent appears only as "Manager" and it sees no other agent's assignment or knowledge. A manager sees its direct children, never their descendants. No worker or manager holds the whole project. The exception is Root's builder: when an import still needs a rename at Root, one model call gets every module of the application, most of them only as export names, so that call is the remaining limit on project size (see [Known limitations](#known-limitations)).
 - **Each inference tree works only on its own scope.** Ownership works like functional programming. A subtree owns its assignment, writes only to its own repositories and shares no mutable state with its siblings. Two subtrees never write to the same repository, so there is nothing to merge and nothing to conflict. Scope is fixed when work is split, which is meant to keep pieces from overlapping; the runtime itself does not deduplicate work (see [Known limitations](#known-limitations)).
 - **Minimal tape.** Independent agents with well-scoped pieces of the same goal converge on code that is close enough to join with very little glue, and here the glue is literally minimal. The builder that joins modules **can only rename import paths and identifiers**. If two modules disagree in a way a rename cannot fix, the problem goes back to the agent that owns the code.
 
@@ -71,7 +71,7 @@ flowchart TD
 1. **Split gate.** For every agent's assignment, Clef answers one typed YES/NO question: can this code be written as two or more independent modules? Clef returns a probability. At or above the room's threshold (default 0.5), Qwen proposes the children.
 2. **Scope check.** Before any child exists, Clef scores every proposed child against both the Root goal and the parent's assignment, and drops children below 0.5. A split needs at least two distinct admitted children that fit the room's agent and depth limits. A rejected split goes back to Clef and Qwen with the reasons. Root's splitter is asked for exactly one child that owns the application entry module, which exports `start()`.
 3. **Spawn.** Each admitted child gets its own Artifacts repository. The parent becomes a manager permanently: it never writes code, and its turns are routing work with an occasional Clef call, never generative inference.
-4. **Workers write.** When Clef says NO, the agent is a worker and Qwen writes its code in the same turn. A worker imports code it does not own by the relative path and name it expects, for example `require('./ticketStore')`, and publishes that expectation as `assumed_*` knowledge. Only Node built-ins are allowed; third-party packages are rejected.
+4. **Workers write.** When Clef says NO, the agent is a worker and Qwen writes its code in the same turn. A worker imports code it does not own by the relative path and name it expects, for example `require('./ticketStore')`, and is asked to publish that expectation as `assumed_*` knowledge. Only Node built-ins are allowed; third-party packages are rejected.
 5. **Parse check.** Every file must contain executable code, parse with Acorn as CommonJS or as an ES module, and import no packages before it is committed. A failure goes back to the same worker in the same turn with the parser message.
 6. **Commit.** The worker's files for the turn are pushed as one commit, and then its completion report goes to its manager.
 7. **Builder link.** When every agent under a manager is done, that manager's builder starts. First, with no model call, it points each import that resolves nowhere at the one module that clearly provides it. Files that still have unresolved imports or mismatched names go to Qwen in full; every other module is shown only by its export names. Qwen returns `find`/`replace` edits, and the runtime keeps only pure renames. A branch builder hands its linked bundle to the builder above and leaves imports it cannot match for that builder.
@@ -85,7 +85,7 @@ Repairs are bounded. Root fails after eight rounds of problems sent back to work
 
 The author describes this as BGP-like route discovery. In the code it works like this:
 
-- **No global directory.** A worker sees only its manager. An agent that is still splitting also sees its parent, its siblings' public summaries and its direct children, never their descendants. A live worker can message only its manager, and the runtime refuses messages that would reveal a hidden descendant's ID.
+- **No global directory.** An agent is shown at most its parent, its direct siblings and its direct children (their assignments, published file names and recent public knowledge), never their descendants. A worker gets that view only on the turn Clef makes it a worker; on later turns it sees no other agent's assignment or knowledge. A live worker can message only its manager, and the runtime refuses messages that would reveal a hidden descendant's ID.
 - **Advertisement.** Each manager republishes its direct children's public files under aliases of its own, and their `assumed_*` knowledge under scoped keys, in its own Artifacts repository. A parent sees what a subtree offers without learning which agent inside it wrote it, much like route aggregation.
 - **Discovery.** A worker blocked on an outside interface asks its manager, using an opaque request ID. The manager checks, in order: its own public knowledge, its children's public knowledge, its children's published source, HTTP routes recognized in that source, and then a keyword match, with Clef when that is ambiguous, to pick the owning direct child. If nothing fits, it forwards the request to its own parent and records the next hop in its ManagerShard Durable Object. Answers retrace the recorded hops, and each manager on the way caches them as public knowledge.
 - **Knowing the owner is enough.** When a manager finds the branch that owns a behavior, it tells the worker to proceed with its assumed interface; the builder will rename later. Non-blocking questions are dropped and the worker keeps its assumption. An explicitly named owner that does not exist stops the worker as out of scope, while a low-confidence route waits rather than failing.
@@ -93,7 +93,7 @@ The author describes this as BGP-like route discovery. In the code it works like
 
 ### Builders are the bottleneck, so every manager has one
 
-Linking is the one place where independent work meets, which makes it the natural bottleneck. Every manager gets its own builder, which starts as soon as that manager's subtree has finished and no repair is in flight there, even while other branches are still working. A builder links only what crosses between its own children, and a child manager is represented by its builder's linked output. When every import already resolves, a builder makes no model call to link. Root's builder works on bundles that lower builders have already linked.
+Linking is the one place where independent work meets, which makes it the natural bottleneck. Every manager gets its own builder, which starts as soon as that manager's subtree has finished and no repair is in flight there, even while other branches are still working. A builder links only what crosses between its own children, and a child manager is represented by its builder's linked output. When every import resolves, every imported name exists in its target and no earlier error names a module, a builder makes no model call to link. Root's builder works on bundles that lower builders have already linked.
 
 ## Cloudflare products used
 
@@ -135,10 +135,10 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Local:** 184 of 184 tests pass with `npm test`.
+- **Local:** the full suite passes with `npm test`.
 - **Live:** two v7.11 runs on a real account (Qwen3-30B-A3B and Clef-flash, issue-tracker goal). Neither completed.
   - The larger run used an earlier v7.11 build that committed every file separately. It exercised the split gate, scope checks, recursive decomposition (28 workers and managers plus 7 builders, four levels deep), per-manager builders applying verified renames, and repair tickets routed down to the owning workers.
-  - The only run on the current code, with one commit per agent turn, paused after 80 seconds. Root's builder could not fix one of the entry module's imports by renaming and sent it back to the entry worker, whose only file is that module. Artifacts rejected the worker's repair commit three times as not a fast-forward (the first of the [known limitations](#known-limitations)).
+  - The only run on the current code, with one commit per agent turn, paused after 80 seconds. Root's builder did not manage to link one of the entry module's imports in three attempts, although renames alone would have fixed it: the path needed `../` where the builder wrote `./`, and the entry used `ticketService.view` and `ticketService.delete` where the service exports `read` and `del`. Each relink started again from the workers' original files, so earlier renames were lost. The builder sent the import back to the entry worker, whose only file is that module. Artifacts rejected the worker's repair commit three times as not a fast-forward (the first of the [known limitations](#known-limitations)).
 
   Neither run reached the Root Container check or the runner test; both are covered only by the local tests so far. Earlier versions did run the Container live, and the failures seen there shaped v7.11.
 
