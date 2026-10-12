@@ -1248,3 +1248,65 @@ test('room: after the model fixes only a path, the runtime fixes that import\'s 
     .replace("{ parseStatus } = require('../parse-stat-9c511f48/parseStatus')",`parseStatus = require('${rel(paths[0])}')`)
     .replace("{ parsePriority } = require('../parse-prio-9f512401/parsePriority')",`parsePriority = require('${rel(paths[1])}')`));
 });
+
+// ------------------------------------- names in scope, the renames a worker hears, and the entry
+async function workersUnder(room,goal,list) {
+  await room.provision('root',null,'Root objective',goal);
+  room.set('goal',goal);
+  await room.spawn('root',list.map(([label,file])=>({label,task:'Write '+file})));
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  for(const [i,[,file,content]] of list.entries()){room.db().exec("UPDATE agents SET phase='implement' WHERE id=?",`root.${i+1}`);await room.putFile(`root.${i+1}`,file,content);}
+  for(let i=1;i<=list.length;i++)room.db().exec("UPDATE agents SET status='done' WHERE id=?",`root.${i}`);
+  return list.map(([label,file],i)=>materializedPath(label,file,`root.${i+1}`));
+}
+
+test('rename-only check: a binding rename may not rename a global read where that binding is not in scope',()=>{
+  const clock="function fakeClock() {\n  const performance = { now: () => 0 };\n  return performance.now();\n}\nfunction elapsed(t0) { return performance.now() - t0; }\nmodule.exports = { fakeClock, elapsed };\n";
+  assert.match(L.applyEdits(clock,[{find:'performance',replace:'clock'}],{knownNames:new Set(['clock'])}).rejected[0]?.reason,/"performance", which the file also reads as a global/);
+  const param="function bytes(s) { return s.length + atob('QQ==').length; }\nfunction decode(atob) { return atob; }\nmodule.exports = { bytes, decode };\n";
+  assert.match(L.applyEdits(param,[{find:'atob',replace:'payload'}],{knownNames:new Set(['payload'])}).rejected[0]?.reason,/global or undefined name/);
+  // Bindings that every use can see still rename: hoisted, shadowed, self-named, block and catch scopes.
+  const rich="const items = [];\nfunction add(item) { items.push(item); return count(); }\nfunction count() { var total = 0; for (var i = 0; i < items.length; i++) total++; return total; }\nconst fib = function f(n) { return n < 2 ? n : f(n - 1) + f(n - 2); };\nclass Box { constructor(v) { this.v = v; } }\nfunction pick(x) { for (const y of [x]) { if (y) return y; } try { return x; } catch (x) { return x; } }\nouter: for (const k of items) { if (k) break outer; }\nmodule.exports = { add, count, fib, Box, pick };\n";
+  for(const [find,replace] of [['items','entries'],['total','sum'],['i','j'],['f','self'],['Box','Crate'],['x','value']])
+    assert.deepEqual(L.applyEdits(rich,[{find,replace}],{knownNames:new Set([replace])}).rejected,[],find);
+});
+
+test('rename-only check: a member this file defines may not be renamed where a string or computed key reaches it',()=>{
+  const svc="const handlers = {\n  create(d) { return { id: 1, ...d }; },\n  read(id) { return { id }; }\n};\nfunction dispatch(op, arg) { return handlers[op](arg); }\nmodule.exports = { start() { return { createTicket: (d) => dispatch('create', d) }; } };\n";
+  assert.match(L.applyEdits(svc,[{find:'create(d)',replace:'add(d)'}],{knownNames:new Set(['add'])}).rejected[0]?.reason,/also names in a string/);
+  const external=svc.replace("createTicket: (d) => dispatch('create', d)","run: dispatch");
+  assert.match(L.applyEdits(external,[{find:'create(d)',replace:'add(d)'}],{knownNames:new Set(['add'])}).rejected[0]?.reason,/reads by a computed key/);
+  const plain=svc.replace('handlers[op](arg)','handlers.create(arg)');
+  assert.equal(L.applyEdits(plain.replace("'create', ",''),[{find:'create',replace:'add'}],{knownNames:new Set(['add'])}).applied.length,1,'reached only by name');
+});
+
+test('shape: an export that gets members through an alias is not taken for a lone function',()=>{
+  const P='components/p-1/parse.js',A='components/a-1/app.js';
+  const files=new Map([['components/p-1/helpers.js',"module.exports = { parse: (s) => 'helpers.parse:' + s };\n"],
+    [P,"function parse(s) { return 'raw:' + s; }\nmodule.exports = parse;\nconst api = parse;\nconst helpers = require('./helpers');\nfor (const k of Object.keys(helpers)) api[k] = helpers[k];\n"],
+    [A,"const { parse } = require('../p-1/parse.js');\nmodule.exports = { start() { return { run: (s) => parse(s) }; } };\n"]]);
+  assert.deepEqual(L.shapeFixes(files,surfacesOf(files)),[]);
+  files.set(P,files.get(P).replace(/const api[^]*$/,''));
+  assert.equal(L.shapeFixes(files,surfacesOf(files)).length,1,'without the alias the runtime fix applies');
+});
+
+test('room: a relink can undo an accepted rename in a file the runtime also shape-fixed',async()=>{
+  let reply;
+  const {room}=liveRoom({link:()=>reply});
+  const clock="function makeClock() { return { now: () => 1 }; }\nmodule.exports = makeClock;\n";
+  const store="const rows = new Map();\nmodule.exports = {\n  create(d) { rows.set(1, d); return 1; },\n  read(id) { return rows.get(id); }\n};\n";
+  const app="const { makeClock } = require('./makeClock');\nconst svc = require('./ticketService');\nfunction start() {\n  const c = makeClock();\n  return { add: (d) => svc.create(d), get: (id) => svc.read(id) };\n}\nmodule.exports = { start };\n";
+  const [,,appPath]=await workersUnder(room,'Build a small issue tracker.',[['Ticket repository','in-memory-ticket-repository.js',store],['Clock','makeClock.js',clock],['Application entry','app.js',app]]);
+  const builder=await room.scheduleAssembly('root');
+  const sources=await room.collectLinkSources(builder.id);
+  reply={edits:[{file:appPath,find:'{ start }',replace:'{ create: start }'}],entry:appPath,issues:[]};
+  const first=await room.linkSnapshot(builder.id,sources,`${appPath}: no entry`,{isRoot:true});
+  assert.match(first.files.get(appPath),/const makeClock = require[^]*\{ create: start \}/);
+  reply={edits:[{file:appPath,find:'create: start',replace:'start'}],entry:appPath,issues:[]};
+  const second=await room.linkSnapshot(builder.id,sources,`${appPath}: start is not a function`,{isRoot:true,current:first.files,done:first.applied});
+  assert.deepEqual(second.rejected,[]);
+  assert.equal(second.files.get(appPath),first.files.get(appPath).replace('create: start','start'));
+  // The runtime's fix is the only non-rename the undo admits.
+  const bad=L.applyEdits(second.files.get(appPath),[{find:'makeClock();',replace:'makeClock(1);'}],{knownNames:new Set(['create']),original:app,shapes:{path:appPath,files:second.files,surfaces:surfacesOf(second.files)}});
+  assert.match(bad.rejected[0]?.reason,/edit adds or removes code/);
+});

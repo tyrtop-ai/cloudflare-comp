@@ -303,6 +303,35 @@ export function nameFacts(text) {
   });
   return {sourceType,keyStarts,memberStarts,selfStarts,declared,definedMembers,usedMembers,patternKeys};
 }
+// Names the file reads where no enclosing scope declares them: globals, or
+// undefined names. A binding of the same name elsewhere in the file is a
+// different variable, so renaming it may not rename these.
+const SCOPE_NODES=new Set(['Program','FunctionDeclaration','FunctionExpression','ArrowFunctionExpression','BlockStatement','StaticBlock','ForStatement','ForInStatement','ForOfStatement','SwitchStatement','CatchClause','ClassDeclaration','ClassExpression']);
+const notReference=(node,parent)=>parent&&((parent.type==='MemberExpression'&&parent.property===node&&!parent.computed)||
+  (['Property','MethodDefinition','PropertyDefinition'].includes(parent.type)&&parent.key===node&&!parent.computed)||
+  ['LabeledStatement','BreakStatement','ContinueStatement','ExportSpecifier','ImportSpecifier','MetaProperty'].includes(parent.type));
+function freeNames(text) {
+  const {ast}=parseSource(text),declared=new Map(),refs=[];
+  const add=(scope,p)=>{if(!scope||!p)return;if(!declared.has(scope))declared.set(scope,new Set());patternNames(p,declared.get(scope));};
+  const go=(node,parent,scopes)=>{
+    const block=scopes.at(-1),fn=scopes.findLast(s=>s.type==='Program'||s.type.includes('Function'));
+    if(node.type==='VariableDeclaration')for(const d of node.declarations)add(node.kind==='var'?fn:block,d.id);
+    else if(node.type==='FunctionDeclaration'){add(block,node.id);add(fn,node.id);}
+    else if(node.type==='ClassDeclaration')add(block,node.id);
+    else if(node.type.startsWith('Import')&&node.local)add(scopes[0],node.local);
+    else if(node.type==='Identifier'&&!notReference(node,parent))refs.push([node.name,scopes]);
+    if(node.type.includes('Function')){if(node.type!=='FunctionDeclaration')add(node,node.id);for(const p of node.params)add(node,p);}
+    if(node.type==='ClassExpression')add(node,node.id);
+    if(node.type==='CatchClause')add(node,node.param);
+    const inner=SCOPE_NODES.has(node.type)?[...scopes,node]:scopes;
+    for(const [key,value] of Object.entries(node)) {
+      if(key==='loc'||key==='start'||key==='end')continue;
+      for(const v of Array.isArray(value)?value:[value])if(v&&typeof v.type==='string')go(v,node,inner);
+    }
+  };
+  go(ast,null,[]);
+  return new Set(refs.filter(([name,scopes])=>!scopes.some(s=>declared.get(s)?.has(name))).map(([name])=>name));
+}
 // Names that exist somewhere else in the system: declared, defined as a
 // member, destructured from another module, or called on another object
 // (except built-in method names).
@@ -381,13 +410,27 @@ export function renameOnlyError(before, after, {knownNames=null}={}) {
     if(k!=='identifier'&&memberMap.has(x.value)&&b[i].value!==memberMap.get(x.value))
       return `edit renames member ${JSON.stringify(x.value)}, which this file defines, at its definition or some uses but not at token ${i+1}`;
   }
+  // A use the token walk cannot see: a global read where no binding of that
+  // name is in scope, or a member reached by a string or computed key.
+  if(bindingMap.size){const free=freeNames(A),hit=[...bindingMap.keys()].find(n=>free.has(n));if(hit)return `edit renames ${JSON.stringify(hit)}, which the file also reads as a global or undefined name where no binding of it is in scope`;}
+  for(const from of memberMap.keys())if(a.some(t=>['string','template'].includes(t.type.label)&&t.value===from))return `edit renames member ${JSON.stringify(from)}, which this file defines and also names in a string`;
+  if(memberMap.size&&readByKey(A,new Set(memberMap.keys())))return `edit renames member ${[...memberMap.keys()].map(n=>JSON.stringify(n)).join(', ')}, which this file defines and also reads by a computed key`;
   return null;
+}
+// handlers[op] or this[name], where handlers is an object literal defining
+// one of names: the key decides at run time which member it reaches.
+function readByKey(text, names) {
+  const {ast}=parseSource(text),holders=new Set();let found=false;
+  walk(ast,node=>{if(node.type==='VariableDeclarator'&&node.id.type==='Identifier'&&node.init?.type==='ObjectExpression'&&node.init.properties.some(p=>p.type==='Property'&&!p.computed&&names.has(nameOf(p.key))))holders.add(node.id.name);});
+  walk(ast,node=>{if(node.type==='MemberExpression'&&node.computed&&node.property.type!=='Literal'&&(node.object.type==='ThisExpression'||holders.has(node.object.name)))found=true;});
+  return found;
 }
 export function tokenNames(text) {return knownNamesFrom([text]);}
 // Replace only occurrences that start and end on token boundaries, so a find
 // text never rewrites part of a longer name or the inside of a string.
 // original: the worker's text. An edit is also accepted when the whole file
-// is still a rename of it, so a relink can undo a rename it accepted before.
+// is still a rename of it (plus the runtime's binding-shape fixes, given
+// shapes), so a relink can undo a rename it accepted before.
 // check: a further per-edit test of the edited text (an error, or null).
 // done: edits an earlier relink applied to this file; one sent again is
 // already in place, not missing.
@@ -432,6 +475,7 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
     const step=renameOnlyError(current,next,{knownNames});
     let error=step&&original!=null&&!renameOnlyError(original,next,{knownNames})?null:step,shape=false;
     if(error&&shapes){const why=shapeEditError(current,next,{...shapes,knownNames});if(!why)[error,shape]=[null,true];else if(why!==NOT_SHAPE&&error.startsWith('edit adds or removes code'))error=why;}
+    if(error&&original!=null&&shapes&&!shapeEditError(original,next,{...shapes,knownNames}))error=null;
     error=error||check?.(next);
     if(error){rejected.push({edit,reason:error});continue;}
     current=next;applied.push(shape?{...edit,shape}:edit);
@@ -746,17 +790,29 @@ function soleExport(surface, path, name, source, content, local) {
 // object key, x.name = …, the string 'name' (defineProperty), or a class
 // that extends another and may inherit one. The export (local, or
 // module.exports) may get any member when it is assigned a computed key or
-// a prototype, or passed to a call (Object.assign, setPrototypeOf, …).
+// a prototype, or passed to a call (Object.assign, setPrototypeOf, …), also
+// through an alias (const api = parse).
 function definesMember(source, name, local) {
   let found=false;
-  const isExport=n=>n?.type==='Identifier'&&!!local&&n.name===local||isModuleExports(n);
-  try {walk(parseSource(source).ast,(node,parent)=>{
-    if(['MethodDefinition','PropertyDefinition','Property'].includes(node.type)&&!node.computed&&nameOf(node.key)===name)found=true;
-    else if(node.type==='MemberExpression'&&parent?.type==='AssignmentExpression'&&parent.left===node&&(nameOf(node.property)===name||isExport(node.object)&&(node.computed||nameOf(node.property)==='__proto__')))found=true;
-    else if(node.type==='Literal'&&node.value===name)found=true;
-    else if((node.type==='ClassDeclaration'||node.type==='ClassExpression')&&node.superClass)found=true;
-    else if(node.type==='CallExpression'&&node.arguments.some(isExport))found=true;
-  });} catch {return true;}
+  const aliases=new Set(local?[local]:[]);
+  const isExport=n=>n?.type==='Identifier'&&aliases.has(n.name)||isModuleExports(n);
+  try {
+    const {ast}=parseSource(source);
+    for(let size=-1;size!==aliases.size;) {
+      size=aliases.size;
+      walk(ast,node=>{
+        const [to,from]=node.type==='VariableDeclarator'?[node.id,node.init]:node.type==='AssignmentExpression'&&node.operator==='='?[node.left,node.right]:[];
+        if(to?.type==='Identifier'&&isExport(from))aliases.add(to.name);
+      });
+    }
+    walk(ast,(node,parent)=>{
+      if(['MethodDefinition','PropertyDefinition','Property'].includes(node.type)&&!node.computed&&nameOf(node.key)===name)found=true;
+      else if(node.type==='MemberExpression'&&parent?.type==='AssignmentExpression'&&parent.left===node&&(nameOf(node.property)===name||isExport(node.object)&&(node.computed||nameOf(node.property)==='__proto__')))found=true;
+      else if(node.type==='Literal'&&node.value===name)found=true;
+      else if((node.type==='ClassDeclaration'||node.type==='ClassExpression')&&node.superClass)found=true;
+      else if(node.type==='CallExpression'&&node.arguments.some(isExport))found=true;
+    });
+  } catch {return true;}
   return found;
 }
 // The members a file reads off name, as name.member or by destructuring it
