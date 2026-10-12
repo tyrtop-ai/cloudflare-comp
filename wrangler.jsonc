@@ -1,0 +1,66 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "qwen-control-plane-v4",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-10",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "default"
+    }
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/api/*"
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ROOMS",
+        "class_name": "ControlRoom"
+      },
+      {
+        "name": "MANAGERS",
+        "class_name": "ManagerShard"
+      },
+      {
+        "name": "BUILD_EXECUTORS",
+        "class_name": "BuildExecutor"
+      }
+    ]
+  },
+  "exports": {
+    "ControlRoom": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "ManagerShard": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "BuildExecutor": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "vars": {
+    "MODEL_NAME": "@cf/qwen/qwen3-30b-a3b-fp8",
+    "MOCK_AI": "false"
+  },
+  "containers": [
+    {
+      "class_name": "BuildExecutor",
+      "image": "./container/Dockerfile",
+      "max_instances": 4
+    }
+  ]
+}

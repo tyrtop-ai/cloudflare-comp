@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Recursive Control Plane — Persistent Artifact Memory</title>
+  <link rel="stylesheet" href="/styles.css?v=6.5" />
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand"><span class="brand-square"></span> CONTROL PLANE <span class="faint">/ AGENT MEMORY</span></div>
+      <div class="top-meta"><span>RECURSIVE · OPAQUE OWNERSHIP · ARTIFACTS</span><span id="connection" class="connection">Not connected</span></div>
+    </header>
+    <div class="heading">
+      <div class="eyebrow">RECURSIVE AGENTS / PERSISTENT KNOWLEDGE</div>
+      <h1>Own the problem.<br/>Delegate the implementation.</h1>
+      <p>Implementation agents own the code. Root links their work and asks an isolated Cloudflare build container to execute the application build. Failed builds route back through the responsible inference tree. Every agent recursively splits independent behaviors when possible. Every agent remains the stable interface for its strand. Qwen workers own their code, make plausible interface assumptions, and publish provisional contracts. Managers route only genuinely blocking external questions; Artifacts stores code and knowledge for final assembly.</p>
+    </div>
+    <div class="app-grid">
+      <aside class="sidebar">
+        <section class="panel">
+          <div class="section-head"><span class="counter">01</span><h2>Experiment</h2></div>
+          <label for="token">Access token</label>
+          <input id="token" type="password" placeholder="Cloudflare APP_TOKEN" autocomplete="off" />
+          <label for="room">Room</label>
+          <input id="room" class="mono" spellcheck="false" />
+          <label for="goal">Problem statement</label>
+          <textarea id="goal" rows="7">Build a small issue tracker that lets someone create, view, update, and delete tickets. Decompose work into independently solvable behaviors where necessary. Each strand owns its interfaces; use public Artifacts knowledge before asking owners for missing information. Assemble the completed components into one application.</textarea>
+          <div class="control-heading">Runtime settings <span>Per room · applied on Start / Continue</span></div>
+          <div class="range-control"><label for="budget">Turn budget <output id="budget-value" for="budget">100</output></label>
+            <input id="budget" type="range" min="1" max="500" step="1" value="100" /></div>
+          <div class="range-control"><label for="parallel-limit">Concurrent agents <output id="parallel-value" for="parallel">16</output></label>
+            <input id="parallel-limit" type="range" min="1" max="64" step="1" value="16" /></div>
+          <div class="range-control"><label for="max-agents">Total agents <output id="max-agents-value" for="max-agents">64</output></label>
+            <input id="max-agents" type="range" min="2" max="256" step="1" value="64" /></div>
+          <div class="range-control"><label for="max-depth">Recursion depth <output id="max-depth-value" for="max-depth">10</output></label>
+            <input id="max-depth" type="range" min="1" max="16" step="1" value="10" /></div>
+          <label for="model">Generative agent model (Cloudflare Workers AI)</label>
+          <select id="model">
+            <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 A3B · 3B active (default)</option>
+            <option value="@cf/meta/llama-3.2-1b-instruct">Llama 3.2 · 1B (experimental)</option>
+            <option value="@cf/qwen/qwen3.8-27b">Qwen 3.8 · 27B (comparison)</option>
+          </select>
+          <label for="split-model">Split decision model</label>
+          <select id="split-model">
+            <option value="@cf/cloudflare/clef-flash">Clef-flash · fast 9B (default)</option>
+            <option value="@cf/cloudflare/clef">Clef · 27B</option>
+          </select>
+          <div class="range-control"><label for="split-threshold">Minimum YES probability <output id="split-threshold-value" for="split-threshold">50%</output></label>
+            <input id="split-threshold" type="range" min="20" max="80" step="5" value="50" /></div>
+          <p class="helper" id="model-hint">Clef decides YES/NO. If YES, Qwen guesses a split. Leaf agents implement. All inference stays on Workers AI.</p>
+          <button class="primary" id="start">Start new experiment <span>↗</span></button>
+          <button class="secondary" id="continue">Continue current experiment</button>
+          <button class="secondary" id="export">Export observation JSON</button>
+          <button class="secondary" id="reset">Clear room state</button>
+          <p id="error" class="error" role="alert"></p>
+          <p class="helper">Start creates a new root repository. Each delegated child receives its own real Cloudflare Artifacts repository. New sessions do not delete old repositories.</p>
+        </section>
+        <section class="panel facts">
+          <div class="section-head"><span class="counter">02</span><h2>Invariant</h2></div>
+          <p>A knows B owns problem Z. If B creates ten descendants, A's address book doesn't change. Workers can only ask their manager. Managers resolve requests by next-hop ownership, without exposing descendants. Missing routes stop out-of-scope work.</p>
+          <div class="rule"></div>
+          <div class="fact-row"><span>Model context</span><strong>Workers: manager only</strong></div>
+          <div class="fact-row"><span>Long-term memory</span><strong>Artifacts per agent</strong></div>
+          <div class="fact-row"><span>Knowledge queries</span><strong>Artifacts first</strong></div>
+          <div class="fact-row"><span>Agent types</span><strong>Managers / implementers</strong></div>
+          <div class="fact-row"><span>Inference</span><strong>Concurrent sibling strands</strong></div>
+        </section>
+      </aside>
+      <section class="workspace">
+        <div class="status-strip">
+          <div><span class="eyebrow">STATE</span><strong id="status">IDLE</strong></div>
+          <div><span class="eyebrow">TURNS</span><strong id="steps">0</strong></div>
+          <div><span class="eyebrow">ACTIVE / LIMIT</span><strong id="active-parallel">0 / 16</strong></div>
+          <div><span class="eyebrow">AGENTS</span><strong id="agent-count">0</strong></div>
+          <div><span class="eyebrow">MAX DEPTH</span><strong id="depth">0</strong></div>
+          <div><span class="eyebrow">COMMITTED FILES</span><strong id="file-count">0</strong></div>
+        </div>
+        <section class="panel" id="build-panel">
+          <div class="section-head"><h2>Container build</h2><span class="right-note" id="build-verdict">Not run</span></div>
+          <pre id="build-evidence" class="build-evidence">Root assembly has not been verified yet.</pre>
+        </section>
+        <section class="panel tree-panel">
+          <div class="section-head"><span class="counter">03</span><h2>Ownership tree</h2><span class="right-note">Observer sees the tree. Individual models don't.</span></div>
+          <div id="hierarchy" class="hierarchy"><p class="empty">No agents yet.</p></div>
+        </section>
+        <div class="two-col">
+          <section class="panel feed-panel">
+            <div class="section-head"><span class="counter">04</span><h2>Agent traffic</h2><span class="right-note" id="event-count">0 events</span></div>
+            <div id="events" class="event-list"><p class="empty">No events yet.</p></div>
+          </section>
+          <section class="panel files-panel">
+            <div class="section-head"><span class="counter">05</span><h2>Committed artifacts</h2><span class="right-note">Read from Cloudflare</span></div>
+            <div id="files" class="file-list"><p class="empty">No files yet.</p></div>
+            <div class="file-preview">
+              <div class="preview-top"><span id="file-title" class="mono">Select a file</span><span id="file-meta" class="faint"></span></div>
+              <pre id="file-content">Source and learned knowledge are stored in each agent's own Artifacts repository.</pre>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+    <footer><span>NO GLOBAL AGENT DIRECTORY. NO REMAPPING. OWNERSHIP SURVIVES DELEGATION.</span><span>Independent agents infer asynchronously. Limits and model are configurable per room. Generated code is not executed or tested.</span><span id="room-id" class="mono"></span></footer>
+  </div>
+  <script type="module" src="/app.js?v=6.5"></script>
+</body>
+</html>

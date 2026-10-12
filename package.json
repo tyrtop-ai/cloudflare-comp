@@ -1,0 +1,20 @@
+{
+  "name": "qwen-recursive-control-plane",
+  "private": true,
+  "version": "7.11.0",
+  "type": "module",
+  "description": "Cloudflare recursive code writing: independent workers write modules blind, a rename-only builder links them, and a separate runner tests the application",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/assembly-gate.js && node --check src/assembly.js && node --check src/index.js && node --check src/manager-shard.js && node --check src/model.js && node --check src/knowledge.js && node --check src/protocol.js && node --check public/app.js && node --check src/build-executor.js && node --check src/build-verification.js && node --check container/build-runner.mjs && node --check src/code-work.js && node --check src/baseline-linker.js && node --check src/linker.js"
+  },
+  "dependencies": {
+    "isomorphic-git": "^1.33.0"
+  },
+  "devDependencies": {
+    "wrangler": ">=4.145.0 <5"
+  },
+  "license": "MIT"
+}
