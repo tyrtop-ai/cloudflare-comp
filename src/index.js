@@ -1094,7 +1094,7 @@ export class ControlRoom extends DurableObject {
       if(out.parse_error)this.event(builderId,'link_unparsed',`The builder returned invalid JSON; it contributed no renames. ${clip(out.raw,300)}`);
       for(const edit of out.edits) {
         if(!needs.has(edit.file)){rejected.push({edit,reason:'that file was not sent for renaming at this level'});continue;}
-        edits.set(edit.file,[...(edits.get(edit.file)||[]),normalizeEditPaths(edit,js)]);
+        edits.set(edit.file,[...(edits.get(edit.file)||[]),normalizeEditPaths(edit,js,files)]);
       }
       for(const issue of out.issues)if(files.has(issue.file))issues.push({path:issue.file,detail:'Builder: '+issue.problem});
       if(out.entry&&files.has(out.entry))proposals.push(out.entry);
