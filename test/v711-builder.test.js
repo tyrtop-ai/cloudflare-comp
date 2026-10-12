@@ -666,3 +666,172 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
   const returnAt=events.findIndex(e=>e.actor==='root.2'&&e.kind==='return');
   assert.ok(commitAt>=0&&commitAt<returnAt);
 });
+
+// ------------------------------------------- deterministic binding shape and name fallback
+// Fixtures are the worker files of live runs e89dba35 and 5f85e12b, copied by hand.
+const F='components/filter-app-9811f10b/components/';
+const liveFilters={
+  [F+'combine-mu-9a11f431/combineFilters.js']:"const { isStatusMatch } = require('../implement--9b11f5c4/statusFilter');\nconst { isPriorityMatch } = require('../implement--9c11f757/priorityFilter');\nconst { isAssigneeMatch } = require('../implement--9911f29e/assigneeFilter');\n\nfunction combineFilters(ticket) {\n  return isStatusMatch(ticket) && isPriorityMatch(ticket) && isAssigneeMatch(ticket);\n}\n\nmodule.exports = { combineFilters };\n",
+  [F+'implement--9b11f5c4/statusFilter.js']:"module.exports = function isStatusMatch(ticket, filter) {\n  const ticketStatus = ticket.status;\n  const filterStatus = filter.status;\n\n  if (Array.isArray(filterStatus)) {\n    return filterStatus.includes(ticketStatus);\n  } else {\n    return ticketStatus === filterStatus;\n  }\n};\n",
+  [F+'implement--9c11f757/priorityFilter.js']:"module.exports = {\n  isPriorityMatch: (ticket, priority) => ticket.priority === priority\n};\n",
+  [F+'implement--9911f29e/assigneeFilter.js']:"function isAssigneeMatch(ticket, assigneeFilter) {\n  return ticket.assignee === assigneeFilter;\n}\n\nmodule.exports = isAssigneeMatch;\n",
+  [F+'parse-filt-a1512727/components/combine-fi-9e51226e/combineFilters.js']:"const { parseStatus } = require('../parse-stat-9c511f48/parseStatus');\nconst { parsePriority } = require('../parse-prio-9f512401/parsePriority');\n\nfunction combineFilters(rawStatus, rawPriority) {\n  const statusFilter = parseStatus(rawStatus);\n  const priorityFilter = parsePriority(rawPriority);\n  return {\n    ...statusFilter,\n    ...priorityFilter\n  };\n}\n\nmodule.exports = { combineFilters };\n",
+  [F+'parse-filt-a1512727/components/parse-stat-9c511f48/parseStatus.js']:"function parseStatus(rawStatus) {\n  return { status: rawStatus };\n}\n\nmodule.exports = parseStatus;\n",
+  [F+'parse-filt-a1512727/components/parse-prio-9f512401/parsePriority.js']:"function parsePriority(priority) {\n  return { priority };\n}\n\nmodule.exports = parsePriority;\n"};
+const COMBINE=F+'combine-mu-9a11f431/combineFilters.js',PARSED=F+'parse-filt-a1512727/components/combine-fi-9e51226e/combineFilters.js';
+const surfacesOf=files=>new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
+const fixAll=(files,surfaces)=>{
+  for(const edit of L.shapeFixes(files,surfaces))files.set(edit.file,L.applyEdits(files.get(edit.file),[edit],{shapes:{path:edit.file,files,surfaces}}).content);
+  return files;
+};
+
+test('shape: one name destructured from a module that exports a single function becomes a plain binding (run e89dba35)',()=>{
+  const files=new Map(Object.entries(liveFilters)),sur=surfacesOf(files);
+  assert.equal(L.importMismatches(files,sur).filter(m=>/single function/.test(m.detail)).length,4,'the static check sees all four');
+  const edits=L.shapeFixes(files,sur);
+  assert.deepEqual(edits.map(e=>e.replace).sort(),[
+    "const isAssigneeMatch = require('../implement--9911f29e/assigneeFilter');",
+    "const isStatusMatch = require('../implement--9b11f5c4/statusFilter');",
+    "const parsePriority = require('../parse-prio-9f512401/parsePriority');",
+    "const parseStatus = require('../parse-stat-9c511f48/parseStatus');"],'priorityFilter exports an object holding isPriorityMatch, so that import is already right');
+  fixAll(files,sur);
+  assert.match(files.get(COMBINE),/^const isStatusMatch = require\(.*\nconst \{ isPriorityMatch \} = require\(.*\nconst isAssigneeMatch = require\(/);
+  assert.equal(files.get(COMBINE).split('\n').slice(3).join('\n'),liveFilters[COMBINE].split('\n').slice(3).join('\n'),'nothing but the bindings changed');
+  assert.deepEqual(L.importMismatches(files,surfacesOf(files)),[],'a fixed import is no longer reported');
+  // The renamer alone still refuses it; the runtime admits only its own fix.
+  const before=liveFilters[PARSED];
+  const after=before.replace('const { parseStatus }','const parseStatus');
+  assert.match(L.renameOnlyError(before,after),/adds or removes code/);
+  assert.equal(L.shapeEditError(before,after,{path:PARSED,files:new Map(Object.entries(liveFilters)),surfaces:sur}),null);
+});
+
+test('shape: the builder\'s own proposals from run e89dba35 are accepted only where they match the runtime fix',()=>{
+  const files=new Map(Object.entries(liveFilters)),sur=surfacesOf(files);
+  const shapes={path:COMBINE,files,surfaces:sur};
+  const r=L.applyEdits(liveFilters[COMBINE],[
+    {find:"const { isStatusMatch } = require('../implement--9b11f5c4/statusFilter');",replace:"const isStatusMatch = require('../implement--9b11f5c4/statusFilter');"},
+    {find:"const { isPriorityMatch } = require('../implement--9c11f757/priorityFilter');",replace:"const isPriorityMatch = require('../implement--9c11f757/priorityFilter');"},
+    {find:"const { isAssigneeMatch } = require('../implement--9911f29e/assigneeFilter');",replace:"const assigneeMatch = require('../implement--9911f29e/assigneeFilter');"}],{shapes});
+  assert.deepEqual(r.applied.map(e=>e.replace.split(' ')[1]),['isStatusMatch']);
+  assert.match(r.rejected[0].reason,/adds or removes code/,'priorityFilter exports an object: binding it whole would break the calls');
+  assert.equal(r.rejected.length,2,'a proposal that differs from the runtime fix (here a half-renamed binding) is not admitted');
+  assert.equal(L.applyEdits(liveFilters[COMBINE],[{find:"const { isStatusMatch }",replace:"const isStatusMatch"}]).applied.length,0,'without shapes, rename-only is unchanged');
+  // An unlinked path and its binding fixed in one edit: the path part must be
+  // a valid rename and the binding part the runtime fix for the new target.
+  const blind=liveFilters[PARSED].replace("'../parse-stat-9c511f48/parseStatus'","'./statusParser'");
+  const combined=L.applyEdits(blind,[{find:"const { parseStatus } = require('./statusParser');",replace:"const parseStatus = require('../parse-stat-9c511f48/parseStatus');"}],{shapes:{path:PARSED,files,surfaces:sur}});
+  assert.equal(combined.applied.length,1,JSON.stringify(combined.rejected));
+  const wrong=L.applyEdits(blind,[{find:"const { parseStatus } = require('./statusParser');",replace:"const parseStatus = require('../../../implement--9b11f5c4/statusFilter');"}],{shapes:{path:PARSED,files,surfaces:sur}});
+  assert.equal(wrong.applied.length,0,'statusFilter exports isStatusMatch, not parseStatus');
+});
+
+test('shape: a module bound whole and only called is destructured when it exports an object holding that function',()=>{
+  // The combine worker's revision from run e89dba35, with its paths linked.
+  const rev=liveFilters[COMBINE].replace('const { isStatusMatch }','const isStatusMatch').replace('const { isPriorityMatch }','const isPriorityMatch').replace('const { isAssigneeMatch }','const isAssigneeMatch');
+  const files=new Map([...Object.entries(liveFilters),[COMBINE,rev]]),sur=surfacesOf(files);
+  assert.deepEqual(L.shapeFixes(files,sur).filter(e=>e.file===COMBINE).map(e=>e.replace),["const { isPriorityMatch } = require('../implement--9c11f757/priorityFilter');"]);
+  fixAll(files,sur);
+  assert.equal(files.get(COMBINE),liveFilters[COMBINE].replace('const { isStatusMatch }','const isStatusMatch').replace('const { isAssigneeMatch }','const isAssigneeMatch'));
+  // Any use other than a call means the binding may really be the namespace.
+  const set=(extra)=>{const m=new Map([...files,[COMBINE,rev+extra]]);return L.shapeFixes(m,surfacesOf(m)).filter(e=>e.file===COMBINE);};
+  assert.equal(set('isPriorityMatch.isPriorityMatch(1);\n').length,0,'x.member');
+  assert.equal(set('new isPriorityMatch.Thing();\n').length,0,'new x.member');
+  assert.equal(set('module.exports.match = isPriorityMatch;\n').length,0,'passed on as a value');
+  assert.equal(set('function inner(isPriorityMatch) { return isPriorityMatch(1); }\n').length,0,'shadowed');
+  assert.equal(set('new isPriorityMatch(1);\n').length,1,'new x() is still a call');
+});
+
+test('shape: ambiguous imports are left for the worker',()=>{
+  const two="const { parseStatus, parsePriority } = require('../parse-stat-9c511f48/parseStatus');\nmodule.exports = (s) => parseStatus(s);\n";
+  const files=new Map([...Object.entries(liveFilters),[PARSED,two]]),sur=surfacesOf(files);
+  assert.equal(L.shapeFixes(files,sur).filter(e=>e.file===PARSED).length,0,'two names from one function');
+  assert.ok(L.importMismatches(files,sur).some(m=>m.path===PARSED&&/single function/.test(m.detail)),'and the static check still reports it');
+  const other=new Map([...Object.entries(liveFilters),[PARSED,"const { parseStatus } = require('../../../implement--9b11f5c4/statusFilter');\nmodule.exports = (s) => parseStatus(s);\n"]]);
+  assert.equal(L.shapeFixes(other,surfacesOf(other)).filter(e=>e.file===PARSED).length,0,'the single function has another name');
+  const withDefault=new Map([...Object.entries(liveFilters),[PARSED,"const { parseStatus = null } = require('../parse-stat-9c511f48/parseStatus');\nmodule.exports = (s) => parseStatus(s);\n"]]);
+  assert.equal(L.shapeFixes(withDefault,surfacesOf(withDefault)).filter(e=>e.file===PARSED).length,0,'a default value');
+  const extra=new Map([['components/a/x.js',"const { parse } = require('../b/parse.js');\nparse(1);\n"],['components/b/parse.js','function parse(){}\nmodule.exports = parse;\nmodule.exports.strict = parse;\n']]);
+  assert.equal(L.shapeFixes(extra,surfacesOf(extra)).length,0,'module.exports is not a single function');
+  const tight=new Map([['components/a/x.js',"const{parse}=require('../b/parse.js');parse(1);"],['components/b/parse.js','module.exports=function parse(){}']]);
+  assert.deepEqual(L.shapeFixes(tight,surfacesOf(tight)).map(e=>e.replace),["const parse=require('../b/parse.js');"],'no tokens run together');
+});
+
+test('shape: ESM named and default imports are fixed the same way',()=>{
+  const files=new Map([
+    ['components/a/app.mjs',"import { parseStatus as parse } from '../b/parseStatus.mjs';\nimport isOpen from '../c/filters.mjs';\nimport store from '../d/store.mjs';\nexport function start(){ return { parse, open: (t) => isOpen(t), all: () => store.all() }; }\n"],
+    ['components/b/parseStatus.mjs','export default function parseStatus(s){ return { status: s }; }\n'],
+    ['components/c/filters.mjs','export function isOpen(t){ return t.status === "open"; }\nexport const ALL = "all";\n'],
+    ['components/d/store.mjs','export function all(){ return []; }\n']]);
+  const sur=surfacesOf(files);
+  assert.ok(L.importMismatches(files,sur).some(m=>m.name==='parseStatus'));
+  assert.deepEqual(L.shapeFixes(files,sur).map(e=>e.replace),["import parse from '../b/parseStatus.mjs';","import { isOpen } from '../c/filters.mjs';"],'store is used as a namespace (store.all), so it stays');
+  fixAll(files,sur);
+  assert.deepEqual(L.importMismatches(files,surfacesOf(files)),[]);
+});
+
+const liveTicketService="let tickets = [];\nlet nextId = 1;\n\nfunction create(ticket) {\n  const newTicket = { ...ticket, id: nextId++ };\n  tickets.push(newTicket);\n  return newTicket;\n}\n\nfunction read(id) {\n  return tickets.find(t => t.id === id);\n}\n\nfunction update(id, updates) {\n  const ticket = tickets.find(t => t.id === id);\n  if (!ticket) return null;\n  Object.assign(ticket, updates);\n  return ticket;\n}\n\nfunction del(id) {\n  const index = tickets.findIndex(t => t.id === id);\n  if (index === -1) return false;\n  tickets.splice(index, 1);\n  return true;\n}\n\nmodule.exports = { create, read, update, del };\n";
+const liveTicket="class Ticket {\n  constructor(id, title, description, status, priority) {\n    this.id = id;\n    this.title = title;\n    this.description = description;\n    this.status = status;\n    this.priority = priority;\n  }\n}\n\nmodule.exports = Ticket;\n";
+const liveEntry="const ticketService = require('./ticketService');\n\nfunction start() {\n  return {\n    create: ticketService.create,\n    view: ticketService.view,\n    update: ticketService.update,\n    delete: ticketService.delete\n  };\n}\n\nmodule.exports = { start };\n";
+
+test('name fallback: an import named after its module resolves even when no module exports every name it uses (run 5f85e12b)',()=>{
+  const ENTRY='components/applicatio-f07f9de6/module.js',SERVICE='components/ticket-ser-f17f9f79/ticketService.js';
+  const files=new Map([[ENTRY,liveEntry],['components/ticket-int-ee7f9ac0/ticket.js',liveTicket],[SERVICE,liveTicketService]]),sur=surfacesOf(files);
+  for(const scope of ['application','branch']) {
+    const edits=L.autoLink(files,sur,{scope});
+    assert.deepEqual(edits.map(e=>[e.file,e.find,e.replace]),[[ENTRY,"'./ticketService'","'../ticket-ser-f17f9f79/ticketService.js'"]],scope);
+    assert.match(edits[0].reason,/only module whose name matches; none exports all of create, view, update, delete/);
+  }
+  const linked=new Map(files);
+  linked.set(ENTRY,L.applyEdits(liveEntry,L.autoLink(files,sur)).content);
+  assert.deepEqual(L.importMismatches(linked,sur).map(m=>m.name),['view','delete'],'only the members that differ are left for the model');
+  // ticket.js loosely matches "ticketService" too; the exact name decides.
+  assert.equal(L.autoLink(files,sur,{scope:'application'})[0].target,SERVICE);
+});
+
+test('name fallback: ambiguous or loose name matches pick nothing, and a provider still comes first',()=>{
+  const entry="const svc = require('./ticketService');\nmodule.exports = { start(){ return { view: svc.view, list: svc.list }; } };\n";
+  const pick=(extra,scope='application')=>{const files=new Map([['components/app-1/app.js',entry],...extra]);return L.autoLink(files,surfacesOf(files),{scope}).map(e=>e.target);};
+  const svc="module.exports = { view(){}, all(){} };\n";
+  assert.deepEqual(pick([['components/a/ticketService.js',svc],['components/b/ticketService.js',svc]]),[],'two exact name matches');
+  assert.deepEqual(pick([['components/a/ticketServiceImpl.js',svc],['components/b/ticketServices.js',svc]]),[],'two loose name matches');
+  assert.deepEqual(pick([['components/a/ticketServiceImpl.js',svc]]),['components/a/ticketServiceImpl.js'],'one loose match at Root that exports some of the names');
+  assert.deepEqual(pick([['components/a/ticketServiceImpl.js',"module.exports = { read(){} };\n"]]),[],'a loose match that exports none of them');
+  assert.deepEqual(pick([['components/a/ticketServiceImpl.js',svc]],'branch'),[],'a branch accepts only an exact name');
+  assert.deepEqual(pick([['components/a/ticketService.js',svc],['components/b/viewer.js','module.exports = { view(){}, list(){} };\n']]),['components/b/viewer.js'],'the only module exporting every name wins over the name');
+  // Run e89dba35: "createTicket" loosely contains "ticket", but ticket.js exports only Ticket.
+  const app="const { createTicket } = require('./createTicket');\nmodule.exports = { createTicket: (ticketData) => createTicket(ticketData) };\n";
+  const ticket="class Ticket {\n  constructor(id, title, status, description) {\n    this.id = id;\n  }\n}\n\nmodule.exports = { Ticket };\n";
+  const files=new Map([['components/issuetrack-f57fa5c5/issueTrackerApp.js',app],['components/viewticket-76192817/components/ticketrepo-2b13086c/components/define-tic-281303b3/ticket.js',ticket]]);
+  assert.deepEqual(L.autoLink(files,surfacesOf(files),{scope:'application'}),[]);
+});
+
+test('room: the live 5f85e12b link resolves its path without the model; the model sees only the member mismatch',async()=>{
+  const ticketRunner="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.create({ title: 'Printer jam', status: 'open' });\n  assert.equal((await app.view(t.id)).title, 'Printer jam');\n  await app.update(t.id, { status: 'closed' });\n  assert.equal((await app.view(t.id)).status, 'closed');\n  assert.equal(await app.delete(t.id), true);\n  assert.equal(await app.view(t.id), undefined);\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
+  const {room,calls}=liveRoom({link:(user)=>{
+    const entry=user.your_files.find(f=>f.path.endsWith('/module.js'));
+    return {edits:entry?[{file:entry.path,find:'ticketService.view',replace:'ticketService.read'},{file:entry.path,find:'ticketService.delete',replace:'ticketService.del'}]:[],entry:entry?.path??null,issues:[]};
+  },runner:()=>ticketRunner});
+  const goal='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
+  await room.provision('root',null,'Root objective',goal);
+  room.set('goal',goal);
+  await room.spawn('root',[{label:'Ticket Interface',task:'Write the ticket class'},{label:'Ticket Service',task:'Write the ticket service'},{label:'Application Entry',task:'Write the entry module exporting start()'}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id IN ('root.1','root.2','root.3')");
+  await room.putFile('root.1','ticket.js',liveTicket);
+  await room.putFile('root.2','ticketService.js',liveTicketService);
+  await room.putFile('root.3','module.js',liveEntry);
+  room.db().exec("UPDATE agents SET status='done' WHERE id IN ('root.1','root.2','root.3')");
+  const entryPath=materializedPath('Application Entry','module.js','root.3');
+  assert.equal(entryPath,'components/applicatio-f07f9de6/module.js','the live run\'s path');
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  const events=room.snapshot().events;
+  assert.equal(room.node(builder.id).status,'done',events.slice(-12).map(e=>e.kind+': '+e.body).join('\n'));
+  assert.match(events.find(e=>e.kind==='link_auto').body,/module\.js: '\.\/ticketService' → '\.\.\/ticket-ser-f17f9f79\/ticketService\.js'/);
+  assert.equal(calls.link.length,1,'one model call, no relink');
+  assert.deepEqual(calls.link[0].your_files.map(f=>f.path),[entryPath]);
+  assert.match(calls.link[0].your_files[0].content,/require\('\.\.\/ticket-ser-f17f9f79\/ticketService\.js'\)/,'the model sees the path already resolved');
+  assert.equal(calls.link[0].known_mismatches.length,2);
+  assert.match(calls.link[0].known_mismatches.join('\n'),/reads 'view'[\s\S]*reads 'delete'/);
+  assert.ok(!events.some(e=>e.kind==='link_retry'||e.kind==='sent_to_workers'));
+});

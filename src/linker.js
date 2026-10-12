@@ -381,7 +381,9 @@ export function renameOnlyError(before, after, {knownNames=null}={}) {
 export function tokenNames(text) {return knownNamesFrom([text]);}
 // Replace only occurrences that start and end on token boundaries, so a find
 // text never rewrites part of a longer name or the inside of a string.
-export function applyEdits(content, edits, {knownNames=null}={}) {
+// shapes ({path, files, surfaces}) also admits the runtime's own binding-shape
+// fix of one import; every other edit must be rename-only.
+export function applyEdits(content, edits, {knownNames=null,shapes=null}={}) {
   let current=String(content);
   const applied=[],rejected=[];
   for(const edit of edits) {
@@ -400,7 +402,8 @@ export function applyEdits(content, edits, {knownNames=null}={}) {
     let next='',last=0;
     for(const at of hits){next+=current.slice(last,at)+replace;last=at+find.length;}
     next+=current.slice(last);
-    const error=renameOnlyError(current,next,{knownNames});
+    let error=renameOnlyError(current,next,{knownNames});
+    if(error&&shapes&&!shapeEditError(current,next,{...shapes,knownNames}))error=null;
     if(error){rejected.push({edit,reason:error});continue;}
     current=next;applied.push(edit);
   }
@@ -566,12 +569,12 @@ export function importMismatches(files, surfaces) {
 // ---------- deterministic linking: no model call when the answer is mechanical ----------
 const normName=s=>String(s||'').toLowerCase().replace(/\.(?:m|c)?js$/,'').replace(/[^a-z0-9]/g,'');
 const methodName=m=>String(m.name).replace(/^(?:static |get |set )/,'');
+const isRequire=n=>n?.type==='CallExpression'&&n.callee?.type==='Identifier'&&n.callee.name==='require'&&n.arguments[0]?.type==='Literal'&&typeof n.arguments[0].value==='string';
 // Every relative import in a file, with the names the file expects from it.
 export function importRefs(path, content) {
   let ast;try {ast=parseSource(content).ast;} catch {return [];}
   const refs=[],byBinding=new Map();
   const add=(lit,binding)=>{const ref={specifier:lit.value,start:lit.start,end:lit.end,names:new Set(),members:new Set(),isNew:false};refs.push(ref);if(binding)byBinding.set(binding,ref);return ref;};
-  const isRequire=n=>n?.type==='CallExpression'&&n.callee?.type==='Identifier'&&n.callee.name==='require'&&n.arguments[0]?.type==='Literal'&&typeof n.arguments[0].value==='string';
   const seen=new Set();
   walk(ast,node=>{
     if(node.type==='VariableDeclarator'&&isRequire(node.init)) {
@@ -601,8 +604,11 @@ export function importRefs(path, content) {
 // Point an import that resolves nowhere at the one module that clearly
 // provides it: the only module exporting every name the file uses from it,
 // or (at Root) the only module whose file or class name matches the path.
-// A branch builder only accepts an exact name match, since the real module
-// may live in a branch it cannot see.
+// When no module exports every name, the name match still decides, and the
+// static check then names the members that differ. An exact name beats a
+// looser one, and a looser one must export at least one of those names. A
+// branch builder only accepts an exact name match, since the real module may
+// live in a branch it cannot see.
 export function autoLink(files, surfaces, {scope='application'}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
@@ -619,20 +625,127 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
         if(file===key||(cls&&cls===key))return true;
         return scope==='application'&&key.length>=5&&(file.includes(key)||key.includes(file)&&file.length>=5||(cls&&cls.includes(key)));
       };
+      const byName=(loose=nameMatch)=>{
+        const exact=others.filter(t=>{const cls=normName(surfaces.get(t)?.default?.name);return normName(t.split('/').pop())===key||(cls&&cls===key);});
+        const pool=exact.length?exact:others.filter(loose);
+        return pool.length===1?pool[0]:null;
+      };
       const provides=t=>{const {names}=exportNames(surfaces.get(t));return [...wanted].every(n=>names.has(n));};
+      // A loose name match must also export something the file uses
+      // (createTicket is not ticket.js).
+      const shares=t=>{const {names}=exportNames(surfaces.get(t));return [...wanted].some(n=>names.has(n));};
       let pick=null,why='';
       if(wanted.size) {
         const pool=others.filter(provides);
         if(pool.length===1){pick=pool[0];why=`only module exporting ${[...wanted].join(', ')}`;}
         else if(pool.length>1){const both=pool.filter(nameMatch);if(both.length===1){pick=both[0];why=`exports ${[...wanted].join(', ')} and matches the name`;}}
-      } else {
-        const pool=others.filter(nameMatch);
-        if(pool.length===1){pick=pool[0];why='only module whose name matches';}
-      }
+        else if((pick=byName(t=>nameMatch(t)&&shares(t))))why=`only module whose name matches; none exports all of ${[...wanted].join(', ')}`;
+      } else if((pick=byName()))why='only module whose name matches';
       if(!pick)continue;
       const raw=content.slice(ref.start,ref.end),quote=raw[0];
       edits.push({file:path,find:raw,replace:quote+relativeSpecifier(path,pick)+quote,reason:why,target:pick});
     }
   }
   return edits;
+}
+
+// ---------- binding shape: the one import change that is not a rename ----------
+// A worker can bind a module the wrong way round: destructure one function
+// from a module whose module.exports is that function, or bind a module whole
+// and only call it when the module exports an object holding that function.
+// Only the binding pattern of that one import changes, and only when the
+// target's export surface says which shape is right.
+function bindingSites(content) {
+  const {ast}=parseSource(content),sites=[];
+  walk(ast,(node,parent)=>{
+    if(node.type==='VariableDeclarator'&&isRequire(node.init))
+      sites.push({node,statement:parent?.declarations?.length===1?parent:node,spec:node.init.arguments[0].value,shape:node.id.type,start:node.id.start,end:node.id.end});
+    else if(node.type==='ImportDeclaration'&&node.specifiers.length===1&&typeof node.source?.value==='string') {
+      const sp=node.specifiers[0],braces=sp.type==='ImportSpecifier';
+      sites.push({node,statement:node,spec:node.source.value,shape:sp.type,start:braces?content.lastIndexOf('{',sp.start):sp.start,end:braces?content.indexOf('}',sp.end)+1:sp.end});
+    }
+  });
+  return sites;
+}
+// The module exports exactly one function or class, named like the binding
+// (or, when anonymous, its file is).
+function soleExport(surface, path, name) {
+  const d=surface?.default;
+  return !!d&&(d.type==='function'||d.type==='class')&&!surface.named.length&&normName(d.name||path.split('/').pop())===normName(name);
+}
+// The module exports an object, or a named set, holding name as something callable.
+function holds(surface, name) {
+  const d=surface?.default;
+  if(d&&d.type!=='object')return false;
+  const m=(d?d.members:surface?.named||[]).find(x=>x.name===name);
+  return !!m&&m.type!=='object'&&m.type!=='instance';
+}
+// Every use of name other than its one declaration calls it, name(...) or
+// new name(...): never name.member, and never passed on as a value.
+function onlyCalled(content, name) {
+  let text,f,list;
+  try {text=canonicalize(content);f=nameFacts(text);list=tokens(text,f.sourceType);} catch {return false;}
+  let calls=0,other=0;
+  list.forEach((t,i)=>{
+    if(t.type.label!=='name'||t.value!==name||f.memberStarts.has(t.start)||f.keyStarts.has(t.start))return;
+    const prev=list[i-1],next=list[i+1];
+    if(next?.type.label==='('&&prev?.type.keyword!=='function'&&prev?.type.label!=='*'||prev?.type.keyword==='new'&&next?.type.label!=='.')calls++;
+    else other++;
+  });
+  return calls>0&&other===1;
+}
+// Proof by tokens: every token outside the binding is unchanged and the
+// binding is now exactly the new pattern.
+function onlyBindingChanged(before, after, start, end, text, sourceType) {
+  let a,b,t;
+  try {parseSource(after);a=tokens(before,sourceType);b=tokens(after,sourceType);t=tokens(text.trim(),sourceType);} catch {return false;}
+  const expected=[...a.filter(x=>x.end<=start),...t,...a.filter(x=>x.start>=end)];
+  return expected.length===b.length&&expected.every((x,i)=>sameToken(x,b[i]));
+}
+function shapeFixesIn(path, content, files, surfaces) {
+  let sites,sourceType;
+  try {sourceType=parseSource(content).sourceType;sites=bindingSites(content);} catch {return [];}
+  const out=[];
+  for(const s of sites) {
+    if(!s.spec.startsWith('.'))continue;
+    const target=resolveLocal(path,s.spec,files).path,surface=target&&surfaces.get(target);
+    if(!surface||surface.error)continue;
+    const id=s.node.id,sp=s.node.specifiers?.[0],p=id?.properties?.length===1?id.properties[0]:null;
+    let text=null,reason='';
+    if(s.shape==='ObjectPattern'&&surface.kind==='cjs'&&p?.type==='Property'&&!p.computed&&p.key.type==='Identifier'&&p.value.type==='Identifier'&&soleExport(surface,target,p.key.name)){text=p.value.name;reason=`${target} exports a single ${surface.default.type} as module.exports`;}
+    else if(s.shape==='Identifier'&&surface.kind==='cjs'&&holds(surface,id.name)&&onlyCalled(content,id.name)){text=`{ ${id.name} }`;reason=`${target} exports ${id.name} inside an object and this file only calls it`;}
+    else if(s.shape==='ImportSpecifier'&&sp.imported.type==='Identifier'&&soleExport(surface,target,sp.imported.name)){text=sp.local.name;reason=`${target} has only a default ${surface.default.type}`;}
+    else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&holds(surface,sp.local.name)&&onlyCalled(content,sp.local.name)){text=`{ ${sp.local.name} }`;reason=`${target} has no default export, only a named ${sp.local.name} that this file calls`;}
+    if(text===null)continue;
+    const gap=(x,y)=>/[\w$]/.test(x||'')&&/[\w$]/.test(y||'')?' ':'';
+    text=gap(content[s.start-1],text[0])+text+gap(text.at(-1),content[s.end]);
+    const next=content.slice(0,s.start)+text+content.slice(s.end);
+    if(!onlyBindingChanged(content,next,s.start,s.end,text,sourceType))continue;
+    const {start,end}=s.statement;
+    out.push({file:path,find:content.slice(start,end),replace:next.slice(start,end+text.length-(s.end-s.start)),reason,target,next});
+  }
+  return out;
+}
+// The shape fix of every resolved import that is bound the wrong way round.
+export function shapeFixes(files, surfaces) {
+  const set=files instanceof Map?files:new Map(Object.entries(files));
+  const edits=[];
+  for(const path of [...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')))
+    for(const {file,find,replace,reason,target} of shapeFixesIn(path,set.get(path),set,surfaces))edits.push({file,find,replace,reason,target});
+  return edits;
+}
+// An edit that is not rename-only is accepted only when its result is, byte
+// for byte, the runtime's shape fix of one import, after any renames the same
+// edit makes (which must pass renameOnlyError on their own).
+export function shapeEditError(before, after, {path, files, surfaces, knownNames=null}={}) {
+  let a,b;
+  try {a=bindingSites(before);b=bindingSites(after);} catch(e) {return 'edited file cannot be analyzed: '+e.message;}
+  const changed=a.length===b.length?a.map((_,i)=>i).filter(i=>a[i].shape!==b[i].shape):[];
+  if(changed.length!==1)return 'edit does not change exactly one import binding';
+  const x=a[changed[0]],y=b[changed[0]];
+  const mid=after.slice(0,y.start)+before.slice(x.start,x.end)+after.slice(y.end);
+  const renamed=mid===before?null:renameOnlyError(before,mid,{knownNames});
+  if(renamed)return renamed;
+  const set=files instanceof Map?files:new Map(Object.entries(files||{}));
+  return shapeFixesIn(path,mid,set,surfaces).some(f=>f.next===after)?null:`edit changes how ${JSON.stringify(after.slice(y.start,y.end))} is bound, which the target module's exports do not call for`;
 }

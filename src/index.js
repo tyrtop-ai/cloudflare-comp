@@ -8,7 +8,7 @@ import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, pr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, importMismatches, autoLink, applyEdits, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, importMismatches, autoLink, shapeFixes, applyEdits, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -1062,15 +1062,20 @@ export class ControlRoom extends DurableObject {
     const js=sources.filter(s=>LINKABLE.test(s.destination)).map(s=>s.destination);
     const surfaces=new Map(js.map(p=>[p,exportSurface(p,files.get(p))]));
     // Mechanical path fixes first, with no model call: an import that resolves
-    // nowhere is pointed at the one module that clearly provides it.
-    const autoApplied=[];
-    const autoByFile=new Map();
-    for(const edit of autoLink(files,surfaces,{scope:isRoot?'application':'branch'}))autoByFile.set(edit.file,[...(autoByFile.get(edit.file)||[]),edit]);
-    for(const [file,list] of autoByFile) {
-      const result=applyEdits(files.get(file),list);
-      files.set(file,result.content);
-      autoApplied.push(...result.applied.map(e=>({...e,file,auto:true})));
-    }
+    // nowhere is pointed at the one module that clearly provides it. Then a
+    // resolved import bound the wrong way round gets its binding shape fixed.
+    const applyAuto=(map,list)=>{
+      const byFile=new Map(),done=[];
+      for(const edit of list)byFile.set(edit.file,[...(byFile.get(edit.file)||[]),edit]);
+      for(const [file,group] of byFile) {
+        const result=applyEdits(map.get(file),group,{shapes:{path:file,files:map,surfaces}});
+        map.set(file,result.content);
+        done.push(...result.applied.map(e=>({...e,file,auto:true})));
+      }
+      return done;
+    };
+    const autoApplied=applyAuto(files,autoLink(files,surfaces,{scope:isRoot?'application':'branch'}));
+    autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
     if(autoApplied.length)this.event(builderId,'link_auto',`Resolved ${autoApplied.length} import(s) without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
     // Only files with an import that does not resolve inside this manager's
@@ -1104,11 +1109,13 @@ export class ControlRoom extends DurableObject {
     for(const [file,list] of edits) {
       const knownNames=new Set();
       for(const [p,names] of namesByFile)if(p!==file)for(const n of names)knownNames.add(n);
-      const result=applyEdits(linked.get(file),list,{knownNames});
+      const result=applyEdits(linked.get(file),list,{knownNames,shapes:{path:file,files:linked,surfaces}});
       linked.set(file,result.content);
       applied.push(...result.applied.map(e=>({...e,file})));
       rejected.push(...result.rejected.map(r=>({...r,edit:{...r.edit,file}})));
     }
+    // A path the model just resolved may still bind its module the wrong way round.
+    if(edits.size)applied.push(...applyAuto(linked,shapeFixes(linked,surfaces)));
     for(const r of rejected.slice(0,12))
       this.event(builderId,'link_edit_rejected',clip(`${r.edit.file}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
     if(applied.length)this.event(builderId,'link_renamed',`Applied ${applied.length} rename(s) in ${new Set(applied.map(e=>e.file)).size} module(s): `+
