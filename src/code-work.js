@@ -10,6 +10,9 @@ export function codeWritingTask(task) {
   // but do not create filenames/exports while splitting the implementation.
   return `${base} Deliver working source files, not prose, plans, or design documents.`;
 }
+// The piece a codeWritingTask() wraps, for notes that quote it.
+export const assignedPiece = task => String(task||'').replace(/ Deliver working source files, not prose, plans, or design documents\.$/,'')
+  .replace(/^Write executable source code to implement the following specific piece: ([\s\S]*)\.$/,'$1');
 
 const SOURCE=/\.(?:[cm]?jsx?|[cm]?tsx?|py|go|rs|java|kt|c|cc|cpp|h|hpp|cs|rb|php|swift|sql|sh|css|scss|html|vue|svelte|json|ya?ml|toml|wasm|graphql|proto)$/i;
 export const isRuntimeLeafFile = path => /\.(?:js|mjs|cjs)$/i.test(String(path||''));
