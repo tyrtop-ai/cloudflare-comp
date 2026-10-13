@@ -287,6 +287,21 @@ test('validation: an unplaceable problem (M7) may go to any child that writes co
   assert.deepEqual([up.how,up.dec.action,up.dec.reason],['model','escalate','not in this branch']);
 });
 
+test('validation: a stuck worker may be told what to write, twice; a stuck branch is never assigned; what came back unchanged twice does not go back',()=>{
+  const ctx={...view('root.1',{'root.1.1':'worker','root.1.2':'manager','root.1.3':'worker'}),recurrence:()=>0};
+  const stuck=problem('stuck',[party('root.1.1','subject','')]),branch=problem('stuck',[party('root.1.2','subject','')]);
+  const mismatch=problem('mismatch',[party('root.1.1','reader'),party('root.1.3','provider')],{flags:{no_change:2,no_change_by:'root.1.1'}});
+  const call=[{id:'p1',p:stuck,dec:{rule:'stuck',action:'escalate'}},{id:'p2',p:branch,dec:{rule:'stuck',action:'escalate'}},{id:'p3',p:mismatch,dec:{rule:'no_change',action:'exhausted'}}];
+  const run=(actions,c=ctx)=>P.validateManagerActions(actions,call,c);
+  const told=run([{action:'assign',problems:['p1'],child:'root.1.1',instructions:'Close the array literal.'}]);
+  assert.deepEqual([told.rejected.length,told.decisions[0].how,told.decisions[0].dec.child],[0,'model','root.1.1']);
+  assert.match(run([{action:'assign',problems:['p2'],child:'root.1.2',instructions:'Fix your branch.'}]).rejected[0].reason,/stuck branch is retasked, retired or escalated, not assigned/);
+  assert.match(run([{action:'assign',problems:['p1'],child:'root.1.1',instructions:'Close it.'}],{...ctx,recurrence:(p,c)=>c==='root.1.1'?2:0}).rejected[0].reason,/root\.1\.1 already had problem p1 2 or more times/);
+  assert.match(run([{action:'assign',problems:['p3'],child:'root.1.1',instructions:'Use fmt.'}]).rejected[0].reason,/already had problem p3/);
+  assert.deepEqual(run([{action:'assign',problems:['p3'],child:'root.1.3',instructions:'Export pretty.'}]).decisions[2].dec.child,'root.1.3','the other side may take it');
+  assert.match(MANAGER_SYSTEM,/M4 it recurs[^]*do not assign it to that child again/);
+});
+
 test('decideProblems never throws: an AI error or output that never parses gives no actions and the error',async()=>{
   const env=answers=>({AI:{run:async(_m,{messages})=>{assert.ok(messages[0].content.startsWith(MANAGER_SYSTEM.slice(0,40)));const a=answers.shift();if(a instanceof Error)throw a;return {response:a};}}});
   let calls=0;const onCall=()=>calls++;

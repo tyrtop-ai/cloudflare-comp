@@ -3,7 +3,7 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
+import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, GOAL_START_REQUIREMENT, ENTRY_CONTRACT, decideProblems } from './model.js';
 import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -1761,12 +1761,13 @@ export class ControlRoom extends DurableObject {
     if(!call.length||!this.allowModel(m)||!this.roundsLeft(m))this.applyDecisions(m,entries,ctx,st);
     else {
       this.applyDecisions(m,entries.filter(e=>!held.has(e)),ctx,st);
-      if(deferred.length)this.deferProblems(m,deferred,'another cluster is decided first');
       const decided=await this.askManagerModel(m,call,fixed,ctx);
       this.applyDecisions(m,decided.decisions,ctx,st,decided);
-      // The next cluster in its own turn, only while the model may be asked:
-      // past the budget, drive still runs a ready manager (critique #5).
-      if(deferred.length&&this.allowModel(m))this.wake(m);
+      // The next cluster in its own turn, only while the model answers and
+      // may be asked again (past the budget, drive still runs a ready
+      // manager, critique #5); otherwise the others keep their defaults now.
+      if(deferred.length&&(decided.error||!this.allowModel(m)))this.applyDecisions(m,deferred,ctx,st);
+      else if(deferred.length){this.deferProblems(m,deferred,'another cluster is decided first');this.wake(m);}
     }
     if(st.exhausted)this.exhaustRounds(m,st.exhausted);
     else this.unfixable(m);
@@ -1798,8 +1799,9 @@ export class ControlRoom extends DurableObject {
       builder:builder?.id||null,maxHops:MAX_HOPS(depth),
       canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),causedHere:p=>caused.has(p.id),
       plainJsDone:id=>plain.has(id),uniqueProvider:p=>unique.get(p.id)||null,
-      // The same problem assigned before to this child or inside its branch (M4).
-      recurrence:(p,child)=>query(this.db(),"SELECT assignee FROM problems WHERE signature=? AND id!=? AND assignee!=''",p.signature,p.id).filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
+      // The same problem assigned before to this child or inside its branch
+      // (M4); for a stuck worker, its earlier stuck problems that what it was told did not settle.
+      recurrence:(p,child)=>query(this.db(),`SELECT assignee FROM problems WHERE ${p.kind==='stuck'?"kind='stuck' AND outcome!='resolved' AND source":'signature'}=? AND id!=? AND assignee!=''`,p.kind==='stuck'?p.source:p.signature,p.id).filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
       production:[...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>c.id),
       leaks:(text,to)=>this.leaksHiddenAgentIds(text,[to]),busy:id=>[...this.activeTurns].some(a=>a===id||a.startsWith(id+'.'))};
   }
@@ -1809,7 +1811,14 @@ export class ControlRoom extends DurableObject {
   // for a report wave costs a repair round (st.exhausted: why none is left).
   // acts: the model's retires and retasks, applied after the rows.
   applyDecisions(m, entries, ctx, st, acts={retire:[],retask:[]}) {
-    const n=this.node(m),kindOf=ctx.kindOf,now=Date.now(),trail=(p,action,to,rule)=>[...p.trail,{at:m,action,to,rule,ts:now}];
+    const n=this.node(m),kindOf=ctx.kindOf,now=Date.now(),trail=(p,action,to,rule)=>[...p.trail,{at:m,action,to,rule,ts:now}],label=id=>ctx.labelOf?.(id)||id;
+    // A retire or retask stands only on rows still as they were read: the
+    // problems it settles, or with none, any problem of the call. A report
+    // that superseded them while the model was asked voids it (critique #20).
+    const current=p=>{const r=query(this.db(),'SELECT holder,status FROM problems WHERE id=?',p.id)[0];return !!r&&r.holder===p.holder&&r.status===p.status;};
+    const stands=r=>{const basis=entries.filter(e=>e.dec.action==='close'&&e.dec.child===r.child);return (basis.length?basis:entries).some(e=>current(e.p));};
+    const kept=list=>list.filter(r=>stands(r)||void this.event(m,'problem_decision_stale',clip(`${acts.retire.includes(r)?'Retiring':'Retasking'} ${label(r.child)} rested on problems that changed while it was being decided; it is not applied.`,400),r.child));
+    acts={retire:kept(acts.retire),retask:kept(acts.retask)};
     // A model retask restarts its child: one round, by the wave of a problem it settles.
     const skip=new Set();
     for(const r of acts.retask) {
@@ -1826,7 +1835,11 @@ export class ControlRoom extends DurableObject {
       }
       decided.push([p,dec]);
     }
-    const tickets=new Map(),relink=[],retasks=new Map(),label=id=>ctx.labelOf?.(id)||id;
+    const tickets=new Map(),relink=[],retasks=new Map();
+    // A model decision's facts add to the problem's own (the provider's
+    // exports, what the top's children offer the entry); they never replace them.
+    const factsOf=(p,dec,own)=>dec.rule!=='model'||dec.facts_text==null?dec.facts_text??own:
+      [...new Set([dec.facts_text,dec.side==='provider'?'':own].filter(Boolean))].join(' | ')||own||'';
     for(const [p,dec] of decided) {
       const kind=dec.child?kindOf(dec.child):null;
       if(dec.action==='exhausted') {
@@ -1834,7 +1847,13 @@ export class ControlRoom extends DurableObject {
         if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:[...p.trail,{at:m,action:'close',to:'',rule:dec.rule,reason:why,ts:now}]})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${why}): ${p.detail}`,600));
           this.wakeReporter(m,p);
+          if(p.kind==='stuck')this.pauseStuck(p);
         }
+      } else if(dec.action==='close'&&dec.outcome==='retasked'&&kind==='worker'&&p.kind!=='stuck') {
+        // A retasked worker owes the fix as if assigned: a rerun that changes
+        // nothing reopens it (reopenStalled), a changed one is relinked.
+        if(this.moveProblem(p,{status:'assigned',assignee:dec.child,flags:{...p.flags,revs:this.revisionKey(dec.child)},trail:trail(p,'retask',dec.child,dec.rule)}))
+          this.event(m,'problem_assigned',clip(`${p.kind} problem goes with ${label(dec.child)}'s new task: ${p.detail}`,600),dec.child);
       } else if(dec.action==='close') {
         // Its child is retired or retasked by this decision.
         if(this.moveProblem(p,{status:'closed',outcome:dec.outcome,trail:trail(p,dec.outcome==='retired'?'retire':'retask',dec.child,dec.rule)}))
@@ -1844,7 +1863,8 @@ export class ControlRoom extends DurableObject {
           retasks.set(dec.child,{task:dec.task,rule:dec.rule,reason:dec.plain_js?'the code gate rejected its output three times; it writes plain JavaScript':''});
       } else if(dec.action==='escalate') {
         // A stuck child's branch cannot finish here: up as this manager's own.
-        const own=dec.resubject||p.kind==='stuck'&&!p.flags.rounds_exhausted?{parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:clip(`${n.label} cannot finish its branch: ${p.detail}`,950)}:{};
+        // (Once: a problem already about this branch goes up as it is.)
+        const own=(dec.resubject||p.kind==='stuck'&&!p.flags.rounds_exhausted)&&!p.parties.some(x=>x.owner===m&&x.role==='subject')?{parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:clip(`${n.label} cannot finish its branch: ${p.detail}`,950)}:{};
         if(this.moveProblem(p,{holder:n.parent,...own,flags:{...p.flags,escalated_from:m},trail:trail(p,'escalate',n.parent,dec.rule)})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_escalated',clip(`${p.kind} problem (${dec.rule}) goes to the parent${dec.reason?` (${dec.reason})`:''}: ${p.detail}`,600),n.parent);
           this.wake(n.parent);
@@ -1856,7 +1876,7 @@ export class ControlRoom extends DurableObject {
         if(this.moveProblem(p,{status:'relinking',assignee:dec.child,flags:{...p.flags,fingerprint:this.assemblyFingerprint(m)},trail:trail(p,'relink',dec.child,dec.rule)}))relink.push(p);
       } else if(kind==='manager') {
         // relay: the decision travels as a side, never a node below the child.
-        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:dec.facts_text??p.facts.provider_text??''};
+        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.facts.provider_text??'')};
         if(this.moveProblem(p,{holder:dec.child,directive,trail:trail(p,directive?'relay':'delegate',dec.child,dec.rule)})) {
           this.event(m,directive?'problem_relayed':'problem_delegated',clip(`${p.kind} problem (${dec.rule}) to ${label(dec.child)}${directive?`, ${directive.side} changes: ${directive.instructions}`:', whose branch holds every party'}`,700),dec.child);
           this.wake(dec.child);
@@ -1875,12 +1895,17 @@ export class ControlRoom extends DurableObject {
       const revs=this.revisionKey(worker),moved=[];
       for(const [p,dec] of list) {
         // A relayed decision stays the parent's, so a reopened problem is relayed again (D1).
-        const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:dec.facts_text??p.directive?.facts_text??p.facts.provider_text??''};
+        const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.directive?.facts_text??p.facts.provider_text??'')};
         if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,flags:{...p.flags,revs},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
       }
       if(!moved.length)continue;
+      // A stuck worker reads its manager's ticket on a fresh turn: its failed
+      // action is not replayed, and its count starts again (the problem stays assigned).
+      if(moved.some(p=>p.kind==='stuck')){this.db().exec('DELETE FROM pending_turns WHERE agent=?',worker);this.resetFailures(worker);}
       const ticket=crypto.randomUUID(),role=moved.some(p=>p.directive.side==='provider')?'provider':'reader';
-      const instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
+      // The entry's runtime contract leads, whatever a decision's own words say.
+      const said=[...new Set(moved.map(p=>p.directive.instructions))],contract=moved.some(p=>p.kind==='entry')&&!said.includes(ENTRY_CONTRACT)?[ENTRY_CONTRACT]:[];
+      const instructions=clip([...contract,...said].join(' '),900);
       const facts=clip([...new Set(moved.flatMap(p=>String(p.directive.facts_text||'').split(' | ')).filter(Boolean))].join(' | '),1400);
       this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,m,worker,JSON.stringify(moved.map(p=>p.id)),role,instructions,facts,now);
       this.send(m,worker,'[build:repair] '+ticket);
@@ -1920,8 +1945,13 @@ export class ControlRoom extends DurableObject {
     for(const r of v.rejected)this.event(m,'problem_decision_rejected',clip(`${r.action?.action||'?'} ${r.action?.child||''}: ${r.reason}`,600));
     const left=v.decisions.filter(d=>d.how==='default');
     if(left.length&&!result.error)this.event(m,'problem_default',clip(`${left.length} problem(s) the decision left out keep their default: ${left.map(d=>`${d.id} ${d.dec.action} ${d.dec.child?ctx.labelOf(d.dec.child):''}`).join(', ')}.`,600));
-    for(const d of v.decisions)if(d.dec.facts_from?.length)d.dec={...d.dec,facts_text:await this.factsFrom(m,d.dec.facts_from,d.dec.child)};
-    return v;
+    // Facts per assignment: the listed children's modules that its problems name first.
+    const facts=new Map(),same=d=>JSON.stringify([d.dec.child,d.dec.facts_from]);
+    for(const d of v.decisions.filter(d=>d.dec.facts_from?.length)) {
+      if(!facts.has(same(d)))facts.set(same(d),await this.factsFrom(m,d.dec.facts_from,d.dec.child,v.decisions.filter(x=>same(x)===same(d)).map(x=>x.p)));
+      d.dec={...d.dec,facts_text:facts.get(same(d))};
+    }
+    return {...v,error:result.error||''};
   }
   // What the manager's model reads (spec 3.6): its responsibility, its
   // direct children (a worker by its modules' exports, a sub-manager by its
@@ -1930,12 +1960,17 @@ export class ControlRoom extends DurableObject {
   // context budget: the children are clipped first.
   async managerModelInput(m, call, fixed, ctx) {
     const n=this.node(m),state=this.read(`link_state:${m}`,null),fp=this.assemblyFingerprint(m),base=p=>String(p||'').split('/').pop();
-    const children=[];
+    const children=[],GIVEN=['assign','relay','delegate','retask'],given=p=>p.trail.filter(t=>t.at===m&&GIVEN.includes(t.action));
+    // What this manager gave each child before, from the trails (a reopened
+    // problem has no assignee), and how often it came back unchanged (M4).
+    const mine=this.problems('trail LIKE ?',`%"at":${JSON.stringify(m)}%`);
     for(const c of this.children(m).filter(c=>c.status!=='retired')) {
-      const kind=ctx.kindOf(c.id),view={id:c.id,label:c.label,kind,status:c.status,task:clip(c.task,400)};
+      const kind=ctx.kindOf(c.id),view={id:c.id,label:c.label,kind,status:c.status,task:clip(c.task,400)},under=id=>id===c.id||String(id||'').startsWith(c.id+'.');
       if(kind==='worker'||kind==='manager') {
-        const rows=this.problems('assignee=? OR assignee LIKE ?',c.id,c.id+'.%');
-        Object.assign(view,await this.boundaryView(c.id),{history:{assigned:rows.length,last_outcome:rows.at(-1)?.outcome||rows.at(-1)?.status||''}});
+        const rows=mine.filter(p=>given(p).some(t=>under(t.to))),last=rows.at(-1);
+        Object.assign(view,await this.boundaryView(c.id),{history:{assigned:rows.flatMap(given).filter(t=>under(t.to)).length,
+          returned_unchanged:rows.filter(p=>under(p.flags.no_change_by)).reduce((n,p)=>n+p.flags.no_change,0),
+          last_outcome:!last?'':last.status==='closed'?last.outcome:last.status==='open'&&last.flags.no_change?'returned unchanged':last.status}});
       }
       if(kind==='builder')view.relinks_left=state?.fingerprint===fp?Math.max(0,MAX_RELINKS-state.relinks):MAX_RELINKS;
       children.push(view);
@@ -1944,7 +1979,8 @@ export class ControlRoom extends DurableObject {
       // proposed: decided by the rules, in this cluster because its child is a party here; the model may change it.
       problems:call.map(({id,p,dec,trigger,placed})=>({id,kind:p.kind,stage:p.stage,trigger:trigger||'proposed',detail:clip(p.detail,700),
         parties:placed.map(x=>({child:x.child||(x.place==='outside'?'(outside this branch)':'(unknown)'),file:base(x.owner_path||x.path),role:x.role})),
-        evidence:(p.evidence||[]).map(e=>clip(e,300)),default:{action:dec.action==='exhausted'?'close':dec.action,...dec.child?{child:dec.child}:{}}})),
+        evidence:(p.evidence||[]).map(e=>clip(e,300)),default:{action:dec.action==='exhausted'?'close':dec.action,...dec.child?{child:dec.child}:{}},
+        ...given(p).length?{history:{assigned_before:given(p).map(t=>t.to),...p.flags.no_change?{returned_unchanged_by:p.flags.no_change_by,times:p.flags.no_change}:{}}}:{}})),
       fixed_decisions:fixed.map(e=>({child:e.dec.child,instructions:clip(e.dec.instructions||instructionsFor(e.p,e.dec.side),300)})),
       rounds_left:Math.max(0,MANAGER_MAX_ROUNDS-Number(this.get(`repair_rounds:${m}`,'0')))};
     for(const cut of [c=>{if(c.exports)c.exports=clip(c.exports,200);},c=>{delete c.needs;c.task=clip(c.task,120);}])
@@ -1989,13 +2025,20 @@ export class ControlRoom extends DurableObject {
   // What the named children export, read from this manager's linked bundle
   // (a sub-manager by the modules its branch offers): the facts a decision
   // sends with its instructions, one line per module, with no ids.
-  async factsFrom(m, ids, recipient) {
+  async factsFrom(m, ids, recipient, problems=[]) {
     const b=this.builderOf(m),rows=b?query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=? ORDER BY destination',b.id):[],lines=[];
+    // The other side's modules the problems name, wherever they lie in a
+    // branch: its boundary lists only what nothing in the branch imports.
+    const named=new Set(problems.flatMap(p=>p.parties).filter(x=>x.owner&&x.owner!==recipient&&!x.owner.startsWith(recipient+'.')).map(x=>`${x.owner}|${x.owner_path}`));
     for(const id of ids) {
-      let files=new Map();
-      for(const r of rows.filter(r=>nextDirectChild(m,r.child)===id))try{files.set(r.destination,await this.indexedContent(b.id,r.destination));}catch{}
+      let files=new Map();const parties=[];
+      for(const r of rows.filter(r=>nextDirectChild(m,r.child)===id))try{
+        files.set(r.destination,await this.indexedContent(b.id,r.destination));
+        const o=this.buildSourceOrigin(b.id,r.destination);
+        if(o&&named.has(`${o.owner}|${o.path}`))parties.push(r.destination);
+      }catch{}
       if(!files.size)files=await this.childModules(id);
-      const surfaces=surfacesOf(files),paths=this.manager(id)?branchBoundary(files).exports.filter(p=>surfaces.has(p)):[...surfaces.keys()];
+      const surfaces=surfacesOf(files),paths=[...new Set([...parties,...this.manager(id)?branchBoundary(files).exports:surfaces.keys()])].filter(p=>surfaces.has(p));
       lines.push(...paths.map(p=>exportsLine(p,surfaces)));
     }
     const text=clip(lines.join(' | '),700);
@@ -2043,6 +2086,11 @@ export class ControlRoom extends DurableObject {
       db.exec("UPDATE problems SET status='closed',outcome=?,updated=? WHERE status!='closed' AND (holder=? OR assignee=? OR source=?)",outcome,now,id,id,id);
     }
     for(const p of this.problems("holder=? AND status!='closed'",m))if(p.parties.some(x=>gone.has(x.owner)))this.moveProblem(p,{status:'closed',outcome});
+    // An alias that resolves into a retired node goes too, at every level above.
+    for(let dead=query(db,`SELECT owner,path FROM exposed_files WHERE source IN (${ids.map(()=>'?').join(',')})`,...ids);dead.length;) {
+      for(const r of dead)db.exec('DELETE FROM exposed_files WHERE owner=? AND path=?',r.owner,r.path);
+      dead=dead.flatMap(r=>query(db,'SELECT owner,path FROM exposed_files WHERE source=? AND source_path=?',r.owner,r.path));
+    }
     this.save('queue',this.read('queue',[]).filter(id=>!gone.has(id)));
     // A manager's Durable Object keeps its own routing hops.
     if(this.env.MANAGERS&&this.ctx.waitUntil)this.ctx.waitUntil(this.purgeShardHops(gone).catch(()=>{}));
@@ -2070,6 +2118,8 @@ export class ControlRoom extends DurableObject {
     if(!node||['retired','failed'].includes(node.status))return;
     if(below.length) {
       this.retireNodes(m,below,'retasked');
+      // What it held was about the branch that is gone; it starts with nothing.
+      db.exec("UPDATE problems SET status='closed',outcome='retasked',updated=? WHERE holder=? AND status!='closed'",Date.now(),c);
       this.set(`builder_gen:${c}`,Number(this.get(`builder_gen:${c}`,'0'))+1);
       for(const k of ['linked','link_state','link_reported','builder_requested','bundle','capacity_blocked','rounds_exhausted','repair_rounds','repair_waves','manager_reconciled'])
         db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
@@ -3467,11 +3517,15 @@ export class ControlRoom extends DurableObject {
   }
   // A production worker below the top stopped by three code-gate failures:
   // a stuck problem in its manager's inbox, once while it is open, with the
-  // last failures as its detail.
+  // last failures as its detail. One its manager already assigned it (what
+  // it was told did not get it past the gate) is replaced, so the manager
+  // hears it again and a stall is never silent.
   fileStuck(id, gates) {
     const n=this.node(id);
     if(!this.live()||!n?.parent||isRuntimeNode(n)||this.manager(id)||gates.length<3||!gates.every(Boolean))return false;
-    if(this.problems("source=? AND kind='stuck' AND status!='closed'",id).length)return true;
+    const prior=this.problems("source=? AND kind='stuck' AND status!='closed'",id);
+    if(prior.some(p=>p.status==='open'))return true;
+    this.closeProblems(prior,'superseded');
     const last=query(this.db(),`SELECT kind,body FROM events WHERE actor=? AND kind IN (${FAILURE_EVENTS.map(()=>'?').join(',')}) ORDER BY id DESC LIMIT 4`,id,...FAILURE_EVENTS).reverse();
     const detail=clip(`${n.label} stopped after three failed turns at the code gate: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
     this.insertProblem({holder:n.parent,kind:'stuck',stage:'work',source:id,input:`turn:${n.turn}`,
@@ -3483,12 +3537,21 @@ export class ControlRoom extends DurableObject {
   // A turn that ended without failure, or Continue: the count starts again
   // and the agent's stuck problems are resolved.
   clearFailures(id) {
-    const failures=this.read('failures',{}),gates=this.read('failure_gates',{});
-    if(failures[id]||gates[id]) {
-      failures[id]=0;delete gates[id];
-      this.save('failures',failures);this.save('failure_gates',gates);
-    }
+    this.resetFailures(id);
     this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='stuck' AND status!='closed'",Date.now(),id);
+  }
+  resetFailures(id) {
+    const failures=this.read('failures',{}),gates=this.read('failure_gates',{});
+    if(!failures[id]&&!gates[id])return;
+    failures[id]=0;delete gates[id];
+    this.save('failures',failures);this.save('failure_gates',gates);
+  }
+  // A stuck worker that no manager above could settle waits for Continue,
+  // as before v7.14, and says so.
+  pauseStuck(p) {
+    const w=this.node(p.source);
+    if(w&&!this.manager(w.id)&&w.status==='waiting'&&(this.read('failures',{})[w.id]||0)>=3)
+      this.event(w.id,'paused','Stopped automatic retries after 3 failures; no manager above could settle it. Continue to retry.');
   }
   // The work queue is only scheduling metadata. Each individual agent retains
   // exclusive control of its own turn, while unrelated strands can infer and
