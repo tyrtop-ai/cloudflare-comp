@@ -928,6 +928,36 @@ export function providedNames(surface) {
   if(d?.type==='class')for(const m of d.methods||[])names.add(methodName(m));
   return names;
 }
+// v7.15: the promised names no file provides in a shape a sibling can
+// destructure and call: a named export, a member of a default object, or a
+// default function or class of that name (the binding fix handles that
+// shape); start alone as the loader finds it. A default class's or instance's
+// methods do not count: const { getTickets } = require(...) gets undefined
+// from a class and an unbound method from an instance. A file whose exports
+// this parse cannot list is given the doubt, as in mayExportStart.
+export function missingExports(files, names) {
+  const surfaces=[...(files instanceof Map?files:new Map(Object.entries(files)))].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>exportSurface(p,c));
+  const doubt=s=>s.error||s.open||s.named.some(n=>n.name==='*')||['call','value'].includes(s.default?.type)||(s.default?.type==='object'&&s.default.members.some(m=>m.type==='spread'));
+  if(surfaces.some(doubt))return [];
+  const provides=(s,name)=>s.named.some(n=>n.name===name)||(s.default?.type==='object'&&s.default.members.some(m=>m.name===name))||
+    (['function','class'].includes(s.default?.type)&&s.default.name===name)||(name==='start'&&exportsStart(s));
+  return [...new Set(names)].filter(name=>!surfaces.some(s=>provides(s,name)));
+}
+// A worker's relative import that resolves to none of its own files and
+// names one of its own promised functions (run6: the create worker wrote
+// const { createTicket } = require('./ticketStore')).
+export function selfImports(files, names) {
+  const set=files instanceof Map?files:new Map(Object.entries(files)),own=new Set(names),out=[];
+  for(const [path,content] of set) {
+    if(!LINKABLE.test(path))continue;
+    const unresolved=new Set(componentImports(path,content,set).filter(r=>r.error).map(r=>r.specifier));
+    for(const ref of importRefs(path,content)) {
+      const hit=[...new Set([...ref.names,...ref.members])].filter(n=>own.has(n));
+      if(hit.length&&unresolved.has(ref.specifier))out.push({path,specifier:ref.specifier,names:hit});
+    }
+  }
+  return out;
+}
 // Every name a module reads from an import that resolves, in source order,
 // with ok=false where the target does not export it.
 export function importReads(files, surfaces) {

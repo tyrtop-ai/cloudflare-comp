@@ -55,7 +55,7 @@ test('rejected 1-of-4 partition returns to Clef and can become direct implementa
     }
     if(input.messages[0].content.includes('LEAF CODE WRITER')){
       calls.push({kind:'leaf',request:JSON.parse(input.messages[1].content)});
-      return answer({summary:'Implements assigned ticket code',files:[{path:'ticket.js',content:'export function ticketTitle(data) { return String(data.title || "").trim(); }'}],done:true});
+      return answer({summary:'Implements assigned ticket code',files:[{path:'ticket.js',content:'export function ticketTitle(data) { return String(data.title || "").trim(); }\nexport function start() { return { ticketTitle }; }'}],done:true});
     }
     throw new Error('Unexpected model call');
   }};

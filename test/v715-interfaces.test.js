@@ -351,6 +351,73 @@ test('v7.15: a worker\'s task text lists only its own functions, with descriptio
   assert.equal(room.node('root.3').status,'done');
 });
 
+const run6Create="const { createTicket } = require('./ticketStore');\nfunction addTicket(title, description) { return createTicket({ title, description }); }\nmodule.exports = { addTicket };\n";
+const fixedCreate="function createTicket(title, description) { return { id: Date.now(), title, description, status: 'open' }; }\nmodule.exports = { createTicket };\n";
+async function createWorker(outputs) {
+  const ai=fakeAI({leaf:n=>({summary:'Create ticket',files:[{path:'createTicket.js',content:outputs(n)}],done:true})});
+  const env=await tree(ai,run6Root.slice(0,3));
+  env.room.db().exec("UPDATE agents SET status='ready' WHERE id='root.3'");
+  return {...env,ai};
+}
+
+test('v7.15: run6 replay (A): a worker missing a promised export is sent back before linking',async()=>{
+  const {room,ai}=await createWorker(n=>n===1?run6Create:fixedCreate);
+  await room.turn('root.3');
+  assert.notEqual(room.node('root.3').status,'done');
+  assert.equal(room.node('root.3').status,'ready','the trailing check wakes it on the [contract] message');
+  const [message]=room.receive('root.3');
+  assert.equal(message.from,'runtime:contract');
+  assert.equal(message.body,"[contract] Your published files do not export: createTicket(title, description): creates a ticket and returns it. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function createTicket(…) or exports.createTicket = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file. createTicket.js imports createTicket from './ticketStore', but createTicket is yours to write: write it in your own module instead of importing it.");
+  assert.equal(room.get('contract_returns:root.3'),'1');
+  assert.equal(room.read('failures',{})['root.3'],0);
+  assert.equal(events(room,'contract_missing')[0].body,'Done refused (1/3): createTicket promised and not exported; back to the worker.');
+  // Publishing wakes the manager for provisional linking, as before; the
+  // return does not: no completion report and no returned mark.
+  assert.equal(room.receive('root').length,0,'no completion report');
+  assert.equal(room.get('returned:root.3'),'');
+  assert.ok(!room.children('root').some(c=>c.label==='Temporary builder'),'no builder links it');
+  await room.turn('root.3');
+  assert.equal(ai.calls.filter(c=>c.kind==='leaf').length,2);
+  assert.ok(ai.calls[1].request.new_messages.some(m=>m.body.startsWith('[contract] ')),'the worker reads the return');
+  assert.equal(room.node('root.3').status,'done');
+  assert.equal(room.get('contract_returns:root.3'),'','cleared when the check passes');
+  assert.match(room.receive('root')[0].body,/^The create ticket subproblem is complete\./,'now the manager hears of it');
+});
+
+test('v7.15: the third contract return accepts done and records contract_unmet; no pause, no incrementFailures',async()=>{
+  const {room}=await createWorker(()=>run6Create);
+  for(let k=1;k<=3;k++) {
+    await room.turn('root.3');
+    assert.equal(room.node('root.3').status,'ready');
+    assert.equal(room.get('contract_returns:root.3'),String(k));
+    assert.equal(room.read('failures',{})['root.3'],0);
+  }
+  await room.turn('root.3');
+  assert.equal(room.node('root.3').status,'done','the done is accepted');
+  assert.deepEqual(events(room,'contract_missing').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
+  assert.equal(events(room,'contract_unmet')[0].body,'createTicket promised and still not exported after 3 returns; accepted, and the gap goes to the manager.');
+  assert.equal(events(room,'paused').length,0,'a contract return never pauses');
+  assert.equal(room.read('failures',{})['root.3'],0);
+});
+
+test('v7.15: a class or instance default does not satisfy a promise; named exports and members of a default object do',()=>{
+  const m=(files,names)=>missingExports(new Map(Object.entries(files)),names);
+  assert.deepEqual(m({'store.js':'class TicketStore { getTickets() { return []; } }\nmodule.exports = new TicketStore();\n'},['getTickets']),['getTickets'],'an instance\'s methods are unbound');
+  assert.deepEqual(m({'store.js':'class TicketStore { static getTickets() { return []; } }\nmodule.exports = TicketStore;\n'},['getTickets','TicketStore']),['getTickets'],'a class default provides its own name only');
+  assert.deepEqual(m({'data.js':'module.exports = function dataStore() { return { readTickets, writeTickets }; };\n'},['readTickets','writeTickets','dataStore']),['readTickets','writeTickets'],'run5');
+  assert.deepEqual(m({'a.js':'export function createTicket() {}\nexport const getTickets = () => [];\n','b.js':'function saveTicket() {}\nmodule.exports = { saveTicket, count: 1 };\n'},['createTicket','getTickets','saveTicket','count']),[]);
+  assert.deepEqual(m({'a.js':'exports.createTicket = function () {};\n'},['createTicket']),[],'an anonymous exports member');
+  assert.deepEqual(m({'a.js':"export { getTickets } from './store.js';\n"},['getTickets']),[],'a re-export');
+  assert.deepEqual(m({'app.js':'module.exports = { start() { return {}; } };\n'},['start']),[]);
+  assert.deepEqual(m({'app.js':'class App { static start() { return {}; } }\nmodule.exports = App;\n'},['start']),[],'the loader calls a default class\'s static start()');
+  for(const source of ['module.exports = makeStore();\n','Object.assign(module.exports, { getTickets });\n',"export * from './store.js';\n",'const base = {};\nmodule.exports = { ...base };\n','this is not ( javascript'])
+    assert.deepEqual(m({'x.js':source},['getTickets']),[],`given the doubt: ${source}`);
+  assert.deepEqual(m({'notes.md':'export function getTickets() {}'},['getTickets']),['getTickets'],'only JavaScript counts');
+  assert.deepEqual(selfImports(new Map([['createTicket.js',run6Create]]),['createTicket']),[{path:'createTicket.js',specifier:'./ticketStore',names:['createTicket']}]);
+  assert.deepEqual(selfImports(new Map([['index.js',"const { createTicket } = require('./create.js');\nmodule.exports = { createTicket };\n"],['create.js',fixedCreate]]),['createTicket']),[],'an import of its own file is not a self-import');
+  assert.deepEqual(selfImports(new Map([['view.js',"const store = require('./store');\nmodule.exports = { viewTickets: () => store.getTickets() };\n"]]),['viewTickets']),[],'importing someone else\'s function is not one');
+});
+
 test('v7.15: run5 replay: the walk strips start from a carrier below and prunes a start-only child by name',async()=>{
   const run5Root=[
     {label:'Data storage handler',task:'Write code that reads and writes the ticket list.',functions:[{name:'readTickets',does:'reads every ticket'},{name:'writeTickets',does:'writes every ticket',params:['tickets']}]},
@@ -401,6 +468,24 @@ test('v7.15: prompts: the shared prompt still says a worker is never shown sibli
   assert.match(splitter,/TypeScript, interfaces or \.ts files/);
   assert.match(splitter,/do not invent filenames/);
   assert.doesNotMatch(splitter,/functions_owned_elsewhere|export signatures|application entry|"entry":true|start\(\)/);
+});
+
+test('v7.15: MOCK run completes with the fixture interfaces, and every mock worker passes the return check',async()=>{
+  const pending=[];
+  const room=new ControlRoom({storage:{sql:new Sql()},waitUntil:p=>pending.push(p)},{MOCK_AI:'true',TEST_ARTIFACT_STORE:new Store()});
+  await room.start('Build a ticket app with API and UI from multiple agents',30);await Promise.all(pending.splice(0));
+  const snap=room.snapshot();
+  assert.equal(snap.status,'complete');
+  assert.deepEqual(room.promisedOf('root'),[],'MOCK Root has no promise');
+  assert.deepEqual(room.promisedOf('root.1'),[]);
+  assert.deepEqual(room.promisedOf('root.2').map(f=>f.name),['addTicket','listTickets','createTicketHandler','verifyTicketAPI']);
+  assert.deepEqual(['root.2.1','root.2.2','root.2.3'].map(id=>room.promisedOf(id).map(f=>f.name)),[['addTicket','listTickets'],['createTicketHandler'],['verifyTicketAPI']]);
+  assert.equal(room.promisedOf('root.2.1')[0].does,'stores a ticket with a title and returns it','carried items take the parent\'s description');
+  assert.ok(!snap.events.some(e=>['contract_missing','contract_unmet','split_rejected','interfaces_repaired'].includes(e.kind)));
+  assert.ok(['root.2.1','root.2.2','root.2.3'].every(id=>snap.events.some(e=>e.actor===id&&e.kind==='done')));
+  assert.deepEqual(snap.agents.find(a=>a.id==='root.2.2').interfaces.map(f=>f.name),['createTicketHandler']);
+  assert.ok(room.view('root.2.1').your_responsibility.endsWith('addTicket(title): stores a ticket with a title and returns it; listTickets(): returns every stored ticket.'));
+  assert.ok(!JSON.stringify(room.view('root.1')).includes('root.2'),'a worker only sees its manager');
 });
 
 test('v7.15: run6 replay (A): the view split\'s "Storage module" exporting only getTickets is pruned by name to "ticket storage" with no Clef owner call; the carrier of viewTickets skips the Clef walk; "Filter application logic" still goes to Clef',async()=>{

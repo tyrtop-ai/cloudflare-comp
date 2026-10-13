@@ -65,7 +65,7 @@ test('Clef NO implements in the same turn but cannot declare an unverified atomi
     const system=params.questions ? 'Clef gate' : params.messages[0].content;
     calls.push(system);
     if(params.questions) return {answers:{should_split:{noul:0.02}}};
-    if(system.includes('Return ONLY the complete text'))return {response:'export const add = (a,b) => a+b;'};
+    if(system.includes('Return ONLY the complete text'))return {response:'export const add = (a,b) => a+b; export function start(){ return { add }; }'};
     return response({summary:'Implemented addition',files:[{path:'add.js',intent:'Implement function add(a,b)'}],done:true});
   }};
   const {room,drain,store}=setup({AI:ai});
@@ -75,7 +75,7 @@ test('Clef NO implements in the same turn but cannot declare an unverified atomi
   assert.equal(room.snapshot().status,'paused');
   assert.ok(room.snapshot().events.some(e=>e.kind==='build_unavailable'));
   assert.equal(calls.length,3);
-  assert.equal((await store.read(room.node('root').repo_name,'add.js')), 'export const add = (a,b) => a+b;');
+  assert.equal((await store.read(room.node('root').repo_name,'add.js')), 'export const add = (a,b) => a+b; export function start(){ return { add }; }');
   assert.ok(room.snapshot().events.some(e=>e.kind==='atomic'));
 });
 

@@ -9,8 +9,8 @@ import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeErr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, GENERIC_NAMES } from './interfaces.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, missingExports, selfImports } from './linker.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, GENERIC_NAMES, signature } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
@@ -2362,6 +2362,30 @@ export class ControlRoom extends DurableObject {
     this.event(owner, 'retire', `Stopped ${child.label} (${childId}); repository retained.`, childId);
     return true;
   }
+  // v7.15: a worker that reports done without exporting what its parent's
+  // split promised for it is sent back, at most 3 times by its own counter
+  // (failures resets after every turn). run6's create worker exported
+  // addTicket and imported its own createTicket from './ticketStore'.
+  async contractReturned(id) {
+    const promised=this.promisedOf(id),key=`contract_returns:${id}`,returns=Number(this.get(key,'0'))||0;
+    if(!promised.length)return false;
+    const files=new Map();
+    for(const f of productionFiles(this.files(id)))if(LINKABLE.test(f.path))files.set(f.path,await this.indexedContent(id,f.path));
+    const names=promised.map(f=>f.name),missing=missingExports(files,names),self=selfImports(files,names);
+    if(!missing.length&&!self.length){if(returns)this.set(key,'');return false;}
+    const gap=missing.length?missing:[...new Set(self.flatMap(x=>x.names))];
+    if(returns>=3) {
+      this.event(id,'contract_unmet',`${gap.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
+      return false;
+    }
+    this.set(key,returns+1);
+    const list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
+    const body=['[contract]',...(missing.length?[`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`]:[]),
+      ...self.map(x=>`${x.path.split('/').pop()} imports ${list(x.names)} from '${x.specifier}', but ${list(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`)].join(' ');
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
+    this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${gap.join(', ')} promised and not exported; back to the worker.`);
+    return true;
+  }
   complete(id) {
     const n = this.node(id);
     if (!n?.parent) return;
@@ -3252,6 +3276,9 @@ export class ControlRoom extends DurableObject {
               !productionFiles(this.files(id)).length) {
             throw new Error('Leaf cannot finish without publishing actual source code for its assigned module');
           }
+          // v7.15: the plan is checked on return, before linking. No throw:
+          // a thrown op replays without asking the model (F4).
+          if(!this.manager(id) && !isRuntimeNode(n) && await this.contractReturned(id))return;
           if(!n.parent&&!this.manager(id)&&this.env.MOCK_AI!=='true') {
             const files=new Map();
             for(const f of this.files(id))if(!f.path.startsWith('memory/'))files.set(f.path,await this.indexedContent(id,f.path));
