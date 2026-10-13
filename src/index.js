@@ -3492,10 +3492,10 @@ export class ControlRoom extends DurableObject {
           delete before.root_scope;
           delete before.split_feedback;
           delete before.your_promised_functions;
-          raw=await decide(this.inferenceEnv(),before);
+          raw=await decide(this.inferenceEnv(),before,{planned:this.planned()});
           this.set(`split_feedback:${id}`,'');
         }
-      } else raw=await decide(this.inferenceEnv(),before);
+      } else raw=await decide(this.inferenceEnv(),before,{planned:this.planned()});
       if (raw.parse_error) {
         this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${raw.raw}`);
         this.incrementFailures(id,'Bad action response');
@@ -3757,7 +3757,7 @@ export class ControlRoom extends DurableObject {
             // fails the source gate, fall back to a targeted single-file repair.
             const content=f.content!==undefined && attempt===0 ? f.content :
               await generateFile(this.inferenceEnv(),{
-                node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),
+                node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,
                 files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
                 children:this.children(id),assemblyInputs:[],
                 correction:diagnostic

@@ -376,30 +376,42 @@ test('v7.15: a hop left without a target by a crash is re-driven by the next man
   assert.equal(rows(paused,'route_hops').length,0);
 });
 
-test('v7.15: the implementer prompt asks for every function at once in the first answer and no longer says to continue on an assumption; LEAF_DEPENDENCY_RULE still says "import it with a relative path and the export name you expect"; generateFile explains route:provided',async()=>{
+test('v7.15: a planned worker\'s prompt asks for every function at once in the first answer, at most 8, never again once answered; a v7.14 room\'s worker keeps the advice to continue on an assumption; only an asking worker reads where its import names come from; generateFile explains route:provided',async()=>{
   const prompts=[],requests=[];
   const env={AI:{run:async(_m,args)=>{prompts.push(args.messages[0].content);requests.push(args.messages[1].content);return {response:JSON.stringify({summary:'s',done:true,files:[{path:'a.js',content:'export const a = 1;'}]})};}}};
   const context={your_label:'Leaf',phase:'implement',your_responsibility:'Write logic',your_private_children:[],neighbor_owners:[]};
-  await decide(env,{...context,parent:{label:'Manager'}});
+  await decide(env,{...context,parent:{label:'Manager'}},{planned:true});
   const worker=prompts.pop();
   assert.ok(worker.includes(ASK_FUNCTIONS));
-  assert.match(worker,/For every function your code needs that your assignment does not list, ask your manager, all at once in your FIRST answer: "ask":\[\{"need":"what the function does, in one line","name":"the name you expect"\}\] with "wait":true\. In that answer write only files that do not import what you asked for, and do not set done\./);
-  assert.match(worker,/import it by exactly that name from the relative path you expect \(the builder fixes paths\)\. If no piece provides it, the answer says whether you write it yourself\./);
+  assert.match(worker,/For every function your code needs that your assignment does not list, ask your manager, all at once in your FIRST answer: "ask":\[\{"need":"what the function does, in one line","name":"the name you expect"\}\] with "wait":true\. In that answer write only files that do not import what you asked for, and do not set done\. At most 8 requests travel in one answer; ask for the rest once they are answered\./);
+  assert.match(worker,/import it by exactly that name from the relative path you expect \(the builder fixes paths\)\. If no piece provides it, the answer says whether you write it yourself\. Every answer is final and stays in answered_requests: never ask again for a function listed there or answered by a \[route:provided\] or \[route:unowned\] message; write your code with it and set done\./);
   assert.doesNotMatch(worker,/normally continue using an explicit assumption|rather than wait/);
-  await decide(env,{...context,parent:null});
+  // A room without Root's promise keeps v7.14 routing, which can park a
+  // request: its workers keep v7.14's advice (slice B review).
+  await decide(env,{...context,parent:{label:'Manager'}},{planned:false});
+  const unplanned=prompts.pop();
+  assert.doesNotMatch(unplanned,/all at once in your FIRST answer|"ask":\[\{"need"/);
+  assert.match(unplanned,/You can request externally owned facts through your parent, but you should normally continue using an explicit assumption rather than wait\./);
+  await decide(env,{...context,parent:null},{planned:true});
   const top=prompts.pop();
   assert.doesNotMatch(top,/ask your manager|"ask":\[\{"need"/,'the top is never told to ask');
   assert.match(top,/You have no manager to ask: write every function your code needs yourself\./);
-  for(const prompt of [worker,top,LEAF_DEPENDENCY_RULE]) {
-    assert.match(prompt,/import it with a relative path and the export name you expect \(the exact name your manager gave you when you asked\)/);
-    assert.match(prompt,/relative path and the export name you expect/);
+  // The top was told "the exact name your manager gave you when you asked"
+  // next to "You have no manager to ask" (slice B review).
+  for(const prompt of [worker,LEAF_DEPENDENCY_RULE])
+    assert.match(prompt,/import it with a relative path and the export name you expect \(the exact name your manager gave you when you asked\), for example/);
+  for(const prompt of [unplanned,top]) {
+    assert.match(prompt,/import it with a relative path and the export name you expect, for example const \{ listedName \}/);
+    assert.doesNotMatch(prompt,/the exact name your manager gave you/);
   }
-  await generateFile(env,{node:{id:'root.1',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[],answers:['getTickets(): returns all tickets. It is exported by "ticket storage".']});
+  await generateFile(env,{node:{id:'root.1',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[],answers:['getTickets(): returns all tickets. It is exported by "ticket storage".'],asks:true});
   const system=prompts.pop(),request=JSON.parse(requests.pop());
   assert.match(system,/A \[route:owned\] message establishes only that another branch owns the behavior; it is not an exact interface and requires no code matching or further confirmation\. A \[route:provided\] message or an answered_requests entry names the exact function to import, its parameters and the piece that exports it: import it by exactly that name\. A \[route:unowned\] message says whether you write it yourself\./);
+  assert.match(system,/the export name you expect \(the exact name your manager gave you when you asked\)/);
   assert.deepEqual(request.answered_requests,['getTickets(): returns all tickets. It is exported by "ticket storage".']);
-  await generateFile(env,{node:{id:'root.1',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[]});
+  await generateFile(env,{node:{id:'root',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[]});
   assert.equal(JSON.parse(requests.pop()).answered_requests,undefined,'no key without answers');
+  assert.doesNotMatch(prompts.pop(),/the exact name your manager gave you/);
 });
 
 test('v7.15: unplanned rooms keep v7.14 routing; planned rooms never answer a function request with out_of_scope; an atomic top\'s asks are dropped',async()=>{
@@ -441,4 +453,17 @@ test('v7.15: unplanned rooms keep v7.14 routing; planned rooms never answer a fu
   assert.deepEqual(events(room,'ask_dropped').map(e=>e.body),['The top has no manager; it writes what it needs.']);
   assert.deepEqual([events(room,'import_deferred').length,rows(room,'route_workers').length,room.files('root').map(f=>f.path)],[0,0,['app.js']],'its file is not deferred');
   assert.deepEqual([room.node('root').status,room.read('failures',{}).root||0],['ready',0]);
+  // A worker in a room without Root's promise is not told to ask and wait
+  // (its request could be parked) but to continue on an assumption, as in
+  // v7.14 (slice B review).
+  for(const planned of [false,true]) {
+    const writer=fakeAI({leaf:()=>({summary:'View',files:[{path:'viewTickets.js',content:'function viewTickets(filter) { return []; }\nmodule.exports = { viewTickets };\n'}],done:true})});
+    const {room:live}=await plannedTree(writer,viewTree,{planned});
+    live.db().exec("UPDATE agents SET status='ready' WHERE id='root.2.1'");
+    await live.turn('root.2.1');
+    const {system}=writer.calls.find(c=>c.kind==='leaf');
+    assert.equal(system.includes(ASK_FUNCTIONS),planned);
+    assert.equal(/normally continue using an explicit assumption rather than wait/.test(system),!planned);
+    assert.equal(/the exact name your manager gave you when you asked/.test(system),planned);
+  }
 });
