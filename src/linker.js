@@ -765,10 +765,12 @@ export function chooseEntry(files, surfaces) {
   const outDegree=new Map(starters.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>js.includes(r.target)).length]));
   return starters.sort((a,b)=>outDegree.get(b)-outDegree.get(a)||a.localeCompare(b))[0];
 }
+// The first line is the marker the Container's build runner looks for
+// (container/build-runner.mjs): keep it byte-for-byte.
 export function entryLoader(entry) {
   const spec=JSON.stringify('../'+entry);
   return [
-    '// RUNTIME-OWNED ENTRYPOINT. Generated from the compiler\'s entry choice; never written by a model.',
+    '// RUNTIME-OWNED ENTRYPOINT. Generated from the linker\'s entry choice; never written by a model.',
     `// Entry module: ${entry}`,
     'let cached;',
     'async function load() {',

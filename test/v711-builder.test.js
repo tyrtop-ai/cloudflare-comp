@@ -8,9 +8,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {ControlRoom,verifyBuild,snapshotHash,materializedPath,Sql,Store,repoSource,appSource,runnerTest,recordStore,auditLog,serviceApp,viewTest,
-  liveRoom,twoWorkers,threeWorkers,workersUnder,linkAndCompile,openProblems,lastReport,tickets,trace} from './helpers/room.js';
+  liveRoom,twoWorkers,threeWorkers,workersUnder,linkAndCompile,runReady,openProblems,lastReport,tickets,trace} from './helpers/room.js';
 const {BUILDER_CONTEXT_BUDGET,sha256}=await import('../src/assembly.js');
 const L=await import('../src/linker.js');
+const {ENTRY_CONTRACT,GOAL_START_REQUIREMENT}=await import('../src/model.js');
+// The runtime appends the start() requirement to Root's goal; the scripted
+// Clef gates read the goal without it.
+const behavior=s=>String(s).replace(' '+GOAL_START_REQUIREMENT,'');
 
 // ---------------------------------------------------------------- linker unit
 test('rename-only check allows import paths, identifiers and property names, nothing else',()=>{
@@ -215,12 +219,11 @@ test('room: blind names are renamed, the compiler runs the runner test, and Root
   // The loader, package and runner's test live in the compiler's repository, not the builder's.
   const compilerRepo=room.node(compiler.id).repo_name;
   assert.equal(await store.read(repoName,'glue/index.js'),null);
-  assert.match(await store.read(compilerRepo,'glue/index.js'),/Generated from the compiler's entry choice/);
+  assert.match(await store.read(compilerRepo,'glue/index.js'),/Generated from the linker's entry choice/);
   assert.equal(await store.read(compilerRepo,'glue/smoke.js'),runnerTest.trim());
   const compiled=JSON.parse(await store.read(compilerRepo,'compile.manifest.json'));
   assert.deepEqual([compiled.entry,compiled.bundle_sha256],[paths.appPath,room.read('bundle:root',null).digest]);
   assert.equal(room.read('compile_passed',null).input,room.read('bundle:root',null).digest);
-  assert.equal(room.read('linked:root',null),null);
   assert.equal(room.get('linked:root'),room.assemblyFingerprint('root'));
   await room.turn('root');
   assert.equal(room.node('root').status,'done');
@@ -504,7 +507,7 @@ test('room: a branch builder leaves an import that points outside its branch for
   assert.deepEqual(link.unresolved.map(u=>u.specifier),['./ticketService']);
 });
 
-test('room: an assertion failure with no component frame is triaged by the builder to the owning worker',async()=>{
+test('room: an assertion failure with no component frame is triaged by the compiler to the owning worker',async()=>{
   let paths;
   const brokenRepo=repoSource.replace('this.#tickets.splice(i,1); return true;','return true;');
   const {room,calls}=liveRoom({
@@ -515,16 +518,16 @@ test('room: an assertion failure with no component frame is triaged by the build
     triage:()=>({file:paths.repoPath,problem:'delete(id) returns true without removing the ticket from #tickets.'})
   });
   paths=await twoWorkers(room,{repo:brokenRepo});
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {compiler}=await linkAndCompile(room);
   assert.equal(calls.runner.length,1,'an application failure is not blamed on the runner test');
   assert.equal(calls.triage.length,1);
   assert.ok(calls.triage[0].modules.some(m=>m.content?.includes('#tickets')),'triage sees source when it fits');
-  const failure=room.read('build_failure:root',null);
-  assert.equal(failure.issues[0].path,paths.repoPath);
+  const failure=lastReport(room,compiler.id);
+  assert.equal(failure.stage,'run');
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['run',paths.repoPath,'root']]);
   assert.match(failure.issues[0].detail,/deleted ticket must be gone/);
-  await room.routeBuildFailures();
-  assert.equal(room.receive('root.1').length,1,'the repository worker receives it');
+  await room.turn('root');
+  assert.equal(tickets(room,'root.1').length,1,'the repository worker receives it');
   assert.equal(room.receive('root.2').length,0);
 });
 
@@ -538,11 +541,11 @@ test('room: a broken runner test is rewritten by the runner, not sent to a worke
     runner:(user,n)=>n===1?runnerTest.replace('app.createTicket(','app.create('):runnerTest
   });
   paths=await twoWorkers(room);
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {compiler}=await linkAndCompile(room);
   assert.equal(calls.runner.length,2);
   assert.match(calls.runner[1].previous_test_error,/app\.create is not a function/);
-  assert.equal(room.node(builder.id).status,'done');
+  assert.equal(room.node(compiler.id).status,'done');
+  assert.equal(room.problems('1=1').length,0);
 });
 
 test('container: a large start() result is described at a smaller depth instead of being cut off',async()=>{
@@ -566,49 +569,51 @@ test('room: a runner test that swallows its own failure is rejected before it ca
     runner:(user,n)=>n===1?swallow:runnerTest
   });
   paths=await twoWorkers(room);
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {compiler}=await linkAndCompile(room);
   assert.equal(calls.runner.length,2);
   assert.match(calls.runner[1].previous_test_error,/without setting process\.exitCode/);
-  assert.equal(room.node(builder.id).status,'done');
+  assert.equal(room.node(compiler.id).status,'done');
 });
 
 test('room: a runner that cannot write a valid test blames no worker',async()=>{
-  const {room,calls}=liveRoom({link:(user)=>({edits:[],entry:user.your_files.find(f=>f.path.endsWith('/app.js'))?.path??null,issues:[]}),runner:()=>'console.log("no test")'});
+  const {room,calls}=liveRoom({runner:()=>'console.log("no test")'});
   await twoWorkers(room,{app:"module.exports={start(){return {ping(){return 1;}}}};"});
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {builder,compiler}=await linkAndCompile(room);
   assert.equal(calls.runner.length,3);
-  assert.equal(room.read('build_failure:root',null),null);
-  assert.ok(room.snapshot().events.some(e=>e.kind==='runner_failed'));
-  assert.equal(room.node(builder.id).status,'waiting');
+  assert.equal(room.problems('1=1').length,0,'no problem is filed');
+  assert.ok(room.snapshot().events.some(e=>e.kind==='runner_failed'&&e.actor===compiler.id));
+  assert.equal(room.node(compiler.id).status,'waiting');
+  assert.equal(room.node(builder.id).status,'done');
+  assert.equal(room.read('compile_reported',null).stage,'runner');
 });
 
 test('room: start() that returns nothing goes back to the entry worker',async()=>{
-  const {room}=liveRoom({link:(user)=>({edits:[],entry:user.your_files.find(f=>f.path.endsWith('/app.js'))?.path??null,issues:[]})});
+  const {room,calls}=liveRoom();
   const paths=await twoWorkers(room,{app:"function start(){ console.log('ready'); }\nmodule.exports={start};\n"});
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
-  const failure=room.read('build_failure:root',null);
-  assert.equal(failure.issues[0].path,paths.appPath);
+  const {compiler}=await linkAndCompile(room);
+  const failure=lastReport(room,compiler.id);
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path]),[['entry',paths.appPath]]);
   assert.match(failure.issues[0].detail,/start\(\) must return an object/);
+  assert.equal(calls.runner.length,0);
+  await room.turn('root');
+  assert.match(tickets(room,'root.2')[0],/exports start\(\); start\(\) returns an object/);
 });
 
-test('room: container infrastructure failure blocks without blaming a worker; Continue reschedules the builder',async()=>{
-  const {room}=liveRoom({link:(user)=>({edits:[],entry:user.your_files.find(f=>f.path.endsWith('/app.js'))?.path??null,issues:[]}),
-    executor:{build:async()=>{throw new Error('Container failed to start: no capacity');}}});
+test('room: container infrastructure failure blocks without blaming a worker; Continue reschedules the compiler',async()=>{
+  const {room}=liveRoom({executor:{build:async()=>{throw new Error('Container failed to start: no capacity');}}});
   await twoWorkers(room,{app:"module.exports={start(){return {}}};"});
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
-  assert.equal(room.read('build_failure:root',null),null,'no worker is blamed for infrastructure');
-  assert.match(room.get('build_infrastructure:root'),/no capacity/);
-  assert.equal(room.read('build_blocked:root',null).builder,builder.id);
-  room.db().exec("UPDATE agents SET status='ready' WHERE id=?",builder.id);
-  await room.turn(builder.id);
+  const {builder,compiler}=await linkAndCompile(room);
+  assert.equal(room.problems('1=1').length,0,'no worker is blamed for infrastructure');
+  assert.match(room.get('compile_infrastructure'),/no capacity/);
+  assert.match(room.snapshot().build_infrastructure,/no capacity/);
+  assert.equal(room.read('compile_blocked',null).node,compiler.id);
+  assert.equal(room.node(builder.id).status,'done','the builder linked; only the compile is blocked');
+  room.db().exec("UPDATE agents SET status='ready' WHERE id=?",compiler.id);
+  await room.turn(compiler.id);
   assert.ok(room.snapshot().events.some(e=>e.kind==='build_blocked'),'a blocked snapshot is not retried by an ordinary turn');
   assert.equal(await room.retryBlockedBuild(),true);
-  assert.equal(room.read('build_blocked:root',null),null);
-  assert.equal(room.node(builder.id).status,'ready');
+  assert.equal(room.read('compile_blocked',null),null);
+  assert.equal(room.node(compiler.id).status,'ready');
 });
 
 test('room: a repaired worker reaching done again re-schedules the builder through its managers',async()=>{
@@ -628,7 +633,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
   const calls={split:0,leaf:0,link:0,runner:0};
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/issue tracker/i.test(params.state.assigned_behavior)&&!/repository|entry module/i.test(params.state.assigned_behavior)?0.95:0.05}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/issue tracker/i.test(behavior(params.state.assigned_behavior))&&!/repository|entry module/i.test(behavior(params.state.assigned_behavior))?0.95:0.05}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content;
@@ -667,6 +672,9 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
   assert.ok(events.some(e=>e.kind==='run_passed'));
   const builder=room.children('root').find(c=>c.label==='Temporary builder');
   assert.equal(builder.status,'done');
+  const compiler=room.children('root').find(c=>c.label==='Compiler');
+  assert.equal(compiler.status,'done');
+  assert.ok(room.node('root').task.endsWith(' '+GOAL_START_REQUIREMENT),'the start() requirement is part of the goal');
 });
 
 test('end to end: a failed run goes back through a manager to a nested worker, which fixes it, and the builder reruns',async()=>{
@@ -676,7 +684,7 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
   const AI={run:async(_model,params)=>{
     if(params.questions) {
       if(params.questions.should_split) {
-        const b=params.state.assigned_behavior;
+        const b=behavior(params.state.assigned_behavior);
         return {answers:{should_split:{noul:/repository|entry module|ticket model/i.test(b)?0.05:0.95}}};
       }
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
@@ -725,8 +733,14 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
   assert.equal(calls.runner,2,'the runner reran against the repaired source');
   assert.equal(calls.link,2);
   assert.equal(calls.leaf.filter(x=>/repository/i.test(x)).length,2,'the nested repository worker ran again to fix its code');
-  assert.ok(events.some(e=>e.kind==='build_repair_routed'&&e.recipient==='root.1'),'Root routed to its direct child that owns the failing worker');
-  assert.equal(room.read('build_failure_rounds',0),1);
+  // Root delegates to its direct child whose branch holds the failing worker, which assigns it.
+  assert.ok(events.some(e=>e.kind==='problem_delegated'&&e.actor==='root'&&e.recipient==='root.1'),'Root delegated to its direct child that owns the failing worker');
+  assert.ok(events.some(e=>e.kind==='problem_assigned'&&e.actor==='root.1'&&e.recipient==='root.1.1'));
+  assert.equal(Number(room.get('repair_rounds:root.1')),1);
+  assert.equal(room.get('repair_rounds:root'),'');
+  assert.equal(Number(room.get('repair_rounds_total')),1);
+  const [row]=room.problems('1=1');
+  assert.deepEqual(row.trail.map(t=>[t.at,t.action,t.to]),[['root','delegate','root.1'],['root.1','assign','root.1.1']]);
   if(process.env.TRACE)console.log(events.filter(e=>!['dispatch','turn_start','turn_end','expose','manager_shard','write','revision','source_copied'].includes(e.kind)).map(e=>`${e.step} ${e.actor} ${e.kind}: ${e.body.slice(0,150)}`).join('\n'));
 });
 
@@ -745,7 +759,7 @@ test('Continue after an unchanged repair relinks with a fresh budget and sends t
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
   assert.equal(linkCalls,3);
-  await room.routeBuildFailures();
+  await room.turn('root');
   assert.equal(room.receive('root.2').length,1);
   room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.2'");
   room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");
@@ -753,12 +767,14 @@ test('Continue after an unchanged repair relinks with a fresh budget and sends t
   room.db().exec("UPDATE agents SET status='ready' WHERE id=?",builder.id);
   await room.turn(builder.id);
   assert.equal(linkCalls,3,'unchanged source is not relinked on an ordinary turn');
+  assert.equal(room.node(builder.id).status,'waiting');
   room.set('status','paused');
   await room.resume(1);
   while(pending.length)await Promise.all(pending.splice(0));
   assert.equal(linkCalls,6,'Continue relinks with a fresh relink budget');
   assert.equal(room.receive('root.2').length,1,'and the problem is sent again');
-  assert.equal(Number(room.get('build_failure_rounds')),2);
+  assert.deepEqual(room.problems('1=1').map(p=>[p.status,p.outcome]),[['closed','superseded'],['assigned','']],'the new report supersedes the first');
+  assert.equal(Number(room.get('repair_rounds:root')),2,'Continue resets no repair round');
   assert.ok(paths.appPath);
 });
 
@@ -779,7 +795,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
   const entrySource="const svc = require('./ticketService');\nfunction start(){ return { createTicket: d => svc.add(d), getTicket: id => svc.find(id), listTickets: () => svc.all(), updateTicket: (id,p) => svc.change(id,p), deleteTicket: id => svc.remove(id) }; }\nmodule.exports = { start };\n";
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|service module|entry module/i.test(params.state.assigned_behavior)?0.05:0.95}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|service module|entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content, user=JSON.parse(params.messages[1].content);
@@ -814,6 +830,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
   assert.equal(room.get('status'),'complete',events.slice(-20).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,140)}`).join('\n'));
   const builders=room.allNodes().filter(n=>n.label==='Temporary builder');
   assert.deepEqual(builders.map(b=>b.parent).sort(),['root','root.1'],'one builder per manager');
+  assert.deepEqual(room.allNodes().filter(n=>n.label==='Compiler').map(n=>[n.parent,n.status]),[['root','done']],'one compiler, under Root');
   const branchCall=linkCalls.find(c=>c.scope==='branch');
   assert.ok(branchCall,'the branch builder called the linker');
   assert.deepEqual(branchCall.your_files.map(f=>f.path.split('/').pop()),['ticketService.js'],'only the file with an in-branch import to resolve');
@@ -837,7 +854,7 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
   const pending=[];
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|entry module/i.test(params.state.assigned_behavior)?0.05:0.95}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content,user=JSON.parse(params.messages[1].content);
@@ -875,7 +892,12 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
   const builder=room.allNodes().find(n=>n.label==='Temporary builder');
   const builderPushes=store.pushes.filter(p=>p.actor===builder.id);
   assert.equal(builderPushes.length,1,'the Root builder pushes once for its whole turn');
-  assert.ok(builderPushes[0].files.includes('glue/index.js')&&builderPushes[0].files.includes('glue/smoke.js')&&builderPushes[0].files.some(f=>f.endsWith('/app.js')));
+  assert.ok(builderPushes[0].files.every(f=>f.startsWith('components/')||f==='assembly.manifest.json')&&builderPushes[0].files.some(f=>f.endsWith('/app.js')),'the builder pushes only the linked components and its manifest');
+  // The compiler pushes the loader, package, runner's test and its manifest once.
+  const compiler=room.allNodes().find(n=>n.label==='Compiler');
+  const compilerPushes=store.pushes.filter(p=>p.actor===compiler.id);
+  assert.equal(compilerPushes.length,1);
+  assert.deepEqual(compilerPushes[0].files.sort(),['compile.manifest.json','glue/index.js','glue/smoke.js','package.json']);
   // The entry worker's completion report is sent only after its commit.
   const commitAt=events.findIndex(e=>e.actor==='root.2'&&e.kind==='commit');
   const returnAt=events.findIndex(e=>e.actor==='root.2'&&e.kind==='return');
@@ -1339,7 +1361,9 @@ test('the renames a worker hears include those around a binding-shape fix, and t
   assert.deepEqual(L.linkRenames(orig,linked),["'../statusFilter' → '../s-1/statusFilter.js'","'../priorityFilter' → '../p-1/priorityFilter.js'",'binding { isStatusMatch } → isStatusMatch']);
 });
 
-test('room: the worker hears a branch builder\'s renames in the copy Root failed on',async()=>{
+// v7.14: the mismatch lies between root.1's own children, so root.1's builder
+// finds it and root.1 decides; Root's builder never runs.
+test('room: the worker hears its branch builder\'s renames in the copy that failed, from the branch manager',async()=>{
   const {room,calls}=liveRoom({link:(user,n)=>{
     const own=user.your_files.find(f=>f.path.endsWith('/app.js'));
     // The branch builder fixes the path and renames .view to the audit log's get().
@@ -1357,15 +1381,19 @@ test('room: the worker hears a branch builder\'s renames in the copy Root failed
   room.db().exec("UPDATE agents SET status='done' WHERE id IN ('root.1.1','root.1.2','root.1.3')");
   const branch=await room.scheduleAssembly('root.1');
   await room.turn(branch.id);
-  assert.match(room.node(branch.id).summary,/with 2 rename\(s\)/);
-  room.db().exec("UPDATE agents SET status='done' WHERE id='root.1'");
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
-  assert.equal(calls.link.length,4);
-  const failure=room.read('build_failure:root',null);
-  assert.equal(failure.issues.length,1);
-  assert.equal(room.resolveBuildSourceOwner(builder.id,failure.issues[0].path),'root.1.3');
+  assert.equal(calls.link.length,3,'the branch builder links and relinks twice');
+  assert.equal(room.node(branch.id).status,'waiting');
+  const failure=lastReport(room,branch.id);
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.holder]),[['mismatch','root.1']]);
+  assert.equal(room.resolveBuildSourceOwner(branch.id,failure.issues[0].path),'root.1.3');
   assert.match(failure.issues[0].detail,/^The module reads 'get' from [^]*\. Builder renames in the linked copy that failed \(your source does not have them\): '\.\/ticketService' → '\.\.\/record-sto-[0-9a-f]+\/store\.js', view → get\.$/);
+  assert.deepEqual(room.read('link_reported:root.1',null).problems,[failure.issues[0].id]);
+  await room.turn('root.1');
+  const sent=tickets(room,'root.1.3');
+  assert.equal(sent.length,1);
+  assert.match(sent[0],/view → get/);
+  assert.equal(room.children('root').some(c=>c.label==='Temporary builder'),false,'Root\'s builder never runs');
+  assert.equal(room.problems('holder=?','root').length,0,'Root\'s inbox is never used');
 });
 
 test('room: a model rename that breaks an import that matched is undone; a consistent one is kept',async()=>{
@@ -1396,7 +1424,7 @@ test('room: builder renames ride inside each problem, so the 12-problem cap neve
   const paths=await workersUnder(room,'Build a small report tool.',[['Date helper','dates.js',helper],...Array.from({length:8},(_,i)=>[`Consumer ${i}`,`c${i}.js`,consumer(i)])]);
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
-  const failure=room.read('build_failure:root',null);
+  const failure=lastReport(room,builder.id);
   assert.equal(failure.stage,'link');
   assert.deepEqual(failure.issues.map(i=>i.path),paths.slice(1));
   for(const [i,issue] of failure.issues.entries())
@@ -1412,11 +1440,13 @@ test('room: a binding-shape fix does not hide the builder rename that broke the 
     return {edits:own&&n===1?[{file:own.path,find:'svc.view',replace:'svc.get'}]:[],entry:paths[2],issues:[]};
   },runner:()=>viewTest});
   paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',store],['Audit log','audit.js',auditLog.replace('read(n)','get(n)')],['Application entry','app.js',app]]);
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {builder,compiler}=await linkAndCompile(room);
+  // Root's builder relinks with each run error (D5) until a relink changes nothing.
+  await runReady(room,['root',builder.id,compiler.id]);
   assert.ok(builds.length>0);
-  const failure=room.read('build_failure:root',null);
+  const failure=lastReport(room,compiler.id);
   assert.equal(failure.stage,'run');
+  assert.deepEqual(room.problems("status!='closed'").map(p=>[p.status,p.assignee,p.flags.builder_tried]),[['assigned','root.3',true]]);
   const issue=failure.issues.find(i=>i.path===paths[2]);
   assert.match(issue.detail,/svc\.get is not a function[^]*Builder renames in the linked copy that failed[^]*: '\.\/store' → '\.\.\/record-sto-[0-9a-f]+\/store\.js', view → get, binding \{ makeStore \} → makeStore\.$/);
 });
@@ -1439,53 +1469,29 @@ test('with no entry, a module named as the application is asked to compose it be
   assert.equal(L.entryCandidate(files),'components/i/issueTrackerApp.js','the one nearest Root');
 });
 
-test('room: with no module exporting start(), Root asks the model for the entry instead of taking the biggest importer, and that module\'s worker hears the entry contract before any container run',async()=>{
+// v7.14: the linker model names no entry. The compiler finds no module that
+// exports start() and files an entry problem with Root for the module named
+// as the application (not combine.js, the biggest importer), before any run.
+test('room: with no module exporting start(), the compiler files an entry problem for the module named as the application, not the biggest importer, before any container run',async()=>{
   const status="module.exports = { isOpen: (t) => !!t && t.status !== 'closed' };\n";
   const combine="const { isOpen } = require('./statusFilter');\nconst { read } = require('./store');\nmodule.exports = { combine: (id) => isOpen(read(id)) };\n";
   const app="const svc = require('./store');\nmodule.exports = { createTicket: (d) => svc.create(d), viewTicket: (id) => svc.read(id) };\n";
   const W=[['Record store','store.js',recordStore],['Status filter','statusFilter.js',status],['Combine filters','combine.js',combine],['Application','app.js',app]];
-  for(const propose of [true,false]) {
-    let paths;
-    const {room,calls,builds}=liveRoom({link:()=>({edits:[],entry:propose?paths[3]:null,issues:[]}),runner:()=>viewTest});
-    paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',W);
-    const builder=await room.scheduleAssembly('root');
-    await room.turn(builder.id);
-    const events=room.snapshot().events;
-    assert.match(events.find(e=>e.kind==='link_auto').body,/^Applied 3 rename\(s\)/,'every import resolves without the model');
-    assert.deepEqual(calls.link[0].your_files,[]);
-    assert.ok(calls.link[0].other_modules_exports.some(t=>t.startsWith(paths[3])));
-    // Renaming cannot add start(), so no relink is spent on it and nothing runs.
-    assert.equal(calls.link.length,1);
-    assert.equal(builds.length,0);
-    const failure=room.read('build_failure:root',null);
-    assert.equal(failure.stage,'link');
-    assert.deepEqual(failure.issues.map(i=>i.path),[paths[3]],'the module named as the application, not combine.js');
-    assert.match(failure.issues[0].detail,propose?/^The application entry \S+app\.js does not export start\(\)/:/^No application entry/);
-    assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object whose methods perform the application's operations\. It does no work at module load/);
-    if(propose)assert.ok(events.some(e=>e.kind==='link_entry'&&e.body===`Application entry: ${paths[3]}.`));
-  }
-});
-
-test('room: an entry the model named on an earlier attempt still counts when a relink names none (run e89dba35)',async()=>{
-  const store="module.exports = function makeStore() {\n  const rows = new Map();\n  let next = 1;\n  return {\n    create(data) { const t = { id: next++, ...data }; rows.set(t.id, t); return { ...t }; },\n    read(id) { const t = rows.get(id); return t ? { ...t } : null; }\n  };\n};\n";
-  const app="const makeStore = require('./store');\nconst svc = makeStore();\nfunction start() {\n  return {\n    createTicket: (data) => svc.create(data),\n    viewTicket: (id) => svc.view(id)\n  };\n}\nmodule.exports = { start };\n";
-  // A second module exports start() and imports more modules, so without the
-  // earlier proposal the relink would start the command line instead.
-  const cli="const makeStore = require('./store');\nconst app = require('./app');\nmodule.exports = { start() { const a = app.begin(); makeStore(); return { run: (title) => a.createTicket({ title }) }; } };\n";
-  let paths;
-  const {room,calls}=liveRoom({runner:()=>viewTest,link:(user,n)=>{
-    const own=new Set(user.your_files.map(f=>f.path));
-    // The first attempt fixes the command line and names the entry; the relink fixes the member and names none.
-    return n===1?{edits:own.has(paths[2])?[{file:paths[2],find:"require('./app')",replace:`require('${L.relativeSpecifier(paths[2],paths[1])}')`},{file:paths[2],find:'app.begin()',replace:'app.start()'}]:[],entry:paths[1],issues:[]}:{edits:own.has(paths[1])?[{file:paths[1],find:'svc.view(id)',replace:'svc.read(id)'}]:[],entry:null,issues:[]};
-  }});
-  paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',store],['Application','app.js',app],['Command line','cli.js',cli]]);
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {room,calls,builds}=liveRoom({runner:()=>viewTest});
+  const paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',W);
+  const {builder,compiler}=await linkAndCompile(room);
   const events=room.snapshot().events;
-  assert.equal(calls.link.length,2);
-  assert.equal(room.node(builder.id).status,'done',events.slice(-5).map(e=>e.kind+': '+e.body).join('\n'));
-  assert.equal(room.read('build_failure:root',null),null);
-  assert.equal(events.filter(e=>e.kind==='link_entry').length,2);
+  assert.match(events.find(e=>e.kind==='link_auto').body,/^Applied 3 rename\(s\)/,'every import resolves without the model');
+  assert.equal(calls.link.length,0,'the builder asks no model: no entry to name');
+  assert.equal(room.node(builder.id).status,'done');
+  assert.equal(builds.length,0,'nothing runs without start()');
+  const failure=lastReport(room,compiler.id);
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[3],'root']],'the module named as the application, not combine.js');
+  assert.match(failure.issues[0].detail,/^No application entry/);
+  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object whose methods perform the application's operations\. It does no work at module load/);
+  await room.turn('root');
+  assert.match(tickets(room,'root.4')[0],/Your manager decided: You write the application entry module/);
+  assert.equal(room.receive('root.3').length,0);
 });
 
 test('room: a definition renamed under a class caller is undone, and the caller\'s own correct rename is kept',async()=>{
@@ -1516,7 +1522,7 @@ test('room: a reader renamed from one wrong name to another is not undone, so it
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
   assert.ok(!room.snapshot().events.some(e=>e.kind==='link_edit_rejected'&&/breaks an import that matched/.test(e.body)));
-  const failure=room.read('build_failure:root',null);
+  const failure=lastReport(room,builder.id);
   assert.deepEqual(failure.issues.map(i=>i.detail.replace(/ which exports.*/s,'')),[`The module reads 'show' from ${paths[0]},`]);
   assert.match(failure.issues[0].detail,/Builder renames in the linked copy that failed[^]*write → log, view → show\.$/);
 });
@@ -1538,7 +1544,7 @@ test('room: a use renamed together with an undone definition goes back with it',
   assert.match(link.rejected[1].reason,/^it renames read → get to match [^]*store\.js, whose rename was undone/);
 });
 
-test('room: a long runner failure keeps the builder\'s triage verdict, and the worker hears it',async()=>{
+test('room: a long runner failure keeps the triage verdict, and the worker hears it',async()=>{
   const mods=['validation','notifications','permissions','history','search'];
   const app="const store = require('./ticketStore');\n"+mods.map(n=>`const ${n} = require('./${n}Service');\n`).join('')+
     `function start() {\n  return {\n    createTicket: (d) => { ${mods.map(n=>`${n}.${n}Check(d);`).join(' ')} return store.create(d); },\n    viewTicket: (id) => store.read(id)\n  };\n}\nmodule.exports = { start };\n`;
@@ -1548,16 +1554,14 @@ test('room: a long runner failure keeps the builder\'s triage verdict, and the w
   let paths;
   const {room}=liveRoom({runner:()=>test,triage:()=>({file:paths.at(-1),problem:verdict}),link:()=>({edits:[],entry:paths.at(-1),issues:[]})});
   paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Ticket store','ticketStore.js',store],...mods.map(n=>[`${n} service`,`${n}Service.js`,`module.exports = { ${n}Check(t) { return true; } };\n`]),['Application entry','app.js',app]]);
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
-  const failure=room.read('build_failure:root',null);
+  const {compiler}=await linkAndCompile(room);
+  const failure=lastReport(room,compiler.id);
   assert.equal(failure.stage,'run');
   assert.deepEqual(failure.issues.map(i=>i.path),[paths.at(-1)]);
-  assert.ok(failure.issues[0].detail.startsWith('Builder triage: '+verdict+' The runner\'s test failed: '),failure.issues[0].detail);
+  assert.ok(failure.issues[0].detail.startsWith('Triage: '+verdict+' The runner\'s test failed: '),failure.issues[0].detail);
   assert.ok(failure.issues[0].detail.length<=950);
-  await room.routeBuildFailures();
-  const inbox=room.receive('root.7');
-  assert.ok(room.buildRepairMessage(inbox[0].body.split(' ')[1]).includes(verdict));
+  await room.turn('root');
+  assert.ok(tickets(room,'root.7')[0].includes(verdict));
 });
 
 test('room: a note about the module a file reads from is told once and names only renamed names',async()=>{
@@ -1572,13 +1576,14 @@ test('room: a note about the module a file reads from is told once and names onl
   paths=await workersUnder(room,'Build a small issue tracker that lets someone create, view, list, update, and delete tickets.',[['Ticket store','ticketStore.js',store],['Identifier generator','idGenerator.js',ids],['System clock','systemClock.js',clock],['Event journal','eventJournal.js',journal],['Application entry','app.js',app]]);
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
-  const failure=room.read('build_failure:root',null);
+  const failure=lastReport(room,builder.id);
   assert.equal(failure.stage,'link');
   assert.deepEqual(failure.issues.map(i=>i.detail.match(/reads '(\w+)'/)?.[1]),['get','list','update','remove']);
   const notes=failure.issues.map(i=>i.detail.match(/Builder renames in components\/\S+ \(its worker's source does not have them\): (.*)$/)?.[1]??null);
   assert.deepEqual(notes,['makeId → nextId.',null,null,null],'once per module read, and only names, not its own import paths');
-  await room.routeBuildFailures();
-  const message=room.buildRepairMessage(room.receive('root.5')[0].body.split(' ')[1]);
+  await room.turn('root');
+  const [message,...more]=tickets(room,'root.5');
+  assert.equal(more.length,0,'one ticket carries every problem of the worker');
   for(const n of ['get','list','update','remove'])assert.ok(message.includes(`reads '${n}'`),n);
 });
 
@@ -1602,7 +1607,7 @@ test('entry: a default class with a static start() is an entry, as the runtime l
   const files=new Map([['components/a/app.js',app],['components/s/store.js','module.exports = { read() {} };\n']]);
   const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
   assert.equal(L.exportsStart(surfaces.get('components/a/app.js')),true);
-  assert.equal(L.chooseEntry(files,surfaces,[]),'components/a/app.js');
+  assert.equal(L.chooseEntry(files,surfaces),'components/a/app.js');
   assert.equal(L.exportsStart(L.exportSurface('x.js',"class App { start() {} }\nmodule.exports = App;\n")),false,'an instance method is not called by the loader');
   const report=await execVerify({'components/a/app.js':app,'glue/index.js':L.entryLoader('components/a/app.js'),'package.json':L.RUNTIME_PACKAGE});
   assert.equal(report.passed,true);
@@ -1622,28 +1627,31 @@ const run3bWorkers=app=>[['Ticket Repository','ticketRepository.js',run3bRepo],[
 const run3bGoal='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
 
 test('room: an entry that exports no start() goes back to its worker with the entry contract before any container run (run3b)',async()=>{
-  let paths;
-  const {room,calls,builds}=liveRoom({link:()=>({edits:[],entry:paths[3],issues:[]})});
-  paths=await workersUnder(room,run3bGoal,run3bWorkers(run3bApp));
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {room,calls,builds}=liveRoom();
+  const paths=await workersUnder(room,run3bGoal,run3bWorkers(run3bApp));
+  const {builder,compiler}=await linkAndCompile(room);
   const events=room.snapshot().events;
   assert.match(events.find(e=>e.kind==='link_auto').body,/^Applied 3 rename\(s\)/,'every import of app.js resolves without the model, as live');
-  assert.ok(events.some(e=>e.kind==='link_entry'&&e.body===`Application entry: ${paths[3]}.`));
+  assert.equal(calls.link.length,0);
+  assert.equal(room.node(builder.id).status,'done');
   assert.equal(builds.length,0,'nothing is loaded, started or run');
   assert.equal(calls.runner.length,0);
-  assert.equal(calls.link.length,1,'renaming cannot add start(), so no relink is spent on it');
   assert.ok(!events.some(e=>e.kind==='runner_failed'));
-  const failure=room.read('build_failure:root',null);
-  assert.equal(failure.stage,'link');
-  assert.deepEqual(failure.issues.map(i=>i.path),[paths[3]]);
-  assert.match(failure.issues[0].detail,/does not export start\(\)/);
+  // The compiler, not a builder, finds no entry and files it with Root.
+  const failure=lastReport(room,compiler.id);
+  assert.equal(failure.stage,'build');
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[3],'root']]);
+  assert.match(failure.issues[0].detail,/^No application entry: no module exports start\(\)/);
   assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object whose methods perform the application's operations/);
   assert.match(failure.issues[0].detail,/importing it must not read process\.argv, start a server or prompt for input/);
-  await room.routeBuildFailures();
-  const inbox=room.receive('root.4');
-  assert.equal(inbox.length,1,'the entry worker hears it');
-  assert.match(room.buildRepairMessage(inbox[0].body.split(' ')[1]),/does no work at module load/);
+  await room.turn('root');
+  const sent=tickets(room,'root.4');
+  assert.equal(sent.length,1,'the entry worker hears it');
+  assert.match(sent[0],/does no work at module load/);
+  // With what each of Root's other children offers to compose.
+  const provided=sent[0].match(/What the other side provides: (.*?) Problems: /)?.[1].split(' | ');
+  assert.deepEqual(provided,['commandDispatcher.js exports: module.exports = { dispatch(command, args) }','commandParser.js exports: module.exports = function parseCommandLineArgs()',
+    'ticketRepository.js exports: module.exports = { createTicket(title, description, status), getTickets(), updateTicket(id, updates), deleteTicket(id) }']);
   for(const other of ['root.1','root.2','root.3'])assert.equal(room.receive(other).length,0);
 });
 
@@ -1651,76 +1659,32 @@ test('room: start() that returns an object with nothing to call goes back to the
   // run3b's app.js with its load-time work moved into start(): it loads and
   // starts, and start() returns {} as the live loader did.
   const app=run3bApp.replace("const command = parseCommand(process.argv);\ndispatch(command, repository);\n","function start() {\n  const command = parseCommand(process.argv);\n  dispatch(command, repository);\n  return {};\n}\n\nmodule.exports = { start };\n");
-  let paths;
-  const {room,calls,builds}=liveRoom({link:()=>({edits:[],entry:paths[3],issues:[]})});
-  paths=await workersUnder(room,run3bGoal,run3bWorkers(app));
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {room,calls,builds}=liveRoom();
+  const paths=await workersUnder(room,run3bGoal,run3bWorkers(app));
+  const {compiler}=await linkAndCompile(room);
   const events=room.snapshot().events;
   assert.equal(builds.length,1,'one load and start in the Container');
   assert.match(events.find(e=>e.kind==='build_checked').body,/start\(\) returned: \{"type":"object","members":\{\}\}/);
   assert.equal(calls.runner.length,0,'the runner has nothing to test');
   assert.ok(!events.some(e=>e.kind==='runner_failed'));
-  const failure=room.read('build_failure:root',null);
+  const failure=lastReport(room,compiler.id);
   assert.equal(failure.stage,'run');
-  assert.deepEqual(failure.issues.map(i=>i.path),[paths[3]]);
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path]),[['entry',paths[3]]]);
   assert.match(failure.issues[0].detail,/start\(\) must return an object whose methods perform the requested operations; it returned \{"type":"object","members":\{\}\}/);
   assert.match(failure.issues[0].detail,/does no work at module load/);
-  await room.routeBuildFailures();
-  assert.equal(room.receive('root.4').length,1);
+  await room.turn('root');
+  assert.equal(tickets(room,'root.4').length,1);
 });
 
 test('room: start() that returns a value with nothing to call goes back to the entry worker; a callable anywhere in it reaches the runner',async()=>{
   for(const [returned,runs] of [['42',false],["{ name: 'tracker', tickets: [] }",false],["{ tickets: { create: (t) => t } }",true],['(op) => op',true]]) {
-    const {room,calls}=liveRoom({link:(user)=>({edits:[],entry:user.your_files.find(f=>f.path.endsWith('/app.js'))?.path??null,issues:[]}),runner:()=>'console.log("no test")'});
+    const {room,calls}=liveRoom({runner:()=>'console.log("no test")'});
     const paths=await twoWorkers(room,{app:`module.exports = { start() { return ${returned}; } };\n`});
-    const builder=await room.scheduleAssembly('root');
-    await room.turn(builder.id);
+    const {compiler}=await linkAndCompile(room);
     assert.equal(calls.runner.length,runs?3:0,returned);
-    if(!runs)assert.deepEqual(room.read('build_failure:root',null).issues.map(i=>i.path),[paths.appPath],returned);
+    if(!runs)assert.deepEqual(lastReport(room,compiler.id).issues.map(i=>[i.kind,i.path]),[['entry',paths.appPath]],returned);
+    else assert.equal(room.problems('1=1').length,0,returned);
   }
-});
-
-test('room: an entry problem goes to the module of the child that holds the entry contract, not to a module the model named',async()=>{
-  // run3b's last link: every import resolves and the entry child wrote app.js,
-  // so no model is asked to name the entry; the problem goes straight to it.
-  const live=liveRoom();
-  const livePaths=await workersUnder(live.room,run3bGoal,run3bWorkers(run3bApp));
-  live.room.set('entry_child','root.4');
-  const lb=await live.room.scheduleAssembly('root');
-  await live.room.turn(lb.id);
-  assert.equal(live.calls.link.length,0);
-  assert.equal(live.builds.length,0);
-  assert.deepEqual(live.room.read('build_failure:root',null).issues.map(i=>i.path),[livePaths[3]]);
-  assert.match(live.room.read('build_failure:root',null).issues[0].detail,/^No application entry/);
-  let paths;
-  // The dispatcher imports a module nobody wrote, so the linker is asked. It
-  // names the dispatcher, which exports no start(); the entry child's app.js
-  // is where start() belongs. Relinks hear only what renaming can fix.
-  const {room,calls,builds}=liveRoom({link:()=>({edits:[],entry:paths[2],issues:[]})});
-  paths=await workersUnder(room,run3bGoal,run3bWorkers(run3bApp).map(([label,file,source])=>[label,file,file==='commandDispatcher.js'?"const audit = require('./auditTrail');\n"+source:source]));
-  room.set('entry_child','root.4');
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
-  assert.equal(builds.length,0);
-  assert.equal(calls.link.length,3);
-  for(const relink of calls.link.slice(1)) {
-    assert.deepEqual(relink.your_files.map(f=>f.path),[paths[2]],'app.js is not sent in full for a problem renaming cannot fix');
-    assert.match(relink.previous_attempt_error,/auditTrail/);
-    assert.doesNotMatch(relink.previous_attempt_error,/start\(\)|application entry/);
-  }
-  const failure=room.read('build_failure:root',null);
-  assert.deepEqual(failure.issues.map(i=>i.path),[paths[3],paths[2]],'app.js, not the dispatcher the model named, first');
-  assert.match(failure.issues[0].detail,/^The application entry \S+commandDispatcher\.js does not export start\(\)/);
-  // With no entry at all, the entry child's module is asked, whatever the file names say.
-  const other=liveRoom({link:()=>({edits:[],entry:null,issues:[]})});
-  const named=await workersUnder(other.room,run3bGoal,[['Ticket Repository','ticketRepository.js',run3bRepo],['Main Application','app.js',"module.exports = { name: 'tracker' };\n"],['Ticket Wiring','wiring.js',"const repo = require('./ticketRepository');\nmodule.exports = { repo };\n"]]);
-  other.room.set('entry_child','root.3');
-  const b=await other.room.scheduleAssembly('root');
-  await other.room.turn(b.id);
-  const f=other.room.read('build_failure:root',null);
-  assert.deepEqual(f.issues.map(i=>i.path),[named[2]],'the entry child, not app.js');
-  assert.match(f.issues[0].detail,/^No application entry/);
 });
 
 test('room: an entry whose start() its export surface cannot show is started in the container, not sent back',async()=>{
@@ -1729,17 +1693,14 @@ test('room: an entry whose start() its export surface cannot show is started in 
     freeze:`const store = require('./store');\nfunction start() {\n  return ${ops};\n}\nmodule.exports = Object.freeze({ start });\n`,
     factory:`const store = require('./store');\nfunction createApp() {\n  return { start() { return ${ops}; } };\n}\nmodule.exports = createApp();\n`,
     assign:`const store = require('./store');\nfunction start() {\n  return ${ops};\n}\nObject.assign(module.exports, { start });\n`};
-  for(const [form,app] of Object.entries(forms))for(const child of [false,true]) {
-    let paths;
-    const {room,calls}=liveRoom({link:()=>({edits:[],entry:paths[1],issues:[]}),runner:()=>viewTest});
-    paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',recordStore],['Application','app.js',app]]);
-    if(child)room.set('entry_child','root.2');
-    const builder=await room.scheduleAssembly('root');
-    await room.turn(builder.id);
-    assert.equal(room.node(builder.id).status,'done',form);
-    assert.ok(room.read('run_passed:root',null),form);
-    // The entry child's module is the entry without asking the model.
-    assert.equal(calls.link.length,child?0:1,form);
+  for(const [form,app] of Object.entries(forms)) {
+    const {room,calls}=liveRoom({runner:()=>viewTest});
+    await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',recordStore],['Application','app.js',app]]);
+    const {compiler}=await linkAndCompile(room);
+    assert.equal(room.node(compiler.id).status,'done',form+'\n'+trace(room));
+    assert.ok(room.compilePassed('root'),form);
+    assert.equal(room.problems('1=1').length,0,'no worker is blamed: '+form);
+    assert.equal(calls.link.length,0,form);
   }
   for(const source of ['export { start } from "./core.js";\n','export * from "./core.js";\n',"const base = require('./base');\nmodule.exports = { ...base };\n"])
     assert.equal(L.mayExportStart(L.exportSurface('components/a/app.js',source)),true,source);
@@ -1756,56 +1717,78 @@ test('entry: a default function named start is called by the runtime loader, as 
   }
 });
 
-test('entry choice: the entry child\'s module first; while a module exports start(), a proposal without it is not the entry',()=>{
+// v7.14 (v7.13 review): with no entry child and no model proposal, the
+// compiler ranks: the one module exporting start(); of several, the one that
+// imports the most (then by path); a module that only may export start()
+// counts only when none does.
+test('entry choice: a module exporting start() first, by imports; one that only may export it only when none does',()=>{
   const files=new Map([
     ['components/r/repo.js','module.exports = { add() {} };\n'],
     ['components/a/app.js',"const r = require('../r/repo.js');\nfunction start() { return r; }\nmodule.exports = { start };\n"],
     ['components/p/repl.js',"function start() { return require('node:readline'); }\nmodule.exports = { start };\n"],
     ['components/c/cli.js',"const app = require('../a/app.js').start();\napp.add(process.argv[2]);\n"],
-    ['components/f/factory.js',"const r = require('../r/repo.js');\nmodule.exports = (() => ({ start: () => r }))();\n"]]);
+    ['components/f/factory.js',"const r = require('../r/repo.js');\nconst repo = require('../r/repo.js');\nmodule.exports = (() => ({ start: () => [r, repo] }))();\n"]]);
   const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
-  assert.equal(L.chooseEntry(files,surfaces,['components/c/cli.js']),'components/a/app.js','a starter by imports, not the CLI that runs at load');
-  assert.equal(L.chooseEntry(files,surfaces,['components/c/cli.js'],['components/p/repl.js']),'components/p/repl.js');
-  assert.equal(L.chooseEntry(files,surfaces,['components/a/app.js'],['components/f/factory.js']),'components/f/factory.js','one that may export start() is enough');
-  assert.equal(L.chooseEntry(files,surfaces,[],['components/c/cli.js']),'components/a/app.js','the entry child\'s module without start() is not');
+  assert.equal(L.chooseEntry(files,surfaces),'components/a/app.js','a starter by imports, not the CLI that runs at load, nor a module that only may export start()');
+  files.delete('components/a/app.js');
+  assert.equal(L.chooseEntry(files,surfaces),'components/p/repl.js','the one static starter beats one that may, whatever it imports');
+  files.delete('components/p/repl.js');
+  assert.equal(L.chooseEntry(files,surfaces),'components/f/factory.js','with no static starter, one that may export start() is started');
+  files.delete('components/f/factory.js');
+  assert.equal(L.chooseEntry(files,surfaces),null);
 });
 
-test('room: with two modules exporting start(), the entry child\'s is started and the other worker hears nothing (run3b shape)',async()=>{
+// v7.14: no entry child picks between two starters. The compiler starts the
+// one that imports more; when its start() returns nothing to call, that
+// module's worker hears the contract and the other worker hears nothing.
+test('room: with two modules exporting start(), the one that imports more is started; its worker alone hears the contract (run3b shape)',async()=>{
   const repo="const tickets = [];\nlet nextId = 1;\nfunction createTicket(title) { const t = { id: nextId++, title }; tickets.push(t); return t; }\nfunction getTickets() { return [...tickets]; }\nmodule.exports = { createTicket, getTickets };\n";
   const create="const { createTicket } = require('./ticketRepository');\nmodule.exports = (args) => createTicket(args[0]);\n";
   const view="const { getTickets } = require('./ticketRepository');\nmodule.exports = () => getTickets();\n";
   // The CLI controller imports more modules and its start() runs the command line.
   const dispatcher="const create = require('./createTicketCommand');\nconst view = require('./viewTicketsCommand');\nconst commands = { create, view };\nfunction start() {\n  const [cmd, ...args] = process.argv.slice(2);\n  const run = commands[cmd];\n  if (run) console.log(run(args)); else console.log('Usage: create|view');\n}\nmodule.exports = { start };\n";
   const app="const repo = require('./ticketRepository');\nfunction start() {\n  return { createTicket: (title) => repo.createTicket(title), listTickets: () => repo.getTickets() };\n}\nmodule.exports = { start };\n";
-  const listTest="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.createTicket('Printer jam');\n  assert.ok((await app.listTickets()).some(x => x.id === t.id));\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
-  const {room,calls}=liveRoom({runner:()=>listTest});
+  const {room,calls}=liveRoom();
   const paths=await workersUnder(room,'Build a small issue tracker that lets someone create and list tickets.',[['Ticket Repository','ticketRepository.js',repo],['Create Ticket Command','createTicketCommand.js',create],['View Tickets Command','viewTicketsCommand.js',view],['CLI Controller','commandDispatcher.js',dispatcher],['Application Entry','app.js',app]]);
-  room.set('entry_child','root.5');
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {compiler}=await linkAndCompile(room);
   const events=room.snapshot().events;
-  assert.ok(events.some(e=>e.kind==='link_entry'&&e.body===`Application entry: ${paths[4]}.`),'not the dispatcher, which imports more');
+  assert.ok(events.some(e=>e.kind==='compile_entry'&&e.body===`Application entry: ${paths[3]}.`));
   assert.equal(calls.link.length,0);
-  assert.equal(calls.runner.length,1);
-  assert.ok(room.read('run_passed:root',null));
-  assert.equal(room.get('entry_owner'),'root.5');
+  assert.equal(calls.runner.length,0);
+  assert.deepEqual(lastReport(room,compiler.id).issues.map(i=>[i.kind,i.path]),[['entry',paths[3]]]);
+  await room.turn('root');
+  assert.equal(tickets(room,'root.4').length,1);
+  assert.equal(room.receive('root.5').length,0);
 });
 
-test('room: the entry problem leads the problems sent back, so the 12-problem cap never drops it',async()=>{
+// v7.14 (critique #17): while Root's builder reports link problems, the
+// compiler checks the published bundle for an entry without the Container,
+// so the entry problem joins the same wave, outside the builder's 12-problem cap.
+test('room: the entry problem rides in the link problems\' wave, outside the builder\'s 12-problem cap',async()=>{
   const names=Array.from({length:13},(_,i)=>`ticketOp${i}`);
   const repoPath=materializedPath('Ticket Repository','ticketRepository.js','root.1');
   const commands=`const { ${names.join(', ')} } = require('../${repoPath.split('/').slice(1).join('/')}');\nmodule.exports = { run: () => [${names.join(', ')}] };\n`;
   const app="const repo = require('./ticketRepository');\nconst commands = require('./ticketCommands');\nconsole.log(commands.run(), repo);\n";
-  const {room,calls}=liveRoom();
+  const {room,calls,builds}=liveRoom();
   const paths=await workersUnder(room,run3bGoal,[['Ticket Repository','ticketRepository.js',run3bRepo],['Ticket Commands','ticketCommands.js',commands],['Application Entry','app.js',app]]);
-  room.set('entry_child','root.3');
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
   assert.equal(calls.link.length,3,'the name mismatches are relinked');
   for(const relink of calls.link.slice(1))assert.doesNotMatch(relink.previous_attempt_error,/application entry|start\(\)/);
-  const failure=room.read('build_failure:root',null);
+  const failure=lastReport(room,builder.id);
   assert.equal(failure.issues.length,12);
-  assert.equal(failure.issues[0].path,paths[2]);
-  assert.match(failure.issues[0].detail,/^No application entry/);
-  assert.ok(failure.issues.slice(1).every(i=>i.path===paths[1]));
+  assert.ok(failure.issues.every(i=>i.path===paths[1]));
+  await room.turn('root');
+  const compiler=room.children('root').find(c=>c.label==='Compiler');
+  assert.ok(compiler,'the compiler checks the entry while the builder reports');
+  assert.equal(builds.length,0,'no Container run');
+  const entry=lastReport(room,compiler.id);
+  assert.deepEqual(entry.issues.map(i=>[i.kind,i.path]),[['entry',paths[2]]]);
+  assert.match(entry.issues[0].detail,/^No application entry/);
+  assert.equal(room.problems('id=?',entry.issues[0].id)[0].flags.wave,room.problems('id=?',failure.issues[0].id)[0].flags.wave,'one wave');
+  // One turn of Root decides both reports: one ticket each, one repair round.
+  assert.equal(tickets(room,'root.3').length,1);
+  assert.equal(tickets(room,'root.2').length,1);
+  assert.equal(Number(room.get('repair_rounds:root')),1);
+  assert.equal(room.problems("status='open'").length,0);
 });

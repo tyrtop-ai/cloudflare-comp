@@ -143,6 +143,16 @@ export async function step(room,id) {
   room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
   await room.turn(id);
 }
+// Run the turns of these nodes while any of them is ready, in the order
+// given (a test standing in for the scheduler, without the workers).
+export async function runReady(room,ids,max=30) {
+  for(let i=0;i<max;i++) {
+    const next=ids.find(id=>room.node(id)?.status==='ready');
+    if(!next)return i;
+    await room.turn(next);
+  }
+  throw new Error('still ready after '+max+' turns: '+ids.filter(id=>room.node(id)?.status==='ready').join(', '));
+}
 // Rows a manager holds that are not closed.
 export const openProblems=(room,holder)=>room.problems("holder=? AND status!='closed'",holder);
 // The latest report of a builder or the compiler, shaped like v7.12's

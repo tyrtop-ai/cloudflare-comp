@@ -122,6 +122,16 @@ async function workers(room,parent,list) {
     room.db().exec("UPDATE agents SET status='done' WHERE id=?",`${parent}.${i+1}`);
   }
 }
+// v7.14: Root's builder links, Root schedules the compiler, and the compiler
+// runs the bundle in the Container.
+async function linkAndCompile(room) {
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  await room.turn('root');
+  const compiler=room.children('root').find(c=>c.label==='Compiler');
+  if(compiler)await room.turn(compiler.id);
+  return builder;
+}
 async function build(room,manager) {
   const builder=await room.scheduleAssembly(manager);
   await room.turn(builder.id);
@@ -165,8 +175,7 @@ test('room: Root\'s linker sees the branch by its boundary and a deep file as an
   assert.deepEqual(boundary.exports.map(x=>x.path),[service]);
   assert.deepEqual(boundary.exports[0].surface,['module.exports = { add(d), get(id), all() }']);
   assert.deepEqual(boundary.needs,[{file:ticketStore,specifier:'./settings',names:['pageLimit'],members:[]}]);
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const builder=await linkAndCompile(room);
   const events=room.snapshot().events;
   assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
   const at=p=>materializedPath('Tickets',p,tree.branch.id);
@@ -197,7 +206,7 @@ test('room: Root\'s linker sees the branch by its boundary and a deep file as an
   assert.match(rejected[0],/"function formatTitle" → "function cleanTitle": find text is not in the excerpt of that file you were sent/);
   const linked=await store.read(room.node(builder.id).repo_name,at(ticketStore));
   assert.equal(linked,branchLinked.replace("'./settings'",`'${L.relativeSpecifier(at(ticketStore),config)}'`).replace(/pageLimit/g,'pageSize'));
-  // The boundary is metadata: never built or run.
+  // The boundary is metadata: never built or run (the compiler builds Root's bundle).
   assert.ok(builds.length>0);
   for(const files of builds)assert.ok(!Object.keys(files).some(p=>p.endsWith(BOUNDARY)));
   assert.ok(events.some(e=>e.kind==='run_passed'));
@@ -207,8 +216,7 @@ test('room: boundaries compose up to Root: a nested branch is seen only through 
   let config;
   const {room,calls}=liveRoom(user=>rootEdits(config)(user));
   const tree=await ticketsTree(room,{nested:true});config=tree.config;
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const builder=await linkAndCompile(room);
   const events=room.snapshot().events;
   assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
   // Tickets' builder linked the Storage bundle as an excerpt, as Root did Tickets'.
@@ -240,8 +248,7 @@ test('room: an excerpt edit whose find also occurs outside the excerpt is refuse
       {file,find:'pageLimit',replace:'pageSize'},{file,find:'{ pageLimit }',replace:'{ pageSize: pageLimit }'}]:[],entry:null,issues:[]};
   },runner);
   const tree=await ticketsTree(room,{store:paged,service,app});config=tree.config;
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const builder=await linkAndCompile(room);
   const events=room.snapshot().events;
   assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
   const sent=calls.link.find(c=>c.scope==='application').your_files[0];
@@ -274,8 +281,7 @@ test('room: a file inside a branch whose exports a mismatch reads goes in full, 
   await workers(room,'root.1',[['Id generator','idGenerator.js',idSource],['Ticket store','ticketStore.js',saving]]);
   await build(room,'root.1');
   config=materializedPath('Settings','config.js','root.2');
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const builder=await linkAndCompile(room);
   const events=room.snapshot().events;
   assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
   // First: ticketStore is linked as an excerpt (app.js resolves nowhere yet).
@@ -308,8 +314,7 @@ test('room: the level above reads the boundary the branch published, not every m
   const stale='components/old-store-00000000/legacyStore.js';
   await room.putFile(tree.branch.id,stale,'module.exports = { legacyTickets() { return []; } };\n',{materialized:true});
   room.db().exec("UPDATE agents SET status='done' WHERE id='root.1'");
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const builder=await linkAndCompile(room);
   const events=room.snapshot().events;
   assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
   const rootCall=calls.link.find(c=>c.scope==='application');

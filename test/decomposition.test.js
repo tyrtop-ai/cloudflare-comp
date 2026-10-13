@@ -122,11 +122,13 @@ test('Clef scope still removes an out-of-scope child from a split',async()=>{
   assert.equal(room.children('root').some(x=>x.label==='Temporary builder'),false);
 });
 
-test('v7.11: the child that composes the application stays a worker and owns the entry module',async()=>{
-  let splitter='';
+// v7.14: Root splits like every manager. The start() requirement reaches the
+// splitter as part of the goal; no split asks for an entry mark.
+test('v7.11: the child that composes the application stays a worker; the start() requirement reaches the splitter in the goal',async()=>{
+  let splitter='',request=null;
   const ai={run:async(_model,params)=>{
     if(params.questions) return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
-    splitter=params.messages[0].content;
+    splitter=params.messages[0].content;request=JSON.parse(params.messages[1].content);
     return response({summary:'Seven jobs; the last one composes the others',spawn:[
       {label:'Define Ticket data model with properties',task:'Write code that defines a Ticket data model'},
       {label:'Implement in-memory TicketStore with CRUD methods',task:'Write code for the TicketStore class'},
@@ -144,15 +146,13 @@ test('v7.11: the child that composes the application stays a worker and owns the
   assert.equal(room.children('root').some(c=>c.label==='Temporary builder'),false,'no builder before the workers finish');
   assert.equal(room.node('root').phase,'manager');
   assert.ok(!room.snapshot().events.some(e=>e.kind==='assembly_deferred'));
-  assert.match(splitter,/exactly ONE child must own the application entry module/);
-  assert.match(splitter,/exports start\(\)/);
+  assert.doesNotMatch(splitter,/application entry|"entry":true|start\(\)/,'no entry marking in the split prompt');
+  assert.equal(request.assigned_code,'Build a small issue tracker '+GOAL_START_REQUIREMENT);
+  assert.equal(request.original_goal_scope_boundary,'Build a small issue tracker '+GOAL_START_REQUIREMENT);
+  assert.equal(room.get('goal'),'Build a small issue tracker '+GOAL_START_REQUIREMENT);
 });
 
-// v7.13, run3b: Root's entry child was asked to "create main module that
-// initializes repository, parses commands, and starts CLI controller"; the
-// start() contract from the split prompt was lost and app.js ran a CLI at load.
-const {ENTRY_CONTRACT}=await import('../src/model.js');
-const {entrySpec}=await import('../src/code-work.js');
+const {ENTRY_CONTRACT,GOAL_START_REQUIREMENT}=await import('../src/model.js');
 const splitRoom=(spawnAt)=>{
   let splits=0;
   const ai={run:async(_model,params)=>{
@@ -162,79 +162,26 @@ const splitRoom=(spawnAt)=>{
   return setup({AI:ai});
 };
 
-test('v7.13: the child the splitter marks as the entry gets the entry contract in its task, and Root remembers it',async()=>{
-  const {room,drain}=splitRoom(()=>[
-    {label:'Ticket store',task:'Write code for an in-memory ticket store'},
-    {label:'Main menu text',task:'Write code that formats the help text'},
-    {label:'Tracker',task:'Write code that combines the store and the help text',entry:true},
-    {label:'Ticket checks',task:'Write code that validates ticket fields',entry:false}]);
-  await room.start('Build a small issue tracker',1);await drain();
-  const kids=room.children('root');
-  assert.equal(kids.length,4);
-  assert.ok(kids[2].task.endsWith(' '+ENTRY_CONTRACT),'the marked child, not the one the label heuristic would pick');
-  assert.match(kids[2].task,/^Write code that combines the store and the help text Deliver working source files/);
-  assert.ok(kids.filter((_,i)=>i!==2).every(k=>!k.task.includes('application entry')));
-  assert.equal(room.get('entry_child'),'root.3');
-  assert.ok(room.snapshot().events.some(e=>e.kind==='entry_child'&&e.recipient==='root.3'));
-});
-
-test('v7.13: an unmarked Root split falls back to the child whose label or task names the entry (run3b)',async()=>{
-  const {room,drain}=splitRoom(()=>[
-    {label:'Ticket Repository',task:'Implement in-memory repository with CRUD operations for tickets using Array methods'},
-    {label:'Command Parser',task:'Create CLI command parser that extracts command type and arguments from process.argv'},
-    {label:'Application Entry',task:'Create main module that initializes repository, parses commands, and starts CLI controller'},
-    {label:'CLI Controller',task:'Build command dispatcher that maps parsed commands to appropriate handler functions'}]);
-  await room.start('Build a small issue tracker',1);await drain();
-  const kids=room.children('root');
-  assert.equal(room.get('entry_child'),'root.3');
-  assert.ok(kids[2].task.endsWith(' '+ENTRY_CONTRACT));
-  assert.equal(kids.filter(k=>k.task.includes(ENTRY_CONTRACT)).length,1);
-  // Two marks: the heuristic decides between them.
-  const two=splitRoom(()=>[
-    {label:'Ticket Repository',task:'Write code for ticket storage',entry:true},
-    {label:'IssueTrackerApp',task:'Write code that assembles all components into one application',entry:true},
-    {label:'Ticket Views',task:'Write code that formats tickets'}]);
-  await two.room.start('Build a small issue tracker',1);await two.drain();
-  assert.equal(two.room.get('entry_child'),'root.2');
-  // No mark and no name: no child gets the contract and none is remembered.
-  const none=splitRoom(()=>[{label:'Ticket store',task:'Write code for ticket storage'},{label:'Ticket views',task:'Write code that formats tickets'}]);
-  await none.room.start('Build a small issue tracker',1);await none.drain();
-  assert.equal(none.room.get('entry_child'),'');
-  assert.ok(none.room.children('root').every(k=>!k.task.includes(ENTRY_CONTRACT)));
-});
-
-test('v7.13: only Root\'s split names an entry child; a mark below Root is ignored',async()=>{
+// v7.14 (author decision 3): no entry marking. An "entry":true the splitter
+// returns is dropped, no child gets a contract appended, nothing is
+// remembered, at Root or below; the compiler enforces start() instead.
+test('v7.14: Root splits like every manager: an entry mark is dropped and no child gets the entry contract',async()=>{
   const {room,drain}=splitRoom((n)=>[
     {label:`Piece ${n}A`,task:`Write code for piece ${n}A of the tracker`},
-    {label:`Application Entry ${n}`,task:`Write the entry module ${n} exporting start()`,entry:true}]);
+    {label:`Application Entry ${n}`,task:`Write the entry module ${n} that wires the pieces together`,entry:true}]);
   await room.start('Build a small issue tracker',2);await drain();
   assert.equal(room.children('root.1').length,2,'root.1 split too');
-  assert.equal(room.get('entry_child'),'root.2');
-  assert.ok(room.children('root.1').every(k=>!k.task.includes(ENTRY_CONTRACT)));
+  const kids=[...room.children('root'),...room.children('root.1')];
+  assert.ok(kids.every(k=>!k.task.includes(ENTRY_CONTRACT)&&!k.task.includes(GOAL_START_REQUIREMENT)),'no child task gets a contract appended');
+  assert.match(kids[1].task,/^Write executable source code to implement the following specific piece: Write the entry module 1 that wires the pieces together\. Deliver working source files/);
+  assert.equal(room.get('entry_child'),'');
+  assert.ok(!room.snapshot().events.some(e=>e.kind==='entry_child'));
+  assert.ok(room.node('root').task.endsWith(' '+GOAL_START_REQUIREMENT),'the requirement is part of the goal');
+  const {normalizeAction}=await import('../src/protocol.js');
+  assert.deepEqual(normalizeAction({spawn:[{label:'App',task:'Write the app entry',entry:true}]}).spawn,[{label:'App',task:'Write the app entry'}]);
 });
 
-test('v7.13: the entry heuristic picks the entry child of every live Root split',()=>{
-  const live={
-    run3b:[['Ticket Interface','Write TypeScript interface for Ticket'],['Ticket Repository','Implement in-memory repository with CRUD operations'],['Command Parser','Create CLI command parser that extracts command type and arguments from process.argv'],['CLI Controller','Build command dispatcher that maps parsed commands to appropriate handler functions'],['Application Entry','Create main module that initializes repository, parses commands, and starts CLI controller']],
-    run3:[['Ticket Interface','Define the Ticket interface'],['In-Memory Ticket Repository','Implement an in-memory repository'],['Create Ticket Service','Create tickets using the repository'],['Application Entry Module','Export a start() method to initialize the tracker']],
-    '5f85e12b':[['Ticket Interface','Define the ticket'],['Ticket Service','Implement CRUD using the Ticket interface'],['Application Entry','Export start() returning an object with methods for create, view, update, and delete operations, and wires them together']],
-    e89dba35:[['TicketDataModel','Define in-memory ticket storage and basic data operations'],['CreateTicket','Implement logic to validate and persist new tickets to the data model'],['IssueTrackerApp','Assemble all components into a cohesive application with a unified interface']]};
-  for(const [run,list] of Object.entries(live)) {
-    const specs=list.map(([label,task])=>({label,task}));
-    assert.equal(entrySpec(specs),specs[specs.length-1],run);
-  }
-  assert.equal(entrySpec([{label:'Ticket store',task:'Write ticket storage'},{label:'Ticket views',task:'Format tickets'}]),null);
-  // A piece whose label only contains an entry word is not the composer, and
-  // a tie names no child rather than give the contract to a guess.
-  const menu=[{label:'Ticket Store',task:'Write code for an in-memory ticket store'},{label:'Main Menu',task:'Write code that prints the menu of available commands'},{label:'Issue Tracker',task:'Write code that wires the store and the command handlers together and exports start()'}];
-  assert.equal(entrySpec(menu),menu[2]);
-  const validation=[{label:'Ticket Store',task:'Write code for an in-memory ticket store'},{label:'Issue Tracker',task:'Write code that wires the store and the validator together and exports start()'},{label:'Ticket Entry Validation',task:'Write code that validates the fields of a new ticket entry'}];
-  assert.equal(entrySpec(validation),validation[1]);
-  assert.equal(entrySpec([{label:'Main',task:'Write the main loop'},{label:'Issue Tracker',task:'Write code that exports start()'}]),null,'a tie names none');
-  assert.equal(entrySpec([{label:'Ticket store',task:'Write ticket storage'},{label:'Integration tests',task:'Write tests that compose the store and the views through start()'}]),null,'a test is never the entry');
-});
-
-test('v7.13: the splitter asks for plain Node.js built-ins only, and Root\'s split marks its entry child',async()=>{
+test('v7.13: the splitter asks for plain Node.js built-ins only, and no split asks for an entry mark',async()=>{
   const systems=[];
   const env={AI:{run:async(_name,args)=>{systems.push(args.messages[0].content);return {response:JSON.stringify({summary:'s',spawn:[{label:'A',task:'Write code A'},{label:'B',task:'Write code B'}]})};}}};
   const {decompose}=await import('../src/model.js');
@@ -245,9 +192,9 @@ test('v7.13: the splitter asks for plain Node.js built-ins only, and Root\'s spl
     assert.match(system,/TypeScript, interfaces or \.ts files/);
     assert.match(system,/UI frameworks or JSX \(React etc\.\)/);
     assert.match(system,/unless the goal explicitly asks for them, web servers, web frameworks \(Express etc\.\), databases or drivers/);
+    assert.doesNotMatch(system,/"entry":true|application entry/);
   }
-  assert.match(systems[0],/Mark that child, and only it, with "entry":true/);
-  assert.doesNotMatch(systems[1],/"entry":true|application entry/);
+  assert.equal(systems[0],systems[1],'Root\'s splitter prompt is every manager\'s');
 });
 
 test('v7.13: a new room splits only at Clef p >= 0.7; a room set to another threshold keeps it',async()=>{

@@ -31,6 +31,9 @@ const isRuntimeNode = n => !!n && RUNTIME_LABELS.includes(n.label);
 const ROOM_SCHEMA = '7.14';
 // Problem rows hold JSON in these columns.
 const PROBLEM_JSON = ['parties','facts','evidence','directive','flags','trail'];
+const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
+// One module's exports on one line, for the facts a worker hears.
+const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
 // What start() returned, as the Container describes it, holds something the
 // runner can call. An unparsed or depth-limited description is given the doubt.
 const apiCallable = d => ['function','class','unparsed'].includes(d?.type) || !!d?.members_truncated || (d?.members ? Object.values(d.members).some(apiCallable) : ['object','array'].includes(d?.type));
@@ -1310,8 +1313,9 @@ export class ControlRoom extends DurableObject {
   // A builder or the compiler files what it cannot fix with its manager, in
   // one synchronous block: its earlier rows are superseded, the new ones open
   // in the manager's inbox as one report wave, and the reporter waits.
-  reportProblems(source, manager, input, stage, items, via=source) {
-    const db=this.db(),wave=crypto.randomUUID();
+  // wave: the report wave the rows join (a new one by default).
+  reportProblems(source, manager, input, stage, items, via=source, wave=crypto.randomUUID()) {
+    const db=this.db();
     const superseded=query(db,"SELECT id FROM problems WHERE source=? AND status!='closed'",source).length;
     db.exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),source);
     if(superseded)this.event(source,'problem_superseded',`${superseded} earlier problem(s) from this source are replaced by this report.`,manager);
@@ -1366,7 +1370,7 @@ export class ControlRoom extends DurableObject {
   // the branch boundary's need, for the builder above.
   inBranchProblems(link, top) {
     const files=link.files,surfaces=link.surfaces,reads=importReads(files,surfaces),items=[];
-    const exportsText=p=>`${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
+    const exportsText=p=>exportsLine(p,surfaces);
     if(top)for(const u of link.unresolved) {
       const ref=importRefs(u.path,files.get(u.path)).find(r=>r.specifier===u.specifier);
       const names=[...new Set([...(ref?.names||[]),...(ref?.members||[])])].filter(Boolean);
@@ -1500,8 +1504,8 @@ export class ControlRoom extends DurableObject {
     if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input)return null;
     let compiler=this.compilerOf(top);
     if(!compiler) {
-      [compiler]=await this.spawn(top,[{label:'Compiler',task:COMPILER_TASK}],`compiler:${top}`);
-      if(!compiler){this.event(top,'integration_capacity','No compiler slot available.');return null;}
+      compiler=await this.spawnCompiler(top);
+      if(!compiler)return null;
       this.set('compile_requested',input);
       this.event(top,'compile_requested','The top builder linked the application; the compiler runs it.',compiler.id);
       return compiler;
@@ -1512,6 +1516,43 @@ export class ControlRoom extends DurableObject {
       this.wake(compiler.id);
     }
     return compiler;
+  }
+  async spawnCompiler(top) {
+    const [compiler]=await this.spawn(top,[{label:'Compiler',task:COMPILER_TASK}],`compiler:${top}`);
+    if(!compiler)this.event(top,'integration_capacity','No compiler slot available.');
+    return compiler||null;
+  }
+  // While the top builder has reported problems, the compiler checks the
+  // entry of its published bundle without the Container, in the top
+  // manager's turn before it decides: a missing start() then joins the link
+  // problems' wave, so a worker hears both in one ticket (critique #17).
+  async compileStatic(top) {
+    const builder=this.builderOf(top),reported=this.read(`link_reported:${top}`,null),input=this.read(`bundle:${top}`,null)?.digest;
+    if(!this.live()||this.node(top)?.parent||builder?.status!=='waiting'||!input||reported?.fingerprint!==this.assemblyFingerprint(top)||
+      this.read('compile_reported',null)?.input===input)return;
+    const compiler=this.compilerOf(top)||await this.spawnCompiler(top);
+    if(!compiler)return;
+    const files=await this.linkedBundle(builder.id),surfaces=surfacesOf(files),entry=chooseEntry(files,surfaces);
+    this.save('compile_state',{input,entry,static:true});
+    if(entry) {
+      // An entry problem an earlier bundle had is settled.
+      this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='entry' AND status!='closed'",Date.now(),compiler.id);
+      this.save('compile_reported',{input,stage:'static',problems:[],ts:Date.now()});
+      return;
+    }
+    const wave=this.problems('id=?',reported.problems?.[0]??'')[0]?.flags.wave;
+    this.reportProblems(compiler.id,top,input,'build',[this.entryProblem(builder.id,files,surfaces)],builder.id,wave||undefined);
+    this.save('compile_reported',{...this.read('compile_reported',null),stage:'static'});
+  }
+  // What the compiler files when no module exports start(): the module most
+  // likely to compose the application hears the contract, with the boundary
+  // of each of the top's children (what each offers to compose).
+  entryProblem(builderId, files, surfaces, path=entryCandidate(files)||'', detail=`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`) {
+    const groups=new Map();
+    for(const r of query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=? ORDER BY destination',builderId))
+      if(files.has(r.destination))groups.set(r.child,[...(groups.get(r.child)||[]),r.destination]);
+    const offered=[...groups.values()].flatMap(list=>branchBoundary(new Map(list.map(p=>[p,files.get(p)]))).exports).filter(p=>p!==path);
+    return {kind:'entry',path,detail,facts:{provider_text:clip(offered.map(p=>exportsLine(p,surfaces)).join(' | '),700)}};
   }
   // The compiler passed on the bundle the top builder linked from the current source.
   compilePassed(top) {
@@ -1558,28 +1599,28 @@ export class ControlRoom extends DurableObject {
       return;
     }
     if(this.read('compile_blocked',null)?.input===input)return wait('build_blocked','Container infrastructure blocked this unchanged bundle; Continue retries it.');
-    if(this.read('compile_reported',null)?.input===input)return wait('compile_waiting','Problems in this bundle are with the top manager; the compiler runs again when the bundle changes, or on Continue.');
+    // A static pass's report on this bundle does not hold back the full run.
+    const prior=this.read('compile_reported',null);
+    if(prior?.input===input&&prior.stage!=='static')return wait('compile_waiting','Problems in this bundle are with the top manager; the compiler runs again when the bundle changes, or on Continue.');
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
-    const files=await this.linkedBundle(builder.id);
-    const surfaces=new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
-    const exportsText=p=>`${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
-    const offered=()=>clip(branchBoundary(files).exports.map(exportsText).join(' | '),700);
+    const files=await this.linkedBundle(builder.id),surfaces=surfacesOf(files);
     const report=async(stage,items)=>this.reportProblems(id,top,input,stage,await this.annotateRenames(builder.id,files,items),builder.id);
     // The entry: the module that exports start(). With none, the module most
     // likely to compose the application hears the requirement.
     const entry=chooseEntry(files,surfaces);
     this.save('compile_state',{input,entry});
-    if(!entry)return report('build',[{kind:'entry',path:entryCandidate(files)||'',detail:`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`,facts:{provider_text:offered()}}]);
+    if(!entry)return report('build',[this.entryProblem(builder.id,files,surfaces)]);
     this.event(id,'compile_entry',`Application entry: ${entry}.`);
     const loader=entryLoader(entry);
     await this.putFile(id,'glue/index.js',loader,{runtimeGlue:true});
     await this.putFile(id,'package.json',RUNTIME_PACKAGE,{runtimeGlue:true});
     const app=new Map([...files,['glue/index.js',loader],['package.json',RUNTIME_PACKAGE]]);
     // A failure with no component path is the entry module's; the import an
-    // interface error names is its other party.
-    const failed=(kind,issues)=>issues.map(x=>{
+    // interface error names is its other party. The runtime loader's frame
+    // repeats the error of a module it started, so it counts only alone.
+    const failed=(kind,issues)=>(issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues).map(x=>{
       const path=files.has(x.path)?x.path:entry,target=errorTarget(files,path,x.detail);
-      return {kind,path,target,detail:path===x.path?x.detail:`${x.path?x.path+': ':''}${x.detail}`,facts:target?{provider_text:clip(exportsText(target),700)}:{}};
+      return {kind,path,target,detail:path===x.path?x.detail:`${x.path?x.path+': ':''}${x.detail}`,facts:target?{provider_text:clip(exportsLine(target,surfaces),700)}:{}};
     });
     const check=await this.containerRun(id,`compile:${input}`,app);
     if(check.infrastructure)return this.blockCompiler(id,input,check.infrastructure);
@@ -1594,7 +1635,7 @@ export class ControlRoom extends DurableObject {
     try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
     // With nothing to call (run3b: {"type":"object","members":{}}) the runner
     // cannot write a valid test, and no worker would hear why.
-    if(!apiCallable(described))return report('run',[{kind:'entry',path:entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`,facts:{provider_text:offered()}}]);
+    if(!apiCallable(described))return report('run',[this.entryProblem(builder.id,files,surfaces,entry,`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`)]);
     const outcome=await this.runApplication(id,input,app,api,this.topTask(),{linked:files,entry});
     if(outcome.infrastructure)return this.blockCompiler(id,input,outcome.infrastructure);
     if(outcome.runnerFailed) {
@@ -2442,8 +2483,10 @@ export class ControlRoom extends DurableObject {
   async managerTurn(id) {
     const n=this.node(id), inbox=await this.managerInbox(id);
     const seenWake=this.wakeGeneration(id);
-    // v7.14: every manager decides the problems in its inbox, one level at a time.
+    // v7.14: every manager decides the problems in its inbox, one level at a
+    // time; at the top, after the compiler's static entry check.
     if(this.live()) {
+      if(!n.parent)await this.compileStatic(id);
       await this.solveProblems(id);
       if(this.node(id)?.status==='failed')return;
     }
