@@ -1147,8 +1147,10 @@ export function errorTarget(files, path, detail) {
 // module exports at least one of them and the static check then names what
 // differs. An exact name beats a looser one. A branch builder
 // only accepts an exact name match, since the real module may live in a
-// branch it cannot see.
-export function autoLink(files, surfaces, {scope='application'}={}) {
+// branch it cannot see. provider(target, names), v7.15: whether the plan
+// gives those names to target's piece; of several modules exporting them,
+// or one that a module named like the path would block, it picks that one.
+export function autoLink(files, surfaces, {scope='application',provider=null}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
   const edits=[];
@@ -1181,9 +1183,10 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
       const flagged=t=>t&&importMismatches(new Map([[path,content.slice(0,ref.start+1)+relativeSpecifier(path,t)+content.slice(ref.end-1)],[t,set.get(t)]]),surfaces).some(m=>m.target===t)?t:null;
       let pick=null,why='';
       if(wanted.size) {
-        const pool=others.filter(provides);
-        if(pool.length===1){if(!others.some(t=>t!==pool[0]&&exactName(t))){pick=pool[0];why=`only module exporting ${[...wanted].join(', ')}`;}}
-        else if(pool.length>1){const both=pool.filter(nameMatch);if(both.length===1){pick=both[0];why=`exports ${[...wanted].join(', ')} and matches the name`;}}
+        const pool=others.filter(provides),planned=provider?pool.filter(t=>provider(t,[...wanted])):[];
+        const plannedWhy=`planned provider of ${[...wanted].join(', ')}`;
+        if(pool.length===1){if(!others.some(t=>t!==pool[0]&&exactName(t))){pick=pool[0];why=`only module exporting ${[...wanted].join(', ')}`;}else if(planned.length===1){pick=pool[0];why=plannedWhy;}}
+        else if(pool.length>1){const both=pool.filter(nameMatch);if(planned.length===1){pick=planned[0];why=plannedWhy;}else if(both.length===1){pick=both[0];why=`exports ${[...wanted].join(', ')} and matches the name`;}}
         else if((pick=flagged(byName(t=>nameMatch(t)&&shares(t)))))why=`only module whose name matches; none exports all of ${[...wanted].join(', ')}`;
       } else if((pick=byName()))why='only module whose name matches';
       if(!pick)continue;
@@ -1192,6 +1195,29 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
     }
   }
   return edits;
+}
+
+// v7.15 (run8): one import line that reads several functions living in
+// different modules (const { loadTickets: load, saveTickets: save } =
+// require('./data-store'), when a branch wrote one module per function).
+// A rename points a line at one module only, and splitting the line adds
+// code, so the reader imports each function on its own line. Only the
+// plan's names count: home(name) is the module the plan gives it here (a
+// v7.14 room's add and read, exported by two modules by chance, are a
+// mismatch as before). Every name has a home, two differ, and no module
+// exports them all.
+export function splitImports(files, surfaces, home) {
+  const set=files instanceof Map?files:new Map(Object.entries(files));
+  const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')),out=[];
+  const has=(t,n)=>exportNames(surfaces.get(t)).names.has(n);
+  for(const path of js)for(const ref of importRefs(path,set.get(path))) {
+    const names=[...new Set([...ref.names,...ref.members])].filter(Boolean);
+    if(names.length<2||!resolveLocal(path,ref.specifier,set).error)continue;
+    if(js.some(t=>t!==path&&surfaces.get(t)&&names.every(n=>has(t,n))))continue;
+    const homes=names.map(n=>home(n));
+    if(homes.every(h=>h&&h!==path)&&new Set(homes).size>1)out.push({path,specifier:ref.specifier,names,homes});
+  }
+  return out;
 }
 
 // What a reader whose import resolves nowhere is offered (at the top): the

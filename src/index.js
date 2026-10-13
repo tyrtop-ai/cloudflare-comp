@@ -9,7 +9,7 @@ import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeErr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, selfImports } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, selfImports, splitImports, moduleSpecifiers } from './linker.js';
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
@@ -608,6 +608,12 @@ export class ControlRoom extends DurableObject {
       .filter(n=>!RUNTIME_LABELS.includes(n.label)&&parse(n.interfaces,[]).some(f=>f.name===name));
     return live.filter(n=>!live.some(x=>x.id.startsWith(n.id+'.'))).map(({id,label})=>({id,label}));
   }
+  // Every name the plan gives a live piece, with its deepest carriers.
+  planIndex() {
+    const rows=query(this.db(),"SELECT id,label,interfaces FROM agents WHERE status NOT IN ('retired','failed') AND interfaces<>'[]'").filter(n=>!RUNTIME_LABELS.includes(n.label)),by=new Map();
+    for(const n of rows)for(const f of parse(n.interfaces,[]))by.set(f.name,[...(by.get(f.name)||[]),n.id]);
+    return new Map([...by].map(([name,ids])=>[name,new Set(ids.filter(id=>!ids.some(x=>x.startsWith(id+'.'))))]));
+  }
   // The goal operations the top's live direct children promise functions
   // for, one per operation: what the top itself answers requests from.
   plannedOperations() {
@@ -1203,14 +1209,28 @@ export class ControlRoom extends DurableObject {
       return done;
     };
     const originalSurfaces=current?new Map(js.map(p=>[p,exportSurface(p,originals.get(p))])):surfaces;
-    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch'}));
+    // v7.15: the plan's names. A module's piece is the worker that wrote it;
+    // provider: the plan gives every declared name asked for to its piece
+    // (spec 5.8); home: a name's module here by the plan, the one of its
+    // carrier's modules that exports it when there are several.
+    const plan=this.planIndex(),owners=new Map(),ownerOf=p=>{if(!owners.has(p))owners.set(p,this.buildSourceOrigin(builderId,p)?.owner||'');return owners.get(p);};
+    const carries=(o,n)=>!!o&&[...plan.get(n)||[]].some(c=>o===c||o.startsWith(c+'.'));
+    const provider=(t,names)=>{const declared=names.filter(n=>plan.has(n));return declared.length>0&&declared.every(n=>carries(ownerOf(t),n));};
+    const home=n=>{
+      const mods=js.filter(p=>carries(ownerOf(p),n)),out=mods.filter(p=>providedNames(surfaces.get(p)).has(n));
+      return mods.length===1?mods[0]:out.length===1?out[0]:null;
+    };
+    // One import line for functions in different modules (run8) cannot be
+    // linked by renaming: no automatic path, no model, no edit of its path.
+    const split=splitImports(originals,originalSurfaces,home),isSplit=(file,spec)=>split.some(x=>x.path===file&&x.specifier===spec);
+    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider}).filter(e=>!isSplit(e.file,e.find.slice(1,-1))));
     autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
     if(autoApplied.length)this.event(builderId,'link_auto',`Applied ${linkEdits(autoApplied)} without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
     // Only files with an import that does not resolve inside this manager's
     // children (or files named by a previous error) need renaming here. Every
     // other module is shown by its export names only.
-    const unresolvedBefore=unresolvedImports(files);
+    const unresolvedBefore=unresolvedImports(files).filter(u=>!isSplit(u.path,u.specifier));
     const mismatchesBefore=importMismatches(files,surfaces);
     const needs=new Set([...unresolvedBefore.map(u=>u.path),...mismatchesBefore.map(m=>m.path)]);
     const named=js.filter(p=>diagnostic&&diagnostic.includes(p));
@@ -1290,7 +1310,12 @@ export class ControlRoom extends DurableObject {
       // A new import path must reach a module; one that resolves nowhere would
       // carry into the next relink and go to the worker as if it were theirs.
       const had=new Set(componentImports(file,linked.get(file),linked).map(r=>r.specifier));
-      const check=next=>{const bad=componentImports(file,next,linked).find(r=>r.error&&!had.has(r.specifier));return bad?`the new import path '${bad.specifier}' resolves to no module`:null;};
+      const check=next=>{
+        const bad=componentImports(file,next,linked).find(r=>r.error&&!had.has(r.specifier));
+        if(bad)return `the new import path '${bad.specifier}' resolves to no module`;
+        const cut=split.find(x=>x.path===file&&!moduleSpecifiers(next).includes(x.specifier));
+        return cut?`'${cut.specifier}' reads ${cut.names.join(', ')}, which live in different modules: an import line links to one module, so its reader imports each function on its own line`:null;
+      };
       const result=applyEdits(linked.get(file),list,{knownNames,original:originals.get(file),check,done:done.filter(e=>e.file===file),shapes:{path:file,files:linked,surfaces}});
       linked.set(file,result.content);
       applied.push(...result.applied.map(e=>({...e,file})));
@@ -1346,7 +1371,12 @@ export class ControlRoom extends DurableObject {
     if(applied.length)this.event(builderId,'link_renamed',`Applied ${linkEdits(applied)} in ${new Set(applied.map(e=>e.file)).size} module(s): `+
       clip(applied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace}`).join('; '),900));
     const linkedSurfaces=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
-    return {files:linked,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfaces),surfaces:linkedSurfaces,applied,rejected};
+    // A split import is this level's problem unless its reader and every
+    // home lie in one branch built below, whose builder reported it.
+    const branchOf=new Map(sources.filter(s=>s.bundled).map(s=>[s.destination,s.owner]));
+    const below=x=>!!branchOf.get(x.path)&&x.homes.every(h=>branchOf.get(h)===branchOf.get(x.path));
+    return {files:linked,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfaces),surfaces:linkedSurfaces,applied,rejected,
+      split:splitImports(linked,linkedSurfaces,home).map(x=>({...x,here:!below(x)}))};
   }
   async publishLinked(builderId, link, sources, {top=false}={}) {
     for(const source of sources) {
@@ -1551,7 +1581,16 @@ export class ControlRoom extends DurableObject {
   inBranchProblems(builderId, link, top) {
     const files=link.files,surfaces=link.surfaces,reads=importReads(files,surfaces),items=[],m=this.node(builderId)?.parent;
     const exportsText=p=>exportsLine(p,surfaces),both=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
-    if(top)for(const u of link.unresolved) {
+    // run8: four readers did const { loadTickets: load, saveTickets: save } =
+    // require('./data-store') of a branch that wrote one module per function,
+    // and the builder and the workers traded it for five minutes. It is the
+    // reader's: one import line per function. Its homes stay unnamed: a
+    // reader never learns a branch's file layout.
+    const split=link.split||[];
+    for(const x of split.filter(x=>x.here))
+      items.push({kind:'unresolved',path:x.path,detail:`${x.path.split('/').pop()} imports ${both(x.names)} from '${x.specifier}' in one line, but they are different functions in different modules, and a builder links each import line to one module only.`,
+        facts:{specifier:x.specifier,names:x.names,split:true,provider_text:''}});
+    if(top)for(const u of link.unresolved.filter(u=>!split.some(x=>x.path===u.path&&x.specifier===u.specifier))) {
       const ref=importRefs(u.path,files.get(u.path)).find(r=>r.specifier===u.specifier);
       const names=[...new Set([...(ref?.names||[]),...(ref?.members||[])])].filter(Boolean);
       // v7.15 §5.7: a name the plan gives a piece whose modules do not
@@ -1665,8 +1704,9 @@ export class ControlRoom extends DurableObject {
       await this.publishLinked(id,link,sources,{top});
       const inside=this.inBranchProblems(id,link,top);
       const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
-      // Renaming cannot add a function: a contract problem never relinks.
-      if(inside.some(x=>x.kind!=='contract')&&state.relinks<MAX_RELINKS) {
+      // Renaming cannot add a function or split an import line: a contract
+      // or split-import problem never relinks.
+      if(inside.some(x=>x.kind!=='contract'&&!x.facts.split)&&state.relinks<MAX_RELINKS) {
         state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+inside.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
         this.save(`link_state:${manager}`,state);
         this.event(id,'link_retry',clip(state.diagnostic,900));

@@ -90,3 +90,123 @@ test('v7.15: a contract problem whose parties lie in one branch is delegated the
   assert.equal(tickets(room,'root.1.2').length,1,'the carrier');
   assert.equal(tickets(room,'root.1.1').length,0,'never the reader');
 });
+
+// ------------------------------------------------------------- test 32
+test('v7.15: autoLink picks the planned provider when two modules export the wanted name, or when a module named like the path would block the only one',()=>{
+  const files=new Map([
+    ['components/save/module.js',"exports.saveTickets = (all) => all;\n"],
+    ['components/append/appendTickets.js',"const { saveTickets } = require('../save/module.js');\nfunction appendTicket(t) { return saveTickets([t]); }\nmodule.exports = { appendTicket, saveTickets };\n"],
+    ['components/update/updateTicket.js',"const { saveTickets } = require('./saveTickets');\nmodule.exports = { updateTicket: (t) => saveTickets([t]) };\n"]]);
+  const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
+  assert.deepEqual(L.autoLink(files,surfaces),[],'two modules export saveTickets: no pick without the plan');
+  const provider=(t,names)=>t==='components/save/module.js'&&names.includes('saveTickets');
+  assert.deepEqual(L.autoLink(files,surfaces,{provider}).map(e=>[e.file,e.replace,e.reason]),
+    [['components/update/updateTicket.js',"'../save/module.js'",'planned provider of saveTickets']]);
+  // A module named like the path that exports something else would block
+  // the only module exporting the name; the plan's provider is picked.
+  const blocked=new Map([['components/save/module.js',files.get('components/save/module.js')],['components/update/updateTicket.js',files.get('components/update/updateTicket.js')],
+    ['components/notes/saveTickets.js',"module.exports = { saveNotes: (n) => n };\n"]]);
+  const bs=new Map([...blocked].map(([p,c])=>[p,L.exportSurface(p,c)]));
+  assert.deepEqual(L.autoLink(blocked,bs),[]);
+  assert.deepEqual(L.autoLink(blocked,bs,{provider}).map(e=>[e.replace,e.reason]),[["'../save/module.js'",'planned provider of saveTickets']]);
+});
+
+// ---------------------------------------------------- run8: one line per function
+// Live run8 (48a10b1d): Root's data store became a sub-manager whose split
+// wrote one module per function (load/ticketLoader.js exporting loadTickets,
+// save/module.js with exports.saveTickets = ..., append/appendTickets.js).
+// v7.15: Root promised loadTickets and saveTickets to the data store, its
+// split carries one promise per worker, and every reader imports each
+// function on its own line named after it: autoLink links each line by the
+// one module exporting that name, inside the branch below, with no model.
+const loader="const rows = [];\nfunction loadTickets() { return rows.slice(); }\nmodule.exports = { loadTickets };\n";
+const saver="let saved = [];\nexports.saveTickets = (tickets) => { saved = tickets.slice(); return saved; };\n";
+const appender="const { loadTickets } = require('./loadTickets');\nconst { saveTickets } = require('./saveTickets');\nfunction appendTicket(ticket) { return saveTickets([...loadTickets(), ticket]); }\nmodule.exports = { appendTicket };\n";
+const updater="const { loadTickets } = require('./loadTickets');\nconst { saveTickets } = require('./saveTickets');\nfunction updateTicket(id, changes) {\n  const all = loadTickets().map(t => t.id === id ? { ...t, ...changes } : t);\n  saveTickets(all);\n  return all.find(t => t.id === id) || null;\n}\nmodule.exports = { updateTicket };\n";
+const run8Entry="const { updateTicket } = require('./updateTicket');\nfunction start() {\n  return { update: updateTicket };\n}\nmodule.exports = { start };\n";
+async function run8(update=updater,append=appender) {
+  const r=liveRoom();
+  await planned(r.room);
+  const [,updatePath]=await pieces(r.room,'root',[['data store',null,null,[fn('loadTickets','returns all tickets'),fn('saveTickets','stores all tickets',['tickets'])]],
+    ['update ticket','updateTicket.js',update,[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket')]],['entry module','app.js',run8Entry,[START]]]);
+  const store=await pieces(r.room,'root.1',[['load tickets','load/ticketLoader.js',loader,[fn('loadTickets','returns all tickets')]],
+    ['save tickets','save/module.js',saver,[fn('saveTickets','stores all tickets',['tickets'])]],['append ticket','append/appendTickets.js',append,[fn('appendTicket','adds a ticket',['ticket'])]]]);
+  return {...r,updatePath,store};
+}
+// The append module also hands saveTickets on: of the two modules exporting
+// it, the plan's provider is picked (spec 5.8).
+test('v7.15: run8 replay (C): one import line per function links across a sub-manager\'s branch with no model call',async()=>{
+  const {room,calls,updatePath}=await run8(updater,appender.replace('module.exports = { appendTicket };','module.exports = { appendTicket, saveTickets };'));
+  assert.deepEqual(room.promisedOf('root.1').map(f=>f.name),['loadTickets','saveTickets']);
+  await linkBranch(room,'root.1');
+  assert.equal(room.node('root.1').status,'done',trace(room));
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.equal(calls.link.length,0,'no linker model call at either level');
+  assert.equal(room.node(b.id).status,'done',trace(room));
+  assert.equal(openProblems(room,'root').length+openProblems(room,'root.1').length,0);
+  const auto=events(room,'link_auto').map(e=>e.body).join(' ');
+  assert.match(auto,/updateTicket\.js: '\.\/loadTickets' → '[^']+' \(only module exporting loadTickets\)/,auto);
+  assert.match(auto,/updateTicket\.js: '\.\/saveTickets' → '[^']+' \(planned provider of saveTickets\)/,auto);
+  const linked=await room.indexedContent(b.id,updatePath),rel=p=>L.relativeSpecifier(updatePath,p);
+  // The bundle's paths: the data store's modules as Root's builder holds them.
+  const bundle=room.db().exec('SELECT destination FROM builder_sources WHERE builder=?',b.id).toArray().map(r=>r.destination);
+  const at=file=>bundle.find(p=>p.endsWith(file));
+  assert.ok(linked.includes(`require('${rel(at('load/ticketLoader.js'))}')`)&&linked.includes(`require('${rel(at('save/module.js'))}')`),linked);
+});
+// The same caller importing both from one path, as run8's four did: one
+// reader problem that says to import each function on its own line; no
+// model relink, no provider problem.
+test('v7.15: run8 replay (C): one import line of two functions from different modules is one reader problem: import each on its own line',async()=>{
+  const combined=updater.replace("const { loadTickets } = require('./loadTickets');\nconst { saveTickets } = require('./saveTickets');","const { loadTickets: load, saveTickets: save } = require('./data-store');").replace('loadTickets()','load()').replace('saveTickets(all)','save(all)');
+  const {room,calls,updatePath}=await run8(combined);
+  await linkBranch(room,'root.1');
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.equal(calls.link.length,0,'renaming cannot split it: the model is not asked');
+  const [p,...more]=openProblems(room,'root');
+  assert.equal(more.length,0,trace(room));
+  assert.deepEqual([p.kind,p.facts.split,p.facts.names,p.parties.map(x=>[x.role,x.owner])],['unresolved',true,['loadTickets','saveTickets'],[['reader','root.2']]]);
+  assert.equal(p.detail,"updateTicket.js imports loadTickets and saveTickets from './data-store' in one line, but they are different functions in different modules, and a builder links each import line to one module only.");
+  assert.equal(events(room,'link_retry').length,0,'no relink');
+  await room.turn('root');
+  const [ticket,...others]=tickets(room,'root.2');
+  assert.equal(others.length,0);
+  assert.match(ticket,/Your manager decided: Import each function on its own line, with the function's name as the path, in place of the one import of loadTickets, saveTickets from '\.\/data-store': const \{ loadTickets \} = require\('\.\/loadTickets'\); const \{ saveTickets \} = require\('\.\/saveTickets'\); The builder links each line to the module that exports that function\./);
+  assert.doesNotMatch(ticket,/ticketLoader|module\.js|appendTickets/,'the reader never learns the branch\'s file layout');
+  for(const id of ['root.1','root.1.1','root.1.2','root.1.3','root.3'])assert.equal(tickets(room,id).length,0,id);
+  // Fixed as told, it links with no model call and no problem.
+  room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.2'");
+  await room.putFile('root.2','updateTicket.js',updater);
+  room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");
+  await step(room,'root');
+  await room.turn(b.id);
+  assert.equal(calls.link.length,0);
+  assert.equal(room.node(b.id).status,'done',trace(room));
+  assert.ok(updatePath);
+});
+// Inside the branch whose modules hold both functions, its own builder
+// reports it to its own manager; the level above does not again. The model
+// may still be asked about the file for another import; its edit pointing
+// the line at one of the two modules is rejected.
+test('v7.15: a split import inside a branch is that branch\'s reader problem, and the linker may not point it at one of the modules',async()=>{
+  const combined="const { loadTickets, saveTickets } = require('./store');\nconst { nextId } = require('./idGenerator');\nfunction appendTicket(ticket) { return saveTickets([...loadTickets(), { id: nextId(), ...ticket }]); }\nmodule.exports = { appendTicket };\n";
+  const r=liveRoom({link:user=>{
+    const file=user.your_files[0].path,loader=user.all_module_paths.find(p=>p.endsWith('load/ticketLoader.js'));
+    return {edits:[{file,find:"'./store'",replace:`'${L.relativeSpecifier(file,loader)}'`}],issues:[]};
+  }});
+  const {room,calls}=r;
+  await planned(room);
+  await pieces(room,'root',[['data store',null,null,[fn('loadTickets'),fn('saveTickets')]],['entry module','app.js',entry,[START]]]);
+  await pieces(room,'root.1',[['load tickets','load/ticketLoader.js',loader,[fn('loadTickets')]],['save tickets','save/module.js',saver,[fn('saveTickets')]],
+    ['append ticket','append/appendTickets.js',combined,[fn('appendTicket')]]]);
+  const b=await room.scheduleAssembly('root.1');
+  await room.turn(b.id);
+  assert.equal(calls.link.length,1,'asked once, for ./idGenerator, and never relinked for the split line');
+  assert.ok(events(room,'link_edit_rejected').some(e=>/'\.\/store' reads loadTickets, saveTickets, which live in different modules: an import line links to one module, so its reader imports each function on its own line/.test(e.body)),trace(room));
+  const held=openProblems(room,'root.1');
+  assert.deepEqual(held.map(p=>[p.kind,p.facts.split,p.parties[0].owner]),[['unresolved',true,'root.1.3']]);
+  assert.equal(openProblems(room,'root').length,0);
+  await room.turn('root.1');
+  assert.match(tickets(room,'root.1.3')[0],/const \{ loadTickets \} = require\('\.\/loadTickets'\); const \{ saveTickets \} = require\('\.\/saveTickets'\);/);
+});
