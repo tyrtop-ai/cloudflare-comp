@@ -27,8 +27,23 @@ const topicSlug = label => String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_'
 const linkEdits = applied => { const shaped=applied.filter(e=>e.shape).length; return `${applied.length-shaped} rename(s)`+(shaped?` and ${shaped} import binding fix(es)`:''); };
 // The owner notes of pruned children, each once, in their short form (owner
 // and label): memory is clipped where it is read (750/950 characters), so
-// the piece itself is quoted only in split_feedback.
-const ownerNotes = rejected => clip([...new Set(rejected.filter(x=>x.owner).map(x=>x.short||x.note))].join(' '),1600);
+// the piece itself is quoted only in split_feedback. outside: the public
+// note the splitter's own children read, which names no branch (rebuilt for
+// feedback saved before v7.15.1).
+const ownerNotes = (rejected,outside=false) => clip([...new Set(rejected.filter(x=>x.owner).map(x=>
+  outside?x.outside||ownerNote(x.label,'','',x.names||[],x.kept).short:x.short||x.note))].join(' '),1600);
+// v7.15.1: a prune verdict names the owning branch only to a direct child of
+// the manager that decided (the splitter, when its parent decided). One from
+// higher up reaches the splitter, and every verdict reaches the splitter's
+// children, only as owned outside this branch: managers talk to children.
+const OUTSIDE = 'outside this branch';
+function ownerNote(label, piece, owner='', names=[], kept=false) {
+  const head=`${kept?`${label}: ${names.join(', ')}`:label} is owned ${owner?`by ${owner}`:OUTSIDE}`;
+  const how=names.length?`import ${names.join(', ')} ${owner?'from that strand ':''}by exactly those names`:`import it ${owner?'from that strand':'by name'}`;
+  const short=`${head}; ${how} and write here only what it lacks.`;
+  return {note:`${head}; ${how} instead of rebuilding it. Any part of "${piece}" that ${owner||'its owner'} does not provide is still written in this strand.`,
+    short,outside:owner?ownerNote(label,piece,'',names,kept).short:short};
+}
 // Builders and the compiler are runtime nodes: one builder per manager links
 // its direct children, one compiler under the top manager runs the bundle.
 const RUNTIME_LABELS = ['Temporary builder','Compiler'];
@@ -599,7 +614,7 @@ export class ControlRoom extends DurableObject {
   ownerBranch(name, id) {
     for(let b=this.node(id);b?.parent;b=this.node(b.parent)) {
       const holders=this.offeredFunctions(b.parent,b.id).filter(o=>o.items.some(f=>f.name===name));
-      if(holders.length)return holders.length===1?{id:holders[0].id,label:holders[0].label}:null;
+      if(holders.length)return holders.length===1?{id:holders[0].id,label:holders[0].label,level:b.parent}:null;
     }
     return null;
   }
@@ -2701,20 +2716,18 @@ export class ControlRoom extends DurableObject {
       const carries=carried(child).length>0,added=child.interfaces.filter(f=>!own.has(f.name)),label=clip(child.label,70);
       const owned=added.filter(f=>!GENERIC_NAMES.has(f.name)).map(f=>({name:f.name,owner:this.ownerBranch(f.name,id)})).filter(x=>x.owner);
       if(owned.length&&!carries&&owned.length===added.length&&new Set(owned.map(x=>x.owner.id)).size===1) {
-        const owner=owned[0].owner,list=owned.map(x=>x.name);
+        const owner=owned[0].owner,list=owned.map(x=>x.name),name=owner.level===this.node(id)?.parent?owner.label:'';
         this.event(id,'scope_pruned',`Proposed child "${label}" exports ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; not spawned. Import them by those names.`);
         rejectedScope++;
-        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:owner.label,names:list,
-          note:`${child.label} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names instead of rebuilding it. Any part of "${clip(assignedPiece(child.task),160)}" that ${owner.label} does not provide is still written in this strand.`,
-          short:`${child.label} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names and write here only what it lacks.`});
+        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,names:list,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,list)});
         continue;
       }
       const byOwner=new Map();
       for(const x of owned){if(!byOwner.has(x.owner.id))byOwner.set(x.owner.id,{owner:x.owner,names:[]});byOwner.get(x.owner.id).names.push(x.name);}
       for(const {owner,names:list} of byOwner.values()) {
         this.event(id,'interfaces_owned_elsewhere',`"${label}" lists ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; kept without ${list.length>1?'them':'it'}.`);
-        rejectedChildren.push({label:child.label,owner:owner.label,names:list,kept:true,
-          short:`${child.label}: ${list.join(', ')} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names and write here only what it lacks.`});
+        const name=owner.level===this.node(id)?.parent?owner.label:'',{short,outside}=ownerNote(child.label,'',name,list,true);
+        rejectedChildren.push({label:child.label,owner:name||OUTSIDE,names:list,kept:true,short,outside});
       }
       const c=owned.length?{...child,interfaces:child.interfaces.filter(f=>!owned.some(x=>x.name===f.name))}:child;
       kept.push(c);
@@ -2749,7 +2762,7 @@ export class ControlRoom extends DurableObject {
         } catch(e) {error||=String(e?.message||e);}
         if(owner===branch.id)return {branch,level};
         const found=candidates.find(c=>c.id===owner);
-        if(found)return {owner:found};
+        if(found)return {owner:found,level};
         branch=level;
       }
       return {error};
@@ -2761,10 +2774,10 @@ export class ControlRoom extends DurableObject {
         this.event(id,'scope_kept',`Clef placed proposed child "${label}" in this strand ("${clip(branch.label,70)}" under ${level.id}); kept.`);
         kept.push(child);
       } else if(owner) {
-        const note=`${child.label} is owned by ${owner.label}; import it from that strand instead of rebuilding it. Any part of "${clip(assignedPiece(child.task),160)}" that ${owner.label} does not provide is still written in this strand.`;
-        this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. Import it from that strand instead of rebuilding it.`);
-        const short=`${child.label} is owned by ${owner.label}; import it from that strand and write here only what it lacks.`;
-        rejected.push({label:child.label,task:clip(child.task,500),owner:owner.label,note,short});
+        // Decided above this strand's manager: the splitter is not told by whom.
+        const near=level.id===this.node(id)?.parent,name=near?owner.label:'';
+        this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. ${near?'Import it from that strand instead of rebuilding it.':`Decided at ${level.id}: this strand is told only that it is owned ${OUTSIDE}, and imports it by name.`}`);
+        rejected.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,...ownerNote(child.label,clip(assignedPiece(child.task),160),name)});
       } else if(error) {
         this.event(id,'scope_walk_uncertain',`No strand up to Root was shown to own "${label}", but Clef failed on the way (${clip(error,200)}); kept, since an error is no proof it is out of scope.`);
         kept.push(child);
@@ -4017,11 +4030,12 @@ export class ControlRoom extends DurableObject {
         action.files=[];action.imports=[];action.exports=[];
         action.done=false;action.wait=true;
       }
-      // Spawned children find where a pruned piece lives, from this split or
-      // the rejected one it corrects unless this split keeps that piece, in
-      // their manager's public knowledge, written before any child can run.
+      // Spawned children find that a pruned piece lives outside their branch
+      // (never whose it is), from this split or the rejected one it corrects
+      // unless this split keeps that piece, in their manager's public
+      // knowledge, written before any child can run.
       const owned=action.spawn.length?ownerNotes([...rejectedChildren,...(before.split_feedback?.rejected||[])]
-        .filter(x=>x.kept||!action.spawn.some(c=>c.label===x.label))):'';
+        .filter(x=>x.kept||!action.spawn.some(c=>c.label===x.label)),true):'';
       if(owned)action.remember.push({visibility:'public',key:'owned_elsewhere',value:owned});
       if (!this.manager(id) && !action.spawn.length && action.exports.length) {
         this.event(id,'blocked','Implementers cannot publish child export aliases.');
