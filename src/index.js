@@ -2962,8 +2962,11 @@ export class ControlRoom extends DurableObject {
           owners=await this.rememberOwners(id,before.split_feedback?.rejected||[]);
           if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
           this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
-          n.phase='implement'; before.phase='implement';splitting=false;
-          before.your_responsibility=this.withContract(n.task,n);
+          n.phase='implement';splitting=false;
+          // From here it is an isolated worker, as on its later turns: its own
+          // contract, and no parent, sibling or neighbour memory (decision 2; a
+          // sibling's prune note named getTickets to the create worker).
+          Object.assign(before,this.view(id,before.new_messages,ownFiles),{turn:before.turn,adjacent_public_memory:[]});
           const reclassified=Boolean(before.split_feedback);
           this.event(id,'atomic',reclassified
             ? 'Clef reviewed the rejected partition and routed this assignment to direct code implementation.'

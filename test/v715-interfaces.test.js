@@ -323,6 +323,7 @@ test('v7.15: a worker\'s task text lists only its own functions, with descriptio
     leaf:()=>({summary:'Wrote createTicket',files:[{path:'createTicket.js',intent:'creates tickets'}],done:true}),
     file:()=>'function createTicket(title, description) { return { id: 1, title, description }; }\nmodule.exports = { createTicket };\n'});
   const {room}=await tree(ai,run6Root.slice(0,3),{phases:{'ticket storage':'decompose','create ticket':'decompose'}});
+  await room.remember('root.1',[{visibility:'public',key:'owned_elsewhere',value:'Ticket loader is owned by ticket storage; import getTickets from that strand by exactly those names and write here only what it lacks.'}]);
   const entry=room.view('root.1').your_responsibility;
   assert.ok(entry.startsWith(run6Root[0].task+'\n\nFunctions you export, by exactly these names, as named exports or members of the exported object (not as methods of a class or instance); parameters and descriptions are hints, and you may export more: '));
   assert.ok(entry.endsWith('start(): no arguments; returns an object with one method per goal operation, each the function that performs it, which you ask your manager for and import by its name.'),'decision 1: the carrier reads start\'s description');
@@ -345,6 +346,10 @@ test('v7.15: a worker\'s task text lists only its own functions, with descriptio
   assert.ok(leaf.your_responsibility.endsWith(contract));
   assert.doesNotMatch(leaf.your_responsibility,/getTickets|saveTicket|start\(|entry module|ticket storage|root\./);
   assert.equal(leaf.your_promised_functions,undefined);
+  // From Clef's NO on it is an isolated worker: a sibling's note naming
+  // getTickets reached this request through adjacent_public_memory.
+  assert.deepEqual([leaf.phase,leaf.parent,leaf.neighbor_owners,leaf.adjacent_public_memory],['implement',{label:'Manager'},[],[]]);
+  assert.doesNotMatch(JSON.stringify({...leaf,your_id:undefined}),/getTickets|saveTicket|start|entry module|ticket storage|Ticket list|Ticket save|Ticket loader|root\./,'no other node\'s label, function or id anywhere in the request');
   const generated=ai.calls.find(c=>c.kind==='file').request;
   assert.ok(generated.assignment.endsWith(contract),'the generateFile request carries the contract');
   assert.equal(room.node('root.3').task,run6Root[2].task,'the stored task never changes');
