@@ -6,7 +6,7 @@
 // The room tests use the REAL container build runner as the executor.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ControlRoom,liveRoom,workers,linkAndCompile,runReady,step,openProblems,lastReport,tickets,settle,events,trace,GOAL} from './helpers/room.js';
+import {ControlRoom,liveRoom,workers,linkAndCompile,runReady,step,openProblems,reportedBefore,lastReport,tickets,settle,events,trace,GOAL} from './helpers/room.js';
 const L=await import('../src/linker.js');
 const {PLAIN_JS_CLAUSE}=await import('../src/problems.js');
 const {ENTRY_CONTRACT,ROOT_PROMISE}=await import('../src/model.js');
@@ -214,7 +214,7 @@ test('v7.14 (5d): retasking a sub-manager retires its whole branch; it splits ag
   await workers(room,'root.1',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
   const old=await room.scheduleAssembly('root.1');
   await room.turn(old.id);
-  room.set('repair_rounds:root.1',6);
+  room.set('repair_stalled:root.1',3);reportedBefore(room);
   await room.turn('root.1');
   const [stuck]=openProblems(room,'root');
   assert.deepEqual([stuck.kind,stuck.flags.rounds_exhausted],['stuck',true]);
@@ -228,7 +228,7 @@ test('v7.14 (5d): retasking a sub-manager retires its whole branch; it splits ag
   assert.equal(room.get('builder_gen:root.1'),'1');
   assert.equal(room.get('linked:root.1'),'');
   assert.equal(room.read('link_reported:root.1',null),null);
-  assert.deepEqual(room.problems("kind='mismatch'").map(p=>[p.status,p.outcome]),[['closed','retasked']],'its builder\'s report closes with the branch');
+  assert.deepEqual(room.problems("kind='mismatch' AND id NOT LIKE '%-before'").map(p=>[p.status,p.outcome]),[['closed','retasked']],'its builder\'s report closes with the branch');
   assert.deepEqual([stuck.id].map(id=>room.problems('id=?',id)[0].outcome),['retasked']);
   assert.equal(room.manager('root.1'),false,'a retired branch does not make it a manager');
   assert.equal(Number(room.get('repair_rounds:root')),1,'a retask costs Root a round');

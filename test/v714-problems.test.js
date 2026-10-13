@@ -6,7 +6,7 @@
 // The room tests use the REAL container build runner as the executor.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {materializedPath,verifyBuild,snapshotHash,liveRoom,workers,linkAndCompile,runReady,step,openProblems,lastReport,tickets,settle,events,trace} from './helpers/room.js';
+import {materializedPath,verifyBuild,snapshotHash,liveRoom,workers,linkAndCompile,runReady,step,openProblems,reportedBefore,lastReport,tickets,settle,events,trace} from './helpers/room.js';
 const {BOUNDARY}=await import('../src/assembly.js');
 const L=await import('../src/linker.js');
 
@@ -393,6 +393,8 @@ test('v7.14: one error in a stack of several modules is one problem, and the mod
 
 // ------------------------------------------------------------- limits
 // Repair is bounded (spec 3.10): a manager's own rounds, and the run's.
+// v7.15.1: a manager's own are its rounds in a row without progress, so each
+// room first sees the same report it already had.
 test('v7.14: out of repair rounds, the top fails the run; a lower manager tells its parent once, which fails it',async()=>{
   // At the top.
   const top=liveRoom();
@@ -400,10 +402,10 @@ test('v7.14: out of repair rounds, the top fails the run; a lower manager tells 
   await workers(top.room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
   const tb=await top.room.scheduleAssembly('root');
   await top.room.turn(tb.id);
-  top.room.set('repair_rounds:root',6);
+  top.room.set('repair_stalled:root',3);reportedBefore(top.room);
   await top.room.turn('root');
   assert.equal(top.room.node('root').status,'failed');
-  assert.match(top.room.node('root').summary,/Repair rounds exhausted: Root objective used all 6 of its repair rounds/);
+  assert.match(top.room.node('root').summary,/Repair rounds exhausted: Root objective made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
   assert.equal(top.room.receive('root.2').length,0,'no ticket beyond the last round');
   assert.ok(events(top.room,'repair_exhausted').length);
   // Below the top: root.1 is out of rounds; it escalates one stuck problem about itself, and Root fails it.
@@ -413,7 +415,7 @@ test('v7.14: out of repair rounds, the top fails the run; a lower manager tells 
   await workers(room,'root.1',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
   const bb=await room.scheduleAssembly('root.1');
   await room.turn(bb.id);
-  room.set('repair_rounds:root.1',6);
+  room.set('repair_stalled:root.1',3);reportedBefore(room);
   await room.turn('root.1');
   assert.equal(room.receive('root.1.2').length,0);
   const [stuck]=openProblems(room,'root');
@@ -429,9 +431,9 @@ test('v7.14: out of repair rounds, the top fails the run; a lower manager tells 
   await workers(total.room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
   const b3=await total.room.scheduleAssembly('root');
   await total.room.turn(b3.id);
-  total.room.set('repair_rounds_total',10);
+  total.room.set('repair_rounds_total',20);
   await total.room.turn('root');
-  assert.equal(total.room.get('repair_exhausted'),'the run used all 10 of its repair rounds');
+  assert.equal(total.room.get('repair_exhausted'),'the run used all 20 of its repair rounds (the per-run ceiling)');
   // The link mismatch, and the entry the compiler found missing (no module here exports start()).
   assert.deepEqual(total.room.problems('1=1').map(p=>[p.kind,p.status,p.outcome]),[['mismatch','closed','exhausted'],['entry','closed','exhausted']]);
   assert.equal(total.room.node('root').status,'failed');

@@ -14,8 +14,8 @@ import {normalizeInterfaces, repairInterfaces} from './interfaces.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
-export const MANAGER_MAX_ROUNDS=6;          // repair rounds per manager per run
-export const MAX_REPAIR_ROUNDS_TOTAL=managers=>Math.min(40,8+2*Math.max(1,managers)); // per run; branch rounds run in parallel
+export const MANAGER_MAX_STALLED=3;         // repair rounds in a row without progress per manager; a round with progress is free (run9)
+export const MAX_REPAIR_ROUNDS_TOTAL=managers=>Math.min(40,16+4*Math.max(1,managers)); // per run, progress or not: the backstop (ping-pong); branch rounds run in parallel
 export const STUCK_AFTER=2;                 // the model decides on the third recurrence (M4)
 export const MAX_MANAGER_MODEL_CALLS=8;     // per manager per run, a parse retry counted; then defaults only
 export const MAX_PROBLEMS_PER_REPORT=12;
@@ -42,6 +42,20 @@ export function problemSignature(kind, parties, detail) {
   const head=String(detail||'').replace(/(?<![\w.\/])\/[^\s)'"]*/g,'').replace(/(?:\.\.?\/)*components\/\S+/g,'').replace(/:\d+(?::\d+)?\b/g,'')
     .replace(/\s+/g,' ').trim().slice(0,160);
   return `${kind}|${owners}|${head}`;
+}
+
+// v7.15.1: a repair round makes progress when its report no longer fails as
+// the same source's report before it did: one of the earlier signatures (a
+// run's failing assertion or the file it is blamed on, a link problem) is
+// gone. A source's first report is new, so progress. Run9 fixed one real bug
+// per round and failed on a flat six-round count while still converging.
+// rows: the source's problem rows in report order.
+export function reportProgress(rows, wave) {
+  const mine=rows.filter(p=>p.flags?.wave===wave),waves=[...new Set(rows.map(p=>p.flags?.wave).filter(Boolean))],i=waves.indexOf(wave);
+  if(!mine.length)return false;
+  if(i<1)return true;
+  const now=new Set(mine.map(p=>p.signature));
+  return rows.some(p=>p.flags?.wave===waves[i-1]&&!now.has(p.signature));
 }
 
 // Where each party of a problem held by `holder` lies: under one of its direct

@@ -181,6 +181,9 @@ export async function runReady(room,ids,max=30) {
   throw new Error('still ready after '+max+' turns: '+ids.filter(id=>room.node(id)?.status==='ready').join(', '));
 }
 // Rows a manager holds that are not closed.
+// v7.15.1: the open problems were reported once before, unchanged, so the
+// round they start makes no progress.
+export function reportedBefore(room) {room.db().exec("INSERT INTO problems SELECT id||'-before',holder,'closed','superseded',kind,stage,source,source_input,signature,parties,detail,facts,evidence,directive,'{\"wave\":\"before\"}','',trail,created-1,updated FROM problems WHERE status!='closed'");}
 export const openProblems=(room,holder)=>room.problems("holder=? AND status!='closed'",holder);
 // The latest report of a builder or the compiler, shaped like v7.12's
 // build_failure:root: {stage, issues:[{path,detail,kind,target,holder,status}]}.
