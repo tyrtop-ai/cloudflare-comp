@@ -608,6 +608,14 @@ export class ControlRoom extends DurableObject {
       .filter(n=>!RUNTIME_LABELS.includes(n.label)&&parse(n.interfaces,[]).some(f=>f.name===name));
     return live.filter(n=>!live.some(x=>x.id.startsWith(n.id+'.'))).map(({id,label})=>({id,label}));
   }
+  // The plan as builder builderId reads it: the plan's names, each module's
+  // piece (the worker that wrote it), whether a piece carries a name, and
+  // whether the plan gives a name to a piece that is not module p's.
+  planOf(builderId) {
+    const plan=this.planIndex(),owners=new Map(),ownerOf=p=>{if(!owners.has(p))owners.set(p,this.buildSourceOrigin(builderId,p)?.owner||'');return owners.get(p);};
+    const carries=(o,n)=>!!o&&[...plan.get(n)||[]].some(c=>o===c||o.startsWith(c+'.'));
+    return {plan,ownerOf,carries,elsewhere:(n,p)=>plan.has(n)&&!carries(ownerOf(p),n)};
+  }
   // Every name the plan gives a live piece, with its deepest carriers.
   planIndex() {
     const rows=query(this.db(),"SELECT id,label,interfaces FROM agents WHERE status NOT IN ('retired','failed') AND interfaces<>'[]'").filter(n=>!RUNTIME_LABELS.includes(n.label)),by=new Map();
@@ -1214,8 +1222,7 @@ export class ControlRoom extends DurableObject {
     // provider: the plan gives every declared name asked for to its piece
     // (spec 5.8); home: a name's module here by the plan, the one of its
     // carrier's modules that exports it when there are several.
-    const plan=this.planIndex(),owners=new Map(),ownerOf=p=>{if(!owners.has(p))owners.set(p,this.buildSourceOrigin(builderId,p)?.owner||'');return owners.get(p);};
-    const carries=(o,n)=>!!o&&[...plan.get(n)||[]].some(c=>o===c||o.startsWith(c+'.'));
+    const {plan,ownerOf,carries,elsewhere}=this.planOf(builderId);
     const provider=(t,names)=>{const declared=names.filter(n=>plan.has(n));return declared.length>0&&declared.every(n=>carries(ownerOf(t),n));};
     const home=n=>{
       const mods=js.filter(p=>carries(ownerOf(p),n)),out=mods.filter(p=>providedNames(surfaces.get(p)).has(n));
@@ -1224,14 +1231,22 @@ export class ControlRoom extends DurableObject {
     // One import line for functions in different modules (run8) cannot be
     // linked by renaming: no automatic path, no model, no edit of its path.
     const split=splitImports(originals,originalSurfaces,home),isSplit=(file,spec)=>split.some(x=>x.path===file&&x.specifier===spec);
-    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider}).filter(e=>!isSplit(e.file,e.find.slice(1,-1))));
+    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider}).filter(e=>!isSplit(e.file,e.specifier)));
     autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
     if(autoApplied.length)this.event(builderId,'link_auto',`Applied ${linkEdits(autoApplied)} without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
     // Only files with an import that does not resolve inside this manager's
     // children (or files named by a previous error) need renaming here. Every
     // other module is shown by its export names only.
-    const unresolvedBefore=unresolvedImports(files).filter(u=>!isSplit(u.path,u.specifier));
+    // An import of functions the plan gives only pieces outside this branch
+    // is its boundary's need: the level that sees their modules links it by
+    // name, so no model is asked here, whose edit could only misdirect it.
+    const m=this.node(builderId).parent,beyond=u=>{
+      if(top)return false;
+      const ref=importRefs(u.path,files.get(u.path)).find(r=>r.specifier===u.specifier),names=[...ref?.names||[],...ref?.members||[]];
+      return names.length>0&&names.every(n=>plan.has(n)&&[...plan.get(n)].every(c=>c!==m&&!c.startsWith(m+'.')));
+    };
+    const unresolvedBefore=unresolvedImports(files).filter(u=>!isSplit(u.path,u.specifier)&&!beyond(u));
     const mismatchesBefore=importMismatches(files,surfaces);
     const needs=new Set([...unresolvedBefore.map(u=>u.path),...mismatchesBefore.map(m=>m.path)]);
     const named=js.filter(p=>diagnostic&&diagnostic.includes(p));
@@ -1300,7 +1315,7 @@ export class ControlRoom extends DurableObject {
         edits.set(edit.file,[...(edits.get(edit.file)||[]),normalizeEditPaths(edit,js,files)]);
       }
       for(const issue of out.issues)if(files.has(issue.file))issues.push({path:issue.file,detail:'Builder: '+issue.problem});
-    } else this.event(builderId,'link_started',`Linking ${label}: every import already resolves; no renaming needed at this level.`);
+    } else this.event(builderId,'link_started',`Linking ${label}: every import already resolves${unresolvedImports(files).length?' or reads functions the plan gives pieces outside this branch':''}; no renaming needed at this level.`);
     // Known names come from the worker originals, never from earlier renames,
     // so a name copied into another file by a relink does not become known.
     const namesByFile=new Map(js.map(p=>[p,tokenNames(originals.get(p))]));
@@ -1319,11 +1334,19 @@ export class ControlRoom extends DurableObject {
       // addTicket): renaming cannot make one operation another.
       const given=[...plan.keys()].filter(n=>carries(ownerOf(file),n)),kept=given.filter(n=>!missingExports(new Map([[file,linked.get(file)]]),[n]).length);
       const bound=new Set(boundNames(originals.get(file),linked.get(file)).map(p=>p.join('|')));
+      // Nor may a path point a function the plan gives another piece at a
+      // module that neither carries nor exports it: the reader would then
+      // hear to stop using a function the plan gives it (slice C review).
+      const aimed=text=>{const at=new Map(componentImports(file,text,linked).filter(r=>r.target).map(r=>[r.specifier,r.target]));
+        return importRefs(file,text).flatMap(r=>{const t=at.get(r.specifier);return t?[...r.names,...r.members].filter(n=>elsewhere(n,file)&&!carries(ownerOf(t),n)&&!providedNames(surfaces.get(t)).has(n)).map(n=>[n,t]):[];});};
+      const misaimed=new Set(aimed(linked.get(file)).map(p=>p.join('|')));
       const check=next=>{
         const bad=componentImports(file,next,linked).find(r=>r.error&&!had.has(r.specifier));
         if(bad)return `the new import path '${bad.specifier}' resolves to no module`;
         const cut=split.find(x=>x.path===file&&!moduleSpecifiers(next).includes(x.specifier));
         if(cut)return `'${cut.specifier}' reads ${cut.names.join(', ')}, which live in different modules: an import line links to one module, so its reader imports each function on its own line`;
+        const [n,t]=aimed(next).find(p=>!misaimed.has(p.join('|')))||[];
+        if(n)return `it points ${n} at ${t.split('/').pop()}, but the plan gives ${n} to ${pieceOf(n)}`;
         const lost=missingExports(new Map([[file,next]]),kept);
         if(lost.length)return `it removes ${lost.join(', ')}, a function the plan gives this module's piece`;
         const [x,y]=boundNames(originals.get(file),next).find(([x,y])=>!bound.has(`${x}|${y}`)&&differ(x,y))||[];
@@ -1607,9 +1630,12 @@ export class ControlRoom extends DurableObject {
     // reader's: one import line per function. Its homes stay unnamed: a
     // reader never learns a branch's file layout.
     const split=link.split||[];
+    // The reader's local names (load for loadTickets) go into the lines it
+    // is told to write: without them run8's save() would be undefined.
+    const aliases=(path,names)=>Object.fromEntries(importRefs(path,files.get(path)).flatMap(r=>[...r.aliases]).filter(([n])=>names.includes(n)));
     for(const x of split.filter(x=>x.here))
       items.push({kind:'unresolved',path:x.path,detail:`${x.path.split('/').pop()} imports ${both(x.names)} from '${x.specifier}' in one line, but they are different functions in different modules, and a builder links each import line to one module only.`,
-        facts:{specifier:x.specifier,names:x.names,split:true,provider_text:''}});
+        facts:{specifier:x.specifier,names:x.names,split:true,aliases:aliases(x.path,x.names),provider_text:''}});
     if(top)for(const u of link.unresolved.filter(u=>!split.some(x=>x.path===u.path&&x.specifier===u.specifier))) {
       const ref=importRefs(u.path,files.get(u.path)).find(r=>r.specifier===u.specifier);
       const names=[...new Set([...(ref?.names||[]),...(ref?.members||[])])].filter(Boolean);
@@ -1640,6 +1666,10 @@ export class ControlRoom extends DurableObject {
     // view:{start}, ...}. A reader that expects a name the provider's piece
     // never promised, while the piece exports what it promised, is the
     // reader's to change (unpromised); the provider is never asked to add it.
+    // A name the plan gives another piece is no name the reader made up: the
+    // path points it at the wrong module (elsewhere), and the reader imports
+    // it on its own line by its name, which links by the plan.
+    const {ownerOf,carries,elsewhere}=this.planOf(builderId);
     const piece=new Map(),promiseOf=t=>{
       if(!piece.has(t)){const w=this.buildSourceOrigin(builderId,t)?.owner,names=w?this.promisedOf(w).map(f=>f.name):[];
         piece.set(t,names.length&&!missingExports(new Map(this.modulesOf(builderId,files,w).map(p=>[p,files.get(p)])),names).length?names:null);}
@@ -1649,11 +1679,12 @@ export class ControlRoom extends DurableObject {
       const same=reads.filter(r=>r.target===m.target),others=new Map(),sur=surfaces.get(m.target),d=sur?.default;
       for(const r of same)if(r.path!==m.path)others.set(r.path,[...(others.get(r.path)||[]),r]);
       const names=[...new Set(link.mismatches.filter(x=>x.path===m.path&&x.target===m.target).map(x=>x.name).filter(Boolean))],promised=m.name?promiseOf(m.target):null;
+      const misdirected=m.name&&names.every(n=>elsewhere(n,m.path)&&!carries(ownerOf(m.target),n));
       items.push({kind:m.name?'mismatch':'binding',path:m.path,target:m.target,detail:`The module ${m.detail}.`,facts:{
         names,anchored:[...others.values()].some(list=>list.every(r=>r.ok)),
         convention:new Set(same.filter(r=>!r.ok&&r.name===m.name).map(r=>r.path)).size,
         provider_empty:!sur?.named?.length&&(!d||d.type==='object'&&!d.members?.length),
-        ...promised&&names.every(n=>!promised.includes(n))?{unpromised:true,promised}:{},
+        ...misdirected?{elsewhere:names,aliases:aliases(m.path,names)}:promised&&names.every(n=>!promised.includes(n)&&!elsewhere(n,m.path))?{unpromised:true,promised}:{},
         provider_kind:d?.type||'',provider_text:clip(exportsText(m.target),700)}});
     }
     return items;

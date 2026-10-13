@@ -1108,27 +1108,30 @@ const normName=s=>String(s||'').toLowerCase().replace(/\.(?:m|c)?js$/,'').replac
 const methodName=m=>String(m.name).replace(/^(?:static |get |set )/,'');
 const isRequire=n=>n?.type==='CallExpression'&&n.callee?.type==='Identifier'&&n.callee.name==='require'&&n.arguments[0]?.type==='Literal'&&typeof n.arguments[0].value==='string';
 // Every relative import in a file, with the names the file expects from it.
+// span: [from, to], the import's text from its binding through its path
+// (its member, for require('./x').y), whole tokens that tell apart two
+// imports of one path text. aliases: each imported name bound under another.
 export function importRefs(path, content) {
   let ast;try {ast=parseSource(content).ast;} catch {return [];}
   const refs=[],byBinding=new Map();
   // local: every name the import binds in this file.
-  const add=(lit,binding)=>{const ref={specifier:lit.value,start:lit.start,end:lit.end,names:new Set(),members:new Set(),local:new Set(),isNew:false};refs.push(ref);if(binding){byBinding.set(binding,ref);ref.local.add(binding);}return ref;};
+  const add=(lit,binding,span=[lit.start,lit.end])=>{const ref={specifier:lit.value,start:lit.start,end:lit.end,span,names:new Set(),members:new Set(),local:new Set(),aliases:new Map(),isNew:false};refs.push(ref);if(binding){byBinding.set(binding,ref);ref.local.add(binding);}return ref;};
   const seen=new Set();
   walk(ast,node=>{
     if(node.type==='VariableDeclarator'&&isRequire(node.init)) {
       const lit=node.init.arguments[0];seen.add(lit.start);
-      const ref=add(lit,node.id.type==='Identifier'?node.id.name:null);
-      if(node.id.type==='ObjectPattern')for(const p of node.id.properties)if(p.type==='Property'&&!p.computed){ref.names.add(nameOf(p.key));if(p.value?.type==='Identifier')ref.local.add(p.value.name);}
+      const ref=add(lit,node.id.type==='Identifier'?node.id.name:null,[node.start,lit.end]);
+      if(node.id.type==='ObjectPattern')for(const p of node.id.properties)if(p.type==='Property'&&!p.computed){ref.names.add(nameOf(p.key));if(p.value?.type==='Identifier'){ref.local.add(p.value.name);if(p.value.name!==nameOf(p.key))ref.aliases.set(nameOf(p.key),p.value.name);}}
     } else if(node.type==='ImportDeclaration'&&typeof node.source?.value==='string') {
-      const ref=add(node.source,null);seen.add(node.source.start);
+      const ref=add(node.source,null,[node.start,node.source.end]);seen.add(node.source.start);
       for(const sp of node.specifiers) {
         ref.local.add(sp.local.name);
-        if(sp.type==='ImportSpecifier')ref.names.add(nameOf(sp.imported));
+        if(sp.type==='ImportSpecifier'){ref.names.add(nameOf(sp.imported));if(sp.local.name!==nameOf(sp.imported))ref.aliases.set(nameOf(sp.imported),sp.local.name);}
         else byBinding.set(sp.local.name,ref);
       }
     } else if(node.type==='MemberExpression'&&!node.computed&&isRequire(node.object)) {
       const lit=node.object.arguments[0];seen.add(lit.start);
-      add(lit,null).members.add(nameOf(node.property));
+      add(lit,null,[node.start,node.end]).members.add(nameOf(node.property));
     }
   });
   walk(ast,node=>{
@@ -1169,8 +1172,8 @@ export function autoLink(files, surfaces, {scope='application',provider=null}={}
   const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
   const edits=[];
   for(const path of js) {
-    const content=set.get(path);
-    for(const ref of importRefs(path,content)) {
+    const content=set.get(path),refs=importRefs(path,content);
+    for(const ref of refs) {
       if(!resolveLocal(path,ref.specifier,set).error)continue;
       const others=js.filter(t=>t!==path&&surfaces.get(t));
       const wanted=new Set([...ref.names,...ref.members].filter(Boolean));
@@ -1204,8 +1207,13 @@ export function autoLink(files, surfaces, {scope='application',provider=null}={}
         else if((pick=flagged(byName(t=>nameMatch(t)&&shares(t)))))why=`only module whose name matches; none exports all of ${[...wanted].join(', ')}`;
       } else if((pick=byName()))why='only module whose name matches';
       if(!pick)continue;
-      const raw=content.slice(ref.start,ref.end),quote=raw[0];
-      edits.push({file:path,find:raw,replace:quote+relativeSpecifier(path,pick)+quote,reason:why,target:pick});
+      const raw=content.slice(ref.start,ref.end),quote=raw[0],to=quote+relativeSpecifier(path,pick)+quote;
+      // Two import lines with one path text (const { loadTickets } =
+      // require('./dataStore'); and the same for saveTickets) are linked
+      // each on its own: a find of the path alone would point both at the
+      // first one's module.
+      const [from,end]=refs.filter(r=>content.slice(r.start,r.end)===raw).length>1?ref.span:[ref.start,ref.end],find=content.slice(from,end);
+      edits.push({file:path,find,replace:find.slice(0,ref.start-from)+to+find.slice(ref.end-from),reason:why,target:pick,specifier:ref.specifier});
     }
   }
   return edits;

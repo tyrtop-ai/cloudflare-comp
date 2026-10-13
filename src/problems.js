@@ -158,8 +158,9 @@ export function modelTrigger(p, dec, ctx) {
   if((ctx.recurrence?.(p,dec.child)||0)>=STUCK_AFTER)return 'M4';
   if(flags.escalated_from&&dec.child===flags.escalated_from)return 'M6';
   if(dec.rule!=='D6')return null;
-  // A name the provider's piece never promised is the reader's (run8).
-  if(f.unpromised)return null;
+  // A name the provider's piece never promised is the reader's (run8), as
+  // is one the plan gives another piece, read through the wrong path.
+  if(f.unpromised||f.elsewhere?.length)return null;
   if(f.provider_empty)return 'M1';
   if(f.anchored)return null;
   return f.convention>=2?'M2':f.provider_blamed?'M3':'M8';
@@ -289,7 +290,7 @@ export function validateManagerActions(actions, call, ctx) {
     if(bad){refuse(a,k==='builder'?'the builder takes only interface errors with relinks left':`${child} holds no party of problem ${bad}`);continue;}
     // A provider is never asked to add a name its piece did not promise (run8).
     const asked=open.find(id=>{const {p}=byId.get(id),placed=placeParties(ctx.holder,p.parties).filter(x=>x.child===child);
-      return p.facts?.unpromised&&placed.length&&placed.every(x=>x.role==='provider');});
+      return (p.facts?.unpromised||p.facts?.elsewhere?.length)&&placed.length&&placed.every(x=>x.role==='provider');});
     if(asked){refuse(a,`${child} holds only the provider of problem ${asked}, which exports what the plan gives it; the reader changes, never the provider, for a name it did not promise`);continue;}
     const text=k==='builder'?null:renderInstructions(instructions,ctx,child);
     for(const id of open)covered.set(id,k==='builder'?{rule:'model',action:'assign',child,builder:true}:
@@ -327,16 +328,20 @@ export function validateManagerActions(actions, call, ctx) {
 
 const base=path=>String(path||'').split('/').pop();
 const list=names=>(names||[]).filter(Boolean).slice(0,8).join(', ')||'them';
+// One import line per function, named after it, under the reader's own
+// local name (run8 called load() and save()).
+const oneLines=(names,aliases={})=>(names||[]).slice(0,4).map(n=>`const { ${n}${aliases?.[n]?': '+aliases[n]:''} } = require('./${n}');`).join(' ');
 // What the deciding manager tells the side that changes, by kind.
 export function instructionsFor(p, side) {
   const f=p.facts||{},provider=(p.parties||[]).find(x=>x.role==='provider');
   if(p.directive?.instructions)return p.directive.instructions;
   switch(p.kind) {
-    case 'mismatch':return f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.`:
+    case 'mismatch':return f.elsewhere?.length?`${list(f.elsewhere)} ${f.elsewhere.length>1?'are':'is'} not ${base(provider?.owner_path||provider?.path)||'the other module'}'s: the plan gives ${f.elsewhere.length>1?'them':'it'} to another piece. Import each on its own line, with its name as the path: ${oneLines(f.elsewhere,f.aliases)} The builder links each line to the module that exports that function.`:
+      f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.`:
       `Use the names ${base(provider?.owner_path||provider?.path)||'the other module'} already exports; do not change what it exports. Change your reads of ${list(f.names)}.`;
     case 'binding':return `${base(provider?.owner_path||provider?.path)||'The other module'} exports a single ${f.provider_kind||'function'} as module.exports: import it whole (const f = require(…)) and call it.`;
     case 'unresolved':{
-      if(f.split)return `Import each function on its own line, with the function's name as the path, in place of the one import of ${list(f.names)} from '${f.specifier||''}': ${(f.names||[]).slice(0,4).map(n=>`const { ${n} } = require('./${n}');`).join(' ')} The builder links each line to the module that exports that function. Keep the names your code calls.`;
+      if(f.split)return `Import each function on its own line, with the function's name as the path, in place of the one import of ${list(f.names)} from '${f.specifier||''}': ${oneLines(f.names,f.aliases)} The builder links each line to the module that exports that function. Keep the names your code calls.`;
       const names=f.names?.length?` (${list(f.names)})`:'';
       return f.named?`'${f.specifier||''}' is ${base(f.named)}, listed below with what it really exports: import it by its relative path and use the names it exports${names&&` in place of what it lacks${names}`}.`:
         `No module in the application provides '${f.specifier||''}'${names}. Import one of the modules listed below by its relative path and real export names, or write what you need yourself.`;
