@@ -513,3 +513,18 @@ test('v7.14: an interface error inside a branch is relinked by that branch\'s bu
   assert.equal(room.receive('root.1.2').length,0,'no worker changes code');
   assert.equal(room.get('repair_rounds:root.1'),'1');
 });
+
+// Rooms started before v7.14 keep Root-keyed build state (build_failure:root,
+// link_routed, run_passed:root): they are reset, not migrated.
+test('v7.14: Continue refuses a room started before v7.14; a new start resets it and marks the schema',async()=>{
+  const {room,drain}=liveRoom();
+  room.set('run_nonce','old-run');room.set('status','paused');room.save('link_routed',{fingerprint:'x'});
+  assert.match((await room.resume(1)).error,/started by a version before v7\.14 and is not migrated/);
+  await room.start('Build a small issue tracker.',0);
+  await drain();
+  assert.equal(room.get('schema'),'7.14');
+  assert.equal(room.get('link_routed'),'','start() resets the room');
+  room.set('status','paused');
+  assert.deepEqual(await room.resume(0),{status:'running'});
+  await drain();
+});
