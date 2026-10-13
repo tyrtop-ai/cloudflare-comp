@@ -10,6 +10,7 @@ import {nextDirectChild} from './build-verification.js';
 import {isInterfaceError} from './linker.js';
 import {ENTRY_CONTRACT} from './model.js';
 import {clip} from './protocol.js';
+import {normalizeInterfaces, repairInterfaces} from './interfaces.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
@@ -211,10 +212,12 @@ const sideOf=(holder,p,child)=>{
 // ctx: the manager's view (as for deterministicDecision) plus production
 // (its live worker and sub-manager children), labelOf(id), leaks(text,
 // recipient), scope(action) (Clef's probability that a retask's task is in
-// scope), retireBlock(child) (why it cannot be retired, or '') and
-// busy(child) (a turn in its branch is running).
+// scope), retireBlock(child) (why it cannot be retired, or ''),
+// busy(child) (a turn in its branch is running) and promise (v7.15: own,
+// the functions this manager promised; carried, each production child's
+// promised names).
 export function validateManagerActions(actions, call, ctx) {
-  const byId=new Map(call.map(e=>[e.id,e])),covered=new Map(),rejected=[],retire=[],retask=[],touched=new Set(),gone=new Map();
+  const byId=new Map(call.map(e=>[e.id,e])),covered=new Map(),rejected=[],retire=[],retask=[],touched=new Set(),gone=new Map(),actionOf=new Map();
   const refuse=(a,reason)=>rejected.push({action:a,reason});
   const production=id=>['worker','manager'].includes(ctx.kindOf(id));
   for(const a of (Array.isArray(actions)?actions:[]).slice(0,24)) {
@@ -243,14 +246,22 @@ export function validateManagerActions(actions, call, ctx) {
       if(!(ctx.production||[]).some(id=>id!==child&&!gone.has(id))){refuse(a,'the last child that writes code cannot be retired');continue;}
       const block=ctx.retireBlock?.(child);
       if(block){refuse(a,block);continue;}
-      gone.set(child,'retired');retire.push({child,reason:clip(a.reason||'',300)});
+      gone.set(child,'retired');retire.push({child,reason:clip(a.reason||'',300)});actionOf.set(retire.at(-1),a);
       continue;
     }
     if(kind==='retask') {
       const task=typeof a.task==='string'?a.task.trim():'',p=ctx.scope?.(a);
       if(task.length<8||task.length>1700){refuse(a,'a retask needs a task of 8 to 1700 characters');continue;}
       if(!(p>=0.5)){refuse(a,`the new task is outside the goal or this manager's responsibility (p=${Number(p||0).toFixed(3)})`);continue;}
-      gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300)});
+      // v7.15 §10.1: a retask keeps the child's promise; interfaces replace
+      // it, cleaned and repaired as a split's (R1-R4), a function this
+      // manager promised taking its item (the description travels down).
+      let interfaces;
+      if(a.interfaces!==undefined) {
+        const items=normalizeInterfaces(Array.isArray(a.interfaces)?a.interfaces:[a.interfaces]),own=ctx.promise?.items||[];
+        interfaces=repairInterfaces([{label:child,interfaces:items}],own).spawn[0].interfaces.map(f=>own.find(x=>x.name===f.name)||f);
+      }
+      gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300),...interfaces?{interfaces}:{}});actionOf.set(retask.at(-1),a);
       for(const id of open)covered.set(id,{rule:'model',action:'close',outcome:'retasked',child});
       continue;
     }
@@ -283,6 +294,27 @@ export function validateManagerActions(actions, call, ctx) {
     for(const id of open)covered.set(id,k==='builder'?{rule:'model',action:'assign',child,builder:true}:
       {rule:'model',action:'assign',child,side:sideOf(ctx.holder,byId.get(id).p,child),instructions:text,facts_from:from});
     touched.add(child);
+  }
+  // v7.15 §10.1, over the whole decision: every function this manager
+  // promised stays on exactly one child. A retire or a retask that leaves
+  // one with no piece, or puts one on a second, is refused, the last such
+  // first; a retire is allowed when the same decision retasks another
+  // child to carry what it carried.
+  const own=ctx.promise?.own||[],before=new Map(Object.entries(ctx.promise?.carried||{}));
+  const count=(name,state)=>[...state.values()].filter(names=>names.includes(name)).length;
+  for(let guard=0;own.length&&guard<24;guard++) {
+    const after=new Map(before);
+    for(const r of retask)if(r.interfaces)after.set(r.child,r.interfaces.map(f=>f.name));
+    for(const r of retire)after.set(r.child,[]);
+    const name=own.find(n=>count(n,before)>0&&count(n,after)===0||count(n,after)>1&&count(n,after)>count(n,before));
+    if(!name)break;
+    const lost=count(name,after)===0,had=r=>(before.get(r.child)||[]).includes(name),gives=r=>!!r.interfaces?.some(f=>f.name===name);
+    const culprit=[...retire,...retask].filter(r=>lost?had(r)&&!gives(r):gives(r)&&!had(r)).at(-1);
+    if(!culprit)break;
+    const list=retire.includes(culprit)?retire:retask;
+    list.splice(list.indexOf(culprit),1);gone.delete(culprit.child);
+    for(const [id,c] of covered)if(c.outcome==='retasked'&&c.child===culprit.child)covered.delete(id);
+    refuse(actionOf.get(culprit),lost?`${name} would have no piece`:`${name} would be on two pieces`);
   }
   const decisions=call.map(e=>{
     if(covered.has(e.id))return {...e,dec:covered.get(e.id),how:'model'};

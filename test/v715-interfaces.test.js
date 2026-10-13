@@ -428,9 +428,14 @@ test('v7.15 × slice 2: a retask clears contract_returns, so the new task\'s don
   // Root promises start; "create ticket" promises createTicket and splits.
   await room.spawn('root.3',[{label:'ticket record writer',task:'Write code that builds and stores the ticket record, exporting createTicket(title, description).',interfaces:[{name:'createTicket'}]},
     {label:'ticket input checks',task:'Write code that validates a new ticket\'s title and description.',interfaces:[{name:'validateTicket',does:'checks a ticket\'s fields'}]}]);
-  const below=await room.retireBlocks('root.3'),top=await room.retireBlocks('root');
-  assert.deepEqual([below('root.3.1'),below('root.3.2')],['it carries createTicket, which this manager promises','']);
-  assert.deepEqual([top('root.1'),top('root.2')],['it carries start, which this manager promises',''],'getTickets is the storage piece\'s own, not Root\'s promise');
+  // Slice C moved the rule into the validator, over the whole decision.
+  const {validateManagerActions}=await import('../src/problems.js');
+  const retire=async(m,child)=>validateManagerActions([{action:'retire',child,reason:'duplicate'}],[],{...await room.decisionContext(m,[]),retireBlock:()=>''}).rejected.map(r=>r.reason);
+  room.db().exec("UPDATE agents SET status='done' WHERE id LIKE 'root.3.%'");
+  assert.deepEqual(await retire('root.3','root.3.1'),['createTicket would have no piece']);
+  assert.deepEqual(await retire('root.3','root.3.2'),[]);
+  assert.deepEqual(await retire('root','root.1'),['start would have no piece']);
+  assert.deepEqual(await retire('root','root.2'),[],'getTickets is the storage piece\'s own, not Root\'s promise');
 });
 
 test('v7.15: a class or instance default does not satisfy a promise; named exports and members of a default object do',()=>{

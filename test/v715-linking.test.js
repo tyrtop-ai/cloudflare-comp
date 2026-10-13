@@ -508,3 +508,89 @@ test('v7.15: run8 replay (C): a repair answered done with no file change is sent
   assert.equal(room.get('status'),'failed','never an idle pause with the problem open');
   assert.match(room.node('root').summary,/^Repair exhausted: a entry problem was closed without a fix \(entry module finished 2 repairs without changing its files\)/);
 });
+
+// ------------------------------------------------- tests 38-39: slice 2
+const P=await import('../src/problems.js');
+const yes=input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.9}]))});
+// Root promises start; the data store promised loadTickets and saveTickets
+// and its split gave one to each worker.
+async function storeRoom(opts={}) {
+  const r=liveRoom({clef:yes,...opts});
+  await planned(r.room);
+  await pieces(r.room,'root',[['data store',null,null,[fn('loadTickets','returns all tickets'),fn('saveTickets','stores all tickets',['tickets'])]],
+    ['view tickets','viewTickets.js',run8View,[fn('viewTickets','returns the tickets',[],'view tickets')]],['entry module','app.js',run8Entry,[START]]]);
+  await pieces(r.room,'root.1',[['load tickets','load/ticketLoader.js',loader,[fn('loadTickets','returns all tickets')]],['save tickets','save/module.js',saver,[fn('saveTickets','stores all tickets',['tickets'])]]]);
+  return r;
+}
+const decide=async(room,m,actions)=>P.validateManagerActions(actions,[],{...await room.decisionContext(m,[]),scope:()=>0.9,retireBlock:()=>''});
+test('v7.15 × slice 2: retask keeps the promise; a retask that orphans a promised name is refused; a retask clears contract_returns and fn_answers',async()=>{
+  const {room}=await storeRoom();
+  const task='Write code that stores the whole ticket list, exporting saveTickets(tickets).';
+  // Without interfaces the child keeps its promise, and its return check
+  // and answers start again.
+  room.set('contract_returns:root.1.2','3');room.save('fn_answers:root.1.2',[{key:'fn loadTickets',kind:'provided',text:'x'}]);
+  room.retaskChild('root.1','root.1.2',task,'probe');
+  assert.deepEqual(room.promisedOf('root.1.2'),[fn('saveTickets','stores all tickets',['tickets'])]);
+  assert.deepEqual([room.get('contract_returns:root.1.2'),room.get('fn_answers:root.1.2')],['','']);
+  assert.match(events(room,'child_retasked').at(-1).body,/; it keeps its promise of saveTickets\. New task:/);
+  // With interfaces, each promised function stays on exactly one child.
+  const why=async actions=>(await decide(room,'root.1',actions)).rejected.map(r=>r.reason);
+  assert.deepEqual(await why([{action:'retask',child:'root.1.2',task,interfaces:[{name:'storeTickets'}]}]),['saveTickets would have no piece']);
+  assert.deepEqual(await why([{action:'retask',child:'root.1.1',task,interfaces:['loadTickets','saveTickets']}]),['saveTickets would be on two pieces']);
+  assert.deepEqual(await why([{action:'retask',child:'root.1.1',task,interfaces:['loadTickets','saveTickets']},{action:'retask',child:'root.1.2',task,interfaces:['persistTicket']}]),[],'moved in one decision');
+  const kept=await decide(room,'root.1',[{action:'retask',child:'root.1.2',task,interfaces:[{name:'saveTickets',does:'the splitter\'s words'},'persistTicket(ticket)','not a name!']}]);
+  assert.deepEqual(kept.retask[0].interfaces,[fn('saveTickets','stores all tickets',['tickets']),fn('persistTicket','',['ticket'])],'repaired, and the promised item travels down unchanged');
+  // Applied by a model decision: SQLite and ownership.json follow.
+  const {room:live,calls}=await storeRoom({manager:user=>({actions:[{action:'retask',child:'root.1.2',task,problems:[user.problems[0].id],reason:'stuck',interfaces:[{name:'saveTickets'},{name:'persistTicket',does:'persists one ticket',params:['ticket']}]}]})});
+  live.insertProblem({holder:'root.1',kind:'stuck',stage:'work',source:'root.1.2',input:'turn:1',parties:[{path:'',owner:'root.1.2',owner_path:'',digest:'',role:'subject'}],detail:'save tickets stopped after three failed turns at the code gate',flags:{wave:'w1'}});
+  await step(live,'root.1');
+  assert.equal(calls.manager.length,1,trace(live));
+  assert.deepEqual(calls.manager[0].children.map(c=>[c.label,c.functions]),[['load tickets',['loadTickets']],['save tickets',['saveTickets']]],'the model sees each child\'s functions');
+  assert.deepEqual(live.promisedOf('root.1.2').map(f=>f.name),['saveTickets','persistTicket']);
+  assert.match(events(live,'child_retasked').at(-1).body,/; it now promises saveTickets, persistTicket\. New task:/);
+  const own=JSON.parse(await live.indexedContent('root.1','memory/private/ownership.json'));
+  assert.deepEqual(own.children.find(c=>c.id==='root.1.2').interfaces.map(f=>f.name),['saveTickets','persistTicket']);
+  assert.match((await import('../src/model.js')).MANAGER_SYSTEM,/A child's functions are the functions it promised the rest of the application[^]*"interfaces":\[\{"name":"functionName","does":"what it does"\}\]\}   \(child cannot succeed or has the wrong job; it keeps its functions unless you give interfaces, which replace them\)/);
+});
+test('v7.15 × slice 2: retire of a direct carrier is refused unless a retask carries it; a retask-kill restarts the child with its promise, its new split must cover it, and requests from outside are kept',async()=>{
+  const split=user=>user.previous_split_rejection?{summary:'Split',spawn:[{label:'ticket reader',task:'Write code that reads every ticket, exporting loadTickets().',functions:[{name:'loadTickets'}]},{label:'ticket writer',task:'Write code that writes the ticket list, exporting saveTickets(tickets).',functions:[{name:'saveTickets'}]}]}:
+    {summary:'Split',spawn:[{label:'ticket reader',task:'Write code that reads every ticket, exporting loadTickets().',functions:[{name:'loadTickets'}]},{label:'ticket cache',task:'Write code that caches tickets.',functions:[{name:'cacheTickets'}]}]};
+  const {room,calls}=await storeRoom({split});
+  const why=async(m,actions)=>(await decide(room,m,actions)).rejected.map(r=>r.reason);
+  assert.deepEqual(await why('root.1',[{action:'retire',child:'root.1.1',reason:'duplicate'}]),['loadTickets would have no piece']);
+  assert.deepEqual(await why('root.1',[{action:'retire',child:'root.1.1'},{action:'retask',child:'root.1.2',task:'Write code that reads and stores the ticket list.',interfaces:['loadTickets','saveTickets']}]),[],'the same decision gives it to another child');
+  assert.deepEqual(await why('root',[{action:'retire',child:'root.3'}]),['start would have no piece']);
+  // A request from outside the branch (the view worker's, at Root) and one
+  // from inside it (the loader's, through the data store).
+  await room.addManagerHop('root',{request_id:'r-out',requester:'root.2',topic:'fn saveTickets',question:'stores tickets',name:'saveTickets'});
+  room.db().exec("INSERT INTO route_workers(worker,topic,request_id) VALUES ('root.2','fn saveTickets','r-out')");
+  await room.addManagerHop('root.1',{request_id:'r-in',requester:'root.1.1',topic:'fn viewTickets',question:'views',name:'viewTickets'});
+  room.retaskChild('root','root.1','Own the ticket data: read every ticket and write the ticket list.','probe');
+  assert.deepEqual(room.children('root.1').map(c=>c.status),['retired','retired']);
+  assert.deepEqual([room.node('root.1').phase,room.node('root.1').status,room.promisedOf('root.1').map(f=>f.name)],['decompose','ready',['loadTickets','saveTickets']]);
+  const hops=room.db().exec('SELECT request_id,manager FROM route_hops').toArray().map(h=>`${h.request_id}@${h.manager}`);
+  assert.deepEqual(hops,['r-out@root'],'the killed branch\'s request goes, the outside one stays');
+  assert.deepEqual(room.db().exec('SELECT request_id FROM route_workers').toArray().map(r=>r.request_id),['r-out']);
+  assert.deepEqual([room.carriersOf('loadTickets','root').map(c=>c.id),room.offeredFunctions('root.1')],[['root.1'],[]],'the retired carriers drop out');
+  // Its new split must cover its promise (C5): one that drops saveTickets is rejected.
+  await room.turn('root.1');
+  assert.match(events(room,'split_rejected').at(-1).body,/Your assignment promises saveTickets\(tickets\): stores all tickets; give it, unchanged, to exactly one piece/);
+  await step(room,'root.1');
+  assert.equal(calls.split.length,3,'the rejected split\'s in-call retry, then the split that covers it');
+  assert.deepEqual(room.children('root.1').filter(c=>c.status!=='retired').map(c=>[c.label,room.promisedOf(c.id).map(f=>f.name)]),[['ticket reader',['loadTickets']],['ticket writer',['saveTickets']]],trace(room));
+});
+test('v7.15 × slice 2: a contract problem clusters like an entry problem: subject-only, never fixed against a provider',()=>{
+  const party=(owner,role)=>({path:`components/x/${role}.js`,owner,owner_path:`${role}.js`,digest:'',role});
+  const placed=p=>P.placeParties('root',p.parties);
+  const contract={kind:'contract',parties:[party('root.2','subject'),party('root.1','site')],facts:{names:['saveTickets']},flags:{},trail:[]};
+  const entry={kind:'entry',parties:[party('root.2','subject')],facts:{},flags:{},trail:[]};
+  const m8={kind:'mismatch',parties:[party('root.2','reader'),party('root.3','provider')],facts:{},flags:{},trail:[]};
+  const entries=[{id:'c',p:contract,dec:{rule:'default',action:'assign',child:'root.2',side:'subject'},trigger:null,placed:placed(contract)},
+    {id:'e',p:entry,dec:{rule:'D4',action:'assign',child:'root.2',side:'subject'},trigger:null,placed:placed(entry)},
+    {id:'m',p:m8,dec:{rule:'D6',action:'assign',child:'root.2',side:'reader'},trigger:'M8',placed:placed(m8)}];
+  const {call,fixed}=P.clusterForModel(entries);
+  assert.deepEqual(call.map(e=>e.id),['c','e','m'],'both join as proposed');
+  assert.deepEqual(fixed,[]);
+  assert.equal(P.DEFAULT_ROLE.contract,'subject');
+  assert.equal(P.modelTrigger(contract,{rule:'default',action:'assign',child:'root.2'},{recurrence:()=>0}),null,'no model needed');
+});

@@ -2077,6 +2077,8 @@ export class ControlRoom extends DurableObject {
       if(deferred.length&&(decided.error||!this.allowModel(m)))this.applyDecisions(m,deferred,ctx,st);
       else if(deferred.length){this.deferProblems(m,deferred,'another cluster is decided first');this.wake(m);}
     }
+    // A retask that changed a child's promise is mirrored, as a spawn's is.
+    if(st.promised)await this.syncOwnership(m);
     if(st.exhausted)this.exhaustRounds(m,st.exhausted);
     else this.unfixable(m);
   }
@@ -2114,7 +2116,10 @@ export class ControlRoom extends DurableObject {
       // (M4); for a stuck worker, its earlier stuck problems that what it was told did not settle.
       recurrence:(p,child)=>query(this.db(),`SELECT assignee FROM problems WHERE ${p.kind==='stuck'?"kind='stuck' AND outcome!='resolved' AND source":'signature'}=? AND id!=? AND assignee!=''`,p.kind==='stuck'?p.source:p.signature,p.id).filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
       production:[...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>c.id),
-      leaks:(text,to)=>this.leaksHiddenAgentIds(text,[to]),busy:id=>[...this.activeTurns].some(a=>a===id||a.startsWith(id+'.'))};
+      leaks:(text,to)=>this.leaksHiddenAgentIds(text,[to]),busy:id=>[...this.activeTurns].some(a=>a===id||a.startsWith(id+'.')),
+      // v7.15 §10.1: what this manager promised, and what each child carries.
+      promise:{own:this.promisedOf(m).map(f=>f.name),items:this.promisedOf(m),
+        carried:Object.fromEntries([...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>[c.id,parse(c.interfaces,[]).map(f=>f.name)]))}};
   }
   // One synchronous block (spec 3.8): every row moves only as it was read
   // (compare-and-set); a worker gets one ticket per turn with all of its
@@ -2226,8 +2231,8 @@ export class ControlRoom extends DurableObject {
       if(moved.some(p=>p.flags.no_change&&p.flags.no_change_by===worker))
         this.event(m,'repair_unchanged',`${label(worker)} answered its repair as done without changing a file; the problem goes back to it once with "nothing changed in your files".`,worker);
     }
-    for(const r of acts.retask)if(!skip.has(r.child)&&!retasks.has(r.child))retasks.set(r.child,{task:r.task,rule:'model',reason:r.reason});
-    for(const [child,r] of retasks)this.retaskChild(m,child,r.task,r.reason,r.rule);
+    for(const r of acts.retask)if(!skip.has(r.child)&&!retasks.has(r.child))retasks.set(r.child,{task:r.task,rule:'model',reason:r.reason,interfaces:r.interfaces});
+    for(const [child,r] of retasks){this.retaskChild(m,child,r.task,r.reason,r.rule,r.interfaces);if(r.interfaces)st.promised=true;}
     for(const r of acts.retire)this.retireChild(m,r.child,r.reason);
   }
   // Problems a later turn decides (another cluster first, or no budget now).
@@ -2281,6 +2286,9 @@ export class ControlRoom extends DurableObject {
     const mine=this.problems('trail LIKE ?',`%"at":${JSON.stringify(m)}%`);
     for(const c of this.children(m).filter(c=>c.status!=='retired')) {
       const kind=ctx.kindOf(c.id),view={id:c.id,label:c.label,kind,status:c.status,task:clip(c.task,400)},under=id=>id===c.id||String(id||'').startsWith(c.id+'.');
+      // Its promise: what this manager answers requests from (decision 2).
+      const functions=parse(c.interfaces,[]).map(f=>f.name);
+      if(functions.length&&['worker','manager'].includes(kind))view.functions=functions;
       if(kind==='worker'||kind==='manager') {
         const rows=mine.filter(p=>given(p).some(t=>under(t.to))),last=rows.at(-1);
         Object.assign(view,await this.boundaryView(c.id),{history:{assigned:rows.flatMap(given).filter(t=>under(t.to)).length,
@@ -2362,14 +2370,13 @@ export class ControlRoom extends DurableObject {
   // Why a direct child cannot be retired (spec 3.7.5): a module outside its
   // branch imports one of its modules in this manager's published bundle,
   // or one of them exports start() (what composes the application; nothing
-  // imports it); with no published bundle, it has published code. Or it
-  // carries a function this manager promised (v7.15 §10.1): retired, no
-  // piece would write it. '' when it can be.
+  // imports it); with no published bundle, it has published code. '' when
+  // it can be. A child carrying a function this manager promised is
+  // refused by the validator over the whole decision (v7.15 §10.1), unless
+  // the same decision retasks another child to carry it.
   async retireBlocks(m) {
     const b=this.builderOf(m),rows=b?query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=?',b.id):[];
-    const own=new Set(this.promisedOf(m).map(f=>f.name)),carried=id=>this.promisedOf(id).map(f=>f.name).filter(x=>own.has(x));
-    const promise=id=>carried(id).length?`it carries ${carried(id).join(', ')}, which this manager promises`:'';
-    if(!rows.length)return id=>promise(id)||((this.manager(id)?this.descendantsWithCode(id).length:productionFiles(this.files(id)).length)?'no linked bundle shows who imports its code':'');
+    if(!rows.length)return id=>(this.manager(id)?this.descendantsWithCode(id).length:productionFiles(this.files(id)).length)?'no linked bundle shows who imports its code':'';
     const owner=new Map(rows.map(r=>[r.destination,nextDirectChild(m,r.child)])),files=new Map(),importers=new Map(),starts=new Set();
     for(const r of rows)try{files.set(r.destination,await this.indexedContent(b.id,r.destination));}catch{}
     for(const [path,content] of files)if(content!=null&&LINKABLE.test(path)) {
@@ -2380,7 +2387,7 @@ export class ControlRoom extends DurableObject {
       }
     }
     return id=>importers.get(id)?.size?`${[...importers.get(id)].map(x=>this.node(x)?.label||x).join(', ')} import${importers.get(id).size>1?'':'s'} its code`:
-      promise(id)||(starts.has(id)?'its code exports start(), which composes the application':'');
+      starts.has(id)?'its code exports start(), which composes the application':'';
   }
   // ---------- retire and retask: validated manager decisions ----------
   // A node and every node below it, the node first.
@@ -2431,9 +2438,12 @@ export class ControlRoom extends DurableObject {
   // its builder are retired, and it restarts as a new child with the new
   // task, through the split gate and the prune walk, its next builder a new
   // generation; the manager's builder relinks its importers.
-  retaskChild(m, c, task, reason='', rule='model') {
+  // v7.15 §10.1: the child keeps its promise, or takes interfaces (already
+  // validated), and a sub-manager's new split must cover it (C5).
+  retaskChild(m, c, task, reason='', rule='model', interfaces=null) {
     const db=this.db(),node=this.node(c),below=this.subtree(c).slice(1);
     if(!node||['retired','failed'].includes(node.status))return;
+    if(interfaces)db.exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces(interfaces)),c);
     if(below.length) {
       this.retireNodes(m,below,'retasked');
       // What it held was about the branch that is gone; it starts with nothing.
@@ -2455,7 +2465,8 @@ export class ControlRoom extends DurableObject {
     // answers to its old task's requests go (v7.15 §10.1).
     for(const k of ['returned','split_feedback','nudged','contract_returns','fn_answers','turn_notes'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
     this.clearFailures(c);
-    this.event(m,'child_retasked',clip(`${node.label} is retasked (${rule}${reason?`: ${reason}`:''})${below.length?`; its branch of ${below.length} node(s) is retired and it splits again`:''}. New task: ${task}`,900),c);
+    const promise=this.promisedOf(c).map(f=>f.name);
+    this.event(m,'child_retasked',clip(`${node.label} is retasked (${rule}${reason?`: ${reason}`:''})${below.length?`; its branch of ${below.length} node(s) is retired and it splits again`:''}${promise.length?`; it ${interfaces?'now promises':'keeps its promise of'} ${promise.join(', ')}`:''}. New task: ${task}`,900),c);
     this.wake(c);
   }
   // The manager whose builder or compiler reported a problem closed without a
