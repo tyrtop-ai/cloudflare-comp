@@ -25,7 +25,39 @@ export function parseObject(output) {
     try { const o = JSON.parse(part); if (o && typeof o === 'object' && !Array.isArray(o)) return o; }
     catch { /* Retain raw output for event log. */ }
   }
+  // Braces in prose or reasoning before the answer defeat the first-'{'-to-last-'}' slice (run7).
+  const found = jsonObjects(raw).at(-1);
+  if (found) return found;
   return { parse_error: true, raw: clip(raw, 1500) };
+}
+// Qwen3 hybrid models reason before answering. Drop closed <think> blocks,
+// everything up to a </think> left without its opening tag, and an unclosed
+// <think> to the end, so reasoning never reaches a parser (run7).
+export function stripReasoning(text) {
+  let s = String(text ?? '').replace(/<think>[\s\S]*?<\/think>/g, '');
+  const close = s.lastIndexOf('</think>');
+  if (close >= 0) s = s.slice(close + 8);
+  const open = s.indexOf('<think>');
+  return open >= 0 ? s.slice(0, open) : s;
+}
+// Every balanced top-level {...} in the text that parses to an object, in
+// order. Braces inside JSON strings, escapes included, never count. A brace
+// that never closes is passed over when prose opened it; one that opens a
+// JSON key is a truncated answer, whose inner objects are not answers.
+export function jsonObjects(text) {
+  const s = String(text ?? ''), found = [];
+  for (let i = 0, depth = 0, start = 0, quoted = false, escaped = false, rescans = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quoted) { if (escaped) escaped = false; else if (c === '\\') escaped = true; else if (c === '"') quoted = false; }
+    else if (c === '"') quoted = depth > 0;
+    else if (c === '{') { if (!depth++) start = i; }
+    else if (c === '}' && depth && !--depth) {
+      try { const o = JSON.parse(s.slice(start, i + 1)); if (o && typeof o === 'object' && !Array.isArray(o)) found.push(o); }
+      catch { /* Prose in braces is no answer. */ }
+    }
+    if (i === s.length - 1 && depth && rescans++ < 8 && !/^\{\s*"/.test(s.slice(start))) { i = start; depth = 0; quoted = escaped = false; }
+  }
+  return found;
 }
 export function normalizeAction(raw,{maxFiles=Infinity}={}) {
   return {

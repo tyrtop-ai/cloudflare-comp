@@ -1,9 +1,14 @@
-import { parseObject, contentOf } from './protocol.js';
+import { parseObject, contentOf, stripReasoning, jsonObjects } from './protocol.js';
+import { parse as parseJs } from './vendor/acorn.mjs';
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
+const HYBRID = '@cf/qwen/qwen3-30b-a3b-fp8';
 
-export async function run(env, system, user, maxTokens) {
-  const messages=[{ role: 'system', content: system }, { role: 'user', content: user }];
+export async function run(env, system, user, maxTokens, {noThink=false}={}) {
   const selected=model(env);
+  // Qwen3 hybrid models' documented soft switch. Their reasoning counts
+  // against max_tokens: run7's runner and coverage calls each took time in
+  // proportion to their caps, as if reasoning filled them.
+  const messages=[{ role: 'system', content: system }, { role: 'user', content: noThink&&selected===HYBRID?user+' /no_think':user }];
   const tokenParam = selected === '@cf/qwen/qwen3.8-27b'
     ? {max_completion_tokens:maxTokens,reasoning_effort:'low'}
     : {max_tokens:maxTokens};
@@ -240,7 +245,7 @@ export async function generateFile(env, { node, path, intent, task, files, inbox
 export const LINKER_SYSTEM = `You are a LINKER for code that independent workers wrote without seeing each other. You may ONLY rename. Allowed: change a relative import path so it points at the real module, and change an identifier (imported name, function name, method name, property name, variable name) so a caller uses the name the other module actually exports. Not allowed: adding, removing, or reordering code; changing arguments, export shapes, destructuring, or logic; writing wrappers or adapters. Import paths must be relative to the importing file, for example ../inmemoryti-f17f9f79/in-memory-ticket-repository.js. Every edit is {"file":"components/...","find":"exact text copied from that file","replace":"the same text with only names or paths changed"}; keep find short but unique, and every occurrence is replaced. Only edit files listed under your_files. If two modules disagree in a way renaming cannot fix (missing function, wrong number of arguments, export shape mismatch such as several names destructured from a module that exports a single function, placeholder or empty implementation, behavior nobody wrote), add an issue {"file":"components/... that must change","problem":"what is wrong and what the other module actually provides"}. To change an imported name without touching its local uses, alias it: const { realName: localName } = require(...) or import { realName as localName } from '...'. Rename only to an export that performs what the caller expects: binding a name to a different operation (for example createTicket to saveTickets, which replaces the whole store) is not a rename but a missing function, so report it as an issue instead. Once an import's path is right, the runtime itself fixes three binding shapes, so for these fix only the path: one name destructured from a module whose module.exports is a function or class of that name (const { f } = require(p) where p's module.exports is f), a module bound whole that the file only calls while it exports an object holding that name (const f = require(p) where p exports { f }), and a module bound whole whose only export is one function, when the file only calls it, directly or from a table of handlers (const f = require(p) where p exports only { g }). If scope is "branch", you see one branch of a larger application and other branches exist that you cannot see: rename an import only when a module listed here clearly provides what it expects, otherwise leave it unchanged for the builder above. If scope is "application", name the application entry, from your_files or other_modules_exports: the module that imports the others and exports start() or otherwise starts the application; null if no module does. Return ONLY JSON: {"edits":[...],"entry":"components/... or null","issues":[...]}.`;
 // Said only when the request shows a branch built below or a file in one.
 export const LINKER_BELOW = ` A file given as an excerpt (hunks of its imports to fix and the lines that use them) instead of content lives inside a branch built below: copy each find from one hunk, long enough to occur nowhere else in the file. other_modules_exports shows a branch built below only by the modules it offers.`;
-const withoutThinking=output=>contentOf(output).replace(/<think>[\s\S]*?<\/think>/g,'');
+const withoutThinking=output=>stripReasoning(contentOf(output));
 export async function linkComponents(env, {goal, files, interfaces, allPaths, diagnostic='', known_mismatches=[], scope='application', below=false}) {
   if (env.MOCK_AI === 'true') return {edits:[],entry:null,issues:[]};
   const request=JSON.stringify({
@@ -285,26 +290,36 @@ export async function attributeFailure(env, {modules, test, failure}) {
 // passed. The runtime checks the mapping against the API (apiGaps); this only
 // proposes it.
 export const COVERAGE_SYSTEM = `You check an application's API against the user's goal before it is tested. You get the goal and a description of the live API that start() returned when the application was started in a container: names, kinds and parameter names only. List each distinct operation the goal asks the application to perform for its user, in the goal's words (for example "create a ticket"), and for each the ONE method of the object start() returned that performs it, named by its property name in the description's members (what a caller writes as app.NAME(...), not the function's "name" field when the two differ), or null when no method does. Never map an operation to a method that does something else: reading is not creating, updating or deleting, and a method that replaces a whole collection does not create, update or delete one item. List an operation once: viewing one item and listing items are one "view" operation unless the goal names both. start() itself, and how the application is built, split, assembled or started, are not operations. Return ONLY JSON: {"operations":[{"operation":"...","method":"name or null"}]}.`;
+// No usable mapping is {operations:null,head}: head is the start of what the
+// model returned, for the event log (run7 logged four unchecked runs blind).
 export async function apiCoverage(env, {goal, api}) {
   if (env.MOCK_AI === 'true') return null;
   const request=JSON.stringify({goal:String(goal||'').slice(0,1500),api_returned_by_start:String(api||'').slice(0,6000)});
+  let head='';
   const read=output=>{
-    const parsed=parseObject(withoutThinking(output));
-    if(parsed.parse_error||!Array.isArray(parsed.operations))return null;
+    const text=withoutThinking(output).trim();head=text.slice(0,200);
+    // The last object holding an operations list is the answer: prose or
+    // reasoning before it may hold braces of its own, such as { create }.
+    const answer=jsonObjects(text).filter(o=>Array.isArray(o.operations)).at(-1);
+    if(!answer)return null;
     const seen=new Set();
-    const operations=parsed.operations.filter(o=>o&&typeof o.operation==='string'&&o.operation.trim()).map(o=>({operation:o.operation.trim().slice(0,120),method:typeof o.method==='string'&&o.method.trim()?o.method.trim().slice(0,120):null}))
+    const operations=answer.operations.filter(o=>o&&typeof o.operation==='string'&&o.operation.trim()).map(o=>({operation:o.operation.trim().slice(0,120),method:typeof o.method==='string'&&o.method.trim()?o.method.trim().slice(0,120):null}))
       .filter(o=>!seen.has(o.operation.toLowerCase())&&seen.add(o.operation.toLowerCase())).slice(0,24);
     return operations.length?{operations}:null;
   };
   // A goal names at least one operation, so an empty list is no answer.
-  const first=read(await run(env,COVERAGE_SYSTEM,request,2048));
+  // Run7's attempts each took about as long as 2048 tokens at the runner's
+  // rate; 3072 leaves the answer room if reasoning comes anyway.
+  const first=read(await run(env,COVERAGE_SYSTEM,request,3072,{noThink:true}));
   if(first)return first;
-  return read(await run(env,COVERAGE_SYSTEM+'\nRETRY: return strictly valid JSON {"operations":[...]} with every operation the goal names. No markdown.',request,2048));
+  return read(await run(env,COVERAGE_SYSTEM+'\nRETRY: return strictly valid JSON {"operations":[...]} with every operation the goal names. No markdown.',request,3072,{noThink:true}))||{operations:null,head};
 }
 
 // The runner is a separate instance. It never sees component source: only the
 // Root goal and the live API returned by start() in the container.
 export const RUNNER_SYSTEM = `You are the RUNNER for an application you have not seen the source of. You get the user's goal and a description of the live API that start() returned when the application was started in a container. Write glue/smoke.js: a complete CommonJS Node script that does const assert = require('node:assert/strict'); const { start } = require('./index.js'); then, inside an async function, gets const app = await start() and exercises the operations the GOAL requests using only that API, with assert checks that the results are what the goal implies (for example: create something, read it back, list it, update it and read the change, delete it and confirm it is gone, all through the same app). operations_to_test, when given, lists each operation the goal names with the method that performs it: the test must exercise every one of them by calling that method on app (app.method(...)) and check its result. Never skip an operation the goal names, and never print success or exit with success for a test that covers only some of them. Use only names that appear in the API description, and await every call because methods may be async. Any failed assertion or thrown error must end with process.exitCode = 1 or an uncaught rejection. Do not mock, do not import anything except node built-ins and ./index.js. Return ONLY the code, no markdown.`;
+// Returns {test,head}: the code found in the answer, and the start of what
+// the model returned for the event log.
 export async function writeRunnerTest(env, {goal, api, operations=null, correction=''}) {
   if (env.MOCK_AI === 'true') return null;
   const output=await run(env,RUNNER_SYSTEM,JSON.stringify({
@@ -312,12 +327,30 @@ export async function writeRunnerTest(env, {goal, api, operations=null, correcti
     api_returned_by_start:api,
     operations_to_test:operations?.length?operations:undefined,
     previous_test_error:correction||undefined
-  }).slice(0,12000),3300);
-  let content=contentOf(output).replace(/<think>[\s\S]*?<\/think>/g,'').trim();
-  // Take the first fenced block even when the model adds prose around it.
-  const fence=content.match(/```[^\n]*\n([\s\S]*?)\n```/);
-  if(fence)content=fence[1];
-  return content.trim();
+  }).slice(0,12000),4096,{noThink:true});
+  const text=withoutThinking(output).trim();
+  return {test:extractCode(text),head:text.slice(0,200)};
+}
+// The code in a model's answer, wherever it put it. Run7's runner wrote
+// "Here is the test:" before a fence the token cap left open, and the whole
+// answer went to the syntax check seven times. Candidates in order: closed
+// fenced blocks (JavaScript-tagged first), the text after an opening fence
+// left unclosed, the text from the first line that starts like code, and the
+// whole text. The first that parses wins; if none does, the first non-empty
+// one goes on, so the rejection names its error.
+const JS_FENCE=/^(?:js|javascript|node|cjs|mjs)$/i;
+const CODE_LINE=/^[ \t]*(?:['"]use strict['"]|(?:const|let|var|function|async|import)\b|require\s*\(|\(|\/\/|\/\*)/m;
+const parses=code=>['script','module'].some(sourceType=>{
+  try {parseJs(code,{ecmaVersion:'latest',sourceType,allowHashBang:true,allowReturnOutsideFunction:sourceType==='script'});return true;}
+  catch {return false;}
+});
+export function extractCode(text) {
+  const s=String(text??'').trim(),blocks=[...s.matchAll(/```([^\n`]*)\n([\s\S]*?)\n?```/g)];
+  const last=blocks.at(-1),open=s.indexOf('```',last?last.index+last[0].length:0),line=CODE_LINE.exec(s);
+  const candidates=[...blocks.filter(b=>JS_FENCE.test(b[1].trim())),...blocks.filter(b=>!JS_FENCE.test(b[1].trim()))].map(b=>b[2])
+    .concat(open>=0?s.slice(open).replace(/^```[^\n]*\n?/,''):'',line?s.slice(line.index).split(/\n[ \t]*```/)[0]:'',s)
+    .map(c=>c.trim()).filter(Boolean);
+  return candidates.find(parses)??candidates[0]??'';
 }
 
 function mockDecision(c) {

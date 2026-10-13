@@ -1424,14 +1424,15 @@ export class ControlRoom extends DurableObject {
     let correction='',test=fixed;
     if(fixed)this.event(builderId,'runner_reused','Running the same test as before: the first test that ran is fixed for the whole run.');
     for(let attempt=0;!test&&attempt<3;attempt++) {
-      const draft=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction});
+      const out=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction}),draft=out?.test;
       // A test that skips a mapped operation would certify a partial
       // application (run6 tested getTickets alone), so it never runs.
       const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft),
         ...untestedOperations(draft,operations).map(o=>`the test never calls ${o.method} (operation ${o.operation}); call app.${o.method}(...) and check its result`)].filter(Boolean):['the runner returned no test'];
       if(!errors.length){test=draft;break;}
       correction='Your previous test was rejected before running: '+errors.join('; ');
-      this.event(builderId,'runner_rejected',clip(correction,800));
+      // The log shows what came back, not only the error (run7 showed seven syntax errors and no text).
+      this.event(builderId,'runner_rejected',clip(correction,800)+(typeof out?.head==='string'?` The runner returned: ${JSON.stringify(out.head)}`:''));
     }
     if(!test)return {passed:false,runnerFailed:true,detail:correction};
     const run=await this.containerRun(builderId,`run:${fingerprint}`,new Map([...files,['glue/smoke.js',test]]));
@@ -1613,15 +1614,16 @@ export class ControlRoom extends DurableObject {
       if(!this.read('runner_test',null)?.test) {
         const checkable=coverageCheckable(described);
         const coverage=checkable?await apiCoverage(this.inferenceEnv(),{goal,api}):null;
-        const gaps=coverage?apiGaps(described,coverage.operations):[];
+        const gaps=coverage?.operations?apiGaps(described,coverage.operations):[];
         if(gaps.length) {
           this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
           return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:gapProblem(described,gaps,ENTRY_CONTRACT)},...link.issues]),'run');
         }
-        if(coverage) {
+        if(coverage?.operations) {
           operations=operationMethods(described,coverage.operations);
           this.event(id,'api_covered',clip('Each operation the goal names has a method: '+operations.map(o=>`${o.operation} -> ${o.method}`).join(', '),900));
-        } else if(this.env.MOCK_AI!=='true')this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900));
+        } else if(this.env.MOCK_AI!=='true')this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
+          (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
       }
       const outcome=await this.runApplication(id,fingerprint,files,api,goal,link,operations);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);
