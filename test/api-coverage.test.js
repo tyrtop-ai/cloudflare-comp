@@ -167,16 +167,17 @@ test('apiCoverage: asks with the goal and the API, normalizes the mapping, retri
   const retried=fakeAI(['I think the API is incomplete.','{"operations":[{"operation":"view tickets","method":"getTickets"}]}']);
   assert.deepEqual(await apiCoverage(retried.env,{goal:'g',api:run6Api}),{operations:[{operation:'view tickets',method:'getTickets'}]});
   assert.match(retried.calls[1].system,/RETRY/);
+  // No usable mapping carries the start of the last answer, for the event log (v7.13.4).
   for(const garbage of [['not json','still not json'],['{"operations":[]}','{"operations":"none"}'],['{"ops":[]}','[1,2]']]) {
     const bad=fakeAI(garbage);
-    assert.equal(await apiCoverage(bad.env,{goal:'g',api:run6Api}),null,garbage[0]);
+    assert.deepEqual(await apiCoverage(bad.env,{goal:'g',api:run6Api}),{operations:null,head:garbage[1]},garbage[0]);
     assert.equal(bad.calls.length,2,'one retry, no more');
   }
 });
 
 test('runner: the mapping reaches the runner, which must call every mapped method; the API-names rule stays',async()=>{
   const ai=fakeAI(['```js\nconst x = 1;\n```']);
-  assert.equal(await writeRunnerTest(ai.env,{goal:'g',api:run6Api,operations:crudMapping}),'const x = 1;');
+  assert.deepEqual(await writeRunnerTest(ai.env,{goal:'g',api:run6Api,operations:crudMapping}),{test:'const x = 1;',head:'```js\nconst x = 1;\n```'});
   assert.deepEqual(ai.calls[0].user.operations_to_test,crudMapping);
   const none=fakeAI(['x']);
   await writeRunnerTest(none.env,{goal:'g',api:run6Api});
@@ -231,7 +232,7 @@ const { start } = require('./index.js');
 function room({coverage=()=>{throw new Error('unexpected model request: coverage');},runner=()=>crudTest,link=()=>({edits:[],entry:null,issues:[]})}={}) {
   const calls={link:[],coverage:[],runner:[],triage:[]};
   const AI={run:async(_model,{messages})=>{
-    const system=messages[0].content,user=JSON.parse(messages[1].content);
+    const system=messages[0].content,user=JSON.parse(messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push({system,user});const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}

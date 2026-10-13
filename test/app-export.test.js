@@ -60,7 +60,7 @@ const { start } = require('./index.js');
 async function linkedRoom({link=true}={}) {
   let paths;
   const AI={run:async(_model,{messages})=>{
-    const system=messages[0].content,user=JSON.parse(messages[1].content);
+    const system=messages[0].content,user=JSON.parse(messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a LINKER')) {
       const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
       return {response:JSON.stringify({edits:app?[

@@ -215,7 +215,7 @@ test('container: the unlinked blind import fails to load and names the importing
 function liveRoom({link=()=>({edits:[],entry:null,issues:[]}),runner=()=>runnerTest,triage=()=>null,executor}={}) {
   const calls={link:[],runner:[],triage:[]};
   const AI={run:async(_model,{messages})=>{
-    const system=messages[0].content,user=JSON.parse(messages[1].content);
+    const system=messages[0].content,user=JSON.parse(messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
     // No mapping: the coverage gate fails open, as these rooms predate it (v7.13.3).
     if(system.startsWith('You check an application\'s API'))return {response:'{}'};
@@ -652,6 +652,11 @@ test('room: a runner that cannot write a valid test blames no worker',async()=>{
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
   assert.equal(calls.runner.length,3);
+  // v7.13.4: one more round of three before the room waits for Continue.
+  assert.ok(room.snapshot().events.some(e=>e.kind==='runner_retry'));
+  assert.equal(room.node(builder.id).status,'ready');
+  await room.turn(builder.id);
+  assert.equal(calls.runner.length,6);
   assert.equal(room.read('build_failure:root',null),null);
   assert.ok(room.snapshot().events.some(e=>e.kind==='runner_failed'));
   assert.equal(room.node(builder.id).status,'waiting');
@@ -705,7 +710,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content;
-    const user=JSON.parse(params.messages[1].content);
+    const user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a CODE SPLITTER')) {
       calls.split++;
       return {response:JSON.stringify({summary:'Repository and entry',spawn:[
@@ -756,7 +761,7 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content;
-    const user=JSON.parse(params.messages[1].content);
+    const user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a CODE SPLITTER')) {
       if(user.assigned_code && /storage branch/i.test(user.assigned_code))
         return {response:JSON.stringify({summary:'Storage pieces',spawn:[
@@ -858,7 +863,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
       if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|service module|application entry module/i.test(params.state.assigned_behavior)?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
-    const system=params.messages[0].content, user=JSON.parse(params.messages[1].content);
+    const system=params.messages[0].content, user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a CODE SPLITTER')) {
       if(/storage branch/i.test(user.assigned_code))return {response:JSON.stringify({summary:'Storage',spawn:[
         {label:'Ticket repository',task:'Write an in-memory ticket repository class'},{label:'Ticket service',task:'Write the ticket service module over the repository'}]})};
@@ -917,7 +922,7 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
       if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|application entry module/i.test(params.state.assigned_behavior)?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
-    const system=params.messages[0].content,user=JSON.parse(params.messages[1].content);
+    const system=params.messages[0].content,user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a CODE SPLITTER'))return {response:JSON.stringify({summary:'Two',spawn:[
       {label:'Ticket repository',task:'Write an in-memory ticket repository class'},{label:'Application entry',task:'Write the application entry module exporting start()'}]})};
     if(system.includes('LEAF CODE WRITER')) {
