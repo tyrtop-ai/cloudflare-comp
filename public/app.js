@@ -32,17 +32,19 @@ function treeIndex(agents) {
   for(const n of agents)if(n.parent)kids.set(n.parent,[...(kids.get(n.parent)||[]),n]);
   for(const list of kids.values())list.sort((a,b)=>isCompiler(a)-isCompiler(b)||idOrder(a,b));
   const producers=id=>(kids.get(id)||[]).filter(c=>!isBuilder(c)&&!isCompiler(c));
-  const builderOf=id=>(kids.get(id)||[]).find(isBuilder)||null;
+  // A retasked sub-manager's old builder is retired with its branch; the live one is the next generation.
+  const builderOf=id=>(kids.get(id)||[]).find(c=>isBuilder(c)&&c.status!=='retired')||null;
   const role=n=>isBuilder(n)?'builder':isCompiler(n)?'compiler':(n.phase==='manager'||producers(n.id).length)?'manager':'worker';
   return {kids,byId,producers,builderOf,role};
 }
 // Who a node can talk to, its inference path: its parent and its direct
 // children (a manager's builder and, at Root, the compiler included). A worker,
 // builder or compiler has no children, so it talks only up; never two levels.
+// A retired node's messages and routes are gone: it talks to no one, and no one to it.
 function pathEdges(id,index) {
-  const n=index.byId.get(id);
-  if(!n)return [];
-  return [...(index.byId.has(n.parent)?[[id,n.parent]]:[]),...(index.kids.get(id)||[]).map(c=>[id,c.id])];
+  const n=index.byId.get(id),live=x=>x&&x.status!=='retired';
+  if(!live(n))return [];
+  return [...(live(index.byId.get(n.parent))?[[id,n.parent]]:[]),...(index.kids.get(id)||[]).filter(live).map(c=>[id,c.id])];
 }
 // working: something under this manager is unfinished; ready: every producer
 // is done, so its builder should be linking; linked: the builder finished.
@@ -64,10 +66,11 @@ function compilerState(n) {
   if(record?record.passed:n.status==='done')return 'passed';
   return n.status==='failed'||COMPILE_FAILED.has(compileVerdict(n.id)?.kind)?'failed':'waiting';
 }
-// Above Root: the compiler, or for a manager Root a dashed placeholder until it exists.
+// Above Root: the compiler, or for a manager Root a dashed placeholder until it
+// exists; a run that ended without one (a mock run never has one) shows nothing.
 function compilerMarkup(root,index) {
   const c=(index.kids.get(root.id)||[]).find(isCompiler);
-  if(!c)return index.role(root)==='manager'?'<div class="ocompiler pending"><span class="dot role-compiler placeholder" title="Compiler · not yet" aria-label="Compiler · not yet"></span></div>':'';
+  if(!c)return index.role(root)==='manager'&&!['complete','failed'].includes(current?.status)?'<div class="ocompiler pending"><span class="dot role-compiler placeholder" title="Compiler · not yet" aria-label="Compiler · not yet"></span></div>':'';
   const state=compilerState(c),tip=`${c.label} · compiler · ${state}`;
   return `<div class="ocompiler ${state}"><button type="button" class="dot role-compiler ${state}${selectedNode===c.id?' selected':''}" data-node="${esc(c.id)}" title="${esc(tip)}" aria-label="${esc(tip)}"></button></div>`;
 }
@@ -89,7 +92,7 @@ function nodeDetail(n,index) {
   const line=x=>`<p class="faint">${esc(x.repo_name)} · ${esc(x.phase||'work')} · turn ${x.turn}${x.summary?` · ${esc(String(x.summary).slice(0,400))}`:''}</p>`;
   const pick=x=>`<button type="button" class="peer mono" data-node="${esc(x.id)}">${esc(x.id)}</button>`;
   const peers=pathEdges(n.id,index).map(([,id])=>index.byId.get(id));
-  const talks=`<p class="onode-path">talks to ${peers.length?peers.map(p=>`${pick(p)} ${index.role(p)}`).join(', '):'no one yet'}</p>`;
+  const talks=`<p class="onode-path${peers.length?'':' none'}">talks to ${peers.length?peers.map(p=>`${pick(p)} ${index.role(p)}`).join(', '):n.status==='retired'?'no one: retired':'no one yet'}</p>`;
   let compile='';
   if(role==='compiler') {
     const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
@@ -111,8 +114,9 @@ function renderDetail(agents) {
 }
 // Orange segments along the tree's own connectors (down from the upper dot,
 // along the bar, down to the lower one); a builder lives in its manager's dot,
-// so the edge between them is an arc on the other side's half. The SVG sits
-// inside .otree and scrolls with it, so only a render or a resize redraws it.
+// so the edge between them is an arc on the other side's half, its ends 15°
+// off the vertical so it never merges into the lines above or below the dot.
+// The SVG sits inside .otree and scrolls with it, so only a render or a resize redraws it.
 function drawPath() {
   const tree=$('hierarchy')?.querySelector?.('.otree'),svg=tree?.querySelector('svg.opath');
   if(!svg)return;
@@ -125,7 +129,7 @@ function drawPath() {
     const a=dots.get(from),b=dots.get(to);
     if(!a||!b)continue;
     const p=at(b);
-    if(a===b){const R=p.r+7;lines+=`<path class="arc" d="M${p.x} ${p.y-R}A${R} ${R} 0 0 ${b.dataset.builder===to?1:0} ${p.x} ${p.y+R}"/>`;continue;}
+    if(a===b){const R=p.r+7,right=b.dataset.builder===to,x=(p.x+(right?R:-R)*Math.sin(Math.PI/12)).toFixed(1),dy=R*Math.cos(Math.PI/12);lines+=`<path class="arc" d="M${x} ${(p.y-dy).toFixed(1)}A${R} ${R} 0 0 ${right?1:0} ${x} ${(p.y+dy).toFixed(1)}"/>`;continue;}
     const q=at(a),[up,low,lowDot]=q.y<p.y?[q,p,b]:[p,q,a],bar=lowDot.closest('.ochild');
     // The compiler's line is centred on Root; a branch's lines start at the
     // centre (left:50%) and are 1-2px wide, so they sit one pixel right.
@@ -265,8 +269,9 @@ $('push-github')?.addEventListener('click',async()=>{
 });
 // Clicking a dot selects it (again: deselects); a name in the detail panel
 // selects that node, which is how a builder, inside its manager's dot, is picked.
+// A selected builder outlines its manager's dot, so clicking that dot deselects too.
 const select=id=>{selectedNode=id;if(current)showTree(current.agents);};
-$('hierarchy').addEventListener('click',e=>{const id=e.target.closest?.('[data-node]')?.dataset.node;if(id)select(selectedNode===id?'':id);});
+$('hierarchy').addEventListener('click',e=>{const d=e.target.closest?.('[data-node]')?.dataset;if(d?.node)select(selectedNode===d.node||selectedNode&&d.builder===selectedNode?'':d.node);});
 $('node-detail')?.addEventListener('click',e=>{const id=e.target.closest?.('[data-node]')?.dataset.node;if(id)select(id);});
 globalThis.addEventListener?.('resize',drawPath);
 if(typeof ResizeObserver==='function')new ResizeObserver(()=>drawPath()).observe($('hierarchy'));

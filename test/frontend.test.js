@@ -115,11 +115,15 @@ test('v7.15.1: the compiler sits above Root, not among Root\'s children; Root\'s
   assert.deepEqual([...tree.matchAll(/class="dot role-(\w+)[^"]*" data-node="([^"]+)"/g)].map(m=>[m[2],m[1]]),[['root.3','compiler'],['root','manager'],['root.1','worker']]);
   assert.match(tree,/^<div class="otree"><div class="obranch ready"><div class="ocompiler running"><button type="button" class="dot role-compiler running" data-node="root\.3" title="Compiler · compiler · running"[^>]*><\/button><\/div><button type="button" class="dot role-manager waiting split root" data-node="root" data-builder="root\.2"/);
   assert.doesNotMatch(tree.slice(tree.indexOf('class="ochildren"')),/root\.3/,'Root\'s children row has no compiler');
-  assert.match(html,/<span><i class="legend-stack"><i class="dot role-compiler done"><\/i><i><\/i><i class="dot role-manager done"><\/i><\/i>compiler, above Root<\/span>/,'the legend puts the compiler above Root');
+  assert.match(html,/<span><i class="legend-stack"><i class="dot role-compiler waiting"><\/i><i><\/i><i class="dot role-manager done"><\/i><\/i>compiler, above Root<\/span>/,'the legend puts the compiler, as it looks in the tree, above Root');
   // A manager Root without a compiler yet shows where it will be; an atomic Root shows nothing.
   const waiting=renderWithPage(true,{agents:[{id:'root',parent:null,label:'Root objective',phase:'manager',status:'waiting',task:'goal'},
     {id:'root.1',parent:'root',label:'Ticket store',phase:'implement',status:'ready',task:'Write ticketStore.js'}]}).get('hierarchy').innerHTML;
   assert.match(waiting,/<div class="ocompiler pending"><span class="dot role-compiler placeholder" title="Compiler · not yet"/);
+  // A run that ended without one (a mock run never schedules it) has nothing to wait for.
+  for(const status of ['complete','failed'])
+    assert.doesNotMatch(renderWithPage(true,{status,agents:[{id:'root',parent:null,label:'Root objective',phase:'manager',status:'done',task:'goal'},
+      {id:'root.1',parent:'root',label:'Ticket store',phase:'implement',status:'done',task:'Write ticketStore.js'}]}).get('hierarchy').innerHTML,/ocompiler|role-compiler/,status);
   const atomic=renderWithPage(true,{agents:[{id:'root',parent:null,label:'Root objective',phase:'implement',status:'done',task:'goal'}]}).get('hierarchy').innerHTML;
   assert.doesNotMatch(atomic,/ocompiler|role-compiler/);
   assert.match(atomic,/class="dot role-worker done root"/);
@@ -146,7 +150,9 @@ function treePage(snapshot={}) {
   runInNewContext(script,context,{filename:'public/app.js'});
   const state={status:'running',busy:false,step:9,max_parallel:4,active_agents:[],files:[],events:[],agents:team,...snapshot};
   context.render(state);
-  const click=(where,id)=>listeners.get(`${where}:click`)({target:{closest:()=>({dataset:{node:id}})}});
+  // A dot carries its builder's id as data-builder, as the page's dot does.
+  const click=(where,id)=>{const b=where==='hierarchy'&&elements.get('hierarchy').innerHTML.match(new RegExp(`data-node="${id.replaceAll('.','\\.')}" data-builder="([^"]+)"`));
+    listeners.get(`${where}:click`)({target:{closest:()=>({dataset:{node:id,...(b?{builder:b[1]}:{})}})}});};
   const edges=()=>elements.get('hierarchy').innerHTML.match(/<svg class="opath" aria-hidden="true" data-edges="([^"]*)"><\/svg>/)[1];
   return {context,elements,state,click,edges,tree:()=>elements.get('hierarchy').innerHTML,detail:()=>elements.get('node-detail').innerHTML};
 }
@@ -162,6 +168,9 @@ test('v7.15.1: pathEdges is what a node can talk to: its parent and its direct c
   assert.deepEqual(path('root.4'),['root.4>root']);
   assert.deepEqual(path('root.5'),['root.5>root'],'the compiler reports to Root');
   assert.deepEqual(path('root.9'),[]);
+  const retired=context.treeIndex(team.map(n=>n.id==='root.1'?{...n,status:'retired'}:n));
+  assert.deepEqual(JSON.parse(JSON.stringify(context.pathEdges('root.1.1',retired))),[],'a retired parent is no one to talk to');
+  assert.deepEqual(JSON.parse(JSON.stringify(context.pathEdges('root.1',retired))),[],'nor is a retired node anyone\'s to reach');
 });
 
 test('v7.15.1: a selected node marks its inference path on the overlay, through refreshes, until deselected',()=>{
@@ -183,6 +192,9 @@ test('v7.15.1: a selected node marks its inference path on the overlay, through 
   assert.match(page.tree(),/data-node="root\.1" data-builder="root\.1\.3"/);
   assert.match(page.tree(),/class="dot role-manager waiting linked selected" data-node="root\.1"/);
   assert.match(page.detail(),/<b class="mono">root\.1\.3<\/b> · Temporary builder · <span class="onode-role">builder<\/span>/);
+  page.click('hierarchy','root.1');
+  assert.equal(page.edges(),'','clicking the dot a selected builder outlines deselects, as for any selected dot');
+  assert.doesNotMatch(page.tree(),/selected/);
   page.click('hierarchy','root.5');
   assert.equal(page.edges(),'root.5:root');
   page.click('hierarchy','root');
@@ -191,6 +203,48 @@ test('v7.15.1: a selected node marks its inference path on the overlay, through 
   assert.equal(page.edges(),'','clicking the selected dot again clears the path');
   assert.doesNotMatch(page.tree(),/selected/);
   assert.match(page.detail(),/Select an agent/);
+});
+
+test('v7.15.1: a retired node talks to no one, and no orange line reaches one',()=>{
+  const page=treePage({agents:team.map(n=>n.id==='root.1.2'?{...n,status:'retired'}:n)});
+  page.click('hierarchy','root.1');
+  assert.equal(page.edges(),'root.1:root root.1:root.1.1 root.1:root.1.3','its retired worker is gone from a manager\'s path');
+  assert.match(page.detail(),/talks to <button[^>]*>root<\/button> manager, <button[^>]*>root\.1\.1<\/button> worker, <button[^>]*>root\.1\.3<\/button> builder<\/p>/);
+  page.click('hierarchy','root.1.1');
+  page.context.render({...page.state,agents:team.map(n=>['root.1.1','root.1.2'].includes(n.id)?{...n,status:'retired'}:n)});
+  assert.equal(page.edges(),'','retired while selected: no path');
+  assert.match(page.tree(),/class="dot role-worker retired selected" data-node="root\.1\.1"/);
+  assert.match(page.detail(),/<p class="onode-path none">talks to no one: retired<\/p>/);
+});
+
+test('v7.15.1: a retasked sub-manager splits for its live builder, not its retired old one',()=>{
+  const at=(id,parent,label,status)=>({id,parent,label,phase:'implement',status,task:label});
+  const page=treePage({agents:[team[0],{...team[1]},
+    at('root.1.1','root.1','Old store','retired'),at('root.1.2','root.1','Old views','retired'),at('root.1.3','root.1','Temporary builder','retired'),
+    at('root.1.4','root.1','Ticket store','done'),at('root.1.5','root.1','Ticket views','done'),at('root.1.6','root.1','Temporary builder','waiting'),
+    at('root.2','root','Server','done'),at('root.3','root','Temporary builder','waiting')]});
+  assert.match(page.tree(),/class="dot role-manager waiting split" data-node="root\.1" data-builder="root\.1\.6"/);
+  page.click('hierarchy','root.1');
+  assert.equal(page.edges(),'root.1:root root.1:root.1.4 root.1:root.1.5 root.1:root.1.6');
+  assert.match(page.detail(),/<span class="onode-role">builder<\/span> <button type="button" class="peer mono" data-node="root\.1\.6">root\.1\.6<\/button> · waiting/);
+  page.click('node-detail','root.1.6');
+  assert.equal(page.edges(),'root.1.6:root.1');
+  assert.match(page.tree(),/class="dot role-manager waiting split selected" data-node="root\.1" data-builder="root\.1\.6"/);
+  page.context.render({...page.state,agents:page.state.agents.map(n=>n.id==='root.1.6'?{...n,status:'done'}:n)});
+  assert.match(page.tree(),/class="dot role-manager waiting linked selected" data-node="root\.1" data-builder="root\.1\.6"/,'its new builder done: linked');
+});
+
+// drawPath against measured dots: a manager at (100,50), its worker at (80,90)
+// under a bar at y=70, its builder in the manager's own dot.
+test('v7.15.1: drawPath follows the connectors, and a manager-builder arc ends 15° off the vertical',()=>{
+  const page=treePage(),box=(left,top,width,height)=>({left,top,width,height});
+  const svg={dataset:{edges:''},innerHTML:''};
+  const dots=[{dataset:{node:'root.1',builder:'root.1.3'},offsetWidth:16,getBoundingClientRect:()=>box(92,42,16,16),closest:()=>null},
+    {dataset:{node:'root.1.1'},offsetWidth:16,getBoundingClientRect:()=>box(72,82,16,16),closest:()=>({getBoundingClientRect:()=>box(60,70,40,40)})}];
+  page.elements.get('hierarchy').querySelector=()=>({getBoundingClientRect:()=>box(0,0,300,200),querySelector:()=>svg,querySelectorAll:()=>dots});
+  const draw=edges=>{svg.dataset.edges=edges;page.context.drawPath();return svg.innerHTML;};
+  assert.equal(draw('root.1:root.1.3 root.1:root.1.1'),'<path class="arc" d="M103.9 35.5A15 15 0 0 1 103.9 64.5"/><path d="M101 58V71H81V82"/>','the builder\'s right half, then down the bar');
+  assert.equal(draw('root.1.3:root.1'),'<path class="arc" d="M96.1 35.5A15 15 0 0 0 96.1 64.5"/>','a selected builder: the manager\'s left half');
 });
 
 test('v7.15.1: the compiler above Root has its own states and details',()=>{
@@ -217,6 +271,9 @@ test('v7.15.1: the path is orange, its own token in light and dark',()=>{
   assert.equal([...css.matchAll(/--path:#[0-9a-f]{6};/g)].length,3,'light, prefers-color-scheme dark and html[a="dark"]');
   assert.match(css,/\.opath \{[^}]*stroke:var\(--path\); stroke-width:2;/);
   assert.match(html,/<i class="swatch path"><\/i>/);
+  assert.match(css,/\.onode-detail \.onode-path:not\(\.none\)::before \{/,'no orange mark when no orange line is drawn');
+  assert.match(css,/\.ocompiler::after \{ content:""; height:24px;/,'the compiler\'s stem is a tree row tall');
+  assert.match(css,/\.dot\.role-compiler\.running \{ --role:var\(--fg\); \}/,'a running compiler differs from a waiting one in a still frame');
 });
 
 test('Download app (.zip) and Push to GitHub sit under Export observation JSON',()=>{

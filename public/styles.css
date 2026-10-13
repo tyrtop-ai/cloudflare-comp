@@ -102,9 +102,10 @@ pre { font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:10p
 .otree-legend .dot { width:11px; height:11px; margin-right:6px; vertical-align:-1px; cursor:default; }
 .swatch { display:inline-block; width:14px; height:0; margin-right:6px; vertical-align:3px; border-top:2px solid var(--ok); }
 .swatch.path { border-top-color:var(--path); }
-.legend-stack { display:inline-flex; flex-direction:column; align-items:center; margin-right:6px; vertical-align:middle; }
-.otree-legend .legend-stack .dot { width:9px; height:9px; margin:0; }
-.legend-stack i:nth-child(2) { width:0; height:4px; border-left:1px solid var(--border); }
+/* Compiler over Root, 17px tall: the negative margins give it an 11px dot's line box, so its label lines up with the others. */
+.legend-stack { display:inline-flex; flex-direction:column; align-items:center; margin:-4px 6px -2px 0; vertical-align:middle; }
+.otree-legend .legend-stack .dot { width:7px; height:7px; margin:0; }
+.legend-stack i:nth-child(2) { width:0; height:3px; border-left:1px solid var(--border); }
 .node-detail { margin-top:12px; padding-top:12px; border-top:thin solid var(--border); } .node-detail .helper { margin:0; }
 .otree { display:flex; justify-content:center; min-width:max-content; padding:10px 8px 12px; }
 .obranch { display:flex; flex-direction:column; align-items:center; }
@@ -131,19 +132,21 @@ pre { font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:10p
 .dot.running { animation:dot-pulse 1.4s ease-in-out infinite; }
 .dot.selected { outline:2px solid var(--fg); outline-offset:3px; }
 .dot:hover { transform:scale(1.15); }
-/* The compiler sits above Root, joined to it by a short line; until it exists
-   a manager Root shows a dashed placeholder there. */
+/* The compiler sits above Root, joined to it by a line a tree row tall; until
+   it exists, while the run goes on, a manager Root shows a dashed placeholder there. */
 .ocompiler { display:flex; flex-direction:column; align-items:center; }
-.ocompiler::after { content:""; height:10px; border-left:1px solid var(--border); }
+.ocompiler::after { content:""; height:24px; border-left:1px solid var(--border); }
 .ocompiler.pending::after { border-left-style:dashed; }
 .dot.placeholder { border-style:dashed; background:transparent; opacity:.7; cursor:default; }
 .dot.placeholder:hover { transform:none; }
 .dot.passed { border-color:var(--ok); background:var(--ok); }
+/* Grey is the compiler's resting colour, so it runs in the text colour: a still frame still tells running from waiting. */
+.dot.role-compiler.running { --role:var(--fg); }
 /* The selected node's inference path, measured and drawn by drawPath. */
 .otree { position:relative; }
 .opath { position:absolute; inset:0; width:100%; height:100%; overflow:visible; pointer-events:none; fill:none; stroke:var(--path); stroke-width:2; }
 .opath path { shape-rendering:crispEdges; } .opath .arc { shape-rendering:auto; stroke-linecap:round; }
-.onode-detail .onode-path::before { content:""; display:inline-block; width:14px; margin-right:6px; vertical-align:3px; border-top:2px solid var(--path); }
+.onode-detail .onode-path:not(.none)::before { content:""; display:inline-block; width:14px; margin-right:6px; vertical-align:3px; border-top:2px solid var(--path); }
 .peer { background:none; border:0; padding:0; color:inherit; font-size:inherit; text-decoration:underline dotted; text-underline-offset:2px; }
 .peer:hover { text-decoration-style:solid; }
 @keyframes dot-pulse { 0%,100% { box-shadow:0 0 0 0 color-mix(in srgb,var(--role) 45%,transparent); } 50% { box-shadow:0 0 0 6px color-mix(in srgb,var(--role) 0%,transparent); } }
