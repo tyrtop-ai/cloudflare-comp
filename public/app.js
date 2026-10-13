@@ -20,10 +20,52 @@ function showError(err) { $('error').textContent=String(err?.message||err); }
 function eventMarkup(e) {
   return `<div class="event"><div class="event-time">${stamp(e.ts)}<br/>#${e.step}</div><div><div class="event-title"><b>${esc(e.actor)}</b><span class="event-type ${e.kind==='error'?'error':''}">${esc(e.kind)}</span>${e.recipient?`<span class="faint">→ ${esc(e.recipient)}</span>`:''}</div><p>${esc(e.body)}</p></div></div>`;
 }
-function nodeMarkup(n) {
-  const level=n.id.split('.').length-1;
-  const visibleStatus=current?.active_agents?.includes(n.id)?'running':n.status;
-  return `<div class="branch" style="margin-left:${Math.min(level,10)*19}px"><div class="branch-line"><span class="branch-id">${esc(n.id)}</span><div class="branch-desc"><strong>${esc(n.label)}</strong><p>${esc(n.task)}</p></div><span class="branch-state ${esc(visibleStatus)}">${esc(visibleStatus)}</span></div><div class="branch-repo">${esc(n.repo_name)} · ${esc(n.phase || 'work')} · turn ${n.turn} · ${esc(String(n.summary).slice(0,170))}</div></div>`;
+// Ownership tree: one colour per role. A manager is a circle; it splits in
+// half, manager | builder, while its builder links the branch, and the branch
+// turns green once every worker under it is done.
+let selectedNode='';
+const isBuilder=n=>n.label==='Temporary builder';
+const isCompiler=n=>n.label==='Compiler';
+const idOrder=(a,b)=>{const x=a.id.split('.').map(Number),y=b.id.split('.').map(Number);for(let i=0;i<Math.max(x.length,y.length);i++)if((x[i]??-1)!==(y[i]??-1))return (x[i]??-1)-(y[i]??-1);return 0;};
+function treeIndex(agents) {
+  const kids=new Map();
+  for(const n of agents)if(n.parent)kids.set(n.parent,[...(kids.get(n.parent)||[]),n]);
+  for(const list of kids.values())list.sort((a,b)=>isCompiler(a)-isCompiler(b)||idOrder(a,b));
+  const producers=id=>(kids.get(id)||[]).filter(c=>!isBuilder(c)&&!isCompiler(c));
+  const builderOf=id=>(kids.get(id)||[]).find(isBuilder)||null;
+  const role=n=>isBuilder(n)?'builder':isCompiler(n)?'compiler':(n.phase==='manager'||producers(n.id).length)?'manager':'worker';
+  return {kids,producers,builderOf,role};
+}
+// working: something under this manager is unfinished; ready: every producer
+// is done, so its builder should be linking; linked: the builder finished.
+function branchState(n,index) {
+  if(index.role(n)!=='manager')return '';
+  const producers=index.producers(n.id);
+  if(!producers.length||!producers.every(c=>['done','retired'].includes(c.status)))return 'working';
+  return index.builderOf(n.id)?.status==='done'?'linked':'ready';
+}
+const statusOf=n=>current?.active_agents?.includes(n.id)?'running':n.status;
+function treeMarkup(n,index) {
+  const role=index.role(n),state=branchState(n,index),builder=role==='manager'?index.builderOf(n.id):null;
+  const building=!!builder&&builder.status!=='done';
+  const children=(index.kids.get(n.id)||[]).filter(c=>!isBuilder(c));
+  const note=building?`<span class="branch-state builder ${esc(statusOf(builder))}">builder ${esc(statusOf(builder))}</span>`:state==='linked'?'<span class="onode-linked">linked ✓</span>':'';
+  const card=`<button type="button" class="onode role-${role} ${state}${selectedNode===n.id?' selected':''}" data-node="${esc(n.id)}" title="${esc(n.task)}"><span class="glyph role-${role}${building?' split':''}"></span><span class="onode-body"><span class="onode-top"><strong>${esc(n.label)}</strong><span class="branch-state ${esc(statusOf(n))}">${esc(statusOf(n))}</span></span><span class="onode-id mono">${esc(n.id)} · ${role}</span>${note}</span></button>`;
+  return `<div class="obranch ${state}">${card}${children.length?`<div class="ochildren">${children.map(c=>`<div class="ochild">${treeMarkup(c,index)}</div>`).join('')}</div>`:''}</div>`;
+}
+function nodeDetail(n,index) {
+  const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
+  const line=x=>`<p class="faint">${esc(x.repo_name)} · ${esc(x.phase||'work')} · turn ${x.turn}${x.summary?` · ${esc(String(x.summary).slice(0,400))}`:''}</p>`;
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(statusOf(n))}</div><p>${esc(n.task)}</p>${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> <b class="mono">${esc(builder.id)}</b> · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+}
+function renderTree(agents) {
+  if(!agents?.length)return '<p class="empty">No agents yet.</p>';
+  const index=treeIndex(agents),root=agents.find(n=>!n.parent)||agents[0];
+  return `<div class="otree">${treeMarkup(root,index)}</div>`;
+}
+function renderDetail(agents) {
+  const picked=agents?.find(n=>n.id===selectedNode);
+  return picked?nodeDetail(picked,treeIndex(agents)):'<p class="helper">Select an agent to see its task.</p>';
 }
 function render(s) {
   current=s;
@@ -48,7 +90,8 @@ function render(s) {
   }
   const fileRows=[...(s.files||[]),...(s.exports||[]).map(f=>({...f,virtual:true,revision:1}))];
   $('file-count').textContent=fileRows.length;
-  $('hierarchy').innerHTML=s.agents?.length?s.agents.map(nodeMarkup).join(''):'<p class="empty">No agents yet.</p>';
+  $('hierarchy').innerHTML=renderTree(s.agents);
+  if($('node-detail'))$('node-detail').innerHTML=renderDetail(s.agents);
   $('events').innerHTML=s.events?.length?s.events.map(eventMarkup).join(''):'<p class="empty">No events yet.</p>';
   $('event-count').textContent=`${s.events?.length||0} events`;
   $('files').innerHTML=fileRows.length?fileRows.map(f=>`<button type="button" class="file-row ${activeFile===f.agent+'/'+f.path?'active':''}" data-agent="${esc(f.agent)}" data-path="${esc(f.path)}"><span class="mono">${esc(f.agent)}/${esc(f.path)}</span><small>${f.virtual?'alias':'r'+f.revision}</small></button>`).join(''):'<p class="empty">No files committed yet.</p>';
@@ -117,5 +160,6 @@ $('export').addEventListener('click',async()=>{
     const url=URL.createObjectURL(file);const a=document.createElement('a');a.href=url;a.download=`recursive-control-plane-${room.slice(0,8)}.json`;a.click();URL.revokeObjectURL(url);
   }catch(err){showError(err);}
 });
+$('hierarchy').addEventListener('click',e=>{const id=e.target.closest?.('[data-node]')?.dataset.node;if(!id)return;selectedNode=selectedNode===id?'':id;if(current){$('hierarchy').innerHTML=renderTree(current.agents);$('node-detail').innerHTML=renderDetail(current.agents);}});
 $('token').addEventListener('change',refresh);$('room').addEventListener('change',()=>{const id=$('room').value.trim();if(/^[a-z0-9-]{8,64}$/i.test(id)){const u=new URL(location.href);u.searchParams.set('room',id);location.assign(u.href);}});
 setInterval(refresh,3000);refresh();

@@ -45,6 +45,6 @@ test('current HTML displays concurrent agent count',()=>{
 });
 
 test('HTML uses versioned JS and CSS asset URLs',()=>{
-  assert.match(html, /src="\/app\.js\?v=6\.5"/);
-  assert.match(html, /href="\/styles\.css\?v=6\.5"/);
+  assert.match(html, /src="\/app\.js\?v=7\.13"/);
+  assert.match(html, /href="\/styles\.css\?v=7\.13"/);
 });
