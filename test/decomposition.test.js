@@ -177,6 +177,9 @@ test('v7.14: Root splits like every manager: an entry mark is dropped and no chi
   assert.equal(room.get('entry_child'),'');
   assert.ok(!room.snapshot().events.some(e=>e.kind==='entry_child'));
   assert.ok(room.node('root').task.endsWith(' '+GOAL_START_REQUIREMENT),'the requirement is part of the goal');
+  // v7.13.2's sentences, with the no-work-at-load clause decision #3 names: one set, appended once.
+  assert.equal(GOAL_START_REQUIREMENT,'The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.');
+  assert.equal(room.node('root').task.split('exports start()').length,2);
   const {normalizeAction}=await import('../src/protocol.js');
   assert.deepEqual(normalizeAction({spawn:[{label:'App',task:'Write the app entry',entry:true}]}).spawn,[{label:'App',task:'Write the app entry'}]);
 });

@@ -608,6 +608,18 @@ test('room: start() that returns nothing goes back to the entry worker',async()=
   assert.match(tickets(room,'root.2')[0],/exports start\(\); start\(\) takes no arguments and returns an object/);
 });
 
+test('room: start() returning one generic handler goes to Root as an entry problem before the coverage model or the runner is asked (run4)',async()=>{
+  const {room,calls}=liveRoom();
+  const paths=await twoWorkers(room,{app:"function start(){ return { handler(event){ return event; } }; }\nmodule.exports={start};\n"});
+  const {compiler}=await linkAndCompile(room);
+  const failure=lastReport(room,compiler.id);
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths.appPath,'root']]);
+  assert.match(failure.issues[0].detail,/^start\(\) must return an object whose methods perform the requested operations, one per operation and named after it, not a single generic method; it returned /);
+  assert.deepEqual([calls.coverage.length,calls.runner.length],[0,0]);
+  await room.turn('root');
+  assert.match(tickets(room,'root.2')[0],/not a single generic handler or dispatcher/);
+});
+
 test('room: container infrastructure failure blocks without blaming a worker; Continue reschedules the compiler',async()=>{
   const {room}=liveRoom({executor:{build:async()=>{throw new Error('Container failed to start: no capacity');}}});
   await twoWorkers(room,{app:"module.exports={start(){return {}}};"});

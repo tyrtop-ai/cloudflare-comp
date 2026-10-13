@@ -104,6 +104,19 @@ function exportPage(fetch) {
   return {elements,clicked,click:id=>listeners.get(`${id}:click`)()};
 }
 
+test('v7.14: the compiler is its own dot under Root, after Root\'s workers; Root\'s builder only splits Root\'s dot',()=>{
+  const elements=renderWithPage(true,{active_agents:['root.3'],agents:[
+    {id:'root',parent:null,label:'Root objective',phase:'manager',status:'waiting',task:'goal'},
+    {id:'root.3',parent:'root',label:'Compiler',phase:'implement',status:'ready',task:'Run the linked application'},
+    {id:'root.1',parent:'root',label:'Ticket store',phase:'implement',status:'done',task:'Write ticketStore.js'},
+    {id:'root.2',parent:'root',label:'Temporary builder',phase:'implement',status:'waiting',task:'Link the branch'}]});
+  const tree=elements.get('hierarchy').innerHTML;
+  assert.deepEqual([...tree.matchAll(/class="dot role-(\w+)[^"]*" data-node="([^"]+)"/g)].map(m=>[m[2],m[1]]),[['root','manager'],['root.1','worker'],['root.3','compiler']]);
+  assert.match(tree,/class="dot role-manager waiting split root"/);
+  assert.match(tree,/class="dot role-compiler running" data-node="root\.3" title="Compiler · compiler · running"/);
+  assert.match(html,/<i class="dot role-compiler done"><\/i>compiler/,'the legend names the compiler');
+});
+
 test('Download app (.zip) and Push to GitHub sit under Export observation JSON',()=>{
   const at=id=>html.indexOf(`id="${id}"`);
   assert.match(html,/<button class="secondary" id="download-app">Download app \(\.zip\)<\/button>/);
