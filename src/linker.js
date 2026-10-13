@@ -106,10 +106,42 @@ function describe(node, decls, depth=0, name=null) {
       const inner=cls?describe(cls,decls,depth+1):null;
       return {type:'instance',of:calleeName(node.callee),methods:inner?.methods||[]};
     }
-    case 'CallExpression': return {type:'call',name,of:calleeName(node.callee)};
+    case 'CallExpression': {
+      // An object built by an immediately invoked function is that object (run7 ticketStore.js).
+      const made=iifeObject(node,decls);
+      if(made)return {...describe(made.object,made.decls,depth,name),of:calleeName(node.callee)};
+      return {type:'call',name,of:calleeName(node.callee)};
+    }
     case 'VariableDeclarator': return {type:'value',name};
     default: return {type:'value',name};
   }
+}
+// (function(){ … return {…}; })() or (() => ({…}))(): the object literal the
+// function returns, when that is its one return and at the top of its body,
+// with the names declared there (and its parameters, which hide outer names).
+// An async or generator function returns something else.
+function iifeObject(node, decls) {
+  const fn=node.callee;
+  if(!/^(?:Function|ArrowFunction)Expression$/.test(fn?.type||'')||fn.async||fn.generator)return null;
+  const inner=new Map(decls),hidden=new Set();
+  for(const p of fn.params)patternNames(p,hidden);
+  for(const n of hidden)inner.set(n,null);
+  if(fn.body.type==='ObjectExpression')return {object:fn.body,decls:inner};
+  const returns=[],look=n=>{
+    if(n.type==='ReturnStatement')returns.push(n);
+    for(const [key,value] of Object.entries(n))if(key!=='loc'&&key!=='start'&&key!=='end')
+      for(const v of Array.isArray(value)?value:[value])if(v&&typeof v.type==='string'&&!FUNCTIONS.has(v.type))look(v);
+  };
+  look(fn.body);
+  const ret=returns.length===1&&fn.body.body.includes(returns[0])?returns[0]:null;
+  if(ret?.argument?.type!=='ObjectExpression')return null;
+  for(const [n,d] of topLevelDeclarations(fn.body))inner.set(n,d);
+  // let f; … f = function(){}: f is that function.
+  for(const s of fn.body.body) {
+    const e=s.type==='ExpressionStatement'&&s.expression;
+    if(e?.type==='AssignmentExpression'&&e.operator==='='&&e.left.type==='Identifier'&&inner.get(e.left.name)?.type==='VariableDeclarator'&&/^(?:Function|ArrowFunction|Class)Expression$/.test(e.right.type))inner.set(e.left.name,e.right);
+  }
+  return {object:ret.argument,decls:inner};
 }
 function isModuleExports(node) {
   return node?.type==='MemberExpression' && node.object?.type==='Identifier' && node.object.name==='module' && keyName(node.property)==='exports';
@@ -1111,7 +1143,8 @@ export function importExcerpt(path, content, {specifiers=null, lines=[]}={}) {
 // A worker can bind a module the wrong way round: destructure one function
 // from a module whose module.exports is that function, or bind a module whole
 // and only call it when the module exports an object holding that function,
-// or use it as that function when it is the module's only export.
+// or use it as that function when it is the module's only export, or only
+// pass it on as a value when the module exports an object holding that name.
 // Only the binding pattern of that one import changes, and only when the
 // target's export surface says which shape is right.
 function bindingSites(content) {
@@ -1238,6 +1271,37 @@ function usedAsFunction(content, at) {
   while(todo.length){const k=todo.pop();if(!refs.get(k).every(use[kinds.get(k)]))return false;}
   return true;
 }
+// The module exports an object, or a named set, with a member called name,
+// of any kind: module.exports is not a function, so the whole binding cannot be.
+function hasMember(surface, name) {
+  const d=surface?.default;
+  return (d?.type==='object'?[...d.members,...surface.named]:d?[]:surface?.named||[]).some(x=>x.name===name);
+}
+// Every use of the binding declared at `at` passes it on as a value: an
+// object property's value, an array element, an argument, a return value or
+// an export (typeof x also counts). Never called, read (x.m, x[k],
+// destructured, spread, Object.keys(x)) or kept in another variable, so
+// nothing in the file needs the module rather than one member (run7 entry.js:
+// return { view: getTicket }).
+function onlyPassedOn(content, at) {
+  let ast,bindingOf,dynamic;
+  try {const p=parseSource(content);ast=p.ast;({bindingOf,dynamic}=scopeOf(ast,p.sourceType));} catch {return false;}
+  if(dynamic)return false;
+  const parents=new Map();
+  walk(ast,(node,parent)=>parents.set(node,parent));
+  const own=[...bindingOf.keys()].find(n=>n.start===at),scope=own&&bindingOf.get(own);
+  if(!scope)return false;
+  const uses=[...bindingOf].filter(([n,s])=>n!==own&&n.name===own.name&&s===scope).map(([n])=>n);
+  const exportsOf=n=>isModuleExports(n)||n?.type==='Identifier'&&n.name==='exports'&&!bindingOf.get(n);
+  const passed=e=>{
+    const p=parents.get(e);
+    return p.type==='Property'&&p.value===e&&parents.get(p)?.type==='ObjectExpression'||p.type==='ArrayExpression'||p.type==='ReturnStatement'||p.type==='ArrowFunctionExpression'&&p.body===e||p.type==='ExportDefaultDeclaration'
+      ||(p.type==='CallExpression'||p.type==='NewExpression')&&p.arguments.includes(e)&&!/^(?:Object|Reflect|JSON)\./.test(calleeName(p.callee))
+      ||p.type==='AssignmentExpression'&&p.operator==='='&&p.right===e&&(exportsOf(p.left)||p.left.type==='MemberExpression'&&exportsOf(p.left.object));
+  };
+  const typeOf=e=>parents.get(e).type==='UnaryExpression'&&parents.get(e).operator==='typeof';
+  return uses.some(passed)&&uses.every(e=>passed(e)||typeOf(e));
+}
 // Every use of name other than its one declaration calls it, name(...) or
 // new name(...): never name.member or name[key], and never passed on as a value.
 function onlyCalled(content, name) {
@@ -1277,6 +1341,9 @@ function shapeFixesIn(path, content, files, surfaces) {
     else if(s.shape==='ImportSpecifier'&&sp.imported.type==='Identifier'&&soleExport(surface,target,sp.imported.name,files.get(target),content,sp.local.name)){text=sp.local.name;reason=`${target} has only a default ${surface.default.type}`;}
     else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&!surface.named.some(n=>n.name==='default')&&holds(surface,sp.local.name)&&onlyCalled(content,sp.local.name)){text=`{ ${sp.local.name} }`;reason=`${target} has no default export, only a named ${sp.local.name} that this file calls`;}
     else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&m&&usedAsFunction(content,s.start)){text=m===sp.local.name?`{ ${m} }`:`{ ${m} as ${sp.local.name} }`;reason=`${target} has no default export, only the function ${m}, and this file only uses ${sp.local.name} as a function`;}
+    // Bound whole and only passed on as a value, never called or read, a module whose exports hold that name means that member (run7 entry.js).
+    else if(s.shape==='Identifier'&&surface.kind==='cjs'&&hasMember(surface,id.name)&&onlyPassedOn(content,s.start)){text=`{ ${id.name} }`;reason=`${target} exports ${id.name} inside an object and this file only passes ${id.name} on as a value`;}
+    else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&!surface.named.some(n=>n.name==='default')&&hasMember(surface,sp.local.name)&&onlyPassedOn(content,s.start)){text=`{ ${sp.local.name} }`;reason=`${target} has no default export, only a named ${sp.local.name} that this file passes on as a value`;}
     if(text===null)continue;
     const gap=(x,y)=>/[\w$]/.test(x||'')&&/[\w$]/.test(y||'')?' ':'';
     text=gap(content[s.start-1],text[0])+text+gap(text.at(-1),content[s.end]);
