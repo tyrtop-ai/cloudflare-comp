@@ -1599,7 +1599,7 @@ export class ControlRoom extends DurableObject {
   // import that resolves nowhere is a problem only at the top; below, it is
   // the branch boundary's need, for the builder above.
   inBranchProblems(builderId, link, top) {
-    const files=link.files,surfaces=link.surfaces,reads=importReads(files,surfaces),items=[],m=this.node(builderId)?.parent;
+    const files=link.files,surfaces=link.surfaces,reads=importReads(files,surfaces),items=[],holder=this.node(builderId)?.parent;
     const exportsText=p=>exportsLine(p,surfaces),both=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
     // run8: four readers did const { loadTickets: load, saveTickets: save } =
     // require('./data-store') of a branch that wrote one module per function,
@@ -1618,7 +1618,7 @@ export class ControlRoom extends DurableObject {
       // for the reader to guess; the piece's modules lead what it is shown.
       const pieces=new Map(),lead=[];
       for(const name of names) {
-        const [w]=this.carriersOf(name,m);
+        const [w]=this.carriersOf(name,holder);
         if(w)pieces.set(w.id,{w,names:[...(pieces.get(w.id)?.names||[]),name]});
       }
       const owed=[];
