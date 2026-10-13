@@ -1,6 +1,6 @@
 // Export connector: ControlRoom.appFiles() on a room whose Root builder linked
 // and passed (the v7.11 room pattern with the REAL container runner), and the
-// /api/app and /api/app.zip routes.
+// /api/app, /api/app.zip and /api/export/github routes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {register} from 'node:module';
@@ -153,7 +153,7 @@ test('appFiles: UNVERIFIED once the files differ from the passing run, or when n
 });
 
 // ----------------------------------------------------------------------- API
-const APP_TOKEN='app-token-0123456789';
+const APP_TOKEN='app-token-0123456789',GITHUB_TOKEN='github_pat_SECRET0123456789abcdef';
 const call=(env,path,{method='GET',body,auth=APP_TOKEN}={})=>worker.fetch(new Request('https://cp.test'+path,{method,
   headers:{...(auth?{authorization:`Bearer ${auth}`}:{}),...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined}),env);
 const envFor=(room,extra={})=>({APP_TOKEN,ROOMS:{getByName:name=>{assert.equal(name,ROOM);return room;}},ASSETS:{fetch:()=>new Response('asset')},...extra});
@@ -183,4 +183,36 @@ test('API: /api/app and /api/app.zip return the application behind APP_TOKEN, 40
     assert.equal(r.status,409);
     assert.match((await r.json()).error,/No application yet/);
   }
+  const gh=await call(envFor(empty,{GITHUB_TOKEN}),'/api/export/github',{method:'POST',body:{room:ROOM,repo:'octo/app'}});
+  assert.equal(gh.status,409);
+});
+
+test('API: /api/export/github needs GITHUB_TOKEN from env, validates the request, and never returns the token',async()=>{
+  const {room}=await linkedRoom();
+  const post=(env,body)=>call(env,'/api/export/github',{method:'POST',body:{room:ROOM,...body}});
+  const missing=await post(envFor(room),{repo:'octo/app',token:GITHUB_TOKEN});
+  assert.equal(missing.status,503,'a token in the request body is ignored');
+  assert.equal((await missing.json()).error,'Set GITHUB_TOKEN with wrangler secret put GITHUB_TOKEN');
+  const env=envFor(room,{GITHUB_TOKEN});
+  for(const [body,pattern] of [[{repo:'octo'},/repo must be owner\/name/],[{repo:'octo/app/x'},/repo/],[{repo:'../..'},/repo/],
+    [{repo:'https://github.com/octo/app'},/repo/],[{repo:'octo/app',dir:'../outside'},/'\.\.'/],[{repo:'octo/app',dir:'/etc'},/relative path/],
+    [{repo:'octo/app',branch:'a..b'},/branch/],[{repo:'octo/app',pr:'yes'},/pr must be/]]) {
+    const r=await post(env,body);
+    assert.equal(r.status,400,JSON.stringify(body));
+    assert.match((await r.json()).error,pattern);
+  }
+  // GitHub answers 401 with the token echoed back: the response carries neither form of it.
+  const basic=btoa(`x-access-token:${GITHUB_TOKEN}`);
+  const leaky=envFor(room,{GITHUB_TOKEN,TEST_GITHUB:{fetch:async()=>new Response(JSON.stringify({message:`Bad credentials ${GITHUB_TOKEN} ${basic}`}),{status:401}),http:{},git:{}}});
+  const denied=await post(leaky,{repo:'octo/app'});
+  assert.equal(denied.status,502);
+  const body=await denied.json();
+  assert.equal(body.github_status,401);
+  assert.match(body.error,/GitHub rejected GITHUB_TOKEN \(401\)/);
+  const crash=envFor(room,{GITHUB_TOKEN,TEST_GITHUB:{fetch:async()=>{throw new Error(`socket closed for ${GITHUB_TOKEN} / ${basic}`);},http:{},git:{}}});
+  const failed=await post(crash,{repo:'octo/app'});
+  const text=await failed.text();
+  assert.equal(failed.status,502);
+  assert.match(text,/\[redacted\]/);
+  for(const r of [text,JSON.stringify(body)])assert.ok(!r.includes(GITHUB_TOKEN)&&!r.includes(basic),r);
 });

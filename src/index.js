@@ -13,6 +13,7 @@ import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { zipFiles } from './zip.js';
+import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
@@ -446,7 +447,7 @@ export class ControlRoom extends DurableObject {
   }
   // The goal as the user wrote it, without the entry sentence the runtime adds.
   userGoal() { const g=this.get('goal')||this.node('root')?.task||''; return g.endsWith(GOAL_ENTRY)?g.slice(0,-GOAL_ENTRY.length):g; }
-  // The runnable application, for /api/app and /api/app.zip:
+  // The runnable application, for /api/app, /api/app.zip and the GitHub export:
   // Root's builder's published files minus assembly metadata, plus a README.
   // The only place that knows where the application lives. passed: the last
   // passing Container run hashed exactly these files (README aside).
@@ -3292,7 +3293,7 @@ export default {
       if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));
       if (url.pathname==='/api/reset' && request.method==='POST') return json(await stub.clear());
       if (url.pathname==='/api/stop' && request.method==='POST') return json(await stub.stop());
-      // Getting the code out: the linked application as JSON or as a ZIP.
+      // Getting the code out: the linked application as JSON, as a ZIP, or as a GitHub branch and pull request.
       if (['/api/app','/api/app.zip'].includes(url.pathname) && request.method==='GET') {
         const app=await stub.appFiles();
         if (app.error) return json({error:app.error},app.status||409);
@@ -3300,7 +3301,19 @@ export default {
         return new Response(zipFiles(app.files),{headers:{'content-type':'application/zip','cache-control':'no-store',
           'content-disposition':`attachment; filename="recursive-app-${room.slice(0,8)}.zip"`,'x-app-passed':String(app.passed)}});
       }
+      if (url.pathname==='/api/export/github' && request.method==='POST') {
+        if (!env.GITHUB_TOKEN) return json({error:NO_TOKEN},503);
+        const options=githubExportOptions(payload,room);
+        const app=await stub.appFiles();
+        if (app.error) return json({error:app.error},app.status||409);
+        // TEST_GITHUB ({git,http,fetch}) is injected by the local tests only.
+        return json(await exportToGitHub({token:env.GITHUB_TOKEN,options,app,room},env.TEST_GITHUB));
+      }
       return json({error:'Unknown API route'},404);
-    } catch(e) {return json({error:clip(e?.message||e,950)},500);}
+    } catch(e) {
+      // GITHUB_TOKEN never leaves the Worker, not even inside an error.
+      const error=clip(redact(e?.message||e,env.GITHUB_TOKEN),950);
+      return e instanceof ExportError?json({error,...(e.github_status?{github_status:e.github_status}:{})},e.status):json({error},500);
+    }
   }
 };
