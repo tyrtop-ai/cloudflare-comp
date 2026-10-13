@@ -38,9 +38,9 @@ const repoImpl={label:'TicketRepositoryImpl.ts',task:'Implement repository logic
 const service={label:'TicketService.ts',task:'Create service class that uses repository to fetch filtered tickets'};
 const controller={label:'TicketController.ts',task:'Implement controller handler to process HTTP requests with filter parameters'};
 // owner(question, labels at that level) names the owning label, or null; it may throw.
-function fakeAI({split,leaf,owner,calls=[]}) {
+function fakeAI({split,leaf,owner,gate=()=>0.9,calls=[]}) {
   return {calls,run:async(_model,input)=>{
-    if(input.questions?.should_split){calls.push({kind:'gate',state:input.state});return {answers:{should_split:{noul:0.9}}};}
+    if(input.questions?.should_split){calls.push({kind:'gate',state:input.state});return {answers:{should_split:{noul:gate(calls.filter(c=>c.kind==='gate').length)}}};}
     if(input.questions?.within_0)return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.9}]))};
     if(input.questions?.owner_0) {
       const labels=input.state.children.map(c=>c.label);
@@ -54,11 +54,12 @@ function fakeAI({split,leaf,owner,calls=[]}) {
       calls.push({kind:'split',request});
       return {response:JSON.stringify({summary:'Split',spawn:split(calls.filter(c=>c.kind==='split').length)})};
     }
-    if(system.includes('LEAF CODE WRITER') && leaf)return {response:JSON.stringify(leaf)};
+    if(system.includes('LEAF CODE WRITER') && leaf){calls.push({kind:'leaf',request:JSON.parse(input.messages[1].content)});return {response:JSON.stringify(leaf)};}
     throw new Error('Unexpected model call');
   }};
 }
 const about=(question,label)=>question.includes(`${label}: `);
+const owns=({label,task},owner)=>`${label} is owned by ${owner}; import it from that strand instead of rebuilding it. Any part of "${task}" that ${owner} does not provide is still written in this strand.`;
 function setup(ai,env={}) {
   const store=new Store();
   const room=new ControlRoom({storage:{sql:new Sql()},waitUntil:()=>{}},{AI:ai,TEST_ARTIFACT_STORE:store,...env});
@@ -86,6 +87,8 @@ async function nested(ai,phase='decompose') {
 const events=(room,kind)=>room.snapshot().events.filter(e=>e.kind===kind);
 const validate={label:'Validate fields',task:'Validate the title and description of a new ticket'};
 const record={label:'Build ticket record',task:'Build the new ticket record with an id and timestamps'};
+const remove={label:'Remove ticket',task:'Remove a ticket from the tracker by its id'};
+const run3Owner=q=>about(q,'Ticket.ts')?'Ticket Interface':about(q,'TicketRepositoryImpl.ts')?'In-Memory Ticket Repository':'View Ticket Service';
 
 test('run3: View Ticket Service prunes Ticket.ts and the repository to their owners and corrects the split',async()=>{
   const ai=fakeAI({split:n=>n===1?[ticketTs,repoImpl,service]:[service,controller],owner:q=>
@@ -108,8 +111,8 @@ test('run3: View Ticket Service prunes Ticket.ts and the repository to their own
   const feedback=room.read('split_feedback:root.4',null);
   assert.deepEqual(feedback.accepted.map(c=>c.label),['TicketService.ts']);
   assert.deepEqual(feedback.rejected.map(({label,owner,note})=>({label,owner,note})),[
-    {label:'Ticket.ts',owner:'Ticket Interface',note:'Ticket.ts is owned by Ticket Interface; import it from that strand instead of rebuilding it.'},
-    {label:'TicketRepositoryImpl.ts',owner:'In-Memory Ticket Repository',note:'TicketRepositoryImpl.ts is owned by In-Memory Ticket Repository; import it from that strand instead of rebuilding it.'}]);
+    {label:'Ticket.ts',owner:'Ticket Interface',note:owns(ticketTs,'Ticket Interface')},
+    {label:'TicketRepositoryImpl.ts',owner:'In-Memory Ticket Repository',note:owns(repoImpl,'In-Memory Ticket Repository')}]);
   // Clef reconsiders and Qwen corrects the partition, both told where the pruned pieces live.
   await room.turn('root.4');
   const gate=ai.calls.filter(c=>c.kind==='gate')[1], second=ai.calls.filter(c=>c.kind==='split')[1];
@@ -169,14 +172,13 @@ test('a Clef error on the walk never kills a child',async()=>{
 });
 
 test('a late split from a leaf is walked the same way',async()=>{
-  const remove={label:'Remove ticket',task:'Remove a ticket from the tracker by its id'};
   const ai=fakeAI({leaf:{summary:'Needs pieces',spawn:[validate,record,remove]},
     owner:q=>about(q,'Remove ticket')?'Delete Ticket':'Create Ticket'});
   const {room}=await nested(ai,'implement');
   await room.turn('root.1.1');
   assert.deepEqual(room.children('root.1.1').map(c=>c.label),['Validate fields','Build ticket record']);
   assert.match(events(room,'scope_pruned')[0].body,/"Remove ticket" is owned by "Delete Ticket" \(root\.1\.2\)/);
-  assert.equal((await room.readKnowledge('root.1.1')).owned_elsewhere,'Remove ticket is owned by Delete Ticket; import it from that strand instead of rebuilding it.');
+  assert.equal((await room.readKnowledge('root.1.1')).owned_elsewhere,owns(remove,'Delete Ticket'));
 });
 
 test("Root's own children are never walked",async()=>{
@@ -208,4 +210,77 @@ test('the walk asks Clef even when keywords favour the asking branch',async()=>{
   assert.equal(asked,0);
   assert.equal(await routeOwner(env,question,candidates,{strict:true,keywords:false}),'root.2');
   assert.equal(asked,1);
+});
+
+test('a manager Clef sends to implementation after a pruned split keeps the owners on every later turn',async()=>{
+  const ai=fakeAI({split:()=>[ticketTs,repoImpl,service],gate:n=>n===1?0.9:0.28,owner:run3Owner,leaf:{summary:'Writing the view',wait:true}});
+  const {room}=await run3(ai);
+  await room.turn('root.4');
+  assert.ok(events(room,'split_rejected').some(e=>e.actor==='root.4'));
+  await room.turn('root.4');
+  assert.ok(events(room,'atomic').some(e=>/rejected partition/.test(e.body)));
+  assert.equal(room.read('split_feedback:root.4',null),null);
+  const notes=[owns(ticketTs,'Ticket Interface'),owns(repoImpl,'In-Memory Ticket Repository')].join(' ');
+  assert.equal((await room.readKnowledge('root.4','private')).owned_elsewhere,notes);
+  room.wake('root.4');
+  await room.turn('root.4');
+  const [first,later]=ai.calls.filter(c=>c.kind==='leaf').map(c=>c.request);
+  assert.equal(first.your_memory.private.owned_elsewhere,notes,'the leaf that takes the split over is told who owns the pruned pieces');
+  assert.equal(later.phase,'implement');
+  assert.deepEqual(later.adjacent_public_memory,[],'a later implementation turn is isolated');
+  assert.equal(later.your_memory.private.owned_elsewhere,notes,'and still finds them in its own memory');
+});
+
+test('spawned children find the owner notes from the moment they are provisioned',async()=>{
+  const ai=fakeAI({split:()=>[ticketTs,service,controller],owner:run3Owner});
+  const {room,store}=await run3(ai);
+  const seen=[],create=store.create.bind(store);
+  store.create=async(...args)=>{
+    for(const c of room.children('root.4'))seen.push({id:c.id,status:c.status,queued:room.read('queue',[]).includes(c.id),
+      note:(await room.knowledgeContext(c.id)).adjacent_public_memory.find(x=>x.owner==='root.4')?.recent_facts.owned_elsewhere});
+    return create(...args);
+  };
+  await room.turn('root.4');
+  assert.deepEqual(room.children('root.4').map(c=>c.label),['TicketService.ts','TicketController.ts']);
+  assert.deepEqual(seen,[{id:'root.4.1',status:'ready',queued:true,note:owns(ticketTs,'Ticket Interface')}],
+    'the first child can be dispatched while the second is provisioned, and already sees the note');
+});
+
+test('a corrected split that keeps a once-pruned piece does not tell it to import itself',async()=>{
+  const calls=[];
+  const ai=fakeAI({calls,split:n=>n===1?[ticketTs,repoImpl,service]:[ticketTs,service,controller],
+    owner:q=>calls.filter(c=>c.kind==='split').length>1&&about(q,'Ticket.ts')?'View Ticket Service':run3Owner(q)});
+  const {room}=await run3(ai);
+  await room.turn('root.4');
+  assert.equal(events(room,'scope_pruned').length,2);
+  await room.turn('root.4');
+  assert.deepEqual(room.children('root.4').map(c=>c.label),['Ticket.ts','TicketService.ts','TicketController.ts']);
+  assert.equal((await room.readKnowledge('root.4')).owned_elsewhere,owns(repoImpl,'In-Memory Ticket Repository'));
+});
+
+test("run3's live five-child split: the kept children learn what of each pruned piece is still theirs",async()=>{
+  const repoInterface={label:'TicketRepository.ts',task:'Write an interface defining getTickets method with status and search filters'};
+  const ai=fakeAI({split:()=>[repoInterface,repoImpl,service,controller,ticketTs],owner:run3Owner});
+  const {room}=await run3(ai);
+  room.db().exec("UPDATE agents SET status='done' WHERE id IN ('root.1','root.2')");
+  await room.turn('root.4');
+  assert.deepEqual(room.children('root.4').map(c=>c.label),['TicketRepository.ts','TicketService.ts','TicketController.ts']);
+  assert.equal(ai.calls.filter(c=>c.kind==='split').length,1,'three children remain: a viable split goes ahead');
+  const note=(await room.readKnowledge('root.4')).owned_elsewhere;
+  assert.equal(note,[owns(repoImpl,'In-Memory Ticket Repository'),owns(ticketTs,'Ticket Interface')].join(' '));
+  assert.match(note,/Any part of "Implement repository logic to retrieve tickets with status\/search filters" that In-Memory Ticket Repository does not provide is still written in this strand/);
+  for(const c of room.children('root.4'))
+    assert.equal((await room.knowledgeContext(c.id)).adjacent_public_memory.find(x=>x.owner==='root.4').recent_facts.owned_elsewhere,note);
+});
+
+test('a late split that pruning leaves below two tells the leaf where the pruned piece lives',async()=>{
+  const ai=fakeAI({leaf:{summary:'Needs pieces',spawn:[validate,remove]},owner:q=>about(q,'Remove ticket')?'Delete Ticket':'Create Ticket'});
+  const {room}=await nested(ai,'implement');
+  await room.turn('root.1.1');
+  assert.equal(room.children('root.1.1').length,0);
+  assert.ok(events(room,'split_rejected').some(e=>e.actor==='root.1.1'));
+  assert.equal((await room.readKnowledge('root.1.1','private')).owned_elsewhere,owns(remove,'Delete Ticket'));
+  await room.turn('root.1.1');
+  assert.equal(ai.calls.filter(c=>c.kind==='leaf')[1].request.your_memory.private.owned_elsewhere,owns(remove,'Delete Ticket'));
+  assert.equal((await room.readKnowledge('root.1.1','private')).owned_elsewhere,owns(remove,'Delete Ticket'),'kept once');
 });

@@ -4,7 +4,7 @@ export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, writeRunnerTest, attributeFailure } from './model.js';
-import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
+import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
@@ -20,6 +20,8 @@ const isAssumption = key => /^assum(?:ed|ption)[_ /:-]/i.test(key);
 const topicSlug = label => String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,24)||'component';
 // A linker edit is a rename, or the runtime's fix of how an import binds.
 const linkEdits = applied => { const shaped=applied.filter(e=>e.shape).length; return `${applied.length-shaped} rename(s)`+(shaped?` and ${shaped} import binding fix(es)`:''); };
+// The owner notes of pruned children, each once.
+const ownerNotes = rejected => clip([...new Set(rejected.filter(x=>x.owner).map(x=>x.note))].join(' '),1600);
 // A scoped public key must survive repeated manager hops without collisions.
 // Strip the child's existing assumption prefix so only ONE prefix remains per
 // hop. For long hierarchical keys, use a digest of the FULL untruncated key.
@@ -1474,9 +1476,10 @@ export class ControlRoom extends DurableObject {
   }
   // Prune on discovery: before a non-Root manager spawns an admitted child,
   // walk up from its parent. At each level Clef picks the direct child that
-  // owns the child's topic: this branch keeps it, another branch prunes it,
-  // and no owner up to Root kills it. A Clef error is no owner at that level
-  // and never kills. Root's own split is already checked against the goal.
+  // owns the child's topic: this branch keeps it, another branch prunes it
+  // (what that owner lacks stays here), and no owner up to Root kills it. A
+  // Clef error is no owner at that level and never kills. Root's own split is
+  // already checked against the goal.
   async pruneOnDiscovery(id, children) {
     if(id==='root'||this.env.MOCK_AI==='true'||!children.length)return {kept:children,rejected:[]};
     const levels=new Map();
@@ -1505,7 +1508,7 @@ export class ControlRoom extends DurableObject {
         this.event(id,'scope_kept',`Clef placed proposed child "${label}" in this strand ("${clip(branch.label,70)}" under ${level.id}); kept.`);
         kept.push(child);
       } else if(owner) {
-        const note=`${child.label} is owned by ${owner.label}; import it from that strand instead of rebuilding it.`;
+        const note=`${child.label} is owned by ${owner.label}; import it from that strand instead of rebuilding it. Any part of "${clip(assignedPiece(child.task),160)}" that ${owner.label} does not provide is still written in this strand.`;
         this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. Import it from that strand instead of rebuilding it.`);
         rejected.push({label:child.label,task:clip(child.task,500),owner:owner.label,note});
       } else if(error) {
@@ -1518,6 +1521,17 @@ export class ControlRoom extends DurableObject {
       }
     });
     return {kept,rejected};
+  }
+  // A leaf keeps where pruned pieces live in its own memory, which every
+  // later turn reads, rather than proposing or rebuilding them again.
+  async rememberOwners(id, rejected) {
+    if(!rejected.some(x=>x.owner))return '';
+    const prior=(await this.readKnowledge(id,'private')).owned_elsewhere||'';
+    const fresh=ownerNotes(rejected.filter(x=>!prior.includes(x.note)));
+    if(!fresh)return '';
+    const value=clip([prior,fresh].filter(Boolean).join(' '),1600);
+    await this.remember(id,[{visibility:'private',key:'owned_elsewhere',value}]);
+    return value;
   }
   // The manager DO holds the authoritative routing hops and inbox. The room
   // retains its older tables only for legacy rooms and worker-side projections.
@@ -2343,7 +2357,7 @@ export class ControlRoom extends DurableObject {
       before.turn = n.turn + 1;
       this.event(id,'working',`Turn ${before.turn}; received ${inbox.length} messages; direct children ${this.children(id).length}.`);
       let splitting = n.phase === 'decompose' && !this.manager(id);
-      let raw;
+      let raw,owners='';
       if (splitting && this.env.MOCK_AI === 'true') {
         // The deterministic integration mock exercises the old atomic/spawn
         // protocol; real rooms always use the Clef gate.
@@ -2364,7 +2378,10 @@ export class ControlRoom extends DurableObject {
           raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()});
         } else {
           // A genuine leaf can implement in the SAME turn; no extra Qwen
-          // decomposition request or artificial scheduler wave.
+          // decomposition request or artificial scheduler wave. It keeps the
+          // owners of the rejected split's pruned pieces.
+          owners=await this.rememberOwners(id,before.split_feedback?.rejected||[]);
+          if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
           this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
           n.phase='implement'; before.phase='implement';splitting=false;
           const reclassified=Boolean(before.split_feedback);
@@ -2385,6 +2402,8 @@ export class ControlRoom extends DurableObject {
         return;
       }
       const action = normalizeAction(raw);
+      // Written again with this turn's writes, which a failed commit rolls back.
+      if(owners)action.remember.push({visibility:'private',key:'owned_elsewhere',value:owners});
       // A splitter does not delegate decisions or documents. Its children are
       // explicitly contracted to write actual code for their piece, regardless
       // of whether Qwen used a vague label while proposing the split.
@@ -2588,6 +2607,7 @@ export class ControlRoom extends DurableObject {
         if((rejectedScope && action.spawn.length<2) || action.spawn.length<2 ||
            action.spawn.length>this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()) {
           this.event(id,'split_rejected','Late decomposition rejected. Preserve the assigned code-writing task for a corrected split, rather than executing an oversized leaf.');
+          await this.rememberOwners(id,walk.rejected);
           this.incrementFailures(id);
           return;
         }
@@ -2600,22 +2620,23 @@ export class ControlRoom extends DurableObject {
         action.done=false;action.wait=true;
       }
       // Spawned children find where a pruned piece lives, from this split or
-      // the rejected one it corrects, in their manager's public knowledge.
-      const owned=[...(before.split_feedback?.rejected||[]),...rejectedChildren].filter(x=>x.owner);
-      if(action.spawn.length && owned.length)
-        action.remember.push({visibility:'public',key:'owned_elsewhere',value:clip([...new Set(owned.map(x=>x.note))].join(' '),1600)});
+      // the rejected one it corrects unless this split keeps that piece, in
+      // their manager's public knowledge, written before any child can run.
+      const owned=action.spawn.length?ownerNotes([...(before.split_feedback?.rejected||[]),...rejectedChildren]
+        .filter(x=>!action.spawn.some(c=>c.label===x.label))):'';
+      if(owned)action.remember.push({visibility:'public',key:'owned_elsewhere',value:owned});
       if (!this.manager(id) && !action.spawn.length && action.exports.length) {
         this.event(id,'blocked','Implementers cannot publish child export aliases.');
         action.exports=[];
       }
-      plan = {action,inbox,nextPhase,assemblyFingerprint:observedAssembly};
+      plan = {action,inbox,nextPhase,assemblyFingerprint:observedAssembly,owned};
       // Persist the accepted action BEFORE effects. On failure, resume its cursor
       // rather than asking the model again and duplicating already-sent messages.
       this.db().exec('INSERT INTO pending_turns(agent,payload,cursor) VALUES (?,?,0)',id,JSON.stringify(plan));
       this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
       saved = { cursor:0 };
     }
-    const {action,inbox,nextPhase,assemblyFingerprint} = plan;
+    const {action,inbox,nextPhase,assemblyFingerprint,owned} = plan;
     // v7.11: every file write of this action is staged, then pushed as ONE
     // commit before any message leaves this agent. A failed push rolls the
     // staged files back and replays from the first write.
@@ -2625,6 +2646,9 @@ export class ControlRoom extends DurableObject {
         this.db().exec('UPDATE agents SET summary=? WHERE id=?',action.summary,id);
         this.event(id,'report',action.summary,n.parent || '');
       },
+      // A child runs as soon as it is provisioned: write its owner notes first
+      // (the writes below repeat them if a failed commit rolls them back).
+      ...(owned ? [async () => { await this.remember(id,[{visibility:'public',key:'owned_elsewhere',value:owned}]); }] : []),
       ...(action.spawn.length ? [async () => {
         const children=await this.spawn(id,action.spawn,`${id}:${this.node(id).turn}`);
         if(children.length === action.spawn.length) {
