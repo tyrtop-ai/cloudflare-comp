@@ -537,7 +537,7 @@ export class ControlRoom extends DurableObject {
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\')',
-      id, parent, clip(label,70), clip(task,2000), '', repo.name, repo.remote, repo.branch);
+      id, parent, clip(label,70), clip(task,parent?2000:1801+GOAL_START_REQUIREMENT.length), '', repo.name, repo.remote, repo.branch);
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
@@ -3371,7 +3371,7 @@ export class ControlRoom extends DurableObject {
     // v7.14: what the loader and the runner rely on is part of the goal, so
     // the splitters assign it like any other requirement. (The MOCK_AI
     // legacy fixtures run without it.)
-    const task=this.live()?`${clip(goal,2000-GOAL_START_REQUIREMENT.length-1)} ${GOAL_START_REQUIREMENT}`:goal;
+    const task=this.live()?`${clip(goal,1800)} ${GOAL_START_REQUIREMENT}`:goal;
     this.set('goal',this.live()?task:clip(goal,1800));
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;

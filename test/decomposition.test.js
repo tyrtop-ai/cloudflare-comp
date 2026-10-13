@@ -162,6 +162,18 @@ const splitRoom=(spawnAt)=>{
   return setup({AI:ai});
 };
 
+// /api/run accepts 1800 characters; the requirement made the runtime cut the
+// goal to fit 2000, so the splitter and the export saw less than was asked.
+test('v7.14: an 1800-character goal reaches Root whole, ahead of the start() requirement',async()=>{
+  const {room,drain}=setup({AI:{run:async()=>{throw new Error('stop here');}}});
+  const goal='Build a small issue tracker. '+'It tags tickets with labels and filters by them. '.repeat(40).slice(0,1771);
+  assert.equal(goal.length,1800);
+  await room.start(goal,1);await drain();
+  assert.equal(room.node('root').task,goal+' '+GOAL_START_REQUIREMENT);
+  assert.equal(room.get('goal'),room.node('root').task);
+  assert.equal(room.userGoal(),goal);
+});
+
 // v7.14 (author decision 3): no entry marking. An "entry":true the splitter
 // returns is dropped, no child gets a contract appended, nothing is
 // remembered, at Root or below; the compiler enforces start() instead.
