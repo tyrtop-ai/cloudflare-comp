@@ -20,14 +20,19 @@ export function parseObject(output) {
   if (output && typeof output === 'object' && !Array.isArray(output) &&
       ('summary' in output || 'spawn' in output || 'files' in output || 'done' in output)) return output;
   const raw = contentOf(output).trim();
-  const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
-  for (const part of [raw, raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''), a < b ? raw.slice(a, b + 1) : '']) {
+  // An object opening a key after the last '}' is an answer the token cap
+  // cut, so what comes before it is no answer either.
+  const a = raw.indexOf('{'), b = raw.lastIndexOf('}'), cut = /\{\s*"/.test(raw.slice(b + 1));
+  for (const part of [raw, raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''), a < b && !cut ? raw.slice(a, b + 1) : '']) {
     try { const o = JSON.parse(part); if (o && typeof o === 'object' && !Array.isArray(o)) return o; }
     catch { /* Retain raw output for event log. */ }
   }
   // Braces in prose or reasoning before the answer defeat the first-'{'-to-last-'}' slice (run7).
-  const found = jsonObjects(raw).at(-1);
-  if (found) return found;
+  // Only an object that ends the text is the answer: reasoning the token cap
+  // cut may quote the prompt's format example, and an object before a cut or
+  // before more prose is that example or an aside, so those stay parse errors.
+  const text = stripReasoning(raw), found = jsonObjects(text).at(-1);
+  if (found && /^\s*(?:```\s*)?$/.test(text.slice(found.end))) return found.value;
   return { parse_error: true, raw: clip(raw, 1500) };
 }
 // Qwen3 hybrid models reason before answering. Drop closed <think> blocks,
@@ -41,21 +46,26 @@ export function stripReasoning(text) {
   return open >= 0 ? s.slice(0, open) : s;
 }
 // Every balanced top-level {...} in the text that parses to an object, in
-// order. Braces inside JSON strings, escapes included, never count. A brace
-// that never closes is passed over when prose opened it; one that opens a
-// JSON key is a truncated answer, whose inner objects are not answers.
+// order, as {value,end}. Braces inside JSON strings, escapes included, never
+// count. A brace that never closes is passed over when prose opened it; one
+// that opens a JSON key is a truncated answer, whose inner objects are not
+// answers, and the list's truncated is then true.
 export function jsonObjects(text) {
   const s = String(text ?? ''), found = [];
+  found.truncated = false;
   for (let i = 0, depth = 0, start = 0, quoted = false, escaped = false, rescans = 0; i < s.length; i++) {
     const c = s[i];
     if (quoted) { if (escaped) escaped = false; else if (c === '\\') escaped = true; else if (c === '"') quoted = false; }
     else if (c === '"') quoted = depth > 0;
     else if (c === '{') { if (!depth++) start = i; }
     else if (c === '}' && depth && !--depth) {
-      try { const o = JSON.parse(s.slice(start, i + 1)); if (o && typeof o === 'object' && !Array.isArray(o)) found.push(o); }
+      try { const o = JSON.parse(s.slice(start, i + 1)); if (o && typeof o === 'object' && !Array.isArray(o)) found.push({ value: o, end: i + 1 }); }
       catch { /* Prose in braces is no answer. */ }
     }
-    if (i === s.length - 1 && depth && rescans++ < 8 && !/^\{\s*"/.test(s.slice(start))) { i = start; depth = 0; quoted = escaped = false; }
+    if (i === s.length - 1 && depth) {
+      if (/^\{\s*"/.test(s.slice(start))) found.truncated = true;
+      else if (rescans++ < 8) { i = start; depth = 0; quoted = escaped = false; }
+    }
   }
   return found;
 }

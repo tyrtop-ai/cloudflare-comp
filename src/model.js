@@ -300,10 +300,16 @@ export async function apiCoverage(env, {goal, api}) {
     const text=withoutThinking(output).trim();head=text.slice(0,200);
     // The last object holding an operations list is the answer: prose or
     // reasoning before it may hold braces of its own, such as { create }.
-    const answer=jsonObjects(text).filter(o=>Array.isArray(o.operations)).at(-1);
+    // An entry copied from the prompt's example names no operation wherever
+    // it is restated, and an answer the token cap cut is no answer even after
+    // a complete object: either would send the entry worker a gap named "...".
+    const found=jsonObjects(text);
+    if(found.truncated)return null;
+    const named=o=>o&&typeof o.operation==='string'&&o.operation.trim()&&!/^(?:\.{3}|…)$/.test(o.operation.trim())&&String(o.method).trim()!=='name or null';
+    const answer=found.map(o=>o.value).filter(o=>Array.isArray(o.operations)&&o.operations.some(named)).at(-1);
     if(!answer)return null;
     const seen=new Set();
-    const operations=answer.operations.filter(o=>o&&typeof o.operation==='string'&&o.operation.trim()).map(o=>({operation:o.operation.trim().slice(0,120),method:typeof o.method==='string'&&o.method.trim()?o.method.trim().slice(0,120):null}))
+    const operations=answer.operations.filter(named).map(o=>({operation:o.operation.trim().slice(0,120),method:typeof o.method==='string'&&o.method.trim()?o.method.trim().slice(0,120):null}))
       .filter(o=>!seen.has(o.operation.toLowerCase())&&seen.add(o.operation.toLowerCase())).slice(0,24);
     return operations.length?{operations}:null;
   };
@@ -329,28 +335,38 @@ export async function writeRunnerTest(env, {goal, api, operations=null, correcti
     previous_test_error:correction||undefined
   }).slice(0,12000),4096,{noThink:true});
   const text=withoutThinking(output).trim();
-  return {test:extractCode(text),head:text.slice(0,200)};
+  return {test:extractCode(text,RUNS_APP),head:text.slice(0,200)};
 }
+// What verifySource asks of glue/smoke.js first: it runs the application.
+const RUNS_APP=code=>/require\s*\(\s*['"]\.\/index(?:\.js)?['"]\s*\)/.test(code)&&/\bstart\s*\(/.test(code);
 // The code in a model's answer, wherever it put it. Run7's runner wrote
 // "Here is the test:" before a fence the token cap left open, and the whole
 // answer went to the syntax check seven times. Candidates in order: closed
 // fenced blocks (JavaScript-tagged first), the text after an opening fence
-// left unclosed, the text from the first line that starts like code, and the
-// whole text. The first that parses wins; if none does, the first non-empty
-// one goes on, so the rejection names its error.
+// left unclosed, the text from the first line that starts like code, that
+// text without the sentences that end it, and the whole text.
+// Of those that parse, the first that wanted accepts wins, else the first
+// (a snippet or a stray "Done" parses too); if none parses, the first
+// non-empty one goes on, so the rejection names its error.
 const JS_FENCE=/^(?:js|javascript|node|cjs|mjs)$/i;
 const CODE_LINE=/^[ \t]*(?:['"]use strict['"]|(?:const|let|var|function|async|import)\b|require\s*\(|\(|\/\/|\/\*)/m;
+// Sentences after a blank line, each line starting "Word " or "Note: ". A
+// test's own lines do not start that way, so a test the token cap cut keeps
+// its broken last line and is never passed off as a shorter test that parses.
+const PROSE_TAIL=/\n[ \t]*\n(?:[A-Z][\w'’]*[:,]? [^\n]*(?:\n|$)|[ \t]*\n)+$/;
 const parses=code=>['script','module'].some(sourceType=>{
   try {parseJs(code,{ecmaVersion:'latest',sourceType,allowHashBang:true,allowReturnOutsideFunction:sourceType==='script'});return true;}
   catch {return false;}
 });
-export function extractCode(text) {
+export function extractCode(text,wanted=()=>true) {
   const s=String(text??'').trim(),blocks=[...s.matchAll(/```([^\n`]*)\n([\s\S]*?)\n?```/g)];
   const last=blocks.at(-1),open=s.indexOf('```',last?last.index+last[0].length:0),line=CODE_LINE.exec(s);
-  const candidates=[...blocks.filter(b=>JS_FENCE.test(b[1].trim())),...blocks.filter(b=>!JS_FENCE.test(b[1].trim()))].map(b=>b[2])
-    .concat(open>=0?s.slice(open).replace(/^```[^\n]*\n?/,''):'',line?s.slice(line.index).split(/\n[ \t]*```/)[0]:'',s)
-    .map(c=>c.trim()).filter(Boolean);
-  return candidates.find(parses)??candidates[0]??'';
+  const code=line?s.slice(line.index).split(/\n[ \t]*```/)[0].trimEnd():'';
+  const candidates=[...new Set([...blocks.filter(b=>JS_FENCE.test(b[1].trim())),...blocks.filter(b=>!JS_FENCE.test(b[1].trim()))].map(b=>b[2])
+    .concat(open>=0?s.slice(open).replace(/^```[^\n]*\n?/,''):'',code,code.replace(PROSE_TAIL,''),s)
+    .map(c=>c.trim()).filter(Boolean))];
+  const parsing=candidates.filter(parses);
+  return parsing.find(wanted)??parsing[0]??candidates[0]??'';
 }
 
 function mockDecision(c) {

@@ -14,7 +14,7 @@ const {ControlRoom}=await import('../src/index.js');
 const {verifyBuild}=await import('../container/build-runner.mjs');
 const {snapshotHash}=await import('../src/build-verification.js');
 const {stripReasoning,jsonObjects,parseObject}=await import('../src/protocol.js');
-const {apiCoverage,writeRunnerTest,extractCode,linkComponents,attributeFailure}=await import('../src/model.js');
+const {apiCoverage,writeRunnerTest,extractCode,linkComponents,attributeFailure,decide,COVERAGE_SYSTEM}=await import('../src/model.js');
 
 class Sql {constructor(){this.db=new DatabaseSync(':memory:');}exec(s,...p){if(!p.length&&!/^\s*select/i.test(s)){this.db.exec(s);return{toArray:()=>[]};}const q=this.db.prepare(s);const rows=/^\s*select/i.test(s)?q.all(...p):(q.run(...p),[]);return{toArray:()=>rows};}}
 class Store {constructor(){this.repos=new Map();}async create(name){this.repos.set(name,new Map());return{name,remote:'https://test/'+name,branch:'main'};}async read(name,path){return this.repos.get(name)?.get(path)??null;}async write({name,path,content}){this.repos.get(name).set(path,content);return{commit:'c'.repeat(40)};}}
@@ -76,6 +76,30 @@ test('extractCode: of two fences the first that parses wins, JavaScript-tagged f
   assert.equal(extractCode('```\nimport assert from "node:assert";\nassert.ok(1);\n```'),'import assert from "node:assert";\nassert.ok(1);','a module parses too');
 });
 
+test('extractCode: sentences after the code are dropped; a test the cap cut is never shortened into one that parses',()=>{
+  const said='\n\nThis test exercises create, view, update and delete.';
+  assert.equal(extractCode(crudTest+said),crudTest);
+  assert.equal(extractCode(prose+crudTest+said+'\nNote: every call is awaited.\n'),crudTest,'prose before and after');
+  // Top-level code the cap cut keeps its broken last line, so the syntax check names the cut.
+  const flat="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\nconst app = await start();\nconst t = await app.create({ title: 'x' });\nassert.ok(t);\n\nawait app.upd";
+  assert.equal(extractCode(flat),flat);
+  assert.equal(extractCode(flat+'\n\n'),flat);
+  // A capitalised line of code is not a sentence.
+  assert.equal(extractCode('const x = 1;\n\nObject.freeze(x'),'const x = 1;\n\nObject.freeze(x');
+});
+
+test('extractCode: of the candidates that parse, the one wanted wins, so a snippet or a stray "Done" never stands in for the test',()=>{
+  const runsApp=c=>c.includes("require('./index.js')")&&c.includes('start(');
+  assert.equal(extractCode(prose+crudTest+'\n```\nDone',runsApp),crudTest,'"Done" parses, as an expression');
+  const snippet='```\n'+crudTest+'\n```\nThe key call is:\n```js\nawait app.create({ title: "x" })\n```';
+  assert.equal(extractCode(snippet,runsApp),crudTest);
+  assert.equal(extractCode(snippet),'await app.create({ title: "x" })','without a preference the JavaScript-tagged block comes first');
+  const prelude='First:\n```js\nconst assert = require("node:assert/strict");\n```\nThen:\n```js\n'+crudTest+'\n```';
+  assert.equal(extractCode(prelude,runsApp),crudTest);
+  // Nothing wanted parses: the first that parses goes on.
+  assert.equal(extractCode('```js\nconst x = 1;\n```',runsApp),'const x = 1;');
+});
+
 test('extractCode: when nothing parses the likeliest candidate goes on, so the rejection names its own error',()=>{
   // Truncated by the cap inside the code: the code, not the prose, is checked.
   const cut=crudTest.slice(0,200);
@@ -94,14 +118,26 @@ test('writeRunnerTest: reasoning ending in </think> before a fenced block, and t
   assert.ok(out.head.length===200&&!out.head.includes('</think>'));
   const open=fakeAI(['<think>let me think about { create }</think>'+prose+'```js\n'+crudTest]);
   assert.equal((await writeRunnerTest(open.env,{goal:'g',api:run7Api})).test,crudTest);
+  // The block that runs the application is the test, whatever its tag or place.
+  const two=fakeAI(['```\n'+crudTest+'\n```\nThe key call is:\n```js\nawait app.create({ title: "x" })\n```']);
+  assert.equal((await writeRunnerTest(two.env,{goal:'g',api:run7Api})).test,crudTest);
+  const done=fakeAI([prose+crudTest+'\n```\nDone']);
+  assert.equal((await writeRunnerTest(done.env,{goal:'g',api:run7Api})).test,crudTest);
   assert.equal(await writeRunnerTest({MOCK_AI:'true'},{goal:'g',api:run7Api}),null);
 });
 
 // ------------------------------------------------------------------ JSON answers
-test('parseObject: braces in prose before the answer no longer hide it; the last object that parses is the answer',()=>{
+test('parseObject: braces in prose before the answer no longer hide it; an object that ends the text is the answer',()=>{
   const answer={edits:[{file:'components/a/x.js',find:'create',replace:'createTicket'}],entry:null,issues:[]};
   assert.deepEqual(parseObject(`The store exports { createTicket } and the caller wants { create }.\n${JSON.stringify(answer)}`),answer);
-  assert.deepEqual(parseObject(`{"draft":true}\nOn reflection:\n${JSON.stringify(answer)}\nThat is { all }.`),answer);
+  assert.deepEqual(parseObject(`{"draft":true}\nOn reflection { all }:\n${JSON.stringify(answer)}\n`),answer);
+  assert.deepEqual(parseObject(`I map { create }.\n\`\`\`json\n${JSON.stringify(answer)}\n\`\`\``),answer,'a closing fence may follow');
+  assert.deepEqual(parseObject(`<think>the caller wants { create }</think>\n${JSON.stringify(answer)}`),answer);
+  // An object followed by more prose with braces is no answer, as at v7.13.3,
+  // so the linker asks again rather than reading an aside as its edits.
+  const aside=parseObject(`${JSON.stringify(answer)}\n\nExplanation: the edit {"file":"components/a/x.js","why":"the store exports createTicket"} fixes the import.`);
+  assert.equal(aside.parse_error,true);
+  assert.equal(parseObject(`{"draft":true}\nOn reflection:\n${JSON.stringify(answer)}\nThat is { all }.`).parse_error,true);
   // Braces inside strings, escaped quotes included, are not structure.
   assert.deepEqual(parseObject('Note {\n{"problem":"exports \\"{ create }\\" only }{"}'),{problem:'exports "{ create }" only }{'});
   // What already parsed parses as before.
@@ -112,8 +148,43 @@ test('parseObject: braces in prose before the answer no longer hide it; the last
   const cut=parseObject('{"summary":"x","files":[{"path":"a.js","content":"ok"},{"path":"b.js","cont');
   assert.equal(cut.parse_error,true);
   assert.equal(parseObject('no braces at all').parse_error,true);
-  assert.deepEqual(jsonObjects('{ create } {"a":1} [1] {"b":[{"c":3}]} {oops'),[{a:1},{b:[{c:3}]}]);
-  assert.deepEqual(jsonObjects('{'.repeat(5000)),[],'unclosed braces end the scan');
+  const found=jsonObjects('{ create } {"a":1} [1] {"b":[{"c":3}]} {oops');
+  assert.deepEqual(found.map(o=>o.value),[{a:1},{b:[{c:3}]}]);
+  assert.deepEqual(found.map(o=>o.end),[18,38]);
+  assert.equal(found.truncated,false);
+  assert.deepEqual([...jsonObjects('{'.repeat(5000))],[],'unclosed braces end the scan');
+  const cutAfter=jsonObjects('{"a":1} then {"b":[{"c":');
+  assert.deepEqual(cutAfter.map(o=>o.value),[{a:1}]);
+  assert.equal(cutAfter.truncated,true);
+});
+
+// The implementer's and manager's format examples, verbatim from decide's prompts.
+const implementerExample='{"summary":"implemented source","files":[{"path":"module.js","content":"full working source code"}],"done":true}';
+const managerExample='{"summary":"...","wait":true,"done":false,"spawn":[{"label":"...","task":"..."}],"exports":[{"from":"...","path":"...","as":"..."}],"remember":[{"visibility":"public|private","key":"...","value":"..."}],"ask":[{"to":"DIRECT CHILD OR NEIGHBOR","key":"...","question":"..."}],"answers":[{"to":"...","key":"...","value":"..."}],"messages":[{"to":"...","body":"..."}],"retire":["COMPLETED BUILDER ID"]}';
+test('parseObject: reasoning the cap cut, or an answer it cut, never yields the prompt\'s format example as an action',async()=>{
+  // Reasoning quotes the format, sketches code, and the cap cuts it before </think>.
+  const sketch=example=>`<think>\nOkay. The store should export { createTicket, getTicket }. The answer format is ${example}. Let me sketch:\nfunction createTicket(title) { const t = { id: next++, title }; tickets.set(t.id, t); return t; }\nfunction getTicket(id) { return tickets.get(id) `;
+  for(const example of [implementerExample,managerExample])assert.equal(parseObject(sketch(example)).parse_error,true);
+  // Reasoning, closed or not tagged at all, quotes the format; the answer after it is cut.
+  const answerCut='{"summary":"Implemented the ticket store","files":[{"path":"ticketStore.js","content":"const tickets = [];\\nfunction createTicket(t) { tickets.push(t); return t; }\\nmodule.exp';
+  assert.equal(parseObject(`<think>The answer format is ${implementerExample}. Let me write the code.</think>\n${answerCut}`).parse_error,true);
+  assert.equal(parseObject(`The answer format is ${implementerExample}. Let me write the code.\n${answerCut}`).parse_error,true);
+  // Cut before any '}' of its own: the first-'{'-to-last-'}' slice would be the example.
+  assert.equal(parseObject(`The answer format is ${implementerExample}. Let me write the code.\n{"summary":"Implemented the ticket store","files":[{"path":"ticketStore.js","content":"const tickets = [];\\nmodule.exp`).parse_error,true);
+  // decide asks again instead of publishing module.js with "full working source code".
+  for(const [phase,example] of [['implement',implementerExample],['manager',managerExample]]) {
+    const ai=fakeAI([sketch(example),sketch(example)],DEFAULT_MODEL);
+    const action=await decide(ai.env,{your_id:'root.1',phase,your_label:'Ticket store'});
+    assert.ok(ai.calls[0].system.includes(example),'the example is the prompt\'s own');
+    assert.equal(ai.calls.length,2,phase);
+    assert.match(ai.calls[1].system,/RETRY: Strictly valid short JSON/);
+    assert.equal(action.parse_error,true,phase);
+  }
+  // The real answer after reasoning that quotes the example is read in one call.
+  const real={summary:'Implemented the ticket store',files:[{path:'ticketStore.js',content:'const tickets = [];\nmodule.exports = { tickets };'}],done:true};
+  const ai=fakeAI([`<think>The answer format is ${implementerExample}. { tickets } is all.</think>\n${JSON.stringify(real)}`],DEFAULT_MODEL);
+  assert.deepEqual(await decide(ai.env,{your_id:'root.1',phase:'implement',your_label:'Ticket store'}),real);
+  assert.equal(ai.calls.length,1);
 });
 
 test('apiCoverage: a coverage answer after reasoning that mentions { create } is read; the last object with operations wins',async()=>{
@@ -129,6 +200,32 @@ test('apiCoverage: a coverage answer after reasoning that mentions { create } is
   assert.deepEqual(await apiCoverage(other.env,{goal:'g',api:run7Api}),mapping);
   const none=fakeAI(['<think>long reasoning the cap cut','{"methods":["create"]}']);
   assert.deepEqual(await apiCoverage(none.env,{goal:'g',api:run7Api}),{operations:null,head:'{"methods":["create"]}'});
+});
+
+const coverageExample='{"operations":[{"operation":"...","method":"name or null"}]}';
+test('apiCoverage: the prompt\'s example is never the mapping, before or after the answer, and an answer the cap cut is none',async()=>{
+  assert.ok(COVERAGE_SYSTEM.includes(coverageExample));
+  // The answer, then the format restated: the answer stands, no gap named "...".
+  for(const after of [`\n\nThis follows the required format ${coverageExample} exactly.`,`\nNote: the format was ${coverageExample}`]) {
+    const ai=fakeAI([JSON.stringify(mapping)+after]);
+    assert.deepEqual(await apiCoverage(ai.env,{goal:'g',api:run7Api}),mapping);
+    assert.equal(ai.calls.length,1);
+  }
+  // Untagged reasoning quotes the example, then the answer is cut: no mapping, so the gate fails open.
+  const cut=`Okay, the goal names create, view, update and delete. The required format is ${coverageExample}. Final answer:\n{"operations":[{"operation":"create a ticket","method":"create"},{"operation":"view tickets","method":`;
+  const ai=fakeAI([cut,cut]);
+  const coverage=await apiCoverage(ai.env,{goal:'g',api:run7Api});
+  assert.equal(coverage.operations,null);
+  assert.equal(ai.calls.length,2);
+  // Even a complete draft before a cut answer is not taken for it.
+  const draft=fakeAI([`Draft: ${JSON.stringify({operations:mapping.operations.slice(0,2)})}\nFinal:\n{"operations":[{"operation":"create a ticket","method":"cr`,JSON.stringify(mapping)]);
+  assert.deepEqual(await apiCoverage(draft.env,{goal:'g',api:run7Api}),mapping);
+  assert.equal(draft.calls.length,2);
+  // A copied example entry inside an answer names no operation; the rest of the answer stands.
+  const copied=fakeAI([JSON.stringify({operations:[...mapping.operations,{operation:'...',method:'name or null'}]})]);
+  assert.deepEqual(await apiCoverage(copied.env,{goal:'g',api:run7Api}),mapping);
+  const only=fakeAI([coverageExample,coverageExample]);
+  assert.equal((await apiCoverage(only.env,{goal:'g',api:run7Api})).operations,null);
 });
 
 // --------------------------------------------------------------- /no_think
