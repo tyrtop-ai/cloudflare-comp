@@ -5,7 +5,7 @@ export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
 import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
-import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
+import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
@@ -317,8 +317,11 @@ export class ControlRoom extends DurableObject {
     const describe = x => ({ id: x.id, label: x.label, responsibility: clip(x.task, 520), status: x.status,
       exposed_files: builderMode ? this.assembledSurface(x).slice(0,12).map(f=>({path:f.path,revision:f.revision})) : this.visibleManifest(x.id) });
     const isolatedWorker=n.phase==='implement' && !builderMode && !this.manager(id);
+    // v7.15: a worker reads its own contract; a splitter gets its promise as
+    // a structured field instead (turn), and keeps the bare task.
+    const worker=!this.manager(id) && !isRuntimeNode(n) && n.phase!=='decompose';
     return {
-      your_id: n.id, your_responsibility: n.task, your_label: n.label, turn: n.turn,
+      your_id: n.id, your_responsibility: worker ? this.withContract(n.task,n) : n.task, your_label: n.label, turn: n.turn,
       phase: this.manager(id) ? 'manager' : n.phase,
       parent: parent ? (isolatedWorker ? {label:'Manager'} : describe(parent)) : null,
       neighbor_owners: isolatedWorker ? [] : this.siblings(n).map(describe),
@@ -579,6 +582,8 @@ export class ControlRoom extends DurableObject {
     }
     return null;
   }
+  // A worker's task as a model reads it: the stored task plus its contract.
+  withContract(task, n) {const own=contractText(this.promisedOf(n.id));return own?`${task}\n\n${own}`:task;}
   canSplit(parentId, count=2) {
     return parentId.split('.').length <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + count <= this.settings().max_agents;
@@ -2932,6 +2937,7 @@ export class ControlRoom extends DurableObject {
           if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
           this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
           n.phase='implement'; before.phase='implement';splitting=false;
+          before.your_responsibility=this.withContract(n.task,n);
           const reclassified=Boolean(before.split_feedback);
           this.event(id,'atomic',reclassified
             ? 'Clef reviewed the rejected partition and routed this assignment to direct code implementation.'
@@ -3180,7 +3186,7 @@ export class ControlRoom extends DurableObject {
             // fails the source gate, fall back to a targeted single-file repair.
             const content=f.content!==undefined && attempt===0 ? f.content :
               await generateFile(this.inferenceEnv(),{
-                node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:current.task,
+                node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),
                 files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
                 children:this.children(id),assemblyInputs:[],
                 correction:diagnostic

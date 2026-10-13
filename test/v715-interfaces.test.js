@@ -316,6 +316,93 @@ test('v7.15: spawn records interfaces in SQLite and ownership.json, and a replay
   assert.deepEqual(old.promisedOf('root'),[]);
 });
 
+test('v7.15: a worker\'s task text lists only its own functions, with descriptions and operation tags',async()=>{
+  const ai=fakeAI({gate:n=>n===1?0.9:0.1,
+    split:()=>[{label:'Ticket list',task:'Write code that returns every ticket',functions:[{name:'getTickets',does:'gets them'}]},
+      {label:'Ticket save',task:'Write code that stores one ticket',functions:[{name:'saveTicket',does:'saves'}]}],
+    leaf:()=>({summary:'Wrote createTicket',files:[{path:'createTicket.js',intent:'creates tickets'}],done:true}),
+    file:()=>'function createTicket(title, description) { return { id: 1, title, description }; }\nmodule.exports = { createTicket };\n'});
+  const {room}=await tree(ai,run6Root.slice(0,3),{phases:{'ticket storage':'decompose','create ticket':'decompose'}});
+  const entry=room.view('root.1').your_responsibility;
+  assert.ok(entry.startsWith(run6Root[0].task+'\n\nFunctions you export, by exactly these names, as named exports or members of the exported object (not as methods of a class or instance); parameters and descriptions are hints, and you may export more: '));
+  assert.ok(entry.endsWith('start(): no arguments; returns an object with one method per goal operation, each the function that performs it, which you ask your manager for and import by its name.'),'decision 1: the carrier reads start\'s description');
+  assert.doesNotMatch(entry.slice(run6Root[0].task.length),/root\.|ticket storage|create ticket|getTickets|saveTicket|createTicket/);
+  // A splitter keeps its bare task and gets its own promise only.
+  assert.equal(room.view('root.2').your_responsibility,run6Root[1].task);
+  await room.turn('root.2');
+  const split=ai.calls.find(c=>c.kind==='split').request;
+  assert.deepEqual(split.your_promised_functions.map(f=>f.name),['getTickets','saveTicket']);
+  assert.doesNotMatch(JSON.stringify(split),/createTicket|"start"|entry module|create ticket/,'no other node\'s names or labels');
+  assert.deepEqual(room.children('root.2').map(c=>room.promisedOf(c.id)),[[{name:'getTickets',does:'returns all tickets',params:[]}],[{name:'saveTicket',does:'stores a ticket and returns it',params:['ticket']}]],'a carried item keeps its parent\'s does');
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.2.1'");
+  const list=room.view('root.2.1').your_responsibility;
+  assert.ok(list.endsWith('getTickets(): returns all tickets.'));
+  assert.doesNotMatch(list,/saveTicket|Ticket save|root\./);
+  // Clef NO: the worker implements in the same turn and reads its contract.
+  await room.turn('root.3');
+  const contract='createTicket(title, description): creates a ticket and returns it [goal operation: create a ticket].';
+  const leaf=ai.calls.find(c=>c.kind==='leaf').request;
+  assert.ok(leaf.your_responsibility.endsWith(contract));
+  assert.doesNotMatch(leaf.your_responsibility,/getTickets|saveTicket|start\(|entry module|ticket storage|root\./);
+  assert.equal(leaf.your_promised_functions,undefined);
+  const generated=ai.calls.find(c=>c.kind==='file').request;
+  assert.ok(generated.assignment.endsWith(contract),'the generateFile request carries the contract');
+  assert.equal(room.node('root.3').task,run6Root[2].task,'the stored task never changes');
+  assert.equal(room.node('root.3').status,'done');
+});
+
+test('v7.15: run5 replay: the walk strips start from a carrier below and prunes a start-only child by name',async()=>{
+  const run5Root=[
+    {label:'Data storage handler',task:'Write code that reads and writes the ticket list.',functions:[{name:'readTickets',does:'reads every ticket'},{name:'writeTickets',does:'writes every ticket',params:['tickets']}]},
+    {label:'Create ticket logic',task:'Write code that creates a ticket from a title and description.',functions:[{name:'createTicket',does:'creates a ticket and returns it',params:['title','description'],operation:'create a ticket'}]},
+    {label:'Update ticket logic',task:'Write code that updates a ticket by id.',functions:[{name:'updateTicket',does:'updates a ticket by id',params:['id','changes'],operation:'update a ticket'}]},
+    {label:'Application entry point',task:'Write the entry module that exports start().',functions:[{name:'start'}]},
+    {label:'View ticket logic',task:'Write code that lists tickets.',functions:[{name:'viewTickets',does:'lists tickets'}]},
+    {label:'Delete ticket logic',task:'Write code that deletes a ticket by id.',functions:[{name:'deleteTicket',does:'deletes a ticket by id',params:['id']}]}];
+  const ai=fakeAI({split:()=>[
+      {label:'Entry module',task:'Write code that exports createTicket() and starts the tracker',functions:[{name:'createTicket'},{name:'start'}]},
+      {label:'Entry point',task:'Write code that starts the application',functions:[{name:'start'}]},
+      {label:'Ticket input validation',task:'Write code that validates a new ticket\'s title and description',functions:[{name:'validateTicketInput'}]}],
+    owner:()=>'Create ticket logic'});
+  const {room}=await tree(ai,run5Root,{phases:{'Create ticket logic':'decompose'}});
+  await room.turn('root.2');
+  assert.deepEqual(room.children('root.2').map(c=>c.label),['Entry module','Ticket input validation']);
+  assert.deepEqual(room.promisedOf('root.2.1'),room.promisedOf('root.2'),'the carrier keeps createTicket, with its parent\'s item, and loses start');
+  assert.deepEqual(room.promisedOf('root.2.2').map(f=>f.name),['validateTicketInput']);
+  assert.deepEqual(events(room,'interfaces_owned_elsewhere').map(e=>e.body),['"Entry module" lists start, which "Application entry point" already provides; kept without it.']);
+  assert.deepEqual(events(room,'scope_pruned').map(e=>e.body),['Proposed child "Entry point" exports start, which "Application entry point" already provides; not spawned. Import them by those names.']);
+  const walked=ai.calls.filter(c=>c.kind==='owner');
+  assert.equal(walked.length,1,'only the non-carrier with names nobody holds takes the Clef walk');
+  assert.match(walked[0].question,/Ticket input validation: /);
+  assert.equal(events(room,'interfaces_repaired').length,0,'start on two pieces is the walk\'s, not a naming slip');
+  const update=room.view('root.3').your_responsibility;
+  assert.ok(update.endsWith('updateTicket(id, changes): updates a ticket by id [goal operation: update a ticket].'));
+  assert.doesNotMatch(update,/Data storage handler|readTickets|writeTickets|createTicket|start\(/);
+  assert.match((await room.readKnowledge('root.2')).owned_elsewhere,/Entry point is owned by Application entry point; import start from that strand by exactly those names and write here only what it lacks\./);
+});
+
+test('v7.15: prompts: the shared prompt still says a worker is never shown sibling ownership; the implementer prompt has the contract clause; LEAF_DEPENDENCY_RULE has no createTicket example; the splitter key is functions',async()=>{
+  const prompts=[];
+  const env={AI:{run:async(_m,args)=>{prompts.push(args.messages[0].content);return {response:JSON.stringify({summary:'s',spawn:[{label:'Ticket store',task:'Write code A'},{label:'Ticket views',task:'Write code B'}],done:true,files:[{path:'a.js',content:'export const a = 1;'}]})};}}};
+  await decide(env,{your_label:'Leaf',phase:'implement',your_responsibility:'Write logic',your_private_children:[],neighbor_owners:[]});
+  const implementer=prompts.pop();
+  assert.match(implementer,/A worker is never shown sibling ownership or the wider tree; it only asks its manager for interfaces or facts owned outside its assigned responsibility\./);
+  assert.match(implementer,/Your assignment ends with the functions you must export, by exactly those names, as named exports or members of the exported object \(not as methods of a class or instance\)\. You import collaborators owned by other strands using the relative path and export names you expect \(never as parameters\), and publish those assumptions as assumed_\* knowledge\./);
+  assert.match(implementer,/If you propose pieces, give each its functions as the splitter does; every function you must export goes to exactly one piece\./);
+  assert.match(implementer,/relative path and the export name you expect/);
+  assert.match(implementer,/never as function or constructor parameters/);
+  assert.doesNotMatch(LEAF_DEPENDENCY_RULE,/createTicket|ticketStore/);
+  assert.match(LEAF_DEPENDENCY_RULE,/import it with a relative path and the export name you expect, for example const \{ listedName \} = require\('\.\/theirModule'\)/);
+  await decompose(env,{your_id:'root.1',your_responsibility:'Write ticket storage',max_child_writers:10});
+  const splitter=prompts.pop();
+  assert.match(splitter,/"spawn":\[\{"label":"short name of what this piece does","task":"Write code that \.\.\.","functions":\[\{"name":"functionName","does":"what it does","params":\["argument"\]\}\]\},\.\.\.\]/);
+  assert.match(splitter,/give each piece "functions", the few functions \(at most 5\) that code outside that piece calls/);
+  assert.match(splitter,/your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece/);
+  assert.match(splitter,/TypeScript, interfaces or \.ts files/);
+  assert.match(splitter,/do not invent filenames/);
+  assert.doesNotMatch(splitter,/functions_owned_elsewhere|export signatures|application entry|"entry":true|start\(\)/);
+});
+
 test('v7.15: run6 replay (A): the view split\'s "Storage module" exporting only getTickets is pruned by name to "ticket storage" with no Clef owner call; the carrier of viewTickets skips the Clef walk; "Filter application logic" still goes to Clef',async()=>{
   const ai=fakeAI({gate:()=>0.77,split:()=>[
       {label:'Storage module for ticket data',task:'Write code that loads the stored tickets',functions:[{name:'getTickets',does:'returns all tickets'}]},

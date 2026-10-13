@@ -10,6 +10,19 @@ export function codeWritingTask(task) {
   // but do not create filenames/exports while splitting the implementation.
   return `${base} Deliver working source files, not prose, plans, or design documents.`;
 }
+// v7.15: a worker's contract, appended to its task where a model reads it:
+// its OWN promised functions only (author decision 2), each with the one-line
+// description its parent's split gave it (decision 1) and its operation tag.
+// Within 900 characters: params go first, then each description is cut to
+// 80; names and operation tags are never cut.
+export function contractText(own) {
+  const items=(Array.isArray(own)?own:[]).filter(f=>f&&typeof f.name==='string').slice(0,5);
+  if(!items.length)return '';
+  const head='Functions you export, by exactly these names, as named exports or members of the exported object (not as methods of a class or instance); parameters and descriptions are hints, and you may export more: ';
+  const render=(params,cut)=>head+items.map(f=>`${f.name}(${params?(f.params||[]).join(', '):f.params?.length?'…':''})${f.does?': '+(cut?String(f.does).slice(0,cut):f.does):''}${f.operation?` [goal operation: ${f.operation}]`:''}`).join('; ')+'.';
+  for(const [params,cut] of [[true,0],[false,0]]){const text=render(params,cut);if(text.length<=900)return text;}
+  return render(false,80);
+}
 // The piece a codeWritingTask() wraps, for notes that quote it.
 export const assignedPiece = task => String(task||'').replace(/ Deliver working source files, not prose, plans, or design documents\.$/,'')
   .replace(/^Write executable source code to implement the following specific piece: ([\s\S]*)\.$/,'$1');
