@@ -8,7 +8,7 @@ import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDepe
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
@@ -1667,6 +1667,9 @@ export class ControlRoom extends DurableObject {
     if(!check.report.passed) {
       const detail=check.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||check.report.log.slice(-900);
       this.event(id,'build_failed',`The linked bundle failed to load or start: ${clip(detail,1000)}`);
+      // An entry that only may export start() and does not: no module does.
+      if(detail.includes(NO_START))return report('build',[this.entryProblem(builder.id,files,surfaces,undefined,
+        `No application entry: ${entry.split('/').pop()} was started but exports no start(), and no other module exports start() to compose the application.`)]);
       return report('build',failed('load',check.report.issues.length?check.report.issues:[{path:'',detail}]));
     }
     const api=check.report.api_surface||'';
