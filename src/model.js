@@ -93,7 +93,7 @@ export async function scopeChildren(env, originalGoal, parentTask, children) {
 // Route questions through a manager's direct-child public Artifacts index.
 // Clef classifies owners; it never reads Git itself or generates an answer.
 // The runtime supplies only direct children's role and PUBLIC repository facts.
-export async function routeOwner(env, question, candidates, {strict=false}={}) {
+export async function routeOwner(env, question, candidates, {strict=false,keywords=true}={}) {
   if (!candidates.length) return null;
   if (candidates.length===1 && !strict) return candidates[0].id;
   const tokenize=s=>new Set(String(s).toLowerCase().match(/[a-z0-9]{3,}/g)||[]);
@@ -106,8 +106,9 @@ export async function routeOwner(env, question, candidates, {strict=false}={}) {
   }
   const lexical=candidates.map(c=>({id:c.id,score:[...tokenize([c.label,c.task,...c.known_topics,...c.files].join(' '))].filter(t=>terms.has(t)).length}));
   lexical.sort((a,b)=>b.score-a.score);
-  // Direct, unambiguous lookup needs no inference.
-  if (lexical[0].score>0 && (candidates.length===1 || lexical[0].score>(lexical[1]?.score||0)+1)) return lexical[0].id;
+  // Direct, unambiguous lookup needs no inference. A split-time scope walk
+  // always asks Clef: a child's task repeats its own branch's words.
+  if (keywords && lexical[0].score>0 && (candidates.length===1 || lexical[0].score>(lexical[1]?.score||0)+1)) return lexical[0].id;
   if(env.MOCK_AI==='true') {
     if(lexical[0].score>0)return lexical[0].id;
     if(strict && terms.has('schema')) {

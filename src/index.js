@@ -1466,11 +1466,58 @@ export class ControlRoom extends DurableObject {
       return this.sendBackToWorkers(id,fingerprint,await routed(link,[...outcome.issues,...link.issues]),'run');
     }
   }
-  async managerRouteOwner(id, question, candidates, strict=false) {
+  async managerRouteOwner(id, question, candidates, strict=false, keywords=true) {
     const shard=this.managerStub(id);
-    if(!shard)return routeOwner(this.inferenceEnv(),question,candidates,{strict});
+    if(!shard)return routeOwner(this.inferenceEnv(),question,candidates,{strict,keywords});
     const cfg=this.settings();
-    return shard.selectOwner({question,candidates,strict,split_model:cfg.split_model,split_threshold:cfg.split_threshold});
+    return shard.selectOwner({question,candidates,strict,keywords,split_model:cfg.split_model,split_threshold:cfg.split_threshold});
+  }
+  // Prune on discovery: before a non-Root manager spawns an admitted child,
+  // walk up from its parent. At each level Clef picks the direct child that
+  // owns the child's topic: this branch keeps it, another branch prunes it,
+  // and no owner up to Root kills it. A Clef error is no owner at that level
+  // and never kills. Root's own split is already checked against the goal.
+  async pruneOnDiscovery(id, children) {
+    if(id==='root'||this.env.MOCK_AI==='true'||!children.length)return {kept:children,rejected:[]};
+    const levels=new Map();
+    const index=level=>{if(!levels.has(level))levels.set(level,this.childIndex(level));return levels.get(level);};
+    const walked=await Promise.all(children.map(async child=>{
+      const question=`Which branch's assigned code already covers this proposed piece? ${child.label}: ${child.task}`;
+      let branch=this.node(id),error='';
+      while(branch?.parent) {
+        const level=this.node(branch.parent);
+        let owner=null,candidates=[];
+        try {
+          candidates=await index(level.id);
+          owner=await this.managerRouteOwner(level.id,question,candidates,true,false);
+        } catch(e) {error||=String(e?.message||e);}
+        if(owner===branch.id)return {branch,level};
+        const found=candidates.find(c=>c.id===owner);
+        if(found)return {owner:found};
+        branch=level;
+      }
+      return {error};
+    }));
+    const kept=[],rejected=[];
+    children.forEach((child,i)=>{
+      const {branch,level,owner,error}=walked[i],label=clip(child.label,70);
+      if(branch) {
+        this.event(id,'scope_kept',`Clef placed proposed child "${label}" in this strand ("${clip(branch.label,70)}" under ${level.id}); kept.`);
+        kept.push(child);
+      } else if(owner) {
+        const note=`${child.label} is owned by ${owner.label}; import it from that strand instead of rebuilding it.`;
+        this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. Import it from that strand instead of rebuilding it.`);
+        rejected.push({label:child.label,task:clip(child.task,500),owner:owner.label,note});
+      } else if(error) {
+        this.event(id,'scope_walk_uncertain',`No strand up to Root was shown to own "${label}", but Clef failed on the way (${clip(error,200)}); kept, since an error is no proof it is out of scope.`);
+        kept.push(child);
+      } else {
+        const note=`No strand up to Root owns ${child.label}; out of the project's scope.`;
+        this.event(id,'scope_killed',`${clip(note,300)} Not spawned.`);
+        rejected.push({label:child.label,task:clip(child.task,500),note});
+      }
+    });
+    return {kept,rejected};
   }
   // The manager DO holds the authoritative routing hops and inbox. The room
   // retains its older tables only for legacy rooms and worker-side projections.
@@ -2454,6 +2501,8 @@ export class ControlRoom extends DurableObject {
             }
             return allowed;
           });
+          const walk=await this.pruneOnDiscovery(id,action.spawn);
+          action.spawn=walk.kept;rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
         }
         // The runtime, not a model's 'done', prevents implementation before
         // decomposition. No code files, imports, or completion are accepted here.
@@ -2534,6 +2583,8 @@ export class ControlRoom extends DurableObject {
           if(!allowed)rejectedScope++;
           return allowed;
         });
+        const walk=await this.pruneOnDiscovery(id,action.spawn);
+        action.spawn=walk.kept;rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
         if((rejectedScope && action.spawn.length<2) || action.spawn.length<2 ||
            action.spawn.length>this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()) {
           this.event(id,'split_rejected','Late decomposition rejected. Preserve the assigned code-writing task for a corrected split, rather than executing an oversized leaf.');
@@ -2548,6 +2599,11 @@ export class ControlRoom extends DurableObject {
         action.files=[];action.imports=[];action.exports=[];
         action.done=false;action.wait=true;
       }
+      // Spawned children find where a pruned piece lives, from this split or
+      // the rejected one it corrects, in their manager's public knowledge.
+      const owned=[...(before.split_feedback?.rejected||[]),...rejectedChildren].filter(x=>x.owner);
+      if(action.spawn.length && owned.length)
+        action.remember.push({visibility:'public',key:'owned_elsewhere',value:clip([...new Set(owned.map(x=>x.note))].join(' '),1600)});
       if (!this.manager(id) && !action.spawn.length && action.exports.length) {
         this.event(id,'blocked','Implementers cannot publish child export aliases.');
         action.exports=[];

@@ -35,7 +35,7 @@ const response=o=>({response:JSON.stringify(o)});
 const scopedAI=(calls)=>async(_model,request)=>{
   if(request.questions) {
     if(request.questions.should_split) return {answers:{should_split:{noul:0.99}}};
-    calls.push(request);
+    if(request.questions.within_0)calls.push(request);
     return {answers:Object.fromEntries(Object.keys(request.questions).map((k,i)=>[k,{noul:i===2?0.01:0.95}]))};
   }
   return response(proposal);
@@ -73,6 +73,7 @@ test('nested decomposition rejects financial-transfer branch but retains valid t
   assert.equal(room.node('root.1').status,'waiting');
   assert.equal(store.created,4,'no repository provisioned for rejected financial branch');
   assert.equal(room.snapshot().events.filter(e=>e.kind==='scope_rejected').length,1);
+  assert.equal(room.snapshot().events.filter(e=>e.kind==='scope_kept').length,2,'the ownership walk keeps both in this strand');
 });
 
 test('when all proposed children are out of scope, do not spawn a partial hierarchy or kill parent responsibility',async()=>{

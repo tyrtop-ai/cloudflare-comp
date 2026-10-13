@@ -50,7 +50,7 @@ test('three-way split is refused in full with only two slots and never forces an
   assert.equal(room.node(target).phase,'decompose');
   assert.equal(room.node(target).status,'ready');
   assert.equal(room.allNodes().length,62);
-  assert.equal(modelCalls,4,'Clef gate and two Qwen split attempts before scope admission; no implementation');
+  assert.equal(modelCalls,7,'Clef gate, two Qwen split attempts, scope admission and one ownership walk call per child; no implementation');
   assert.ok(room.snapshot().events.some(e=>e.kind==='split_rejected' && e.actor===target));
   assert.ok(room.snapshot().events.some(e=>e.kind==='split_rejected'));
   assert.equal(room.files(target).some(f=>f.path==='piece.js'),false,'oversized work was not forced onto a leaf');
