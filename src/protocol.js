@@ -70,6 +70,25 @@ export function jsonObjects(text) {
   }
   return found;
 }
+// v7.15: a function request names what it needs and the name it expects;
+// the older {key, question} form is kept as it was. The splitter's {name,
+// does} shape, {function, description}, a bare name and a lone object are
+// requests too: a worker told to wait whose every ask was dropped never ran
+// again (slice B review). Every request, unclipped; an action keeps the first
+// MAX_REQUESTS.
+export function normalizeAsk(ask) {
+  const request = (need, name) => ({ to: 'parent', key: requestKey({need, name}), question: clip(need, 300), ...(name ? {name} : {}) });
+  return (Array.isArray(ask) ? ask : ask && typeof ask === 'object' || typeof ask === 'string' ? [ask] : []).map(q => {
+    if (typeof q === 'string') q = { need: q, name: q };
+    if (!q || typeof q !== 'object') return null;
+    const name = validName(q.name ?? q.function);
+    if (typeof q.need === 'string' && q.need.trim()) return request(q.need.trim(), name);
+    if ((q.to === undefined || typeof q.to === 'string') && validKnowledgeKey(q.key) && typeof q.question === 'string' && q.question.length > 0)
+      return { to: clip(q.to || 'parent',70), key: q.key, question: clip(q.question,900) };
+    const does = [q.does, q.description].find(x => typeof x === 'string' && x.trim())?.trim() || name;
+    return does ? request(does, name) : null;
+  }).filter(Boolean);
+}
 export function normalizeAction(raw,{maxFiles=Infinity}={}) {
   return {
     summary: clip(raw.summary || 'No progress summary.', 1100),
@@ -99,16 +118,7 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
     remember: (Array.isArray(raw.remember) ? raw.remember : [])
       .filter(n => n && ['public','private'].includes(n.visibility) && validKnowledgeKey(n.key) && typeof n.value === 'string' && n.value.length > 0)
       .map(n => ({ visibility: n.visibility, key: n.key, value: clip(n.value, 1600) })),
-    // v7.15: a function request names what it needs and the name it expects;
-    // the older {key, question} form is kept as it was.
-    ask: (Array.isArray(raw.ask) ? raw.ask : []).map(q => {
-      if (q && typeof q.need === 'string' && q.need.trim()) {
-        const name = validName(q.name), need = q.need.trim();
-        return { to: 'parent', key: requestKey({need, name}), question: clip(need, 300), ...(name ? {name} : {}) };
-      }
-      return q && (q.to === undefined || typeof q.to === 'string') && validKnowledgeKey(q.key) && typeof q.question === 'string' && q.question.length > 0 ?
-        { to: clip(q.to || 'parent',70), key: q.key, question: clip(q.question,900) } : null;
-    }).filter(Boolean).slice(0, MAX_REQUESTS),
+    ask: normalizeAsk(raw.ask).slice(0, MAX_REQUESTS),
     recall: (Array.isArray(raw.recall) ? raw.recall : [])
       .filter(r => r && ['public','private'].includes(r.visibility) && validKnowledgeKey(r.key))
       .map(r => ({ visibility:r.visibility, key:r.key })),

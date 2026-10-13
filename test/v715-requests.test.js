@@ -118,6 +118,18 @@ test('v7.15: a function request\'s topic comes from its own name and need, and o
     {to:'parent',key:'fn formats a date',question:'formats a date'},
     {to:'parent',key:'schema_definition',question:'Which schema?'}],'the older form is kept; a bad name is dropped, the need kept');
   assert.equal(action.ask.length,MAX_REQUESTS);
+  // The splitter's {name, does}, {function, description}, a bare name or
+  // need and a lone object are requests too: a worker told to wait whose
+  // every ask was dropped never ran again (slice B review).
+  assert.deepEqual(normalizeAction({ask:[{name:'getTickets',does:'returns all tickets'},{function:'formatDate',description:'formats a date'},'saveTicket','returns every ticket',{name:'x'},{},'',7,null]}).ask,[
+    {to:'parent',key:'fn getTickets',question:'returns all tickets',name:'getTickets'},
+    {to:'parent',key:'fn formatDate',question:'formats a date',name:'formatDate'},
+    {to:'parent',key:'fn saveTicket',question:'saveTicket',name:'saveTicket'},
+    {to:'parent',key:'fn returns every ticket',question:'returns every ticket'},
+    {to:'parent',key:'fn x',question:'x',name:'x'}]);
+  assert.deepEqual(normalizeAction({ask:{need:'returns all tickets',name:'getTickets'}}).ask,[{to:'parent',key:'fn getTickets',question:'returns all tickets',name:'getTickets'}]);
+  assert.deepEqual(normalizeAction({ask:'getTickets'}).ask.map(a=>a.key),['fn getTickets']);
+  assert.deepEqual(normalizeAction({ask:7}).ask,[]);
 });
 
 test('v7.15: matchFunction and ownsNeed: one question per offered function in batches of 12, the best at or above the threshold, invalid answers throw',async()=>{
@@ -476,4 +488,99 @@ test('v7.15: unplanned rooms keep v7.14 routing; planned rooms never answer a fu
     assert.equal(/normally continue using an explicit assumption rather than wait/.test(system),!planned);
     assert.equal(/the exact name your manager gave you when you asked/.test(system),planned);
   }
+});
+
+// slice B review: a worker repeating its answered ask every turn was made to
+// wait, lost its file each time and never finished.
+test('v7.15: an answer is final: asking for it again sends nothing, defers nothing and does not stop the worker finishing',async()=>{
+  const saving="const { saveTicket } = require('./ticketStore');\nfunction createTicket(title, description) { return saveTicket({ title, description }); }\nmodule.exports = { createTicket };\n";
+  const ai=fakeAI({leaf:n=>({summary:'Create',ask:[{need:'stores a ticket',name:'saveTicket'}],wait:n===1,done:n>1,files:[{path:'createTicket.js',content:saving}]})});
+  const {room}=await plannedTree(ai,storageTree),worker='root.1.1';
+  room.db().exec("UPDATE agents SET status='ready' WHERE id=?",worker);
+  await room.turn(worker);
+  assert.deepEqual([room.node(worker).status,room.files(worker).length],['waiting',0]);
+  await managerTurn(room,'root.1');
+  await room.turn(worker);
+  assert.deepEqual(ai.calls.filter(c=>c.kind==='leaf')[1].request.last_turn_notes,['createTicket.js was not written: it imported saveTicket before your manager answered. Write it with the answers, importing exactly the names they give.'],'the deferred file is named to it');
+  assert.equal(room.node(worker).status,'done');
+  assert.equal(await room.indexedContent(worker,'createTicket.js'),saving,'an answered name is not deferred');
+  assert.deepEqual(events(room,'ask_repeated').map(e=>e.body),['saveTicket already answered; not asked again.']);
+  assert.deepEqual([events(room,'route_request').length,events(room,'import_deferred').length,rows(room,'route_workers').length,room.read('failures',{})[worker]||0],[1,1,0,0]);
+  assert.deepEqual(room.read(`turn_notes:${worker}`,[]),['You asked again for saveTicket, which your manager already answered (answered_requests). An answer is final: use it and do not ask again.']);
+  // Asked as loadTickets and answered getTickets: asking for getTickets is a repeat too.
+  const loading="const { getTickets } = require('./ticketStore');\nfunction createTicket(title, description) { return { id: getTickets().length + 1, title, description }; }\nmodule.exports = { createTicket };\n";
+  const renamed=fakeAI({fnP:f=>f.signature==='getTickets()'?0.9:0.1,leaf:n=>n===1?{summary:'Create',ask:[{need:'returns every stored ticket',name:'loadTickets'}],wait:true}
+    :{summary:'Create',ask:[{need:'returns all tickets',name:'getTickets'}],done:true,files:[{path:'createTicket.js',content:loading}]}});
+  const {room:other}=await plannedTree(renamed,storageTree);
+  other.db().exec("UPDATE agents SET status='ready' WHERE id=?",worker);
+  await other.turn(worker);await managerTurn(other,'root.1');await other.turn(worker);
+  assert.deepEqual([other.node(worker).status,await other.indexedContent(worker,'createTicket.js')],['done',loading]);
+  assert.deepEqual([events(other,'route_request').length,renamed.calls.filter(c=>c.kind==='fn').length],[1,1],'one request, one Clef call');
+  assert.deepEqual(events(other,'ask_repeated').map(e=>e.body),['getTickets already answered; not asked again.']);
+});
+
+// slice B review: asks in the splitter's {name, does} shape were all dropped,
+// and the worker told to set "wait":true waited for nothing, for good.
+test('v7.15: a worker waiting for nothing runs again with a note, and a third time in a row is stuck; asks beyond 8 are named to it; Continue wakes a worker with nothing open',async()=>{
+  const tree={root:[{label:'ticket storage',fns:[fn('getTickets','returns all tickets')]},{label:'view ticket',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'],'view tickets')]},{label:'entry module',fns:[START]}]};
+  const shaped=fakeAI({leaf:()=>({summary:'Needs storage',ask:{name:'getTickets',does:'returns all tickets'},wait:true})});
+  const {room:asked}=await plannedTree(shaped,tree);
+  asked.db().exec("UPDATE agents SET status='ready' WHERE id='root.2'");
+  await asked.turn('root.2');
+  assert.deepEqual([rows(asked,'route_workers').map(r=>r.topic),asked.node('root.2').status],[['fn getTickets'],'waiting'],'the splitter\'s shape, alone, is a request');
+  const garbled=fakeAI({leaf:()=>({summary:'Needs storage',ask:[{}],wait:true})});
+  const {room}=await plannedTree(garbled,tree),worker='root.2';
+  room.db().exec("UPDATE agents SET status='ready' WHERE id=?",worker);
+  await room.turn(worker);
+  assert.deepEqual([room.node(worker).status,room.read('failures',{})[worker],rows(room,'route_workers').length],['ready',1,0]);
+  assert.ok(room.read('queue',[]).includes(worker),'queued to run again');
+  assert.deepEqual(events(room,'ask_unheard').map(e=>e.body),['Its ask was not understood; nothing was sent, so it does not wait.']);
+  await room.turn(worker);
+  assert.deepEqual(garbled.calls.filter(c=>c.kind==='leaf')[1].request.last_turn_notes,['Your ask was not understood, so nothing was sent and there is nothing to wait for. Ask in exactly this form: "ask":[{"need":"what the function does, in one line","name":"the name you expect"}] with "wait":true, or write your code and set done.']);
+  await room.turn(worker);
+  assert.deepEqual([room.node(worker).status,room.read('failures',{})[worker]],['waiting',3]);
+  assert.deepEqual(rows(room,'problems').map(p=>[p.kind,p.holder,p.source]),[['stuck','root',worker]],'its manager decides');
+  // Ten asks: eight travel, and the worker is told which two did not.
+  const many=fakeAI({leaf:()=>({summary:'Entry',ask:Array.from({length:10},(_,i)=>({need:`does step ${i}`,name:`step${i}`})),wait:true})});
+  const {room:busy}=await plannedTree(many,tree);
+  busy.db().exec("UPDATE agents SET status='ready' WHERE id='root.3'");
+  await busy.turn('root.3');
+  assert.equal(rows(busy,'route_workers').length,MAX_REQUESTS);
+  assert.deepEqual(events(busy,'ask_clipped').map(e=>e.body),['Only 8 requests travel at once; not sent: step8; step9.']);
+  assert.deepEqual(busy.read('turn_notes:root.3',[]),['Only your first 8 requests were sent. Ask for these once they are answered: step8; step9.']);
+  // Continue wakes a waiting worker with no request open, nothing unread
+  // and no source; one with source is the idle nudge's.
+  const {room:paused,drain}=await plannedTree(fakeAI({leaf:()=>({summary:'Storage',files:[{path:'store.js',content:'function getTickets() { return []; }\nmodule.exports = { getTickets };\n'}],done:true})}),tree);
+  await paused.putFile('root.2','viewTickets.js','function viewTickets(filter) { return []; }\nmodule.exports = { viewTickets };\n');
+  paused.set('status','paused');
+  const before=['root.1','root.2'].map(id=>paused.wakeGeneration(id));
+  await paused.resume(1);
+  assert.deepEqual(['root.1','root.2'].map((id,i)=>paused.wakeGeneration(id)-before[i]),[1,0]);
+  await drain();
+});
+
+// slice B review: a worker fixing a repair ticket asked for the name its fix
+// imports; the fix was dropped and the repair text was gone the next turn.
+test('v7.15: a repair turn\'s fix is not deferred for a name the ticket gives, and a deferred file is named to the worker with the repair text',async()=>{
+  const tree={root:[{label:'ticket storage',fns:[fn('getTickets','returns all tickets')]},{label:'view ticket',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'],'view tickets')]},{label:'entry module',fns:[START]}]};
+  const broken="const { getTicket } = require('./ticketStore');\nfunction viewTickets(f) { return getTicket(); }\nmodule.exports = { viewTickets };\n";
+  const fixed="const { getTickets } = require('./ticketStore');\nfunction viewTickets(f) { return getTickets(); }\nmodule.exports = { viewTickets };\n";
+  const dated="const { formatDate } = require('./dates');\nfunction showDate(d) { return formatDate(d); }\nmodule.exports = { showDate };\n";
+  const ai=fakeAI({leaf:n=>n===1?{summary:'Fix',files:[{path:'viewTickets.js',content:fixed},{path:'showDate.js',content:dated}],ask:[{need:'returns all tickets',name:'getTickets'},{need:'formats a date',name:'formatDate'}],wait:true,done:true}:{summary:'Done',done:true}});
+  const {room}=await plannedTree(ai,tree),worker='root.2';
+  await room.putFile(worker,'viewTickets.js',broken);room.db().exec("UPDATE agents SET status='done' WHERE id=?",worker);
+  const now=Date.now(),problem=crypto.randomUUID(),ticket=crypto.randomUUID();
+  room.db().exec('INSERT INTO problems(id,holder,status,kind,stage,source,source_input,signature,parties,detail,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    problem,'root','assigned','unresolved','link','root.4','x','sig',JSON.stringify([{path:'viewTickets.js',owner:worker,owner_path:'viewTickets.js',role:'subject'}]),"viewTickets.js imports getTicket from './ticketStore', which no module exports; ticket storage exports getTickets.",now,now);
+  room.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,'root',worker,JSON.stringify([problem]),'reader','Import the name the provider exports.','{}',now);
+  room.send('root',worker,'[build:repair] '+ticket);
+  await room.turn(worker);
+  assert.equal(await room.indexedContent(worker,'viewTickets.js'),fixed,'the fix is written');
+  assert.deepEqual(events(room,'import_deferred').map(e=>e.body),['showDate.js imports formatDate before the manager answered; write it after the answer.']);
+  const [note]=room.read(`turn_notes:${worker}`,[]);
+  assert.match(note,/^showDate\.js was not written: it imported formatDate before your manager answered\. Write it with the answers, importing exactly the names they give\. It was your fix for this repair request: /);
+  assert.ok(note.includes("viewTickets.js imports getTicket from './ticketStore', which no module exports; ticket storage exports getTickets."),'with the repair text');
+  await managerTurn(room,'root');
+  await room.turn(worker);
+  assert.deepEqual(ai.calls.filter(c=>c.kind==='leaf')[1].request.last_turn_notes,[note]);
 });

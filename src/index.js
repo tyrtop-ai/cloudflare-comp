@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
-import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
+import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
 import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, selfImports } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature, validName, requestNames, nameMatch } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, instructionsFor, repairText } from './problems.js';
@@ -39,9 +39,9 @@ const ROOM_SCHEMA = '7.14';
 const PROBLEM_JSON = ['parties','facts','evidence','directive','flags','trail'];
 // A failed turn the code gate caused (spec 3.2): the worker's own output was
 // rejected, not the infrastructure (an Artifacts commit, a network error).
-const CODE_GATE = /^(?:missing_code|non_code_rejected|split_rejected|code_retry)\b|Worker artifact rejected|Leaf outputs must be executable|Leaf cannot finish without|Bad (?:decomposition|action) response/;
+const CODE_GATE = /^(?:missing_code|non_code_rejected|split_rejected|code_retry|ask_unheard)\b|Worker artifact rejected|Leaf outputs must be executable|Leaf cannot finish without|Bad (?:decomposition|action) response/;
 // The events a stuck worker's manager reads as its last failures.
-const FAILURE_EVENTS = ['error','missing_code','non_code_rejected','split_rejected','code_retry'];
+const FAILURE_EVENTS = ['error','missing_code','non_code_rejected','split_rejected','code_retry','ask_unheard'];
 const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
 // One module's exports on one line, for the facts a worker hears.
 const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
@@ -333,7 +333,7 @@ export class ControlRoom extends DurableObject {
     // a structured field instead (turn), and keeps the bare task.
     const worker=!this.manager(id) && !isRuntimeNode(n) && n.phase!=='decompose';
     // v7.15 slice B: the answers to its own function requests, not a list of other pieces.
-    const answered=worker?this.read(`fn_answers:${id}`,[]).map(a=>a.text):[];
+    const answered=worker?this.read(`fn_answers:${id}`,[]).map(a=>a.text):[],notes=worker?this.read(`turn_notes:${id}`,[]):[];
     return {
       your_id: n.id, your_responsibility: worker ? this.withContract(n.task,n) : n.task, your_label: n.label, turn: n.turn,
       phase: this.manager(id) ? 'manager' : n.phase,
@@ -344,6 +344,7 @@ export class ControlRoom extends DurableObject {
       your_exposed_files: builderMode ? this.files(id).filter(f=>isBuilderGluePath(f.path)).slice(0,18) : this.visibleManifest(id),
       your_own_files: ownFiles.filter(f => !f.path.startsWith('memory/') && (!builderMode || this.env.MOCK_AI==='true' || isBuilderGluePath(f.path))).slice(0, 8).map(f => ({ path: f.path, revision: f.revision, content: f.content.slice(0, 3000) })),
       ...(answered.length ? {answered_requests: answered} : {}),
+      ...(notes.length ? {last_turn_notes: notes} : {}),
       new_messages: inbox
     };
   }
@@ -2293,7 +2294,7 @@ export class ControlRoom extends DurableObject {
     db.exec("DELETE FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",c);
     // Its new task's done is checked against the promise again, and the
     // answers to its old task's requests go (v7.15 §10.1).
-    for(const k of ['returned','split_feedback','nudged','contract_returns','fn_answers'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
+    for(const k of ['returned','split_feedback','nudged','contract_returns','fn_answers','turn_notes'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
     this.clearFailures(c);
     this.event(m,'child_retasked',clip(`${node.label} is retasked (${rule}${reason?`: ${reason}`:''})${below.length?`; its branch of ${below.length} node(s) is retired and it splits again`:''}. New task: ${task}`,900),c);
     this.wake(c);
@@ -2956,6 +2957,51 @@ export class ControlRoom extends DurableObject {
     const key=`fn_answers:${worker}`;
     this.save(key,[...this.read(key,[]).filter(a=>a.key!==answer.key),answer].slice(-8));
   }
+  // v7.15 §5.12a, a planned worker's fresh action before the code gates:
+  // every new ask waits, and a file importing a name it asks for waits for
+  // the answer. An answer is final, so an ask for an answered function sends
+  // nothing and defers nothing (slice B review: a worker repeating its ask
+  // was made to wait and lost its file every turn). A name this turn's
+  // repair ticket gives is the fix's, never deferred. A wait with no request
+  // open waits for nothing: the worker runs again, and a third such turn in
+  // a row is stuck (slice B review: asks in the splitter's shape were all
+  // dropped and the worker told to wait never ran again). The notes go to
+  // its next turn's view.
+  plannedAsks(id, raw, action, inbox) {
+    const notes=[],answers=this.read(`fn_answers:${id}`,[]),all=normalizeAsk(raw.ask);
+    const given=new Set(answers.flatMap(a=>[a.key,...(a.fn?.name?[requestKey({name:a.fn.name})]:[])])),fresh=a=>!given.has(a.key);
+    const rest=all.slice(MAX_REQUESTS).filter(fresh).map(a=>a.name||a.question);
+    if(rest.length) {
+      this.event(id,'ask_clipped',clip(`Only ${MAX_REQUESTS} requests travel at once; not sent: ${rest.join('; ')}.`,600));
+      notes.push(clip(`Only your first ${MAX_REQUESTS} requests were sent. Ask for these once they are answered: ${rest.join('; ')}.`,600));
+    }
+    const repeated=action.ask.filter(a=>!fresh(a)).map(a=>a.key.replace(/^fn /,''));
+    if(repeated.length) {
+      action.ask=action.ask.filter(fresh);
+      this.event(id,'ask_repeated',clip(`${repeated.join(', ')} already answered; not asked again.`,600));
+      notes.push(clip(`You asked again for ${repeated.join(', ')}, which your manager already answered (answered_requests). An answer is final: use it and do not ask again.`,600));
+    }
+    if(action.ask.length) {
+      action.wait=true;action.done=false;
+      const repair=inbox.filter(m=>m.repair).map(m=>m.body);
+      const known=new Set([...answers.flatMap(a=>[a.fn?.name,/^fn ([A-Za-z_$][\w$]*)$/.exec(a.key)?.[1]]),...repair.flatMap(t=>[...ids(t)])]);
+      const asked=new Set(action.ask.map(a=>a.name).filter(x=>x&&!known.has(x)));
+      action.files=action.files.filter(f=>{
+        const names=f.content===undefined?[]:[...new Set(importRefs(f.path,f.content).flatMap(r=>[...r.names,...r.members]).filter(x=>asked.has(x)))];
+        if(!names.length)return true;
+        this.event(id,'import_deferred',`${f.path} imports ${names.join(', ')} before the manager answered; write it after the answer.`);
+        notes.push(clip(`${f.path} was not written: it imported ${names.join(', ')} before your manager answered. Write it with the answers, importing exactly the names they give.${repair.length?` It was your fix for this repair request: ${repair.join(' ')}`:''}`,1500));
+        return false;
+      });
+    } else if(action.wait && !action.done && !query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',id).length) {
+      const garbled=!repeated.length&&!all.length&&(Array.isArray(raw.ask)?raw.ask.length>0:raw.ask!=null&&raw.ask!=='');
+      action.wait=false;action.unheard=true;
+      this.event(id,'ask_unheard',garbled?'Its ask was not understood; nothing was sent, so it does not wait.':'It has no request open, so it does not wait.');
+      notes.push(garbled?'Your ask was not understood, so nothing was sent and there is nothing to wait for. Ask in exactly this form: "ask":[{"need":"what the function does, in one line","name":"the name you expect"}] with "wait":true, or write your code and set done.':
+        'You have no request open, so there is nothing to wait for: write your code and set done.');
+    }
+    return notes;
+  }
   routeMessage(body) {
     const match=/^\[route:(request|answer|owned|out_of_scope|provided|unowned)\]\s*(\{[\s\S]*\})$/.exec(body);
     if(!match) return null;
@@ -3398,7 +3444,7 @@ export class ControlRoom extends DurableObject {
       // the worker's own paths; one whose problems all closed since says so.
       const inbox = this.receive(id).map(message=>{
         const match=/^\[build:repair\] ([a-f0-9-]{36})$/.exec(message.body);
-        return match?{...message,body:this.buildRepairMessage(match[1])||'An earlier repair request was withdrawn: its problems were resolved or replaced. It needs no change.'}:message;
+        return match?{...message,body:this.buildRepairMessage(match[1])||'An earlier repair request was withdrawn: its problems were resolved or replaced. It needs no change.',repair:true}:message;
       });
       const ownFiles = await this.ownFiles(id);
       // A capacity ceiling is not proof the assigned code became atomic.
@@ -3505,24 +3551,17 @@ export class ControlRoom extends DurableObject {
       // v7.15 §5.12a, before the code gates: the top has no manager to ask
       // (an atomic Root that asked with wait failed every replay of the ask
       // op); a node that splits leaves asking to its pieces; in a planned
-      // room every ask waits, and a file importing an asked name waits for
-      // the answer.
-      if(!splitting && !this.manager(id) && !isRuntimeNode(n) && action.ask.length) {
-        if(!n.parent) {
-          this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
-          action.ask=[];action.wait=false;
-        } else if(this.planned() && action.spawn.length) {
-          this.event(id,'ask_dropped','A splitting node does not ask; its pieces will.');
+      // room a worker's asks are checked against its answers and every new
+      // one waits (plannedAsks).
+      const writer=!splitting && !this.manager(id) && !isRuntimeNode(n);
+      if(writer && action.ask.length && !n.parent) {
+        this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
+        action.ask=[];action.wait=false;
+      } else if(writer && n.parent && this.planned()) {
+        if(action.spawn.length) {
+          if(action.ask.length)this.event(id,'ask_dropped','A splitting node does not ask; its pieces will.');
           action.ask=[];
-        } else if(this.planned()) {
-          action.wait=true;action.done=false;
-          const asked=new Set(action.ask.map(a=>a.name).filter(Boolean));
-          action.files=action.files.filter(f=>{
-            const names=f.content===undefined?[]:[...new Set(importRefs(f.path,f.content).flatMap(r=>[...r.names,...r.members]).filter(x=>asked.has(x)))];
-            if(names.length)this.event(id,'import_deferred',`${f.path} imports ${names.join(', ')} before the manager answered; write it after the answer.`);
-            return !names.length;
-          });
-        }
+        } else action.notes=this.plannedAsks(id,raw,action,inbox);
       }
       // Written again with this turn's writes, which a failed commit rolls back.
       if(owners)action.remember.push({visibility:'private',key:'owned_elsewhere',value:owners});
@@ -3809,6 +3848,7 @@ export class ControlRoom extends DurableObject {
         }
         this.send(id,m.to,m.body);
       }),
+      ...(action.notes ? [async () => { this.save(`turn_notes:${id}`,action.notes); }] : []),
       async () => { this.acknowledge(id,inbox); },
       async () => {
         if(this.node(id)?.status==='failed')return;
@@ -3898,7 +3938,8 @@ export class ControlRoom extends DurableObject {
       }
     }
     this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
-    this.clearFailures(id);
+    // A wait for nothing runs again, at most twice in a row (plannedAsks).
+    if(action.unheard)this.incrementFailures(id,'ask_unheard');else this.clearFailures(id);
     // A peer can send a message during this agent's inference or file push.
     // Such a message wasn't in the action's captured inbox; schedule a fresh
     // turn instead of silently leaving it behind a final wait/done state.
@@ -4147,6 +4188,10 @@ export class ControlRoom extends DurableObject {
     }
     this.save('failures',failures);
     for(const id of continued)this.clearFailures(id);
+    // A planned worker waiting with no request open, nothing unread and no
+    // source has nothing that would wake it; Continue does (slice B review).
+    if(this.planned())for(const n of this.allNodes().filter(x=>x.status==='waiting'&&x.parent&&x.phase==='implement'&&!isRuntimeNode(x)&&!this.manager(x.id)))
+      if(!productionFiles(this.files(n.id)).length&&!this.receive(n.id).length&&!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',n.id).length)this.wake(n.id);
     // Continue is an explicit request to retry a quiescent builder when all
     // code producers are done. The ordinary idle nudge intentionally excludes
     // builders, to avoid uncontrolled model inference on every source revision.
