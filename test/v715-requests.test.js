@@ -144,6 +144,126 @@ test('v7.15: matchFunction and ownsNeed: one question per offered function in ba
   await assert.rejects(ownsNeed({AI:{run:async()=>({answers:{}})}},{assigned_code:'x',need:'y'}),/no valid probability/);
 });
 
+test('v7.15: a worker\'s request is answered by its manager by name, with no model call',async()=>{
+  const ai=thrower(),{room}=await plannedTree(ai,storageTree);
+  const worker='root.1.1',seen=room.wakeGeneration(worker);
+  assert.equal(ask(room,worker,'stores a ticket','saveTicket'),true);
+  assert.equal(rows(room,'route_workers').length,1);
+  await managerTurn(room,'root.1');
+  const [reply]=replies(room,worker);
+  assert.equal(reply.kind,'provided');
+  assert.deepEqual(reply.fn,{name:'saveTicket',params:['ticket'],does:'stores a ticket and returns it',owner:'ticket storage'});
+  assert.equal(reply.value,'saveTicket(ticket): stores a ticket and returns it. It is exported by "ticket storage". Import it by exactly this name from the relative path you expect; the builder fixes the path. Do not write it yourself.');
+  assert.deepEqual([rows(room,'route_workers').length,rows(room,'route_hops').length],[0,0]);
+  assert.deepEqual(events(room,'route_provided').map(e=>[e.actor,e.body]),[['root.1','saveTicket is in "ticket storage"\'s promise; matched by name.']]);
+  assert.equal(room.node(worker).status,'ready','the worker was woken');
+  assert.equal(room.wakeGeneration(worker),seen+1);
+  assert.equal(ai.calls,0,'no model call');
+  assert.deepEqual(room.read(`fn_answers:${worker}`,[]).map(a=>[a.key,a.kind,a.fn.name]),[['fn saveTicket','provided','saveTicket']]);
+});
+
+test('v7.15: a request is answered by Clef over the manager\'s children\'s functions',async()=>{
+  const ai=fakeAI({fnP:f=>f.signature==='getTickets()'?0.9:0.1}),{room}=await plannedTree(ai,storageTree);
+  ask(room,'root.1.1','returns every stored ticket','loadTickets');
+  await managerTurn(room,'root.1');
+  assert.deepEqual(ai.calls.map(c=>c.kind),['fn'],'one Clef call and no routeOwner question');
+  assert.deepEqual(ai.calls[0].state,{request:{need:'returns every stored ticket',expected_name:'loadTickets'},functions:[
+    {slot:0,piece:'ticket storage',signature:'getTickets()',does:'returns all tickets'},
+    {slot:1,piece:'ticket storage',signature:'saveTicket(ticket)',does:'stores a ticket and returns it'}]},'the siblings\' functions with does, no other node\'s');
+  const [reply]=replies(room,'root.1.1');
+  assert.deepEqual([reply.kind,reply.fn.name,reply.fn.owner],['provided','getTickets','ticket storage']);
+  assert.equal(events(room,'route_provided')[0].body,'Clef matched loadTickets (returns every stored ticket) to "ticket storage"\'s getTickets (p=0.900).');
+  // A Clef that fails twice is no match at this level, never a stall.
+  const flaky=fakeAI(),{room:other}=await plannedTree({run:async(m,input)=>{if(input.questions?.fn_0)throw new Error('Clef down');return flaky.run(m,input);}},storageTree);
+  ask(other,'root.1.1','returns every stored ticket','loadTickets');
+  await managerTurn(other,'root.1');
+  assert.deepEqual(events(other,'route_uncertain').map(e=>e.body),['Clef failed matching loadTickets (returns every stored ticket) here (Clef down); treated as no match.']);
+  assert.deepEqual((await other.managerHops('root.1')).map(h=>h.target),['root'],'it went up');
+});
+
+test('v7.15: a request no child of the worker\'s manager promises climbs one level and is answered by the grandparent\'s child',async()=>{
+  const {room}=await plannedTree(null,viewTree,{mock:true});
+  const worker='root.2.1';
+  ask(room,worker,'returns every stored ticket','getTickets');
+  await managerTurn(room,'root.2');
+  assert.deepEqual((await room.managerHops('root.2')).map(h=>[h.target,h.name]),[['root','getTickets']],'its hop targets the parent');
+  assert.equal(room.node(worker).status,'waiting');
+  assert.ok(!room.read('queue',[]).includes(worker),'not queued');
+  assert.equal(events(room,'route_up')[0].body,'No direct child of "view ticket" promises getTickets (returns every stored ticket); asked the parent.');
+  await managerTurn(room,'root');
+  assert.equal((await room.managerHops('root')).length,0,'Root has no hop');
+  const up=replies(room,'root.2');
+  assert.deepEqual(up.map(r=>[r.kind,r.fn.name,r.fn.owner]),[['provided','getTickets','ticket storage']]);
+  assert.equal(events(room,'route_provided')[0].actor,'root');
+  assert.equal(room.node(worker).status,'waiting','not woken before its own manager answers');
+  await managerTurn(room,'root.2');
+  const [reply]=replies(room,worker);
+  assert.deepEqual([reply.kind,reply.fn.name,reply.fn.owner],['provided','getTickets','ticket storage']);
+  assert.deepEqual(room.read(`fn_answers:${worker}`,[]).map(a=>a.text),[reply.value]);
+  assert.equal(room.node(worker).status,'ready');
+  assert.deepEqual(room.view(worker).answered_requests,[reply.value]);
+  assert.equal((await room.managerHops('root.2')).length,0);
+  for(const m of room.db().exec('SELECT body FROM messages WHERE recipient=?',worker).toArray())assert.doesNotMatch(m.body,NO_ID,'no node id reaches the worker');
+});
+
+test('v7.15: a request nobody up to Root promises gets unowned, and the worker\'s manager judges the assignment',async()=>{
+  for(const [p,text] of [[0.8,'No piece of the application promises formatDate (formats a date for display). It is part of your assignment: write it in your own module.'],
+    [0.2,'No piece of the application promises formatDate (formats a date for display), and it is not part of your assignment. Do not write it: import it as formatDate from the relative path you expect and finish your code. The missing function reaches Root as a problem when the application is linked.']]) {
+    const ai=fakeAI({inside:()=>p}),{room}=await plannedTree(ai,viewTree);
+    const worker='root.2.1',seen=room.wakeGeneration(worker);
+    ask(room,worker,'formats a date for display','formatDate');
+    for(const id of ['root.2','root'])await managerTurn(room,id);
+    assert.deepEqual(replies(room,'root.2').map(r=>[r.kind,r.value]),[['unowned','No piece of the application promises formatDate (formats a date for display).']]);
+    assert.equal(events(room,'route_unowned')[0].actor,'root');
+    assert.equal(room.wakeGeneration(worker),seen,'not woken before its own manager answers');
+    await managerTurn(room,'root.2');
+    const [reply]=replies(room,worker);
+    assert.deepEqual([reply.kind,reply.value],['unowned',text]);
+    assert.deepEqual(ai.calls.filter(c=>c.kind==='inside').map(c=>c.state.assigned_code),[room.node(worker).task],'the worker\'s own assignment');
+    assert.equal(events(room,'route_scope')[0].body,`formatDate (formats a date for display): Clef p=${p.toFixed(3)}, ${p>=0.5?'inside':'outside'} "Ticket retrieval function"'s assignment.`);
+    assert.equal(rows(room,'problems').length,0,'no problem is filed');
+    assert.notEqual(room.node(worker).status,'failed','contrast out_of_scope');
+    assert.equal(events(room,'scope_rejected').length,0);
+    assert.equal(room.wakeGeneration(worker),seen+1,'woken once');
+    assert.equal(room.node(worker).status,'ready');
+  }
+});
+
+test('v7.15: a hop left without a target by a crash is re-driven by the next manager turn, and duplicates are ignored',async()=>{
+  const deep={root:[{label:'ticket storage',fns:[fn('getTickets','returns all tickets')]},{label:'view ticket',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'])]},{label:'entry module',fns:[START]}],
+    'root.2':[{label:'Ticket retrieval',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'])]},{label:'Filter application logic',fns:[fn('applyFilters','filters tickets',['tickets','filter'])]}],
+    'root.2.1':[{label:'Retrieval logic',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'])]},{label:'Ticket formatting',fns:[fn('formatTicket','formats a ticket',['ticket'])]}]};
+  const {room}=await plannedTree(null,deep,{mock:true}),worker='root.2.1.1';
+  ask(room,worker,'returns all tickets','getTickets');
+  // root.2.1 crashed in step 5, after sending the request up and before
+  // recording the target; its inbox message was never acknowledged.
+  const [message]=room.receive('root.2.1'),request=JSON.parse(message.body.slice(16));
+  await room.addManagerHop('root.2.1',{request_id:request.id,requester:worker,topic:request.key,question:request.question,name:request.name});
+  room.send('root.2.1','root.2','[route:request] '+JSON.stringify(request));
+  await managerTurn(room,'root.2.1');
+  assert.deepEqual((await room.managerHops('root.2.1')).map(h=>[h.target,h.name]),[['root.2','getTickets']],'the next turn re-drives it');
+  assert.equal(room.receive('root.2').length,2,'the parent got the request twice');
+  await managerTurn(room,'root.2');
+  assert.equal(room.receive('root').length,1,'the prior-hop check drops the copy');
+  assert.equal((await room.managerHops('root.2')).length,1);
+  for(const id of ['root','root.2','root.2.1'])await managerTurn(room,id);
+  assert.deepEqual(replies(room,worker).map(r=>[r.kind,r.fn.name]),[['provided','getTickets']]);
+  assert.equal(rows(room,'route_hops').length,0);
+  // Continue wakes a manager holding a hop without a target.
+  const {room:paused,drain}=await plannedTree(null,deep,{mock:true});
+  ask(paused,worker,'returns all tickets','getTickets');
+  const [lost]=paused.receive('root.2.1'),req=JSON.parse(lost.body.slice(16));
+  await paused.addManagerHop('root.2.1',{request_id:req.id,requester:worker,topic:req.key,question:req.question,name:req.name});
+  paused.acknowledge('root.2.1',[lost]);
+  paused.save('queue',[]);paused.set('status','paused');
+  const seen=paused.wakeGeneration('root.2.1');
+  await paused.resume(1);
+  assert.equal(paused.wakeGeneration('root.2.1'),seen+1);
+  await drain();
+  assert.ok(events(paused,'route_provided').some(e=>e.actor==='root'),'re-driven to an answer');
+  assert.equal(rows(paused,'route_hops').length,0);
+});
+
 test('v7.15: the implementer prompt asks for every function at once in the first answer and no longer says to continue on an assumption; LEAF_DEPENDENCY_RULE still says "import it with a relative path and the export name you expect"; generateFile explains route:provided',async()=>{
   const prompts=[],requests=[];
   const env={AI:{run:async(_m,args)=>{prompts.push(args.messages[0].content);requests.push(args.messages[1].content);return {response:JSON.stringify({summary:'s',done:true,files:[{path:'a.js',content:'export const a = 1;'}]})};}}};

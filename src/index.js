@@ -3,14 +3,14 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
 import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, selfImports } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature, validName, requestNames, nameMatch } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, instructionsFor, repairText } from './problems.js';
@@ -65,6 +65,10 @@ async function assumptionTopic(slug, childKey) {
   return `${full.slice(0,87)}_${hash}`; // exactly 100 characters, 48-bit suffix
 }
 const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces';
+// v7.15 slice B: what a function request asks for, as answers and events say it.
+const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
+// A function a manager's reply carries, cleaned as a promise item is.
+const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&!Array.isArray(fn)?[fn]:[]); return f&&validName(f.name)?{...f,owner:clip(fn.owner,70)}:null; };
 // Hard safety ceilings. Actual per-room limits are chosen in the dashboard.
 export const ROOM_LIMITS = Object.freeze({
   max_agents: [2, 256], max_depth: [1, 16], parallel: [1, 64], budget: [1, 500]
@@ -193,6 +197,8 @@ export class ControlRoom extends DurableObject {
     // Request IDs are opaque. A manager sees its own next hop, never a remote subtree.
     db.exec('CREATE TABLE IF NOT EXISTS route_hops (request_id TEXT NOT NULL, manager TEXT NOT NULL, requester TEXT NOT NULL, topic TEXT NOT NULL, question TEXT NOT NULL, target TEXT NOT NULL DEFAULT \'\', PRIMARY KEY(request_id,manager))');
     db.exec('CREATE TABLE IF NOT EXISTS route_workers (worker TEXT NOT NULL, topic TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, PRIMARY KEY(worker,topic))');
+    // v7.15 slice B: the name a function request expects.
+    if (!query(db, "SELECT name FROM pragma_table_info('route_hops')").some(c => c.name === 'name')) db.exec("ALTER TABLE route_hops ADD COLUMN name TEXT NOT NULL DEFAULT ''");
     // Reserve all child slots before the first asynchronous Artifacts creation.
     // One persisted batch per turn also lets interrupted spawns resume without duplicates.
     db.exec('CREATE TABLE IF NOT EXISTS spawn_batches (batch_key TEXT PRIMARY KEY, parent TEXT NOT NULL, start_index INTEGER NOT NULL, specs TEXT NOT NULL)');
@@ -326,6 +332,8 @@ export class ControlRoom extends DurableObject {
     // v7.15: a worker reads its own contract; a splitter gets its promise as
     // a structured field instead (turn), and keeps the bare task.
     const worker=!this.manager(id) && !isRuntimeNode(n) && n.phase!=='decompose';
+    // v7.15 slice B: the answers to its own function requests, not a list of other pieces.
+    const answered=worker?this.read(`fn_answers:${id}`,[]).map(a=>a.text):[];
     return {
       your_id: n.id, your_responsibility: worker ? this.withContract(n.task,n) : n.task, your_label: n.label, turn: n.turn,
       phase: this.manager(id) ? 'manager' : n.phase,
@@ -335,6 +343,7 @@ export class ControlRoom extends DurableObject {
       your_progress: n.summary,
       your_exposed_files: builderMode ? this.files(id).filter(f=>isBuilderGluePath(f.path)).slice(0,18) : this.visibleManifest(id),
       your_own_files: ownFiles.filter(f => !f.path.startsWith('memory/') && (!builderMode || this.env.MOCK_AI==='true' || isBuilderGluePath(f.path))).slice(0, 8).map(f => ({ path: f.path, revision: f.revision, content: f.content.slice(0, 3000) })),
+      ...(answered.length ? {answered_requests: answered} : {}),
       new_messages: inbox
     };
   }
@@ -572,6 +581,9 @@ export class ControlRoom extends DurableObject {
   productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)&&n.status!=='retired').length;}
   // v7.15: a node's promise, the only accessor.
   promisedOf(id) {const n=this.node(id);return n?parse(n.interfaces,[]):[];}
+  // A room whose Root promises start (live, started under v7.15) answers
+  // function requests from promises; MOCK and v7.14 rooms route as v7.14.
+  planned() {return this.promisedOf('root').length>0;}
   // The promises of one level's live direct children, minus the branch a
   // walk or request came from. Nothing else is read (author decision 2).
   offeredFunctions(level, exclude='') {
@@ -641,7 +653,7 @@ export class ControlRoom extends DurableObject {
     }
     return made;
   }
-  send(from, to, body) {
+  send(from, to, body, {wake=true}={}) {
     const sender = this.node(from);
     const resolved = to === 'parent' ? sender?.parent : to;
     const receiver = resolved ? this.node(resolved) : null;
@@ -656,7 +668,7 @@ export class ControlRoom extends DurableObject {
     }
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)', from, resolved, clip(body,1800));
     this.event(from,'message',body,resolved);
-    this.wake(resolved);
+    if(wake)this.wake(resolved);
     return true;
   }
   wake(id) {
@@ -2279,8 +2291,9 @@ export class ControlRoom extends DurableObject {
     db.exec("UPDATE agents SET task=?,status='ready' WHERE id=?",clip(task,2000),c);
     db.exec('DELETE FROM pending_turns WHERE agent=?',c);
     db.exec("DELETE FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",c);
-    // Its new task's done is checked against the promise again (v7.15 §10.1).
-    for(const k of ['returned','split_feedback','nudged','contract_returns'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
+    // Its new task's done is checked against the promise again, and the
+    // answers to its old task's requests go (v7.15 §10.1).
+    for(const k of ['returned','split_feedback','nudged','contract_returns','fn_answers'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
     this.clearFailures(c);
     this.event(m,'child_retasked',clip(`${node.label} is retasked (${rule}${reason?`: ${reason}`:''})${below.length?`; its branch of ${below.length} node(s) is retired and it splits again`:''}. New task: ${task}`,900),c);
     this.wake(c);
@@ -2524,16 +2537,16 @@ export class ControlRoom extends DurableObject {
   // retains its older tables only for legacy rooms and worker-side projections.
   async managerHop(manager, request_id) {
     const shard=this.managerStub(manager);
-    return shard?shard.hop(request_id):query(this.db(),'SELECT requester,topic,target,question FROM route_hops WHERE manager=? AND request_id=?',manager,request_id)[0]||null;
+    return shard?shard.hop(request_id):query(this.db(),'SELECT requester,topic,target,question,name FROM route_hops WHERE manager=? AND request_id=?',manager,request_id)[0]||null;
   }
   async managerHops(manager) {
     const shard=this.managerStub(manager);
-    return shard?shard.pendingHops():query(this.db(),'SELECT request_id,requester,topic,question,target FROM route_hops WHERE manager=?',manager);
+    return shard?shard.pendingHops():query(this.db(),'SELECT request_id,requester,topic,question,target,name FROM route_hops WHERE manager=?',manager);
   }
-  async addManagerHop(manager,{request_id,requester,topic,question}) {
+  async addManagerHop(manager,{request_id,requester,topic,question,name=''}) {
     const shard=this.managerStub(manager);
-    if(shard)await shard.putHop({request_id,requester,topic,question});
-    else this.db().exec("INSERT OR IGNORE INTO route_hops(request_id,manager,requester,topic,question,target) VALUES (?,?,?,?,?,'')",request_id,manager,requester,topic,question);
+    if(shard)await shard.putHop({request_id,requester,topic,question,name});
+    else this.db().exec("INSERT OR IGNORE INTO route_hops(request_id,manager,requester,topic,question,target,name) VALUES (?,?,?,?,?,'',?)",request_id,manager,requester,topic,question,name);
   }
   async targetManagerHop(manager,request_id,target) {
     const shard=this.managerStub(manager);
@@ -2911,9 +2924,20 @@ export class ControlRoom extends DurableObject {
 
   // Only a worker's DIRECT manager receives the question. Repeated requests
   // with the same topic reuse the outstanding request rather than calling Qwen.
-  askManager(worker,key,question) {
+  askManager(worker,key,question,name='') {
     const n=this.node(worker);
     if(!n?.parent || this.manager(worker) || n.status==='retired' || n.status==='failed') return false;
+    // v7.15 §5.12b: its own promised function is its own to write, with no
+    // hop (run6's create worker imported its own createTicket). The trailing
+    // check, or its last answer, wakes it.
+    const own=name&&this.planned()?this.promisedOf(worker).find(f=>f.name===name):null;
+    if(own) {
+      const value=`${signature(own)} is in your own contract: write it in your own module and export it by exactly this name.`;
+      this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',worker,'[route:unowned] '+JSON.stringify({id:crypto.randomUUID(),key,value}));
+      this.recordAnswer(worker,{key,kind:'unowned',text:value});
+      this.event(worker,'route_own',`${name} is in its own contract; answered without asking the manager.`);
+      return true;
+    }
     const existing=query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',worker,key)[0];
     if(existing) {
       this.event(worker,'route_pending',`Waiting for manager to resolve ${key}; no new request created.`);
@@ -2921,13 +2945,19 @@ export class ControlRoom extends DurableObject {
     }
     const request_id=crypto.randomUUID();
     this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?)',worker,key,request_id);
-    const ok=this.send(worker,n.parent,'[route:request] '+JSON.stringify({id:request_id,key,question}));
+    const ok=this.send(worker,n.parent,'[route:request] '+JSON.stringify({id:request_id,key,question,...(name?{name}:{})}));
     if(!ok) this.db().exec('DELETE FROM route_workers WHERE request_id=?',request_id);
     else this.event(worker,'route_request',`Requested blocking external interface ${key} from manager; independently authored files are retained.`);
     return ok;
   }
+  // The answers a worker got to its function requests, newest kept, one per
+  // topic; later turns read them as answered_requests.
+  recordAnswer(worker, answer) {
+    const key=`fn_answers:${worker}`;
+    this.save(key,[...this.read(key,[]).filter(a=>a.key!==answer.key),answer].slice(-8));
+  }
   routeMessage(body) {
-    const match=/^\[route:(request|answer|owned|out_of_scope)\]\s*(\{[\s\S]*\})$/.exec(body);
+    const match=/^\[route:(request|answer|owned|out_of_scope|provided|unowned)\]\s*(\{[\s\S]*\})$/.exec(body);
     if(!match) return null;
     const data=parse(match[2],null);
     if(!data || typeof data.id!=='string' || !/^[a-z0-9-]{8,80}$/i.test(data.id)) return null;
@@ -2999,7 +3029,7 @@ export class ControlRoom extends DurableObject {
     if(http)return {value:http,source:manager};
     return null;
   }
-  async routeReply(manager, request_id, kind, value) {
+  async routeReply(manager, request_id, kind, value, fn=null) {
     const hop=await this.managerHop(manager,request_id);
     if(!hop)return;
     if(kind==='answer' && !this.validRouteAnswer(value)) {
@@ -3012,27 +3042,37 @@ export class ControlRoom extends DurableObject {
       const own=await this.readKnowledge(manager);
       if(own[hop.topic]!==value) await this.remember(manager,[{visibility:'public',key:hop.topic,value}]);
     }
-    const upstream=this.node(hop.requester);
-    if(upstream && !this.manager(hop.requester)) {
+    const upstream=this.node(hop.requester),worker=upstream&&!this.manager(hop.requester),planned=worker&&this.planned();
+    // v7.15 §5.12e: nobody up to Root promises it; the worker's own manager
+    // asks Clef whether it is the worker's to write, before the row goes.
+    if(planned&&kind==='unowned')value=await this.needScope(manager,upstream,hop);
+    const body=v=>'[route:'+kind+'] '+JSON.stringify({id:request_id,key:hop.topic,value:clip(v,1400),...(fn?{fn}:{})});
+    if(worker) {
       this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',upstream.id,request_id);
       if(kind==='out_of_scope') {
         this.failAgent(upstream.id,`Out of scope: no owner in project hierarchy for ${hop.topic}`);
         this.save('queue',this.read('queue',[]).filter(x=>x!==upstream.id));
         this.event(upstream.id,'scope_rejected',`No owner in project hierarchy for ${hop.topic}; worker stopped.`);
         if(upstream.parent)this.wake(upstream.parent);
+      } else if(planned) {
+        // A worker's requests travel together; only its last answer wakes it.
+        if(kind==='provided'||kind==='unowned')this.recordAnswer(upstream.id,{key:hop.topic,kind,text:clip(value,600),...(fn?{fn}:{})});
+        const remaining=query(this.db(),'SELECT COUNT(*) AS n FROM route_workers WHERE worker=?',upstream.id)[0].n;
+        this.send(manager,upstream.id,body(value),{wake:!remaining});
       } else {
-        this.send(manager,upstream.id,'[route:'+kind+'] '+JSON.stringify({id:request_id,key:hop.topic,value:clip(value,1400)}));
+        this.send(manager,upstream.id,body(value));
       }
     } else {
-      this.send(manager,hop.requester,'[route:'+kind+'] '+JSON.stringify({id:request_id,key:hop.topic,value:clip(value,1400)}));
+      this.send(manager,hop.requester,body(value));
     }
     await this.removeManagerHop(manager,request_id);
   }
-  async routeRequest(manager,requester,request_id,key,question) {
+  async routeRequest(manager,requester,request_id,key,question,name='') {
     if(!this.node(manager) || !this.node(requester) || !this.manager(manager))return;
     const prior=await this.managerHop(manager,request_id);
     if(prior)return;
-    await this.addManagerHop(manager,{request_id,requester,topic:key,question});
+    await this.addManagerHop(manager,{request_id,requester,topic:key,question,name});
+    if(this.planned())return this.routeFunction(manager,{request_id,requester,topic:key,question,name});
     const direct=(await this.childIndex(manager)).filter(c=>c.id!==requester);
     const named=this.explicitInterfaceOwner(key);
     const localOwner=named===manager;
@@ -3083,9 +3123,67 @@ export class ControlRoom extends DurableObject {
       this.event(manager,'route_uncertain',`No proven next hop for ${key}; keeping request pending, not killing the worker.`);
     }
   }
+  // v7.15 §5.12c: a function request is answered from this manager's direct
+  // children's promises only: the expected name first, with no model call,
+  // else one Clef call over their functions. A miss goes one level up; at
+  // the top it is unowned. Never parked, never out_of_scope.
+  async routeFunction(m, hop) {
+    const offers=this.offeredFunctions(m,hop.requester),want=wanted(hop);
+    let hit=nameMatch(offers,requestNames(hop.name,hop.question)),how='';
+    if(hit)how=`${hit.item.name} is in "${hit.child.label}"'s promise; matched by name.`;
+    else if(offers.length) {
+      const items=offers.flatMap(o=>o.items.map(f=>({...f,owner:o.label}))),ask=()=>matchFunction(this.inferenceEnv(),{need:hop.question,name:hop.name},items);
+      let match=null;
+      try {match=await ask();}
+      catch {
+        try {match=await ask();}
+        catch(e) {this.event(m,'route_uncertain',`Clef failed matching ${want} here (${clip(e?.message||e,300)}); treated as no match.`);}
+      }
+      if(match) {
+        const {owner,...item}=items[match.index];
+        hit={child:{label:owner},item};how=`Clef matched ${want} to "${owner}"'s ${item.name} (p=${match.p.toFixed(3)}).`;
+      }
+    }
+    if(hit) {
+      const f=hit.item,fn={name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),owner:hit.child.label};
+      this.event(m,'route_provided',how);
+      await this.routeReply(m,hop.request_id,'provided',clip(`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}. It is exported by "${hit.child.label}". Import it by exactly this name from the relative path you expect; the builder fixes the path. Do not write it yourself.`,600),fn);
+      return;
+    }
+    // Sent, then targeted: a crash between the two leaves a hop with no
+    // target, which the next turn sends again; the parent drops the copy.
+    const parent=this.node(m)?.parent;
+    if(parent && parent!==hop.requester && this.send(m,parent,'[route:request] '+JSON.stringify({id:hop.request_id,key:hop.topic,question:hop.question,...(hop.name?{name:hop.name}:{})}))) {
+      await this.targetManagerHop(m,hop.request_id,parent);
+      this.event(m,'route_up',`No direct child of "${this.node(m)?.label||m}" promises ${want}; asked the parent.`);
+      return;
+    }
+    this.event(m,'route_unowned',`No piece of the application promises ${want}.`);
+    await this.routeReply(m,hop.request_id,'unowned',`No piece of the application promises ${want}.`);
+  }
+  // §5.12f: the worker writes a need inside its assignment; one outside it
+  // is imported by the name it expects and reaches Root at link time as an
+  // unresolved import. A Clef error counts as inside.
+  async needScope(m, worker, hop) {
+    const want=wanted(hop);
+    let inside=true;
+    try {
+      const p=await ownsNeed(this.inferenceEnv(),{assigned_code:worker.task,need:hop.question,name:hop.name});
+      inside=p>=0.5;
+      this.event(m,'route_scope',`${want}: Clef p=${p.toFixed(3)}, ${inside?'inside':'outside'} "${worker.label}"'s assignment.`);
+    } catch(e) {this.event(m,'route_scope',`${want}: Clef failed (${clip(e?.message||e,300)}); counted inside "${worker.label}"'s assignment.`);}
+    return inside?`No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`:
+      `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: import it as ${hop.name||'a descriptive camelCase name'} from the relative path you expect and finish your code. The missing function reaches Root as a problem when the application is linked.`;
+  }
   // Revisit only requests whose chosen child has published new public data.
   // This does not wake an implementer or spend a generative inference.
   async refreshRoutes(manager) {
+    // v7.15 §5.12g: a hop a crash left without a target is answered or sent
+    // up again; one with a target waits for its parent's reply.
+    if(this.planned()) {
+      for(const hop of (await this.managerHops(manager)).filter(h=>!h.target))await this.routeFunction(manager,hop);
+      return;
+    }
     // Unknown destinations can become answerable when children publish files.
     // Never spend Qwen (or another Clef hop) just to check the same empty repo.
     const unresolved=(await this.managerHops(manager)).filter(h=>!h.target);
@@ -3184,10 +3282,10 @@ export class ControlRoom extends DurableObject {
       const route=this.routeMessage(message.body);
       if(route) {
         if(route.kind==='request' && typeof route.key==='string' && typeof route.question==='string') {
-          await this.routeRequest(id,message.from,route.id,clip(route.key,110),clip(route.question,900));
-        } else if(route.kind==='answer'||route.kind==='owned'||route.kind==='out_of_scope') {
+          await this.routeRequest(id,message.from,route.id,clip(route.key,110),clip(route.question,900),validName(route.name));
+        } else if(['answer','owned','out_of_scope','provided','unowned'].includes(route.kind)) {
           const hop=await this.managerHop(id,route.id);
-          if(hop?.target===message.from)await this.routeReply(id,route.id,route.kind,route.value);
+          if(hop?.target===message.from)await this.routeReply(id,route.id,route.kind,route.value,replyFn(route.fn));
         }
         await this.acknowledgeManager(id,[message]);
         continue;
@@ -3643,7 +3741,7 @@ export class ControlRoom extends DurableObject {
             // fails the source gate, fall back to a targeted single-file repair.
             const content=f.content!==undefined && attempt===0 ? f.content :
               await generateFile(this.inferenceEnv(),{
-                node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),
+                node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),
                 files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
                 children:this.children(id),assemblyInputs:[],
                 correction:diagnostic
@@ -4064,6 +4162,10 @@ export class ControlRoom extends DurableObject {
       this.event(builder.id,'builder_continue','Continue restarted final wiring against the completed source snapshot.');
       this.wake(builder.id);
     }
+    // v7.15 §5.12g: a manager holding a hop a crash left without a target
+    // re-drives it on its next turn.
+    if(this.planned())for(const m of this.allNodes().filter(x=>!['retired','failed'].includes(x.status)&&this.manager(x.id)))
+      if((await this.managerHops(m.id)).some(h=>!h.target))this.wake(m.id);
     this.busy=true;this.set('status','running');this.event('system','resume',`Continue for up to ${budget} turns.`);
     this.ctx.waitUntil((async()=>{
       try {await this.flushAllPending();await this.retryBlockedBuild();await this.drive(budget);}

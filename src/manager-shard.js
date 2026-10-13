@@ -67,6 +67,8 @@ export class ManagerShard extends DurableObject {
     sql.exec('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, created_at INTEGER NOT NULL)');
     sql.exec('CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, sender TEXT NOT NULL, body TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0)');
     sql.exec("CREATE TABLE IF NOT EXISTS route_hops (request_id TEXT PRIMARY KEY, requester TEXT NOT NULL, topic TEXT NOT NULL, question TEXT NOT NULL, target TEXT NOT NULL DEFAULT '')");
+    // v7.15 slice B: the name a function request expects.
+    if(!sql.exec("SELECT name FROM pragma_table_info('route_hops')").toArray().some(c=>c.name==='name'))sql.exec("ALTER TABLE route_hops ADD COLUMN name TEXT NOT NULL DEFAULT ''");
   }
   get(key, fallback='') {
     return this.ctx.storage.sql.exec('SELECT value FROM manager_meta WHERE key=?',key).toArray()[0]?.value??fallback;
@@ -101,8 +103,8 @@ export class ManagerShard extends DurableObject {
   }
   async inbox() {return this.ctx.storage.sql.exec('SELECT id,sender,body FROM inbox WHERE acknowledged=0 ORDER BY rowid LIMIT 24').toArray();}
   async acknowledge(ids) {for(const id of ids)this.ctx.storage.sql.exec('UPDATE inbox SET acknowledged=1 WHERE id=?',id);return true;}
-  async putHop({request_id,requester,topic,question,target=''}) {
-    this.ctx.storage.sql.exec('INSERT OR IGNORE INTO route_hops(request_id,requester,topic,question,target) VALUES (?,?,?,?,?)',request_id,requester,topic,question,target);
+  async putHop({request_id,requester,topic,question,target='',name=''}) {
+    this.ctx.storage.sql.exec('INSERT OR IGNORE INTO route_hops(request_id,requester,topic,question,target,name) VALUES (?,?,?,?,?,?)',request_id,requester,topic,question,target,name);
     return this.hop(request_id);
   }
   async hop(request_id) {return this.ctx.storage.sql.exec('SELECT * FROM route_hops WHERE request_id=?',request_id).toArray()[0]||null;}
