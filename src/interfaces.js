@@ -158,9 +158,11 @@ export function repairInterfaces(spawn, promised = [], elsewhere = new Set()) {
 export const MAX_REQUESTS = 8;
 export const validName = v => typeof v === 'string' && IDENTIFIER.test(v.trim()) ? v.trim() : '';
 export const ids = text => new Set(String(text ?? '').match(/[A-Za-z_$][\w$]{2,}/g) || []);
-// The names a request can be answered by without a model call: the name it
-// expects, then camelCase identifiers in its need; never a generic name.
-export const requestNames = (name, need) => [...new Set([name, ...[...ids(need)].filter(t => /[A-Z_$]/.test(t.slice(1)))])].filter(t => t && !GENERIC_NAMES.has(t)).slice(0, 8);
+// The names a request can be answered by without a model call: only the name
+// it expects, never a generic one. A need names other functions as context
+// ("... before saveTicket stores it" was answered saveTicket, slice B review);
+// a request without a name goes to Clef.
+export const requestNames = name => name && !GENERIC_NAMES.has(name) ? [name] : [];
 // One route topic per request; a knowledge key ($ is not allowed in one).
 export const requestKey = ({need, name}) => name ? 'fn ' + name.replace(/\$/g, '_') : 'fn ' + String(need ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90).trim();
 // The one offer whose promise holds a name, trying names in order; two

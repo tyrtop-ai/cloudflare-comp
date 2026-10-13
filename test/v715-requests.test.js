@@ -97,11 +97,13 @@ const viewTree={
   'root.2':[{label:'Ticket retrieval function',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'],'view tickets')]},
     {label:'Filter application logic',fns:[fn('applyFilters','filters tickets',['tickets','filter'])]}]};
 
-test('v7.15: a function request\'s names, topic and name match come only from its own name and need',()=>{
+test('v7.15: a function request\'s topic comes from its own name and need, and only its name is matched by name',()=>{
   assert.deepEqual([...ids('load all tickets via getTickets, $store or a_b')],['load','all','tickets','via','getTickets','$store','a_b']);
-  assert.deepEqual(requestNames('loadTickets','returns what getTickets and save_ticket return; create, list or Load'),['loadTickets','getTickets','save_ticket'],'camelCase-shaped tokens only, never a generic name');
-  assert.deepEqual(requestNames('',''),[]);
-  assert.deepEqual(requestNames('get','uses getTickets'),['getTickets'],'a generic expected name is not matched by name');
+  // A need names other functions as context: "... before saveTicket stores
+  // the ticket" was answered saveTicket (slice B review).
+  assert.deepEqual(requestNames('loadTickets'),['loadTickets']);
+  assert.deepEqual(requestNames(''),[]);
+  assert.deepEqual(requestNames('get'),[],'a generic expected name is not matched by name');
   assert.equal(requestKey({need:'load all tickets',name:'loadTickets'}),'fn loadTickets');
   assert.equal(requestKey({need:' Returns EVERY stored ticket! (sorted) '}),'fn returns every stored ticket sorted');
   for(const r of [{name:'$load'},{need:'x'.repeat(300)},{need:'??'},{name:'a$b'}])assert.ok(validKnowledgeKey(requestKey(r)),JSON.stringify(r));
@@ -179,6 +181,14 @@ test('v7.15: a request is answered by Clef over the manager\'s children\'s funct
   await managerTurn(other,'root.1');
   assert.deepEqual(events(other,'route_uncertain').map(e=>e.body),['Clef failed matching loadTickets (returns every stored ticket) here (Clef down); treated as no match.']);
   assert.deepEqual((await other.managerHops('root.1')).map(h=>h.target),['root'],'it went up');
+  // Only the expected name is matched without Clef: a need that names
+  // another function as context was answered with it, "Do not write it
+  // yourself", and the validator was never written (slice B review).
+  const context=fakeAI(),{room:named}=await plannedTree(context,storageTree);
+  ask(named,'root.1.1','checks that title and description are present before saveTicket stores the ticket','validateTicketInput');
+  await managerTurn(named,'root.1');
+  assert.deepEqual([context.calls.filter(c=>c.kind==='fn').length,events(named,'route_provided').length],[1,0],'Clef judged it, and nothing matched');
+  assert.deepEqual((await named.managerHops('root.1')).map(h=>h.target),['root']);
 });
 
 test('v7.15: a request no child of the worker\'s manager promises climbs one level and is answered by the grandparent\'s child',async()=>{

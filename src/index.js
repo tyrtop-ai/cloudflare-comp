@@ -3129,7 +3129,7 @@ export class ControlRoom extends DurableObject {
   // the top it is unowned. Never parked, never out_of_scope.
   async routeFunction(m, hop) {
     const offers=this.offeredFunctions(m,hop.requester),want=wanted(hop);
-    let hit=nameMatch(offers,requestNames(hop.name,hop.question)),how='';
+    let hit=nameMatch(offers,requestNames(hop.name)),how='';
     if(hit)how=`${hit.item.name} is in "${hit.child.label}"'s promise; matched by name.`;
     else if(offers.length) {
       const items=offers.flatMap(o=>o.items.map(f=>({...f,owner:o.label}))),ask=()=>matchFunction(this.inferenceEnv(),{need:hop.question,name:hop.name},items);
