@@ -160,9 +160,10 @@ test('D8: a worker the code gate keeps rejecting for TypeScript or JSX is retask
   assert.equal(d.task,`Write the root.1.2 module. ${P.PLAIN_JS_CLAUSE}`);
   assert.equal(P.validateDecision(d,stuck('x'),ctx),null);
   assert.equal(P.modelTrigger(stuck('x'),d,ctx),null,'D8 needs no model');
-  // run3's React worker: a JSX parse error, or the react package.
+  // run3's React worker: a JSX parse error, or the react package; its Express and pg imports.
   for(const detail of ['error: Operation 2/5 failed: Worker artifact rejected: TicketForm.js: does not parse as JavaScript (Unexpected token at 12:4). Line 12: "    <form onSubmit={handleSubmit}>"',
-    "error: Worker artifact rejected: TicketForm.js: external package 'react' is not permitted in a leaf"])
+    "error: Worker artifact rejected: TicketForm.js: external package 'react' is not permitted in a leaf",
+    "code_retry: Leaf source rejected; using a targeted code-generation correction: Worker artifact rejected: ticketRoutes.js: external package 'express' is not permitted in a leaf"])
     assert.equal(P.deterministicDecision(stuck(detail),ctx).rule,'D8',detail);
   // Once only, and not for another failure: the model's (M5); by default the branch cannot finish here.
   const again=P.deterministicDecision(stuck('non_code_rejected: Form.tsx'),{...ctx,plainJsDone:id=>id==='root.1.2'});

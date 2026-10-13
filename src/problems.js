@@ -21,9 +21,10 @@ export const MAX_PROBLEMS_PER_REPORT=12;
 export const MAX_PROBLEMS_PER_CALL=12;
 export const MAX_HOPS=depth=>2*depth+2;     // decisions on one problem before it is closed exhausted
 export const PLAIN_JS_CLAUSE='Write plain JavaScript (.js) with Node built-ins only: no TypeScript, JSX, React or packages.';
-// A worker the code gate rejects for this (run3's React "TicketForm") is
-// retasked once with PLAIN_JS_CLAUSE, without the model (D8).
-export const PLAIN_JS=/non_code_rejected|Leaf outputs must be executable|\.(?:tsx?|jsx)\b|\bJSX\b|\bReact\b|TypeScript|Line \d+: "\s*<[A-Za-z]/i;
+// A worker the code gate rejects for this (run3's React "TicketForm", its
+// Express and pg imports) is retasked once with PLAIN_JS_CLAUSE, without the
+// model (D8).
+export const PLAIN_JS=/non_code_rejected|Leaf outputs must be executable|\.(?:tsx?|jsx)\b|\bJSX\b|\bReact\b|TypeScript|Line \d+: "\s*<[A-Za-z]|external package '/i;
 export const COMPILER_TASK='Run the linked application: choose the entry, generate the runtime loader and package, load and start it in the Container, and have the runner test it. Report failures to the manager; never edit code.';
 
 export const KINDS=['unresolved','mismatch','binding','entry','load','run','stuck'];
