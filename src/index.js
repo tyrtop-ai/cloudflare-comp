@@ -1632,8 +1632,10 @@ export class ControlRoom extends DurableObject {
         // first time for this source the builder is queued once more, a
         // counted turn with three more drafts; after that it waits for
         // Continue, as before, however often Continue fails the same way.
+        // That turn relinks from the workers' source, so like Continue it
+        // starts with a fresh relink budget and no stale diagnostic.
         if(this.read('runner_retry',null)?.fingerprint!==fingerprint) {
-          this.save('runner_retry',{fingerprint,ts:Date.now()});
+          this.save('runner_retry',{fingerprint,ts:Date.now()});this.save('link_state',null);
           this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
           this.save('queue',addLast(this.read('queue',[]),id));
           this.event(id,'runner_retry',`The runner could not produce a valid test in three attempts; the builder runs once more with three more before it waits for Continue. Last problem: ${clip(outcome.detail,700)}`);

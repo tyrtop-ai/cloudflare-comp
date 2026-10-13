@@ -261,11 +261,11 @@ const entry="const { createTicket, getTickets, updateTicket, deleteTicket } = re
 const goal='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
 const sentence='I will now write the test that checks every operation through the app.';
 
-function room({coverage=()=>mapping,runner}) {
-  const calls={coverage:[],runner:[]},pending=[];
+function room({coverage=()=>mapping,runner,link=()=>({edits:[],entry:null,issues:[]})}) {
+  const calls={coverage:[],runner:[],link:[]},pending=[];
   const AI={run:async(_model,{messages})=>{
     const system=messages[0].content,content=messages[1].content;
-    if(system.startsWith('You are a LINKER'))return {response:'{"edits":[],"entry":null,"issues":[]}'};
+    if(system.startsWith('You are a LINKER')){calls.link.push(JSON.parse(content));return {response:JSON.stringify(link(calls.link.at(-1),calls.link.length))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push(content);const a=coverage(calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(system.startsWith('You are the RUNNER')){calls.runner.push(content);return {response:runner(calls.runner.length)};}
     throw new Error('unexpected model request: '+system.slice(0,80));
@@ -276,12 +276,12 @@ function room({coverage=()=>mapping,runner}) {
   r.set('room_id','run7-test');
   return {room:r,calls,builds,pending};
 }
-async function workers(r) {
+async function workers(r,app=entry) {
   await r.provision('root',null,'Root objective',goal);
   r.set('goal',goal);
   await r.spawn('root',[{label:'Ticket store',task:'Write ticketStore.js'},{label:'Application entry',task:'Write app.js'}]);
   r.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
-  for(const [id,file,content] of [['root.1','ticketStore.js',store],['root.2','app.js',entry]]){r.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);await r.putFile(id,file,content);}
+  for(const [id,file,content] of [['root.1','ticketStore.js',store],['root.2','app.js',app]]){r.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);await r.putFile(id,file,content);}
   r.db().exec("UPDATE agents SET status='done' WHERE id IN ('root.1','root.2')");
   r.set('status','paused');
 }
@@ -377,4 +377,26 @@ test('room: a revised source gets its own retry; the record is per fingerprint',
   assert.equal(calls.runner.length,12,tail(r));
   assert.equal(events(r,'runner_retry').length,2);
   assert.equal(events(r,'runner_failed').length,2);
+});
+
+test('room: the retry turn starts with a fresh relink budget and no stale diagnostic, as Continue does',async()=>{
+  // The entry imports addTicket; the store exports createTicket. The linker
+  // needs both relinks in the first turn (two wrong renames, then the right
+  // one) and gets one wrong answer again in the retry turn.
+  const misnamed=entry.replace('{ createTicket,','{ addTicket,').replace('create: createTicket','create: addTicket');
+  const rename=(user,to)=>{const app=user.your_files.find(f=>f.path.endsWith('/app.js'));return {edits:[{file:app.path,find:app.content.match(/\{ (\w+), getTickets/)[1],replace:to}],entry:app.path,issues:[]};};
+  const {room:r,calls}=room({link:(user,n)=>rename(user,n===3||n>=5?'createTicket':'makeTicket'),runner:n=>n<=3?`${sentence} (draft ${n})`:crudTest});
+  await workers(r,misnamed);
+  const builder=await r.scheduleAssembly('root');
+  await r.drive(20);
+  assert.equal(events(r,'runner_retry').length,1);
+  assert.equal(calls.link.length,5,tail(r));
+  assert.equal(calls.link[3].previous_attempt_error,undefined,'the retry turn\'s first link hears nothing from the turn before');
+  assert.match(calls.link[4].previous_attempt_error,/makeTicket/);
+  assert.equal(events(r,'link_retry').length,3,'two relinks in the first turn, one in the retry turn');
+  assert.equal(events(r,'sent_to_workers').length,0,tail(r));
+  assert.equal(r.read('build_failure:root',null),null);
+  assert.equal(r.node(builder.id).status,'done',tail(r));
+  assert.equal(calls.runner.length,4);
+  assert.ok(r.read('run_passed:root',null));
 });
