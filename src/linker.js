@@ -702,6 +702,29 @@ export function tokenNames(text) {return knownNamesFrom([text]);}
 // imported name { a } to { b } but not the file's uses of a is applied as the
 // alias { b: a } when its find text occurs once and the import still names
 // the same module, which exports b and not a.
+// Where applyEdits replaces an edit's find text: every occurrence that is
+// whole tokens. A bare path ("../statusFilter") lies inside a string token;
+// when it is the whole value of module specifiers, and of no other string,
+// the edit means those specifiers, so find widens to their quotes (quote).
+// {find, hits: offsets, quote}; no hits when nothing would be replaced.
+export function editHits(content, find, list=null) {
+  const current=String(content);
+  if(!list)try {list=tokens(current,parseSource(current).sourceType);} catch {return {find,hits:[],quote:''};}
+  const starts=new Set(list.map(t=>t.start)),ends=new Set(list.map(t=>t.end));
+  const hitsOf=f=>{
+    const hits=[];
+    for(let at=current.indexOf(f);f&&at>=0;at=current.indexOf(f,at+1))
+      if(starts.has(at)&&ends.has(at+f.length)&&(!hits.length||at>=hits.at(-1)+f.length))hits.push(at);
+    return hits;
+  };
+  let hits=hitsOf(find),quote='';
+  if(!hits.length) {
+    const lits=list.flatMap((t,i)=>t.type.label==='string'&&current.slice(t.start+1,t.end-1)===find?[i]:[]);
+    const q=lits.length?current[list[lits[0]].start]:'';
+    if(lits.length&&lits.every(i=>specifierPosition(list,i)&&current[list[i].start]===q)){quote=q;find=q+find+q;hits=hitsOf(find);}
+  }
+  return {find,hits,quote};
+}
 export function applyEdits(content, edits, {knownNames=null,original=null,check=null,done=[],shapes=null}={}) {
   let current=String(content);
   const applied=[],rejected=[];
@@ -715,23 +738,11 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
     }
     let list;
     try {list=tokens(current,parseSource(current).sourceType);} catch(e) {rejected.push({edit,reason:'file cannot be tokenized: '+e.message});continue;}
-    const starts=new Set(list.map(t=>t.start)),ends=new Set(list.map(t=>t.end));
-    const hitsOf=f=>{
-      const hits=[];
-      for(let at=current.indexOf(f);at>=0;at=current.indexOf(f,at+1))
-        if(starts.has(at)&&ends.has(at+f.length)&&(!hits.length||at>=hits.at(-1)+f.length))hits.push(at);
-      return hits;
-    };
-    let hits=hitsOf(find);
-    // A bare path ("../statusFilter") lies inside a string token. When it is
-    // the whole value of module specifiers, and of no other string, the edit
-    // means those specifiers: widen find and replace to their quotes. A quoted
-    // find replaced by a bare relative path means the same literal.
-    if(!hits.length) {
-      const lits=list.flatMap((t,i)=>t.type.label==='string'&&current.slice(t.start+1,t.end-1)===find?[i]:[]);
-      const q=lits.length?current[list[lits[0]].start]:'';
-      if(lits.length&&lits.every(i=>specifierPosition(list,i)&&current[list[i].start]===q)){find=q+find+q;if(!quotedString.test(replace))replace=q+replace+q;hits=hitsOf(find);}
-    } else if(quotedString.test(find)&&/^\.{1,2}\/[^'"`\s]*$/.test(replace))replace=find[0]+replace+find[0];
+    let hits,quote;
+    ({find,hits,quote}=editHits(current,find,list));
+    // A quoted find replaced by a bare relative path means the same literal.
+    if(quote){if(!quotedString.test(replace))replace=quote+replace+quote;}
+    else if(hits.length&&quotedString.test(find)&&/^\.{1,2}\/[^'"`\s]*$/.test(replace))replace=find[0]+replace+find[0];
     if(find===replace)continue;
     if(!hits.length){rejected.push({edit,reason:'find text does not match whole tokens'});continue;}
     const splice=r=>{let out='',last=0;for(const at of hits){out+=current.slice(last,at)+r;last=at+find.length;}return out+current.slice(last);};
@@ -1119,9 +1130,15 @@ export function likelyTargets(path, content, specifier, surfaces) {
 // one when specifiers is null), the lines that use what an import binds or an
 // instance made from it, and any line an error names, each with a line of
 // context, as separate hunks. A file the hunks cover whole is one hunk, its text.
-export function importExcerpt(path, content, {specifiers=null, lines=[]}={}) {
+export function importExcerpt(path, content, options={}) {
+  const text=String(content??''),all=text.split('\n'),ranges=excerptRanges(path,text,options);
+  return ranges?ranges.map(([from,to])=>all.slice(from-1,to).join('\n')):[text];
+}
+// The lines of an excerpt, as [from, to] ranges (1-based, inclusive); null
+// when the file does not parse (its excerpt is the whole text).
+export function excerptRanges(path, content, {specifiers=null, lines=[]}={}) {
   const text=String(content??''),all=text.split('\n'),keep=new Set(),bound=new Set();
-  let ast;try {ast=parseSource(text).ast;} catch {return [text];}
+  let ast;try {ast=parseSource(text).ast;} catch {return null;}
   const span=(node,pad)=>{for(let l=node.loc.start.line-pad;l<=node.loc.end.line+pad;l++)if(l>=1&&l<=all.length)keep.add(l);};
   const chosen=lit=>typeof lit?.value==='string'&&lit.value.startsWith('.')&&(!specifiers||specifiers.includes(lit.value));
   const root=n=>{while(n?.type==='MemberExpression')n=n.object;return n;};
@@ -1139,14 +1156,12 @@ export function importExcerpt(path, content, {specifiers=null, lines=[]}={}) {
   }
   walk(ast,(node,parent)=>{if(node.type==='Identifier'&&bound.has(node.name)&&!notReference(node,parent))span(node,1);});
   for(const l of lines)for(let x=l-2;x<=l+2;x++)if(x>=1&&x<=all.length)keep.add(x);
-  const hunks=[];let from=null,to=null;
+  const ranges=[];
   for(const l of [...keep].sort((a,b)=>a-b)) {
-    if(from!==null&&l===to+1){to=l;continue;}
-    if(from!==null)hunks.push(all.slice(from-1,to).join('\n'));
-    from=to=l;
+    if(ranges.length&&l===ranges.at(-1)[1]+1)ranges.at(-1)[1]=l;
+    else ranges.push([l,l]);
   }
-  if(from!==null)hunks.push(all.slice(from-1,to).join('\n'));
-  return hunks;
+  return ranges;
 }
 
 // ---------- binding shape: the one import change that is not a rename ----------

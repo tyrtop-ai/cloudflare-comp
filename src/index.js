@@ -8,7 +8,7 @@ import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDepe
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, importExcerpt, errorTarget } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
@@ -1062,8 +1062,9 @@ export class ControlRoom extends DurableObject {
         const specifiers=[...unresolvedBefore.filter(u=>u.path===p).map(u=>u.specifier),...componentImports(p,files.get(p),files).filter(r=>targets.has(r.target)).map(r=>r.specifier)];
         const lines=[...String(diagnostic).matchAll(new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+':(\\d+)','g'))].map(m=>Number(m[1]));
         if(!specifiers.length&&!lines.length)continue;
-        const hunks=importExcerpt(p,files.get(p),{specifiers:specifiers.length?specifiers:null,lines});
-        if(hunks.length&&hunks[0]!==files.get(p))excerpts.set(p,hunks);
+        const ranges=excerptRanges(p,files.get(p),{specifiers:specifiers.length?specifiers:null,lines});
+        const all=files.get(p).split('\n'),hunks=ranges?.map(([from,to])=>all.slice(from-1,to).join('\n'));
+        if(hunks?.length&&hunks[0]!==files.get(p))excerpts.set(p,Object.assign(hunks,{ranges}));
       }
       const blocks=new Map(),interfaces=[],faced=js.filter(p=>shown.has(p)&&(!needs.has(p)||excerpts.has(p)));
       for(const p of faced) {
@@ -1085,11 +1086,19 @@ export class ControlRoom extends DurableObject {
         if(!needs.has(edit.file)){rejected.push({edit,reason:'that file was not sent for renaming at this level'});continue;}
         // An edit to an excerpt must find text the model was shown, and only
         // there, since every occurrence is replaced; it then applies to the
-        // whole file, verified as any other edit.
+        // whole file, verified as any other edit. What counts is what
+        // applyEdits would replace (whole tokens; a bare path widened to the
+        // specifiers it names), not every substring.
         if(excerpts.has(edit.file)&&edit.find) {
-          const count=text=>{let n=0;for(let at=text.indexOf(edit.find);at>=0;at=text.indexOf(edit.find,at+1))n++;return n;};
-          const inHunks=excerpts.get(edit.file).reduce((n,h)=>n+count(h),0);
-          if(count(files.get(edit.file))>inHunks){rejected.push({edit,reason:inHunks?'find text also occurs outside the excerpt of that file you were sent, and every occurrence is replaced; make it longer so it matches only inside the hunks':'find text is not in the excerpt of that file you were sent; copy it from one hunk'});continue;}
+          const text=files.get(edit.file),{find,hits}=editHits(text,edit.find),{ranges}=excerpts.get(edit.file);
+          const lineAt=at=>text.slice(0,at).split('\n').length,inside=at=>ranges.some(([from,to])=>lineAt(at)>=from&&lineAt(at+find.length)<=to);
+          const out=hits.find(at=>!inside(at));
+          if(out!==undefined) {
+            const where=`line ${lineAt(out)}: ${JSON.stringify(text.split('\n')[lineAt(out)-1].trim().slice(0,120))}`;
+            rejected.push({edit,reason:hits.some(inside)?`find text also occurs outside the excerpt of that file you were sent (${where}), and every occurrence is replaced; make it longer so it matches only inside the hunks`:
+              `find text is not in the excerpt of that file you were sent (${where}); copy it from one hunk`});
+            continue;
+          }
         }
         edits.set(edit.file,[...(edits.get(edit.file)||[]),normalizeEditPaths(edit,js,files)]);
       }

@@ -255,11 +255,50 @@ test('room: an excerpt edit whose find also occurs outside the excerpt is refuse
   assert.ok(sent.excerpt&&!JSON.stringify(sent).includes('opts.pageLimit'));
   const rejected=events.filter(e=>e.kind==='link_edit_rejected').map(e=>e.body);
   assert.equal(rejected.length,1);
-  assert.match(rejected[0],/"pageLimit" → "pageSize": find text also occurs outside the excerpt of that file you were sent/);
+  assert.match(rejected[0],/"pageLimit" → "pageSize": find text also occurs outside the excerpt of that file you were sent \(line 17: "const size = opts\.pageLimit;"\)/,'the refusal names the line');
   const linked=await store.read(room.node(builder.id).repo_name,sent.path);
   assert.match(linked,/const \{ pageSize: pageLimit \} = require\('[./a-z0-9-]+\/config\.js'\);/);
   assert.match(linked,/const size = opts\.pageLimit;/);
   assert.ok(events.some(e=>e.kind==='run_passed'));
+});
+
+// v7.13 review: the guard counted every substring, but applyEdits replaces
+// whole tokens, and a bare path only in the one specifier it names. 'save'
+// inside autosaveEnabled and './ticketStore' inside './ticketStoreFormat' lie
+// outside the excerpt and are never replaced, so neither refuses the edit.
+test('room: an excerpt edit is refused only for what it would replace outside the excerpt, not a longer token or another specifier holding its text',async()=>{
+  const repo="let rows = [];\nfunction create(d) { const t = { id: rows.length + 1, ...d }; rows.push(t); return t; }\nfunction list() { return rows.slice(); }\nmodule.exports = { create, list };\n";
+  const pad=Array.from({length:8},(_,i)=>`function helper${i}(x) { return x + ${i}; }`).join('\n');
+  const service=`const { save, list } = require('./ticketStore');\n${pad}\nconst format = require('./ticketStoreFormat');\nconst autosaveEnabled = false;\n${pad.replace(/helper/g,'other')}\nfunction add(d) { return save(d); }\nfunction all() { return list(); }\nfunction label(t) { return autosaveEnabled ? '' : format.fmt(t); }\nmodule.exports = { add, all, label };\n`;
+  const app="const svc = require('./ticketService');\nfunction start() {\n  return { createTicket: (d) => svc.add(d), listTickets: () => svc.all() };\n}\nmodule.exports = { start };\n";
+  const runner="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  assert.equal((await app.createTicket({ title: 'x' })).id, 1);\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
+  const sent=[];
+  const {room,calls}=liveRoom(user=>{
+    if(user.scope!=='application')return {edits:[],issues:[]};
+    const file=user.your_files.find(f=>f.path.endsWith('/ticketService.js')),store=user.all_module_paths.find(p=>p.endsWith('/repo.js'));
+    sent.push(file);
+    return {edits:file?[{file:file.path,find:'./ticketStore',replace:L.relativeSpecifier(file.path,store)},{file:file.path,find:'save',replace:'create'}]:[],issues:[]};
+  },runner);
+  const goal='Build a small issue tracker that lets someone create and list tickets.';
+  await room.provision('root',null,'Root objective',goal);room.set('goal',goal);
+  await workers(room,'root',[['Records','repo.js',repo],['Service'],['Application entry','app.js',app]]);
+  await room.spawn('root.2',[{label:'Ticket service',task:'Write ticketService.js'}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root.2'");
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.2.1'");
+  await room.putFile('root.2.1','ticketService.js',service);
+  await room.putFile('root.2.1','ticketStoreFormat.js',"module.exports = { fmt: (t) => '#' + t.id };\n");
+  room.db().exec("UPDATE agents SET status='done' WHERE id='root.2.1'");
+  await build(room,'root.2');
+  const builder=await linkAndCompile(room);
+  const events=room.snapshot().events;
+  assert.equal(calls.link.filter(c=>c.scope==='application').length,1);
+  assert.ok(sent[0].excerpt,'the service goes as an excerpt');
+  assert.ok(!sent[0].excerpt.join('\n').includes('autosaveEnabled = false')&&!sent[0].excerpt.join('\n').includes("'./ticketStoreFormat'"),'both lie outside it');
+  assert.deepEqual(events.filter(e=>e.kind==='link_edit_rejected'),[]);
+  assert.ok(events.some(e=>e.kind==='link_renamed'&&/ticketService\.js: save → create/.test(e.body)));
+  assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
+  assert.ok(events.some(e=>e.kind==='run_passed'));
+  assert.equal(room.problems('1=1').length,0,'nothing goes to a worker');
 });
 
 test('room: a file inside a branch whose exports a mismatch reads goes in full, so its export can be renamed',async()=>{
