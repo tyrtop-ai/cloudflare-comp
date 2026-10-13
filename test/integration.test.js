@@ -15,7 +15,7 @@ class Sql {
 }
 class FakeArtifacts {
   constructor(){this.repos=new Map();this.failNextWrite=false;this.loseNextResponse=false;}
-  async create(name){this.repos.set(name,{files:new Map(),commits:[]});return {name,remote:`https://example.artifacts.cloudflare.net/git/default/${name}.git`,branch:'main'};}
+  async create(name){this.repos.set(name,{files:new Map(),commits:[]});return {name,remote:`https://artifacts.invalid/git/default/${name}.git`,branch:'main'};}
   async read(name,path){const repo=this.repos.get(name);if(!repo)throw Error('missing repo');return repo.files.get(path)??null;}
   async write({name,path,content,hasCommits}){return this.push(name,[{path,content}],hasCommits);}
   // Like Artifacts, the repo's own history is the base of the next commit. A

@@ -16,7 +16,7 @@ class Sql {
 }
 class Artifacts {
   constructor() {this.repos=new Map();this.reads=0;this.fail=false;}
-  async create(name) {this.repos.set(name,new Map());return {name,remote:'https://example.artifacts.cloudflare.net/git/default/'+name+'.git',branch:'main'};}
+  async create(name) {this.repos.set(name,new Map());return {name,remote:'https://artifacts.invalid/git/default/'+name+'.git',branch:'main'};}
   async write({name,path,content}) {
     if(this.fail) {this.fail=false;throw Error('rejected');}
     this.repos.get(name).set(path,content);
