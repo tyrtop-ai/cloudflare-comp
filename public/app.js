@@ -22,19 +22,27 @@ function eventMarkup(e) {
 }
 // Ownership tree: one colour per role. A manager is a circle; it splits in
 // half, manager | builder, while its builder links the branch, and the branch
-// turns green once every worker under it is done.
+// turns green once every worker under it is done. The compiler sits above Root.
 let selectedNode='';
 const isBuilder=n=>n.label==='Temporary builder';
 const isCompiler=n=>n.label==='Compiler';
 const idOrder=(a,b)=>{const x=a.id.split('.').map(Number),y=b.id.split('.').map(Number);for(let i=0;i<Math.max(x.length,y.length);i++)if((x[i]??-1)!==(y[i]??-1))return (x[i]??-1)-(y[i]??-1);return 0;};
 function treeIndex(agents) {
-  const kids=new Map();
+  const kids=new Map(),byId=new Map(agents.map(n=>[n.id,n]));
   for(const n of agents)if(n.parent)kids.set(n.parent,[...(kids.get(n.parent)||[]),n]);
   for(const list of kids.values())list.sort((a,b)=>isCompiler(a)-isCompiler(b)||idOrder(a,b));
   const producers=id=>(kids.get(id)||[]).filter(c=>!isBuilder(c)&&!isCompiler(c));
   const builderOf=id=>(kids.get(id)||[]).find(isBuilder)||null;
   const role=n=>isBuilder(n)?'builder':isCompiler(n)?'compiler':(n.phase==='manager'||producers(n.id).length)?'manager':'worker';
-  return {kids,producers,builderOf,role};
+  return {kids,byId,producers,builderOf,role};
+}
+// Who a node can talk to, its inference path: its parent and its direct
+// children (a manager's builder and, at Root, the compiler included). A worker,
+// builder or compiler has no children, so it talks only up; never two levels.
+function pathEdges(id,index) {
+  const n=index.byId.get(id);
+  if(!n)return [];
+  return [...(index.byId.has(n.parent)?[[id,n.parent]]:[]),...(index.kids.get(id)||[]).map(c=>[id,c.id])];
 }
 // working: something under this manager is unfinished; ready: every producer
 // is done, so its builder should be linking; linked: the builder finished.
@@ -45,29 +53,92 @@ function branchState(n,index) {
   return index.builderOf(n.id)?.status==='done'?'linked':'ready';
 }
 const statusOf=n=>current?.active_agents?.includes(n.id)?'running':n.status;
+// The compiler's own states: running pulses, passed (on the current bundle) is
+// green, and its latest verdict a failed load, run or report is red; a newer
+// bundle sent to it clears that. Infrastructure blocks are no failure: waiting.
+const COMPILE_FAILED=new Set(['build_failed','problems_reported','runner_failed']);
+const compileVerdict=id=>[...(current?.events||[])].reverse().find(e=>e.actor===id&&(COMPILE_FAILED.has(e.kind)||['run_passed','runner_retry','compile_continue'].includes(e.kind))||e.recipient===id&&e.kind==='compile_requested');
+function compilerState(n) {
+  if(statusOf(n)==='running')return 'running';
+  const record=current?.compiler?.id===n.id?current.compiler:null;
+  if(record?record.passed:n.status==='done')return 'passed';
+  return n.status==='failed'||COMPILE_FAILED.has(compileVerdict(n.id)?.kind)?'failed':'waiting';
+}
+// Above Root: the compiler, or for a manager Root a dashed placeholder until it exists.
+function compilerMarkup(root,index) {
+  const c=(index.kids.get(root.id)||[]).find(isCompiler);
+  if(!c)return index.role(root)==='manager'?'<div class="ocompiler pending"><span class="dot role-compiler placeholder" title="Compiler · not yet" aria-label="Compiler · not yet"></span></div>':'';
+  const state=compilerState(c),tip=`${c.label} · compiler · ${state}`;
+  return `<div class="ocompiler ${state}"><button type="button" class="dot role-compiler ${state}${selectedNode===c.id?' selected':''}" data-node="${esc(c.id)}" title="${esc(tip)}" aria-label="${esc(tip)}"></button></div>`;
+}
 // Just circles: colour is the role, solid means done, a pulse means running;
-// everything else is one click away in the detail panel.
-function treeMarkup(n,index) {
+// everything else is one click away in the detail panel. A builder has no dot
+// of its own: it is its manager's right half (data-builder), so a selected
+// builder marks its manager's dot.
+function treeMarkup(n,index,top=false) {
   const role=index.role(n),state=branchState(n,index),builder=role==='manager'?index.builderOf(n.id):null;
   const building=!!builder&&builder.status!=='done',status=statusOf(n);
-  const children=(index.kids.get(n.id)||[]).filter(c=>!isBuilder(c));
+  const children=(index.kids.get(n.id)||[]).filter(c=>!isBuilder(c)&&!(top&&isCompiler(c)));
   const tip=`${n.label} · ${role}${building?' · builder '+statusOf(builder):''} · ${status}`;
-  const dot=`<button type="button" class="dot role-${role} ${esc(status)}${building?' split':''}${state==='linked'?' linked':''}${n.parent?'':' root'}${selectedNode===n.id?' selected':''}" data-node="${esc(n.id)}" title="${esc(tip)}" aria-label="${esc(tip)}"></button>`;
-  return `<div class="obranch ${state}">${dot}${children.length?`<div class="ochildren">${children.map(c=>`<div class="ochild">${treeMarkup(c,index)}</div>`).join('')}</div>`:''}</div>`;
+  const selected=selectedNode===n.id||!!builder&&selectedNode===builder.id;
+  const dot=`<button type="button" class="dot role-${role} ${esc(status)}${building?' split':''}${state==='linked'?' linked':''}${n.parent?'':' root'}${selected?' selected':''}" data-node="${esc(n.id)}"${builder?` data-builder="${esc(builder.id)}"`:''} title="${esc(tip)}" aria-label="${esc(tip)}"></button>`;
+  return `<div class="obranch ${state}">${top?compilerMarkup(n,index):''}${dot}${children.length?`<div class="ochildren">${children.map(c=>`<div class="ochild">${treeMarkup(c,index)}</div>`).join('')}</div>`:''}</div>`;
 }
 function nodeDetail(n,index) {
   const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
   const line=x=>`<p class="faint">${esc(x.repo_name)} · ${esc(x.phase||'work')} · turn ${x.turn}${x.summary?` · ${esc(String(x.summary).slice(0,400))}`:''}</p>`;
-  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(statusOf(n))}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(i=>`${i.name}(${(i.params||[]).join(', ')})`).join(', '))}</p>`:''}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> <b class="mono">${esc(builder.id)}</b> · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+  const pick=x=>`<button type="button" class="peer mono" data-node="${esc(x.id)}">${esc(x.id)}</button>`;
+  const peers=pathEdges(n.id,index).map(([,id])=>index.byId.get(id));
+  const talks=`<p class="onode-path">talks to ${peers.length?peers.map(p=>`${pick(p)} ${index.role(p)}`).join(', '):'no one yet'}</p>`;
+  let compile='';
+  if(role==='compiler') {
+    const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
+    compile=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
+  }
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(i=>`${i.name}(${(i.params||[]).join(', ')})`).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
 }
+// The selected node's edges ride on the overlay as data-edges ("from:to ...");
+// drawPath measures the dots after layout and draws them.
 function renderTree(agents) {
   if(!agents?.length)return '<p class="empty">No agents yet.</p>';
   const index=treeIndex(agents),root=agents.find(n=>!n.parent)||agents[0];
-  return `<div class="otree">${treeMarkup(root,index)}</div>`;
+  const edges=selectedNode?pathEdges(selectedNode,index):[];
+  return `<div class="otree">${treeMarkup(root,index,true)}<svg class="opath" aria-hidden="true" data-edges="${esc(edges.map(e=>e.join(':')).join(' '))}"></svg></div>`;
 }
 function renderDetail(agents) {
   const picked=agents?.find(n=>n.id===selectedNode);
   return picked?nodeDetail(picked,treeIndex(agents)):'<p class="helper">Select an agent to see its task.</p>';
+}
+// Orange segments along the tree's own connectors (down from the upper dot,
+// along the bar, down to the lower one); a builder lives in its manager's dot,
+// so the edge between them is an arc on the other side's half. The SVG sits
+// inside .otree and scrolls with it, so only a render or a resize redraws it.
+function drawPath() {
+  const tree=$('hierarchy')?.querySelector?.('.otree'),svg=tree?.querySelector('svg.opath');
+  if(!svg)return;
+  const dots=new Map(),o=tree.getBoundingClientRect();
+  for(const d of tree.querySelectorAll('[data-node]')){dots.set(d.dataset.node,d);if(d.dataset.builder)dots.set(d.dataset.builder,d);}
+  // Centre, not edges: a hovered dot is scaled. Whole pixels keep 2px lines crisp.
+  const at=d=>{const r=d.getBoundingClientRect();return {x:Math.round(r.left+r.width/2-o.left),y:Math.round(r.top+r.height/2-o.top),r:d.offsetWidth/2};};
+  let lines='';
+  for(const [from,to] of (svg.dataset.edges||'').split(' ').filter(Boolean).map(e=>e.split(':'))) {
+    const a=dots.get(from),b=dots.get(to);
+    if(!a||!b)continue;
+    const p=at(b);
+    if(a===b){const R=p.r+7;lines+=`<path class="arc" d="M${p.x} ${p.y-R}A${R} ${R} 0 0 ${b.dataset.builder===to?1:0} ${p.x} ${p.y+R}"/>`;continue;}
+    const q=at(a),[up,low,lowDot]=q.y<p.y?[q,p,b]:[p,q,a],bar=lowDot.closest('.ochild');
+    // The compiler's line is centred on Root; a branch's lines start at the
+    // centre (left:50%) and are 1-2px wide, so they sit one pixel right.
+    if(!bar){lines+=`<path d="M${low.x} ${up.y+up.r}V${low.y-low.r}"/>`;continue;}
+    const y=Math.round(bar.getBoundingClientRect().top-o.top)+1;
+    lines+=`<path d="M${up.x+1} ${up.y+up.r}V${y}H${low.x+1}V${low.y-low.r}"/>`;
+  }
+  svg.innerHTML=lines;
+}
+function showTree(agents) {
+  $('hierarchy').innerHTML=renderTree(agents);
+  if($('node-detail'))$('node-detail').innerHTML=renderDetail(agents);
+  drawPath();
 }
 function render(s) {
   current=s;
@@ -92,8 +163,7 @@ function render(s) {
   }
   const fileRows=[...(s.files||[]),...(s.exports||[]).map(f=>({...f,virtual:true,revision:1}))];
   $('file-count').textContent=fileRows.length;
-  $('hierarchy').innerHTML=renderTree(s.agents);
-  if($('node-detail'))$('node-detail').innerHTML=renderDetail(s.agents);
+  showTree(s.agents);
   // Newest first: the latest traffic is at the top; scroll down for older events.
   $('events').innerHTML=s.events?.length?[...s.events].reverse().map(eventMarkup).join(''):'<p class="empty">No events yet.</p>';
   $('event-count').textContent=`${s.events?.length||0} events`;
@@ -193,6 +263,12 @@ $('push-github')?.addEventListener('click',async()=>{
   }catch(err){exportNote(esc(err?.message||err),true);}
   finally{$('push-github').disabled=false;}
 });
-$('hierarchy').addEventListener('click',e=>{const id=e.target.closest?.('[data-node]')?.dataset.node;if(!id)return;selectedNode=selectedNode===id?'':id;if(current){$('hierarchy').innerHTML=renderTree(current.agents);$('node-detail').innerHTML=renderDetail(current.agents);}});
+// Clicking a dot selects it (again: deselects); a name in the detail panel
+// selects that node, which is how a builder, inside its manager's dot, is picked.
+const select=id=>{selectedNode=id;if(current)showTree(current.agents);};
+$('hierarchy').addEventListener('click',e=>{const id=e.target.closest?.('[data-node]')?.dataset.node;if(id)select(selectedNode===id?'':id);});
+$('node-detail')?.addEventListener('click',e=>{const id=e.target.closest?.('[data-node]')?.dataset.node;if(id)select(id);});
+globalThis.addEventListener?.('resize',drawPath);
+if(typeof ResizeObserver==='function')new ResizeObserver(()=>drawPath()).observe($('hierarchy'));
 $('token').addEventListener('change',refresh);$('room').addEventListener('change',()=>{const id=$('room').value.trim();if(/^[a-z0-9-]{8,64}$/i.test(id)){const u=new URL(location.href);u.searchParams.set('room',id);location.assign(u.href);}});
 setInterval(refresh,3000);refresh();
