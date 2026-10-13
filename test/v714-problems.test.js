@@ -482,3 +482,34 @@ test('v7.14: decisions compare and set; a ticket for problems closed since is wi
   room.db().exec("UPDATE problems SET status='closed',outcome='resolved'");
   assert.equal(room.buildRepairMessage(ticket),'');
 });
+
+// A compiler failure between two modules of root.1 goes down to root.1 (D3),
+// the lowest common manager, whose own builder relinks first (D5), told the
+// error in its own bundle's paths.
+test('v7.14: an interface error inside a branch is relinked by that branch\'s builder, in its own paths',async()=>{
+  const lookup="const makeStore = require('./store');\nconst s = makeStore();\nmodule.exports = { add: (d) => s.create(d), get: (id) => s.view(id) };\n";
+  const app="const svc = require('./ticketService');\nfunction start() {\n  return { createTicket: svc.add, viewTicket: svc.get };\n}\nmodule.exports = { start };\n";
+  const link=user=>{
+    const svc=user.your_files.find(f=>f.path.endsWith('/ticketService.js'));
+    return {edits:svc&&/s\.view is not a function/.test(user.previous_attempt_error||'')?[{file:svc.path,find:'s.view(id)',replace:'s.read(id)'}]:[],issues:[]};
+  };
+  const {room,calls}=liveRoom({link,runner:()=>viewRunner});
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Tickets'],['Application entry','app.js',app]]);
+  const [,svcPath]=await workers(room,'root.1',[['Store','store.js',factoryStore],['Ticket service','ticketService.js',lookup]]);
+  const branch=await room.scheduleAssembly('root.1');
+  await room.turn(branch.id);
+  await room.turn('root.1');
+  const {builder,compiler}=await linkAndCompile(room);
+  assert.match(lastReport(room,compiler.id).issues[0].detail,/s\.view is not a function/);
+  await runReady(room,['root','root.1',branch.id,builder.id,compiler.id]);
+  assert.equal(room.node(compiler.id).status,'done',trace(room));
+  const [row]=room.problems('1=1');
+  assert.deepEqual(row.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','delegate','root.1','D3'],['root.1','relink',branch.id,'D5']]);
+  assert.deepEqual([row.status,row.outcome],['closed','relinked']);
+  const relink=calls.link.find(c=>/s\.view is not a function/.test(c.previous_attempt_error||''));
+  assert.equal(relink.scope,'branch');
+  assert.ok(relink.previous_attempt_error.startsWith(`Running the application failed after your renames: ${svcPath}: `),'the branch builder hears its own path');
+  assert.equal(room.receive('root.1.2').length,0,'no worker changes code');
+  assert.equal(room.get('repair_rounds:root.1'),'1');
+});
