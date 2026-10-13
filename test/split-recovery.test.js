@@ -66,7 +66,7 @@ test('rejected 1-of-4 partition returns to Clef and can become direct implementa
   const feedback=room.read('split_feedback:root',null);
   assert.equal(feedback.rejected.length,3);
   assert.deepEqual(feedback.accepted.map(x=>x.label),['Tokenize command string']);
-  assert.equal(calls[1].request.original_goal_scope_boundary,'Build an issue tracker supporting ticket create, view, update and delete');
+  assert.ok(calls[1].request.original_goal_scope_boundary.startsWith('Build an issue tracker supporting ticket create, view, update and delete The finished application has one entry module that exports start()'));
   await room.resume(1);await drain();
   assert.equal(room.node('root').phase,'implement');
   assert.equal(room.children('root').length,0);

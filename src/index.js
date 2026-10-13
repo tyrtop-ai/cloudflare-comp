@@ -25,6 +25,11 @@ const ownerNotes = rejected => clip([...new Set(rejected.filter(x=>x.owner).map(
 // What start() returned, as the Container describes it, holds something the
 // runner can call. An unparsed or depth-limited description is given the doubt.
 const apiCallable = d => ['function','class','unparsed'].includes(d?.type) || !!d?.members_truncated || (d?.members ? Object.values(d.members).some(apiCallable) : ['object','array'].includes(d?.type));
+// A lone generic method (run4: start() returned { handler(event) }) leaves the
+// runner guessing at a protocol the goal never named.
+const apiGenericOnly = d => { const fns=d?.type==='object'&&d.members?Object.entries(d.members).filter(([,v])=>v?.type==='function'||v?.type==='class'):[]; return fns.length===1&&Object.keys(d.members).length===1&&/^(?:handler|handle|dispatch|run|execute|process|invoke|main|call|request)$/i.test(fns[0][0]); };
+// The entry is part of the goal, so a split's scope check admits the child that composes it.
+const GOAL_ENTRY=' The finished application has one entry module that exports start(); start() returns an object with one method per operation named above.';
 // A scoped public key must survive repeated manager hops without collisions.
 // Strip the child's existing assumption prefix so only ONE prefix remains per
 // hop. For long hierarchical keys, use a digest of the FULL untruncated key.
@@ -1342,49 +1347,45 @@ export class ControlRoom extends DurableObject {
     return null;
   }
   async runApplication(builderId, fingerprint, files, api, goal, link) {
-    let correction='';
-    for(let attempt=0;attempt<3;attempt++) {
-      const test=await writeRunnerTest(this.inferenceEnv(),{goal,api,correction});
-      const withTest=new Map([...files,['glue/smoke.js',String(test||'')]]);
-      const errors=test?[...verifySource('glue/smoke.js',test,withTest),this.runnerTestError(test)].filter(Boolean):['the runner returned no test'];
-      if(errors.length) {
-        correction='Your previous test was rejected before running: '+errors.join('; ');
-        this.event(builderId,'runner_rejected',clip(correction,800));
-        continue;
-      }
-      const run=await this.containerRun(builderId,`run:${fingerprint}:${attempt}`,withTest);
-      if(run.infrastructure)return {infrastructure:run.infrastructure};
-      await this.putFile(builderId,'glue/smoke.js',test);
-      if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
-      const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
-      let kind=this.runFailureKind(run.report);
-      let issues=run.report.issues.length?run.report.issues:[{path:'',detail}];
-      if(kind==='app' && !issues.some(x=>String(x.path).startsWith('components/'))) {
-        // No stack frame names a module. The builder has seen the source; it
-        // names the module whose worker must change, or says the test is wrong.
-        const linkedJs=[...link.files].filter(([p])=>LINKABLE.test(p));
-        const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
-        const modules=fits?linkedJs.map(([path,content])=>({path,content})):
-          linkedJs.map(([path,content])=>path===link.entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
-        const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail});
-        if(verdict?.file==='glue/smoke.js') {
-          kind='runner';
-          this.event(builderId,'run_triage',`Builder says the runner's test is wrong: ${clip(verdict.problem,700)}`);
-        } else if(verdict && link.files.has(verdict.file)) {
-          this.event(builderId,'run_triage',`Builder attributes the failed run to ${verdict.file}: ${clip(verdict.problem,700)}`);
-          // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
-          const problem=clip(verdict.problem,400).trim();
-          issues=[{path:verdict.file,detail:`Builder triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} The runner's test failed: ${clip(detail,700)}`}];
-        }
-      }
-      this.event(builderId,'run_failed',`Runner attempt ${attempt+1}: ${kind==='runner'?'the test itself was wrong':'the application failed the test'}. ${clip(detail,900)}`);
-      if(kind==='runner') {
-        correction=`Your previous test failed because of the test, not the application: ${clip(detail,1200)}. Use only names in the API description and expectations the goal implies.`;
-        continue;
-      }
-      return {passed:false,issues,detail,test};
+    // The runner's test is static: the first test that runs in the Container is
+    // the specification for the rest of the run and is never rewritten. A new
+    // test every repair round moved the target the worker was fixing (run4).
+    // Only a test that was turned back before it ever ran is written again.
+    const fixed=this.read('runner_test',null)?.test||null;
+    let correction='',test=fixed;
+    if(fixed)this.event(builderId,'runner_reused','Running the same test as before: the first test that ran is fixed for the whole run.');
+    for(let attempt=0;!test&&attempt<3;attempt++) {
+      const draft=await writeRunnerTest(this.inferenceEnv(),{goal,api,correction});
+      const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft)].filter(Boolean):['the runner returned no test'];
+      if(!errors.length){test=draft;break;}
+      correction='Your previous test was rejected before running: '+errors.join('; ');
+      this.event(builderId,'runner_rejected',clip(correction,800));
     }
-    return {passed:false,runnerFailed:true,detail:correction};
+    if(!test)return {passed:false,runnerFailed:true,detail:correction};
+    const run=await this.containerRun(builderId,`run:${fingerprint}`,new Map([...files,['glue/smoke.js',test]]));
+    if(run.infrastructure)return {infrastructure:run.infrastructure};
+    if(!fixed)this.save('runner_test',{api,test});
+    await this.putFile(builderId,'glue/smoke.js',test);
+    if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
+    const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
+    let issues=run.report.issues.length?run.report.issues:[{path:'',detail}];
+    if(!issues.some(x=>String(x.path).startsWith('components/'))) {
+      // No stack frame names a module. The builder has seen the source and
+      // names the module whose worker must change. The test stays as it is, so
+      // a verdict against the test, or none, goes to the entry module: the
+      // application must do what the test asks.
+      const linkedJs=[...link.files].filter(([p])=>LINKABLE.test(p));
+      const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
+      const modules=fits?linkedJs.map(([path,content])=>({path,content})):
+        linkedJs.map(([path,content])=>path===link.entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
+      const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail});
+      const owner=verdict&&link.files.has(verdict.file)?verdict.file:this.entryModule(builderId,link.files,link.entry);
+      if(verdict)this.event(builderId,'run_triage',`Builder attributes the failed run to ${owner}: ${clip(verdict.problem,700)}`);
+      const problem=clip(verdict?.problem||'',400).trim();
+      issues=[{path:owner||'',detail:`${problem?`Builder triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
+    }
+    this.event(builderId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
+    return {passed:false,issues,detail,test};
   }
   async builderTurn(id) {
     const n=this.node(id), manager=n.parent, isRoot=manager==='root';
@@ -1525,8 +1526,8 @@ export class ControlRoom extends DurableObject {
       try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
       // With nothing to call (run3b: {"type":"object","members":{}}) the runner
       // cannot write a valid test, and no worker would hear why.
-      if(!apiCallable(described)) {
-        return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`},...link.issues]),'run');
+      if(!apiCallable(described)||apiGenericOnly(described)) {
+        return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:`start() must return an object whose methods perform the requested operations${apiGenericOnly(described)?', one per operation and named after it, not a single generic method':''}; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`},...link.issues]),'run');
       }
       const outcome=await this.runApplication(id,fingerprint,files,api,goal,link);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);
@@ -3143,12 +3144,12 @@ export class ControlRoom extends DurableObject {
     if (roomId) this.set('room_id',roomId);
     // A fresh experiment must never reuse manager DO state from an older run.
     this.set('run_nonce',crypto.randomUUID());
-    this.set('goal',clip(goal,1800));
+    this.set('goal',clip(goal,1800)+GOAL_ENTRY);
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
     this.ctx.waitUntil((async()=>{
-      try { await this.provision('root',null,'Root objective',goal); await this.drive(budget); }
+      try { await this.provision('root',null,'Root objective',this.get('goal')); await this.drive(budget); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};

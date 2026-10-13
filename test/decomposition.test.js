@@ -274,3 +274,17 @@ test('v7.13: a new room splits only at Clef p >= 0.7; a room set to another thre
   await kept.resume(1,{});
   assert.equal(kept.settings().split_threshold,0.5,'Continue keeps the room\'s own threshold');
 });
+
+test('a split whose labels copy the prompt example ("Piece A", run4) is turned back with "be more specific"',async()=>{
+  const systems=[];
+  const vague={summary:'s',spawn:['A','B','C','D','E'].map(x=>({label:`Piece ${x}`,task:`Write code for piece ${x}`}))};
+  const named={summary:'s',spawn:[{label:'Ticket input validation',task:'Write code that validates a new ticket'},{label:'Ticket record creation',task:'Write code that stores a validated ticket'}]};
+  const env={AI:{run:async(_name,args)=>{systems.push(args.messages[0].content);return {response:JSON.stringify(systems.length===1?vague:named)};}}};
+  const {decompose,placeholderChildren}=await import('../src/model.js');
+  const split=await decompose(env,{your_id:'root.2',your_responsibility:'Write code that processes ticket creation requests',max_child_writers:10});
+  assert.equal(systems.length,2);
+  assert.match(systems[1],/placeholder labels or tasks copied from the example \("Piece A", "Piece B", "Piece C", "Piece D", "Piece E"\); be more specific: name each piece after what it does/);
+  assert.deepEqual(split.spawn.map(c=>c.label),['Ticket input validation','Ticket record creation']);
+  assert.doesNotMatch(systems[0],/"label":"Piece A"/,'the prompt example no longer offers a name to copy');
+  assert.deepEqual(placeholderChildren([{label:'Part 2',task:'x'},{label:'Ticket storage',task:'Write code that stores tickets'},{label:'Validation',task:'Write code that ...'},{label:'Pieces of flair',task:'Write code that renders flair'}]).map(c=>c.label),['Part 2','Validation']);
+});
