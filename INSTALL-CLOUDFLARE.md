@@ -85,7 +85,7 @@ Paste a long random value, for example the output of `node -e "console.log(crypt
 
 ### Optional: a GitHub token for exports
 
-To push a run's application to GitHub from the dashboard or the API, store a GitHub token as a second secret:
+To push a run's application to GitHub through `POST /api/export/github`, store a GitHub token as a second secret. The dashboard's **Push to GitHub** button is hidden for now, while the export is not being tested; the API route stays available (see [Using the API directly](#using-the-api-directly)).
 
 ```bash
 npx wrangler secret put GITHUB_TOKEN
@@ -106,7 +106,7 @@ npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave runni
 
 1. Open the Worker URL. The page creates a room ID and adds it to the URL as `?room=...`. Each room is its own `ControlRoom` Durable Object, so bookmark the URL to come back to the same room.
 2. Paste your `APP_TOKEN` into **Access token**.
-3. Edit **Problem statement** if you like. The default asks for a small issue tracker with create, view, update and delete.
+3. Edit **Problem statement** if you like. The default is just the product: "Build a small issue tracker that lets someone create, view, update, and delete tickets." Write the product you want, not instructions to the agents; the runtime's prompts already tell them how to split, write and link.
 4. Choose the runtime settings. They apply to this room on **Start** and **Continue**:
 
    | Setting | Default | Range | Meaning |
@@ -115,17 +115,20 @@ npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave runni
    | Concurrent agents | 16 | 1–64 | Agent turns that run at the same time. |
    | Total agents | 64 | 2–256 | Workers and managers in the tree. Builders, the compiler and retired agents do not count. |
    | Recursion depth | 10 | 1–16 | Maximum tree depth. |
-   | Generative agent model | Qwen3 A3B | Qwen3 A3B, Llama 3.2 1B, Qwen 3.8 27B | Writes splits, code, link edits, managers' decisions, triage and runner tests. |
-   | Split decision model | Clef-flash | Clef-flash, Clef | Answers the split, scope, routing and prune YES/NO questions, and checks a retask's new task. |
+   | Generative agent model | Qwen3 A3B | Qwen3 A3B, Llama 3.2 1B, Qwen 3.8 27B | Writes splits and their promised functions, code, link edits, managers' decisions, the API coverage mapping, triage and runner tests. |
+   | Split decision model | Clef-flash | Clef-flash, Clef | Answers the YES/NO questions as probabilities: the split gate, each child's scope, each function name a split adds, routing, the prune walk, which function answers a worker's request, and a retask's new task. |
    | Minimum YES probability | 70% | 20–80% | Clef split threshold. |
 
    The generative model is chosen here, per room, or with `settings.model` in the API. Rooms do not read the `MODEL_NAME` variable in `wrangler.jsonc`, so editing it does not change the model.
 
-5. Press **Start new experiment**. This clears the room's state and creates Root. The runtime appends one requirement to your problem statement: the application exports `start()` from one entry module, and `start()` returns an object whose methods perform the operations the goal requests. The splitters assign that requirement like any other.
+5. Press **Start**. This clears the room's state and creates Root. The runtime appends one requirement to your problem statement, so you do not need to write it:
+   > The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.
+
+   The splitters assign that requirement like any other, and Root promises `start`: its split must give `start` to exactly one child. While the run is going, **Start** becomes **Stop**. Stop starts no new turns; the running ones finish, and then the room pauses (**Stopping** until then). **Continue** resumes it.
 
 The dashboard refreshes every 3 seconds. It shows:
-- **The ownership tree**, as circles coloured by role: managers, workers and the compiler. A manager's circle splits in half while its builder works on the branch. Green lines mark a branch whose agents are all done, and a green ring marks one its builder has linked. Click a circle for its task.
-- **Agent traffic:** the latest 300 events.
+- **The ownership tree**, as circles coloured by role: managers, workers and the compiler. A manager's circle splits in half while its builder works on the branch. Green lines mark a branch whose agents are all done, and a green ring marks one its builder has linked. Click a circle to see, below the tree, its task and a `promises:` line with the functions it promised.
+- **Agent traffic:** the latest 300 events, newest first.
 - **The files** the room has recorded, committed or staged for the current turn's commit. Click one to read its content from the room's index of Artifacts writes.
 - **The Container build panel**, with the latest Container report.
 
@@ -140,7 +143,8 @@ A run ends in one of three states:
 - reopens splits that were blocked for capacity, if you raised the limits;
 - relinks a waiting builder, at any level, with a fresh relink budget;
 - runs the compiler again on the current bundle, or retries it after a Container infrastructure failure;
-- wakes every manager that still holds an open problem;
+- wakes every manager that still holds an open problem, or a function request that a restart left without a next hop;
+- in a room with promises, wakes a worker that waits with no request open, no unread message and no source;
 - pushes any files still staged.
 
 **Clear room state** deletes the room's state. Its Artifacts repositories remain.
@@ -159,7 +163,7 @@ A run ends in one of three states:
 Once Root's builder has linked the application and the compiler has chosen its entry, the room holds runnable code: the workers' modules under `components/` as Root's builder linked them, and from the compiler the runtime loader `glue/index.js`, `package.json` and the runner's test `glue/smoke.js` once it has been written. The export adds a `README.md` with the goal, the run status and how to run it. Assembly metadata (`assembly.manifest.json`, `assembly.boundary.json`, `compile.manifest.json`) and agent notebooks are left out. When Clef judged the whole goal atomic, Root writes the code itself and there is no builder: the export is then Root's own files, and its README gives the package scripts the Container runs, or a command that loads the entry module and calls `start()`.
 
 - **Download app (.zip)** saves `recursive-app-<first 8 characters of the room>.zip` from `/api/app.zip`.
-- **Push to GitHub** takes `owner/repo`, pushes the application to a new branch `control-plane/<first 8 characters of the room>` (`-2`, `-3` and so on if the name is taken) with the files under `apps/<first 8 characters of the room>/`, and opens a pull request against the repository's default branch. The dashboard links the pull request, or the branch when there is none. On the new branch that directory holds exactly the exported files: files an earlier export left there are removed, and the pull request says so. Nothing outside it changes, and nothing is ever force-pushed. With `dir` set to `.` the files go to the repository root, next to the repository's own files; if that would change a file the repository already has (its `README.md` or `package.json`, say), the export is refused with `409` and the names of those files. In an empty repository the new branch becomes its first branch, and no pull request is opened because there is no base branch.
+- **`POST /api/export/github`** takes `owner/repo`, pushes the application to a new branch `control-plane/<first 8 characters of the room>` (`-2`, `-3` and so on if the name is taken) with the files under `apps/<first 8 characters of the room>/`, and opens a pull request against the repository's default branch. It returns the pull request's URL, or the branch's when there is none. The dashboard's **Push to GitHub** button, which does the same, is hidden for now. On the new branch that directory holds exactly the exported files: files an earlier export left there are removed, and the pull request says so. Nothing outside it changes, and nothing is ever force-pushed. With `dir` set to `.` the files go to the repository root, next to the repository's own files; if that would change a file the repository already has (its `README.md` or `package.json`, say), the export is refused with `409` and the names of those files. In an empty repository the new branch becomes its first branch, and no pull request is opened because there is no base branch.
 
 The Worker clones the base branch at depth 1 into memory without checking it out, builds the new commit from the base's trees, and pushes only the objects the base does not already have. Peak memory is about four times the base branch's packed size, so a base branch up to about 20 MB packed fits in a Worker's 128 MB. For a larger repository, export into an empty or smaller repository, or download the ZIP.
 
@@ -212,17 +216,23 @@ curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" 
 - **Deploy fails with "The Docker CLI is needed to build the configured image"**: start Docker. With Podman, set `WRANGLER_DOCKER_BIN` and `DOCKER_HOST` as Wrangler suggests. `npx wrangler deploy --containers-rollout=none` deploys the Worker without the Container, but then Root cannot run the application and the build panel reports **EXECUTOR UNAVAILABLE**.
 - **Build panel shows EXECUTOR UNAVAILABLE, or a `build_infrastructure` event appears**: the Container is not ready or failed to start. The Worker can be live before its Container is provisioned. Check `npx wrangler containers list`, and watch `wrangler tail` for `Build container exec not ready`, `Build container command exceeded` or `Build process termination failed`. An infrastructure failure blames no worker; the compiler waits (`build_blocked`). Once the Container is up, **Continue** clears the block and the compiler runs the current bundle again.
 - **`split_capacity_blocked`**: Clef chose to split, but the room has no agent slots or depth left. Raise **Total agents** or **Recursion depth** and press **Continue**.
+- **`split_rejected`, "The proposed functions fail … check(s)"**: the split did not give each function its node promised to exactly one piece. The next turn keeps Clef's YES and gives the splitter its partition back. Bad names in a split are deleted, never the piece (`interfaces_repaired`, `interfaces_stripped`, `interfaces_owned_elsewhere`).
+- **A worker `waiting` after `route_request` or `done_deferred`**: it asked its manager for functions and waits for the answers (`route_provided`, `route_up`, `route_unowned`). A request climbs one level per manager turn, and only the last answer wakes the worker. **Continue** wakes a manager holding a request that a restart left without a next hop.
+- **`contract_missing`**: a worker reported done without exporting a function it promised, and was sent back (at most three times). **`contract_unmet`**: the fourth done was accepted, and a `contract` problem went to its manager.
+- **`repair_unchanged`**: a worker answered its repair ticket as done without changing a file. The ticket goes back once, saying so; a second unchanged answer closes the problem unfixed.
+- **`api_incomplete`**: `start()` has no method for an operation the goal names, and the entry module's worker hears which. **`coverage_unchecked`** or **`api_planned`**: the coverage model gave no usable mapping. With promises, the runner then tests the plan's operation functions that `start()` returned.
+- **`runner_retry`, then `runner_failed`**: the runner could not write a valid test in three attempts, twice. No worker is blamed; **Continue** retries.
 - **`paused` event, "Stopped automatic retries after 3 failures"**: the agent failed three turns in a row; the `error` events before it give the reason. **Continue** retries it. A worker below Root whose three failures were all the code gate's does not pause. A `stuck` event files it with its manager, which retasks it to plain JavaScript (for TypeScript, JSX or a package import), tells it what to write, retires it, or escalates. It pauses only if no manager above settles it.
 - **`Artifacts ... failed for rc-...`**: a git step on that agent's repository failed. The word after `Artifacts` names the step: `refs` (asking the repository whether `main` exists), `clone`, `init`, `write`, `stage`, `commit` or `push`. For a worker, the files staged in that turn are rolled back and the action replays from its first write. For a manager or builder, the files stay staged and are pushed at the next flush (a `commit_failed` event). Three failures in a row pause a worker, and **Continue** retries it. If every write fails, run the probe from step 3.
 - **`recovered` event, "Durable Object restarted during a run"**: the room was evicted mid-run and is now paused. **Continue** resumes interrupted turns from their saved position.
 - **`Experiment already running`**: a run is in progress in this room. Wait for it to pause, or use another room.
 - **Status stays paused with a builder or the compiler `waiting`**: its problems are with its manager (`problems_reported`, then `problem_assigned` or `problem_escalated`) and nothing has changed yet, or the runner could not write a valid test (`runner_failed`). **Continue** relinks waiting builders with a fresh relink budget, runs the compiler again, and has every manager decide the problems it still holds.
-- **`repair_exhausted` and a failed run**: a manager ran out of repair rounds (6 per manager, and 8 plus 2 per manager for the run, at most 40), or a problem was closed without a fix while its reporter waited on it. The `problem_exhausted` and `problem_escalated` events before it say which. Start a new experiment.
-- **`This room was started by a version before v7.14 and is not migrated`**: **Continue** refuses rooms from earlier versions. **Start new experiment** resets the room.
+- **`repair_exhausted` and a failed run**: a manager ran out of repair rounds (6 per manager, and 8 plus 2 per manager for the run, at most 40), or a problem was closed without a fix while its reporter waited on it, for example after a worker answered it twice without changing a file. The `problem_exhausted` and `problem_escalated` events before it say which. Start a new experiment.
+- **`This room was started by a version before v7.14 and is not migrated`**: **Continue** refuses rooms from earlier versions. **Start** resets the room.
 
 ## Costs and cleanup
 
-Every run creates one Artifacts repository per agent, builders and the compiler included, named `rc-<random>-<agent id>`. Neither the app nor **Clear room state** ever deletes them. A run also makes many Workers AI calls and starts a Container for the compiler: Qwen for splits, code, links, managers' decisions and tests, and Clef for each gate and each level of the prune walk. All of this is billed to your account. To find and delete old repositories:
+Every run creates one Artifacts repository per agent, builders and the compiler included, named `rc-<random>-<agent id>`. Neither the app nor **Clear room state** ever deletes them. A run also makes many Workers AI calls and starts a Container for the compiler: Qwen for splits, code, links, managers' decisions, the coverage mapping and tests, and Clef for each gate, each level of the prune walk, and each function request a manager cannot answer by name. All of this is billed to your account. To find and delete old repositories:
 
 ```bash
 npx wrangler artifacts repos list --namespace default
@@ -243,7 +253,7 @@ npm ci
 npm run deploy
 ```
 
-Start a new experiment after upgrading. A room started before v7.14 cannot be continued: **Continue** refuses it, and **Start new experiment** resets it.
+Start a new experiment after upgrading. A room started before v7.14 cannot be continued: **Continue** refuses it, and **Start** resets it. A room started on v7.14 can be continued, and keeps v7.14's behavior: it has no promises, so its workers do not ask for functions and its builders and compiler do not read a plan.
 
 The name is only kept for continuity. For a separate new deployment, change `"name"` in `wrangler.jsonc`, or run `npx wrangler deploy --name <new-name>`. A Worker with a different name gets its own Durable Objects and needs its own `APP_TOKEN` (`npx wrangler secret put APP_TOKEN --name <new-name>`). Do not rename the Durable Object classes on an existing Worker: its stored rooms would be left behind.
 

@@ -12,13 +12,15 @@ The live runs show what that cost:
 - **Run 3b (9 flat workers).** Root's builder sent 12 problems, then 1, then 6. It chose who changes by fixed rules, with no way to settle one naming convention across the handlers.
 - **Run e89dba35 (four levels deep).** Root sent 12 problems twice, mostly about code inside `root.3`, whose own manager never saw them.
 - **Run 3.** A worker the code gate kept rejecting paused the whole room.
-- **Run 26fadbdb, the one live run on v7.13.** Clef's scope check rejected Root's proposed entry child (p 0.346), because the goal never mentions an entry. Without that child, no worker carried the `start()` contract.
+- **Run4 (26fadbdb), the first live run on v7.13.** Clef's scope check rejected Root's proposed entry child (p 0.346), because the goal never mentions an entry. Without that child, no worker carried the `start()` contract.
 
 v7.14 makes every node one of four roles. Root is the final stop on the train, not a special manager. The release follows the design spec and the author's decisions, in two slices:
 - **Slice 1:** one builder at every level, the compiler node, and the problem inbox, at parity with v7.13's routing.
 - **Slice 2:** the managers' decisions, retire and retask, and workers stuck at the code gate.
 
-Each slice had a review, and the fixes from both reviews are part of the release. Everything below is verified locally, with the real Container runner script run in Node. No live run has used v7.14 yet.
+Each slice had a review, and the fixes from both reviews are part of the release. Everything below is verified locally, with the real Container runner script run in Node. No live run has used v7.14.
+
+**The port.** The hotfixes v7.13.1 to v7.13.4, the export connector and the later dashboard changes were made on the live line after v7.14 branched. They were then ported into v7.14's layout (f235580, 4fa5093, cda769f), where the compiler runs their checks and files what they find with Root through the problem inbox. The points the port or v7.15 changed are marked below. See [CHANGELOG-v7.13.md](CHANGELOG-v7.13.md) and [CHANGELOG-v7.15.md](CHANGELOG-v7.15.md).
 
 ### Four roles
 
@@ -27,7 +29,7 @@ Each slice had a review, and the fixes from both reviews are part of the release
 | Worker | a leaf | writes modules, and fixes its own modules when its manager sends it a repair ticket | decides for others |
 | Manager (Root included) | a node with children | splits, scope-checks and prunes its children; solves the problems in its inbox: assign, escalate, retire, retask | writes code, or reaches below its direct children |
 | Builder | `Temporary builder`, one per manager, a child of that manager | links the manager's direct children, rename-only plus the runtime's binding fixes; publishes a boundary; reports what renaming cannot fix to its manager | decides who changes what |
-| Compiler | `Compiler`, one per run, a child of Root | chooses the entry; writes `glue/index.js`, `package.json` and the runner's `glue/smoke.js`; loads and starts the application in the Container; has the runner test it; triages; reports failures to Root | writes or edits application code |
+| Compiler | `Compiler`, one per run, a child of Root | chooses the entry; writes `glue/index.js`, `package.json` and the runner's `glue/smoke.js`; loads and starts the application in the Container; checks the API it returned; has the runner test it; triages; reports failures to Root | writes or edits application code |
 
 A manager owns only its direct children, and problems move one level at a time:
 - A builder reports to its own manager, and the compiler reports to Root.
@@ -43,9 +45,9 @@ The runtime enforces who writes what:
 
 - Every builder runs the same turn, at every level, including Root's.
 - It waits until every worker under its manager has finished, no repair ticket is still in flight there, and no manager below holds an open problem. Then it links its manager's direct children: a worker child's modules, and a sub-manager's linked bundle read through its boundary.
-- It relinks up to `MAX_RELINKS` (2) times while problems remain inside the branch.
+- It relinks up to `MAX_RELINKS` (2) times while problems remain inside the branch. (v7.15: a `contract` problem or a combined import line never relinks, since renaming cannot add a function or split a line.)
 - Below the top, it publishes the bundle and the branch's boundary. An import that resolves nowhere in the branch becomes a need on the boundary, for the builder above.
-- At the top, the same import becomes a problem for Root.
+- At the top, the same import becomes a problem for Root. (v7.15: when the plan gives the name to a piece whose modules do not export it, it is that piece's `contract` problem instead.)
 - A name or binding mismatch between the branch's own modules is a problem for its manager.
 - The builder then waits (`builder_waiting`) until the source changes, its manager asks it to relink, or Continue relinks it with a fresh budget.
 - Root's builder no longer runs the Container, chooses the entry, asks for an entry, writes the loader or calls the runner. That work moved to the compiler.
@@ -58,18 +60,21 @@ The runtime enforces who writes what:
 - **Entry.** The entry is the one module that exports `start()`.
   - Of several, it is the one whose `start()` returns a value without reading the command line, listening or prompting. Next comes one that returns a value, and last one that returns nothing. A tie goes to the module that imports the most others (2bf75d2).
   - When no module is known to export `start()`, it is the likeliest composing module among those that may export it, and the Container decides.
+  - v7.15: the modules of the piece the plan gives `start` come first, after the `start()` rank and before the module that imports the most others.
   - With no candidate, the compiler files "No application entry" without running the Container.
 - **Container check.** The compiler writes the runtime loader `glue/index.js` and `package.json`. The Container parses every file, loads the entry and calls `start()`.
   - An entry that only may export `start()` and has none makes the loader throw (`NO_START`), and the compiler files the entry problem. Before, the loader handed out the module's exports as the application, so a run could complete with no `start()` anywhere (2bf75d2).
-  - `start()` must return something to call, as in v7.13.
-- **Runner.** A separate model call writes `glue/smoke.js` from the goal and the description of the live API alone. The Container runs it.
-  - When no stack frame names a module, triage names the module whose worker must change, or says the test is wrong.
+  - `start()` must return something to call, as in v7.13. Since the port of v7.13.1, a `start()` whose only member is a single generic handler (`handler`, `dispatch`, `run` and the like) is an `entry` problem too, before the runner is asked.
+- **API coverage (ported from v7.13.3).** While no runner test is fixed, a model call maps each operation the goal names to the one method of `start()`'s API that performs it, and the runtime checks the mapping against the API the Container described. An operation with no method is an `entry` problem filed with Root (`api_incomplete`), and no test is written. An answer that is no mapping, twice, fails open (`coverage_unchecked`). v7.15 adds a fallback from the plan for that case.
+- **Runner.** A separate model call writes `glue/smoke.js` from the goal and the description of the live API alone, plus the method that performs each operation when the coverage check mapped them. The Container runs it.
+  - **The test is fixed for the run (ported from v7.13.1).** The first test that runs in the Container is the specification for the rest of the run, and later runs reuse it (`runner_reused`). Only a draft turned back before it ever ran is written again.
+  - When no stack frame names a module, triage names the module whose worker must change. Since the test stays fixed, a verdict against the test, or none, goes to the entry module: the application must satisfy the test. (Before the port, triage could also say the test was wrong, and the runner wrote a new one.)
   - The test stays in the application.
 - **Failures.** Every failure goes to Root as a problem: `entry`, `load` or `run`.
   - The Container reports one error once per module in its stack. That is one problem, whose sites are those modules, and the module that threw first changes.
   - An interface error also names the import it read as the other party.
 - **Static entry check.** While Root's builder has problems reported, the compiler checks the entry of the published bundle without the Container, in Root's turn before Root decides. A missing `start()` then joins the link problems' wave, so a worker hears both in one ticket and one repair round.
-- **Waiting.** An infrastructure failure blames nobody: the compiler waits (`build_blocked`), and Continue retries it. A runner that cannot write a valid test in three attempts also blames nobody (`runner_failed`), and Continue retries.
+- **Waiting.** An infrastructure failure blames nobody: the compiler waits (`build_blocked`), and Continue retries it. A runner that cannot write a valid test in three attempts also blames nobody. Since the port of v7.13.4, the first time this happens for a source, the compiler runs once more with three more drafts (`runner_retry`); after that it waits (`runner_failed`), and Continue retries.
 - **Completion.** The room completes only when the compiler has passed on the bundle linked from the current source.
 - **Requests (30ecb18).** A compiler that waited for the top builder has its request cleared, so Root requests it again. Continue wakes a waiting compiler whenever the top builder is current and the compile has not passed.
 
@@ -79,11 +84,14 @@ The runtime enforces who writes what:
   - The splitter prompt is the same at every level, and an `"entry"` mark is dropped wherever it appears.
   - Nothing is appended to a chosen child's task.
   - `entry_child` and `entrySpec` are gone, along with the model's entry proposals.
-- When a run starts, the runtime appends this requirement to the goal:
-  > Requirement: the application exports start() from one entry module; start() returns an object whose methods perform the operations this goal requests, and importing a module does no work at load (no reading process.argv, starting a server or prompting).
-- Clef's scope check reads every child against the goal, so it now sees this requirement. The splitters assign it like any other requirement, at whatever level.
+- When a run starts, the runtime appends this requirement to the goal. Since the port, it is v7.13.2's sentences with v7.14's clause on module load:
+  > The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.
+
+  The goal is clipped to 1,800 characters, the API's limit, and Root's task holds it whole plus the requirement (ed20497).
+- Clef's scope check reads every child against the goal, so it now sees this requirement. The splitters assign it like any other requirement, at whatever level. Since the port of v7.13.3, the scope question also says that a module composing other pieces, such as an entry module that exports `start()`, is source code.
+- v7.15: the runtime writes Root's promise, `start`. The child a split gives it carries it, and its task ends with its contract, as every carrier's does. A carrier is in scope by construction.
 - The compiler enforces the requirement. A missing entry, an entry without `start()`, or a `start()` that returns nothing to call is an `entry` problem filed with Root.
-  - Root places it like any problem, by default with the module most likely to compose the application, among the modules nothing imports and by file name.
+  - Root places it like any problem, by default with the module most likely to compose the application, among the modules nothing imports and by file name. v7.15: the module of the piece the plan gives `start` comes first.
   - The manager whose branch holds that module passes it down.
   - Its worker's ticket leads with `ENTRY_CONTRACT`.
 - Root differs from other managers by position only:
@@ -98,7 +106,7 @@ The runtime enforces who writes what:
 ### The problem inbox
 
 - Problems are rows in a table in the room's SQLite, each held by one manager.
-- **Kinds:** `unresolved`, `mismatch`, `binding`, `entry`, `load`, `run` and `stuck`.
+- **Kinds:** `unresolved`, `mismatch`, `binding`, `entry`, `load`, `run` and `stuck`. v7.15 adds `contract`: a piece does not export a function its promise names.
 - **Parties.** Each problem has parties: reader, provider, site or subject. Each party has its owner, the worker found by following provenance through every builder.
 - **Reports.** A builder or the compiler files a report in one synchronous block:
   - its earlier rows close as `superseded`;
@@ -115,6 +123,7 @@ The runtime enforces who writes what:
   - what the other side provides, one line per module;
   - every problem, in the worker's own file paths.
   - The ticket is at most 2,400 characters. A ticket whose problems all closed since it was sent reads as withdrawn.
+  - v7.15: a ticket for a problem the worker answered done without changing a file says so right after its head ("NOTHING CHANGED IN YOUR FILES").
 - **Compare-and-set.** A row moves only if it is still as it was read. A stale decision is logged (`problem_decision_stale`) and sends no ticket.
 - **Replaced machinery.** The inbox replaces `build_failure:root`, `routeBuildFailures` and `forwardBuildRepair`.
 
@@ -135,6 +144,8 @@ A manager decides each problem by these rules, first match wins:
 | D3 delegate | every party lies in one sub-manager's branch | that sub-manager decides |
 | D4 | every party lies in one worker | that worker |
 | D6 | a two-sided mismatch | the reader changes. A problem a child escalated, which exactly one other child can satisfy, goes back with that child's exports (M6 settled) |
+
+v7.15 adds the reader rule: in a room with promises, a mismatch whose reader expects a name the provider's piece never promised, while that piece exports everything it did promise, goes to the reader with no model call, and no decision may give it to the provider.
 
 - **Who caused an error (b5c28f7).** A builder's edit counts as the cause only when a name or path it put into the failing line appears in the error's message. When the error names no line of the file, any line counts. Before, a top builder that renamed an unrelated import path in the file relinked a branch's own bug first, and the shared `builder_tried` flag then kept that branch's builder from relinking it. `builder_tried` now lists the builders that tried.
 - **Validation.** Every decision is checked:
@@ -168,15 +179,16 @@ A manager decides each problem by these rules, first match wins:
   - A Durable Object restart while the model answers keeps the tickets already sent and decides the cluster again.
 - **What the model reads:**
   - the manager's responsibility;
-  - its direct children: a worker by its modules' exports, a sub-manager by its boundary, the builder by its relinks left, each with its history;
+  - its direct children: a worker by its modules' exports, a sub-manager by its boundary, the builder by its relinks left, each with its history (and, in v7.15, each child's promised functions);
   - the problems, with their parties as child, file and role, the builder's evidence and the default the rules would apply;
   - the decisions it must keep;
   - the rounds left.
   - Child ids in its instructions become labels for the recipient. An id the recipient may not see voids the instructions, and the default text is used.
 - **Actions.** The model may assign, escalate, retask or retire. Each action is validated:
   - **assign:** instructions of at most 900 characters, and facts from direct children that write code.
-  - **retask:** a task of 8 to 1,700 characters that Clef scores at p ≥ 0.5 against the goal and this manager's responsibility.
+  - **retask:** a task of 8 to 1,700 characters that Clef scores at p ≥ 0.5 against the goal and this manager's responsibility. v7.15: in a room with promises it may carry `interfaces`, which replace the child's promise.
   - **retire:** refused for the last child that writes code, for a child that a module outside its branch imports, for the child whose code exports `start()`, for a branch with a turn running, and for the compiler.
+  - v7.15: a retire or a retask that would leave a function this manager promised with no piece, or put it on a second, is refused.
   - The first valid action covering a problem decides it. Everything the model leaves out keeps its default.
 - **Limits.**
   - Each manager has at most `MAX_MANAGER_MODEL_CALLS` (8) calls per run, a retry after unparsable output counting as one.
@@ -188,10 +200,10 @@ A manager decides each problem by these rules, first match wins:
 ### Retire and retask
 
 - **Retire.** A retired child takes its whole branch with it: queued turns, undelivered messages, routes, aliases at every level above, and open problems. Its code leaves the bundle that the level above reads, and its manager's builder relinks what remains.
-- **Retask a worker.** The worker gets the new task and runs again. A problem the retask settles stays assigned to it, so a rerun that changes nothing reopens it.
+- **Retask a worker.** The worker gets the new task and runs again. A problem the retask settles stays assigned to it, so a rerun that changes nothing reopens it. v7.15: it keeps its promise unless the retask replaces it, and its contract returns and its answers to function requests are cleared.
 - **Retask a sub-manager (author decision 1).** This kills its branch:
   - every descendant is retired, its builder included, and the problems the sub-manager held close;
-  - it splits again as a new child, through the split gate and the prune walk;
+  - it splits again as a new child, through the split gate and the prune walk (v7.15: its new split must give its promise to its pieces);
   - its next builder is a new generation (`builder:<id>:<gen>`).
 - Retired nodes take no agent slot.
 
@@ -228,6 +240,7 @@ A manager decides each problem by these rules, first match wins:
   - A repair that changes nothing reopens its problem once.
   - The second unchanged repair closes it, or, while the model may be asked, leaves it to the model (M4), which closes it by default.
   - Before this fix, the same rule sent the same ticket again until the hop limit. In the slice 1 review's e89dba35 replay that cost 25 worker calls, and each Continue added 10.
+  - v7.15 tells the worker, in the ticket that goes back, that nothing changed in its files (run8's entry answered "fixed" and wrote no file).
 - **A problem closed without a fix (6c07847).** Its reporter could be left waiting, and the room paused with no failure. Now, when nothing of the report is open and nothing below could still change the source, Root fails the run, and a lower manager tells its parent it cannot finish.
 
 ### v7.13 fixes folded in
@@ -274,7 +287,7 @@ Four smaller fixes (b507b0d):
 
 ### Replays
 
-These replays run the real scheduler and the real Container runner script in Node, with scripted models. Each compares v7.13 (e1004c8) with this release, on the same inputs and the same scripted workers.
+These replays run the real scheduler and the real Container runner script in Node, with scripted models. Each compares v7.13 (e1004c8) with the v7.14 commit (df96484), on the same inputs and the same scripted workers. They were measured before the port, which adds the coverage call before the first runner test and keeps that test for the run.
 
 **Run 3b at step 49: the live final worker files, in which `app.js` exports nothing.** Live v7.12 made 1 Container run and 3 runner calls, then ended in `runner_failed` with no worker blamed.
 
@@ -323,7 +336,7 @@ These replays run the real scheduler and the real Container runner script in Nod
 
 ## Tests
 
-350 local tests pass (`npm test`), up from 288 in v7.13. `npm run check` covers 56 files.
+At the v7.14 commit (df96484), 350 local tests passed (`npm test`), up from 288 at the v7.13.0 merge, and `npm run check` covered 56 files.
 
 | File | Tests | What they cover |
 |---|---|---|
@@ -338,18 +351,19 @@ These replays run the real scheduler and the real Container runner script in Nod
 
 - **Rewritten tests.** Tests that asserted Root-centred building now run through the compiler and the inbox: `build_failure:root`, `routeBuildFailures`, `run_passed:root` and Root entry marking.
 - **Deleted tests.** Six tests were deleted with the machinery they covered: `entrySpec`, the entry mark and `entry_child`, and the model's entry proposals. Two of them are merged into one test asserting the opposite: a mark is dropped at every level.
-- **Unchanged.** The `MOCK_AI` suites and `public/` are unchanged by v7.14. This branch also merges the v7.13 dashboard palette commit.
+- **Unchanged.** The `MOCK_AI` suites and `public/` are unchanged by v7.14 itself. This branch also merges the v7.13 dashboard palette commit.
+- **The port** brings the hotfixes' tests (`test/api-coverage.test.js`, `test/run7-linker.test.js`, `test/run7-model-output.test.js`, `test/stop.test.js`) and the export connector's (`test/zip.test.js`, `test/app-export.test.js`, `test/github-export.test.js`), rewritten where the compiler, not Root's builder, now runs the checks. It adds tests for the compiler's dot in the dashboard, a lone generic handler reaching Root as an entry problem, and the goal's `start()` sentences appended once (6301564).
 
 ## Still open
 
-- **Not verified live.** No live run has used v7.14. The replays above use scripted models.
-- **Live run 26fadbdb showed three problems that v7.14 does not fix:**
-  - the runner writes a new test every time the compiler runs, so a worker can chase a moving target;
-  - a split whose children are placeholders ("Piece A" to "Piece E") reaches Clef and the prune walk, which in that run killed four of the five;
-  - a `start()` that returns a single generic handler passes the check before the runner.
-- **Long goals are cut.** The goal is clipped to 1,746 characters before the `start()` requirement is appended. The API accepts goals of up to 1,800 characters, so the end of a longer goal is lost.
-- **Clef can still reject the composing child.** Its scope check can still reject the child that would compose the application. The compiler then files the entry problem with Root, which places it with the module most likely to compose. Whether that settles faster in a live run than v7.13's marking is not yet measured.
-- **Workers that never change their files.** The run ends in failure after each was told twice. That bounds the cost but does not route the problem elsewhere unless the manager's model chooses to.
+- **Not verified live.** No live run has used v7.14 or v7.15. The replays above use scripted models.
+- **Fixed by the port.** Run4 (26fadbdb) showed three problems that v7.14 alone did not fix. v7.13.1 fixed all three on the live line, and the port brings them here:
+  - the runner wrote a new test every time the application ran, so a worker chased a moving target: the first test that runs is now fixed for the run;
+  - a split whose children were placeholders ("Piece A" to "Piece E") reached Clef and the prune walk, which in that run killed four of the five: the splitter now gets one more try, told to be more specific, before Clef sees it;
+  - a `start()` that returned a single generic handler passed the check before the runner: it is now an `entry` problem.
+- **Long goals, fixed in this line.** The v7.14 commit clipped the goal before appending the `start()` requirement, so the end of a goal near the API's 1,800-character limit was lost. The goal is now clipped at 1,800, and Root's task holds it whole, plus the requirement (ed20497).
+- **Clef can still reject the composing child** in a room without promises. The compiler then files the entry problem with Root, which places it with the module most likely to compose. The port adds the scope sentence of v7.13.3, and in v7.15 the child that carries `start` is in scope by construction. Neither has been measured in a live run.
+- **Workers that never change their files.** The run ends in failure after each was told twice. That bounds the cost but does not route the problem elsewhere unless the manager's model chooses to. v7.15 tells the worker, the second time, that nothing changed.
 - **An adversarial retask loop.** A manager's model that keeps retasking a worker that never succeeds is bounded only by that manager's six repair rounds. The branch's problem then goes up to its parent.
 - **A Root that does not split.** A Root that Clef does not split writes the application itself. It keeps its own build path, with no builder and no compiler. Its code goes through the Container's build check, and the runner writes no test for it (author decision 4, critique #27).
 - **Carried over from v7.12:**
