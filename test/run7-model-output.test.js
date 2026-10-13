@@ -218,3 +218,66 @@ test('room: runner_rejected carries the start of what the runner returned, after
   assert.equal(r.node(builder.id).status,'done',tail(r));
 });
 
+// ------------------------------------------------- the bounded runner retry
+test('room: a runner that returns prose three times, then valid code, completes without a Continue (run7)',async()=>{
+  const {room:r,calls,builds}=room({runner:n=>n<=3?`${sentence} (draft ${n})`:prose+'```js\n'+crudTest});
+  await workers(r);
+  const builder=await r.scheduleAssembly('root');
+  await r.drive(20);
+  assert.equal(calls.runner.length,4,tail(r));
+  assert.ok(calls.runner.every(c=>c.endsWith(' /no_think')),'the room\'s default model is asked for no reasoning');
+  assert.equal(events(r,'runner_rejected').length,3);
+  assert.equal(events(r,'runner_retry').length,1);
+  assert.match(events(r,'runner_retry')[0].body,/^The runner could not produce a valid test in three attempts; the builder runs once more with three more before it waits for Continue\. Last problem: Your previous test was rejected before running: glue\/smoke\.js: /);
+  assert.equal(events(r,'runner_failed').length,0);
+  assert.equal(events(r,'builder_continue').length,0);
+  assert.equal(r.node(builder.id).status,'done',tail(r));
+  assert.ok(r.read('run_passed:root',null));
+  assert.equal(r.read('runner_test',null).test,crudTest);
+  assert.equal(builds.at(-1)['glue/smoke.js'],crudTest);
+  // The retry round relinks and loads again, and the mapping is asked again.
+  assert.equal(calls.coverage.length,2);
+  assert.ok(calls.coverage.every(c=>c.endsWith(' /no_think')));
+});
+
+test('room: a runner that never writes code ends in runner_failed after one bounded retry; Continue gives one more round, not another retry',async()=>{
+  const {room:r,calls,pending}=room({runner:n=>`${sentence} (draft ${n})`});
+  await workers(r);
+  const builder=await r.scheduleAssembly('root');
+  await r.drive(50);
+  assert.equal(calls.runner.length,6,'two rounds of three, then the room waits');
+  assert.equal(events(r,'runner_retry').length,1);
+  assert.equal(events(r,'runner_failed').length,1);
+  assert.equal(r.node(builder.id).status,'waiting');
+  assert.ok(!r.read('queue',[]).includes(builder.id));
+  assert.equal(r.get('status'),'paused');
+  assert.equal(r.read('build_failure:root',null),null,'no worker is blamed');
+  // Each rejection shows the start of what the runner returned.
+  const rejected=events(r,'runner_rejected');
+  assert.equal(rejected.length,6);
+  rejected.forEach((e,i)=>assert.ok(e.body.endsWith(` The runner returned: ${JSON.stringify(`${sentence} (draft ${i+1})`)}`),e.body));
+  // Continue works as before: one round of three, then runner_failed again.
+  assert.deepEqual(await r.resume(20),{status:'running'});
+  await Promise.all(pending.splice(0));
+  assert.equal(calls.runner.length,9,tail(r));
+  assert.equal(events(r,'builder_continue').length,1);
+  assert.equal(events(r,'runner_retry').length,1,'one automatic retry per source fingerprint');
+  assert.equal(events(r,'runner_failed').length,2);
+  assert.equal(r.node(builder.id).status,'waiting');
+  assert.equal(r.get('status'),'paused');
+});
+
+test('room: a revised source gets its own retry; the record is per fingerprint',async()=>{
+  const {room:r,calls}=room({runner:n=>`${sentence} (draft ${n})`});
+  await workers(r);
+  const builder=await r.scheduleAssembly('root');
+  await r.drive(50);
+  assert.equal(calls.runner.length,6);
+  await r.putFile('root.1','ticketStore.js',store+'// revised\n');
+  await r.scheduleAssembly('root');
+  assert.equal(r.node(builder.id).status,'ready');
+  await r.drive(50);
+  assert.equal(calls.runner.length,12,tail(r));
+  assert.equal(events(r,'runner_retry').length,2);
+  assert.equal(events(r,'runner_failed').length,2);
+});

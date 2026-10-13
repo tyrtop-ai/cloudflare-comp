@@ -652,6 +652,11 @@ test('room: a runner that cannot write a valid test blames no worker',async()=>{
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
   assert.equal(calls.runner.length,3);
+  // v7.13.4: one more round of three before the room waits for Continue.
+  assert.ok(room.snapshot().events.some(e=>e.kind==='runner_retry'));
+  assert.equal(room.node(builder.id).status,'ready');
+  await room.turn(builder.id);
+  assert.equal(calls.runner.length,6);
   assert.equal(room.read('build_failure:root',null),null);
   assert.ok(room.snapshot().events.some(e=>e.kind==='runner_failed'));
   assert.equal(room.node(builder.id).status,'waiting');

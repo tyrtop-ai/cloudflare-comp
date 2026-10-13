@@ -1628,6 +1628,17 @@ export class ControlRoom extends DurableObject {
       const outcome=await this.runApplication(id,fingerprint,files,api,goal,link,operations);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);
       if(outcome.runnerFailed) {
+        // Run7 paused twice for a human Continue after three drafts. The
+        // first time for this source the builder is queued once more, a
+        // counted turn with three more drafts; after that it waits for
+        // Continue, as before, however often Continue fails the same way.
+        if(this.read('runner_retry',null)?.fingerprint!==fingerprint) {
+          this.save('runner_retry',{fingerprint,ts:Date.now()});
+          this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+          this.save('queue',addLast(this.read('queue',[]),id));
+          this.event(id,'runner_retry',`The runner could not produce a valid test in three attempts; the builder runs once more with three more before it waits for Continue. Last problem: ${clip(outcome.detail,700)}`);
+          return;
+        }
         // A runner that cannot write a valid test is not a worker's problem.
         this.save('link_routed',{fingerprint,stage:'runner',ts:Date.now()});
         this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
