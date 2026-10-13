@@ -45,13 +45,15 @@ function branchState(n,index) {
   return index.builderOf(n.id)?.status==='done'?'linked':'ready';
 }
 const statusOf=n=>current?.active_agents?.includes(n.id)?'running':n.status;
+// Just circles: colour is the role, solid means done, a pulse means running;
+// everything else is one click away in the detail panel.
 function treeMarkup(n,index) {
   const role=index.role(n),state=branchState(n,index),builder=role==='manager'?index.builderOf(n.id):null;
-  const building=!!builder&&builder.status!=='done';
+  const building=!!builder&&builder.status!=='done',status=statusOf(n);
   const children=(index.kids.get(n.id)||[]).filter(c=>!isBuilder(c));
-  const note=building?`<span class="branch-state builder ${esc(statusOf(builder))}">builder ${esc(statusOf(builder))}</span>`:state==='linked'?'<span class="onode-linked">linked ✓</span>':'';
-  const card=`<button type="button" class="onode role-${role} ${state}${selectedNode===n.id?' selected':''}" data-node="${esc(n.id)}" title="${esc(n.task)}"><span class="glyph role-${role}${building?' split':''}"></span><span class="onode-body"><span class="onode-top"><strong>${esc(n.label)}</strong><span class="branch-state ${esc(statusOf(n))}">${esc(statusOf(n))}</span></span><span class="onode-id mono">${esc(n.id)} · ${role}</span>${note}</span></button>`;
-  return `<div class="obranch ${state}">${card}${children.length?`<div class="ochildren">${children.map(c=>`<div class="ochild">${treeMarkup(c,index)}</div>`).join('')}</div>`:''}</div>`;
+  const tip=`${n.label} · ${role}${building?' · builder '+statusOf(builder):''} · ${status}`;
+  const dot=`<button type="button" class="dot role-${role} ${esc(status)}${building?' split':''}${state==='linked'?' linked':''}${n.parent?'':' root'}${selectedNode===n.id?' selected':''}" data-node="${esc(n.id)}" title="${esc(tip)}" aria-label="${esc(tip)}"></button>`;
+  return `<div class="obranch ${state}">${dot}${children.length?`<div class="ochildren">${children.map(c=>`<div class="ochild">${treeMarkup(c,index)}</div>`).join('')}</div>`:''}</div>`;
 }
 function nodeDetail(n,index) {
   const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
