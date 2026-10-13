@@ -1,11 +1,12 @@
 // Small in-memory filesystem for isomorphic-git, adapted from Cloudflare's
 // published Artifacts Worker example. No source is persisted in the DO.
 class MemoryStats {
-  constructor(entry) { this.entry = entry; }
+  // mode is a plain property: isomorphic-git's checkout assigns 0o755 or
+  // 0o160000 to it for executables and submodules (a getter threw there).
+  constructor(entry) { this.entry = entry; this.mode = entry.kind === 'file' ? 0o100644 : entry.kind === 'symlink' ? 0o120777 : 0o040000; }
   get size() { return this.entry.kind === 'dir' ? 0 : this.entry.kind === 'symlink' ? new TextEncoder().encode(this.entry.target).byteLength : this.entry.data.byteLength; }
   get mtimeMs() { return this.entry.mtimeMs; }
   get ctimeMs() { return this.entry.mtimeMs; }
-  get mode() { return this.entry.kind === 'file' ? 0o100644 : this.entry.kind === 'symlink' ? 0o120777 : 0o040000; }
   isFile() { return this.entry.kind === 'file'; }
   isDirectory() { return this.entry.kind === 'dir'; }
   isSymbolicLink() { return this.entry.kind === 'symlink'; }
