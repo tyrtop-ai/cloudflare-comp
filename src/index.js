@@ -3,13 +3,14 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
 import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget } from './linker.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, GENERIC_NAMES } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
@@ -58,7 +59,7 @@ async function assumptionTopic(slug, childKey) {
   const hash=Array.from(bytes.slice(0,6),b=>b.toString(16).padStart(2,'0')).join('');
   return `${full.slice(0,87)}_${hash}`; // exactly 100 characters, 48-bit suffix
 }
-const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase';
+const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces';
 // Hard safety ceilings. Actual per-room limits are chosen in the dashboard.
 export const ROOM_LIMITS = Object.freeze({
   max_agents: [2, 256], max_depth: [1, 16], parallel: [1, 64], budget: [1, 500]
@@ -167,6 +168,9 @@ export class ControlRoom extends DurableObject {
     // agents always begin with mandatory behavior decomposition.
     const cols = query(db, "SELECT name FROM pragma_table_info('agents')").map(c => c.name);
     if (!cols.includes('phase')) db.exec("ALTER TABLE agents ADD COLUMN phase TEXT NOT NULL DEFAULT 'work'");
+    // v7.15: a node's promise, the functions its parent's split listed for it.
+    // '[]' (a v7.14 room) is no promise and exactly v7.14 behavior.
+    if (!cols.includes('interfaces')) db.exec("ALTER TABLE agents ADD COLUMN interfaces TEXT NOT NULL DEFAULT '[]'");
     db.exec('CREATE TABLE IF NOT EXISTS artifact_files (agent TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL, commit_hash TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(agent,path))');
     // Export index is populated on successful Artifacts writes, not at download time.
     db.exec('CREATE TABLE IF NOT EXISTS artifact_contents (agent TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(agent,path))');
@@ -399,7 +403,8 @@ export class ControlRoom extends DurableObject {
     if (!owner) return;
     const children = this.children(id);
     if (!children.length && !this.files(id).some(x=>x.path===OWNERSHIP_MEMORY)) return;
-    const notebook = { responsibility:owner.task, children: children.map(c => ({id:c.id,label:c.label,responsibility:c.task})) };
+    // v7.15: the plan's names, mirrored from agents.interfaces (routing reads SQLite).
+    const notebook = { responsibility:owner.task, interfaces:parse(owner.interfaces,[]), children: children.map(c => ({id:c.id,label:c.label,responsibility:c.task,interfaces:parse(c.interfaces,[])})) };
     await this.putFile(id,OWNERSHIP_MEMORY,JSON.stringify(notebook,null,2)+'\n');
   }
   // Agent asks the PUBLIC memory of the responsible adjacent strand first. On
@@ -433,7 +438,7 @@ export class ControlRoom extends DurableObject {
       build: this.read('last_build_report',null), build_infrastructure: this.get('compile_infrastructure',''),
       active_agents: [...this.activeTurns], max_parallel: this.settings().parallel, settings: this.settings(),
       budget: Number(this.get('budget','0')), queue: this.read('queue', []),
-      agents: this.allNodes(),
+      agents: this.allNodes().map(n=>({...n,interfaces:parse(n.interfaces,[])})),
       files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
       // Export manifests contain only aliases, never hidden child routing IDs.
       exports: this.allNodes().flatMap(n=>this.manager(n.id) ?
@@ -532,12 +537,12 @@ export class ControlRoom extends DurableObject {
     const readme=files.some(f=>f.path==='README.md')?'README.control-plane.md':'README.md';
     return {...app,files:[{path:readme,content:appReadme(app,files)},...files]};
   }
-  async provision(id, parent, label, task) {
+  async provision(id, parent, label, task, interfaces=[]) {
     if (this.node(id)) throw new Error('Agent ID exists');
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
-    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\')',
-      id, parent, clip(label,70), clip(task,parent?2000:1801+GOAL_START_REQUIREMENT.length), '', repo.name, repo.remote, repo.branch);
+    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?)',
+      id, parent, clip(label,70), clip(task,parent?2000:1801+GOAL_START_REQUIREMENT.length), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)));
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
@@ -556,6 +561,24 @@ export class ControlRoom extends DurableObject {
     },0);
   }
   productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)).length;}
+  // v7.15: a node's promise, the only accessor.
+  promisedOf(id) {const n=this.node(id);return n?parse(n.interfaces,[]):[];}
+  // The promises of one level's live direct children, minus the branch a
+  // walk or request came from. Nothing else is read (author decision 2).
+  offeredFunctions(level, exclude='') {
+    return query(this.db(),"SELECT id,label,interfaces FROM agents WHERE parent=? AND id<>? AND status NOT IN ('retired','failed') AND interfaces<>'[]' ORDER BY LENGTH(id),id",level,exclude)
+      .filter(c=>!RUNTIME_LABELS.includes(c.label)).map(c=>({id:c.id,label:c.label,items:parse(c.interfaces,[])})).filter(c=>c.items.length);
+  }
+  // Walk up from id: the nearest level where exactly one other direct child
+  // promises name. Two there is ambiguous; a name in a promise on the path
+  // is never matched, as that branch is the one excluded.
+  ownerBranch(name, id) {
+    for(let b=this.node(id);b?.parent;b=this.node(b.parent)) {
+      const holders=this.offeredFunctions(b.parent,b.id).filter(o=>o.items.some(f=>f.name===name));
+      if(holders.length)return holders.length===1?{id:holders[0].id,label:holders[0].label}:null;
+    }
+    return null;
+  }
   canSplit(parentId, count=2) {
     return parentId.split('.').length <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + count <= this.settings().max_agents;
@@ -600,7 +623,7 @@ export class ControlRoom extends DurableObject {
     for(let i=0;i<planned.length;i++) {
       const id=`${parentId}.${batch.start_index+i}`;
       let child=this.node(id);
-      if(!child) child=await this.provision(id,parentId,planned[i].label,planned[i].task);
+      if(!child) child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[]);
       made.push(child);
     }
     return made;
@@ -1940,6 +1963,82 @@ export class ControlRoom extends DurableObject {
     const cfg=this.settings();
     return shard.selectOwner({question,candidates,strict,keywords,split_model:cfg.split_model,split_threshold:cfg.split_threshold});
   }
+  // v7.15: one admission for every split, first or late, before any child
+  // exists. Names first and deterministic: C0 reads what a task says it
+  // exports, R1-R4 repair a naming slip by deleting the name, and only a
+  // promised name without exactly one carrier (C5) rejects the split, with no
+  // Clef call spent on it. Then Clef on scope (unchanged) and on the names a
+  // piece adds, in the same step; a carrier is in scope by construction (run6
+  // lost its entry module at p=0.448). Then the walk by name, and the Clef
+  // walk for the non-carriers left.
+  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[]}={}) {
+    const promised=this.promisedOf(id),own=new Set(promised.map(p=>p.name));
+    const {spawn:named,inferred}=normalizeSpawn(spawn,promised);
+    // C0 already ran in decompose for a first split; it reports what it read.
+    const read=[...(Array.isArray(earlier)?earlier:[]).filter(x=>typeof x?.label==='string'&&own.has(x?.name)),...inferred];
+    for(const x of read)this.event(id,'interfaces_inferred',`"${clip(x.label,70)}" says it exports ${x.name}(); it carries ${x.name}.`);
+    const c5=interfaceErrors(named,promised).filter(e=>e.check==='C5');
+    if(c5.length)return {spawn:named,c5,rejectedScope:0,rejectedChildren:[]};
+    const elsewhere=new Set(named.flatMap(c=>(c?.interfaces||[]).map(f=>f.name)).filter(name=>!own.has(name)&&!GENERIC_NAMES.has(name)&&this.ownerBranch(name,id)));
+    const {spawn:repaired,removed}=repairInterfaces(named,promised,elsewhere);
+    if(removed.length)this.event(id,'interfaces_repaired',`Deleted ${removed.map(r=>`${r.name} from "${clip(r.label,70)}" (${r.why})`).join('; ')}; the pieces are kept.`);
+    const carried=c=>(c.interfaces||[]).filter(f=>own.has(f.name)).map(f=>f.name);
+    const goal=this.topTask()||n.task,env=this.inferenceEnv();
+    const [scope,names]=await Promise.all([scopeChildren(env,goal,n.task,repaired),scopeInterfaces(env,goal,n.task,repaired,promised)]);
+    let rejectedScope=0;
+    const rejectedChildren=[],admitted=[];
+    repaired.forEach((child,i)=>{
+      const carries=carried(child),label=clip(child.label,70),p=scope[i].toFixed(3);
+      if(scope[i]>=0.5)this.event(id,'scope_allowed',late?`Clef accepted late child "${label}" (p=${p}).`:`Clef accepted proposed child "${label}" (p=${p}); within Root and parent scope.`);
+      else if(carries.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which carries ${carries.join(', ')} that this manager was promised; admitted (in scope by construction).`);
+      else {
+        this.event(id,'scope_rejected',late?`Clef rejected late child "${label}" (p=${p}).`:`Clef rejected proposed child "${label}" (p=${p}); outside Root and parent scope.`);
+        rejectedScope++;rejectedChildren.push({label:child.label,task:clip(child.task,500),probability:scope[i]});
+        return;
+      }
+      // A carried name takes the parent's item: the description travels down unchanged.
+      let interfaces=(child.interfaces||[]).map(f=>own.has(f.name)?promised.find(p=>p.name===f.name):f);
+      const no=(names[i]||[]).filter(x=>x.p<0.5);
+      for(const x of no)this.event(id,'interfaces_stripped',`Clef judged ${x.name} (p=${x.p.toFixed(3)}) is not what "${label}" writes; the piece is kept without it.`);
+      if(no.length)interfaces=interfaces.filter(f=>!no.some(x=>x.name===f.name));
+      admitted.push({...child,interfaces});
+    });
+    // The walk by name (C6): a name that another branch's promise holds, at
+    // the nearest level that has one, belongs to that branch. A non-carrier
+    // made only of such names, all one branch's, is pruned to it with no Clef
+    // call; otherwise those names are deleted from the piece (R5), carriers
+    // included. Generic names never prune.
+    const kept=[],walkable=[];
+    for(const child of admitted) {
+      const carries=carried(child).length>0,added=child.interfaces.filter(f=>!own.has(f.name)),label=clip(child.label,70);
+      const owned=added.filter(f=>!GENERIC_NAMES.has(f.name)).map(f=>({name:f.name,owner:this.ownerBranch(f.name,id)})).filter(x=>x.owner);
+      if(owned.length&&!carries&&owned.length===added.length&&new Set(owned.map(x=>x.owner.id)).size===1) {
+        const owner=owned[0].owner,list=owned.map(x=>x.name);
+        this.event(id,'scope_pruned',`Proposed child "${label}" exports ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; not spawned. Import them by those names.`);
+        rejectedScope++;
+        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:owner.label,names:list,
+          note:`${child.label} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names instead of rebuilding it. Any part of "${clip(assignedPiece(child.task),160)}" that ${owner.label} does not provide is still written in this strand.`,
+          short:`${child.label} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names and write here only what it lacks.`});
+        continue;
+      }
+      const byOwner=new Map();
+      for(const x of owned){if(!byOwner.has(x.owner.id))byOwner.set(x.owner.id,{owner:x.owner,names:[]});byOwner.get(x.owner.id).names.push(x.name);}
+      for(const {owner,names:list} of byOwner.values()) {
+        this.event(id,'interfaces_owned_elsewhere',`"${label}" lists ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; kept without ${list.length>1?'them':'it'}.`);
+        rejectedChildren.push({label:child.label,owner:owner.label,names:list,kept:true,
+          short:`${child.label}: ${list.join(', ')} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names and write here only what it lacks.`});
+      }
+      const c=owned.length?{...child,interfaces:child.interfaces.filter(f=>!owned.some(x=>x.name===f.name))}:child;
+      kept.push(c);
+      if(!carries)walkable.push(c);
+    }
+    // A carrier never takes the Clef walk: its names were given to it.
+    const walk=await this.pruneOnDiscovery(id,walkable);
+    rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
+    const survivors=kept.filter(c=>carried(c).length||walk.kept.includes(c));
+    if(interfaceErrors(survivors,promised).some(e=>e.check==='C5'))throw new Error(`Admission lost a function promised to ${id}; this is a runtime bug.`);
+    return {spawn:survivors,c5:[],rejectedScope,rejectedChildren};
+  }
   // Prune on discovery: before a manager with a parent spawns an admitted
   // child, walk up from its parent. At each level Clef picks the direct child
   // that owns the child's topic: this branch keeps it, another branch prunes
@@ -2776,6 +2875,9 @@ export class ControlRoom extends DurableObject {
       if(n.phase==='decompose') {
         before.split_feedback=this.read(`split_feedback:${id}`,null);
         before.root_scope=this.topTask() || n.task;
+        // v7.15: a splitter sees its own promise only, never another node's.
+        const promised=this.promisedOf(id);
+        if(promised.length)before.your_promised_functions=promised;
       }
       const observedAssembly=n.label==='Temporary builder'?this.assemblyFingerprint(n.parent):null;
       if(n.label==='Temporary builder') {
@@ -2806,8 +2908,12 @@ export class ControlRoom extends DurableObject {
         raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()});
       } else if (splitting) {
         const started=Date.now();
-        const gate=await shouldSplit(this.inferenceEnv(),n.task,before);
-        this.event(id,'split_gate',`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
+        // v7.15: a split rejected only for its function names keeps Clef's
+        // YES; asking again invites "implement it directly", which at Root
+        // would hand the whole application to one worker.
+        const namesOnly=before.split_feedback?.kind==='interfaces';
+        const gate=namesOnly?{split:true}:await shouldSplit(this.inferenceEnv(),n.task,before);
+        this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
         if (gate.split && !this.canSplit(id,2)) {
           // Clef chose to split but the room has no agent slots or depth left.
           // Do not force a weak leaf to implement work Clef would divide.
@@ -2834,6 +2940,7 @@ export class ControlRoom extends DurableObject {
           // global scope and the rejected split remain router-only context.
           delete before.root_scope;
           delete before.split_feedback;
+          delete before.your_promised_functions;
           raw=await decide(this.inferenceEnv(),before);
           this.set(`split_feedback:${id}`,'');
         }
@@ -2852,7 +2959,7 @@ export class ControlRoom extends DurableObject {
       // v7.14: the top splits like every manager; the start() requirement is
       // part of the goal, assigned like any other requirement.
       if(this.env.MOCK_AI!=='true' && (splitting || action.spawn.length))
-        action.spawn=action.spawn.map(spec=>spec.label==='Temporary builder'?spec:{label:spec.label,task:codeWritingTask(spec.task)});
+        action.spawn=action.spawn.map(spec=>spec.label==='Temporary builder'?spec:{...spec,task:codeWritingTask(spec.task)});
       // Leaves publish their own source; builders author only narrow wiring
       // and smoke tests. Runtime alone owns package/entrypoint generation.
       if(this.env.MOCK_AI!=='true' && !splitting && !this.manager(id) && n.label!=='Temporary builder') {
@@ -2899,19 +3006,20 @@ export class ControlRoom extends DurableObject {
         // child repository is created. Keep Root's goal as an immutable scope
         // anchor so an ambiguous parent cannot drift over generations.
         if(action.spawn.length) {
-          const scope = await scopeChildren(this.inferenceEnv(),this.topTask()||n.task,n.task,action.spawn);
-          action.spawn=action.spawn.filter((child,i)=>{
-            const allowed=scope[i]>=0.5;
-            this.event(id,allowed?'scope_allowed':'scope_rejected',
-              `Clef ${allowed?'accepted':'rejected'} proposed child "${clip(child.label,70)}" (p=${scope[i].toFixed(3)}); ${allowed?'within':'outside'} Root and parent scope.`);
-            if(!allowed) {
-              rejectedScope++;
-              rejectedChildren.push({label:child.label,task:clip(child.task,500),probability:scope[i]});
-            }
-            return allowed;
-          });
-          const walk=await this.pruneOnDiscovery(id,action.spawn);
-          action.spawn=walk.kept;rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
+          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred});
+          if(admit.c5.length) {
+            // The partition was not what failed: the next turn keeps Clef's
+            // YES and the splitter gets this partition back to correct.
+            const texts=admit.c5.map(e=>e.text);
+            this.save(`split_feedback:${id}`,{kind:'interfaces',
+              reason:`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and give each promised function to exactly one of them.`,
+              proposed:admit.spawn.map(c=>({label:c.label,task:clip(c.task,300),functions:(c.interfaces||[]).map(f=>f.name)})),accepted:[],rejected:[],
+              interfaces:texts,root_goal:this.topTask()||n.task});
+            this.event(id,'split_rejected',`The proposed functions fail ${texts.length} check(s): ${texts.join(' ')}`);
+            this.incrementFailures(id);
+            return;
+          }
+          action.spawn=admit.spawn;rejectedScope+=admit.rejectedScope;rejectedChildren.push(...admit.rejectedChildren);
         }
         // The runtime, not a model's 'done', prevents implementation before
         // decomposition. No code files, imports, or completion are accepted here.
@@ -2984,20 +3092,14 @@ export class ControlRoom extends DurableObject {
           this.incrementFailures(id);
           return;
         }
-        const scope=await scopeChildren(this.inferenceEnv(),this.topTask()||n.task,n.task,action.spawn);
-        action.spawn=action.spawn.filter((child,i)=>{
-          const allowed=scope[i]>=0.5;
-          this.event(id,allowed?'scope_allowed':'scope_rejected',
-            `Clef ${allowed?'accepted':'rejected'} late child "${clip(child.label,70)}" (p=${scope[i].toFixed(3)}).`);
-          if(!allowed)rejectedScope++;
-          return allowed;
-        });
-        const walk=await this.pruneOnDiscovery(id,action.spawn);
-        action.spawn=walk.kept;rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
-        if((rejectedScope && action.spawn.length<2) || action.spawn.length<2 ||
+        // A worker with a promise must give every promised name to one piece (C5).
+        const admit=await this.admitChildren(id,n,action.spawn,{late:true});
+        action.spawn=admit.c5.length?[]:admit.spawn;rejectedScope+=admit.rejectedScope;rejectedChildren.push(...admit.rejectedChildren);
+        if(admit.c5.length || (rejectedScope && action.spawn.length<2) || action.spawn.length<2 ||
            action.spawn.length>this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()) {
-          this.event(id,'split_rejected','Late decomposition rejected. Preserve the assigned code-writing task for a corrected split, rather than executing an oversized leaf.');
-          await this.rememberOwners(id,walk.rejected);
+          this.event(id,'split_rejected',admit.c5.length?`Late decomposition rejected: the proposed functions fail ${admit.c5.length} check(s): ${admit.c5.map(e=>e.text).join(' ')}`:
+            'Late decomposition rejected. Preserve the assigned code-writing task for a corrected split, rather than executing an oversized leaf.');
+          await this.rememberOwners(id,admit.rejectedChildren);
           this.incrementFailures(id);
           return;
         }
@@ -3013,7 +3115,7 @@ export class ControlRoom extends DurableObject {
       // the rejected one it corrects unless this split keeps that piece, in
       // their manager's public knowledge, written before any child can run.
       const owned=action.spawn.length?ownerNotes([...rejectedChildren,...(before.split_feedback?.rejected||[])]
-        .filter(x=>!action.spawn.some(c=>c.label===x.label))):'';
+        .filter(x=>x.kept||!action.spawn.some(c=>c.label===x.label))):'';
       if(owned)action.remember.push({visibility:'public',key:'owned_elsewhere',value:owned});
       if (!this.manager(id) && !action.spawn.length && action.exports.length) {
         this.event(id,'blocked','Implementers cannot publish child export aliases.');
@@ -3369,7 +3471,8 @@ export class ControlRoom extends DurableObject {
     this.busy=true;
     this.event('system','start',clip(goal,1300));
     this.ctx.waitUntil((async()=>{
-      try { await this.provision('root',null,'Root objective',task); await this.drive(budget); }
+      // v7.15: Root promises start, the only runtime-written promise (live rooms).
+      try { await this.provision('root',null,'Root objective',task,this.live()?ROOT_PROMISE:[]); await this.drive(budget); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};

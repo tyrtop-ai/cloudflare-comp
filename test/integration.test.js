@@ -238,7 +238,7 @@ test('a manager never invokes a generative decision even if that model would wri
     if(system.includes('CODE SPLITTER'))return {response:JSON.stringify({
       summary:'Separate UI and operations into independent behaviors',spawn:[
         {label:'UI',task:'Implement all user interactions for creating and viewing ticket records'},
-        {label:'Backend',task:'Implement storage and all ticket CRUD request operations'}]})};
+        {label:'Backend',task:'Implement storage and all ticket CRUD request operations',functions:[{name:'start'}]}]})};
     decisionCalls++;
     return {response:JSON.stringify({summary:'I want to rewrite my own implementation',
       files:[{path:'app.js',intent:'implement everything myself'}],

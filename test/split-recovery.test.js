@@ -27,7 +27,7 @@ function setup(ai){
   return {room,drain:async()=>Promise.all(pending.splice(0))};
 }
 const bogus=[
-  {label:'Tokenize command string',task:'Write code to tokenize a command string'},
+  {label:'Tokenize command string',task:'Write code to tokenize a command string',functions:[{name:'start'}]},
   {label:'Handle quoted arguments',task:'Write code to handle quoted command arguments'},
   {label:'Process escape characters',task:'Write code to parse command escape characters'},
   {label:'Combine parsing components',task:'Write code to combine a shell parser'}
@@ -97,7 +97,7 @@ test('Clef can keep split decision and Qwen sees rejection details to correct th
       splits.push(request);
       return answer({summary:'Code pieces',spawn:splits.length===1?bogus:[
         {label:'Ticket model',task:'Write code implementing ticket model state'},
-        {label:'Ticket operations',task:'Write code implementing ticket creation and update operations'}
+        {label:'Ticket operations',task:'Write code implementing ticket creation and update operations',functions:[{name:'start'}]}
       ]});
     }
     throw new Error('Unexpected model call');

@@ -44,7 +44,7 @@ test('independent behavioral components are spawned and cannot create code on th
     calls.push(params.questions ? 'Clef gate' : params.messages[0].content);
     if(params.questions) return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.9}]))};
     return response({summary:'Separate UI behavior from storage behavior',spawn:[
-      {label:'UI',task:'Implement user-facing creation, viewing, updating and deletion interactions for tickets'},
+      {label:'UI',task:'Implement user-facing creation, viewing, updating and deletion interactions for tickets',functions:[{name:'start'}]},
       {label:'Storage',task:'Implement persisted ticket creation, lookup, updates and deletion operations'}],
       done:true,files:[{path:'wrong.js',intent:'should be ignored'}]});
   }};
@@ -111,7 +111,7 @@ test('Clef scope still removes an out-of-scope child from a split',async()=>{
       return {answers:Object.fromEntries(Object.keys(params.questions).map((k,i)=>[k,{noul:i===2?0.02:0.9}]))};
     }
     return response({summary:'Two producers and one unrelated strand',spawn:[
-      {label:'Ticket creation',task:'Write code to create ticket records'},
+      {label:'Ticket creation',task:'Write code to create ticket records',functions:[{name:'start'}]},
       {label:'Ticket management',task:'Write code to update and delete ticket records'},
       {label:'Marketing site',task:'Write a marketing landing page'}]});
   }};
@@ -136,7 +136,7 @@ test('v7.11: the child that composes the application stays a worker; the start()
       {label:'Create handler for viewing tickets',task:'Write code that retrieves tickets'},
       {label:'Create handler for updating tickets',task:'Write code that updates tickets'},
       {label:'Create handler for deleting tickets',task:'Write code that deletes tickets'},
-      {label:'Assemble components into IssueTracker application',task:'Write code that combines TicketStore and handlers into a cohesive issue tracker interface'}
+      {label:'Assemble components into IssueTracker application',task:'Write code that combines TicketStore and handlers into a cohesive issue tracker interface',functions:[{name:'start'}]}
     ]});
   }};
   const {room,drain}=setup({AI:ai});
@@ -180,9 +180,12 @@ test('v7.14: an 1800-character goal reaches Root whole, ahead of the start() req
 test('v7.14: Root splits like every manager: an entry mark is dropped and no child gets the entry contract',async()=>{
   const {room,drain}=splitRoom((n)=>[
     {label:`Piece ${n}A`,task:`Write code for piece ${n}A of the tracker`},
-    {label:`Application Entry ${n}`,task:`Write the entry module ${n} that wires the pieces together`,entry:true}]);
+    {label:`Application Entry ${n}`,task:`Write the entry module ${n} that wires the pieces together`,entry:true,functions:n===1?[{name:'start'}]:[{name:'start'},{name:'wirePieces'}]}]);
   await room.start('Build a small issue tracker',2);await drain();
   assert.equal(room.children('root.1').length,2,'root.1 split too');
+  // v7.15: root.2 carries Root's start, so the walk deletes the start root.1's split lists (R5).
+  assert.deepEqual(room.promisedOf('root.1.2').map(f=>f.name),['wirePieces']);
+  assert.ok(room.snapshot().events.some(e=>e.kind==='interfaces_owned_elsewhere'&&e.actor==='root.1'&&/lists start, which "Application Entry 1" already provides/.test(e.body)));
   const kids=[...room.children('root'),...room.children('root.1')];
   assert.ok(kids.every(k=>!k.task.includes(ENTRY_CONTRACT)&&!k.task.includes(GOAL_START_REQUIREMENT)),'no child task gets a contract appended');
   assert.match(kids[1].task,/^Write executable source code to implement the following specific piece: Write the entry module 1 that wires the pieces together\. Deliver working source files/);
@@ -220,7 +223,7 @@ test('v7.13: a new room splits only at Clef p >= 0.7; a room set to another thre
   const run=async(settings)=>{
     const ai={run:async(_model,params)=>{
       if(params.questions) return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.6}]))};
-      if(params.messages[0].content.includes('CODE SPLITTER'))return response({summary:'Two',spawn:[{label:'Store',task:'Write code for ticket storage'},{label:'Views',task:'Write code that formats tickets'}]});
+      if(params.messages[0].content.includes('CODE SPLITTER'))return response({summary:'Two',spawn:[{label:'Store',task:'Write code for ticket storage'},{label:'Views',task:'Write code that formats tickets',functions:[{name:'start'}]}]});
       return response({summary:'Implemented',files:[{path:'tracker.js',content:'module.exports = { start() { return { list: () => [] }; } };\n'}],done:true});
     }};
     const {room,drain}=setup({AI:ai});

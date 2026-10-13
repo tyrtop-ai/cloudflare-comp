@@ -142,6 +142,55 @@ test('v7.15: C0 reads a promised name only where a task says it exports it',()=>
   assert.deepEqual(listed.spawn.map(c=>c.interfaces.map(f=>f.name)),[[],['start']]);
 });
 
+test('v7.15: repairs delete bad, copied, duplicated and surplus names and keep promised ones; only C5 rejects',async()=>{
+  const named=(label,...names)=>({label,task:'Write code',interfaces:names.map(name=>({name,does:'',params:[]}))});
+  const {spawn,removed}=repairInterfaces([named('Entry','start','bad name','functionName','sharedHelper'),
+    named('Store','saveTicket','getTickets','listTickets','countTickets','findTicket','purgeTickets','sharedHelper')],[START]);
+  assert.deepEqual(spawn.map(c=>c.interfaces.map(f=>f.name)),[['start'],['saveTicket','getTickets','listTickets','countTickets','findTicket']]);
+  assert.deepEqual(removed.map(r=>[r.label,r.name,r.why]),[['Entry','bad name','not a plain function name'],['Entry','functionName','copied from the example'],
+    ['Entry','sharedHelper','listed by two pieces'],['Store','sharedHelper','listed by two pieces'],['Store','purgeTickets','more than 5']]);
+  assert.deepEqual(repairInterfaces([named('Many','a1','a2','a3','a4','a5','start')],[START]).spawn[0].interfaces.map(f=>f.name),['a1','a2','a3','a4','start'],'promised names are kept first, in their order');
+  // In a room: one in-call retry, then the repairs, one event, and the split stands.
+  const answer=[{label:'Entry module',task:'Write code that wires the tracker together',functions:[{name:'start'},{name:'bad name'},{name:'functionName'}]},
+    {label:'Ticket store',task:'Write code that keeps tickets in memory',functions:['saveTicket','getTickets','listTickets','countTickets','findTicket','purgeTickets','sharedHelper'].map(name=>({name}))},
+    {label:'Ticket views',task:'Write code that renders tickets',functions:[{name:'sharedHelper'},{name:'renderTicket'}]}];
+  const ai=fakeAI({split:()=>answer});
+  const {room,drain}=setup(ai);
+  await room.start('Build a small issue tracker',1);await drain();
+  assert.equal(ai.calls.filter(c=>c.kind==='split').length,2,'one in-call retry');
+  assert.deepEqual(room.children('root').map(c=>room.promisedOf(c.id).map(f=>f.name)),[['start'],['saveTicket','getTickets','listTickets','countTickets','findTicket'],['renderTicket']]);
+  assert.deepEqual(room.promisedOf('root.1'),[START]);
+  const repaired=events(room,'interfaces_repaired');
+  assert.equal(repaired.length,1);
+  assert.equal(repaired[0].body,'Deleted bad name from "Entry module" (not a plain function name); functionName from "Entry module" (copied from the example); sharedHelper from "Ticket store" (listed by two pieces); sharedHelper from "Ticket views" (listed by two pieces); purgeTickets from "Ticket store" (more than 5); the pieces are kept.');
+  assert.equal(events(room,'split_rejected').length,0);
+});
+
+test('v7.15: a split that drops a promised name is rejected before any Clef call; the next turn skips the Clef gate and the splitter sees the proposed partition',async()=>{
+  const first=[{label:'Ticket store',task:'Write code that keeps tickets in memory',functions:[{name:'saveTicket'}]},{label:'Ticket views',task:'Write code that renders tickets'}];
+  const ai=fakeAI({split:n=>n<=2?first:[first[0],{...first[1],functions:[{name:'start'}]}]});
+  const {room,drain}=setup(ai);
+  await room.start('Build a small issue tracker',1);await drain();
+  assert.deepEqual(ai.calls.map(c=>c.kind),['gate','split','split'],'no Clef call is spent on a names-only failure');
+  const feedback=room.read('split_feedback:root',null);
+  assert.equal(feedback.kind,'interfaces');
+  assert.deepEqual(feedback.proposed.map(c=>[c.label,c.functions]),[['Ticket store',['saveTicket']],['Ticket views',[]]]);
+  assert.deepEqual([feedback.accepted,feedback.rejected],[[],[]]);
+  assert.equal(feedback.reason,`The partition was acceptable; only its function names failed: Your assignment promises start(): ${START.does}; give it, unchanged, to exactly one piece, the one whose task writes it. Keep the pieces and give each promised function to exactly one of them.`);
+  assert.equal(room.read('failures',{}).root,1);
+  assert.equal(room.children('root').length,0);
+  assert.match(events(room,'split_rejected')[0].body,/^The proposed functions fail 1 check\(s\): Your assignment promises start\(\)/);
+  await room.resume(1);await drain();
+  const later=ai.calls.slice(3);
+  assert.equal(later.filter(c=>c.kind==='gate').length,0,'Clef\'s YES stands');
+  assert.equal(later.filter(c=>c.kind==='split').length,1);
+  assert.equal(later[0].request.previous_split_rejection.kind,'interfaces');
+  assert.deepEqual(later[0].request.previous_split_rejection.proposed.map(c=>c.label),['Ticket store','Ticket views'],'the splitter gets the partition to keep');
+  assert.ok(events(room,'split_gate').some(e=>e.body==='Clef\'s YES stands: the last split failed only on function names.'));
+  assert.deepEqual(room.children('root').map(c=>[c.label,room.promisedOf(c.id).map(f=>f.name)]),[['Ticket store',['saveTicket']],['Ticket views',['start']]]);
+  assert.equal(room.read('split_feedback:root',null),null);
+});
+
 test('v7.15: decompose retries once in the same call and keeps the better answer',async()=>{
   const script=answers=>{
     const calls=[];
@@ -212,4 +261,121 @@ test('v7.15: scopeInterfaces asks one question per non-promised name, never abou
   assert.equal(calls.length,0,'no name to ask about, no call');
   assert.deepEqual((await scopeInterfaces({MOCK_AI:'true'},'goal','parent',children,[START]))[1].map(x=>x.p),[1,1,1,1,1]);
   await assert.rejects(scopeInterfaces({AI:{run:async()=>({answers:{}})}},'goal','parent',children,[START]),/no valid probability for saveTicket of child 1/);
+  // In a room: the NO strips getTickets and keeps the piece.
+  const ai=fakeAI({split:()=>[{label:'Entry module',task:'Write code that exports start() and wires the pieces',functions:[]},
+    {label:'Ticket store',task:'Write code that keeps tickets',functions:[{name:'saveTicket'},{name:'getTickets'}]}],names:(_label,name)=>name==='getTickets'?0.1:0.8});
+  const {room,drain}=setup(ai);
+  await room.start('Build a small issue tracker',1);await drain();
+  assert.deepEqual(room.children('root').map(c=>room.promisedOf(c.id).map(f=>f.name)),[['start'],['saveTicket']]);
+  assert.deepEqual(events(room,'interfaces_stripped').map(e=>e.body),['Clef judged getTickets (p=0.100) is not what "Ticket store" writes; the piece is kept without it.']);
+  assert.deepEqual(events(room,'interfaces_inferred').map(e=>e.body),['"Entry module" says it exports start(); it carries start.']);
+});
+
+test('v7.15: run6 replay (A): Root\'s entry module carrying start is admitted at p=0.448 and keeps start whatever Clef says about names',async()=>{
+  const ai=fakeAI({gate:()=>0.854,split:()=>run6Root,within:label=>run6Within[label],names:()=>0.1});
+  const {room,drain}=setup(ai);
+  await room.start(run6Goal,1);await drain();
+  const asked=ai.calls.filter(c=>c.kind==='names').flatMap(c=>Object.values(c.questions).map(q=>q.instructions));
+  assert.equal(asked.length,6,'one question per name the pieces add');
+  assert.ok(asked.every(q=>!/\bstart\(/.test(q)),'start is never put to Clef');
+  assert.deepEqual(room.children('root').map(c=>c.label),run6Root.map(c=>c.label));
+  assert.ok(events(room,'scope_allowed').some(e=>e.body==='Clef answered p=0.448 for "entry module", which carries start that this manager was promised; admitted (in scope by construction).'));
+  assert.deepEqual(room.promisedOf('root.1'),[START],'the parent\'s item, not the splitter\'s "starts the tracker"');
+  for(const c of room.children('root').slice(1))assert.deepEqual(room.promisedOf(c.id),[],c.label);
+  assert.equal(events(room,'interfaces_stripped').length,6);
+  assert.equal(events(room,'split_rejected').length,0);
+  assert.equal(ai.calls.filter(c=>c.kind==='owner').length,0,'Root\'s children are not walked');
+  const notebook=JSON.parse(await room.indexedContent('root','memory/private/ownership.json'));
+  assert.deepEqual(notebook.interfaces,room.promisedOf('root'));
+  assert.deepEqual(notebook.children.map(c=>[c.id,c.interfaces]),room.children('root').map(c=>[c.id,room.promisedOf(c.id)]),'ownership.json mirrors SQLite');
+});
+
+test('v7.15: spawn records interfaces in SQLite and ownership.json, and a replayed batch keeps them',async()=>{
+  const {room,store}=setup({run:async()=>{throw new Error('no model call');}});
+  await room.provision('root',null,'Root objective',run6Goal,ROOT_PROMISE);
+  assert.deepEqual(room.promisedOf('root'),[START]);
+  const original=store.create.bind(store);
+  let attempts=0;
+  store.create=async(name,...args)=>{attempts++;if(attempts===2)throw new Error('Injected repository failure');return original(name,...args);};
+  const specs=run6Root.slice(0,3).map(c=>({label:c.label,task:c.task,interfaces:normalizeInterfaces(c.functions)}));
+  specs[0].interfaces=[START];
+  await assert.rejects(room.spawn('root',specs,'batch-1'),/Injected/);
+  assert.equal(room.children('root').length,1);
+  await room.spawn('root',specs,'batch-1');
+  assert.deepEqual(room.children('root').map(c=>room.promisedOf(c.id)),specs.map(s=>s.interfaces),'the replayed batch keeps every promise');
+  await room.syncOwnership('root');
+  const notebook=JSON.parse(await room.indexedContent('root','memory/private/ownership.json'));
+  assert.deepEqual(notebook.interfaces,[START]);
+  assert.deepEqual(notebook.children,room.children('root').map(c=>({id:c.id,label:c.label,responsibility:c.task,interfaces:room.promisedOf(c.id)})));
+  assert.deepEqual(room.snapshot().agents.find(a=>a.id==='root.2').interfaces,specs[1].interfaces,'the dashboard gets the parsed promise');
+  // A room from before v7.15 gains the column, empty: no promise, v7.14 behavior.
+  const sql=new Sql();
+  sql.db.exec("CREATE TABLE agents (id TEXT PRIMARY KEY,parent TEXT,label TEXT NOT NULL,task TEXT NOT NULL,summary TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,turn INTEGER NOT NULL DEFAULT 0,repo_name TEXT NOT NULL,remote TEXT NOT NULL,branch TEXT NOT NULL,phase TEXT NOT NULL DEFAULT 'work')");
+  sql.db.prepare("INSERT INTO agents(id,parent,label,task,status,repo_name,remote,branch) VALUES ('root',NULL,'Root','old goal','done','r','x','main')").run();
+  const old=new ControlRoom({storage:{sql},waitUntil:()=>{}},{MOCK_AI:'true',TEST_ARTIFACT_STORE:new Store()});
+  assert.deepEqual(old.promisedOf('root'),[]);
+});
+
+test('v7.15: run6 replay (A): the view split\'s "Storage module" exporting only getTickets is pruned by name to "ticket storage" with no Clef owner call; the carrier of viewTickets skips the Clef walk; "Filter application logic" still goes to Clef',async()=>{
+  const ai=fakeAI({gate:()=>0.77,split:()=>[
+      {label:'Storage module for ticket data',task:'Write code that loads the stored tickets',functions:[{name:'getTickets',does:'returns all tickets'}]},
+      {label:'Filter application logic',task:'Write code that applies status filters to a ticket list',functions:[{name:'applyFilters',does:'filters tickets',params:['tickets','filter']}]},
+      {label:'Ticket retrieval function',task:'Write code that returns the tickets matching a filter',functions:[{name:'viewTickets'}]}],
+    within:label=>({'Storage module for ticket data':0.863,'Filter application logic':0.682,'Ticket retrieval function':0.836})[label],
+    owner:()=>'view ticket'});
+  const {room,store}=await tree(ai,run6Root,{phases:{'view ticket':'decompose'}});
+  const repos=store.repos.size;
+  await room.turn('root.4');
+  assert.deepEqual(room.children('root.4').map(c=>c.label),['Filter application logic','Ticket retrieval function']);
+  assert.equal(store.repos.size,repos+2,'no repository for the pruned piece');
+  assert.deepEqual(events(room,'scope_pruned').map(e=>e.body),['Proposed child "Storage module for ticket data" exports getTickets, which "ticket storage" already provides; not spawned. Import them by those names.']);
+  const walked=ai.calls.filter(c=>c.kind==='owner');
+  assert.equal(walked.length,1);
+  assert.match(walked[0].question,/^Which branch's assigned code already covers this proposed piece\? Filter application logic: /);
+  assert.deepEqual(room.promisedOf('root.4.2'),room.promisedOf('root.4'),'the carrier keeps view ticket\'s item');
+  assert.deepEqual(room.promisedOf('root.4.1').map(f=>f.name),['applyFilters']);
+  assert.match((await room.readKnowledge('root.4')).owned_elsewhere,/Storage module for ticket data is owned by ticket storage; import getTickets from that strand by exactly those names/);
+});
+
+test('v7.15: a child (carrier or not) with some names owned elsewhere is kept without them, and the notes name them',async()=>{
+  const spawn=[{label:'Create handler',task:'Write code that creates a ticket and stores it',functions:[{name:'createTicket'},{name:'saveTicket'}]},
+    {label:'Ticket validation',task:'Write code that validates a new ticket against the stored ones',functions:[{name:'validateTicketInput'},{name:'getTickets'}]}];
+  const ai=fakeAI({split:()=>spawn,owner:()=>'create ticket'});
+  const {room}=await tree(ai,run6Root,{phases:{'create ticket':'decompose'}});
+  const direct=await room.admitChildren('root.3',room.node('root.3'),normalizeAction({spawn}).spawn);
+  assert.equal(direct.rejectedScope,0,'kept children do not count as rejected');
+  assert.deepEqual(direct.rejectedChildren.map(x=>[x.label,x.owner,x.names,x.kept]),[['Create handler','ticket storage',['saveTicket'],true],['Ticket validation','ticket storage',['getTickets'],true]]);
+  assert.deepEqual(direct.spawn.map(c=>c.interfaces.map(f=>f.name)),[['createTicket'],['validateTicketInput']]);
+  await room.turn('root.3');
+  assert.deepEqual(room.children('root.3').map(c=>[c.label,room.promisedOf(c.id).map(f=>f.name)]),[['Create handler',['createTicket']],['Ticket validation',['validateTicketInput']]]);
+  assert.deepEqual(events(room,'interfaces_owned_elsewhere').slice(-2).map(e=>e.body),[
+    '"Create handler" lists saveTicket, which "ticket storage" already provides; kept without it.',
+    '"Ticket validation" lists getTickets, which "ticket storage" already provides; kept without it.']);
+  const note=(await room.readKnowledge('root.3')).owned_elsewhere;
+  assert.match(note,/Create handler: saveTicket is owned by ticket storage; import saveTicket from that strand by exactly those names/);
+  assert.match(note,/Ticket validation: getTickets is owned by ticket storage; import getTickets from that strand by exactly those names/);
+  assert.equal(ai.calls.filter(c=>c.kind==='owner'&&/Create handler: /.test(c.question)).length,0,'a carrier skips the Clef walk');
+  assert.ok(ai.calls.some(c=>c.kind==='owner'&&/Ticket validation: /.test(c.question)));
+});
+
+test('v7.15: ownerBranch reads only each level\'s other direct children\'s promises, nearest level first',async()=>{
+  const {room}=setup({run:async()=>{throw new Error('no model call');}});
+  const fn=(...names)=>names.map(name=>({name,does:'',params:[]}));
+  await room.provision('root',null,'Root objective','Build an app',ROOT_PROMISE);
+  await room.spawn('root',[{label:'A',task:'Write code for A',interfaces:fn('alpha')},{label:'B',task:'Write code for B',interfaces:fn('beta')},{label:'C',task:'Write code for C'}]);
+  await room.spawn('root.1',[{label:'A1',task:'Write code for A1',interfaces:fn('alpha')},{label:'A2',task:'Write code for A2',interfaces:fn('gamma')}]);
+  await room.spawn('root.2',[{label:'B1',task:'Write code for B1',interfaces:fn('beta')},{label:'B2',task:'Write code for B2',interfaces:fn('delta')}]);
+  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.1',label:'A'});
+  assert.equal(room.ownerBranch('gamma','root.2.1'),null,'a name a cousin\'s lower split added is not found');
+  assert.equal(room.ownerBranch('beta','root.2.1'),null,'a name in an ancestor\'s own promise is not found');
+  assert.deepEqual(room.ownerBranch('delta','root.2.1'),{id:'root.2.2',label:'B2'});
+  assert.equal(room.ownerBranch('alpha','root'),null,'the top has no level above');
+  const set=(id,...names)=>room.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(fn(...names)),id);
+  set('root.2.2','delta','alpha');
+  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.2.2',label:'B2'},'nearest level first');
+  set('root.2.2','delta');set('root.3','alpha');
+  assert.equal(room.ownerBranch('alpha','root.2.1'),null,'two holders at one level are ambiguous');
+  room.db().exec("UPDATE agents SET status='retired' WHERE id='root.3'");
+  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.1',label:'A'},'a retired child offers nothing');
+  assert.deepEqual(room.offeredFunctions('root','root.2').map(o=>[o.id,o.items.map(f=>f.name)]),[['root.1',['alpha']]]);
 });
