@@ -147,7 +147,7 @@ Open the `workers.dev` URL Wrangler prints, paste the token, and press **Start n
 
 ### Getting the code out
 
-Once Root's builder has linked the application, **Download app (.zip)** in the dashboard saves it, and **Push to GitHub** pushes it to a new branch of a repository you name and opens a pull request (this needs a `GITHUB_TOKEN` secret). The export holds the linked modules, the runtime loader, the runner's test and a README that says whether the last Container run passed for exactly these files, or that they are UNVERIFIED. It runs with plain Node.js, with nothing to install: `node glue/smoke.js`. [INSTALL-CLOUDFLARE.md](INSTALL-CLOUDFLARE.md#getting-the-code-out) gives the token's permissions and the API routes (`/api/app`, `/api/app.zip`, `/api/export/github`).
+Once Root's builder has linked the application, **Download app (.zip)** in the dashboard saves it, and **Push to GitHub** pushes it to a new branch of a repository you name and opens a pull request (this needs a `GITHUB_TOKEN` secret). The export holds the linked modules, the runtime loader, the runner's test and a README that says whether the last Container run passed for exactly these files, or that they are UNVERIFIED. It runs with plain Node.js, with nothing to install: `node glue/smoke.js`. When Clef left the whole goal atomic, Root wrote the code itself, and the export is Root's own files. [INSTALL-CLOUDFLARE.md](INSTALL-CLOUDFLARE.md#getting-the-code-out) gives the token's permissions and the API routes (`/api/app`, `/api/app.zip`, `/api/export/github`).
 
 ### Local checks
 
