@@ -584,3 +584,35 @@ test('v7.15: a repair turn\'s fix is not deferred for a name the ticket gives, a
   await room.turn(worker);
   assert.deepEqual(ai.calls.filter(c=>c.kind==='leaf')[1].request.last_turn_notes,[note]);
 });
+
+// slice B review: a retask cleared the child's answers, but an answer to its
+// old task's request, or to its killed branch's, still reached it, Clef
+// judged it against the new task, and it refilled fn_answers.
+test('v7.15: a retask voids the requests of the retasked child and of its killed branch: no stale answer, Clef call or wake reaches it',async()=>{
+  const deep={root:[{label:'ticket storage',fns:[fn('getTickets','returns all tickets')]},{label:'view ticket',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'])]},{label:'entry module',fns:[START]}],
+    'root.2':[{label:'Ticket retrieval',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'])]},{label:'Filter application logic',fns:[fn('applyFilters','filters tickets',['tickets','filter'])]}],
+    'root.2.1':[{label:'Retrieval logic',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'])]},{label:'Ticket formatting',fns:[fn('formatTicket','formats a ticket',['ticket'])]}]};
+  const ai=fakeAI({inside:()=>0.2}),{room}=await plannedTree(ai,deep);
+  ask(room,'root.2.1.1','formats a date','formatDate');
+  for(const id of ['root.2.1','root.2','root'])await managerTurn(room,id);
+  assert.deepEqual(replies(room,'root.2').map(r=>r.kind),['unowned'],'Root\'s answer is on its way down');
+  // A request from the branch nobody has read yet.
+  ask(room,'root.2.1.2','parses a date','parseDate');
+  room.retaskChild('root.2','root.2.1','Write code that returns the tickets matching a filter, in one module.','probe');
+  assert.deepEqual(room.receive('root.2.1').map(m=>m.body.slice(0,16)),[],'its killed branch\'s request is gone');
+  await managerTurn(room,'root.2');
+  assert.deepEqual(events(room,'route_stale').map(e=>[e.actor,e.body]),[['root.2','Dropped the answer to fn formatDate: "Ticket retrieval" no longer asks for it.']]);
+  assert.deepEqual([ai.calls.filter(c=>c.kind==='inside').length,room.read('fn_answers:root.2.1',[]).length,room.receive('root.2.1').length,rows(room,'route_hops').length],[0,0,0,0]);
+  // A retasked worker: its old request's answer, and its unread second request, go.
+  const worker='root.1.1',flat=fakeAI({inside:()=>0.2}),{room:w}=await plannedTree(flat,storageTree);
+  ask(w,worker,'formats a date','formatDate');
+  await managerTurn(w,'root.1');await managerTurn(w,'root');
+  ask(w,worker,'parses a date','parseDate');
+  w.retaskChild('root.1',worker,'Write code that creates a ticket with a title only.','probe');
+  assert.equal(rows(w,'route_workers').length,0);
+  assert.deepEqual(w.receive('root.1').map(m=>m.body.slice(0,15)),['[route:unowned]'],'only the answer on its way is left');
+  const seen=w.wakeGeneration(worker);
+  await managerTurn(w,'root.1');
+  assert.equal(events(w,'route_stale').length,1);
+  assert.deepEqual([flat.calls.filter(c=>c.kind==='inside').length,w.read(`fn_answers:${worker}`,[]).length,w.receive(worker).length,w.wakeGeneration(worker)],[0,0,0,seen]);
+});

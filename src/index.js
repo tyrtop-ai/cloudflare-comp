@@ -2292,6 +2292,11 @@ export class ControlRoom extends DurableObject {
     db.exec("UPDATE agents SET task=?,status='ready' WHERE id=?",clip(task,2000),c);
     db.exec('DELETE FROM pending_turns WHERE agent=?',c);
     db.exec("DELETE FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",c);
+    // Its old task's requests, and its killed branch's, are void: an answer
+    // to one reached it as its own and Clef judged it against the new task
+    // (slice B review). Routing drops a reply still on its way (routeReply).
+    db.exec('DELETE FROM route_workers WHERE worker=?',c);
+    db.exec("DELETE FROM messages WHERE (recipient=? OR sender=?) AND delivered=0 AND body LIKE '[route:%'",c,c);
     // Its new task's done is checked against the promise again, and the
     // answers to its old task's requests go (v7.15 §10.1).
     for(const k of ['returned','split_feedback','nudged','contract_returns','fn_answers','turn_notes'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
@@ -3089,6 +3094,13 @@ export class ControlRoom extends DurableObject {
       if(own[hop.topic]!==value) await this.remember(manager,[{visibility:'public',key:hop.topic,value}]);
     }
     const upstream=this.node(hop.requester),worker=upstream&&!this.manager(hop.requester),planned=worker&&this.planned();
+    // A worker no longer waiting for this request (retasked, or a sub-manager
+    // whose branch a retask killed) gets no answer, no Clef call and no wake.
+    if(planned&&!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND request_id=?',upstream.id,request_id).length) {
+      this.event(manager,'route_stale',`Dropped the answer to ${hop.topic}: "${upstream.label}" no longer asks for it.`);
+      await this.removeManagerHop(manager,request_id);
+      return;
+    }
     // v7.15 §5.12e: nobody up to Root promises it; the worker's own manager
     // asks Clef whether it is the worker's to write, before the row goes.
     if(planned&&kind==='unowned')value=await this.needScope(manager,upstream,hop);
