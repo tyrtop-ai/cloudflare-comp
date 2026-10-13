@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recursive Control Plane — Persistent Artifact Memory</title>
-  <link rel="stylesheet" href="/styles.css?v=7.13.2" />
+  <link rel="stylesheet" href="/styles.css?v=7.13.3" />
 </head>
 <body>
   <div class="page">
@@ -79,8 +79,8 @@
         <section class="panel tree-panel">
           <div class="section-head"><span class="counter">03</span><h2>Ownership tree</h2><span class="right-note">Observer sees the tree. Individual models don't.</span></div>
           <div class="otree-legend"><span><i class="dot role-manager done"></i>manager</span><span><i class="dot role-worker done"></i>worker</span><span><i class="dot role-manager split"></i>builder linking</span><span><i class="dot role-compiler done"></i>compiler</span><span><i class="dot role-worker waiting"></i>working</span><span><i class="swatch ready"></i>all workers done</span><span><i class="dot role-manager done linked"></i>linked</span></div>
-          <div id="node-detail" class="node-detail"><p class="helper">Select an agent to see its task.</p></div>
           <div id="hierarchy" class="hierarchy"><p class="empty">No agents yet.</p></div>
+          <div id="node-detail" class="node-detail"><p class="helper">Select an agent to see its task.</p></div>
         </section>
         <div class="two-col">
           <section class="panel feed-panel">
@@ -100,6 +100,6 @@
     </div>
     <footer><span>NO GLOBAL AGENT DIRECTORY. NO REMAPPING. OWNERSHIP SURVIVES DELEGATION.</span><span>Independent agents infer asynchronously. Limits and model are configurable per room. Generated code is not executed or tested.</span><span id="room-id" class="mono"></span></footer>
   </div>
-  <script type="module" src="/app.js?v=7.13.2"></script>
+  <script type="module" src="/app.js?v=7.13.3"></script>
 </body>
 </html>
