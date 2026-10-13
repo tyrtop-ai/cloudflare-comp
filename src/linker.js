@@ -1005,6 +1005,72 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
   return edits;
 }
 
+// ---------- boundaries: what a branch built below shows the level above ----------
+// A branch builder publishes its linked bundle's boundary beside it: the
+// modules it offers outward (those none of its modules imports, and the one
+// module exporting start() if only one does) and every import that does not
+// resolve inside it, with the names and members it wants. Only the model's
+// view above is built from boundaries; everything deterministic reads the bundle.
+export function branchBoundary(files) {
+  const set=files instanceof Map?files:new Map(Object.entries(files));
+  const js=[...set.keys()].filter(p=>LINKABLE.test(p)).sort(),imported=new Set(),needs=new Map();
+  for(const file of js)for(const ref of importRefs(file,set.get(file))) {
+    const r=resolveLocal(file,ref.specifier,set);
+    if(r.path){if(r.path!==file)imported.add(r.path);continue;}
+    const need=needs.get(file+'|'+ref.specifier)||{file,specifier:ref.specifier,names:[],members:[]};
+    need.names=[...new Set([...need.names,...ref.names])].filter(Boolean);need.members=[...new Set([...need.members,...ref.members])].filter(Boolean);
+    needs.set(file+'|'+ref.specifier,need);
+  }
+  const starters=js.filter(p=>exportsStart(exportSurface(p,set.get(p))));
+  const offered=js.filter(p=>!imported.has(p)||starters.length===1&&starters[0]===p);
+  return {exports:offered.length?offered:js,needs:[...needs.values()]};
+}
+// Modules an import that resolves nowhere may mean: named like its path (file
+// or class name), or exporting every name it wants.
+export function likelyTargets(path, content, specifier, surfaces) {
+  const ref=importRefs(path,content).find(r=>r.specifier===specifier);
+  if(!ref)return [];
+  const key=normName(specifier.split('/').pop()),wanted=[...ref.names,...ref.members].filter(Boolean);
+  return [...surfaces.keys()].filter(t=>{
+    if(t===path)return false;
+    const file=normName(t.split('/').pop()),cls=normName(surfaces.get(t)?.default?.name),{names}=exportNames(surfaces.get(t));
+    return file===key||!!cls&&cls===key||key.length>=5&&(file.includes(key)||key.includes(file)&&file.length>=5)||wanted.length>0&&wanted.every(n=>names.has(n));
+  });
+}
+// A file the model links that lives inside a branch built below is sent as
+// an excerpt: each import it must fix (every relative import when specifiers
+// is null), the lines that use what the import binds or an instance made
+// from it, and any line an error names, each with a line of context, as
+// separate hunks. A file the hunks cover whole is one hunk, its text.
+export function importExcerpt(path, content, {specifiers=null, lines=[]}={}) {
+  const text=String(content??''),all=text.split('\n'),keep=new Set(),bound=new Set();
+  let ast;try {ast=parseSource(text).ast;} catch {return [text];}
+  const span=(node,pad)=>{for(let l=node.loc.start.line-pad;l<=node.loc.end.line+pad;l++)if(l>=1&&l<=all.length)keep.add(l);};
+  const chosen=lit=>typeof lit?.value==='string'&&lit.value.startsWith('.')&&(!specifiers||specifiers.includes(lit.value));
+  const root=n=>{while(n?.type==='MemberExpression')n=n.object;return n;};
+  walk(ast,(node,parent)=>{
+    if(node.type==='VariableDeclarator'&&isRequire(root(node.init))&&chosen(root(node.init).arguments[0])){patternNames(node.id,bound);span(parent?.type==='VariableDeclaration'?parent:node,0);}
+    else if(node.type==='ImportDeclaration'&&chosen(node.source)){for(const sp of node.specifiers)bound.add(sp.local.name);span(node,0);}
+    else if(isRequire(node)&&chosen(node.arguments[0])&&parent?.type!=='VariableDeclarator')span(parent||node,1);
+  });
+  for(let grew=true;grew;) {
+    grew=false;
+    walk(ast,node=>{
+      if(node.type==='VariableDeclarator'&&node.id.type==='Identifier'&&!bound.has(node.id.name)&&/^(?:New|Call)Expression$/.test(node.init?.type||'')&&bound.has(nameOf(root(node.init.callee)))){bound.add(node.id.name);grew=true;}
+    });
+  }
+  walk(ast,(node,parent)=>{if(node.type==='Identifier'&&bound.has(node.name)&&!notReference(node,parent))span(node,1);});
+  for(const l of lines)for(let x=l-2;x<=l+2;x++)if(x>=1&&x<=all.length)keep.add(x);
+  const hunks=[];let from=null,to=null;
+  for(const l of [...keep].sort((a,b)=>a-b)) {
+    if(from!==null&&l===to+1){to=l;continue;}
+    if(from!==null)hunks.push(all.slice(from-1,to).join('\n'));
+    from=to=l;
+  }
+  if(from!==null)hunks.push(all.slice(from-1,to).join('\n'));
+  return hunks;
+}
+
 // ---------- binding shape: the one import change that is not a rename ----------
 // A worker can bind a module the wrong way round: destructure one function
 // from a module whose module.exports is that function, or bind a module whole

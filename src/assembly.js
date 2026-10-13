@@ -2,8 +2,10 @@
 // copied byte-for-byte into namespaced subtrees, preserving relative imports.
 import { isPath } from './protocol.js';
 
+// A branch builder's boundary: what the level above shows its model of the branch.
+export const BOUNDARY = 'assembly.boundary.json';
 export const isAssemblyMetadata = path => String(path).split('/').some((part,i,all) =>
-  part === 'memory' || part === 'assembly.manifest.json' ||
+  part === 'memory' || part === 'assembly.manifest.json' || part === BOUNDARY ||
   (part === 'public' && all[i+1] === 'interfaces.json'));
 
 export const isBuilderGluePath = path => isPath(path) && (
