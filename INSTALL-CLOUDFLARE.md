@@ -83,10 +83,20 @@ npx wrangler secret put APP_TOKEN
 
 Paste a long random value, for example the output of `node -e "console.log(crypto.randomUUID()+crypto.randomUUID())"`. Keep it out of Git. Until the secret is set, every `/api/*` request returns `503` with `Set APP_TOKEN with wrangler secret put APP_TOKEN`; the dashboard page itself still loads. `wrangler secret put` publishes a new Worker version, so no extra deploy is needed.
 
+### Optional: a GitHub token for exports
+
+To push a run's application to GitHub from the dashboard or the API, store a GitHub token as a second secret:
+
+```bash
+npx wrangler secret put GITHUB_TOKEN
+```
+
+Use a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) limited to the repositories you export to, with **Contents: Read and write** and **Pull requests: Read and write** (GitHub adds **Metadata: Read** itself). The token stays in the Worker: the export reads it from the secret only, never from a request, never returns or logs it, and removes it from every error message. The Worker talks only to `https://github.com` and `https://api.github.com` for exports. Without the secret, `POST /api/export/github` returns `503` with `Set GITHUB_TOKEN with wrangler secret put GITHUB_TOKEN`; downloading the app as a ZIP needs no token.
+
 ## 6. Verify the deployment
 
 ```bash
-npx wrangler secret list                                # shows APP_TOKEN
+npx wrangler secret list                                # shows APP_TOKEN (and GITHUB_TOKEN, if set)
 npx wrangler containers list                            # shows the BuildExecutor container
 npx wrangler artifacts repos list --namespace default   # empty until the first run
 npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave running during a run
@@ -129,6 +139,25 @@ A run ends **complete** when Root's runner test passes, **failed** when an agent
 
 **Export observation JSON** downloads `recursive-control-plane-<first 8 characters of the room>.json` from `/api/export`. It contains the room snapshot, every agent, every file the room has recorded with its content, and up to 20,000 events. The agents' Artifacts remote URLs include your account ID, so review an export before you share it.
 
+### Getting the code out
+
+Once Root's builder has linked the application, the room holds runnable code: the workers' modules under `components/`, the runtime loader `glue/index.js` and `package.json`, and the runner's test `glue/smoke.js` once it has been written. The export adds a `README.md` with the goal, the run status and how to run it. Assembly metadata (`assembly.manifest.json`, `assembly.boundary.json`) and agent notebooks are left out. When Clef judged the whole goal atomic, Root writes the code itself and there is no builder: the export is then Root's own files, and its README gives the package scripts the Container runs, or a command that loads the entry module and calls `start()`.
+
+- **Download app (.zip)** saves `recursive-app-<first 8 characters of the room>.zip` from `/api/app.zip`.
+- **Push to GitHub** takes `owner/repo`, pushes the application to a new branch `control-plane/<first 8 characters of the room>` (`-2`, `-3` and so on if the name is taken) with the files under `apps/<first 8 characters of the room>/`, and opens a pull request against the repository's default branch. The dashboard links the pull request, or the branch when there is none. On the new branch that directory holds exactly the exported files: files an earlier export left there are removed, and the pull request says so. Nothing outside it changes, and nothing is ever force-pushed. With `dir` set to `.` the files go to the repository root, next to the repository's own files; if that would change a file the repository already has (its `README.md` or `package.json`, say), the export is refused with `409` and the names of those files. In an empty repository the new branch becomes its first branch, and no pull request is opened because there is no base branch.
+
+The Worker clones the base branch at depth 1 into memory without checking it out, builds the new commit from the base's trees, and pushes only the objects the base does not already have. Peak memory is about four times the base branch's packed size, so a base branch up to about 20 MB packed fits in a Worker's 128 MB. For a larger repository, export into an empty or smaller repository, or download the ZIP.
+
+The run status says whether the last passing Container run hashed exactly the exported files. If anything changed after that run, or no run has passed, the README, the commit message and the pull request say **UNVERIFIED**. The app needs only Node.js 22 or newer and its built-ins:
+
+```bash
+unzip recursive-app-demo-roo.zip -d app && cd app
+node -e "require('./glue/index.js').start().then(app=>console.log(Object.keys(app)))"
+node glue/smoke.js
+```
+
+Before there is an application (Root's builder has not linked one, or an atomic Root has not written code) these routes return `409` with `No application yet`. A complete or failed room that never had one returns `409` with `No application to export`; start a new room.
+
 ### Using the API directly
 
 Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is 8–64 characters of letters, digits and `-`. `GET` routes take the room as `?room=`, and `POST` routes take it in the JSON body.
@@ -141,6 +170,9 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 | `POST /api/run` | `{room, goal, budget, settings}`: start a new run. The goal must be 8–1800 characters. |
 | `POST /api/continue` | `{room, budget, settings}`: resume a run |
 | `POST /api/reset` | `{room}`: clear the room's state |
+| `GET /api/app?room=` | The application as JSON: `files` (`[{path, content}]`, README first), `passed`, `fingerprint`, `digest` and `note`, plus `room`, `goal`, `room_status`, `agents`, `entry` and `kind` (`linked` by Root's builder, or `atomic` when Root wrote it) |
+| `GET /api/app.zip?room=` | The same files as a ZIP download; the `x-app-passed` header is `true` or `false` |
+| `POST /api/export/github` | `{room, repo, branch?, dir?, pr?, base?}`: push the application to a new branch of `repo` (`owner/name`) and open a pull request unless `pr` is `false`. `branch` defaults to `control-plane/<room8>`, `dir` to `apps/<room8>/` (`.` is the repository root; `..` and absolute paths are refused), `base` to the repository's default branch. Returns `{branch, commit, pr_url, branch_url, files, passed, replaced}`; `replaced` is `true` when `dir` already held files on the base branch. Needs the `GITHUB_TOKEN` secret |
 
 ```bash
 URL=https://qwen-control-plane-v4.<your-subdomain>.workers.dev
@@ -148,6 +180,9 @@ APP_TOKEN='<the value you stored with wrangler secret put>'
 curl -sS -X POST "$URL/api/run" -H "Authorization: Bearer $APP_TOKEN" -H 'content-type: application/json' \
   -d '{"room":"demo-room-0001","goal":"Build a small issue tracker that lets someone create, view, update, and delete tickets.","budget":100,"settings":{"parallel":16,"max_agents":64,"max_depth":10}}'
 curl -sS "$URL/api/export?room=demo-room-0001" -H "Authorization: Bearer $APP_TOKEN" > run.json
+curl -sS -OJ "$URL/api/app.zip?room=demo-room-0001" -H "Authorization: Bearer $APP_TOKEN"   # saves recursive-app-demo-roo.zip
+curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" -H 'content-type: application/json' \
+  -d '{"room":"demo-room-0001","repo":"your-name/your-repo"}'
 ```
 
 `settings` accepts `parallel`, `max_agents`, `max_depth`, `model`, `split_model` and `split_threshold` (0.2–0.8), with the same limits as the dashboard. When `budget` is left out, it defaults to 20.
@@ -156,6 +191,8 @@ curl -sS "$URL/api/export?room=demo-room-0001" -H "Authorization: Bearer $APP_TO
 
 - **`503 Set APP_TOKEN ...`**: the secret is not set; see step 5. **`401 Invalid APP_TOKEN`**: the token in the dashboard does not match the secret.
 - **`400 Invalid room`**: the room ID must be 8–64 letters, digits or `-`.
+- **`409 No application yet`** from `/api/app`, `/api/app.zip` or `/api/export/github`: Root's builder has not linked the application, or an atomic Root has not written code. Continue the run until it does. **`409 No application to export`**: the room is complete or failed without an application; start a new room. **`409 ... already has ...`** from `/api/export/github`: exporting to the repository root would change the repository's own files; pass a `dir`. **`409 ... nothing to push`**: that directory already holds exactly these files.
+- **`503 Set GITHUB_TOKEN ...`**: the optional GitHub secret is not set; see step 5. **`502 GitHub ...`**: GitHub refused the export, and the message (with `github_status`) says why: `401` means the token is invalid or expired, `403` that it lacks Contents or Pull requests write access to that repository, `404` that the repository does not exist or the token cannot see it, and `422` that GitHub rejected the pull request. When the pull request fails after the push, the message names the branch that was pushed. When GitHub declines the push itself, the message ends with what GitHub said, for example `GH006` (a protected branch) or `GH013` (repository rules).
 - **Deploy fails with "The Docker CLI is needed to build the configured image"**: start Docker. With Podman, set `WRANGLER_DOCKER_BIN` and `DOCKER_HOST` as Wrangler suggests. `npx wrangler deploy --containers-rollout=none` deploys the Worker without the Container, but then Root cannot run the application and the build panel reports **EXECUTOR UNAVAILABLE**.
 - **Build panel shows EXECUTOR UNAVAILABLE, or a `build_infrastructure` event appears**: the Container is not ready or failed to start. The Worker can be live before its Container is provisioned. Check `npx wrangler containers list`, and watch `wrangler tail` for `Build container exec not ready`, `Build container command exceeded` or `Build process termination failed`. An infrastructure failure blames no worker; once the Container is up, **Continue** clears the block and Root's builder relinks and reruns the current source.
 - **`split_capacity_blocked`**: Clef chose to split, but the room has no agent slots or depth left. Raise **Total agents** or **Recursion depth** and press **Continue**.
