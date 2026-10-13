@@ -31,6 +31,13 @@ test('Clef threshold and model selector change only the split gate',async()=>{
   assert.ok(calls.every(c=>c.name==='@cf/cloudflare/clef' && c.input.model==='clef'));
 });
 
+test('v7.13: with no threshold passed, the Clef gate splits only at p >= 0.7',async()=>{
+  for(const [p,split] of [[0.6,false],[0.69,false],[0.7,true],[0.75,true]]) {
+    const env={AI:{run:async()=>({answers:{should_split:{noul:p}}})}};
+    assert.equal((await shouldSplit(env,minimal.your_responsibility,minimal)).split,split,String(p));
+  }
+});
+
 test('Malformed Clef response must not silently classify work as atomic',async()=>{
   for(const invalid of [{}, {answers:{should_split:{noul:'YES'}}},{answers:{should_split:{noul:3}}}]){
     assert.throws(()=>splitProbability(invalid), /Clef returned no valid/);

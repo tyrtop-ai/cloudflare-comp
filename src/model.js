@@ -45,7 +45,7 @@ export async function shouldSplit(env, task, mockContext) {
     questions:{should_split:{type:'noul',instructions:question}}
   });
   const probability=splitProbability(answer);
-  return {split:probability >= (Number(env.SPLIT_THRESHOLD)||0.5),probability};
+  return {split:probability >= (Number(env.SPLIT_THRESHOLD)||0.7),probability};
 }
 
 // After Qwen proposes children, ONE Clef request vets the whole proposed
@@ -134,12 +134,17 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
   return probabilities[0].p>=(strict?0.6:0.35)?probabilities[0].id:null;
 }
 
+// What the runtime loader and the runner rely on. The runtime, not the
+// splitter's wording, appends it to the task of the Root child that owns the
+// application entry, and repeats it in every entry problem.
+export const ENTRY_CONTRACT = 'You write the application entry module: it imports the other pieces by the relative paths and names it expects, wires them together and exports start(); start() returns an object whose methods perform the application\'s operations. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
+
 // When Clef says YES, a lightweight generative agent guesses the next layer.
 // No optimizing, no capacity prediction, no files, no agent registry.
 export async function decompose(env, context) {
   if (env.MOCK_AI === 'true') return mockDecomposition(context);
   const available=Math.max(0,Number(context.max_child_writers ?? 256));
-  const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into the smallest INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide as finely as the code naturally permits, with no predetermined number of children. The runtime has ${available} available agent slots for this split; use no more than that (and at least two if splitting). Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements, but do not invent filenames, export signatures, or a new global architecture. A separate builder only renames import paths and identifiers between finished modules; it never writes code. ${context.your_id==='root'?'Because no one else composes the application, exactly ONE child must own the application entry module: it imports the other pieces by the relative paths and names it expects, wires them together, and exports start(), which returns an object whose methods perform the operations the goal requests. ':''}Return ONLY JSON: {"summary":"...","spawn":[{"label":"Piece A","task":"Write code that ..."},...]}. Do not write code yourself.`;
+  const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into the smallest INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide as finely as the code naturally permits, with no predetermined number of children. The runtime has ${available} available agent slots for this split; use no more than that (and at least two if splitting). Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements, but do not invent filenames, export signatures, or a new global architecture. The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. ${context.your_id==='root'?'Because no one else composes the application, exactly ONE child must own the application entry module: it imports the other pieces by the relative paths and names it expects, wires them together, and exports start(), which returns an object whose methods perform the operations the goal requests. Mark that child, and only it, with "entry":true in its spawn item. ':''}Return ONLY JSON: {"summary":"...","spawn":[{"label":"Piece A","task":"Write code that ..."},...]}. Do not write code yourself.`;
   // Root's goal is a scope boundary for this splitter, never a request for
   // an agent to design the whole app or invent cross-module interfaces.
   const request=JSON.stringify({assigned_code:context.your_responsibility,

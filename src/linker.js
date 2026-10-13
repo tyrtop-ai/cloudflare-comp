@@ -148,6 +148,10 @@ export function exportSurface(path, content) {
       if(isModuleExports(left))surface.default=describe(right,decls);
       else if(left.type==='MemberExpression' && (isModuleExports(left.object) || (left.object.type==='Identifier'&&left.object.name==='exports')))
         addNamed(keyName(left.property)??'?',describe(right,decls,0,keyName(left.property)));
+    } else if(statement.type==='ExpressionStatement'&&statement.expression.type==='CallExpression'&&
+      statement.expression.arguments.some(a=>isModuleExports(a)||(a.type==='Identifier'&&a.name==='exports'))) {
+      // Object.assign(module.exports, {...}) exports names this parse does not list.
+      surface.open=true;
     }
   }
   return surface;
@@ -183,6 +187,16 @@ export function exportsStart(surface) {
   // The runtime loader calls a default class's static start().
   if(d.type==='class'&&d.methods.some(m=>m.name==='static start'))return true;
   return false;
+}
+// Whether a module may export start() where its surface cannot tell: exports
+// set by a call, a default made by a call (createApp(), Object.freeze({start}))
+// or held in a value this parse does not follow, a spread, an instance of a
+// class from elsewhere, or a re-export. Only a module known to lack start()
+// is turned back before the container runs.
+export function mayExportStart(surface) {
+  if(!surface||surface.error||surface.open||exportsStart(surface)||surface.named.some(n=>n.type==='reexport'))return true;
+  const d=surface.default;
+  return ['call','value'].includes(d?.type)||(d?.type==='object'&&d.members.some(m=>m.type==='spread'))||(d?.type==='instance'&&!d.methods.length);
 }
 
 // ---------- module specifiers ----------
@@ -724,17 +738,21 @@ export function linkRenames(before, after) {
 export const tokenEstimate=text=>Math.ceil(String(text||'').length/3)+40;
 
 // ---------- entry selection and the runtime loader ----------
-export function chooseEntry(files, surfaces, proposals=[]) {
+// owned: the modules of Root's entry child, which holds the entry contract;
+// one that exports start(), else one that may, is the entry.
+export function chooseEntry(files, surfaces, proposals=[], owned=[]) {
   const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
   const starters=js.filter(p=>surfaces.get(p)&&exportsStart(surfaces.get(p)));
+  const own=owned.filter(p=>js.includes(p)&&mayExportStart(surfaces.get(p)));
+  if(own.length)return own.find(p=>starters.includes(p))??own[0];
   const proposed=[...new Set(proposals.filter(p=>js.includes(p)))];
   const proposedStarter=proposed.find(p=>starters.includes(p));
   if(proposedStarter)return proposedStarter;
   if(starters.length===1)return starters[0];
-  if(proposed.length)return proposed[0];
   // With no module exporting start(), only the model's proposal names the
-  // application; the biggest importer may be a helper (run e89dba35).
-  if(!starters.length)return null;
+  // application; the biggest importer may be a helper (run e89dba35). While
+  // some module does, a proposal without start() is not the entry.
+  if(!starters.length)return proposed[0]??null;
   const outDegree=new Map(starters.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>js.includes(r.target)).length]));
   return starters.sort((a,b)=>outDegree.get(b)-outDegree.get(a)||a.localeCompare(b))[0];
 }
@@ -748,7 +766,8 @@ export function entryLoader(entry) {
     '  if (cached !== undefined) return cached;',
     `  const ns = await import(${spec});`,
     '  const candidates = [ns.default, ns].filter(value => value != null);',
-    '  cached = candidates.find(value => typeof value.start === "function") ?? (ns.default ?? ns);',
+    '  cached = candidates.find(value => typeof value.start === "function") ??',
+    '    (typeof ns.default === "function" && ns.default.name === "start" ? { start: ns.default } : (ns.default ?? ns));',
     '  return cached;',
     '}',
     'async function start(...args) {',

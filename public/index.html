@@ -47,8 +47,8 @@
             <option value="@cf/cloudflare/clef-flash">Clef-flash · fast 9B (default)</option>
             <option value="@cf/cloudflare/clef">Clef · 27B</option>
           </select>
-          <div class="range-control"><label for="split-threshold">Minimum YES probability <output id="split-threshold-value" for="split-threshold">50%</output></label>
-            <input id="split-threshold" type="range" min="20" max="80" step="5" value="50" /></div>
+          <div class="range-control"><label for="split-threshold">Minimum YES probability <output id="split-threshold-value" for="split-threshold">70%</output></label>
+            <input id="split-threshold" type="range" min="20" max="80" step="5" value="70" /></div>
           <p class="helper" id="model-hint">Clef decides YES/NO. If YES, Qwen guesses a split. Leaf agents implement. All inference stays on Workers AI.</p>
           <button class="primary" id="start">Start new experiment <span>↗</span></button>
           <button class="secondary" id="continue">Continue current experiment</button>
