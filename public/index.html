@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recursive Control Plane — Persistent Artifact Memory</title>
-  <link rel="stylesheet" href="/styles.css?v=7.15.0" />
+  <link rel="stylesheet" href="/styles.css?v=7.15.1" />
 </head>
 <body>
   <div class="page">
@@ -75,7 +75,7 @@
         </section>
         <section class="panel tree-panel">
           <div class="section-head"><span class="counter">03</span><h2>Ownership tree</h2><span class="right-note">Observer sees the tree. Individual models don't.</span></div>
-          <div class="otree-legend"><span><i class="dot role-manager done"></i>manager</span><span><i class="dot role-worker done"></i>worker</span><span><i class="dot role-manager split"></i>builder linking</span><span><i class="dot role-compiler done"></i>compiler</span><span><i class="dot role-worker waiting"></i>working</span><span><i class="swatch ready"></i>all workers done</span><span><i class="dot role-manager done linked"></i>linked</span></div>
+          <div class="otree-legend"><span><i class="dot role-manager done"></i>manager</span><span><i class="dot role-worker done"></i>worker</span><span><i class="dot role-manager split"></i>builder linking</span><span><i class="legend-stack"><i class="dot role-compiler waiting"></i><i></i><i class="dot role-manager done"></i></i>compiler, above Root</span><span><i class="dot role-worker waiting"></i>working</span><span><i class="swatch ready"></i>all workers done</span><span><i class="dot role-manager done linked"></i>linked</span><span><i class="swatch path"></i>what the selected agent talks to</span></div>
           <div id="hierarchy" class="hierarchy"><p class="empty">No agents yet.</p></div>
           <div id="node-detail" class="node-detail"><p class="helper">Select an agent to see its task.</p></div>
         </section>
@@ -96,6 +96,6 @@
       </section>
     </div>
   </div>
-  <script type="module" src="/app.js?v=7.15.0"></script>
+  <script type="module" src="/app.js?v=7.15.1"></script>
 </body>
 </html>
