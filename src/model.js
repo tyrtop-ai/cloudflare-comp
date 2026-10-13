@@ -266,6 +266,35 @@ export async function attributeFailure(env, {modules, test, failure}) {
   return {file:parsed.file.slice(0,300),problem:parsed.problem.slice(0,900)};
 }
 
+// A manager decides who changes what when its builder or the compiler
+// found problems between its children that the runtime's rules do not
+// settle. It never writes code; the runtime validates every action.
+export const MANAGER_SYSTEM = `You are a MANAGER of a branch of a code-writing tree. You never write or edit code. Your direct children are workers (they wrote modules), sub-managers (each owns a branch, shown only by its boundary: what it exports and still needs), your builder (it may only rename import paths and identifiers between your children's modules) and, at the top, the compiler (you cannot assign to it). The runtime found problems between your children. Decide who changes what so that every listed problem is settled CONSISTENTLY with as few children changing as possible. When several modules disagree on the same names or shapes, choose ONE convention and tell every affected child the same thing. fixed_decisions are final: never ask a module to change something another child was told to rely on. Prefer the side whose change is smallest; a provider whose exports others already use correctly keeps them. Each problem shows the default the runtime applies when you leave it out. Actions:
+ {"action":"assign","problems":[ids],"child":"<direct child id>","instructions":"exact names/shapes to use","facts_from":["<direct child id>",...]}
+ {"action":"escalate","problems":[ids],"reason":"..."}   (only if can_escalate)
+ {"action":"retask","child":"<id>","task":"new assignment","problems":[ids],"reason":"..."}   (child cannot succeed or has the wrong job)
+ {"action":"retire","child":"<id>","reason":"..."}   (duplicated or out-of-scope work that no other module imports)
+Return ONLY JSON {"actions":[...]}.`;
+// One decision, with one retry on output that does not parse. It never
+// throws: an AI error or a second parse error returns no actions (and the
+// error), so the caller applies the defaults instead of failing a turn.
+// onCall runs before every request (the caller counts them); retry=false
+// when no second request is allowed.
+export async function decideProblems(env, input, {onCall=()=>{}, retry=true}={}) {
+  if (env.MOCK_AI === 'true') return {actions:[]};
+  const request=JSON.stringify(input);
+  try {
+    onCall();
+    let parsed=parseObject(withoutThinking(await run(env,MANAGER_SYSTEM,request,2048)));
+    if(parsed.parse_error&&retry) {
+      onCall();
+      parsed=parseObject(withoutThinking(await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048)));
+    }
+    if(parsed.parse_error)return {actions:[],error:'the decision did not parse: '+String(parsed.raw||'').slice(0,300)};
+    return {actions:Array.isArray(parsed.actions)?parsed.actions.slice(0,24):[]};
+  } catch(e) {return {actions:[],error:String(e?.message||e).slice(0,600)};}
+}
+
 // The runner is a separate instance. It never sees component source: only the
 // Root goal and the live API returned by start() in the container.
 export const RUNNER_SYSTEM = `You are the RUNNER for an application you have not seen the source of. You get the user's goal and a description of the live API that start() returned when the application was started in a container. Write glue/smoke.js: a complete CommonJS Node script that does const assert = require('node:assert/strict'); const { start } = require('./index.js'); then, inside an async function, gets const app = await start() and exercises the operations the GOAL requests using only that API, with assert checks that the results are what the goal implies (for example: create something, read it back, list it, update it and read the change, delete it and confirm it is gone, all through the same app). Use only names that appear in the API description, and await every call because methods may be async. Any failed assertion or thrown error must end with process.exitCode = 1 or an uncaught rejection. Do not mock, do not import anything except node built-ins and ./index.js. Return ONLY the code, no markdown.`;
