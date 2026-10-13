@@ -145,6 +145,10 @@ npx wrangler secret put APP_TOKEN               # any long random string
 
 Open the `workers.dev` URL Wrangler prints, paste the token, and press **Start new experiment**. [INSTALL-CLOUDFLARE.md](INSTALL-CLOUDFLARE.md) covers each step in detail, along with the Artifacts namespace, checking the Container, starting runs from the API, exporting runs and troubleshooting.
 
+### Getting the code out
+
+Once Root's builder has linked the application, **Download app (.zip)** in the dashboard saves it, and **Push to GitHub** pushes it to a new branch of a repository you name and opens a pull request (this needs a `GITHUB_TOKEN` secret). The export holds the linked modules, the runtime loader, the runner's test and a README that says whether the last Container run passed for exactly these files, or that they are UNVERIFIED. It runs with plain Node.js, with nothing to install: `node glue/smoke.js`. [INSTALL-CLOUDFLARE.md](INSTALL-CLOUDFLARE.md#getting-the-code-out) gives the token's permissions and the API routes (`/api/app`, `/api/app.zip`, `/api/export/github`).
+
 ### Local checks
 
 ```bash
@@ -193,6 +197,7 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 | `src/code-work.js`, `src/assembly.js`, `src/assembly-gate.js` | Worker output rules, `components/...` bundle paths, source and builder-file gates |
 | `src/baseline-linker.js` | Diagnostic linker from the v7.7–v7.10 builder; builders since v7.11 do not use it |
 | `src/knowledge.js`, `src/protocol.js` | Public and private knowledge files, action parsing, contact rules |
+| `src/zip.js`, `src/github-export.js` | Getting the code out: a store-only ZIP writer, and the push of the linked application to a new GitHub branch and pull request |
 | `src/vendor/acorn.mjs` | Vendored Acorn parser (MIT, see `src/vendor/ACORN-LICENSE`) |
 | `container/` | Container image (`Dockerfile`) and `build-runner.mjs` |
 | `public/` | Dashboard |
