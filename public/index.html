@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recursive Control Plane — Persistent Artifact Memory</title>
-  <link rel="stylesheet" href="/styles.css?v=7.13.6" />
+  <link rel="stylesheet" href="/styles.css?v=7.13.7" />
 </head>
 <body>
   <div class="page">
@@ -48,8 +48,14 @@
           <button class="primary" id="start" title="Start">Start <span>↗</span></button>
           <button class="secondary" id="continue">Continue current experiment</button>
           <button class="secondary" id="export">Export observation JSON</button>
+          <button class="secondary" id="download-app">Download app (.zip)</button>
+          <div class="github-export">
+            <input id="github-repo" class="mono" placeholder="owner/repo" spellcheck="false" autocomplete="off" aria-label="GitHub repository (owner/repo)" />
+            <button class="secondary" id="push-github">Push to GitHub</button>
+          </div>
           <button class="secondary" id="reset">Clear room state</button>
           <p id="error" class="error" role="alert"></p>
+          <p id="export-result" class="helper export-result" aria-live="polite"></p>
           <p class="helper">Start creates a new root repository. Each delegated child receives its own real Cloudflare Artifacts repository. New sessions do not delete old repositories.</p>
         </section>
       </aside>
@@ -89,6 +95,6 @@
       </section>
     </div>
   </div>
-  <script type="module" src="/app.js?v=7.13.6"></script>
+  <script type="module" src="/app.js?v=7.13.7"></script>
 </body>
 </html>

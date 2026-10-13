@@ -143,3 +143,10 @@ input[type=range] {padding:0;border:0;background:transparent;box-shadow:none;acc
 input[type=range]:focus {box-shadow:none;}
 
 .build-evidence { white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; padding:14px; font-size:12px; line-height:1.65; color:var(--code-fg); background:var(--code-bg); border:thin solid var(--code-bd); border-radius:4px; }
+
+/* Getting the code out: owner/repo and the push button share a row. */
+.github-export { display:flex; gap:8px; margin-top:9px; }
+.github-export input { flex:1 1 auto; min-width:0; }
+.github-export .secondary { width:auto; flex:0 0 auto; margin-top:0; white-space:nowrap; }
+.export-result:empty { display:none; }
+.export-result a { overflow-wrap:anywhere; }

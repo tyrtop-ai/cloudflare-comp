@@ -168,6 +168,31 @@ $('export').addEventListener('click',async()=>{
     const url=URL.createObjectURL(file);const a=document.createElement('a');a.href=url;a.download=`recursive-control-plane-${room.slice(0,8)}.json`;a.click();URL.revokeObjectURL(url);
   }catch(err){showError(err);}
 });
+// Getting the code out: the linked application as a ZIP, or as a GitHub branch
+// and pull request. The result (or error) stays under the buttons; refresh() never clears it.
+const exportNote=(html,isError=false)=>{const el=$('export-result');if(el){el.className=`${isError?'error':'helper'} export-result`;el.innerHTML=html;}};
+$('download-app')?.addEventListener('click',async()=>{
+  try {
+    exportNote('Packing the application…');
+    const response=await fetch(`/api/app.zip?room=${encodeURIComponent(room)}`,{headers:{Authorization:`Bearer ${token()}`},cache:'no-store'});
+    if (!response.ok) throw Error((await response.json().catch(()=>({}))).error||`HTTP ${response.status}`);
+    const url=URL.createObjectURL(await response.blob());const a=document.createElement('a');a.href=url;a.download=`recursive-app-${room.slice(0,8)}.zip`;a.click();URL.revokeObjectURL(url);
+    exportNote(response.headers.get('x-app-passed')==='true'?'Downloaded. The last Container run passed for exactly these files.':'Downloaded. UNVERIFIED: these files have not passed a Container run as exported.');
+  }catch(err){exportNote(esc(err?.message||err),true);}
+});
+try { $('github-repo').value=localStorage.getItem('github-repo')||''; } catch {}
+$('push-github')?.addEventListener('click',async()=>{
+  const repo=$('github-repo').value.trim();
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return exportNote('Enter the GitHub repository as owner/repo.',true);
+  try { localStorage.setItem('github-repo',repo); } catch {}
+  $('push-github').disabled=true;exportNote(`Pushing to ${esc(repo)}…`);
+  try {
+    const r=await call('/api/export/github','POST',{repo});
+    const pr=/^https:\/\/github\.com\//.test(r.pr_url||'')?r.pr_url:null;
+    exportNote(`${pr?'Pull request':'Branch'} <a href="${esc(pr||r.branch_url)}" target="_blank" rel="noopener">${esc(pr?pr.replace('https://github.com/',''):`${repo}:${r.branch}`)}</a> · ${Number(r.files)||0} files${r.passed?'':' · UNVERIFIED'}${r.note?`<br/>${esc(r.note)}`:''}`);
+  }catch(err){exportNote(esc(err?.message||err),true);}
+  finally{$('push-github').disabled=false;}
+});
 $('hierarchy').addEventListener('click',e=>{const id=e.target.closest?.('[data-node]')?.dataset.node;if(!id)return;selectedNode=selectedNode===id?'':id;if(current){$('hierarchy').innerHTML=renderTree(current.agents);$('node-detail').innerHTML=renderDetail(current.agents);}});
 $('token').addEventListener('change',refresh);$('room').addEventListener('change',()=>{const id=$('room').value.trim();if(/^[a-z0-9-]{8,64}$/i.test(id)){const u=new URL(location.href);u.searchParams.set('room',id);location.assign(u.href);}});
 setInterval(refresh,3000);refresh();
