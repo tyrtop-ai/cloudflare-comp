@@ -72,9 +72,14 @@ test('recursive ownership remains opaque while private children build Artifacts'
   const bContext=JSON.stringify(room.view('root.2'));
   assert.ok(bContext.includes('root.2.1'));
   assert.ok(bContext.includes('root.2.2'));
-  assert.ok(snap.events.some(e=>e.actor==='root.1' && e.kind==='message' && e.recipient==='root.2'));
-  assert.ok(snap.events.some(e=>e.actor==='root.2' && e.kind==='message' && e.recipient==='root.1'));
+  // v7.15.1: A gets B's contract through their manager; A and B never message each other.
+  const sent=(from,to)=>snap.events.filter(e=>e.actor===from && e.kind==='message' && e.recipient===to);
+  assert.ok(sent('root.1','root').length,'A asks its manager');
+  assert.ok(sent('root','root.1').some(e=>e.body.includes('GET /api/tickets')),'the manager relays B\'s contract to A');
+  assert.equal(sent('root.1','root.2').length+sent('root.2','root.1').length,0,'siblings never message each other');
   assert.ok(!snap.events.some(e=>e.actor==='root.1' && e.kind==='message' && e.recipient.startsWith('root.2.')));
+  assert.ok(!room.send('root.1','root.2','please answer me directly'));
+  assert.ok(room.snapshot().events.some(e=>e.actor==='root.1' && e.kind==='blocked' && e.body.includes('root.2')));
   assert.ok(!room.send('root.1','root.2.1','please bypass B'));
   assert.ok(snap.files.some(f=>f.agent==='root.2.1' && f.path==='store.js'));
   const code=await room.fileContent('root.2.1','store.js');
@@ -116,10 +121,15 @@ test('new child cannot become reachable directly by parent sibling',async()=>{
   await room.start('Use stable interface boundaries in agent decomposition',4);await drain();
   assert.ok(room.node('root.2.1'));
   assert.equal(room.send('root.1','root.2.1','I know your id, bypass B'),false);
-  assert.equal(room.send('root.1','root.2','Please find the answer inside your branch'),true);
-  const messages=room.receive('root.2');
-  assert.ok(messages.some(m=>m.from==='root.1'));
-  assert.ok(!room.receive('root.2.1').some(m=>m.from==='root.1'));
+  // v7.15.1: nor B itself: A reaches B's branch through their manager, which may address B but not B's child.
+  assert.equal(room.send('root.1','root.2','Please find the answer inside your branch'),false);
+  assert.equal(room.send('root.1','parent','Please find the answer inside B\'s branch'),true);
+  assert.ok(room.receive('root').some(m=>m.from==='root.1'));
+  assert.equal(room.send('root','root.2.1','Please find the answer inside your branch'),false);
+  assert.equal(room.send('root','root.2','Please find the answer inside your branch'),true);
+  assert.ok(room.receive('root.2').some(m=>m.from==='root'));
+  assert.ok(!room.receive('root.2').some(m=>m.from==='root.1'));
+  assert.ok(!room.receive('root.2.1').some(m=>m.from==='root.1'||m.from==='root'));
 });
 
 test('deeper recursive delegation never remaps an ancestor or external sibling',async()=>{
@@ -157,7 +167,10 @@ test('builder can import public sibling artifacts, not private descendants', asy
   assert.equal(await store.read(builder.repo_name,'public/index.html'),await store.read(room.node('root.1').repo_name,'index.html'));
   assert.ok(room.snapshot().events.some(e=>e.actor==='root.3'&&e.kind==='import'));
   assert.equal(await room.importFile('root.3','root.2.1','store.js','private.js'),false);
-  assert.equal(room.send('root.3','root.2','hi after completion'),true,'reusable builders can be woken for later revisions');
+  // v7.15.1: the builder reads its siblings but never messages them; it reports to its manager, which can wake it.
+  assert.equal(room.send('root.3','root.2','hi after completion'),false);
+  assert.equal(room.send('root.3','parent','linked; nothing to report'),true);
+  assert.equal(room.send('root','root.3','revise the link'),true,'reusable builders can be woken for later revisions');
   assert.ok(await room.fileContent('root.3','server.js'),'revision retains artifacts');
 });
 
@@ -215,7 +228,13 @@ test('opaque export routing can cross multiple managers without exposing the gra
   assert.ok(room.visibleManifest('root.2').some(f=>f.path==='parser.js'));
   assert.ok(!JSON.stringify(room.visibleManifest('root.2')).includes(grandchild.id));
   assert.equal(await room.importFile('root.1',grandchild.id,'parser.js','stolen.js'),false);
-  assert.equal(await room.importFile('root.1','root.2','parser.js','parser.js'),true);
+  // v7.15.1: only Root's builder reads root.2's alias; a worker never reads its sibling.
+  assert.equal(await room.importFile('root.1','root.2','parser.js','parser.js'),false);
+  const builder=room.builderOf('root')||(await room.spawn('root',[{label:'Temporary builder',task:'Link the published work of the children of root'}],'builder:root'))[0];
+  assert.equal(await room.importFile(builder.id,grandchild.id,'parser.js','stolen.js'),false);
+  assert.equal(await room.importFile(builder.id,intermediate.id,'parser.js','stolen.js'),false);
+  assert.equal(await room.importFile(builder.id,'root.2','parser.js','parser.js'),true);
+  assert.equal((await room.fileContent(builder.id,'parser.js')).content,'export const parse = x => x;');
 });
 
 test('manager cannot retire finished production children or unfinished temporary builders',async()=>{

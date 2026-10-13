@@ -9,7 +9,7 @@ const {ControlRoom}=await import('../src/index.js');
 const {BuildExecutor,execAfterStartup,waitForBuildOutput}=await import('../src/build-executor.js');
 const {snapshotHash,sourceOwnerForPath,nextDirectChild}=await import('../src/build-verification.js');
 const {materializedPath}=await import('../src/assembly.js');
-const {verifyBuild,classifyInstallFailure,stageEnvironment,dependencyInstallDecision}=await import('../container/build-runner.mjs');
+const {verifyBuild,classifyInstallFailure,stageEnvironment,dependencyInstallDecision,run}=await import('../container/build-runner.mjs');
 
 class Sql {constructor(){this.db=new DatabaseSync(':memory:');} exec(sql,...args){
   if(!args.length&&!/^\s*select/i.test(sql)){this.db.exec(sql);return{toArray:()=>[]};}
@@ -62,6 +62,12 @@ test('real build executes failing JavaScript and identifies the exact file',asyn
   assert.equal(result.passed,false);
   assert.ok(result.issues.some(x=>x.path==='components/source.cjs'));
   assert.ok(result.checks.some(x=>x.name==='syntax:components/source.cjs'&&x.exit_code!==0));
+});
+
+// The suite failed now and then on an uncaught write EPIPE from a stage
+// (the start check's stdin) that exited before reading it.
+test('a stage that exits before reading its stdin returns its result, never an uncaught EPIPE',async()=>{
+  for(let i=0;i<3;i++)assert.equal((await run('node',['-e','process.exit(0)'],tmpdir(),10_000,'x'.repeat(8*1024*1024))).code,0);
 });
 
 test('build executor sends a pinned immutable source snapshot over isolated container stdin',async()=>{

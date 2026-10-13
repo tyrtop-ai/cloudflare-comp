@@ -151,7 +151,7 @@ export function apiSurfaceFrom(log) {
   const line=String(log||'').split('\n').find(x=>x.startsWith('API_SURFACE '));
   return line?line.slice(12).slice(0,6000):'';
 }
-async function run(cmd,args,cwd,ms=20_000,stdin='') {
+export async function run(cmd,args,cwd,ms=20_000,stdin='') {
   return new Promise(resolve=>{
     const child=spawn(cmd,args,{cwd,env:stageEnvironment(),stdio:['pipe','pipe','pipe'],detached:true});
     if(child.pid)activeProcessGroups.add(child.pid);
@@ -161,8 +161,8 @@ async function run(cmd,args,cwd,ms=20_000,stdin='') {
     child.stdout.on('data',append);child.stderr.on('data',append);
     child.on('error',e=>{clearTimeout(timer);if(child.pid)activeProcessGroups.delete(child.pid);resolve({code:-1,log:String(e),timedOut:false});});
     child.on('close',code=>{clearTimeout(timer);if(child.pid)activeProcessGroups.delete(child.pid);resolve({code:code??-1,log:output,timedOut});});
-    // A child that exits before reading its stdin makes the write fail with
-    // EPIPE; unhandled, that error would crash the whole build runner.
+    // A stage that exits before reading its stdin closes the pipe: EPIPE is
+    // then its result (code and log above), never an uncaught exception.
     child.stdin.on('error',()=>{});
     child.stdin.end(stdin);
   });

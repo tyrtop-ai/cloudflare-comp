@@ -484,7 +484,7 @@ test('v7.15: run5 replay: the walk strips start from a carrier below and prunes 
   const update=room.view('root.3').your_responsibility;
   assert.ok(update.endsWith('updateTicket(id, changes): updates a ticket by id [goal operation: update a ticket].'));
   assert.doesNotMatch(update,/Data storage handler|readTickets|writeTickets|createTicket|start\(/);
-  assert.match((await room.readKnowledge('root.2')).owned_elsewhere,/Entry point is owned by Application entry point; import start from that strand by exactly those names and write here only what it lacks\./);
+  assert.match((await room.readKnowledge('root.2')).owned_elsewhere,/Entry point is owned outside this branch; import start by exactly those names and write here only what it lacks\./);
 });
 
 test('v7.15: prompts: the shared prompt still says a worker is never shown sibling ownership; the implementer prompt has the contract clause; LEAF_DEPENDENCY_RULE has no createTicket example; the splitter key is functions, the TypeScript sentence stays, and the splitter prompt never mentions functions_owned_elsewhere',async()=>{
@@ -545,7 +545,7 @@ test('v7.15: run6 replay (A): the view split\'s "Storage module" exporting only 
   assert.match(walked[0].question,/^Which branch's assigned code already covers this proposed piece\? Filter application logic: /);
   assert.deepEqual(room.promisedOf('root.4.2'),room.promisedOf('root.4'),'the carrier keeps view ticket\'s item');
   assert.deepEqual(room.promisedOf('root.4.1').map(f=>f.name),['applyFilters']);
-  assert.match((await room.readKnowledge('root.4')).owned_elsewhere,/Storage module for ticket data is owned by ticket storage; import getTickets from that strand by exactly those names/);
+  assert.match((await room.readKnowledge('root.4')).owned_elsewhere,/Storage module for ticket data is owned outside this branch; import getTickets by exactly those names/);
 });
 
 test('v7.15: a child (carrier or not) with some names owned elsewhere is kept without them, and the notes name them',async()=>{
@@ -563,8 +563,9 @@ test('v7.15: a child (carrier or not) with some names owned elsewhere is kept wi
     '"Create handler" lists saveTicket, which "ticket storage" already provides; kept without it.',
     '"Ticket validation" lists getTickets, which "ticket storage" already provides; kept without it.']);
   const note=(await room.readKnowledge('root.3')).owned_elsewhere;
-  assert.match(note,/Create handler: saveTicket is owned by ticket storage; import saveTicket from that strand by exactly those names/);
-  assert.match(note,/Ticket validation: getTickets is owned by ticket storage; import getTickets from that strand by exactly those names/);
+  assert.match(note,/Create handler: saveTicket is owned outside this branch; import saveTicket by exactly those names/);
+  assert.match(note,/Ticket validation: getTickets is owned outside this branch; import getTickets by exactly those names/);
+  assert.doesNotMatch(note,/ticket storage/,'the public note its children read names no branch');
   assert.equal(ai.calls.filter(c=>c.kind==='owner'&&/Create handler: /.test(c.question)).length,0,'a carrier skips the Clef walk');
   assert.ok(ai.calls.some(c=>c.kind==='owner'&&/Ticket validation: /.test(c.question)));
   // A split that then fails viability does not list a kept piece as rejected:
@@ -583,18 +584,18 @@ test('v7.15: ownerBranch reads only each level\'s other direct children\'s promi
   await room.spawn('root',[{label:'A',task:'Write code for A',interfaces:fn('alpha')},{label:'B',task:'Write code for B',interfaces:fn('beta')},{label:'C',task:'Write code for C'}]);
   await room.spawn('root.1',[{label:'A1',task:'Write code for A1',interfaces:fn('alpha')},{label:'A2',task:'Write code for A2',interfaces:fn('gamma')}]);
   await room.spawn('root.2',[{label:'B1',task:'Write code for B1',interfaces:fn('beta')},{label:'B2',task:'Write code for B2',interfaces:fn('delta')}]);
-  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.1',label:'A'});
+  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.1',label:'A',level:'root'},'the level that decided');
   assert.equal(room.ownerBranch('gamma','root.2.1'),null,'a name a cousin\'s lower split added is not found');
   assert.equal(room.ownerBranch('beta','root.2.1'),null,'a name in an ancestor\'s own promise is not found');
-  assert.deepEqual(room.ownerBranch('delta','root.2.1'),{id:'root.2.2',label:'B2'});
+  assert.deepEqual(room.ownerBranch('delta','root.2.1'),{id:'root.2.2',label:'B2',level:'root.2'});
   assert.equal(room.ownerBranch('alpha','root'),null,'the top has no level above');
   const set=(id,...names)=>room.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(fn(...names)),id);
   set('root.2.2','delta','alpha');
-  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.2.2',label:'B2'},'nearest level first');
+  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.2.2',label:'B2',level:'root.2'},'nearest level first');
   set('root.2.2','delta');set('root.3','alpha');
   assert.equal(room.ownerBranch('alpha','root.2.1'),null,'two holders at one level are ambiguous');
   room.db().exec("UPDATE agents SET status='retired' WHERE id='root.3'");
-  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.1',label:'A'},'a retired child offers nothing');
+  assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.1',label:'A',level:'root'},'a retired child offers nothing');
   assert.deepEqual(room.offeredFunctions('root','root.2').map(o=>[o.id,o.items.map(f=>f.name)]),[['root.1',['alpha']]]);
 });
 

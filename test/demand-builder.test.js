@@ -35,7 +35,9 @@ test('two-thirds context reserve is deterministic and does not call Clef',()=>{
   assert.ok(estimateBuilderTokens([{files:[{path:'x.js',content:'abcd'.repeat(25000)}]}])>BUILDER_CONTEXT_BUDGET);
 });
 
-test('one Root builder consumes worker sources across manager layers when source fits',async()=>{
+// v7.15.1: a builder reads what its manager's children publish; a manager
+// child is its export aliases, each file once, never its workers' raw files.
+test('one Root builder reads a manager child\'s published files when they fit, never its workers\' own',async()=>{
   const {room,store}=await roomFixture();
   const leaf='import { norm } from "./helper.js";\nexport const save=x=>norm(x);';
   await room.putFile('root.1.1','write.js',leaf);
@@ -46,8 +48,9 @@ test('one Root builder consumes worker sources across manager layers when source
   await room.managerTurn('root');
   const rootBuilder=builder(room,'root');assert.ok(rootBuilder);
   const copies=await room.materializeBuilder(rootBuilder.id);
-  assert.equal(copies.length,3);
-  assert.equal(await store.read(rootBuilder.repo_name,materializedPath('Save','write.js','root.1.1')),leaf);
+  assert.deepEqual(copies.map(c=>c.source_path).sort(),['save/helper.js','save/write.js','view.js'],'each published file once, in its child\'s directory');
+  assert.equal(await store.read(rootBuilder.repo_name,materializedPath('Storage','save/write.js','root.1')),leaf);
+  assert.equal(await store.read(rootBuilder.repo_name,materializedPath('Save','write.js','root.1.1')),null,'never under the worker\'s own name');
   const inputs=await room.builderSourceContext(rootBuilder.id);
   assert.ok(inputs.some(g=>g.files.some(f=>f.content===leaf)),'full implementation reaches Root context');
   assert.equal(builder(room,'root.1'),undefined);
@@ -60,6 +63,7 @@ test('oversized Root scope delegates to a manager instead of truncating source c
   await room.putFile('root.1.1','storageA.js',big(1,26000));
   await room.putFile('root.1.2','storageB.js',big(2,26000));
   await room.putFile('root.2','ui.js',big(3,26000));
+  await room.publishExports('root.1',[{from:'root.1.1',path:'storageA.js',as:'storageA.js'},{from:'root.1.2',path:'storageB.js',as:'storageB.js'}]);
   const before=await room.assemblyBudget('root');assert.ok(before.tokens>before.budget);
   await room.scheduleAssembly('root');
   assert.equal(room.get('builder_delegated:root.1'),'1');
@@ -82,6 +86,8 @@ test('multiple oversized branches each delegate and a parent sees only their int
   await room.putFile('root.3','report.js',big(3,15000));
   for(const id of ['root.1.1','root.1.2','root.2.1','root.2.2'])
     await room.putFile(id,id==='root.1.1'?'index.js':'source.js',big(id.replaceAll('.',''),26000));
+  await room.publishExports('root.1',[{from:'root.1.1',path:'index.js',as:'index.js'},{from:'root.1.2',path:'source.js',as:'source.js'}]);
+  await room.publishExports('root.2',[{from:'root.2.1',path:'source.js',as:'list/source.js'},{from:'root.2.2',path:'source.js',as:'details/source.js'}]);
   const b=await room.assemblyBudget('root');assert.ok(b.tokens>BUILDER_CONTEXT_BUDGET);
   await room.scheduleAssembly('root');
   assert.equal(room.get('builder_delegated:root.1'),'1');
@@ -103,6 +109,7 @@ test('multiple oversized branches each delegate and a parent sees only their int
 test('revision of source within context is available to same Root builder without spawning intermediate builder',async()=>{
   const {room,store}=await roomFixture();
   await room.putFile('root.1.1','storage.js','export const data=1;');
+  await room.publishExports('root.1',[{from:'root.1.1',path:'storage.js',as:'storage.js'}]);
   await room.scheduleAssembly('root');
   const b=builder(room,'root');
   await room.materializeBuilder(b.id);
@@ -112,6 +119,6 @@ test('revision of source within context is available to same Root builder withou
   assert.equal(builder(room,'root').id,b.id);
   assert.notEqual(room.assemblyFingerprint('root'),initial);
   await room.materializeBuilder(b.id);
-  assert.equal(await store.read(b.repo_name,materializedPath('Save','storage.js','root.1.1')),'export const data=2;');
+  assert.equal(await store.read(b.repo_name,materializedPath('Storage','storage.js','root.1')),'export const data=2;','a revision behind the alias reaches the builder');
   assert.equal(builder(room,'root.1'),undefined);
 });

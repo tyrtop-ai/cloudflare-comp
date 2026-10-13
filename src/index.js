@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
-import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished } from './protocol.js';
+import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
 import { apiGaps, apiMethod, coverageCheckable, gapList, gapProblem, operationMethods, plannedGaps, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
@@ -27,8 +27,23 @@ const topicSlug = label => String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_'
 const linkEdits = applied => { const shaped=applied.filter(e=>e.shape).length; return `${applied.length-shaped} rename(s)`+(shaped?` and ${shaped} import binding fix(es)`:''); };
 // The owner notes of pruned children, each once, in their short form (owner
 // and label): memory is clipped where it is read (750/950 characters), so
-// the piece itself is quoted only in split_feedback.
-const ownerNotes = rejected => clip([...new Set(rejected.filter(x=>x.owner).map(x=>x.short||x.note))].join(' '),1600);
+// the piece itself is quoted only in split_feedback. outside: the public
+// note the splitter's own children read, which names no branch (rebuilt for
+// feedback saved before v7.15.1).
+const ownerNotes = (rejected,outside=false) => clip([...new Set(rejected.filter(x=>x.owner).map(x=>
+  outside?x.outside||ownerNote(x.label,'','',x.names||[],x.kept).short:x.short||x.note))].join(' '),1600);
+// v7.15.1: a prune verdict names the owning branch only to a direct child of
+// the manager that decided (the splitter, when its parent decided). One from
+// higher up reaches the splitter, and every verdict reaches the splitter's
+// children, only as owned outside this branch: managers talk to children.
+const OUTSIDE = 'outside this branch';
+function ownerNote(label, piece, owner='', names=[], kept=false) {
+  const head=`${kept?`${label}: ${names.join(', ')}`:label} is owned ${owner?`by ${owner}`:OUTSIDE}`;
+  const how=names.length?`import ${names.join(', ')} ${owner?'from that strand ':''}by exactly those names`:`import it ${owner?'from that strand':'by name'}`;
+  const short=`${head}; ${how} and write here only what it lacks.`;
+  return {note:`${head}; ${how} instead of rebuilding it. Any part of "${piece}" that ${owner||'its owner'} does not provide is still written in this strand.`,
+    short,outside:owner?ownerNote(label,piece,'',names,kept).short:short};
+}
 // Builders and the compiler are runtime nodes: one builder per manager links
 // its direct children, one compiler under the top manager runs the bundle.
 const RUNTIME_LABELS = ['Temporary builder','Compiler'];
@@ -320,8 +335,8 @@ export class ControlRoom extends DurableObject {
   }
   view(id, inbox = [], ownFiles = []) {
     // CRITICAL INVARIANT: the model never receives a global registry. An agent sees
-    // ONLY its parent, immediate siblings, and direct children. Descendants remain
-    // entirely hidden behind their parent-owner's public interface.
+    // ONLY its parent and direct children (a builder also its siblings, whose
+    // files it reads). Descendants remain hidden behind their owner's interface.
     const n = this.node(id);
     if (!n) throw new Error(`Unknown agent: ${id}`);
     const parent = n.parent ? this.node(n.parent) : null;
@@ -338,7 +353,8 @@ export class ControlRoom extends DurableObject {
       your_id: n.id, your_responsibility: worker ? this.withContract(n.task,n) : n.task, your_label: n.label, turn: n.turn,
       phase: this.manager(id) ? 'manager' : n.phase,
       parent: parent ? (isolatedWorker ? {label:'Manager'} : describe(parent)) : null,
-      neighbor_owners: isolatedWorker ? [] : this.siblings(n).map(describe),
+      // v7.15.1: nobody messages a sibling; only a builder lists them, as sources.
+      neighbor_owners: this.siblings(n).filter(s=>canRead(n,s)).map(describe),
       your_private_children: this.children(id).map(c => ({ ...describe(c), progress: clip(c.summary, 500) })),
       your_progress: n.summary,
       your_exposed_files: builderMode ? this.files(id).filter(f=>isBuilderGluePath(f.path)).slice(0,18) : this.visibleManifest(id),
@@ -360,7 +376,8 @@ export class ControlRoom extends DurableObject {
   async knowledgeContext(id) {
     const n = this.node(id);
     if (!n) throw new Error('Unknown owner');
-    const adjacent = [n.parent, ...this.siblings(n).map(x => x.id), ...this.children(id).map(x => x.id)].filter(Boolean);
+    // v7.15.1: a sibling's memory only for a builder, which reads its files.
+    const adjacent = [n.parent, ...this.siblings(n).filter(s => canRead(n,s)).map(x => x.id), ...this.children(id).map(x => x.id)].filter(Boolean);
     const local = await Promise.all([this.readKnowledge(id, 'public'), this.readKnowledge(id, 'private')]);
     // Only neighbor PUBLIC entries. Never traverse a neighbor's descendants.
     const neighbors = await Promise.all(adjacent.slice(0, 12).map(async owner => {
@@ -597,7 +614,7 @@ export class ControlRoom extends DurableObject {
   ownerBranch(name, id) {
     for(let b=this.node(id);b?.parent;b=this.node(b.parent)) {
       const holders=this.offeredFunctions(b.parent,b.id).filter(o=>o.items.some(f=>f.name===name));
-      if(holders.length)return holders.length===1?{id:holders[0].id,label:holders[0].label}:null;
+      if(holders.length)return holders.length===1?{id:holders[0].id,label:holders[0].label,level:b.parent}:null;
     }
     return null;
   }
@@ -694,7 +711,8 @@ export class ControlRoom extends DurableObject {
     const sender = this.node(from);
     const resolved = to === 'parent' ? sender?.parent : to;
     const receiver = resolved ? this.node(resolved) : null;
-    // Structural check is absolute: A cannot address B1, even knowing its id.
+    // Structural check is absolute: A cannot address B1, even knowing its id,
+    // nor its sibling B; siblings reach each other through their manager.
     if (!sender || !receiver || sender.status === 'retired' || receiver.status === 'retired' || !canContact(sender, receiver)) {
       this.event(from,'blocked',`Rejected message to ${clip(to,75)}: outside your immediate ownership boundary.`);
       return false;
@@ -728,8 +746,7 @@ export class ControlRoom extends DurableObject {
     return this.env.MANAGERS.getByName(`${room}:${this.get('run_nonce','legacy')}:${id}`);
   }
   // Agent-facing views expose only the public surface of a direct neighbor.
-  // This projection does not determine builder materialization (which uses
-  // actual owner files without an alias explosion).
+  // A builder copies the same surface, each file once (publishedSources).
   assembledSurface(child) {
     const published=this.visibleManifest(child.id);
     return published.filter(f=>!isAssemblyMetadata(f.path)).map(f=>({path:f.path,revision:f.revision||1})).slice(0,24);
@@ -778,9 +795,40 @@ export class ControlRoom extends DurableObject {
           .map(f=>({path:f.path,revision:f.revision,owner:builder.id,sourceLabel:child.label,delegated:true})):[];
         return {child,files,delegated:true};
       }
-      return {child,files:this.manager(child.id)?this.descendantsWithCode(child.id):
+      // v7.15.1: a manager child is what it publishes (MOCK), never its workers' raw files.
+      return {child,files:this.manager(child.id)?this.publishedSources(child):
         this.files(child.id).filter(f=>!isAssemblyMetadata(f.path)).map(f=>({path:f.path,revision:f.revision,owner:child.id,sourceLabel:child.label})),delegated:false};
     });
+  }
+  // A manager child's public files and export aliases; the runtime resolves
+  // an alias when it reads it, and its revision is the file it points to.
+  // One entry per file: a manager publishes a child's file under its bare
+  // path and under the child's directory; the longer keeps that layout.
+  publishedSources(child) {
+    const target=(owner,path,depth=0)=>{
+      const alias=query(this.db(),'SELECT source,source_path FROM exposed_files WHERE owner=? AND path=?',owner,path)[0];
+      return alias&&depth<=this.settings().max_depth?target(alias.source,alias.source_path,depth+1):{key:owner+'\n'+path,revision:this.files(owner).find(f=>f.path===path)?.revision||0};
+    };
+    const byFile=new Map();
+    for(const f of this.visibleManifest(child.id).filter(f=>!isAssemblyMetadata(f.path))) {
+      const {key,revision}=target(child.id,f.path);
+      if(!byFile.has(key)||f.path.length>byFile.get(key).path.length)byFile.set(key,{path:f.path,revision,owner:child.id,sourceLabel:child.label});
+    }
+    return [...byFile.values()];
+  }
+  // v7.15.1: a builder reads, of its manager's child, only what that child
+  // publishes: its own files and aliases, or the bundle its own builder
+  // linked. Never a file a deeper agent owns.
+  publishedBy(child, owner) {
+    if(owner===child.id)return true;
+    const o=this.node(owner);
+    return o?.label==='Temporary builder'&&o.parent===child.id;
+  }
+  // The gate on every copy into a builder: its sibling, and a file that sibling publishes.
+  builderReads(builder, child, f) {
+    if(canRead(builder,child)&&this.publishedBy(child,f.owner))return true;
+    this.event(builder.id,'blocked',`Not read: ${clip(child.label,70)}/${clip(f.path,120)} is not a file its sibling publishes.`);
+    return false;
   }
   assemblyFingerprint(id) {
     return JSON.stringify(this.assemblySources(id).map(({child,files,delegated})=>[
@@ -790,7 +838,7 @@ export class ControlRoom extends DurableObject {
   async builderContext(id) {
     return Promise.all(this.assemblySources(id).map(async ({child,files,delegated})=>({
       label:child.label,responsibility:clip(child.task,500),status:child.status,delegated,
-      files:await Promise.all(files.slice(0,32).map(async f=>({
+      files:await Promise.all(files.filter(f=>this.publishedBy(child,f.owner)).slice(0,32).map(async f=>({
         path:materializedPath(f.sourceLabel,f.path,f.owner),
         source_path:f.path,revision:f.revision,
         content:clip(await this.indexedContent(f.owner,f.path),2000)
@@ -836,12 +884,15 @@ export class ControlRoom extends DurableObject {
   }
   // Source bytes are copied by the runtime, never manufactured by a builder.
   // Each producer's namespace remains stable across revisions and passes.
+  // The legacy copy path (MOCK fixtures and tests); a live builder reads
+  // through collectLinkSources, under the same check.
   async materializeBuilder(builderId) {
     const builder=this.node(builderId);
     if(builder?.label!=='Temporary builder' || !builder.parent)throw new Error('Only a temporary builder can materialize children');
     const sources=[],failures=[];
     for(const {child,files} of this.assemblySources(builder.parent)) {
       for(const f of files) {
+        if(!this.builderReads(builder,child,f))continue;
         const destination=materializedPath(f.sourceLabel,f.path,f.owner);
         let content;
         try { content=await this.indexedContent(f.owner,f.path); }
@@ -1172,6 +1223,7 @@ export class ControlRoom extends DurableObject {
     for(const {child,files,delegated} of this.assemblySources(builder.parent)) {
       const from=[];
       for(const f of files) {
+        if(!this.builderReads(builder,child,f))continue;
         const content=await this.indexedContent(f.owner,f.path);
         if(content===null)throw new Error(`Completed source unavailable: ${child.label}/${f.path}`);
         const destination=materializedPath(f.sourceLabel,f.path,f.owner);
@@ -2700,20 +2752,18 @@ export class ControlRoom extends DurableObject {
       const carries=carried(child).length>0,added=child.interfaces.filter(f=>!own.has(f.name)),label=clip(child.label,70);
       const owned=added.filter(f=>!GENERIC_NAMES.has(f.name)).map(f=>({name:f.name,owner:this.ownerBranch(f.name,id)})).filter(x=>x.owner);
       if(owned.length&&!carries&&owned.length===added.length&&new Set(owned.map(x=>x.owner.id)).size===1) {
-        const owner=owned[0].owner,list=owned.map(x=>x.name);
+        const owner=owned[0].owner,list=owned.map(x=>x.name),name=owner.level===this.node(id)?.parent?owner.label:'';
         this.event(id,'scope_pruned',`Proposed child "${label}" exports ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; not spawned. Import them by those names.`);
         rejectedScope++;
-        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:owner.label,names:list,
-          note:`${child.label} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names instead of rebuilding it. Any part of "${clip(assignedPiece(child.task),160)}" that ${owner.label} does not provide is still written in this strand.`,
-          short:`${child.label} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names and write here only what it lacks.`});
+        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,names:list,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,list)});
         continue;
       }
       const byOwner=new Map();
       for(const x of owned){if(!byOwner.has(x.owner.id))byOwner.set(x.owner.id,{owner:x.owner,names:[]});byOwner.get(x.owner.id).names.push(x.name);}
       for(const {owner,names:list} of byOwner.values()) {
         this.event(id,'interfaces_owned_elsewhere',`"${label}" lists ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; kept without ${list.length>1?'them':'it'}.`);
-        rejectedChildren.push({label:child.label,owner:owner.label,names:list,kept:true,
-          short:`${child.label}: ${list.join(', ')} is owned by ${owner.label}; import ${list.join(', ')} from that strand by exactly those names and write here only what it lacks.`});
+        const name=owner.level===this.node(id)?.parent?owner.label:'',{short,outside}=ownerNote(child.label,'',name,list,true);
+        rejectedChildren.push({label:child.label,owner:name||OUTSIDE,names:list,kept:true,short,outside});
       }
       const c=owned.length?{...child,interfaces:child.interfaces.filter(f=>!owned.some(x=>x.name===f.name))}:child;
       kept.push(c);
@@ -2748,7 +2798,7 @@ export class ControlRoom extends DurableObject {
         } catch(e) {error||=String(e?.message||e);}
         if(owner===branch.id)return {branch,level};
         const found=candidates.find(c=>c.id===owner);
-        if(found)return {owner:found};
+        if(found)return {owner:found,level};
         branch=level;
       }
       return {error};
@@ -2760,10 +2810,10 @@ export class ControlRoom extends DurableObject {
         this.event(id,'scope_kept',`Clef placed proposed child "${label}" in this strand ("${clip(branch.label,70)}" under ${level.id}); kept.`);
         kept.push(child);
       } else if(owner) {
-        const note=`${child.label} is owned by ${owner.label}; import it from that strand instead of rebuilding it. Any part of "${clip(assignedPiece(child.task),160)}" that ${owner.label} does not provide is still written in this strand.`;
-        this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. Import it from that strand instead of rebuilding it.`);
-        const short=`${child.label} is owned by ${owner.label}; import it from that strand and write here only what it lacks.`;
-        rejected.push({label:child.label,task:clip(child.task,500),owner:owner.label,note,short});
+        // Decided above this strand's manager: the splitter is not told by whom.
+        const near=level.id===this.node(id)?.parent,name=near?owner.label:'';
+        this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. ${near?'Import it from that strand instead of rebuilding it.':`Decided at ${level.id}: this strand is told only that it is owned ${OUTSIDE}, and imports it by name.`}`);
+        rejected.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,...ownerNote(child.label,clip(assignedPiece(child.task),160),name)});
       } else if(error) {
         this.event(id,'scope_walk_uncertain',`No strand up to Root was shown to own "${label}", but Clef failed on the way (${clip(error,200)}); kept, since an error is no proof it is out of scope.`);
         kept.push(child);
@@ -2978,8 +3028,8 @@ export class ControlRoom extends DurableObject {
     }
     const receiver = this.node(id), source = this.node(from);
     if (!receiver || !source || receiver.status === 'retired' || source.status === 'retired' ||
-      !canContact(receiver, source) || !isPath(path) || !isPath(dest)) {
-      this.event(id, 'blocked', `Rejected artifact import from ${clip(from,70)}: outside immediate ownership boundary.`);
+      !canRead(receiver, source) || !isPath(path) || !isPath(dest)) {
+      this.event(id, 'blocked', `Rejected artifact import from ${clip(from,70)}: only a builder reads its manager's children's files.`);
       return false;
     }
     if (isPrivatePath(path) || !this.visibleManifest(from).some(f => f.path === path)) {
@@ -3610,7 +3660,8 @@ export class ControlRoom extends DurableObject {
     }
     // On a genuine miss, Clef examines direct-child responsibilities, PUBLIC
     // notebooks, file names, and short reads of exposed code from their repos.
-    const enriched=await this.childIndex(id,true);
+    // v7.15.1: never the asker itself; siblings now ask through this relay.
+    const enriched=(await this.childIndex(id,true)).filter(c=>c.id!==requester);
     const evidenced=await this.repoAnswer(id,key+' '+question,enriched);
     if(evidenced) {
       await this.managerAnswer(id,requester,key,evidenced);
@@ -4009,7 +4060,7 @@ export class ControlRoom extends DurableObject {
           action.ask=[];
         }
       }
-      if(this.env.MOCK_AI!=='true' && !this.manager(id) && this.node(id)?.label!=='Temporary builder' && action.imports.length) {
+      if(!this.manager(id) && this.node(id)?.label!=='Temporary builder' && action.imports.length) {
         this.event(id,'blocked','Only the temporary builder imports sibling Artifacts; workers ask their manager for interfaces.');
         action.imports=[];
       }
@@ -4055,11 +4106,12 @@ export class ControlRoom extends DurableObject {
         action.files=[];action.imports=[];action.exports=[];
         action.done=false;action.wait=true;
       }
-      // Spawned children find where a pruned piece lives, from this split or
-      // the rejected one it corrects unless this split keeps that piece, in
-      // their manager's public knowledge, written before any child can run.
+      // Spawned children find that a pruned piece lives outside their branch
+      // (never whose it is), from this split or the rejected one it corrects
+      // unless this split keeps that piece, in their manager's public
+      // knowledge, written before any child can run.
       const owned=action.spawn.length?ownerNotes([...rejectedChildren,...(before.split_feedback?.rejected||[])]
-        .filter(x=>x.kept||!action.spawn.some(c=>c.label===x.label))):'';
+        .filter(x=>x.kept||!action.spawn.some(c=>c.label===x.label)),true):'';
       if(owned)action.remember.push({visibility:'public',key:'owned_elsewhere',value:owned});
       if (!this.manager(id) && !action.spawn.length && action.exports.length) {
         this.event(id,'blocked','Implementers cannot publish child export aliases.');
@@ -4152,27 +4204,25 @@ export class ControlRoom extends DurableObject {
     ];
     const after=[
       ...action.answers.map(a => async () => {
-        if(this.env.MOCK_AI!=='true' && !this.manager(id) && a.to!=='parent' && a.to!==this.node(id)?.parent) {
+        if(!this.manager(id) && a.to!=='parent' && a.to!==this.node(id)?.parent) {
           this.event(id,'blocked','Worker can only publish knowledge through its manager.');return;
         }
         if (!this.send(id,a.to,`[knowledge:${a.key}] ${a.value}`)) throw new Error('Answer recipient is not adjacent');
       }),
       ...action.ask.map(a => async () => {
-        // Legacy deterministic fixture still exercises the historical adjacent
-        // owner protocol; real inference uses manager-only opaque requests.
-        if(this.env.MOCK_AI==='true' && a.to!=='parent' && a.to!==this.node(id)?.parent) {
-          if(!await this.askKnowledge(id,a.to,a.key,a.question)) throw new Error('Mock adjacency lookup failed');
-        } else if(!this.node(id)?.parent) {
+        // v7.15.1: every ask goes to the worker's manager, whatever it names;
+        // the manager answers from its children or asks up (MOCK too).
+        if(!this.node(id)?.parent) {
           // A plan persisted before the guard above: drop it, never throw.
           action.wait=false;this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
         } else if(!this.askManager(id,a.key,a.question,a.name||'')) throw new Error('Worker has no available manager');
       }),
       ...action.recall.map(r => async () => { await this.recall(id,r.visibility,r.key); }),
       ...action.messages.map(m => async () => {
-        // Ordinary Qwen implementers cannot navigate sideways/downward to search.
-        // Builders are the single intentional integration exception.
-        if(this.env.MOCK_AI!=='true' && !this.manager(id) && this.node(id)?.label!=='Temporary builder' && m.to!=='parent' && m.to!==this.node(id)?.parent) {
-          this.event(id,'blocked','Worker messages must go to its manager.');return;
+        // v7.15.1: a worker (a builder too) messages only its manager, never
+        // a sibling; a builder's one exception is reading, not messaging.
+        if(!this.manager(id) && m.to!=='parent' && m.to!==this.node(id)?.parent) {
+          this.event(id,'blocked',`Worker messages must go to its manager; not sent to ${clip(m.to,70)}.`);return;
         }
         this.send(id,m.to,m.body);
       }),

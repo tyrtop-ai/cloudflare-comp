@@ -35,7 +35,9 @@ const bootstrap=async()=>{
 test('malformed model decision does not acknowledge incoming messages or consume the logical turn',async()=>{
   const {room,env,drain}=await bootstrap();
   await room.start('Build a project from small independent agent strands',1);await drain();
-  assert.equal(room.send('root.2','root.1','critical API contract'),true);
+  // v7.15.1: the contract reaches root.1 through its manager; its sibling cannot send it.
+  assert.equal(room.send('root.2','root.1','critical API contract'),false);
+  assert.equal(room.send('root','root.1','critical API contract'),true);
   let calls=0;
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1'");
   env.MOCK_AI='false';
@@ -53,7 +55,8 @@ test('malformed model decision does not acknowledge incoming messages or consume
 test('failed commit resumes accepted action without sending messages early, losing the inbox or redeciding',async()=>{
   const {room,env,artifacts,drain}=await bootstrap();
   await room.start('Build a project from small independent agent strands',1);await drain();
-  assert.equal(room.send('root.2','root.1','API shape agreed'),true);
+  assert.equal(room.send('root.2','root.1','API shape agreed'),false,'v7.15.1: siblings talk through their manager');
+  assert.equal(room.send('root','root.1','API shape agreed'),true);
   let decisions=0,files=0;
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1'");
   env.MOCK_AI='false';
@@ -120,7 +123,8 @@ test('decision output budget supports reasoning overhead and safe token comparis
 test('an unfinished action survives DO eviction and resumes from its saved cursor',async()=>{
   const {room,env,sql,artifacts,drain}=await bootstrap();
   await room.start('Build a project from small independent agent strands',1);await drain();
-  room.send('root.2','root.1','message that must survive the restart');
+  assert.equal(room.send('root','root.1','message that must survive the restart'),true);
+  assert.equal(room.receive('root.1').length,1);
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1'");
   env.MOCK_AI='false';
   let decisions=0;
