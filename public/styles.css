@@ -39,11 +39,8 @@ a { color:var(--link); } a:visited { color:var(--visited); }
 .connection { display:inline-flex; align-items:center; gap:7px; color:var(--muted); }
 .connection::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--border); }
 .connection.online::before { background:var(--ok); }
-.heading { padding:57px 0 48px; max-width:920px; }
 .eyebrow { color:var(--muted); letter-spacing:.13em; font-size:10px; font-weight:700; }
-h1 { font-size:clamp(36px,4.1vw,62px); letter-spacing:-.055em; line-height:1.085; font-weight:600; margin:16px 0 22px; }
-.heading p { max-width:740px; line-height:1.7; color:var(--muted); margin:0; font-size:15px; }
-.app-grid { display:grid; grid-template-columns:305px minmax(0,1fr); gap:16px; align-items:start; }
+.app-grid { display:grid; grid-template-columns:305px minmax(0,1fr); gap:16px; align-items:start; margin-top:24px; }
 .sidebar,.workspace { display:flex; flex-direction:column; gap:16px; min-width:0; }
 .panel,.status-strip { border:thin solid var(--border); background:var(--bg); border-radius:6px; }
 .panel { padding:22px; }
@@ -94,7 +91,7 @@ textarea { resize:vertical; min-height:150px; line-height:1.6; }
 pre { font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:10px; line-height:1.65; color:var(--code-fg); padding:15px; margin:0; min-height:175px; max-height:330px; overflow:auto; white-space:pre; }
 footer { display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; font-size:10px; color:var(--muted); border-top:thin solid var(--border); padding:26px 0; margin-top:32px; letter-spacing:.03em; }
 @media(max-width:1080px) { .app-grid { grid-template-columns:270px minmax(0,1fr); } .two-col { grid-template-columns:1fr; } .feed-panel,.files-panel { min-height:0; } .event-list { min-height:230px; } }
-@media(max-width:750px) { .page {padding:0 16px;} .topbar{height:64px;} .top-meta>span:first-child{display:none;} .heading{padding:38px 0 32px;} .heading p{font-size:13px;} .app-grid{grid-template-columns:1fr;} .status-strip>div{padding:0 7px;} .status-strip strong{font-size:16px;} .eyebrow{font-size:8px;} .panel{padding:17px;} }
+@media(max-width:750px) { .page {padding:0 16px;} .topbar{height:64px;} .top-meta>span:first-child{display:none;} .app-grid{grid-template-columns:1fr;} .status-strip>div{padding:0 7px;} .status-strip strong{font-size:16px;} .eyebrow{font-size:8px;} .panel{padding:17px;} }
 
 /* Ownership tree: observer-only, never model input. Just circles: colour is
    the role, solid means done, a manager splits manager | builder while its
