@@ -673,7 +673,8 @@ export function tokenNames(text) {return knownNamesFrom([text]);}
 // other edit must be rename-only. With shapes, an edit that renames an
 // imported name { a } to { b } but not the file's uses of a is applied as the
 // alias { b: a } when its find text occurs once and the import still names
-// the same module, which exports b and not a.
+// the same module, which exports b and not a; also when { b } does not parse
+// because the file declares b itself (run6).
 export function applyEdits(content, edits, {knownNames=null,original=null,check=null,done=[],shapes=null}={}) {
   let current=String(content);
   const applied=[],rejected=[];
@@ -719,7 +720,7 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
     // means the name the target exports: bind it as { b: a } (import { b as a }).
     if(error&&shapes&&hits.length===1) {
       let text=replace;
-      for(const x of importAliases(current,next,shapes))if(x.at>=hits[0]&&x.at<=hits[0]+replace.length)text=text.slice(0,x.at-hits[0])+x.text+text.slice(x.at-hits[0]);
+      for(const x of importAliases(current,next,shapes,[hits[0],hits[0]+find.length]))if(x.at>=hits[0]&&x.at<=hits[0]+replace.length)text=text.slice(0,x.at-hits[0])+x.text+text.slice(x.at-hits[0]);
       const v=text===replace?null:splice(text);
       if(v&&!verify(v)[0])[next,error,alias]=[v,null,text];
     }
@@ -1300,21 +1301,36 @@ function importKeys(content) {
   const out=[];
   walk(parseSource(content).ast,node=>{
     if(node.type==='VariableDeclarator'&&isRequire(node.init)&&node.id.type==='ObjectPattern') {
-      for(const p of node.id.properties)if(p.type==='Property'&&!p.computed&&p.key.type==='Identifier'&&p.value.type==='Identifier')out.push({key:p.key,local:p.value,spec:node.init.arguments[0].value});
+      for(const p of node.id.properties)if(p.type==='Property'&&!p.computed&&p.key.type==='Identifier'&&p.value.type==='Identifier')out.push({key:p.key,local:p.value,spec:node.init.arguments[0].value,specAt:node.init.arguments[0].start});
     } else if(node.type==='ImportDeclaration'&&typeof node.source?.value==='string')
-      for(const sp of node.specifiers)if(sp.type==='ImportSpecifier'&&sp.imported.type==='Identifier')out.push({key:sp.imported,local:sp.local,spec:node.source.value,esm:true});
+      for(const sp of node.specifiers)if(sp.type==='ImportSpecifier'&&sp.imported.type==='Identifier')out.push({key:sp.imported,local:sp.local,spec:node.source.value,specAt:node.source.start,esm:true});
   });
   return out;
+}
+// The import keys of an after that does not parse, found through the tokens
+// of before: an edit that renames { loadTickets } to { getTickets } in a file
+// that declares function getTickets redeclares it (run6, three relinks of
+// the same rejected edit). Only when the token count is the same and every
+// changed token is a name or a string inside the edit [from, to).
+function renamedImportKeys(before, after, from, to) {
+  try {
+    const type=parseSource(before).sourceType,a=tokens(before,type),b=tokens(after,type);
+    if(a.length!==b.length||a.some((t,i)=>!sameToken(t,b[i])&&(t.start<from||t.end>to||t.type!==b[i].type||!['name','string'].includes(t.type.label))))return null;
+    const at=new Map(a.map((t,i)=>[t.start,b[i]])),moved=n=>{const t=at.get(n.start);return {name:t.value,start:t.start,end:t.end};};
+    return importKeys(before).map(k=>({...k,key:moved(k.key),local:moved(k.local),spec:at.get(k.specAt).value}));
+  } catch {return null;}
 }
 // Where after renames a shorthand import { a } to { b }, the text that keeps
 // the local name a ({ b: a }, import { b as a }), last first. Only when the
 // import still names the same module, which (or the one module its
 // unresolved path names) exports b and not a; an alias ({ x: y } to
-// { z: y }) is a rename as it is.
-function importAliases(before, after, {path, files, surfaces}) {
+// { z: y }) is a rename as it is. hit ([from, to) in before): the edit, for
+// an after that does not parse because b is already declared there.
+function importAliases(before, after, {path, files, surfaces}, hit=null) {
   let x,y;
-  try {x=importKeys(before);y=importKeys(after);} catch {return [];}
-  if(x.length!==y.length)return [];
+  try {x=importKeys(before);} catch {return [];}
+  try {y=importKeys(after);} catch {y=hit&&renamedImportKeys(before,after,...hit);}
+  if(!y||x.length!==y.length)return [];
   const set=files instanceof Map?files:new Map(Object.entries(files||{})),all=[...set.keys()].filter(p=>LINKABLE.test(p));
   const targetOf=spec=>spec.startsWith('.')&&(resolveLocal(path,spec,set).path||namedModule(path,spec,all));
   return y.flatMap((b,i)=>{
