@@ -1731,7 +1731,7 @@ export class ControlRoom extends DurableObject {
       } else if(kind==='manager') {
         // relay: the decision travels as a side, never a node below the child.
         const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:instructionsFor(p,dec.side),facts_text:p.facts.provider_text||''};
-        if(this.moveProblem(p,{holder:dec.child,directive,trail:trail(p,dec.delegate?'delegate':dec.relay?'relay':'assign',dec.child,dec.rule)})) {
+        if(this.moveProblem(p,{holder:dec.child,directive,trail:trail(p,directive?'relay':'delegate',dec.child,dec.rule)})) {
           this.event(m,directive?'problem_relayed':'problem_delegated',clip(`${p.kind} problem (${dec.rule}) to ${children.get(dec.child).label}${directive?`, ${directive.side} changes: ${directive.instructions}`:', whose branch holds every party'}`,700),dec.child);
           this.wake(dec.child);
         }

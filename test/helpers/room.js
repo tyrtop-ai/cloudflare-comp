@@ -79,22 +79,27 @@ const { start } = require('./index.js');
 // ------------------------------------------------------------------ rooms
 // A live room with a scripted linker, runner and triage. Any other model
 // request fails the test: in slice 1 no manager calls a model.
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,triage=()=>null,executor,room_id='v714-test'}={}) {
-  const calls={link:[],runner:[],triage:[]};
+// leaf(user, n) answers a worker's turn (a repair) when a test drives the
+// room with drive(); without it a worker turn fails the test.
+export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,triage=()=>null,leaf=null,executor,room_id='v714-test'}={}) {
+  const calls={link:[],runner:[],triage:[],leaf:[]};
   const AI={run:async(_model,{messages})=>{
     const system=messages[0].content,user=JSON.parse(messages[1].content);
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
+    if(leaf&&system.includes('LEAF CODE WRITER')){calls.leaf.push(user);return {response:JSON.stringify(leaf(user,calls.leaf.length))};}
     if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}
     if(system.startsWith('You are the BUILDER doing triage')){calls.triage.push(user);return {response:JSON.stringify(triage(user))};}
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
   const builds=[];
   const exec=executor||{build:async({fingerprint,files})=>{builds.push(files);return verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files});}};
-  const store=new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil(){}};
+  const pending=[],store=new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
   const env={MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec}};
   const room=new ControlRoom(ctx,env);
   room.set('room_id',room_id);
-  return {room,store,calls,builds,sql,ctx,env};
+  // Await what start() or resume() left running.
+  const drain=async()=>{while(pending.length)await Promise.all(pending.splice(0));};
+  return {room,store,calls,builds,sql,ctx,env,drain};
 }
 export const GOAL='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
 // Workers under `parent` (a manager), each done with one file. A spec with
