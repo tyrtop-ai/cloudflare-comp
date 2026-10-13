@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, missingExports, selfImports } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, GENERIC_NAMES, signature } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
@@ -1978,12 +1978,17 @@ export class ControlRoom extends DurableObject {
   // piece adds, in the same step; a carrier is in scope by construction (run6
   // lost its entry module at p=0.448). Then the walk by name, and the Clef
   // walk for the non-carriers left.
-  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[]}={}) {
+  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[],place=false}={}) {
     const promised=this.promisedOf(id),own=new Set(promised.map(p=>p.name));
-    const {spawn:named,inferred}=normalizeSpawn(spawn,promised);
+    let {spawn:named,inferred}=normalizeSpawn(spawn,promised);
     // C0 already ran in decompose for a first split; it reports what it read.
     const read=[...(Array.isArray(earlier)?earlier:[]).filter(x=>typeof x?.label==='string'&&own.has(x?.name)),...inferred];
     for(const x of read)this.event(id,'interfaces_inferred',`"${clip(x.label,70)}" says it exports ${x.name}(); it carries ${x.name}.`);
+    // The last attempt before a pause places what the pieces' own text shows (R6).
+    if(place&&interfaceErrors(named,promised).some(e=>e.check==='C5')) {
+      const placed=placePromised(named,promised);named=placed.spawn;
+      for(const x of placed.placed)this.event(id,'interfaces_placed',`Last attempt before a pause: ${x.from.length?`${x.name} stays on "${clip(x.label,70)}" and is deleted from ${x.from.map(l=>`"${clip(l,70)}"`).join(', ')}`:`"${clip(x.label,70)}" carries ${x.name}`}, as its own text shows.`);
+    }
     const c5=interfaceErrors(named,promised).filter(e=>e.check==='C5');
     if(c5.length)return {spawn:named,c5,rejectedScope:0,rejectedChildren:[]};
     const elsewhere=new Set(named.flatMap(c=>(c?.interfaces||[]).map(f=>f.name)).filter(name=>!own.has(name)&&!GENERIC_NAMES.has(name)&&this.ownerBranch(name,id)));
@@ -2942,7 +2947,11 @@ export class ControlRoom extends DurableObject {
         // v7.15: a split rejected only for its function names keeps Clef's
         // YES; asking again invites "implement it directly", which at Root
         // would hand the whole application to one worker.
-        const namesOnly=before.split_feedback?.kind==='interfaces';
+        // Below the top, once a names-only re-split has failed too, Clef is
+        // asked again with the feedback: a branch may implement its promise
+        // itself (a splitter that kept naming createComment for addComment).
+        const lastTry=(this.read('failures',{})[id]||0)>=2;
+        const namesOnly=before.split_feedback?.kind==='interfaces'&&(!n.parent||!lastTry);
         const gate=namesOnly?{split:true}:await shouldSplit(this.inferenceEnv(),n.task,before);
         this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
         if (gate.split && !this.canSplit(id,2)) {
@@ -3041,7 +3050,7 @@ export class ControlRoom extends DurableObject {
         // child repository is created. Keep Root's goal as an immutable scope
         // anchor so an ambiguous parent cannot drift over generations.
         if(action.spawn.length) {
-          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred});
+          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2});
           if(admit.c5.length) {
             // The partition was not what failed: the next turn keeps Clef's
             // YES and the splitter gets this partition back to correct.
@@ -3134,7 +3143,7 @@ export class ControlRoom extends DurableObject {
           return;
         }
         // A worker with a promise must give every promised name to one piece (C5).
-        const admit=await this.admitChildren(id,n,action.spawn,{late:true});
+        const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2});
         action.spawn=admit.c5.length?[]:admit.spawn;rejectedScope+=admit.rejectedScope;rejectedChildren.push(...admit.rejectedChildren);
         if(admit.c5.length || (rejectedScope && action.spawn.length<2) || action.spawn.length<2 ||
            action.spawn.length>this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()) {

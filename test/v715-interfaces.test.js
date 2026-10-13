@@ -9,7 +9,7 @@ import {DatabaseSync} from 'node:sqlite';
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../src/index.js');
 const {normalizeAction}=await import('../src/protocol.js');
-const {normalizeInterfaces,normalizeSpawn,interfaceErrors,repairInterfaces}=await import('../src/interfaces.js');
+const {normalizeInterfaces,normalizeSpawn,interfaceErrors,repairInterfaces,placePromised}=await import('../src/interfaces.js');
 const {decompose,decide,scopeInterfaces,ROOT_PROMISE,LEAF_DEPENDENCY_RULE}=await import('../src/model.js');
 const {missingExports,selfImports}=await import('../src/linker.js');
 class Sql {
@@ -120,7 +120,7 @@ test('v7.15: interfaceErrors names bad identifiers, example copies, duplicates, 
     ['C4','"saveTicket" is listed by both "Store" and "Crowded"; give each function to exactly one piece.'],
     ['C3','"Entry" lists 6 functions; list at most 5, only those another piece calls.'],
     ['C3','"Crowded" lists 6 functions; list at most 5, only those another piece calls.'],
-    ['C5','Your assignment promises start(): no arguments; returns the API; give it, unchanged, to exactly one piece, the one whose task writes it.'],
+    ['C5','Your assignment promises start(): no arguments; returns the API; "Entry" and "Also entry" both list it; give it, unchanged, to exactly one piece, the one whose task writes it.'],
     ['C5','Your assignment promises stopApp(reason): stops the application; give it, unchanged, to exactly one piece, the one whose task writes it.']]);
   assert.deepEqual(interfaceErrors([named('A','start'),named('B','createTicket','create')],promised.slice(0,1)),[],'a generic name is never an error');
   assert.deepEqual(interfaceErrors([named('A','x'),named('B','y')],[]),[],'no promise, no C5');
@@ -582,4 +582,58 @@ test('v7.15: an atomic Root reads start without the clause on asking a manager, 
   assert.equal(events(room,'ask_dropped').length,2);
   assert.equal(room.db().exec('SELECT * FROM pending_turns').toArray().length,0);
   assert.equal(room.node('root').status,'ready');
+});
+
+test('v7.15: on the last attempt before a pause a promised name goes where the pieces\' own text puts it; C5 names the pieces that share one',()=>{
+  const named=(label,task,...names)=>({label,task,interfaces:names.map(name=>({name,does:'',params:[]}))});
+  const addComment={name:'addComment',does:'adds a comment',params:['ticketId','text'],operation:'add a comment'};
+  const two=[named('entry module','Write the entry module that exports start()','start'),named('command line interface','Write code that reads commands','start')];
+  assert.deepEqual(interfaceErrors(two,[START]).map(e=>e.text),[`Your assignment promises start(): ${START.does}; "entry module" and "command line interface" both list it; give it, unchanged, to exactly one piece, the one whose task writes it.`]);
+  const kept=placePromised(two,[START]);
+  assert.deepEqual(kept.spawn.map(c=>c.interfaces.map(f=>f.name)),[['start'],[]]);
+  assert.deepEqual(kept.placed,[{label:'entry module',name:'start',from:['command line interface']}]);
+  assert.deepEqual(two[1].interfaces.map(f=>f.name),['start'],'the input is not changed');
+  const mentioned=placePromised([named('Entry','Write the entry module that provides a start() function'),named('Store','Write code that keeps tickets','saveTicket')],[START]);
+  assert.deepEqual(mentioned.spawn[0].interfaces,[START],'the parent\'s item');
+  assert.deepEqual(mentioned.placed,[{label:'Entry',name:'start',from:[]}]);
+  const cased=placePromised([named('comment operations','Write code that adds comments','AddComment','listComments'),named('comment store','Write code that stores comments','saveComment')],[addComment]);
+  assert.deepEqual(cased.spawn[0].interfaces,[addComment,{name:'listComments',does:'',params:[]}]);
+  const assignTicket={name:'assignTicket',does:'',params:['ticketId','user']};
+  assert.deepEqual(placePromised([named('assignment rules','Write code that checks a user can be assigned a ticket.'),named('assignment writer','Write code that records the assignee and exports assignTicket.')],[assignTicket]).placed,
+    [{label:'assignment writer',name:'assignTicket',from:[]}],'a camelCase name needs no parentheses (sa-latesplit probe)');
+  for(const [spawn,promised] of [[[named('A','Write code so start() can return it'),named('B','Write code that calls start() in its tests')],[START]],
+    [[named('A','Write code that starts the tracker'),named('B','Write code to start the tracker')],[START]],
+    [[named('A','Write code that adds comments','createComment'),named('B','Write code that stores comments','saveComment')],[addComment]],
+    [[named('A','Write code that exports start()','start'),named('B','Write code exporting start()','start')],[START]],
+    [two.slice(0,1),[START]]])
+    assert.deepEqual(placePromised(spawn,promised).placed,[],'two candidates, none, or one carrier already: nothing is placed');
+});
+
+test('v7.15: a splitter that repeats a misplaced promise does not pause the run: the top keeps start on the piece that exports it, and a lower branch asks Clef again',async()=>{
+  const dupes=[{label:'entry module',task:'Write the application entry module that imports the operations and exports start()',functions:[{name:'start'}]},
+    {label:'ticket operations',task:'Write code that creates and lists tickets',functions:[{name:'createTicket'}]},
+    {label:'command line interface',task:'Write code that reads commands from the user and calls the ticket operations',functions:[{name:'start',does:'runs the CLI'}]}];
+  const ai=fakeAI({split:()=>dupes});
+  const {room,drain}=setup(ai);
+  await room.start('Build a small issue tracker',3);await drain();
+  assert.equal(ai.calls.filter(c=>c.kind==='gate').length,1,'the top keeps Clef\'s YES');
+  assert.equal(ai.calls.filter(c=>c.kind==='split').length,6);
+  assert.equal(events(room,'split_rejected').length,2);
+  assert.match(events(room,'split_rejected')[0].body,/"entry module" and "command line interface" both list it; give it/);
+  assert.deepEqual(events(room,'interfaces_placed').map(e=>e.body),['Last attempt before a pause: start stays on "entry module" and is deleted from "command line interface", as its own text shows.']);
+  assert.deepEqual(room.children('root').map(c=>[c.label,room.promisedOf(c.id).map(f=>f.name)]),[['entry module',['start']],['ticket operations',['createTicket']],['command line interface',[]]]);
+  assert.deepEqual(room.promisedOf('root.1'),[START]);
+  assert.ok(!events(room,'paused').some(e=>/after 3 failures/.test(e.body)));
+  // Below the top: the comments branch keeps naming createComment for its
+  // promised addComment; the third turn asks Clef, whose NO implements it.
+  const comments={label:'comments',task:'Write code that adds comments to a ticket and lists a ticket\'s comments.',functions:[{name:'addComment',does:'adds a comment',params:['ticketId','text'],operation:'add a comment'},{name:'listComments',does:'lists comments',params:['ticketId'],operation:'list comments'}]};
+  const renamed=[{label:'comment store',task:'Write code that stores comments per ticket',functions:[{name:'saveComment'}]},
+    {label:'comment operations',task:'Write code that adds a comment to a ticket and lists its comments',functions:[{name:'createComment'},{name:'listComments'}]}];
+  const below=fakeAI({gate:n=>n===1?0.9:0.1,split:()=>renamed,leaf:()=>({summary:'Comments',files:[{path:'comments.js',content:'const comments = {};\nfunction addComment(ticketId, text) { (comments[ticketId] ||= []).push(text); return text; }\nfunction listComments(ticketId) { return comments[ticketId] || []; }\nmodule.exports = { addComment, listComments };\n'}],done:true})});
+  const {room:lower}=await tree(below,[comments,run6Root[0]],{phases:{comments:'decompose'}});
+  for(let k=0;k<3;k++)await lower.turn('root.1');
+  assert.deepEqual(below.calls.map(c=>c.kind),['gate','split','split','split','split','gate','leaf']);
+  assert.equal(below.calls[5].state.previous_split_rejection.kind,'interfaces','Clef reads the names-only feedback');
+  assert.deepEqual([lower.node('root.1').phase,lower.node('root.1').status],['implement','done']);
+  assert.ok(below.calls[6].request.your_responsibility.endsWith('listComments(ticketId): lists comments [goal operation: list comments].'),'it writes its own promise');
 });

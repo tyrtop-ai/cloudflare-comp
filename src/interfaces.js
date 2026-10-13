@@ -48,6 +48,9 @@ const namesOf = c => (c.interfaces || []).map(f => f.name);
 // C0: a piece whose own text says it exports a promised name carries it. A
 // mere mention ("so start() can return it") does not count.
 const saysExports = (c, name) => new RegExp(`\\b[Ee]xport(?:s|ing|ed)?\\s+(?:[Aa]n?\\s+|[Tt]he\\s+)?(?:function\\s+)?${escape(name)}\\s*\\(`).test(`${c.label || ''}\n${c.task || ''}`);
+// NAME( anywhere, or a camelCase name as a whole word ("exports assignTicket."):
+// a plain word such as start is prose without its parentheses.
+const mentions = (c, name) => new RegExp(`(?:^|[^\\w$])${escape(name)}${/[A-Z0-9_$]/.test(name.slice(1)) ? '(?![\\w$])' : '\\s*\\('}`).test(`${c.label || ''}\n${c.task || ''}`);
 export function normalizeSpawn(spawn, promised = []) {
   if (!Array.isArray(spawn)) return {spawn, inferred: []};
   const out = spawn.map(s => {
@@ -86,9 +89,39 @@ export function interfaceErrors(spawn, promised = []) {
   }
   for (const c of kids) if (namesOf(c).length > MAX_INTERFACES)
     errors.push({label: c.label, name: '', check: 'C3', text: `"${c.label}" lists ${namesOf(c).length} functions; list at most ${MAX_INTERFACES}, only those another piece calls.`});
-  for (const p of promised) if (kids.filter(k => namesOf(k).includes(p.name)).length !== 1)
-    errors.push({label: '', name: p.name, check: 'C5', text: `Your assignment promises ${described(p)}; give it, unchanged, to exactly one piece, the one whose task writes it.`});
+  for (const p of promised) {
+    const holders = kids.filter(k => namesOf(k).includes(p.name));
+    if (holders.length !== 1) errors.push({label: '', name: p.name, check: 'C5', text: `Your assignment promises ${described(p)}; ${holders.length ? `${holders.map(k => `"${k.label}"`).join(' and ')} ${holders.length > 2 ? 'all' : 'both'} list it; ` : ''}give it, unchanged, to exactly one piece, the one whose task writes it.`});
+  }
   return errors;
+}
+// R6, only on the last attempt before a pause, which would stop the run: a
+// promised name on several pieces stays on the one whose task says it
+// exports it, else the one whose text mentions it; one on no piece goes to
+// the one piece listing it in another case, else the one whose text
+// mentions it (a repeating splitter: "provides a start() function", or
+// start on both the entry and a CLI piece). A wrong guess costs at most
+// three contract returns. Returns what it placed.
+export function placePromised(spawn, promised = []) {
+  const out = (Array.isArray(spawn) ? spawn : []).map(c => c && typeof c === 'object' ? {...c, interfaces: [...(c.interfaces || [])]} : c);
+  const kids = out.filter(c => c && typeof c === 'object'), one = xs => xs.length === 1 ? xs[0] : null, placed = [];
+  for (const p of promised) {
+    const holders = kids.filter(k => namesOf(k).includes(p.name)), carried = {...p, params: [...(p.params || [])]};
+    if (holders.length === 1) continue;
+    if (holders.length) {
+      const pick = one(holders.filter(c => saysExports(c, p.name))) || one(holders.filter(c => mentions(c, p.name)));
+      if (!pick) continue;
+      for (const c of holders) if (c !== pick) c.interfaces = c.interfaces.filter(f => f.name !== p.name);
+      placed.push({label: pick.label, name: p.name, from: holders.filter(c => c !== pick).map(c => c.label)});
+      continue;
+    }
+    const same = f => f.name.toLowerCase() === p.name.toLowerCase();
+    const cased = one(kids.filter(c => c.interfaces.some(same))), pick = cased || one(kids.filter(c => mentions(c, p.name)));
+    if (!pick) continue;
+    pick.interfaces = cased ? pick.interfaces.map(f => same(f) ? carried : f) : [...pick.interfaces, carried];
+    placed.push({label: pick.label, name: p.name, from: []});
+  }
+  return {spawn: out, placed};
 }
 // R1-R4: a naming slip deletes the name, never the piece. Promised names are
 // never deleted; one on two pieces is a C5 failure, not a repair. A name on
