@@ -4,7 +4,7 @@
 // The room tests use the REAL container build runner as the executor.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {materializedPath,liveRoom,step,openProblems,lastReport,tickets,events,trace} from './helpers/room.js';
+import {materializedPath,liveRoom,step,openProblems,lastReport,tickets,events,trace,settle} from './helpers/room.js';
 const L=await import('../src/linker.js');
 const {ROOT_PROMISE}=await import('../src/model.js');
 
@@ -482,4 +482,29 @@ test('v7.15: run8 replay (B): the entry reading .start() from view-tickets is th
   assert.deepEqual([v.decisions[0].how,v.decisions[0].dec.child],['default','root.3']);
   // Without a promise (a v7.14 room) the same disagreement is still the model's (M8).
   assert.equal(P.modelTrigger({...p,facts:{...p.facts,unpromised:undefined}},{rule:'D6',action:'assign',child:'root.3'},{recurrence:()=>0}),'M8');
+});
+
+// ---------------------------------------------------- run8: no-change repair
+// run8's last step: the entry worker answered its repair ticket with
+// 'Fixed entry module…' and done:true but wrote no file. Nothing changed,
+// nothing was relinked, the manager went idle and the run paused for a
+// Continue. The problem goes back once, saying nothing changed in its
+// files, as an event; the second unchanged answer closes it through the
+// exhausted path, and the run ends visibly instead of idling.
+test('v7.15: run8 replay (C): a repair answered done with no file change is sent back once, saying so; the second closes it and the run ends visibly',async()=>{
+  const {room,calls}=liveRoom({leaf:()=>({summary:'Fixed entry module: start() now returns every operation.',done:true})});
+  await planned(room);
+  await pieces(room,'root',[['ticket storage','storage.js',"const rows = [];\nfunction saveTicket(t) { rows.push(t); return t; }\nmodule.exports = { saveTicket };\n",[fn('saveTicket','stores a ticket',['ticket'])]],
+    ['entry module','app.js',entry,[START]]]);
+  await settle(room);
+  assert.equal(calls.leaf.length,2,'asked once more, not forever');
+  const [first,second]=calls.leaf.map(c=>c.new_messages.map(m=>m.body).join('\n'));
+  assert.doesNotMatch(first,/NOTHING CHANGED/);
+  assert.match(second,/^REAL CONTAINER BUILD FAILED on your owned source\.[^]* NOTHING CHANGED IN YOUR FILES: you answered this problem as fixed, but your published files are exactly as they were when it was sent\. /);
+  assert.match(second,/start\(\) must return an object whose methods perform the requested operations/,'with the problem text');
+  assert.deepEqual(events(room,'repair_unchanged').map(e=>[e.actor,e.recipient,e.body]),[['root','root.2','entry module answered its repair as done without changing a file; the problem goes back to it once with "nothing changed in your files".']]);
+  const [p]=room.problems("kind='entry'");
+  assert.deepEqual([p.status,p.outcome,p.trail.map(t=>[t.action,t.rule])],['closed','exhausted',[['assign','D4'],['assign','D4'],['close','no_change']]]);
+  assert.equal(room.get('status'),'failed','never an idle pause with the problem open');
+  assert.match(room.node('root').summary,/^Repair exhausted: a entry problem was closed without a fix \(entry module finished 2 repairs without changing its files\)/);
 });

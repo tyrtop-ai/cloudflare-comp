@@ -1123,7 +1123,7 @@ export class ControlRoom extends DurableObject {
     if(!row)return '';
     const problems=parse(row.problems,[]).map(id=>this.problems('id=?',id)[0]).filter(p=>p&&p.status!=='closed');
     if(!problems.length)return '';
-    return repairText({role:row.role,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),
+    return repairText({role:row.role,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),unchanged:problems.some(p=>p.flags.no_change&&p.flags.no_change_by===row.worker),
       problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
@@ -2221,6 +2221,10 @@ export class ControlRoom extends DurableObject {
       this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,m,worker,JSON.stringify(moved.map(p=>p.id)),role,instructions,facts,now);
       this.send(m,worker,'[build:repair] '+ticket);
       this.event(m,'problem_assigned',clip(`${moved.length} problem(s) to ${label(worker)} (${[...new Set(list.map(([,d])=>d.rule))].join(', ')}): ${instructions}`,800),worker);
+      // run8 paused silently after its entry answered a repair 'fixed' and
+      // wrote nothing. Back once, saying so; the next unchanged answer closes it.
+      if(moved.some(p=>p.flags.no_change&&p.flags.no_change_by===worker))
+        this.event(m,'repair_unchanged',`${label(worker)} answered its repair as done without changing a file; the problem goes back to it once with "nothing changed in your files".`,worker);
     }
     for(const r of acts.retask)if(!skip.has(r.child)&&!retasks.has(r.child))retasks.set(r.child,{task:r.task,rule:'model',reason:r.reason});
     for(const [child,r] of retasks)this.retaskChild(m,child,r.task,r.reason,r.rule);

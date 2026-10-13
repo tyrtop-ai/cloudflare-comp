@@ -331,9 +331,13 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // the v7.13.3 entry contract alone is 532 and leads the manager's words.
 // kinds: the problems' kinds; when every one is a contract nothing was
 // built or run, so the head says the plan was checked instead (v7.15).
-export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[]}) {
-  const head=kinds.length&&kinds.every(k=>k==='contract')?'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.':
-    'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers, so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER);
+// unchanged: the worker answered this problem done without changing a file
+// (run8's entry answered 'Fixed entry module' and wrote nothing): it hears
+// so right after the head, once; a second such answer closes it unfixed.
+export const UNCHANGED=' NOTHING CHANGED IN YOUR FILES: you answered this problem as fixed, but your published files are exactly as they were when it was sent. Change the code and publish the FULL updated file; another answer that changes nothing closes the problem unfixed.';
+export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],unchanged=false}) {
+  const head=(kinds.length&&kinds.every(k=>k==='contract')?'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.':
+    'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers, so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER))+(unchanged?UNCHANGED:'');
   const decided=instructions?` Your manager decided: ${String(instructions).slice(0,900)}`:'';
   const shown=problems.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ');
   const room=Math.max(0,2400-head.length-decided.length-' Problems: '.length-Math.min(shown.length,1100)-' What the other side provides: '.length);
