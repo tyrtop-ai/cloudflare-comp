@@ -51,7 +51,7 @@ test('a single Clef request evaluates all proposed children against Root AND par
     assert.equal(args.state.original_goal,goal);
     assert.equal(args.state.parent_responsibility,'Manage ticket ownership');
     assert.deepEqual(Object.keys(args.questions),['within_0','within_1','within_2']);
-    assert.ok(Object.values(args.questions).every(q=>q.instructions.includes('A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code needed by the goal.')),'run6: Clef rejected the entry-module child the goal asks for');
+    assert.ok(Object.values(args.questions).every(q=>q.instructions.includes('A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code; judge its scope like any other child.')),'run6: Clef rejected the entry-module child the goal asks for');
     assert.ok(!('messages' in args));
     return {answers:{within_0:{noul:0.9},within_1:{noul:0.92},within_2:{noul:0.01}}};
   }}},goal,'Manage ticket ownership',children);

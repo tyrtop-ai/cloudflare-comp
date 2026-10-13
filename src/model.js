@@ -72,7 +72,7 @@ export async function scopeChildren(env, originalGoal, parentTask, children) {
   const checked=await Promise.all(groups.map(async ({start,group})=>{
     const questions=Object.fromEntries(group.map((_, i) => [`within_${i}`,{
       type:'noul',
-      instructions:`Does proposed child ${start+i} request a concrete SOURCE CODE IMPLEMENTATION of a submodule needed for BOTH the original user goal and its parent code-writing assignment? Answer NO for unrelated domains and for tasks that only describe, choose, plan, document, outline, or discuss a solution instead of writing source code. An actual executable schema/configuration module or test is code. A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code needed by the goal. Judge scope and code deliverability, not implementation quality.`
+      instructions:`Does proposed child ${start+i} request a concrete SOURCE CODE IMPLEMENTATION of a submodule needed for BOTH the original user goal and its parent code-writing assignment? Answer NO for unrelated domains and for tasks that only describe, choose, plan, document, outline, or discuss a solution instead of writing source code. An actual executable schema/configuration module or test is code. A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code; judge its scope like any other child. Judge scope and code deliverability, not implementation quality.`
     }]));
     const output=await env.AI.run(selector,{
       model:clef,
