@@ -180,6 +180,13 @@ export async function runReady(room,ids,max=30) {
   }
   throw new Error('still ready after '+max+' turns: '+ids.filter(id=>room.node(id)?.status==='ready').join(', '));
 }
+// v7.15.1: the open problems were reported once before, unchanged, and their
+// manager paid a round for that report, so the round they start makes no progress.
+export function reportedBefore(room) {
+  const holders=new Set(room.problems("status!='closed'").map(p=>p.holder));
+  room.db().exec("INSERT INTO problems SELECT id||'-before',holder,'closed','superseded',kind,stage,source,source_input,signature,parties,detail,facts,evidence,directive,'{\"wave\":\"before\"}','',trail,created-1,updated FROM problems WHERE status!='closed'");
+  for(const m of holders)room.save(`repair_waves:${m}`,[...room.read(`repair_waves:${m}`,[]),'before']);
+}
 // Rows a manager holds that are not closed.
 export const openProblems=(room,holder)=>room.problems("holder=? AND status!='closed'",holder);
 // The latest report of a builder or the compiler, shaped like v7.12's

@@ -13,7 +13,7 @@ import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImpor
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
-import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
+import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -513,7 +513,7 @@ export class ControlRoom extends DurableObject {
     // (bounded) so early split and capacity decisions can be diagnosed.
     const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 20000').reverse();
     // Every problem row and ticket, and the per-manager linking and compile state.
-    const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
+    const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
     return {...snapshot,events,exports,exported_at:new Date().toISOString(),files,
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state};
   }
@@ -1523,7 +1523,8 @@ export class ControlRoom extends DurableObject {
       if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${clip(verdict.problem,700)}`);
       // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
       const problem=clip(verdict?.problem||'',400).trim();
-      issues=[{path:owner||'',detail:`${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
+      // failure: the runner's own output, which says whether the failure moved (v7.15.1).
+      issues=[{path:owner||'',failure:detail,detail:`${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
     return {passed:false,issues,detail,test};
@@ -1968,12 +1969,13 @@ export class ControlRoom extends DurableObject {
     // Container reports one error once per module in its stack: one problem,
     // whose sites are those modules, the innermost first.
     const failed=(kind,issues)=>{
-      const groups=new Map();
+      const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail]));
       for(const x of issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues)
         if(groups.has(x.detail))groups.get(x.detail).push(x.path);else groups.set(x.detail,[x.path]);
       return [...groups].map(([detail,[first,...more]])=>{
         const path=files.has(first)?first:entry,target=errorTarget(files,path,detail);
-        return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,facts:target?{provider_text:clip(exportsLine(target,surfaces),700)}:{}};
+        return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,
+          facts:{...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure:failureHead(output.get(detail))}};
       });
     };
     const check=await this.containerRun(id,`compile:${input}`,app);
@@ -2104,7 +2106,7 @@ export class ControlRoom extends DurableObject {
     const {call,fixed,deferred}=clusterForModel(entries),held=new Set([...call,...deferred]);
     // Out of model calls, turn budget or repair rounds, every problem keeps
     // its default, the rules' decision, as with no model at all.
-    if(!call.length||!this.allowModel(m)||!this.roundsLeft(m))this.applyDecisions(m,entries,ctx,st);
+    if(!call.length||!this.allowModel(m)||!this.roundsLeft(m,call.map(e=>e.p)))this.applyDecisions(m,entries,ctx,st);
     else {
       this.applyDecisions(m,entries.filter(e=>!held.has(e)),ctx,st);
       const decided=await this.askManagerModel(m,call,fixed,ctx);
@@ -2352,7 +2354,8 @@ export class ControlRoom extends DurableObject {
         evidence:(p.evidence||[]).map(e=>clip(e,300)),default:{action:dec.action==='exhausted'?'close':dec.action,...dec.child?{child:dec.child}:{}},
         ...given(p).length?{history:{assigned_before:given(p).map(t=>t.to),...p.flags.no_change?{returned_unchanged_by:p.flags.no_change_by,times:p.flags.no_change}:{}}}:{}})),
       fixed_decisions:fixed.map(e=>({child:e.dec.child,instructions:clip(e.dec.instructions||instructionsFor(e.p,e.dec.side),300)})),
-      rounds_left:Math.max(0,MANAGER_MAX_ROUNDS-Number(this.get(`repair_rounds:${m}`,'0')))};
+      // Rounds without progress left for these problems, within the run's (v7.15.1).
+      rounds_left:Math.max(0,Math.min(this.stalledLeft(m,call.map(e=>e.p)),this.roundCap()-Number(this.get('repair_rounds_total','0'))))};
     for(const cut of [c=>{if(c.exports)c.exports=clip(c.exports,200);},c=>{delete c.needs;c.task=clip(c.task,120);}])
       if(tokenEstimate(JSON.stringify(input))>BUILDER_CONTEXT_BUDGET)input.children.forEach(cut);
     return input;
@@ -2496,7 +2499,7 @@ export class ControlRoom extends DurableObject {
       // What it held was about the branch that is gone; it starts with nothing.
       db.exec("UPDATE problems SET status='closed',outcome='retasked',updated=? WHERE holder=? AND status!='closed'",Date.now(),c);
       this.set(`builder_gen:${c}`,Number(this.get(`builder_gen:${c}`,'0'))+1);
-      for(const k of ['linked','link_state','link_reported','builder_requested','bundle','capacity_blocked','rounds_exhausted','repair_rounds','repair_waves','manager_reconciled'])
+      for(const k of ['linked','link_state','link_reported','builder_requested','bundle','capacity_blocked','rounds_exhausted','repair_rounds','repair_stalled','repair_waves','manager_reconciled'])
         db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
       db.exec("UPDATE agents SET phase='decompose' WHERE id=?",c);
     }
@@ -2537,23 +2540,42 @@ export class ControlRoom extends DurableObject {
       return this.exhaustRounds(m,`a ${dead.kind} problem was closed without a fix (${dead.trail.at(-1)?.reason||'exhausted'})`,'Repair exhausted');
     }
   }
-  // Whether this manager may still start a repair round (its own, and the run's).
-  roundsLeft(m) {
-    return Number(this.get(`repair_rounds:${m}`,'0'))<MANAGER_MAX_ROUNDS&&
-      Number(this.get('repair_rounds_total','0'))<MAX_REPAIR_ROUNDS_TOTAL(this.allNodes().filter(x=>this.manager(x.id)).length);
+  // Whether this manager may still start a repair round for these problems
+  // (its own, and the run's).
+  roundsLeft(m, rows=[]) {return Number(this.get('repair_rounds_total','0'))<this.roundCap()&&this.stalledLeft(m,rows)>0;}
+  // Rounds without progress this manager has left for these problems: a
+  // round that makes progress resets the count, and one already paid costs
+  // none. The model is never asked while told 0 are left.
+  stalledLeft(m, rows=[]) {
+    const waves=this.read(`repair_waves:${m}`,[]),stalled=Number(this.get(`repair_stalled:${m}`,'0'));
+    if(rows.some(p=>!waves.includes(p.flags.wave)&&this.waveProgress(m,p.flags.wave)))return MANAGER_MAX_STALLED;
+    return Math.max(rows.some(p=>waves.includes(p.flags.wave))?1:0,MANAGER_MAX_STALLED-stalled);
+  }
+  roundCap() {return MAX_REPAIR_ROUNDS_TOTAL(this.allNodes().filter(x=>this.manager(x.id)).length);}
+  // Whether a report wave fails differently from its source's reports this
+  // manager paid rounds for (reportProgress). A retask's own wave has no
+  // rows: no progress.
+  waveProgress(m, wave) {
+    const [row]=this.problems('flags LIKE ?',`%"wave":${JSON.stringify(String(wave??''))}%`);
+    return !!row&&reportProgress(this.problems('source=?',row.source),wave,this.read(`repair_waves:${m}`,[]));
   }
   // One repair round per report wave a manager first assigns to a worker or
-  // to its builder. Returns why no round is left, or ''.
+  // to its builder. Only a round without progress counts against the
+  // manager's MANAGER_MAX_STALLED in a row; every round counts against the
+  // run's ceiling. Returns why no round is left, or ''.
   countRound(m, wave) {
     const waves=this.read(`repair_waves:${m}`,[]);
     if(waves.includes(wave))return '';
-    const rounds=Number(this.get(`repair_rounds:${m}`,'0')),total=Number(this.get('repair_rounds_total','0'));
-    const cap=MAX_REPAIR_ROUNDS_TOTAL(this.allNodes().filter(x=>this.manager(x.id)).length);
-    if(total>=cap)return `the run used all ${cap} of its repair rounds`;
-    if(rounds>=MANAGER_MAX_ROUNDS)return `${this.node(m).label} used all ${MANAGER_MAX_ROUNDS} of its repair rounds`;
+    const rounds=Number(this.get(`repair_rounds:${m}`,'0')),total=Number(this.get('repair_rounds_total','0')),stalled=Number(this.get(`repair_stalled:${m}`,'0'));
+    const cap=this.roundCap(),progress=this.waveProgress(m,wave),label=this.node(m).label;
+    if(total>=cap)return `the run used all ${cap} of its repair rounds (the per-run ceiling)`;
+    if(!progress&&stalled>=MANAGER_MAX_STALLED)return `${label} made no progress in ${MANAGER_MAX_STALLED} repair rounds in a row (the per-manager limit)`;
+    const left=progress?MANAGER_MAX_STALLED:MANAGER_MAX_STALLED-stalled-1;
     this.set(`repair_rounds:${m}`,rounds+1);
+    this.set(`repair_stalled:${m}`,progress?0:stalled+1);
     this.set('repair_rounds_total',total+1);
     this.save(`repair_waves:${m}`,[...waves,wave].slice(-64));
+    this.event(m,'repair_round',`Repair round ${rounds+1} (${total+1} of the run's ${cap}): ${progress?'progress (what fails changed)':'no progress (it fails as a round before it did)'}; ${left} round(s) without progress left.`);
     return '';
   }
   // Out of rounds: the whole run's, so no manager assigns again and the top

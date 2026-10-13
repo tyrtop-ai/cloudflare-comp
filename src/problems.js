@@ -14,8 +14,9 @@ import {normalizeInterfaces, repairInterfaces} from './interfaces.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
-export const MANAGER_MAX_ROUNDS=6;          // repair rounds per manager per run
-export const MAX_REPAIR_ROUNDS_TOTAL=managers=>Math.min(40,8+2*Math.max(1,managers)); // per run; branch rounds run in parallel
+export const MANAGER_MAX_STALLED=3;         // repair rounds in a row without progress per manager; a round with progress is free (run9)
+export const MAX_REPAIR_ROUNDS_TOTAL=managers=>Math.min(40,16+4*Math.max(1,managers)); // per run, progress or not: the backstop for a failure that keeps moving; branch rounds run in parallel
+export const PROGRESS_LOOKBACK=3;           // a report like one of the manager's last 3 rounds of its source makes no progress (ping-pong)
 export const STUCK_AFTER=2;                 // the model decides on the third recurrence (M4)
 export const MAX_MANAGER_MODEL_CALLS=8;     // per manager per run, a parse retry counted; then defaults only
 export const MAX_PROBLEMS_PER_REPORT=12;
@@ -37,11 +38,45 @@ export const DEFAULT_ROLE={unresolved:'reader',mismatch:'reader',binding:'reader
 // Recurrence key: the kind, the worker files involved, and the detail's head
 // without bundle paths (they differ by level), absolute paths (the
 // Container's build folder differs by run) or line positions.
-export function problemSignature(kind, parties, detail) {
-  const owners=[...new Set((parties||[]).map(p=>p.owner?`${p.owner}:${p.owner_path||''}`:`?:${p.path||''}`))].sort().join(',');
-  const head=String(detail||'').replace(/(?<![\w.\/])\/[^\s)'"]*/g,'').replace(/(?:\.\.?\/)*components\/\S+/g,'').replace(/:\d+(?::\d+)?\b/g,'')
-    .replace(/\s+/g,' ').trim().slice(0,160);
-  return `${kind}|${owners}|${head}`;
+const ownersOf=parties=>[...new Set((parties||[]).map(p=>p.owner?`${p.owner}:${p.owner_path||''}`:`?:${p.path||''}`))].sort().join(',');
+const headOf=detail=>String(detail||'').replace(/(?<![\w.\/])\/[^\s)'"]*/g,'').replace(/(?:\.\.?\/)*components\/\S+/g,'').replace(/:\d+(?::\d+)?\b/g,'')
+  .replace(/\s+/g,' ').trim().slice(0,160);
+export function problemSignature(kind, parties, detail) {return `${kind}|${ownersOf(parties)}|${headOf(detail)}`;}
+
+// v7.15.1: what a load or run failed with, whoever triaged it: the output's
+// error line (run9: "AssertionError [ERR_ASSERTION]: Ticket should be
+// created") and the line of the runner's fixed test it stopped at, else the
+// output without Node's crash preamble; random ids and timestamps as #. A
+// run's detail opens with triage prose, worded anew each round, or with that
+// preamble, which filled the signature's 160 characters for every assertion
+// (run9), so neither tells whether the failure moved.
+export function failureHead(output) {
+  const s=String(output||''),error=s.match(/(?:^|\): )[ \t]*(\[?(?:[A-Z]\w*)?(?:Error|Rejection)\b(?: \[\w+\])?:[^\n]*)/m)?.[1];
+  const at=s.match(/glue\/smoke\.js:(\d+)/)?.[1];
+  return headOf(error??s.split('\n').filter(l=>!/node:internal\/|triggerUncaughtException|^\s*\^?\s*$/.test(l)).join(' '))
+    .replace(/\b[0-9a-f]{8,}(?:-[0-9a-f]{4,})+\b|\b\d{10,}\b/gi,'#')+(at?` (test line ${at})`:'');
+}
+// What a row fails with for progress: a load or run failure's head and the
+// files it is blamed on; any other problem's text is deterministic already.
+export const progressKey=p=>p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
+
+// v7.15.1: a repair round makes progress when its report no longer fails as
+// the source's report of the manager's last round did (one of its keys, a
+// run's failure or the file it is blamed on, a link problem, is gone) and
+// fails as none of its last PROGRESS_LOOKBACK did (ping-pong). A report the
+// manager never paid a round for is not compared: superseded first, it was
+// not acted on. A source's first report is new, so progress. Run9 fixed one
+// real bug per round and failed on a flat six-round count while converging.
+// rows: the source's problem rows in report order; counted: the waves the
+// manager paid a round for (all, when not given).
+export function reportProgress(rows, wave, counted=null) {
+  const keys=w=>new Set(rows.filter(p=>p.flags?.wave===w).map(progressKey)),now=keys(wave);
+  if(!now.size)return false;
+  const waves=[...new Set(rows.map(p=>p.flags?.wave).filter(Boolean))];
+  const before=waves.slice(0,waves.indexOf(wave)).filter(w=>!counted||counted.includes(w)).slice(-PROGRESS_LOOKBACK).map(keys);
+  if(!before.length)return true;
+  const same=(a,b)=>a.size===b.size&&[...a].every(k=>b.has(k));
+  return [...before.at(-1)].some(k=>!now.has(k))&&!before.some(b=>same(b,now));
 }
 
 // Where each party of a problem held by `holder` lies: under one of its direct

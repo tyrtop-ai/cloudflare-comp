@@ -103,9 +103,10 @@ test('limits: a problem decided MAX_HOPS times is closed; a branch out of repair
   const stuck=problem('stuck',[party('root.1','subject')],{flags:{rounds_exhausted:true,escalated_from:'root.1'}});
   assert.deepEqual(decide(stuck,view('root',{'root.1':'manager'})),['rounds','fail','root.1',null]);
   assert.equal(P.validateDecision(P.deterministicDecision(stuck,view('root',{'root.1':'manager'})),stuck,view('root',{'root.1':'manager'})),null);
-  // The run's repair cap scales with its managers (critique #25), capped at 40.
-  assert.deepEqual([1,4,10,30].map(P.MAX_REPAIR_ROUNDS_TOTAL),[10,16,28,40]);
-  assert.deepEqual([P.MAX_RELINKS,P.MANAGER_MAX_ROUNDS,P.MAX_PROBLEMS_PER_REPORT],[2,6,12]);
+  // The run's repair cap scales with its managers (critique #25), capped at
+  // 40; v7.15.1 raised it as the backstop to rounds without progress (run9).
+  assert.deepEqual([1,4,10,30].map(P.MAX_REPAIR_ROUNDS_TOTAL),[20,32,40,40]);
+  assert.deepEqual([P.MAX_RELINKS,P.MANAGER_MAX_STALLED,P.MAX_PROBLEMS_PER_REPORT],[2,3,12]);
 });
 
 test('validation: an action names a direct child that can take it',()=>{
