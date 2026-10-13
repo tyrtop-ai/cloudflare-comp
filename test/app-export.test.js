@@ -93,12 +93,65 @@ const index=(room,builder,path,content)=>{
   room.db().exec('INSERT INTO artifact_contents(agent,path,content) VALUES (?,?,?)',builder,path,content);
 };
 
-test('appFiles: no application before Root\'s builder links one',async()=>{
+test('appFiles: no application before Root\'s builder links one; a room that ended says so instead of asking to continue it',async()=>{
   const {room}=await linkedRoom({link:false});
   const app=await room.appFiles();
   assert.equal(app.status,409);
-  assert.match(app.error,/No application yet/);
+  assert.equal(app.error,'No application yet: Root split the goal and its builder has not started linking. Continue the room until it has one, then export it.');
   assert.equal(app.files,undefined);
+  await room.scheduleAssembly('root');
+  assert.match((await room.appFiles()).error,/^No application yet: Root's builder has not linked one \(there is no glue\/index\.js\)\. Continue the room/);
+  // resume() refuses complete and failed rooms, so the message must not ask for that.
+  for(const status of ['complete','failed']) {
+    room.set('status',status);
+    const ended=await room.appFiles();
+    assert.equal(ended.status,409);
+    assert.match(ended.error,new RegExp(`^No application to export: this room ended \\(${status}\\) and Root's builder has not linked one .*Start a new room to build one\\.$`));
+    assert.doesNotMatch(ended.error,/Continue/);
+  }
+  const fresh=new ControlRoom({storage:{sql:new Sql()},waitUntil(){}},{MOCK_AI:'false',TEST_ARTIFACT_STORE:new Store()});
+  assert.equal((await fresh.appFiles()).error,'No application yet: no run has started in this room. Start a run first.');
+});
+
+// Clef can judge the whole goal atomic: Root writes the code in its own repository
+// and verifyRuntimeBuild runs it in the Container. There is no builder.
+test('appFiles: an atomic Root exports its own files (no memory/), passed against build_passed:root, with a README that does not assume glue/',async()=>{
+  // The Container's verdict is stubbed; verifyRuntimeBuild records it exactly as in a real room.
+  const exec={build:async({fingerprint,files})=>({fingerprint,snapshot_hash:await snapshotHash(files),passed:true,checks:[{name:'syntax:index.js',exit_code:0}]})};
+  const room=new ControlRoom({storage:{sql:new Sql()},waitUntil(){}},{MOCK_AI:'false',TEST_ARTIFACT_STORE:new Store(),BUILD_EXECUTORS:{getByName:()=>exec}});
+  room.set('room_id',ROOM);room.set('goal',GOAL);
+  await room.provision('root',null,'Root objective',GOAL);
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root'");
+  assert.match((await room.appFiles()).error,/^No application yet: Root has not written any code\./);
+  const code={'index.js':appSource.replace("require('./ticketRepository')","require('./repository.js')").replace('repo.get(id)','repo.read(id)'),
+    'repository.js':repoSource,'test.js':runnerTest};
+  for(const [path,content] of Object.entries(code))await room.putFile('root',path,content);
+  await room.putFile('root','memory/public/knowledge.json','{}\n');
+  // What Root's final turn does when Clef left it atomic (src/index.js): Root's files minus memory/ go to the Container.
+  const files=new Map();for(const f of room.files('root'))if(!f.path.startsWith('memory/'))files.set(f.path,await room.indexedContent('root',f.path));
+  assert.equal(await room.verifyRuntimeBuild('root','atomic:test',files),true);
+  room.db().exec("UPDATE agents SET status='done' WHERE id='root'");room.set('status','complete');
+  const app=await room.appFiles();
+  assert.equal(app.error,undefined);
+  assert.deepEqual(app.files.map(f=>f.path),['README.md','index.js','repository.js','test.js']);
+  assert.deepEqual([app.kind,app.passed,app.fingerprint,app.entry,app.agents,app.room_status],['atomic',true,'atomic:test',null,1,'complete']);
+  assert.equal(app.digest,room.read('build_passed:root',null).digest);
+  const readme=app.files[0].content,load=`node -e "const m=require('./index.js');Promise.resolve(m.start?m.start():m).then(app=>console.log(Object.keys(app)))"`;
+  for(const text of [GOAL,ROOM,'**passed**','Root wrote the code itself','with nothing to install',load])assert.ok(readme.includes(text),text);
+  assert.doesNotMatch(readme,/glue|components\//);
+  // The README's command works on the exported files.
+  const dir=mkdtempSync(join(tmpdir(),'app-export-atomic-'));
+  try {
+    for(const f of app.files)writeFileSync(join(dir,f.path),f.content);
+    const list=spawnSync(process.execPath,['-e',load.slice(9,-1)],{cwd:dir,encoding:'utf8'});
+    assert.equal(list.status,0,list.stderr);
+    assert.match(list.stdout,/createTicket.*getTicket.*listTickets.*updateTicket.*deleteTicket/s);
+    assert.equal(spawnSync(process.execPath,['test.js'],{cwd:dir}).status,0);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+  await room.putFile('root','test.js',runnerTest+'// edited after the run\n');
+  const changed=await room.appFiles();
+  assert.deepEqual([changed.passed,changed.fingerprint],[false,null]);
+  assert.match(changed.files[0].content,/\*\*UNVERIFIED\*\*/);
 });
 
 test('appFiles: the linked application without assembly metadata, with a README, passed for exactly these files',async()=>{
