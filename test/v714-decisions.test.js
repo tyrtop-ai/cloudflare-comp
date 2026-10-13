@@ -339,6 +339,18 @@ test('v7.14 (10): a manager model that throws leaves the defaults in the same tu
   assert.notEqual(room.node('root').status,'failed');
 });
 
+// No entry child is marked any more (author decision 3): the module that
+// exports start() is imported by nobody, yet retiring its owner would leave
+// the application without its composer.
+test('v7.14: the model cannot retire the child whose code exports start()',async()=>{
+  const {room,calls}=await fiveRoom({manager:()=>({actions:[{action:'retire',child:'root.5',reason:'nobody imports it'}]})});
+  await room.turn('root');
+  assert.equal(calls.manager.length,1);
+  assert.ok(events(room,'problem_decision_rejected').some(e=>/retire root\.5: its code exports start\(\), which composes the application/.test(e.body)),trace(room));
+  assert.notEqual(room.node('root.5').status,'retired');
+  assert.deepEqual(room.problems("kind='mismatch'").map(p=>[p.assignee,p.trail.at(-1).rule]),[['root.2','D6'],['root.5','D6']],'the defaults apply');
+});
+
 // ------------------------------------------------------------- limits
 test('v7.14: past MAX_MANAGER_MODEL_CALLS, or with the turn budget spent, a manager decides by its defaults without its model',async()=>{
   for(const [why,set] of [['calls',room=>room.set('manager_model_calls:root',8)],['budget',room=>{room.budgetSpent=true;}]]) {
@@ -529,4 +541,13 @@ test('v7.14: three code-gate failures file a stuck problem; infrastructure pause
   for(let i=0;i<3;i++)top.room.incrementFailures('root','missing_code');
   assert.equal(top.room.problems('1=1').length,0);
   assert.ok(events(top.room,'paused').length);
+});
+test('v7.14: a stuck problem the model escalates goes up as the escalating branch\'s own',async()=>{
+  const {room,calls}=await stuckTwice({manager:(user,n)=>n===1?{actions:[{action:'escalate',problems:[user.problems[0].id],reason:'this branch needs a different form'}]}:{actions:[]}});
+  assert.equal(calls.manager.length,2);
+  assert.deepEqual(calls.manager[1].problems[0].parties,[{child:'root.1',file:'',role:'subject'}]);
+  const [,second]=room.problems("kind='stuck'");
+  assert.deepEqual(second.trail.map(t=>[t.at,t.action,t.rule]),[['root.1','escalate','model'],['root','close','stuck']]);
+  assert.match(second.detail,/^Ticket form app cannot finish its branch: TicketForm Component stopped/);
+  assert.ok(events(room,'problem_escalated').some(e=>e.actor==='root.1'&&/this branch needs a different form/.test(e.body)));
 });

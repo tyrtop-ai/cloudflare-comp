@@ -1844,7 +1844,7 @@ export class ControlRoom extends DurableObject {
           retasks.set(dec.child,{task:dec.task,rule:dec.rule,reason:dec.plain_js?'the code gate rejected its output three times; it writes plain JavaScript':''});
       } else if(dec.action==='escalate') {
         // A stuck child's branch cannot finish here: up as this manager's own.
-        const own=dec.resubject?{parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:clip(`${n.label} cannot finish its branch: ${p.detail}`,950)}:{};
+        const own=dec.resubject||p.kind==='stuck'&&!p.flags.rounds_exhausted?{parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:clip(`${n.label} cannot finish its branch: ${p.detail}`,950)}:{};
         if(this.moveProblem(p,{holder:n.parent,...own,flags:{...p.flags,escalated_from:m},trail:trail(p,'escalate',n.parent,dec.rule)})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_escalated',clip(`${p.kind} problem (${dec.rule}) goes to the parent${dec.reason?` (${dec.reason})`:''}: ${p.detail}`,600),n.parent);
           this.wake(n.parent);
@@ -2002,19 +2002,24 @@ export class ControlRoom extends DurableObject {
     return this.leaksHiddenAgentIds(text,[recipient])?'':text;
   }
   // Why a direct child cannot be retired (spec 3.7.5): a module outside its
-  // branch imports one of its modules in this manager's published bundle;
-  // with no published bundle, it has published code. '' when it can be.
+  // branch imports one of its modules in this manager's published bundle,
+  // or one of them exports start() (what composes the application; nothing
+  // imports it); with no published bundle, it has published code. '' when
+  // it can be.
   async retireBlocks(m) {
     const b=this.builderOf(m),rows=b?query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=?',b.id):[];
     if(!rows.length)return id=>(this.manager(id)?this.descendantsWithCode(id).length:productionFiles(this.files(id)).length)?'no linked bundle shows who imports its code':'';
-    const owner=new Map(rows.map(r=>[r.destination,nextDirectChild(m,r.child)])),files=new Map(),importers=new Map();
+    const owner=new Map(rows.map(r=>[r.destination,nextDirectChild(m,r.child)])),files=new Map(),importers=new Map(),starts=new Set();
     for(const r of rows)try{files.set(r.destination,await this.indexedContent(b.id,r.destination));}catch{}
-    for(const [path,content] of files)if(content!=null&&LINKABLE.test(path))
+    for(const [path,content] of files)if(content!=null&&LINKABLE.test(path)) {
+      if(exportsStart(exportSurface(path,content)))starts.add(owner.get(path));
       for(const x of componentImports(path,content,files)) {
         const to=owner.get(x.target),from=owner.get(path);
         if(x.target&&to&&to!==from)importers.set(to,new Set([...importers.get(to)||[],from]));
       }
-    return id=>importers.get(id)?.size?`${[...importers.get(id)].map(x=>this.node(x)?.label||x).join(', ')} import${importers.get(id).size>1?'':'s'} its code`:'';
+    }
+    return id=>importers.get(id)?.size?`${[...importers.get(id)].map(x=>this.node(x)?.label||x).join(', ')} import${importers.get(id).size>1?'':'s'} its code`:
+      starts.has(id)?'its code exports start(), which composes the application':'';
   }
   // ---------- retire and retask: validated manager decisions ----------
   // A node and every node below it, the node first.
