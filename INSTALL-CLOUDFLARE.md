@@ -101,33 +101,48 @@ npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave runni
 
    | Setting | Default | Range | Meaning |
    |---|---|---|---|
-   | Turn budget | 100 | 1–500 | Agent turns this Start or Continue may spend. Manager routing turns do not count. |
+   | Turn budget | 100 | 1–500 | Agent turns this Start or Continue may spend. A manager's turn does not count, unless it asks the manager's model to decide problems: that costs one. |
    | Concurrent agents | 16 | 1–64 | Agent turns that run at the same time. |
-   | Total agents | 64 | 2–256 | Workers and managers in the tree. Builders do not count. |
+   | Total agents | 64 | 2–256 | Workers and managers in the tree. Builders, the compiler and retired agents do not count. |
    | Recursion depth | 10 | 1–16 | Maximum tree depth. |
-   | Generative agent model | Qwen3 A3B | Qwen3 A3B, Llama 3.2 1B, Qwen 3.8 27B | Writes splits, code, link edits, triage and runner tests. |
-   | Split decision model | Clef-flash | Clef-flash, Clef | Answers the split, scope and routing YES/NO questions. |
-   | Minimum YES probability | 50% | 20–80% | Clef split threshold. |
+   | Generative agent model | Qwen3 A3B | Qwen3 A3B, Llama 3.2 1B, Qwen 3.8 27B | Writes splits, code, link edits, managers' decisions, triage and runner tests. |
+   | Split decision model | Clef-flash | Clef-flash, Clef | Answers the split, scope, routing and prune YES/NO questions, and checks a retask's new task. |
+   | Minimum YES probability | 70% | 20–80% | Clef split threshold. |
 
    The generative model is chosen here, per room, or with `settings.model` in the API. Rooms do not read the `MODEL_NAME` variable in `wrangler.jsonc`, so editing it does not change the model.
 
-5. Press **Start new experiment**. This clears the room's state and creates Root.
+5. Press **Start new experiment**. This clears the room's state and creates Root. The runtime appends one requirement to your problem statement: the application exports `start()` from one entry module, and `start()` returns an object whose methods perform the operations the goal requests. The splitters assign that requirement like any other.
 
-The dashboard refreshes every 3 seconds. It shows the ownership tree, agent traffic (the latest 300 events), the files the room has recorded, committed or staged for the current turn's commit (click one to read its content from the room's index of Artifacts writes), and the **Container build** panel with the latest Container report.
+The dashboard refreshes every 3 seconds. It shows:
+- **The ownership tree**, as circles coloured by role: managers, workers and the compiler. A manager's circle splits in half while its builder works on the branch. Green lines mark a branch whose agents are all done, and a green ring marks one its builder has linked. Click a circle for its task.
+- **Agent traffic:** the latest 300 events.
+- **The files** the room has recorded, committed or staged for the current turn's commit. Click one to read its content from the room's index of Artifacts writes.
+- **The Container build panel**, with the latest Container report.
 
-A run ends **complete** when Root's runner test passes, **failed** when an agent fails for good, or **paused** when the budget is spent or every remaining agent is waiting. **Continue** resumes a paused run with a new budget. It also:
+A run ends in one of three states:
+- **complete**, when the compiler's runner test passes on the current source and every agent is done;
+- **failed**, when an agent fails for good, for example when Root runs out of repair rounds;
+- **paused**, when the budget is spent or every remaining agent is waiting.
+
+**Continue** resumes a paused run with a new budget. It also:
 
 - retries agents paused after three failures;
 - reopens splits that were blocked for capacity, if you raised the limits;
-- relinks a waiting builder;
-- retries after a Container infrastructure failure;
+- relinks a waiting builder, at any level, with a fresh relink budget;
+- runs the compiler again on the current bundle, or retries it after a Container infrastructure failure;
+- wakes every manager that still holds an open problem;
 - pushes any files still staged.
 
 **Clear room state** deletes the room's state. Its Artifacts repositories remain.
 
 ## 8. Export a run
 
-**Export observation JSON** downloads `recursive-control-plane-<first 8 characters of the room>.json` from `/api/export`. It contains the room snapshot, every agent, every file the room has recorded with its content, and up to 20,000 events. The agents' Artifacts remote URLs include your account ID, so review an export before you share it.
+**Export observation JSON** downloads `recursive-control-plane-<first 8 characters of the room>.json` from `/api/export`. It contains:
+- the room snapshot and every agent;
+- every file the room has recorded, with its content;
+- every problem with its decisions, and every repair ticket;
+- each manager's linking state and the compiler's state;
+- up to 20,000 events. The agents' Artifacts remote URLs include your account ID, so review an export before you share it.
 
 ### Using the API directly
 
@@ -150,24 +165,26 @@ curl -sS -X POST "$URL/api/run" -H "Authorization: Bearer $APP_TOKEN" -H 'conten
 curl -sS "$URL/api/export?room=demo-room-0001" -H "Authorization: Bearer $APP_TOKEN" > run.json
 ```
 
-`settings` accepts `parallel`, `max_agents`, `max_depth`, `model`, `split_model` and `split_threshold` (0.2–0.8), with the same limits as the dashboard. When `budget` is left out, it defaults to 20.
+`settings` accepts `parallel`, `max_agents`, `max_depth`, `model`, `split_model` and `split_threshold` (0.2–0.8, default 0.7), with the same limits as the dashboard. When `budget` is left out, it defaults to 20.
 
 ## Troubleshooting
 
 - **`503 Set APP_TOKEN ...`**: the secret is not set; see step 5. **`401 Invalid APP_TOKEN`**: the token in the dashboard does not match the secret.
 - **`400 Invalid room`**: the room ID must be 8–64 letters, digits or `-`.
 - **Deploy fails with "The Docker CLI is needed to build the configured image"**: start Docker. With Podman, set `WRANGLER_DOCKER_BIN` and `DOCKER_HOST` as Wrangler suggests. `npx wrangler deploy --containers-rollout=none` deploys the Worker without the Container, but then Root cannot run the application and the build panel reports **EXECUTOR UNAVAILABLE**.
-- **Build panel shows EXECUTOR UNAVAILABLE, or a `build_infrastructure` event appears**: the Container is not ready or failed to start. The Worker can be live before its Container is provisioned. Check `npx wrangler containers list`, and watch `wrangler tail` for `Build container exec not ready`, `Build container command exceeded` or `Build process termination failed`. An infrastructure failure blames no worker; once the Container is up, **Continue** clears the block and Root's builder relinks and reruns the current source.
+- **Build panel shows EXECUTOR UNAVAILABLE, or a `build_infrastructure` event appears**: the Container is not ready or failed to start. The Worker can be live before its Container is provisioned. Check `npx wrangler containers list`, and watch `wrangler tail` for `Build container exec not ready`, `Build container command exceeded` or `Build process termination failed`. An infrastructure failure blames no worker; the compiler waits (`build_blocked`). Once the Container is up, **Continue** clears the block and the compiler runs the current bundle again.
 - **`split_capacity_blocked`**: Clef chose to split, but the room has no agent slots or depth left. Raise **Total agents** or **Recursion depth** and press **Continue**.
-- **`paused` event, "Stopped automatic retries after 3 failures"**: the agent failed three turns in a row; the `error` events before it give the reason. **Continue** retries it.
+- **`paused` event, "Stopped automatic retries after 3 failures"**: the agent failed three turns in a row; the `error` events before it give the reason. **Continue** retries it. A worker below Root whose three failures were all the code gate's does not pause. A `stuck` event files it with its manager, which retasks it to plain JavaScript (for TypeScript, JSX or a package import), tells it what to write, retires it, or escalates. It pauses only if no manager above settles it.
 - **`Artifacts ... failed for rc-...`**: a git step on that agent's repository failed. The word after `Artifacts` names the step: `refs` (asking the repository whether `main` exists), `clone`, `init`, `write`, `stage`, `commit` or `push`. For a worker, the files staged in that turn are rolled back and the action replays from its first write. For a manager or builder, the files stay staged and are pushed at the next flush (a `commit_failed` event). Three failures in a row pause a worker, and **Continue** retries it. If every write fails, run the probe from step 3.
 - **`recovered` event, "Durable Object restarted during a run"**: the room was evicted mid-run and is now paused. **Continue** resumes interrupted turns from their saved position.
 - **`Experiment already running`**: a run is in progress in this room. Wait for it to pause, or use another room.
-- **Status stays paused with builders `waiting`**: problems were sent back to workers and nothing has changed yet, or the runner could not write a valid test. **Continue** relinks with a fresh relink budget.
+- **Status stays paused with a builder or the compiler `waiting`**: its problems are with its manager (`problems_reported`, then `problem_assigned` or `problem_escalated`) and nothing has changed yet, or the runner could not write a valid test (`runner_failed`). **Continue** relinks waiting builders with a fresh relink budget, runs the compiler again, and has every manager decide the problems it still holds.
+- **`repair_exhausted` and a failed run**: a manager ran out of repair rounds (6 per manager, and 8 plus 2 per manager for the run, at most 40), or a problem was closed without a fix while its reporter waited on it. The `problem_exhausted` and `problem_escalated` events before it say which. Start a new experiment.
+- **`This room was started by a version before v7.14 and is not migrated`**: **Continue** refuses rooms from earlier versions. **Start new experiment** resets the room.
 
 ## Costs and cleanup
 
-Every run creates one Artifacts repository per agent, builders included, named `rc-<random>-<agent id>`. Neither the app nor **Clear room state** ever deletes them. A run also makes many Workers AI calls (Qwen for splits, code, links and tests, plus Clef for each gate) and starts a Container at Root. All of this is billed to your account. To find and delete old repositories:
+Every run creates one Artifacts repository per agent, builders and the compiler included, named `rc-<random>-<agent id>`. Neither the app nor **Clear room state** ever deletes them. A run also makes many Workers AI calls and starts a Container for the compiler: Qwen for splits, code, links, managers' decisions and tests, and Clef for each gate and each level of the prune walk. All of this is billed to your account. To find and delete old repositories:
 
 ```bash
 npx wrangler artifacts repos list --namespace default
@@ -188,7 +205,7 @@ npm ci
 npm run deploy
 ```
 
-Start a new room after upgrading. An existing room keeps its agents' earlier state.
+Start a new experiment after upgrading. A room started before v7.14 cannot be continued: **Continue** refuses it, and **Start new experiment** resets it.
 
 The name is only kept for continuity. For a separate new deployment, change `"name"` in `wrangler.jsonc`, or run `npx wrangler deploy --name <new-name>`. A Worker with a different name gets its own Durable Objects and needs its own `APP_TOKEN` (`npx wrangler secret put APP_TOKEN --name <new-name>`). Do not rename the Durable Object classes on an existing Worker: its stored rooms would be left behind.
 
