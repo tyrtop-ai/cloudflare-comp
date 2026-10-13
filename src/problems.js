@@ -157,6 +157,8 @@ export function modelTrigger(p, dec, ctx) {
   if((ctx.recurrence?.(p,dec.child)||0)>=STUCK_AFTER)return 'M4';
   if(flags.escalated_from&&dec.child===flags.escalated_from)return 'M6';
   if(dec.rule!=='D6')return null;
+  // A name the provider's piece never promised is the reader's (run8).
+  if(f.unpromised)return null;
   if(f.provider_empty)return 'M1';
   if(f.anchored)return null;
   return f.convention>=2?'M2':f.provider_blamed?'M3':'M8';
@@ -273,6 +275,10 @@ export function validateManagerActions(actions, call, ctx) {
       return !placed.some(x=>x.child===child)&&(placed.some(x=>x.place==='child')||!production(child));
     });
     if(bad){refuse(a,k==='builder'?'the builder takes only interface errors with relinks left':`${child} holds no party of problem ${bad}`);continue;}
+    // A provider is never asked to add a name its piece did not promise (run8).
+    const asked=open.find(id=>{const {p}=byId.get(id),placed=placeParties(ctx.holder,p.parties).filter(x=>x.child===child);
+      return p.facts?.unpromised&&placed.length&&placed.every(x=>x.role==='provider');});
+    if(asked){refuse(a,`${child} holds only the provider of problem ${asked}, which exports what the plan gives it; the reader changes, never the provider, for a name it did not promise`);continue;}
     const text=k==='builder'?null:renderInstructions(instructions,ctx,child);
     for(const id of open)covered.set(id,k==='builder'?{rule:'model',action:'assign',child,builder:true}:
       {rule:'model',action:'assign',child,side:sideOf(ctx.holder,byId.get(id).p,child),instructions:text,facts_from:from});
@@ -293,7 +299,8 @@ export function instructionsFor(p, side) {
   const f=p.facts||{},provider=(p.parties||[]).find(x=>x.role==='provider');
   if(p.directive?.instructions)return p.directive.instructions;
   switch(p.kind) {
-    case 'mismatch':return `Use the names ${base(provider?.owner_path||provider?.path)||'the other module'} already exports; do not change what it exports. Change your reads of ${list(f.names)}.`;
+    case 'mismatch':return f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.`:
+      `Use the names ${base(provider?.owner_path||provider?.path)||'the other module'} already exports; do not change what it exports. Change your reads of ${list(f.names)}.`;
     case 'binding':return `${base(provider?.owner_path||provider?.path)||'The other module'} exports a single ${f.provider_kind||'function'} as module.exports: import it whole (const f = require(…)) and call it.`;
     case 'unresolved':{
       if(f.split)return `Import each function on its own line, with the function's name as the path, in place of the one import of ${list(f.names)} from '${f.specifier||''}': ${(f.names||[]).slice(0,4).map(n=>`const { ${n} } = require('./${n}');`).join(' ')} The builder links each line to the module that exports that function. Keep the names your code calls.`;

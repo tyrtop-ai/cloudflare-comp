@@ -437,3 +437,49 @@ test('v7.15: a coverage gap lists the top\'s children\'s operation functions, ne
   assert.doesNotMatch(gapProblem(described,gaps,'C'.repeat(700),946,ops),/plan's operation functions/,'cut first when the contract needs the room');
   assert.match(gapProblem(described,gaps,'C'.repeat(500),946,ops),/The plan's operation functions: createTicket \(create a ticket\) from create ticket; and more\. Import/);
 });
+
+// ---------------------------------------------------- run8: the reader rule
+// run8: the entry called .start() on every module and the providers then
+// added start() exports to satisfy it, so start() returned {create:{start},
+// view:{start}, ...}. The view piece promised viewTickets and exports it:
+// the entry's read of start is the entry's to change. With no rule, two
+// children disagreeing unanchored is the model's (M8), which run8's chose
+// to give to the provider; here the model is never asked, and a model that
+// gives it to the provider anyway is refused.
+const run8View="const tickets = [];\nfunction viewTickets() { return tickets.slice(); }\nmodule.exports = { viewTickets };\n";
+const run8Create="const tickets = [];\nfunction createTicket(t) { tickets.push(t); return t; }\nmodule.exports = { createTicket };\n";
+const startEverywhere="const create = require('./createTicket');\nconst view = require('./viewTickets');\nfunction start() {\n  return { create: create.start(), view: view.start() };\n}\nmodule.exports = { start };\n";
+test('v7.15: run8 replay (B): the entry reading .start() from view-tickets is the entry\'s problem, never view-tickets\'',async()=>{
+  const {room,calls}=liveRoom({
+    link:user=>{
+      const app=user.your_files.find(f=>f.path.endsWith('app.js'));
+      if(!app)return {edits:[],issues:[]};
+      const to=name=>L.relativeSpecifier(app.path,user.all_module_paths.find(p=>p.endsWith(name)));
+      return {edits:[{file:app.path,find:"'./createTicket'",replace:`'${to('createTicket.js')}'`},{file:app.path,find:"'./viewTickets'",replace:`'${to('viewTickets.js')}'`}],issues:[]};
+    },
+    manager:user=>({actions:[{action:'assign',problems:user.problems.map(p=>p.id),child:'root.2',instructions:'Export a start() function that returns your API.'}]})});
+  await planned(room);
+  await pieces(room,'root',[['create ticket','createTicket.js',run8Create,[fn('createTicket','creates a ticket',['ticket'],'create a ticket')]],
+    ['view tickets','viewTickets.js',run8View,[fn('viewTickets','returns the tickets',[],'view tickets')]],['entry module','app.js',startEverywhere,[START]]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  const held=openProblems(room,'root');
+  assert.deepEqual(held.map(p=>[p.kind,p.facts.unpromised,p.facts.promised,p.parties.map(x=>x.owner)]).sort(),
+    [['mismatch',true,['createTicket'],['root.3','root.1']],['mismatch',true,['viewTickets'],['root.3','root.2']]],trace(room));
+  await room.turn('root');
+  assert.equal(calls.manager.length,0,'no choice to make: the model is not asked');
+  const [ticket,...more]=tickets(room,'root.3');
+  assert.equal(more.length,0);
+  assert.match(ticket,/viewTickets\.js exports what the plan gives its piece \(viewTickets\) and not start, and it is never asked to add it\. Change your reads of start: use the functions it exports, each imported on its own line by its name\./);
+  assert.match(ticket,/createTicket\.js exports what the plan gives its piece \(createTicket\)/);
+  assert.deepEqual([tickets(room,'root.1').length,tickets(room,'root.2').length],[0,0],'the providers are never asked to add start()');
+  // The validator refuses giving it to the provider, whoever asks.
+  const P=await import('../src/problems.js');
+  const [p]=held.filter(x=>x.facts.promised[0]==='viewTickets');
+  const ctx={holder:'root',parent:null,kindOf:id=>['root.1','root.2','root.3'].includes(id)?'worker':null,statusOf:()=>'done',labelOf:id=>id,production:['root.1','root.2','root.3'],canRelink:()=>false};
+  const v=P.validateManagerActions([{action:'assign',problems:['p1'],child:'root.2',instructions:'Export start().'}],[{id:'p1',p,dec:{rule:'D6',action:'assign',child:'root.3',side:'reader'}}],ctx);
+  assert.match(v.rejected[0].reason,/root\.2 holds only the provider of problem p1, which exports what the plan gives it; the reader changes, never the provider/);
+  assert.deepEqual([v.decisions[0].how,v.decisions[0].dec.child],['default','root.3']);
+  // Without a promise (a v7.14 room) the same disagreement is still the model's (M8).
+  assert.equal(P.modelTrigger({...p,facts:{...p.facts,unpromised:undefined}},{rule:'D6',action:'assign',child:'root.3'},{recurrence:()=>0}),'M8');
+});

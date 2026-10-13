@@ -1635,14 +1635,25 @@ export class ControlRoom extends DurableObject {
       items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`,
         facts:{specifier:u.specifier,names,named,provider_text:clip([...new Set([...lead,...offered])].map(exportsText).join(' | '),700)}});
     }
+    // run8: the entry called .start() on every module, and providers added
+    // start() exports to satisfy it, so start() returned {create:{start},
+    // view:{start}, ...}. A reader that expects a name the provider's piece
+    // never promised, while the piece exports what it promised, is the
+    // reader's to change (unpromised); the provider is never asked to add it.
+    const piece=new Map(),promiseOf=t=>{
+      if(!piece.has(t)){const w=this.buildSourceOrigin(builderId,t)?.owner,names=w?this.promisedOf(w).map(f=>f.name):[];
+        piece.set(t,names.length&&!missingExports(new Map(this.modulesOf(builderId,files,w).map(p=>[p,files.get(p)])),names).length?names:null);}
+      return piece.get(t);
+    };
     for(const m of link.mismatches) {
       const same=reads.filter(r=>r.target===m.target),others=new Map(),sur=surfaces.get(m.target),d=sur?.default;
       for(const r of same)if(r.path!==m.path)others.set(r.path,[...(others.get(r.path)||[]),r]);
+      const names=[...new Set(link.mismatches.filter(x=>x.path===m.path&&x.target===m.target).map(x=>x.name).filter(Boolean))],promised=m.name?promiseOf(m.target):null;
       items.push({kind:m.name?'mismatch':'binding',path:m.path,target:m.target,detail:`The module ${m.detail}.`,facts:{
-        names:[...new Set(link.mismatches.filter(x=>x.path===m.path&&x.target===m.target).map(x=>x.name).filter(Boolean))],
-        anchored:[...others.values()].some(list=>list.every(r=>r.ok)),
+        names,anchored:[...others.values()].some(list=>list.every(r=>r.ok)),
         convention:new Set(same.filter(r=>!r.ok&&r.name===m.name).map(r=>r.path)).size,
         provider_empty:!sur?.named?.length&&(!d||d.type==='object'&&!d.members?.length),
+        ...promised&&names.every(n=>!promised.includes(n))?{unpromised:true,promised}:{},
         provider_kind:d?.type||'',provider_text:clip(exportsText(m.target),700)}});
     }
     return items;
