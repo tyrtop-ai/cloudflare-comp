@@ -17,9 +17,10 @@ const ROOM='export-test-room-0001',GOAL='Build a small issue tracker that lets s
 // method, the compiler picks app.js, and the real container runner runs the
 // runner's test. The coverage model gives no mapping, so the gate lets the
 // run continue unchecked.
-async function linkedRoom({link=true}={}) {
+async function linkedRoom({link=true,linker={}}={}) {
   let paths;
   const {room}=liveRoom({room_id:ROOM,link:user=>{
+    if(linker.error)throw new Error(linker.error);
     const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
     return {edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:`require('../${paths.repoPath.split('/').slice(1).join('/')}')`},
       {file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],issues:[]};
@@ -163,6 +164,37 @@ const APP_TOKEN='app-token-0123456789',GITHUB_TOKEN='github_pat_SECRET0123456789
 const call=(env,path,{method='GET',body,auth=APP_TOKEN}={})=>worker.fetch(new Request('https://cp.test'+path,{method,
   headers:{...(auth?{authorization:`Bearer ${auth}`}:{}),...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined}),env);
 const envFor=(room,extra={})=>({APP_TOKEN,ROOMS:{getByName:name=>{assert.equal(name,ROOM);return room;}},ASSETS:{fetch:()=>new Response('asset')},...extra});
+
+// collectLinkSources rewrites builder_sources before the linker's model call,
+// so a new source has no registered file while the top builder links or
+// after its link turn failed: export what it last published, never a 500.
+test('appFiles: a top builder mid-link or after a failed link turn exports what it last published, or 409, never "File is not registered"',async()=>{
+  const linker={error:'3040: Capacity temporarily exceeded'};
+  const {room:first}=await linkedRoom({link:false,linker});
+  const top=await first.scheduleAssembly('root');
+  await first.runSelectedTurn(top.id,1);
+  assert.ok(first.db().exec('SELECT destination FROM builder_sources WHERE builder=?',top.id).toArray().length>0);
+  assert.deepEqual(first.files(top.id).map(f=>f.path),[],'the failed first link published nothing');
+  assert.match((await first.appFiles()).error,/^No application yet: Root's builder has not linked one/);
+  delete linker.error;
+  const {room,builder}=await linkedRoom({linker});
+  const passing=await room.appFiles();
+  assert.equal(passing.passed,true);
+  // A repair adds a module to the repository worker; the top builder's relink fails at the model.
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root.1'");
+  await room.putFile('root.1','helpers.js','module.exports = { id: x => x };\n');
+  room.db().exec("UPDATE agents SET status='done' WHERE id='root.1'");
+  linker.error='3040: Capacity temporarily exceeded';
+  room.db().exec("UPDATE agents SET status='ready' WHERE id=?",builder.id);
+  await room.runSelectedTurn(builder.id,9);
+  assert.ok(room.db().exec('SELECT destination FROM builder_sources WHERE builder=?',builder.id).toArray().some(r=>r.destination.endsWith('/helpers.js')),'the new source is collected');
+  const during=await room.appFiles();
+  assert.equal(during.error,undefined);
+  assert.deepEqual(during.files.map(f=>f.path),passing.files.map(f=>f.path),'the unregistered source is left out');
+  assert.deepEqual([during.passed,during.digest],[true,passing.digest],'exactly the files that passed');
+  assert.ok(!during.files.some(f=>f.path.endsWith('/helpers.js')));
+  assert.equal((await call(envFor(room),`/api/app?room=${ROOM}`)).status,200);
+});
 
 test('API: /api/app and /api/app.zip return the application behind APP_TOKEN, 409 before there is one',async()=>{
   const {room}=await linkedRoom();

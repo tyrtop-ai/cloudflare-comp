@@ -508,7 +508,8 @@ export class ControlRoom extends DurableObject {
     const builder=root&&this.builderOf(top),compiler=root&&this.compilerOf(top);
     const atomic=!builder&&!!root&&!this.manager(top),files=[];
     if(builder) {
-      for(const [path,content] of await this.linkedBundle(builder.id))files.push({path,content});
+      // Mid-link, the files it last published; the digest says whether they passed.
+      for(const [path,content] of await this.linkedBundle(builder.id,true))files.push({path,content});
       for(const f of compiler?this.files(compiler.id).filter(f=>!isAssemblyMetadata(f.path)):[])files.push({path:f.path,content:await this.indexedContent(compiler.id,f.path)});
     } else if(atomic)for(const f of this.files(top).filter(f=>!isAssemblyMetadata(f.path)))files.push({path:f.path,content:await this.indexedContent(top,f.path)});
     if(builder?!files.some(f=>f.path==='glue/index.js'):!files.length) {
@@ -1657,10 +1658,13 @@ export class ControlRoom extends DurableObject {
     return !!passed&&passed.input===this.read(`bundle:${top}`,null)?.digest&&this.builderCurrent(top);
   }
   // The top builder's linked components (its current sources only).
-  async linkedBundle(builderId) {
-    const files=new Map();
+  // published: only the sources it has registered. collectLinkSources
+  // rewrites the sources before the linker's model call, so while a link
+  // turn runs, or after one failed, a new source has no file yet.
+  async linkedBundle(builderId, published=false) {
+    const files=new Map(),have=published&&new Set(this.files(builderId).map(f=>f.path));
     for(const r of query(this.db(),'SELECT destination FROM builder_sources WHERE builder=? ORDER BY destination',builderId))
-      files.set(r.destination,await this.indexedContent(builderId,r.destination));
+      if(!have||have.has(r.destination))files.set(r.destination,await this.indexedContent(builderId,r.destination));
     return files;
   }
   // Infrastructure is nobody's code: the compiler waits for Continue.
