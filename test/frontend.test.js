@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 
 const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 
 function renderWithPage(includeParallel, snapshot = {}) {
   const markup = includeParallel ? html : html.replace('id="parallel"', 'id="absent-parallel"');
@@ -45,8 +46,8 @@ test('current HTML displays concurrent agent count',()=>{
 });
 
 test('HTML uses versioned JS and CSS asset URLs',()=>{
-  assert.match(html, /src="\/app\.js\?v=7\.13\.8"/);
-  assert.match(html, /href="\/styles\.css\?v=7\.13\.8"/);
+  assert.match(html, /src="\/app\.js\?v=7\.13\.9"/);
+  assert.match(html, /href="\/styles\.css\?v=7\.13\.9"/);
 });
 
 test('v7.13: the split threshold control defaults to 70%',()=>{
@@ -106,6 +107,9 @@ function exportPage(fetch) {
 
 test('Download app (.zip) and Push to GitHub sit under Export observation JSON',()=>{
   const at=id=>html.indexOf(`id="${id}"`);
+  // Push to GitHub is hidden for now; its controls and handler stay in place.
+  assert.match(html,/<div class="github-export" hidden>/);
+  assert.match(css,/\.github-export\[hidden\] \{ display:none; \}/);
   assert.match(html,/<button class="secondary" id="download-app">Download app \(\.zip\)<\/button>/);
   assert.match(html,/<input id="github-repo"[^>]*placeholder="owner\/repo"/);
   assert.match(html,/<button class="secondary" id="push-github">Push to GitHub<\/button>/);

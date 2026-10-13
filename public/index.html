@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recursive Control Plane — Persistent Artifact Memory</title>
-  <link rel="stylesheet" href="/styles.css?v=7.13.8" />
+  <link rel="stylesheet" href="/styles.css?v=7.13.9" />
 </head>
 <body>
   <div class="page">
@@ -49,7 +49,8 @@
           <button class="secondary" id="continue">Continue current experiment</button>
           <button class="secondary" id="export">Export observation JSON</button>
           <button class="secondary" id="download-app">Download app (.zip)</button>
-          <div class="github-export">
+          <!-- Push to GitHub is hidden while it is not being tested; remove "hidden" to show it again. -->
+          <div class="github-export" hidden>
             <input id="github-repo" class="mono" placeholder="owner/repo" spellcheck="false" autocomplete="off" aria-label="GitHub repository (owner/repo)" />
             <button class="secondary" id="push-github">Push to GitHub</button>
           </div>
@@ -95,6 +96,6 @@
       </section>
     </div>
   </div>
-  <script type="module" src="/app.js?v=7.13.8"></script>
+  <script type="module" src="/app.js?v=7.13.9"></script>
 </body>
 </html>
