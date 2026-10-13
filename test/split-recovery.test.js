@@ -4,6 +4,7 @@ import {register} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
 register('./cloudflare-loader.mjs', import.meta.url);
 const {ControlRoom}=await import('../src/index.js');
+const {GOAL_START_REQUIREMENT}=await import('../src/model.js');
 
 class Sql {
   constructor(){this.db=new DatabaseSync(':memory:');}
@@ -66,7 +67,8 @@ test('rejected 1-of-4 partition returns to Clef and can become direct implementa
   const feedback=room.read('split_feedback:root',null);
   assert.equal(feedback.rejected.length,3);
   assert.deepEqual(feedback.accepted.map(x=>x.label),['Tokenize command string']);
-  assert.equal(calls[1].request.original_goal_scope_boundary,'Build an issue tracker supporting ticket create, view, update and delete');
+  // v7.14: the runtime appends the start() requirement to the goal.
+  assert.equal(calls[1].request.original_goal_scope_boundary,'Build an issue tracker supporting ticket create, view, update and delete '+GOAL_START_REQUIREMENT);
   await room.resume(1);await drain();
   assert.equal(room.node('root').phase,'implement');
   assert.equal(room.children('root').length,0);

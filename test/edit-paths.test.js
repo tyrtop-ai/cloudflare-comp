@@ -152,11 +152,11 @@ test('room: linkSnapshot applies the live bare and sibling path edits and nothin
   edits.set(app,[{file:app,find:"const ticketService = require('./ticketSvc');",replace:"const ticketService = require('./ticket-ser-f17f9f79/ticketService.js');"},
     {file:app,find:'view: ticketService.view',replace:'view: ticketService.read'}]);
   const builder=await room.scheduleAssembly('root');
-  const live=await room.linkSnapshot(builder.id,await room.collectLinkSources(builder.id),'',{isRoot:true});
+  const live=await room.linkSnapshot(builder.id,await room.collectLinkSources(builder.id),'',{top:true});
   assert.deepEqual(live.rejected,[]);
   assert.deepEqual(live.unresolved,[]);
   assert.match(live.files.get(app),/require\('\.\.\/ticket-ser-f17f9f79\/ticketService\.js'\)/);
-  assert.equal(live.entry,app);
+  assert.equal(L.chooseEntry(live.files,live.surfaces),app,'the compiler starts the module that exports start()');
   // Run e89dba35's rejected bare edits, through the same path.
   edits.set(combine,[{file:combine,find:'../statusFilter',replace:'../implement--9b11f5c4/statusFilter'},{file:combine,find:'../assigneeFilter',replace:'../implement--9911f29e/assigneeFilter'}]);
   // './statusFilter' resolves to the tracker's own json file, so it is kept.
@@ -166,7 +166,7 @@ test('room: linkSnapshot applies the live bare and sibling path edits and nothin
     [status,'module.exports = function isStatusMatch(ticket, filter) { return ticket.status === filter.status; };\n'],
     [assignee,'function isAssigneeMatch(ticket, assigneeFilter) {\n  return ticket.assignee === assigneeFilter;\n}\n\nmodule.exports = isAssigneeMatch;\n'],
     [tracker,"const { createTicket } = require('./createTicket');\nconst labels = require('./x');\nmodule.exports = { start: () => ({ createTicket, labels }) };\n"],[model,'class Ticket {}\nmodule.exports = Ticket;\n'],[json,'{"open":"Open"}\n']];
-  const deep=await room.linkSnapshot(builder.id,src.map(([destination,content])=>({destination,content})),'',{isRoot:true});
+  const deep=await room.linkSnapshot(builder.id,src.map(([destination,content])=>({destination,content})),'',{top:true});
   assert.deepEqual(deep.rejected,[]);
   // The runtime now links combineFilters.js itself (paths, then binding shape),
   // before the model is asked; the tracker's two edits still come from the model.

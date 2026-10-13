@@ -3,14 +3,15 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, ENTRY_CONTRACT } from './model.js';
-import { codeWritingTask, assignedPiece, entrySpec, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
+import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
+import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, providedNames, exportsStart, mayExportStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, importExcerpt } from './linker.js';
-import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
-import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY } from './assembly.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, importExcerpt, errorTarget } from './linker.js';
+import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
+import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
+import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
@@ -22,6 +23,14 @@ const topicSlug = label => String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_'
 const linkEdits = applied => { const shaped=applied.filter(e=>e.shape).length; return `${applied.length-shaped} rename(s)`+(shaped?` and ${shaped} import binding fix(es)`:''); };
 // The owner notes of pruned children, each once.
 const ownerNotes = rejected => clip([...new Set(rejected.filter(x=>x.owner).map(x=>x.note))].join(' '),1600);
+// Builders and the compiler are runtime nodes: one builder per manager links
+// its direct children, one compiler under the top manager runs the bundle.
+const RUNTIME_LABELS = ['Temporary builder','Compiler'];
+const isRuntimeNode = n => !!n && RUNTIME_LABELS.includes(n.label);
+// A room started before v7.14 (no schema mark) is reset, not migrated.
+const ROOM_SCHEMA = '7.14';
+// Problem rows hold JSON in these columns.
+const PROBLEM_JSON = ['parties','facts','evidence','directive','flags','trail'];
 // What start() returned, as the Container describes it, holds something the
 // runner can call. An unparsed or depth-limited description is given the doubt.
 const apiCallable = d => ['function','class','unparsed'].includes(d?.type) || !!d?.members_truncated || (d?.members ? Object.values(d.members).some(apiCallable) : ['object','array'].includes(d?.type));
@@ -133,6 +142,12 @@ export class ControlRoom extends DurableObject {
     // One persisted batch per turn also lets interrupted spawns resume without duplicates.
     db.exec('CREATE TABLE IF NOT EXISTS spawn_batches (batch_key TEXT PRIMARY KEY, parent TEXT NOT NULL, start_index INTEGER NOT NULL, specs TEXT NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, step INTEGER NOT NULL, actor TEXT NOT NULL, kind TEXT NOT NULL, recipient TEXT NOT NULL, body TEXT NOT NULL, path TEXT NOT NULL)');
+    // v7.14: each manager's problem inbox. A row moves one level at a time
+    // (holder); a reporter opens and supersedes its rows, a manager moves or
+    // closes them by its decisions. Rows are never deleted during a run.
+    db.exec("CREATE TABLE IF NOT EXISTS problems (id TEXT PRIMARY KEY, holder TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, stage TEXT NOT NULL, source TEXT NOT NULL, source_input TEXT NOT NULL, signature TEXT NOT NULL, parties TEXT NOT NULL, detail TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '{}', evidence TEXT NOT NULL DEFAULT '[]', directive TEXT NOT NULL DEFAULT '', flags TEXT NOT NULL DEFAULT '{}', assignee TEXT NOT NULL DEFAULT '', trail TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL)");
+    db.exec('CREATE INDEX IF NOT EXISTS problems_holder ON problems(holder,status)');
+    db.exec('CREATE TABLE IF NOT EXISTS repair_tickets (id TEXT PRIMARY KEY, manager TEXT NOT NULL, worker TEXT NOT NULL, problems TEXT NOT NULL, role TEXT NOT NULL, instructions TEXT NOT NULL, facts TEXT NOT NULL, created INTEGER NOT NULL)');
     // In-memory busy is gone on DO eviction. Repair persisted 'running' state and
     // requeue interrupted turns instead of leaving the dashboard locked forever.
     if (this.get('status') === 'running') {
@@ -149,6 +164,7 @@ export class ControlRoom extends DurableObject {
     }
   }
   db() { return this.ctx.storage.sql; }
+  live() { return this.env.MOCK_AI!=='true'; }
   get(key, otherwise = '') { return query(this.db(), 'SELECT value FROM meta WHERE key=?', key)[0]?.value ?? otherwise; }
   set(key, value) { this.db().exec('INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value)); }
   read(key, otherwise) { return parse(this.get(key), otherwise); }
@@ -369,7 +385,7 @@ export class ControlRoom extends DurableObject {
   snapshot() {
     return {
       goal: this.get('goal'), status: this.get('status','idle'), busy: this.busy, step: Number(this.get('step','0')),
-      build: this.read('last_build_report',null), build_infrastructure: this.get('build_infrastructure:root',''),
+      build: this.read('last_build_report',null), build_infrastructure: this.get('compile_infrastructure',''),
       active_agents: [...this.activeTurns], max_parallel: this.settings().parallel, settings: this.settings(),
       budget: Number(this.get('budget','0')), queue: this.read('queue', []),
       agents: this.allNodes(),
@@ -378,8 +394,17 @@ export class ControlRoom extends DurableObject {
       exports: this.allNodes().flatMap(n=>this.manager(n.id) ?
         this.visibleManifest(n.id).filter(f=>query(this.db(),'SELECT path FROM exposed_files WHERE owner=? AND path=?',n.id,f.path).length)
           .map(f=>({agent:n.id,path:f.path})) : []),
-      events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse()
+      events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
+      problems: this.problems("status!='closed'").slice(0,80).map(p=>({id:p.id,holder:p.holder,kind:p.kind,status:p.status,assignee:p.assignee,
+        path:String(p.parties[0]?.path||'').split('/').pop(),detail:clip(p.detail,300),trail:p.trail.map(t=>t.at)})),
+      compiler: this.compilerSummary()
     };
+  }
+  compilerSummary() {
+    const top=this.allNodes().find(n=>!n.parent),compiler=top&&this.compilerOf(top.id);
+    if(!compiler)return null;
+    const passed=this.read('compile_passed',null);
+    return {id:compiler.id,status:compiler.status,input:this.read(`bundle:${top.id}`,null)?.digest||'',entry:this.read('compile_state',null)?.entry||'',passed:!!passed&&this.compilePassed(top.id)};
   }
   // The observer's raw JSON export resolves aliases locally against this room's
   // write-through index. Fresh runs never fetch files from Artifacts on export.
@@ -418,7 +443,10 @@ export class ControlRoom extends DurableObject {
     // The dashboard shows the last 300 events; an export keeps the full run
     // (bounded) so early split and capacity decisions can be diagnosed.
     const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 20000').reverse();
-    return {...snapshot,events,exports,exported_at:new Date().toISOString(),files};
+    // Every problem row and ticket, and the per-manager linking and compile state.
+    const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
+    return {...snapshot,events,exports,exported_at:new Date().toISOString(),files,
+      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state};
   }
   async provision(id, parent, label, task) {
     if (this.node(id)) throw new Error('Agent ID exists');
@@ -426,7 +454,7 @@ export class ControlRoom extends DurableObject {
     const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\')',
       id, parent, clip(label,70), clip(task,2000), '', repo.name, repo.remote, repo.branch);
-    if (label==='Temporary builder') this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
+    if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
     return this.node(id);
@@ -438,12 +466,12 @@ export class ControlRoom extends DurableObject {
       const specs=parse(batch.specs,[]);
       let pending=0;
       for(let i=0;i<specs.length;i++) {
-        if(!this.node(`${batch.parent}.${batch.start_index+i}`) && specs[i].label!=='Temporary builder') pending++;
+        if(!this.node(`${batch.parent}.${batch.start_index+i}`) && !RUNTIME_LABELS.includes(specs[i].label)) pending++;
       }
       return total+pending;
     },0);
   }
-  productionNodeCount() {return this.allNodes().filter(n=>n.label!=='Temporary builder').length;}
+  productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)).length;}
   canSplit(parentId, count=2) {
     return parentId.split('.').length <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + count <= this.settings().max_agents;
@@ -452,10 +480,16 @@ export class ControlRoom extends DurableObject {
     const parent=this.node(parentId);
     if(!parent) throw new Error('Unknown owner');
     if(!specs.length) return [];
+    // Generation 0 keeps builder:<id>; a retasked manager's fresh builder is builder:<id>:<gen>.
     if(specs.some(s=>s.label==='Temporary builder') &&
-      !(batchKey===`builder:${parentId}` && this.children(parentId).length>0 &&
-        this.children(parentId).some(c=>c.label!=='Temporary builder') && this.manager(parentId))) {
+      !(new RegExp(`^builder:${parentId.replaceAll('.','\\.')}(?::\\d+)?$`).test(batchKey) && this.children(parentId).length>0 &&
+        this.children(parentId).some(c=>!isRuntimeNode(c)) && this.manager(parentId))) {
       this.event(parentId,'blocked','Temporary builders can only be scheduled internally by their owning manager.');
+      return [];
+    }
+    if(specs.some(s=>s.label==='Compiler') &&
+      !(batchKey===`compiler:${parentId}` && specs.length===1 && !parent.parent && this.manager(parentId))) {
+      this.event(parentId,'blocked','The compiler can only be scheduled internally, once, under the top manager.');
       return [];
     }
     let batch=query(this.db(),'SELECT parent,start_index,specs FROM spawn_batches WHERE batch_key=?',batchKey)[0];
@@ -466,7 +500,7 @@ export class ControlRoom extends DurableObject {
       }
       // Do not create one child out of three. Inference turns overlap, so
       // reservations must be synchronous and include other pending batches.
-      if (this.productionNodeCount() + this.reservedSpawnSlots() + specs.filter(s=>s.label!=='Temporary builder').length > this.settings().max_agents) {
+      if (this.productionNodeCount() + this.reservedSpawnSlots() + specs.filter(s=>!RUNTIME_LABELS.includes(s.label)).length > this.settings().max_agents) {
         this.event(parentId,'limit',`Agent cap: cannot reserve all ${specs.length} children; split rejected in full.`);
         return [];
       }
@@ -535,7 +569,7 @@ export class ControlRoom extends DurableObject {
   // Root is the only default builder. Managers receive delegated integration
   // work ONLY when an ancestor's actual source no longer fits the context budget.
   integrationEnabled(id) {
-    if(this.env.MOCK_AI!=='true')return this.children(id).some(c=>c.label!=='Temporary builder');
+    if(this.env.MOCK_AI!=='true')return this.children(id).some(c=>!isRuntimeNode(c));
     return id==='root' || this.get(`builder_delegated:${id}`)==='1';
   }
   descendantsWithCode(ownerId) {
@@ -544,7 +578,7 @@ export class ControlRoom extends DurableObject {
     const out=[];
     const walk=id=>{
       for(const child of this.children(id)) {
-        if(child.label==='Temporary builder')continue;
+        if(isRuntimeNode(child))continue;
         if(this.manager(child.id))walk(child.id);
         else for(const f of this.files(child.id))if(!isAssemblyMetadata(f.path))
           out.push({path:f.path,revision:f.revision,owner:child.id,sourceLabel:child.label});
@@ -555,11 +589,11 @@ export class ControlRoom extends DurableObject {
   }
   assemblySources(id) {
     const live=this.env.MOCK_AI!=='true';
-    return this.children(id).filter(c=>c.label!=='Temporary builder').map(child=>{
+    return this.children(id).filter(c=>!isRuntimeNode(c)).map(child=>{
       // v7.11: a manager child is represented by its own builder's linked
       // components, never by its raw descendants.
       if(live && this.manager(child.id)) {
-        const builder=this.children(child.id).find(x=>x.label==='Temporary builder');
+        const builder=this.builderOf(child.id);
         const files=builder?this.files(builder.id).filter(f=>f.path.startsWith('components/'))
           .map(f=>({path:f.path,revision:f.revision,owner:builder.id,sourceLabel:child.label,delegated:true})):[];
         return {child,files,delegated:true};
@@ -678,57 +712,7 @@ export class ControlRoom extends DurableObject {
     await this.putFile(builderId,'package.json',baseline.packageJson,{runtimeGlue:true});
     return baseline;
   }
-  async diagnoseBuilderWithBaseline(builderId) {
-    if(this.env.MOCK_AI==='true' || !this.env.BUILD_EXECUTORS)return null;
-    const builder=this.node(builderId);
-    if(builder?.label!=='Temporary builder')return null;
-    await this.materializeBuilder(builderId);
-    await this.publishRuntimeLinker(builderId);
-    const fingerprint=this.assemblyFingerprint(builder.parent);
-    const key=`baseline_checked:${builderId}`;
-    // No repeated Container build for unchanged source after multiple model errors.
-    if(this.get(key)===fingerprint)return this.read(`baseline_report:${builderId}`,null);
-    let baseline;
-    try { baseline=await this.builderBaseline(builderId); }
-    catch(e) { this.event(builderId,'baseline_unavailable',clip(e?.message||e,600));return null; }
-    const priorDiagnostic=this.get(`builder_diagnostic:${builderId}`)||'';
-    const snapshot=validateBuildFiles(new Map([...baseline.files].filter(([p])=>!isAssemblyMetadata(p))));
-    const digest=await snapshotHash(snapshot);
-    const buildKey=await sha256('diagnostic-baseline:'+fingerprint);
-    let report;
-    try {
-      const room=this.get('room_id','test-room');
-      const stub=this.env.BUILD_EXECUTORS.getByName(`${room}:${this.get('run_nonce','legacy')}:build`);
-      report=normalizeBuildResult(await stub.build({fingerprint:buildKey,files:Object.fromEntries(snapshot)}),buildKey,digest);
-    } catch(e) {
-      this.event(builderId,'baseline_unavailable',`Baseline build unavailable: ${clip(e?.message||e,500)}`);
-      return null;
-    }
-    if(report.infrastructure_issue) {
-      this.event(builderId,'baseline_unavailable',clip(report.infrastructure_issue,600));
-      return null;
-    }
-    this.set(key,fingerprint);
-    this.save(`baseline_report:${builderId}`,report);
-    if(report.passed) {
-      this.event(builderId,'baseline_loaded',`Deterministic baseline loaded ${baseline.included.length} native JS module(s). This is not proof of application integration.`);
-      this.set(`builder_diagnostic:${builderId}`,clip(priorDiagnostic,700)+'\n'+`Deterministic baseline loaded ${baseline.included.length} modules. `+
-        `Source paths are known; your job is ONLY to wire exported collaborators and behavior, NOT to invent imports. `+
-        `Excluded ${baseline.skipped.length} TS/JSX source(s) that require compilation or contain types. `+
-        `Passing baseline is NOT a completed application.`);
-    } else {
-      // Real errors now have leaf-owned paths instead of failed invented glue.
-      // They must flow through the existing Root -> owning manager -> leaf router.
-      const routed={...report,builder:builderId,diagnostic_baseline:true};
-      this.save('build_failure:root',routed);
-      this.event(builderId,'baseline_failed',clip(report.issues.map(x=>`${x.path}: ${x.detail}`).join('; '),950));
-      this.set(`builder_diagnostic:${builderId}`,clip(priorDiagnostic,700)+'\n'+`Deterministic baseline load failed in actual source; Root is routing the Container diagnostic to the owner. `+
-        clip(report.issues.map(x=>`${x.path}: ${x.detail}`).join('; '),950));
-      this.wake('root');
-    }
-    // Crucial: never set build_passed, assembly_completed or builder done.
-    return report;
-  }
+  // MOCK_AI legacy builder context.
   async builderSourceContext(builderId) {
     const parent=this.node(builderId)?.parent;
     const groups=[];
@@ -747,16 +731,18 @@ export class ControlRoom extends DurableObject {
   // v7.11: every manager gets its own builder, started as soon as all of that
   // manager's workers are finished. A manager's builder links only the imports
   // that cross between its own children; the parent's builder receives the
-  // child's linked output as one bundle. Only Root's builder runs the app.
+  // child's linked output as one bundle. v7.14: every builder runs the same
+  // turn; the compiler under the top manager runs the application.
   async scheduleAssembly(id) {
     if(this.env.MOCK_AI==='true')return this.legacyScheduleAssembly(id);
-    if(!this.children(id).some(c=>c.label!=='Temporary builder') || !this.subtreeQuiescent(id))return null;
+    if(!this.children(id).some(c=>!isRuntimeNode(c)) || !this.subtreeQuiescent(id))return null;
     const fingerprint=this.assemblyFingerprint(id);
-    let builder=this.children(id).find(c=>c.label==='Temporary builder');
+    let builder=this.builderOf(id);
     if(!builder) {
       const task='Rename-only linker for: '+clip(this.node(id).task,700)+
-        '. Every worker under this manager has finished. Change only import paths and identifier names so the modules agree'+
-        (id==='root'?', pick the application entry, and send anything renaming cannot fix back to the worker that owns it. A separate runner then runs the application.':'; anything that points outside this branch is left for the builder above.');
+        '. Every worker under this manager has finished. Change only import paths and identifier names (and the runtime\'s import binding fixes) so the modules of this manager\'s direct children agree. '+
+        (this.node(id).parent?'An import that resolves outside this branch goes to the branch boundary for the builder above.':'This is the top level: an import that resolves nowhere is reported to the manager.')+
+        ' Anything renaming cannot fix inside the branch is reported to the manager, which decides who changes it.';
       const created=await this.spawn(id,[{label:'Temporary builder',task}],`builder:${id}`);
       builder=created[0];
       if(!builder) {this.event(id,'integration_capacity','No builder slot available.');return null;}
@@ -772,20 +758,24 @@ export class ControlRoom extends DurableObject {
     }
     return builder;
   }
+  // A builder is current when it linked this exact source, at every level.
   builderCurrent(manager, fingerprint=this.assemblyFingerprint(manager)) {
-    return manager==='root' ? this.read('run_passed:root',null)?.fingerprint===fingerprint : this.get(`linked:${manager}`)===fingerprint;
+    return this.get(`linked:${manager}`)===fingerprint;
   }
-  // Every production agent under this manager is finished and no repair
-  // request is still in flight to any of them. Builders are excluded.
+  builderOf(manager) {return this.children(manager).find(c=>c.label==='Temporary builder'&&c.status!=='retired')||null;}
+  compilerOf(top) {return this.children(top).find(c=>c.label==='Compiler')||null;}
+  // Every production agent under this manager is finished, no repair
+  // request is still in flight to any of them, and no manager below holds an
+  // open problem. Builders and the compiler are excluded.
   subtreeQuiescent(id) {
     const below=[];
-    const walk=parent=>{for(const c of this.children(parent)){if(c.label==='Temporary builder')continue;below.push(c);walk(c.id);}};
+    const walk=parent=>{for(const c of this.children(parent)){if(isRuntimeNode(c))continue;below.push(c);walk(c.id);}};
     walk(id);
     if(below.some(n=>!['done','retired'].includes(n.status)))return false;
     const ids=new Set(below.map(n=>n.id));
+    if(query(this.db(),"SELECT DISTINCT holder FROM problems WHERE status='open'").some(r=>ids.has(r.holder)))return false;
     return !query(this.db(),"SELECT recipient FROM messages WHERE delivered=0 AND body LIKE '[build:repair]%'").some(m=>ids.has(m.recipient));
   }
-  treeQuiescent() {return this.subtreeQuiescent('root');}
   async legacyScheduleAssembly(id) {
     if(!this.integrationEnabled(id))return null;
     const children=this.children(id).filter(c=>c.label!=='Temporary builder');
@@ -824,7 +814,9 @@ export class ControlRoom extends DurableObject {
   }
   // The build executor, not inference, is the only authority that certifies a
   // runnable final assembly. A failure is attached to a byte-exact candidate.
-  async verifyRuntimeBuild(builderId,fingerprint,files) {
+  // v7.14: used only by an atomic top (a top that never split), which owns
+  // all the code and re-runs its own turn on a failure.
+  async verifyRuntimeBuild(nodeId,fingerprint,files) {
     const snapshot=validateBuildFiles(new Map([...files].filter(([path])=>!isAssemblyMetadata(path))));
     const digest=await snapshotHash(snapshot);
     // The full source inventory is an internal revision key. It can be thousands
@@ -833,12 +825,12 @@ export class ControlRoom extends DurableObject {
     // BuildExecutor, while the original fingerprint stays in room metadata.
     const buildKey=await sha256(fingerprint);
     const block=reason=>{
-      this.set('build_infrastructure:root',clip(reason,950));
-      this.save('build_blocked:root',{builder:builderId,fingerprint,digest});
+      this.set('compile_infrastructure',clip(reason,950));
+      this.save('compile_blocked',{node:nodeId,input:fingerprint,digest});
     };
     if(!this.env.BUILD_EXECUTORS) {
       block('BUILD_EXECUTORS binding unavailable; cannot certify application.');
-      this.event('root','build_unavailable','BUILD_EXECUTORS container is not configured. Build acceptance blocked.');
+      this.event(nodeId,'build_unavailable','BUILD_EXECUTORS container is not configured. Build acceptance blocked.');
       return false;
     }
     let report;
@@ -848,7 +840,7 @@ export class ControlRoom extends DurableObject {
       report=normalizeBuildResult(await stub.build({fingerprint:buildKey,files:Object.fromEntries(snapshot)}),buildKey,digest);
     } catch(error) {
       block(error?.message||error);
-      this.event('root','build_infrastructure',clip(error?.message||error,950));
+      this.event(nodeId,'build_infrastructure',clip(error?.message||error,950));
       return false; // Never ask Qwen to repair a Cloudflare infrastructure error.
     }
     this.save('last_build_report',report);
@@ -856,38 +848,25 @@ export class ControlRoom extends DurableObject {
       // A registry timeout is neither broken glue nor a child-owned defect.
       // Keep the existing assembly and retry from Continue without inference.
       block(report.infrastructure_issue);
-      this.save('build_failure:root',null);
-      this.event('root','build_infrastructure',clip(report.infrastructure_issue,950),builderId);
+      this.event(nodeId,'build_infrastructure',clip(report.infrastructure_issue,950));
       return false;
     }
-    this.save('build_blocked:root',null);
-    this.set('build_infrastructure:root','');
+    this.save('compile_blocked',null);
+    this.set('compile_infrastructure','');
     if(report.passed) {
-      this.save('build_passed:root',{fingerprint,digest,ts:Date.now(),checks:report.checks});
-      this.save('build_failure:root',null);
-      this.event('root','build_passed',`Container executed ${report.checks.length} checks against immutable snapshot ${digest.slice(0,14)}.`,builderId);
+      this.save('compile_passed',{input:fingerprint,digest,ts:Date.now(),checks:report.checks});
+      this.event(nodeId,'build_passed',`Container executed ${report.checks.length} checks against immutable snapshot ${digest.slice(0,14)}.`);
       return true;
     }
-    this.save('build_failure:root',{...report,builder:builderId});
-    this.event('root','build_failed',`Container rejected ${digest.slice(0,14)}: ${clip(report.issues.map(x=>x.detail).join('; ')||report.log,1100)}`,builderId);
-    this.wake('root');
+    this.event(nodeId,'build_failed',`Container rejected ${digest.slice(0,14)}: ${clip(report.issues.map(x=>x.detail).join('; ')||report.log,1100)}`);
+    this.wake(nodeId);
     return false;
   }
-  // Chase source provenance across delegated linker layers until reaching
   // Explicit Continue retries an infrastructure-blocked build without
   // re-invoking Qwen or re-writing any Artifacts source. It also upgrades
   // persisted v6.5 rooms whose build failed with 'Invalid build fingerprint'.
   async retryBlockedBuild() {
-    if(this.env.MOCK_AI!=='true') {
-      // The v7.11 builder relinks and reruns from its own turn; Continue only
-      // clears the infrastructure block and schedules that turn.
-      const blocked=this.read('build_blocked:root',null);
-      if(!blocked)return false;
-      this.save('build_blocked:root',null);
-      this.set('build_infrastructure:root','');
-      if(this.node(blocked.builder))this.wake(blocked.builder);
-      return true;
-    }
+    if(this.env.MOCK_AI!=='true')return this.retryBlockedCompile();
     let blocked=this.read('build_blocked:root',null);
     if(!blocked && this.get('build_infrastructure:root')) {
       // Migration for runs created by v6.5 before the retry bookmark existed.
@@ -941,97 +920,31 @@ export class ControlRoom extends DurableObject {
     return null;
   }
   resolveBuildSourceOwner(builder,path) {return this.buildSourceOrigin(builder,path)?.owner||null;}
-  // The components/ modules Root's entry child wrote: it holds the entry contract.
-  entryChildModules(builder,paths) {
-    const child=this.get('entry_child');
-    return child?[...paths].filter(p=>{if(!LINKABLE.test(p)||!p.startsWith('components/'))return false;const o=this.resolveBuildSourceOwner(builder,p);return !!o&&(o===child||o.startsWith(child+'.'));}):[];
-  }
-  // The module an entry problem goes to: one of the modules Root's entry child
-  // wrote (it holds the entry contract), the chosen entry first; with no entry
-  // child, the chosen entry, else the closest candidate by imports and name.
-  // The entry is another module only when none of the child's may export start().
-  entryModule(builder,files,entry=null) {
-    const own=this.entryChildModules(builder,files.keys());
-    if(entry&&(!own.length||own.includes(entry)))return entry;
-    return entryCandidate(own.length?new Map(own.map(p=>[p,files.get(p)])):files);
-  }
-  // Root routes failed paths via provenance, one manager boundary at a time.
-  // Root never rewrites child-owned implementations or manufactures replacements.
-  async routeBuildFailures() {
-    const failure=this.read('build_failure:root',null);
-    if(!failure || this.get('build_routed_digest')===failure.snapshot_hash)return;
-    this.set('build_routed_digest',failure.snapshot_hash);
-    const groups=new Map();
-    for(const issue of failure.issues.length?failure.issues:[{path:'',detail:failure.log||'Build returned nonzero status'}]) {
-      const origin=this.resolveBuildSourceOwner(failure.builder,issue.path);
-      // A failure with no component path (an assertion in the runner's test,
-      // or the runtime loader) belongs to the worker that owns the entry.
-      const entryOwner=this.env.MOCK_AI!=='true'?this.get('entry_owner'):'';
-      const target=origin && this.node(origin) ? origin : entryOwner && this.node(entryOwner) ? entryOwner : failure.builder;
-      const list=groups.get(target)||[];
-      list.push(issue);groups.set(target,list);
+  // A path in builder `from`'s bundle as builder `to`, which built a branch
+  // below it, names the same module; null when that branch did not build it.
+  pathIn(from, path, to) {
+    let builder=from,current=String(path||'').replace(/^\.\//,'');
+    for(let depth=0;depth<=this.settings().max_depth+2&&builder!==to;depth++) {
+      const row=query(this.db(),'SELECT child,source_path FROM builder_sources WHERE builder=? AND destination=?',builder,current)[0];
+      if(!row||this.node(row.child)?.label!=='Temporary builder')return null;
+      builder=row.child;current=row.source_path;
     }
-    const rounds=Number(this.get('build_failure_rounds','0'))+1;
-    this.set('build_failure_rounds',rounds);
-    if(rounds>8) {
-      this.event('root','build_repair_exhausted','Eight failed build candidates; refusing an unbounded repair loop.');
-      this.db().exec("UPDATE agents SET status='failed' WHERE id='root'");
-      return;
-    }
-    for(const [target,issues] of groups) {
-      const ticket=crypto.randomUUID();
-      this.save(`build_route:${ticket}`,{target,details:issues,hash:failure.snapshot_hash});
-      const next=nextDirectChild('root',target);
-      if(!next||!this.node(next)) {this.event('root','build_unroutable',`No direct child responsible for ${issues[0].path}`);continue;}
-      const envelope='[build:repair] '+ticket;
-      this.send('root',next,envelope);
-      this.event('root','build_repair_routed',`Build error ${clip(issues[0].path||'glue',130)} delegated to direct child ${this.node(next).label}.`,next);
-    }
+    return builder===to?current:null;
   }
-  async forwardBuildRepair(manager,ticket) {
-    const route=this.read(`build_route:${ticket}`,null);
-    if(!route)return false;
-    const next=nextDirectChild(manager,route.target);
-    if(!next||!this.node(next)||this.node(next).parent!==manager)return false;
-    return this.send(manager,next,'[build:repair] '+ticket);
-  }
+  // A worker's repair message, from the ticket its manager sent. Problems
+  // closed since are left out; a ticket whose problems all closed says so.
   buildRepairMessage(ticket) {
-    const route=this.read(`build_route:${ticket}`,null);
-    if(!route)return '';
-    return 'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers, so this problem needs a change in your code. Fix the existing implementation, keep your exported names, and do not invent unrelated features. Problems: '+route.details.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ').slice(0,1700);
+    const row=query(this.db(),'SELECT * FROM repair_tickets WHERE id=?',ticket)[0];
+    if(!row)return '';
+    const problems=parse(row.problems,[]).map(id=>this.problems('id=?',id)[0]).filter(p=>p&&p.status!=='closed');
+    if(!problems.length)return '';
+    return repairText({role:row.role,instructions:row.instructions,facts:row.facts,
+      problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
     const builder=this.node(builderId);
     if(!builder?.parent)return;
     const manager=builder.parent;
-    if(this.env.MOCK_AI!=='true') {
-      if(fingerprint!==this.assemblyFingerprint(manager))
-        throw new Error('Cannot accept a stale assembly input revision');
-      const files=new Map();
-      for(const f of this.files(builderId))files.set(f.path,await this.indexedContent(builderId,f.path));
-      const final=this.children(manager).filter(x=>x.label!=='Temporary builder')
-        .every(x=>x.status==='done'||x.status==='retired');
-      const errors=verifyBuilderBundle(files,{root:manager==='root',final});
-      if(!files.has('glue/wiring.js'))errors.push('Only a wired integration can finish; deterministic baseline is diagnostic-only');
-      if(manager==='root' && final && !files.has('glue/smoke.js'))errors.push('Root must publish glue/smoke.js testing real user operations through the wired application');
-      let inputCount=0;
-      // The manifest must be a complete, byte-exact snapshot of the source
-      // revision. A source can change while inference is running, so syntax
-      // validity alone is NOT proof that all intended modules were linked.
-      for(const {child,sources,files:inputs} of this.assemblySources(manager).map(x=>({...x,sources:x.files}))) {
-        for(const item of inputs) {
-          inputCount++;
-          const dest=materializedPath(item.sourceLabel,item.path,item.owner);
-          const original=await this.indexedContent(item.owner,item.path);
-          const copied=files.get(dest);
-          if(original===null || copied===undefined || original!==copied)
-            errors.push(`missing or stale source copy ${child.label}/${item.path} at ${dest}`);
-        }
-      }
-      if(final && !inputCount)errors.push('No actual worker implementations were included in the final build');
-      if(errors.length)throw new Error('Cannot accept invalid builder package: '+errors.slice(0,8).join('; '));
-      if(manager==='root' && final && !(await this.verifyRuntimeBuild(builderId,fingerprint,files)))return false;
-    }
     const shard=this.managerStub(manager);
     if(shard)await shard.finishAssembly({fingerprint,builder:builderId});
     else this.set(`assembly_completed:${manager}`,fingerprint);
@@ -1042,7 +955,7 @@ export class ControlRoom extends DurableObject {
   async assemblyCurrent(id) {
     if(this.env.MOCK_AI!=='true') {
       if(!this.integrationEnabled(id))return true;
-      const builder=this.children(id).find(c=>c.label==='Temporary builder');
+      const builder=this.builderOf(id);
       return !!builder && builder.status==='done' && this.builderCurrent(id);
     }
     if(!this.integrationEnabled(id))return true;
@@ -1051,19 +964,14 @@ export class ControlRoom extends DurableObject {
     const completed=shard?(await shard.assemblyState()).completed:this.get(`assembly_completed:${id}`);
     const builder=this.children(id).find(c=>c.label==='Temporary builder');
     if(!builder||builder.status!=='done'||expected!==completed)return false;
-    if(id==='root'&&this.env.MOCK_AI!=='true') {
-      const build=this.read('build_passed:root',null);
-      if(build?.fingerprint!==expected)return false;
-      const files=new Map();for(const f of this.files(builder.id))if(!isAssemblyMetadata(f.path))files.set(f.path,await this.indexedContent(builder.id,f.path));
-      return build.digest===await snapshotHash(files);
-    }
     return true;
   }
-  // ========================= v7.11 builder and runner =========================
-  // Builder: rename-only linker over one manager's finished children. Runner
-  // (Root only): a separate model instance that writes a test from the Root
-  // goal and the live API, never from component source. Anything renaming
-  // cannot fix goes back to the worker that owns it.
+  // ========================= v7.14 builders and the compiler =========================
+  // Builder: rename-only linker over one manager's direct children, the same
+  // turn at every level. What renaming cannot fix it reports to its manager,
+  // which decides who changes what. Compiler (one, under the top manager):
+  // picks the entry, loads and starts the bundle in the Container, and has a
+  // separate runner write a test from the goal and the live API.
   async collectLinkSources(builderId) {
     const builder=this.node(builderId);
     const sources=[];
@@ -1094,11 +1002,9 @@ export class ControlRoom extends DurableObject {
   // current: the previous relink's linked files. A relink edits those, so
   // renames accepted earlier in the turn are kept and the model edits what
   // it was shown; sources keep the worker originals for the manifest.
-  // done: the edits earlier relinks in this turn applied.
-  // entries: modules the model named as the entry on earlier attempts.
-  // owned: the modules Root's entry child wrote; the entry is one of them
-  // when one may export start().
-  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false,current=null,done=[],entries=[],owned=[]}={}) {
+  // done: the edits earlier relinks of this source applied.
+  // top: the manager has no parent, so no builder sits above this one.
+  async linkSnapshot(builderId, sources, diagnostic='', {top=false,current=null,done=[]}={}) {
     const originals=new Map(sources.map(s=>[s.destination,s.content]));
     const files=new Map(sources.map(s=>[s.destination,current?.get(s.destination)??s.content]));
     const js=sources.filter(s=>LINKABLE.test(s.destination)).map(s=>s.destination);
@@ -1118,7 +1024,7 @@ export class ControlRoom extends DurableObject {
       return done;
     };
     const originalSurfaces=current?new Map(js.map(p=>[p,exportSurface(p,originals.get(p))])):surfaces;
-    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:isRoot?'application':'branch'}));
+    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch'}));
     autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
     if(autoApplied.length)this.event(builderId,'link_auto',`Applied ${linkEdits(autoApplied)} without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
@@ -1131,12 +1037,8 @@ export class ControlRoom extends DurableObject {
     const named=js.filter(p=>diagnostic&&diagnostic.includes(p));
     for(const p of named)needs.add(p);
     const label=this.node(this.node(builderId).parent)?.label||'manager';
-    const edits=new Map(),issues=[],proposals=[],rejected=[];
-    // Which module is the application is not mechanical when none exports
-    // start(): Root asks the model to name it even if every import resolves,
-    // unless the entry child wrote modules (an entry problem goes to them).
-    const askEntry=isRoot&&!owned.length&&!js.some(p=>exportsStart(surfaces.get(p)));
-    if(needs.size||askEntry) {
+    const edits=new Map(),issues=[],rejected=[];
+    if(needs.size) {
       const own=[...needs].filter(p=>files.has(p));
       // The model reads a branch built below by its boundary: the modules it
       // offers, less those a module of the branch imports once this level
@@ -1170,11 +1072,11 @@ export class ControlRoom extends DurableObject {
       const sent=own.map(p=>excerpts.has(p)?{path:p,excerpt:excerpts.get(p)}:{path:p,content:files.get(p)}),paths=js.filter(p=>shown.has(p)),below=excerpts.size>0||blocks.size>0;
       const size=(list,faces,all)=>1800+list.reduce((n,f)=>n+tokenEstimate(f.path+(f.content??f.excerpt.join('\n'))),0)+faces.reduce((n,t)=>n+tokenEstimate(t),0)+tokenEstimate(all.join('\n'));
       const estimate=size(sent,interfaces,paths)+(below?tokenEstimate(LINKER_BELOW):0),whole=size(own.map(p=>({path:p,content:files.get(p)})),js.filter(p=>!needs.has(p)).map(p=>surfaceText(surfaces.get(p))),js);
-      this.event(builderId,'link_started',`Linking ${label}: ${own.length-excerpts.size} module(s) with imports to resolve sent in full${excerpts.size?` and ${excerpts.size} inside branches below as excerpts`:''}, ${faced.length} shown by export names only${paths.length<js.length?`, ${js.length-paths.length} inside branches below left out`:''}${askEntry?'; no module exports start(), so the builder names the entry':''} (about ${estimate} tokens${estimate<whole?`, ${whole} without branch boundaries`:''}).`);
+      this.event(builderId,'link_started',`Linking ${label}: ${own.length-excerpts.size} module(s) with imports to resolve sent in full${excerpts.size?` and ${excerpts.size} inside branches below as excerpts`:''}, ${faced.length} shown by export names only${paths.length<js.length?`, ${js.length-paths.length} inside branches below left out`:''} (about ${estimate} tokens${estimate<whole?`, ${whole} without branch boundaries`:''}).`);
       if(estimate>BUILDER_CONTEXT_BUDGET)this.event(builderId,'link_oversize',`Linker input is about ${estimate} tokens, over ${BUILDER_CONTEXT_BUDGET}; the model may truncate it.`);
-      const out=await linkComponents(this.inferenceEnv(),{goal:this.get('goal')||this.node('root')?.task||'',
+      const out=await linkComponents(this.inferenceEnv(),{goal:this.topTask(),
         files:sent,interfaces,allPaths:paths,diagnostic,
-        known_mismatches:mismatchesBefore.map(m=>`${m.path} ${m.detail}`),scope:isRoot?'application':'branch',below});
+        known_mismatches:mismatchesBefore.map(m=>`${m.path} ${m.detail}`),scope:top?'application':'branch',below});
       if(out.parse_error)this.event(builderId,'link_unparsed',`The builder returned invalid JSON; it contributed no renames. ${clip(out.raw,300)}`);
       for(const edit of out.edits) {
         if(!needs.has(edit.file)){rejected.push({edit,reason:'that file was not sent for renaming at this level'});continue;}
@@ -1189,7 +1091,6 @@ export class ControlRoom extends DurableObject {
         edits.set(edit.file,[...(edits.get(edit.file)||[]),normalizeEditPaths(edit,js,files)]);
       }
       for(const issue of out.issues)if(files.has(issue.file))issues.push({path:issue.file,detail:'Builder: '+issue.problem});
-      if(out.entry&&files.has(out.entry))proposals.push(out.entry);
     } else this.event(builderId,'link_started',`Linking ${label}: every import already resolves; no renaming needed at this level.`);
     // Known names come from the worker originals, never from earlier renames,
     // so a name copied into another file by a relink does not become known.
@@ -1256,29 +1157,25 @@ export class ControlRoom extends DurableObject {
       this.event(builderId,'link_edit_rejected',clip(`${r.edit.file}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
     if(applied.length)this.event(builderId,'link_renamed',`Applied ${linkEdits(applied)} in ${new Set(applied.map(e=>e.file)).size} module(s): `+
       clip(applied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace}`).join('; '),900));
-    let entry=null;
-    if(isRoot) {
-      const linkedSurfaces=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
-      entry=chooseEntry(linked,linkedSurfaces,[...proposals,...entries],owned);
-    }
-    const linkedSurfacesAll=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
-    return {files:linked,entry,proposals,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfacesAll),applied,rejected};
+    const linkedSurfaces=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
+    return {files:linked,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfaces),surfaces:linkedSurfaces,applied,rejected};
   }
-  async publishLinked(builderId, link, sources, {isRoot=false}={}) {
+  async publishLinked(builderId, link, sources, {top=false}={}) {
     for(const source of sources) {
       const content=link.files.get(source.destination);
       const stored=this.files(builderId).some(f=>f.path===source.destination)?await this.indexedContent(builderId,source.destination):null;
       if(stored!==content)await this.putFile(builderId,source.destination,content,{materialized:true});
     }
+    // The entry is the compiler's choice, never a builder's.
     const manifest=JSON.stringify({format:'recursive-assembly-v2',
       note:'Each component is a copy of a worker publication or of a child manager\'s linked bundle. renamed=true means this builder changed only import paths, identifier names, or how an import binds a module whose exports call for it; the runtime verified that token by token.',
-      entry:link.entry||null,
+      entry:null,
       sources:await Promise.all([...sources].sort((a,b)=>a.destination.localeCompare(b.destination)).map(async s=>({
         branch:s.branch,source:s.source_path,destination:s.destination,sha256:s.digest,
         linked_sha256:await sha256(link.files.get(s.destination)),renamed:link.files.get(s.destination)!==s.content})))},null,2)+'\n';
     const storedManifest=this.files(builderId).some(f=>f.path==='assembly.manifest.json')?await this.indexedContent(builderId,'assembly.manifest.json'):null;
     if(storedManifest!==manifest)await this.putFile(builderId,'assembly.manifest.json',manifest,{materialized:true});
-    if(!isRoot) {
+    if(!top) {
       // The level above shows its model this branch only through its boundary.
       const {exports,needs}=branchBoundary(link.files);
       const boundary=JSON.stringify({format:'recursive-boundary-v1',
@@ -1287,14 +1184,14 @@ export class ControlRoom extends DurableObject {
       const stored=this.files(builderId).some(f=>f.path===BOUNDARY)?await this.indexedContent(builderId,BOUNDARY):null;
       if(stored!==boundary)await this.putFile(builderId,BOUNDARY,boundary,{materialized:true});
     }
-    if(isRoot&&link.entry) {
-      await this.putFile(builderId,'glue/index.js',entryLoader(link.entry),{runtimeGlue:true});
-      await this.putFile(builderId,'package.json',RUNTIME_PACKAGE,{runtimeGlue:true});
-      this.set('entry_owner',this.resolveBuildSourceOwner(builderId,link.entry)||'');
-      this.event(builderId,'link_entry',`Application entry: ${link.entry}.`);
-    }
   }
-  async containerRun(builderId, label, files) {
+  // The builder's published linked copy of these sources: its last link.
+  async publishedLinked(builderId, sources) {
+    const files=new Map();
+    for(const s of sources)files.set(s.destination,this.files(builderId).some(f=>f.path===s.destination)?await this.indexedContent(builderId,s.destination):s.content);
+    return files;
+  }
+  async containerRun(nodeId, label, files) {
     if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot build or run the application.'};
     const snapshot=validateBuildFiles(new Map([...files].filter(([path])=>!isAssemblyMetadata(path))));
     const digest=await snapshotHash(snapshot);
@@ -1308,22 +1205,6 @@ export class ControlRoom extends DurableObject {
     this.save('last_build_report',report);
     if(report.infrastructure_issue)return {infrastructure:report.infrastructure_issue,digest,report};
     return {report,digest};
-  }
-  blockBuilder(builderId, fingerprint, reason) {
-    this.set('build_infrastructure:root',clip(reason,950));
-    this.save('build_blocked:root',{builder:builderId,fingerprint});
-    this.event('root','build_infrastructure',clip(reason,950),builderId);
-    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",builderId);
-  }
-  async sendBackToWorkers(builderId, fingerprint, issues, stage) {
-    const list=issues.slice(0,12).map(x=>({path:String(x.path||''),detail:clip(x.detail,950),kind:'source'}));
-    const hash=await sha256(`${stage}:${fingerprint}:${JSON.stringify(list)}:${Date.now()}`);
-    this.save('build_failure:root',{builder:builderId,issues:list,snapshot_hash:hash,stage,log:''});
-    this.save('link_routed',{fingerprint,stage,ts:Date.now()});
-    this.event(builderId,'sent_to_workers',`${list.length} problem(s) that renaming cannot fix go back to the workers that own them: `+
-      clip(list.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; '),1000));
-    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",builderId);
-    this.wake('root');
   }
   runFailureKind(report) {
     const issues=report.issues||[];
@@ -1341,7 +1222,8 @@ export class ControlRoom extends DurableObject {
       return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass';
     return null;
   }
-  async runApplication(builderId, fingerprint, files, api, goal, link) {
+  // linked: the top builder's components; entry: the module glue/index.js starts.
+  async runApplication(nodeId, input, files, api, goal, {linked, entry}) {
     let correction='';
     for(let attempt=0;attempt<3;attempt++) {
       const test=await writeRunnerTest(this.inferenceEnv(),{goal,api,correction});
@@ -1349,35 +1231,35 @@ export class ControlRoom extends DurableObject {
       const errors=test?[...verifySource('glue/smoke.js',test,withTest),this.runnerTestError(test)].filter(Boolean):['the runner returned no test'];
       if(errors.length) {
         correction='Your previous test was rejected before running: '+errors.join('; ');
-        this.event(builderId,'runner_rejected',clip(correction,800));
+        this.event(nodeId,'runner_rejected',clip(correction,800));
         continue;
       }
-      const run=await this.containerRun(builderId,`run:${fingerprint}:${attempt}`,withTest);
+      const run=await this.containerRun(nodeId,`run:${input}:${attempt}`,withTest);
       if(run.infrastructure)return {infrastructure:run.infrastructure};
-      await this.putFile(builderId,'glue/smoke.js',test);
+      await this.putFile(nodeId,'glue/smoke.js',test);
       if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
       const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
       let kind=this.runFailureKind(run.report);
       let issues=run.report.issues.length?run.report.issues:[{path:'',detail}];
       if(kind==='app' && !issues.some(x=>String(x.path).startsWith('components/'))) {
-        // No stack frame names a module. The builder has seen the source; it
-        // names the module whose worker must change, or says the test is wrong.
-        const linkedJs=[...link.files].filter(([p])=>LINKABLE.test(p));
+        // No stack frame names a module. Triage, which sees the source, names
+        // the module whose worker must change, or says the test is wrong.
+        const linkedJs=[...linked].filter(([p])=>LINKABLE.test(p));
         const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
         const modules=fits?linkedJs.map(([path,content])=>({path,content})):
-          linkedJs.map(([path,content])=>path===link.entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
+          linkedJs.map(([path,content])=>path===entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
         const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail});
         if(verdict?.file==='glue/smoke.js') {
           kind='runner';
-          this.event(builderId,'run_triage',`Builder says the runner's test is wrong: ${clip(verdict.problem,700)}`);
-        } else if(verdict && link.files.has(verdict.file)) {
-          this.event(builderId,'run_triage',`Builder attributes the failed run to ${verdict.file}: ${clip(verdict.problem,700)}`);
+          this.event(nodeId,'run_triage',`Triage says the runner's test is wrong: ${clip(verdict.problem,700)}`);
+        } else if(verdict && linked.has(verdict.file)) {
+          this.event(nodeId,'run_triage',`Triage attributes the failed run to ${verdict.file}: ${clip(verdict.problem,700)}`);
           // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
           const problem=clip(verdict.problem,400).trim();
-          issues=[{path:verdict.file,detail:`Builder triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} The runner's test failed: ${clip(detail,700)}`}];
+          issues=[{path:verdict.file,detail:`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} The runner's test failed: ${clip(detail,700)}`}];
         }
       }
-      this.event(builderId,'run_failed',`Runner attempt ${attempt+1}: ${kind==='runner'?'the test itself was wrong':'the application failed the test'}. ${clip(detail,900)}`);
+      this.event(nodeId,'run_failed',`Runner attempt ${attempt+1}: ${kind==='runner'?'the test itself was wrong':'the application failed the test'}. ${clip(detail,900)}`);
       if(kind==='runner') {
         correction=`Your previous test failed because of the test, not the application: ${clip(detail,1200)}. Use only names in the API description and expectations the goal implies.`;
         continue;
@@ -1386,8 +1268,156 @@ export class ControlRoom extends DurableObject {
     }
     return {passed:false,runnerFailed:true,detail:correction};
   }
+
+  // ---------- the problem inbox ----------
+  // The run's goal (the requirement the runtime appended included), else the top's task.
+  topTask() {return this.get('goal')||query(this.db(),'SELECT task FROM agents WHERE parent IS NULL LIMIT 1')[0]?.task||'';}
+  problems(where, ...args) {
+    return query(this.db(),`SELECT * FROM problems WHERE ${where} ORDER BY created,rowid`,...args).map(r=>({...r,
+      ...Object.fromEntries(PROBLEM_JSON.map(k=>[k,parse(r[k],k==='directive'?null:['parties','evidence','trail'].includes(k)?[]:{})]))}));
+  }
+  problemsHeld(m) {return this.problems("holder=? AND status='open'",m);}
+  insertProblem(p) {
+    const now=Date.now(),id=crypto.randomUUID();
+    this.db().exec('INSERT INTO problems(id,holder,status,outcome,kind,stage,source,source_input,signature,parties,detail,facts,evidence,directive,flags,assignee,trail,created,updated) VALUES (?,?,\'open\',\'\',?,?,?,?,?,?,?,?,?,\'\',?,\'\',\'[]\',?,?)',
+      id,p.holder,p.kind,p.stage,p.source,String(p.input??''),problemSignature(p.kind,p.parties,p.detail),JSON.stringify(p.parties),clip(p.detail,950),
+      JSON.stringify(p.facts||{}),JSON.stringify(p.evidence||[]),JSON.stringify(p.flags||{}),now,now);
+    return id;
+  }
+  // Compare-and-set: a row another turn moved or closed since it was read is
+  // left alone, and no ticket goes out for it.
+  moveProblem(row, fields) {
+    const now=query(this.db(),'SELECT holder,status FROM problems WHERE id=?',row.id)[0];
+    if(!now||now.holder!==row.holder||now.status!==row.status) {
+      this.event(row.holder,'problem_decision_stale',`Problem ${row.id.slice(0,8)} changed while it was being decided; it is left as it is.`);
+      return false;
+    }
+    const keys=Object.keys(fields),value=(k,v)=>PROBLEM_JSON.includes(k)?(v==null?'':JSON.stringify(v)):v;
+    this.db().exec(`UPDATE problems SET ${keys.map(k=>`${k}=?`).join(',')},updated=? WHERE id=?`,...keys.map(k=>value(k,fields[k])),Date.now(),row.id);
+    Object.assign(row,fields);
+    return true;
+  }
+  closeProblems(rows, outcome, flags={}) {for(const row of rows)this.moveProblem(row,{status:'closed',outcome,flags:{...row.flags,...flags}});}
+  closeProblemsFrom(source, outcome) {
+    this.db().exec("UPDATE problems SET status='closed',outcome=?,updated=? WHERE source=? AND status!='closed'",outcome,Date.now(),source);
+  }
+  // A problem's parties, each with the worker that wrote it (through every
+  // builder below `via`) and the digest of the text that was linked.
+  partiesOf(via, x) {
+    const party=(path,role)=>{const o=path?this.buildSourceOrigin(via,path):null;return {path:path||'',owner:o?.owner||'',owner_path:o?.path||'',digest:o?.digest||'',role};};
+    return [party(x.path,DEFAULT_ROLE[x.kind]||'site'),...(x.target&&x.target!==x.path?[party(x.target,'provider')]:[])];
+  }
+  // A builder or the compiler files what it cannot fix with its manager, in
+  // one synchronous block: its earlier rows are superseded, the new ones open
+  // in the manager's inbox as one report wave, and the reporter waits.
+  reportProblems(source, manager, input, stage, items, via=source) {
+    const db=this.db(),wave=crypto.randomUUID();
+    const superseded=query(db,"SELECT id FROM problems WHERE source=? AND status!='closed'",source).length;
+    db.exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),source);
+    if(superseded)this.event(source,'problem_superseded',`${superseded} earlier problem(s) from this source are replaced by this report.`,manager);
+    const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
+    const ids=list.map(x=>this.insertProblem({holder:manager,kind:x.kind,stage,source,input,parties:this.partiesOf(via,x),detail:x.detail,
+      facts:{...x.facts,via},evidence:x.evidence,flags:{wave}}));
+    if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,stage,problems:ids,ts:Date.now()});
+    else this.save(`link_reported:${manager}`,{fingerprint:input,stage,problems:ids,ts:Date.now()});
+    db.exec("UPDATE agents SET status='waiting' WHERE id=?",source);
+    this.event(source,'problems_reported',`${ids.length} problem(s) that renaming cannot fix go to the manager, which decides who changes what: `+
+      clip(list.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; '),1000),manager);
+    this.wake(manager);
+  }
+  // A problem in a file a builder renamed goes back with those renames, so a
+  // name that only a builder rename put in the failing copy is not taken for
+  // the worker's own. They are every builder's renames since the worker's
+  // publication, and the names renamed in the module a mismatch reads from
+  // (its own import paths say nothing about its names). They ride in the
+  // problem's own detail, so they never crowd problems out: the problem
+  // keeps its whole text, each note is told once per file and once per
+  // module read, and a note gets only the room the problem leaves.
+  async annotateRenames(builderId, files, items, sources=null) {
+    const workerText=async p=>{
+      const origin=this.buildSourceOrigin(builderId,p);
+      let text=null;
+      try {text=origin?await this.indexedContent(origin.owner,origin.path):null;} catch {}
+      if(text!==null&&await sha256(text)===origin.digest)return text;
+      if(sources)return sources.find(s=>s.destination===p)?.content??null;
+      // The compiler has no sources: the copy the builder linked from.
+      const row=query(this.db(),'SELECT child,source_path FROM builder_sources WHERE builder=? AND destination=?',builderId,p)[0];
+      try {return row?await this.indexedContent(row.child,row.source_path):null;} catch {return null;}
+    };
+    const renames=new Map();
+    for(const p of new Set(items.flatMap(x=>[x.path,x.target]).filter(p=>files.has(p)))) {
+      const text=await workerText(p);
+      renames.set(p,text!==null&&text!==files.get(p)?linkRenames(text,files.get(p)):[]);
+    }
+    const told=new Set();
+    return items.map(x=>{
+      const own=renames.get(x.path)||[],names=x.target&&x.target!==x.path?(renames.get(x.target)||[]).filter(r=>!r.startsWith("'")&&!r.startsWith('binding ')):[],notes=[];
+      if(own.length&&!told.has(x.path))notes.push([x.path,`Builder renames in the linked copy that failed (your source does not have them): ${own.join(', ')}.`]);
+      if(names.length&&!told.has(x.path+'|'+x.target))notes.push([x.path+'|'+x.target,`Builder renames in ${x.target} (its worker's source does not have them): ${names.join(', ')}.`]);
+      const detail=clip(x.detail,946).trimEnd(),room=946-detail.length-2;
+      if(!notes.length||room<80)return x;
+      for(const [k] of notes)told.add(k);
+      return {...x,detail:detail+(/[.!?]$/.test(detail)?' ':'. ')+clip(notes.map(n=>n[1]).join(' '),Math.min(500,room))};
+    });
+  }
+  // What a link leaves that renaming cannot fix inside this branch, with the
+  // facts the manager decides on, read from the whole linked bundle. An
+  // import that resolves nowhere is a problem only at the top; below, it is
+  // the branch boundary's need, for the builder above.
+  inBranchProblems(link, top) {
+    const files=link.files,surfaces=link.surfaces,reads=importReads(files,surfaces),items=[];
+    const exportsText=p=>`${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
+    if(top)for(const u of link.unresolved) {
+      const ref=importRefs(u.path,files.get(u.path)).find(r=>r.specifier===u.specifier);
+      const names=[...new Set([...(ref?.names||[]),...(ref?.members||[])])].filter(Boolean);
+      const providers=[...surfaces.keys()].filter(p=>p!==u.path&&names.some(n=>providedNames(surfaces.get(p)).has(n))).slice(0,4);
+      const offered=providers.length?providers:branchBoundary(files).exports.filter(p=>p!==u.path).slice(0,6);
+      items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`,
+        facts:{specifier:u.specifier,names,provider_text:clip(offered.map(exportsText).join(' | '),700)}});
+    }
+    for(const m of link.mismatches) {
+      const same=reads.filter(r=>r.target===m.target),others=new Map(),sur=surfaces.get(m.target),d=sur?.default;
+      for(const r of same)if(r.path!==m.path)others.set(r.path,[...(others.get(r.path)||[]),r]);
+      items.push({kind:m.name?'mismatch':'binding',path:m.path,target:m.target,detail:`The module ${m.detail}.`,facts:{
+        names:[...new Set(link.mismatches.filter(x=>x.path===m.path&&x.target===m.target).map(x=>x.name).filter(Boolean))],
+        anchored:[...others.values()].some(list=>list.every(r=>r.ok)),
+        convention:new Set(same.filter(r=>!r.ok&&r.name===m.name).map(r=>r.path)).size,
+        provider_empty:!sur?.named?.length&&(!d||d.type==='object'&&!d.members?.length),
+        provider_kind:d?.type||'',provider_text:clip(exportsText(m.target),700)}});
+    }
+    return items;
+  }
+  // A model note rides with the static problems that name its file; with
+  // none, it is only an event and reaches no worker.
+  withEvidence(builderId, items, notes) {
+    for(const note of notes) {
+      const hit=items.filter(x=>x.path===note.path||x.target===note.path);
+      if(hit.length)for(const x of hit)x.evidence=[...(x.evidence||[]),clip(note.detail,300)];
+      else this.event(builderId,'link_note',clip(`${note.path}: ${note.detail}`,700));
+    }
+    return items;
+  }
+  // The error the manager asked this builder to relink with, in its own paths.
+  relinkDiagnostic(builderId, rows) {
+    const lead=rows.some(p=>p.stage==='build')?'The container failed after your renames: ':'Running the application failed after your renames: ';
+    return lead+rows.map(p=>{
+      const via=p.facts.via||builderId,paths=[...new Set(p.parties.map(x=>this.pathIn(via,x.path,builderId)).filter(Boolean))];
+      return `${paths.join(' and ')||'(application)'}: ${p.detail}`;
+    }).join('; ');
+  }
+  // A relink the manager asked for that changed nothing: its problems go
+  // back to the manager, marked so it does not ask the builder again.
+  returnToManager(builderId, m, rows) {
+    for(const row of rows)this.moveProblem(row,{status:'open',assignee:'',flags:{...row.flags,builder_tried:true},trail:[...row.trail,{at:builderId,action:'returned',to:m,ts:Date.now()}]});
+    this.event(builderId,'problem_returned',`The relink changed nothing; ${rows.length} problem(s) go back to the manager.`,m);
+  }
+  // One builder turn at every level: link this manager's direct children
+  // (relinking up to MAX_RELINKS times while problems inside the branch
+  // remain), publish the bundle and, below the top, its boundary, then
+  // either finish (linked) or report what is left to the manager (reported).
+  // It never decides who changes code.
   async builderTurn(id) {
-    const n=this.node(id), manager=n.parent, isRoot=manager==='root';
+    const n=this.node(id), manager=n.parent, top=!this.node(manager)?.parent;
     this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
     const inbox=this.receive(id);
     if(inbox.length)this.acknowledge(id,inbox);
@@ -1399,164 +1429,336 @@ export class ControlRoom extends DurableObject {
       return;
     }
     const fingerprint=this.assemblyFingerprint(manager);
-    if(this.builderCurrent(manager,fingerprint)) {
+    // One state per source: the relink budget and the edits accepted so far
+    // survive the round trip through the compiler and the manager.
+    let state=this.read(`link_state:${manager}`,null);
+    const fresh=state?.fingerprint!==fingerprint;
+    if(fresh)state={fingerprint,relinks:0,diagnostic:'',done:[]};
+    const assigned=this.problems("holder=? AND status='relinking' AND assignee=?",manager,id);
+    if(this.builderCurrent(manager,fingerprint)&&!assigned.length) {
       this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
       this.wake(manager);
       return;
     }
-    if(isRoot && this.read('link_routed',null)?.fingerprint===fingerprint) {
+    if(this.read(`link_reported:${manager}`,null)?.fingerprint===fingerprint&&!assigned.length) {
       this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-      this.event(id,'builder_waiting','Problems in this exact source were already sent back to their workers and the source has not changed since. Continue relinks it.');
+      this.event(id,'builder_waiting','Problems in this exact source are with the manager, which decides who changes what, and the source has not changed since. Continue relinks it.');
       return;
     }
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const sources=await this.collectLinkSources(id);
-    if(!isRoot) {
-      // A branch builder renames what crosses between this manager's children
-      // and hands the linked bundle up. Imports that point outside the branch
-      // are left for the builder above; only Root runs the application.
-      const link=await this.linkSnapshot(id,sources,'',{isRoot:false});
-      await this.publishLinked(id,link,sources,{isRoot:false});
+    // A relink the manager asked for edits this source's published linked copy.
+    let last=assigned.length&&!fresh?{files:await this.publishedLinked(id,sources)}:null;
+    if(assigned.length) {
+      state.diagnostic=clip(this.relinkDiagnostic(id,assigned),2400);
+      this.event(id,'link_retry',`The manager asks for a relink with the error: ${clip(state.diagnostic,800)}`);
+    }
+    const before=this.read(`bundle:${manager}`,null)?.digest;
+    for(;;) {
+      this.event(id,'working',`Linking ${sources.length} file(s)${state.diagnostic?`; relink ${state.relinks+1} with the previous error`:''}.`);
+      const link=await this.linkSnapshot(id,sources,state.diagnostic,{top,current:last?.files,done:state.done});
+      last=link;
+      state.done=[...state.done,...link.applied.map(e=>({file:e.file,find:e.find,replace:e.replace,...(e.alias?{alias:e.alias}:{})}))].slice(-200);
+      await this.publishLinked(id,link,sources,{top});
+      const inside=this.inBranchProblems(link,top);
+      const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
+      if(inside.length&&state.relinks<MAX_RELINKS) {
+        state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+inside.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
+        this.save(`link_state:${manager}`,state);
+        this.event(id,'link_retry',clip(state.diagnostic,900));
+        continue;
+      }
+      const digest=await snapshotHash(new Map([...link.files].filter(([p])=>!isAssemblyMetadata(p))));
+      this.save(`bundle:${manager}`,{fingerprint,digest});
+      if(assigned.length) {
+        // A relink the manager asked for spends the same budget.
+        state.relinks++;
+        if(digest===before)this.returnToManager(id,manager,assigned);
+        else this.closeProblems(assigned,'relinked',{fingerprint});
+      }
+      this.save(`link_state:${manager}`,state);
+      if(inside.length)return this.reportProblems(id,manager,fingerprint,'link',await this.annotateRenames(id,link.files,this.withEvidence(id,inside,link.issues),sources));
+      for(const note of link.issues)this.event(id,'link_note',clip(`${note.path}: ${note.detail}`,700));
+      this.closeProblemsFrom(id,'resolved');
       this.set(`linked:${manager}`,fingerprint);
-      const outside=new Set(link.unresolved.map(u=>u.specifier)).size;
-      const summary=`Linked ${sources.length} file(s) for ${this.node(manager)?.label||manager} with ${linkEdits(link.applied)}`+(outside?`; ${outside} import(s) point outside this branch and are left for the builder above.`:'.');
+      const outside=new Set(link.unresolved.map(u=>u.specifier)).size,renamed=sources.filter(s=>link.files.get(s.destination)!==s.content).length;
+      const summary=`Linked ${sources.length} file(s) for ${this.node(manager)?.label||manager}, ${renamed} of them renamed, with ${linkEdits(link.applied)}`+(outside?`; ${outside} import(s) point outside this branch and are left for the builder above.`:'.');
       this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
       this.event(id,'link_done',summary);
       this.wake(manager);
       return;
     }
-    this.save('run_passed:root',null);this.save('build_passed:root',null);
-    let state=this.read('link_state',null);
-    if(state?.fingerprint!==fingerprint)state={fingerprint,relinks:0,diagnostic:''};
-    const owned=this.entryChildModules(id,sources.map(s=>s.destination));
-    const goal=this.get('goal')||this.node('root')?.task||'';
-    // A problem in a file a builder renamed goes back with those renames, so a
-    // name that only a builder rename put in the failing copy is not taken for
-    // the worker's own. They are every builder's renames since the worker's
-    // publication, and the names renamed in the module a mismatch reads from
-    // (its own import paths say nothing about its names). They ride in the
-    // problem's own detail, so they never crowd problems out: the problem
-    // keeps its whole text, each note is told once per file and once per
-    // module read, and a note gets only the room the problem leaves.
-    const workerText=async p=>{
-      const origin=this.buildSourceOrigin(id,p);
-      let text=null;
-      try {text=origin?await this.indexedContent(origin.owner,origin.path):null;} catch {}
-      return text!==null&&await sha256(text)===origin.digest?text:sources.find(s=>s.destination===p)?.content??null;
-    };
-    const routed=async(link,issues)=>{
-      const renames=new Map();
-      for(const p of new Set(issues.flatMap(x=>[x.path,x.target]).filter(p=>link.files.has(p)))) {
-        const text=await workerText(p);
-        renames.set(p,text!==null&&text!==link.files.get(p)?linkRenames(text,link.files.get(p)):[]);
+  }
+
+  // ---------- the compiler ----------
+  // One compiler per run, a child of the top manager, scheduled once the top
+  // builder linked the current source; it runs again for every new bundle.
+  async scheduleCompiler(top) {
+    const n=this.node(top);
+    if(!this.live()||!n||n.parent)return null;
+    const builder=this.builderOf(top),input=this.read(`bundle:${top}`,null)?.digest;
+    if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input)return null;
+    let compiler=this.compilerOf(top);
+    if(!compiler) {
+      [compiler]=await this.spawn(top,[{label:'Compiler',task:COMPILER_TASK}],`compiler:${top}`);
+      if(!compiler){this.event(top,'integration_capacity','No compiler slot available.');return null;}
+      this.set('compile_requested',input);
+      this.event(top,'compile_requested','The top builder linked the application; the compiler runs it.',compiler.id);
+      return compiler;
+    }
+    if(this.read('compile_passed',null)?.input!==input&&this.get('compile_requested')!==input) {
+      this.set('compile_requested',input);
+      this.event(top,'compile_requested','The top builder linked a new bundle; the compiler runs it again.',compiler.id);
+      this.wake(compiler.id);
+    }
+    return compiler;
+  }
+  // The compiler passed on the bundle the top builder linked from the current source.
+  compilePassed(top) {
+    const passed=this.read('compile_passed',null);
+    return !!passed&&passed.input===this.read(`bundle:${top}`,null)?.digest&&this.builderCurrent(top);
+  }
+  // The top builder's linked components (its current sources only).
+  async linkedBundle(builderId) {
+    const files=new Map();
+    for(const r of query(this.db(),'SELECT destination FROM builder_sources WHERE builder=? ORDER BY destination',builderId))
+      files.set(r.destination,await this.indexedContent(builderId,r.destination));
+    return files;
+  }
+  // Infrastructure is nobody's code: the compiler waits for Continue.
+  blockCompiler(id, input, reason) {
+    this.set('compile_infrastructure',clip(reason,950));
+    this.save('compile_blocked',{node:id,input});
+    this.event(id,'build_infrastructure',clip(reason,950));
+    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+  }
+  retryBlockedCompile() {
+    const blocked=this.read('compile_blocked',null);
+    if(!blocked)return false;
+    this.save('compile_blocked',null);
+    this.set('compile_infrastructure','');
+    if(this.node(blocked.node))this.wake(blocked.node);
+    return true;
+  }
+  // Choose the entry, write the runtime loader and package, load and start
+  // the bundle in the Container, check that start() returns something to
+  // call, and have the runner test it. Never relinks or edits a module:
+  // every failure goes to the top manager as a problem.
+  async compilerTurn(id) {
+    const top=this.node(id).parent,builder=this.builderOf(top);
+    this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
+    const inbox=this.receive(id);
+    if(inbox.length)this.acknowledge(id,inbox);
+    const wait=(kind,body)=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.event(id,kind,body);};
+    const input=this.read(`bundle:${top}`,null)?.digest;
+    if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input)return wait('compile_waiting','Waiting for the top builder to link the current source.');
+    if(this.read('compile_passed',null)?.input===input) {
+      this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
+      this.wake(top);
+      return;
+    }
+    if(this.read('compile_blocked',null)?.input===input)return wait('build_blocked','Container infrastructure blocked this unchanged bundle; Continue retries it.');
+    if(this.read('compile_reported',null)?.input===input)return wait('compile_waiting','Problems in this bundle are with the top manager; the compiler runs again when the bundle changes, or on Continue.');
+    this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
+    const files=await this.linkedBundle(builder.id);
+    const surfaces=new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
+    const exportsText=p=>`${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
+    const offered=()=>clip(branchBoundary(files).exports.map(exportsText).join(' | '),700);
+    const report=async(stage,items)=>this.reportProblems(id,top,input,stage,await this.annotateRenames(builder.id,files,items),builder.id);
+    // The entry: the module that exports start(). With none, the module most
+    // likely to compose the application hears the requirement.
+    const entry=chooseEntry(files,surfaces);
+    this.save('compile_state',{input,entry});
+    if(!entry)return report('build',[{kind:'entry',path:entryCandidate(files)||'',detail:`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`,facts:{provider_text:offered()}}]);
+    this.event(id,'compile_entry',`Application entry: ${entry}.`);
+    const loader=entryLoader(entry);
+    await this.putFile(id,'glue/index.js',loader,{runtimeGlue:true});
+    await this.putFile(id,'package.json',RUNTIME_PACKAGE,{runtimeGlue:true});
+    const app=new Map([...files,['glue/index.js',loader],['package.json',RUNTIME_PACKAGE]]);
+    // A failure with no component path is the entry module's; the import an
+    // interface error names is its other party.
+    const failed=(kind,issues)=>issues.map(x=>{
+      const path=files.has(x.path)?x.path:entry,target=errorTarget(files,path,x.detail);
+      return {kind,path,target,detail:path===x.path?x.detail:`${x.path?x.path+': ':''}${x.detail}`,facts:target?{provider_text:clip(exportsText(target),700)}:{}};
+    });
+    const check=await this.containerRun(id,`compile:${input}`,app);
+    if(check.infrastructure)return this.blockCompiler(id,input,check.infrastructure);
+    if(!check.report.passed) {
+      const detail=check.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||check.report.log.slice(-900);
+      this.event(id,'build_failed',`The linked bundle failed to load or start: ${clip(detail,1000)}`);
+      return report('build',failed('load',check.report.issues.length?check.report.issues:[{path:'',detail}]));
+    }
+    const api=check.report.api_surface||'';
+    this.event(id,'build_checked',`Linked source parsed, loaded and started in the container. start() returned: ${clip(api||'(no description)',900)}`);
+    let described=null;
+    try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
+    // With nothing to call (run3b: {"type":"object","members":{}}) the runner
+    // cannot write a valid test, and no worker would hear why.
+    if(!apiCallable(described))return report('run',[{kind:'entry',path:entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`,facts:{provider_text:offered()}}]);
+    const outcome=await this.runApplication(id,input,app,api,this.topTask(),{linked:files,entry});
+    if(outcome.infrastructure)return this.blockCompiler(id,input,outcome.infrastructure);
+    if(outcome.runnerFailed) {
+      // A runner that cannot write a valid test is not a worker's problem.
+      this.save('compile_reported',{input,stage:'runner',problems:[],ts:Date.now()});
+      return wait('runner_failed',`The runner could not produce a valid test in three attempts; no worker was blamed. Continue retries. Last problem: ${clip(outcome.detail,700)}`);
+    }
+    if(outcome.passed) {
+      this.save('compile_passed',{input,digest:outcome.digest,ts:Date.now(),checks:outcome.report.checks});
+      this.save('compile_reported',null);this.save('compile_blocked',null);this.set('compile_infrastructure','');
+      this.closeProblemsFrom(id,'resolved');
+      await this.putFile(id,COMPILE_MANIFEST,JSON.stringify({format:'recursive-compile-v1',
+        note:'What the compiler ran and passed: the top builder\'s linked components (bundle_sha256), this loader and package, and the runner\'s test.',
+        builder:builder.id,bundle_sha256:input,entry,snapshot_sha256:outcome.digest},null,2)+'\n',{materialized:true});
+      const summary=`Ran ${files.size} linked file(s) from ${entry}; the runner's test passed in the container.`;
+      this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
+      this.event(id,'run_passed',`Runner test passed against snapshot ${outcome.digest.slice(0,14)}.`);
+      this.wake(top);
+      return;
+    }
+    return report('run',failed('run',outcome.issues));
+  }
+
+  // ---------- managers solve problems (slice 1: deterministic rules) ----------
+  // Every open problem this manager holds is placed among its own direct
+  // children and decided: delegated or relayed to a sub-manager, assigned to
+  // a worker (one ticket per worker per turn) or to its builder for a relink,
+  // escalated to its parent, or closed. One synchronous block, so a restart
+  // cannot split a decision from its ticket.
+  async solveProblems(m) {
+    const n=this.node(m);
+    if(!this.live()||!n||['failed','retired'].includes(n.status))return;
+    if(!n.parent&&this.get('repair_exhausted')) {
+      this.failAgent(m,`Repair rounds exhausted: ${this.get('repair_exhausted')}; refusing an unbounded repair loop.`);
+      this.event(m,'repair_exhausted',`No more repair rounds: ${this.get('repair_exhausted')}.`);
+      return;
+    }
+    this.reopenStalled(m);
+    const rows=this.problemsHeld(m);
+    if(!rows.length)return;
+    const children=new Map(this.children(m).map(c=>[c.id,c]));
+    const kindOf=id=>{const c=children.get(id);return !c?null:c.label==='Temporary builder'?'builder':c.label==='Compiler'?'compiler':this.manager(c.id)?'manager':'worker';};
+    const builder=this.builderOf(m),fingerprint=this.assemblyFingerprint(m),state=this.read(`link_state:${m}`,null);
+    const relinked=new Set(this.problems("holder=? AND status='closed' AND outcome='relinked'",m).filter(p=>p.flags.fingerprint===fingerprint).map(p=>p.signature));
+    const depth=Math.max(1,...this.allNodes().map(x=>x.id.split('.').length-1));
+    const ctx={holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,builder:builder?.id||null,maxHops:MAX_HOPS(depth),
+      canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature)};
+    const decided=[];
+    let exhausted='';
+    for(const p of rows) {
+      let dec=deterministicDecision(p,ctx);
+      const refused=validateDecision(dec,p,ctx);
+      if(refused) {
+        this.event(m,'problem_decision_rejected',clip(`${dec.rule} ${dec.action} ${dec.child||''}: ${refused}`,600));
+        dec=n.parent?{rule:'fallback',action:'escalate'}:{rule:'fallback',action:'exhausted',reason:refused};
       }
-      const told=new Set();
-      return issues.map(x=>{
-        const own=renames.get(x.path)||[],names=x.target&&x.target!==x.path?(renames.get(x.target)||[]).filter(r=>!r.startsWith("'")&&!r.startsWith('binding ')):[],notes=[];
-        if(own.length&&!told.has(x.path))notes.push([x.path,`Builder renames in the linked copy that failed (your source does not have them): ${own.join(', ')}.`]);
-        if(names.length&&!told.has(x.path+'|'+x.target))notes.push([x.path+'|'+x.target,`Builder renames in ${x.target} (its worker's source does not have them): ${names.join(', ')}.`]);
-        const detail=clip(x.detail,946).trimEnd(),room=946-detail.length-2;
-        if(!notes.length||room<80)return {path:x.path,detail:x.detail};
-        for(const [k] of notes)told.add(k);
-        return {path:x.path,detail:detail+(/[.!?]$/.test(detail)?' ':'. ')+clip(notes.map(n=>n[1]).join(' '),Math.min(500,room))};
-      });
-    };
-    let last=null,done=[],failed=null;
-    for(;;) {
-      this.event(id,'working',`Linking ${sources.length} file(s)${state.relinks?`; relink ${state.relinks} with the previous error`:''}.`);
-      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current:last?.files,done,entries:state.entries||[],owned});
-      // An entry the model named on an earlier attempt still counts when a
-      // later attempt names none.
-      if(link.proposals.some(p=>!state.entries?.includes(p))){state.entries=[...new Set([...link.proposals,...(state.entries||[])])];this.save('link_state',state);}
-      // A relink after a container failure that changed nothing would fail it the same way.
-      const same=failed&&link.entry===last.entry&&[...link.files].every(([p,c])=>last.files.get(p)===c);
-      last=link;done=[...done,...link.applied];
-      await this.publishLinked(id,link,sources,{isRoot:true});
-      const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
-      const local=[...link.unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
-        ...link.mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`,target:m.target}))];
-      // The runtime loader starts the entry's start(), and the runner tests only
-      // what start() returns: an entry known to lack one goes to the worker,
-      // first, before any container run (run3b's app.js ran a CLI at load and
-      // exported nothing).
-      if(!link.entry)local.unshift({path:this.entryModule(id,link.files)||'',detail:`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`,entry:true});
-      else if(!mayExportStart(exportSurface(link.entry,link.files.get(link.entry))))
-        local.unshift({path:this.entryModule(id,link.files,link.entry),detail:`The application entry ${link.entry} does not export start(), so the application cannot be started. ${ENTRY_CONTRACT}`,entry:true});
-      if(local.length) {
-        // Renaming cannot give a module start(), and the entry lacks it only
-        // when no module has it: an entry problem alone goes to its worker,
-        // and a relink's linker hears only the others.
-        const renamable=local.filter(x=>!x.entry);
-        if(state.relinks<2&&renamable.length) {
-          state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+renamable.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
-          this.save('link_state',state);
-          this.event(id,'link_retry',clip(state.diagnostic,900));
-          continue;
+      // The first assignment to a worker or the builder for a report wave is a repair round.
+      if(dec.action==='assign'&&['worker','builder'].includes(kindOf(dec.child))) {
+        if(exhausted)continue;
+        exhausted=this.countRound(m,p.flags.wave);
+        if(exhausted)continue;
+      }
+      decided.push([p,dec]);
+    }
+    const now=Date.now(),trail=(p,action,to,rule)=>[...p.trail,{at:m,action,to,rule,ts:now}];
+    const tickets=new Map(),relink=[];
+    for(const [p,dec] of decided) {
+      const kind=dec.child?kindOf(dec.child):null;
+      if(dec.action==='exhausted') {
+        if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:trail(p,'close','',dec.rule)}))
+          this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${dec.reason||'no direct child holds it'}): ${p.detail}`,600));
+      } else if(dec.action==='escalate') {
+        if(this.moveProblem(p,{holder:n.parent,flags:{...p.flags,escalated_from:m},trail:trail(p,'escalate',n.parent,dec.rule)})) {
+          this.event(m,dec.unroutable?'problem_unroutable':'problem_escalated',clip(`${p.kind} problem (${dec.rule}) goes to the parent: ${p.detail}`,600),n.parent);
+          this.wake(n.parent);
         }
-        return this.sendBackToWorkers(id,fingerprint,await routed(link,[...local,...link.issues]),'link');
-      }
-      if(same) {
-        if(state.relinks<2) {
-          state.relinks++;state.diagnostic=clip(`${failed.error} Your last relink changed nothing.${rejectedNote}`,2400);
-          this.save('link_state',state);
-          this.event(id,'link_retry','The relink changed nothing, so the container is not run again; relinking with the same error.');
-          continue;
+      } else if(dec.action==='fail') {
+        if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:trail(p,'fail',dec.child,dec.rule)}))
+          this.failAgent(dec.child,`Repair rounds exhausted: ${p.detail}`);
+      } else if(kind==='builder') {
+        if(this.moveProblem(p,{status:'relinking',assignee:dec.child,flags:{...p.flags,fingerprint},trail:trail(p,'relink',dec.child,dec.rule)}))relink.push(p);
+      } else if(kind==='manager') {
+        // relay: the decision travels as a side, never a node below the child.
+        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:instructionsFor(p,dec.side),facts_text:p.facts.provider_text||''};
+        if(this.moveProblem(p,{holder:dec.child,directive,trail:trail(p,dec.delegate?'delegate':dec.relay?'relay':'assign',dec.child,dec.rule)})) {
+          this.event(m,directive?'problem_relayed':'problem_delegated',clip(`${p.kind} problem (${dec.rule}) to ${children.get(dec.child).label}${directive?`, ${directive.side} changes: ${directive.instructions}`:', whose branch holds every party'}`,700),dec.child);
+          this.wake(dec.child);
         }
-        return this.sendBackToWorkers(id,fingerprint,await routed(link,[...failed.issues,...link.issues]),failed.stage);
+      } else {
+        const list=tickets.get(dec.child)||[];
+        list.push([p,dec]);tickets.set(dec.child,list);
       }
-      const files=new Map([...link.files,['glue/index.js',entryLoader(link.entry)],['package.json',RUNTIME_PACKAGE]]);
-      const check=await this.containerRun(id,`link:${fingerprint}:${state.relinks}`,files);
-      if(check.infrastructure)return this.blockBuilder(id,fingerprint,check.infrastructure);
-      const checkDetail=check.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||check.report.log.slice(-900);
-      if(!check.report.passed) {
-        this.event(id,'build_failed',`Linked source failed to load or start: ${clip(checkDetail,1000)}`);
-        if(state.relinks<2 && isInterfaceError(checkDetail)) {
-          failed={stage:'build',issues:check.report.issues,error:`The container failed after your renames: ${checkDetail}`};
-          state.relinks++;state.diagnostic=clip(failed.error+rejectedNote,2400);
-          this.save('link_state',state);
-          this.event(id,'link_retry','Load error looks like a name or path mismatch; relinking with the error.');
-          continue;
-        }
-        return this.sendBackToWorkers(id,fingerprint,await routed(link,[...check.report.issues,...link.issues]),'build');
+    }
+    if(relink.length) {
+      this.set(`linked:${m}`,'');
+      this.event(m,'problem_assigned',clip(`${relink.length} interface error(s) between this manager's children go to its builder for a relink: ${relink.map(p=>p.detail).join('; ')}`,800),builder.id);
+      this.wake(builder.id);
+    }
+    for(const [worker,list] of tickets) {
+      const revs=this.revisionKey(worker),moved=[];
+      for(const [p,dec] of list) {
+        const directive={by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:instructionsFor(p,dec.side),facts_text:p.directive?.facts_text??p.facts.provider_text??''};
+        if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,flags:{...p.flags,revs},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
       }
-      const api=check.report.api_surface||'';
-      this.event(id,'build_checked',`Linked source parsed, loaded and started in the container. start() returned: ${clip(api||'(no description)',900)}`);
-      let described=null;
-      try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
-      // With nothing to call (run3b: {"type":"object","members":{}}) the runner
-      // cannot write a valid test, and no worker would hear why.
-      if(!apiCallable(described)) {
-        return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`},...link.issues]),'run');
-      }
-      const outcome=await this.runApplication(id,fingerprint,files,api,goal,link);
-      if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);
-      if(outcome.runnerFailed) {
-        // A runner that cannot write a valid test is not a worker's problem.
-        this.save('link_routed',{fingerprint,stage:'runner',ts:Date.now()});
-        this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-        this.event(id,'runner_failed',`The runner could not produce a valid test in three attempts; no worker was blamed. Continue retries. Last problem: ${clip(outcome.detail,700)}`);
-        return;
-      }
-      if(outcome.passed) {
-        const record={fingerprint,digest:outcome.digest,ts:Date.now(),checks:outcome.report.checks};
-        this.save('run_passed:root',record);this.save('build_passed:root',record);
-        this.save('build_failure:root',null);this.save('link_routed',null);this.save('link_state',null);
-        this.save('build_blocked:root',null);this.set('build_infrastructure:root','');
-        const renamed=sources.filter(s=>link.files.get(s.destination)!==s.content).length;
-        const summary=`Linked ${sources.length} file(s), ${renamed} of them renamed; the runner's test passed in the container.`;
-        this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
-        this.event(id,'run_passed',`Runner test passed against snapshot ${outcome.digest.slice(0,14)}.`+(link.issues.length?` Builder notes not needed for this goal: ${clip(link.issues.map(x=>x.detail).join('; '),500)}`:''));
-        this.wake(manager);
-        return;
-      }
-      if(state.relinks<2 && isInterfaceError(outcome.detail) && outcome.issues.some(x=>String(x.path).startsWith('components/'))) {
-        failed={stage:'run',issues:outcome.issues,error:`Running the application failed after your renames: ${outcome.detail}`};
-        state.relinks++;state.diagnostic=clip(failed.error+rejectedNote,2400);
-        this.save('link_state',state);
-        this.event(id,'link_retry','Run error looks like a name mismatch between modules; relinking with the error.');
-        continue;
-      }
-      return this.sendBackToWorkers(id,fingerprint,await routed(link,[...outcome.issues,...link.issues]),'run');
+      if(!moved.length)continue;
+      const ticket=crypto.randomUUID(),role=moved.some(p=>p.directive.side==='provider')?'provider':'reader';
+      const instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
+      const facts=clip([...new Set(moved.map(p=>p.directive.facts_text).filter(Boolean))].join(' | '),1400);
+      this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,m,worker,JSON.stringify(moved.map(p=>p.id)),role,instructions,facts,now);
+      this.send(m,worker,'[build:repair] '+ticket);
+      this.event(m,'problem_assigned',clip(`${moved.length} problem(s) to ${children.get(worker).label} (${[...new Set(list.map(([,d])=>d.rule))].join(', ')}): ${instructions}`,800),worker);
+    }
+    if(exhausted)this.exhaustRounds(m,exhausted);
+  }
+  // One repair round per report wave a manager first assigns to a worker or
+  // to its builder. Returns why no round is left, or ''.
+  countRound(m, wave) {
+    const waves=this.read(`repair_waves:${m}`,[]);
+    if(waves.includes(wave))return '';
+    const rounds=Number(this.get(`repair_rounds:${m}`,'0')),total=Number(this.get('repair_rounds_total','0'));
+    const cap=MAX_REPAIR_ROUNDS_TOTAL(this.allNodes().filter(x=>this.manager(x.id)).length);
+    if(total>=cap)return `the run used all ${cap} of its repair rounds`;
+    if(rounds>=MANAGER_MAX_ROUNDS)return `${this.node(m).label} used all ${MANAGER_MAX_ROUNDS} of its repair rounds`;
+    this.set(`repair_rounds:${m}`,rounds+1);
+    this.set('repair_rounds_total',total+1);
+    this.save(`repair_waves:${m}`,[...waves,wave].slice(-64));
+    return '';
+  }
+  // Out of rounds: the whole run's, so no manager assigns again and the top
+  // fails; or this manager's, so the top fails, or a lower manager tells its
+  // parent once that it cannot finish its branch (the parent fails it).
+  exhaustRounds(m, reason) {
+    const n=this.node(m),total=/^the run /.test(reason);
+    if(total) {
+      this.set('repair_exhausted',reason);
+      for(const p of this.problemsHeld(m))this.moveProblem(p,{status:'closed',outcome:'exhausted'});
+      const top=this.allNodes().find(x=>!x.parent);
+      if(top&&top.id!==m)this.wake(top.id);
+    }
+    if(!n.parent) {
+      this.failAgent(m,`Repair rounds exhausted: ${reason}; refusing an unbounded repair loop.`);
+      this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
+      return;
+    }
+    if(total||this.get(`rounds_exhausted:${m}`))return;
+    this.set(`rounds_exhausted:${m}`,'1');
+    this.insertProblem({holder:n.parent,kind:'stuck',stage:'work',source:m,input:'rounds',
+      parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:`${n.label} cannot finish its branch: ${reason}.`,flags:{rounds_exhausted:true,escalated_from:m,wave:crypto.randomUUID()}});
+    this.event(m,'problem_escalated',`${reason}; ${n.label} cannot finish its branch.`,n.parent);
+    this.wake(n.parent);
+  }
+  // A worker's production files as of a ticket: unchanged after it finished
+  // means the repair changed nothing.
+  revisionKey(id) {return JSON.stringify(this.files(id).filter(f=>!f.path.startsWith('memory/')).map(f=>[f.path,f.revision]));}
+  // An assigned problem whose worker finished without changing a file would
+  // stall its branch (the source and its fingerprint are the same): it is
+  // open again, and its manager decides it again.
+  reopenStalled(m) {
+    for(const p of this.problems("holder=? AND status='assigned'",m)) {
+      const w=this.node(p.assignee);
+      if(!w||w.status!=='done'||!p.flags.revs||p.flags.revs!==this.revisionKey(w.id))continue;
+      if(query(this.db(),"SELECT id FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",w.id).length)continue;
+      if(this.moveProblem(p,{status:'open',assignee:'',flags:{...p.flags,no_change:(p.flags.no_change||0)+1}}))
+        this.event(m,'problem_reopened',`${w.label} finished without changing its files; the problem is open again.`,w.id);
     }
   }
   async managerRouteOwner(id, question, candidates, strict=false, keywords=true) {
@@ -1565,14 +1767,14 @@ export class ControlRoom extends DurableObject {
     const cfg=this.settings();
     return shard.selectOwner({question,candidates,strict,keywords,split_model:cfg.split_model,split_threshold:cfg.split_threshold});
   }
-  // Prune on discovery: before a non-Root manager spawns an admitted child,
-  // walk up from its parent. At each level Clef picks the direct child that
-  // owns the child's topic: this branch keeps it, another branch prunes it
-  // (what that owner lacks stays here), and no owner up to Root kills it. A
-  // Clef error is no owner at that level and never kills. Root's own split is
-  // already checked against the goal.
+  // Prune on discovery: before a manager with a parent spawns an admitted
+  // child, walk up from its parent. At each level Clef picks the direct child
+  // that owns the child's topic: this branch keeps it, another branch prunes
+  // it (what that owner lacks stays here), and no owner up to the top kills
+  // it. A Clef error is no owner at that level and never kills. The top's own
+  // split has no level above; it is already checked against the goal.
   async pruneOnDiscovery(id, children) {
-    if(id==='root'||this.env.MOCK_AI==='true'||!children.length)return {kept:children,rejected:[]};
+    if(!this.node(id)?.parent||this.env.MOCK_AI==='true'||!children.length)return {kept:children,rejected:[]};
     const levels=new Map();
     const index=level=>{if(!levels.has(level))levels.set(level,this.childIndex(level));return levels.get(level);};
     const walked=await Promise.all(children.map(async child=>{
@@ -1690,7 +1892,12 @@ export class ControlRoom extends DurableObject {
       throw new Error('Decomposition must finish before code can be written');
     if (query(this.db(),'SELECT owner FROM exposed_files WHERE owner=? AND path=?',id,path).length)
       throw new Error('Cannot overwrite a public export alias');
-    if(this.env.MOCK_AI!=='true' && !materialized && n.phase==='implement' && n.label!=='Temporary builder' &&
+    // The compiler writes only the runtime loader and package, the runner's
+    // test and its own manifest; never a module.
+    if(n.label==='Compiler' && this.env.MOCK_AI!=='true' &&
+       !(runtimeGlue?['glue/index.js','package.json'].includes(path):materialized?path===COMPILE_MANIFEST:path==='glue/smoke.js'))
+      throw new Error('The compiler writes only glue/index.js, package.json, glue/smoke.js and '+COMPILE_MANIFEST+': '+path);
+    if(this.env.MOCK_AI!=='true' && !materialized && n.phase==='implement' && !isRuntimeNode(n) &&
        !path.startsWith('memory/') && ![PUBLIC_KNOWLEDGE,PRIVATE_KNOWLEDGE].includes(path) && !isRuntimeLeafFile(path))
        throw new Error('Leaf outputs must be executable .js, .mjs, or .cjs source: '+path);
     if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
@@ -1736,12 +1943,12 @@ export class ControlRoom extends DurableObject {
     db.exec('INSERT INTO artifact_files(agent,path,revision,commit_hash,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(agent,path) DO UPDATE SET revision=excluded.revision,commit_hash=excluded.commit_hash,updated_at=excluded.updated_at', id,path,revision,commit,Date.now());
     db.exec('INSERT INTO artifact_contents(agent,path,content) VALUES (?,?,?) ON CONFLICT(agent,path) DO UPDATE SET content=excluded.content',id,path,content);
     this.event(id,existing?'revision':'write',batched?`${n.repo_name}/${path}: revision ${revision}; staged for this turn's single commit`:`${n.repo_name}/${path}: revision ${revision}; commit ${commit.slice(0,12)}`,'',`${id}/${path}`);
-    // Certificates attest the complete bundle bytes, not only leaf revisions.
-    // Even a late glue-only edit must force another actual container build.
-    if(((n.label==='Temporary builder'&&n.parent==='root')||(id==='root'&&!this.manager('root')&&!path.startsWith('memory/')))
-      &&this.env.MOCK_AI!=='true'&&this.read('build_passed:root',null)) {
-      this.save('build_passed:root',null);
-      this.event('root','build_invalidated',`Accepted build invalidated by change to ${path}; new container build required.`,id);
+    // An atomic top's accepted build attests its exact files: any later
+    // source change needs another container build. (The compiler's pass is
+    // pinned to the bundle digest it ran.)
+    if(!n.parent&&!this.manager(id)&&!path.startsWith('memory/')&&this.env.MOCK_AI!=='true'&&this.read('compile_passed',null)) {
+      this.save('compile_passed',null);
+      this.event(id,'build_invalidated',`Accepted build invalidated by change to ${path}; new container build required.`);
       this.wake(id);
     }
     const wakeParent=n.parent && ((!path.startsWith('memory/') || path===PUBLIC_KNOWLEDGE) ||
@@ -1892,7 +2099,7 @@ export class ControlRoom extends DurableObject {
   // Reconstruct public ownership facts from DIRECT children, not from a
   // child-authored "map" or a model's memory. Grandchildren are never read.
   async childIndex(id, withPreviews=false) {
-    return Promise.all(this.children(id).filter(c=>c.label!=='Temporary builder').map(async child=>{
+    return Promise.all(this.children(id).filter(c=>!isRuntimeNode(c)).map(async child=>{
       const publicFacts=await this.readKnowledge(child.id);
       const paths=this.visibleManifest(child.id).map(f=>f.path)
         .filter(path=>!path.startsWith('memory/'));
@@ -2146,7 +2353,7 @@ export class ControlRoom extends DurableObject {
       await this.targetManagerHop(manager,request_id,parent);
       this.send(manager,parent,'[route:request] '+JSON.stringify({id:request_id,key,question}));
       this.event(manager,'route_up',`No local owner of ${key}; searching parent scope.`);
-    } else if(manager==='root' && named && !this.node(named)) {
+    } else if(!this.node(manager)?.parent && named && !this.node(named)) {
       // A fully qualified owner name missing from Root's actual registry is
       // demonstrably unreachable. This is NOT a Clef-confidence decision.
       this.event(manager,'no_route',`Explicit destination ${named} does not exist in the ownership tree.`);
@@ -2235,8 +2442,9 @@ export class ControlRoom extends DurableObject {
   async managerTurn(id) {
     const n=this.node(id), inbox=await this.managerInbox(id);
     const seenWake=this.wakeGeneration(id);
-    if(id==='root') {
-      await this.routeBuildFailures();
+    // v7.14: every manager decides the problems in its inbox, one level at a time.
+    if(this.live()) {
+      await this.solveProblems(id);
       if(this.node(id)?.status==='failed')return;
     }
     const candidates=await this.childIndex(id);
@@ -2245,9 +2453,10 @@ export class ControlRoom extends DurableObject {
     // Populate parent-facing interfaces with existing child public files.
     await this.exposeManagerKnowledge(id,candidates);
     for(const message of inbox) {
-      const buildRepair=/^\[build:repair\] ([a-f0-9-]{36})$/.exec(message.body);
-      if(buildRepair) {
-        if(!await this.forwardBuildRepair(id,buildRepair[1]))this.event(id,'build_repair_unroutable','Build repair has no owned direct child.');
+      // Tickets go from a manager to its own worker; one that reaches a
+      // manager (its worker split since) has nobody to do it here.
+      if(/^\[build:repair\] [a-f0-9-]{36}$/.test(message.body)) {
+        this.event(id,'problem_unroutable','A repair ticket reached a manager; its problems stay with the manager that sent it.',message.from);
         await this.acknowledgeManager(id,[message]);
         continue;
       }
@@ -2314,12 +2523,17 @@ export class ControlRoom extends DurableObject {
     // child publishes a useful artifact. This is independent of sibling
     // completion; the builder may be revised many times before finalization.
     if(this.integrationEnabled(id))await this.scheduleAssembly(id);
+    // The top's compiler runs once its builder linked the current source.
+    if(this.live()&&!n.parent)await this.scheduleCompiler(id);
     const children=this.children(id);
-    const producers=children.filter(c=>c.label!=='Temporary builder');
+    const producers=children.filter(c=>!isRuntimeNode(c));
     const pending=query(this.db(),'SELECT manager FROM manager_routes WHERE manager=? LIMIT 1',id).length>0 ||
       (await this.managerHops(id)).length>0;
     const allDone=producers.length>0&&producers.every(c=>c.status==='done'||c.status==='retired');
-    const needsBuilder=this.integrationEnabled(id) && !await this.assemblyCurrent(id);
+    // Not done while it holds an open problem, nor (at the top) before the
+    // compiler passed on the current bundle.
+    const held=this.live()&&this.problemsHeld(id).length>0,compiled=!!n.parent||!this.live()||this.compilePassed(id);
+    const needsBuilder=(this.integrationEnabled(id) && !await this.assemblyCurrent(id))||held||!compiled;
     const finished=allDone&&!pending&&!needsBuilder;
     const staleTurn=this.wakeGeneration(id)!==seenWake;
     const shard=this.managerStub(id);
@@ -2346,17 +2560,8 @@ export class ControlRoom extends DurableObject {
     const n = this.node(id);
     if (!n || n.status !== 'ready') return;
     const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
-    const blocked=this.read('build_blocked:root',null);
-    if(n.label==='Temporary builder' && blocked?.builder===id &&
-       blocked.fingerprint===this.assemblyFingerprint(n.parent)) {
-      this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-      this.event(id,'build_blocked','Container infrastructure blocked this unchanged assembly; Continue retries the build directly.');
-      return;
-    }
-    if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
-      await this.builderTurn(id);
-      return;
-    }
+    // Builders and the compiler run runtime turns, never a model action.
+    if(isRuntimeNode(n) && this.live()) return n.label==='Compiler'?this.compilerTurn(id):this.builderTurn(id);
     // Managers are deterministic Artifacts-backed routers, never generative turns.
     // Preserve pending action replays from prior versions before entering this path.
     if (this.manager(id) && !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) {
@@ -2365,44 +2570,17 @@ export class ControlRoom extends DurableObject {
     }
     let saved = query(this.db(), 'SELECT payload,cursor FROM pending_turns WHERE agent=?',id)[0];
     let plan;
-    // v7.7 rooms may have a queued model-authored entrypoint/package action.
-    // Drop that obsolete inference action before replaying any writes; v7.8
-    // publishes both files deterministically and only Qwen wiring is valid.
-    if(saved && n.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
-      const legacy=parse(saved.payload,null);
-      if(legacy?.action?.files?.some(f=>!['glue/wiring.js','glue/smoke.js'].includes(f.path))) {
-        this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
-        this.set(`builder_diagnostic:${id}`,
-          'Older builder action requested files now owned by the runtime. ' +
-          'Runtime generated glue/index.js and package.json; Qwen may publish only glue/wiring.js and glue/smoke.js.');
-        this.event(id,'builder_action_migrated','Obsolete pre-v7.8 builder file request discarded before replay.');
-        saved=null;
-      }
-    }
-    // v7.9 could persist a zero-file builder action before the new targeted
-    // work scheduler existed. At cursor zero there are no committed effects:
-    // replan safely instead of replaying that historical no-op indefinitely.
-    if(saved && n.label==='Temporary builder' && this.env.MOCK_AI!=='true' && saved.cursor===0 &&
-       parse(saved.payload,null)?.action?.files?.length===0) {
-      this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
-      this.event(id,'builder_action_migrated','Discarded an unexecuted empty legacy action; mandatory glue files will be scheduled independently of the next model action.');
-      saved=null;
-    }
     if (saved) {
       plan = parse(saved.payload,null);
       if (!plan) throw new Error('Invalid persisted action for ' + id);
-      // A pending builder action can outlive provisional production. Source
-      // materialization is idempotent and MUST run on retry too, otherwise
-      // the final builder sees an obsolete partial source snapshot.
-      if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true')
-        {await this.materializeBuilder(id);await this.publishRuntimeLinker(id);}
       this.event(id, 'retry', `Resuming an interrupted action at operation ${saved.cursor}.`);
     } else {
+      // A repair ticket reads as its manager's decision and the problems in
+      // the worker's own paths; one whose problems all closed since says so.
       const inbox = this.receive(id).map(message=>{
         const match=/^\[build:repair\] ([a-f0-9-]{36})$/.exec(message.body);
-        return match?{...message,body:this.buildRepairMessage(match[1])}:message;
+        return match?{...message,body:this.buildRepairMessage(match[1])||'An earlier repair request was withdrawn: its problems were resolved or replaced. It needs no change.'}:message;
       });
-      if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true'){await this.materializeBuilder(id);await this.publishRuntimeLinker(id);}
       const ownFiles = await this.ownFiles(id);
       // A capacity ceiling is not proof the assigned code became atomic.
       // Preserve the code-writing assignment and stop rather than forcing a
@@ -2420,16 +2598,12 @@ export class ControlRoom extends DurableObject {
       // for the splitter. Keep it durable across retries and DO restarts.
       if(n.phase==='decompose') {
         before.split_feedback=this.read(`split_feedback:${id}`,null);
-        before.root_scope=this.get('goal') || this.node('root')?.task || n.task;
+        before.root_scope=this.topTask() || n.task;
       }
       const observedAssembly=n.label==='Temporary builder'?this.assemblyFingerprint(n.parent):null;
       if(n.label==='Temporary builder') {
-        before.assembly_inputs=this.env.MOCK_AI==='true'?await this.builderContext(n.parent):await this.builderSourceContext(id);
+        before.assembly_inputs=await this.builderContext(n.parent);
         before.assembly_manifest='assembly.manifest.json (all copied source paths and provenance)';
-        if(this.env.MOCK_AI!=='true') {
-          const baseline=await this.builderBaseline(id);
-          before.deterministic_linker={entry:'glue/index.js',wiring:'glue/wiring.js',method:'The runtime OWNS glue/index.js and package.json. Write glue/wiring.js exporting wire(components) with ONE shared storage state; at Root also write glue/smoke.js verifying the actual requested behavior through require("./index.js").start(). Wiring may not import/require; smoke may use Node assert and the deterministic entrypoint.',root_smoke_required:n.parent==='root',component_paths:baseline.included,skipped_type_only_or_compiled_files:baseline.skipped};
-        }
         before.assembly_revision=observedAssembly;
         const lastError=this.get(`builder_diagnostic:${id}`);
         if(lastError)before.builder_repair_required=lastError;
@@ -2441,7 +2615,7 @@ export class ControlRoom extends DurableObject {
           owner:x.owner,known_topics:x.known_topics.slice(0,12),recent_facts:Object.fromEntries(Object.entries(x.recent_facts).slice(-6))
         }));
       }
-      if(id==='root'&&!this.manager(id)&&this.env.MOCK_AI!=='true') {
+      if(!n.parent&&!this.manager(id)&&this.env.MOCK_AI!=='true') {
         const failure=this.read('last_build_report',null);
         if(failure&&!failure.passed)before.root_build_diagnostic={issues:failure.issues,log:failure.log.slice(-1600)};
       }
@@ -2498,67 +2672,10 @@ export class ControlRoom extends DurableObject {
       // A splitter does not delegate decisions or documents. Its children are
       // explicitly contracted to write actual code for their piece, regardless
       // of whether Qwen used a vague label while proposing the split.
-      if(this.env.MOCK_AI!=='true' && (splitting || action.spawn.length)) {
-        // Exactly one of Root's children owns the application entry: the one
-        // the splitter marked, else the one its label or task names. The
-        // runtime, not the splitter's wording, gives it the entry contract.
-        const marked=action.spawn.filter(s=>s.entry);
-        const entry=splitting&&id==='root'?(marked.length===1?marked[0]:entrySpec(marked.length?marked:action.spawn)||marked[0]):null;
-        action.spawn=action.spawn.map(spec=>spec.label==='Temporary builder'?spec:spec===entry?
-          {label:spec.label,task:`${codeWritingTask(spec.task)} ${ENTRY_CONTRACT}`,entry:true}:{label:spec.label,task:codeWritingTask(spec.task)});
-      }
-      if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
-        const denied=action.files.filter(x=>!['glue/wiring.js','glue/smoke.js'].includes(x.path));
-        if(denied.length) {
-          // The original Qwen action is rejected, but it MUST NOT suppress
-          // runtime-owned targeted generation of the required builder files.
-          const paths=[...new Set(denied.map(f=>f.path))];
-          const message=`Builder artifact rejected. Forbidden output path(s): ${paths.join(', ')}. `+
-            'Only allowed model-authored files: glue/wiring.js and glue/smoke.js. The runtime OWNS glue/index.js and package.json. ' +
-            'Do not write import paths, require calls, components/** or any entrypoint. ' +
-            'Write wiring.js as CommonJS wire(components), using the supplied namespaces and ONE shared store. At Root, smoke.js must assert actual operations using require("./index.js").start().';
-          this.set(`builder_diagnostic:${id}`,message);
-          this.event(id,'builder_restricted',message);
-          action.files=[];
-          await this.diagnoseBuilderWithBaseline(id);
-        }
-        if(action.imports.length)this.event(id,'builder_imports',`Ignored ${action.imports.length} model-requested imports; runtime has already copied every published child source.`);
-        action.imports=[];
-        // These are runtime-scheduled work items, NOT optional suggestions
-        // from Qwen's high-level JSON action. A zero-file answer cannot
-        // strand the builder or consume five identical correction turns.
-        const producers=this.children(n.parent).filter(c=>c.label!=='Temporary builder');
-        const final=producers.every(c=>['done','retired'].includes(c.status));
-        const needed=['glue/wiring.js',...(n.parent==='root'&&final?['glue/smoke.js']:[])];
-        const currentPaths=new Set(this.files(id).map(f=>f.path));
-        const missing=needed.filter(path=>!currentPaths.has(path) && !action.files.some(f=>f.path===path));
-        // A Container failure is a reason to repair the joints, not to
-        // regenerate a working smoke test or rewrite the original leaf code.
-        // The verified failure is routed to this builder through Root's normal
-        // ownership tree; never trigger a correction just because a snapshot
-        // changed or baseline diagnostics were recorded.
-        const repairedByInbox=inbox.some(message=>message.body.startsWith('REAL CONTAINER BUILD FAILED'));
-        const lastFailure=this.read('build_failure:root',null);
-        const actualGlueErrors=repairedByInbox && lastFailure?.builder===id ?
-          (lastFailure.issues||[]).filter(issue=>['glue/wiring.js','glue/smoke.js','glue/index.js'].includes(issue.path)) : [];
-        const repairPaths=actualGlueErrors.length ? actualGlueErrors.map(issue=>
-          issue.path==='glue/smoke.js'?'glue/smoke.js':'glue/wiring.js') : repairedByInbox?['glue/wiring.js']:[];
-        const lastDiagnostic=String(this.get(`builder_diagnostic:${id}`)||'');
-        const rejectedWiring=/^(?:Assembly rejected|Builder artifact rejected|Unable to produce valid linker source|Final source changed|Final source snapshot changed)/.test(lastDiagnostic);
-        const diagnosticRepair=rejectedWiring && !action.files.length ? ['glue/wiring.js'] : [];
-        const targets=[...new Set([...missing,...repairPaths,...diagnosticRepair])]
-          .filter(path=>!action.files.some(f=>f.path===path));
-        for(const path of targets) {
-          if(!action.files.some(f=>f.path===path))action.files.push({path,intent:
-            path==='glue/wiring.js'?'Connect actual component exports with ONE shared store; export wire(components).':
-              'Run actual create/list/update/delete assertions through require("./index.js").start().'});
-          this.event(id,'builder_required_file',`Runtime scheduled targeted generation of ${path}; the model action did not supply it.`);
-        }
-        // These are real builder work items, not a change in ownership. Once
-        // source producers are finished, actually validate the two authored
-        // joint files rather than treating an empty/waiting action as success.
-        if(targets.length&&final){action.done=true;action.wait=false;}
-      }
+      // v7.14: the top splits like every manager; the start() requirement is
+      // part of the goal, assigned like any other requirement.
+      if(this.env.MOCK_AI!=='true' && (splitting || action.spawn.length))
+        action.spawn=action.spawn.map(spec=>spec.label==='Temporary builder'?spec:{label:spec.label,task:codeWritingTask(spec.task)});
       // Leaves publish their own source; builders author only narrow wiring
       // and smoke tests. Runtime alone owns package/entrypoint generation.
       if(this.env.MOCK_AI!=='true' && !splitting && !this.manager(id) && n.label!=='Temporary builder') {
@@ -2605,7 +2722,7 @@ export class ControlRoom extends DurableObject {
         // child repository is created. Keep Root's goal as an immutable scope
         // anchor so an ambiguous parent cannot drift over generations.
         if(action.spawn.length) {
-          const scope = await scopeChildren(this.inferenceEnv(),this.get('goal')||this.node('root')?.task||n.task,n.task,action.spawn);
+          const scope = await scopeChildren(this.inferenceEnv(),this.topTask()||n.task,n.task,action.spawn);
           action.spawn=action.spawn.filter((child,i)=>{
             const allowed=scope[i]>=0.5;
             this.event(id,allowed?'scope_allowed':'scope_rejected',
@@ -2636,7 +2753,7 @@ export class ControlRoom extends DurableObject {
             : 'Qwen proposed no valid partition into distinct code-writing children within the available capacity.';
           this.save(`split_feedback:${id}`,{
             reason,accepted:action.spawn.map(c=>({label:c.label,task:clip(c.task,500)})),
-            rejected:rejectedChildren,root_goal:this.get('goal')||this.node('root')?.task||n.task
+            rejected:rejectedChildren,root_goal:this.topTask()||n.task
           });
           this.event(id,'split_rejected',`${reason} Clef will reconsider routing with this feedback; if it still chooses a split, Qwen must correct the partition.`);
           this.incrementFailures(id);
@@ -2690,7 +2807,7 @@ export class ControlRoom extends DurableObject {
           this.incrementFailures(id);
           return;
         }
-        const scope=await scopeChildren(this.inferenceEnv(),this.get('goal')||this.node('root')?.task||n.task,n.task,action.spawn);
+        const scope=await scopeChildren(this.inferenceEnv(),this.topTask()||n.task,n.task,action.spawn);
         action.spawn=action.spawn.filter((child,i)=>{
           const allowed=scope[i]>=0.5;
           this.event(id,allowed?'scope_allowed':'scope_rejected',
@@ -2750,11 +2867,6 @@ export class ControlRoom extends DurableObject {
         if(children.length === action.spawn.length) {
           this.db().exec("UPDATE agents SET phase='manager' WHERE id=?",id);
           this.event(id,'decompose',`Delegated all ${children.length} behaviors; now permanently a manager.`);
-          const entry=id==='root'?children[action.spawn.findIndex(s=>s.entry)]:null;
-          if(entry) {
-            this.set('entry_child',entry.id);
-            this.event(id,'entry_child',`${entry.label} owns the application entry; the runtime added the entry contract to its task.`,entry.id);
-          }
         } else if (!this.manager(id)) {
           this.db().exec("UPDATE agents SET phase='decompose',status='waiting' WHERE id=?",id);
           this.event(id,'split_capacity_blocked','Unable to allocate all code-writing children; keep the delegated code assignment awaiting additional capacity.');
@@ -2779,16 +2891,10 @@ export class ControlRoom extends DurableObject {
       }),
       ...action.files.map(f => async () => {
         if (this.manager(id)) throw new Error('Manager cannot request code generation');
-        if (this.env.MOCK_AI!=='true' && this.node(id)?.label==='Temporary builder' && !['glue/wiring.js','glue/smoke.js'].includes(f.path)) { this.event(id,'builder_restricted',`Skipped invalid persisted implementation write ${f.path}.`); return; }
         if (f.path.startsWith('memory/')) { this.event(id,'memory_skipped',`Skipped invalid persisted notebook write ${f.path}; use remember.`); return; }
         const current = this.node(id);
-        const builder=current.label==='Temporary builder' && this.env.MOCK_AI!=='true';
-        let diagnostic=builder?String(this.get(`builder_diagnostic:${id}`)||''):'';
-        // Read immutable source context once, not three times per rejected
-        // answer. An oversized generation must participate in the correction
-        // loop just like syntactically invalid glue.
-        const sourceContext=builder?await this.builderSourceContext(id):[];
-        for(let attempt=0;attempt<(builder?3:2);attempt++) {
+        let diagnostic='';
+        for(let attempt=0;attempt<2;attempt++) {
           try {
             // Qwen's code-writing turn can return complete file bytes inline.
             // This avoids a second model request per file. If inline content
@@ -2797,10 +2903,10 @@ export class ControlRoom extends DurableObject {
               await generateFile(this.inferenceEnv(),{
                 node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:current.task,
                 files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
-                children:this.children(id),assemblyInputs:sourceContext,
+                children:this.children(id),assemblyInputs:[],
                 correction:diagnostic
               });
-            if(!builder && this.env.MOCK_AI!=='true') {
+            if(this.env.MOCK_AI!=='true') {
               // The worker's own file must parse before it is committed. A
               // parse failure goes straight back to the same worker as a
               // targeted correction; it never reaches the builder.
@@ -2811,17 +2917,14 @@ export class ControlRoom extends DurableObject {
             diagnostic='';break;
           } catch(e) {
             const invalid=String(e.message);
-            if(!builder && attempt===0 && /^Worker artifact rejected/.test(invalid)) {
+            if(attempt===0 && /^Worker artifact rejected/.test(invalid)) {
               diagnostic=invalid;
               this.event(id,'code_retry',`Leaf source rejected; using a targeted code-generation correction: ${clip(diagnostic,500)}`);
               continue;
             }
-            if(!builder || !/^(Builder artifact rejected|Invalid file length for)/.test(invalid))throw e;
-            diagnostic=invalid;
-            this.event(id,'glue_rejected',`Attempt ${attempt+1}: ${clip(diagnostic,1000)}`);
+            throw e;
           }
         }
-        if(diagnostic)throw new Error('Unable to produce valid linker source after 3 bounded repairs: '+diagnostic);
       }),
     ];
     const after=[
@@ -2864,83 +2967,23 @@ export class ControlRoom extends DurableObject {
               !productionFiles(this.files(id)).length) {
             throw new Error('Leaf cannot finish without publishing actual source code for its assigned module');
           }
-          if(id==='root'&&!this.manager(id)&&this.env.MOCK_AI!=='true') {
+          if(!n.parent&&!this.manager(id)&&this.env.MOCK_AI!=='true') {
             const files=new Map();
-            for(const f of this.files('root'))if(!f.path.startsWith('memory/'))files.set(f.path,await this.indexedContent('root',f.path));
-            // Root can itself be a Clef-classified atomic implementation.
-            // Its code is subject to the same real build gate as split projects.
-            const fingerprint='atomic:'+JSON.stringify(this.files('root').filter(x=>!x.path.startsWith('memory/')).map(x=>[x.path,x.revision]));
-            const accepted=await this.verifyRuntimeBuild('root',fingerprint,files);
+            for(const f of this.files(id))if(!f.path.startsWith('memory/'))files.set(f.path,await this.indexedContent(id,f.path));
+            // The top can itself be a Clef-classified atomic implementation:
+            // no builder and no compiler, but the same real build gate. Its
+            // failure re-runs its own turn, since it owns all the code.
+            const fingerprint='atomic:'+JSON.stringify(this.files(id).filter(x=>!x.path.startsWith('memory/')).map(x=>[x.path,x.revision]));
+            const accepted=await this.verifyRuntimeBuild(id,fingerprint,files);
             if(!accepted) {
               const attempts=Number(this.get('atomic_build_attempts','0'))+1;
               this.set('atomic_build_attempts',attempts);
               if(attempts>6) {
-                this.failAgent('root','Atomic Root failed six build attempts; no completed application.');
-                this.event('root','build_repair_exhausted','Atomic Root failed six build attempts; no completed application.');
+                this.failAgent(id,'The atomic top failed six build attempts; no completed application.');
+                this.event(id,'repair_exhausted','The atomic top failed six build attempts; no completed application.');
               } else {
-                this.db().exec("UPDATE agents SET status='waiting' WHERE id='root'");
-                this.wake('root');
-              }
-              return;
-            }
-          }
-          if(this.node(id)?.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
-            const latest=this.assemblyFingerprint(n.parent);
-            const stale=latest!==assemblyFingerprint;
-            const producerDone=this.children(n.parent).filter(c=>c.label!=='Temporary builder')
-              .every(c=>c.status==='done'||c.status==='retired');
-            const repository=new Map();
-            for(const f of this.files(id))repository.set(f.path,await this.indexedContent(id,f.path));
-            const errors=verifyBuilderBundle(repository,{root:n.parent==='root',final:producerDone});
-            if(!repository.has('glue/wiring.js'))errors.push('Integration wiring missing: Qwen must publish glue/wiring.js; baseline module load is diagnostic only.');
-            if(n.parent==='root' && producerDone && !repository.has('glue/smoke.js'))errors.push('Behavioral acceptance missing: Root builder must publish glue/smoke.js exercising create/list/update/delete via the returned application');
-            if(stale && !producerDone) {
-              this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-              this.event(id,'builder_provisional','Source changed during provisional linking; keep existing glue and defer reassembly until producers finish.');
-              return;
-            }
-            if(stale || errors.length) {
-              const message=stale?'Final source snapshot changed during linking; materialize final revisions and update glue.':
-                'Assembly rejected: '+errors.slice(0,8).join('; ');
-              this.set(`builder_diagnostic:${id}`,message);
-              this.event(id,stale?'builder_stale':'builder_invalid',clip(message,1200));
-              if(!stale)await this.diagnoseBuilderWithBaseline(id);
-              const key=`builder_repair:${id}:${latest}`;
-              const attempts=Number(this.get(key,'0'))+1;
-              this.set(key,attempts);
-              if(attempts>5) {
                 this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-                this.set(`builder_repair_paused:${id}`,latest);
-                this.event(id,'builder_repair_paused',`Builder exhausted 5 wiring/smoke corrections: ${clip(message,650)}. Runtime baseline remains valid; Continue can retry wiring.`);
-                this.wake(n.parent);
-              } else this.wake(id);
-              return;
-            }
-            this.set(`builder_diagnostic:${id}`,'');
-            // The commit is accepted only for the EXACT source snapshot observed
-            // before inference, never a newer revision received concurrently.
-            try {
-              const accepted=await this.markBuilderComplete(id,assemblyFingerprint);
-              if(accepted===false) {
-                this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-                this.event(id,'build_waiting','Container build failed or is unavailable; Root will route the diagnostic.');
-                return;
-              }
-            }
-            catch(e) {
-              if(!/stale assembly input revision|stale source copy|missing or stale source copy/.test(String(e?.message)))throw e;
-              this.set(`builder_diagnostic:${id}`,String(e.message));
-              this.wake(id);
-              return;
-            }
-            if(this.assemblyFingerprint(n.parent)!==assemblyFingerprint){
-              const finalNow=this.children(n.parent).filter(c=>c.label!=='Temporary builder').every(c=>c.status==='done'||c.status==='retired');
-              if(finalNow) {
-                this.set(`builder_diagnostic:${id}`,'Final source changed during publication; integrate the final snapshot.');
                 this.wake(id);
-              } else {
-                this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-                this.event(id,'builder_provisional','Intermediate source changed; defer integration until finalization.');
               }
               return;
             }
@@ -2979,17 +3022,7 @@ export class ControlRoom extends DurableObject {
         const message=String(e?.message||e);
         this.event(id,'error',`Operation ${i+1}/${operations.length} failed: ${clip(message,1100)}`);
         // A deterministic commit failure (e.g. Artifacts push/network) must
-        // replay at its persisted cursor. A Qwen builder that cannot produce
-        // valid glue is different: replaying the SAME accepted file request
-        // only spends another three calls on stale/invented imports. Let the
-        // builder reconsider the COMPLETE action on its next scheduled turn.
-        if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true' &&
-          /^Unable to produce valid linker source after/.test(message)) {
-          this.set(`builder_diagnostic:${id}`,message);
-          this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
-          this.event(id,'builder_replan','Rejected glue plan discarded; next builder decision receives the exact error and current materialized source.');
-          await this.diagnoseBuilderWithBaseline(id);
-        }
+        // replay at its persisted cursor.
         this.incrementFailures(id);
         return;
       }
@@ -3057,10 +3090,9 @@ export class ControlRoom extends DurableObject {
     if (this.read('queue',[]).some(id=>this.node(id)?.status==='ready')) return false;
     for (const n of this.allNodes()) {
       if (n.status !== 'waiting' || !n.parent || this.children(n.id).some(c=>c.status!=='done' && c.status!=='retired')) continue;
-      const blocked=this.read('build_blocked:root',null);
-      // Builder inference is driven only by initial schedule, finalization,
-      // or a specific build/linker diagnostic, never the generic idle nudge.
-      if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true')continue;
+      // Builder and compiler turns are driven by their manager's schedule, a
+      // problem or Continue, never the generic idle nudge.
+      if(isRuntimeNode(n) && this.env.MOCK_AI!=='true')continue;
       if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',n.id).length)continue;
       const parent = this.node(n.parent);
       if (parent?.status !== 'waiting') continue;
@@ -3088,9 +3120,9 @@ export class ControlRoom extends DurableObject {
       this.batching.delete(id);
       try {await this.flushWrites(id);}
       catch(e) {this.event(id,'commit_failed',`Artifacts push failed; files stay staged and are retried: ${clip(e?.message||e,600)}`);}
-      if(this.node(id)?.label==='Temporary builder' && this.wakeGeneration(id)!==observedWake &&
+      if(isRuntimeNode(this.node(id)) && this.wakeGeneration(id)!==observedWake &&
          !['retired','failed'].includes(this.node(id)?.status)) {
-        this.event(id,'builder_wake_recovered','Builder received integration revision or finalization while inference was running; queuing another turn.');
+        this.event(id,'builder_wake_recovered',`${this.node(id).label==='Compiler'?'Compiler':'Builder'} was woken while its turn was running; queuing another turn.`);
         this.wake(id);
       }
       this.event(id,'turn_end',`Completed turn after ${Date.now()-started} ms.`);
@@ -3138,17 +3170,22 @@ export class ControlRoom extends DurableObject {
   }
   async start(goal,budget,settings = {},roomId='') {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
-    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${table}`);
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
+    this.set('schema',ROOM_SCHEMA);
     // A fresh experiment must never reuse manager DO state from an older run.
     this.set('run_nonce',crypto.randomUUID());
-    this.set('goal',clip(goal,1800));
+    // v7.14: what the loader and the runner rely on is part of the goal, so
+    // the splitters assign it like any other requirement. (The MOCK_AI
+    // legacy fixtures run without it.)
+    const task=this.live()?`${clip(goal,2000-GOAL_START_REQUIREMENT.length-1)} ${GOAL_START_REQUIREMENT}`:goal;
+    this.set('goal',this.live()?task:clip(goal,1800));
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
     this.ctx.waitUntil((async()=>{
-      try { await this.provision('root',null,'Root objective',goal); await this.drive(budget); }
+      try { await this.provision('root',null,'Root objective',task); await this.drive(budget); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};
@@ -3158,6 +3195,9 @@ export class ControlRoom extends DurableObject {
     if (!['paused','complete','error','running','failed'].includes(this.get('status'))) return {error:'Start a session first'};
     if (this.get('status')==='complete') return {error:'All agents are done; start a new experiment'};
     if (this.get('status')==='failed') return {error:`Run failed: ${this.failedDescendantReason('root')}. Start a new room or inspect the recorded diagnostic.`};
+    // Rooms from v7.13 and earlier keep Root-keyed build state: reset, not migrated.
+    if (this.live() && this.get('run_nonce') && this.get('schema')!==ROOM_SCHEMA)
+      return {error:'This room was started by a version before v7.14 and is not migrated; start a new experiment, which resets the room.'};
     this.configure(settings);
     const failures=this.read('failures',{});
     for (const n of this.allNodes()) {
@@ -3173,12 +3213,27 @@ export class ControlRoom extends DurableObject {
     // code producers are done. The ordinary idle nudge intentionally excludes
     // builders, to avoid uncontrolled model inference on every source revision.
     for(const builder of this.allNodes().filter(n=>n.label==='Temporary builder' && n.parent && n.status==='waiting' && this.env.MOCK_AI!=='true')) {
-      // Continue relinks the current source even if its problems were already
-      // sent back and no worker changed anything.
+      // Continue relinks the current source with a fresh relink budget, at
+      // every level, even if its problems were already reported and no
+      // worker changed anything; they are reported again.
       if(!this.subtreeQuiescent(builder.parent) || this.builderCurrent(builder.parent))continue;
-      if(builder.parent==='root') {this.save('link_routed',null);this.save('link_state',null);}
-      this.event(builder.id,'builder_continue',builder.parent==='root'?'Continue relinks and reruns the current source with a fresh relink budget.':'Continue relinks this branch.');
+      this.save(`link_reported:${builder.parent}`,null);this.save(`link_state:${builder.parent}`,null);
+      this.event(builder.id,'builder_continue','Continue relinks this branch with a fresh relink budget.');
       this.wake(builder.id);
+    }
+    if(this.live()) {
+      // The compiler runs again on the current bundle: a fresh set of runner
+      // attempts, and its problems are reported again.
+      const top=this.allNodes().find(n=>!n.parent),compiler=top&&this.compilerOf(top.id);
+      if(compiler&&compiler.status==='waiting'&&this.read('compile_reported',null)) {
+        this.save('compile_reported',null);
+        if(this.builderCurrent(top.id)&&!this.compilePassed(top.id)) {
+          this.event(compiler.id,'compile_continue','Continue runs the compiler again on the current bundle.');
+          this.wake(compiler.id);
+        }
+      }
+      // Every manager decides the problems it still holds.
+      for(const {holder} of query(this.db(),"SELECT DISTINCT holder FROM problems WHERE status='open'"))this.wake(holder);
     }
     for(const builder of this.allNodes().filter(n=>n.label==='Temporary builder' && n.parent && n.status==='waiting' && this.env.MOCK_AI==='true')) {
       const producers=this.children(builder.parent).filter(c=>c.label!=='Temporary builder');
@@ -3205,7 +3260,7 @@ export class ControlRoom extends DurableObject {
   }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
-    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${name}`);
     return this.snapshot();
   }
 }

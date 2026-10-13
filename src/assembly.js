@@ -4,8 +4,10 @@ import { isPath } from './protocol.js';
 
 // A branch builder's boundary: what the level above shows its model of the branch.
 export const BOUNDARY = 'assembly.boundary.json';
+// The compiler's record of the bundle digest and entry it ran.
+export const COMPILE_MANIFEST = 'compile.manifest.json';
 export const isAssemblyMetadata = path => String(path).split('/').some((part,i,all) =>
-  part === 'memory' || part === 'assembly.manifest.json' || part === BOUNDARY ||
+  part === 'memory' || part === 'assembly.manifest.json' || part === BOUNDARY || part === COMPILE_MANIFEST ||
   (part === 'public' && all[i+1] === 'interfaces.json'));
 
 export const isBuilderGluePath = path => isPath(path) && (

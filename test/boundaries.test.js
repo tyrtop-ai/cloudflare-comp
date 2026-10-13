@@ -295,7 +295,7 @@ test('room: a file inside a branch that an error names, with no import of its ow
   const sources=await room.collectLinkSources(builder.id);
   const path=sources.find(s=>s.destination.endsWith('/ticketService.js')).destination;
   assert.ok(L.importExcerpt(path,service).length>1,'an excerpt of its imports would leave title() out');
-  await room.linkSnapshot(builder.id,sources,`Runner: ${path} drops each ticket's title.`,{isRoot:true});
+  await room.linkSnapshot(builder.id,sources,`Runner: ${path} drops each ticket's title.`,{top:true});
   assert.equal(calls.link.at(-1).your_files.find(f=>f.path===path).content,sources.find(s=>s.destination===path).content);
 });
 

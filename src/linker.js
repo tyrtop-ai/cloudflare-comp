@@ -750,28 +750,25 @@ export function linkRenames(before, after) {
 export const tokenEstimate=text=>Math.ceil(String(text||'').length/3)+40;
 
 // ---------- entry selection and the runtime loader ----------
-// owned: the modules of Root's entry child, which holds the entry contract;
-// one that exports start(), else one that may, is the entry.
-export function chooseEntry(files, surfaces, proposals=[], owned=[]) {
+// The compiler's entry: the one module that exports start(), or of several
+// the one that imports the most others; when none is known to, the candidate
+// (by imports and name) among the modules that may export start(), which the
+// Container then decides; null when no module may.
+export function chooseEntry(files, surfaces) {
   const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
   const starters=js.filter(p=>surfaces.get(p)&&exportsStart(surfaces.get(p)));
-  const own=owned.filter(p=>js.includes(p)&&mayExportStart(surfaces.get(p)));
-  if(own.length)return own.find(p=>starters.includes(p))??own[0];
-  const proposed=[...new Set(proposals.filter(p=>js.includes(p)))];
-  const proposedStarter=proposed.find(p=>starters.includes(p));
-  if(proposedStarter)return proposedStarter;
   if(starters.length===1)return starters[0];
-  // With no module exporting start(), only the model's proposal names the
-  // application; the biggest importer may be a helper (run e89dba35). While
-  // some module does, a proposal without start() is not the entry.
-  if(!starters.length)return proposed[0]??null;
+  if(!starters.length) {
+    const maybe=js.filter(p=>mayExportStart(surfaces.get(p)));
+    return maybe.length?entryCandidate(files,maybe):null;
+  }
   const outDegree=new Map(starters.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>js.includes(r.target)).length]));
   return starters.sort((a,b)=>outDegree.get(b)-outDegree.get(a)||a.localeCompare(b))[0];
 }
 export function entryLoader(entry) {
   const spec=JSON.stringify('../'+entry);
   return [
-    '// RUNTIME-OWNED ENTRYPOINT. Generated from the linker\'s entry choice; never written by a model.',
+    '// RUNTIME-OWNED ENTRYPOINT. Generated from the compiler\'s entry choice; never written by a model.',
     `// Entry module: ${entry}`,
     'let cached;',
     'async function load() {',
@@ -858,11 +855,13 @@ const appNamed=p=>{
   const base=p.split('/').pop().replace(/\.(?:m|c)?js$/i,'');
   return /^(?:app|main|index|entry|cli|server|tracker|application)$/i.test(base)||/[-_.](?:app|application)$/i.test(base)||/[a-z0-9](?:App|Application)$/.test(base);
 };
-export function entryCandidate(files) {
+// only: the modules that may be picked (all by default).
+export function entryCandidate(files, only=null) {
   const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
-  if(!js.length)return null;
+  const allowed=js.filter(p=>!only||only.includes(p));
+  if(!allowed.length)return null;
   const imports=new Map(js.map(p=>[p,componentImports(p,files.get(p),files).map(r=>r.target).filter(t=>t&&t!==p&&js.includes(t))]));
-  const imported=new Set([...imports.values()].flat()),roots=js.filter(p=>!imported.has(p)),pool=roots.length?roots:js;
+  const imported=new Set([...imports.values()].flat()),roots=allowed.filter(p=>!imported.has(p)),pool=roots.length?roots:allowed;
   const depth=p=>p.split('/').filter(s=>s==='components').length;
   const named=pool.filter(appNamed).sort((x,y)=>depth(x)-depth(y));
   if(named.length)return named[0];
@@ -956,16 +955,18 @@ const isRequire=n=>n?.type==='CallExpression'&&n.callee?.type==='Identifier'&&n.
 export function importRefs(path, content) {
   let ast;try {ast=parseSource(content).ast;} catch {return [];}
   const refs=[],byBinding=new Map();
-  const add=(lit,binding)=>{const ref={specifier:lit.value,start:lit.start,end:lit.end,names:new Set(),members:new Set(),isNew:false};refs.push(ref);if(binding)byBinding.set(binding,ref);return ref;};
+  // local: every name the import binds in this file.
+  const add=(lit,binding)=>{const ref={specifier:lit.value,start:lit.start,end:lit.end,names:new Set(),members:new Set(),local:new Set(),isNew:false};refs.push(ref);if(binding){byBinding.set(binding,ref);ref.local.add(binding);}return ref;};
   const seen=new Set();
   walk(ast,node=>{
     if(node.type==='VariableDeclarator'&&isRequire(node.init)) {
       const lit=node.init.arguments[0];seen.add(lit.start);
       const ref=add(lit,node.id.type==='Identifier'?node.id.name:null);
-      if(node.id.type==='ObjectPattern')for(const p of node.id.properties)if(p.type==='Property'&&!p.computed)ref.names.add(nameOf(p.key));
+      if(node.id.type==='ObjectPattern')for(const p of node.id.properties)if(p.type==='Property'&&!p.computed){ref.names.add(nameOf(p.key));if(p.value?.type==='Identifier')ref.local.add(p.value.name);}
     } else if(node.type==='ImportDeclaration'&&typeof node.source?.value==='string') {
       const ref=add(node.source,null);seen.add(node.source.start);
       for(const sp of node.specifiers) {
+        ref.local.add(sp.local.name);
         if(sp.type==='ImportSpecifier')ref.names.add(nameOf(sp.imported));
         else byBinding.set(sp.local.name,ref);
       }
@@ -982,6 +983,18 @@ export function importRefs(path, content) {
     if(node.type==='NewExpression'&&node.callee.type==='Identifier'&&byBinding.has(node.callee.name))byBinding.get(node.callee.name).isNew=true;
   });
   return refs.filter(r=>r.specifier.startsWith('.'));
+}
+// The module a load or run error at path names through one of path's own
+// imports ("x is not a function", "x.y is not a constructor", "Cannot read
+// properties of undefined (reading 'x')", where path imports x): the other
+// party of an interface error. null when the error names no import.
+export function errorTarget(files, path, detail) {
+  const content=files.get(path);
+  const m=content==null?null:/([\w$]+)(?:\.[\w$]+)? is not a (?:function|constructor)|Cannot read propert(?:y|ies) of undefined \(reading '([\w$]+)'\)/.exec(String(detail||''));
+  if(!m)return null;
+  const ref=importRefs(path,content).find(r=>r.local.has(m[1]||m[2]));
+  const target=ref?resolveLocal(path,ref.specifier,files).path:null;
+  return target&&target!==path?target:null;
 }
 // Point an import that resolves nowhere at the one module that clearly
 // provides it: the only module exporting every name the file uses from it
