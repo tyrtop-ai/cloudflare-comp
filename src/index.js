@@ -936,6 +936,13 @@ export class ControlRoom extends DurableObject {
     }
     return builder===to?current:null;
   }
+  // Whether a builder's own edits changed this file of its bundle: its
+  // published copy differs from the source it copied.
+  async editedBy(builderId, path) {
+    const row=query(this.db(),'SELECT child,source_path FROM builder_sources WHERE builder=? AND destination=?',builderId,path)[0];
+    if(!row||!this.files(builderId).some(f=>f.path===path))return false;
+    try {return await this.indexedContent(builderId,path)!==await this.indexedContent(row.child,row.source_path);} catch {return false;}
+  }
   // A worker's repair message, from the ticket its manager sent. Problems
   // closed since are left out; a ticket whose problems all closed says so.
   buildRepairMessage(ticket) {
@@ -1319,7 +1326,7 @@ export class ControlRoom extends DurableObject {
   // builder below `via`) and the digest of the text that was linked.
   partiesOf(via, x) {
     const party=(path,role)=>{const o=path?this.buildSourceOrigin(via,path):null;return {path:path||'',owner:o?.owner||'',owner_path:o?.path||'',digest:o?.digest||'',role};};
-    return [party(x.path,DEFAULT_ROLE[x.kind]||'site'),...(x.target&&x.target!==x.path?[party(x.target,'provider')]:[])];
+    return [party(x.path,DEFAULT_ROLE[x.kind]||'site'),...(x.sites||[]).map(p=>party(p,'site')),...(x.target&&x.target!==x.path?[party(x.target,'provider')]:[])];
   }
   // A builder or the compiler files what it cannot fix with its manager, in
   // one synchronous block: its earlier rows are superseded, the new ones open
@@ -1628,11 +1635,18 @@ export class ControlRoom extends DurableObject {
     const app=new Map([...files,['glue/index.js',loader],['package.json',RUNTIME_PACKAGE]]);
     // A failure with no component path is the entry module's; the import an
     // interface error names is its other party. The runtime loader's frame
-    // repeats the error of a module it started, so it counts only alone.
-    const failed=(kind,issues)=>(issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues).map(x=>{
-      const path=files.has(x.path)?x.path:entry,target=errorTarget(files,path,x.detail);
-      return {kind,path,target,detail:path===x.path?x.detail:`${x.path?x.path+': ':''}${x.detail}`,facts:target?{provider_text:clip(exportsLine(target,surfaces),700)}:{}};
-    });
+    // repeats the error of a module it started, so it counts only alone. The
+    // Container reports one error once per module in its stack: one problem,
+    // whose sites are those modules, the innermost first.
+    const failed=(kind,issues)=>{
+      const groups=new Map();
+      for(const x of issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues)
+        if(groups.has(x.detail))groups.get(x.detail).push(x.path);else groups.set(x.detail,[x.path]);
+      return [...groups].map(([detail,[first,...more]])=>{
+        const path=files.has(first)?first:entry,target=errorTarget(files,path,detail);
+        return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,facts:target?{provider_text:clip(exportsLine(target,surfaces),700)}:{}};
+      });
+    };
     const check=await this.containerRun(id,`compile:${input}`,app);
     if(check.infrastructure)return this.blockCompiler(id,input,check.infrastructure);
     if(!check.report.passed) {
@@ -1692,8 +1706,16 @@ export class ControlRoom extends DurableObject {
     const builder=this.builderOf(m),fingerprint=this.assemblyFingerprint(m),state=this.read(`link_state:${m}`,null);
     const relinked=new Set(this.problems("holder=? AND status='closed' AND outcome='relinked'",m).filter(p=>p.flags.fingerprint===fingerprint).map(p=>p.signature));
     const depth=Math.max(1,...this.allNodes().map(x=>x.id.split('.').length-1));
+    // A load or run error in a file this manager's builder edited (its copy
+    // differs from the one it was given) is first this builder's to relink.
+    const edited=new Set();
+    if(builder)for(const p of rows.filter(p=>['load','run'].includes(p.kind)))
+      for(const x of p.parties.filter(x=>x.role==='site')) {
+        const here=this.pathIn(p.facts.via||builder.id,x.path,builder.id);
+        if(here&&await this.editedBy(builder.id,here)){edited.add(p.id);break;}
+      }
     const ctx={holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,builder:builder?.id||null,maxHops:MAX_HOPS(depth),
-      canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature)};
+      canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),editedHere:p=>edited.has(p.id)};
     const decided=[];
     let exhausted='';
     for(const p of rows) {

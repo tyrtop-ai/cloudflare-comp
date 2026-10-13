@@ -301,3 +301,87 @@ test('v7.14 (9): the compiler never relinks or edits a module; infrastructure an
   assert.deepEqual(files,['compile.manifest.json','glue/index.js','glue/smoke.js','package.json'],'the compiler wrote no module');
   await assert.rejects(room.putFile(compiler.id,'components/x/app.js','module.exports = {};\n'),/The compiler writes only/);
 });
+
+// ------------------------------------------------- critique #23
+// Root's builder edits a file inside root.1's branch and one of its renames
+// breaks the run there. Every party lies in root.1, but
+// root.1's builder never saw that edit and cannot undo it, and its worker's
+// source does not have it: Root's own builder relinks first (D5).
+const factoryStore="module.exports = function makeStore() {\n  const rows = new Map();\n  let next = 1;\n  return {\n    create(d) { const t = { id: next++, ...d }; rows.set(t.id, t); return { ...t }; },\n    read(id) { return rows.get(id) || null; }\n  };\n};\n";
+const pagedService="const makeStore = require('./store');\nconst { pageLimit } = require('./settings');\nconst s = makeStore();\nmodule.exports = { add: (d) => s.create(d), get: (id) => s.read(id), limit: () => pageLimit };\n";
+// The entry hands the service's functions out as they are, so only the
+// service is in the failing stack.
+const viewEntry="const svc = require('./ticketService');\nfunction start() {\n  return { createTicket: svc.add, viewTicket: svc.view };\n}\nmodule.exports = { start };\n";
+const viewRunner=`const assert = require('node:assert/strict');
+const { start } = require('./index.js');
+(async () => {
+  const app = await start();
+  const t = await app.createTicket({ title: 'Printer jam' });
+  assert.equal((await app.viewTicket(t.id)).title, 'Printer jam');
+})().catch(e => { console.error(e); process.exitCode = 1; });
+`;
+test('v7.14 (#23): an error in a file the manager\'s own builder edited inside a child branch is relinked there first, not sent down',async()=>{
+  let n=0;
+  const link=user=>{
+    if(user.scope!=='application')return {edits:[],issues:[]};
+    n++;
+    const app=user.your_files.find(f=>f.path.endsWith('/app.js')),svc=user.your_files.find(f=>f.path.endsWith('/ticketService.js'));
+    const config=user.all_module_paths.find(p=>p.endsWith('/config.js'));
+    if(n===1)return {edits:[
+      ...app?[{file:app.path,find:'svc.view',replace:'svc.get'}]:[],
+      // Right: the path and the name; wrong: s.read → s.view, which no static check can see.
+      ...svc?[{file:svc.path,find:"'./settings'",replace:`'${L.relativeSpecifier(svc.path,config)}'`},{file:svc.path,find:'{ pageLimit }',replace:'{ pageSize: pageLimit }'},
+        {file:svc.path,find:'s.read(id)',replace:'s.view(id)'}]:[]],issues:[]};
+    // The relink Root asks for, with the run's error, undoes the wrong rename.
+    return {edits:svc?[{file:svc.path,find:'s.view(id)',replace:'s.read(id)'}]:[],issues:[]};
+  };
+  const {room,calls}=liveRoom({link,runner:()=>viewRunner});
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Tickets'],['Application entry','app.js',viewEntry],['Settings','config.js','module.exports = { pageSize: 20 };\n']]);
+  await workers(room,'root.1',[['Store','store.js',factoryStore],['Ticket service','ticketService.js',pagedService]]);
+  const branch=await room.scheduleAssembly('root.1');
+  await room.turn(branch.id);
+  assert.equal(room.node(branch.id).status,'done',trace(room));
+  await room.turn('root.1');
+  const {builder,compiler}=await linkAndCompile(room);
+  assert.equal(room.node(builder.id).status,'done',trace(room));
+  assert.ok(events(room,'link_renamed').some(e=>e.actor===builder.id&&/ticketService\.js: s\.read\(id\) → s\.view\(id\)/.test(e.body)),'Root\'s builder edited the deep file');
+  const report=lastReport(room,compiler.id);
+  assert.match(report.issues[0].detail,/s\.view is not a function/);
+  assert.deepEqual(room.problems('1=1')[0].parties.map(p=>[p.role,p.owner]),[['site','root.1.2']],'every party lies in root.1');
+  await room.turn('root');
+  const [row]=room.problems('1=1');
+  assert.deepEqual(row.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relink',builder.id,'D5']]);
+  await runReady(room,['root',builder.id,compiler.id]);
+  assert.equal(room.node(compiler.id).status,'done',trace(room));
+  assert.deepEqual(room.problems('1=1').map(p=>[p.status,p.outcome]),[['closed','relinked']]);
+  assert.match(calls.link.at(-1).previous_attempt_error,/^Running the application failed after your renames: [^]*s\.view is not a function/);
+  assert.equal(room.receive('root.1.2').length,0,'the worker never hears of a rename it did not write');
+  assert.equal(room.problems('holder=?','root.1').length,0,'root.1 is never asked');
+  await room.turn('root');
+  assert.equal(room.node('root').status,'done');
+});
+
+// The Container names every module in a failing stack, each with the same
+// error: one problem, the module that threw its first site. When the
+// builder's relink changes nothing, that module's worker hears it, and the
+// caller's worker hears nothing (v7.12 told both).
+test('v7.14: one error in a stack of several modules is one problem, and the module that threw is the one that changes',async()=>{
+  const store="module.exports = function makeStore() {\n  return { read(id) { return { id, title: 'Printer jam' }; } };\n};\n";
+  const lookup="const makeStore = require('./store');\nconst s = makeStore();\nmodule.exports = { get: (id) => s.view(id) };\n";
+  const app="const lookup = require('./lookup');\nfunction start() {\n  return { createTicket: (d) => ({ id: 1, ...d }), viewTicket: (id) => lookup.get(id) };\n}\nmodule.exports = { start };\n";
+  const {room}=liveRoom({runner:()=>viewRunner});
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Store','store.js',store],['Lookup','lookup.js',lookup],['Application entry','app.js',app]]);
+  const {builder,compiler}=await linkAndCompile(room);
+  const [row]=room.problems('1=1');
+  assert.equal(room.problems('1=1').length,1);
+  assert.deepEqual(row.parties.map(p=>[p.role,p.owner,p.owner_path]),[['site','root.2','lookup.js'],['site','root.3','app.js']]);
+  // Root relinks first (D5); the relink changes nothing; the thrower's worker changes it.
+  await runReady(room,['root',builder.id,compiler.id]);
+  const [now]=room.problems('1=1');
+  assert.deepEqual([now.status,now.assignee,now.flags.builder_tried],['assigned','root.2',true]);
+  assert.deepEqual(now.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relink',builder.id,'D5'],[builder.id,'returned','root',undefined],['root','assign','root.2','default']]);
+  assert.match(tickets(room,'root.2')[0],/Problems: lookup\.js: smoke failed[^]*s\.view is not a function/);
+  assert.equal(room.receive('root.3').length,0);
+});

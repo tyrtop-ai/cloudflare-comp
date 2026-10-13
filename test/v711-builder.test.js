@@ -1135,17 +1135,18 @@ test('room: the live 5f85e12b link resolves its path without the model; the mode
   room.db().exec("UPDATE agents SET status='done' WHERE id IN ('root.1','root.2','root.3')");
   const entryPath=materializedPath('Application Entry','module.js','root.3');
   assert.equal(entryPath,'components/applicatio-f07f9de6/module.js','the live run\'s path');
-  const builder=await room.scheduleAssembly('root');
-  await room.turn(builder.id);
+  const {builder,compiler}=await linkAndCompile(room);
   const events=room.snapshot().events;
   assert.equal(room.node(builder.id).status,'done',events.slice(-12).map(e=>e.kind+': '+e.body).join('\n'));
+  assert.equal(room.node(compiler.id).status,'done',trace(room));
+  assert.ok(events.some(e=>e.kind==='compile_entry'&&e.body===`Application entry: ${entryPath}.`));
   assert.match(events.find(e=>e.kind==='link_auto').body,/module\.js: '\.\/ticketService' → '\.\.\/ticket-ser-f17f9f79\/ticketService\.js'/);
   assert.equal(calls.link.length,1,'one model call, no relink');
   assert.deepEqual(calls.link[0].your_files.map(f=>f.path),[entryPath]);
   assert.match(calls.link[0].your_files[0].content,/require\('\.\.\/ticket-ser-f17f9f79\/ticketService\.js'\)/,'the model sees the path already resolved');
   assert.equal(calls.link[0].known_mismatches.length,2);
   assert.match(calls.link[0].known_mismatches.join('\n'),/reads 'view'[\s\S]*reads 'delete'/);
-  assert.ok(!events.some(e=>e.kind==='link_retry'||e.kind==='sent_to_workers'));
+  assert.ok(!events.some(e=>e.kind==='link_retry'||e.kind==='problems_reported'));
 });
 
 // A branch builder over the workers of one manager in run e89dba35 (labels and
