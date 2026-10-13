@@ -21,8 +21,10 @@ const isAssumption = key => /^assum(?:ed|ption)[_ /:-]/i.test(key);
 const topicSlug = label => String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,24)||'component';
 // A linker edit is a rename, or the runtime's fix of how an import binds.
 const linkEdits = applied => { const shaped=applied.filter(e=>e.shape).length; return `${applied.length-shaped} rename(s)`+(shaped?` and ${shaped} import binding fix(es)`:''); };
-// The owner notes of pruned children, each once.
-const ownerNotes = rejected => clip([...new Set(rejected.filter(x=>x.owner).map(x=>x.note))].join(' '),1600);
+// The owner notes of pruned children, each once, in their short form (owner
+// and label): memory is clipped where it is read (750/950 characters), so
+// the piece itself is quoted only in split_feedback.
+const ownerNotes = rejected => clip([...new Set(rejected.filter(x=>x.owner).map(x=>x.short||x.note))].join(' '),1600);
 // Builders and the compiler are runtime nodes: one builder per manager links
 // its direct children, one compiler under the top manager runs the bundle.
 const RUNTIME_LABELS = ['Temporary builder','Compiler'];
@@ -1853,7 +1855,8 @@ export class ControlRoom extends DurableObject {
       } else if(owner) {
         const note=`${child.label} is owned by ${owner.label}; import it from that strand instead of rebuilding it. Any part of "${clip(assignedPiece(child.task),160)}" that ${owner.label} does not provide is still written in this strand.`;
         this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. Import it from that strand instead of rebuilding it.`);
-        rejected.push({label:child.label,task:clip(child.task,500),owner:owner.label,note});
+        const short=`${child.label} is owned by ${owner.label}; import it from that strand and write here only what it lacks.`;
+        rejected.push({label:child.label,task:clip(child.task,500),owner:owner.label,note,short});
       } else if(error) {
         this.event(id,'scope_walk_uncertain',`No strand up to Root was shown to own "${label}", but Clef failed on the way (${clip(error,200)}); kept, since an error is no proof it is out of scope.`);
         kept.push(child);
@@ -1870,9 +1873,10 @@ export class ControlRoom extends DurableObject {
   async rememberOwners(id, rejected) {
     if(!rejected.some(x=>x.owner))return '';
     const prior=(await this.readKnowledge(id,'private')).owned_elsewhere||'';
-    const fresh=ownerNotes(rejected.filter(x=>!prior.includes(x.note)));
+    const fresh=ownerNotes(rejected.filter(x=>!prior.includes(x.short||x.note)));
     if(!fresh)return '';
-    const value=clip([prior,fresh].filter(Boolean).join(' '),1600);
+    // Newest first: where the memory is clipped, the oldest notes go.
+    const value=clip([fresh,prior].filter(Boolean).join(' '),1600);
     await this.remember(id,[{visibility:'private',key:'owned_elsewhere',value}]);
     return value;
   }
@@ -2887,7 +2891,7 @@ export class ControlRoom extends DurableObject {
       // Spawned children find where a pruned piece lives, from this split or
       // the rejected one it corrects unless this split keeps that piece, in
       // their manager's public knowledge, written before any child can run.
-      const owned=action.spawn.length?ownerNotes([...(before.split_feedback?.rejected||[]),...rejectedChildren]
+      const owned=action.spawn.length?ownerNotes([...rejectedChildren,...(before.split_feedback?.rejected||[])]
         .filter(x=>!action.spawn.some(c=>c.label===x.label))):'';
       if(owned)action.remember.push({visibility:'public',key:'owned_elsewhere',value:owned});
       if (!this.manager(id) && !action.spawn.length && action.exports.length) {

@@ -59,7 +59,10 @@ function fakeAI({split,leaf,owner,gate=()=>0.9,calls=[]}) {
   }};
 }
 const about=(question,label)=>question.includes(`${label}: `);
+// The note quoting the piece goes to the splitter (split_feedback); memory,
+// which is clipped where it is read, keeps the short one.
 const owns=({label,task},owner)=>`${label} is owned by ${owner}; import it from that strand instead of rebuilding it. Any part of "${task}" that ${owner} does not provide is still written in this strand.`;
+const short=({label},owner)=>`${label} is owned by ${owner}; import it from that strand and write here only what it lacks.`;
 function setup(ai,env={}) {
   const store=new Store();
   const room=new ControlRoom({storage:{sql:new Sql()},waitUntil:()=>{}},{AI:ai,TEST_ARTIFACT_STORE:store,...env});
@@ -178,7 +181,7 @@ test('a late split from a leaf is walked the same way',async()=>{
   await room.turn('root.1.1');
   assert.deepEqual(room.children('root.1.1').map(c=>c.label),['Validate fields','Build ticket record']);
   assert.match(events(room,'scope_pruned')[0].body,/"Remove ticket" is owned by "Delete Ticket" \(root\.1\.2\)/);
-  assert.equal((await room.readKnowledge('root.1.1')).owned_elsewhere,owns(remove,'Delete Ticket'));
+  assert.equal((await room.readKnowledge('root.1.1')).owned_elsewhere,short(remove,'Delete Ticket'));
 });
 
 test("Root's own children are never walked",async()=>{
@@ -220,7 +223,7 @@ test('a manager Clef sends to implementation after a pruned split keeps the owne
   await room.turn('root.4');
   assert.ok(events(room,'atomic').some(e=>/rejected partition/.test(e.body)));
   assert.equal(room.read('split_feedback:root.4',null),null);
-  const notes=[owns(ticketTs,'Ticket Interface'),owns(repoImpl,'In-Memory Ticket Repository')].join(' ');
+  const notes=[short(ticketTs,'Ticket Interface'),short(repoImpl,'In-Memory Ticket Repository')].join(' ');
   assert.equal((await room.readKnowledge('root.4','private')).owned_elsewhere,notes);
   room.wake('root.4');
   await room.turn('root.4');
@@ -242,7 +245,7 @@ test('spawned children find the owner notes from the moment they are provisioned
   };
   await room.turn('root.4');
   assert.deepEqual(room.children('root.4').map(c=>c.label),['TicketService.ts','TicketController.ts']);
-  assert.deepEqual(seen,[{id:'root.4.1',status:'ready',queued:true,note:owns(ticketTs,'Ticket Interface')}],
+  assert.deepEqual(seen,[{id:'root.4.1',status:'ready',queued:true,note:short(ticketTs,'Ticket Interface')}],
     'the first child can be dispatched while the second is provisioned, and already sees the note');
 });
 
@@ -255,10 +258,10 @@ test('a corrected split that keeps a once-pruned piece does not tell it to impor
   assert.equal(events(room,'scope_pruned').length,2);
   await room.turn('root.4');
   assert.deepEqual(room.children('root.4').map(c=>c.label),['Ticket.ts','TicketService.ts','TicketController.ts']);
-  assert.equal((await room.readKnowledge('root.4')).owned_elsewhere,owns(repoImpl,'In-Memory Ticket Repository'));
+  assert.equal((await room.readKnowledge('root.4')).owned_elsewhere,short(repoImpl,'In-Memory Ticket Repository'));
 });
 
-test("run3's live five-child split: the kept children learn what of each pruned piece is still theirs",async()=>{
+test("run3's live five-child split: the kept children learn the owner of each pruned piece, and that what it lacks is still theirs",async()=>{
   const repoInterface={label:'TicketRepository.ts',task:'Write an interface defining getTickets method with status and search filters'};
   const ai=fakeAI({split:()=>[repoInterface,repoImpl,service,controller,ticketTs],owner:run3Owner});
   const {room}=await run3(ai);
@@ -267,8 +270,8 @@ test("run3's live five-child split: the kept children learn what of each pruned 
   assert.deepEqual(room.children('root.4').map(c=>c.label),['TicketRepository.ts','TicketService.ts','TicketController.ts']);
   assert.equal(ai.calls.filter(c=>c.kind==='split').length,1,'three children remain: a viable split goes ahead');
   const note=(await room.readKnowledge('root.4')).owned_elsewhere;
-  assert.equal(note,[owns(repoImpl,'In-Memory Ticket Repository'),owns(ticketTs,'Ticket Interface')].join(' '));
-  assert.match(note,/Any part of "Implement repository logic to retrieve tickets with status\/search filters" that In-Memory Ticket Repository does not provide is still written in this strand/);
+  assert.equal(note,[short(repoImpl,'In-Memory Ticket Repository'),short(ticketTs,'Ticket Interface')].join(' '));
+  assert.match(note,/TicketRepositoryImpl\.ts is owned by In-Memory Ticket Repository; import it from that strand and write here only what it lacks\./);
   for(const c of room.children('root.4'))
     assert.equal((await room.knowledgeContext(c.id)).adjacent_public_memory.find(x=>x.owner==='root.4').recent_facts.owned_elsewhere,note);
 });
@@ -279,8 +282,35 @@ test('a late split that pruning leaves below two tells the leaf where the pruned
   await room.turn('root.1.1');
   assert.equal(room.children('root.1.1').length,0);
   assert.ok(events(room,'split_rejected').some(e=>e.actor==='root.1.1'));
-  assert.equal((await room.readKnowledge('root.1.1','private')).owned_elsewhere,owns(remove,'Delete Ticket'));
+  assert.equal((await room.readKnowledge('root.1.1','private')).owned_elsewhere,short(remove,'Delete Ticket'));
   await room.turn('root.1.1');
-  assert.equal(ai.calls.filter(c=>c.kind==='leaf')[1].request.your_memory.private.owned_elsewhere,owns(remove,'Delete Ticket'));
-  assert.equal((await room.readKnowledge('root.1.1','private')).owned_elsewhere,owns(remove,'Delete Ticket'),'kept once');
+  assert.equal(ai.calls.filter(c=>c.kind==='leaf')[1].request.your_memory.private.owned_elsewhere,short(remove,'Delete Ticket'));
+  assert.equal((await room.readKnowledge('root.1.1','private')).owned_elsewhere,short(remove,'Delete Ticket'),'kept once');
+});
+
+// v7.13 review: notes quoting each piece ran 300+ characters, so where they
+// are read (750 characters for a neighbour's public facts, 950 for a node's
+// own memory) the third was cut and a fourth lost. The short notes fit, the
+// piece is quoted only to the splitter, and the newest notes come first.
+test('owner notes stay short where they are read, so four pruned pieces all reach the kept children; the newest come first in a leaf\'s memory',async()=>{
+  const long=t=>({...t,task:t.task+'. '+'It must handle every edge case the tracker can meet, including concurrent edits, missing fields and stale identifiers.'});
+  const pieces=[long(ticketTs),long(repoImpl),long({label:'CreateTicket.ts',task:'Create tickets with validation'}),long({label:'DeleteTicket.ts',task:'Delete tickets by id'})];
+  const owner=q=>about(q,'CreateTicket.ts')?'Create Ticket Service':about(q,'DeleteTicket.ts')?'Delete Ticket Service':
+    about(q,'Ticket.ts')?'Ticket Interface':about(q,'TicketRepositoryImpl.ts')?'In-Memory Ticket Repository':'View Ticket Service';
+  const ai=fakeAI({split:()=>[...pieces,service,controller],owner});
+  const {room}=await run3(ai);
+  room.db().exec("UPDATE agents SET status='done' WHERE id IN ('root.1','root.2')");
+  await room.turn('root.4');
+  assert.deepEqual(room.children('root.4').map(c=>c.label),['TicketService.ts','TicketController.ts']);
+  const seen=(await room.knowledgeContext('root.4.1')).adjacent_public_memory.find(x=>x.owner==='root.4').recent_facts.owned_elsewhere;
+  for(const [piece,who] of pieces.map(p=>[p,owner(`${p.label}: `)]))assert.ok(seen.includes(short(piece,who)),piece.label);
+  assert.ok(!seen.includes('edge case'),'the piece is not quoted in memory');
+  // A leaf that learns owners twice reads the newest first.
+  const leaf=fakeAI({leaf:{summary:'Needs pieces',spawn:[validate,remove]},owner:q=>about(q,'Remove ticket')?'Delete Ticket':'Create Ticket'});
+  const nest=await nested(leaf,'implement');
+  await nest.room.rememberOwners('root.1.1',pieces.map(p=>({label:p.label,owner:owner(`${p.label}: `),note:'(long)',short:short(p,owner(`${p.label}: `))})));
+  await nest.room.turn('root.1.1');
+  const memory=(await nest.room.knowledgeContext('root.1.1')).your_memory.private.owned_elsewhere;
+  assert.ok(memory.startsWith(short(remove,'Delete Ticket')+' '),memory);
+  assert.ok(memory.includes(short(pieces[3],'Delete Ticket Service')),'the older notes still fit in 950 characters');
 });
