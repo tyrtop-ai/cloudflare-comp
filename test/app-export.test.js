@@ -125,7 +125,7 @@ test('appFiles: the linked application without assembly metadata, with a README,
   assert.deepEqual([app.room,app.goal,app.entry,app.agents,app.room_status],[ROOM,GOAL,paths.appPath,5,'idle'],'the goal without the requirement the runtime appends');
   assert.match(app.note,/passed for exactly these files/);
   const readme=app.files[0].content;
-  for(const text of [GOAL,ROOM,'**passed**',`node -e "require('./glue/index.js').start().then(app=>console.log(Object.keys(app)))"`,'node glue/smoke.js',paths.appPath])
+  for(const text of [GOAL,ROOM,'**passed**','A compiler chose the entry module and these files passed its Container run',`node -e "require('./glue/index.js').start().then(app=>console.log(Object.keys(app)))"`,'node glue/smoke.js',paths.appPath])
     assert.ok(readme.includes(text),text);
   assert.doesNotMatch(readme,/exports start\(\); start\(\) takes no arguments/);
   // The README's instructions work on the exported files, outside the Container.
@@ -150,6 +150,9 @@ test('appFiles: UNVERIFIED once the files differ from the passing run, or when n
   assert.notEqual(changed.digest,passing.digest);
   assert.match(changed.note,new RegExp(`differ from the last passing Container run \\(snapshot ${passing.digest.slice(0,16)}\\)`));
   assert.match(changed.files[0].content,/\*\*UNVERIFIED\*\*/);
+  // The prose above the Status section claims no run either.
+  assert.match(changed.files[0].content,/A compiler chose the entry module; these files have not passed a Container run\./);
+  assert.doesNotMatch(changed.files[0].content,/passed its Container run|ran the application/);
   room.save('compile_passed',null);
   const none=await room.appFiles();
   assert.equal(none.passed,false);
