@@ -1696,16 +1696,17 @@ export class ControlRoom extends DurableObject {
   }
   // v7.15 §6.2: a function this manager promised that no module of its
   // linked branch exports is a contract problem for the piece below that
-  // carries it (or the direct child its split gave it to). A safety net:
-  // a rename cannot remove a planned export (5.9), so only retire, retask,
-  // capacity or an accepted contract return leave such a hole. A piece
-  // that already filed its own gap (its accepted return) is not told twice.
+  // carries it. A safety net: a rename cannot remove a planned export
+  // (5.9), so only retire, retask, capacity or an accepted contract return
+  // leave such a hole. A piece that already filed its own gap (its
+  // accepted return) is not told twice. With no live piece below carrying
+  // it (carriersOf reaches every live child), it is only an event.
   contractProblems(builderId, m, files) {
     const promised=this.promisedOf(m),label=this.node(m)?.label||m,items=[];
     if(!promised.length)return items;
     for(const name of missingExports(new Map([...files].filter(([p])=>LINKABLE.test(p))),promised.map(f=>f.name))) {
       const f=promised.find(x=>x.name===name);
-      const w=this.carriersOf(name,m).find(c=>c.id!==m)||this.children(m).find(c=>!['retired','failed'].includes(c.status)&&this.promisedOf(c.id).some(x=>x.name===name));
+      const w=this.carriersOf(name,m).find(c=>c.id!==m);
       if(!w){this.event(builderId,'contract_unplaced',`${label} promised ${signature(f)}, which no module of its branch exports and no piece below carries.`,m);continue;}
       if(this.problems("source=? AND kind='contract' AND status!='closed'",w.id).some(p=>p.facts.names?.includes(name)))continue;
       items.push({kind:'contract',owner:w.id,path:this.modulesOf(builderId,files,w.id)[0]||'',
@@ -2153,9 +2154,10 @@ export class ControlRoom extends DurableObject {
       recurrence:(p,child)=>query(this.db(),`SELECT assignee FROM problems WHERE ${p.kind==='stuck'?"kind='stuck' AND outcome!='resolved' AND source":'signature'}=? AND id!=? AND assignee!=''`,p.kind==='stuck'?p.source:p.signature,p.id).filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
       production:[...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>c.id),
       leaks:(text,to)=>this.leaksHiddenAgentIds(text,[to]),busy:id=>[...this.activeTurns].some(a=>a===id||a.startsWith(id+'.')),
-      // v7.15 §10.1: what this manager promised, and what each child carries.
-      promise:{own:this.promisedOf(m).map(f=>f.name),items:this.promisedOf(m),
-        carried:Object.fromEntries([...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>[c.id,parse(c.interfaces,[]).map(f=>f.name)]))}};
+      // v7.15 §10.1: what this manager promised, and what each child carries;
+      // none in a room without promises, whose retasks take no interfaces.
+      promise:this.planned()?{own:this.promisedOf(m).map(f=>f.name),items:this.promisedOf(m),
+        carried:Object.fromEntries([...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>[c.id,parse(c.interfaces,[]).map(f=>f.name)]))}:null};
   }
   // One synchronous block (spec 3.8): every row moves only as it was read
   // (compare-and-set); a worker gets one ticket per turn with all of its

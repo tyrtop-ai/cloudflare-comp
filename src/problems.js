@@ -258,7 +258,7 @@ export function validateManagerActions(actions, call, ctx) {
       // it, cleaned and repaired as a split's (R1-R4), a function this
       // manager promised taking its item (the description travels down).
       let interfaces;
-      if(a.interfaces!==undefined) {
+      if(a.interfaces!==undefined&&ctx.promise) {
         const items=normalizeInterfaces(Array.isArray(a.interfaces)?a.interfaces:[a.interfaces]),own=ctx.promise?.items||[];
         interfaces=repairInterfaces([{label:child,interfaces:items}],own).spawn[0].interfaces.map(f=>own.find(x=>x.name===f.name)||f);
       }

@@ -422,9 +422,11 @@ test('v7.15: a planned worker\'s prompt asks for every function at once in the f
   // next to "You have no manager to ask" (slice B review).
   for(const prompt of [worker,LEAF_DEPENDENCY_RULE])
     assert.match(prompt,/import it with a relative path and the export name you expect \(the exact name your manager gave you when you asked\), each function on its own import line/);
+  // Only the plan links a line by its name: a room without promises, and
+  // the top, keep slice B's advice (slice C review).
   for(const prompt of [unplanned,top]) {
-    assert.match(prompt,/import it with a relative path and the export name you expect, each function on its own import line with the function's name as the path, for example const \{ listedName \} = require\('\.\/listedName'\);/);
-    assert.doesNotMatch(prompt,/the exact name your manager gave you/);
+    assert.match(prompt,/import it with a relative path and the export name you expect, for example const \{ listedName \} = require\('\.\/theirModule'\), and publish that expectation/);
+    assert.doesNotMatch(prompt,/the exact name your manager gave you|on its own import line/);
   }
   await generateFile(env,{node:{id:'root.1',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[],answers:['getTickets(): returns all tickets. It is exported by "ticket storage".'],asks:true});
   const system=prompts.pop(),request=JSON.parse(requests.pop());

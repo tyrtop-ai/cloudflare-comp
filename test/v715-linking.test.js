@@ -763,4 +763,7 @@ test('v7.15 × slice 2: a contract problem clusters like an entry problem: subje
   assert.equal(P.modelTrigger(contract,entries[0].dec,{recurrence:()=>2}),'M4');
   assert.deepEqual(P.validateManagerActions(again,one,{...ctx,recurrence:()=>2}).rejected.map(r=>r.reason),['root.2 already had problem c 2 or more times without a fix: give it to another child, retask or retire it, or escalate']);
   assert.deepEqual(P.validateManagerActions(again,one,{...ctx,recurrence:()=>1}).rejected,[]);
+  // In a room without promises a retask takes no interfaces (slice C review).
+  const plain=P.validateManagerActions([{action:'retask',child:'root.2',task:'Write the storage module again.',interfaces:['saveTickets']}],[],{...ctx,promise:null,scope:()=>0.9,production:['root.1','root.2']});
+  assert.deepEqual(plain.retask.map(r=>[r.child,r.interfaces]),[['root.2',undefined]]);
 });
