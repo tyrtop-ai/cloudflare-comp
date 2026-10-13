@@ -1354,7 +1354,7 @@ export class ControlRoom extends DurableObject {
     const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
     const ids=list.map(x=>this.insertProblem({holder:manager,kind:x.kind,stage,source,input,parties:this.partiesOf(via,x),detail:x.detail,
       facts:{...x.facts,via},evidence:x.evidence,flags:{wave}}));
-    if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,stage,problems:ids,ts:Date.now()});
+    if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,fingerprint:this.assemblyFingerprint(manager),stage,problems:ids,ts:Date.now()});
     else this.save(`link_reported:${manager}`,{fingerprint:input,stage,problems:ids,ts:Date.now()});
     db.exec("UPDATE agents SET status='waiting' WHERE id=?",source);
     this.event(source,'problems_reported',`${ids.length} problem(s) that renaming cannot fix go to the manager, which decides who changes what: `+
@@ -1529,22 +1529,23 @@ export class ControlRoom extends DurableObject {
 
   // ---------- the compiler ----------
   // One compiler per run, a child of the top manager, scheduled once the top
-  // builder linked the current source; it runs again for every new bundle.
+  // builder linked the current source; it runs again for every new bundle,
+  // and for new source that links to the same bundle as a failed one.
   async scheduleCompiler(top) {
     const n=this.node(top);
     if(!this.live()||!n||n.parent)return null;
-    const builder=this.builderOf(top),input=this.read(`bundle:${top}`,null)?.digest;
+    const builder=this.builderOf(top),input=this.read(`bundle:${top}`,null)?.digest,request=`${input}|${this.assemblyFingerprint(top)}`;
     if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input)return null;
     let compiler=this.compilerOf(top);
     if(!compiler) {
       compiler=await this.spawnCompiler(top);
       if(!compiler)return null;
-      this.set('compile_requested',input);
+      this.set('compile_requested',request);
       this.event(top,'compile_requested','The top builder linked the application; the compiler runs it.',compiler.id);
       return compiler;
     }
-    if(this.read('compile_passed',null)?.input!==input&&this.get('compile_requested')!==input) {
-      this.set('compile_requested',input);
+    if(this.read('compile_passed',null)?.input!==input&&this.get('compile_requested')!==request) {
+      this.set('compile_requested',request);
       this.event(top,'compile_requested','The top builder linked a new bundle; the compiler runs it again.',compiler.id);
       this.wake(compiler.id);
     }
@@ -1561,8 +1562,9 @@ export class ControlRoom extends DurableObject {
   // problems' wave, so a worker hears both in one ticket (critique #17).
   async compileStatic(top) {
     const builder=this.builderOf(top),reported=this.read(`link_reported:${top}`,null),input=this.read(`bundle:${top}`,null)?.digest;
-    if(!this.live()||this.node(top)?.parent||builder?.status!=='waiting'||!input||reported?.fingerprint!==this.assemblyFingerprint(top)||
-      this.read('compile_reported',null)?.input===input)return;
+    const fingerprint=this.assemblyFingerprint(top),prior=this.read('compile_reported',null);
+    if(!this.live()||this.node(top)?.parent||builder?.status!=='waiting'||!input||reported?.fingerprint!==fingerprint||
+      prior?.input===input&&prior.fingerprint===fingerprint)return;
     const compiler=this.compilerOf(top)||await this.spawnCompiler(top);
     if(!compiler)return;
     const files=await this.linkedBundle(builder.id),surfaces=surfacesOf(files),entry=chooseEntry(files,surfaces);
@@ -1570,7 +1572,7 @@ export class ControlRoom extends DurableObject {
     if(entry) {
       // An entry problem an earlier bundle had is settled.
       this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='entry' AND status!='closed'",Date.now(),compiler.id);
-      this.save('compile_reported',{input,stage:'static',problems:[],ts:Date.now()});
+      this.save('compile_reported',{input,fingerprint,stage:'static',problems:[],ts:Date.now()});
       return;
     }
     const wave=this.problems('id=?',reported.problems?.[0]??'')[0]?.flags.wave;
@@ -1624,17 +1626,22 @@ export class ControlRoom extends DurableObject {
     const inbox=this.receive(id);
     if(inbox.length)this.acknowledge(id,inbox);
     const wait=(kind,body)=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.event(id,kind,body);};
-    const input=this.read(`bundle:${top}`,null)?.digest;
-    if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input)return wait('compile_waiting','Waiting for the top builder to link the current source.');
+    const input=this.read(`bundle:${top}`,null)?.digest,fingerprint=this.assemblyFingerprint(top);
+    if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input) {
+      // The top re-requests this compiler once its builder is current again.
+      this.set('compile_requested','');
+      return wait('compile_waiting','Waiting for the top builder to link the current source.');
+    }
     if(this.read('compile_passed',null)?.input===input) {
       this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
       this.wake(top);
       return;
     }
     if(this.read('compile_blocked',null)?.input===input)return wait('build_blocked','Container infrastructure blocked this unchanged bundle; Continue retries it.');
-    // A static pass's report on this bundle does not hold back the full run.
+    // A static pass's report on this bundle does not hold back the full run;
+    // new source that links to the same bytes runs again.
     const prior=this.read('compile_reported',null);
-    if(prior?.input===input&&prior.stage!=='static')return wait('compile_waiting','Problems in this bundle are with the top manager; the compiler runs again when the bundle changes, or on Continue.');
+    if(prior?.input===input&&prior.fingerprint===fingerprint&&prior.stage!=='static')return wait('compile_waiting','Problems in this bundle are with the top manager; the compiler runs again when the bundle changes, or on Continue.');
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const files=await this.linkedBundle(builder.id),surfaces=surfacesOf(files);
     const report=async(stage,items)=>this.reportProblems(id,top,input,stage,await this.annotateRenames(builder.id,files,items),builder.id);
@@ -1683,7 +1690,7 @@ export class ControlRoom extends DurableObject {
     if(outcome.infrastructure)return this.blockCompiler(id,input,outcome.infrastructure);
     if(outcome.runnerFailed) {
       // A runner that cannot write a valid test is not a worker's problem.
-      this.save('compile_reported',{input,stage:'runner',problems:[],ts:Date.now()});
+      this.save('compile_reported',{input,fingerprint,stage:'runner',problems:[],ts:Date.now()});
       return wait('runner_failed',`The runner could not produce a valid test in three attempts; no worker was blamed. Continue retries. Last problem: ${clip(outcome.detail,700)}`);
     }
     if(outcome.passed) {
@@ -3321,9 +3328,11 @@ export class ControlRoom extends DurableObject {
       // The compiler runs again on the current bundle: a fresh set of runner
       // attempts, and its problems are reported again.
       const top=this.allNodes().find(n=>!n.parent),compiler=top&&this.compilerOf(top.id);
-      if(compiler&&compiler.status==='waiting'&&this.read('compile_reported',null)) {
+      // Blocked by infrastructure, it is woken by retryBlockedCompile.
+      if(compiler&&compiler.status==='waiting') {
         this.save('compile_reported',null);
-        if(this.builderCurrent(top.id)&&!this.compilePassed(top.id)) {
+        if(this.builderCurrent(top.id)&&!this.compilePassed(top.id)&&!this.read('compile_blocked',null)) {
+          this.set('compile_requested','');
           this.event(compiler.id,'compile_continue','Continue runs the compiler again on the current bundle.');
           this.wake(compiler.id);
         }

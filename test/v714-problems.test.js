@@ -545,6 +545,75 @@ test('v7.14: a top-builder rename elsewhere in the failing file does not make it
   assert.equal(room.get('repair_rounds:root'),'','Root spends no round');
 });
 
+// v7.14 review: the compiler, requested by Root, found the top builder not
+// current (a child was briefly woken) and waited. When the child is done
+// again the bundle and the source are the same as requested: the compiler is
+// requested again, not left waiting for good.
+test('v7.14: a compiler that waited for the top builder is requested again once it is current',async()=>{
+  const app="function start() {\n  return { createTicket: (d) => ({ id: 1, ...d }) };\n}\nmodule.exports = { start };\n";
+  const {room,calls,drain}=liveRoom({runner:()=>ticketRunner,leaf:()=>({summary:'Nothing to change',done:true,files:[]})});
+  await tree(room,'Build a small issue tracker that lets someone create tickets.');
+  await workers(room,'root',[['Application entry','app.js',app],['Formatter','format.js',"module.exports = { fmt: (t) => '#' + t.id };\n"]]);
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  await room.turn('root');
+  const compiler=room.compilerOf('root');
+  assert.ok(room.get('compile_requested'));
+  room.send('root','root.2','FYI: the ticket store answered your earlier question.');
+  await room.turn(compiler.id);
+  assert.equal(room.node(compiler.id).status,'waiting');
+  assert.equal(room.get('compile_requested'),'','the wait clears the request');
+  await settle(room,20);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(calls.runner.length,1);
+  // Continue wakes a waiting compiler whenever the top builder is current
+  // and the compile has not passed, reported or not.
+  const again=liveRoom({runner:()=>ticketRunner});
+  await tree(again.room,'Build a small issue tracker that lets someone create tickets.');
+  await workers(again.room,'root',[['Application entry','app.js',app],['Formatter','format.js',"module.exports = { fmt: (t) => '#' + t.id };\n"]]);
+  const b=await again.room.scheduleAssembly('root');
+  await again.room.turn(b.id);
+  await again.room.turn('root');
+  const c=again.room.compilerOf('root');
+  again.room.db().exec("UPDATE agents SET status='waiting' WHERE id=?",c.id);
+  assert.equal(again.room.read('compile_reported',null),null);
+  again.room.set('status','paused');
+  await again.room.resume(10);
+  await again.drain();
+  assert.equal(again.room.get('status'),'complete',trace(again.room));
+});
+
+// v7.14 review: a repair that changes the source but links to the same
+// bytes as the failed bundle (the worker only adopted the builder's import
+// path) runs the compiler again, which reports again: the room does not
+// pause on a problem assigned to a worker who is done.
+test('v7.14: new source that links to the bundle that failed runs the compiler again',async()=>{
+  const repo="const rows = new Map();\nlet next = 1;\nmodule.exports = {\n  create(d) { const t = { id: next++, ...d }; rows.set(t.id, t); return { ...t }; },\n  read(id) { return rows.get(id) || null; },\n  remove(id) { return rows.delete(id); }\n};\n";
+  const app="const repo = require('./repository');\nfunction start() {\n  return { createTicket: (d) => repo.create(d), viewTicket: (id) => repo.read(id), deleteTicket: (id) => true };\n}\nmodule.exports = { start };\n";
+  const runner=`const assert = require('node:assert/strict');
+const { start } = require('./index.js');
+(async () => {
+  const app = await start();
+  const t = await app.createTicket({ title: 'Printer jam' });
+  await app.deleteTicket(t.id);
+  assert.equal(await app.viewTicket(t.id), null, 'deleted ticket must be gone');
+})().catch(e => { console.error(e); process.exitCode = 1; });
+`;
+  let repairs=[];
+  const {room,calls}=liveRoom({runner:()=>runner,triage:user=>({file:user.modules.find(m=>m.path.endsWith('/app.js')).path,problem:'deleteTicket does not delete.'}),
+    leaf:(u,n)=>({summary:'Repaired',done:true,files:[{path:'app.js',content:repairs[n-1]}]})});
+  await tree(room,'Build a small issue tracker that lets someone create, view and delete tickets.');
+  const [repoPath]=await workers(room,'root',[['Repository','repository.js',repo],['Application entry','app.js',app]]);
+  // First repair: only the builder's import path (the same linked bytes); second: the fix.
+  const adopted=app.replace("'./repository'",`'../${repoPath.split('/').slice(1).join('/')}'`);
+  repairs=[adopted,adopted.replace('deleteTicket: (id) => true','deleteTicket: (id) => repo.remove(id)')];
+  await settle(room,40);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(calls.leaf.length,2);
+  assert.equal(calls.runner.length,3,'the compiler ran the same bytes again for the new source');
+  assert.equal(events(room,'run_failed').length,2);
+});
+
 // Rooms started before v7.14 keep Root-keyed build state (build_failure:root,
 // link_routed, run_passed:root): they are reset, not migrated.
 test('v7.14: Continue refuses a room started before v7.14; a new start resets it and marks the schema',async()=>{
