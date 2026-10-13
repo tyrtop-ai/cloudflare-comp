@@ -297,12 +297,29 @@ export function validateManagerActions(actions, call, ctx) {
       {rule:'model',action:'assign',child,side:sideOf(ctx.holder,byId.get(id).p,child),instructions:text,facts_from:from});
     touched.add(child);
   }
-  // v7.15 §10.1, over the whole decision: every function this manager
-  // promised stays on exactly one child. A retire or a retask that leaves
-  // one with no piece, or puts one on a second, is refused, the last such
-  // first; a retire is allowed when the same decision retasks another
-  // child to carry what it carried.
-  const own=ctx.promise?.own||[],before=new Map(Object.entries(ctx.promise?.carried||{}));
+  // v7.15 §10.1, over the whole decision: a retire or a retask that leaves
+  // a function this manager promised with no piece, or on a second, is refused.
+  keepPromise(ctx.promise,retire,retask,(culprit,why)=>{
+    gone.delete(culprit.child);
+    for(const [id,c] of covered)if(c.outcome==='retasked'&&c.child===culprit.child)covered.delete(id);
+    refuse(actionOf.get(culprit),why);
+  });
+  const decisions=call.map(e=>{
+    if(covered.has(e.id))return {...e,dec:covered.get(e.id),how:'model'};
+    const hit=placeParties(ctx.holder,e.p.parties).find(x=>gone.has(x.child));
+    return hit?{...e,dec:{rule:'model',action:'close',outcome:gone.get(hit.child),child:hit.child},how:'closed'}:{...e,how:'default'};
+  });
+  return {decisions,retire,retask,rejected};
+}
+
+// v7.15 §10.1: every function a manager promised stays on exactly one
+// child. promise: {own, carried: {child: names}}; retire and retask, the
+// lists, are changed in place: one that leaves a name with no piece, or
+// puts one on a second, is dropped, the last such first, and drop(it, why)
+// is told. A retire stands when a retask in the lists carries what it
+// carried. The applier checks again what it will apply (slice C review).
+export function keepPromise(promise, retire, retask, drop) {
+  const own=promise?.own||[],before=new Map(Object.entries(promise?.carried||{}));
   const count=(name,state)=>[...state.values()].filter(names=>names.includes(name)).length;
   for(let guard=0;own.length&&guard<24;guard++) {
     const after=new Map(before);
@@ -314,16 +331,9 @@ export function validateManagerActions(actions, call, ctx) {
     const culprit=[...retire,...retask].filter(r=>lost?had(r)&&!gives(r):gives(r)&&!had(r)).at(-1);
     if(!culprit)break;
     const list=retire.includes(culprit)?retire:retask;
-    list.splice(list.indexOf(culprit),1);gone.delete(culprit.child);
-    for(const [id,c] of covered)if(c.outcome==='retasked'&&c.child===culprit.child)covered.delete(id);
-    refuse(actionOf.get(culprit),lost?`${name} would have no piece`:`${name} would be on two pieces`);
+    list.splice(list.indexOf(culprit),1);
+    drop(culprit,lost?`${name} would have no piece`:`${name} would be on two pieces`);
   }
-  const decisions=call.map(e=>{
-    if(covered.has(e.id))return {...e,dec:covered.get(e.id),how:'model'};
-    const hit=placeParties(ctx.holder,e.p.parties).find(x=>gone.has(x.child));
-    return hit?{...e,dec:{rule:'model',action:'close',outcome:gone.get(hit.child),child:hit.child},how:'closed'}:{...e,how:'default'};
-  });
-  return {decisions,retire,retask,rejected};
 }
 
 const base=path=>String(path||'').split('/').pop();

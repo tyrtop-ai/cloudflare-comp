@@ -688,6 +688,37 @@ test('v7.15 × slice 2: retire of a direct carrier is refused unless a retask ca
   assert.equal(calls.split.length,3,'the rejected split\'s in-call retry, then the split that covers it');
   assert.deepEqual(room.children('root.1').filter(c=>c.status!=='retired').map(c=>[c.label,room.promisedOf(c.id).map(f=>f.name)]),[['ticket reader',['loadTickets']],['ticket writer',['saveTickets']]],trace(room));
 });
+// The validator accepts a retire of the loader with a retask that gives
+// the saver both names, as one decision. Applied, each half stands on its
+// own problems: when one half went stale while the model decided (a new
+// report), the other alone would orphan loadTickets or put it on two
+// pieces, so it waits too.
+test('v7.15 × slice 2: half of a validated retire and retask pair is not applied alone',async()=>{
+  for(const stale of ['retask','retire']) {
+    let gone=null;
+    const task='Write code that reads and stores the whole ticket list.';
+    const {room}=await storeRoom({manager:user=>{
+      room.db().exec("UPDATE problems SET status='closed',outcome='superseded' WHERE id=?",gone);
+      const save=user.problems.find(p=>p.parties.every(x=>x.child==='root.1.2')).id;
+      return {actions:[{action:'retire',child:'root.1.1',reason:'duplicate'},{action:'retask',child:'root.1.2',task,problems:[save],reason:'stuck',interfaces:['loadTickets','saveTickets']}]};
+    }});
+    const b=await room.scheduleAssembly('root.1');
+    await room.turn(b.id);
+    const stuck=(owners,detail)=>room.insertProblem({holder:'root.1',kind:'stuck',stage:'work',source:owners[0],input:'turn:1',
+      parties:owners.map((owner,i)=>({path:'',owner,owner_path:'',digest:'',role:i?'site':'subject'})),detail,flags:{wave:'w-'+owners.join()}});
+    stuck(['root.1.1','root.1.2'],'load tickets stopped after three failed turns at the code gate');
+    stuck(['root.1.2'],'save tickets stopped after three failed turns at the code gate');
+    gone=room.problems(stale==='retask'?"holder='root.1' AND source='root.1.2'":"holder='root.1' AND source='root.1.1'")[0].id;
+    await step(room,'root.1');
+    assert.deepEqual(room.children('root.1').filter(c=>c.label!=='Temporary builder').map(c=>[c.label,c.status,room.promisedOf(c.id).map(f=>f.name)]),
+      [['load tickets','done',['loadTickets']],['save tickets','done',['saveTickets']]],`${stale} stale: `+trace(room));
+    assert.deepEqual([room.carriersOf('loadTickets','root.1').map(c=>c.id),room.carriersOf('saveTickets','root.1').map(c=>c.id)],[['root.1.1'],['root.1.2']]);
+    const why=events(room,'problem_decision_stale').map(e=>e.body);
+    assert.ok(why.includes(stale==='retask'?'Retiring load tickets is not applied: without the rest of its decision, loadTickets would have no piece.':
+      'Retasking save tickets is not applied: without the rest of its decision, loadTickets would be on two pieces.'),why.join('\n'));
+    assert.equal(events(room,'child_retired').length+events(room,'child_retasked').length,0);
+  }
+});
 test('v7.15 × slice 2: a contract problem clusters like an entry problem: subject-only, never fixed against a provider',()=>{
   const party=(owner,role)=>({path:`components/x/${role}.js`,owner,owner_path:`${role}.js`,digest:'',role});
   const placed=p=>P.placeParties('root',p.parties);

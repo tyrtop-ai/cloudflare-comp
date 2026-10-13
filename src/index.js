@@ -13,7 +13,7 @@ import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImpor
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
-import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, instructionsFor, repairText } from './problems.js';
+import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -2172,6 +2172,14 @@ export class ControlRoom extends DurableObject {
       const wave=entries.find(e=>e.dec.outcome==='retasked'&&e.dec.child===r.child)?.p.flags.wave||`retask:${r.child}:${now}`;
       if(st.exhausted||(st.exhausted=this.countRound(m,wave)))skip.add(r.child);
     }
+    // The decision was validated whole; what of it applies is checked again,
+    // so half of a retire and retask pair (the other stale or out of rounds)
+    // never leaves a promised name with no piece or on two: it waits too.
+    const applied=acts.retask.filter(r=>!skip.has(r.child));
+    keepPromise(ctx.promise,acts.retire,applied,(r,why)=>{
+      skip.add(r.child);
+      this.event(m,'problem_decision_stale',clip(`${r.task?'Retasking':'Retiring'} ${label(r.child)} is not applied: without the rest of its decision, ${why}.`,400),r.child);
+    });
     const decided=[];
     for(const {p,dec} of entries) {
       if(dec.action==='close'&&skip.has(dec.child))continue;
