@@ -1,4 +1,5 @@
 import { validKnowledgeKey } from './knowledge.js';
+import { normalizeInterfaces } from './interfaces.js';
 
 // Small coordination messages. Source code never travels inside the control JSON.
 export const clip = (v, n = 1200) => String(v ?? '').slice(0, n);
@@ -43,9 +44,13 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
       .map(f => ({ from: f.from, path: f.path, as: f.as || f.path })),
     spawn: (Array.isArray(raw.spawn) ? raw.spawn : [])
       .filter(s => s && typeof s.task === 'string' && s.task.trim().length >= 8)
-      // Module paths and export signatures are NOT splitter output. Discard
-      // legacy/unrequested fields so they cannot become child requirements.
-      .map(s => ({ label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700) })),
+      // Module paths are not splitter output; function names are (v7.15, key
+      // "functions"). Discard other fields so they cannot become requirements.
+      .map(s => {
+        const fns = Array.isArray(s.functions) ? s.functions : Array.isArray(s.interfaces) ? s.interfaces : null;
+        const interfaces = fns?.length ? normalizeInterfaces(fns) : [];
+        return { label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700), ...(interfaces.length ? {interfaces} : {}) };
+      }),
     messages: (Array.isArray(raw.messages) ? raw.messages : [])
       .filter(m => m && typeof m.to === 'string' && typeof m.body === 'string')
       .map(m => ({ to: clip(m.to, 70), body: clip(m.body, 1800) })),

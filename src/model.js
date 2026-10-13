@@ -1,4 +1,5 @@
 import { parseObject, contentOf } from './protocol.js';
+import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature } from './interfaces.js';
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 
 export async function run(env, system, user, maxTokens) {
@@ -91,6 +92,39 @@ export async function scopeChildren(env, originalGoal, parentTask, children) {
   }));
   return checked.flat();
 }
+// v7.15: Clef vets the names in the same step, in its own call so the
+// within_i scores above stay what they were (run6's sit near 0.5). One
+// question per name a piece adds; a promised name is never asked about, so
+// no answer about names can reject a split. A NO strips that name only.
+export async function scopeInterfaces(env, originalGoal, parentTask, children, promised=[]) {
+  const own=new Set(promised.map(p=>p.name));
+  const asks=children.flatMap((c,i)=>(c.interfaces||[]).map((f,k)=>({i,k,f})).filter(x=>!own.has(x.f.name)));
+  const result=children.map(c=>(c.interfaces||[]).some(f=>!own.has(f.name))?[]:null);
+  if(!asks.length)return result;
+  if(env.MOCK_AI==='true'){for(const {i,f} of asks)result[i].push({name:f.name,p:1});return result;}
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef scope decision model');
+  const line=f=>`${signature(f)}${f.does?': '+f.does:''}`;
+  const state={original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
+    parent_promised_functions:promised.map(p=>p.name),
+    proposed_children:children.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900),functions:(c.interfaces||[]).map(line)}))};
+  const groups=[];
+  for(let start=0;start<asks.length;start+=12)groups.push(asks.slice(start,start+12));
+  const answered=await Promise.all(groups.map(async group=>{
+    const questions=Object.fromEntries(group.map(({i,k,f})=>[`names_${i}_${k}`,{type:'noul',
+      instructions:`Proposed child ${i} ("${String(children[i].label).slice(0,70)}") lists ${line(f)} among the functions it will export. Does child ${i}'s own responsibility write this function, rather than another proposed child's responsibility or code outside the parent's assignment? Answer NO if another proposed child's responsibility writes it, or if the parent was not asked for it. Judge only where the function belongs, not its quality or its name.`}]));
+    const output=await env.AI.run(selector,{model:clef,state,questions});
+    return group.map(({i,k,f})=>{
+      const probability=output?.answers?.[`names_${i}_${k}`]?.noul;
+      if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
+        throw new Error(`Clef returned no valid probability for ${f.name} of child ${i}`);
+      return {i,name:f.name,p:probability};
+    });
+  }));
+  for(const {i,name,p} of answered.flat())result[i].push({name,p});
+  return result;
+}
 
 // Route questions through a manager's direct-child public Artifacts index.
 // Clef classifies owners; it never reads Git itself or generates an answer.
@@ -141,6 +175,10 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
 // any other part of the goal; the compiler repeats the contract in every
 // entry problem it files.
 export const GOAL_START_REQUIREMENT = 'The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.';
+// v7.15 (author decision 1): Root's promise, written by the runtime at run
+// start in live rooms. Its carrier learns the operations from its own task
+// and asks for each one's function.
+export const ROOT_PROMISE = Object.freeze([Object.freeze({name:'start',does:'no arguments; returns an object with one method per goal operation, each the function that performs it, which you ask your manager for and import by its name',params:Object.freeze([])})]);
 export const ENTRY_CONTRACT = 'You write the application entry module: it imports the other pieces by the relative paths and names it expects, exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each the operation imported from the module that owns it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
 
 // When Clef says YES, a lightweight generative agent guesses the next layer.
@@ -148,22 +186,52 @@ export const ENTRY_CONTRACT = 'You write the application entry module: it import
 export async function decompose(env, context) {
   if (env.MOCK_AI === 'true') return mockDecomposition(context);
   const available=Math.max(0,Number(context.max_child_writers ?? 256));
-  const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into the smallest INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide as finely as the code naturally permits, with no predetermined number of children. The runtime has ${available} available agent slots for this split; use no more than that (and at least two if splitting). Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements, but do not invent filenames, export signatures, or a new global architecture. The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON: {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that ..."},...]}. Do not write code yourself.`;
+  const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into the smallest INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide as finely as the code naturally permits, with no predetermined number of children. The runtime has ${available} available agent slots for this split; use no more than that (and at least two if splitting). Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements; do not invent filenames or a new global architecture. DO name the functions each piece exports: give each piece "functions", the few functions (at most 5) that code outside that piece calls, each {"name":"camelCaseIdentifier","does":"one line","params":["optional hint"]}. Name each function after what it does and what it acts on (createTicket, not create). Names are binding: the piece must export exactly these names and other pieces import them by these names; a later builder can only rename, so choose plain descriptive names. A piece may export more; list only what others call. your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece, the one whose task writes it. Never give a function to two pieces. List only functions your pieces write: a piece that needs a function from elsewhere asks for it when it runs, so do not create a piece for it. If a function performs one of the operations the original goal names, add "operation":"<that operation in a few words>". The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON: {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that ...","functions":[{"name":"functionName","does":"what it does","params":["argument"]}]},...]}. Do not write code yourself.`;
   // Root's goal is a scope boundary for this splitter, never a request for
-  // an agent to design the whole app or invent cross-module interfaces.
-  const request=JSON.stringify({assigned_code:context.your_responsibility,
+  // an agent to design the whole app. The request is built field by field
+  // (a blind cut could end the JSON mid-string); only the rejection feedback
+  // is clipped to the room left.
+  const promised=Array.isArray(context.your_promised_functions)?context.your_promised_functions:[];
+  const fields={assigned_code:context.your_responsibility,
+    your_promised_functions:promised.length?promised:undefined,
     original_goal_scope_boundary:context.root_scope || undefined,
-    previous_split_rejection:context.split_feedback || undefined,
-    available_child_slots:available}).slice(0,8500);
-  let output=await run(env,system,request,4096);
-  let parsed=parseObject(output);
-  const vague=placeholderChildren(parsed.spawn);
-  if(!parsed.parse_error && Array.isArray(parsed.spawn) && parsed.spawn.length>=2 && parsed.spawn.length<=available && !vague.length)return parsed;
+    previous_split_rejection:undefined,
+    available_child_slots:available};
+  if(context.split_feedback)fields.previous_split_rejection=clipFeedback(context.split_feedback,8500-JSON.stringify(fields).length-30);
+  const request=JSON.stringify(fields);
+  // C0 runs first, so a piece whose task says it exports a promised name
+  // costs no retry; C6 is the walk's, as this splitter sees no other branch.
+  const vet=parsed=>{
+    if(parsed.parse_error||!Array.isArray(parsed.spawn))return {parsed,ok:false,count:Infinity};
+    const {spawn,inferred}=normalizeSpawn(parsed.spawn,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised);
+    return {parsed,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
+  };
+  const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
+  const first=vet(parseObject(await run(env,system,request,4096)));
+  if(first.ok && !first.count)return done(first);
   // Labels copied from the example ("Piece A", run4) give Clef and the prune
   // walk nothing to place, so they are turned back before anyone sees them.
-  const specific=vague.length?` Your previous answer used placeholder labels or tasks copied from the example (${vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
-  output=await run(env,system+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+specific,request,4096);
-  return parseObject(output);
+  const specific=first.vague?.length?` Your previous answer used placeholder labels or tasks copied from the example (${first.vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
+  const names=first.bad?.length?` Your previous answer's functions failed these checks: ${first.bad.map(e=>e.text).join(' ')} Correct them.`+
+    (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
+  const retry=vet(parseObject(await run(env,system+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+specific+names,request,4096)));
+  // The retry replaces the first answer only when it is not worse.
+  return done(retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok ? first : retry);
+}
+// The rejection feedback within the room left: rejected, then accepted,
+// then proposed entries go from the end, then the reason is cut.
+export function clipFeedback(feedback, room) {
+  const size=x=>JSON.stringify(x).length;
+  if(!feedback||typeof feedback!=='object'||size(feedback)<=room)return feedback;
+  const out={...feedback};
+  for(const key of ['rejected','accepted','proposed']) {
+    if(!Array.isArray(out[key]))continue;
+    out[key]=[...out[key]];
+    while(out[key].length&&size(out)>room)out[key].pop();
+  }
+  if(size(out)>room&&typeof out.reason==='string')out.reason=out.reason.slice(0,Math.max(0,out.reason.length-(size(out)-room)));
+  if(size(out)>room)delete out.root_goal;
+  return out;
 }
 // A child whose label or task is the prompt's example, or a bare
 // "Piece A" / "Part 2" style name, says nothing about the code it writes.
@@ -179,15 +247,17 @@ function mockDecomposition(c) {
     summary:'Issue tracker splits into user-facing interactions and ticket service behavior, irrespective of implementation difficulty.',
     spawn:[
       {label:'A · UI',task:'Implement the user-facing ticket interactions and display. Coordinate the public backend interface with its responsible owner.'},
-      {label:'B · Backend',task:'Provide ticket storage, HTTP operations, and verification. Factor distinct behaviors further; own the integrated backend output.'}
+      {label:'B · Backend',task:'Provide ticket storage, HTTP operations, and verification. Factor distinct behaviors further; own the integrated backend output.',
+        functions:[{name:'addTicket',does:'stores a ticket with a title and returns it',params:['title']},{name:'listTickets',does:'returns every stored ticket'},
+          {name:'createTicketHandler',does:'returns the HTTP request handler for tickets',params:['storage']},{name:'verifyTicketAPI',does:'checks the ticket HTTP API',params:['backend']}]}
     ]
   };
   if (c.your_id === 'root.2') return {
     summary:'Backend service contains three independently buildable behaviors.',
     spawn:[
-      {label:'Persistence',task:'Implement ticket storage with operations for creation and retrieval; expose composable behavior to backend owner.'},
-      {label:'HTTP API',task:'Implement Node built-in HTTP request/response behavior for tickets, accepting storage callbacks as parameters.'},
-      {label:'Tests',task:'Implement checks of ticket operations and API behavior to hand to backend owner.'}
+      {label:'Persistence',task:'Implement ticket storage with operations for creation and retrieval; expose composable behavior to backend owner.',functions:[{name:'addTicket'},{name:'listTickets'}]},
+      {label:'HTTP API',task:'Implement Node built-in HTTP request/response behavior for tickets, accepting storage callbacks as parameters.',functions:[{name:'createTicketHandler'}]},
+      {label:'Tests',task:'Implement checks of ticket operations and API behavior to hand to backend owner.',functions:[{name:'verifyTicketAPI'}]}
     ]
   };
   return {summary:'A single cohesive behavior remains.',atomic:true,reason:'Further subdivisions would be steps within one coupled behavior, not independently composable outcomes.'};
