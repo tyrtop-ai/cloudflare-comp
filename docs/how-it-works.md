@@ -1,6 +1,6 @@
 # Recursive Control Plane: how it works
 
-> The detailed companion to the short [README](../README.md). It was written for v7.15.0, before run9; the v7.15.1 section of [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md#v7151) gives what changed since.
+> The detailed companion to the short [README](../README.md), for v7.15.1. The [v7.15.1 section of CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md#v7151) gives the details of what changed after run9.
 
 A multi-agent code-writing control plane that runs entirely on Cloudflare. You give it a goal, and a tree of small agents:
 - splits the work, promising a few named functions for each piece;
@@ -12,7 +12,7 @@ Each failure goes to the lowest manager whose branch holds every module involved
 
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
-> **Status:** this is v7.15.0. The live runs on Cloudflare so far, up to run8, all used v7.13.x. No live run has used v7.14 or v7.15, and no live run has yet finished with a correct, verified application. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
+> **Status:** this is v7.15.1. Every live run up to run8 used v7.13.x or earlier; run9 was the first on v7.15 and ended when its flat budget of six repair rounds ran out, which v7.15.1 makes progress-aware. No live run has yet finished with a correct, verified application. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
 
 ## The idea
 
@@ -46,7 +46,7 @@ Every node in the tree has one of four roles:
 | **Worker** | Writes modules, exports the functions it promised, asks its manager for every function it needs, and fixes its own modules when its manager sends it a repair ticket | Decides for others |
 | **Manager** (Root included) | Splits its assignment, promising functions for each child; scope-checks and prunes its children; answers function requests from its direct children's promises; solves the problems in its inbox: assign, escalate, retire or retask | Writes code, or reaches below its direct children |
 | **Builder** (one per manager, a child of it) | Links the manager's direct children, rename-only plus the runtime's binding fixes, and reports what renaming cannot fix to its manager | Decides who changes what |
-| **Compiler** (one per run, a child of Root) | Chooses the entry, writes the runtime loader and package, loads and starts the application in a Container, checks the API it returned, has a separate runner test it, and reports failures to Root | Writes or edits application code |
+| **Compiler** (one per run: Root's one extra child, drawn above it on the dashboard) | Chooses the entry, writes the runtime loader and package, loads and starts the application in a Container, checks the API it returned, has a separate runner test it, and reports failures to Root | Writes or edits application code |
 
 **A manager owns only its direct children, and problems and requests move one level at a time.**
 - A builder reports to its own manager, and the compiler reports to Root.
@@ -66,7 +66,7 @@ Every node in the tree has one of four roles:
   - It has no parent. Where another manager would escalate, Root closes the problem, and when its repair rounds run out, the run fails. A function request that reaches Root unanswered is answered "no piece promises it".
   - An import that resolves nowhere becomes a problem at Root, not a need on a branch boundary.
   - Its own split is not checked by the prune walk.
-  - The compiler hangs under it.
+  - The compiler is its child, drawn above it on the dashboard.
 
 ## Promises
 
@@ -93,7 +93,7 @@ A node's **promise** is the functions its parent's split listed for it (Root's i
 | Issues and assignment | The problem inbox. A builder or the compiler files what renaming cannot fix with its manager. Each manager places a problem's parties among its own direct children and decides one level at a time. Deterministic rules decide first. The manager's model is asked only for a real choice, and the runtime validates every action it returns. |
 | CODEOWNERS and blame | Provenance. A problem names its parties (the module that reads a name, the one that provides it, the line that failed, the piece that promised a function) and the worker that wrote each, through any number of nested builders. A worker hears it with the renames every builder made in its file since it published it, so a builder's rename is not mistaken for the worker's own code. |
 | Discussion | Function requests. A worker asks only its manager, for each function it needs. The manager answers from its direct children's promises, by name or with one Clef call, or passes the request to its own parent, and the answer comes back down the same way. |
-| CI | The compiler, one node under Root, runs the linked application and the runner's test in a Cloudflare Container. |
+| CI | The compiler, Root's one extra child, runs the linked application and the runner's test in a Cloudflare Container. |
 
 ## Architecture
 
@@ -146,7 +146,7 @@ flowchart TD
 2. **Split gate.** For every agent's assignment, Clef answers one typed YES/NO question: can this code be written as two or more independent modules? Clef returns a probability. At or above the room's threshold (default 0.7), Qwen proposes the children.
    - The splitter prompt is the same at every level. It asks for plain Node.js with built-in modules only: no TypeScript, UI frameworks or JSX, and no servers, frameworks or databases unless the goal asks for them.
    - For each child, the splitter gives a label, a task and its `functions`: at most five that code outside the piece calls. The splitter must give each function its own node promised, unchanged, to exactly one piece.
-3. **Names checked.** Before Clef is asked, the runtime checks the names. A piece whose task says it "exports NAME(" carries NAME. A name that is not an identifier, is copied from the prompt's example, is listed by two pieces or comes past the fifth gets one retry in the same call, and is then deleted. Placeholder labels such as "Piece A" also get the retry. Only a split that does not give each promised name to exactly one piece is rejected. The next turn then keeps Clef's YES and gives the splitter its partition back.
+3. **Names checked.** Before Clef is asked, the runtime checks the names. A piece whose task says it "exports NAME(" carries NAME. A name that is not an identifier, is copied from the prompt's example, or comes past the fifth gets one retry in the same call, and is then deleted. A new name that two pieces list also gets the retry, and is then placed on one of them: the one piece whose task says it exports it, else the one piece whose label is the name's words ("Update Ticket Module" for `updateTicket`), else the piece Clef picks at 0.6 or above. Only when none fits is it deleted from all of them. Placeholder labels such as "Piece A" also get the retry. Only a split that does not give each promised name to exactly one piece is rejected. The next turn then keeps Clef's YES and gives the splitter its partition back.
 4. **Scope check, in the same step.** Two Clef calls run in parallel:
    - one scores every proposed child against both the goal and the parent's assignment, and drops a child below 0.5;
    - one asks, for each name a child adds, whether that child's own assignment writes it, and a NO deletes only that name.
@@ -166,7 +166,7 @@ flowchart TD
 8. **Parse check and commit.** Every file must contain executable JavaScript, parse with Acorn as CommonJS or as an ES module, and import no packages. A failure goes back to the same worker in the same turn. The worker's files for the turn are then pushed as one commit.
    - A worker that fails three turns in a row at this gate becomes a `stuck` problem for its manager.
    - A worker rejected for TypeScript, JSX or a package import is retasked once to plain JavaScript.
-9. **Return check.** Before its done is accepted, a worker must export each promised function as a named export or a member of the exported object (a class's or instance's methods do not count). If it does not, it is sent back, up to three times. The fourth done is accepted, and a `contract` problem goes to its manager. Then its completion report goes to its manager.
+9. **Return check.** Before its done is accepted, a worker must export each promised function as a named export or a member of the exported object (a class's or instance's methods do not count), and none of them may be an empty placeholder: no statements, only returning nothing, or only throwing a not-implemented error. For the piece that carries `start`, the same goes for each operation `start()` returns. If it fails, it is sent back, up to three times. A placeholder is sent back with what the plan offers for that operation, found the way a function request is answered, or, when no piece up to Root promises it, with the instruction to write it here. The fourth done is accepted, and a `contract` problem goes to its manager. Then its completion report goes to its manager.
 10. **Builder link.** A manager's builder starts when every worker under the manager has finished and no repair is in flight there.
     - **Path fixes.** With no model call, the runtime points each import that resolves nowhere at the one module that clearly provides it. That is the only module exporting every name the file uses from the import; of several, the one whose piece the plan gives those names; or else the only module named like the import path that exports at least one of them. A branch builder accepts only an exact name.
     - **Binding fixes.** The runtime then fixes each import that is bound the wrong way round for its target.
@@ -276,15 +276,15 @@ The model gets one call per turn on the largest cluster of related problems.
 | Limit | Value |
 |---|---|
 | Relinks per manager per source | 2 |
-| Repair rounds per manager | 6 |
-| Repair rounds per run | 8 plus 2 per manager, at most 40 |
+| Repair rounds per manager | 3 in a row without progress; a round with progress resets the count |
+| Repair rounds per run | min(40, 16 + 4 × managers), progress or not |
 | Manager model calls per manager | 8 |
 | Unchanged repairs per problem | 2 |
 | Decisions per problem | 2 × depth + 2 |
 | Returns for a missing promised function | 3 |
 | Function requests sent at once | 8 |
 
-When Root runs out of rounds, the run fails. A lower manager that runs out tells its parent it cannot finish its branch. Infrastructure failures, and three failed turns a manager cannot settle, pause until you press **Continue**.
+A round makes progress when its report no longer fails the way the manager's last round from the same source did, and fails like none of its last three rounds from that source, so ping-pong between two failures is not progress. For a load or run failure, progress compares the error line, the line of the runner's fixed test where it stopped and the files it is blamed on, never triage's wording. When Root runs out of rounds, the run fails. A lower manager that runs out tells its parent it cannot finish its branch. Infrastructure failures, and three failed turns a manager cannot settle, pause until you press **Continue**.
 
 ### Function requests, one level at a time
 
@@ -325,11 +325,12 @@ Linking is the one place where independent work meets, which makes it the natura
 
 The page served from `public/` shows the run as an ownership tree of circles. It is observer-only: no agent reads it.
 
-- **Colour is the role.** Managers are blue, workers are ink, and the compiler is grey.
+- **Colour is the role.** Managers are blue, workers are ink, and the compiler is grey. The compiler is drawn above Root, joined to it by a short line.
   - A builder is not drawn separately. Its manager's circle splits in half, manager and builder (purple), while the builder is at work on the branch, and a light band sweeps across it.
   - A circle with a light fill is working, and a solid one is done. A pulse means it is running inference. A faded circle is retired, and a red one has failed.
 - **Green marks finished branches.** The lines under a manager turn green once everything below it is done and its builder has yet to link. When the builder has linked the branch, the manager's circle gets a green ring.
 - **Details.** Hover a circle for its name. Click it to see, below the tree, its task, a `promises:` line with the functions it promised (when it has any), its repository and summary, and, for a manager, its builder.
+- **Inference path.** A selected circle draws, in orange, the edges it can use: its parent and its direct children (for a manager, its builder too, and at Root the compiler). The details say who it talks to; click a name to select that node, which is how a builder is selected.
 - **Colours.** They come from the tyrtop.com palette. Dark mode follows the system setting; `html[a="dark"]` or `html[a="light"]` forces either one.
 
 Around the tree, the dashboard shows:
@@ -387,11 +388,11 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Version.** This is v7.15.0. The full local suite passes with `npm test`, and `npm run check` passes.
+- **Version.** This is v7.15.1. The full local suite passes with `npm test`, and `npm run check` passes.
   - [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md): predicted interfaces, the promises, function requests, and what the linker and the compiler read from the plan.
   - [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md): the four roles, the problem inbox and the managers' decisions.
   - [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md): v7.13.0, the hotfixes v7.13.1 to v7.13.4, and the export connector.
-- **Live.** Every live run so far used the issue-tracker goal, Qwen3-30B-A3B for the splitter and the workers, and Clef-flash for the gates. Up to run8, they all ran on v7.13.x or earlier. **No live run has used v7.14 or v7.15, and no live run has yet finished with a correct, verified application.**
+- **Live.** Every live run so far used the issue-tracker goal, Qwen3-30B-A3B for the splitter and the workers, and Clef-flash for the gates. Up to run8, they all ran on v7.13.x or earlier; run9 ran on v7.15.0. **No live run has yet finished with a correct, verified application.**
 
 | Run | Room | Version | Outcome | Fixed in |
 |---|---|---|---|---|
@@ -403,6 +404,7 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 | run6 | 9642ff74 | v7.13.1 | "complete" in 3 minutes, but false: `start()` returned only `{ getTickets }` | v7.13.3 |
 | run7 | 4203fa2a | v7.13.3 | did not complete in 38 minutes: an immediately invoked store read as exporting nothing, whole modules bound as values, unreadable runner and coverage output | v7.13.4 |
 | run8 | 48a10b1d | v7.13.4 | paused after 9.6 minutes and 5 repair rounds: one import line for two modules, reader and provider confused, a repair answered "fixed" with no file | v7.15 |
+| run9 | 92cc686b | v7.15.0 | failed after 6.5 minutes, when Root's flat budget of six repair rounds ran out. Clef made every split decision, every relink after the first needed no model call, the app loaded and started on every round, and each repair round fixed a real bug. It ended on two gaps: names that two pieces both listed were deleted from both, so no piece promised update or delete, and `start()` returned empty placeholder functions | v7.15.1 |
 
 The changelogs give each run's evidence, and the local replays of its files, which run through the real Container runner script with scripted models.
 
@@ -418,7 +420,7 @@ The changelogs give each run's evidence, and the local replays of its files, whi
 - **Context.** Linker input at one level is not split when it exceeds the model's context; the builder logs a `link_oversize` event instead. A builder's request grows with its direct children and their boundaries, not with the whole tree. The compiler's triage of a test failure that no stack frame attributes is the one call that can read the whole application.
 - **Plain JavaScript only.** Workers write `.js`, `.mjs` or `.cjs` using Node built-ins: no npm packages, TypeScript or JSX.
 - **Duplicated work.** Scope is checked when work is split, not afterwards:
-  - the splitter is asked for non-overlapping pieces, and no function name may be on two pieces;
+  - the splitter is asked for non-overlapping pieces, and a new function name two pieces list is placed on one of them (by task, label or Clef), or dropped when none fits;
   - Clef checks each child against the goal and its parent's assignment;
   - a split with two identical tasks is refused;
   - below Root, the prune walk drops a child whose names another branch already promises, then asks each level above whether another strand already owns it.
@@ -461,7 +463,8 @@ The design reached this shape over many versions:
 - since v7.12, builders that may also fix how an import binds its module;
 - in v7.13, prune on discovery, builders that read their children's boundaries, and the hotfixes from four live runs;
 - in v7.14, four uniform roles, with Root as the final stop;
-- in v7.15, promised functions: each split names them, a worker asks its manager for what it needs, and the linker and the compiler read the plan.
+- in v7.15, promised functions: each split names them, a worker asks its manager for what it needs, and the linker and the compiler read the plan;
+- in v7.15.1, from run9: repair rounds that count only when they make no progress, duplicate names placed on one piece, and empty placeholders sent back.
 
 [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md), [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md) and [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md) cover what changed since v7.12. [docs/history/CHANGELOG-v7.12.md](history/CHANGELOG-v7.12.md) documents the release before them. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](history/).
 
