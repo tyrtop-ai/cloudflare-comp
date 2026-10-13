@@ -731,8 +731,7 @@ export class ControlRoom extends DurableObject {
     return this.env.MANAGERS.getByName(`${room}:${this.get('run_nonce','legacy')}:${id}`);
   }
   // Agent-facing views expose only the public surface of a direct neighbor.
-  // This projection does not determine builder materialization (which uses
-  // actual owner files without an alias explosion).
+  // A builder copies the same surface, each file once (publishedSources).
   assembledSurface(child) {
     const published=this.visibleManifest(child.id);
     return published.filter(f=>!isAssemblyMetadata(f.path)).map(f=>({path:f.path,revision:f.revision||1})).slice(0,24);
@@ -781,9 +780,40 @@ export class ControlRoom extends DurableObject {
           .map(f=>({path:f.path,revision:f.revision,owner:builder.id,sourceLabel:child.label,delegated:true})):[];
         return {child,files,delegated:true};
       }
-      return {child,files:this.manager(child.id)?this.descendantsWithCode(child.id):
+      // v7.15.1: a manager child is what it publishes (MOCK), never its workers' raw files.
+      return {child,files:this.manager(child.id)?this.publishedSources(child):
         this.files(child.id).filter(f=>!isAssemblyMetadata(f.path)).map(f=>({path:f.path,revision:f.revision,owner:child.id,sourceLabel:child.label})),delegated:false};
     });
+  }
+  // A manager child's public files and export aliases; the runtime resolves
+  // an alias when it reads it, and its revision is the file it points to.
+  // One entry per file: a manager publishes a child's file under its bare
+  // path and under the child's directory; the longer keeps that layout.
+  publishedSources(child) {
+    const target=(owner,path,depth=0)=>{
+      const alias=query(this.db(),'SELECT source,source_path FROM exposed_files WHERE owner=? AND path=?',owner,path)[0];
+      return alias&&depth<=this.settings().max_depth?target(alias.source,alias.source_path,depth+1):{key:owner+'\n'+path,revision:this.files(owner).find(f=>f.path===path)?.revision||0};
+    };
+    const byFile=new Map();
+    for(const f of this.visibleManifest(child.id).filter(f=>!isAssemblyMetadata(f.path))) {
+      const {key,revision}=target(child.id,f.path);
+      if(!byFile.has(key)||f.path.length>byFile.get(key).path.length)byFile.set(key,{path:f.path,revision,owner:child.id,sourceLabel:child.label});
+    }
+    return [...byFile.values()];
+  }
+  // v7.15.1: a builder reads, of its manager's child, only what that child
+  // publishes: its own files and aliases, or the bundle its own builder
+  // linked. Never a file a deeper agent owns.
+  publishedBy(child, owner) {
+    if(owner===child.id)return true;
+    const o=this.node(owner);
+    return o?.label==='Temporary builder'&&o.parent===child.id;
+  }
+  // The gate on every copy into a builder: its sibling, and a file that sibling publishes.
+  builderReads(builder, child, f) {
+    if(canRead(builder,child)&&this.publishedBy(child,f.owner))return true;
+    this.event(builder.id,'blocked',`Not read: ${clip(child.label,70)}/${clip(f.path,120)} is not a file its sibling publishes.`);
+    return false;
   }
   assemblyFingerprint(id) {
     return JSON.stringify(this.assemblySources(id).map(({child,files,delegated})=>[
@@ -793,7 +823,7 @@ export class ControlRoom extends DurableObject {
   async builderContext(id) {
     return Promise.all(this.assemblySources(id).map(async ({child,files,delegated})=>({
       label:child.label,responsibility:clip(child.task,500),status:child.status,delegated,
-      files:await Promise.all(files.slice(0,32).map(async f=>({
+      files:await Promise.all(files.filter(f=>this.publishedBy(child,f.owner)).slice(0,32).map(async f=>({
         path:materializedPath(f.sourceLabel,f.path,f.owner),
         source_path:f.path,revision:f.revision,
         content:clip(await this.indexedContent(f.owner,f.path),2000)
@@ -839,15 +869,15 @@ export class ControlRoom extends DurableObject {
   }
   // Source bytes are copied by the runtime, never manufactured by a builder.
   // Each producer's namespace remains stable across revisions and passes.
+  // The legacy copy path (MOCK fixtures and tests); a live builder reads
+  // through collectLinkSources, under the same check.
   async materializeBuilder(builderId) {
     const builder=this.node(builderId);
     if(builder?.label!=='Temporary builder' || !builder.parent)throw new Error('Only a temporary builder can materialize children');
     const sources=[],failures=[];
     for(const {child,files} of this.assemblySources(builder.parent)) {
-      // v7.15.1: the builder reads for its manager, its own siblings only (a
-      // manager sibling's files are its linked bundle, published by its builder).
-      if(!canRead(builder,child))continue;
       for(const f of files) {
+        if(!this.builderReads(builder,child,f))continue;
         const destination=materializedPath(f.sourceLabel,f.path,f.owner);
         let content;
         try { content=await this.indexedContent(f.owner,f.path); }
@@ -1178,6 +1208,7 @@ export class ControlRoom extends DurableObject {
     for(const {child,files,delegated} of this.assemblySources(builder.parent)) {
       const from=[];
       for(const f of files) {
+        if(!this.builderReads(builder,child,f))continue;
         const content=await this.indexedContent(f.owner,f.path);
         if(content===null)throw new Error(`Completed source unavailable: ${child.label}/${f.path}`);
         const destination=materializedPath(f.sourceLabel,f.path,f.owner);

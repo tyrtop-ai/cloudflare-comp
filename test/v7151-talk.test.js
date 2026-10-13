@@ -9,6 +9,7 @@ import {DatabaseSync} from 'node:sqlite';
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../src/index.js');
 const {canContact}=await import('../src/protocol.js');
+const {branchDirectory}=await import('../src/assembly.js');
 class Sql {
   constructor(){this.db=new DatabaseSync(':memory:');}
   exec(sql,...args){
@@ -108,10 +109,13 @@ test('v7.15.1: a builder reads its siblings\' published files, never a cousin\'s
   // Nothing wider: a cousin, and its manager's sibling.
   assert.equal(await reads(below.id,form.id,'form.js'),false);
   assert.equal(await reads(below.id,'root.1','form.js'),false);
-  // No other node reads a sibling.
+  // No other node reads a sibling, directly or through its manager's alias.
   assert.equal(await reads(api.id,store.id,'store.js'),false);
+  await r.publishExports('root.2',[{from:api.id,path:'api.js',as:'api.js'}]);
+  assert.equal(await reads(store.id,'root.2','api.js'),false,'the alias resolves to its sibling\'s file');
+  assert.ok(!r.files(store.id).some(f=>f.path==='root.2-api.js'));
   const refused=r.snapshot().events.filter(e=>e.kind==='blocked'&&/Rejected artifact import/.test(e.body));
-  assert.equal(refused.length,5);
+  assert.equal(refused.length,6);
   assert.ok(refused.every(e=>/only a builder reads its manager's children's files/.test(e.body)));
   assert.ok(!r.files(below.id).some(f=>f.path.includes(deep.id)||f.path.includes(form.id)));
 });
@@ -126,4 +130,32 @@ test('v7.15.1: the MOCK run completes and every message travels between a parent
   assert.ok(!snap.events.some(e=>e.kind==='blocked'),'no fixture addresses a sibling');
   assert.ok(messages.some(e=>e.actor==='root'&&e.recipient==='root.1'&&e.body.includes('GET /api/tickets')),'the UI gets the contract from its manager');
   assert.ok(snap.events.some(e=>e.actor==='root.3'&&e.kind==='import'&&e.body.startsWith('root.2/')),'the builder read its sibling');
+});
+
+// Review: in MOCK a manager sibling stood for its workers' raw files, so the
+// builder's model input held files its grandchildren owned.
+test('v7.15.1: the MOCK builder\'s input is what its siblings publish: a manager sibling\'s aliases, each file once, never its workers\' files',async()=>{
+  const {room:r}=await room(30);
+  assert.equal(r.snapshot().status,'complete');
+  for(const {child,files} of r.assemblySources('root'))for(const f of files)assert.equal(f.owner,child.id,`${child.id}: ${f.path}`);
+  const backend=(await r.builderContext('root')).find(g=>g.label==='B · Backend');
+  assert.deepEqual(backend.files.map(f=>f.source_path).sort(),['http-api/api.js','persistence/store.js','tests/backend.test.js']);
+  assert.ok(backend.files.every(f=>f.path.startsWith(`components/${branchDirectory('B · Backend','root.2')}/`)));
+  assert.ok(backend.files.some(f=>f.content.includes('createTicketHandler')),'the bytes behind the alias');
+});
+
+test('v7.15.1: every copy into a builder checks who owns each file: a grandchild\'s file is never read, though its manager is a sibling',async()=>{
+  const {room:r}=await room();
+  const [store]=await r.spawn('root.2',[{label:'Persistence',task:'Implement ticket storage with creation and retrieval'}]);
+  r.db().exec("UPDATE agents SET phase='implement' WHERE id=?",store.id);
+  await r.putFile(store.id,'store.js',`export const from = '${store.id}';`);
+  const [b]=await r.spawn('root',[{label:'Temporary builder',task:'Link the published work of the children of root'}],'builder:root');
+  // The pre-v7.15.1 MOCK shape: root.2 stood for its worker's raw file.
+  const sources=r.assemblySources('root');
+  r.assemblySources=()=>sources.map(x=>x.child.id==='root.2'?{...x,files:[{path:'store.js',revision:1,owner:store.id,sourceLabel:'Persistence'}]}:x);
+  assert.deepEqual(await r.materializeBuilder(b.id),[]);
+  assert.deepEqual(await r.collectLinkSources(b.id),[]);
+  assert.deepEqual((await r.builderContext('root')).find(g=>g.label==='B · Backend').files,[]);
+  assert.ok(!r.files(b.id).some(f=>f.path.endsWith('store.js')));
+  assert.equal(events(r,b.id,'blocked').filter(e=>e.body==='Not read: B · Backend/store.js is not a file its sibling publishes.').length,2);
 });

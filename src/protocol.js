@@ -142,10 +142,12 @@ export function canContact(sender, receiver) {
 }
 // The one exception, for reading only: a builder acts for its manager, so it
 // reads the published files of that manager's direct children (its siblings)
-// to link them; nothing deeper or wider, and it never messages them.
+// to link them; nothing deeper or wider, and it never messages them. Nobody
+// else reads another node's files: a manager's alias resolves to its child,
+// so a worker reading its manager's alias would read its sibling.
 export function canRead(reader, owner) {
-  return canContact(reader, owner) || (reader?.label === 'Temporary builder' && reader.parent != null &&
-    owner?.id !== reader.id && owner?.parent === reader.parent);
+  return !!owner && reader?.label === 'Temporary builder' && reader.parent != null &&
+    owner.id !== reader.id && owner.parent === reader.parent;
 }
 export function addFirst(queue, id) { return [id, ...queue.filter(q => q !== id)]; }
 export function addLast(queue, id) { return queue.includes(id) ? queue : [...queue, id]; }

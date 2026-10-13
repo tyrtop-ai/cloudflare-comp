@@ -43,7 +43,8 @@ test('a builder reads its siblings, its manager\'s children; nothing deeper or w
   assert.equal(reads('root.2.3','root.2.3'),false);
   assert.equal(reads('root.2.1','root.2.2'),false,'a worker never reads its sibling');
   assert.equal(reads('root.1','root.2'),false,'a manager never reads its sibling');
-  assert.equal(reads('root.2.1','root.2'),true,'reading follows contact otherwise');
+  assert.equal(reads('root.2.1','root.2'),false,'nor its manager, whose aliases resolve to its siblings');
+  assert.equal(reads('root.2','root.2.1'),false,'a manager reads its children through the runtime, not as a builder');
   assert.equal(reads('root.2.1','root.2.3'),false,'nor the builder, which is a sibling too');
 });
 
