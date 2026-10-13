@@ -434,8 +434,12 @@ test('v7.14: out of repair rounds, the top fails the run; a lower manager tells 
 
 // A worker that finishes a repair without changing a file leaves the same
 // source and fingerprint behind: its problem opens again and its manager
-// decides it again (critique #4), with no new round, until MAX_HOPS closes it.
-test('v7.14: a repair that changes nothing reopens the problem for its manager, without a new round, until the hop limit closes it',async()=>{
+// decides it again (critique #4), with no new round. Slice 1 has no model
+// for a recurrence (M4), so the same ticket would go out until MAX_HOPS:
+// at STUCK_AFTER unchanged repairs the problem is closed instead, and with
+// its builder still waiting and nothing else in flight the top fails rather
+// than pausing for a Continue that would repeat it (v7.14 review).
+test('v7.14: a repair that changes nothing reopens the problem once; a second closes it, and the top fails instead of pausing',async()=>{
   const {room}=liveRoom();
   await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
   await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
@@ -454,10 +458,38 @@ test('v7.14: a repair that changes nothing reopens the problem for its manager, 
   assert.ok(events(room,'problem_reopened').length);
   assert.equal(tickets(room,'root.2').length,1,'a fresh ticket');
   assert.equal(Number(room.get('repair_rounds:root')),1,'the same wave: no new round');
-  for(let i=0;i<4;i++){finishUnchanged();await step(room,'root');}
-  assert.deepEqual([row().status,row().outcome],['closed','exhausted']);
-  assert.deepEqual(row().trail.map(t=>t.action),['assign','assign','assign','assign','close'],'MAX_HOPS(1) decisions, then closed');
-  assert.ok(events(room,'problem_exhausted').some(e=>/4 decisions without a fix/.test(e.body)));
+  finishUnchanged();
+  await step(room,'root');
+  assert.deepEqual([row().status,row().outcome,row().flags.no_change],['closed','exhausted',2]);
+  assert.deepEqual(row().trail.map(t=>[t.action,t.rule]),[['assign','D6'],['assign','D6'],['close','no_change']],'two tickets, not MAX_HOPS');
+  assert.equal(tickets(room,'root.2').length,0,'no third ticket');
+  assert.ok(events(room,'problem_exhausted').some(e=>/Ticket service finished 2 repairs without changing its files/.test(e.body)));
+  assert.equal(room.node(b.id).status,'waiting','its builder still waits on it');
+  assert.equal(room.node('root').status,'failed');
+  assert.match(room.node('root').summary,/^Repair exhausted: a mismatch problem was closed without a fix \(Ticket service finished 2 repairs/);
+});
+
+// A problem closed without a fix while other repairs of its report are in
+// flight leaves the run going: those repairs change the source, and the
+// builder links and reports again.
+test('v7.14: a problem closed without a fix fails nothing while the source can still change',async()=>{
+  const reader2=service.replace("repo.add(d)","repo.insert(d)").replace("get: (id) => repo.read(id)","get: (id) => repo.fetch(id)");
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service],['Ticket lookup','ticketLookup.js',reader2]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  await room.turn('root');
+  assert.deepEqual([...new Set(room.problems("status='assigned'").map(p=>p.assignee))].sort(),['root.2','root.3']);
+  // root.2 returns unchanged twice; root.3 has not finished its repair.
+  for(let i=0;i<2;i++) {
+    room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.2'");room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");
+    await step(room,'root');
+  }
+  assert.ok(room.problems("assignee='root.2'").every(p=>p.status==='closed'&&p.outcome==='exhausted'));
+  assert.ok(room.problems("assignee='root.3'").every(p=>p.status==='assigned'));
+  assert.notEqual(room.node('root').status,'failed','root.3 may still change the source');
+  assert.equal(room.get('rounds_exhausted:root'),'');
 });
 
 // A decision applies to a row only as it was read: one a reporter
@@ -612,6 +644,24 @@ const { start } = require('./index.js');
   assert.equal(calls.leaf.length,2);
   assert.equal(calls.runner.length,3,'the compiler ran the same bytes again for the new source');
   assert.equal(events(room,'run_failed').length,2);
+});
+
+// v7.14 review: a problem closed after MAX_HOPS decisions leaves its
+// reporter waiting with nothing in flight: the top fails instead of pausing.
+test('v7.14: a problem closed at the hop limit, with its reporter waiting and nothing in flight, fails the top',async()=>{
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service],['Application entry','app.js',entry]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.equal(room.node(b.id).status,'waiting');
+  const trail=Array.from({length:4},()=>({at:'root',action:'assign',to:'root.2',rule:'D6',ts:0}));
+  room.db().exec('UPDATE problems SET trail=?',JSON.stringify(trail));
+  await room.turn('root');
+  assert.deepEqual(room.problems('1=1').map(p=>[p.status,p.outcome]),[['closed','exhausted']]);
+  assert.equal(tickets(room,'root.2').length,0);
+  assert.equal(room.node('root').status,'failed');
+  assert.match(room.node('root').summary,/^Repair exhausted: a mismatch problem was closed without a fix \(4 decisions without a fix\)/);
 });
 
 // Rooms started before v7.14 keep Root-keyed build state (build_failure:root,

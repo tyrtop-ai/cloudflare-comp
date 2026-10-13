@@ -11,7 +11,7 @@ import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
-import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
+import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
@@ -1725,7 +1725,7 @@ export class ControlRoom extends DurableObject {
     }
     this.reopenStalled(m);
     const rows=this.problemsHeld(m);
-    if(!rows.length)return;
+    if(!rows.length)return this.unfixable(m);
     const children=new Map(this.children(m).map(c=>[c.id,c]));
     const kindOf=id=>{const c=children.get(id);return !c?null:c.label==='Temporary builder'?'builder':c.label==='Compiler'?'compiler':this.manager(c.id)?'manager':'worker';};
     const builder=this.builderOf(m),fingerprint=this.assemblyFingerprint(m),state=this.read(`link_state:${m}`,null);
@@ -1763,8 +1763,11 @@ export class ControlRoom extends DurableObject {
     for(const [p,dec] of decided) {
       const kind=dec.child?kindOf(dec.child):null;
       if(dec.action==='exhausted') {
-        if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:trail(p,'close','',dec.rule)}))
-          this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${dec.reason||'no direct child holds it'}): ${p.detail}`,600));
+        const why=dec.reason||'no direct child holds it';
+        if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:[...p.trail,{at:m,action:'close',to:'',rule:dec.rule,reason:why,ts:now}]})) {
+          this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${why}): ${p.detail}`,600));
+          this.wakeReporter(m,p);
+        }
       } else if(dec.action==='escalate') {
         if(this.moveProblem(p,{holder:n.parent,flags:{...p.flags,escalated_from:m},trail:trail(p,'escalate',n.parent,dec.rule)})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_escalated',clip(`${p.kind} problem (${dec.rule}) goes to the parent: ${p.detail}`,600),n.parent);
@@ -1807,6 +1810,28 @@ export class ControlRoom extends DurableObject {
       this.event(m,'problem_assigned',clip(`${moved.length} problem(s) to ${children.get(worker).label} (${[...new Set(list.map(([,d])=>d.rule))].join(', ')}): ${instructions}`,800),worker);
     }
     if(exhausted)this.exhaustRounds(m,exhausted);
+    else this.unfixable(m);
+  }
+  // The manager whose builder or compiler reported a problem closed without a
+  // fix elsewhere checks it on its next turn.
+  wakeReporter(m, p) {
+    const at=this.node(p.source)?.parent;
+    if(at&&at!==m)this.wake(at);
+  }
+  // This manager's builder (or, at the top, its compiler) waits on a report
+  // of which a problem was closed without a fix, nothing of it is still open,
+  // and nothing in flight below could change the source: no turn would ever
+  // run again. The top fails; a manager below tells its parent it cannot
+  // finish its branch (spec 3.10), as when its repair rounds run out.
+  unfixable(m) {
+    const n=this.node(m);
+    for(const r of [this.builderOf(m),!n.parent&&this.compilerOf(m)].filter(Boolean)) {
+      const report=this.read(r.label==='Compiler'?'compile_reported':`link_reported:${m}`,null);
+      if(r.status!=='waiting'||!report?.problems?.length||report.fingerprint!==this.assemblyFingerprint(m))continue;
+      const dead=report.problems.map(id=>this.problems('id=?',id)[0]).find(p=>p?.status==='closed'&&p.outcome==='exhausted');
+      if(!dead||this.problems("source=? AND status!='closed'",r.id).length||!this.subtreeQuiescent(m))continue;
+      return this.exhaustRounds(m,`a ${dead.kind} problem was closed without a fix (${dead.trail.at(-1)?.reason||'exhausted'})`,'Repair exhausted');
+    }
   }
   // One repair round per report wave a manager first assigns to a worker or
   // to its builder. Returns why no round is left, or ''.
@@ -1825,7 +1850,7 @@ export class ControlRoom extends DurableObject {
   // Out of rounds: the whole run's, so no manager assigns again and the top
   // fails; or this manager's, so the top fails, or a lower manager tells its
   // parent once that it cannot finish its branch (the parent fails it).
-  exhaustRounds(m, reason) {
+  exhaustRounds(m, reason, head='Repair rounds exhausted') {
     const n=this.node(m),total=/^the run /.test(reason);
     if(total) {
       this.set('repair_exhausted',reason);
@@ -1834,7 +1859,7 @@ export class ControlRoom extends DurableObject {
       if(top&&top.id!==m)this.wake(top.id);
     }
     if(!n.parent) {
-      this.failAgent(m,`Repair rounds exhausted: ${reason}; refusing an unbounded repair loop.`);
+      this.failAgent(m,`${head}: ${reason}; refusing an unbounded repair loop.`);
       this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
       return;
     }
@@ -1850,13 +1875,21 @@ export class ControlRoom extends DurableObject {
   revisionKey(id) {return JSON.stringify(this.files(id).filter(f=>!f.path.startsWith('memory/')).map(f=>[f.path,f.revision]));}
   // An assigned problem whose worker finished without changing a file would
   // stall its branch (the source and its fingerprint are the same): it is
-  // open again, and its manager decides it again.
+  // open again, and its manager decides it again. Slice 1 has no model for a
+  // recurrence (M4), so the same rule would send the same ticket again: at
+  // STUCK_AFTER tickets without a change, the problem is closed instead.
   reopenStalled(m) {
     for(const p of this.problems("holder=? AND status='assigned'",m)) {
-      const w=this.node(p.assignee);
+      const w=this.node(p.assignee),count=(p.flags.no_change||0)+1;
       if(!w||w.status!=='done'||!p.flags.revs||p.flags.revs!==this.revisionKey(w.id))continue;
       if(query(this.db(),"SELECT id FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",w.id).length)continue;
-      if(this.moveProblem(p,{status:'open',assignee:'',flags:{...p.flags,no_change:(p.flags.no_change||0)+1}}))
+      if(count>=STUCK_AFTER) {
+        const why=`${w.label} finished ${count} repairs without changing its files`;
+        if(this.moveProblem(p,{status:'closed',outcome:'exhausted',flags:{...p.flags,no_change:count},trail:[...p.trail,{at:m,action:'close',to:'',rule:'no_change',reason:why,ts:Date.now()}]})) {
+          this.event(m,'problem_exhausted',clip(`${p.kind} problem closed (${why}): ${p.detail}`,600),w.id);
+          this.wakeReporter(m,p);
+        }
+      } else if(this.moveProblem(p,{status:'open',assignee:'',flags:{...p.flags,no_change:count}}))
         this.event(m,'problem_reopened',`${w.label} finished without changing its files; the problem is open again.`,w.id);
     }
   }
