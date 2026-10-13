@@ -131,6 +131,7 @@ export async function scopeInterfaces(env, originalGoal, parentTask, children, p
   return result;
 }
 
+const OWNER_STOP_WORDS = ['ticket','tickets','please','what','which','does','have','need','request','provide','definition','about','the','this','your','from','data','system','project','implement','function','operation'];
 // Route questions through a manager's direct-child public Artifacts index.
 // Clef classifies owners; it never reads Git itself or generates an answer.
 // The runtime supplies only direct children's role and PUBLIC repository facts.
@@ -141,7 +142,7 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
   const terms=tokenize(question);
   if(strict) {
     // Common nouns like 'ticket' describe the whole project, not its owner.
-    for(const word of ['ticket','tickets','please','what','which','does','have','need','request','provide','definition','about','the','this','your','from','data','system','project','implement','function','operation'])terms.delete(word);
+    for(const word of OWNER_STOP_WORDS)terms.delete(word);
     // Do not automatically treat a schema *consumer* as the schema owner.
     // Clef may recognize semantic synonyms, but a lexical shortcut cannot.
   }
@@ -173,6 +174,56 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
     throw new Error('Clef returned invalid ownership probabilities');
   probabilities.sort((a,b)=>b.p-a.p);
   return probabilities[0].p>=(strict?0.6:0.35)?probabilities[0].id:null;
+}
+
+// v7.15 slice B: a worker's function request, answered at one level from the
+// functions its direct children promise. One question per function; the
+// best answer at or above the threshold is the function the worker imports.
+export const FUNCTION_MATCH_THRESHOLD = 0.6;
+const words = s => new Set(String(s ?? '').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().match(/[a-z0-9]{3,}/g)||[]);
+export async function matchFunction(env, {need, name=''}, items) {
+  if (!items?.length) return null;
+  if (env.MOCK_AI === 'true') {
+    const terms=[...words(need+' '+name)].filter(t=>!OWNER_STOP_WORDS.includes(t));
+    const scores=items.map(f=>{const have=words([f.name,f.does,f.operation].join(' '));return terms.filter(t=>have.has(t)).length;});
+    const best=Math.max(...scores);
+    return best>0&&scores.filter(x=>x===best).length===1?{index:scores.indexOf(best),p:1}:null;
+  }
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef routing decision model');
+  const state={request:{need:String(need).slice(0,300),expected_name:name||''},
+    functions:items.map((f,j)=>({slot:j,piece:String(f.owner).slice(0,70),signature:signature(f),does:f.does||'',...(f.operation?{operation:f.operation}:{})}))};
+  const groups=[];
+  for(let start=0;start<items.length;start+=12)groups.push(items.slice(start,start+12).map((_,k)=>start+k));
+  const answered=await Promise.all(groups.map(async group=>{
+    const questions=Object.fromEntries(group.map(j=>[`fn_${j}`,{type:'noul',
+      instructions:`Does function ${j} do what the request needs, so that the requester can import it instead of writing it? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.`}]));
+    const output=await env.AI.run(selector,{model:clef,state,questions});
+    return group.map(j=>{
+      const probability=output?.answers?.[`fn_${j}`]?.noul;
+      if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
+        throw new Error(`Clef returned no valid probability for function ${j}`);
+      return {index:j,p:probability};
+    });
+  }));
+  let best=null;
+  for(const x of answered.flat())if(x.p>=FUNCTION_MATCH_THRESHOLD&&(!best||x.p>best.p))best=x;
+  return best;
+}
+// Nobody up to Root promises the function: is it the worker's own to write?
+export async function ownsNeed(env, {assigned_code, need, name=''}) {
+  if (env.MOCK_AI === 'true') return 1;
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef routing decision model');
+  const output=await env.AI.run(selector,{model:clef,
+    state:{assigned_code:String(assigned_code).slice(0,1800),needed_function:{need:String(need).slice(0,300),expected_name:name||''}},
+    questions:{inside:{type:'noul',instructions:'Is writing this function part of the assigned code? Answer NO if the assigned code does not ask for this behavior.'}}});
+  const probability=output?.answers?.inside?.noul;
+  if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
+    throw new Error('Clef returned no valid probability for the assignment check');
+  return probability;
 }
 
 // What the runtime loader and the runner rely on. The runtime appends the

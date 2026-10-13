@@ -153,3 +153,23 @@ export function repairInterfaces(spawn, promised = [], elsewhere = new Set()) {
   });
   return {spawn: out, removed};
 }
+
+// Slice B: a worker's function requests. At most MAX_REQUESTS per turn.
+export const MAX_REQUESTS = 8;
+export const validName = v => typeof v === 'string' && IDENTIFIER.test(v.trim()) ? v.trim() : '';
+export const ids = text => new Set(String(text ?? '').match(/[A-Za-z_$][\w$]{2,}/g) || []);
+// The names a request can be answered by without a model call: the name it
+// expects, then camelCase identifiers in its need; never a generic name.
+export const requestNames = (name, need) => [...new Set([name, ...[...ids(need)].filter(t => /[A-Z_$]/.test(t.slice(1)))])].filter(t => t && !GENERIC_NAMES.has(t)).slice(0, 8);
+// One route topic per request; a knowledge key ($ is not allowed in one).
+export const requestKey = ({need, name}) => name ? 'fn ' + name.replace(/\$/g, '_') : 'fn ' + String(need ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90).trim();
+// The one offer whose promise holds a name, trying names in order; two
+// offers holding the same name is ambiguous, and no answer.
+export function nameMatch(offers, names) {
+  for (const name of names) {
+    const holders = offers.filter(o => o.items.some(f => f.name === name));
+    if (holders.length === 1) return {child: holders[0], item: holders[0].items.find(f => f.name === name)};
+    if (holders.length) return null;
+  }
+  return null;
+}

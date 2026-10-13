@@ -1,5 +1,5 @@
 import { validKnowledgeKey } from './knowledge.js';
-import { normalizeInterfaces } from './interfaces.js';
+import { normalizeInterfaces, requestKey, validName, MAX_REQUESTS } from './interfaces.js';
 
 // Small coordination messages. Source code never travels inside the control JSON.
 export const clip = (v, n = 1200) => String(v ?? '').slice(0, n);
@@ -99,9 +99,16 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
     remember: (Array.isArray(raw.remember) ? raw.remember : [])
       .filter(n => n && ['public','private'].includes(n.visibility) && validKnowledgeKey(n.key) && typeof n.value === 'string' && n.value.length > 0)
       .map(n => ({ visibility: n.visibility, key: n.key, value: clip(n.value, 1600) })),
-    ask: (Array.isArray(raw.ask) ? raw.ask : [])
-      .filter(q => q && (q.to === undefined || typeof q.to === 'string') && validKnowledgeKey(q.key) && typeof q.question === 'string' && q.question.length > 0)
-      .map(q => ({ to: clip(q.to || 'parent',70), key: q.key, question: clip(q.question,900) })),
+    // v7.15: a function request names what it needs and the name it expects;
+    // the older {key, question} form is kept as it was.
+    ask: (Array.isArray(raw.ask) ? raw.ask : []).map(q => {
+      if (q && typeof q.need === 'string' && q.need.trim()) {
+        const name = validName(q.name), need = q.need.trim();
+        return { to: 'parent', key: requestKey({need, name}), question: clip(need, 300), ...(name ? {name} : {}) };
+      }
+      return q && (q.to === undefined || typeof q.to === 'string') && validKnowledgeKey(q.key) && typeof q.question === 'string' && q.question.length > 0 ?
+        { to: clip(q.to || 'parent',70), key: q.key, question: clip(q.question,900) } : null;
+    }).filter(Boolean).slice(0, MAX_REQUESTS),
     recall: (Array.isArray(raw.recall) ? raw.recall : [])
       .filter(r => r && ['public','private'].includes(r.visibility) && validKnowledgeKey(r.key))
       .map(r => ({ visibility:r.visibility, key:r.key })),
