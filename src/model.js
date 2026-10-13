@@ -590,14 +590,21 @@ function mockDecision(c) {
   if (id === 'root.2.2') return {summary:'Finished HTTP API.',files:[{path:'api.js',intent:'Node built-in HTTP ticket request handler accepting storage operations through constructor arguments.'}],done:true};
   if (id === 'root.2.3') return {summary:'Finished backend test scaffold.',files:[{path:'backend.test.js',intent:'GET/POST ticket test scaffold.'}],done:true};
   if (id === 'root.3') {
+    const imports=[
+      {from:'root.1',path:'index.html',as:'public/index.html'},
+      {from:'root.2',path:'api.js',as:'api.js'},
+      {from:'root.2',path:'store.js',as:'store.js'},
+      {from:'root.2',path:'tests/backend.test.js',as:'tests/backend.test.js'}
+    ];
+    // v7.15.1: Root may start its builder while A still waits for the
+    // contract; the builder waits until its siblings publish what it links.
+    const published=i=>(c.neighbor_owners||[]).some(n=>n.id===i.from&&(n.exposed_files||[]).some(f=>f.path===i.path));
+    if (!c.your_own_files?.some(x => x.path === 'api.js') && !imports.every(published)) return {
+      summary:'Waiting for my siblings to publish the files I link.', wait:true
+    };
     if (!c.your_own_files?.some(x => x.path === 'api.js')) return {
       summary:'Temporary builder importing immediate sibling public files; B private children remain unknown.',
-      imports:[
-        {from:'root.1',path:'index.html',as:'public/index.html'},
-        {from:'root.2',path:'api.js',as:'api.js'},
-        {from:'root.2',path:'store.js',as:'store.js'},
-        {from:'root.2',path:'tests/backend.test.js',as:'tests/backend.test.js'}
-      ],wait:false
+      imports,wait:false
     };
     return {summary:'Assembled a deployable project in my isolated repo from A/B public artifacts. No tests executed.',
       files:[

@@ -128,6 +128,10 @@ test('v7.15.1: the MOCK run completes and every message travels between a parent
   assert.ok(messages.length>0);
   for(const e of messages)assert.ok(canContact(r.node(e.actor),r.node(e.recipient)),`${e.actor} -> ${e.recipient}`);
   assert.ok(!snap.events.some(e=>e.kind==='blocked'),'no fixture addresses a sibling');
+  // Review: the relay through Root starts the builder before A publishes; it waits, never fails its imports.
+  assert.deepEqual(snap.events.filter(e=>e.kind==='error').map(e=>e.body),[]);
+  assert.deepEqual(snap.events.filter(e=>e.kind==='paused'&&e.actor!=='system').map(e=>`${e.actor}: ${e.body}`),[]);
+  assert.ok(snap.events.some(e=>e.actor==='root.3'&&e.kind==='report'&&e.body==='Waiting for my siblings to publish the files I link.'),'spawned early, it waited');
   assert.ok(messages.some(e=>e.actor==='root'&&e.recipient==='root.1'&&e.body.includes('GET /api/tickets')),'the UI gets the contract from its manager');
   assert.ok(snap.events.some(e=>e.actor==='root.3'&&e.kind==='import'&&e.body.startsWith('root.2/')),'the builder read its sibling');
 });
