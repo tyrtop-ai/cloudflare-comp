@@ -1042,6 +1042,77 @@ export function selfImports(files, names) {
   }
   return out;
 }
+// v7.15.1: a promised function that does nothing is not delivered: a body
+// with no statements, one that only returns nothing, or one that only throws
+// a not-implemented error. For start, so is each operation it returns that
+// is such a local function (run9's entry.js after six repair rounds: function
+// update() {} and function del() {}, returned as update and delete). A body
+// that delegates or does any work passes; a value this parse cannot follow
+// (an import, a call) is given the doubt.
+const NOT_IMPLEMENTED=/not\s+(?:yet\s+)?implemented|unimplemented|\btodo\b|\bstub\b|placeholder/i;
+function placeholder(fn, content) {
+  const nothing=e=>!e||e.type==='Identifier'&&e.name==='undefined'||e.type==='Literal'&&e.value===null||e.type==='UnaryExpression'&&e.operator==='void';
+  if(fn.body.type!=='BlockStatement')return nothing(fn.body);
+  const body=fn.body.body.filter(x=>x.type!=='EmptyStatement'&&!(x.type==='ExpressionStatement'&&x.directive));
+  if(!body.length)return true;
+  if(body.length>1)return false;
+  if(body[0].type==='ReturnStatement')return nothing(body[0].argument);
+  return body[0].type==='ThrowStatement'&&NOT_IMPLEMENTED.test(content.slice(body[0].argument.start,body[0].argument.end));
+}
+// The function a value is, following local names (three hops at most).
+function functionOf(node, decls, depth=0) {
+  if(FUNCTIONS.has(node?.type))return node;
+  if(node?.type==='Identifier'&&depth<3){const d=decls.get(node.name);return d&&d!==node?functionOf(d,decls,depth+1):null;}
+  return null;
+}
+// Each exported name and the node it is, for the shapes missingExports reads.
+function exportedValues(ast, decls) {
+  const out=new Map(),members=o=>{for(const p of o?.type==='ObjectExpression'?o.properties:[]){const n=p.type==='Property'&&keyName(p.key);if(n)out.set(n,p.value);}};
+  for(const st of ast.body) {
+    if(st.type==='ExportNamedDeclaration') {
+      const d=st.declaration;
+      if(d?.type==='VariableDeclaration'){for(const v of d.declarations)if(v.id?.type==='Identifier')out.set(v.id.name,v.init);}
+      else if(d?.id)out.set(d.id.name,d);
+      if(!st.source)for(const x of st.specifiers||[])out.set(keyName(x.exported),{type:'Identifier',name:keyName(x.local)});
+    } else if(st.type==='ExportDefaultDeclaration') {
+      const d=st.declaration,o=d?.type==='Identifier'?decls.get(d.name):d;
+      if(o?.type==='ObjectExpression')members(o);else if(FUNCTIONS.has(d?.type)&&d.id)out.set(d.id.name,d);
+    } else if(st.type==='ExpressionStatement'&&st.expression.type==='AssignmentExpression') {
+      const {left,right}=st.expression;
+      if(isModuleExports(left)){const o=right?.type==='Identifier'?decls.get(right.name):right;if(o?.type==='ObjectExpression')members(o);else if(FUNCTIONS.has(right?.type)&&right.id)out.set(right.id.name,right);}
+      else if(left.type==='MemberExpression'&&(isModuleExports(left.object)||left.object.type==='Identifier'&&left.object.name==='exports'))out.set(keyName(left.property),right);
+    }
+  }
+  return out;
+}
+export function placeholders(files, names) {
+  const out=[],want=new Set(names);
+  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+    if(!LINKABLE.test(path))continue;
+    let ast;try{ast=parseSource(content).ast;}catch{continue;}
+    const decls=topLevelDeclarations(ast);
+    for(const [name,value] of exportedValues(ast,decls)) {
+      if(!want.has(name))continue;
+      const fn=functionOf(value,decls);
+      if(!fn)continue;
+      if(placeholder(fn,content)){out.push({path,name});continue;}
+      if(name!=='start')continue;
+      // The object start returns: its own return, or the local it returns.
+      const inner=new Map(decls);
+      if(fn.body.type==='BlockStatement')for(const [n,d] of topLevelDeclarations(fn.body))inner.set(n,d);
+      const returns=fn.body.type==='BlockStatement'?fn.body.body.filter(x=>x.type==='ReturnStatement').map(x=>x.argument):[fn.body];
+      for(let r of returns) {
+        if(r?.type==='Identifier')r=inner.get(r.name);
+        if(r?.type!=='ObjectExpression')continue;
+        for(const p of r.properties) {
+          const op=p.type==='Property'&&keyName(p.key),f=op&&(p.method?p.value:functionOf(p.value,inner));
+          if(f&&placeholder(f,content))out.push({path,name,op,local:p.value.type==='Identifier'?p.value.name:op});
+        }
+      }
+    }
+  }
+  return out;
+}
 // Every name a module reads from an import that resolves, in source order,
 // with ok=false where the target does not export it.
 export function importReads(files, surfaces) {

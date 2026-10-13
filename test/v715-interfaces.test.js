@@ -169,7 +169,8 @@ test('v7.15: repairs delete bad, copied, duplicated and surplus names and keep p
   assert.deepEqual(room.promisedOf('root.1'),[START]);
   const repaired=events(room,'interfaces_repaired');
   assert.equal(repaired.length,1);
-  assert.equal(repaired[0].body,'Deleted bad name from "Entry module" (not a plain function name); functionName from "Entry module" (copied from the example); sharedHelper from "Ticket store" (listed by two pieces); sharedHelper from "Ticket views" (listed by two pieces); purgeTickets from "Ticket store" (more than 5); the pieces are kept.');
+  // v7.15.1: this fake Clef throws on the placement question: deleted from all, as before.
+  assert.equal(repaired[0].body,'Deleted bad name from "Entry module" (not a plain function name); functionName from "Entry module" (copied from the example); sharedHelper from "Ticket store" (listed by two pieces; Clef failed); sharedHelper from "Ticket views" (listed by two pieces; Clef failed); purgeTickets from "Ticket store" (more than 5); the pieces are kept.');
   assert.equal(events(room,'split_rejected').length,0);
 });
 

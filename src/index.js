@@ -3,14 +3,14 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
 import { apiGaps, apiMethod, coverageCheckable, gapList, gapProblem, operationMethods, plannedGaps, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, selfImports, splitImports, moduleSpecifiers, boundNames } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames } from './linker.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
@@ -2631,11 +2631,23 @@ export class ControlRoom extends DurableObject {
     const c5=interfaceErrors(named,promised).filter(e=>e.check==='C5');
     if(c5.length)return {spawn:named,c5,rejectedScope:0,rejectedChildren:[]};
     const elsewhere=new Set(named.flatMap(c=>(c?.interfaces||[]).map(f=>f.name)).filter(name=>!own.has(name)&&!GENERIC_NAMES.has(name)&&this.ownerBranch(name,id)));
-    const {spawn:repaired,removed}=repairInterfaces(named,promised,elsewhere);
+    // v7.15.1: a name two pieces list goes to one (run9 deleted updateTicket
+    // and deleteTicket from all, and nobody promised update or delete): the
+    // plain pick, else Clef over those pieces, beside the scope call; a miss
+    // or an error deletes it from all, as before.
+    const goal=this.topTask()||n.task,env=this.inferenceEnv(),dups=duplicateNames(named,promised,elsewhere),owners=new Map();
+    for(const d of dups)if(d.pick!==null)owners.set(d.name,{index:d.pick,why:d.why});
+    const scoped=scopeChildren(env,goal,n.task,named);scoped.catch(()=>{});
+    await Promise.all(dups.filter(d=>d.pick===null).map(async d=>{
+      try {
+        const x=await pickPiece(env,d.item,d.holders.map(i=>named[i]));
+        owners.set(d.name,x?.index>=0?{index:d.holders[x.index],why:`Clef p=${x.p.toFixed(2)}`}:{index:-1,why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}`});
+      } catch {owners.set(d.name,{index:-1,why:'Clef failed'});}
+    }));
+    const {spawn:repaired,removed}=repairInterfaces(named,promised,elsewhere,owners);
     if(removed.length)this.event(id,'interfaces_repaired',`Deleted ${removed.map(r=>`${r.name} from "${clip(r.label,70)}" (${r.why})`).join('; ')}; the pieces are kept.`);
     const carried=c=>(c.interfaces||[]).filter(f=>own.has(f.name)).map(f=>f.name);
-    const goal=this.topTask()||n.task,env=this.inferenceEnv();
-    const [scope,names]=await Promise.all([scopeChildren(env,goal,n.task,repaired),scopeInterfaces(env,goal,n.task,repaired,promised)]);
+    const [scope,names]=await Promise.all([scoped,scopeInterfaces(env,goal,n.task,repaired,promised)]);
     let rejectedScope=0;
     const rejectedChildren=[],admitted=[];
     repaired.forEach((child,i)=>{
@@ -3020,23 +3032,54 @@ export class ControlRoom extends DurableObject {
     // A self-import counts only for a name not exported: a file that exports
     // getTickets and delegates to store.getTickets() keeps its promise.
     const names=promised.map(f=>f.name),missing=missingExports(files,names),self=missing.length?selfImports(files,missing):[];
-    if(!missing.length) {
+    // v7.15.1: an empty placeholder is not delivered either (run9's update and del).
+    const empty=placeholders(files,names.filter(n=>!missing.includes(n))),list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
+    const emptyNames=[...new Set(empty.map(x=>x.op||x.name))],are=emptyNames.length>1?'are empty placeholders':'is an empty placeholder';
+    if(!missing.length&&!empty.length) {
       if(returns)this.set(key,'');
       this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
       return false;
     }
     if(returns>=3) {
-      this.event(id,'contract_unmet',`${missing.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
-      this.fileContract(id,missing.map(name=>promised.find(p=>p.name===name)));
+      if(missing.length) {
+        this.event(id,'contract_unmet',`${missing.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
+        this.fileContract(id,missing.map(name=>promised.find(p=>p.name===name)));
+      }
+      if(empty.length)this.event(id,'contract_unmet',`${list(emptyNames)} ${are.replace(/^(?:are|is)/,'$& still')} after 3 returns; accepted, and the runner's test decides.`);
       return false;
     }
     this.set(key,returns+1);
-    const list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
-    const body=['[contract]',`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`,
-      ...self.map(x=>`${x.path.split('/').pop()} imports ${list(x.names)} from '${x.specifier}', but ${list(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`)].join(' ');
+    const answers=await Promise.all(emptyNames.map(op=>this.placeholderAnswer(id,empty.find(x=>(x.op||x.name)===op),promised)));
+    const body=['[contract]',...(missing.length?[`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`]:[]),
+      ...self.map(x=>`${x.path.split('/').pop()} imports ${list(x.names)} from '${x.specifier}', but ${list(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`),
+      ...answers.map(a=>a.text),...(missing.length?[]:['Publish the FULL updated file.'])].join(' ');
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
-    this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${missing.join(', ')} promised and not exported; back to the worker.`);
+    if(missing.length)this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${missing.join(', ')} promised and not exported; back to the worker.`);
+    if(empty.length)this.event(id,'contract_placeholder',`Done refused (${returns+1}/3): ${list(emptyNames)} ${are}; back to the worker. ${answers.map(a=>a.how).join(' ')}`.trim());
     return true;
+  }
+  // v7.15.1: the manager answers an empty operation from its own plan: the
+  // direct child whose promise performs it, by the operation word (update ->
+  // updateTicket), else the Clef matcher a function request uses. run9's
+  // start carrier returned update() {} and del() {} and never asked for them.
+  async placeholderAnswer(id, x, promised) {
+    if(!x.op){const f=promised.find(p=>p.name===x.name);return {text:`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''} is promised by your assignment and is an empty placeholder: write it here.`,how:`${x.name} is its own to write.`};}
+    const parent=this.node(id)?.parent,items=(parent?this.offeredFunctions(parent,id):[]).flatMap(o=>o.items.map(f=>({...f,owner:o.label})));
+    const first=t=>String(t||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().match(/[a-z0-9]+/)?.[0]||'';
+    const said=new Set([x.op,x.local].map(first)),removes=['del','delete','remove'];
+    if(removes.some(w=>said.has(w)))for(const w of removes)said.add(w);
+    const byWord=items.filter(f=>said.has(first(f.name))||said.has(first(f.operation)));
+    let hit=byWord.length===1?byWord[0]:null,how=hit?'operation word':'',failed=false;
+    if(!hit&&items.length) {
+      try {
+        const pool=byWord.length>1?byWord:items,m=await matchFunction(this.inferenceEnv(),{need:`the ${x.op} operation`,name:''},pool);
+        if(m){hit=pool[m.index];how=`Clef p=${m.p.toFixed(2)}`;}
+      } catch {failed=true;}
+    }
+    if(hit)return {text:`${x.op} is an empty placeholder: ${signature(hit)}${hit.does?` — "${String(hit.does).replace(/[.\s]+$/,'')}" —`:''} is promised by "${hit.owner}"; import it on its own line, const { ${hit.name} } = require('./${hit.name}'), and return it as ${x.op}.`,
+      how:`${x.op}: ${hit.name} from "${clip(hit.owner,70)}" (${how}).`};
+    if(failed)return {text:`${x.op} is an empty placeholder: ask your manager for the function that performs it and return it as ${x.op}.`,how:`${x.op}: Clef failed; ask.`};
+    return {text:`${x.op} is an empty placeholder and no piece promises it: implement it here.`,how:`${x.op}: no piece promises it.`};
   }
   // v7.15 §6.1: an accepted return's gap is a contract problem in its
   // manager's inbox, which D4 gives back to it as a repair ticket and slice
