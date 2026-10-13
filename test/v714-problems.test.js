@@ -385,3 +385,100 @@ test('v7.14: one error in a stack of several modules is one problem, and the mod
   assert.match(tickets(room,'root.2')[0],/Problems: lookup\.js: smoke failed[^]*s\.view is not a function/);
   assert.equal(room.receive('root.3').length,0);
 });
+
+// ------------------------------------------------------------- limits
+// Repair is bounded (spec 3.10): a manager's own rounds, and the run's.
+test('v7.14: out of repair rounds, the top fails the run; a lower manager tells its parent once, which fails it',async()=>{
+  // At the top.
+  const top=liveRoom();
+  await tree(top.room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(top.room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
+  const tb=await top.room.scheduleAssembly('root');
+  await top.room.turn(tb.id);
+  top.room.set('repair_rounds:root',6);
+  await top.room.turn('root');
+  assert.equal(top.room.node('root').status,'failed');
+  assert.match(top.room.node('root').summary,/Repair rounds exhausted: Root objective used all 6 of its repair rounds/);
+  assert.equal(top.room.receive('root.2').length,0,'no ticket beyond the last round');
+  assert.ok(events(top.room,'repair_exhausted').length);
+  // Below the top: root.1 is out of rounds; it escalates one stuck problem about itself, and Root fails it.
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Storage'],['Application entry','app.js',entry]]);
+  await workers(room,'root.1',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
+  const bb=await room.scheduleAssembly('root.1');
+  await room.turn(bb.id);
+  room.set('repair_rounds:root.1',6);
+  await room.turn('root.1');
+  assert.equal(room.receive('root.1.2').length,0);
+  const [stuck]=openProblems(room,'root');
+  assert.deepEqual([stuck.kind,stuck.flags.rounds_exhausted,stuck.parties[0].owner],['stuck',true,'root.1']);
+  await step(room,'root.1');
+  assert.equal(openProblems(room,'root').length,1,'told once');
+  await room.turn('root');
+  assert.equal(room.node('root.1').status,'failed');
+  assert.match(room.node('root.1').summary,/Repair rounds exhausted: Storage cannot finish its branch/);
+  // The run's rounds: with all of them used, no manager assigns and the top fails.
+  const total=liveRoom();
+  await tree(total.room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(total.room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
+  const b3=await total.room.scheduleAssembly('root');
+  await total.room.turn(b3.id);
+  total.room.set('repair_rounds_total',10);
+  await total.room.turn('root');
+  assert.equal(total.room.get('repair_exhausted'),'the run used all 10 of its repair rounds');
+  // The link mismatch, and the entry the compiler found missing (no module here exports start()).
+  assert.deepEqual(total.room.problems('1=1').map(p=>[p.kind,p.status,p.outcome]),[['mismatch','closed','exhausted'],['entry','closed','exhausted']]);
+  assert.equal(total.room.node('root').status,'failed');
+});
+
+// A worker that finishes a repair without changing a file leaves the same
+// source and fingerprint behind: its problem opens again and its manager
+// decides it again (critique #4), with no new round, until MAX_HOPS closes it.
+test('v7.14: a repair that changes nothing reopens the problem for its manager, without a new round, until the hop limit closes it',async()=>{
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  const finishUnchanged=()=>{room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.2'");room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");};
+  await room.turn('root');
+  const id=room.problems("kind='mismatch'")[0].id,row=()=>room.problems('id=?',id)[0];
+  assert.deepEqual([row().status,row().assignee],['assigned','root.2']);
+  // Still undelivered: not reopened.
+  await step(room,'root');
+  assert.equal(row().flags.no_change,undefined);
+  finishUnchanged();
+  await step(room,'root');
+  assert.deepEqual([row().status,row().assignee,row().flags.no_change],['assigned','root.2',1]);
+  assert.ok(events(room,'problem_reopened').length);
+  assert.equal(tickets(room,'root.2').length,1,'a fresh ticket');
+  assert.equal(Number(room.get('repair_rounds:root')),1,'the same wave: no new round');
+  for(let i=0;i<4;i++){finishUnchanged();await step(room,'root');}
+  assert.deepEqual([row().status,row().outcome],['closed','exhausted']);
+  assert.deepEqual(row().trail.map(t=>t.action),['assign','assign','assign','assign','close'],'MAX_HOPS(1) decisions, then closed');
+  assert.ok(events(room,'problem_exhausted').some(e=>/4 decisions without a fix/.test(e.body)));
+});
+
+// A decision applies to a row only as it was read: one a reporter
+// superseded meanwhile is left alone and gets no ticket (critique #20), and
+// a ticket whose problems all closed since reads as withdrawn.
+test('v7.14: decisions compare and set; a ticket for problems closed since is withdrawn',async()=>{
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  const [read]=room.problemsHeld('root');
+  room.db().exec("UPDATE problems SET status='closed',outcome='superseded' WHERE id=?",read.id);
+  assert.equal(room.moveProblem(read,{status:'assigned',assignee:'root.2'}),false);
+  assert.deepEqual(room.problems('id=?',read.id).map(p=>[p.status,p.outcome]),[['closed','superseded']]);
+  assert.ok(events(room,'problem_decision_stale').length);
+  // A ticket whose problems all closed since it was sent.
+  room.db().exec("UPDATE problems SET status='open',outcome='' WHERE id=?",read.id);
+  await room.turn('root');
+  const ticket=room.receive('root.2').map(m=>m.body.split(' ')[1])[0];
+  assert.match(room.buildRepairMessage(ticket),/REAL CONTAINER BUILD FAILED/);
+  room.db().exec("UPDATE problems SET status='closed',outcome='resolved'");
+  assert.equal(room.buildRepairMessage(ticket),'');
+});
