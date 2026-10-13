@@ -45,8 +45,8 @@ test('current HTML displays concurrent agent count',()=>{
 });
 
 test('HTML uses versioned JS and CSS asset URLs',()=>{
-  assert.match(html, /src="\/app\.js\?v=7\.13\.4"/);
-  assert.match(html, /href="\/styles\.css\?v=7\.13\.4"/);
+  assert.match(html, /src="\/app\.js\?v=7\.13\.5"/);
+  assert.match(html, /href="\/styles\.css\?v=7\.13\.5"/);
 });
 
 test('v7.13: the split threshold control defaults to 70%',()=>{
@@ -54,4 +54,16 @@ test('v7.13: the split threshold control defaults to 70%',()=>{
   assert.match(html,/<input id="split-threshold" type="range" min="20" max="80" step="5" value="70" \/>/);
   const elements=renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}});
   assert.equal(elements.get('split-threshold').value,70,'a room snapshot without a threshold shows the 0.7 default');
+});
+
+test('agent traffic lists the newest event first',()=>{
+  const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(match=>match[1]);
+  const elements=new Map(ids.map(id=>[id,{id,value:'',textContent:'',className:'',innerHTML:'',disabled:false,addEventListener(){},querySelectorAll(){return [];},dispatchEvent(){}}]));
+  const context={document:{getElementById(id){return elements.get(id)||null;},querySelectorAll(){return [];}},
+    crypto:{randomUUID(){return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';}},location:{href:'https://example.com/'},history:{replaceState(){}},URL,setInterval(){},Event:class{}};
+  runInNewContext(script,context,{filename:'public/app.js'});
+  context.render({status:'running',busy:false,step:3,agents:[],files:[],events:[
+    {id:1,ts:1,step:1,actor:'root',kind:'start',body:'first'},{id:2,ts:2,step:2,actor:'root',kind:'decompose',body:'second'},{id:3,ts:3,step:3,actor:'root.1',kind:'report',body:'third'}]});
+  const list=elements.get('events').innerHTML;
+  assert.ok(list.indexOf('third')<list.indexOf('second')&&list.indexOf('second')<list.indexOf('first'),list);
 });

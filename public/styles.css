@@ -61,11 +61,6 @@ textarea { resize:vertical; min-height:150px; line-height:1.6; }
 .secondary:hover { background:var(--code-bg); }
 .error { color:var(--bad); font-size:12px; margin-top:13px; line-height:1.5; }
 .error:empty { display:none; }
-.facts p { font-size:12px; line-height:1.75; color:var(--muted); margin:0; }
-.rule { height:1px; background:var(--border); margin:21px 0; }
-.fact-row { display:flex; justify-content:space-between; gap:10px; font-size:11px; margin-top:15px; }
-.fact-row span { color:var(--muted); }
-.fact-row strong { color:var(--fg); font-weight:600; }
 .status-strip { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:0; padding:19px 0; }
 .status-strip>div { display:flex; flex-direction:column; gap:7px; padding:0 19px; border-right:thin solid var(--border); }
 .status-strip>div:last-child { border-right:none; }

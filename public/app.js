@@ -94,7 +94,8 @@ function render(s) {
   $('file-count').textContent=fileRows.length;
   $('hierarchy').innerHTML=renderTree(s.agents);
   if($('node-detail'))$('node-detail').innerHTML=renderDetail(s.agents);
-  $('events').innerHTML=s.events?.length?s.events.map(eventMarkup).join(''):'<p class="empty">No events yet.</p>';
+  // Newest first: the latest traffic is at the top; scroll down for older events.
+  $('events').innerHTML=s.events?.length?[...s.events].reverse().map(eventMarkup).join(''):'<p class="empty">No events yet.</p>';
   $('event-count').textContent=`${s.events?.length||0} events`;
   $('files').innerHTML=fileRows.length?fileRows.map(f=>`<button type="button" class="file-row ${activeFile===f.agent+'/'+f.path?'active':''}" data-agent="${esc(f.agent)}" data-path="${esc(f.path)}"><span class="mono">${esc(f.agent)}/${esc(f.path)}</span><small>${f.virtual?'alias':'r'+f.revision}</small></button>`).join(''):'<p class="empty">No files committed yet.</p>';
   $('files').querySelectorAll('button[data-agent]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.agent,btn.dataset.path)));
