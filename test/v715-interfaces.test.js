@@ -448,7 +448,7 @@ test('v7.15: run5 replay: the walk strips start from a carrier below and prunes 
   assert.match((await room.readKnowledge('root.2')).owned_elsewhere,/Entry point is owned by Application entry point; import start from that strand by exactly those names and write here only what it lacks\./);
 });
 
-test('v7.15: prompts: the shared prompt still says a worker is never shown sibling ownership; the implementer prompt has the contract clause; LEAF_DEPENDENCY_RULE has no createTicket example; the splitter key is functions',async()=>{
+test('v7.15: prompts: the shared prompt still says a worker is never shown sibling ownership; the implementer prompt has the contract clause; LEAF_DEPENDENCY_RULE has no createTicket example; the splitter key is functions, the TypeScript sentence stays, and the splitter prompt never mentions functions_owned_elsewhere',async()=>{
   const prompts=[];
   const env={AI:{run:async(_m,args)=>{prompts.push(args.messages[0].content);return {response:JSON.stringify({summary:'s',spawn:[{label:'Ticket store',task:'Write code A'},{label:'Ticket views',task:'Write code B'}],done:true,files:[{path:'a.js',content:'export const a = 1;'}]})};}}};
   await decide(env,{your_label:'Leaf',phase:'implement',your_responsibility:'Write logic',your_private_children:[],neighbor_owners:[]});
