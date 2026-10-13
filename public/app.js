@@ -58,7 +58,7 @@ function treeMarkup(n,index) {
 function nodeDetail(n,index) {
   const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
   const line=x=>`<p class="faint">${esc(x.repo_name)} · ${esc(x.phase||'work')} · turn ${x.turn}${x.summary?` · ${esc(String(x.summary).slice(0,400))}`:''}</p>`;
-  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(statusOf(n))}</div><p>${esc(n.task)}</p>${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> <b class="mono">${esc(builder.id)}</b> · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(statusOf(n))}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(i=>`${i.name}(${(i.params||[]).join(', ')})`).join(', '))}</p>`:''}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> <b class="mono">${esc(builder.id)}</b> · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
 }
 function renderTree(agents) {
   if(!agents?.length)return '<p class="empty">No agents yet.</p>';

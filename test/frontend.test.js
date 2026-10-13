@@ -165,3 +165,20 @@ test('Push to GitHub posts owner/repo and links the pull request, the branch, or
   assert.equal(result.innerHTML,'Set GITHUB_TOKEN with wrangler secret put GITHUB_TOKEN');
   assert.match(result.className,/^error /);
 });
+
+test('v7.15: the node detail lists a node\'s promised functions',()=>{
+  const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m=>m[1]),listeners=new Map();
+  const elements=new Map(ids.map(id=>[id,{id,value:'',textContent:'',className:'',innerHTML:'',title:'',disabled:false,
+    addEventListener(type,fn){listeners.set(`${id}:${type}`,fn);},querySelectorAll(){return [];}}]));
+  const context={document:{getElementById(id){return elements.get(id)||null;},querySelectorAll(){return [];}},
+    crypto:{randomUUID(){return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';}},location:{href:'https://example.com/'},history:{replaceState(){}},URL,setInterval(){}};
+  runInNewContext(script,context,{filename:'public/app.js'});
+  context.render({status:'paused',busy:false,step:1,max_parallel:4,active_agents:[],files:[],events:[],agents:[
+    {id:'root',parent:null,label:'Root objective',phase:'manager',status:'waiting',task:'goal',interfaces:[{name:'start',does:'no arguments',params:[]}]},
+    {id:'root.1',parent:'root',label:'create ticket',phase:'implement',status:'ready',task:'Write code that creates tickets',interfaces:[{name:'createTicket',does:'creates a ticket',params:['title','description']},{name:'saveTicket'}]},
+    {id:'root.2',parent:'root',label:'Ticket <views>',phase:'implement',status:'ready',task:'Write code that renders tickets',interfaces:[]}]});
+  const pick=id=>{listeners.get('hierarchy:click')({target:{closest:()=>({dataset:{node:id}})}});return elements.get('node-detail').innerHTML;};
+  assert.match(pick('root.1'),/<p>Write code that creates tickets<\/p><p class="faint">promises: createTicket\(title, description\), saveTicket\(\)<\/p>/);
+  assert.match(pick('root'),/<p class="faint">promises: start\(\)<\/p>/);
+  assert.doesNotMatch(pick('root.2'),/promises:/,'no promise, no line');
+});
