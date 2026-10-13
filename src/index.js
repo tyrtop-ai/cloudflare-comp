@@ -4,7 +4,7 @@ export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT } from './model.js';
-import { apiGaps, coverageCheckable, operationMethods, untestedOperations } from './api-coverage.js';
+import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, assignedPiece, entrySpec, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -1537,23 +1537,23 @@ export class ControlRoom extends DurableObject {
       // delete goal; the runner tested reading alone and the run completed.
       // Before the test is fixed, every operation the goal names needs its
       // own method, or the entry worker hears which are missing. The model
-      // only proposes the mapping; a model that cannot answer never blocks.
+      // only proposes the mapping. Its error propagates, as the linker's and
+      // the runner's do, so the turn is retried: swallowed, one capacity error
+      // fixed run6's read-only test unchecked for the whole run. An answer
+      // that is no mapping, twice, fails open.
       let operations=null;
       if(!this.read('runner_test',null)?.test) {
-        let coverage=null,error='';
-        if(coverageCheckable(described)) {
-          try{coverage=await apiCoverage(this.inferenceEnv(),{goal,api});}catch(e){error=String(e?.message||e);}
-        } else error='the API description lists no top-level members to check';
+        const checkable=coverageCheckable(described);
+        const coverage=checkable?await apiCoverage(this.inferenceEnv(),{goal,api}):null;
         const gaps=coverage?apiGaps(described,coverage.operations):[];
         if(gaps.length) {
-          const missing=gaps.map(g=>g.same_as?`${g.operation} (${g.method} already performs ${g.same_as})`:g.operation).join(', ');
-          this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${missing}.`,900));
-          return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:`start() returns no method for: ${clip(missing,240)}; it returned ${clip(api,200)}. Each operation the goal names needs its own method on the object start() returns, the operation imported from the module that performs it. ${ENTRY_CONTRACT}`},...link.issues]),'run');
+          this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
+          return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:gapProblem(described,gaps,ENTRY_CONTRACT)},...link.issues]),'run');
         }
         if(coverage) {
           operations=operationMethods(described,coverage.operations);
           this.event(id,'api_covered',clip('Each operation the goal names has a method: '+operations.map(o=>`${o.operation} -> ${o.method}`).join(', '),900));
-        } else if(this.env.MOCK_AI!=='true')this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${error||'the model gave no usable mapping'}. The runner is not told which methods to test.`,900));
+        } else if(this.env.MOCK_AI!=='true')this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900));
       }
       const outcome=await this.runApplication(id,fingerprint,files,api,goal,link,operations);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);

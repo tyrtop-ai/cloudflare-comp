@@ -217,6 +217,8 @@ function liveRoom({link=()=>({edits:[],entry:null,issues:[]}),runner=()=>runnerT
   const AI={run:async(_model,{messages})=>{
     const system=messages[0].content,user=JSON.parse(messages[1].content);
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
+    // No mapping: the coverage gate fails open, as these rooms predate it (v7.13.3).
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}
     if(system.startsWith('You are the BUILDER doing triage')){calls.triage.push(user);return {response:JSON.stringify(triage(user))};}
     throw new Error('unexpected model request: '+system.slice(0,80));
@@ -722,6 +724,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
       const repo=user.all_module_paths.find(p=>p.endsWith('in-memory-ticket-repository.js'));
       return {response:JSON.stringify({edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:`require('../${repo.split('/').slice(1).join('/')}')`},{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:app?.path??null,issues:[]})};
     }
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER')){calls.runner++;return {response:runnerTest};}
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
@@ -777,6 +780,7 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
       const repo=user.all_module_paths.find(p=>p.endsWith('in-memory-ticket-repository.js'));
       return {response:JSON.stringify({edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:`require('../${repo.split('/').slice(1).join('/')}')`},{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:app?.path??null,issues:[]})};
     }
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER')){calls.runner++;return {response:runnerTest};}
     if(system.startsWith('You are the BUILDER doing triage')) {
       calls.triage++;
@@ -875,6 +879,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
       }
       return {response:JSON.stringify({edits,entry:user.scope==='application'?(user.all_module_paths.find(p=>p.endsWith('/app.js'))||null):null,issues:[]})};
     }
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER'))return {response:runnerTest};
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
@@ -926,6 +931,7 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
       const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
       return {response:JSON.stringify({edits:app?[{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:null,issues:[]})};
     }
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER'))return {response:runnerTest};
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};

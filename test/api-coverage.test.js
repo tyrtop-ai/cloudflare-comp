@@ -15,7 +15,7 @@ const {ControlRoom}=await import('../src/index.js');
 const {verifyBuild}=await import('../container/build-runner.mjs');
 const {snapshotHash}=await import('../src/build-verification.js');
 const {materializedPath}=await import('../src/assembly.js');
-const {apiGaps,apiMethod,methodName,operationMethods,untestedOperations,coverageCheckable}=await import('../src/api-coverage.js');
+const {apiGaps,apiMethod,methodName,operationMethods,untestedOperations,coverageCheckable,gapProblem}=await import('../src/api-coverage.js');
 const {apiCoverage,writeRunnerTest,COVERAGE_SYSTEM,RUNNER_SYSTEM,ENTRY_CONTRACT}=await import('../src/model.js');
 
 class Sql {constructor(){this.db=new DatabaseSync(':memory:');}exec(s,...p){if(!p.length&&!/^\s*select/i.test(s)){this.db.exec(s);return{toArray:()=>[]};}const q=this.db.prepare(s);const rows=/^\s*select/i.test(s)?q.all(...p):(q.run(...p),[]);return{toArray:()=>rows};}}
@@ -45,7 +45,10 @@ test('apiGaps: model spellings of a method resolve to the top-level member; non-
   for(const spelled of ['createTicket','app.createTicket','createTicket()','createTicket(data)',' createTicket ',"app['createTicket']",'await app.createTicket(data);','start().createTicket','CreateTicket'])
     assert.equal(apiMethod(crudApi,spelled),'createTicket',spelled);
   assert.equal(methodName('app . createTicket ( { title } )'),'createTicket');
-  for(const spelled of ['version','toString','tickets.create','none',null,'',42])assert.equal(apiMethod(crudApi,spelled),null,String(spelled));
+  // Decorated answers fail closed as false gaps unless their first name after app, await, async, new or start counts.
+  for(const spelled of ['`createTicket`',"'createTicket'",'"createTicket"','createTicket(data): Promise<Ticket>','createTicket(data) -> ticket','app.createTicket // creates','async createTicket','app[`createTicket`]','new app.createTicket'])
+    assert.equal(apiMethod(crudApi,spelled),'createTicket',spelled);
+  for(const spelled of ['version','toString','tickets.create','none',null,'',42,'none: getTickets only reads','N/A','Create is missing'])assert.equal(apiMethod(crudApi,spelled),null,String(spelled));
   // Two members that differ only in case are never guessed between.
   assert.equal(apiMethod({type:'object',members:{getTicket:fn('getTicket'),GetTicket:fn('GetTicket')}},'getticket'),null);
   const nested={type:'object',members:{tickets:{type:'object',members:{create:fn('create')}},Store:{type:'class',name:'Store',params:[]}}};
@@ -54,14 +57,49 @@ test('apiGaps: model spellings of a method resolve to the top-level member; non-
     [{operation:'create a ticket',method:'createTicket'},{operation:'view tickets',method:'getTickets'}]);
 });
 
-test('apiGaps: a description that cannot be checked is no gate',()=>{
+test('apiGaps: an entry shaped as the contract asks ({ create: createTicket, ... }) is covered when the model names the functions',()=>{
+  // The Container describes create with name "createTicket"; a model that answers with the name field means the create member.
+  const aliased={type:'object',members:{create:fn('createTicket','data'),view:fn('getTickets','filters'),update:fn('bound updateTicket','id','patch'),delete:fn('deleteTicket','id')}};
+  const byName=[{operation:'create a ticket',method:'createTicket'},{operation:'view tickets',method:'app.getTickets()'},{operation:'update a ticket',method:'updateTicket'},{operation:'delete a ticket',method:'delete'}];
+  assert.deepEqual(apiGaps(aliased,byName),[]);
+  assert.deepEqual(operationMethods(aliased,byName).map(o=>o.method),['create','view','update','delete'],'the runner calls the property, app.create(...)');
+  // Two members holding the same function are never guessed between.
+  assert.equal(apiMethod({type:'object',members:{add:fn('createTicket'),create:fn('createTicket')}},'createTicket'),null);
+  assert.match(COVERAGE_SYSTEM,/property name in the description's members \(what a caller writes as app\.NAME\(\.\.\.\), not the function's "name" field when the two differ\)/);
+});
+
+test('apiGaps: a description that cannot be checked is no gate; a function, class or array start() returned has no method',()=>{
   const none=[{operation:'create a ticket',method:null}];
-  for(const described of [{type:'unparsed'},{type:'object',members_truncated:true,keys:['createTicket']},{type:'function',name:'app',params:[]},{type:'array',members:{0:fn('x')}},{type:'object'},null,undefined]) {
+  for(const described of [{type:'unparsed'},{type:'object',members_truncated:true,keys:['createTicket']},{type:'object'},null,undefined]) {
     assert.deepEqual(apiGaps(described,none),[],JSON.stringify(described));
     assert.equal(coverageCheckable(described),false,JSON.stringify(described));
   }
   assert.deepEqual(apiGaps(crudApi,null),[]);
   assert.equal(coverageCheckable(JSON.parse(run6Api)),true);
+  // The entry contract asks for an object with one method per operation: a
+  // bare function for a CRUD goal covers none of them, whatever it is called.
+  const mapped=[{operation:'create a ticket',method:'app'},{operation:'view tickets',method:'start'}];
+  for(const described of [{type:'function',name:'app',params:['data']},{type:'class',name:'Store',params:[],methods:['add']},{type:'array',members:{0:fn('app')}}]) {
+    assert.equal(coverageCheckable(described),true,described.type);
+    assert.deepEqual(apiGaps(described,mapped).map(g=>g.operation),['create a ticket','view tickets'],described.type);
+  }
+});
+
+test('gapProblem: the missing operations and the whole entry contract fit the routed problem\'s limit, however long the API',()=>{
+  const big={type:'object',members:Object.fromEntries(['listAllOpenTicketsForCurrentUser','searchTicketsByKeywordAndStatus','exportTicketsAsCommaSeparatedValues','countTicketsGroupedByPriority','getTicketHistoryWithComments'].map(k=>[k,fn(k,'options','pagination')]))};
+  assert.ok(JSON.stringify(big).length>400);
+  const gaps=['create a ticket','update a ticket','delete a ticket','assign a ticket','close a ticket'].map(operation=>({operation,method:null}));
+  const detail=gapProblem(big,gaps,ENTRY_CONTRACT);
+  assert.ok(detail.length<=946,String(detail.length));
+  assert.ok(detail.endsWith(ENTRY_CONTRACT));
+  assert.match(detail,/^start\(\) returns no method for: create a ticket, update a ticket, delete a ticket, assign a ticket, close a ticket; it returned methods listAllOpenTicketsForCurrentUser, /);
+  // A list longer than the room is cut between operations, never mid-name.
+  const many=Array.from({length:30},(_,i)=>({operation:`operation number ${i} on a ticket`,method:null}));
+  const cut=gapProblem(big,many,ENTRY_CONTRACT);
+  assert.ok(cut.length<=946&&cut.endsWith(ENTRY_CONTRACT),String(cut.length));
+  assert.match(cut,/^start\(\) returns no method for: operation number 0 on a ticket, (?:operation number \d+ on a ticket, )*operation number \d+ on a ticket and more; it returned methods listAllOpenTicketsForCurrentUser(?:, \w+)* and more\. Each operation/);
+  assert.match(gapProblem({type:'function',name:'app',params:['data']},gaps.slice(0,1),ENTRY_CONTRACT),/^start\(\) returns no method for: create a ticket; it returned a function, not an object\. /);
+  assert.match(gapProblem({type:'object',members:{version:{type:'string',value:'1'}}},gaps.slice(0,1),ENTRY_CONTRACT),/; it returned no methods\. /);
 });
 
 // ------------------------------------------------------- the runner backstop
@@ -95,6 +133,21 @@ test('backstop: a runner test that never calls a mapped method is caught; commen
   assert.deepEqual(untestedOperations("const f = app.deleteTicket; app.createTicket(); app.getTickets(); app.updateTicket();",crudMapping).map(o=>o.method),['deleteTicket'],'a reference is not a call');
   assert.deepEqual(untestedOperations(run6Test,null),[],'no mapping, no backstop');
   assert.deepEqual(untestedOperations('app.createTicket(',crudMapping),[],'a test that does not parse is left to the syntax check');
+});
+
+test('backstop: a method destructured or copied from the app and called counts; a call on another object does not',()=>{
+  const wrap=body=>`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n${body}\n})().catch(e => { console.error(e); process.exitCode = 1; });\n`;
+  for(const body of [
+    'const app = await start();\nconst { createTicket, getTickets, updateTicket: update, deleteTicket = null } = app;\nconst t = await createTicket({});\nawait getTickets();\nawait update(t.id, {});\nawait deleteTicket(t.id);',
+    'const { createTicket, getTickets, updateTicket, deleteTicket } = await start();\nawait createTicket({}); await getTickets(); await updateTicket(1, {}); await deleteTicket(1);',
+    'const app = await start();\nconst c = app.createTicket.bind(app); await c({});\nconst view = app.getTickets; await view();\nawait app[`updateTicket`](1, {});\nawait (await start()).deleteTicket(1);',
+    'let app;\napp = await start();\nasync function check(a) { await a.createTicket({}); await a.getTickets(); await a.updateTicket(1, {}); }\nawait check(app);\nconst { deleteTicket: remove } = app; await remove.call(app, 1);',
+  ])assert.deepEqual(untestedOperations(wrap(body),crudMapping),[],body);
+  // With the app known, Map#delete, Array#find and Object.create are not the app's methods.
+  const others=[{operation:'add a ticket',method:'add'},{operation:'find a ticket',method:'find'},{operation:'delete a ticket',method:'delete'},{operation:'create a board',method:'create'}];
+  assert.deepEqual(untestedOperations(wrap("const app = await start();\nconst seen = new Map();\nconst t = await app.add({ title: 'x' });\nseen.set(t.id, t); seen.delete(t.id);\nassert.ok([t].find(x => x.id === t.id));\nObject.create(null);"),others).map(o=>o.method),['find','delete','create']);
+  // A class member is constructed, not called.
+  assert.deepEqual(untestedOperations(wrap('const app = await start();\nconst s = new app.TicketStore();\nassert.ok(s);'),[{operation:'open a ticket store',method:'TicketStore'}]),[]);
 });
 
 // --------------------------------------------------------------- the models
@@ -224,9 +277,11 @@ test('room: run6\'s start() returning only getTickets goes back to the entry wor
   const failure=r.read('build_failure:root',null);
   assert.equal(failure.stage,'run');
   assert.deepEqual(failure.issues.map(i=>i.path),[paths[2]],'the module that exports start()');
-  assert.match(failure.issues[0].detail,/^start\(\) returns no method for: create a ticket, update a ticket, delete a ticket; it returned \{"type":"object"/);
+  assert.match(failure.issues[0].detail,/^start\(\) returns no method for: create a ticket, update a ticket, delete a ticket; it returned methods getTickets\. /);
   assert.match(failure.issues[0].detail,/Each operation the goal names needs its own method on the object start\(\) returns, the operation imported from the module that performs it\./);
-  assert.ok(failure.issues[0].detail.endsWith(ENTRY_CONTRACT),'the whole entry contract survives the problem\'s length limit');
+  // The whole entry contract survives the length limit, with room left for the builder's renames.
+  assert.ok(failure.issues[0].detail.includes(`${ENTRY_CONTRACT} Builder renames in the linked copy that failed (your source does not have them): './ticketStorage' → `),failure.issues[0].detail);
+  assert.ok(failure.issues[0].detail.length<=950);
   await r.routeBuildFailures();
   assert.equal(r.receive('root.3').length,1,'the retrieval worker that wrote start() hears it');
   for(const other of ['root.1','root.2','root.4','root.5'])assert.equal(r.receive(other).length,0,other);
@@ -283,27 +338,87 @@ test('room: a runner draft that skips a mapped method is turned back before it r
   assert.equal(r.node(builder.id).status,'done',tail(r));
 });
 
-test('room: a coverage model that answers garbage or fails fails open: coverage_unchecked, and the runner is told no mapping',async()=>{
-  for(const [name,coverage,asked] of [['garbage',()=>'The API looks incomplete to me.',2],['throws',undefined,1]]) {
-    const {room:r,calls}=room(coverage?{coverage}:{});
-    await workersUnder(r,memoryGoal,memoryWorkers);
-    const builder=await r.scheduleAssembly('root');
-    await r.turn(builder.id);
-    const events=r.snapshot().events;
-    assert.equal(calls.coverage.length,asked,name);
-    assert.match(events.find(e=>e.kind==='coverage_unchecked')?.body||'',/^Not checked that start\(\) has a method for every operation the goal names/,name);
-    assert.ok(!kinds(r).includes('api_incomplete'),name);
-    assert.equal(calls.runner.length,1,name);
-    assert.equal('operations_to_test' in calls.runner[0],false,name);
-    assert.equal(r.read('runner_test',null).operations,null,name);
-    assert.equal(r.node(builder.id).status,'done',name+'\n'+tail(r));
-  }
-  // An API description with no top-level members is not sent to the model at all.
-  const {room:r,calls}=room({coverage:()=>memoryCoverage,runner:()=>"const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => { const create = await start(); assert.equal((await create({ title: 'x' })).title, 'x'); })().catch(e => { console.error(e); process.exitCode = 1; });\n"});
-  await workersUnder(r,memoryGoal,[['Application entry','app.js',"module.exports = { start() { return (data) => ({ id: 1, ...data }); } };\n"]]);
+test('room: a coverage model that answers no mapping fails open: coverage_unchecked, and the runner is told no mapping',async()=>{
+  const {room:r,calls}=room({coverage:()=>'The API looks incomplete to me.'});
+  await workersUnder(r,memoryGoal,memoryWorkers);
   const builder=await r.scheduleAssembly('root');
   await r.turn(builder.id);
-  assert.equal(calls.coverage.length,0);
-  assert.match(r.snapshot().events.find(e=>e.kind==='coverage_unchecked').body,/lists no top-level members/);
+  assert.equal(calls.coverage.length,2,'one retry');
+  assert.match(r.snapshot().events.find(e=>e.kind==='coverage_unchecked')?.body||'',/^Not checked that start\(\) has a method for every operation the goal names: the model gave no usable mapping/);
+  assert.ok(!kinds(r).includes('api_incomplete'));
+  assert.equal(calls.runner.length,1);
+  assert.equal('operations_to_test' in calls.runner[0],false);
+  assert.equal(r.read('runner_test',null).operations,null);
+  assert.equal(r.node(builder.id).status,'done',tail(r));
+});
+
+test('room: a coverage call that throws fails the turn, which is retried; run6\'s read-only test never runs unchecked',async()=>{
+  // Swallowed, one capacity error fixed run6's read-only test, which passed, for the whole run.
+  const readOnlyRun6="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  // Since the API only exposes getTickets, we can only read tickets.\n  assert.ok(Array.isArray(await app.getTickets({})));\n  console.log('API test passed with available method:', 'getTickets');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
+  const {room:r,calls}=room({coverage:(_u,n)=>{if(n===1)throw new Error('3040: Capacity temporarily exceeded, please try again.');return run6Coverage;},runner:()=>readOnlyRun6});
+  const paths=await workersUnder(r,run6Goal,run6Workers);
+  const builder=await r.scheduleAssembly('root');
+  await r.runSelectedTurn(builder.id,1);
+  assert.equal(calls.coverage.length,1);
+  assert.equal(calls.runner.length,0,'no test is written without the check');
+  assert.equal(r.read('runner_test',null),null);
+  assert.ok(!kinds(r).includes('coverage_unchecked')&&!kinds(r).includes('run_passed'),tail(r));
+  assert.match(r.snapshot().events.find(e=>e.kind==='error')?.body||'',/3040: Capacity temporarily exceeded/);
+  assert.equal(r.node(builder.id).status,'ready','retried like any failed turn');
+  assert.ok(r.read('queue',[]).includes(builder.id));
+  await r.runSelectedTurn(builder.id,2);
+  assert.equal(calls.coverage.length,2);
+  assert.equal(calls.runner.length,0);
+  assert.ok(kinds(r).includes('api_incomplete'),tail(r));
+  assert.deepEqual(r.read('build_failure:root',null).issues.map(i=>i.path),[paths[2]]);
+  assert.equal(r.node(builder.id).status,'waiting');
+});
+
+test('room: start() that returns one function for a CRUD goal goes back to the entry worker; an API cut short is not sent to the model',async()=>{
+  const single="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => { const create = await start(); assert.equal((await create({ title: 'x' })).title, 'x'); })().catch(e => { console.error(e); process.exitCode = 1; });\n";
+  const {room:r,calls}=room({coverage:()=>({operations:[{operation:'create a ticket',method:'start'},{operation:'view tickets',method:null},{operation:'update a ticket',method:null},{operation:'delete a ticket',method:null}]}),runner:()=>single});
+  const paths=await workersUnder(r,memoryGoal,[['Application entry','app.js',"module.exports = { start() { return (data) => ({ id: 1, ...data }); } };\n"]]);
+  const builder=await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  assert.equal(calls.coverage.length,1);
+  assert.equal(calls.runner.length,0,'a create-only test never certifies it');
+  assert.match(r.snapshot().events.find(e=>e.kind==='api_incomplete')?.body||'',/no method for 4 of the 4 operation/,tail(r));
+  const failure=r.read('build_failure:root',null);
+  assert.deepEqual(failure.issues.map(i=>i.path),[paths[0]]);
+  assert.match(failure.issues[0].detail,/^start\(\) returns no method for: create a ticket, view tickets, update a ticket, delete a ticket; it returned a function, not an object\. /);
+  // Forty long method names: the Container cuts the description to its keys, which says no member's kind.
+  const names=Array.from({length:40},(_,i)=>`operation${i}OnTicketsWithAVeryLongDescriptiveNameForTheTest`);
+  const wide=`function start() {\n  return {\n${names.map(k=>`    ${k}(ticketIdentifier, requestedChanges, requestOptions) { return '${k}'; },`).join('\n')}\n  };\n}\nmodule.exports = { start };\n`;
+  const probe=room({coverage:()=>memoryCoverage,runner:()=>`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => { const app = await start(); assert.equal(await app.${names[0]}(), '${names[0]}'); })().catch(e => { console.error(e); process.exitCode = 1; });\n`});
+  await workersUnder(probe.room,memoryGoal,[['Application entry','app.js',wide]]);
+  const b=await probe.room.scheduleAssembly('root');
+  await probe.room.turn(b.id);
+  assert.match(probe.room.snapshot().events.find(e=>e.kind==='build_checked').body,/"members_truncated":true/);
+  assert.equal(probe.calls.coverage.length,0);
+  assert.match(probe.room.snapshot().events.find(e=>e.kind==='coverage_unchecked')?.body||'',/the API description was cut short or did not parse/,tail(probe.room));
+  assert.equal(probe.calls.runner.length,1);
+});
+
+test('room: an entry shaped as the contract asks, { create: createTicket, ... }, is covered when the model names the functions, and the runner calls the properties',async()=>{
+  const aliasApp="const { createTicket, getTickets, updateTicket, deleteTicket } = require('./ticketStore');\nfunction start() {\n  return { create: createTicket, view: getTickets, update: updateTicket, delete: deleteTicket };\n}\nmodule.exports = { start };\n";
+  const byName={operations:[{operation:'create a ticket',method:'createTicket'},{operation:'view tickets',method:'getTickets'},{operation:'update a ticket',method:'updateTicket'},{operation:'delete a ticket',method:'deleteTicket'}]};
+  const aliasTest=crudTest.replace(/app\.createTicket/g,'app.create').replace(/app\.viewTickets/g,'app.view').replace(/app\.updateTicket/g,'app.update').replace(/app\.deleteTicket/g,'app.delete');
+  const {room:r,calls}=room({coverage:()=>byName,runner:()=>aliasTest});
+  await workersUnder(r,memoryGoal,[['Ticket store','ticketStore.js',memoryStore],['Application entry','app.js',aliasApp]]);
+  const builder=await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  assert.ok(!kinds(r).includes('api_incomplete'),tail(r));
+  assert.deepEqual(calls.runner[0].operations_to_test,[{operation:'create a ticket',method:'create'},{operation:'view tickets',method:'view'},{operation:'update a ticket',method:'update'},{operation:'delete a ticket',method:'delete'}]);
+  assert.equal(r.node(builder.id).status,'done',tail(r));
+});
+
+test('room: a runner test that destructures the methods from the app is accepted and runs',async()=>{
+  const destructured="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const { createTicket, viewTickets, updateTicket, deleteTicket } = app;\n  const t = await createTicket({ title: 'Printer jam', status: 'open' });\n  assert.ok((await viewTickets()).some(x => x.id === t.id));\n  await updateTicket(t.id, { status: 'closed' });\n  assert.equal(await deleteTicket(t.id), true);\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
+  const {room:r,calls}=room({coverage:()=>memoryCoverage,runner:()=>destructured});
+  await workersUnder(r,memoryGoal,memoryWorkers);
+  const builder=await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  assert.equal(calls.runner.length,1);
+  assert.ok(!kinds(r).includes('runner_rejected'),tail(r));
   assert.equal(r.node(builder.id).status,'done',tail(r));
 });
