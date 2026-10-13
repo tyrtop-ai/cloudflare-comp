@@ -1543,7 +1543,7 @@ test('room: with no module exporting start(), Root asks the model for the entry 
     assert.equal(failure.stage,'link');
     assert.deepEqual(failure.issues.map(i=>i.path),[paths[3]],'the module named as the application, not combine.js');
     assert.match(failure.issues[0].detail,propose?/^The application entry \S+app\.js does not export start\(\)/:/^No application entry/);
-    assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object with one method per operation the goal names, each named after that operation .* It does no work at module load/);
+    assert.match(failure.issues[0].detail,/exports start\(\); start\(\) takes no arguments and returns an object with one method per operation the goal names, each named after that operation .* It does no work at module load/);
     if(propose)assert.ok(events.some(e=>e.kind==='link_entry'&&e.body===`Application entry: ${paths[3]}.`));
   }
 });
@@ -1720,7 +1720,7 @@ test('room: an entry that exports no start() goes back to its worker with the en
   assert.equal(failure.stage,'link');
   assert.deepEqual(failure.issues.map(i=>i.path),[paths[3]]);
   assert.match(failure.issues[0].detail,/does not export start\(\)/);
-  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object with one method per operation the goal names/);
+  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) takes no arguments and returns an object with one method per operation the goal names/);
   assert.match(failure.issues[0].detail,/importing it must not read process\.argv, start a server or prompt for input/);
   await room.routeBuildFailures();
   const inbox=room.receive('root.4');

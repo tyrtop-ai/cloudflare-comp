@@ -3,7 +3,7 @@ const roomFromURL = new URL(location.href).searchParams.get('room');
 const room = /^[0-9a-z-]{8,64}$/i.test(roomFromURL || '') ? roomFromURL : crypto.randomUUID();
 const params = new URL(location.href); params.searchParams.set('room',room);
 history.replaceState(null,'',params);
-$('room').value=room; $('room-id').textContent=room.slice(0,8);
+$('room').value=room;
 let current = null, activeFile = '';
 const esc = value => String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 const stamp = value => { try { return new Date(value).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit',second:'2-digit'}); } catch { return ''; } };
@@ -99,7 +99,12 @@ function render(s) {
   $('event-count').textContent=`${s.events?.length||0} events`;
   $('files').innerHTML=fileRows.length?fileRows.map(f=>`<button type="button" class="file-row ${activeFile===f.agent+'/'+f.path?'active':''}" data-agent="${esc(f.agent)}" data-path="${esc(f.path)}"><span class="mono">${esc(f.agent)}/${esc(f.path)}</span><small>${f.virtual?'alias':'r'+f.revision}</small></button>`).join(''):'<p class="empty">No files committed yet.</p>';
   $('files').querySelectorAll('button[data-agent]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.agent,btn.dataset.path)));
-  $('start').disabled=s.status==='running'; $('continue').disabled=Boolean(s.busy) || (s.status==='complete' || s.status==='failed') || !s.agents?.length;
+  // While a run is going, Start becomes a square stop button.
+  const running=s.status==='running';
+  $('start').innerHTML=running?'<span class="stop-square" aria-hidden="true"></span><span class="sr-only">Stop</span>':'Start <span>↗</span>';
+  $('start').title=running?(s.stopping?'Stopping after the running turns finish':'Stop'):'Start';
+  $('start').className=running?'primary stop':'primary';
+  $('start').disabled=Boolean(s.stopping); $('continue').disabled=Boolean(s.busy) || (s.status==='complete' || s.status==='failed') || !s.agents?.length;
 }
 async function refresh() {
   if (!token()) return;
@@ -151,7 +156,7 @@ $('model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();}
 $('split-model').addEventListener('change',()=>{controlsDirty=true;});
 for(const id of ['parallel-limit','max-agents','max-depth','split-threshold']) $(id).addEventListener('input',()=>{controlsDirty=true;});
 updateModelHint();
-$('start').addEventListener('click',()=>action('/api/run',{goal:$('goal').value,budget:Number($('budget').value),settings:settings()}));
+$('start').addEventListener('click',()=>current?.status==='running'?action('/api/stop'):action('/api/run',{goal:$('goal').value,budget:Number($('budget').value),settings:settings()}));
 $('continue').addEventListener('click',()=>action('/api/continue',{budget:Number($('budget').value),settings:settings()}));
 $('reset').addEventListener('click',()=>{if(confirm('Clear the room session? Existing Artifacts repos will remain.'))action('/api/reset');});
 $('export').addEventListener('click',async()=>{

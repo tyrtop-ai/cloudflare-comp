@@ -29,7 +29,7 @@ const apiCallable = d => ['function','class','unparsed'].includes(d?.type) || !!
 // runner guessing at a protocol the goal never named.
 const apiGenericOnly = d => { const fns=d?.type==='object'&&d.members?Object.entries(d.members).filter(([,v])=>v?.type==='function'||v?.type==='class'):[]; return fns.length===1&&Object.keys(d.members).length===1&&/^(?:handler|handle|dispatch|run|execute|process|invoke|main|call|request)$/i.test(fns[0][0]); };
 // The entry is part of the goal, so a split's scope check admits the child that composes it.
-const GOAL_ENTRY=' The finished application has one entry module that exports start(); start() returns an object with one method per operation named above.';
+const GOAL_ENTRY=' The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it.';
 // A scoped public key must survive repeated manager hops without collisions.
 // Strip the child's existing assumption prefix so only ONE prefix remains per
 // hop. For long hierarchical keys, use a digest of the FULL untruncated key.
@@ -373,7 +373,7 @@ export class ControlRoom extends DurableObject {
   // is constructed from snapshot(), avoiding accidental descendant leakage.
   snapshot() {
     return {
-      goal: this.get('goal'), status: this.get('status','idle'), busy: this.busy, step: Number(this.get('step','0')),
+      goal: this.get('goal'), status: this.get('status','idle'), busy: this.busy, stopping: this.get('stop_requested')==='1', step: Number(this.get('step','0')),
       build: this.read('last_build_report',null), build_infrastructure: this.get('build_infrastructure:root',''),
       active_agents: [...this.activeTurns], max_parallel: this.settings().parallel, settings: this.settings(),
       budget: Number(this.get('budget','0')), queue: this.read('queue', []),
@@ -3106,8 +3106,10 @@ export class ControlRoom extends DurableObject {
     try {
       // Work-conserving: replace each completed slot immediately, without
       // waiting for slower inferences from the same dispatch wave.
-      while (spent<cap || active.size || this.read('queue',[]).some(id=>this.manager(id)&&this.node(id)?.status==='ready')) {
-        while (active.size<this.settings().parallel) {
+      // A stop request dispatches nothing new; turns already running finish.
+      const stopping=()=>this.get('stop_requested')==='1';
+      while (active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>this.manager(id)&&this.node(id)?.status==='ready'))) {
+        while (!stopping() && active.size<this.settings().parallel) {
           let [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && active.size===0 && this.nudgeQuiescentManager()) [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && spent<cap && active.size===0 && this.nudgeQuiescentLeaf()) [id]=this.takeReadyBatch(1);
@@ -3128,6 +3130,11 @@ export class ControlRoom extends DurableObject {
         await Promise.race(active);
       }
       await this.flushAllPending();
+      if (stopping()) {
+        this.set('stop_requested','');this.set('status','paused');
+        this.event('system','stopped','Stopped by the observer after the running turns finished; Continue resumes.');
+        return;
+      }
       const nodes=this.allNodes();
       const finished=allFinished(nodes) && nodes.some(n=>n.id==='root');
       const failed=nodes.some(n=>n.status==='failed');
@@ -3154,8 +3161,17 @@ export class ControlRoom extends DurableObject {
     })());
     return {status:'running'};
   }
+  // Stop: no new turns are dispatched; the ones already running finish, then
+  // the run pauses. Continue resumes it.
+  async stop() {
+    if (!this.busy && this.get('status')!=='running') return {error:'Nothing is running'};
+    this.set('stop_requested','1');
+    this.event('system','stop_requested','Stop requested: no new turns start; the running ones finish, then the run pauses.');
+    return {status:'stopping'};
+  }
   async resume(budget,settings = {}) {
     if (this.busy) return {error:'Experiment running'};
+    this.set('stop_requested','');
     if (!['paused','complete','error','running','failed'].includes(this.get('status'))) return {error:'Start a session first'};
     if (this.get('status')==='complete') return {error:'All agents are done; start a new experiment'};
     if (this.get('status')==='failed') return {error:`Run failed: ${this.failedDescendantReason('root')}. Start a new room or inspect the recorded diagnostic.`};
@@ -3232,6 +3248,7 @@ export default {
       }
       if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));
       if (url.pathname==='/api/reset' && request.method==='POST') return json(await stub.clear());
+      if (url.pathname==='/api/stop' && request.method==='POST') return json(await stub.stop());
       return json({error:'Unknown API route'},404);
     } catch(e) {return json({error:clip(e?.message||e,950)},500);}
   }

@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recursive Control Plane — Persistent Artifact Memory</title>
-  <link rel="stylesheet" href="/styles.css?v=7.13.5" />
+  <link rel="stylesheet" href="/styles.css?v=7.13.6" />
 </head>
 <body>
   <div class="page">
     <header class="topbar">
       <div class="brand"><span class="brand-square"></span> CONTROL PLANE <span class="faint">/ AGENT MEMORY</span></div>
-      <div class="top-meta"><span>RECURSIVE · OPAQUE OWNERSHIP · ARTIFACTS</span><span id="connection" class="connection">Not connected</span></div>
+      <div class="top-meta"><span id="connection" class="connection">Not connected</span></div>
     </header>
     <div class="app-grid">
       <aside class="sidebar">
@@ -45,7 +45,7 @@
           <div class="range-control"><label for="split-threshold">Minimum YES probability <output id="split-threshold-value" for="split-threshold">70%</output></label>
             <input id="split-threshold" type="range" min="20" max="80" step="5" value="70" /></div>
           <p class="helper" id="model-hint">Clef decides YES/NO. If YES, Qwen guesses a split. Leaf agents implement. All inference stays on Workers AI.</p>
-          <button class="primary" id="start">Start new experiment <span>↗</span></button>
+          <button class="primary" id="start" title="Start">Start <span>↗</span></button>
           <button class="secondary" id="continue">Continue current experiment</button>
           <button class="secondary" id="export">Export observation JSON</button>
           <button class="secondary" id="reset">Clear room state</button>
@@ -88,8 +88,7 @@
         </div>
       </section>
     </div>
-    <footer><span>NO GLOBAL AGENT DIRECTORY. NO REMAPPING. OWNERSHIP SURVIVES DELEGATION.</span><span>Independent agents infer asynchronously. Limits and model are configurable per room. Generated code is not executed or tested.</span><span id="room-id" class="mono"></span></footer>
   </div>
-  <script type="module" src="/app.js?v=7.13.5"></script>
+  <script type="module" src="/app.js?v=7.13.6"></script>
 </body>
 </html>

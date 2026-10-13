@@ -45,8 +45,8 @@ test('current HTML displays concurrent agent count',()=>{
 });
 
 test('HTML uses versioned JS and CSS asset URLs',()=>{
-  assert.match(html, /src="\/app\.js\?v=7\.13\.5"/);
-  assert.match(html, /href="\/styles\.css\?v=7\.13\.5"/);
+  assert.match(html, /src="\/app\.js\?v=7\.13\.6"/);
+  assert.match(html, /href="\/styles\.css\?v=7\.13\.6"/);
 });
 
 test('v7.13: the split threshold control defaults to 70%',()=>{
@@ -66,4 +66,23 @@ test('agent traffic lists the newest event first',()=>{
     {id:1,ts:1,step:1,actor:'root',kind:'start',body:'first'},{id:2,ts:2,step:2,actor:'root',kind:'decompose',body:'second'},{id:3,ts:3,step:3,actor:'root.1',kind:'report',body:'third'}]});
   const list=elements.get('events').innerHTML;
   assert.ok(list.indexOf('third')<list.indexOf('second')&&list.indexOf('second')<list.indexOf('first'),list);
+});
+
+test('Start becomes a square stop button while a run is going',()=>{
+  const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(match=>match[1]);
+  const elements=new Map(ids.map(id=>[id,{id,value:'',textContent:'',className:'',innerHTML:'',title:'',disabled:false,addEventListener(){},querySelectorAll(){return [];},dispatchEvent(){}}]));
+  const context={document:{getElementById(id){return elements.get(id)||null;},querySelectorAll(){return [];}},
+    crypto:{randomUUID(){return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';}},location:{href:'https://example.com/'},history:{replaceState(){}},URL,setInterval(){},Event:class{}};
+  runInNewContext(script,context,{filename:'public/app.js'});
+  assert.match(html,/id="start"[^>]*>Start <span>/);
+  assert.doesNotMatch(html,/<footer|RECURSIVE · OPAQUE OWNERSHIP/);
+  context.render({status:'running',busy:true,step:1,agents:[],files:[],events:[]});
+  assert.match(elements.get('start').innerHTML,/stop-square/);
+  assert.equal(elements.get('start').title,'Stop');
+  assert.equal(elements.get('start').disabled,false);
+  context.render({status:'running',busy:true,stopping:true,step:1,agents:[],files:[],events:[]});
+  assert.equal(elements.get('start').disabled,true);
+  context.render({status:'paused',busy:false,step:1,agents:[],files:[],events:[]});
+  assert.match(elements.get('start').innerHTML,/^Start/);
+  assert.equal(elements.get('start').title,'Start');
 });

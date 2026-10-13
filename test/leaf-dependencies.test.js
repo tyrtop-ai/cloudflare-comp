@@ -116,7 +116,9 @@ test('both generation prompts contain the identical ownership rule and mock buil
   for(const prompt of prompts){
     assert.match(prompt,/Node\.js built-in modules/);
     assert.match(prompt,/import it with a relative path and the export name you expect/);
-    assert.match(prompt,/receive collaborators as function or constructor parameters/);
+    assert.match(prompt,/get collaborators only by importing them, never as function or constructor parameters, factories or a start\(\.\.\.\) of your own/);
+    assert.match(prompt,/keep any shared state at module level in the module that owns it/);
+    assert.doesNotMatch(prompt,/may also receive collaborators|accept them as parameters/);
   }
   const packageJSON=JSON.parse(await generateFile({MOCK_AI:'true'}, {node:{id:'root.3',label:'Temporary builder'},path:'package.json'}));
   assert.equal(packageJSON.dependencies,undefined);
