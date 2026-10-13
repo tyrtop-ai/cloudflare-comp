@@ -211,6 +211,39 @@ export async function matchFunction(env, {need, name=''}, items) {
   for(const x of answered.flat())if(x.p>=FUNCTION_MATCH_THRESHOLD&&(!best||x.p>best.p))best=x;
   return best;
 }
+// v7.15.1: a name two pieces of one split list goes to one of them, asked
+// like matchFunction over the candidate pieces only (run9's updateTicket on
+// the Data Module and the Update Ticket Module, when no label or task says).
+export async function pickPiece(env, fn, pieces) {
+  if (!pieces?.length) return null;
+  if (env.MOCK_AI === 'true') {
+    const terms=[...words(fn.name+' '+(fn.does||''))].filter(t=>!OWNER_STOP_WORDS.includes(t));
+    const scores=pieces.map(c=>{const have=words(c.label+' '+c.task);return terms.filter(t=>have.has(t)).length;});
+    const best=Math.max(...scores);
+    return best>0&&scores.filter(x=>x===best).length===1?{index:scores.indexOf(best),p:1}:null;
+  }
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef routing decision model');
+  const state={function:{signature:signature(fn),does:fn.does||''},pieces:pieces.map((c,j)=>({slot:j,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900)}))};
+  const groups=[];
+  for(let start=0;start<pieces.length;start+=12)groups.push(pieces.slice(start,start+12).map((_,k)=>start+k));
+  const answered=await Promise.all(groups.map(async group=>{
+    const questions=Object.fromEntries(group.map(j=>[`piece_${j}`,{type:'noul',
+      instructions:`Does piece ${j} write ${signature(fn)} as part of its own responsibility, so that the other pieces import it from piece ${j}? Answer NO if another piece's responsibility writes it and piece ${j} only calls it. Judge by what each piece writes, not by the function's name.`}]));
+    const output=await env.AI.run(selector,{model:clef,state,questions});
+    return group.map(j=>{
+      const probability=output?.answers?.[`piece_${j}`]?.noul;
+      if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
+        throw new Error(`Clef returned no valid probability for piece ${j}`);
+      return {index:j,p:probability};
+    });
+  }));
+  let best=null,top=0;
+  for(const x of answered.flat()){top=Math.max(top,x.p);if(x.p>=FUNCTION_MATCH_THRESHOLD&&(!best||x.p>best.p))best=x;}
+  // Pieces within 0.05 of the best are a tie, which the caller settles.
+  return best?{...best,tied:answered.flat().filter(x=>x!==best&&x.p>=FUNCTION_MATCH_THRESHOLD&&best.p-x.p<0.05).map(x=>x.index)}:{index:-1,p:top};
+}
 // Nobody up to Root promises the function: is it the worker's own to write?
 export async function ownsNeed(env, {assigned_code, need, name=''}) {
   if (env.MOCK_AI === 'true') return 1;

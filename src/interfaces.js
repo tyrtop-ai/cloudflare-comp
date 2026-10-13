@@ -127,12 +127,46 @@ export function placePromised(spawn, promised = []) {
   }
   return {spawn: out, placed};
 }
+// v7.15.1: a name two pieces of one split list is the manager's to place.
+// The answer is plain when exactly one piece's text says it exports NAME( or
+// exactly one label is the name's words (updateTicket and "Update Ticket
+// Module"); two plain answers that disagree are not. run9's Data Module
+// listed updateTicket and deleteTicket beside the Update and Delete Ticket
+// Modules, R3 deleted both from all, and nobody promised update or delete.
+const FILLER_WORDS = new Set('module modules piece component service handler handlers logic layer code file'.split(' '));
+const words = s => (String(s ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().match(/[a-z0-9]+/g) || []).map(w => w.length > 3 ? w.replace(/s$/, '') : w);
+export const labelNames = (label, name) => {const a = words(label).filter(w => !FILLER_WORDS.has(w)), b = words(name); return a.length === b.length && a.every((w, i) => w === b[i]);};
+// v7.15.1: a promised function performs an operation start() returns when
+// every word of the operation is in its name or its operation, the verb
+// first: update is updateTicket, addComment is never addTicket. del, delete
+// and remove are one verb, only as the verb (run9's del; removeTag is never
+// deleteTicket).
+const VERB = w => w === 'del' || w === 'remove' ? 'delete' : w;
+const covers = (a, b) => b.length > 0 && VERB(a[0]) === VERB(b[0]) && a.slice(1).every(w => b.slice(1).includes(w));
+export const performsOp = (op, f) => {const a = words(op); return a.length > 0 && (covers(a, words(f?.name)) || covers(a, words(f?.operation)));};
+// Each shared name R3 would delete: its holders (spawn indices), the item
+// with the most hint, and the plain pick, or null when Clef must choose.
+export function duplicateNames(spawn, promised = [], elsewhere = new Set()) {
+  const own = new Set(promised.map(p => p.name)), out = [];
+  const kids = (Array.isArray(spawn) ? spawn : []).map((c, i) => ({c, i})).filter(x => x.c && typeof x.c === 'object');
+  for (const name of new Set(kids.flatMap(x => namesOf(x.c)))) {
+    if (own.has(name) || elsewhere.has(name) || notIdentifier(name) || EXAMPLE.test(name)) continue;
+    const holders = kids.filter(x => namesOf(x.c).includes(name));
+    if (holders.length < 2) continue;
+    const one = xs => xs.length === 1 ? xs[0].i : null, task = one(holders.filter(x => saysExports(x.c, name))), label = one(holders.filter(x => labelNames(x.c.label, name)));
+    const pick = task !== null && label !== null && task !== label ? null : task ?? label;
+    const items = holders.map(x => x.c.interfaces.find(f => f.name === name)), item = items.find(f => f.does) || items.find(f => f.params.length) || items[0];
+    out.push({name, item, holders: holders.map(x => x.i), pick, why: pick === null ? '' : pick === task ? 'task exports it' : 'label matches'});
+  }
+  return out;
+}
 // R1-R4: a naming slip deletes the name, never the piece. Promised names are
 // never deleted; one on two pieces is a C5 failure, not a repair. A name on
 // two pieces that another branch already promises (elsewhere) is left to the
 // walk (R5), which prunes a piece made only of such names (run5's two entry
-// pieces both listed start, which Root's entry child carried).
-export function repairInterfaces(spawn, promised = [], elsewhere = new Set()) {
+// pieces both listed start, which Root's entry child carried). A shared name
+// the manager placed (owners: name -> {index, why}) stays on that piece only.
+export function repairInterfaces(spawn, promised = [], elsewhere = new Set(), owners = new Map()) {
   const own = new Set(promised.map(p => p.name)), removed = [];
   const drop = (c, keep, why) => {
     const kept = [];
@@ -145,7 +179,12 @@ export function repairInterfaces(spawn, promised = [], elsewhere = new Set()) {
   out = out.map(c => c && typeof c === 'object' ? drop(c, f => !EXAMPLE.test(f.name), 'copied from the example') : c);
   const count = name => kids().filter(k => namesOf(k).includes(name)).length;
   const shared = new Set(kids().flatMap(namesOf).filter(name => !own.has(name) && !elsewhere.has(name) && count(name) > 1));
-  out = out.map(c => c && typeof c === 'object' ? drop(c, f => !shared.has(f.name), 'listed by two pieces') : c);
+  const placed = name => owners.get(name)?.index >= 0 ? `listed by two pieces; kept on "${out[owners.get(name).index]?.label}", ${owners.get(name).why}` : `listed by two pieces${owners.get(name)?.why ? '; ' + owners.get(name).why : ''}`;
+  out = out.map((c, i) => c && typeof c === 'object' ? {...c, interfaces: (c.interfaces || []).filter(f => {
+    if (own.has(f.name) || !shared.has(f.name) || owners.get(f.name)?.index === i) return true;
+    removed.push({label: c.label, name: f.name, why: placed(f.name)});
+    return false;
+  })} : c);
   out = out.map(c => {
     if (!c || typeof c !== 'object' || (c.interfaces || []).length <= MAX_INTERFACES) return c;
     const keep = new Set([...c.interfaces.filter(f => own.has(f.name)), ...c.interfaces.filter(f => !own.has(f.name))].slice(0, MAX_INTERFACES).map(f => f.name));
