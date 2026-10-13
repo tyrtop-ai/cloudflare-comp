@@ -118,6 +118,12 @@ footer { display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; 
 .dot.retired { opacity:.35; }
 .dot.failed { border-color:var(--bad); background:color-mix(in srgb,var(--bad) 20%,var(--bg)); }
 .dot.split { border-color:transparent; background:linear-gradient(90deg,var(--manager) 0 50%,var(--bg) 50% calc(50% + 1px),var(--builder) calc(50% + 1px) 100%); }
+/* A builder linking its branch: a thin band sweeps left to right across the split circle. */
+.dot.split { position:relative; overflow:hidden; }
+.dot.split::after { content:""; position:absolute; top:0; bottom:0; left:0; width:45%; background:linear-gradient(90deg,transparent,rgb(255 255 255 / .6),transparent); transform:translateX(-110%); animation:link-sweep 1.6s linear infinite; pointer-events:none; }
+.otree-legend .dot.split::after { animation:none; display:none; }
+@keyframes link-sweep { to { transform:translateX(240%); } }
+@media (prefers-reduced-motion: reduce) { .dot.split::after,.dot.running { animation:none; } .dot.split::after { display:none; } }
 .dot.linked { box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--ok); }
 .dot.running { animation:dot-pulse 1.4s ease-in-out infinite; }
 .dot.selected { outline:2px solid var(--fg); outline-offset:3px; }
