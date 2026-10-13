@@ -217,27 +217,31 @@ export async function generateFile(env, { node, path, intent, task, files, inbox
 }
 
 // The builder is a rename-only linker. It sees full source for the modules in
-// its share of the context and only the export surface of everything else.
+// its share of the context and only the export surface of everything else: a
+// branch built below shows its boundary, and a file inside one an excerpt.
 // It proposes find/replace edits; the runtime rejects any edit that changes
 // more than import paths and identifier names, except its own fix of how an
 // import binds a module.
 export const LINKER_SYSTEM = `You are a LINKER for code that independent workers wrote without seeing each other. You may ONLY rename. Allowed: change a relative import path so it points at the real module, and change an identifier (imported name, function name, method name, property name, variable name) so a caller uses the name the other module actually exports. Not allowed: adding, removing, or reordering code; changing arguments, export shapes, destructuring, or logic; writing wrappers or adapters. Import paths must be relative to the importing file, for example ../inmemoryti-f17f9f79/in-memory-ticket-repository.js. Every edit is {"file":"components/...","find":"exact text copied from that file","replace":"the same text with only names or paths changed"}; keep find short but unique, and every occurrence is replaced. Only edit files listed under your_files. If two modules disagree in a way renaming cannot fix (missing function, wrong number of arguments, export shape mismatch such as several names destructured from a module that exports a single function, placeholder or empty implementation, behavior nobody wrote), add an issue {"file":"components/... that must change","problem":"what is wrong and what the other module actually provides"}. To change an imported name without touching its local uses, alias it: const { realName: localName } = require(...) or import { realName as localName } from '...'. Once an import's path is right, the runtime itself fixes three binding shapes, so for these fix only the path: one name destructured from a module whose module.exports is a function or class of that name (const { f } = require(p) where p's module.exports is f), a module bound whole that the file only calls while it exports an object holding that name (const f = require(p) where p exports { f }), and a module bound whole whose only export is one function, when the file only calls it, directly or from a table of handlers (const f = require(p) where p exports only { g }). If scope is "branch", you see one branch of a larger application and other branches exist that you cannot see: rename an import only when a module listed here clearly provides what it expects, otherwise leave it unchanged for the builder above. If scope is "application", name the application entry, from your_files or other_modules_exports: the module that imports the others and exports start() or otherwise starts the application; null if no module does. Return ONLY JSON: {"edits":[...],"entry":"components/... or null","issues":[...]}.`;
+// Said only when the request shows a branch built below or a file in one.
+export const LINKER_BELOW = ` A file given as an excerpt (hunks of its imports to fix and the lines that use them) instead of content lives inside a branch built below: copy each find from one hunk, long enough to occur nowhere else in the file. other_modules_exports shows a branch built below only by the modules it offers.`;
 const withoutThinking=output=>contentOf(output).replace(/<think>[\s\S]*?<\/think>/g,'');
-export async function linkComponents(env, {goal, files, interfaces, allPaths, diagnostic='', known_mismatches=[], scope='application'}) {
+export async function linkComponents(env, {goal, files, interfaces, allPaths, diagnostic='', known_mismatches=[], scope='application', below=false}) {
   if (env.MOCK_AI === 'true') return {edits:[],entry:null,issues:[]};
   const request=JSON.stringify({
     scope,
     application_goal:String(goal||'').slice(0,1200),
     known_mismatches:known_mismatches.length?known_mismatches:undefined,
-    your_files:files.map(f=>({path:f.path,content:f.content})),
+    your_files:files.map(f=>f.excerpt?{path:f.path,excerpt:f.excerpt}:{path:f.path,content:f.content}),
     other_modules_exports:interfaces,
     all_module_paths:allPaths,
     previous_attempt_error:diagnostic||undefined
   });
-  let output=await run(env,LINKER_SYSTEM,request,4096);
+  const system=LINKER_SYSTEM+(below?LINKER_BELOW:'');
+  let output=await run(env,system,request,4096);
   let parsed=parseObject(withoutThinking(output));
   if(parsed.parse_error) {
-    output=await run(env,LINKER_SYSTEM+'\nRETRY: return strictly valid JSON with edits, entry and issues. No markdown.',request,4096);
+    output=await run(env,system+'\nRETRY: return strictly valid JSON with edits, entry and issues. No markdown.',request,4096);
     parsed=parseObject(withoutThinking(output));
   }
   if(parsed.parse_error)return {edits:[],entry:null,issues:[],parse_error:true,raw:parsed.raw};

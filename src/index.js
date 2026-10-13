@@ -3,14 +3,14 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, writeRunnerTest, attributeFailure, ENTRY_CONTRACT } from './model.js';
+import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, ENTRY_CONTRACT } from './model.js';
 import { codeWritingTask, assignedPiece, entrySpec, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, providedNames, exportsStart, mayExportStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, providedNames, exportsStart, mayExportStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, importExcerpt } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
-import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
+import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
@@ -1068,7 +1068,8 @@ export class ControlRoom extends DurableObject {
     const builder=this.node(builderId);
     const sources=[];
     this.db().exec('DELETE FROM builder_sources WHERE builder=?',builderId);
-    for(const {child,files} of this.assemblySources(builder.parent)) {
+    for(const {child,files,delegated} of this.assemblySources(builder.parent)) {
+      const from=[];
       for(const f of files) {
         const content=await this.indexedContent(f.owner,f.path);
         if(content===null)throw new Error(`Completed source unavailable: ${child.label}/${f.path}`);
@@ -1076,8 +1077,17 @@ export class ControlRoom extends DurableObject {
         const digest=await sha256(content);
         this.db().exec('INSERT INTO builder_sources(builder,child,source_path,label,destination,digest) VALUES (?,?,?,?,?,?) ON CONFLICT(builder,child,source_path) DO UPDATE SET label=excluded.label,destination=excluded.destination,digest=excluded.digest',
           builderId,f.owner,f.path,f.sourceLabel,destination,digest);
-        sources.push({owner:f.owner,label:f.sourceLabel,branch:child.label,source_path:f.path,destination,content,digest});
+        from.push({owner:f.owner,label:f.sourceLabel,branch:child.label,source_path:f.path,destination,content,digest});
       }
+      // A branch built below is read through the boundary its builder
+      // published beside the bundle, or derived from the bundle without one.
+      if(delegated&&from.length) {
+        let offered=null;
+        try {offered=new Set(JSON.parse(await this.indexedContent(from[0].owner,BOUNDARY)).exports.map(x=>x.path));} catch {}
+        if(!offered?.size||![...offered].every(p=>from.some(s=>s.source_path===p)))offered=new Set(branchBoundary(new Map(from.map(s=>[s.source_path,s.content]))).exports);
+        for(const s of from)Object.assign(s,{bundled:true,outward:offered.has(s.source_path)});
+      }
+      sources.push(...from);
     }
     return sources;
   }
@@ -1118,7 +1128,8 @@ export class ControlRoom extends DurableObject {
     const unresolvedBefore=unresolvedImports(files);
     const mismatchesBefore=importMismatches(files,surfaces);
     const needs=new Set([...unresolvedBefore.map(u=>u.path),...mismatchesBefore.map(m=>m.path)]);
-    for(const p of js)if(diagnostic&&diagnostic.includes(p))needs.add(p);
+    const named=js.filter(p=>diagnostic&&diagnostic.includes(p));
+    for(const p of named)needs.add(p);
     const label=this.node(this.node(builderId).parent)?.label||'manager';
     const edits=new Map(),issues=[],proposals=[],rejected=[];
     // Which module is the application is not mechanical when none exports
@@ -1127,16 +1138,54 @@ export class ControlRoom extends DurableObject {
     const askEntry=isRoot&&!owned.length&&!js.some(p=>exportsStart(surfaces.get(p)));
     if(needs.size||askEntry) {
       const own=[...needs].filter(p=>files.has(p));
-      const interfaces=js.filter(p=>!needs.has(p)).map(p=>surfaceText(surfaces.get(p)));
-      const estimate=1800+own.reduce((n,p)=>n+tokenEstimate(p+files.get(p)),0)+interfaces.reduce((n,t)=>n+tokenEstimate(t),0);
-      this.event(builderId,'link_started',`Linking ${label}: ${own.length} module(s) with imports to resolve sent in full, ${interfaces.length} shown by export names only${askEntry?'; no module exports start(), so the builder names the entry':''} (about ${estimate} tokens).`);
+      // The model reads a branch built below by its boundary: the modules it
+      // offers, less those a module of the branch imports once this level
+      // has linked it. It also sees any of its modules that an import from
+      // outside it, a mismatch or a file an error names reaches, and any named
+      // like an import that resolves nowhere. A file to link inside such a
+      // branch goes as an excerpt, its surface in the branch's block; one
+      // with no import of its own to fix and no line an error names, or
+      // whose exports a mismatch reads, goes in full.
+      const bundled=new Map(sources.filter(s=>s.bundled).map(s=>[s.destination,s])),inside=new Set(),reached=new Set(mismatchesBefore.map(m=>m.target));
+      for(const p of js)for(const r of componentImports(p,files.get(p),files))
+        if(bundled.has(r.target)&&r.target!==p)(bundled.get(p)?.owner!==bundled.get(r.target).owner||named.includes(p)?reached:inside).add(r.target);
+      if(bundled.size)for(const u of unresolvedBefore)for(const t of likelyTargets(u.path,files.get(u.path),u.specifier,surfaces))reached.add(t);
+      const shown=new Set(js.filter(p=>!bundled.has(p)||bundled.get(p).outward&&(!inside.has(p)||exportsStart(surfaces.get(p)))||needs.has(p)||reached.has(p)));
+      const excerpts=new Map();
+      for(const p of own.filter(p=>bundled.has(p)&&!mismatchesBefore.some(m=>m.target===p))) {
+        const targets=new Set(mismatchesBefore.filter(m=>m.path===p).map(m=>m.target));
+        const specifiers=[...unresolvedBefore.filter(u=>u.path===p).map(u=>u.specifier),...componentImports(p,files.get(p),files).filter(r=>targets.has(r.target)).map(r=>r.specifier)];
+        const lines=[...String(diagnostic).matchAll(new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+':(\\d+)','g'))].map(m=>Number(m[1]));
+        if(!specifiers.length&&!lines.length)continue;
+        const hunks=importExcerpt(p,files.get(p),{specifiers:specifiers.length?specifiers:null,lines});
+        if(hunks.length&&hunks[0]!==files.get(p))excerpts.set(p,hunks);
+      }
+      const blocks=new Map(),interfaces=[],faced=js.filter(p=>shown.has(p)&&(!needs.has(p)||excerpts.has(p)));
+      for(const p of faced) {
+        const s=bundled.get(p);
+        if(!s){interfaces.push(surfaceText(surfaces.get(p)));continue;}
+        if(!blocks.has(s.owner)){blocks.set(s.owner,interfaces.length);interfaces.push(`${s.branch} (a branch built below; only the modules it offers):`);}
+        interfaces[blocks.get(s.owner)]+='\n'+surfaceText(surfaces.get(p));
+      }
+      const sent=own.map(p=>excerpts.has(p)?{path:p,excerpt:excerpts.get(p)}:{path:p,content:files.get(p)}),paths=js.filter(p=>shown.has(p)),below=excerpts.size>0||blocks.size>0;
+      const size=(list,faces,all)=>1800+list.reduce((n,f)=>n+tokenEstimate(f.path+(f.content??f.excerpt.join('\n'))),0)+faces.reduce((n,t)=>n+tokenEstimate(t),0)+tokenEstimate(all.join('\n'));
+      const estimate=size(sent,interfaces,paths)+(below?tokenEstimate(LINKER_BELOW):0),whole=size(own.map(p=>({path:p,content:files.get(p)})),js.filter(p=>!needs.has(p)).map(p=>surfaceText(surfaces.get(p))),js);
+      this.event(builderId,'link_started',`Linking ${label}: ${own.length-excerpts.size} module(s) with imports to resolve sent in full${excerpts.size?` and ${excerpts.size} inside branches below as excerpts`:''}, ${faced.length} shown by export names only${paths.length<js.length?`, ${js.length-paths.length} inside branches below left out`:''}${askEntry?'; no module exports start(), so the builder names the entry':''} (about ${estimate} tokens${estimate<whole?`, ${whole} without branch boundaries`:''}).`);
       if(estimate>BUILDER_CONTEXT_BUDGET)this.event(builderId,'link_oversize',`Linker input is about ${estimate} tokens, over ${BUILDER_CONTEXT_BUDGET}; the model may truncate it.`);
       const out=await linkComponents(this.inferenceEnv(),{goal:this.get('goal')||this.node('root')?.task||'',
-        files:own.map(p=>({path:p,content:files.get(p)})),interfaces,allPaths:js,diagnostic,
-        known_mismatches:mismatchesBefore.map(m=>`${m.path} ${m.detail}`),scope:isRoot?'application':'branch'});
+        files:sent,interfaces,allPaths:paths,diagnostic,
+        known_mismatches:mismatchesBefore.map(m=>`${m.path} ${m.detail}`),scope:isRoot?'application':'branch',below});
       if(out.parse_error)this.event(builderId,'link_unparsed',`The builder returned invalid JSON; it contributed no renames. ${clip(out.raw,300)}`);
       for(const edit of out.edits) {
         if(!needs.has(edit.file)){rejected.push({edit,reason:'that file was not sent for renaming at this level'});continue;}
+        // An edit to an excerpt must find text the model was shown, and only
+        // there, since every occurrence is replaced; it then applies to the
+        // whole file, verified as any other edit.
+        if(excerpts.has(edit.file)&&edit.find) {
+          const count=text=>{let n=0;for(let at=text.indexOf(edit.find);at>=0;at=text.indexOf(edit.find,at+1))n++;return n;};
+          const inHunks=excerpts.get(edit.file).reduce((n,h)=>n+count(h),0);
+          if(count(files.get(edit.file))>inHunks){rejected.push({edit,reason:inHunks?'find text also occurs outside the excerpt of that file you were sent, and every occurrence is replaced; make it longer so it matches only inside the hunks':'find text is not in the excerpt of that file you were sent; copy it from one hunk'});continue;}
+        }
         edits.set(edit.file,[...(edits.get(edit.file)||[]),normalizeEditPaths(edit,js,files)]);
       }
       for(const issue of out.issues)if(files.has(issue.file))issues.push({path:issue.file,detail:'Builder: '+issue.problem});
@@ -1229,6 +1278,15 @@ export class ControlRoom extends DurableObject {
         linked_sha256:await sha256(link.files.get(s.destination)),renamed:link.files.get(s.destination)!==s.content})))},null,2)+'\n';
     const storedManifest=this.files(builderId).some(f=>f.path==='assembly.manifest.json')?await this.indexedContent(builderId,'assembly.manifest.json'):null;
     if(storedManifest!==manifest)await this.putFile(builderId,'assembly.manifest.json',manifest,{materialized:true});
+    if(!isRoot) {
+      // The level above shows its model this branch only through its boundary.
+      const {exports,needs}=branchBoundary(link.files);
+      const boundary=JSON.stringify({format:'recursive-boundary-v1',
+        note:'What this branch offers the level above (modules none of its modules imports) and what it needs from outside it. Assembly metadata: never built or run; the bundle stays whole.',
+        exports:exports.map(p=>({path:p,surface:surfaceText(exportSurface(p,link.files.get(p))).split('\n').slice(1).map(x=>x.trim())})),needs},null,2)+'\n';
+      const stored=this.files(builderId).some(f=>f.path===BOUNDARY)?await this.indexedContent(builderId,BOUNDARY):null;
+      if(stored!==boundary)await this.putFile(builderId,BOUNDARY,boundary,{materialized:true});
+    }
     if(isRoot&&link.entry) {
       await this.putFile(builderId,'glue/index.js',entryLoader(link.entry),{runtimeGlue:true});
       await this.putFile(builderId,'package.json',RUNTIME_PACKAGE,{runtimeGlue:true});
@@ -1640,7 +1698,7 @@ export class ControlRoom extends DurableObject {
         throw new Error('Only glue/wiring.js and glue/smoke.js may be authored by a builder; glue/index.js and package.json belong to runtime');
       if(runtimeGlue && !['glue/index.js','package.json'].includes(path))
         throw new Error('Invalid runtime-owned linker output');
-      if(materialized && path!=='assembly.manifest.json' && !path.startsWith('components/'))
+      if(materialized && path!=='assembly.manifest.json' && path!==BOUNDARY && !path.startsWith('components/'))
         throw new Error('Only runtime-owned materialized source paths can bypass the builder glue gate');
       if(!materialized && !isBuilderGluePath(path) && ![PUBLIC_KNOWLEDGE,PRIVATE_KNOWLEDGE].includes(path))
         throw new Error('Builders cannot publish implementation files; memory must use remember');
