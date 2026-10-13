@@ -3502,6 +3502,28 @@ export class ControlRoom extends DurableObject {
         return;
       }
       const action = normalizeAction(raw);
+      // v7.15 §5.12a, before the code gates: the top has no manager to ask
+      // (an atomic Root that asked with wait failed every replay of the ask
+      // op); a node that splits leaves asking to its pieces; in a planned
+      // room every ask waits, and a file importing an asked name waits for
+      // the answer.
+      if(!splitting && !this.manager(id) && !isRuntimeNode(n) && action.ask.length) {
+        if(!n.parent) {
+          this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
+          action.ask=[];action.wait=false;
+        } else if(this.planned() && action.spawn.length) {
+          this.event(id,'ask_dropped','A splitting node does not ask; its pieces will.');
+          action.ask=[];
+        } else if(this.planned()) {
+          action.wait=true;action.done=false;
+          const asked=new Set(action.ask.map(a=>a.name).filter(Boolean));
+          action.files=action.files.filter(f=>{
+            const names=f.content===undefined?[]:[...new Set(importRefs(f.path,f.content).flatMap(r=>[...r.names,...r.members]).filter(x=>asked.has(x)))];
+            if(names.length)this.event(id,'import_deferred',`${f.path} imports ${names.join(', ')} before the manager answered; write it after the answer.`);
+            return !names.length;
+          });
+        }
+      }
       // Written again with this turn's writes, which a failed commit rolls back.
       if(owners)action.remember.push({visibility:'private',key:'owned_elsewhere',value:owners});
       // A splitter does not delegate decisions or documents. Its children are
@@ -3607,13 +3629,7 @@ export class ControlRoom extends DurableObject {
         action.files=[];action.imports=[];action.exports=[];action.retire=[];action.messages=[];
         action.ask=[];action.answers=[];action.recall=[];action.remember=[];
       }
-      // The top has no manager to ask (v7.15 §5.12a, brought forward): an
-      // atomic Root that asked with wait failed every replay of the ask op.
-      if(!n.parent && !this.manager(id) && action.ask.length) {
-        this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
-        action.ask=[];action.wait=false;
-      }
-      if(this.env.MOCK_AI!=='true' && !this.manager(id) && action.ask.length) {
+      if(this.env.MOCK_AI!=='true' && !this.manager(id) && action.ask.length && !this.planned()) {
         if(action.wait) {
           // Only a genuinely unguessable external dependency blocks progress.
           // Keep any independently implementable files and public knowledge.
@@ -3782,7 +3798,7 @@ export class ControlRoom extends DurableObject {
         } else if(!this.node(id)?.parent) {
           // A plan persisted before the guard above: drop it, never throw.
           action.wait=false;this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
-        } else if(!this.askManager(id,a.key,a.question)) throw new Error('Worker has no available manager');
+        } else if(!this.askManager(id,a.key,a.question,a.name||'')) throw new Error('Worker has no available manager');
       }),
       ...action.recall.map(r => async () => { await this.recall(id,r.visibility,r.key); }),
       ...action.messages.map(m => async () => {
@@ -3806,6 +3822,14 @@ export class ControlRoom extends DurableObject {
           this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
           this.event(id,'split_capacity_blocked','Split could not be admitted; code-writing assignment remains pending, not converted into a leaf.');
         } else if (action.done && !unfinished && !needsBuilder) {
+          // v7.15 §5.12b: a worker with an open request does not finish; it
+          // counts no failure, and its last answer wakes it to decide again.
+          const open=this.planned()&&!this.manager(id)&&!isRuntimeNode(n)?query(this.db(),'SELECT topic FROM route_workers WHERE worker=? ORDER BY topic',id).map(r=>r.topic):[];
+          if(open.length) {
+            this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+            this.event(id,'done_deferred',`Waiting for answers to ${open.join(', ')} before finishing.`);
+            return;
+          }
           if(this.env.MOCK_AI!=='true' && !this.manager(id) && n.label!=='Temporary builder' &&
               !productionFiles(this.files(id)).length) {
             throw new Error('Leaf cannot finish without publishing actual source code for its assigned module');
@@ -3878,7 +3902,9 @@ export class ControlRoom extends DurableObject {
     // A peer can send a message during this agent's inference or file push.
     // Such a message wasn't in the action's captured inbox; schedule a fresh
     // turn instead of silently leaving it behind a final wait/done state.
-    if (this.node(id)?.status !== 'retired' && (this.receive(id).length ||
+    // v7.15 §5.12b: an answer wakes a worker only once none is outstanding.
+    const unread=this.receive(id),asking=()=>this.planned()&&query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',id).length>0;
+    if (this.node(id)?.status !== 'retired' && (unread.some(m=>!/^\[route:/.test(m.body)) || unread.length && !asking() ||
        (seenBuilderWake!==null && this.wakeGeneration(id)!==seenBuilderWake))) this.wake(id);
   }
   // A failed turn. The third in a row stops the agent. When all three were

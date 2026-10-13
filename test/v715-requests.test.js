@@ -229,6 +229,118 @@ test('v7.15: a request nobody up to Root promises gets unowned, and the worker\'
   }
 });
 
+// Live run6 (v7.13): the retrieval worker under "view ticket" imported
+// getTickets from a storage module nobody wrote; under v7.15 it asks.
+const run6Goal='Build a small issue tracker that lets someone create, view, update, and delete tickets. Decompose work into independently solvable behaviors where necessary. Each strand owns its interfaces; use public Artifacts knowledge before asking owners for missing information. Assemble the completed components into one application.';
+const run6Root=[
+  {label:'entry module',task:'Write code that imports the ticket operations and exports start(), which returns an object with a method for each operation.',functions:[START]},
+  {label:'ticket storage',task:'Write code that keeps tickets in memory and lets other modules read and write them.',functions:[fn('getTickets','returns all tickets'),fn('saveTicket','stores a ticket and returns it',['ticket'])]},
+  {label:'create ticket',task:'Write code that validates input and creates a ticket with an id, title, description and status.',functions:[fn('createTicket','creates a ticket and returns it',['title','description'],'create a ticket')]},
+  {label:'view ticket',task:'Write code that retrieves tickets, optionally filtered by status.',functions:[fn('viewTickets','returns the tickets that match a filter',['filter'],'view tickets')]},
+  {label:'update ticket',task:'Write code that changes the title, description or status of a ticket by id.',functions:[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket')]},
+  {label:'delete ticket',task:'Write code that removes a ticket by id.',functions:[fn('deleteTicket','removes a ticket by id',['id'],'delete a ticket')]}];
+const deferredView="const { loadTickets } = require('./ticketStorage');\nfunction viewTickets(filter) { return loadTickets().filter(t => !filter || t.status === filter.status); }\nmodule.exports = { viewTickets };\n";
+const answeredView="const { getTickets } = require('./ticketStorage');\nfunction viewTickets(filter) { return getTickets().filter(t => !filter || t.status === filter.status); }\nmodule.exports = { viewTickets };\n";
+
+test('v7.15: run6 replay (B): the retrieval worker asks for "load all tickets" and imports getTickets from "ticket storage"',async()=>{
+  const ai=fakeAI({gate:n=>n===1?0.77:0.1,
+    split:()=>[
+      {label:'Storage module for ticket data',task:'Write code that loads the stored tickets',functions:[{name:'getTickets',does:'returns all tickets'}]},
+      {label:'Filter application logic',task:'Write code that applies status filters to a ticket list',functions:[{name:'applyFilters',does:'filters tickets',params:['tickets','filter']}]},
+      {label:'Ticket retrieval function',task:'Write code that returns the tickets matching a filter',functions:[{name:'viewTickets'}]}],
+    within:label=>({'Storage module for ticket data':0.863,'Filter application logic':0.682,'Ticket retrieval function':0.836})[label],
+    owner:()=>'view ticket',
+    // At "view ticket" applyFilters is no match; at Root getTickets is.
+    fnP:f=>f.signature==='applyFilters(tickets, filter)'?0.05:f.signature==='getTickets()'?0.93:0.2,
+    leaf:n=>n===1?{summary:'Retrieval needs the stored tickets',ask:[{need:'load all tickets',name:'loadTickets'}],wait:true,files:[{path:'viewTickets.js',content:deferredView}]}
+      :{summary:'Retrieval',files:[{path:'viewTickets.js',content:answeredView}],done:true}});
+  const {room}=setup(ai);
+  await room.provision('root',null,'Root objective',run6Goal,ROOT_PROMISE);room.set('goal',run6Goal);
+  await room.spawn('root',run6Root.map(c=>({label:c.label,task:c.task,interfaces:c.functions})));
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  for(const c of room.children('root'))room.db().exec('UPDATE agents SET phase=?,status=? WHERE id=?',c.label==='view ticket'?'decompose':'implement',c.label==='view ticket'?'ready':'waiting',c.id);
+  await room.turn('root.4');
+  assert.deepEqual(room.children('root.4').map(c=>c.label),['Filter application logic','Ticket retrieval function'],'"Storage module" is pruned by name (test 18)');
+  const worker='root.4.2',turns=()=>['root','root.4'].map(id=>room.node(id).turn),before=turns(),clef=()=>ai.calls.filter(c=>c.kind==='fn').length;
+  await room.turn(worker);
+  assert.equal(room.files(worker).length,0,'the file importing what it asked for is not written');
+  assert.deepEqual(events(room,'import_deferred').map(e=>e.body),['viewTickets.js imports loadTickets before the manager answered; write it after the answer.']);
+  assert.equal(room.node(worker).status,'waiting');
+  assert.equal(room.read('failures',{})[worker]||0,0);
+  await room.turn('root.4');
+  assert.deepEqual(events(room,'route_up').map(e=>[e.actor,e.body]),[['root.4','No direct child of "view ticket" promises loadTickets (load all tickets); asked the parent.']]);
+  await managerTurn(room,'root');
+  assert.deepEqual(events(room,'route_provided').map(e=>[e.actor,e.body]),[['root','Clef matched loadTickets (load all tickets) to "ticket storage"\'s getTickets (p=0.930).']]);
+  const atRoot=ai.calls.filter(c=>c.kind==='fn')[1].state.functions;
+  assert.deepEqual(atRoot.map(f=>`${f.piece}: ${f.signature}`),['entry module: start()','ticket storage: getTickets()','ticket storage: saveTicket(ticket)','create ticket: createTicket(title, description)','update ticket: updateTicket(id, changes)','delete ticket: deleteTicket(id)'],'Root offers its direct children\'s promises, minus the branch the request came from');
+  await managerTurn(room,'root.4');
+  assert.equal(room.node(worker).status,'ready');
+  await room.turn(worker);
+  const second=ai.calls.filter(c=>c.kind==='leaf')[1].request;
+  const provided=second.new_messages.find(m=>m.body.startsWith('[route:provided] '));
+  assert.ok(provided,'the worker\'s second decide sees [route:provided]');
+  assert.deepEqual(JSON.parse(provided.body.slice(17)).fn,{name:'getTickets',params:[],does:'returns all tickets',owner:'ticket storage'});
+  assert.deepEqual(second.answered_requests,['getTickets(): returns all tickets. It is exported by "ticket storage". Import it by exactly this name from the relative path you expect; the builder fixes the path. Do not write it yourself.']);
+  assert.equal(await room.indexedContent(worker,'viewTickets.js'),answeredView);
+  assert.equal(room.node(worker).status,'done');
+  assert.equal(ai.calls.filter(c=>c.kind==='leaf').length,2,'decide was called exactly twice');
+  assert.deepEqual(turns().map((t,i)=>t-before[i]),[1,2],'3 manager turns: "view ticket", Root, "view ticket"');
+  assert.equal(clef(),2,'2 Clef fn_* calls');
+});
+
+test('v7.15: a worker\'s requests travel together and wake it once',async()=>{
+  const tree={root:[{label:'ticket storage',fns:[fn('getTickets','returns all tickets')]},{label:'create ticket',fns:[fn('createTicket','creates a ticket and returns it',['title','description'])]},{label:'entry module',fns:[START]}],
+    'root.2':[{label:'Ticket creation logic',fns:[fn('createTicket','creates a ticket and returns it',['title','description'])]},{label:'Ticket persistence',fns:[fn('saveTicket','stores a ticket and returns it',['ticket'])]}]};
+  const created="function createTicket(title, description) { return { id: 1, title, description }; }\nmodule.exports = { createTicket };\n";
+  const ai=fakeAI({leaf:n=>n===1?{summary:'Needs three functions',ask:[{need:'stores a ticket',name:'saveTicket'},{need:'returns all tickets',name:'getTickets'},{need:'formats a date',name:'formatDate'}],done:true}
+    :{summary:'Create ticket',files:[{path:'createTicket.js',content:created}],done:true}});
+  const {room}=await plannedTree(ai,tree),worker='root.2.1';
+  room.db().exec("UPDATE agents SET status='ready' WHERE id=?",worker);
+  await room.turn(worker);
+  assert.deepEqual(rows(room,'route_workers').map(r=>r.topic).sort(),['fn formatDate','fn getTickets','fn saveTicket']);
+  assert.equal(events(room,'missing_code').length,0,'a done with asks and no files counts no missing_code failure');
+  assert.deepEqual([room.node(worker).status,room.read('failures',{})[worker]||0],['waiting',0]);
+  const g0=room.wakeGeneration(worker);
+  await managerTurn(room,'root.2');
+  assert.deepEqual(replies(room,worker).map(r=>[r.kind,r.fn?.name]),[['provided','saveTicket']]);
+  assert.deepEqual([room.node(worker).status,room.wakeGeneration(worker)],['waiting',g0],'the first answer does not wake it');
+  assert.deepEqual((await room.managerHops('root.2')).map(h=>h.target),['root','root']);
+  // A repair ticket wakes it; it may write, but its done waits for the answers.
+  assert.ok(room.send('root.2',worker,'[build:repair] '+crypto.randomUUID()));
+  assert.equal(room.node(worker).status,'ready');
+  await room.turn(worker);
+  assert.equal(await room.indexedContent(worker,'createTicket.js'),created);
+  assert.deepEqual(events(room,'done_deferred').map(e=>e.body),['Waiting for answers to fn formatDate, fn getTickets before finishing.']);
+  assert.deepEqual([room.node(worker).status,room.read('failures',{})[worker]||0,room.get(`contract_returns:${worker}`)],['waiting',0,'']);
+  assert.equal(room.receive('root.2').filter(m=>/subproblem is complete/.test(m.body)).length,0,'no completion report');
+  const g1=room.wakeGeneration(worker);
+  await managerTurn(room,'root');
+  assert.equal(room.wakeGeneration(worker),g1);
+  await managerTurn(room,'root.2');
+  assert.deepEqual(replies(room,worker).map(r=>[r.kind,r.fn?.name]),[['provided','getTickets'],['unowned',undefined]]);
+  assert.equal(room.wakeGeneration(worker),g1+1,'only the last answer wakes it');
+  assert.equal(rows(room,'route_workers').length,0);
+  await room.turn(worker);
+  assert.equal(room.node(worker).status,'done','with every answer in, it finishes');
+  assert.deepEqual(room.read(`fn_answers:${worker}`,[]).map(a=>a.key),['fn saveTicket','fn getTickets','fn formatDate']);
+});
+
+test('v7.15: a worker asking for its own promised function gets the own-contract answer without a hop',async()=>{
+  const ai=fakeAI({leaf:()=>({summary:'Create ticket',ask:[{need:'creates a ticket',name:'createTicket'}],wait:true})});
+  const {room}=await plannedTree(ai,{root:[{label:'create ticket',fns:[fn('createTicket','creates a ticket and returns it',['title','description'],'create a ticket')]},{label:'entry module',fns:[START]}]});
+  const worker='root.1';
+  room.db().exec("UPDATE agents SET status='ready' WHERE id=?",worker);
+  await room.turn(worker);
+  assert.deepEqual([rows(room,'route_hops').length,rows(room,'route_workers').length,room.receive('root').length],[0,0,0],'no hop, no request');
+  const [reply]=room.receive(worker);
+  assert.equal(reply.from,'runtime:route');
+  assert.match(reply.body,/^\[route:unowned\] /);
+  assert.equal(JSON.parse(reply.body.slice(16)).value,'createTicket(title, description) is in your own contract: write it in your own module and export it by exactly this name.');
+  assert.deepEqual(events(room,'route_own').map(e=>e.body),['createTicket is in its own contract; answered without asking the manager.']);
+  assert.equal(room.node(worker).status,'ready','woken by the trailing check');
+  assert.deepEqual(room.view(worker).answered_requests,['createTicket(title, description) is in your own contract: write it in your own module and export it by exactly this name.']);
+});
+
 test('v7.15: a hop left without a target by a crash is re-driven by the next manager turn, and duplicates are ignored',async()=>{
   const deep={root:[{label:'ticket storage',fns:[fn('getTickets','returns all tickets')]},{label:'view ticket',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'])]},{label:'entry module',fns:[START]}],
     'root.2':[{label:'Ticket retrieval',fns:[fn('viewTickets','returns the tickets that match a filter',['filter'])]},{label:'Filter application logic',fns:[fn('applyFilters','filters tickets',['tickets','filter'])]}],
@@ -288,4 +400,45 @@ test('v7.15: the implementer prompt asks for every function at once in the first
   assert.deepEqual(request.answered_requests,['getTickets(): returns all tickets. It is exported by "ticket storage".']);
   await generateFile(env,{node:{id:'root.1',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[]});
   assert.equal(JSON.parse(requests.pop()).answered_requests,undefined,'no key without answers');
+});
+
+test('v7.15: unplanned rooms keep v7.14 routing; planned rooms never answer a function request with out_of_scope; an atomic top\'s asks are dropped',async()=>{
+  // The same request, in a room without Root's promise (MOCK, a v7.14 room)
+  // and in a planned one. hierarchical-routing.test.js is the rest of v7.14.
+  for(const planned of [false,true]) {
+    const {room}=await plannedTree(null,viewTree,{mock:true,planned}),worker='root.2.1';
+    assert.equal(room.planned(),planned);
+    assert.equal(room.askManager(worker,'interfaces/root.999','What is the public interface of root.999?'),true);
+    for(const id of ['root.2','root','root.2'])await managerTurn(room,id);
+    if(!planned) {
+      assert.equal(room.node(worker).status,'failed','v7.14: an explicit unknown owner is out of scope');
+      assert.equal(events(room,'scope_rejected').length,1);
+      assert.equal(events(room,'route_provided').length+events(room,'route_unowned').length,0);
+    } else {
+      assert.equal(room.node(worker).status,'ready');
+      assert.equal(events(room,'scope_rejected').length,0);
+      assert.deepEqual(replies(room,worker).map(r=>r.kind),['unowned']);
+      assert.equal(events(room,'route_unowned')[0].actor,'root');
+    }
+    assert.equal(rows(room,'route_hops').length,0);
+  }
+  // A worker that splits leaves asking to its pieces.
+  const late=fakeAI({leaf:()=>({summary:'Split',ask:[{need:'returns all tickets',name:'getTickets'}],spawn:[{label:'Piece one',task:'Write code that does part one of the work'},{label:'Piece two',task:'Write code that does part two of the work'}]})});
+  const {room:splitter}=await plannedTree(late,viewTree);
+  splitter.db().exec("UPDATE agents SET status='ready' WHERE id='root.2.2'");
+  await splitter.turn('root.2.2');
+  assert.deepEqual(events(splitter,'ask_dropped').map(e=>e.body),['A splitting node does not ask; its pieces will.']);
+  assert.equal(rows(splitter,'route_workers').length,0);
+  // The top has no manager: a need-form ask from an atomic Root is dropped.
+  const atomic=fakeAI({gate:()=>0.02,leaf:n=>n===1
+    ?{summary:'Entry',files:[{path:'app.js',content:"const { addNumbers } = require('./addNumbers');\nexport function start(){ return { add: addNumbers }; }\n"}],ask:[{need:'adds two numbers',name:'addNumbers'}],wait:true}
+    :{summary:'Entry',files:[{path:'app.js',content:'export const add = (a, b) => a + b;\nexport function start(){ return { add }; }\n'}],done:true}});
+  const {room,drain}=setup(atomic);
+  await room.start('Build a calculator that adds two numbers',1);await drain();
+  assert.ok(room.planned(),'a live room started under v7.15 is planned');
+  const first=atomic.calls.find(c=>c.kind==='leaf');
+  assert.doesNotMatch(first.system,/ask your manager/,'never told to ask');
+  assert.deepEqual(events(room,'ask_dropped').map(e=>e.body),['The top has no manager; it writes what it needs.']);
+  assert.deepEqual([events(room,'import_deferred').length,rows(room,'route_workers').length,room.files('root').map(f=>f.path)],[0,0,['app.js']],'its file is not deferred');
+  assert.deepEqual([room.node('root').status,room.read('failures',{}).root||0],['ready',0]);
 });
