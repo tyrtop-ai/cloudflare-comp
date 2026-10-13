@@ -167,7 +167,7 @@ test('v7.15: a worker\'s request is answered by its manager by name, with no mod
   const [reply]=replies(room,worker);
   assert.equal(reply.kind,'provided');
   assert.deepEqual(reply.fn,{name:'saveTicket',params:['ticket'],does:'stores a ticket and returns it',owner:'ticket storage'});
-  assert.equal(reply.value,'saveTicket(ticket): stores a ticket and returns it. It is exported by "ticket storage". Import it by exactly this name from the relative path you expect; the builder fixes the path. Do not write it yourself.');
+  assert.equal(reply.value,'saveTicket(ticket): stores a ticket and returns it. It is exported by "ticket storage". Import saveTicket on its own line, by exactly this name, with the name as the path: const { saveTicket } = require(\'./saveTicket\'); the builder links the line to the module that exports it. Do not write it yourself.');
   assert.deepEqual([rows(room,'route_workers').length,rows(room,'route_hops').length],[0,0]);
   assert.deepEqual(events(room,'route_provided').map(e=>[e.actor,e.body]),[['root.1','saveTicket is in "ticket storage"\'s promise; matched by name.']]);
   assert.equal(room.node(worker).status,'ready','the worker was woken');
@@ -230,7 +230,7 @@ test('v7.15: a request no child of the worker\'s manager promises climbs one lev
 
 test('v7.15: a request nobody up to Root promises gets unowned, and the worker\'s manager judges the assignment',async()=>{
   for(const [p,text] of [[0.8,'No piece of the application promises formatDate (formats a date for display). It is part of your assignment: write it in your own module.'],
-    [0.2,'No piece of the application promises formatDate (formats a date for display), and it is not part of your assignment. Do not write it: import it as formatDate from the relative path you expect and finish your code. The missing function reaches Root as a problem when the application is linked.']]) {
+    [0.2,'No piece of the application promises formatDate (formats a date for display), and it is not part of your assignment. Do not write it: import formatDate on its own line, with the name as the path: const { formatDate } = require(\'./formatDate\'); and finish your code. The missing function reaches Root as a problem when the application is linked.']]) {
     const ai=fakeAI({inside:()=>p}),{room}=await plannedTree(ai,viewTree);
     const worker='root.2.1',seen=room.wakeGeneration(worker);
     ask(room,worker,'formats a date for display','formatDate');
@@ -302,7 +302,7 @@ test('v7.15: run6 replay (B): the retrieval worker asks for "load all tickets" a
   const provided=second.new_messages.find(m=>m.body.startsWith('[route:provided] '));
   assert.ok(provided,'the worker\'s second decide sees [route:provided]');
   assert.deepEqual(JSON.parse(provided.body.slice(17)).fn,{name:'getTickets',params:[],does:'returns all tickets',owner:'ticket storage'});
-  assert.deepEqual(second.answered_requests,['getTickets(): returns all tickets. It is exported by "ticket storage". Import it by exactly this name from the relative path you expect; the builder fixes the path. Do not write it yourself.']);
+  assert.deepEqual(second.answered_requests,['getTickets(): returns all tickets. It is exported by "ticket storage". Import getTickets on its own line, by exactly this name, with the name as the path: const { getTickets } = require(\'./getTickets\'); the builder links the line to the module that exports it. Do not write it yourself.']);
   assert.equal(await room.indexedContent(worker,'viewTickets.js'),answeredView);
   assert.equal(room.node(worker).status,'done');
   assert.equal(ai.calls.filter(c=>c.kind==='leaf').length,2,'decide was called exactly twice');
@@ -406,7 +406,7 @@ test('v7.15: a planned worker\'s prompt asks for every function at once in the f
   const worker=prompts.pop();
   assert.ok(worker.includes(ASK_FUNCTIONS));
   assert.match(worker,/For every function your code needs that your assignment does not list, ask your manager, all at once in your FIRST answer: "ask":\[\{"need":"what the function does, in one line","name":"the name you expect"\}\] with "wait":true\. In that answer write only files that do not import what you asked for, and do not set done\. At most 8 requests travel in one answer; ask for the rest once they are answered\./);
-  assert.match(worker,/import it by exactly that name from the relative path you expect \(the builder fixes paths\)\. If no piece provides it, the answer says whether you write it yourself\. Every answer is final and stays in answered_requests: never ask again for a function listed there or answered by a \[route:provided\] or \[route:unowned\] message; write your code with it and set done\./);
+  assert.match(worker,/import it by exactly that name, on its own line with the name as the path \(const \{ name \} = require\('\.\/name'\); the builder fixes paths\)\. If no piece provides it, the answer says whether you write it yourself\. Every answer is final and stays in answered_requests: never ask again for a function listed there or answered by a \[route:provided\] or \[route:unowned\] message; write your code with it and set done\./);
   assert.doesNotMatch(worker,/normally continue using an explicit assumption|rather than wait/);
   // A room without Root's promise keeps v7.14 routing, which can park a
   // request: its workers keep v7.14's advice (slice B review).
@@ -421,9 +421,9 @@ test('v7.15: a planned worker\'s prompt asks for every function at once in the f
   // The top was told "the exact name your manager gave you when you asked"
   // next to "You have no manager to ask" (slice B review).
   for(const prompt of [worker,LEAF_DEPENDENCY_RULE])
-    assert.match(prompt,/import it with a relative path and the export name you expect \(the exact name your manager gave you when you asked\), for example/);
+    assert.match(prompt,/import it with a relative path and the export name you expect \(the exact name your manager gave you when you asked\), each function on its own import line/);
   for(const prompt of [unplanned,top]) {
-    assert.match(prompt,/import it with a relative path and the export name you expect, for example const \{ listedName \}/);
+    assert.match(prompt,/import it with a relative path and the export name you expect, each function on its own import line with the function's name as the path, for example const \{ listedName \} = require\('\.\/listedName'\);/);
     assert.doesNotMatch(prompt,/the exact name your manager gave you/);
   }
   await generateFile(env,{node:{id:'root.1',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[],answers:['getTickets(): returns all tickets. It is exported by "ticket storage".'],asks:true});

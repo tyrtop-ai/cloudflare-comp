@@ -3366,7 +3366,9 @@ export class ControlRoom extends DurableObject {
     if(hit) {
       const f=hit.item,fn={name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),owner:hit.child.label};
       this.event(m,'route_provided',how);
-      await this.routeReply(m,hop.request_id,'provided',clip(`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}. It is exported by "${hit.child.label}". Import it by exactly this name from the relative path you expect; the builder fixes the path. Do not write it yourself.`,600),fn);
+      // One line per function, named after it (run8): the builder links it
+      // by the name alone, wherever the function's module lies.
+      await this.routeReply(m,hop.request_id,'provided',clip(`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}. It is exported by "${hit.child.label}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`,600),fn);
       return;
     }
     // Sent, then targeted: a crash between the two leaves a hop with no
@@ -3392,7 +3394,7 @@ export class ControlRoom extends DurableObject {
       this.event(m,'route_scope',`${want}: Clef p=${p.toFixed(3)}, ${inside?'inside':'outside'} "${worker.label}"'s assignment.`);
     } catch(e) {this.event(m,'route_scope',`${want}: Clef failed (${clip(e?.message||e,300)}); counted inside "${worker.label}"'s assignment.`);}
     return inside?`No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`:
-      `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: import it as ${hop.name||'a descriptive camelCase name'} from the relative path you expect and finish your code. The missing function reaches Root as a problem when the application is linked.`;
+      `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: const { ${hop.name} } = require('./${hop.name}');`:'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
   }
   // Revisit only requests whose chosen child has published new public data.
   // This does not wake an implementer or spend a generative inference.
