@@ -271,9 +271,10 @@ export function validateManagerActions(actions, call, ctx) {
     const branch=open.find(id=>byId.get(id).p.kind==='stuck'&&k!=='worker');
     if(branch){refuse(a,`a stuck branch is retasked, retired or escalated, not assigned (problem ${branch})`);continue;}
     // M4: what a child returned unchanged twice, or a stuck worker already
-    // told twice what to write, does not go back to it.
+    // told twice what to write, does not go back to it; nor does a contract
+    // it was given twice (subject-only: no other side can take it).
     const unchanged=open.find(id=>{const {p}=byId.get(id),f=p.flags||{};
-      return (f.no_change||0)>=STUCK_AFTER&&(f.no_change_by===child||String(f.no_change_by||'').startsWith(child+'.'))||p.kind==='stuck'&&(ctx.recurrence?.(p,child)||0)>=STUCK_AFTER;});
+      return (f.no_change||0)>=STUCK_AFTER&&(f.no_change_by===child||String(f.no_change_by||'').startsWith(child+'.'))||['stuck','contract'].includes(p.kind)&&(ctx.recurrence?.(p,child)||0)>=STUCK_AFTER;});
     if(unchanged){refuse(a,`${child} already had problem ${unchanged} ${STUCK_AFTER} or more times without a fix: give it to another child, retask or retire it, or escalate`);continue;}
     const instructions=typeof a.instructions==='string'?a.instructions.trim():'';
     if(k!=='builder'&&(!instructions||instructions.length>900)){refuse(a,'instructions must be 1 to 900 characters');continue;}

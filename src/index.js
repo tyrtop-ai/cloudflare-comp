@@ -2994,12 +2994,16 @@ export class ControlRoom extends DurableObject {
   // v7.15 §6.1: an accepted return's gap is a contract problem in its
   // manager's inbox, which D4 gives back to it as a repair ticket and slice
   // 2's model may retask. One open at a time; one it was given and finished
-  // without settling is replaced, so its manager decides again.
+  // without settling is replaced, so its manager decides again. One it was
+  // given and answered without changing a file stays as it is: its manager's
+  // reopenStalled sends it back once saying so, then closes it (run8's
+  // 'fixed' with no file; replaced, it spent all six of Root's rounds).
   fileContract(id, fns) {
     const n=this.node(id);
     if(!this.live()||!n?.parent)return;
     const prior=this.problems("source=? AND kind='contract' AND status!='closed'",id);
     if(prior.some(p=>p.status==='open'))return;
+    if(prior.some(p=>p.status==='assigned'&&p.assignee===id&&p.flags.revs===this.revisionKey(id)))return;
     this.closeProblems(prior,'superseded');
     const path=productionFiles(this.files(id)).map(f=>f.path).find(p=>LINKABLE.test(p))||'',them=fns.length>1?'them':'it';
     this.insertProblem({holder:n.parent,kind:'contract',stage:'work',source:id,input:`turn:${n.turn}`,

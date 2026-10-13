@@ -508,6 +508,29 @@ test('v7.15: run8 replay (C): a repair answered done with no file change is sent
   assert.equal(room.get('status'),'failed','never an idle pause with the problem open');
   assert.match(room.node('root').summary,/^Repair exhausted: a entry problem was closed without a fix \(entry module finished 2 repairs without changing its files\)/);
 });
+// The same bounce for an accepted contract return's problem: each 'fixed'
+// with no file used to replace it with a fresh one (a new wave, a new
+// round, no_change reset), so one worker spent all six of Root's rounds.
+test('v7.15: an accepted contract return answered done with no file change goes back once, saying so, and is then closed',async()=>{
+  const {room,calls}=liveRoom({leaf:()=>({summary:'Fixed: createTicket is exported now.',done:true}),
+    runner:()=>"const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  assert.equal(app.create('Printer jam').title, 'Printer jam');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n"});
+  await planned(room,'Build a small issue tracker that lets someone create tickets.');
+  await pieces(room,'root',[['create ticket','createTicket.js',"const tickets = [];\nfunction addTicket(title) { const t = { id: tickets.length + 1, title }; tickets.push(t); return t; }\nmodule.exports = { addTicket };\n",[fn('createTicket','creates a ticket',['title'],'create a ticket')]],
+    ['entry module','app.js',"const { addTicket } = require('./addTicket');\nfunction start() {\n  return { create: addTicket };\n}\nmodule.exports = { start };\n",[START]]]);
+  room.set('contract_returns:root.1','3');
+  assert.equal(await room.contractReturned('root.1'),false,'accepted');
+  await settle(room,80);
+  assert.equal(calls.leaf.length,2,trace(room));
+  const [first,second]=calls.leaf.map(c=>c.new_messages.map(m=>m.body).join('\n'));
+  assert.match(first,/^YOUR ASSIGNMENT PROMISES FUNCTIONS[^]*Your assignment promises createTicket;/);
+  assert.doesNotMatch(first,/NOTHING CHANGED/);
+  assert.match(second,/^YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT\.[^]* NOTHING CHANGED IN YOUR FILES/);
+  assert.equal(events(room,'repair_unchanged').length,1);
+  const rows=room.problems("kind='contract'");
+  assert.deepEqual(rows.map(p=>[p.source,p.status,p.outcome,p.flags.no_change,p.trail.map(t=>t.rule)]),[['root.1','closed','exhausted',2,['D4','D4','no_change']]],'one problem, never replaced');
+  assert.ok(Number(room.get('repair_rounds:root','0'))<=1,'one round, not all six');
+  assert.ok(!events(room,'repair_exhausted').length,trace(room));
+});
 
 // ------------------------------------------------- tests 38-39: slice 2
 const P=await import('../src/problems.js');
@@ -593,4 +616,11 @@ test('v7.15 × slice 2: a contract problem clusters like an entry problem: subje
   assert.deepEqual(fixed,[]);
   assert.equal(P.DEFAULT_ROLE.contract,'subject');
   assert.equal(P.modelTrigger(contract,{rule:'default',action:'assign',child:'root.2'},{recurrence:()=>0}),null,'no model needed');
+  // Given to its piece twice already, the model may not give it back (M4):
+  // no other side can take a contract.
+  const ctx={holder:'root',parent:null,kindOf:id=>['root.1','root.2'].includes(id)?'worker':null,canRelink:()=>false};
+  const again=[{action:'assign',problems:['c'],child:'root.2',instructions:'Export saveTickets by that name.'}],one=[{id:'c',p:contract,dec:entries[0].dec}];
+  assert.equal(P.modelTrigger(contract,entries[0].dec,{recurrence:()=>2}),'M4');
+  assert.deepEqual(P.validateManagerActions(again,one,{...ctx,recurrence:()=>2}).rejected.map(r=>r.reason),['root.2 already had problem c 2 or more times without a fix: give it to another child, retask or retire it, or escalate']);
+  assert.deepEqual(P.validateManagerActions(again,one,{...ctx,recurrence:()=>1}).rejected,[]);
 });
