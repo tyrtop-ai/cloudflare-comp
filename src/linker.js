@@ -656,7 +656,9 @@ export function tokenNames(text) {return knownNamesFrom([text]);}
 // already in place, not missing.
 // shapes ({path, files, surfaces}) also admits the runtime's own binding-shape
 // fix of an import, and names the binding a refused one gets wrong; every
-// other edit must be rename-only.
+// other edit must be rename-only. With shapes, an edit that renames an
+// imported name { a } to { b } but not the file's uses of a is applied as the
+// alias { b: a } when the target exports b.
 export function applyEdits(content, edits, {knownNames=null,original=null,check=null,done=[],shapes=null}={}) {
   let current=String(content);
   const applied=[],rejected=[];
@@ -665,7 +667,7 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
     if(!find){rejected.push({edit,reason:'empty find text'});continue;}
     if(find===replace)continue;
     if(!current.includes(find)) {
-      if(!(current.includes(replace)&&done.some(d=>d.find===find&&d.replace===replace)))rejected.push({edit,reason:'find text is not in the file'});
+      if(!done.some(d=>d.find===find&&(d.replace===replace||d.alias===replace)&&current.includes(d.replace)))rejected.push({edit,reason:'find text is not in the file'});
       continue;
     }
     let list;
@@ -689,16 +691,25 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
     } else if(quotedString.test(find)&&/^\.{1,2}\/[^'"`\s]*$/.test(replace))replace=find[0]+replace+find[0];
     if(find===replace)continue;
     if(!hits.length){rejected.push({edit,reason:'find text does not match whole tokens'});continue;}
-    let next='',last=0;
-    for(const at of hits){next+=current.slice(last,at)+replace;last=at+find.length;}
-    next+=current.slice(last);
-    const step=renameOnlyError(current,next,{knownNames});
-    let error=step&&original!=null&&!renameOnlyError(original,next,{knownNames})?null:step,shape=false;
-    if(error&&shapes){const why=shapeEditError(current,next,{...shapes,knownNames});if(!why)[error,shape]=[null,true];else if(why!==NOT_SHAPE&&error.startsWith('edit adds or removes code'))error=why;}
-    if(error&&original!=null&&shapes&&!shapeEditError(original,next,{...shapes,knownNames}))error=null;
-    error=error||check?.(next);
+    const splice=r=>{let out='',last=0;for(const at of hits){out+=current.slice(last,at)+r;last=at+find.length;}return out+current.slice(last);};
+    const verify=next=>{
+      const step=renameOnlyError(current,next,{knownNames});
+      let error=step&&original!=null&&!renameOnlyError(original,next,{knownNames})?null:step,shape=false;
+      if(error&&shapes){const why=shapeEditError(current,next,{...shapes,knownNames});if(!why)[error,shape]=[null,true];else if(why!==NOT_SHAPE&&error.startsWith('edit adds or removes code'))error=why;}
+      if(error&&original!=null&&shapes&&!shapeEditError(original,next,{...shapes,knownNames}))error=null;
+      return [error||check?.(next),shape];
+    };
+    let next=splice(replace),[error,shape]=verify(next),alias=null;
+    // A destructured import renamed from a to b while the file still uses a
+    // means the name the target exports: bind it as { b: a } (import { b as a }).
+    if(error&&shapes) {
+      let text=replace;
+      for(const x of importAliases(current,next,shapes))if(x.at>=hits[0]&&x.at<=hits[0]+replace.length)text=text.slice(0,x.at-hits[0])+x.text+text.slice(x.at-hits[0]);
+      const v=text===replace?null:splice(text);
+      if(v&&!verify(v)[0])[next,error,alias]=[v,null,text];
+    }
     if(error){rejected.push({edit,reason:error});continue;}
-    current=next;applied.push(shape?{...edit,shape}:edit);
+    current=next;applied.push(shape?{...edit,shape}:alias?{...edit,replace:alias,alias:edit.replace}:edit);
   }
   return {content:current,applied,rejected};
 }
@@ -785,6 +796,11 @@ export function relativeSpecifier(from, to) {
 // directory ('./ticket-ser-f17f9f79/ticketService.js' from a sibling) or
 // without the nested components/ levels names the one module whose path ends
 // in the same segments. files (all paths in the bundle) decides what resolves.
+const pathParts=p=>p.replace(/\.(?:js|mjs|cjs)$/i,'').split('/').filter(s=>s&&s!=='.'&&s!=='..'&&s!=='components').join('/');
+function namedModule(file, spec, allPaths) {
+  const want=pathParts(spec),hits=want?allPaths.filter(p=>p!==file&&('/'+pathParts(p)).endsWith('/'+want)):[];
+  return hits.length===1?hits[0]:null;
+}
 export function normalizeEditPaths(edit, allPaths, files=null) {
   let replace=String(edit.replace??'');
   for(const target of allPaths) {
@@ -797,13 +813,11 @@ export function normalizeEditPaths(edit, allPaths, files=null) {
     }
   }
   const known=files||new Set(allPaths),find=String(edit.find??'');
-  const parts=p=>p.replace(/\.(?:js|mjs|cjs)$/i,'').split('/').filter(s=>s&&s!=='.'&&s!=='..'&&s!=='components').join('/');
   const fix=spec=>{
     // A string the find already has is one the model kept, not one it wrote.
     if(find===spec||find.includes(`'${spec}'`)||find.includes(`"${spec}"`)||isBuiltin(spec)||resolveLocal(edit.file,spec,known).path)return spec;
-    const want=parts(spec);
-    const hits=want?allPaths.filter(p=>p!==edit.file&&('/'+parts(p)).endsWith('/'+want)):[];
-    return hits.length===1?relativeSpecifier(edit.file,hits[0]):spec;
+    const hit=namedModule(edit.file,spec,allPaths);
+    return hit?relativeSpecifier(edit.file,hit):spec;
   };
   // Only specifier positions; a replacement that is one string, or one bare
   // path standing for a relative path, is the specifier itself (applyEdits
@@ -1008,7 +1022,8 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
 // ---------- binding shape: the one import change that is not a rename ----------
 // A worker can bind a module the wrong way round: destructure one function
 // from a module whose module.exports is that function, or bind a module whole
-// and only call it when the module exports an object holding that function.
+// and only call it when the module exports an object holding that function,
+// or use it as that function when it is the module's only export.
 // Only the binding pattern of that one import changes, and only when the
 // target's export surface says which shape is right.
 function bindingSites(content) {
@@ -1081,6 +1096,34 @@ function holds(surface, name) {
   const m=(d?d.members:surface?.named||[]).find(x=>x.name===name);
   return !!m&&m.type!=='object'&&m.type!=='instance';
 }
+// The module's exports are exactly one member, a function or class:
+// module.exports = { m }, exports.m = …, or one export function m and no default.
+function loneMember(surface) {
+  const d=surface?.default,list=[...(d?.type==='object'?d.members:d?[null]:[]),...(surface?.named||[])];
+  return list.length===1&&['function','class'].includes(list[0]?.type)?list[0].name:null;
+}
+// The file reads no member of name: no name.m, name[k], destructuring,
+// spread, key listing or copy, in or for…in, and it does not export name as
+// is (another module may read it). It may call name or pass it on, as in a
+// handler table. No other binding of that name shadows it.
+function noMemberUse(content, name) {
+  if(memberReads(content,name).size)return false;
+  const is=n=>n?.type==='Identifier'&&n.name===name,exported=n=>isModuleExports(n)||n?.type==='MemberExpression'&&(isModuleExports(n.object)||nameOf(n.object)==='exports');
+  let used=false,declared=0;
+  try {walk(parseSource(content).ast,node=>{
+    const names=new Set();
+    if(node.type==='VariableDeclarator')patternNames(node.id,names);
+    else if(FUNCTIONS.has(node.type)||node.type==='ClassDeclaration'||node.type==='ClassExpression'){if(node.id)names.add(node.id.name);for(const p of node.params||[])patternNames(p,names);}
+    else if(node.type==='CatchClause')patternNames(node.param,names);
+    else if(node.type.startsWith('Import')&&node.local)names.add(node.local.name);
+    if(names.has(name))declared++;
+    if(node.type==='SpreadElement'&&is(node.argument)||node.type==='ForInStatement'&&is(node.right)||node.type==='BinaryExpression'&&node.operator==='in'&&is(node.right))used=true;
+    else if(node.type==='CallExpression'&&[KEY_LISTS,KEY_ARGS,COPIES].some(r=>r.test(calleeName(node.callee)))&&node.arguments.some(is))used=true;
+    else if(node.type==='AssignmentExpression'&&exported(node.left)&&(is(node.right)||node.right.type==='ObjectExpression'&&node.right.properties.some(p=>is(p.value))))used=true;
+    else if(node.type==='ExportDefaultDeclaration'&&is(node.declaration)||node.type==='ExportSpecifier'&&nameOf(node.local)===name||node.type==='ExportNamedDeclaration'&&node.declaration?.declarations?.some(d=>is(d.init)))used=true;
+  });} catch {return false;}
+  return !used&&declared===1;
+}
 // Every use of name other than its one declaration calls it, name(...) or
 // new name(...): never name.member or name[key], and never passed on as a value.
 function onlyCalled(content, name) {
@@ -1111,12 +1154,15 @@ function shapeFixesIn(path, content, files, surfaces) {
     if(!s.spec.startsWith('.'))continue;
     const target=resolveLocal(path,s.spec,files).path,surface=target&&surfaces.get(target);
     if(!surface||surface.error)continue;
-    const id=s.node.id,sp=s.node.specifiers?.[0],p=id?.properties?.length===1?id.properties[0]:null;
+    const id=s.node.id,sp=s.node.specifiers?.[0],p=id?.properties?.length===1?id.properties[0]:null,m=loneMember(surface);
     let text=null,reason='';
     if(s.shape==='ObjectPattern'&&surface.kind==='cjs'&&p?.type==='Property'&&!p.computed&&p.key.type==='Identifier'&&p.value.type==='Identifier'&&soleExport(surface,target,p.key.name,files.get(target),content,p.value.name)){text=p.value.name;reason=`${target} exports a single ${surface.default.type} as module.exports`;}
     else if(s.shape==='Identifier'&&surface.kind==='cjs'&&holds(surface,id.name)&&onlyCalled(content,id.name)){text=`{ ${id.name} }`;reason=`${target} exports ${id.name} inside an object and this file only calls it`;}
+    // Bound whole, a module whose only export is one function can only mean that function.
+    else if(s.shape==='Identifier'&&surface.kind==='cjs'&&m&&noMemberUse(content,id.name)){text=m===id.name?`{ ${m} }`:`{ ${m}: ${id.name} }`;reason=`${target} exports only the function ${m} and this file reads no member of ${id.name}`;}
     else if(s.shape==='ImportSpecifier'&&sp.imported.type==='Identifier'&&soleExport(surface,target,sp.imported.name,files.get(target),content,sp.local.name)){text=sp.local.name;reason=`${target} has only a default ${surface.default.type}`;}
     else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&!surface.named.some(n=>n.name==='default')&&holds(surface,sp.local.name)&&onlyCalled(content,sp.local.name)){text=`{ ${sp.local.name} }`;reason=`${target} has no default export, only a named ${sp.local.name} that this file calls`;}
+    else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&m&&noMemberUse(content,sp.local.name)){text=m===sp.local.name?`{ ${m} }`:`{ ${m} as ${sp.local.name} }`;reason=`${target} has no default export, only the function ${m}, and this file reads no member of ${sp.local.name}`;}
     if(text===null)continue;
     const gap=(x,y)=>/[\w$]/.test(x||'')&&/[\w$]/.test(y||'')?' ':'';
     text=gap(content[s.start-1],text[0])+text+gap(text.at(-1),content[s.end]);
@@ -1134,6 +1180,35 @@ export function shapeFixes(files, surfaces) {
   for(const path of [...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')))
     for(const {file,find,replace,reason,target} of shapeFixesIn(path,set.get(path),set,surfaces))edits.push({file,find,replace,reason,target});
   return edits;
+}
+// Every name destructured from an import: const { key: local } = require(p)
+// and import { key as local } from p.
+function importKeys(content) {
+  const out=[];
+  walk(parseSource(content).ast,node=>{
+    if(node.type==='VariableDeclarator'&&isRequire(node.init)&&node.id.type==='ObjectPattern') {
+      for(const p of node.id.properties)if(p.type==='Property'&&!p.computed&&p.key.type==='Identifier'&&p.value.type==='Identifier')out.push({key:p.key,local:p.value,spec:node.init.arguments[0].value});
+    } else if(node.type==='ImportDeclaration'&&typeof node.source?.value==='string')
+      for(const sp of node.specifiers)if(sp.type==='ImportSpecifier'&&sp.imported.type==='Identifier')out.push({key:sp.imported,local:sp.local,spec:node.source.value,esm:true});
+  });
+  return out;
+}
+// Where after renames a shorthand import { a } to { b }, the text that keeps
+// the local name a ({ b: a }, import { b as a }), last first. Only when the
+// target, or the one module its unresolved path names, exports b; an alias
+// ({ x: y } to { z: y }) is a rename as it is.
+function importAliases(before, after, {path, files, surfaces}) {
+  let x,y;
+  try {x=importKeys(before);y=importKeys(after);} catch {return [];}
+  if(x.length!==y.length)return [];
+  const set=files instanceof Map?files:new Map(Object.entries(files||{})),all=[...set.keys()].filter(p=>LINKABLE.test(p));
+  return y.flatMap((b,i)=>{
+    const a=x[i];
+    if(a.key.start!==a.local.start||b.key.start!==b.local.start||a.key.name===b.key.name)return [];
+    const target=b.spec.startsWith('.')&&(resolveLocal(path,b.spec,set).path||namedModule(path,b.spec,all)),surface=target&&surfaces.get(target),d=surface?.default;
+    if(!surface||!exportNames(surface).names.has(b.key.name)&&!((d?.type==='function'||d?.type==='class')&&d.name===b.key.name))return [];
+    return [{at:b.key.end,text:(b.esm?' as ':': ')+a.key.name}];
+  }).sort((p,q)=>q.at-p.at);
 }
 // An edit that is not rename-only is accepted only when its result is, token
 // for token, the runtime's shape fix of each import whose binding it changes
