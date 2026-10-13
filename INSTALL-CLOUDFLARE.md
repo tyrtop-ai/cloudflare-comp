@@ -169,6 +169,7 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 | `GET /api/file?room=&agent=&path=` | One file an agent wrote, from the room's index of its Artifacts writes |
 | `POST /api/run` | `{room, goal, budget, settings}`: start a new run. The goal must be 8–1800 characters. |
 | `POST /api/continue` | `{room, budget, settings}`: resume a run |
+| `POST /api/stop` | `{room}`: stop a run. No new turns start; the running ones finish, then the room pauses (`status: paused`, event `stopped`) and the snapshot's `stopping` is `true` until then. Returns `{status: "stopping"}`, or `{error: "Nothing is running"}`; `/api/continue` resumes it |
 | `POST /api/reset` | `{room}`: clear the room's state |
 | `GET /api/app?room=` | The application as JSON: `files` (`[{path, content}]`, README first), `passed`, `fingerprint`, `digest` and `note`, plus `room`, `goal`, `room_status`, `agents`, `entry` and `kind` (`linked` by the builders and run by the compiler, or `atomic` when Root wrote it); `fingerprint` names what the passing run compiled |
 | `GET /api/app.zip?room=` | The same files as a ZIP download; the `x-app-passed` header is `true` or `false` |
