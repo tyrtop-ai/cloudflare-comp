@@ -27,10 +27,11 @@ export const PLAIN_JS_CLAUSE='Write plain JavaScript (.js) with Node built-ins o
 export const PLAIN_JS=/non_code_rejected|Leaf outputs must be executable|\.(?:tsx?|jsx)\b|\bJSX\b|\bReact\b|TypeScript|Line \d+: "\s*<[A-Za-z]|external package '/i;
 export const COMPILER_TASK='Run the linked application: choose the entry, generate the runtime loader and package, load and start it in the Container, and have the runner test it. Report failures to the manager; never edit code.';
 
-export const KINDS=['unresolved','mismatch','binding','entry','load','run','stuck'];
+export const KINDS=['unresolved','mismatch','binding','entry','load','run','stuck','contract'];
 // The party a problem goes to when nothing else decides: the reader of a
-// name or import, the entry module, the line that failed.
-export const DEFAULT_ROLE={unresolved:'reader',mismatch:'reader',binding:'reader',entry:'subject',load:'site',run:'site',stuck:'subject'};
+// name or import, the entry module, the line that failed, the piece that
+// does not export what the plan promised for it (v7.15 contract).
+export const DEFAULT_ROLE={unresolved:'reader',mismatch:'reader',binding:'reader',entry:'subject',load:'site',run:'site',stuck:'subject',contract:'subject'};
 
 // Recurrence key: the kind, the worker files involved, and the detail's head
 // without bundle paths (they differ by level), absolute paths (the
@@ -301,6 +302,10 @@ export function instructionsFor(p, side) {
     }
     case 'entry':return ENTRY_CONTRACT;
     case 'stuck':return 'Finish your assignment.';
+    case 'contract':{
+      const by=(f.requested_by||[]).filter(Boolean).slice(0,8);
+      return `Your assignment promises ${list(f.names)}; ${by.length?by.join(', '):'other pieces'} need ${(f.names||[]).length>1?'them':'it'} from you and your modules do not export ${(f.names||[]).length>1?'them':'it'}. Export each as a named export with exactly that name; keep your other exports.`;
+    }
     default:return side==='provider'?'Fix your module so the call described below works.':'Fix the error below in your code.';
   }
 }
@@ -316,8 +321,11 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // every problem in its own file paths. Clipped to 2400 characters, problems
 // keeping at least 1100. The decision keeps what the ticket stored (900):
 // the v7.13.3 entry contract alone is 532 and leads the manager's words.
-export function repairText({role='reader',instructions='',facts='',problems=[]}) {
-  const head='REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers, so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER);
+// kinds: the problems' kinds; when every one is a contract nothing was
+// built or run, so the head says the plan was checked instead (v7.15).
+export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[]}) {
+  const head=kinds.length&&kinds.every(k=>k==='contract')?'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.':
+    'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers, so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER);
   const decided=instructions?` Your manager decided: ${String(instructions).slice(0,900)}`:'';
   const shown=problems.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ');
   const room=Math.max(0,2400-head.length-decided.length-' Problems: '.length-Math.min(shown.length,1100)-' What the other side provides: '.length);

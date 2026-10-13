@@ -601,6 +601,28 @@ export class ControlRoom extends DurableObject {
     }
     return null;
   }
+  // v7.15 slice C: the deepest live nodes at or under `under` whose promise
+  // holds name. Runtime only (linker, branch check, entry): no prompt shows it.
+  carriersOf(name, under) {
+    const live=query(this.db(),"SELECT id,label,interfaces FROM agents WHERE (id=? OR id LIKE ?) AND status NOT IN ('retired','failed') AND interfaces<>'[]' ORDER BY LENGTH(id),id",under,under+'.%')
+      .filter(n=>!RUNTIME_LABELS.includes(n.label)&&parse(n.interfaces,[]).some(f=>f.name===name));
+    return live.filter(n=>!live.some(x=>x.id.startsWith(n.id+'.'))).map(({id,label})=>({id,label}));
+  }
+  // The goal operations the top's live direct children promise functions
+  // for, one per operation: what the top itself answers requests from.
+  plannedOperations() {
+    const top=this.allNodes().find(n=>!n.parent),seen=new Set(),out=[];
+    for(const c of top?this.offeredFunctions(top.id):[])for(const f of c.items) {
+      const key=String(f.operation||'').toLowerCase().replace(/\s+/g,' ').trim();
+      if(key&&!seen.has(key)){seen.add(key);out.push({operation:f.operation,method:f.name,label:c.label});}
+    }
+    return out;
+  }
+  // The modules of piece w in a builder's bundle: those its workers wrote,
+  // through every builder below.
+  modulesOf(builderId, files, w) {
+    return [...files.keys()].filter(p=>LINKABLE.test(p)&&(o=>!!o&&(o===w||o.startsWith(w+'.')))(this.buildSourceOrigin(builderId,p)?.owner)).sort();
+  }
   // A worker's task as a model reads it: the stored task plus its contract.
   // The top has no manager to ask: an atomic Root that followed the clause
   // asked anyway and wedged on 'Worker has no available manager'.
@@ -1095,7 +1117,7 @@ export class ControlRoom extends DurableObject {
     if(!row)return '';
     const problems=parse(row.problems,[]).map(id=>this.problems('id=?',id)[0]).filter(p=>p&&p.status!=='closed');
     if(!problems.length)return '';
-    return repairText({role:row.role,instructions:row.instructions,facts:row.facts,
+    return repairText({role:row.role,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),
       problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
@@ -1462,10 +1484,11 @@ export class ControlRoom extends DurableObject {
     this.db().exec("UPDATE problems SET status='closed',outcome=?,updated=? WHERE source=? AND status!='closed'",outcome,Date.now(),source);
   }
   // A problem's parties, each with the worker that wrote it (through every
-  // builder below `via`) and the digest of the text that was linked.
+  // builder below `via`) and the digest of the text that was linked. A
+  // contract problem names its piece (owner), which may have no module yet.
   partiesOf(via, x) {
-    const party=(path,role)=>{const o=path?this.buildSourceOrigin(via,path):null;return {path:path||'',owner:o?.owner||'',owner_path:o?.path||'',digest:o?.digest||'',role};};
-    return [party(x.path,DEFAULT_ROLE[x.kind]||'site'),...(x.sites||[]).map(p=>party(p,'site')),...(x.target&&x.target!==x.path?[party(x.target,'provider')]:[])];
+    const party=(path,role,owner='')=>{const o=path?this.buildSourceOrigin(via,path):null;return {path:path||'',owner:o?.owner||owner,owner_path:o?.path||'',digest:o?.digest||'',role};};
+    return [party(x.path,DEFAULT_ROLE[x.kind]||'site',x.owner||''),...(x.sites||[]).map(p=>party(p,'site')),...(x.target&&x.target!==x.path?[party(x.target,'provider')]:[])];
   }
   // A builder or the compiler files what it cannot fix with its manager, in
   // one synchronous block: its earlier rows are superseded, the new ones open
@@ -1525,15 +1548,33 @@ export class ControlRoom extends DurableObject {
   // facts the manager decides on, read from the whole linked bundle. An
   // import that resolves nowhere is a problem only at the top; below, it is
   // the branch boundary's need, for the builder above.
-  inBranchProblems(link, top) {
-    const files=link.files,surfaces=link.surfaces,reads=importReads(files,surfaces),items=[];
-    const exportsText=p=>exportsLine(p,surfaces);
+  inBranchProblems(builderId, link, top) {
+    const files=link.files,surfaces=link.surfaces,reads=importReads(files,surfaces),items=[],m=this.node(builderId)?.parent;
+    const exportsText=p=>exportsLine(p,surfaces),both=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
     if(top)for(const u of link.unresolved) {
       const ref=importRefs(u.path,files.get(u.path)).find(r=>r.specifier===u.specifier);
       const names=[...new Set([...(ref?.names||[]),...(ref?.members||[])])].filter(Boolean);
+      // v7.15 §5.7: a name the plan gives a piece whose modules do not
+      // export it is that piece's to write (a contract problem), not a path
+      // for the reader to guess; the piece's modules lead what it is shown.
+      const pieces=new Map(),lead=[];
+      for(const name of names) {
+        const [w]=this.carriersOf(name,m);
+        if(w)pieces.set(w.id,{w,names:[...(pieces.get(w.id)?.names||[]),name]});
+      }
+      const owed=[];
+      for(const {w,names:mine} of pieces.values()) {
+        const own=this.modulesOf(builderId,files,w.id),missing=missingExports(new Map(own.map(p=>[p,files.get(p)])),mine);
+        lead.push(...own);
+        if(!missing.length)continue;
+        owed.push(...missing);
+        items.push({kind:'contract',owner:w.id,path:own[0]||'',sites:[u.path],detail:`${u.path} imports ${both(missing)} from '${u.specifier}'; the plan gives ${missing.length>1?'them':'it'} to ${w.label}, whose modules do not export ${missing.length>1?'them':'it'}.`,
+          facts:{names:missing,declared_by:w.label,requested_by:[u.path.split('/').pop()]}});
+      }
+      if(names.length&&names.every(x=>owed.includes(x)))continue;
       const {named,offered}=importOffers(files,surfaces,u.path,u.specifier,names);
       items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`,
-        facts:{specifier:u.specifier,names,named,provider_text:clip(offered.map(exportsText).join(' | '),700)}});
+        facts:{specifier:u.specifier,names,named,provider_text:clip([...new Set([...lead,...offered])].map(exportsText).join(' | '),700)}});
     }
     for(const m of link.mismatches) {
       const same=reads.filter(r=>r.target===m.target),others=new Map(),sur=surfaces.get(m.target),d=sur?.default;
@@ -1622,9 +1663,10 @@ export class ControlRoom extends DurableObject {
       last=link;
       state.done=[...state.done,...link.applied.map(e=>({file:e.file,find:e.find,replace:e.replace,...(e.alias?{alias:e.alias}:{})}))].slice(-200);
       await this.publishLinked(id,link,sources,{top});
-      const inside=this.inBranchProblems(link,top);
+      const inside=this.inBranchProblems(id,link,top);
       const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
-      if(inside.length&&state.relinks<MAX_RELINKS) {
+      // Renaming cannot add a function: a contract problem never relinks.
+      if(inside.some(x=>x.kind!=='contract')&&state.relinks<MAX_RELINKS) {
         state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+inside.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
         this.save(`link_state:${manager}`,state);
         this.event(id,'link_retry',clip(state.diagnostic,900));
