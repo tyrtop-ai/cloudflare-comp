@@ -1176,9 +1176,10 @@ export class ControlRoom extends DurableObject {
       // published beside the bundle, or derived from the bundle without one.
       if(delegated&&from.length) {
         let offered=null;
+        const bundle=new Map(from.map(s=>[s.source_path,s.content])),keep=new Set(this.promiseModules(child.id,bundle));
         try {offered=new Set(JSON.parse(await this.indexedContent(from[0].owner,BOUNDARY)).exports.map(x=>x.path));} catch {}
-        if(!offered?.size||![...offered].every(p=>from.some(s=>s.source_path===p)))offered=new Set(branchBoundary(new Map(from.map(s=>[s.source_path,s.content]))).exports);
-        for(const s of from)Object.assign(s,{bundled:true,outward:offered.has(s.source_path)});
+        if(!offered?.size||![...offered].every(p=>from.some(s=>s.source_path===p)))offered=new Set(branchBoundary(bundle,{keep:[...keep]}).exports);
+        for(const s of from)Object.assign(s,{bundled:true,outward:offered.has(s.source_path)||keep.has(s.source_path),promised:keep.has(s.source_path)});
       }
       sources.push(...from);
     }
@@ -1251,7 +1252,7 @@ export class ControlRoom extends DurableObject {
       for(const p of js)for(const r of componentImports(p,files.get(p),files))
         if(bundled.has(r.target)&&r.target!==p)(bundled.get(p)?.owner!==bundled.get(r.target).owner||named.includes(p)?reached:inside).add(r.target);
       if(bundled.size)for(const u of unresolvedBefore)for(const t of likelyTargets(u.path,files.get(u.path),u.specifier,surfaces))reached.add(t);
-      const shown=new Set(js.filter(p=>!bundled.has(p)||bundled.get(p).outward&&(!inside.has(p)||exportsStart(surfaces.get(p)))||needs.has(p)||reached.has(p)));
+      const shown=new Set(js.filter(p=>!bundled.has(p)||bundled.get(p).outward&&(!inside.has(p)||bundled.get(p).promised||exportsStart(surfaces.get(p)))||needs.has(p)||reached.has(p)));
       const excerpts=new Map();
       for(const p of own.filter(p=>bundled.has(p)&&!mismatchesBefore.some(m=>m.target===p))) {
         const targets=new Set(mismatchesBefore.filter(m=>m.path===p).map(m=>m.target));
@@ -1390,6 +1391,11 @@ export class ControlRoom extends DurableObject {
     return {files:linked,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfaces),surfaces:linkedSurfaces,applied,rejected,
       split:splitImports(linked,linkedSurfaces,home).map(x=>({...x,here:!below(x)}))};
   }
+  // The modules of a bundle that export a function manager m promised.
+  promiseModules(m, files) {
+    const names=this.promisedOf(m).map(f=>f.name);
+    return names.length?[...files.keys()].filter(p=>LINKABLE.test(p)&&(s=>names.some(n=>providedNames(s).has(n)||n==='start'&&exportsStart(s)))(exportSurface(p,files.get(p)))):[];
+  }
   async publishLinked(builderId, link, sources, {top=false}={}) {
     for(const source of sources) {
       const content=link.files.get(source.destination);
@@ -1406,8 +1412,10 @@ export class ControlRoom extends DurableObject {
     const storedManifest=this.files(builderId).some(f=>f.path==='assembly.manifest.json')?await this.indexedContent(builderId,'assembly.manifest.json'):null;
     if(storedManifest!==manifest)await this.putFile(builderId,'assembly.manifest.json',manifest,{materialized:true});
     if(!top) {
-      // The level above shows its model this branch only through its boundary.
-      const {exports,needs}=branchBoundary(link.files);
+      // The level above shows its model this branch only through its
+      // boundary, which always offers the modules exporting what this
+      // manager promised, even when a module inside imports them (spec 6.2).
+      const {exports,needs}=branchBoundary(link.files,{keep:this.promiseModules(this.node(builderId).parent,link.files)});
       const boundary=JSON.stringify({format:'recursive-boundary-v1',
         note:'What this branch offers the level above (modules none of its modules imports) and what it needs from outside it. Assembly metadata: never built or run; the bundle stays whole.',
         exports:exports.map(p=>({path:p,surface:surfaceText(exportSurface(p,link.files.get(p))).split('\n').slice(1).map(x=>x.trim())})),needs},null,2)+'\n';
@@ -1639,6 +1647,25 @@ export class ControlRoom extends DurableObject {
     }
     return items;
   }
+  // v7.15 §6.2: a function this manager promised that no module of its
+  // linked branch exports is a contract problem for the piece below that
+  // carries it (or the direct child its split gave it to). A safety net:
+  // a rename cannot remove a planned export (5.9), so only retire, retask,
+  // capacity or an accepted contract return leave such a hole. A piece
+  // that already filed its own gap (its accepted return) is not told twice.
+  contractProblems(builderId, m, files) {
+    const promised=this.promisedOf(m),label=this.node(m)?.label||m,items=[];
+    if(!promised.length)return items;
+    for(const name of missingExports(new Map([...files].filter(([p])=>LINKABLE.test(p))),promised.map(f=>f.name))) {
+      const f=promised.find(x=>x.name===name);
+      const w=this.carriersOf(name,m).find(c=>c.id!==m)||this.children(m).find(c=>!['retired','failed'].includes(c.status)&&this.promisedOf(c.id).some(x=>x.name===name));
+      if(!w){this.event(builderId,'contract_unplaced',`${label} promised ${signature(f)}, which no module of its branch exports and no piece below carries.`,m);continue;}
+      if(this.problems("source=? AND kind='contract' AND status!='closed'",w.id).some(p=>p.facts.names?.includes(name)))continue;
+      items.push({kind:'contract',owner:w.id,path:this.modulesOf(builderId,files,w.id)[0]||'',
+        detail:`${w.label} was promised ${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}, and no module of ${label}'s linked branch exports it.`,facts:{names:[name],declared_by:w.label}});
+    }
+    return items;
+  }
   // A model note rides with the static problems that name its file; with
   // none, it is only an event and reaches no worker. A note on a problem's
   // provider blames that side (the manager's model decides, M3).
@@ -1733,7 +1760,10 @@ export class ControlRoom extends DurableObject {
         else this.closeProblems(assigned,'relinked',{fingerprint});
       }
       this.save(`link_state:${manager}`,state);
-      if(inside.length)return this.reportProblems(id,manager,fingerprint,'link',await this.annotateRenames(id,link.files,this.withEvidence(id,inside,link.issues),sources));
+      // Below the top, the branch is checked against its promise (spec 6.2);
+      // at the top, start is the compiler's to check.
+      const items=[...inside,...top?[]:this.contractProblems(id,manager,link.files)];
+      if(items.length)return this.reportProblems(id,manager,fingerprint,'link',await this.annotateRenames(id,link.files,this.withEvidence(id,items,link.issues),sources));
       for(const note of link.issues)this.event(id,'link_note',clip(`${note.path}: ${note.detail}`,700));
       this.closeProblemsFrom(id,'resolved');
       this.set(`linked:${manager}`,fingerprint);
@@ -2902,9 +2932,14 @@ export class ControlRoom extends DurableObject {
     // A self-import counts only for a name not exported: a file that exports
     // getTickets and delegates to store.getTickets() keeps its promise.
     const names=promised.map(f=>f.name),missing=missingExports(files,names),self=missing.length?selfImports(files,missing):[];
-    if(!missing.length){if(returns)this.set(key,'');return false;}
+    if(!missing.length) {
+      if(returns)this.set(key,'');
+      this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
+      return false;
+    }
     if(returns>=3) {
       this.event(id,'contract_unmet',`${missing.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
+      this.fileContract(id,missing.map(name=>promised.find(p=>p.name===name)));
       return false;
     }
     this.set(key,returns+1);
@@ -2914,6 +2949,23 @@ export class ControlRoom extends DurableObject {
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
     this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${missing.join(', ')} promised and not exported; back to the worker.`);
     return true;
+  }
+  // v7.15 §6.1: an accepted return's gap is a contract problem in its
+  // manager's inbox, which D4 gives back to it as a repair ticket and slice
+  // 2's model may retask. One open at a time; one it was given and finished
+  // without settling is replaced, so its manager decides again.
+  fileContract(id, fns) {
+    const n=this.node(id);
+    if(!this.live()||!n?.parent)return;
+    const prior=this.problems("source=? AND kind='contract' AND status!='closed'",id);
+    if(prior.some(p=>p.status==='open'))return;
+    this.closeProblems(prior,'superseded');
+    const path=productionFiles(this.files(id)).map(f=>f.path).find(p=>LINKABLE.test(p))||'',them=fns.length>1?'them':'it';
+    this.insertProblem({holder:n.parent,kind:'contract',stage:'work',source:id,input:`turn:${n.turn}`,
+      parties:[{path,owner:id,owner_path:path,digest:'',role:'subject'}],detail:`${n.label} was promised ${fns.map(signature).join(', ')} and its published modules do not export ${them}.`,
+      facts:{names:fns.map(f=>f.name),declared_by:n.label},flags:{wave:crypto.randomUUID()}});
+    this.event(id,'problems_reported',`1 problem goes to the manager: ${n.label} does not export ${fns.map(f=>f.name).join(', ')}, which its assignment promises.`,n.parent);
+    this.wake(n.parent);
   }
   complete(id) {
     const n = this.node(id);

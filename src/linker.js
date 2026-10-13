@@ -1257,7 +1257,8 @@ export function importOffers(files, surfaces, path, specifier, names=[]) {
 // module exporting start() if only one does) and every import that does not
 // resolve inside it, with the names and members it wants. Only the model's
 // view above is built from boundaries; everything deterministic reads the bundle.
-export function branchBoundary(files) {
+// keep (v7.15): modules always offered, those exporting the branch's promise.
+export function branchBoundary(files, {keep=[]}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const js=[...set.keys()].filter(p=>LINKABLE.test(p)).sort(),imported=new Set(),needs=new Map();
   for(const file of js)for(const ref of importRefs(file,set.get(file))) {
@@ -1268,7 +1269,7 @@ export function branchBoundary(files) {
     needs.set(file+'|'+ref.specifier,need);
   }
   const starters=js.filter(p=>exportsStart(exportSurface(p,set.get(p))));
-  const offered=js.filter(p=>!imported.has(p)||starters.length===1&&starters[0]===p);
+  const offered=js.filter(p=>!imported.has(p)||starters.length===1&&starters[0]===p||keep.includes(p));
   return {exports:offered.length?offered:js,needs:[...needs.values()]};
 }
 // Modules an import that resolves nowhere may mean: named like its path (file

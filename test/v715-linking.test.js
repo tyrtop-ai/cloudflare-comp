@@ -263,3 +263,83 @@ test('v7.15: run8: the linker may not bind addTicket to saveTickets; the add pie
   assert.match(tickets(room,'root.2')[0],/Your assignment promises addTicket; app\.js need it from you and your modules do not export it\./);
   assert.equal(tickets(room,'root.1').length,0,'the storage piece is never asked');
 });
+
+// ------------------------------------------------------------- test 34
+// The data store promised saveTickets; the piece its split gave it to
+// exported storeTickets. The branch's linked bundle lacks a promised name:
+// a contract problem for that piece, reported to the branch's manager
+// without a relink (renaming cannot add a function).
+test('v7.15: a branch bundle missing a promised name reports a contract problem without a relink; the top builder does not; an accepted contract return files one',async()=>{
+  const {room,calls}=liveRoom();
+  await planned(room);
+  await pieces(room,'root',[['data store',null,null,[fn('loadTickets','returns all tickets'),fn('saveTickets','stores all tickets',['tickets'])]],['entry module','app.js',"function begin() {\n  return {};\n}\nmodule.exports = { begin };\n",[START]]]);
+  await pieces(room,'root.1',[['load tickets','load/ticketLoader.js',loader,[fn('loadTickets','returns all tickets')]],
+    ['save tickets','save/module.js',"let saved = [];\nexports.storeTickets = (tickets) => { saved = tickets.slice(); return saved; };\n",[fn('saveTickets','stores all tickets',['tickets'])]]]);
+  const b=await room.scheduleAssembly('root.1');
+  await room.turn(b.id);
+  assert.deepEqual([calls.link.length,events(room,'link_retry').length],[0,0],'no model, no relink');
+  const [p,...more]=openProblems(room,'root.1');
+  assert.equal(more.length,0,trace(room));
+  assert.deepEqual([p.kind,p.source,p.parties.map(x=>[x.role,x.owner,x.owner_path])],['contract',b.id,[['subject','root.1.2','save/module.js']]]);
+  assert.equal(p.detail,'save tickets was promised saveTickets(tickets): stores all tickets, and no module of data store\'s linked branch exports it.');
+  assert.equal(room.node(b.id).status,'waiting');
+  await room.turn('root.1');
+  const [ticket]=tickets(room,'root.1.2');
+  assert.ok(ticket.startsWith('YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT.'),ticket);
+  assert.match(ticket,/Your assignment promises saveTickets; other pieces need it from you and your modules do not export it\./);
+  // Fixed, the branch links clean; the top builder never checks start
+  // (the compiler does): the entry exporting begin() is no contract problem.
+  room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.1.2'");
+  await room.putFile('root.1.2','save/module.js',saver);
+  room.db().exec("UPDATE agents SET status='done' WHERE id='root.1.2'");
+  await step(room,'root.1');
+  await room.turn(b.id);
+  assert.equal(room.node(b.id).status,'done',trace(room));
+  assert.deepEqual(room.problems('id=?',p.id).map(x=>[x.status,x.outcome]),[['closed','resolved']]);
+  await room.turn('root.1');
+  const top=await room.scheduleAssembly('root');
+  await room.turn(top.id);
+  assert.equal(room.node(top.id).status,'done',trace(room));
+  assert.equal(room.problems("kind='contract' AND status!='closed'").length,0);
+  // An accepted contract return (three returns spent) files one with the
+  // worker's manager, which gives it back as a repair ticket (D4); the
+  // worker's next return that exports it closes it.
+  await room.putFile('root.1.1','load/ticketLoader.js',"const rows = [];\nmodule.exports = { readAll: () => rows.slice() };\n");
+  room.set('contract_returns:root.1.1','3');
+  assert.equal(await room.contractReturned('root.1.1'),false,'accepted');
+  const [gap]=openProblems(room,'root.1');
+  assert.deepEqual([gap.kind,gap.source,gap.detail,gap.parties[0].owner_path],['contract','root.1.1','load tickets was promised loadTickets() and its published modules do not export it.','load/ticketLoader.js']);
+  assert.ok(events(room,'contract_unmet').length);
+  room.db().exec("UPDATE agents SET status='done' WHERE id='root.1.1'");
+  await step(room,'root.1');
+  assert.match(tickets(room,'root.1.1')[0],/^YOUR ASSIGNMENT PROMISES FUNCTIONS/);
+  await room.putFile('root.1.1','load/ticketLoader.js',loader);
+  assert.equal(await room.contractReturned('root.1.1'),false);
+  assert.deepEqual(room.problems('id=?',gap.id).map(x=>[x.status,x.outcome]),[['closed','resolved']]);
+});
+
+// ------------------------------------------------------------- test 35
+// run8's append module imports the loader inside the data store branch.
+// The boundary used to offer only modules nothing in the branch imports,
+// so the level above saw neither the loader nor the saver.
+test('v7.15: a module exporting a promised name is offered in the branch boundary even when imported inside the branch',async()=>{
+  const r=liveRoom();
+  const {room,calls}=r;
+  await planned(room);
+  const [,updatePath]=await pieces(room,'root',[['data store',null,null,[fn('loadTickets','returns all tickets'),fn('saveTickets','stores all tickets',['tickets'])]],
+    ['update ticket','updateTicket.js',updater.replace("module.exports = { updateTicket };","const { formatTicket } = require('./formatTicket');\nmodule.exports = { updateTicket, show: formatTicket };"),[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket')]],['entry module','app.js',run8Entry,[START]]]);
+  await pieces(room,'root.1',[['load tickets','load/ticketLoader.js',loader,[fn('loadTickets','returns all tickets')]],
+    ['save tickets','save/module.js',saver,[fn('saveTickets','stores all tickets',['tickets'])]],['append ticket','append/appendTickets.js',appender,[fn('appendTicket','adds a ticket',['ticket'])]]]);
+  const b=await linkBranch(room,'root.1');
+  const boundary=JSON.parse(await room.indexedContent(b.id,'assembly.boundary.json')).exports.map(x=>x.path.split('/').slice(-2).join('/'));
+  assert.deepEqual(boundary.sort(),['append/appendTickets.js','load/ticketLoader.js','save/module.js'],'imported by append, offered all the same');
+  assert.deepEqual(L.branchBoundary(new Map([['a.js',"const { f } = require('./b.js');\nmodule.exports = { g: f };\n"],['b.js','module.exports = { f: () => 1 };\n']])).exports,['a.js'],'without the plan, as before');
+  // The top's linker model (asked for formatTicket, which nobody exports)
+  // sees the data store's promised modules.
+  const top=await room.scheduleAssembly('root');
+  await room.turn(top.id);
+  assert.ok(calls.link.length>=1);
+  const block=calls.link[0].other_modules_exports.find(t=>t.startsWith('data store (a branch built below'));
+  assert.ok(block&&/ticketLoader\.js/.test(block)&&/module\.js/.test(block),JSON.stringify(calls.link[0].other_modules_exports));
+  assert.ok(updatePath);
+});
