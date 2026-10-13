@@ -531,21 +531,30 @@ test('room: an assertion failure with no component frame is triaged by the compi
   assert.equal(room.receive('root.2').length,0);
 });
 
-test('room: a broken runner test is rewritten by the runner, not sent to a worker',async()=>{
+test('room: the runner\'s test is static: a test that ran is never rewritten; its failure goes to the application (run4)',async()=>{
   let paths;
   const {room,calls}=liveRoom({
     link:(user)=>{
       const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
       return {edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:`require('../${paths.repoPath.split('/').slice(1).join('/')}')`},{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:app?.path??null,issues:[]};
     },
+    // The first test asks for app.create, which the application does not have.
     runner:(user,n)=>n===1?runnerTest.replace('app.createTicket(','app.create('):runnerTest
   });
   paths=await twoWorkers(room);
   const {compiler}=await linkAndCompile(room);
-  assert.equal(calls.runner.length,2);
-  assert.match(calls.runner[1].previous_test_error,/app\.create is not a function/);
-  assert.equal(room.node(compiler.id).status,'done');
-  assert.equal(room.problems('1=1').length,0);
+  assert.equal(calls.runner.length,1,'the test that ran is not rewritten');
+  const failure=lastReport(room,compiler.id);
+  assert.equal(failure.stage,'run');
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['run',paths.appPath,'root']],'the entry module must satisfy the test');
+  assert.match(failure.issues[0].detail,/app\.create is not a function/);
+  assert.match(failure.issues[0].detail,/The test stays fixed for this run/);
+  assert.match(room.read('runner_test',null).test,/app\.create\(/);
+  // The next round runs the same test, without asking the runner again.
+  const before=calls.runner.length;
+  await room.runApplication(compiler.id,'input-2',new Map(),'{}','goal',{linked:new Map(),entry:null});
+  assert.equal(calls.runner.length,before);
+  assert.ok(room.snapshot().events.some(e=>e.kind==='runner_reused'));
 });
 
 test('container: a large start() result is described at a smaller depth instead of being cut off',async()=>{
@@ -596,7 +605,7 @@ test('room: start() that returns nothing goes back to the entry worker',async()=
   assert.match(failure.issues[0].detail,/start\(\) must return an object/);
   assert.equal(calls.runner.length,0);
   await room.turn('root');
-  assert.match(tickets(room,'root.2')[0],/exports start\(\); start\(\) returns an object/);
+  assert.match(tickets(room,'root.2')[0],/exports start\(\); start\(\) takes no arguments and returns an object/);
 });
 
 test('room: container infrastructure failure blocks without blaming a worker; Continue reschedules the compiler',async()=>{
@@ -633,7 +642,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
   const calls={split:0,leaf:0,link:0,runner:0};
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/issue tracker/i.test(behavior(params.state.assigned_behavior))&&!/repository|entry module/i.test(behavior(params.state.assigned_behavior))?0.95:0.05}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/issue tracker/i.test(behavior(params.state.assigned_behavior))&&!/repository|application entry module/i.test(behavior(params.state.assigned_behavior))?0.95:0.05}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content;
@@ -646,7 +655,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
     }
     if(system.includes('LEAF CODE WRITER')) {
       calls.leaf++;
-      const entry=/entry module/i.test(user.your_responsibility);
+      const entry=/application entry module/i.test(user.your_responsibility);
       return {response:JSON.stringify({summary:entry?'Entry':'Repository',done:true,
         files:[entry?{path:'app.js',content:appSource}:{path:'in-memory-ticket-repository.js',content:repoSource}]})};
     }
@@ -656,6 +665,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
       const repo=user.all_module_paths.find(p=>p.endsWith('in-memory-ticket-repository.js'));
       return {response:JSON.stringify({edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:`require('../${repo.split('/').slice(1).join('/')}')`},{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:app?.path??null,issues:[]})};
     }
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER')){calls.runner++;return {response:runnerTest};}
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
@@ -685,7 +695,7 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
     if(params.questions) {
       if(params.questions.should_split) {
         const b=behavior(params.state.assigned_behavior);
-        return {answers:{should_split:{noul:/repository|entry module|ticket model/i.test(b)?0.05:0.95}}};
+        return {answers:{should_split:{noul:/repository|application entry module|ticket model/i.test(b)?0.05:0.95}}};
       }
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
@@ -704,7 +714,7 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
       const r=user.your_responsibility;
       calls.leaf.push(r.slice(0,300));
       const repair=(user.new_messages||[]).some(m=>/REAL CONTAINER BUILD FAILED/.test(m.body));
-      if(/entry module/i.test(r))return {response:JSON.stringify({summary:'Entry',done:true,files:[{path:'app.js',content:appSource}]})};
+      if(/application entry module/i.test(r))return {response:JSON.stringify({summary:'Entry',done:true,files:[{path:'app.js',content:appSource}]})};
       if(/ticket model/i.test(r))return {response:JSON.stringify({summary:'Model',done:true,files:[{path:'ticket.js',content:'module.exports = (title) => ({ title, status: "open" });\n'}]})};
       return {response:JSON.stringify({summary:repair?'Fixed delete':'Repository',done:true,files:[{path:'in-memory-ticket-repository.js',content:repair?repoSource:brokenRepo}]})};
     }
@@ -714,6 +724,7 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
       const repo=user.all_module_paths.find(p=>p.endsWith('in-memory-ticket-repository.js'));
       return {response:JSON.stringify({edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:`require('../${repo.split('/').slice(1).join('/')}')`},{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:app?.path??null,issues:[]})};
     }
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER')){calls.runner++;return {response:runnerTest};}
     if(system.startsWith('You are the BUILDER doing triage')) {
       calls.triage++;
@@ -730,7 +741,8 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
   const trace=events.filter(e=>!['dispatch','turn_start','turn_end','expose','manager_shard','write','revision'].includes(e.kind)).slice(-25).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,160)}`).join('\n');
   assert.equal(room.get('status'),'complete',trace);
   assert.equal(calls.triage,1);
-  assert.equal(calls.runner,2,'the runner reran against the repaired source');
+  assert.equal(calls.runner,1,'the repaired source ran the same, static test');
+  assert.ok(room.snapshot().events.some(e=>e.kind==='runner_reused'),'the second run reused the first test');
   assert.equal(calls.link,2);
   assert.equal(calls.leaf.filter(x=>/repository/i.test(x)).length,2,'the nested repository worker ran again to fix its code');
   // Root delegates to its direct child whose branch holds the failing worker, which assigns it.
@@ -795,7 +807,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
   const entrySource="const svc = require('./ticketService');\nfunction start(){ return { createTicket: d => svc.add(d), getTicket: id => svc.find(id), listTickets: () => svc.all(), updateTicket: (id,p) => svc.change(id,p), deleteTicket: id => svc.remove(id) }; }\nmodule.exports = { start };\n";
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|service module|entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|service module|application entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content, user=JSON.parse(params.messages[1].content);
@@ -806,7 +818,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
     }
     if(system.includes('LEAF CODE WRITER')) {
       const r=user.your_responsibility;
-      const file=/entry module/i.test(r)?{path:'app.js',content:entrySource}:/service module/i.test(r)?{path:'ticketService.js',content:serviceSource}:{path:'in-memory-ticket-repository.js',content:repoSource};
+      const file=/application entry module/i.test(r)?{path:'app.js',content:entrySource}:/service module/i.test(r)?{path:'ticketService.js',content:serviceSource}:{path:'in-memory-ticket-repository.js',content:repoSource};
       return {response:JSON.stringify({summary:'done',done:true,files:[file]})};
     }
     if(system.startsWith('You are a LINKER')) {
@@ -819,6 +831,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
       }
       return {response:JSON.stringify({edits,entry:user.scope==='application'?(user.all_module_paths.find(p=>p.endsWith('/app.js'))||null):null,issues:[]})};
     }
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER'))return {response:runnerTest};
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
@@ -854,14 +867,14 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
   const pending=[];
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|application entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content,user=JSON.parse(params.messages[1].content);
     if(system.startsWith('You are a CODE SPLITTER'))return {response:JSON.stringify({summary:'Two',spawn:[
       {label:'Ticket repository',task:'Write an in-memory ticket repository class'},{label:'Application entry',task:'Write the application entry module exporting start()'}]})};
     if(system.includes('LEAF CODE WRITER')) {
-      const entry=/entry module/i.test(user.your_responsibility);
+      const entry=/application entry module/i.test(user.your_responsibility);
       // Two files and a public assumption in one answer: still one push.
       return {response:JSON.stringify({summary:'done',done:true,
         remember:[{visibility:'public',key:'assumed_ticket_store',value:'A repository class with create/read/update/delete/getAll'}],
@@ -871,6 +884,7 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
       const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
       return {response:JSON.stringify({edits:app?[{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:null,issues:[]})};
     }
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER'))return {response:runnerTest};
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
@@ -1489,7 +1503,7 @@ test('room: with no module exporting start(), the compiler files an entry proble
   const failure=lastReport(room,compiler.id);
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[3],'root']],'the module named as the application, not combine.js');
   assert.match(failure.issues[0].detail,/^No application entry/);
-  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object whose methods perform the application's operations\. It does no work at module load/);
+  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) takes no arguments and returns an object with one method per operation the goal names, each named after that operation .* It does no work at module load/);
   await room.turn('root');
   assert.match(tickets(room,'root.4')[0],/Your manager decided: You write the application entry module/);
   assert.equal(room.receive('root.3').length,0);
@@ -1643,7 +1657,7 @@ test('room: an entry that exports no start() goes back to its worker with the en
   assert.equal(failure.stage,'build');
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[3],'root']]);
   assert.match(failure.issues[0].detail,/^No application entry: no module exports start\(\)/);
-  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object whose methods perform the application's operations/);
+  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) takes no arguments and returns an object with one method per operation the goal names/);
   assert.match(failure.issues[0].detail,/importing it must not read process\.argv, start a server or prompt for input/);
   await room.turn('root');
   const sent=tickets(room,'root.4');

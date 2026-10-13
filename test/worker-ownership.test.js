@@ -19,7 +19,7 @@ test('implementer owns local design decisions and reserves manager asks for exte
   assert.match(system,/relative path and the export name you expect/i);
   assert.match(system,/only Node.js built-in modules/i);
   assert.match(system,/it only renames/i);
-  assert.match(system,/function or constructor parameters/i);
+  assert.match(system,/never as function or constructor parameters/i);
   assert.match(system,/side effects at module load/i);
   assert.match(system,/assumed_\*/i);
   assert.deepEqual(result.ask,undefined);

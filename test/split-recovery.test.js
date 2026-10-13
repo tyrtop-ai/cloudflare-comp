@@ -69,6 +69,7 @@ test('rejected 1-of-4 partition returns to Clef and can become direct implementa
   assert.deepEqual(feedback.accepted.map(x=>x.label),['Tokenize command string']);
   // v7.14: the runtime appends the start() requirement to the goal.
   assert.equal(calls[1].request.original_goal_scope_boundary,'Build an issue tracker supporting ticket create, view, update and delete '+GOAL_START_REQUIREMENT);
+  assert.ok(calls[1].request.original_goal_scope_boundary.startsWith('Build an issue tracker supporting ticket create, view, update and delete The finished application has one entry module that exports start()'),'v7.13.2: the entry sentence follows the goal');
   await room.resume(1);await drain();
   assert.equal(room.node('root').phase,'implement');
   assert.equal(room.children('root').length,0);

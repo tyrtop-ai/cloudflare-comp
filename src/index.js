@@ -3,7 +3,8 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
+import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
+import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -13,6 +14,8 @@ import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
+import { zipFiles } from './zip.js';
+import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
@@ -39,6 +42,9 @@ const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.g
 // What start() returned, as the Container describes it, holds something the
 // runner can call. An unparsed or depth-limited description is given the doubt.
 const apiCallable = d => ['function','class','unparsed'].includes(d?.type) || !!d?.members_truncated || (d?.members ? Object.values(d.members).some(apiCallable) : ['object','array'].includes(d?.type));
+// A lone generic method (run4: start() returned { handler(event) }) leaves the
+// runner guessing at a protocol the goal never named.
+const apiGenericOnly = d => { const fns=d?.type==='object'&&d.members?Object.entries(d.members).filter(([,v])=>v?.type==='function'||v?.type==='class'):[]; return fns.length===1&&Object.keys(d.members).length===1&&/^(?:handler|handle|dispatch|run|execute|process|invoke|main|call|request)$/i.test(fns[0][0]); };
 // A scoped public key must survive repeated manager hops without collisions.
 // Strip the child's existing assumption prefix so only ONE prefix remains per
 // hop. For long hierarchical keys, use a digest of the FULL untruncated key.
@@ -106,6 +112,40 @@ export function safeTokenEqual(presented, expected) {
   let difference = a.length ^ b.length;
   for (let i=0; i<Math.max(a.length,b.length); i++) difference |= (a[i]??0) ^ (b[i]??0);
   return difference === 0;
+}
+// The exported application's README: goal, run status and how to run it.
+function appReadme(app,files) {
+  const has=p=>files.some(f=>f.path===p),fence='```';
+  const head=[`# Recursive control plane app${app.room?` (${app.room.slice(0,8)})`:''}`,''];
+  const about=['## Goal','',app.goal||'(no goal recorded)','',
+    '## Status','',`- Room: ${app.room_status}`,`- Container: **${app.passed?'passed':'UNVERIFIED'}**. ${app.note}`,''];
+  if(app.kind==='atomic') {
+    // Root's own code: what the Container would run (container/build-runner.mjs), else its entry module.
+    let pkg={};try{pkg=JSON.parse(files.find(f=>f.path==='package.json')?.content||'{}')||{};}catch{}
+    const s=pkg.scripts&&typeof pkg.scripts==='object'?pkg.scripts:{},deps=Object.keys({...pkg.dependencies,...pkg.devDependencies}).length>0;
+    const entry=['index.js','index.cjs','index.mjs','main.js','app.js','src/index.js'].find(has);
+    const run=[...(deps?['npm install']:[]),...(s.build?['npm run build']:[]),...(s.test?['npm test']:[]),...(has('glue/smoke.js')?['node glue/smoke.js']:[]),
+      ...(s.smoke?['npm run smoke']:[]),...(!s.build&&!s.test&&!s.smoke&&s.start?['npm start']:[])];
+    const load=!run.length&&entry;
+    if(load)run.push(`node -e "const m=require('./${entry}');Promise.resolve(m.start?m.start():m).then(app=>console.log(Object.keys(app)))"`);
+    return [...head,`Generated by the recursive control plane${app.room?` in room \`${app.room}\``:''}: the goal was small enough that Root wrote the code itself instead of splitting it.`,'',
+      ...about,'## Run it','',`Node.js 22 or newer${deps?'; `npm install` fetches the dependencies in package.json.':', with nothing to install.'}`,'',
+      ...(run.length?[fence+'bash',...run,fence,'']:[has('index.html')?'Open `index.html` in a browser.':'There is no entry module or script to run; see the files.','']),
+      ...(load?[`The command loads \`${entry}\`, calls its \`start()\` if it exports one, and lists what it returned.`,'']:[])].join('\n');
+  }
+  return [...head,
+    `Generated by the recursive control plane${app.room?` in room \`${app.room}\``:''}: a tree of ${app.agents} agents split the goal and wrote the modules in parallel, and builders linked them without writing code: they only rename import paths and identifiers, or fix how an import binds. A compiler chose the entry module and ran the application in a Container.`,'',
+    ...about,
+    '## Run it','','Node.js 22 or newer and Node built-ins only: there is nothing to install.','',fence+'bash',
+    `node -e "require('./glue/index.js').start().then(app=>console.log(Object.keys(app)))"`,
+    ...(has('glue/smoke.js')?['node glue/smoke.js']:[]),fence,'',
+    `The first command loads the entry module${app.entry?` (\`${app.entry}\`)`:''} through the runtime loader, calls \`start()\` and lists the operations it returned.`+
+      (has('glue/smoke.js')?' The second runs the runner\'s test, written from the goal and that API alone; it exits non-zero on failure.':''),'',
+    '## Layout','',
+    '- `glue/index.js`: the runtime-owned loader the compiler wrote; `start()` starts the entry module.',
+    ...(has('glue/smoke.js')?['- `glue/smoke.js`: the runner\'s test.']:[]),
+    ...(has('package.json')?['- `package.json`: runtime-owned; `npm start` runs the loader.']:[]),
+    '- `components/`: the workers\' modules, each in the directory of the branch that wrote it.',''].join('\n');
 }
 
 export class ControlRoom extends DurableObject {
@@ -389,7 +429,7 @@ export class ControlRoom extends DurableObject {
   // is constructed from snapshot(), avoiding accidental descendant leakage.
   snapshot() {
     return {
-      goal: this.get('goal'), status: this.get('status','idle'), busy: this.busy, step: Number(this.get('step','0')),
+      goal: this.get('goal'), status: this.get('status','idle'), busy: this.busy, stopping: this.get('stop_requested')==='1', step: Number(this.get('step','0')),
       build: this.read('last_build_report',null), build_infrastructure: this.get('compile_infrastructure',''),
       active_agents: [...this.activeTurns], max_parallel: this.settings().parallel, settings: this.settings(),
       budget: Number(this.get('budget','0')), queue: this.read('queue', []),
@@ -452,6 +492,44 @@ export class ControlRoom extends DurableObject {
     const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
     return {...snapshot,events,exports,exported_at:new Date().toISOString(),files,
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state};
+  }
+  // The goal as the user wrote it, without the requirement the runtime appends.
+  userGoal() { const g=this.topTask(),r=' '+GOAL_START_REQUIREMENT; return g.endsWith(r)?g.slice(0,-r.length):g; }
+  // The runnable application, for /api/app, /api/app.zip and the GitHub export:
+  // the top builder's linked components (its current sources) and the
+  // compiler's loader, package and runner test, minus assembly metadata,
+  // plus a README; for an atomic top (Clef did not split the goal), its own
+  // files, as it keeps its own build path (decision #27). The only place
+  // that knows where the application lives. passed: the snapshot the last
+  // passing Container run recorded (compile_passed) hashed exactly these
+  // files (README aside).
+  async appFiles() {
+    const root=this.allNodes().find(n=>!n.parent)||null,top=root?.id;
+    const builder=root&&this.builderOf(top),compiler=root&&this.compilerOf(top);
+    const atomic=!builder&&!!root&&!this.manager(top),files=[];
+    if(builder) {
+      for(const [path,content] of await this.linkedBundle(builder.id))files.push({path,content});
+      for(const f of compiler?this.files(compiler.id).filter(f=>!isAssemblyMetadata(f.path)):[])files.push({path:f.path,content:await this.indexedContent(compiler.id,f.path)});
+    } else if(atomic)for(const f of this.files(top).filter(f=>!isAssemblyMetadata(f.path)))files.push({path:f.path,content:await this.indexedContent(top,f.path)});
+    if(builder?!files.some(f=>f.path==='glue/index.js'):!files.length) {
+      const status=this.get('status','idle'),why=!root?'no run has started in this room':builder?(this.read(`bundle:${top}`,null)?'the compiler has not chosen an entry and written its loader (there is no glue/index.js)':'Root\'s builder has not linked one (there is no glue/index.js)'):
+        atomic?'Root has not written any code':'Root split the goal and its builder has not started linking';
+      // complete and failed rooms cannot be continued (resume refuses them).
+      return {status:409,error:['complete','failed'].includes(status)?`No application to export: this room ended (${status}) and ${why}. Start a new room to build one.`:
+        `No application yet: ${why}. ${root?'Continue the room until it has one, then export it.':'Start a run first.'}`};
+    }
+    files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+    const digest=await snapshotHash(new Map(files.map(f=>[f.path,f.content])));
+    // One record of the run that passed: the compiler's, or an atomic top's own build.
+    const last=this.read('compile_passed',null),hit=last?.digest===digest?last:null;
+    const note=hit?`The last Container run passed for exactly these files (snapshot ${digest.slice(0,16)}).`:
+      last?.digest?`These files differ from the last passing Container run (snapshot ${last.digest.slice(0,16)}), so they have not been run as exported.`:
+      'No Container run has passed for this application yet.';
+    const app={room:this.get('room_id',''),goal:this.userGoal(),room_status:this.get('status','idle'),agents:this.allNodes().length,kind:builder?'linked':'atomic',
+      entry:builder?/^\/\/ Entry module: (.+)$/m.exec(files.find(f=>f.path==='glue/index.js').content)?.[1]||null:null,
+      passed:!!hit,fingerprint:hit?.input??null,digest,note};
+    const readme=files.some(f=>f.path==='README.md')?'README.control-plane.md':'README.md';
+    return {...app,files:[{path:readme,content:appReadme(app,files)},...files]};
   }
   async provision(id, parent, label, task) {
     if (this.node(id)) throw new Error('Agent ID exists');
@@ -1243,51 +1321,52 @@ export class ControlRoom extends DurableObject {
       return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass';
     return null;
   }
-  // linked: the top builder's components; entry: the module glue/index.js starts.
-  async runApplication(nodeId, input, files, api, goal, {linked, entry}) {
-    let correction='';
-    for(let attempt=0;attempt<3;attempt++) {
-      const test=await writeRunnerTest(this.inferenceEnv(),{goal,api,correction});
-      const withTest=new Map([...files,['glue/smoke.js',String(test||'')]]);
-      const errors=test?[...verifySource('glue/smoke.js',test,withTest),this.runnerTestError(test)].filter(Boolean):['the runner returned no test'];
-      if(errors.length) {
-        correction='Your previous test was rejected before running: '+errors.join('; ');
-        this.event(nodeId,'runner_rejected',clip(correction,800));
-        continue;
-      }
-      const run=await this.containerRun(nodeId,`run:${input}:${attempt}`,withTest);
-      if(run.infrastructure)return {infrastructure:run.infrastructure};
-      await this.putFile(nodeId,'glue/smoke.js',test);
-      if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
-      const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
-      let kind=this.runFailureKind(run.report);
-      let issues=run.report.issues.length?run.report.issues:[{path:'',detail}];
-      if(kind==='app' && !issues.some(x=>String(x.path).startsWith('components/'))) {
-        // No stack frame names a module. Triage, which sees the source, names
-        // the module whose worker must change, or says the test is wrong.
-        const linkedJs=[...linked].filter(([p])=>LINKABLE.test(p));
-        const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
-        const modules=fits?linkedJs.map(([path,content])=>({path,content})):
-          linkedJs.map(([path,content])=>path===entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
-        const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail});
-        if(verdict?.file==='glue/smoke.js') {
-          kind='runner';
-          this.event(nodeId,'run_triage',`Triage says the runner's test is wrong: ${clip(verdict.problem,700)}`);
-        } else if(verdict && linked.has(verdict.file)) {
-          this.event(nodeId,'run_triage',`Triage attributes the failed run to ${verdict.file}: ${clip(verdict.problem,700)}`);
-          // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
-          const problem=clip(verdict.problem,400).trim();
-          issues=[{path:verdict.file,detail:`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} The runner's test failed: ${clip(detail,700)}`}];
-        }
-      }
-      this.event(nodeId,'run_failed',`Runner attempt ${attempt+1}: ${kind==='runner'?'the test itself was wrong':'the application failed the test'}. ${clip(detail,900)}`);
-      if(kind==='runner') {
-        correction=`Your previous test failed because of the test, not the application: ${clip(detail,1200)}. Use only names in the API description and expectations the goal implies.`;
-        continue;
-      }
-      return {passed:false,issues,detail,test};
+  // linked: the top builder's components; entry: the module glue/index.js
+  // starts; operations: the coverage gate's mapping the test must exercise.
+  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null}) {
+    // The runner's test is static: the first test that runs in the Container is
+    // the specification for the rest of the run and is never rewritten. A new
+    // test every repair round moved the target the worker was fixing (run4).
+    // Only a test that was turned back before it ever ran is written again.
+    const fixed=this.read('runner_test',null)?.test||null;
+    let correction='',test=fixed;
+    if(fixed)this.event(nodeId,'runner_reused','Running the same test as before: the first test that ran is fixed for the whole run.');
+    for(let attempt=0;!test&&attempt<3;attempt++) {
+      const draft=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction});
+      // A test that skips a mapped operation would certify a partial
+      // application (run6 tested getTickets alone), so it never runs.
+      const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft),
+        ...untestedOperations(draft,operations).map(o=>`the test never calls ${o.method} (operation ${o.operation}); call app.${o.method}(...) and check its result`)].filter(Boolean):['the runner returned no test'];
+      if(!errors.length){test=draft;break;}
+      correction='Your previous test was rejected before running: '+errors.join('; ');
+      this.event(nodeId,'runner_rejected',clip(correction,800));
     }
-    return {passed:false,runnerFailed:true,detail:correction};
+    if(!test)return {passed:false,runnerFailed:true,detail:correction};
+    const run=await this.containerRun(nodeId,`run:${input}`,new Map([...files,['glue/smoke.js',test]]));
+    if(run.infrastructure)return {infrastructure:run.infrastructure};
+    if(!fixed)this.save('runner_test',{api,test,operations});
+    await this.putFile(nodeId,'glue/smoke.js',test);
+    if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
+    const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
+    let issues=run.report.issues.length?run.report.issues:[{path:'',detail}];
+    if(!issues.some(x=>String(x.path).startsWith('components/'))) {
+      // No stack frame names a module. Triage, which sees the source, names
+      // the module whose worker must change. The test stays as it is, so a
+      // verdict against the test, or none, goes to the entry module: the
+      // application must do what the test asks.
+      const linkedJs=[...linked].filter(([p])=>LINKABLE.test(p));
+      const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
+      const modules=fits?linkedJs.map(([path,content])=>({path,content})):
+        linkedJs.map(([path,content])=>path===entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
+      const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail});
+      const owner=verdict&&linked.has(verdict.file)?verdict.file:entry;
+      if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${clip(verdict.problem,700)}`);
+      // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
+      const problem=clip(verdict?.problem||'',400).trim();
+      issues=[{path:owner||'',detail:`${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
+    }
+    this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
+    return {passed:false,issues,detail,test};
   }
 
   // ---------- the problem inbox ----------
@@ -1660,8 +1739,32 @@ export class ControlRoom extends DurableObject {
     try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
     // With nothing to call (run3b: {"type":"object","members":{}}) the runner
     // cannot write a valid test, and no worker would hear why.
-    if(!apiCallable(described))return report('run',[this.entryProblem(builder.id,files,surfaces,entry,`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`)]);
-    const outcome=await this.runApplication(id,input,app,api,this.topTask(),{linked:files,entry});
+    if(!apiCallable(described)||apiGenericOnly(described))
+      return report('run',[this.entryProblem(builder.id,files,surfaces,entry,`start() must return an object whose methods perform the requested operations${apiGenericOnly(described)?', one per operation and named after it, not a single generic method':''}; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`)]);
+    // Run6: start() returned { getTickets } for a create, view, update and
+    // delete goal; the runner tested reading alone and the run completed.
+    // Before the test is fixed, every operation the goal names needs its
+    // own method, or Root hears which are missing, as an entry problem. The
+    // model only proposes the mapping. Its error propagates, as the linker's
+    // and the runner's do, so the turn is retried: swallowed, one capacity
+    // error fixed run6's read-only test unchecked for the whole run. An
+    // answer that is no mapping, twice, fails open.
+    const goal=this.topTask();
+    let operations=null;
+    if(!this.read('runner_test',null)?.test) {
+      const checkable=coverageCheckable(described);
+      const coverage=checkable?await apiCoverage(this.inferenceEnv(),{goal,api}):null;
+      const gaps=coverage?apiGaps(described,coverage.operations):[];
+      if(gaps.length) {
+        this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
+        return report('run',[this.entryProblem(builder.id,files,surfaces,entry,gapProblem(described,gaps,ENTRY_CONTRACT))]);
+      }
+      if(coverage) {
+        operations=operationMethods(described,coverage.operations);
+        this.event(id,'api_covered',clip('Each operation the goal names has a method: '+operations.map(o=>`${o.operation} -> ${o.method}`).join(', '),900));
+      } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900));
+    }
+    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations});
     if(outcome.infrastructure)return this.blockCompiler(id,input,outcome.infrastructure);
     if(outcome.runnerFailed) {
       // A runner that cannot write a valid test is not a worker's problem.
@@ -3215,8 +3318,10 @@ export class ControlRoom extends DurableObject {
     try {
       // Work-conserving: replace each completed slot immediately, without
       // waiting for slower inferences from the same dispatch wave.
-      while (spent<cap || active.size || this.read('queue',[]).some(id=>this.manager(id)&&this.node(id)?.status==='ready')) {
-        while (active.size<this.settings().parallel) {
+      // A stop request dispatches nothing new; turns already running finish.
+      const stopping=()=>this.get('stop_requested')==='1';
+      while (active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>this.manager(id)&&this.node(id)?.status==='ready'))) {
+        while (!stopping() && active.size<this.settings().parallel) {
           let [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && active.size===0 && this.nudgeQuiescentManager()) [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && spent<cap && active.size===0 && this.nudgeQuiescentLeaf()) [id]=this.takeReadyBatch(1);
@@ -3237,6 +3342,11 @@ export class ControlRoom extends DurableObject {
         await Promise.race(active);
       }
       await this.flushAllPending();
+      if (stopping()) {
+        this.set('stop_requested','');this.set('status','paused');
+        this.event('system','stopped','Stopped by the observer after the running turns finished; Continue resumes.');
+        return;
+      }
       const nodes=this.allNodes();
       const finished=allFinished(nodes) && nodes.some(n=>n.id==='root');
       const failed=nodes.some(n=>n.status==='failed');
@@ -3268,8 +3378,17 @@ export class ControlRoom extends DurableObject {
     })());
     return {status:'running'};
   }
+  // Stop: no new turns are dispatched; the ones already running finish, then
+  // the run pauses. Continue resumes it.
+  async stop() {
+    if (!this.busy && this.get('status')!=='running') return {error:'Nothing is running'};
+    this.set('stop_requested','1');
+    this.event('system','stop_requested','Stop requested: no new turns start; the running ones finish, then the run pauses.');
+    return {status:'stopping'};
+  }
   async resume(budget,settings = {}) {
     if (this.busy) return {error:'Experiment running'};
+    this.set('stop_requested','');
     if (!['paused','complete','error','running','failed'].includes(this.get('status'))) return {error:'Start a session first'};
     if (this.get('status')==='complete') return {error:'All agents are done; start a new experiment'};
     if (this.get('status')==='failed') return {error:`Run failed: ${this.failedDescendantReason('root')}. Start a new room or inspect the recorded diagnostic.`};
@@ -3364,7 +3483,28 @@ export default {
       }
       if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));
       if (url.pathname==='/api/reset' && request.method==='POST') return json(await stub.clear());
+      if (url.pathname==='/api/stop' && request.method==='POST') return json(await stub.stop());
+      // Getting the code out: the linked application as JSON, as a ZIP, or as a GitHub branch and pull request.
+      if (['/api/app','/api/app.zip'].includes(url.pathname) && request.method==='GET') {
+        const app=await stub.appFiles();
+        if (app.error) return json({error:app.error},app.status||409);
+        if (url.pathname==='/api/app') return json(app);
+        return new Response(zipFiles(app.files),{headers:{'content-type':'application/zip','cache-control':'no-store',
+          'content-disposition':`attachment; filename="recursive-app-${room.slice(0,8)}.zip"`,'x-app-passed':String(app.passed)}});
+      }
+      if (url.pathname==='/api/export/github' && request.method==='POST') {
+        if (!env.GITHUB_TOKEN) return json({error:NO_TOKEN},503);
+        const options=githubExportOptions(payload,room);
+        const app=await stub.appFiles();
+        if (app.error) return json({error:app.error},app.status||409);
+        // TEST_GITHUB ({git,http,fetch}) is injected by the local tests only.
+        return json(await exportToGitHub({token:env.GITHUB_TOKEN,options,app,room},env.TEST_GITHUB));
+      }
       return json({error:'Unknown API route'},404);
-    } catch(e) {return json({error:clip(e?.message||e,950)},500);}
+    } catch(e) {
+      // GITHUB_TOKEN never leaves the Worker, not even inside an error.
+      const error=clip(redact(e?.message||e,env.GITHUB_TOKEN),950);
+      return e instanceof ExportError?json({error,...(e.github_status?{github_status:e.github_status}:{})},e.status):json({error},500);
+    }
   }
 };

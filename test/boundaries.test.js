@@ -102,6 +102,8 @@ function liveRoom(link,runner=runnerTest) {
   const AI={run:async(_model,{messages})=>{
     const system=messages[0].content,user=JSON.parse(messages[1].content);
     if(system.startsWith('You are a LINKER')){calls.link.push(user);calls.system.push(system);return {response:JSON.stringify(link(user))};}
+    // No mapping: the coverage gate fails open, as these rooms predate it (v7.13.3).
+    if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER'))return {response:runner};
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
