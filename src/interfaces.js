@@ -11,22 +11,26 @@ export const MAX_INTERFACES = 5;
 export const GENERIC_NAMES = new Set('init run main handle process validate create get set update remove delete list load save'.split(' '));
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
 const RESERVED = new Set('await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield'.split(' '));
-// The prompt's and LEAF_DEPENDENCY_RULE's example names, and stock fillers.
-const EXAMPLE = /^(?:functionName|fnName|name|listedName|example\w*|foo|bar)$/i;
-const text = (v, n) => typeof v === 'string' ? v.trim().slice(0, n) : '';
+// The prompts' and LEAF_DEPENDENCY_RULE's example names, and stock fillers.
+const EXAMPLE = /^(?:functionName|fnName|name|listedName|camelCaseIdentifier|example\w*|foo|bar)$/i;
+// The splitter prompt's example does and params, copied: no hint at all.
+const FILLER = /^(?:one line|what it does|optional hint|argument)$/i;
+const text = (v, n) => typeof v === 'string' && !FILLER.test(v.trim()) ? v.trim().slice(0, n) : '';
 const escape = s => s.replace(/[$]/g, '\\$');
 
-// One item: an object, or a string such as "createTicket(title, description)".
+// One item: an object, or a string such as "createTicket(title, description)",
+// "start(): returns the API" or "getTickets: returns all tickets", in
+// backticks or not; the text after the signature is its does.
 function item(raw) {
   const o = typeof raw === 'string' ? {name: raw} : raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
   if (!o || typeof o.name !== 'string') return null;
-  let name = o.name.trim(), params = Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [];
-  const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name);
-  if (call) { name = call[1].trim(); if (!params.length) params = call[2].split(','); }
+  let name = o.name.trim().replace(/^`+|`+$/g, ''), params = Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [], does = text(o.does, 160);
+  const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name) || /^([A-Za-z_$][\w$]*)`?\s*(?:\(([^)]*)\)`?)?(?:\s*:|\s+-+|\s+[–—])\s*([\s\S]*)$/.exec(name);
+  if (call) { name = call[1].trim(); if (!params.length) params = (call[2] || '').split(','); if (!does) does = text(call[3], 160); }
   name = name.slice(0, 64);
   if (!name) return null;
   const operation = text(o.operation, 80);
-  return {name, does: text(o.does, 160), params: params.map(p => text(p, 40)).filter(Boolean).slice(0, 6), ...(operation ? {operation} : {})};
+  return {name, does, params: params.map(p => text(p, 40)).filter(Boolean).slice(0, 6), ...(operation ? {operation} : {})};
 }
 // Cleaned, merged by name, at most 8 kept so the more-than-five check still fires.
 export function normalizeInterfaces(raw) {

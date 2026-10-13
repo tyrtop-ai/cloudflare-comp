@@ -101,6 +101,12 @@ test('v7.15: normalizeAction keeps each child\'s functions as interfaces, cleane
   assert.deepEqual(crowded.interfaces.map(f=>f.name),['fn0','fn1','fn2','fn3','fn4','fn5','fn6','fn7'],'more than 8 are cut; more than 5 is left for the check');
   assert.deepEqual(normalizeAction({spawn:[{label:'App',task:'Write the app entry',entry:true,exports:['start']}]}).spawn,[{label:'App',task:'Write the app entry'}]);
   assert.deepEqual(normalizeInterfaces(['start()','start(config)',{name:'stop',params:'reason, code'}]),[{name:'start',does:'',params:['config']},{name:'stop',does:'',params:['reason','code']}]);
+  // A description after the signature is its does; R1 deleted every such name (sa-strings probe).
+  assert.deepEqual(normalizeInterfaces(['start(): returns the API object','createTicket(title, description) - creates a ticket','getTickets: returns all tickets','`saveTicket(ticket)`','`viewTickets`: lists tickets','bad name','create-ticket']),[
+    {name:'start',does:'returns the API object',params:[]},{name:'createTicket',does:'creates a ticket',params:['title','description']},
+    {name:'getTickets',does:'returns all tickets',params:[]},{name:'saveTicket',does:'',params:['ticket']},{name:'viewTickets',does:'lists tickets',params:[]},
+    {name:'bad name',does:'',params:[]},{name:'create-ticket',does:'',params:[]}]);
+  assert.deepEqual(normalizeInterfaces([{name:'viewTickets',does:'one line',params:['optional hint']}]),[{name:'viewTickets',does:'',params:[]}],'the prompt\'s example hints, copied, are no hints');
 });
 
 test('v7.15: interfaceErrors names bad identifiers, example copies, duplicates, more than five and an unassigned promise',()=>{
@@ -124,6 +130,7 @@ test('v7.15: interfaceErrors names bad identifiers, example copies, duplicates, 
     ['C5','Your assignment promises stopApp(reason): stops the application; give it, unchanged, to exactly one piece, the one whose task writes it.']]);
   assert.deepEqual(interfaceErrors([named('A','start'),named('B','createTicket','create')],promised.slice(0,1)),[],'a generic name is never an error');
   assert.deepEqual(interfaceErrors([named('A','x'),named('B','y')],[]),[],'no promise, no C5');
+  assert.deepEqual(interfaceErrors([named('A','camelCaseIdentifier'),named('B','checkTicket')],[]).map(e=>e.text),['"A": "camelCaseIdentifier" is copied from the example; name the function after what it does.'],'the splitter prompt\'s item template');
 });
 
 test('v7.15: C0 reads a promised name only where a task says it exports it',()=>{
@@ -533,6 +540,13 @@ test('v7.15: a child (carrier or not) with some names owned elsewhere is kept wi
   assert.match(note,/Ticket validation: getTickets is owned by ticket storage; import getTickets from that strand by exactly those names/);
   assert.equal(ai.calls.filter(c=>c.kind==='owner'&&/Create handler: /.test(c.question)).length,0,'a carrier skips the Clef walk');
   assert.ok(ai.calls.some(c=>c.kind==='owner'&&/Ticket validation: /.test(c.question)));
+  // A split that then fails viability does not list a kept piece as rejected:
+  // the splitter is told not to repeat rejected proposals, and Clef reads them.
+  const thin=fakeAI({split:()=>[spawn[0],{label:'Ticket printer',task:'Write code that prints tickets on paper'}],within:label=>label==='Ticket printer'?0.1:0.9});
+  const {room:failed}=await tree(thin,run6Root,{phases:{'create ticket':'decompose'}});
+  await failed.turn('root.3');
+  const feedback=failed.read('split_feedback:root.3',null);
+  assert.deepEqual([feedback.accepted.map(c=>c.label),feedback.rejected.map(c=>c.label)],[['Create handler'],['Ticket printer']]);
 });
 
 test('v7.15: ownerBranch reads only each level\'s other direct children\'s promises, nearest level first',async()=>{
@@ -636,4 +650,28 @@ test('v7.15: a splitter that repeats a misplaced promise does not pause the run:
   assert.equal(below.calls[5].state.previous_split_rejection.kind,'interfaces','Clef reads the names-only feedback');
   assert.deepEqual([lower.node('root.1').phase,lower.node('root.1').status],['implement','done']);
   assert.ok(below.calls[6].request.your_responsibility.endsWith('listComments(ticketId): lists comments [goal operation: list comments].'),'it writes its own promise');
+});
+
+test('v7.15: a worker that exports its promised function and delegates to a same-named import keeps its promise',async()=>{
+  const delegating="const store = require('./ticketStore');\nfunction createTicket(title, description) { return store.createTicket({ title, description }); }\nmodule.exports = { createTicket };\n";
+  assert.equal(selfImports(new Map([['createTicket.js',delegating]]),['createTicket']).length,1,'the shape the return check used to refuse');
+  const {room}=await createWorker(()=>delegating);
+  await room.turn('root.3');
+  assert.equal(room.node('root.3').status,'done');
+  assert.equal(events(room,'contract_missing').length,0);
+});
+
+test('v7.15: a late split that drops the worker\'s promise is rejected, and the worker\'s next turn reads why',async()=>{
+  const ai=fakeAI({leaf:n=>n===1
+    ?{summary:'Split',spawn:[{label:'ticket input checks',task:'Write code that validates a new ticket\'s title and description'},{label:'ticket record writer',task:'Write code that builds the ticket record with an id and status'}]}
+    :{summary:'Create ticket',files:[{path:'createTicket.js',content:fixedCreate}],done:true}});
+  const {room}=await tree(ai,run6Root.slice(0,3));
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root.3'");
+  await room.turn('root.3');
+  assert.match(events(room,'split_rejected').at(-1).body,/^Late decomposition rejected: the proposed functions fail 1 check\(s\): Your assignment promises createTicket\(title, description\)/);
+  assert.equal(room.children('root.3').length,0);
+  await room.turn('root.3');
+  const second=ai.calls.filter(c=>c.kind==='leaf')[1].request;
+  assert.match(second.your_memory.private.late_split_rejected,/^Your proposed pieces were not created: Your assignment promises createTicket\(title, description\): creates a ticket and returns it; give it/);
+  assert.equal(room.node('root.3').status,'done');
 });

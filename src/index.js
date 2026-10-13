@@ -2378,19 +2378,20 @@ export class ControlRoom extends DurableObject {
     if(!promised.length)return false;
     const files=new Map();
     for(const f of productionFiles(this.files(id)))if(LINKABLE.test(f.path))files.set(f.path,await this.indexedContent(id,f.path));
-    const names=promised.map(f=>f.name),missing=missingExports(files,names),self=selfImports(files,names);
-    if(!missing.length&&!self.length){if(returns)this.set(key,'');return false;}
-    const gap=missing.length?missing:[...new Set(self.flatMap(x=>x.names))];
+    // A self-import counts only for a name not exported: a file that exports
+    // getTickets and delegates to store.getTickets() keeps its promise.
+    const names=promised.map(f=>f.name),missing=missingExports(files,names),self=missing.length?selfImports(files,missing):[];
+    if(!missing.length){if(returns)this.set(key,'');return false;}
     if(returns>=3) {
-      this.event(id,'contract_unmet',`${gap.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
+      this.event(id,'contract_unmet',`${missing.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
       return false;
     }
     this.set(key,returns+1);
     const list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
-    const body=['[contract]',...(missing.length?[`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`]:[]),
+    const body=['[contract]',`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`,
       ...self.map(x=>`${x.path.split('/').pop()} imports ${list(x.names)} from '${x.specifier}', but ${list(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`)].join(' ');
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
-    this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${gap.join(', ')} promised and not exported; back to the worker.`);
+    this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${missing.join(', ')} promised and not exported; back to the worker.`);
     return true;
   }
   complete(id) {
@@ -3080,9 +3081,11 @@ export class ControlRoom extends DurableObject {
           const reason=rejectedScope
             ? `Only ${action.spawn.length} in-scope child(ren) remained after Clef rejected ${rejectedScope}; not a viable code split.`
             : 'Qwen proposed no valid partition into distinct code-writing children within the available capacity.';
+          // A piece kept with names moved elsewhere (kept:true) is accepted:
+          // listed as rejected, the splitter and Clef would drop it.
           this.save(`split_feedback:${id}`,{
             reason,accepted:action.spawn.map(c=>({label:c.label,task:clip(c.task,500)})),
-            rejected:rejectedChildren,root_goal:this.topTask()||n.task
+            rejected:rejectedChildren.filter(x=>!x.kept),root_goal:this.topTask()||n.task
           });
           this.event(id,'split_rejected',`${reason} Clef will reconsider routing with this feedback; if it still chooses a split, Qwen must correct the partition.`);
           this.incrementFailures(id);
@@ -3149,6 +3152,8 @@ export class ControlRoom extends DurableObject {
            action.spawn.length>this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()) {
           this.event(id,'split_rejected',admit.c5.length?`Late decomposition rejected: the proposed functions fail ${admit.c5.length} check(s): ${admit.c5.map(e=>e.text).join(' ')}`:
             'Late decomposition rejected. Preserve the assigned code-writing task for a corrected split, rather than executing an oversized leaf.');
+          // The worker's next turn says why; it never sees the splitter's checks.
+          if(admit.c5.length)await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:clip(`Your proposed pieces were not created: ${admit.c5.map(e=>e.text).join(' ')} Give each proposed piece "functions":[{"name","does"}].`,950)}]);
           await this.rememberOwners(id,admit.rejectedChildren);
           this.incrementFailures(id);
           return;
