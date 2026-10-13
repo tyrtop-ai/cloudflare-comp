@@ -39,3 +39,15 @@ test('Stop dispatches no new turn; the run pauses and Continue resumes it',async
   await drain();
   assert.ok(r.snapshot().step>0,'Continue dispatches again');
 });
+
+test('a Start refused for bad settings leaves the previous run intact',async()=>{
+  const {r,drain}=room();
+  await r.start('Build a small issue tracker that lets someone create, view, update, and delete tickets.',30,{},'aaaaaaaa-bbbb');await drain();
+  const before=r.snapshot();
+  assert.ok(before.agents.length>0);
+  const refused=await r.start('Build a small issue tracker app please',10,{parallel:999},'aaaaaaaa-bbbb');
+  assert.match(refused.error,/Invalid parallel/);
+  const after=r.snapshot();
+  assert.equal(after.status,before.status);
+  assert.equal(after.agents.length,before.agents.length,'the refused Start must not wipe the room');
+});

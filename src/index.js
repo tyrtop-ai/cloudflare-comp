@@ -4390,6 +4390,9 @@ export class ControlRoom extends DurableObject {
   }
   async start(goal,budget,settings = {},roomId='') {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
+    // Refuse bad settings before the room is wiped: a refused Start must leave
+    // the previous run intact (verification probe: parallel 999 erased it).
+    try { normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS); } catch(e) { return {error:clip(e?.message||e,300)}; }
     for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${table}`);
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
@@ -4523,7 +4526,8 @@ export default {
       if (url.pathname==='/api/run' && request.method==='POST') {
         const goal=String(payload.goal||'').trim();
         if (goal.length<8 || goal.length>1800) return json({error:'Goal must have 8–1800 characters'},400);
-        return json(await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room));
+        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room);
+        return json(started,started.error?400:200);
       }
       if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));
       if (url.pathname==='/api/reset' && request.method==='POST') return json(await stub.clear());
