@@ -89,6 +89,7 @@ test('gapProblem: the missing operations and the whole entry contract fit the ro
   assert.match(cut,/^start\(\) returns no method for: operation number 0 on a ticket, (?:operation number \d+ on a ticket, )*operation number \d+ on a ticket and more; it returned methods listAllOpenTicketsForCurrentUser(?:, \w+)* and more\. Each operation/);
   assert.match(gapProblem({type:'function',name:'app',params:['data']},gaps.slice(0,1),ENTRY_CONTRACT),/^start\(\) returns no method for: create a ticket; it returned a function, not an object\. /);
   assert.match(gapProblem({type:'object',members:{version:{type:'string',value:'1'}}},gaps.slice(0,1),ENTRY_CONTRACT),/; it returned no methods\. /);
+  assert.ok(gapProblem(big,gaps,'').endsWith('from the module that performs it.'),'no contract: nothing after the sentence');
 });
 
 // ------------------------------------------------------- the runner backstop
@@ -262,11 +263,17 @@ test('room: run6\'s start() returning only getTickets goes back to the entry wor
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[2],'root']],'the module that exports start()');
   assert.match(failure.issues[0].detail,/^start\(\) returns no method for: create a ticket, update a ticket, delete a ticket; it returned methods getTickets\. /);
   assert.match(failure.issues[0].detail,/Each operation the goal names needs its own method on the object start\(\) returns, the operation imported from the module that performs it\./);
-  // The whole entry contract survives the length limit, with room left for the builder's renames.
-  assert.ok(failure.issues[0].detail.includes(`${ENTRY_CONTRACT} Builder renames in the linked copy that failed (your source does not have them): './ticketStorage' → `),failure.issues[0].detail);
+  // The ticket leads with the entry contract, so the detail does not repeat
+  // it, and the builder's renames fit whole.
+  assert.ok(!failure.issues[0].detail.includes(ENTRY_CONTRACT.slice(0,80)),failure.issues[0].detail);
+  assert.match(failure.issues[0].detail,/performs it\. Builder renames in the linked copy that failed \(your source does not have them\): '\.\/ticketStorage' → '[^']+', '\.\/filterApplication' → '[^']+'\.$/);
   assert.ok(failure.issues[0].detail.length<=950);
   await r.turn('root');
-  assert.equal(tickets(r,'root.3').length,1,'the retrieval worker that wrote start() hears it');
+  const sent=tickets(r,'root.3');
+  assert.equal(sent.length,1,'the retrieval worker that wrote start() hears it');
+  assert.equal(sent[0].split(ENTRY_CONTRACT).length-1,1,'the contract once, as the manager\'s decision');
+  assert.ok(sent[0].includes(`Your manager decided: ${ENTRY_CONTRACT}`));
+  assert.match(sent[0],/'\.\/filterApplication' → '[^']+'\.$/,'the renames note is not cut');
   for(const other of ['root.1','root.2','root.4','root.5'])assert.equal(r.receive(other).length,0,other);
 });
 

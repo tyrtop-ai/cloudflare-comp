@@ -1819,7 +1819,9 @@ export class ControlRoom extends DurableObject {
       const gaps=coverage?.operations?apiGaps(described,coverage.operations):[];
       if(gaps.length) {
         this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
-        return report('run',[this.entryProblem(builder.id,files,surfaces,entry,gapProblem(described,gaps,ENTRY_CONTRACT))]);
+        // The contract leads the entry ticket (applyDecisions); here it would
+        // repeat it and clip the builder's renames.
+        return report('run',[this.entryProblem(builder.id,files,surfaces,entry,gapProblem(described,gaps,''))]);
       }
       if(coverage?.operations) {
         operations=operationMethods(described,coverage.operations);

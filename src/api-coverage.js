@@ -67,14 +67,15 @@ export function apiGaps(described, operations) {
 }
 export const gapList = gaps => gaps.map(g=>g.same_as?`${g.operation} (${g.method} already performs ${g.same_as})`:g.operation).join(', ');
 // The entry worker's problem, within the 946 characters a routed problem
-// keeps, the contract whole and last. Quoting the API JSON cut the contract
+// keeps, a contract given whole and last (the room gives none: its entry
+// ticket leads with the contract). Quoting the API JSON cut the contract
 // once start() returned three or four methods; the missing operations come
 // first, then the names start() returned, each list cut between items.
 const fit = (text, n) => text.length<=n?text:text.slice(0,Math.max(0,n-9)).replace(/,[^,]*$/,'')+' and more';
 export function gapProblem(described, gaps, contract, limit=946) {
   const members=methodsOf(described),names=Object.keys(members).filter(k=>callable(members[k]));
   const returned=described?.type==='object'?(names.length?'methods '+names.join(', '):'no methods'):({function:'a function',class:'a class',array:'an array'}[described?.type]||'no object')+', not an object';
-  const head='start() returns no method for: ',tail=`. Each operation the goal names needs its own method on the object start() returns, the operation imported from the module that performs it. ${contract}`;
+  const head='start() returns no method for: ',tail=`. Each operation the goal names needs its own method on the object start() returns, the operation imported from the module that performs it.${contract?' '+contract:''}`;
   const room=limit-head.length-'; it returned '.length-tail.length,list=fit(gapList(gaps),room-Math.min(returned.length,40));
   return `${head}${list}; it returned ${fit(returned,room-list.length)}${tail}`;
 }
