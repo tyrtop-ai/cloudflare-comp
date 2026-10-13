@@ -6,7 +6,7 @@ import { runInNewContext } from 'node:vm';
 const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 
-function renderWithPage(includeParallel) {
+function renderWithPage(includeParallel, snapshot = {}) {
   const markup = includeParallel ? html : html.replace('id="parallel"', 'id="absent-parallel"');
   const ids = [...markup.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(match => match[1]);
   const elements = new Map(ids.map(id => [id, {
@@ -29,7 +29,7 @@ function renderWithPage(includeParallel) {
   // No token is provided, so the initial refresh does not call fetch.
   runInNewContext(script,context,{filename:'public/app.js'});
   context.render({status:'paused',busy:false,step:4,max_parallel:4,
-    active_agents:['root.1','root.2'],agents:[],files:[],events:[]});
+    active_agents:['root.1','root.2'],agents:[],files:[],events:[],...snapshot});
   return elements;
 }
 
@@ -47,4 +47,11 @@ test('current HTML displays concurrent agent count',()=>{
 test('HTML uses versioned JS and CSS asset URLs',()=>{
   assert.match(html, /src="\/app\.js\?v=6\.5"/);
   assert.match(html, /href="\/styles\.css\?v=6\.5"/);
+});
+
+test('v7.13: the split threshold control defaults to 70%',()=>{
+  assert.match(html,/<output id="split-threshold-value" for="split-threshold">70%<\/output>/);
+  assert.match(html,/<input id="split-threshold" type="range" min="20" max="80" step="5" value="70" \/>/);
+  const elements=renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}});
+  assert.equal(elements.get('split-threshold').value,70,'a room snapshot without a threshold shows the 0.7 default');
 });

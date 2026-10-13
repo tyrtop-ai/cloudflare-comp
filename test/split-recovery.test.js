@@ -35,6 +35,7 @@ function answer(data){return {response:JSON.stringify(data)};}
 
 // Reproduce the live trace: Clef YES at 0.56, Qwen produces four tasks,
 // Clef accepts only one. Do not blindly retry split until the third failure.
+// The live room split at 0.5, below today's 0.7 default, so it is set explicitly.
 test('rejected 1-of-4 partition returns to Clef and can become direct implementation',async()=>{
   const calls=[];
   let gates=0;
@@ -58,7 +59,7 @@ test('rejected 1-of-4 partition returns to Clef and can become direct implementa
     throw new Error('Unexpected model call');
   }};
   const {room,drain}=setup(ai);
-  await room.start('Build an issue tracker supporting ticket create, view, update and delete',1);await drain();
+  await room.start('Build an issue tracker supporting ticket create, view, update and delete',1,{split_threshold:0.5});await drain();
   assert.equal(room.node('root').phase,'decompose');
   assert.equal(room.children('root').length,0);
   assert.equal(room.read('failures',{}).root,1);
@@ -99,7 +100,7 @@ test('Clef can keep split decision and Qwen sees rejection details to correct th
     throw new Error('Unexpected model call');
   }};
   const {room,drain}=setup(ai);
-  await room.start('Build an issue tracker',1);await drain();
+  await room.start('Build an issue tracker',1,{split_threshold:0.5});await drain();
   await room.resume(1);await drain();
   assert.equal(room.node('root').phase,'manager');
   assert.deepEqual(room.children('root').map(x=>x.label),['Ticket model','Ticket operations']);

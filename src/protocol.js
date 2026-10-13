@@ -44,8 +44,9 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
     spawn: (Array.isArray(raw.spawn) ? raw.spawn : [])
       .filter(s => s && typeof s.task === 'string' && s.task.trim().length >= 8)
       // Module paths and export signatures are NOT splitter output. Discard
-      // legacy/unrequested fields so they cannot become child requirements.
-      .map(s => ({ label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700) })),
+      // legacy/unrequested fields so they cannot become child requirements;
+      // keep only Root's mark on the child that owns the application entry.
+      .map(s => ({ label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700), ...(s.entry === true ? { entry: true } : {}) })),
     messages: (Array.isArray(raw.messages) ? raw.messages : [])
       .filter(m => m && typeof m.to === 'string' && typeof m.body === 'string')
       .map(m => ({ to: clip(m.to, 70), body: clip(m.body, 1800) })),

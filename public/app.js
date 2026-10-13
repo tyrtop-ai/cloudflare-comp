@@ -90,7 +90,7 @@ const settings=()=>({parallel:Number($('parallel-limit').value),
 const applySnapshotSettings=s=>{
   if(controlsDirty || !s.settings) return;
   const c=s.settings;
-  const values={'parallel-limit':c.parallel,'max-agents':c.max_agents,'max-depth':c.max_depth, 'split-threshold':Math.round((c.split_threshold??0.5)*100)};
+  const values={'parallel-limit':c.parallel,'max-agents':c.max_agents,'max-depth':c.max_depth, 'split-threshold':Math.round((c.split_threshold??0.7)*100)};
   for(const [id,value] of Object.entries(values)) { if($(id) && value!=null) {$(id).value=value;$(id).dispatchEvent?.(new Event('input'));} }
   if(c.model) $('model').value=c.model;
   if(c.split_model) $('split-model').value=c.split_model;

@@ -10,6 +10,17 @@ export function codeWritingTask(task) {
   // but do not create filenames/exports while splitting the implementation.
   return `${base} Deliver working source files, not prose, plans, or design documents.`;
 }
+// The Root child that owns the application entry when the splitter marked
+// none: its label, else its task, says it is the entry or composes the
+// others (Application Entry, IssueTrackerApp, Assemble components into ...),
+// and it is not a test. Splitters list that child last: the last of equals wins.
+export function entrySpec(specs) {
+  const score=s=>/\btest/i.test(s.label)?0:(/\b(?:entry|main|bootstrap\w*|assembl\w*|compos(?:e|es|ing|ition)|orchestrat\w*|wir(?:e|es|ing))\b|\bapp(?:lication)?$/i.test(s.label)||/[a-z](?:App|Application)$/.test(s.label)?2:0)+
+    (/\bentry\b|\bmain module\b|\bstart\(\)|\b(?:assembl\w*|compos(?:e|es|ing)|orchestrat\w*|wires?)\b/i.test(s.task)?1:0);
+  let best=null,top=0;
+  for(const s of specs)if(score(s)&&score(s)>=top){best=s;top=score(s);}
+  return best;
+}
 
 const SOURCE=/\.(?:[cm]?jsx?|[cm]?tsx?|py|go|rs|java|kt|c|cc|cpp|h|hpp|cs|rb|php|swift|sql|sh|css|scss|html|vue|svelte|json|ya?ml|toml|wasm|graphql|proto)$/i;
 export const isRuntimeLeafFile = path => /\.(?:js|mjs|cjs)$/i.test(String(path||''));

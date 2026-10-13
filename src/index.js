@@ -3,8 +3,8 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, writeRunnerTest, attributeFailure } from './model.js';
-import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
+import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, writeRunnerTest, attributeFailure, ENTRY_CONTRACT } from './model.js';
+import { codeWritingTask, entrySpec, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
@@ -20,6 +20,9 @@ const isAssumption = key => /^assum(?:ed|ption)[_ /:-]/i.test(key);
 const topicSlug = label => String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,24)||'component';
 // A linker edit is a rename, or the runtime's fix of how an import binds.
 const linkEdits = applied => { const shaped=applied.filter(e=>e.shape).length; return `${applied.length-shaped} rename(s)`+(shaped?` and ${shaped} import binding fix(es)`:''); };
+// What start() returned, as the Container describes it, holds something the
+// runner can call. An unparsed or depth-limited description is given the doubt.
+const apiCallable = d => ['function','class','unparsed'].includes(d?.type) || !!d?.members_truncated || (d?.members ? Object.values(d.members).some(apiCallable) : ['object','array'].includes(d?.type));
 // A scoped public key must survive repeated manager hops without collisions.
 // Strip the child's existing assumption prefix so only ONE prefix remains per
 // hop. For long hierarchical keys, use a digest of the FULL untruncated key.
@@ -40,7 +43,7 @@ export const ROOM_LIMITS = Object.freeze({
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   max_agents: 64, max_depth: 10, parallel: 16,
-  model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.5
+  model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
 });
 const CLOUDFLARE_MODELS = new Set(['@cf/qwen/qwen3.8-27b', '@cf/qwen/qwen3-30b-a3b-fp8', '@cf/meta/llama-3.2-1b-instruct']);
 export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
@@ -936,6 +939,15 @@ export class ControlRoom extends DurableObject {
     return null;
   }
   resolveBuildSourceOwner(builder,path) {return this.buildSourceOrigin(builder,path)?.owner||null;}
+  // The module an entry problem goes to: one of the modules Root's entry child
+  // wrote (it holds the entry contract), the chosen entry first; with no entry
+  // child, the chosen entry, else the closest candidate by imports and name.
+  entryModule(builder,files,entry=null) {
+    const child=this.get('entry_child');
+    const own=child?[...files.keys()].filter(p=>{const o=this.resolveBuildSourceOwner(builder,p);return !!o&&(o===child||o.startsWith(child+'.'));}):[];
+    if(entry&&(!own.length||own.includes(entry)))return entry;
+    return entryCandidate(own.length?new Map(own.map(p=>[p,files.get(p)])):files);
+  }
   // Root routes failed paths via provenance, one manager boundary at a time.
   // Root never rewrites child-owned implementations or manufactures replacements.
   async routeBuildFailures() {
@@ -1394,9 +1406,17 @@ export class ControlRoom extends DurableObject {
       const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
       const local=[...link.unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
         ...link.mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`,target:m.target}))];
-      if(!link.entry)local.push({path:entryCandidate(link.files)||'',detail:'No application entry: no module exports start() or imports the other modules to compose the application. This module is the closest candidate: import the other modules it needs by relative path and export start(), returning an object whose methods perform the operations the goal requests.'});
+      // The runtime loader starts the entry's start(), and the runner tests only
+      // what start() returns: an entry without one goes to the worker before
+      // any container run (run3b's app.js ran a CLI at load and exported nothing).
+      if(!link.entry)local.push({path:this.entryModule(id,link.files)||'',detail:`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`,entry:true});
+      else if(!exportsStart(exportSurface(link.entry,link.files.get(link.entry))))
+        local.push({path:this.entryModule(id,link.files,link.entry),detail:`The application entry ${link.entry} does not export start(), so the application cannot be started. ${ENTRY_CONTRACT}`,entry:true});
       if(local.length) {
-        if(state.relinks<2) {
+        // Renaming cannot give a module start(): when none exports it, a relink
+        // could only name another entry that lacks it too.
+        const starts=[...link.files].some(([p,c])=>LINKABLE.test(p)&&p.startsWith('components/')&&exportsStart(exportSurface(p,c)));
+        if(state.relinks<2&&(starts||local.some(x=>!x.entry))) {
           state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+local.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
           this.save('link_state',state);
           this.event(id,'link_retry',clip(state.diagnostic,900));
@@ -1432,8 +1452,10 @@ export class ControlRoom extends DurableObject {
       this.event(id,'build_checked',`Linked source parsed, loaded and started in the container. start() returned: ${clip(api||'(no description)',900)}`);
       let described=null;
       try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
-      if(!described || ['undefined','null'].includes(described.type) || described.error) {
-        return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:link.entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}.`},...link.issues]),'run');
+      // With nothing to call (run3b: {"type":"object","members":{}}) the runner
+      // cannot write a valid test, and no worker would hear why.
+      if(!apiCallable(described)) {
+        return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:link.entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`},...link.issues]),'run');
       }
       const outcome=await this.runApplication(id,fingerprint,files,api,goal,link);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);
@@ -2342,8 +2364,13 @@ export class ControlRoom extends DurableObject {
       // explicitly contracted to write actual code for their piece, regardless
       // of whether Qwen used a vague label while proposing the split.
       if(this.env.MOCK_AI!=='true' && (splitting || action.spawn.length)) {
-        action.spawn=action.spawn.map(spec=>spec.label==='Temporary builder'?spec:
-          {...spec,task:codeWritingTask(spec.task)});
+        // Exactly one of Root's children owns the application entry: the one
+        // the splitter marked, else the one its label or task names. The
+        // runtime, not the splitter's wording, gives it the entry contract.
+        const marked=action.spawn.filter(s=>s.entry);
+        const entry=splitting&&id==='root'?(marked.length===1?marked[0]:entrySpec(marked.length?marked:action.spawn)||marked[0]):null;
+        action.spawn=action.spawn.map(spec=>spec.label==='Temporary builder'?spec:spec===entry?
+          {label:spec.label,task:`${codeWritingTask(spec.task)} ${ENTRY_CONTRACT}`,entry:true}:{label:spec.label,task:codeWritingTask(spec.task)});
       }
       if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
         const denied=action.files.filter(x=>!['glue/wiring.js','glue/smoke.js'].includes(x.path));
@@ -2574,6 +2601,11 @@ export class ControlRoom extends DurableObject {
         if(children.length === action.spawn.length) {
           this.db().exec("UPDATE agents SET phase='manager' WHERE id=?",id);
           this.event(id,'decompose',`Delegated all ${children.length} behaviors; now permanently a manager.`);
+          const entry=id==='root'?children[action.spawn.findIndex(s=>s.entry)]:null;
+          if(entry) {
+            this.set('entry_child',entry.id);
+            this.event(id,'entry_child',`${entry.label} owns the application entry; the runtime added the entry contract to its task.`,entry.id);
+          }
         } else if (!this.manager(id)) {
           this.db().exec("UPDATE agents SET phase='decompose',status='waiting' WHERE id=?",id);
           this.event(id,'split_capacity_blocked','Unable to allocate all code-writing children; keep the delegated code assignment awaiting additional capacity.');
