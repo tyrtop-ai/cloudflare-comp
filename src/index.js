@@ -1378,14 +1378,15 @@ export class ControlRoom extends DurableObject {
     let correction='',test=fixed;
     if(fixed)this.event(nodeId,'runner_reused','Running the same test as before: the first test that ran is fixed for the whole run.');
     for(let attempt=0;!test&&attempt<3;attempt++) {
-      const draft=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction});
+      const out=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction}),draft=out?.test;
       // A test that skips a mapped operation would certify a partial
       // application (run6 tested getTickets alone), so it never runs.
       const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft),
         ...untestedOperations(draft,operations).map(o=>`the test never calls ${o.method} (operation ${o.operation}); call app.${o.method}(...) and check its result`)].filter(Boolean):['the runner returned no test'];
       if(!errors.length){test=draft;break;}
       correction='Your previous test was rejected before running: '+errors.join('; ');
-      this.event(nodeId,'runner_rejected',clip(correction,800));
+      // The log shows what came back, not only the error (run7 showed seven syntax errors and no text).
+      this.event(nodeId,'runner_rejected',clip(correction,800)+(typeof out?.head==='string'?` The runner returned: ${JSON.stringify(out.head)}`:''));
     }
     if(!test)return {passed:false,runnerFailed:true,detail:correction};
     const run=await this.containerRun(nodeId,`run:${input}`,new Map([...files,['glue/smoke.js',test]]));
@@ -1815,19 +1816,32 @@ export class ControlRoom extends DurableObject {
     if(!this.read('runner_test',null)?.test) {
       const checkable=coverageCheckable(described);
       const coverage=checkable?await apiCoverage(this.inferenceEnv(),{goal,api}):null;
-      const gaps=coverage?apiGaps(described,coverage.operations):[];
+      const gaps=coverage?.operations?apiGaps(described,coverage.operations):[];
       if(gaps.length) {
         this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
         return report('run',[this.entryProblem(builder.id,files,surfaces,entry,gapProblem(described,gaps,ENTRY_CONTRACT))]);
       }
-      if(coverage) {
+      if(coverage?.operations) {
         operations=operationMethods(described,coverage.operations);
         this.event(id,'api_covered',clip('Each operation the goal names has a method: '+operations.map(o=>`${o.operation} -> ${o.method}`).join(', '),900));
-      } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900));
+      } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
+        (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
     const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations});
     if(outcome.infrastructure)return this.blockCompiler(id,input,outcome.infrastructure);
     if(outcome.runnerFailed) {
+      // Run7 paused twice for a human Continue after three drafts. The first
+      // time for this source the compiler is queued once more, a counted
+      // turn with three more drafts; after that it waits for Continue, as
+      // before, however often Continue fails the same way. Like Continue,
+      // that turn starts with no report of this bundle.
+      if(this.read('runner_retry',null)?.fingerprint!==fingerprint) {
+        this.save('runner_retry',{fingerprint,ts:Date.now()});this.save('compile_reported',null);
+        this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+        this.save('queue',addLast(this.read('queue',[]),id));
+        this.event(id,'runner_retry',`The runner could not produce a valid test in three attempts; the compiler runs once more with three more before it waits for Continue. Last problem: ${clip(outcome.detail,700)}`);
+        return;
+      }
       // A runner that cannot write a valid test is not a worker's problem.
       this.save('compile_reported',{input,fingerprint,stage:'runner',problems:[],ts:Date.now()});
       return wait('runner_failed',`The runner could not produce a valid test in three attempts; no worker was blamed. Continue retries. Last problem: ${clip(outcome.detail,700)}`);

@@ -589,6 +589,11 @@ test('room: a runner that cannot write a valid test blames no worker',async()=>{
   await twoWorkers(room,{app:"module.exports={start(){return {ping(){return 1;}}}};"});
   const {builder,compiler}=await linkAndCompile(room);
   assert.equal(calls.runner.length,3);
+  // v7.13.4: one more round of three before the room waits for Continue.
+  assert.ok(room.snapshot().events.some(e=>e.kind==='runner_retry'&&e.actor===compiler.id));
+  assert.equal(room.node(compiler.id).status,'ready');
+  await room.turn(compiler.id);
+  assert.equal(calls.runner.length,6);
   assert.equal(room.problems('1=1').length,0,'no problem is filed');
   assert.ok(room.snapshot().events.some(e=>e.kind==='runner_failed'&&e.actor===compiler.id));
   assert.equal(room.node(compiler.id).status,'waiting');
@@ -658,7 +663,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content;
-    const user=JSON.parse(params.messages[1].content);
+    const user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a CODE SPLITTER')) {
       calls.split++;
       return {response:JSON.stringify({summary:'Repository and entry',spawn:[
@@ -712,7 +717,7 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content;
-    const user=JSON.parse(params.messages[1].content);
+    const user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a CODE SPLITTER')) {
       if(user.assigned_code && /storage branch/i.test(user.assigned_code))
         return {response:JSON.stringify({summary:'Storage pieces',spawn:[
@@ -822,7 +827,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
       if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|service module|application entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
-    const system=params.messages[0].content, user=JSON.parse(params.messages[1].content);
+    const system=params.messages[0].content, user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a CODE SPLITTER')) {
       if(/storage branch/i.test(user.assigned_code))return {response:JSON.stringify({summary:'Storage',spawn:[
         {label:'Ticket repository',task:'Write an in-memory ticket repository class'},{label:'Ticket service',task:'Write the ticket service module over the repository'}]})};
@@ -882,7 +887,7 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
       if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|application entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
-    const system=params.messages[0].content,user=JSON.parse(params.messages[1].content);
+    const system=params.messages[0].content,user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     if(system.startsWith('You are a CODE SPLITTER'))return {response:JSON.stringify({summary:'Two',spawn:[
       {label:'Ticket repository',task:'Write an in-memory ticket repository class'},{label:'Application entry',task:'Write the application entry module exporting start()'}]})};
     if(system.includes('LEAF CODE WRITER')) {
@@ -1734,7 +1739,9 @@ test('room: an entry whose start() its export surface cannot show is started in 
   for(const source of ['export { start } from "./core.js";\n','export * from "./core.js";\n',"const base = require('./base');\nmodule.exports = { ...base };\n",
     "const app = {};\napp.start = () => ({});\nmodule.exports = app;\n","class App {}\nApp.start = () => ({});\nmodule.exports = App;\n",
     "class App { run() {} }\nApp.prototype.start = function () { return {}; };\nmodule.exports = new App();\n","const app = {};\nObject.assign(app, { start() { return {}; } });\nexport default app;\n",
-    "function main() {}\nmain['start'] = () => ({});\nmodule.exports = main;\n","const app = {};\napp[key] = () => ({});\nmodule.exports = app;\n"])
+    "function main() {}\nmain['start'] = () => ({});\nmodule.exports = main;\n","const app = {};\napp[key] = () => ({});\nmodule.exports = app;\n",
+    // v7.13.4 (run7): through an alias, or handed to a call that may add it.
+    "const app = {};\nconst api = app;\napi.start = () => ({});\nmodule.exports = app;\n","const app = {};\ninstall(app);\nmodule.exports = app;\n"])
     assert.equal(L.mayExportStart(L.exportSurface('components/a/app.js',source)),true,source);
   // Certain only when nothing could have added start().
   for(const source of [run3bApp,run3bDispatcher,'module.exports = {};\n',"class App { start() {} }\nmodule.exports = App;\n",
@@ -1789,7 +1796,8 @@ test('entry choice: a module exporting start() first, by imports; one that only 
     ['components/a/app.js',"const r = require('../r/repo.js');\nfunction start() { return r; }\nmodule.exports = { start };\n"],
     ['components/p/repl.js',"function start() { return require('node:readline'); }\nmodule.exports = { start };\n"],
     ['components/c/cli.js',"const app = require('../a/app.js').start();\napp.add(process.argv[2]);\n"],
-    ['components/f/factory.js',"const r = require('../r/repo.js');\nconst repo = require('../r/repo.js');\nmodule.exports = (() => ({ start: () => [r, repo] }))();\n"]]);
+    // A factory's result (v7.13.4 reads an immediately invoked one as its object).
+    ['components/f/factory.js',"const r = require('../r/repo.js');\nconst repo = require('../r/repo.js');\nfunction make() { return { start: () => [r, repo] }; }\nmodule.exports = make();\n"]]);
   const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
   assert.equal(L.chooseEntry(files,surfaces),'components/a/app.js','a starter by imports, not the CLI that runs at load, nor a module that only may export start()');
   files.delete('components/a/app.js');

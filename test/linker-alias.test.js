@@ -96,7 +96,7 @@ test('shape: a module bound whole whose only export is one function is bound as 
   const app="const { createTicket, getTickets, updateTicket, deleteTicket } = require('../ticket-rep-f17f9f79/ticketRepository.js');\nconst parseCommand = require('../command-pa-f07f9de6/commandParser.js');\nconst dispatchCommand = require('../cli-contro-f77fa8eb/commandDispatcher.js');\n\nconst repository = { createTicket, getTickets, updateTicket, deleteTicket };\nconst command = parseCommand(process.argv);\ndispatchCommand(command, repository);";
   const withApp=new Map([...files,[P.app,app],[P.parser,'const parseCommandLineArgs = () => ({});\nmodule.exports = parseCommandLineArgs;']]);
   assert.deepEqual(L.shapeFixes(withApp,surfacesOf(withApp)).filter(e=>e.file===P.app).map(e=>e.replace),["const { dispatch: dispatchCommand } = require('../cli-contro-f77fa8eb/commandDispatcher.js');"],'parseCommand is bound whole to a single function, which is right');
-  assert.match(LINKER_SYSTEM,/fixes three binding shapes[^]*a module bound whole whose only export is one function, when the file only calls it, directly or from a table of handlers \(const f = require\(p\) where p exports only \{ g \}\)/,'the linker is told, so it fixes only the path');
+  assert.match(LINKER_SYSTEM,/fixes four binding shapes[^]*a module bound whole whose only export is one function, when the file only calls it, directly or from a table of handlers \(const f = require\(p\) where p exports only \{ g \}\)/,'the linker is told, so it fixes only the path');
 });
 
 test('shape: a whole binding is left alone when the target exports more, or the file may read a member of it',()=>{

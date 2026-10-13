@@ -86,15 +86,18 @@ const { start } = require('./index.js');
 // clef(input, n) a Clef gate, scope or routing question. Every manager
 // request is recorded. coverage(user, n) answers the API coverage gate; by
 // default with no mapping, so the gate fails open, as these rooms predate
-// it (v7.13.3).
+// it (v7.13.3). raw holds every request's system prompt and user text as
+// sent: on the room's default model the runner's and coverage's end with
+// ' /no_think' (v7.13.4).
 export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,triage=()=>null,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,executor,room_id='v714-test'}={}) {
-  const calls={link:[],runner:[],triage:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[]};
+  const calls={link:[],runner:[],triage:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
       calls.clef.push(input);return clef(input,calls.clef.length);
     }
-    const {messages}=input,system=messages[0].content,user=JSON.parse(messages[1].content);
+    const {messages}=input,system=messages[0].content,text=messages[1].content,user=JSON.parse(text.replace(/ \/no_think$/,''));
+    calls.raw.push({system,text});
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push(user);const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(system.startsWith('You are a MANAGER')) {

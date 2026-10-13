@@ -265,7 +265,8 @@ test('v7.14 (8): a branch builder links, relinks and reports exactly as the top 
 // ------------------------------------------------------------- test 9
 // The compiler never relinks or edits a module; infrastructure blocks it
 // without blaming anyone, and Continue retries; a runner that cannot write a
-// valid test blames nobody, and Continue gives it a fresh set of attempts.
+// valid test blames nobody: after one automatic round of three more
+// (v7.13.4) it waits, and Continue gives it a fresh set of attempts.
 // (D5 relinks after a load or run error, and a relink that changes nothing,
 // are in v711-builder.test.js: "a container load error or a failed run goes
 // to Root..." and "a relink Root asks for that changes nothing...".)
@@ -273,7 +274,7 @@ test('v7.14 (9): the compiler never relinks or edits a module; infrastructure an
   let down=true,runs=0;
   const exec={build:async({fingerprint,files})=>{if(down)throw new Error('Container failed to start: no capacity');return verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files});}};
   const broken="function start() {\n  return { createTicket: (d) => ({ id: 1, ...d }) };\n}\nmodule.exports = { start };\n";
-  const {room,calls,store,drain}=liveRoom({executor:exec,runner:()=>{runs++;return runs<=3?'console.log("no test")':ticketRunner;}});
+  const {room,calls,store,drain}=liveRoom({executor:exec,runner:()=>{runs++;return runs<=6?'console.log("no test")':ticketRunner;}});
   await tree(room,'Build a small issue tracker that lets someone create tickets.');
   await workers(room,'root',[['Application entry','app.js',broken],['Formatter','format.js',"module.exports = { fmt: (t) => '#' + t.id };\n"]]);
   const {builder,compiler}=await linkAndCompile(room);
@@ -281,13 +282,15 @@ test('v7.14 (9): the compiler never relinks or edits a module; infrastructure an
   assert.equal(room.node(compiler.id).status,'waiting');
   assert.match(room.get('compile_infrastructure'),/no capacity/);
   assert.equal(room.problems('1=1').length,0,'infrastructure is nobody\'s code');
-  // Continue: the Container is back; the runner fails to write a test three times.
+  // Continue: the Container is back; the runner fails to write a test three
+  // times, and three more in the one automatic retry.
   down=false;
   room.set('status','paused');
-  await room.resume(1);
+  await room.resume(2);
   await drain();
   assert.equal(room.get('compile_infrastructure'),'');
-  assert.equal(runs,3);
+  assert.equal(runs,6);
+  assert.equal(events(room,'runner_retry').length,1);
   assert.equal(room.read('compile_reported',null).stage,'runner');
   assert.equal(room.problems('1=1').length,0,'a runner that cannot write a test blames no worker');
   assert.equal(room.node(compiler.id).status,'waiting');
@@ -296,7 +299,8 @@ test('v7.14 (9): the compiler never relinks or edits a module; infrastructure an
   await room.resume(2);
   await drain();
   assert.equal(room.get('status'),'complete',trace(room));
-  assert.equal(runs,4);
+  assert.equal(runs,7);
+  assert.equal(events(room,'runner_retry').length,1,'one automatic retry per source fingerprint');
   assert.equal(calls.link.length,0,'the compiler never asked the linker');
   const files=[...store.repos.get(room.node(compiler.id).repo_name).keys()].sort();
   assert.deepEqual(files,['compile.manifest.json','glue/index.js','glue/smoke.js','package.json'],'the compiler wrote no module');
