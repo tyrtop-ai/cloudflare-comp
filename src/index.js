@@ -1306,14 +1306,6 @@ export class ControlRoom extends DurableObject {
     if(report.infrastructure_issue)return {infrastructure:report.infrastructure_issue,digest,report};
     return {report,digest};
   }
-  runFailureKind(report) {
-    const issues=report.issues||[];
-    if(issues.some(x=>String(x.path).startsWith('components/')))return 'app';
-    const text=issues.map(x=>x.detail).join('\n')+'\n'+(report.log||'');
-    if(/AssertionError|ERR_ASSERTION/.test(text))return 'app';
-    if(issues.some(x=>x.path==='glue/smoke.js') && /SyntaxError|ReferenceError|TypeError/.test(text))return 'runner';
-    return 'app';
-  }
   // A test that catches its own failure and exits 0 would certify a broken
   // application. Any catch must set a failing exit code or rethrow.
   runnerTestError(test) {
