@@ -1038,10 +1038,10 @@ export function likelyTargets(path, content, specifier, surfaces) {
   });
 }
 // A file the model links that lives inside a branch built below is sent as
-// an excerpt: each import it must fix (every relative import when specifiers
-// is null), the lines that use what the import binds or an instance made
-// from it, and any line an error names, each with a line of context, as
-// separate hunks. A file the hunks cover whole is one hunk, its text.
+// an excerpt: each import, re-export or import() it must fix (every relative
+// one when specifiers is null), the lines that use what an import binds or an
+// instance made from it, and any line an error names, each with a line of
+// context, as separate hunks. A file the hunks cover whole is one hunk, its text.
 export function importExcerpt(path, content, {specifiers=null, lines=[]}={}) {
   const text=String(content??''),all=text.split('\n'),keep=new Set(),bound=new Set();
   let ast;try {ast=parseSource(text).ast;} catch {return [text];}
@@ -1051,7 +1051,8 @@ export function importExcerpt(path, content, {specifiers=null, lines=[]}={}) {
   walk(ast,(node,parent)=>{
     if(node.type==='VariableDeclarator'&&isRequire(root(node.init))&&chosen(root(node.init).arguments[0])){patternNames(node.id,bound);span(parent?.type==='VariableDeclaration'?parent:node,0);}
     else if(node.type==='ImportDeclaration'&&chosen(node.source)){for(const sp of node.specifiers)bound.add(sp.local.name);span(node,0);}
-    else if(isRequire(node)&&chosen(node.arguments[0])&&parent?.type!=='VariableDeclarator')span(parent||node,1);
+    else if(/^Export(?:Named|All)Declaration$/.test(node.type)&&chosen(node.source))span(node,0);
+    else if(isRequire(node)&&chosen(node.arguments[0])&&parent?.type!=='VariableDeclarator'||node.type==='ImportExpression'&&chosen(node.source))span(parent||node,1);
   });
   for(let grew=true;grew;) {
     grew=false;

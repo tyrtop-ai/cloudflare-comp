@@ -3,7 +3,7 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, writeRunnerTest, attributeFailure } from './model.js';
+import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure } from './model.js';
 import { codeWritingTask, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -1121,41 +1121,49 @@ export class ControlRoom extends DurableObject {
       // has linked it. It also sees any of its modules that an import from
       // outside it, a mismatch or a file an error names reaches, and any named
       // like an import that resolves nowhere. A file to link inside such a
-      // branch goes as an excerpt.
+      // branch goes as an excerpt, its surface in the branch's block; one
+      // with no import of its own to fix and no line an error names, or
+      // whose exports a mismatch reads, goes in full.
       const bundled=new Map(sources.filter(s=>s.bundled).map(s=>[s.destination,s])),inside=new Set(),reached=new Set(mismatchesBefore.map(m=>m.target));
       for(const p of js)for(const r of componentImports(p,files.get(p),files))
         if(bundled.has(r.target)&&r.target!==p)(bundled.get(p)?.owner!==bundled.get(r.target).owner||named.includes(p)?reached:inside).add(r.target);
       if(bundled.size)for(const u of unresolvedBefore)for(const t of likelyTargets(u.path,files.get(u.path),u.specifier,surfaces))reached.add(t);
       const shown=new Set(js.filter(p=>!bundled.has(p)||bundled.get(p).outward&&(!inside.has(p)||exportsStart(surfaces.get(p)))||needs.has(p)||reached.has(p)));
       const excerpts=new Map();
-      for(const p of own.filter(p=>bundled.has(p))) {
+      for(const p of own.filter(p=>bundled.has(p)&&!mismatchesBefore.some(m=>m.target===p))) {
         const targets=new Set(mismatchesBefore.filter(m=>m.path===p).map(m=>m.target));
         const specifiers=[...unresolvedBefore.filter(u=>u.path===p).map(u=>u.specifier),...componentImports(p,files.get(p),files).filter(r=>targets.has(r.target)).map(r=>r.specifier)];
         const lines=[...String(diagnostic).matchAll(new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+':(\\d+)','g'))].map(m=>Number(m[1]));
+        if(!specifiers.length&&!lines.length)continue;
         const hunks=importExcerpt(p,files.get(p),{specifiers:specifiers.length?specifiers:null,lines});
         if(hunks.length&&hunks[0]!==files.get(p))excerpts.set(p,hunks);
       }
-      const blocks=new Map(),interfaces=[],faced=js.filter(p=>shown.has(p)&&!needs.has(p));
+      const blocks=new Map(),interfaces=[],faced=js.filter(p=>shown.has(p)&&(!needs.has(p)||excerpts.has(p)));
       for(const p of faced) {
         const s=bundled.get(p);
         if(!s){interfaces.push(surfaceText(surfaces.get(p)));continue;}
         if(!blocks.has(s.owner)){blocks.set(s.owner,interfaces.length);interfaces.push(`${s.branch} (a branch built below; only the modules it offers):`);}
         interfaces[blocks.get(s.owner)]+='\n'+surfaceText(surfaces.get(p));
       }
-      const sent=own.map(p=>excerpts.has(p)?{path:p,excerpt:excerpts.get(p)}:{path:p,content:files.get(p)}),paths=js.filter(p=>shown.has(p));
+      const sent=own.map(p=>excerpts.has(p)?{path:p,excerpt:excerpts.get(p)}:{path:p,content:files.get(p)}),paths=js.filter(p=>shown.has(p)),below=excerpts.size>0||blocks.size>0;
       const size=(list,faces,all)=>1800+list.reduce((n,f)=>n+tokenEstimate(f.path+(f.content??f.excerpt.join('\n'))),0)+faces.reduce((n,t)=>n+tokenEstimate(t),0)+tokenEstimate(all.join('\n'));
-      const estimate=size(sent,interfaces,paths),whole=size(own.map(p=>({path:p,content:files.get(p)})),js.filter(p=>!needs.has(p)).map(p=>surfaceText(surfaces.get(p))),js);
+      const estimate=size(sent,interfaces,paths)+(below?tokenEstimate(LINKER_BELOW):0),whole=size(own.map(p=>({path:p,content:files.get(p)})),js.filter(p=>!needs.has(p)).map(p=>surfaceText(surfaces.get(p))),js);
       this.event(builderId,'link_started',`Linking ${label}: ${own.length-excerpts.size} module(s) with imports to resolve sent in full${excerpts.size?` and ${excerpts.size} inside branches below as excerpts`:''}, ${faced.length} shown by export names only${paths.length<js.length?`, ${js.length-paths.length} inside branches below left out`:''}${askEntry?'; no module exports start(), so the builder names the entry':''} (about ${estimate} tokens${estimate<whole?`, ${whole} without branch boundaries`:''}).`);
       if(estimate>BUILDER_CONTEXT_BUDGET)this.event(builderId,'link_oversize',`Linker input is about ${estimate} tokens, over ${BUILDER_CONTEXT_BUDGET}; the model may truncate it.`);
       const out=await linkComponents(this.inferenceEnv(),{goal:this.get('goal')||this.node('root')?.task||'',
         files:sent,interfaces,allPaths:paths,diagnostic,
-        known_mismatches:mismatchesBefore.map(m=>`${m.path} ${m.detail}`),scope:isRoot?'application':'branch'});
+        known_mismatches:mismatchesBefore.map(m=>`${m.path} ${m.detail}`),scope:isRoot?'application':'branch',below});
       if(out.parse_error)this.event(builderId,'link_unparsed',`The builder returned invalid JSON; it contributed no renames. ${clip(out.raw,300)}`);
       for(const edit of out.edits) {
         if(!needs.has(edit.file)){rejected.push({edit,reason:'that file was not sent for renaming at this level'});continue;}
-        // An edit to an excerpt must find text the model was shown; it then
-        // applies to the whole file, verified as any other edit.
-        if(excerpts.has(edit.file)&&files.get(edit.file).includes(edit.find)&&!excerpts.get(edit.file).some(h=>h.includes(edit.find))){rejected.push({edit,reason:'find text is not in the excerpt of that file you were sent; copy it from one hunk'});continue;}
+        // An edit to an excerpt must find text the model was shown, and only
+        // there, since every occurrence is replaced; it then applies to the
+        // whole file, verified as any other edit.
+        if(excerpts.has(edit.file)&&edit.find) {
+          const count=text=>{let n=0;for(let at=text.indexOf(edit.find);at>=0;at=text.indexOf(edit.find,at+1))n++;return n;};
+          const inHunks=excerpts.get(edit.file).reduce((n,h)=>n+count(h),0);
+          if(count(files.get(edit.file))>inHunks){rejected.push({edit,reason:inHunks?'find text also occurs outside the excerpt of that file you were sent, and every occurrence is replaced; make it longer so it matches only inside the hunks':'find text is not in the excerpt of that file you were sent; copy it from one hunk'});continue;}
+        }
         edits.set(edit.file,[...(edits.get(edit.file)||[]),normalizeEditPaths(edit,js,files)]);
       }
       for(const issue of out.issues)if(files.has(issue.file))issues.push({path:issue.file,detail:'Builder: '+issue.problem});
