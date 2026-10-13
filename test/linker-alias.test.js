@@ -96,10 +96,10 @@ test('shape: a module bound whole whose only export is one function is bound as 
   const app="const { createTicket, getTickets, updateTicket, deleteTicket } = require('../ticket-rep-f17f9f79/ticketRepository.js');\nconst parseCommand = require('../command-pa-f07f9de6/commandParser.js');\nconst dispatchCommand = require('../cli-contro-f77fa8eb/commandDispatcher.js');\n\nconst repository = { createTicket, getTickets, updateTicket, deleteTicket };\nconst command = parseCommand(process.argv);\ndispatchCommand(command, repository);";
   const withApp=new Map([...files,[P.app,app],[P.parser,'const parseCommandLineArgs = () => ({});\nmodule.exports = parseCommandLineArgs;']]);
   assert.deepEqual(L.shapeFixes(withApp,surfacesOf(withApp)).filter(e=>e.file===P.app).map(e=>e.replace),["const { dispatch: dispatchCommand } = require('../cli-contro-f77fa8eb/commandDispatcher.js');"],'parseCommand is bound whole to a single function, which is right');
-  assert.match(LINKER_SYSTEM,/fixes three binding shapes[^]*a module bound whole whose only export is one function, when the file reads no member of it \(const f = require\(p\) where p exports only \{ g \}\)/,'the linker is told, so it fixes only the path');
+  assert.match(LINKER_SYSTEM,/fixes three binding shapes[^]*a module bound whole whose only export is one function, when the file only calls it, directly or from a table of handlers \(const f = require\(p\) where p exports only \{ g \}\)/,'the linker is told, so it fixes only the path');
 });
 
-test('shape: a whole binding is left alone when the target exports more, or the file reads, spreads or exports it',()=>{
+test('shape: a whole binding is left alone when the target exports more, or the file may read a member of it',()=>{
   const fixes=(app,target,file='components/b/x.js')=>{const m=new Map([['components/a/app.js',app],[file,target]]);return L.shapeFixes(m,surfacesOf(m)).map(e=>e.replace);};
   const table="const run = require('../b/x');\nconst table = { go: run };\nmodule.exports = { dispatch: (op, a) => table[op](a) };\n";
   const one='module.exports = { add(a){ return a; } };\n';
@@ -111,11 +111,15 @@ test('shape: a whole binding is left alone when the target exports more, or the 
   assert.deepEqual(fixes(table,'module.exports = { add: 1 };\n'),[],'a member that is not a function');
   assert.deepEqual(fixes(table,"const make = require('../c/make');\nmodule.exports = { add: make() };\n"),[],'a member that may not be a function');
   assert.deepEqual(fixes(table,'module.exports = function add(a){ return a; };\n'),[],'the module is the function: the whole binding is right');
+  assert.deepEqual(fixes(table+'const h = table.go || run;\nif (typeof h === \'function\' && !(\'go\' in table)) h(1);\n',one),["const { add: run } = require('../b/x');"],'kept in a variable, tested and called');
   for(const [how,line] of [['x.member','run.add(1);'],['x[key]',"run['add'](1);"],['destructured','const { add } = run;'],['spread','const copy = { ...run };'],['key listing','Object.keys(run);'],['copied','Object.assign({}, run);'],
-    ['in',"'add' in run;"],['for…in','for (const k in run) {}'],['exported as is','module.exports.run = run;'],['exported in an object','exports.api = { run };'],['shadowed','function f(run) { return run; }']])
+    ['in',"'add' in run;"],['for…in','for (const k in run) {}'],['exported as is','module.exports.run = run;'],['exported in an object','exports.api = { run };'],['shadowed','function f(run) { return run; }'],
+    ['returned','function f() { return run; }'],['returned in an object','function f() { return { tickets: run }; }'],['passed to a call','setup(run);'],['in an array','[run].forEach(c => c.add(1));'],
+    ["a table entry's member",'table.go.add(1);'],['a table entry passed on','const h = table.go; setup(h);'],['the table returned','function f() { return table; }'],['the table exported','exports.table = table;'],['the table copied','Object.values(table);'],
+    ['a table method that reads entries through this',"table.call = function (op) { return this[op].add(); };"]])
     assert.deepEqual(fixes(table+line+'\n',one),[],how);
   const esm=(app,target)=>{const m=new Map([['components/a/app.mjs',app],['components/b/x.mjs',target]]);return L.shapeFixes(m,surfacesOf(m)).map(e=>e.replace);};
-  const use="import run from '../b/x.mjs';\nconst table = { go: run };\nexport function start(){ return table; }\n";
+  const use="import run from '../b/x.mjs';\nconst table = { go: run };\nexport function start(op){ return table[op](); }\n";
   assert.deepEqual(esm(use,'export function add(a){ return a; }\n'),["import { add as run } from '../b/x.mjs';"],'ESM: one named function and no default');
   const m=new Map([['components/a/app.mjs',use],['components/b/x.mjs','export function add(a){ return a; }\n']]),shapes={path:'components/a/app.mjs',files:m,surfaces:surfacesOf(m)};
   assert.equal(L.applyEdits(use,[{find:'import run from',replace:'import { add as run } from'}],{shapes}).applied[0]?.shape,true,'the same edit from the model is the runtime fix');
@@ -124,6 +128,15 @@ test('shape: a whole binding is left alone when the target exports more, or the 
   assert.deepEqual(esm(use,'export function add(a){ return a; }\nexport const ALL = 1;\n'),[],'ESM: two named exports');
   assert.deepEqual(esm("import run from '../b/x.mjs';\nexport function start(){ return run.add; }\n",'export function add(a){ return a; }\n'),[],'ESM: read as a namespace');
   assert.deepEqual(esm("import run from '../b/x.mjs';\nexport const api = run;\n",'export function add(a){ return a; }\n'),[],'ESM: exported as is');
+  assert.deepEqual(esm("import run from '../b/x.mjs';\nconst table = { go: run };\nexport { table };\n",'export function add(a){ return a; }\n'),[],'ESM: its table exported');
+});
+
+test('shape: command objects kept in a table and read for their one method stay bound whole, and the program runs',()=>{
+  const files=new Map([['components/add/addCommand.js',"function execute(args) { return 'added ' + args.title; }\nmodule.exports = { execute };"],['components/list/listCommand.js',"module.exports = { execute(args) { return 'listed'; } };"],
+    ['components/cli/dispatcher.js',"const addCommand = require('../add/addCommand.js');\nconst listCommand = require('../list/listCommand.js');\n\nconst commands = { add: addCommand, list: listCommand };\n\nfunction start() {\n  return { run: (name, args) => commands[name].execute(args) };\n}\nmodule.exports = { start };"]]);
+  assert.deepEqual(L.shapeFixes(files,surfacesOf(files)),[]);
+  const app=load(files,'components/cli/dispatcher.js').start();
+  assert.deepEqual([app.run('add',{title:'x'}),app.run('list',{})],['added x','listed']);
 });
 
 test('room: the live run3b command branch links with no model call, and its dispatcher runs every command',async()=>{
@@ -199,6 +212,32 @@ test('alias: only an imported name, and only to a name the target exports',()=>{
   assert.equal(local.applied.length,0,'the local name of an alias is a variable: renaming it alone is refused');
   const lost=new Map([...files,['components/a/app.js',files.get('components/a/app.js').replace("'../b/x'","'./nowhere'")]]);
   assert.equal(L.applyEdits(lost.get('components/a/app.js'),[{find:'{ make }',replace:'{ create }'}],{knownNames:new Set(['create']),shapes:{path:'components/a/app.js',files:lost,surfaces:sur}}).applied.length,0,'a path that names no module');
+});
+
+test('alias: only an import that did not match, still of the same module, where the find text occurs once',()=>{
+  const edit=(files,file,find,replace)=>L.applyEdits(files.get(file),[{find,replace}],{knownNames:knownFor(files,file),original:files.get(file),shapes:{path:file,files,surfaces:surfacesOf(files)}});
+  // run3 branch builder root.5.4.3.3, step 106: the model pointed Ticket at another module.
+  const json='components/jsontotick-a83fb27d/jsonToTicket.js',r3=new Map([['components/tickettojs-a53fadc4/ticketToJson.js',"function ticketToJson(ticket) {\n  return JSON.stringify(ticket);\n}\n\nmodule.exports = ticketToJson;"],
+    [json,"const { Ticket } = require('./Ticket');\n\nfunction jsonToTicket(jsonString) {\n  const data = JSON.parse(jsonString);\n  return new Ticket(data);\n}\n\nmodule.exports = { jsonToTicket };"]]);
+  let r=edit(r3,json,"const { Ticket } = require('./Ticket');","const { ticketToJson } = require('../tickettojs-a53fadc4/ticketToJson.js');");
+  assert.match(r.rejected[0]?.reason,/renames "Ticket" in some places but not at token 31/,'another module: the live rejection stands');
+  assert.equal(r.content,r3.get(json));
+  // An import that matched: the target exports both names.
+  const view='components/view/viewTicket.js',both=new Map([['components/repo/ticketRepository.js',"function getTicketById(id) { return { id }; }\nfunction getTickets() { return []; }\nmodule.exports = { getTicketById, getTickets };"],
+    [view,"const { getTicketById } = require('../repo/ticketRepository.js');\n\nfunction viewTicket(id) {\n  return getTicketById(id);\n}\nmodule.exports = { viewTicket };"]]);
+  r=edit(both,view,"const { getTicketById } = require('../repo/ticketRepository.js');","const { getTickets } = require('../repo/ticketRepository.js');");
+  assert.match(r.rejected[0]?.reason,/renames "getTicketById" in some places/,'the target provides the old name too');
+  assert.equal(r.content,both.get(view));
+  // The find text is also an object literal, whose key would change.
+  const v='components/v/validators.js',lit=new Map([['components/t/titleValidator.js',"function isValidTitle(s) { return typeof s === 'string' && s.length > 0; }\nmodule.exports = { isValidTitle };"],
+    [v,"const { validateTitle } = require('./titleValidator');\nfunction check(t) { return validateTitle(t.title); }\nmodule.exports = { check, validators: { validateTitle } };"]]);
+  r=edit(lit,v,'{ validateTitle }','{ isValidTitle }');
+  assert.match(r.rejected[0]?.reason,/renames "validateTitle" in some places/);
+  assert.equal(r.content,lit.get(v));
+  // The same module by its resolved path: the import alone becomes the alias.
+  r=edit(lit,v,"const { validateTitle } = require('./titleValidator');","const { isValidTitle } = require('../t/titleValidator.js');");
+  assert.deepEqual(r.rejected,[]);
+  assert.equal(r.content,lit.get(v).replace("{ validateTitle } = require('./titleValidator')","{ isValidTitle: validateTitle } = require('../t/titleValidator.js')"));
 });
 
 // ------------------------------------------- run3 (v7.12, threshold 0.5), root.3.3.1

@@ -658,7 +658,8 @@ export function tokenNames(text) {return knownNamesFrom([text]);}
 // fix of an import, and names the binding a refused one gets wrong; every
 // other edit must be rename-only. With shapes, an edit that renames an
 // imported name { a } to { b } but not the file's uses of a is applied as the
-// alias { b: a } when the target exports b.
+// alias { b: a } when its find text occurs once and the import still names
+// the same module, which exports b and not a.
 export function applyEdits(content, edits, {knownNames=null,original=null,check=null,done=[],shapes=null}={}) {
   let current=String(content);
   const applied=[],rejected=[];
@@ -702,7 +703,7 @@ export function applyEdits(content, edits, {knownNames=null,original=null,check=
     let next=splice(replace),[error,shape]=verify(next),alias=null;
     // A destructured import renamed from a to b while the file still uses a
     // means the name the target exports: bind it as { b: a } (import { b as a }).
-    if(error&&shapes) {
+    if(error&&shapes&&hits.length===1) {
       let text=replace;
       for(const x of importAliases(current,next,shapes))if(x.at>=hits[0]&&x.at<=hits[0]+replace.length)text=text.slice(0,x.at-hits[0])+x.text+text.slice(x.at-hits[0]);
       const v=text===replace?null:splice(text);
@@ -1102,27 +1103,53 @@ function loneMember(surface) {
   const d=surface?.default,list=[...(d?.type==='object'?d.members:d?[null]:[]),...(surface?.named||[])];
   return list.length===1&&['function','class'].includes(list[0]?.type)?list[0].name:null;
 }
-// The file reads no member of name: no name.m, name[k], destructuring,
-// spread, key listing or copy, in or for…in, and it does not export name as
-// is (another module may read it). It may call name or pass it on, as in a
-// handler table. No other binding of that name shadows it.
-function noMemberUse(content, name) {
-  if(memberReads(content,name).size)return false;
-  const is=n=>n?.type==='Identifier'&&n.name===name,exported=n=>isModuleExports(n)||n?.type==='MemberExpression'&&(isModuleExports(n.object)||nameOf(n.object)==='exports');
-  let used=false,declared=0;
-  try {walk(parseSource(content).ast,node=>{
-    const names=new Set();
-    if(node.type==='VariableDeclarator')patternNames(node.id,names);
-    else if(FUNCTIONS.has(node.type)||node.type==='ClassDeclaration'||node.type==='ClassExpression'){if(node.id)names.add(node.id.name);for(const p of node.params||[])patternNames(p,names);}
-    else if(node.type==='CatchClause')patternNames(node.param,names);
-    else if(node.type.startsWith('Import')&&node.local)names.add(node.local.name);
-    if(names.has(name))declared++;
-    if(node.type==='SpreadElement'&&is(node.argument)||node.type==='ForInStatement'&&is(node.right)||node.type==='BinaryExpression'&&node.operator==='in'&&is(node.right))used=true;
-    else if(node.type==='CallExpression'&&[KEY_LISTS,KEY_ARGS,COPIES].some(r=>r.test(calleeName(node.callee)))&&node.arguments.some(is))used=true;
-    else if(node.type==='AssignmentExpression'&&exported(node.left)&&(is(node.right)||node.right.type==='ObjectExpression'&&node.right.properties.some(p=>is(p.value))))used=true;
-    else if(node.type==='ExportDefaultDeclaration'&&is(node.declaration)||node.type==='ExportSpecifier'&&nameOf(node.local)===name||node.type==='ExportNamedDeclaration'&&node.declaration?.declarations?.some(d=>is(d.init)))used=true;
-  });} catch {return false;}
-  return !used&&declared===1;
+// The binding declared at `at` is only ever used as a function: called,
+// tested (if (x), !x, typeof x, x === y), or kept in a variable, or in an
+// object literal a variable holds (a handler table, read only by key, by in
+// or for…in, or Object.keys), whose every use is again one of these. Any
+// other use (x.m, a table entry's member, x passed to a call, put in an
+// array, returned or exported) may read the module's members, so there the
+// whole binding may be the one meant.
+function usedAsFunction(content, at) {
+  let ast,bindingOf,dynamic;
+  try {const p=parseSource(content);ast=p.ast;({bindingOf,dynamic}=scopeOf(ast,p.sourceType));} catch {return false;}
+  if(dynamic)return false;
+  const parents=new Map(),exported=new Set(),scopeIds=new Map(),refs=new Map(),kinds=new Map(),todo=[];
+  walk(ast,(node,parent)=>{parents.set(node,parent);if(node.type==='ExportSpecifier')exported.add(nameOf(node.local));});
+  const varKey=n=>{const s=bindingOf.get(n);if(!s)return null;if(!scopeIds.has(s))scopeIds.set(s,scopeIds.size);return n.name+'#'+scopeIds.get(s);};
+  for(const n of bindingOf.keys()){const k=varKey(n);if(k)(refs.get(k)||refs.set(k,[]).get(k)).push(n);}
+  const keep=(id,kind)=>{
+    const k=id?.type==='Identifier'&&!exported.has(id.name)&&varKey(id);
+    if(!k)return false;
+    if(!kinds.has(k)){kinds.set(k,kind);todo.push(k);}
+    return kinds.get(k)===kind;
+  };
+  const declares=(e,p)=>p.type==='VariableDeclarator'&&p.id===e&&parents.get(parents.get(p))?.type!=='ExportNamedDeclaration';
+  // e may evaluate to the function: where its value goes.
+  const value=e=>{
+    const p=parents.get(e);
+    if((p.type==='CallExpression'||p.type==='NewExpression')&&p.callee===e||p.test===e||p.type==='ExpressionStatement'||p.type==='UnaryExpression'&&['!','typeof'].includes(p.operator)||p.type==='BinaryExpression'&&/^[!=]==?$/.test(p.operator))return true;
+    if(['LogicalExpression','ConditionalExpression','ChainExpression'].includes(p.type))return value(p);
+    if(p.type==='VariableDeclarator'&&p.init===e)return keep(p.id,'fn');
+    if(p.type==='AssignmentExpression'&&p.operator==='='&&p.right===e)return (p.left.type==='Identifier'?keep(p.left,'fn'):p.left.type==='MemberExpression'&&keep(p.left.object,'table'))&&value(p);
+    const o=p.type==='Property'&&p.value===e&&parents.get(p),d=o&&parents.get(o);
+    return d?.type==='VariableDeclarator'&&d.init===o&&keep(d.id,'table');
+  };
+  const use={
+    fn:e=>{const p=parents.get(e);return declares(e,p)||p.type==='AssignmentExpression'&&p.left===e||p.type==='ImportDefaultSpecifier'||value(e);},
+    // A table holds only plain entries: no method or function that could reach the others through this.
+    table:e=>{
+      const p=parents.get(e),q=parents.get(p),fn=n=>n?.type==='FunctionExpression';
+      if(p.type==='MemberExpression'&&p.object===e)return q.type==='AssignmentExpression'&&q.left===p?!fn(q.right):value(p);
+      return declares(e,p)&&p.init?.type==='ObjectExpression'&&p.init.properties.every(x=>x.type==='Property'&&x.kind==='init'&&!x.method&&!fn(x.value))
+        ||p.type==='BinaryExpression'&&p.operator==='in'&&p.right===e||p.type==='ForInStatement'&&p.right===e||p.type==='CallExpression'&&calleeName(p.callee)==='Object.keys';
+    },
+  };
+  // No other binding of that name shadows it.
+  const own=[...bindingOf.keys()].find(n=>n.start===at),key=own&&varKey(own);
+  if(!key||[...bindingOf.keys()].some(n=>n.name===own.name&&varKey(n)!==key)||!keep(own,'fn'))return false;
+  while(todo.length){const k=todo.pop();if(!refs.get(k).every(use[kinds.get(k)]))return false;}
+  return true;
 }
 // Every use of name other than its one declaration calls it, name(...) or
 // new name(...): never name.member or name[key], and never passed on as a value.
@@ -1158,11 +1185,11 @@ function shapeFixesIn(path, content, files, surfaces) {
     let text=null,reason='';
     if(s.shape==='ObjectPattern'&&surface.kind==='cjs'&&p?.type==='Property'&&!p.computed&&p.key.type==='Identifier'&&p.value.type==='Identifier'&&soleExport(surface,target,p.key.name,files.get(target),content,p.value.name)){text=p.value.name;reason=`${target} exports a single ${surface.default.type} as module.exports`;}
     else if(s.shape==='Identifier'&&surface.kind==='cjs'&&holds(surface,id.name)&&onlyCalled(content,id.name)){text=`{ ${id.name} }`;reason=`${target} exports ${id.name} inside an object and this file only calls it`;}
-    // Bound whole, a module whose only export is one function can only mean that function.
-    else if(s.shape==='Identifier'&&surface.kind==='cjs'&&m&&noMemberUse(content,id.name)){text=m===id.name?`{ ${m} }`:`{ ${m}: ${id.name} }`;reason=`${target} exports only the function ${m} and this file reads no member of ${id.name}`;}
+    // Bound whole and only used as a function, a module whose only export is one function means that function.
+    else if(s.shape==='Identifier'&&surface.kind==='cjs'&&m&&usedAsFunction(content,s.start)){text=m===id.name?`{ ${m} }`:`{ ${m}: ${id.name} }`;reason=`${target} exports only the function ${m} and this file only uses ${id.name} as a function`;}
     else if(s.shape==='ImportSpecifier'&&sp.imported.type==='Identifier'&&soleExport(surface,target,sp.imported.name,files.get(target),content,sp.local.name)){text=sp.local.name;reason=`${target} has only a default ${surface.default.type}`;}
     else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&!surface.named.some(n=>n.name==='default')&&holds(surface,sp.local.name)&&onlyCalled(content,sp.local.name)){text=`{ ${sp.local.name} }`;reason=`${target} has no default export, only a named ${sp.local.name} that this file calls`;}
-    else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&m&&noMemberUse(content,sp.local.name)){text=m===sp.local.name?`{ ${m} }`:`{ ${m} as ${sp.local.name} }`;reason=`${target} has no default export, only the function ${m}, and this file reads no member of ${sp.local.name}`;}
+    else if(s.shape==='ImportDefaultSpecifier'&&surface.kind==='esm'&&!surface.default&&m&&usedAsFunction(content,s.start)){text=m===sp.local.name?`{ ${m} }`:`{ ${m} as ${sp.local.name} }`;reason=`${target} has no default export, only the function ${m}, and this file only uses ${sp.local.name} as a function`;}
     if(text===null)continue;
     const gap=(x,y)=>/[\w$]/.test(x||'')&&/[\w$]/.test(y||'')?' ':'';
     text=gap(content[s.start-1],text[0])+text+gap(text.at(-1),content[s.end]);
@@ -1195,18 +1222,21 @@ function importKeys(content) {
 }
 // Where after renames a shorthand import { a } to { b }, the text that keeps
 // the local name a ({ b: a }, import { b as a }), last first. Only when the
-// target, or the one module its unresolved path names, exports b; an alias
-// ({ x: y } to { z: y }) is a rename as it is.
+// import still names the same module, which (or the one module its
+// unresolved path names) exports b and not a; an alias ({ x: y } to
+// { z: y }) is a rename as it is.
 function importAliases(before, after, {path, files, surfaces}) {
   let x,y;
   try {x=importKeys(before);y=importKeys(after);} catch {return [];}
   if(x.length!==y.length)return [];
   const set=files instanceof Map?files:new Map(Object.entries(files||{})),all=[...set.keys()].filter(p=>LINKABLE.test(p));
+  const targetOf=spec=>spec.startsWith('.')&&(resolveLocal(path,spec,set).path||namedModule(path,spec,all));
   return y.flatMap((b,i)=>{
     const a=x[i];
     if(a.key.start!==a.local.start||b.key.start!==b.local.start||a.key.name===b.key.name)return [];
-    const target=b.spec.startsWith('.')&&(resolveLocal(path,b.spec,set).path||namedModule(path,b.spec,all)),surface=target&&surfaces.get(target),d=surface?.default;
-    if(!surface||!exportNames(surface).names.has(b.key.name)&&!((d?.type==='function'||d?.type==='class')&&d.name===b.key.name))return [];
+    const target=targetOf(b.spec),surface=target&&targetOf(a.spec)===target&&surfaces.get(target),d=surface?.default;
+    const has=n=>exportNames(surface).names.has(n)||(d?.type==='function'||d?.type==='class')&&d.name===n;
+    if(!surface||!has(b.key.name)||has(a.key.name))return [];
     return [{at:b.key.end,text:(b.esm?' as ':': ')+a.key.name}];
   }).sort((p,q)=>q.at-p.at);
 }
