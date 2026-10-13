@@ -1119,6 +1119,24 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
   return edits;
 }
 
+// What a reader whose import resolves nowhere is offered (at the top): the
+// module named as the import (by file or class), then those exporting the
+// most names it reads, nearest the reader first; with none, the modules
+// nearest it (its own branch first), then the outward ones. Never a module
+// that imports the reader, which would make a cycle. {named, offered}.
+export function importOffers(files, surfaces, path, specifier, names=[]) {
+  const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
+  const importers=new Set(js.filter(p=>componentImports(p,files.get(p),files).some(r=>r.target===path)));
+  const outward=new Set(branchBoundary(files).exports),key=normName(String(specifier||'').split('/').pop()),dir=path.split('/').slice(0,-1);
+  const named=p=>{const cls=normName(surfaces.get(p)?.default?.name);return !!key&&(normName(p.split('/').pop())===key||!!cls&&cls===key);};
+  const near=p=>{const d=p.split('/');let i=0;while(i<dir.length&&d[i]===dir[i])i++;return i;};
+  const score=new Map(js.filter(p=>p!==path&&!importers.has(p)&&surfaces.get(p)).map(p=>
+    [p,[named(p)?1:0,names.filter(n=>providedNames(surfaces.get(p)).has(n)).length,near(p),outward.has(p)?1:0]]));
+  const order=(a,b)=>{const x=score.get(a),y=score.get(b);return x.reduce((d,v,i)=>d||y[i]-v,0)||a.localeCompare(b);};
+  const pool=[...score.keys()].sort(order),matched=pool.filter(p=>score.get(p)[0]||score.get(p)[1]);
+  return {named:pool.find(named)||'',offered:matched.length?matched.slice(0,4):pool.slice(0,6)};
+}
+
 // ---------- boundaries: what a branch built below shows the level above ----------
 // A branch builder publishes its linked bundle's boundary beside it: the
 // modules it offers outward (those none of its modules imports, and the one

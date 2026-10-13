@@ -126,6 +126,11 @@ test('signature: the same problem reported at two levels, or with renamed bundle
   const b=P.problemSignature('mismatch',[party('root.1.2','reader','components/b-2/components/a-1/x.js')],"The module reads 'get' from components/b-2/components/a-1/store.js, which exports: read");
   assert.equal(a,b);
   assert.notEqual(a,P.problemSignature('binding',[party('root.1.2','reader','components/a-1/x.js')],"The module reads 'get' from components/a-1/store.js, which exports: read"));
+  // The Container's build folder differs by run, and so may line positions (v7.14 review).
+  const run=dir=>P.problemSignature('run',[party('root.2','site')],`smoke failed (exit 1): TypeError: this.repo.save is not a function\n    at TicketService.add (/tmp/build-${dir}/components/t/service.js:3:9)\n    at file:///tmp/build-${dir}/glue/smoke.js:6:27`);
+  assert.equal(run('pOnJto'),run('Xy12ab'));
+  assert.doesNotMatch(run('pOnJto'),/build-|:\d/);
+  assert.match(P.problemSignature('load',[],"Error: Cannot find module '../x/y.js'"),/'\.\.\/x\/y\.js'/,'a relative specifier is kept');
 });
 
 test('instructions and the repair text a worker reads',()=>{
@@ -133,6 +138,10 @@ test('instructions and the repair text a worker reads',()=>{
   assert.equal(P.instructionsFor(p,'reader'),'Use the names store.js already exports; do not change what it exports. Change your reads of add, find.');
   assert.equal(P.instructionsFor(problem('entry',[party('root.2','subject')]),'subject'),ENTRY_CONTRACT);
   assert.equal(P.instructionsFor({...p,directive:{instructions:'Bind it whole.'}},'reader'),'Bind it whole.','a relayed decision is not re-decided');
+  // An unresolved import: no '(them)' when no names are known; a module named as the import is named (v7.14 review).
+  const unresolved=facts=>P.instructionsFor(problem('unresolved',[party('root.2','reader')],{facts}),'reader');
+  assert.equal(unresolved({specifier:'./statusParser',names:[]}),"No module in the application provides './statusParser'. Import one of the modules listed below by its relative path and real export names, or write what you need yourself.");
+  assert.match(unresolved({specifier:'./ticketRepository',names:['addTicket'],named:'components/t/ticketRepository.js'}),/^'\.\/ticketRepository' is ticketRepository\.js, listed below with what it really exports: import it by its relative path and use the names it exports in place of what it lacks \(addTicket\)\.$/);
   const text=P.repairText({role:'reader',instructions:'Use create.',facts:'store.js exports: create',problems:[{path:'svc.js',detail:'x'.repeat(3000)}]});
   assert.ok(text.startsWith('REAL CONTAINER BUILD FAILED on your owned source.'));
   assert.ok(text.length<=2400);

@@ -3,12 +3,12 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
+import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, GOAL_START_REQUIREMENT } from './model.js';
 import { codeWritingTask, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
@@ -1406,10 +1406,9 @@ export class ControlRoom extends DurableObject {
     if(top)for(const u of link.unresolved) {
       const ref=importRefs(u.path,files.get(u.path)).find(r=>r.specifier===u.specifier);
       const names=[...new Set([...(ref?.names||[]),...(ref?.members||[])])].filter(Boolean);
-      const providers=[...surfaces.keys()].filter(p=>p!==u.path&&names.some(n=>providedNames(surfaces.get(p)).has(n))).slice(0,4);
-      const offered=providers.length?providers:branchBoundary(files).exports.filter(p=>p!==u.path).slice(0,6);
+      const {named,offered}=importOffers(files,surfaces,u.path,u.specifier,names);
       items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`,
-        facts:{specifier:u.specifier,names,provider_text:clip(offered.map(exportsText).join(' | '),700)}});
+        facts:{specifier:u.specifier,names,named,provider_text:clip(offered.map(exportsText).join(' | '),700)}});
     }
     for(const m of link.mismatches) {
       const same=reads.filter(r=>r.target===m.target),others=new Map(),sur=surfaces.get(m.target),d=sur?.default;
@@ -1580,9 +1579,10 @@ export class ControlRoom extends DurableObject {
     this.save('compile_reported',{...this.read('compile_reported',null),stage:'static'});
   }
   // What the compiler files when no module exports start(): the module most
-  // likely to compose the application hears the contract, with the boundary
-  // of each of the top's children (what each offers to compose).
-  entryProblem(builderId, files, surfaces, path=entryCandidate(files)||'', detail=`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`) {
+  // likely to compose the application hears the contract (the entry
+  // instructions carry it), with the boundary of each of the top's children
+  // (what each offers to compose).
+  entryProblem(builderId, files, surfaces, path=entryCandidate(files)||'', detail='No application entry: no module exports start() to compose the application.') {
     const groups=new Map();
     for(const r of query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=? ORDER BY destination',builderId))
       if(files.has(r.destination))groups.set(r.child,[...(groups.get(r.child)||[]),r.destination]);
@@ -1685,7 +1685,7 @@ export class ControlRoom extends DurableObject {
     try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
     // With nothing to call (run3b: {"type":"object","members":{}}) the runner
     // cannot write a valid test, and no worker would hear why.
-    if(!apiCallable(described))return report('run',[this.entryProblem(builder.id,files,surfaces,entry,`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`)]);
+    if(!apiCallable(described))return report('run',[this.entryProblem(builder.id,files,surfaces,entry,`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}.`)]);
     const outcome=await this.runApplication(id,input,app,api,this.topTask(),{linked:files,entry});
     if(outcome.infrastructure)return this.blockCompiler(id,input,outcome.infrastructure);
     if(outcome.runnerFailed) {
@@ -1798,13 +1798,14 @@ export class ControlRoom extends DurableObject {
     for(const [worker,list] of tickets) {
       const revs=this.revisionKey(worker),moved=[];
       for(const [p,dec] of list) {
-        const directive={by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:instructionsFor(p,dec.side),facts_text:p.directive?.facts_text??p.facts.provider_text??''};
+        // A relayed decision stays the parent's, so a reopened problem is relayed again (D1).
+        const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:instructionsFor(p,dec.side),facts_text:p.directive?.facts_text??p.facts.provider_text??''};
         if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,flags:{...p.flags,revs},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
       }
       if(!moved.length)continue;
       const ticket=crypto.randomUUID(),role=moved.some(p=>p.directive.side==='provider')?'provider':'reader';
       const instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
-      const facts=clip([...new Set(moved.map(p=>p.directive.facts_text).filter(Boolean))].join(' | '),1400);
+      const facts=clip([...new Set(moved.flatMap(p=>String(p.directive.facts_text||'').split(' | ')).filter(Boolean))].join(' | '),1400);
       this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,m,worker,JSON.stringify(moved.map(p=>p.id)),role,instructions,facts,now);
       this.send(m,worker,'[build:repair] '+ticket);
       this.event(m,'problem_assigned',clip(`${moved.length} problem(s) to ${children.get(worker).label} (${[...new Set(list.map(([,d])=>d.rule))].join(', ')}): ${instructions}`,800),worker);

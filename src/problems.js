@@ -26,10 +26,12 @@ export const KINDS=['unresolved','mismatch','binding','entry','load','run','stuc
 export const DEFAULT_ROLE={unresolved:'reader',mismatch:'reader',binding:'reader',entry:'subject',load:'site',run:'site',stuck:'subject'};
 
 // Recurrence key: the kind, the worker files involved, and the detail's head
-// without bundle paths (they differ by level).
+// without bundle paths (they differ by level), absolute paths (the
+// Container's build folder differs by run) or line positions.
 export function problemSignature(kind, parties, detail) {
   const owners=[...new Set((parties||[]).map(p=>p.owner?`${p.owner}:${p.owner_path||''}`:`?:${p.path||''}`))].sort().join(',');
-  const head=String(detail||'').replace(/(?:\.\.?\/)*components\/\S+/g,'').replace(/\s+/g,' ').trim().slice(0,160);
+  const head=String(detail||'').replace(/(?<![\w.\/])\/[^\s)'"]*/g,'').replace(/(?:\.\.?\/)*components\/\S+/g,'').replace(/:\d+(?::\d+)?\b/g,'')
+    .replace(/\s+/g,' ').trim().slice(0,160);
   return `${kind}|${owners}|${head}`;
 }
 
@@ -122,7 +124,11 @@ export function instructionsFor(p, side) {
   switch(p.kind) {
     case 'mismatch':return `Use the names ${base(provider?.owner_path||provider?.path)||'the other module'} already exports; do not change what it exports. Change your reads of ${list(f.names)}.`;
     case 'binding':return `${base(provider?.owner_path||provider?.path)||'The other module'} exports a single ${f.provider_kind||'function'} as module.exports: import it whole (const f = require(…)) and call it.`;
-    case 'unresolved':return `No module in the application provides '${f.specifier||''}' (${list(f.names)}). Import one of the modules listed below by its relative path and real export names, or write what you need yourself.`;
+    case 'unresolved':{
+      const names=f.names?.length?` (${list(f.names)})`:'';
+      return f.named?`'${f.specifier||''}' is ${base(f.named)}, listed below with what it really exports: import it by its relative path and use the names it exports${names&&` in place of what it lacks${names}`}.`:
+        `No module in the application provides '${f.specifier||''}'${names}. Import one of the modules listed below by its relative path and real export names, or write what you need yourself.`;
+    }
     case 'entry':return ENTRY_CONTRACT;
     case 'stuck':return 'Finish your assignment.';
     default:return side==='provider'?'Fix your module so the call described below works.':'Fix the error below in your code.';

@@ -664,6 +664,32 @@ test('v7.14: a problem closed at the hop limit, with its reporter waiting and no
   assert.match(room.node('root').summary,/^Repair exhausted: a mismatch problem was closed without a fix \(4 decisions without a fix\)/);
 });
 
+// v7.14 review: a manager that relays its parent's decision to a worker
+// keeps it as the parent's, so when the worker returns its file unchanged
+// and the problem opens again, the manager relays it again (D1) instead of
+// escalating it back up (D2) as if nobody had decided.
+test('v7.14: a relayed problem reopened below is relayed again, not escalated',async()=>{
+  const reader="const repo = require('./repository');\nmodule.exports = { add: (d) => repo.add(d), get: (id) => repo.read(id) };\n";
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Services'],['Repository','repository.js',repository],['Application entry','app.js',entry]]);
+  await workers(room,'root.1',[['Formatter','format.js',"module.exports = { fmt: (t) => '#' + t.id };\n"],['Ticket service','ticketService.js',reader]]);
+  const branch=await room.scheduleAssembly('root.1');
+  await room.turn(branch.id);
+  await room.turn('root.1');
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  await room.turn('root');
+  const id=room.problems("kind='mismatch'")[0].id,row=()=>room.problems('id=?',id)[0];
+  assert.deepEqual(row().trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relay','root.1','D6']]);
+  await room.turn('root.1');
+  assert.deepEqual([row().status,row().assignee,row().directive.by],['assigned','root.1.2','root'],'the decision stays Root\'s');
+  room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.1.2'");room.db().exec("UPDATE agents SET status='done' WHERE id='root.1.2'");
+  await step(room,'root.1');
+  assert.deepEqual(row().trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relay','root.1','D6'],['root.1','assign','root.1.2','D1'],['root.1','assign','root.1.2','D1']]);
+  assert.equal(events(room,'problem_escalated').length,0);
+});
+
 // Rooms started before v7.14 keep Root-keyed build state (build_failure:root,
 // link_routed, run_passed:root): they are reset, not migrated.
 test('v7.14: Continue refuses a room started before v7.14; a new start resets it and marks the schema',async()=>{

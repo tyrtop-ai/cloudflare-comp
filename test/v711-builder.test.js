@@ -1489,9 +1489,8 @@ test('room: with no module exporting start(), the compiler files an entry proble
   const failure=lastReport(room,compiler.id);
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[3],'root']],'the module named as the application, not combine.js');
   assert.match(failure.issues[0].detail,/^No application entry/);
-  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object whose methods perform the application's operations\. It does no work at module load/);
   await room.turn('root');
-  assert.match(tickets(room,'root.4')[0],/Your manager decided: You write the application entry module/);
+  assert.match(tickets(room,'root.4')[0],/Your manager decided: You write the application entry module[^]*exports start\(\); start\(\) returns an object whose methods perform the application's operations\. It does no work at module load/);
   assert.equal(room.receive('root.3').length,0);
 });
 
@@ -1643,12 +1642,12 @@ test('room: an entry that exports no start() goes back to its worker with the en
   assert.equal(failure.stage,'build');
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[3],'root']]);
   assert.match(failure.issues[0].detail,/^No application entry: no module exports start\(\)/);
-  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) returns an object whose methods perform the application's operations/);
-  assert.match(failure.issues[0].detail,/importing it must not read process\.argv, start a server or prompt for input/);
   await room.turn('root');
   const sent=tickets(room,'root.4');
   assert.equal(sent.length,1,'the entry worker hears it');
-  assert.match(sent[0],/does no work at module load/);
+  assert.match(sent[0],/exports start\(\); start\(\) returns an object whose methods perform the application's operations/);
+  assert.match(sent[0],/importing it must not read process\.argv, start a server or prompt for input/);
+  assert.equal(sent[0].split('You write the application entry module').length,2,'the contract once, in the manager\'s instructions');
   // With what each of Root's other children offers to compose.
   const provided=sent[0].match(/What the other side provides: (.*?) Problems: /)?.[1].split(' | ');
   assert.deepEqual(provided,['commandDispatcher.js exports: module.exports = { dispatch(command, args) }','commandParser.js exports: module.exports = function parseCommandLineArgs()',
@@ -1672,9 +1671,9 @@ test('room: start() that returns an object with nothing to call goes back to the
   assert.equal(failure.stage,'run');
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path]),[['entry',paths[3]]]);
   assert.match(failure.issues[0].detail,/start\(\) must return an object whose methods perform the requested operations; it returned \{"type":"object","members":\{\}\}/);
-  assert.match(failure.issues[0].detail,/does no work at module load/);
   await room.turn('root');
   assert.equal(tickets(room,'root.4').length,1);
+  assert.match(tickets(room,'root.4')[0],/Your manager decided: You write the application entry module[^]*does no work at module load/);
 });
 
 test('room: start() that returns a value with nothing to call goes back to the entry worker; a callable anywhere in it reaches the runner',async()=>{
@@ -1800,6 +1799,47 @@ test('room: with two modules exporting start(), the one whose start() returns th
   assert.equal(room.node(compiler.id).status,'done',trace(room));
   assert.equal(room.problems('1=1').length,0,'no worker is told it writes the entry');
   for(const id of ['root.4','root.5'])assert.equal(room.receive(id).length,0);
+});
+
+// v7.14 review: an import that resolves nowhere is offered the module named
+// as it first, then the modules exporting what it reads, its own branch
+// first; never a module that imports the reader (a cycle).
+test('unresolved: the module named as the import, then providers, nearest first; never one that imports the reader',()=>{
+  const files=new Map([
+    ['components/e/app.js',"const svc = require('../b/components/s/service.js');\nfunction start() { return svc; }\nmodule.exports = { start };\n"],
+    ['components/b/components/s/service.js',"const repo = require('./ticketRepository');\nconst { parse } = require('./statusParser');\nmodule.exports = { add: (t) => repo.addTicket(parse(t)) };\n"],
+    ['components/b/components/p/parseStatus.js',"module.exports = { parseStatus: (s) => s };\n"],
+    ['components/r/ticketRepository.js',"module.exports = { createTicket(t) { return t; }, listTickets() { return []; } };\n"],
+    ['components/x/report.js',"module.exports = { addTicket() {} };\n"],
+    ['components/y/zz.js',"module.exports = { other() {} };\n"]]);
+  const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
+  const reader='components/b/components/s/service.js';
+  const repo=L.importOffers(files,surfaces,reader,'./ticketRepository',['addTicket']);
+  assert.equal(repo.named,'components/r/ticketRepository.js');
+  assert.deepEqual(repo.offered,['components/r/ticketRepository.js','components/x/report.js'],'the named module, then the one exporting addTicket');
+  const parser=L.importOffers(files,surfaces,reader,'./statusParser',['parse']);
+  assert.equal(parser.named,'');
+  assert.equal(parser.offered[0],'components/b/components/p/parseStatus.js','its own branch first');
+  assert.ok(!parser.offered.includes('components/e/app.js'),'not the entry, which imports the reader');
+});
+
+// v7.14 review: two problems for one worker whose facts share a module (an
+// import of the repository by a name it lacks, and the entry problem listing
+// what each child offers) list that module once; the contract rides once.
+test('room: a ticket lists each module once, however many of its problems name it, and the entry contract once',async()=>{
+  const app="const repo = require('./ticketRepository');\nconsole.log(repo.addTicket('Printer jam'));\n";
+  const {room}=liveRoom();
+  const paths=await workersUnder(room,run3bGoal,[['Ticket Repository','ticketRepository.js',run3bRepo],['Command Parser','commandParser.js',run3bParser],['Application Entry','app.js',app]]);
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  await room.turn('root');
+  assert.deepEqual(room.problems('1=1').map(p=>[p.kind,p.assignee]).sort(),[['entry','root.3'],['unresolved','root.3']]);
+  const [sent]=tickets(room,'root.3');
+  assert.match(sent,/'\.\/ticketRepository' is ticketRepository\.js, listed below with what it really exports/,'the module named as the import');
+  assert.match(sent,/No application entry/);
+  assert.equal(sent.split('ticketRepository.js exports:').length,2,'the repository once');
+  assert.equal(sent.split('You write the application entry module').length,2,'the contract once');
+  assert.ok(paths[2]);
 });
 
 // v7.14 (critique #17): while Root's builder reports link problems, the
