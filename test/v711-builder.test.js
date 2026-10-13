@@ -1692,7 +1692,10 @@ test('room: an entry whose start() its export surface cannot show is started in 
   const forms={
     freeze:`const store = require('./store');\nfunction start() {\n  return ${ops};\n}\nmodule.exports = Object.freeze({ start });\n`,
     factory:`const store = require('./store');\nfunction createApp() {\n  return { start() { return ${ops}; } };\n}\nmodule.exports = createApp();\n`,
-    assign:`const store = require('./store');\nfunction start() {\n  return ${ops};\n}\nObject.assign(module.exports, { start });\n`};
+    assign:`const store = require('./store');\nfunction start() {\n  return ${ops};\n}\nObject.assign(module.exports, { start });\n`,
+    // v7.13 review: start attached after the object or class is declared.
+    attached:`const store = require('./store');\nconst app = {};\napp.start = () => (${ops});\nmodule.exports = app;\n`,
+    statics:`const store = require('./store');\nclass App {}\nApp.start = () => (${ops});\nmodule.exports = App;\n`};
   for(const [form,app] of Object.entries(forms)) {
     const {room,calls}=liveRoom({runner:()=>viewTest});
     await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',recordStore],['Application','app.js',app]]);
@@ -1702,9 +1705,14 @@ test('room: an entry whose start() its export surface cannot show is started in 
     assert.equal(room.problems('1=1').length,0,'no worker is blamed: '+form);
     assert.equal(calls.link.length,0,form);
   }
-  for(const source of ['export { start } from "./core.js";\n','export * from "./core.js";\n',"const base = require('./base');\nmodule.exports = { ...base };\n"])
+  for(const source of ['export { start } from "./core.js";\n','export * from "./core.js";\n',"const base = require('./base');\nmodule.exports = { ...base };\n",
+    "const app = {};\napp.start = () => ({});\nmodule.exports = app;\n","class App {}\nApp.start = () => ({});\nmodule.exports = App;\n",
+    "class App { run() {} }\nApp.prototype.start = function () { return {}; };\nmodule.exports = new App();\n","const app = {};\nObject.assign(app, { start() { return {}; } });\nexport default app;\n",
+    "function main() {}\nmain['start'] = () => ({});\nmodule.exports = main;\n","const app = {};\napp[key] = () => ({});\nmodule.exports = app;\n"])
     assert.equal(L.mayExportStart(L.exportSurface('components/a/app.js',source)),true,source);
-  for(const source of [run3bApp,run3bDispatcher,'module.exports = {};\n',"class App { start() {} }\nmodule.exports = App;\n"])
+  // Certain only when nothing could have added start().
+  for(const source of [run3bApp,run3bDispatcher,'module.exports = {};\n',"class App { start() {} }\nmodule.exports = App;\n",
+    "const app = {};\napp.items = [];\nmodule.exports = app;\n","const app = {};\nObject.assign(app, { items: [] });\nmodule.exports = app;\n"])
     assert.equal(L.mayExportStart(L.exportSurface('components/a/app.js',source)),false,source);
 });
 

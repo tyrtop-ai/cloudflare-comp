@@ -122,6 +122,16 @@ export function exportSurface(path, content) {
   const decls=topLevelDeclarations(ast);
   const surface={path,kind:'cjs',default:null,named:[]};
   const addNamed=(name,info)=>{surface.named=surface.named.filter(x=>x.name!==name);surface.named.push({...info,name});};
+  // The bindings the default export is (or is an instance of), which the
+  // file may add members to after declaring them.
+  const roots=new Set();
+  const rootOf=node=>{
+    const name=node?.type==='Identifier'?node.name:['ClassDeclaration','FunctionDeclaration'].includes(node?.type)?node.id?.name:null;
+    const init=name?decls.get(name):node;
+    if(name)roots.add(name);
+    if(init?.type==='NewExpression'&&init.callee.type==='Identifier')roots.add(init.callee.name);
+  };
+  const setDefault=node=>{surface.default=describe(node,decls);rootOf(node);};
   for(const statement of ast.body) {
     if(statement.type==='ExportNamedDeclaration') {
       surface.kind='esm';
@@ -131,11 +141,11 @@ export function exportSurface(path, content) {
       for(const s of statement.specifiers||[]) {
         const local=keyName(s.local),exported=keyName(s.exported);
         if(statement.source)addNamed(exported,{type:'reexport',from:statement.source.value});
-        else if(exported==='default')surface.default=describe({type:'Identifier',name:local},decls);
+        else if(exported==='default')setDefault({type:'Identifier',name:local});
         else addNamed(exported,describe({type:'Identifier',name:local},decls));
       }
     } else if(statement.type==='ExportDefaultDeclaration') {
-      surface.kind='esm';surface.default=describe(statement.declaration,decls);
+      surface.kind='esm';setDefault(statement.declaration);
     } else if(statement.type==='ExportAllDeclaration') {
       surface.kind='esm';addNamed('*',{type:'reexport',from:statement.source.value});
     } else if(statement.type==='ExpressionStatement'&&statement.expression.type==='AssignmentExpression') {
@@ -145,7 +155,7 @@ export function exportSurface(path, content) {
         if(isModuleExports(right.left)){left=right.left;right=right.right;break;}
         right=right.right;
       }
-      if(isModuleExports(left))surface.default=describe(right,decls);
+      if(isModuleExports(left))setDefault(right);
       else if(left.type==='MemberExpression' && (isModuleExports(left.object) || (left.object.type==='Identifier'&&left.object.name==='exports')))
         addNamed(keyName(left.property)??'?',describe(right,decls,0,keyName(left.property)));
     } else if(statement.type==='ExpressionStatement'&&statement.expression.type==='CallExpression'&&
@@ -153,6 +163,24 @@ export function exportSurface(path, content) {
       // Object.assign(module.exports, {...}) exports names this parse does not list.
       surface.open=true;
     }
+  }
+  // A start() added to the default after its declaration (app.start = …,
+  // App.start = …, App.prototype.start = …, Object.assign(app, { start })),
+  // or a member this parse cannot name, leaves the surface open: start() is
+  // then not known to be absent, and the Container decides.
+  if(surface.default&&roots.size&&!surface.open) {
+    const target=n=>n?.type==='Identifier'&&roots.has(n.name)||n?.type==='MemberExpression'&&keyName(n.property)==='prototype'&&n.object?.type==='Identifier'&&roots.has(n.object.name);
+    const mayHold=n=>n?.type!=='ObjectExpression'||n.properties.some(p=>p.type==='SpreadElement'||p.computed&&p.key?.type!=='Literal'||keyName(p.key)==='start');
+    walk(ast,node=>{
+      if(node.type==='AssignmentExpression'&&node.left.type==='MemberExpression'&&target(node.left.object)) {
+        const key=node.left.computed&&node.left.property.type!=='Literal'?null:keyName(node.left.property);
+        if(key===null||key==='start'||key==='prototype'&&mayHold(node.right))surface.open=true;
+      } else if(node.type==='CallExpression'&&node.callee.type==='MemberExpression'&&node.callee.object?.type==='Identifier'&&node.callee.object.name==='Object'&&target(node.arguments[0])) {
+        const how=keyName(node.callee.property),[,key,...rest]=node.arguments;
+        if(how==='assign'&&[key,...rest].some(mayHold)||how==='defineProperties'&&mayHold(key)||how==='setPrototypeOf'||
+          how==='defineProperty'&&(key?.type!=='Literal'||key.value==='start'))surface.open=true;
+      }
+    });
   }
   return surface;
 }
