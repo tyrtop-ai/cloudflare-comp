@@ -486,7 +486,7 @@ test('room: a relink Root asks for that changes nothing is not run again; the pr
   await room.turn('root');                      // the builder tried: the entry worker changes its code (D4)
   assert.equal(builds.length,2,'one load/describe build and one run build; the unchanged bundle is not run again');
   const [row]=room.problems("status='assigned'");
-  assert.deepEqual([row.assignee,row.flags.builder_tried],['root.3',true]);
+  assert.deepEqual([row.assignee,row.flags.builder_tried],['root.3',[builder.id]],'this builder tried');
   const sent=tickets(room,'root.3');
   assert.equal(sent.length,1);
   assert.match(sent[0],/svc\.get is not a function[^]*Builder renames in the linked copy that failed[^]*view → get/);
@@ -1473,7 +1473,7 @@ test('room: a binding-shape fix does not hide the builder rename that broke the 
   assert.ok(builds.length>0);
   const failure=lastReport(room,compiler.id);
   assert.equal(failure.stage,'run');
-  assert.deepEqual(room.problems("status!='closed'").map(p=>[p.status,p.assignee,p.flags.builder_tried]),[['assigned','root.3',true]]);
+  assert.deepEqual(room.problems("status!='closed'").map(p=>[p.status,p.assignee,p.flags.builder_tried]),[['assigned','root.3',[builder.id]]]);
   const issue=failure.issues.find(i=>i.path===paths[2]);
   assert.match(issue.detail,/svc\.get is not a function[^]*Builder renames in the linked copy that failed[^]*: '\.\/store' → '\.\.\/record-sto-[0-9a-f]+\/store\.js', view → get, binding \{ makeStore \} → makeStore\.$/);
 });
@@ -1515,9 +1515,8 @@ test('room: with no module exporting start(), the compiler files an entry proble
   const failure=lastReport(room,compiler.id);
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[3],'root']],'the module named as the application, not combine.js');
   assert.match(failure.issues[0].detail,/^No application entry/);
-  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) takes no arguments and returns an object with one method per operation the goal names, each named after that operation .* It does no work at module load/);
   await room.turn('root');
-  assert.match(tickets(room,'root.4')[0],/Your manager decided: You write the application entry module/);
+  assert.match(tickets(room,'root.4')[0],/Your manager decided: You write the application entry module[^]*exports start\(\); start\(\) takes no arguments and returns an object with one method per operation the goal names, each named after that operation .* It does no work at module load/);
   assert.equal(room.receive('root.3').length,0);
 });
 
@@ -1669,12 +1668,12 @@ test('room: an entry that exports no start() goes back to its worker with the en
   assert.equal(failure.stage,'build');
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[3],'root']]);
   assert.match(failure.issues[0].detail,/^No application entry: no module exports start\(\)/);
-  assert.match(failure.issues[0].detail,/exports start\(\); start\(\) takes no arguments and returns an object with one method per operation the goal names/);
-  assert.match(failure.issues[0].detail,/importing it must not read process\.argv, start a server or prompt for input/);
   await room.turn('root');
   const sent=tickets(room,'root.4');
   assert.equal(sent.length,1,'the entry worker hears it');
-  assert.match(sent[0],/does no work at module load/);
+  assert.match(sent[0],/exports start\(\); start\(\) takes no arguments and returns an object with one method per operation the goal names/);
+  assert.match(sent[0],/importing it must not read process\.argv, start a server or prompt for input/);
+  assert.equal(sent[0].split('You write the application entry module').length,2,'the contract once, in the manager\'s instructions');
   // With what each of Root's other children offers to compose.
   const provided=sent[0].match(/What the other side provides: (.*?) Problems: /)?.[1].split(' | ');
   assert.deepEqual(provided,['commandDispatcher.js exports: module.exports = { dispatch(command, args) }','commandParser.js exports: module.exports = function parseCommandLineArgs()',
@@ -1698,9 +1697,9 @@ test('room: start() that returns an object with nothing to call goes back to the
   assert.equal(failure.stage,'run');
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path]),[['entry',paths[3]]]);
   assert.match(failure.issues[0].detail,/start\(\) must return an object whose methods perform the requested operations; it returned \{"type":"object","members":\{\}\}/);
-  assert.match(failure.issues[0].detail,/does no work at module load/);
   await room.turn('root');
   assert.equal(tickets(room,'root.4').length,1);
+  assert.match(tickets(room,'root.4')[0],/Your manager decided: You write the application entry module[^]*does no work at module load/);
 });
 
 test('room: start() that returns a value with nothing to call goes back to the entry worker; a callable anywhere in it reaches the runner',async()=>{
@@ -1743,6 +1742,34 @@ test('room: an entry whose start() its export surface cannot show is started in 
     assert.equal(L.mayExportStart(L.exportSurface('components/a/app.js',source)),false,source);
 });
 
+// v7.14 review: a module that only may export start() (a factory's result)
+// is started, but when it has no start() the loader does not hand its
+// exports out as the application: the run is not complete with no start()
+// anywhere, and the module composing the application hears the contract.
+test('room: an entry that only may export start() and has none is an entry problem, not the application',async()=>{
+  const repo="function createRepository() {\n  const rows = new Map(); let next = 1;\n  return {\n    createTicket(d) { const t = { id: next++, ...d }; rows.set(t.id, t); return { ...t }; },\n    getTicket(id) { return rows.get(id) || null; }\n  };\n}\nmodule.exports = createRepository();\n";
+  // Its import already points at the repository (a factory's surface names nothing to link by).
+  const app=`const repo = require('../${materializedPath('Ticket repository','repository.js','root.1').split('/').slice(1).join('/')}');\nif (require.main === module) {\n  const [cmd, title] = process.argv.slice(2);\n  if (cmd === 'create') console.log(repo.createTicket({ title }));\n}\n`;
+  const {room,calls,builds}=liveRoom();
+  const paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Ticket repository','repository.js',repo],['Application entry','app.js',app]]);
+  const {compiler}=await linkAndCompile(room);
+  assert.equal(room.read('compile_state',null).entry,paths[0],'the factory module may export start(): it is started');
+  assert.equal(builds.length,1);
+  assert.equal(calls.runner.length,0,'nothing to test');
+  assert.ok(!room.compilePassed('root'));
+  assert.equal(room.node(compiler.id).status,'waiting');
+  const failure=lastReport(room,compiler.id);
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['entry',paths[1],'root']],'the module composing the application, not the factory');
+  assert.match(failure.issues[0].detail,/^No application entry: repository\.js was started but exports no start\(\)/);
+  await room.turn('root');
+  assert.match(tickets(room,'root.2')[0],/Your manager decided: You write the application entry module/);
+  assert.equal(room.receive('root.1').length,0);
+  // The loader itself: no start(), no application.
+  const report=await execVerify({[paths[0]]:repo,'glue/index.js':L.entryLoader(paths[0]),'package.json':L.RUNTIME_PACKAGE});
+  assert.equal(report.passed,false);
+  assert.match(report.log,new RegExp(L.NO_START.replace(/[()]/g,'\\$&')));
+});
+
 test('entry: a default function named start is called by the runtime loader, as entry detection counts it',async()=>{
   for(const [path,source] of [['components/a/app.js',"module.exports = function start() {\n  return { ping: () => 'pong' };\n};\n"],['components/a/app.mjs',"export default function start() {\n  return { ping: () => 'pong' };\n}\n"]]) {
     assert.equal(L.exportsStart(L.exportSurface(path,source)),true);
@@ -1774,26 +1801,71 @@ test('entry choice: a module exporting start() first, by imports; one that only 
 });
 
 // v7.14: no entry child picks between two starters. The compiler starts the
-// one that imports more; when its start() returns nothing to call, that
-// module's worker hears the contract and the other worker hears nothing.
-test('room: with two modules exporting start(), the one that imports more is started; its worker alone hears the contract (run3b shape)',async()=>{
+// one whose start() returns an API to call, not the CLI controller whose
+// start() reads the command line and returns nothing, though it imports more
+// (v7.14 review: the CLI's worker was told it writes the entry, four times).
+test('room: with two modules exporting start(), the one whose start() returns the API is started, not the CLI that imports more (run3b shape)',async()=>{
   const repo="const tickets = [];\nlet nextId = 1;\nfunction createTicket(title) { const t = { id: nextId++, title }; tickets.push(t); return t; }\nfunction getTickets() { return [...tickets]; }\nmodule.exports = { createTicket, getTickets };\n";
   const create="const { createTicket } = require('./ticketRepository');\nmodule.exports = (args) => createTicket(args[0]);\n";
   const view="const { getTickets } = require('./ticketRepository');\nmodule.exports = () => getTickets();\n";
   // The CLI controller imports more modules and its start() runs the command line.
   const dispatcher="const create = require('./createTicketCommand');\nconst view = require('./viewTicketsCommand');\nconst commands = { create, view };\nfunction start() {\n  const [cmd, ...args] = process.argv.slice(2);\n  const run = commands[cmd];\n  if (run) console.log(run(args)); else console.log('Usage: create|view');\n}\nmodule.exports = { start };\n";
   const app="const repo = require('./ticketRepository');\nfunction start() {\n  return { createTicket: (title) => repo.createTicket(title), listTickets: () => repo.getTickets() };\n}\nmodule.exports = { start };\n";
-  const {room,calls}=liveRoom();
+  const test="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.createTicket('Printer jam');\n  assert.ok((await app.listTickets()).some(x => x.id === t.id));\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
+  const {room,calls}=liveRoom({runner:()=>test});
   const paths=await workersUnder(room,'Build a small issue tracker that lets someone create and list tickets.',[['Ticket Repository','ticketRepository.js',repo],['Create Ticket Command','createTicketCommand.js',create],['View Tickets Command','viewTicketsCommand.js',view],['CLI Controller','commandDispatcher.js',dispatcher],['Application Entry','app.js',app]]);
+  const files=new Map(paths.map((p,i)=>[p,[repo,create,view,dispatcher,app][i]])),surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
+  assert.deepEqual([L.startRank(dispatcher),L.startRank(app)],[0,2]);
+  assert.equal(L.chooseEntry(files,surfaces),paths[4]);
   const {compiler}=await linkAndCompile(room);
   const events=room.snapshot().events;
-  assert.ok(events.some(e=>e.kind==='compile_entry'&&e.body===`Application entry: ${paths[3]}.`));
+  assert.ok(events.some(e=>e.kind==='compile_entry'&&e.body===`Application entry: ${paths[4]}.`),trace(room));
   assert.equal(calls.link.length,0);
-  assert.equal(calls.runner.length,0);
-  assert.deepEqual(lastReport(room,compiler.id).issues.map(i=>[i.kind,i.path]),[['entry',paths[3]]]);
+  assert.equal(calls.runner.length,1);
+  assert.equal(room.node(compiler.id).status,'done',trace(room));
+  assert.equal(room.problems('1=1').length,0,'no worker is told it writes the entry');
+  for(const id of ['root.4','root.5'])assert.equal(room.receive(id).length,0);
+});
+
+// v7.14 review: an import that resolves nowhere is offered the module named
+// as it first, then the modules exporting what it reads, its own branch
+// first; never a module that imports the reader (a cycle).
+test('unresolved: the module named as the import, then providers, nearest first; never one that imports the reader',()=>{
+  const files=new Map([
+    ['components/e/app.js',"const svc = require('../b/components/s/service.js');\nfunction start() { return svc; }\nmodule.exports = { start };\n"],
+    ['components/b/components/s/service.js',"const repo = require('./ticketRepository');\nconst { parse } = require('./statusParser');\nmodule.exports = { add: (t) => repo.addTicket(parse(t)) };\n"],
+    ['components/b/components/p/parseStatus.js',"module.exports = { parseStatus: (s) => s };\n"],
+    ['components/r/ticketRepository.js',"module.exports = { createTicket(t) { return t; }, listTickets() { return []; } };\n"],
+    ['components/x/report.js',"module.exports = { addTicket() {} };\n"],
+    ['components/y/zz.js',"module.exports = { other() {} };\n"]]);
+  const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
+  const reader='components/b/components/s/service.js';
+  const repo=L.importOffers(files,surfaces,reader,'./ticketRepository',['addTicket']);
+  assert.equal(repo.named,'components/r/ticketRepository.js');
+  assert.deepEqual(repo.offered,['components/r/ticketRepository.js','components/x/report.js'],'the named module, then the one exporting addTicket');
+  const parser=L.importOffers(files,surfaces,reader,'./statusParser',['parse']);
+  assert.equal(parser.named,'');
+  assert.equal(parser.offered[0],'components/b/components/p/parseStatus.js','its own branch first');
+  assert.ok(!parser.offered.includes('components/e/app.js'),'not the entry, which imports the reader');
+});
+
+// v7.14 review: two problems for one worker whose facts share a module (an
+// import of the repository by a name it lacks, and the entry problem listing
+// what each child offers) list that module once; the contract rides once.
+test('room: a ticket lists each module once, however many of its problems name it, and the entry contract once',async()=>{
+  const app="const repo = require('./ticketRepository');\nconsole.log(repo.addTicket('Printer jam'));\n";
+  const {room}=liveRoom();
+  const paths=await workersUnder(room,run3bGoal,[['Ticket Repository','ticketRepository.js',run3bRepo],['Command Parser','commandParser.js',run3bParser],['Application Entry','app.js',app]]);
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
   await room.turn('root');
-  assert.equal(tickets(room,'root.4').length,1);
-  assert.equal(room.receive('root.5').length,0);
+  assert.deepEqual(room.problems('1=1').map(p=>[p.kind,p.assignee]).sort(),[['entry','root.3'],['unresolved','root.3']]);
+  const [sent]=tickets(room,'root.3');
+  assert.match(sent,/'\.\/ticketRepository' is ticketRepository\.js, listed below with what it really exports/,'the module named as the import');
+  assert.match(sent,/No application entry/);
+  assert.equal(sent.split('ticketRepository.js exports:').length,2,'the repository once');
+  assert.equal(sent.split('You write the application entry module').length,2,'the contract once');
+  assert.ok(paths[2]);
 });
 
 // v7.14 (critique #17): while Root's builder reports link problems, the

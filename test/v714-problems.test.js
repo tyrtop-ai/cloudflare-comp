@@ -381,7 +381,7 @@ test('v7.14: one error in a stack of several modules is one problem, and the mod
   // Root relinks first (D5); the relink changes nothing; the thrower's worker changes it.
   await runReady(room,['root',builder.id,compiler.id]);
   const [now]=room.problems('1=1');
-  assert.deepEqual([now.status,now.assignee,now.flags.builder_tried],['assigned','root.2',true]);
+  assert.deepEqual([now.status,now.assignee,now.flags.builder_tried],['assigned','root.2',[builder.id]]);
   assert.deepEqual(now.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relink',builder.id,'D5'],[builder.id,'returned','root',undefined],['root','assign','root.2','default']]);
   assert.match(tickets(room,'root.2')[0],/Problems: lookup\.js: smoke failed[^]*s\.view is not a function/);
   assert.equal(room.receive('root.3').length,0);
@@ -435,8 +435,12 @@ test('v7.14: out of repair rounds, the top fails the run; a lower manager tells 
 
 // A worker that finishes a repair without changing a file leaves the same
 // source and fingerprint behind: its problem opens again and its manager
-// decides it again (critique #4), with no new round, until MAX_HOPS closes it.
-test('v7.14: a repair that changes nothing reopens the problem for its manager, without a new round, until the hop limit closes it',async()=>{
+// decides it again (critique #4), with no new round. Slice 1 has no model
+// for a recurrence (M4), so the same ticket would go out until MAX_HOPS:
+// at STUCK_AFTER unchanged repairs the problem is closed instead, and with
+// its builder still waiting and nothing else in flight the top fails rather
+// than pausing for a Continue that would repeat it (v7.14 review).
+test('v7.14: a repair that changes nothing reopens the problem once; a second closes it, and the top fails instead of pausing',async()=>{
   const {room}=liveRoom();
   await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
   await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
@@ -455,10 +459,38 @@ test('v7.14: a repair that changes nothing reopens the problem for its manager, 
   assert.ok(events(room,'problem_reopened').length);
   assert.equal(tickets(room,'root.2').length,1,'a fresh ticket');
   assert.equal(Number(room.get('repair_rounds:root')),1,'the same wave: no new round');
-  for(let i=0;i<4;i++){finishUnchanged();await step(room,'root');}
-  assert.deepEqual([row().status,row().outcome],['closed','exhausted']);
-  assert.deepEqual(row().trail.map(t=>t.action),['assign','assign','assign','assign','close'],'MAX_HOPS(1) decisions, then closed');
-  assert.ok(events(room,'problem_exhausted').some(e=>/4 decisions without a fix/.test(e.body)));
+  finishUnchanged();
+  await step(room,'root');
+  assert.deepEqual([row().status,row().outcome,row().flags.no_change],['closed','exhausted',2]);
+  assert.deepEqual(row().trail.map(t=>[t.action,t.rule]),[['assign','D6'],['assign','D6'],['close','no_change']],'two tickets, not MAX_HOPS');
+  assert.equal(tickets(room,'root.2').length,0,'no third ticket');
+  assert.ok(events(room,'problem_exhausted').some(e=>/Ticket service finished 2 repairs without changing its files/.test(e.body)));
+  assert.equal(room.node(b.id).status,'waiting','its builder still waits on it');
+  assert.equal(room.node('root').status,'failed');
+  assert.match(room.node('root').summary,/^Repair exhausted: a mismatch problem was closed without a fix \(Ticket service finished 2 repairs/);
+});
+
+// A problem closed without a fix while other repairs of its report are in
+// flight leaves the run going: those repairs change the source, and the
+// builder links and reports again.
+test('v7.14: a problem closed without a fix fails nothing while the source can still change',async()=>{
+  const reader2=service.replace("repo.add(d)","repo.insert(d)").replace("get: (id) => repo.read(id)","get: (id) => repo.fetch(id)");
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service],['Ticket lookup','ticketLookup.js',reader2]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  await room.turn('root');
+  assert.deepEqual([...new Set(room.problems("status='assigned'").map(p=>p.assignee))].sort(),['root.2','root.3']);
+  // root.2 returns unchanged twice; root.3 has not finished its repair.
+  for(let i=0;i<2;i++) {
+    room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.2'");room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");
+    await step(room,'root');
+  }
+  assert.ok(room.problems("assignee='root.2'").every(p=>p.status==='closed'&&p.outcome==='exhausted'));
+  assert.ok(room.problems("assignee='root.3'").every(p=>p.status==='assigned'));
+  assert.notEqual(room.node('root').status,'failed','root.3 may still change the source');
+  assert.equal(room.get('rounds_exhausted:root'),'');
 });
 
 // A decision applies to a row only as it was read: one a reporter
@@ -513,6 +545,152 @@ test('v7.14: an interface error inside a branch is relinked by that branch\'s bu
   assert.ok(relink.previous_attempt_error.startsWith(`Running the application failed after your renames: ${svcPath}: `),'the branch builder hears its own path');
   assert.equal(room.receive('root.1.2').length,0,'no worker changes code');
   assert.equal(room.get('repair_rounds:root.1'),'1');
+});
+
+// v7.14 review: Root's builder renamed only the path of another import in
+// the failing file (to root.2's config). That rename did not cause the
+// error, so the branch's own builder still relinks first, and Root neither
+// relinks nor spends a round on it (critique #23 counts only a builder's
+// own edit at the failing site).
+test('v7.14: a top-builder rename elsewhere in the failing file does not make it relink first; the branch builder does',async()=>{
+  const lookup="const makeStore = require('./store');\nconst { pageSize } = require('./config');\nconst s = makeStore();\nmodule.exports = { add: (d) => s.create(d), get: (id) => s.view(id), limit: () => pageSize };\n";
+  const app="const svc = require('./ticketService');\nfunction start() {\n  return { createTicket: svc.add, viewTicket: svc.get };\n}\nmodule.exports = { start };\n";
+  const link=user=>{
+    const svc=user.your_files.find(f=>f.path.endsWith('/ticketService.js'));
+    return {edits:user.scope==='branch'&&svc&&/s\.view is not a function/.test(user.previous_attempt_error||'')?[{file:svc.path,find:'s.view(id)',replace:'s.read(id)'}]:[],issues:[]};
+  };
+  const {room,calls}=liveRoom({link,runner:()=>viewRunner});
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Tickets'],['Application entry','app.js',app],['Settings','config.js','module.exports = { pageSize: 20 };\n']]);
+  await workers(room,'root.1',[['Store','store.js',factoryStore],['Ticket service','ticketService.js',lookup]]);
+  const branch=await room.scheduleAssembly('root.1');
+  await room.turn(branch.id);
+  await room.turn('root.1');
+  const {builder,compiler}=await linkAndCompile(room);
+  assert.ok(events(room,'link_auto').some(e=>e.actor===builder.id&&/ticketService\.js: '\.\/config' →/.test(e.body)),'Root\'s builder renamed the config import in the failing file');
+  await runReady(room,['root','root.1',branch.id,builder.id,compiler.id]);
+  assert.equal(room.node(compiler.id).status,'done',trace(room));
+  const [row]=room.problems('1=1');
+  assert.deepEqual(row.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','delegate','root.1','D3'],['root.1','relink',branch.id,'D5']]);
+  assert.deepEqual([row.status,row.outcome],['closed','relinked']);
+  assert.ok(calls.link.some(c=>c.scope==='branch'&&/s\.view is not a function/.test(c.previous_attempt_error||'')));
+  assert.equal(room.receive('root.1.2').length,0,'no worker changes code');
+  assert.equal(room.get('repair_rounds:root'),'','Root spends no round');
+});
+
+// v7.14 review: the compiler, requested by Root, found the top builder not
+// current (a child was briefly woken) and waited. When the child is done
+// again the bundle and the source are the same as requested: the compiler is
+// requested again, not left waiting for good.
+test('v7.14: a compiler that waited for the top builder is requested again once it is current',async()=>{
+  const app="function start() {\n  return { createTicket: (d) => ({ id: 1, ...d }) };\n}\nmodule.exports = { start };\n";
+  const {room,calls,drain}=liveRoom({runner:()=>ticketRunner,leaf:()=>({summary:'Nothing to change',done:true,files:[]})});
+  await tree(room,'Build a small issue tracker that lets someone create tickets.');
+  await workers(room,'root',[['Application entry','app.js',app],['Formatter','format.js',"module.exports = { fmt: (t) => '#' + t.id };\n"]]);
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  await room.turn('root');
+  const compiler=room.compilerOf('root');
+  assert.ok(room.get('compile_requested'));
+  room.send('root','root.2','FYI: the ticket store answered your earlier question.');
+  await room.turn(compiler.id);
+  assert.equal(room.node(compiler.id).status,'waiting');
+  assert.equal(room.get('compile_requested'),'','the wait clears the request');
+  await settle(room,20);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(calls.runner.length,1);
+  // Continue wakes a waiting compiler whenever the top builder is current
+  // and the compile has not passed, reported or not.
+  const again=liveRoom({runner:()=>ticketRunner});
+  await tree(again.room,'Build a small issue tracker that lets someone create tickets.');
+  await workers(again.room,'root',[['Application entry','app.js',app],['Formatter','format.js',"module.exports = { fmt: (t) => '#' + t.id };\n"]]);
+  const b=await again.room.scheduleAssembly('root');
+  await again.room.turn(b.id);
+  await again.room.turn('root');
+  const c=again.room.compilerOf('root');
+  again.room.db().exec("UPDATE agents SET status='waiting' WHERE id=?",c.id);
+  assert.equal(again.room.read('compile_reported',null),null);
+  again.room.set('status','paused');
+  await again.room.resume(10);
+  await again.drain();
+  assert.equal(again.room.get('status'),'complete',trace(again.room));
+});
+
+// v7.14 review: a repair that changes the source but links to the same
+// bytes as the failed bundle (the worker only adopted the builder's import
+// path) runs the compiler again, which reports again: the room does not
+// pause on a problem assigned to a worker who is done.
+test('v7.14: new source that links to the bundle that failed runs the compiler again',async()=>{
+  const repo="const rows = new Map();\nlet next = 1;\nmodule.exports = {\n  create(d) { const t = { id: next++, ...d }; rows.set(t.id, t); return { ...t }; },\n  read(id) { return rows.get(id) || null; },\n  remove(id) { return rows.delete(id); }\n};\n";
+  const app="const repo = require('./repository');\nfunction start() {\n  return { createTicket: (d) => repo.create(d), viewTicket: (id) => repo.read(id), deleteTicket: (id) => true };\n}\nmodule.exports = { start };\n";
+  const runner=`const assert = require('node:assert/strict');
+const { start } = require('./index.js');
+(async () => {
+  const app = await start();
+  const t = await app.createTicket({ title: 'Printer jam' });
+  await app.deleteTicket(t.id);
+  assert.equal(await app.viewTicket(t.id), null, 'deleted ticket must be gone');
+})().catch(e => { console.error(e); process.exitCode = 1; });
+`;
+  let repairs=[];
+  const {room,calls}=liveRoom({runner:()=>runner,triage:user=>({file:user.modules.find(m=>m.path.endsWith('/app.js')).path,problem:'deleteTicket does not delete.'}),
+    leaf:(u,n)=>({summary:'Repaired',done:true,files:[{path:'app.js',content:repairs[n-1]}]})});
+  await tree(room,'Build a small issue tracker that lets someone create, view and delete tickets.');
+  const [repoPath]=await workers(room,'root',[['Repository','repository.js',repo],['Application entry','app.js',app]]);
+  // First repair: only the builder's import path (the same linked bytes); second: the fix.
+  const adopted=app.replace("'./repository'",`'../${repoPath.split('/').slice(1).join('/')}'`);
+  repairs=[adopted,adopted.replace('deleteTicket: (id) => true','deleteTicket: (id) => repo.remove(id)')];
+  await settle(room,40);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(calls.leaf.length,2);
+  // The first test that ran is fixed for the run (run4), so the runner writes once.
+  assert.equal(calls.runner.length,1);
+  assert.equal(events(room,'runner_reused').length,2,'the compiler ran the same bytes again for the new source');
+  assert.equal(events(room,'run_failed').length,2);
+});
+
+// v7.14 review: a problem closed after MAX_HOPS decisions leaves its
+// reporter waiting with nothing in flight: the top fails instead of pausing.
+test('v7.14: a problem closed at the hop limit, with its reporter waiting and nothing in flight, fails the top',async()=>{
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service],['Application entry','app.js',entry]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.equal(room.node(b.id).status,'waiting');
+  const trail=Array.from({length:4},()=>({at:'root',action:'assign',to:'root.2',rule:'D6',ts:0}));
+  room.db().exec('UPDATE problems SET trail=?',JSON.stringify(trail));
+  await room.turn('root');
+  assert.deepEqual(room.problems('1=1').map(p=>[p.status,p.outcome]),[['closed','exhausted']]);
+  assert.equal(tickets(room,'root.2').length,0);
+  assert.equal(room.node('root').status,'failed');
+  assert.match(room.node('root').summary,/^Repair exhausted: a mismatch problem was closed without a fix \(4 decisions without a fix\)/);
+});
+
+// v7.14 review: a manager that relays its parent's decision to a worker
+// keeps it as the parent's, so when the worker returns its file unchanged
+// and the problem opens again, the manager relays it again (D1) instead of
+// escalating it back up (D2) as if nobody had decided.
+test('v7.14: a relayed problem reopened below is relayed again, not escalated',async()=>{
+  const reader="const repo = require('./repository');\nmodule.exports = { add: (d) => repo.add(d), get: (id) => repo.read(id) };\n";
+  const {room}=liveRoom();
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Services'],['Repository','repository.js',repository],['Application entry','app.js',entry]]);
+  await workers(room,'root.1',[['Formatter','format.js',"module.exports = { fmt: (t) => '#' + t.id };\n"],['Ticket service','ticketService.js',reader]]);
+  const branch=await room.scheduleAssembly('root.1');
+  await room.turn(branch.id);
+  await room.turn('root.1');
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  await room.turn('root');
+  const id=room.problems("kind='mismatch'")[0].id,row=()=>room.problems('id=?',id)[0];
+  assert.deepEqual(row().trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relay','root.1','D6']]);
+  await room.turn('root.1');
+  assert.deepEqual([row().status,row().assignee,row().directive.by],['assigned','root.1.2','root'],'the decision stays Root\'s');
+  room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.1.2'");room.db().exec("UPDATE agents SET status='done' WHERE id='root.1.2'");
+  await step(room,'root.1');
+  assert.deepEqual(row().trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relay','root.1','D6'],['root.1','assign','root.1.2','D1'],['root.1','assign','root.1.2','D1']]);
+  assert.equal(events(room,'problem_escalated').length,0);
 });
 
 // Rooms started before v7.14 keep Root-keyed build state (build_failure:root,

@@ -78,17 +78,33 @@ const { start } = require('./index.js');
 
 // ------------------------------------------------------------------ rooms
 // A live room with a scripted linker, runner, triage and coverage check. Any
-// other model request fails the test: in slice 1 no manager calls a model.
-// leaf(user, n) answers a worker's turn (a repair) when a test drives the
-// room with drive(); without it a worker turn fails the test. coverage(user,
-// n) answers the API coverage gate; by default with no mapping, so the gate
-// fails open, as these rooms predate it (v7.13.3).
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,triage=()=>null,coverage=()=>({}),leaf=null,executor,room_id='v714-test'}={}) {
-  const calls={link:[],runner:[],triage:[],leaf:[],coverage:[]};
-  const AI={run:async(_model,{messages})=>{
-    const system=messages[0].content,user=JSON.parse(messages[1].content);
+// other model request fails the request (and so the turn, or, for a
+// manager's model, the decision: its defaults apply). leaf(user, n) answers
+// a worker's turn (a repair) when a test drives the room with drive();
+// file(user, n) a worker's single-file correction; manager(user, n) a
+// manager's decision (an object, or raw text); split(user, n) the splitter;
+// clef(input, n) a Clef gate, scope or routing question. Every manager
+// request is recorded. coverage(user, n) answers the API coverage gate; by
+// default with no mapping, so the gate fails open, as these rooms predate
+// it (v7.13.3).
+export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,triage=()=>null,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,executor,room_id='v714-test'}={}) {
+  const calls={link:[],runner:[],triage:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[]};
+  const AI={run:async(_model,input)=>{
+    if(!input.messages) {
+      if(!clef)throw new Error('unexpected Clef request');
+      calls.clef.push(input);return clef(input,calls.clef.length);
+    }
+    const {messages}=input,system=messages[0].content,user=JSON.parse(messages[1].content);
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push(user);const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
+    if(system.startsWith('You are a MANAGER')) {
+      calls.manager.push(user);
+      if(!manager)throw new Error('no manager model in this test');
+      const answer=await manager(user,calls.manager.length);
+      return {response:typeof answer==='string'?answer:JSON.stringify(answer)};
+    }
+    if(split&&system.startsWith('You are a CODE SPLITTER')){calls.split.push(user);return {response:JSON.stringify(split(user,calls.split.length))};}
+    if(file&&system.includes('building ONE file')){calls.file.push(user);return {response:file(user,calls.file.length)};}
     if(leaf&&system.includes('LEAF CODE WRITER')){calls.leaf.push(user);return {response:JSON.stringify(leaf(user,calls.leaf.length))};}
     if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}
     if(system.startsWith('You are the BUILDER doing triage')){calls.triage.push(user);return {response:JSON.stringify(triage(user))};}

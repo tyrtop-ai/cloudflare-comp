@@ -381,7 +381,7 @@ test('v7.15: run6 replay (A): a worker missing a promised export is sent back be
   assert.equal(message.from,'runtime:contract');
   assert.equal(message.body,"[contract] Your published files do not export: createTicket(title, description): creates a ticket and returns it. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function createTicket(…) or exports.createTicket = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file. createTicket.js imports createTicket from './ticketStore', but createTicket is yours to write: write it in your own module instead of importing it.");
   assert.equal(room.get('contract_returns:root.3'),'1');
-  assert.equal(room.read('failures',{})['root.3'],0);
+  assert.equal(room.read('failures',{})['root.3']||0,0);
   assert.equal(events(room,'contract_missing')[0].body,'Done refused (1/3): createTicket promised and not exported; back to the worker.');
   // Publishing wakes the manager for provisional linking, as before; the
   // return does not: no completion report and no returned mark.
@@ -402,14 +402,14 @@ test('v7.15: the third contract return accepts done and records contract_unmet; 
     await room.turn('root.3');
     assert.equal(room.node('root.3').status,'ready');
     assert.equal(room.get('contract_returns:root.3'),String(k));
-    assert.equal(room.read('failures',{})['root.3'],0);
+    assert.equal(room.read('failures',{})['root.3']||0,0);
   }
   await room.turn('root.3');
   assert.equal(room.node('root.3').status,'done','the done is accepted');
   assert.deepEqual(events(room,'contract_missing').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
   assert.equal(events(room,'contract_unmet')[0].body,'createTicket promised and still not exported after 3 returns; accepted, and the gap goes to the manager.');
   assert.equal(events(room,'paused').length,0,'a contract return never pauses');
-  assert.equal(room.read('failures',{})['root.3'],0);
+  assert.equal(room.read('failures',{})['root.3']||0,0);
 });
 
 test('v7.15: a class or instance default does not satisfy a promise; named exports and members of a default object do',()=>{
@@ -584,7 +584,7 @@ test('v7.15: an atomic Root reads start without the clause on asking a manager, 
   assert.deepEqual(events(room,'ask_dropped').map(e=>e.body),['The top has no manager; it writes what it needs.']);
   assert.equal(events(room,'error').length,0);
   assert.equal(room.db().exec('SELECT * FROM route_workers').toArray().length,0);
-  assert.deepEqual([room.node('root').status,room.read('failures',{}).root],['ready',0],'not waiting for an answer nobody owes it');
+  assert.deepEqual([room.node('root').status,room.read('failures',{}).root||0],['ready',0],'not waiting for an answer nobody owes it');
   await room.resume(1);await drain();
   assert.equal(ai.calls.filter(c=>c.kind==='leaf').length,2,'Continue asks the model again');
   assert.equal(events(room,'build_unavailable').length,1,'its done reaches the atomic build check');

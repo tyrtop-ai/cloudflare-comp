@@ -3,17 +3,17 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
 import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, missingExports, selfImports } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, selfImports } from './linker.js';
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature } from './interfaces.js';
-import { snapshotHash, validateBuildFiles, normalizeBuildResult } from './build-verification.js';
+import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
-import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, deterministicDecision, validateDecision, instructionsFor, repairText } from './problems.js';
+import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -37,6 +37,11 @@ const isRuntimeNode = n => !!n && RUNTIME_LABELS.includes(n.label);
 const ROOM_SCHEMA = '7.14';
 // Problem rows hold JSON in these columns.
 const PROBLEM_JSON = ['parties','facts','evidence','directive','flags','trail'];
+// A failed turn the code gate caused (spec 3.2): the worker's own output was
+// rejected, not the infrastructure (an Artifacts commit, a network error).
+const CODE_GATE = /^(?:missing_code|non_code_rejected|split_rejected|code_retry)\b|Worker artifact rejected|Leaf outputs must be executable|Leaf cannot finish without|Bad (?:decomposition|action) response/;
+// The events a stuck worker's manager reads as its last failures.
+const FAILURE_EVENTS = ['error','missing_code','non_code_rejected','split_rejected','code_retry'];
 const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
 // One module's exports on one line, for the facts a worker hears.
 const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
@@ -102,8 +107,9 @@ export function normalizeTurnBudget(value) {
 }
 // After an agent delegates, it only routes, remembers and publishes *references*.
 // Older rooms used 'compose'; the legacy phase is manager-equivalent.
+// A retasked sub-manager whose branch was retired splits again as a new child.
 const isManager = (agent, children = []) => !!agent &&
-  (agent.phase === 'manager' || agent.phase === 'compose' || children.length > 0);
+  (agent.phase === 'manager' || agent.phase === 'compose' || children.some(c=>c.status!=='retired'));
 
 
 // Constant work for secrets of equal maximum lengths; avoids plain string comparison.
@@ -563,7 +569,7 @@ export class ControlRoom extends DurableObject {
       return total+pending;
     },0);
   }
-  productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)).length;}
+  productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)&&n.status!=='retired').length;}
   // v7.15: a node's promise, the only accessor.
   promisedOf(id) {const n=this.node(id);return n?parse(n.interfaces,[]):[];}
   // The promises of one level's live direct children, minus the branch a
@@ -703,12 +709,13 @@ export class ControlRoom extends DurableObject {
   }
   assemblySources(id) {
     const live=this.env.MOCK_AI!=='true';
-    return this.children(id).filter(c=>!isRuntimeNode(c)).map(child=>{
+    return this.children(id).filter(c=>!isRuntimeNode(c)&&c.status!=='retired').map(child=>{
       // v7.11: a manager child is represented by its own builder's linked
-      // components, never by its raw descendants.
+      // components, never by its raw descendants (a retired child's stay in
+      // the builder's repository, out of the bundle).
       if(live && this.manager(child.id)) {
-        const builder=this.builderOf(child.id);
-        const files=builder?this.files(builder.id).filter(f=>f.path.startsWith('components/'))
+        const builder=this.builderOf(child.id),retired=new Set(builder?this.read(`retired_components:${builder.id}`,[]):[]);
+        const files=builder?this.files(builder.id).filter(f=>f.path.startsWith('components/')&&!retired.has(f.path))
           .map(f=>({path:f.path,revision:f.revision,owner:builder.id,sourceLabel:child.label,delegated:true})):[];
         return {child,files,delegated:true};
       }
@@ -857,7 +864,9 @@ export class ControlRoom extends DurableObject {
         '. Every worker under this manager has finished. Change only import paths and identifier names (and the runtime\'s import binding fixes) so the modules of this manager\'s direct children agree. '+
         (this.node(id).parent?'An import that resolves outside this branch goes to the branch boundary for the builder above.':'This is the top level: an import that resolves nowhere is reported to the manager.')+
         ' Anything renaming cannot fix inside the branch is reported to the manager, which decides who changes it.';
-      const created=await this.spawn(id,[{label:'Temporary builder',task}],`builder:${id}`);
+      // A retasked manager's fresh builder is a new generation (builder:<id>:<gen>).
+      const gen=Number(this.get(`builder_gen:${id}`,'0'));
+      const created=await this.spawn(id,[{label:'Temporary builder',task}],gen?`builder:${id}:${gen}`:`builder:${id}`);
       builder=created[0];
       if(!builder) {this.event(id,'integration_capacity','No builder slot available.');return null;}
       this.set(`builder_requested:${id}`,fingerprint);
@@ -1045,12 +1054,26 @@ export class ControlRoom extends DurableObject {
     }
     return builder===to?current:null;
   }
-  // Whether a builder's own edits changed this file of its bundle: its
-  // published copy differs from the source it copied.
-  async editedBy(builderId, path) {
+  // Whether this builder's own edit to file `path` of its bundle caused an
+  // error (critique #23): a name or path it put into the failing line (or,
+  // when the error names no line of the file, into any line) appears in the
+  // error's message. A rename elsewhere in the file, such as the path of an
+  // unrelated import, does not. site: the file's path in the error's bundle.
+  async editCaused(builderId, path, site, detail) {
     const row=query(this.db(),'SELECT child,source_path FROM builder_sources WHERE builder=? AND destination=?',builderId,path)[0];
     if(!row||!this.files(builderId).some(f=>f.path===path))return false;
-    try {return await this.indexedContent(builderId,path)!==await this.indexedContent(row.child,row.source_path);} catch {return false;}
+    let copy,source;
+    try {copy=await this.indexedContent(builderId,path);source=await this.indexedContent(row.child,row.source_path);} catch {return false;}
+    if(copy===source)return false;
+    // The rename notes annotateRenames adds list every builder's renames.
+    const error=String(detail||'').replace(/\.? ?Builder renames in [^]*$/,''),a=copy.split('\n'),b=source.split('\n');
+    const at=error.match(new RegExp(site.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+':(\\d+):\\d+'));
+    const lines=at&&a.length===b.length?[Number(at[1])-1]:a.map((_,i)=>i);
+    const quoted=/'[^'\n]*'|"[^"\n]*"|`[^`\n]*`/g;
+    const words=t=>[...(t.match(quoted)||[]).map(s=>s.slice(1,-1)),...(t.replace(quoted,' ').match(/[A-Za-z_$][\w$]*/g)||[])];
+    const added=new Set(lines.flatMap(i=>{const old=new Set(words(b[i]??''));return words(a[i]??'').filter(w=>w&&!old.has(w));}));
+    const head=error.split('\n')[0],bare=head.replace(/\S*\/\S*/g,' ');
+    return [...added].some(w=>w.includes('/')?head.includes(w.replace(/^(?:\.\.?\/)+/,'')):new RegExp(`(?:^|[^\\w$])${w.replace(/\$/g,'\\$')}(?![\\w$])`).test(bare));
   }
   // A worker's repair message, from the ticket its manager sent. Problems
   // closed since are left out; a ticket whose problems all closed says so.
@@ -1442,7 +1465,7 @@ export class ControlRoom extends DurableObject {
     const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
     const ids=list.map(x=>this.insertProblem({holder:manager,kind:x.kind,stage,source,input,parties:this.partiesOf(via,x),detail:x.detail,
       facts:{...x.facts,via},evidence:x.evidence,flags:{wave}}));
-    if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,stage,problems:ids,ts:Date.now()});
+    if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,fingerprint:this.assemblyFingerprint(manager),stage,problems:ids,ts:Date.now()});
     else this.save(`link_reported:${manager}`,{fingerprint:input,stage,problems:ids,ts:Date.now()});
     db.exec("UPDATE agents SET status='waiting' WHERE id=?",source);
     this.event(source,'problems_reported',`${ids.length} problem(s) that renaming cannot fix go to the manager, which decides who changes what: `+
@@ -1494,10 +1517,9 @@ export class ControlRoom extends DurableObject {
     if(top)for(const u of link.unresolved) {
       const ref=importRefs(u.path,files.get(u.path)).find(r=>r.specifier===u.specifier);
       const names=[...new Set([...(ref?.names||[]),...(ref?.members||[])])].filter(Boolean);
-      const providers=[...surfaces.keys()].filter(p=>p!==u.path&&names.some(n=>providedNames(surfaces.get(p)).has(n))).slice(0,4);
-      const offered=providers.length?providers:branchBoundary(files).exports.filter(p=>p!==u.path).slice(0,6);
+      const {named,offered}=importOffers(files,surfaces,u.path,u.specifier,names);
       items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`,
-        facts:{specifier:u.specifier,names,provider_text:clip(offered.map(exportsText).join(' | '),700)}});
+        facts:{specifier:u.specifier,names,named,provider_text:clip(offered.map(exportsText).join(' | '),700)}});
     }
     for(const m of link.mismatches) {
       const same=reads.filter(r=>r.target===m.target),others=new Map(),sur=surfaces.get(m.target),d=sur?.default;
@@ -1512,11 +1534,12 @@ export class ControlRoom extends DurableObject {
     return items;
   }
   // A model note rides with the static problems that name its file; with
-  // none, it is only an event and reaches no worker.
+  // none, it is only an event and reaches no worker. A note on a problem's
+  // provider blames that side (the manager's model decides, M3).
   withEvidence(builderId, items, notes) {
     for(const note of notes) {
       const hit=items.filter(x=>x.path===note.path||x.target===note.path);
-      if(hit.length)for(const x of hit)x.evidence=[...(x.evidence||[]),clip(note.detail,300)];
+      if(hit.length)for(const x of hit){x.evidence=[...(x.evidence||[]),clip(note.detail,300)];if(x.target===note.path)x.facts={...x.facts,provider_blamed:true};}
       else this.event(builderId,'link_note',clip(`${note.path}: ${note.detail}`,700));
     }
     return items;
@@ -1530,9 +1553,10 @@ export class ControlRoom extends DurableObject {
     }).join('; ');
   }
   // A relink the manager asked for that changed nothing: its problems go
-  // back to the manager, marked so it does not ask the builder again.
+  // back to the manager, marked so it does not ask this builder again (a
+  // builder below, which never tried, still may).
   returnToManager(builderId, m, rows) {
-    for(const row of rows)this.moveProblem(row,{status:'open',assignee:'',flags:{...row.flags,builder_tried:true},trail:[...row.trail,{at:builderId,action:'returned',to:m,ts:Date.now()}]});
+    for(const row of rows)this.moveProblem(row,{status:'open',assignee:'',flags:{...row.flags,builder_tried:[...new Set([...[].concat(row.flags.builder_tried||[]),builderId])]},trail:[...row.trail,{at:builderId,action:'returned',to:m,ts:Date.now()}]});
     this.event(builderId,'problem_returned',`The relink changed nothing; ${rows.length} problem(s) go back to the manager.`,m);
   }
   // One builder turn at every level: link this manager's direct children
@@ -1616,22 +1640,23 @@ export class ControlRoom extends DurableObject {
 
   // ---------- the compiler ----------
   // One compiler per run, a child of the top manager, scheduled once the top
-  // builder linked the current source; it runs again for every new bundle.
+  // builder linked the current source; it runs again for every new bundle,
+  // and for new source that links to the same bundle as a failed one.
   async scheduleCompiler(top) {
     const n=this.node(top);
     if(!this.live()||!n||n.parent)return null;
-    const builder=this.builderOf(top),input=this.read(`bundle:${top}`,null)?.digest;
+    const builder=this.builderOf(top),input=this.read(`bundle:${top}`,null)?.digest,request=`${input}|${this.assemblyFingerprint(top)}`;
     if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input)return null;
     let compiler=this.compilerOf(top);
     if(!compiler) {
       compiler=await this.spawnCompiler(top);
       if(!compiler)return null;
-      this.set('compile_requested',input);
+      this.set('compile_requested',request);
       this.event(top,'compile_requested','The top builder linked the application; the compiler runs it.',compiler.id);
       return compiler;
     }
-    if(this.read('compile_passed',null)?.input!==input&&this.get('compile_requested')!==input) {
-      this.set('compile_requested',input);
+    if(this.read('compile_passed',null)?.input!==input&&this.get('compile_requested')!==request) {
+      this.set('compile_requested',request);
       this.event(top,'compile_requested','The top builder linked a new bundle; the compiler runs it again.',compiler.id);
       this.wake(compiler.id);
     }
@@ -1648,8 +1673,9 @@ export class ControlRoom extends DurableObject {
   // problems' wave, so a worker hears both in one ticket (critique #17).
   async compileStatic(top) {
     const builder=this.builderOf(top),reported=this.read(`link_reported:${top}`,null),input=this.read(`bundle:${top}`,null)?.digest;
-    if(!this.live()||this.node(top)?.parent||builder?.status!=='waiting'||!input||reported?.fingerprint!==this.assemblyFingerprint(top)||
-      this.read('compile_reported',null)?.input===input)return;
+    const fingerprint=this.assemblyFingerprint(top),prior=this.read('compile_reported',null);
+    if(!this.live()||this.node(top)?.parent||builder?.status!=='waiting'||!input||reported?.fingerprint!==fingerprint||
+      prior?.input===input&&prior.fingerprint===fingerprint)return;
     const compiler=this.compilerOf(top)||await this.spawnCompiler(top);
     if(!compiler)return;
     const files=await this.linkedBundle(builder.id),surfaces=surfacesOf(files),entry=chooseEntry(files,surfaces);
@@ -1657,7 +1683,7 @@ export class ControlRoom extends DurableObject {
     if(entry) {
       // An entry problem an earlier bundle had is settled.
       this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='entry' AND status!='closed'",Date.now(),compiler.id);
-      this.save('compile_reported',{input,stage:'static',problems:[],ts:Date.now()});
+      this.save('compile_reported',{input,fingerprint,stage:'static',problems:[],ts:Date.now()});
       return;
     }
     const wave=this.problems('id=?',reported.problems?.[0]??'')[0]?.flags.wave;
@@ -1665,9 +1691,10 @@ export class ControlRoom extends DurableObject {
     this.save('compile_reported',{...this.read('compile_reported',null),stage:'static'});
   }
   // What the compiler files when no module exports start(): the module most
-  // likely to compose the application hears the contract, with the boundary
-  // of each of the top's children (what each offers to compose).
-  entryProblem(builderId, files, surfaces, path=entryCandidate(files)||'', detail=`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`) {
+  // likely to compose the application hears the contract (the entry
+  // instructions carry it), with the boundary of each of the top's children
+  // (what each offers to compose).
+  entryProblem(builderId, files, surfaces, path=entryCandidate(files)||'', detail='No application entry: no module exports start() to compose the application.') {
     const groups=new Map();
     for(const r of query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=? ORDER BY destination',builderId))
       if(files.has(r.destination))groups.set(r.child,[...(groups.get(r.child)||[]),r.destination]);
@@ -1714,17 +1741,22 @@ export class ControlRoom extends DurableObject {
     const inbox=this.receive(id);
     if(inbox.length)this.acknowledge(id,inbox);
     const wait=(kind,body)=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.event(id,kind,body);};
-    const input=this.read(`bundle:${top}`,null)?.digest;
-    if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input)return wait('compile_waiting','Waiting for the top builder to link the current source.');
+    const input=this.read(`bundle:${top}`,null)?.digest,fingerprint=this.assemblyFingerprint(top);
+    if(!builder||builder.status!=='done'||!this.builderCurrent(top)||!input) {
+      // The top re-requests this compiler once its builder is current again.
+      this.set('compile_requested','');
+      return wait('compile_waiting','Waiting for the top builder to link the current source.');
+    }
     if(this.read('compile_passed',null)?.input===input) {
       this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
       this.wake(top);
       return;
     }
     if(this.read('compile_blocked',null)?.input===input)return wait('build_blocked','Container infrastructure blocked this unchanged bundle; Continue retries it.');
-    // A static pass's report on this bundle does not hold back the full run.
+    // A static pass's report on this bundle does not hold back the full run;
+    // new source that links to the same bytes runs again.
     const prior=this.read('compile_reported',null);
-    if(prior?.input===input&&prior.stage!=='static')return wait('compile_waiting','Problems in this bundle are with the top manager; the compiler runs again when the bundle changes, or on Continue.');
+    if(prior?.input===input&&prior.fingerprint===fingerprint&&prior.stage!=='static')return wait('compile_waiting','Problems in this bundle are with the top manager; the compiler runs again when the bundle changes, or on Continue.');
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const files=await this.linkedBundle(builder.id),surfaces=surfacesOf(files);
     const report=async(stage,items)=>this.reportProblems(id,top,input,stage,await this.annotateRenames(builder.id,files,items),builder.id);
@@ -1757,6 +1789,9 @@ export class ControlRoom extends DurableObject {
     if(!check.report.passed) {
       const detail=check.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||check.report.log.slice(-900);
       this.event(id,'build_failed',`The linked bundle failed to load or start: ${clip(detail,1000)}`);
+      // An entry that only may export start() and does not: no module does.
+      if(detail.includes(NO_START))return report('build',[this.entryProblem(builder.id,files,surfaces,undefined,
+        `No application entry: ${entry.split('/').pop()} was started but exports no start(), and no other module exports start() to compose the application.`)]);
       return report('build',failed('load',check.report.issues.length?check.report.issues:[{path:'',detail}]));
     }
     const api=check.report.api_surface||'';
@@ -1766,7 +1801,7 @@ export class ControlRoom extends DurableObject {
     // With nothing to call (run3b: {"type":"object","members":{}}) the runner
     // cannot write a valid test, and no worker would hear why.
     if(!apiCallable(described)||apiGenericOnly(described))
-      return report('run',[this.entryProblem(builder.id,files,surfaces,entry,`start() must return an object whose methods perform the requested operations${apiGenericOnly(described)?', one per operation and named after it, not a single generic method':''}; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`)]);
+      return report('run',[this.entryProblem(builder.id,files,surfaces,entry,`start() must return an object whose methods perform the requested operations${apiGenericOnly(described)?', one per operation and named after it, not a single generic method':''}; it returned ${clip(api||'nothing',300)}.`)]);
     // Run6: start() returned { getTickets } for a create, view, update and
     // delete goal; the runner tested reading alone and the run completed.
     // Before the test is fixed, every operation the goal names needs its
@@ -1794,7 +1829,7 @@ export class ControlRoom extends DurableObject {
     if(outcome.infrastructure)return this.blockCompiler(id,input,outcome.infrastructure);
     if(outcome.runnerFailed) {
       // A runner that cannot write a valid test is not a worker's problem.
-      this.save('compile_reported',{input,stage:'runner',problems:[],ts:Date.now()});
+      this.save('compile_reported',{input,fingerprint,stage:'runner',problems:[],ts:Date.now()});
       return wait('runner_failed',`The runner could not produce a valid test in three attempts; no worker was blamed. Continue retries. Last problem: ${clip(outcome.detail,700)}`);
     }
     if(outcome.passed) {
@@ -1813,12 +1848,17 @@ export class ControlRoom extends DurableObject {
     return report('run',failed('run',outcome.issues));
   }
 
-  // ---------- managers solve problems (slice 1: deterministic rules) ----------
+  // ---------- managers solve problems ----------
   // Every open problem this manager holds is placed among its own direct
-  // children and decided: delegated or relayed to a sub-manager, assigned to
-  // a worker (one ticket per worker per turn) or to its builder for a relink,
-  // escalated to its parent, or closed. One synchronous block, so a restart
-  // cannot split a decision from its ticket.
+  // children and decided by the deterministic rules first (spec 3.4):
+  // delegated or relayed to a sub-manager, assigned to a worker (one ticket
+  // per worker per turn) or to its builder for a relink, escalated to its
+  // parent, a stuck worker retasked, or closed. A real choice (M1-M8) goes
+  // to the manager's model, at most one call per turn on the largest
+  // cluster (spec 3.9). Every action it returns is validated; a problem it
+  // leaves out keeps its default, the rules' decision, so with no model the
+  // decisions are the rules' alone. Each application is one synchronous
+  // block, so a restart cannot split a decision from its ticket.
   async solveProblems(m) {
     const n=this.node(m);
     if(!this.live()||!n||['failed','retired'].includes(n.status))return;
@@ -1827,63 +1867,147 @@ export class ControlRoom extends DurableObject {
       this.event(m,'repair_exhausted',`No more repair rounds: ${this.get('repair_exhausted')}.`);
       return;
     }
-    this.reopenStalled(m);
+    this.reopenStalled(m,this.allowModel(m));
     const rows=this.problemsHeld(m);
-    if(!rows.length)return;
-    const children=new Map(this.children(m).map(c=>[c.id,c]));
-    const kindOf=id=>{const c=children.get(id);return !c?null:c.label==='Temporary builder'?'builder':c.label==='Compiler'?'compiler':this.manager(c.id)?'manager':'worker';};
-    const builder=this.builderOf(m),fingerprint=this.assemblyFingerprint(m),state=this.read(`link_state:${m}`,null);
-    const relinked=new Set(this.problems("holder=? AND status='closed' AND outcome='relinked'",m).filter(p=>p.flags.fingerprint===fingerprint).map(p=>p.signature));
-    const depth=Math.max(1,...this.allNodes().map(x=>x.id.split('.').length-1));
-    // A load or run error in a file this manager's builder edited (its copy
-    // differs from the one it was given) is first this builder's to relink.
-    const edited=new Set();
-    if(builder)for(const p of rows.filter(p=>['load','run'].includes(p.kind)))
-      for(const x of p.parties.filter(x=>x.role==='site')) {
-        const here=this.pathIn(p.facts.via||builder.id,x.path,builder.id);
-        if(here&&await this.editedBy(builder.id,here)){edited.add(p.id);break;}
-      }
-    const ctx={holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,builder:builder?.id||null,maxHops:MAX_HOPS(depth),
-      canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),editedHere:p=>edited.has(p.id)};
-    const decided=[];
-    let exhausted='';
-    for(const p of rows) {
+    if(!rows.length)return this.unfixable(m);
+    const ctx=await this.decisionContext(m,rows),st={exhausted:''};
+    const entries=rows.map(p=>{
       let dec=deterministicDecision(p,ctx);
       const refused=validateDecision(dec,p,ctx);
       if(refused) {
         this.event(m,'problem_decision_rejected',clip(`${dec.rule} ${dec.action} ${dec.child||''}: ${refused}`,600));
         dec=n.parent?{rule:'fallback',action:'escalate'}:{rule:'fallback',action:'exhausted',reason:refused};
       }
-      // The first assignment to a worker or the builder for a report wave is a repair round.
-      if(dec.action==='assign'&&['worker','builder'].includes(kindOf(dec.child))) {
-        if(exhausted)continue;
-        exhausted=this.countRound(m,p.flags.wave);
-        if(exhausted)continue;
+      const trigger=modelTrigger(p,dec,ctx);
+      // Back unchanged twice: by default it is closed, as with no model.
+      if(trigger==='M4'&&p.flags.no_change>=STUCK_AFTER)
+        dec={rule:'no_change',action:'exhausted',reason:`${p.flags.no_change_by&&this.node(p.flags.no_change_by)?.label||'Its worker'} finished ${p.flags.no_change} repairs without changing its files`};
+      return {id:p.id.slice(0,8),p,dec,trigger,placed:placeParties(m,p.parties)};
+    });
+    const {call,fixed,deferred}=clusterForModel(entries),held=new Set([...call,...deferred]);
+    // Out of model calls, turn budget or repair rounds, every problem keeps
+    // its default, the rules' decision, as with no model at all.
+    if(!call.length||!this.allowModel(m)||!this.roundsLeft(m))this.applyDecisions(m,entries,ctx,st);
+    else {
+      this.applyDecisions(m,entries.filter(e=>!held.has(e)),ctx,st);
+      const decided=await this.askManagerModel(m,call,fixed,ctx);
+      this.applyDecisions(m,decided.decisions,ctx,st,decided);
+      // The next cluster in its own turn, only while the model answers and
+      // may be asked again (past the budget, drive still runs a ready
+      // manager, critique #5); otherwise the others keep their defaults now.
+      if(deferred.length&&(decided.error||!this.allowModel(m)))this.applyDecisions(m,deferred,ctx,st);
+      else if(deferred.length){this.deferProblems(m,deferred,'another cluster is decided first');this.wake(m);}
+    }
+    if(st.exhausted)this.exhaustRounds(m,st.exhausted);
+    else this.unfixable(m);
+  }
+  modelCalls(m) {return Number(this.get(`manager_model_calls:${m}`,'0'));}
+  // The manager's model may be asked now: calls and turn budget left.
+  allowModel(m) {return this.live()&&!this.budgetSpent&&this.modelCalls(m)<MAX_MANAGER_MODEL_CALLS;}
+  // A manager's view for its decisions: its direct children, its builder and
+  // relink budget, and what the rules read from its problems' history.
+  async decisionContext(m, rows) {
+    const n=this.node(m),children=new Map(this.children(m).map(c=>[c.id,c]));
+    const kindOf=id=>{const c=children.get(id);return !c?null:c.label==='Temporary builder'?'builder':c.label==='Compiler'?'compiler':this.manager(c.id)?'manager':'worker';};
+    const builder=this.builderOf(m),fingerprint=this.assemblyFingerprint(m),state=this.read(`link_state:${m}`,null);
+    const relinked=new Set(this.problems("holder=? AND status='closed' AND outcome='relinked'",m).filter(p=>p.flags.fingerprint===fingerprint).map(p=>p.signature));
+    const depth=Math.max(1,...this.allNodes().map(x=>x.id.split('.').length-1));
+    // A load or run error that this manager's builder's own edit caused (a
+    // name or path it put into the failing line) is first this builder's to relink.
+    const caused=new Set();
+    if(builder)for(const p of rows.filter(p=>['load','run'].includes(p.kind)))
+      for(const x of p.parties.filter(x=>x.role==='site')) {
+        const here=this.pathIn(p.facts.via||builder.id,x.path,builder.id);
+        if(here&&await this.editCaused(builder.id,here,x.path,p.detail)){caused.add(p.id);break;}
+      }
+    // D8 retasks a worker to plain JavaScript once.
+    const plain=new Set(this.problems("kind='stuck' AND outcome='retasked'").filter(p=>p.flags.plain_js).map(p=>p.parties[0]?.owner));
+    const unique=new Map();
+    for(const p of rows)if(p.flags.escalated_from&&p.facts.names?.length)unique.set(p.id,await this.uniqueProvider(m,p));
+    return {holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,taskOf:id=>children.get(id)?.task,labelOf:id=>children.get(id)?.label||id,
+      builder:builder?.id||null,maxHops:MAX_HOPS(depth),
+      canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),causedHere:p=>caused.has(p.id),
+      plainJsDone:id=>plain.has(id),uniqueProvider:p=>unique.get(p.id)||null,
+      // The same problem assigned before to this child or inside its branch
+      // (M4); for a stuck worker, its earlier stuck problems that what it was told did not settle.
+      recurrence:(p,child)=>query(this.db(),`SELECT assignee FROM problems WHERE ${p.kind==='stuck'?"kind='stuck' AND outcome!='resolved' AND source":'signature'}=? AND id!=? AND assignee!=''`,p.kind==='stuck'?p.source:p.signature,p.id).filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
+      production:[...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>c.id),
+      leaks:(text,to)=>this.leaksHiddenAgentIds(text,[to]),busy:id=>[...this.activeTurns].some(a=>a===id||a.startsWith(id+'.'))};
+  }
+  // One synchronous block (spec 3.8): every row moves only as it was read
+  // (compare-and-set); a worker gets one ticket per turn with all of its
+  // problems; the first assignment to a worker or the builder, or a retask,
+  // for a report wave costs a repair round (st.exhausted: why none is left).
+  // acts: the model's retires and retasks, applied after the rows.
+  applyDecisions(m, entries, ctx, st, acts={retire:[],retask:[]}) {
+    const n=this.node(m),kindOf=ctx.kindOf,now=Date.now(),trail=(p,action,to,rule)=>[...p.trail,{at:m,action,to,rule,ts:now}],label=id=>ctx.labelOf?.(id)||id;
+    // A retire or retask stands only on rows still as they were read: the
+    // problems it settles, or with none, any problem of the call. A report
+    // that superseded them while the model was asked voids it (critique #20).
+    const current=p=>{const r=query(this.db(),'SELECT holder,status FROM problems WHERE id=?',p.id)[0];return !!r&&r.holder===p.holder&&r.status===p.status;};
+    const stands=r=>{const basis=entries.filter(e=>e.dec.action==='close'&&e.dec.child===r.child);return (basis.length?basis:entries).some(e=>current(e.p));};
+    const kept=list=>list.filter(r=>stands(r)||void this.event(m,'problem_decision_stale',clip(`${acts.retire.includes(r)?'Retiring':'Retasking'} ${label(r.child)} rested on problems that changed while it was being decided; it is not applied.`,400),r.child));
+    acts={retire:kept(acts.retire),retask:kept(acts.retask)};
+    // A model retask restarts its child: one round, by the wave of a problem it settles.
+    const skip=new Set();
+    for(const r of acts.retask) {
+      const wave=entries.find(e=>e.dec.outcome==='retasked'&&e.dec.child===r.child)?.p.flags.wave||`retask:${r.child}:${now}`;
+      if(st.exhausted||(st.exhausted=this.countRound(m,wave)))skip.add(r.child);
+    }
+    const decided=[];
+    for(const {p,dec} of entries) {
+      if(dec.action==='close'&&skip.has(dec.child))continue;
+      if(dec.action==='retask'||dec.action==='assign'&&['worker','builder'].includes(kindOf(dec.child))) {
+        if(st.exhausted)continue;
+        st.exhausted=this.countRound(m,p.flags.wave);
+        if(st.exhausted)continue;
       }
       decided.push([p,dec]);
     }
-    const now=Date.now(),trail=(p,action,to,rule)=>[...p.trail,{at:m,action,to,rule,ts:now}];
-    const tickets=new Map(),relink=[];
+    const tickets=new Map(),relink=[],retasks=new Map();
+    // A model decision's facts add to the problem's own (the provider's
+    // exports, what the top's children offer the entry); they never replace them.
+    const factsOf=(p,dec,own)=>dec.rule!=='model'||dec.facts_text==null?dec.facts_text??own:
+      [...new Set([dec.facts_text,dec.side==='provider'?'':own].filter(Boolean))].join(' | ')||own||'';
     for(const [p,dec] of decided) {
       const kind=dec.child?kindOf(dec.child):null;
       if(dec.action==='exhausted') {
-        if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:trail(p,'close','',dec.rule)}))
-          this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${dec.reason||'no direct child holds it'}): ${p.detail}`,600));
+        const why=dec.reason||'no direct child holds it';
+        if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:[...p.trail,{at:m,action:'close',to:'',rule:dec.rule,reason:why,ts:now}]})) {
+          this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${why}): ${p.detail}`,600));
+          this.wakeReporter(m,p);
+          if(p.kind==='stuck')this.pauseStuck(p);
+        }
+      } else if(dec.action==='close'&&dec.outcome==='retasked'&&kind==='worker'&&p.kind!=='stuck') {
+        // A retasked worker owes the fix as if assigned: a rerun that changes
+        // nothing reopens it (reopenStalled), a changed one is relinked.
+        if(this.moveProblem(p,{status:'assigned',assignee:dec.child,flags:{...p.flags,revs:this.revisionKey(dec.child)},trail:trail(p,'retask',dec.child,dec.rule)}))
+          this.event(m,'problem_assigned',clip(`${p.kind} problem goes with ${label(dec.child)}'s new task: ${p.detail}`,600),dec.child);
+      } else if(dec.action==='close') {
+        // Its child is retired or retasked by this decision.
+        if(this.moveProblem(p,{status:'closed',outcome:dec.outcome,trail:trail(p,dec.outcome==='retired'?'retire':'retask',dec.child,dec.rule)}))
+          this.event(m,'problem_closed',clip(`${p.kind} problem closed: ${label(dec.child)} is ${dec.outcome}: ${p.detail}`,600),dec.child);
+      } else if(dec.action==='retask') {
+        if(this.moveProblem(p,{status:'closed',outcome:'retasked',flags:{...p.flags,...dec.plain_js?{plain_js:true}:{}},trail:trail(p,'retask',dec.child,dec.rule)}))
+          retasks.set(dec.child,{task:dec.task,rule:dec.rule,reason:dec.plain_js?'the code gate rejected its output three times; it writes plain JavaScript':''});
       } else if(dec.action==='escalate') {
-        if(this.moveProblem(p,{holder:n.parent,flags:{...p.flags,escalated_from:m},trail:trail(p,'escalate',n.parent,dec.rule)})) {
-          this.event(m,dec.unroutable?'problem_unroutable':'problem_escalated',clip(`${p.kind} problem (${dec.rule}) goes to the parent: ${p.detail}`,600),n.parent);
+        // A stuck child's branch cannot finish here: up as this manager's own.
+        // (Once: a problem already about this branch goes up as it is.)
+        const own=(dec.resubject||p.kind==='stuck'&&!p.flags.rounds_exhausted)&&!p.parties.some(x=>x.owner===m&&x.role==='subject')?{parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:clip(`${n.label} cannot finish its branch: ${p.detail}`,950)}:{};
+        if(this.moveProblem(p,{holder:n.parent,...own,flags:{...p.flags,escalated_from:m},trail:trail(p,'escalate',n.parent,dec.rule)})) {
+          this.event(m,dec.unroutable?'problem_unroutable':'problem_escalated',clip(`${p.kind} problem (${dec.rule}) goes to the parent${dec.reason?` (${dec.reason})`:''}: ${p.detail}`,600),n.parent);
           this.wake(n.parent);
         }
       } else if(dec.action==='fail') {
         if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:trail(p,'fail',dec.child,dec.rule)}))
           this.failAgent(dec.child,`Repair rounds exhausted: ${p.detail}`);
       } else if(kind==='builder') {
-        if(this.moveProblem(p,{status:'relinking',assignee:dec.child,flags:{...p.flags,fingerprint},trail:trail(p,'relink',dec.child,dec.rule)}))relink.push(p);
+        if(this.moveProblem(p,{status:'relinking',assignee:dec.child,flags:{...p.flags,fingerprint:this.assemblyFingerprint(m)},trail:trail(p,'relink',dec.child,dec.rule)}))relink.push(p);
       } else if(kind==='manager') {
         // relay: the decision travels as a side, never a node below the child.
-        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:instructionsFor(p,dec.side),facts_text:p.facts.provider_text||''};
+        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.facts.provider_text??'')};
         if(this.moveProblem(p,{holder:dec.child,directive,trail:trail(p,directive?'relay':'delegate',dec.child,dec.rule)})) {
-          this.event(m,directive?'problem_relayed':'problem_delegated',clip(`${p.kind} problem (${dec.rule}) to ${children.get(dec.child).label}${directive?`, ${directive.side} changes: ${directive.instructions}`:', whose branch holds every party'}`,700),dec.child);
+          this.event(m,directive?'problem_relayed':'problem_delegated',clip(`${p.kind} problem (${dec.rule}) to ${label(dec.child)}${directive?`, ${directive.side} changes: ${directive.instructions}`:', whose branch holds every party'}`,700),dec.child);
           this.wake(dec.child);
         }
       } else {
@@ -1893,24 +2017,276 @@ export class ControlRoom extends DurableObject {
     }
     if(relink.length) {
       this.set(`linked:${m}`,'');
-      this.event(m,'problem_assigned',clip(`${relink.length} interface error(s) between this manager's children go to its builder for a relink: ${relink.map(p=>p.detail).join('; ')}`,800),builder.id);
-      this.wake(builder.id);
+      this.event(m,'problem_assigned',clip(`${relink.length} interface error(s) between this manager's children go to its builder for a relink: ${relink.map(p=>p.detail).join('; ')}`,800),ctx.builder);
+      this.wake(ctx.builder);
     }
     for(const [worker,list] of tickets) {
       const revs=this.revisionKey(worker),moved=[];
       for(const [p,dec] of list) {
-        const directive={by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:instructionsFor(p,dec.side),facts_text:p.directive?.facts_text??p.facts.provider_text??''};
+        // A relayed decision stays the parent's, so a reopened problem is relayed again (D1).
+        const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.directive?.facts_text??p.facts.provider_text??'')};
         if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,flags:{...p.flags,revs},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
       }
       if(!moved.length)continue;
+      // A stuck worker reads its manager's ticket on a fresh turn: its failed
+      // action is not replayed, and its count starts again (the problem stays assigned).
+      if(moved.some(p=>p.kind==='stuck')){this.db().exec('DELETE FROM pending_turns WHERE agent=?',worker);this.resetFailures(worker);}
       const ticket=crypto.randomUUID(),role=moved.some(p=>p.directive.side==='provider')?'provider':'reader';
-      const instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
-      const facts=clip([...new Set(moved.map(p=>p.directive.facts_text).filter(Boolean))].join(' | '),1400);
+      // The entry's runtime contract leads, whatever a decision's own words say.
+      const said=[...new Set(moved.map(p=>p.directive.instructions))],contract=moved.some(p=>p.kind==='entry')&&!said.includes(ENTRY_CONTRACT)?[ENTRY_CONTRACT]:[];
+      const instructions=clip([...contract,...said].join(' '),900);
+      const facts=clip([...new Set(moved.flatMap(p=>String(p.directive.facts_text||'').split(' | ')).filter(Boolean))].join(' | '),1400);
       this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,m,worker,JSON.stringify(moved.map(p=>p.id)),role,instructions,facts,now);
       this.send(m,worker,'[build:repair] '+ticket);
-      this.event(m,'problem_assigned',clip(`${moved.length} problem(s) to ${children.get(worker).label} (${[...new Set(list.map(([,d])=>d.rule))].join(', ')}): ${instructions}`,800),worker);
+      this.event(m,'problem_assigned',clip(`${moved.length} problem(s) to ${label(worker)} (${[...new Set(list.map(([,d])=>d.rule))].join(', ')}): ${instructions}`,800),worker);
     }
-    if(exhausted)this.exhaustRounds(m,exhausted);
+    for(const r of acts.retask)if(!skip.has(r.child)&&!retasks.has(r.child))retasks.set(r.child,{task:r.task,rule:'model',reason:r.reason});
+    for(const [child,r] of retasks)this.retaskChild(m,child,r.task,r.reason,r.rule);
+    for(const r of acts.retire)this.retireChild(m,r.child,r.reason);
+  }
+  // Problems a later turn decides (another cluster first, or no budget now).
+  deferProblems(m, entries, why) {
+    const moved=entries.filter(({p})=>this.moveProblem(p,{flags:{...p.flags,deferred:true}}));
+    if(moved.length)this.event(m,'problem_deferred',clip(`${moved.length} problem(s) wait for a later decision: ${why}.`,400));
+  }
+  // One model call on one cluster (spec 3.6-3.7). It never throws: on any
+  // failure the cluster keeps its defaults. Calls are counted before each
+  // request (a parse retry is a second), so a restart or a retry cannot
+  // exceed MAX_MANAGER_MODEL_CALLS; the turn costs one unit of the budget.
+  async askManagerModel(m, call, fixed, ctx) {
+    const n=this.node(m),key=`manager_model_calls:${m}`;
+    let result;
+    try {
+      const input=await this.managerModelInput(m,call,fixed,ctx);
+      this.spentExtra=(this.spentExtra||0)+1;
+      this.event(m,'problem_model_call',clip(`${call.length} problem(s) need a choice (${[...new Set(call.map(e=>e.trigger).filter(Boolean))].join(', ')}): ${call.map(e=>`${e.id} ${e.p.kind}`).join(', ')}.`,600));
+      result=await decideProblems(this.inferenceEnv(),input,{retry:this.modelCalls(m)+1<MAX_MANAGER_MODEL_CALLS,onCall:()=>this.set(key,this.modelCalls(m)+1)});
+    } catch(e) {result={actions:[],error:String(e?.message||e)};}
+    if(result.error)this.event(m,'problem_model_failed',clip(`The manager's model gave no decision (${result.error}); the defaults apply.`,700));
+    // Clef checks every retask's new task against the goal and this manager's responsibility, in one call.
+    const scope=new Map(),retasks=result.actions.filter(a=>a?.action==='retask'&&typeof a.task==='string'&&ctx.kindOf(String(a.child)));
+    if(retasks.length)try {
+      const ps=await scopeChildren(this.inferenceEnv(),this.topTask()||n.task,n.task,retasks.map(a=>({label:ctx.labelOf(String(a.child)),task:clip(a.task.trim(),1700)})));
+      retasks.forEach((a,i)=>scope.set(a,ps[i]));
+    } catch(e) {this.event(m,'problem_decision_rejected',clip(`Clef could not check a retask's scope: ${e?.message||e}`,600));}
+    const blocks=result.actions.some(a=>a?.action==='retire')?await this.retireBlocks(m):()=>'';
+    const v=validateManagerActions(result.actions,call,{...ctx,scope:a=>scope.get(a),retireBlock:blocks});
+    for(const r of v.rejected)this.event(m,'problem_decision_rejected',clip(`${r.action?.action||'?'} ${r.action?.child||''}: ${r.reason}`,600));
+    const left=v.decisions.filter(d=>d.how==='default');
+    if(left.length&&!result.error)this.event(m,'problem_default',clip(`${left.length} problem(s) the decision left out keep their default: ${left.map(d=>`${d.id} ${d.dec.action} ${d.dec.child?ctx.labelOf(d.dec.child):''}`).join(', ')}.`,600));
+    // Facts per assignment: the listed children's modules that its problems name first.
+    const facts=new Map(),same=d=>JSON.stringify([d.dec.child,d.dec.facts_from]);
+    for(const d of v.decisions.filter(d=>d.dec.facts_from?.length)) {
+      if(!facts.has(same(d)))facts.set(same(d),await this.factsFrom(m,d.dec.facts_from,d.dec.child,v.decisions.filter(x=>same(x)===same(d)).map(x=>x.p)));
+      d.dec={...d.dec,facts_text:facts.get(same(d))};
+    }
+    return {...v,error:result.error||''};
+  }
+  // What the manager's model reads (spec 3.6): its responsibility, its
+  // direct children (a worker by its modules' exports, a sub-manager by its
+  // boundary), the problems with their parties as children and file names
+  // and their defaults, and the decisions it must keep. Within the builder's
+  // context budget: the children are clipped first.
+  async managerModelInput(m, call, fixed, ctx) {
+    const n=this.node(m),state=this.read(`link_state:${m}`,null),fp=this.assemblyFingerprint(m),base=p=>String(p||'').split('/').pop();
+    const children=[],GIVEN=['assign','relay','delegate','retask'],given=p=>p.trail.filter(t=>t.at===m&&GIVEN.includes(t.action));
+    // What this manager gave each child before, from the trails (a reopened
+    // problem has no assignee), and how often it came back unchanged (M4).
+    const mine=this.problems('trail LIKE ?',`%"at":${JSON.stringify(m)}%`);
+    for(const c of this.children(m).filter(c=>c.status!=='retired')) {
+      const kind=ctx.kindOf(c.id),view={id:c.id,label:c.label,kind,status:c.status,task:clip(c.task,400)},under=id=>id===c.id||String(id||'').startsWith(c.id+'.');
+      if(kind==='worker'||kind==='manager') {
+        const rows=mine.filter(p=>given(p).some(t=>under(t.to))),last=rows.at(-1);
+        Object.assign(view,await this.boundaryView(c.id),{history:{assigned:rows.flatMap(given).filter(t=>under(t.to)).length,
+          returned_unchanged:rows.filter(p=>under(p.flags.no_change_by)).reduce((n,p)=>n+p.flags.no_change,0),
+          last_outcome:!last?'':last.status==='closed'?last.outcome:last.status==='open'&&last.flags.no_change?'returned unchanged':last.status}});
+      }
+      if(kind==='builder')view.relinks_left=state?.fingerprint===fp?Math.max(0,MAX_RELINKS-state.relinks):MAX_RELINKS;
+      children.push(view);
+    }
+    const input={your_responsibility:clip(n.task,700),can_escalate:!!n.parent,children,
+      // proposed: decided by the rules, in this cluster because its child is a party here; the model may change it.
+      problems:call.map(({id,p,dec,trigger,placed})=>({id,kind:p.kind,stage:p.stage,trigger:trigger||'proposed',detail:clip(p.detail,700),
+        parties:placed.map(x=>({child:x.child||(x.place==='outside'?'(outside this branch)':'(unknown)'),file:base(x.owner_path||x.path),role:x.role})),
+        evidence:(p.evidence||[]).map(e=>clip(e,300)),default:{action:dec.action==='exhausted'?'close':dec.action,...dec.child?{child:dec.child}:{}},
+        ...given(p).length?{history:{assigned_before:given(p).map(t=>t.to),...p.flags.no_change?{returned_unchanged_by:p.flags.no_change_by,times:p.flags.no_change}:{}}}:{}})),
+      fixed_decisions:fixed.map(e=>({child:e.dec.child,instructions:clip(e.dec.instructions||instructionsFor(e.p,e.dec.side),300)})),
+      rounds_left:Math.max(0,MANAGER_MAX_ROUNDS-Number(this.get(`repair_rounds:${m}`,'0')))};
+    for(const cut of [c=>{if(c.exports)c.exports=clip(c.exports,200);},c=>{delete c.needs;c.task=clip(c.task,120);}])
+      if(tokenEstimate(JSON.stringify(input))>BUILDER_CONTEXT_BUDGET)input.children.forEach(cut);
+    return input;
+  }
+  // A direct child as its manager's model sees it: a worker by its own
+  // modules' exports, a sub-manager by its boundary (what it offers, needs).
+  async boundaryView(id) {
+    if(!this.manager(id)) {
+      const files=await this.childModules(id),surfaces=surfacesOf(files);
+      return {exports:clip([...surfaces.keys()].map(p=>exportsLine(p,surfaces)).join(' | '),600)};
+    }
+    let boundary=null;
+    const b=this.builderOf(id);
+    try {boundary=b?JSON.parse(await this.indexedContent(b.id,BOUNDARY)):null;} catch {}
+    return {exports:clip((boundary?.exports||[]).map(x=>`${String(x.path).split('/').pop()}: ${(x.surface||[]).join('; ')}`).join(' | '),600),
+      needs:(boundary?.needs||[]).slice(0,8).map(x=>`${x.specifier} (${[...x.names||[],...x.members||[]].join(', ')||'the module'})`)};
+  }
+  // A direct child's modules: a worker's own; a sub-manager's last linked bundle.
+  async childModules(id) {
+    const b=this.manager(id)?this.builderOf(id):null,files=new Map();
+    const list=b?query(this.db(),'SELECT destination FROM builder_sources WHERE builder=?',b.id).map(r=>[b.id,r.destination]):
+      this.manager(id)?[]:productionFiles(this.files(id)).map(f=>[id,f.path]);
+    for(const [owner,path] of list.filter(([,p])=>LINKABLE.test(p)))
+      try {const text=await this.indexedContent(owner,path);if(text!==null)files.set(path,text);} catch {}
+    return files;
+  }
+  // For a problem a child escalated: the one other direct child whose
+  // modules export every name it wants (full surfaces, spec 3.5 M6), or null.
+  async uniqueProvider(m, p) {
+    const names=p.facts.names.filter(Boolean),found=[];
+    for(const c of this.children(m)) {
+      if(c.id===p.flags.escalated_from||isRuntimeNode(c)||['retired','failed'].includes(c.status))continue;
+      for(const [path,content] of await this.childModules(c.id)) {
+        const surface=exportSurface(path,content),have=providedNames(surface);
+        if(names.every(x=>have.has(x))){found.push({child:c.id,path,text:clip(exportsLine(path,new Map([[path,surface]])),700)});break;}
+      }
+    }
+    return found.length===1?found[0]:null;
+  }
+  // What the named children export, read from this manager's linked bundle
+  // (a sub-manager by the modules its branch offers): the facts a decision
+  // sends with its instructions, one line per module, with no ids.
+  async factsFrom(m, ids, recipient, problems=[]) {
+    const b=this.builderOf(m),rows=b?query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=? ORDER BY destination',b.id):[],lines=[];
+    // The other side's modules the problems name, wherever they lie in a
+    // branch: its boundary lists only what nothing in the branch imports.
+    const named=new Set(problems.flatMap(p=>p.parties).filter(x=>x.owner&&x.owner!==recipient&&!x.owner.startsWith(recipient+'.')).map(x=>`${x.owner}|${x.owner_path}`));
+    for(const id of ids) {
+      let files=new Map();const parties=[];
+      for(const r of rows.filter(r=>nextDirectChild(m,r.child)===id))try{
+        files.set(r.destination,await this.indexedContent(b.id,r.destination));
+        const o=this.buildSourceOrigin(b.id,r.destination);
+        if(o&&named.has(`${o.owner}|${o.path}`))parties.push(r.destination);
+      }catch{}
+      if(!files.size)files=await this.childModules(id);
+      const surfaces=surfacesOf(files),paths=[...new Set([...parties,...this.manager(id)?branchBoundary(files).exports:surfaces.keys()])].filter(p=>surfaces.has(p));
+      lines.push(...paths.map(p=>exportsLine(p,surfaces)));
+    }
+    const text=clip(lines.join(' | '),700);
+    return this.leaksHiddenAgentIds(text,[recipient])?'':text;
+  }
+  // Why a direct child cannot be retired (spec 3.7.5): a module outside its
+  // branch imports one of its modules in this manager's published bundle,
+  // or one of them exports start() (what composes the application; nothing
+  // imports it); with no published bundle, it has published code. '' when
+  // it can be.
+  async retireBlocks(m) {
+    const b=this.builderOf(m),rows=b?query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=?',b.id):[];
+    if(!rows.length)return id=>(this.manager(id)?this.descendantsWithCode(id).length:productionFiles(this.files(id)).length)?'no linked bundle shows who imports its code':'';
+    const owner=new Map(rows.map(r=>[r.destination,nextDirectChild(m,r.child)])),files=new Map(),importers=new Map(),starts=new Set();
+    for(const r of rows)try{files.set(r.destination,await this.indexedContent(b.id,r.destination));}catch{}
+    for(const [path,content] of files)if(content!=null&&LINKABLE.test(path)) {
+      if(exportsStart(exportSurface(path,content)))starts.add(owner.get(path));
+      for(const x of componentImports(path,content,files)) {
+        const to=owner.get(x.target),from=owner.get(path);
+        if(x.target&&to&&to!==from)importers.set(to,new Set([...importers.get(to)||[],from]));
+      }
+    }
+    return id=>importers.get(id)?.size?`${[...importers.get(id)].map(x=>this.node(x)?.label||x).join(', ')} import${importers.get(id).size>1?'':'s'} its code`:
+      starts.has(id)?'its code exports start(), which composes the application':'';
+  }
+  // ---------- retire and retask: validated manager decisions ----------
+  // A node and every node below it, the node first.
+  subtree(id) {const out=[id];for(let i=0;i<out.length;i++)out.push(...this.children(out[i]).map(c=>c.id));return out;}
+  // Retired nodes leave nothing behind (critique #13): no queued turn,
+  // undelivered message, route, alias or open problem of theirs, so no
+  // manager waits on them; the problems manager m holds about them close.
+  retireNodes(m, ids, outcome) {
+    const db=this.db(),gone=new Set(ids),now=Date.now(),b=this.builderOf(m);
+    // Their code in the manager's builder's repository leaves the bundle the level above reads.
+    const paths=b?query(db,`SELECT destination FROM builder_sources WHERE builder=? AND child IN (${ids.map(()=>'?').join(',')})`,b.id,...ids).map(r=>r.destination):[];
+    if(paths.length)this.save(`retired_components:${b.id}`,[...new Set([...this.read(`retired_components:${b.id}`,[]),...paths])]);
+    for(const id of ids) {
+      db.exec("UPDATE agents SET status='retired' WHERE id=?",id);
+      db.exec('DELETE FROM messages WHERE recipient=? AND delivered=0',id);
+      db.exec('DELETE FROM pending_turns WHERE agent=?',id);
+      db.exec('DELETE FROM route_hops WHERE manager=? OR requester=? OR target=?',id,id,id);
+      db.exec('DELETE FROM manager_routes WHERE manager=? OR requester=? OR child=?',id,id,id);
+      db.exec('DELETE FROM route_workers WHERE worker=?',id);
+      db.exec('DELETE FROM exposed_files WHERE owner=?',id);
+      db.exec("UPDATE problems SET status='closed',outcome=?,updated=? WHERE status!='closed' AND (holder=? OR assignee=? OR source=?)",outcome,now,id,id,id);
+    }
+    for(const p of this.problems("holder=? AND status!='closed'",m))if(p.parties.some(x=>gone.has(x.owner)))this.moveProblem(p,{status:'closed',outcome});
+    // An alias that resolves into a retired node goes too, at every level above.
+    for(let dead=query(db,`SELECT owner,path FROM exposed_files WHERE source IN (${ids.map(()=>'?').join(',')})`,...ids);dead.length;) {
+      for(const r of dead)db.exec('DELETE FROM exposed_files WHERE owner=? AND path=?',r.owner,r.path);
+      dead=dead.flatMap(r=>query(db,'SELECT owner,path FROM exposed_files WHERE source=? AND source_path=?',r.owner,r.path));
+    }
+    this.save('queue',this.read('queue',[]).filter(id=>!gone.has(id)));
+    // A manager's Durable Object keeps its own routing hops.
+    if(this.env.MANAGERS&&this.ctx.waitUntil)this.ctx.waitUntil(this.purgeShardHops(gone).catch(()=>{}));
+  }
+  async purgeShardHops(gone) {
+    for(const x of this.allNodes().filter(x=>!gone.has(x.id)&&this.children(x.id).length))
+      for(const hop of await this.managerHops(x.id))if(gone.has(hop.requester)||gone.has(hop.target))await this.removeManagerHop(x.id,hop.request_id);
+  }
+  // Retire a direct child with its branch: its code leaves the manager's
+  // bundle, its builder relinks what remains, and its aliases are gone.
+  retireChild(m, c, reason='') {
+    const label=this.node(c)?.label||c;
+    this.retireNodes(m,this.subtree(c),'retired');
+    this.db().exec('DELETE FROM exposed_files WHERE owner=? AND source=?',m,c);
+    this.event(m,'child_retired',clip(`${label} is retired${reason?` (${reason})`:''}; its code leaves this manager's bundle.`,600),c);
+    this.wake(m);
+  }
+  // Retask a direct child (author decision 1). A worker gets the new task
+  // and runs again. A sub-manager's branch is killed: every descendant and
+  // its builder are retired, and it restarts as a new child with the new
+  // task, through the split gate and the prune walk, its next builder a new
+  // generation; the manager's builder relinks its importers.
+  retaskChild(m, c, task, reason='', rule='model') {
+    const db=this.db(),node=this.node(c),below=this.subtree(c).slice(1);
+    if(!node||['retired','failed'].includes(node.status))return;
+    if(below.length) {
+      this.retireNodes(m,below,'retasked');
+      // What it held was about the branch that is gone; it starts with nothing.
+      db.exec("UPDATE problems SET status='closed',outcome='retasked',updated=? WHERE holder=? AND status!='closed'",Date.now(),c);
+      this.set(`builder_gen:${c}`,Number(this.get(`builder_gen:${c}`,'0'))+1);
+      for(const k of ['linked','link_state','link_reported','builder_requested','bundle','capacity_blocked','rounds_exhausted','repair_rounds','repair_waves','manager_reconciled'])
+        db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
+      db.exec("UPDATE agents SET phase='decompose' WHERE id=?",c);
+    }
+    db.exec("UPDATE agents SET task=?,status='ready' WHERE id=?",clip(task,2000),c);
+    db.exec('DELETE FROM pending_turns WHERE agent=?',c);
+    db.exec("DELETE FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",c);
+    for(const k of ['returned','split_feedback','nudged'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
+    this.clearFailures(c);
+    this.event(m,'child_retasked',clip(`${node.label} is retasked (${rule}${reason?`: ${reason}`:''})${below.length?`; its branch of ${below.length} node(s) is retired and it splits again`:''}. New task: ${task}`,900),c);
+    this.wake(c);
+  }
+  // The manager whose builder or compiler reported a problem closed without a
+  // fix elsewhere checks it on its next turn.
+  wakeReporter(m, p) {
+    const at=this.node(p.source)?.parent;
+    if(at&&at!==m)this.wake(at);
+  }
+  // This manager's builder (or, at the top, its compiler) waits on a report
+  // of which a problem was closed without a fix, nothing of it is still open,
+  // and nothing in flight below could change the source: no turn would ever
+  // run again. The top fails; a manager below tells its parent it cannot
+  // finish its branch (spec 3.10), as when its repair rounds run out.
+  unfixable(m) {
+    const n=this.node(m);
+    for(const r of [this.builderOf(m),!n.parent&&this.compilerOf(m)].filter(Boolean)) {
+      const report=this.read(r.label==='Compiler'?'compile_reported':`link_reported:${m}`,null);
+      if(r.status!=='waiting'||!report?.problems?.length||report.fingerprint!==this.assemblyFingerprint(m))continue;
+      const dead=report.problems.map(id=>this.problems('id=?',id)[0]).find(p=>p?.status==='closed'&&p.outcome==='exhausted');
+      if(!dead||this.problems("source=? AND status!='closed'",r.id).length||!this.subtreeQuiescent(m))continue;
+      return this.exhaustRounds(m,`a ${dead.kind} problem was closed without a fix (${dead.trail.at(-1)?.reason||'exhausted'})`,'Repair exhausted');
+    }
+  }
+  // Whether this manager may still start a repair round (its own, and the run's).
+  roundsLeft(m) {
+    return Number(this.get(`repair_rounds:${m}`,'0'))<MANAGER_MAX_ROUNDS&&
+      Number(this.get('repair_rounds_total','0'))<MAX_REPAIR_ROUNDS_TOTAL(this.allNodes().filter(x=>this.manager(x.id)).length);
   }
   // One repair round per report wave a manager first assigns to a worker or
   // to its builder. Returns why no round is left, or ''.
@@ -1929,7 +2305,7 @@ export class ControlRoom extends DurableObject {
   // Out of rounds: the whole run's, so no manager assigns again and the top
   // fails; or this manager's, so the top fails, or a lower manager tells its
   // parent once that it cannot finish its branch (the parent fails it).
-  exhaustRounds(m, reason) {
+  exhaustRounds(m, reason, head='Repair rounds exhausted') {
     const n=this.node(m),total=/^the run /.test(reason);
     if(total) {
       this.set('repair_exhausted',reason);
@@ -1938,7 +2314,7 @@ export class ControlRoom extends DurableObject {
       if(top&&top.id!==m)this.wake(top.id);
     }
     if(!n.parent) {
-      this.failAgent(m,`Repair rounds exhausted: ${reason}; refusing an unbounded repair loop.`);
+      this.failAgent(m,`${head}: ${reason}; refusing an unbounded repair loop.`);
       this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
       return;
     }
@@ -1954,13 +2330,22 @@ export class ControlRoom extends DurableObject {
   revisionKey(id) {return JSON.stringify(this.files(id).filter(f=>!f.path.startsWith('memory/')).map(f=>[f.path,f.revision]));}
   // An assigned problem whose worker finished without changing a file would
   // stall its branch (the source and its fingerprint are the same): it is
-  // open again, and its manager decides it again.
-  reopenStalled(m) {
+  // open again, and its manager decides it again. The same rule would send
+  // the same ticket again, so at STUCK_AFTER tickets without a change it is
+  // the manager's model's (M4) while it may still be asked (later), and is
+  // closed otherwise, which is also the model's default.
+  reopenStalled(m, later=false) {
     for(const p of this.problems("holder=? AND status='assigned'",m)) {
-      const w=this.node(p.assignee);
+      const w=this.node(p.assignee),count=(p.flags.no_change||0)+1;
       if(!w||w.status!=='done'||!p.flags.revs||p.flags.revs!==this.revisionKey(w.id))continue;
       if(query(this.db(),"SELECT id FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",w.id).length)continue;
-      if(this.moveProblem(p,{status:'open',assignee:'',flags:{...p.flags,no_change:(p.flags.no_change||0)+1}}))
+      if(count>=STUCK_AFTER&&!later) {
+        const why=`${w.label} finished ${count} repairs without changing its files`;
+        if(this.moveProblem(p,{status:'closed',outcome:'exhausted',flags:{...p.flags,no_change:count},trail:[...p.trail,{at:m,action:'close',to:'',rule:'no_change',reason:why,ts:Date.now()}]})) {
+          this.event(m,'problem_exhausted',clip(`${p.kind} problem closed (${why}): ${p.detail}`,600),w.id);
+          this.wakeReporter(m,p);
+        }
+      } else if(this.moveProblem(p,{status:'open',assignee:'',flags:{...p.flags,no_change:count,no_change_by:w.id}}))
         this.event(m,'problem_reopened',`${w.label} finished without changing its files; the problem is open again.`,w.id);
     }
   }
@@ -2410,7 +2795,7 @@ export class ControlRoom extends DurableObject {
   // Reconstruct public ownership facts from DIRECT children, not from a
   // child-authored "map" or a model's memory. Grandchildren are never read.
   async childIndex(id, withPreviews=false) {
-    return Promise.all(this.children(id).filter(c=>!isRuntimeNode(c)).map(async child=>{
+    return Promise.all(this.children(id).filter(c=>!isRuntimeNode(c)&&c.status!=='retired').map(async child=>{
       const publicFacts=await this.readKnowledge(child.id);
       const paths=this.visibleManifest(child.id).map(f=>f.path)
         .filter(path=>!path.startsWith('memory/'));
@@ -2992,7 +3377,7 @@ export class ControlRoom extends DurableObject {
       } else raw=await decide(this.inferenceEnv(),before);
       if (raw.parse_error) {
         this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${raw.raw}`);
-        this.incrementFailures(id);
+        this.incrementFailures(id,'Bad action response');
         return;
       }
       const action = normalizeAction(raw);
@@ -3021,7 +3406,7 @@ export class ControlRoom extends DurableObject {
             this.event(id,'missing_code',required ?
               `Leaf must publish its assigned module ${required}, not just other source files.`:
               'Leaf attempted to complete its code-writing assignment without any executable code.');
-            this.incrementFailures(id);
+            this.incrementFailures(id,'missing_code');
             return;
           }
         }
@@ -3061,7 +3446,7 @@ export class ControlRoom extends DurableObject {
               proposed:admit.spawn.map(c=>({label:c.label,task:clip(c.task,300),functions:(c.interfaces||[]).map(f=>f.name)})),accepted:[],rejected:[],
               interfaces:texts,root_goal:this.topTask()||n.task});
             this.event(id,'split_rejected',`The proposed functions fail ${texts.length} check(s): ${texts.join(' ')}`);
-            this.incrementFailures(id);
+            this.incrementFailures(id,'split_rejected');
             return;
           }
           action.spawn=admit.spawn;rejectedScope+=admit.rejectedScope;rejectedChildren.push(...admit.rejectedChildren);
@@ -3088,7 +3473,7 @@ export class ControlRoom extends DurableObject {
             rejected:rejectedChildren.filter(x=>!x.kept),root_goal:this.topTask()||n.task
           });
           this.event(id,'split_rejected',`${reason} Clef will reconsider routing with this feedback; if it still chooses a split, Qwen must correct the partition.`);
-          this.incrementFailures(id);
+          this.incrementFailures(id,'split_rejected');
           return;
         } else if(split) {
           this.set(`split_feedback:${id}`,'');
@@ -3142,7 +3527,7 @@ export class ControlRoom extends DurableObject {
         }
         if(!action.spawn.length) {
           this.event(id,'split_rejected','Proposed late split contained only builder-owned assembly work. No implementation child was created.');
-          this.incrementFailures(id);
+          this.incrementFailures(id,'split_rejected');
           return;
         }
         // A worker with a promise must give every promised name to one piece (C5).
@@ -3155,7 +3540,7 @@ export class ControlRoom extends DurableObject {
           // The worker's next turn says why; it never sees the splitter's checks.
           if(admit.c5.length)await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:clip(`Your proposed pieces were not created: ${admit.c5.map(e=>e.text).join(' ')} Give each proposed piece "functions":[{"name","does"}].`,950)}]);
           await this.rememberOwners(id,admit.rejectedChildren);
-          this.incrementFailures(id);
+          this.incrementFailures(id,'split_rejected');
           return;
         }
       }
@@ -3363,29 +3748,72 @@ export class ControlRoom extends DurableObject {
         this.event(id,'error',`Operation ${i+1}/${operations.length} failed: ${clip(message,1100)}`);
         // A deterministic commit failure (e.g. Artifacts push/network) must
         // replay at its persisted cursor.
-        this.incrementFailures(id);
+        this.incrementFailures(id,message);
         return;
       }
     }
     this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
-    this.save('failures',{...this.read('failures',{}),[id]:0});
+    this.clearFailures(id);
     // A peer can send a message during this agent's inference or file push.
     // Such a message wasn't in the action's captured inbox; schedule a fresh
     // turn instead of silently leaving it behind a final wait/done state.
     if (this.node(id)?.status !== 'retired' && (this.receive(id).length ||
        (seenBuilderWake!==null && this.wakeGeneration(id)!==seenBuilderWake))) this.wake(id);
   }
-  incrementFailures(id) {
-    const failures=this.read('failures',{});
+  // A failed turn. The third in a row stops the agent. When all three were
+  // the code gate's, a worker's manager hears it as a stuck problem and
+  // decides (retask or retire it, spec 3.2) instead of the room pausing for
+  // a Continue that would repeat it; infrastructure keeps pause-and-Continue.
+  incrementFailures(id, cause='') {
+    const failures=this.read('failures',{}),gates=this.read('failure_gates',{});
     failures[id]=(failures[id]||0)+1;
-    this.save('failures',failures);
+    gates[id]=[...(gates[id]||[]),CODE_GATE.test(String(cause))].slice(-3);
+    this.save('failures',failures);this.save('failure_gates',gates);
     if (failures[id]>=3) {
       this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-      this.event(id,'paused','Stopped automatic retries after 3 failures. Continue to retry.');
+      if(!this.fileStuck(id,gates[id]))this.event(id,'paused','Stopped automatic retries after 3 failures. Continue to retry.');
     } else {
       this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
       this.save('queue',addLast(this.read('queue',[]),id));
     }
+  }
+  // A production worker below the top stopped by three code-gate failures:
+  // a stuck problem in its manager's inbox, once while it is open, with the
+  // last failures as its detail. One its manager already assigned it (what
+  // it was told did not get it past the gate) is replaced, so the manager
+  // hears it again and a stall is never silent.
+  fileStuck(id, gates) {
+    const n=this.node(id);
+    if(!this.live()||!n?.parent||isRuntimeNode(n)||this.manager(id)||gates.length<3||!gates.every(Boolean))return false;
+    const prior=this.problems("source=? AND kind='stuck' AND status!='closed'",id);
+    if(prior.some(p=>p.status==='open'))return true;
+    this.closeProblems(prior,'superseded');
+    const last=query(this.db(),`SELECT kind,body FROM events WHERE actor=? AND kind IN (${FAILURE_EVENTS.map(()=>'?').join(',')}) ORDER BY id DESC LIMIT 4`,id,...FAILURE_EVENTS).reverse();
+    const detail=clip(`${n.label} stopped after three failed turns at the code gate: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
+    this.insertProblem({holder:n.parent,kind:'stuck',stage:'work',source:id,input:`turn:${n.turn}`,
+      parties:[{path:'',owner:id,owner_path:'',digest:'',role:'subject'}],detail,flags:{wave:crypto.randomUUID()}});
+    this.event(id,'stuck',`Stopped after three failed turns at the code gate; the manager decides: ${clip(detail,700)}`,n.parent);
+    this.wake(n.parent);
+    return true;
+  }
+  // A turn that ended without failure, or Continue: the count starts again
+  // and the agent's stuck problems are resolved.
+  clearFailures(id) {
+    this.resetFailures(id);
+    this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='stuck' AND status!='closed'",Date.now(),id);
+  }
+  resetFailures(id) {
+    const failures=this.read('failures',{}),gates=this.read('failure_gates',{});
+    if(!failures[id]&&!gates[id])return;
+    failures[id]=0;delete gates[id];
+    this.save('failures',failures);this.save('failure_gates',gates);
+  }
+  // A stuck worker that no manager above could settle waits for Continue,
+  // as before v7.14, and says so.
+  pauseStuck(p) {
+    const w=this.node(p.source);
+    if(w&&!this.manager(w.id)&&w.status==='waiting'&&(this.read('failures',{})[w.id]||0)>=3)
+      this.event(w.id,'paused','Stopped automatic retries after 3 failures; no manager above could settle it. Continue to retry.');
   }
   // The work queue is only scheduling metadata. Each individual agent retains
   // exclusive control of its own turn, while unrelated strands can infer and
@@ -3455,7 +3883,7 @@ export class ControlRoom extends DurableObject {
     this.event(id,'turn_start',`Started turn concurrently with ${this.activeTurns.size-1} other agent(s).`);
     this.batching.add(id);
     try { await this.turn(id); }
-    catch (e) { this.event(id,'error',clip(e?.message||e,1300)); this.incrementFailures(id); }
+    catch (e) { this.event(id,'error',clip(e?.message||e,1300)); this.incrementFailures(id,String(e?.message||e)); }
     finally {
       this.batching.delete(id);
       try {await this.flushWrites(id);}
@@ -3474,13 +3902,18 @@ export class ControlRoom extends DurableObject {
     this.set('budget',cap);
     let spent=0;
     const active=new Set();
+    // A manager turn that asked its model adds to spent (spentExtra); once
+    // the budget is spent, managers still run but ask no model (budgetSpent).
+    const tally=()=>{spent+=this.spentExtra||0;this.spentExtra=0;this.budgetSpent=spent>=cap;};
+    this.spentExtra=0;this.budgetSpent=false;
     try {
       // Work-conserving: replace each completed slot immediately, without
       // waiting for slower inferences from the same dispatch wave.
       // A stop request dispatches nothing new; turns already running finish.
       const stopping=()=>this.get('stop_requested')==='1';
-      while (active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>this.manager(id)&&this.node(id)?.status==='ready'))) {
+      while (tally(), active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>this.manager(id)&&this.node(id)?.status==='ready'))) {
         while (!stopping() && active.size<this.settings().parallel) {
+          tally();
           let [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && active.size===0 && this.nudgeQuiescentManager()) [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && spent<cap && active.size===0 && this.nudgeQuiescentLeaf()) [id]=this.takeReadyBatch(1);
@@ -3489,7 +3922,7 @@ export class ControlRoom extends DurableObject {
           this.set('step',step);
           // Manager routing is local bookkeeping + optional cheap Clef. Do not
           // spend a generative inference turn or block a finished hierarchy.
-          if(!this.manager(id))spent++;
+          if(!this.manager(id)){spent++;this.budgetSpent=spent>=cap;}
           this.event('system','dispatch',`Launching agent ${id} in free slot (${active.size+1}/${this.settings().parallel}).`);
           const task=this.runSelectedTurn(id,step);
           active.add(task);
@@ -3513,7 +3946,7 @@ export class ControlRoom extends DurableObject {
       this.event('system',finished?'complete':failed?'failed':'paused',finished ? 'All strands returned complete.' :
         failed ? `Run failed: ${this.failedDescendantReason('root')}` : 'Inference budget ended or strands are waiting; continue to resume.');
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
-    finally { this.busy=false; }
+    finally { this.busy=false;this.budgetSpent=false; }
   }
   async start(goal,budget,settings = {},roomId='') {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
@@ -3556,9 +3989,9 @@ export class ControlRoom extends DurableObject {
     if (this.live() && this.get('run_nonce') && this.get('schema')!==ROOM_SCHEMA)
       return {error:'This room was started by a version before v7.14 and is not migrated; start a new experiment, which resets the room.'};
     this.configure(settings);
-    const failures=this.read('failures',{});
+    const failures=this.read('failures',{}),continued=[];
     for (const n of this.allNodes()) {
-      if ((failures[n.id]||0)>=3) { failures[n.id]=0;this.wake(n.id); }
+      if ((failures[n.id]||0)>=3) { failures[n.id]=0;continued.push(n.id);this.wake(n.id); }
       else if(n.phase==='decompose' && n.status==='waiting' &&
               this.canSplit(n.id,2) && this.get(`capacity_blocked:${n.id}`)==='1') {
         this.set(`capacity_blocked:${n.id}`,'0');
@@ -3566,6 +3999,7 @@ export class ControlRoom extends DurableObject {
       }
     }
     this.save('failures',failures);
+    for(const id of continued)this.clearFailures(id);
     // Continue is an explicit request to retry a quiescent builder when all
     // code producers are done. The ordinary idle nudge intentionally excludes
     // builders, to avoid uncontrolled model inference on every source revision.
@@ -3582,9 +4016,11 @@ export class ControlRoom extends DurableObject {
       // The compiler runs again on the current bundle: a fresh set of runner
       // attempts, and its problems are reported again.
       const top=this.allNodes().find(n=>!n.parent),compiler=top&&this.compilerOf(top.id);
-      if(compiler&&compiler.status==='waiting'&&this.read('compile_reported',null)) {
+      // Blocked by infrastructure, it is woken by retryBlockedCompile.
+      if(compiler&&compiler.status==='waiting') {
         this.save('compile_reported',null);
-        if(this.builderCurrent(top.id)&&!this.compilePassed(top.id)) {
+        if(this.builderCurrent(top.id)&&!this.compilePassed(top.id)&&!this.read('compile_blocked',null)) {
+          this.set('compile_requested','');
           this.event(compiler.id,'compile_continue','Continue runs the compiler again on the current bundle.');
           this.wake(compiler.id);
         }

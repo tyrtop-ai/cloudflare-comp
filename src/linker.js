@@ -790,10 +790,32 @@ export function linkRenames(before, after) {
 export const tokenEstimate=text=>Math.ceil(String(text||'').length/3)+40;
 
 // ---------- entry selection and the runtime loader ----------
-// The compiler's entry: the one module that exports start(), or of several
-// the one that imports the most others; when none is known to, the candidate
-// (by imports and name) among the modules that may export start(), which the
-// Container then decides; null when no module may.
+// How a module's start() serves as the entry: 2 when it returns a value and
+// neither reads the command line nor listens or prompts (an API to call), 1
+// when it returns one anyway (or no start function is found), 0 when it
+// returns nothing (a CLI or server that only runs).
+export function startRank(content) {
+  let ast;try {ast=parseSource(content).ast;} catch {return 1;}
+  const fn=n=>['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression'].includes(n?.type);
+  const found=[];
+  walk(ast,node=>{
+    if(node.type==='FunctionDeclaration'&&node.id?.name==='start')found.push(node);
+    else if(node.type==='VariableDeclarator'&&nameOf(node.id)==='start'&&fn(node.init))found.push(node.init);
+    else if(['Property','MethodDefinition','PropertyDefinition'].includes(node.type)&&!node.computed&&nameOf(node.key)==='start'&&fn(node.value))found.push(node.value);
+    else if(node.type==='AssignmentExpression'&&node.left.type==='MemberExpression'&&nameOf(node.left.property)==='start'&&fn(node.right))found.push(node.right);
+  });
+  if(!found.length)return 1;
+  // A return with a value in the function's own body (not a nested one).
+  const returns=n=>!!n&&typeof n.type==='string'&&!fn(n)&&(n.type==='ReturnStatement'?!!n.argument:
+    Object.entries(n).some(([k,v])=>!['loc','start','end'].includes(k)&&(Array.isArray(v)?v:[v]).some(returns)));
+  return Math.max(...found.map(f=>!(f.expression||returns(f.body))?0:
+    /process\.argv|process\.stdin|\.listen\s*\(|readline|createInterface/.test(content.slice(f.start,f.end))?1:2));
+}
+// The compiler's entry: the one module that exports start(); of several, the
+// one whose start() returns an API to call (not a CLI or server that only
+// runs), then the one that imports the most others; when none is known to,
+// the candidate (by imports and name) among the modules that may export
+// start(), which the Container then decides; null when no module may.
 export function chooseEntry(files, surfaces) {
   const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
   const starters=js.filter(p=>surfaces.get(p)&&exportsStart(surfaces.get(p)));
@@ -802,9 +824,13 @@ export function chooseEntry(files, surfaces) {
     const maybe=js.filter(p=>mayExportStart(surfaces.get(p)));
     return maybe.length?entryCandidate(files,maybe):null;
   }
+  const rank=new Map(starters.map(p=>[p,startRank(files.get(p))]));
   const outDegree=new Map(starters.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>js.includes(r.target)).length]));
-  return starters.sort((a,b)=>outDegree.get(b)-outDegree.get(a)||a.localeCompare(b))[0];
+  return starters.sort((a,b)=>rank.get(b)-rank.get(a)||outDegree.get(b)-outDegree.get(a)||a.localeCompare(b))[0];
 }
+// What the runtime loader's start() throws when the entry it loaded has no
+// start() (one that only may export it): the compiler files the entry problem.
+export const NO_START='The application entry exports no start() function';
 // The first line is the marker the Container's build runner looks for
 // (container/build-runner.mjs): keep it byte-for-byte.
 export function entryLoader(entry) {
@@ -824,7 +850,7 @@ export function entryLoader(entry) {
     'async function start(...args) {',
     '  const app = await load();',
     '  if (app && typeof app.start === "function") return await app.start(...args);',
-    '  return app;',
+    `  throw new Error(${JSON.stringify(`${NO_START}: ${entry}`)});`,
     '}',
     `module.exports = { load, start, entry: ${JSON.stringify(entry)} };`,
     'if (require.main === module) {',
@@ -1122,6 +1148,24 @@ export function autoLink(files, surfaces, {scope='application'}={}) {
     }
   }
   return edits;
+}
+
+// What a reader whose import resolves nowhere is offered (at the top): the
+// module named as the import (by file or class), then those exporting the
+// most names it reads, nearest the reader first; with none, the modules
+// nearest it (its own branch first), then the outward ones. Never a module
+// that imports the reader, which would make a cycle. {named, offered}.
+export function importOffers(files, surfaces, path, specifier, names=[]) {
+  const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
+  const importers=new Set(js.filter(p=>componentImports(p,files.get(p),files).some(r=>r.target===path)));
+  const outward=new Set(branchBoundary(files).exports),key=normName(String(specifier||'').split('/').pop()),dir=path.split('/').slice(0,-1);
+  const named=p=>{const cls=normName(surfaces.get(p)?.default?.name);return !!key&&(normName(p.split('/').pop())===key||!!cls&&cls===key);};
+  const near=p=>{const d=p.split('/');let i=0;while(i<dir.length&&d[i]===dir[i])i++;return i;};
+  const score=new Map(js.filter(p=>p!==path&&!importers.has(p)&&surfaces.get(p)).map(p=>
+    [p,[named(p)?1:0,names.filter(n=>providedNames(surfaces.get(p)).has(n)).length,near(p),outward.has(p)?1:0]]));
+  const order=(a,b)=>{const x=score.get(a),y=score.get(b);return x.reduce((d,v,i)=>d||y[i]-v,0)||a.localeCompare(b);};
+  const pool=[...score.keys()].sort(order),matched=pool.filter(p=>score.get(p)[0]||score.get(p)[1]);
+  return {named:pool.find(named)||'',offered:matched.length?matched.slice(0,4):pool.slice(0,6)};
 }
 
 // ---------- boundaries: what a branch built below shows the level above ----------
