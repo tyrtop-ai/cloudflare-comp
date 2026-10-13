@@ -492,7 +492,7 @@ test('v7.15: prompts: the shared prompt still says a worker is never shown sibli
   assert.match(implementer,/relative path and the export name you expect/);
   assert.match(implementer,/never as function or constructor parameters/);
   assert.doesNotMatch(LEAF_DEPENDENCY_RULE,/createTicket|ticketStore/);
-  assert.match(LEAF_DEPENDENCY_RULE,/import it with a relative path and the export name you expect, for example const \{ listedName \} = require\('\.\/theirModule'\)/);
+  assert.match(LEAF_DEPENDENCY_RULE,/import it with a relative path and the export name you expect \(the exact name your manager gave you when you asked\), for example const \{ listedName \} = require\('\.\/theirModule'\)/);
   await decompose(env,{your_id:'root.1',your_responsibility:'Write ticket storage',max_child_writers:10});
   const splitter=prompts.pop();
   assert.match(splitter,/"spawn":\[\{"label":"short name of what this piece does","task":"Write code that \.\.\.","functions":\[\{"name":"functionName","does":"what it does","params":\["argument"\]\}\]\},\.\.\.\]/);

@@ -143,3 +143,29 @@ test('v7.15: matchFunction and ownsNeed: one question per offered function in ba
   assert.equal(await ownsNeed({MOCK_AI:'true'},{assigned_code:'x',need:'y'}),1);
   await assert.rejects(ownsNeed({AI:{run:async()=>({answers:{}})}},{assigned_code:'x',need:'y'}),/no valid probability/);
 });
+
+test('v7.15: the implementer prompt asks for every function at once in the first answer and no longer says to continue on an assumption; LEAF_DEPENDENCY_RULE still says "import it with a relative path and the export name you expect"; generateFile explains route:provided',async()=>{
+  const prompts=[],requests=[];
+  const env={AI:{run:async(_m,args)=>{prompts.push(args.messages[0].content);requests.push(args.messages[1].content);return {response:JSON.stringify({summary:'s',done:true,files:[{path:'a.js',content:'export const a = 1;'}]})};}}};
+  const context={your_label:'Leaf',phase:'implement',your_responsibility:'Write logic',your_private_children:[],neighbor_owners:[]};
+  await decide(env,{...context,parent:{label:'Manager'}});
+  const worker=prompts.pop();
+  assert.ok(worker.includes(ASK_FUNCTIONS));
+  assert.match(worker,/For every function your code needs that your assignment does not list, ask your manager, all at once in your FIRST answer: "ask":\[\{"need":"what the function does, in one line","name":"the name you expect"\}\] with "wait":true\. In that answer write only files that do not import what you asked for, and do not set done\./);
+  assert.match(worker,/import it by exactly that name from the relative path you expect \(the builder fixes paths\)\. If no piece provides it, the answer says whether you write it yourself\./);
+  assert.doesNotMatch(worker,/normally continue using an explicit assumption|rather than wait/);
+  await decide(env,{...context,parent:null});
+  const top=prompts.pop();
+  assert.doesNotMatch(top,/ask your manager|"ask":\[\{"need"/,'the top is never told to ask');
+  assert.match(top,/You have no manager to ask: write every function your code needs yourself\./);
+  for(const prompt of [worker,top,LEAF_DEPENDENCY_RULE]) {
+    assert.match(prompt,/import it with a relative path and the export name you expect \(the exact name your manager gave you when you asked\)/);
+    assert.match(prompt,/relative path and the export name you expect/);
+  }
+  await generateFile(env,{node:{id:'root.1',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[],answers:['getTickets(): returns all tickets. It is exported by "ticket storage".']});
+  const system=prompts.pop(),request=JSON.parse(requests.pop());
+  assert.match(system,/A \[route:owned\] message establishes only that another branch owns the behavior; it is not an exact interface and requires no code matching or further confirmation\. A \[route:provided\] message or an answered_requests entry names the exact function to import, its parameters and the piece that exports it: import it by exactly that name\. A \[route:unowned\] message says whether you write it yourself\./);
+  assert.deepEqual(request.answered_requests,['getTickets(): returns all tickets. It is exported by "ticket storage".']);
+  await generateFile(env,{node:{id:'root.1',label:'Leaf'},path:'a.js',task:'Write logic',files:[],inbox:[],children:[]});
+  assert.equal(JSON.parse(requests.pop()).answered_requests,undefined,'no key without answers');
+});
