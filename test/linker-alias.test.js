@@ -1,9 +1,9 @@
 // v7.13: a module bound whole whose only export is one function is bound as
 // that function, and a model edit that renames an imported name but not its
-// uses is applied as an alias. Fixtures are worker files from live runs run3b
-// and run3, copied exactly; three earlier revisions of run3b files are
-// reconstructed from the run's rejected edits and reproduce the live
-// rejection messages token for token.
+// uses is applied as an alias. Fixtures are worker files from live runs run3b,
+// run3 and run6, copied exactly; three earlier revisions of run3b files and
+// one of run6 are reconstructed from the run's rejected edits and reproduce
+// the live rejection messages token for token.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {register,createRequire} from 'node:module';
@@ -277,4 +277,96 @@ test('room: the live run3 validator branch keeps the builder\'s three name edits
   const top=[...(await room.collectLinkSources(above.id))].find(s=>s.destination.endsWith('/TicketValidator.js'));
   const linked=await store.read(room.node(above.id).repo_name,top.destination);
   assert.match(linked,/^const \{ isValidTitle: validateTitle \} = require\('\.\.\/[^']+\/titleValidator\.js'\);\nconst validateDescription = require\('\.\.\/[^']+\/descriptionValidator\.js'\);\nconst \{ isValidPriority: validatePriority \} = require\('\.\.\/[^']+\/priorityValidator\.js'\);\n/);
+});
+
+// ------------------------------------------- run6 (v7.13.1, threshold 0.5), root.6
+// Root's builder sent the same edit three times at step 28, each rejected live as
+// "edited file does not parse": the file declares getTickets itself, so the import
+// could only become the alias { getTickets: loadTickets }. ticketStorage.js and
+// filterApplication.js are copied exactly; ticketRetrieval.js at step 28 is its
+// revision 3 with the import the rejected edit names and without start(), which
+// step 28 still reported missing.
+const STORAGE_6="const fs = require('fs');\nconst path = require('path');\n\nconst TICKETS_FILE = path.join(__dirname, 'tickets.json');\n\nfunction getTickets() {\n  if (!fs.existsSync(TICKETS_FILE)) {\n    fs.writeFileSync(TICKETS_FILE, '[]');\n  }\n  const data = fs.readFileSync(TICKETS_FILE, 'utf8');\n  return JSON.parse(data);\n}\n\nfunction saveTickets(tickets) {\n  fs.writeFileSync(TICKETS_FILE, JSON.stringify(tickets, null, 2));\n}\n\nmodule.exports = {\n  getTickets,\n  saveTickets\n};";
+const FILTER_6="exports.applyFilters = function(tickets, filters) {\n  return tickets.filter(ticket => {\n    return Object.keys(filters).every(key => {\n      return ticket[key] === filters[key];\n    });\n  });\n};\n";
+const RETRIEVAL_28="const { loadTickets } = require('../../../ticket-sto-ee7f9ac0/ticketStorage.js');\nconst { applyFilters } = require('../filter-app-721921cb/filterApplication.js');\n\nfunction getTickets(filters) {\n  const tickets = loadTickets();\n  return applyFilters(tickets, filters);\n}\n\nmodule.exports = { getTickets };";
+const P6={store:'components/ticket-sto-ee7f9ac0/ticketStorage.js',filter:'components/view-ticke-741924f1/components/filter-app-721921cb/filterApplication.js',ret:'components/view-ticke-741924f1/components/ticket-ret-7319235e/ticketRetrieval.js'};
+const run6=()=>new Map([[P6.store,STORAGE_6],[P6.filter,FILTER_6],[P6.ret,RETRIEVAL_28]]);
+const FIND_6="const { loadTickets } = require('../../../ticket-sto-ee7f9ac0/ticketStorage.js');",REPLACE_6=FIND_6.replace('{ loadTickets }','{ getTickets }');
+const REDECLARED="edited file does not parse: Identifier 'getTickets' has already been declared (4:9)";
+
+test('alias: an imported name renamed onto a function the file declares is bound as an alias, not refused as a redeclaration (run6 ticketRetrieval.js)',()=>{
+  const files=run6(),sur=surfacesOf(files),before=files.get(P6.ret);
+  assert.equal(L.renameOnlyError(before,before.replace(FIND_6,REPLACE_6)),REDECLARED,'the reconstruction gives the live rejection');
+  assert.deepEqual(L.importMismatches(files,sur).map(m=>m.detail),["destructures 'loadTickets' from components/ticket-sto-ee7f9ac0/ticketStorage.js, which exports: getTickets, saveTickets"],'the live link_retry problem');
+  const r=L.applyEdits(before,[{find:FIND_6,replace:REPLACE_6}],{knownNames:knownFor(files,P6.ret),original:before,shapes:{path:P6.ret,files,surfaces:sur}});
+  const alias="const { getTickets: loadTickets } = require('../../../ticket-sto-ee7f9ac0/ticketStorage.js');";
+  assert.deepEqual(r.rejected,[]);
+  assert.deepEqual(r.applied,[{find:FIND_6,replace:alias,alias:REPLACE_6}]);
+  assert.equal(r.content,before.replace(FIND_6,alias));
+  assert.match(r.content,/\n\nfunction getTickets\(filters\) \{\n  const tickets = loadTickets\(\);\n[^]*\nmodule\.exports = \{ getTickets \};$/,'the file\'s own getTickets and its call of loadTickets are untouched');
+  const linked=new Map([...files,[P6.ret,r.content]]);
+  assert.deepEqual(L.importMismatches(linked,surfacesOf(linked)),[]);
+  const {getTickets}=load(new Map([...linked,['components/ticket-sto-ee7f9ac0/tickets.json','[{"id":1,"status":"open"},{"id":2,"status":"closed"}]']]),P6.ret);
+  assert.deepEqual(getTickets({status:'open'}),[{id:1,status:'open'}],'the linked module reads the store through the alias');
+  assert.equal(L.applyEdits(before,[{find:FIND_6,replace:REPLACE_6}],{knownNames:knownFor(files,P6.ret)}).rejected[0]?.reason,REDECLARED,'without the target, still refused');
+  const again=L.applyEdits(r.content,[{find:FIND_6,replace:REPLACE_6}],{done:r.applied});
+  assert.deepEqual([again.content,again.rejected],[r.content,[]],'a relink that sends the same edit again finds it in place');
+  // The path resolved in the same edit: the unresolved path names the same module.
+  const unresolved=new Map([...files,[P6.ret,before.replace('../../../ticket-sto-ee7f9ac0/ticketStorage.js','./ticketStorage')]]);
+  const both=L.applyEdits(unresolved.get(P6.ret),[{find:FIND_6.replace('../../../ticket-sto-ee7f9ac0/ticketStorage.js','./ticketStorage'),replace:REPLACE_6}],{knownNames:knownFor(unresolved,P6.ret),original:unresolved.get(P6.ret),shapes:{path:P6.ret,files:unresolved,surfaces:surfacesOf(unresolved)}});
+  assert.deepEqual([both.rejected,both.content],[[],r.content]);
+});
+
+test('alias: the same collision in an ES module is bound as import { b as a }',()=>{
+  const store='components/ticket-sto/ticketStorage.mjs',ret='components/view/ticket-ret/ticketRetrieval.mjs';
+  const files=new Map([[store,"export function getTickets() {\n  return [];\n}\n\nexport function saveTickets(tickets) {}\n"],
+    [ret,"import { loadTickets } from '../../ticket-sto/ticketStorage.mjs';\n\nexport function getTickets(filters) {\n  return loadTickets().filter(t => t.status === filters.status);\n}\n"]]);
+  const before=files.get(ret),find='import { loadTickets } from',replace='import { getTickets } from';
+  assert.match(L.renameOnlyError(before,before.replace(find,replace)),/^edited file does not parse: Identifier 'getTickets' has already been declared/);
+  const r=L.applyEdits(before,[{find,replace}],{knownNames:knownFor(files,ret),original:before,shapes:{path:ret,files,surfaces:surfacesOf(files)}});
+  assert.deepEqual([r.rejected,r.applied],[[],[{find,replace:'import { getTickets as loadTickets } from',alias:replace}]]);
+  assert.equal(r.content,before.replace('{ loadTickets }','{ getTickets as loadTickets }'));
+});
+
+test('alias on a collision: only an imported name, of the same module, which exports the new name and not the old',()=>{
+  const edit=(files,find,replace,file=P6.ret)=>L.applyEdits(files.get(file),[{find,replace}],{knownNames:knownFor(files,file),original:files.get(file),shapes:{path:file,files,surfaces:surfacesOf(files)}});
+  const refused=(r,files,reason,how,file=P6.ret)=>{assert.equal(r.applied.length,0,how);assert.match(r.rejected[0]?.reason??'',reason,how);assert.equal(r.content,files.get(file),how);};
+  // The target does not export getTickets, or exports loadTickets too.
+  let files=new Map([...run6(),[P6.store,STORAGE_6.replaceAll('getTickets','readTickets')]]);
+  refused(edit(files,FIND_6,REPLACE_6),files,/^edited file does not parse: Identifier 'getTickets' has already been declared/,'the target does not export the new name');
+  files=new Map([...run6(),[P6.store,STORAGE_6.replace('  getTickets,\n','  getTickets,\n  loadTickets: getTickets,\n')]]);
+  refused(edit(files,FIND_6,REPLACE_6),files,/^edited file does not parse/,'the target provides the old name too');
+  // Pointed at another module that exports getTickets.
+  files=new Map([...run6(),['components/archive-a1/archive.js','function getTickets() { return []; }\nmodule.exports = { getTickets };']]);
+  refused(edit(files,FIND_6,"const { getTickets } = require('../../../archive-a1/archive.js');"),files,/^edited file does not parse/,'another module');
+  // Collisions that are not an imported name renamed.
+  files=run6();
+  refused(edit(files,'function getTickets(filters)','function loadTickets(filters)'),files,/^edited file does not parse: Identifier 'loadTickets' has already been declared/,'the file\'s function renamed onto the imported name');
+  refused(edit(files,'const { loadTickets } =','let { getTickets } ='),files,/^edited file does not parse/,'a keyword changed too');
+  const local=new Map([...run6(),[P6.ret,RETRIEVAL_28.replace(FIND_6,"const storage = require('../../../ticket-sto-ee7f9ac0/ticketStorage.js');\nconst { loadTickets } = storage;")]]);
+  refused(edit(local,'const { loadTickets } = storage;','const { getTickets } = storage;'),local,/^edited file does not parse: Identifier 'getTickets' has already been declared/,'a destructured local value, not an import');
+});
+
+// Root's first link bound createTicket.js's { createTicket } to saveTickets, which
+// replaces the whole store. Token for token that is a rename, so only the
+// prompt can tell the builder it is a missing function.
+test('prompt: binding a name to another operation is a missing function, not a rename (run6 createTicket.js)',()=>{
+  const before="const { createTicket } = require('./ticketStore');\n\nmodule.exports = { addTicket: (data) => createTicket(data) };\n";
+  assert.equal(L.renameOnlyError(before,before.replace("{ createTicket } = require('./ticketStore')","{ saveTickets: createTicket } = require('../ticket-sto-ee7f9ac0/ticketStorage.js')"),{knownNames:L.knownNamesFrom([STORAGE_6])}),null,'the live rename passes the rename-only check');
+  assert.match(LINKER_SYSTEM,/Rename only to an export that performs what the caller expects: binding a name to a different operation \(for example createTicket to saveTickets, which replaces the whole store\) is not a rename but a missing function, so report it as an issue instead\./);
+});
+
+test('room: the run6 retrieval branch applies the colliding rename as an alias, and nothing goes back to the worker',async()=>{
+  const under='root.1',labels=[['Ticket storage','ticketStorage.js'],['Filter application logic','filterApplication.js'],['Ticket retrieval function','ticketRetrieval.js']];
+  const [store,filter,ret]=labels.map(([label,file],i)=>materializedPath(label,file,`${under}.${i+1}`));
+  const source=RETRIEVAL_28.replace('../../../ticket-sto-ee7f9ac0/ticketStorage.js',L.relativeSpecifier(ret,store)).replace('../filter-app-721921cb/filterApplication.js',L.relativeSpecifier(ret,filter));
+  const find=source.split('\n')[0],replace=find.replace('{ loadTickets }','{ getTickets }');
+  const {room,store:repos,calls}=linkRoom(user=>({edits:user.your_files.some(f=>f.path===ret)?[{file:ret,find,replace}]:[],entry:null,issues:[]}));
+  assert.equal(await managers(room,['view ticket']),under);
+  const {builder}=await linkBranch(room,under,[[...labels[0],STORAGE_6],[...labels[1],FILTER_6],[...labels[2],source]]);
+  const events=room.snapshot().events,mine=e=>e.actor===builder.id;
+  assert.equal(room.node(builder.id).status,'done',events.slice(-8).map(e=>e.kind+': '+e.body).join('\n'));
+  assert.equal(calls.length,1,'one model call: the edit is not sent again');
+  assert.ok(!events.some(e=>mine(e)&&['link_edit_rejected','link_retry','sent_to_workers'].includes(e.kind)),events.filter(mine).map(e=>e.kind+': '+e.body).join('\n'));
+  assert.equal(await repos.read(room.node(builder.id).repo_name,ret),source.replace('{ loadTickets }','{ getTickets: loadTickets }'));
 });
