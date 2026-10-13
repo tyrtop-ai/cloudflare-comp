@@ -275,14 +275,39 @@ export async function attributeFailure(env, {modules, test, failure}) {
   return {file:parsed.file.slice(0,300),problem:parsed.problem.slice(0,900)};
 }
 
+// Before the runner writes its test, the decision model maps each operation
+// the goal names to the method of start()'s API that performs it. Run6:
+// start() returned { getTickets } for a create, view, update and delete goal,
+// and the runner, told to use only the API's names, tested reading alone and
+// passed. The runtime checks the mapping against the API (apiGaps); this only
+// proposes it.
+export const COVERAGE_SYSTEM = `You check an application's API against the user's goal before it is tested. You get the goal and a description of the live API that start() returned when the application was started in a container: names, kinds and parameter names only. List each distinct operation the goal asks the application to perform for its user, in the goal's words (for example "create a ticket"), and for each the ONE method of the object start() returned that performs it, named exactly as in the API description, or null when no method does. Never map an operation to a method that does something else: reading is not creating, updating or deleting, and a method that replaces a whole collection does not create, update or delete one item. List an operation once: viewing one item and listing items are one "view" operation unless the goal names both. start() itself, and how the application is built, split, assembled or started, are not operations. Return ONLY JSON: {"operations":[{"operation":"...","method":"name or null"}]}.`;
+export async function apiCoverage(env, {goal, api}) {
+  if (env.MOCK_AI === 'true') return null;
+  const request=JSON.stringify({goal:String(goal||'').slice(0,1500),api_returned_by_start:String(api||'').slice(0,6000)});
+  const read=output=>{
+    const parsed=parseObject(withoutThinking(output));
+    if(parsed.parse_error||!Array.isArray(parsed.operations))return null;
+    const seen=new Set();
+    const operations=parsed.operations.filter(o=>o&&typeof o.operation==='string'&&o.operation.trim()).map(o=>({operation:o.operation.trim().slice(0,120),method:typeof o.method==='string'&&o.method.trim()?o.method.trim().slice(0,120):null}))
+      .filter(o=>!seen.has(o.operation.toLowerCase())&&seen.add(o.operation.toLowerCase())).slice(0,24);
+    return operations.length?{operations}:null;
+  };
+  // A goal names at least one operation, so an empty list is no answer.
+  const first=read(await run(env,COVERAGE_SYSTEM,request,2048));
+  if(first)return first;
+  return read(await run(env,COVERAGE_SYSTEM+'\nRETRY: return strictly valid JSON {"operations":[...]} with every operation the goal names. No markdown.',request,2048));
+}
+
 // The runner is a separate instance. It never sees component source: only the
 // Root goal and the live API returned by start() in the container.
-export const RUNNER_SYSTEM = `You are the RUNNER for an application you have not seen the source of. You get the user's goal and a description of the live API that start() returned when the application was started in a container. Write glue/smoke.js: a complete CommonJS Node script that does const assert = require('node:assert/strict'); const { start } = require('./index.js'); then, inside an async function, gets const app = await start() and exercises the operations the GOAL requests using only that API, with assert checks that the results are what the goal implies (for example: create something, read it back, list it, update it and read the change, delete it and confirm it is gone, all through the same app). Use only names that appear in the API description, and await every call because methods may be async. Any failed assertion or thrown error must end with process.exitCode = 1 or an uncaught rejection. Do not mock, do not import anything except node built-ins and ./index.js. Return ONLY the code, no markdown.`;
-export async function writeRunnerTest(env, {goal, api, correction=''}) {
+export const RUNNER_SYSTEM = `You are the RUNNER for an application you have not seen the source of. You get the user's goal and a description of the live API that start() returned when the application was started in a container. Write glue/smoke.js: a complete CommonJS Node script that does const assert = require('node:assert/strict'); const { start } = require('./index.js'); then, inside an async function, gets const app = await start() and exercises the operations the GOAL requests using only that API, with assert checks that the results are what the goal implies (for example: create something, read it back, list it, update it and read the change, delete it and confirm it is gone, all through the same app). operations_to_test, when given, lists each operation the goal names with the method that performs it: the test must exercise every one of them by calling that method on app (app.method(...)) and check its result. Never skip an operation the goal names, and never print success or exit with success for a test that covers only some of them. Use only names that appear in the API description, and await every call because methods may be async. Any failed assertion or thrown error must end with process.exitCode = 1 or an uncaught rejection. Do not mock, do not import anything except node built-ins and ./index.js. Return ONLY the code, no markdown.`;
+export async function writeRunnerTest(env, {goal, api, operations=null, correction=''}) {
   if (env.MOCK_AI === 'true') return null;
   const output=await run(env,RUNNER_SYSTEM,JSON.stringify({
     goal:String(goal||'').slice(0,1500),
     api_returned_by_start:api,
+    operations_to_test:operations?.length?operations:undefined,
     previous_test_error:correction||undefined
   }).slice(0,12000),3300);
   let content=contentOf(output).replace(/<think>[\s\S]*?<\/think>/g,'').trim();

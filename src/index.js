@@ -3,7 +3,8 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, ENTRY_CONTRACT } from './model.js';
+import { decompose, shouldSplit, scopeChildren, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT } from './model.js';
+import { apiGaps, coverageCheckable, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, assignedPiece, entrySpec, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -1346,7 +1347,7 @@ export class ControlRoom extends DurableObject {
       return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass';
     return null;
   }
-  async runApplication(builderId, fingerprint, files, api, goal, link) {
+  async runApplication(builderId, fingerprint, files, api, goal, link, operations=null) {
     // The runner's test is static: the first test that runs in the Container is
     // the specification for the rest of the run and is never rewritten. A new
     // test every repair round moved the target the worker was fixing (run4).
@@ -1355,8 +1356,11 @@ export class ControlRoom extends DurableObject {
     let correction='',test=fixed;
     if(fixed)this.event(builderId,'runner_reused','Running the same test as before: the first test that ran is fixed for the whole run.');
     for(let attempt=0;!test&&attempt<3;attempt++) {
-      const draft=await writeRunnerTest(this.inferenceEnv(),{goal,api,correction});
-      const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft)].filter(Boolean):['the runner returned no test'];
+      const draft=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction});
+      // A test that skips a mapped operation would certify a partial
+      // application (run6 tested getTickets alone), so it never runs.
+      const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft),
+        ...untestedOperations(draft,operations).map(o=>`the test never calls ${o.method} (operation ${o.operation}); call app.${o.method}(...) and check its result`)].filter(Boolean):['the runner returned no test'];
       if(!errors.length){test=draft;break;}
       correction='Your previous test was rejected before running: '+errors.join('; ');
       this.event(builderId,'runner_rejected',clip(correction,800));
@@ -1364,7 +1368,7 @@ export class ControlRoom extends DurableObject {
     if(!test)return {passed:false,runnerFailed:true,detail:correction};
     const run=await this.containerRun(builderId,`run:${fingerprint}`,new Map([...files,['glue/smoke.js',test]]));
     if(run.infrastructure)return {infrastructure:run.infrastructure};
-    if(!fixed)this.save('runner_test',{api,test});
+    if(!fixed)this.save('runner_test',{api,test,operations});
     await this.putFile(builderId,'glue/smoke.js',test);
     if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
     const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
@@ -1529,7 +1533,29 @@ export class ControlRoom extends DurableObject {
       if(!apiCallable(described)||apiGenericOnly(described)) {
         return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:`start() must return an object whose methods perform the requested operations${apiGenericOnly(described)?', one per operation and named after it, not a single generic method':''}; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`},...link.issues]),'run');
       }
-      const outcome=await this.runApplication(id,fingerprint,files,api,goal,link);
+      // Run6: start() returned { getTickets } for a create, view, update and
+      // delete goal; the runner tested reading alone and the run completed.
+      // Before the test is fixed, every operation the goal names needs its
+      // own method, or the entry worker hears which are missing. The model
+      // only proposes the mapping; a model that cannot answer never blocks.
+      let operations=null;
+      if(!this.read('runner_test',null)?.test) {
+        let coverage=null,error='';
+        if(coverageCheckable(described)) {
+          try{coverage=await apiCoverage(this.inferenceEnv(),{goal,api});}catch(e){error=String(e?.message||e);}
+        } else error='the API description lists no top-level members to check';
+        const gaps=coverage?apiGaps(described,coverage.operations):[];
+        if(gaps.length) {
+          const missing=gaps.map(g=>g.same_as?`${g.operation} (${g.method} already performs ${g.same_as})`:g.operation).join(', ');
+          this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${missing}.`,900));
+          return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:`start() returns no method for: ${clip(missing,240)}; it returned ${clip(api,200)}. Each operation the goal names needs its own method on the object start() returns, the operation imported from the module that performs it. ${ENTRY_CONTRACT}`},...link.issues]),'run');
+        }
+        if(coverage) {
+          operations=operationMethods(described,coverage.operations);
+          this.event(id,'api_covered',clip('Each operation the goal names has a method: '+operations.map(o=>`${o.operation} -> ${o.method}`).join(', '),900));
+        } else if(this.env.MOCK_AI!=='true')this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${error||'the model gave no usable mapping'}. The runner is not told which methods to test.`,900));
+      }
+      const outcome=await this.runApplication(id,fingerprint,files,api,goal,link,operations);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);
       if(outcome.runnerFailed) {
         // A runner that cannot write a valid test is not a worker's problem.

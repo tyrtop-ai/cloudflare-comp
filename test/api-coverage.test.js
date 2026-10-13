@@ -1,0 +1,309 @@
+// v7.13.3: the runner never certifies an application whose start() lacks an
+// operation the goal names. Live run6 (v7.13.1), hand-copied: with no entry
+// child, ticketRetrieval.js got the entry problem and added start() returning
+// { getTickets }; the runner, told to use only the API's names, tested
+// reading alone, its test passed and the run completed with create, update
+// and delete missing.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {register} from 'node:module';
+import {DatabaseSync} from 'node:sqlite';
+import {tmpdir} from 'node:os';
+process.env.BUILD_RUNNER_WORKDIR=tmpdir();
+register('./cloudflare-loader.mjs',import.meta.url);
+const {ControlRoom}=await import('../src/index.js');
+const {verifyBuild}=await import('../container/build-runner.mjs');
+const {snapshotHash}=await import('../src/build-verification.js');
+const {materializedPath}=await import('../src/assembly.js');
+const {apiGaps,apiMethod,methodName,operationMethods,untestedOperations,coverageCheckable}=await import('../src/api-coverage.js');
+const {apiCoverage,writeRunnerTest,COVERAGE_SYSTEM,RUNNER_SYSTEM,ENTRY_CONTRACT}=await import('../src/model.js');
+
+class Sql {constructor(){this.db=new DatabaseSync(':memory:');}exec(s,...p){if(!p.length&&!/^\s*select/i.test(s)){this.db.exec(s);return{toArray:()=>[]};}const q=this.db.prepare(s);const rows=/^\s*select/i.test(s)?q.all(...p):(q.run(...p),[]);return{toArray:()=>rows};}}
+class Store {constructor(){this.repos=new Map();}async create(name){this.repos.set(name,new Map());return{name,remote:'https://test/'+name,branch:'main'};}async read(name,path){return this.repos.get(name)?.get(path)??null;}async write({name,path,content}){this.repos.get(name).set(path,content);return{commit:'c'.repeat(40)};}}
+
+// ------------------------------------------------------------------ apiGaps
+const run6Api='{"type":"object","members":{"getTickets":{"type":"function","name":"getTickets","params":["filters"]}}}';
+const fn=(name,...params)=>({type:'function',name,params});
+const crudApi={type:'object',members:{createTicket:fn('createTicket','data'),getTickets:fn('getTickets','filters'),updateTicket:fn('updateTicket','id','patch'),deleteTicket:fn('deleteTicket','id'),version:{type:'string',value:'1'}}};
+
+test('apiGaps: run6\'s start() covers only view; create, update and delete have no method',()=>{
+  const mapping=[{operation:'create a ticket',method:null},{operation:'view tickets',method:'getTickets'},{operation:'update a ticket',method:null},{operation:'delete a ticket',method:''}];
+  assert.deepEqual(apiGaps(JSON.parse(run6Api),mapping).map(g=>g.operation),['create a ticket','update a ticket','delete a ticket']);
+  // A method the model named but start() did not return is no method.
+  assert.deepEqual(apiGaps(JSON.parse(run6Api),[{operation:'create a ticket',method:'createTicket'},{operation:'view tickets',method:'getTickets'}]).map(g=>g.operation),['create a ticket']);
+  assert.deepEqual(apiGaps(crudApi,[{operation:'create a ticket',method:'createTicket'},{operation:'view tickets',method:'getTickets'},{operation:'update a ticket',method:'updateTicket'},{operation:'delete a ticket',method:'deleteTicket'}]),[]);
+});
+
+test('apiGaps: one method per operation; a method an earlier operation uses is a gap that names it',()=>{
+  // Reading is not creating: a mapping that reuses getTickets for create does not cover it.
+  const gaps=apiGaps(JSON.parse(run6Api),[{operation:'view tickets',method:'getTickets'},{operation:'create a ticket',method:'getTickets'}]);
+  assert.deepEqual(gaps,[{operation:'create a ticket',method:'getTickets',same_as:'view tickets'}]);
+  assert.deepEqual(apiGaps(crudApi,[{operation:'create a ticket',method:'createTicket'},{operation:'update a ticket',method:'app.createTicket'}]),[{operation:'update a ticket',method:'createTicket',same_as:'create a ticket'}],'the same method under another spelling');
+});
+
+test('apiGaps: model spellings of a method resolve to the top-level member; non-callables and nested members do not',()=>{
+  for(const spelled of ['createTicket','app.createTicket','createTicket()','createTicket(data)',' createTicket ',"app['createTicket']",'await app.createTicket(data);','start().createTicket','CreateTicket'])
+    assert.equal(apiMethod(crudApi,spelled),'createTicket',spelled);
+  assert.equal(methodName('app . createTicket ( { title } )'),'createTicket');
+  for(const spelled of ['version','toString','tickets.create','none',null,'',42])assert.equal(apiMethod(crudApi,spelled),null,String(spelled));
+  // Two members that differ only in case are never guessed between.
+  assert.equal(apiMethod({type:'object',members:{getTicket:fn('getTicket'),GetTicket:fn('GetTicket')}},'getticket'),null);
+  const nested={type:'object',members:{tickets:{type:'object',members:{create:fn('create')}},Store:{type:'class',name:'Store',params:[]}}};
+  assert.deepEqual(apiGaps(nested,[{operation:'create a ticket',method:'tickets.create'},{operation:'open a store',method:'Store'}]).map(g=>g.operation),['create a ticket']);
+  assert.deepEqual(operationMethods(crudApi,[{operation:'create a ticket',method:'app.createTicket()'},{operation:'view tickets',method:'getTickets'},{operation:'archive',method:null}]),
+    [{operation:'create a ticket',method:'createTicket'},{operation:'view tickets',method:'getTickets'}]);
+});
+
+test('apiGaps: a description that cannot be checked is no gate',()=>{
+  const none=[{operation:'create a ticket',method:null}];
+  for(const described of [{type:'unparsed'},{type:'object',members_truncated:true,keys:['createTicket']},{type:'function',name:'app',params:[]},{type:'array',members:{0:fn('x')}},{type:'object'},null,undefined]) {
+    assert.deepEqual(apiGaps(described,none),[],JSON.stringify(described));
+    assert.equal(coverageCheckable(described),false,JSON.stringify(described));
+  }
+  assert.deepEqual(apiGaps(crudApi,null),[]);
+  assert.equal(coverageCheckable(JSON.parse(run6Api)),true);
+});
+
+// ------------------------------------------------------- the runner backstop
+const run6Test=`const assert = require('node:assert/strict');
+const { start } = require('./index.js');
+
+(async () => {
+  try {
+    const app = await start();
+
+    // Since the API only exposes getTickets, we can only read tickets.
+    // The goal requires create, update, delete, but those methods are not in the API.
+    // If the API had app.createTicket(), app.updateTicket() and app.deleteTicket(), they would be used here.
+    const allTickets = await app.getTickets({});
+    assert.ok(Array.isArray(allTickets), 'getTickets should return an array');
+    console.log('API test passed with available method:', 'getTickets');
+    process.exit(0);
+  } catch (error) {
+    console.error('Test failed:', error.message);
+    process.exit(1);
+  }
+})();
+`;
+const crudMapping=[{operation:'create a ticket',method:'createTicket'},{operation:'view tickets',method:'getTickets'},{operation:'update a ticket',method:'updateTicket'},{operation:'delete a ticket',method:'deleteTicket'}];
+
+test('backstop: a runner test that never calls a mapped method is caught; comments and strings are not calls',()=>{
+  assert.deepEqual(untestedOperations(run6Test,crudMapping).map(o=>o.method),['createTicket','updateTicket','deleteTicket']);
+  const every="const { start } = require('./index.js');\n(async () => { const app = await start(); const t = await app.createTicket({ title: 'x' }); await app?.getTickets(); await app['updateTicket'](t.id, {}); await app.deleteTicket.call(app, t.id); })();\n";
+  assert.deepEqual(untestedOperations(every,crudMapping),[]);
+  assert.deepEqual(untestedOperations("const app = {}; console.log('app.deleteTicket(1)'); app.createTicket(); app.getTickets(); app.updateTicket();",crudMapping).map(o=>o.method),['deleteTicket']);
+  assert.deepEqual(untestedOperations("const f = app.deleteTicket; app.createTicket(); app.getTickets(); app.updateTicket();",crudMapping).map(o=>o.method),['deleteTicket'],'a reference is not a call');
+  assert.deepEqual(untestedOperations(run6Test,null),[],'no mapping, no backstop');
+  assert.deepEqual(untestedOperations('app.createTicket(',crudMapping),[],'a test that does not parse is left to the syntax check');
+});
+
+// --------------------------------------------------------------- the models
+function fakeAI(answers) {
+  const calls=[];
+  return {calls,env:{MOCK_AI:'false',AI:{run:async(_m,{messages})=>{calls.push({system:messages[0].content,user:JSON.parse(messages[1].content)});const a=answers[calls.length-1];return {response:typeof a==='string'?a:JSON.stringify(a)};}}}};
+}
+test('apiCoverage: asks with the goal and the API, normalizes the mapping, retries unparsable output once, then gives up',async()=>{
+  assert.equal(await apiCoverage({MOCK_AI:'true'},{goal:'g',api:run6Api}),null);
+  const ok=fakeAI(['<think>the goal names four</think>```json\n{"operations":[{"operation":" create a ticket ","method":null},{"operation":"view tickets","method":" getTickets "},{"operation":"View tickets","method":"getTickets"},{"operation":"","method":"x"},{"operation":"delete a ticket","method":7}]}\n```']);
+  assert.deepEqual(await apiCoverage(ok.env,{goal:'Build a small issue tracker',api:run6Api}),{operations:[{operation:'create a ticket',method:null},{operation:'view tickets',method:'getTickets'},{operation:'delete a ticket',method:null}]});
+  assert.equal(ok.calls.length,1);
+  assert.equal(ok.calls[0].system,COVERAGE_SYSTEM);
+  assert.deepEqual(ok.calls[0].user,{goal:'Build a small issue tracker',api_returned_by_start:run6Api});
+  assert.match(COVERAGE_SYSTEM,/reading is not creating/);
+  assert.match(COVERAGE_SYSTEM,/List an operation once: viewing one item and listing items are one "view" operation unless the goal names both/);
+  const retried=fakeAI(['I think the API is incomplete.','{"operations":[{"operation":"view tickets","method":"getTickets"}]}']);
+  assert.deepEqual(await apiCoverage(retried.env,{goal:'g',api:run6Api}),{operations:[{operation:'view tickets',method:'getTickets'}]});
+  assert.match(retried.calls[1].system,/RETRY/);
+  for(const garbage of [['not json','still not json'],['{"operations":[]}','{"operations":"none"}'],['{"ops":[]}','[1,2]']]) {
+    const bad=fakeAI(garbage);
+    assert.equal(await apiCoverage(bad.env,{goal:'g',api:run6Api}),null,garbage[0]);
+    assert.equal(bad.calls.length,2,'one retry, no more');
+  }
+});
+
+test('runner: the mapping reaches the runner, which must call every mapped method; the API-names rule stays',async()=>{
+  const ai=fakeAI(['```js\nconst x = 1;\n```']);
+  assert.equal(await writeRunnerTest(ai.env,{goal:'g',api:run6Api,operations:crudMapping}),'const x = 1;');
+  assert.deepEqual(ai.calls[0].user.operations_to_test,crudMapping);
+  const none=fakeAI(['x']);
+  await writeRunnerTest(none.env,{goal:'g',api:run6Api});
+  assert.equal('operations_to_test' in none.calls[0].user,false);
+  assert.match(RUNNER_SYSTEM,/operations_to_test/);
+  assert.match(RUNNER_SYSTEM,/exercise every one of them by calling that method/);
+  assert.match(RUNNER_SYSTEM,/Never skip an operation the goal names, and never print success or exit with success for a test that covers only some of them/);
+  assert.match(RUNNER_SYSTEM,/Use only names that appear in the API description/);
+});
+
+// ------------------------------------------------------------------ room level
+// Run6's modules, flattened to one level. Every import is still blind.
+const run6Storage="const fs = require('fs');\nconst path = require('path');\n\nconst TICKETS_FILE = path.join(__dirname, 'tickets.json');\n\nfunction getTickets() {\n  if (!fs.existsSync(TICKETS_FILE)) {\n    fs.writeFileSync(TICKETS_FILE, '[]');\n  }\n  const data = fs.readFileSync(TICKETS_FILE, 'utf8');\n  return JSON.parse(data);\n}\n\nfunction saveTickets(tickets) {\n  fs.writeFileSync(TICKETS_FILE, JSON.stringify(tickets, null, 2));\n}\n\nmodule.exports = {\n  getTickets,\n  saveTickets\n};\n";
+const run6Filter="exports.applyFilters = function(tickets, filters) {\n  return tickets.filter(ticket => {\n    return Object.keys(filters).every(key => {\n      return ticket[key] === filters[key];\n    });\n  });\n};\n";
+const run6Retrieval="const { getTickets: storageGetTickets } = require('./ticketStorage');\nconst { applyFilters } = require('./filterApplication');\n\nfunction getTickets(filters) {\n  const tickets = storageGetTickets();\n  return applyFilters(tickets, filters);\n}\n\nfunction start() {\n  return {\n    getTickets: getTickets\n  };\n}\n\nmodule.exports = { start };\n";
+const run6Update="const { getTickets, saveTickets } = require('./ticketStorage');\n\nfunction updateTickets(criteria, updates) {\n  const tickets = getTickets();\n  const updated = tickets.map(ticket => {\n    if (matchesCriteria(ticket, criteria)) {\n      return { ...ticket, ...updates };\n    }\n    return ticket;\n  });\n  saveTickets(updated);\n  return updated;\n}\n\nfunction matchesCriteria(ticket, criteria) {\n  return Object.entries(criteria).every(([key, value]) => \n    ticket[key] === value\n  );\n}\n\nmodule.exports = { updateTickets };\n";
+const run6Delete="const { getTickets, saveTickets } = require('./ticketStorage');\n\nasync function deleteTickets(ids) {\n  const tickets = await getTickets();\n  const filtered = tickets.filter(ticket => !ids.includes(ticket.id));\n  await saveTickets(filtered);\n}\n\nmodule.exports = { deleteTickets };\n";
+const run6Goal='Build a small issue tracker that lets someone create, view, update, and delete tickets. The finished application has one entry module that exports start(); start() returns an object with one method per operation named above.';
+const run6Workers=[['ticket storage','ticketStorage.js',run6Storage],['Filter application logic','filterApplication.js',run6Filter],['Ticket retrieval function','ticketRetrieval.js',run6Retrieval],['update ticket','updateTicket.js',run6Update],['delete ticket','deleteTicket.js',run6Delete]];
+const run6Coverage={operations:[{operation:'create a ticket',method:null},{operation:'view tickets',method:'getTickets'},{operation:'update a ticket',method:null},{operation:'delete a ticket',method:null}]};
+
+// In-memory CRUD modules for a run that can pass.
+const memoryStore="const tickets = [];\nlet nextId = 1;\nfunction createTicket(data) { const t = { id: nextId++, ...data }; tickets.push(t); return { ...t }; }\nfunction getTickets() { return tickets.map(t => ({ ...t })); }\nfunction updateTicket(id, patch) { const t = tickets.find(x => x.id === id); if (!t) return null; Object.assign(t, patch); return { ...t }; }\nfunction deleteTicket(id) { const i = tickets.findIndex(x => x.id === id); if (i < 0) return false; tickets.splice(i, 1); return true; }\nmodule.exports = { createTicket, getTickets, updateTicket, deleteTicket };\n";
+const memoryApp="const { createTicket, getTickets, updateTicket, deleteTicket } = require('./ticketStore');\nfunction start() {\n  return { createTicket, viewTickets: getTickets, updateTicket, deleteTicket };\n}\nmodule.exports = { start };\n";
+const memoryWorkers=[['Ticket store','ticketStore.js',memoryStore],['Application entry','app.js',memoryApp]];
+const memoryGoal='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
+const memoryCoverage={operations:[{operation:'create a ticket',method:'app.createTicket'},{operation:'view tickets',method:'viewTickets()'},{operation:'update a ticket',method:' updateTicket '},{operation:'delete a ticket',method:'deleteTicket'}]};
+const memoryMapping=[{operation:'create a ticket',method:'createTicket'},{operation:'view tickets',method:'viewTickets'},{operation:'update a ticket',method:'updateTicket'},{operation:'delete a ticket',method:'deleteTicket'}];
+const crudTest=`const assert = require('node:assert/strict');
+const { start } = require('./index.js');
+(async () => {
+  const app = await start();
+  const t = await app.createTicket({ title: 'Printer jam', status: 'open' });
+  assert.ok((await app.viewTickets()).some(x => x.id === t.id));
+  await app.updateTicket(t.id, { status: 'closed' });
+  assert.equal((await app.viewTickets()).find(x => x.id === t.id).status, 'closed');
+  assert.equal(await app.deleteTicket(t.id), true);
+  assert.equal((await app.viewTickets()).some(x => x.id === t.id), false);
+})().catch(e => { console.error(e); process.exitCode = 1; });
+`;
+// Reads only, as run6's runner did; its comments name every other method.
+const readOnlyTest=`const assert = require('node:assert/strict');
+const { start } = require('./index.js');
+(async () => {
+  const app = await start();
+  // The goal also wants app.createTicket(), app.updateTicket() and app.deleteTicket().
+  assert.ok(Array.isArray(await app.viewTickets()));
+  console.log('API test passed');
+})().catch(e => { console.error(e); process.exitCode = 1; });
+`;
+
+function room({coverage=()=>{throw new Error('unexpected model request: coverage');},runner=()=>crudTest,link=()=>({edits:[],entry:null,issues:[]})}={}) {
+  const calls={link:[],coverage:[],runner:[],triage:[]};
+  const AI={run:async(_model,{messages})=>{
+    const system=messages[0].content,user=JSON.parse(messages[1].content);
+    if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user))};}
+    if(system.startsWith('You check an application\'s API')){calls.coverage.push({system,user});const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
+    if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}
+    if(system.startsWith('You are the BUILDER doing triage')){calls.triage.push(user);return {response:'{}'};}
+    throw new Error('unexpected model request: '+system.slice(0,80));
+  }};
+  const builds=[];
+  const exec={build:async({fingerprint,files})=>{builds.push(files);return verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files});}};
+  const store=new Store();
+  const r=new ControlRoom({storage:{sql:new Sql()},waitUntil(){}},{MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec}});
+  r.set('room_id','coverage-test');
+  return {room:r,store,calls,builds};
+}
+async function workersUnder(room,goal,list) {
+  await room.provision('root',null,'Root objective',goal);
+  room.set('goal',goal);
+  await room.spawn('root',list.map(([label,file])=>({label,task:'Write '+file})));
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  for(const [i,[,file,content]] of list.entries()){room.db().exec("UPDATE agents SET phase='implement' WHERE id=?",`root.${i+1}`);await room.putFile(`root.${i+1}`,file,content);}
+  for(let i=1;i<=list.length;i++)room.db().exec("UPDATE agents SET status='done' WHERE id=?",`root.${i}`);
+  return list.map(([label,file],i)=>materializedPath(label,file,`root.${i+1}`));
+}
+const kinds=room=>room.snapshot().events.map(e=>e.kind);
+const tail=room=>room.snapshot().events.slice(-12).map(e=>`${e.kind}: ${e.body}`).join('\n');
+
+test('room: run6\'s start() returning only getTickets goes back to the entry worker; no runner test is written or saved',async()=>{
+  const {room:r,store,calls,builds}=room({coverage:()=>run6Coverage});
+  const paths=await workersUnder(r,run6Goal,run6Workers);
+  const builder=await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  const events=r.snapshot().events;
+  assert.match(events.find(e=>e.kind==='build_checked')?.body||'',/start\(\) returned: \{"type":"object","members":\{"getTickets":\{"type":"function","name":"getTickets","params":\["filters"\]\}\}\}/,tail(r));
+  assert.equal(calls.coverage.length,1);
+  assert.equal(calls.coverage[0].user.goal,run6Goal);
+  assert.equal(calls.coverage[0].user.api_returned_by_start,run6Api);
+  assert.equal(calls.runner.length,0,'the runner is never asked to test a partial application');
+  assert.equal(builds.length,1,'one load and start; nothing is run');
+  assert.equal(r.read('runner_test',null),null,'no test is fixed for the run');
+  assert.equal(await store.read(r.node(builder.id).repo_name,'glue/smoke.js'),null);
+  assert.match(events.find(e=>e.kind==='api_incomplete').body,/no method for 3 of the 4 operation\(s\) the goal names: create a ticket, update a ticket, delete a ticket\./);
+  assert.ok(!kinds(r).includes('run_passed'));
+  assert.equal(r.node(builder.id).status,'waiting');
+  const failure=r.read('build_failure:root',null);
+  assert.equal(failure.stage,'run');
+  assert.deepEqual(failure.issues.map(i=>i.path),[paths[2]],'the module that exports start()');
+  assert.match(failure.issues[0].detail,/^start\(\) returns no method for: create a ticket, update a ticket, delete a ticket; it returned \{"type":"object"/);
+  assert.match(failure.issues[0].detail,/Each operation the goal names needs its own method on the object start\(\) returns, the operation imported from the module that performs it\./);
+  assert.ok(failure.issues[0].detail.endsWith(ENTRY_CONTRACT),'the whole entry contract survives the problem\'s length limit');
+  await r.routeBuildFailures();
+  assert.equal(r.receive('root.3').length,1,'the retrieval worker that wrote start() hears it');
+  for(const other of ['root.1','root.2','root.4','root.5'])assert.equal(r.receive(other).length,0,other);
+});
+
+test('room: a model that maps two operations to one method has not covered the second',async()=>{
+  const {room:r,calls}=room({coverage:()=>({operations:[{operation:'view tickets',method:'getTickets'},{operation:'create a ticket',method:'getTickets'}]})});
+  await workersUnder(r,run6Goal,run6Workers);
+  const builder=await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  assert.equal(calls.runner.length,0);
+  assert.match(r.read('build_failure:root',null).issues[0].detail,/^start\(\) returns no method for: create a ticket \(getTickets already performs view tickets\);/);
+});
+
+test('room: complete coverage passes the mapping to the runner and saves it with the fixed test; a later round asks no one again',async()=>{
+  const {room:r,calls}=room({coverage:()=>memoryCoverage});
+  await workersUnder(r,memoryGoal,memoryWorkers);
+  const builder=await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  assert.equal(r.node(builder.id).status,'done',tail(r));
+  assert.ok(r.read('run_passed:root',null));
+  assert.equal(calls.coverage.length,1);
+  assert.equal(calls.runner.length,1);
+  assert.deepEqual(calls.runner[0].operations_to_test,memoryMapping,'each method by the name start() returned it under');
+  assert.match(r.snapshot().events.find(e=>e.kind==='api_covered').body,/create a ticket -> createTicket, view tickets -> viewTickets, update a ticket -> updateTicket, delete a ticket -> deleteTicket/);
+  const saved=r.read('runner_test',null);
+  assert.equal(saved.test,crudTest.trim());
+  assert.deepEqual(saved.operations,memoryMapping);
+  // A changed source reruns the same test: the mapping is not asked for again.
+  await r.putFile('root.1','ticketStore.js',memoryStore+'// revised\n');
+  await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  assert.ok(kinds(r).includes('runner_reused'),tail(r));
+  assert.equal(calls.coverage.length,1);
+  assert.equal(calls.runner.length,1);
+  assert.equal(r.node(builder.id).status,'done',tail(r));
+});
+
+test('room: a runner draft that skips a mapped method is turned back before it runs',async()=>{
+  const {room:r,calls,builds}=room({coverage:()=>memoryCoverage,runner:(_u,n)=>n===1?readOnlyTest:crudTest});
+  await workersUnder(r,memoryGoal,memoryWorkers);
+  const builder=await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  assert.equal(calls.runner.length,2);
+  assert.match(calls.runner[1].previous_test_error,/^Your previous test was rejected before running: the test never calls createTicket \(operation create a ticket\); call app\.createTicket\(\.\.\.\) and check its result; the test never calls updateTicket \(operation update a ticket\)/);
+  assert.match(calls.runner[1].previous_test_error,/the test never calls deleteTicket \(operation delete a ticket\)/);
+  assert.doesNotMatch(calls.runner[1].previous_test_error,/viewTickets/);
+  assert.deepEqual(calls.runner[1].operations_to_test,memoryMapping,'the correction keeps the mapping');
+  assert.equal(builds.length,2,'one load and start, one run of the corrected test');
+  assert.equal(builds[1]['glue/smoke.js'],crudTest.trim());
+  assert.ok(!builds.some(files=>/The goal also wants/.test(files['glue/smoke.js']||'')),'the read-only draft never ran');
+  assert.ok(kinds(r).includes('runner_rejected'));
+  assert.equal(r.read('runner_test',null).test,crudTest.trim());
+  assert.equal(r.node(builder.id).status,'done',tail(r));
+});
+
+test('room: a coverage model that answers garbage or fails fails open: coverage_unchecked, and the runner is told no mapping',async()=>{
+  for(const [name,coverage,asked] of [['garbage',()=>'The API looks incomplete to me.',2],['throws',undefined,1]]) {
+    const {room:r,calls}=room(coverage?{coverage}:{});
+    await workersUnder(r,memoryGoal,memoryWorkers);
+    const builder=await r.scheduleAssembly('root');
+    await r.turn(builder.id);
+    const events=r.snapshot().events;
+    assert.equal(calls.coverage.length,asked,name);
+    assert.match(events.find(e=>e.kind==='coverage_unchecked')?.body||'',/^Not checked that start\(\) has a method for every operation the goal names/,name);
+    assert.ok(!kinds(r).includes('api_incomplete'),name);
+    assert.equal(calls.runner.length,1,name);
+    assert.equal('operations_to_test' in calls.runner[0],false,name);
+    assert.equal(r.read('runner_test',null).operations,null,name);
+    assert.equal(r.node(builder.id).status,'done',name+'\n'+tail(r));
+  }
+  // An API description with no top-level members is not sent to the model at all.
+  const {room:r,calls}=room({coverage:()=>memoryCoverage,runner:()=>"const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => { const create = await start(); assert.equal((await create({ title: 'x' })).title, 'x'); })().catch(e => { console.error(e); process.exitCode = 1; });\n"});
+  await workersUnder(r,memoryGoal,[['Application entry','app.js',"module.exports = { start() { return (data) => ({ id: 1, ...data }); } };\n"]]);
+  const builder=await r.scheduleAssembly('root');
+  await r.turn(builder.id);
+  assert.equal(calls.coverage.length,0);
+  assert.match(r.snapshot().events.find(e=>e.kind==='coverage_unchecked').body,/lists no top-level members/);
+  assert.equal(r.node(builder.id).status,'done',tail(r));
+});
