@@ -1334,6 +1334,10 @@ export class ControlRoom extends DurableObject {
       // addTicket): renaming cannot make one operation another.
       const given=[...plan.keys()].filter(n=>carries(ownerOf(file),n)),kept=given.filter(n=>!missingExports(new Map([[file,linked.get(file)]]),[n]).length);
       const bound=new Set(boundNames(originals.get(file),linked.get(file)).map(p=>p.join('|')));
+      // A name its piece asked for and was told no piece promises (run8's
+      // addTicket) is no planned function either: bound to one, it would
+      // become another operation (addTicket replaced the list as saveTickets).
+      const unowned=new Set(this.read(`fn_answers:${ownerOf(file)}`,[]).filter(a=>a.kind==='unowned'&&/^fn [A-Za-z_$][\w$]*$/.test(a.key)).map(a=>a.key.slice(3)).filter(n=>!plan.has(n)));
       // Nor may a path point a function the plan gives another piece at a
       // module that neither carries nor exports it: the reader would then
       // hear to stop using a function the plan gives it (slice C review).
@@ -1349,8 +1353,9 @@ export class ControlRoom extends DurableObject {
         if(n)return `it points ${n} at ${t.split('/').pop()}, but the plan gives ${n} to ${pieceOf(n)}`;
         const lost=missingExports(new Map([[file,next]]),kept);
         if(lost.length)return `it removes ${lost.join(', ')}, a function the plan gives this module's piece`;
-        const [x,y]=boundNames(originals.get(file),next).find(([x,y])=>!bound.has(`${x}|${y}`)&&differ(x,y))||[];
-        return x?`it binds ${x} to ${y}, which the plan names as different functions (${pieceOf(x)}, ${pieceOf(y)})`:null;
+        const [x,y]=boundNames(originals.get(file),next).find(([x,y])=>!bound.has(`${x}|${y}`)&&(differ(x,y)||unowned.has(x)&&plan.has(y)))||[];
+        return !x?null:unowned.has(x)?`it binds ${x} to ${y}: no piece promises ${x}, and the plan gives ${y} to ${pieceOf(y)} as a different function`:
+          `it binds ${x} to ${y}, which the plan names as different functions (${pieceOf(x)}, ${pieceOf(y)})`;
       };
       const result=applyEdits(linked.get(file),list,{knownNames,original:originals.get(file),check,done:done.filter(e=>e.file===file),shapes:{path:file,files:linked,surfaces}});
       linked.set(file,result.content);

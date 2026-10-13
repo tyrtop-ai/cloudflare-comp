@@ -350,6 +350,29 @@ test('v7.15: run8: the linker may not bind addTicket to saveTickets; the add pie
   assert.equal(tickets(room,'root.1').length,0,'the storage piece is never asked');
 });
 
+// run8's real shape: no piece promised addTicket. The create worker asked
+// for it and was told no piece promises it, imported it on its own line,
+// and the top linker bound it to saveTickets, which replaces the list.
+test('v7.15: run8: a name answered as promised by no piece may not be bound to a planned function; it reaches the top unresolved',async()=>{
+  const service="const { addTicket } = require('./addTicket');\nlet next = 1;\nfunction createTicket(title) { const t = { id: next++, title }; addTicket(t); return t; }\nmodule.exports = { createTicket };\n";
+  const {room}=liveRoom({link:user=>{
+    const f=user.your_files.find(x=>x.path.endsWith('createTicket.js')),store=user.all_module_paths.find(p=>p.endsWith('save/module.js'));
+    return f&&store?{edits:[{file:f.path,find:"{ addTicket } = require('./addTicket')",replace:`{ saveTickets: addTicket } = require('${L.relativeSpecifier(f.path,store)}')`}],issues:[]}:{edits:[],issues:[]};
+  }});
+  await planned(room);
+  await pieces(room,'root',[['data store',null,null,[fn('loadTickets','returns all tickets'),fn('saveTickets','stores all tickets',['tickets'])]],
+    ['create ticket','createTicket.js',service,[fn('createTicket','creates a ticket',['title'],'create a ticket')]],['entry module','app.js',run8Entry.replace(/update/g,'create'),[START]]]);
+  await pieces(room,'root.1',[['load tickets','load/ticketLoader.js',loader,[fn('loadTickets','returns all tickets')]],['save tickets','save/module.js',saver,[fn('saveTickets','stores all tickets',['tickets'])]]]);
+  room.recordAnswer('root.2',{key:'fn addTicket',kind:'unowned',text:'No piece of the application promises addTicket (adds a ticket to storage), and it is not part of your assignment.'});
+  await linkBranch(room,'root.1');
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.ok(events(room,'link_edit_rejected').some(e=>/createTicket\.js: .*it binds addTicket to saveTickets: no piece promises addTicket, and the plan gives saveTickets to save tickets as a different function$/.test(e.body)),trace(room));
+  assert.doesNotMatch(events(room,'link_renamed').map(e=>e.body).join(' '),/saveTickets: addTicket/);
+  const [p,...more]=openProblems(room,'root');
+  assert.equal(more.length,0,trace(room));
+  assert.deepEqual([p.kind,p.facts.names,p.parties.map(x=>[x.role,x.owner])],['unresolved',['addTicket'],[['reader','root.2']]]);
+});
 // ------------------------------------------------------------- test 34
 // The data store promised saveTickets; the piece its split gave it to
 // exported storeTickets. The branch's linked bundle lacks a promised name:
