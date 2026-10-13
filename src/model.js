@@ -241,7 +241,8 @@ export async function pickPiece(env, fn, pieces) {
   }));
   let best=null,top=0;
   for(const x of answered.flat()){top=Math.max(top,x.p);if(x.p>=FUNCTION_MATCH_THRESHOLD&&(!best||x.p>best.p))best=x;}
-  return best||{index:-1,p:top};
+  // Pieces within 0.05 of the best are a tie, which the caller settles.
+  return best?{...best,tied:answered.flat().filter(x=>x!==best&&x.p>=FUNCTION_MATCH_THRESHOLD&&best.p-x.p<0.05).map(x=>x.index)}:{index:-1,p:top};
 }
 // Nobody up to Root promises the function: is it the worker's own to write?
 export async function ownsNeed(env, {assigned_code, need, name=''}) {

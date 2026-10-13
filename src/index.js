@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_ROUNDS, MAX_REPAIR_ROUNDS_TOTAL, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
@@ -2641,7 +2641,9 @@ export class ControlRoom extends DurableObject {
     await Promise.all(dups.filter(d=>d.pick===null).map(async d=>{
       try {
         const x=await pickPiece(env,d.item,d.holders.map(i=>named[i]));
-        owners.set(d.name,x?.index>=0?{index:d.holders[x.index],why:`Clef p=${x.p.toFixed(2)}`}:{index:-1,why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}`});
+        // A tie goes to the one tied piece named for the function, else is said.
+        const tied=x?.index>=0?[x.index,...(x.tied||[])]:[],by=tied.filter(j=>labelNames(named[d.holders[j]].label,d.name)),j=tied.length>1&&by.length===1?by[0]:x?.index;
+        owners.set(d.name,x?.index>=0?{index:d.holders[j],why:tied.length<2?`Clef p=${x.p.toFixed(2)}`:by.length===1?`Clef tie, label matches`:`Clef p=${x.p.toFixed(2)}, tied with ${x.tied.map(k=>`"${clip(named[d.holders[k]].label,40)}"`).join(', ')}`}:{index:-1,why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}`});
       } catch {owners.set(d.name,{index:-1,why:'Clef failed'});}
     }));
     const {spawn:repaired,removed}=repairInterfaces(named,promised,elsewhere,owners);
@@ -3035,9 +3037,10 @@ export class ControlRoom extends DurableObject {
     // v7.15.1: an empty placeholder is not delivered either (run9's update and del).
     const empty=placeholders(files,names.filter(n=>!missing.includes(n))),list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
     const emptyNames=[...new Set(empty.map(x=>x.op||x.name))],are=emptyNames.length>1?'are empty placeholders':'is an empty placeholder';
+    // A contract problem is about a missing export: closed once it is exported, whatever the placeholders.
+    if(!missing.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
     if(!missing.length&&!empty.length) {
       if(returns)this.set(key,'');
-      this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
       return false;
     }
     if(returns>=3) {
@@ -3058,27 +3061,35 @@ export class ControlRoom extends DurableObject {
     if(empty.length)this.event(id,'contract_placeholder',`Done refused (${returns+1}/3): ${list(emptyNames)} ${are}; back to the worker. ${answers.map(a=>a.how).join(' ')}`.trim());
     return true;
   }
-  // v7.15.1: the manager answers an empty operation from its own plan: the
-  // direct child whose promise performs it, by the operation word (update ->
-  // updateTicket), else the Clef matcher a function request uses. run9's
-  // start carrier returned update() {} and del() {} and never asked for them.
+  // v7.15.1: the manager answers an empty operation from the plan as a
+  // function request is answered (routeFunction): at each level up from the
+  // worker, the other children's promises, by every word of the operation
+  // (performsOp), else Clef. Only a word hit whose arguments fit is returned
+  // as the operation; a Clef hit is what to write it with (run9's view(id) is
+  // getTickets().find(...), not getTickets). run9's start carrier returned
+  // update() {} and del() {} and never asked for them.
   async placeholderAnswer(id, x, promised) {
     if(!x.op){const f=promised.find(p=>p.name===x.name);return {text:`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''} is promised by your assignment and is an empty placeholder: write it here.`,how:`${x.name} is its own to write.`};}
-    const parent=this.node(id)?.parent,items=(parent?this.offeredFunctions(parent,id):[]).flatMap(o=>o.items.map(f=>({...f,owner:o.label})));
-    const first=t=>String(t||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().match(/[a-z0-9]+/)?.[0]||'';
-    const said=new Set([x.op,x.local].map(first)),removes=['del','delete','remove'];
-    if(removes.some(w=>said.has(w)))for(const w of removes)said.add(w);
-    const byWord=items.filter(f=>said.has(first(f.name))||said.has(first(f.operation)));
-    let hit=byWord.length===1?byWord[0]:null,how=hit?'operation word':'',failed=false;
-    if(!hit&&items.length) {
-      try {
-        const pool=byWord.length>1?byWord:items,m=await matchFunction(this.inferenceEnv(),{need:`the ${x.op} operation`,name:''},pool);
+    const sig=x.params?.length?`${x.op}(${x.params.join(', ')})`:x.op,need=`the ${String(x.op).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase()} operation that start() returns as ${sig}`;
+    let failed=false;
+    for(let b=this.node(id);b?.parent;b=this.node(b.parent)) {
+      const items=this.offeredFunctions(b.parent,b.id).flatMap(o=>o.items.map(f=>({...f,owner:o.label})));
+      if(!items.length)continue;
+      const byWord=items.filter(f=>performsOp(x.op,f)),pool=byWord.length>1?byWord:items,ask=()=>matchFunction(this.inferenceEnv(),{need,name:''},pool);
+      let hit=byWord.length===1?byWord[0]:null,how=hit?'operation word':'',m=null;
+      if(!hit) {
+        // Clef down where the words found the operation: ask, not a level up.
+        try {m=await ask();} catch {try {m=await ask();} catch {failed=true;if(byWord.length)break;}}
         if(m){hit=pool[m.index];how=`Clef p=${m.p.toFixed(2)}`;}
-      } catch {failed=true;}
+      }
+      if(!hit)continue;
+      const does=hit.does?` — "${String(hit.does).replace(/[.\s]+$/,'')}" —`:'',line=`const { ${hit.name} } = require('./${hit.name}')`;
+      // Both sides naming a different number of arguments is not the same operation.
+      if(byWord.includes(hit)&&(!x.params?.length||!hit.params?.length||x.params.length===hit.params.length))
+        return {text:`${x.op} is an empty placeholder: ${signature(hit)}${does} is promised by "${hit.owner}"; import it on its own line, ${line}, and return it as ${x.op}.`,how:`${x.op}: ${hit.name} from "${clip(hit.owner,70)}" (${how}).`};
+      return {text:`${x.op} is an empty placeholder: write ${sig} with ${signature(hit)}${does} which "${hit.owner}" promises; import it on its own line, ${line}, and call it from ${x.op}.`,how:`${x.op}: write it with ${hit.name} from "${clip(hit.owner,70)}" (${how}).`};
     }
-    if(hit)return {text:`${x.op} is an empty placeholder: ${signature(hit)}${hit.does?` — "${String(hit.does).replace(/[.\s]+$/,'')}" —`:''} is promised by "${hit.owner}"; import it on its own line, const { ${hit.name} } = require('./${hit.name}'), and return it as ${x.op}.`,
-      how:`${x.op}: ${hit.name} from "${clip(hit.owner,70)}" (${how}).`};
-    if(failed)return {text:`${x.op} is an empty placeholder: ask your manager for the function that performs it and return it as ${x.op}.`,how:`${x.op}: Clef failed; ask.`};
+    if(failed)return {text:`${x.op} is an empty placeholder: ask your manager for the function that performs it.`,how:`${x.op}: Clef failed; ask.`};
     return {text:`${x.op} is an empty placeholder and no piece promises it: implement it here.`,how:`${x.op}: no piece promises it.`};
   }
   // v7.15 §6.1: an accepted return's gap is a contract problem in its

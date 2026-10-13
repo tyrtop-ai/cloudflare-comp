@@ -1048,10 +1048,12 @@ export function selfImports(files, names) {
 // is such a local function (run9's entry.js after six repair rounds: function
 // update() {} and function del() {}, returned as update and delete). A body
 // that delegates or does any work passes; a value this parse cannot follow
-// (an import, a call) is given the doubt.
+// (an import, a call, a name bound by a pattern or assigned again) is given
+// the doubt. void is nothing only of a plain value: id => void
+// tickets.delete(id) does the work.
 const NOT_IMPLEMENTED=/not\s+(?:yet\s+)?implemented|unimplemented|\btodo\b|\bstub\b|placeholder/i;
 function placeholder(fn, content) {
-  const nothing=e=>!e||e.type==='Identifier'&&e.name==='undefined'||e.type==='Literal'&&e.value===null||e.type==='UnaryExpression'&&e.operator==='void';
+  const nothing=e=>!e||e.type==='Identifier'&&e.name==='undefined'||e.type==='Literal'&&e.value===null||e.type==='UnaryExpression'&&e.operator==='void'&&/^(?:Literal|Identifier)$/.test(e.argument.type);
   if(fn.body.type!=='BlockStatement')return nothing(fn.body);
   const body=fn.body.body.filter(x=>x.type!=='EmptyStatement'&&!(x.type==='ExpressionStatement'&&x.directive));
   if(!body.length)return true;
@@ -1085,12 +1087,17 @@ function exportedValues(ast, decls) {
   }
   return out;
 }
+// A getter, a setter or a lifecycle no-op beside the operations (close() {}
+// for an in-memory app) is not an operation start owes.
+const LIFECYCLE=new Set('close stop dispose destroy shutdown teardown cleanup reset init'.split(' '));
 export function placeholders(files, names) {
   const out=[],want=new Set(names);
   for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
     if(!LINKABLE.test(path))continue;
     let ast;try{ast=parseSource(content).ast;}catch{continue;}
-    const decls=topLevelDeclarations(ast);
+    const decls=topLevelDeclarations(ast),again=new Set();
+    walk(ast,node=>{if(node.type==='AssignmentExpression'&&node.left.type==='Identifier')again.add(node.left.name);});
+    for(const n of again)decls.set(n,null);
     for(const [name,value] of exportedValues(ast,decls)) {
       if(!want.has(name))continue;
       const fn=functionOf(value,decls);
@@ -1098,15 +1105,21 @@ export function placeholders(files, names) {
       if(placeholder(fn,content)){out.push({path,name});continue;}
       if(name!=='start')continue;
       // The object start returns: its own return, or the local it returns.
-      const inner=new Map(decls);
-      if(fn.body.type==='BlockStatement')for(const [n,d] of topLevelDeclarations(fn.body))inner.set(n,d);
+      // start's parameters and destructured names hide outer ones.
+      const inner=new Map(decls),hidden=new Set();
+      for(const p of fn.params)patternNames(p,hidden);
+      if(fn.body.type==='BlockStatement') {
+        for(const [n,d] of topLevelDeclarations(fn.body))inner.set(n,d);
+        for(const st of fn.body.body)if(st.type==='VariableDeclaration')for(const d of st.declarations)if(d.id?.type!=='Identifier')patternNames(d.id,hidden);
+      }
+      for(const n of [...hidden,...again])inner.set(n,null);
       const returns=fn.body.type==='BlockStatement'?fn.body.body.filter(x=>x.type==='ReturnStatement').map(x=>x.argument):[fn.body];
       for(let r of returns) {
         if(r?.type==='Identifier')r=inner.get(r.name);
         if(r?.type!=='ObjectExpression')continue;
         for(const p of r.properties) {
-          const op=p.type==='Property'&&keyName(p.key),f=op&&(p.method?p.value:functionOf(p.value,inner));
-          if(f&&placeholder(f,content))out.push({path,name,op,local:p.value.type==='Identifier'?p.value.name:op});
+          const op=p.type==='Property'&&p.kind==='init'&&keyName(p.key),f=op&&!LIFECYCLE.has(op)&&(p.method?p.value:functionOf(p.value,inner));
+          if(f&&placeholder(f,content))out.push({path,name,op,params:f.params.map(paramText)});
         }
       }
     }

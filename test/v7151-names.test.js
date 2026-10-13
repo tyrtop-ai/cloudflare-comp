@@ -8,7 +8,7 @@ import {register} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../src/index.js');
-const {duplicateNames,repairInterfaces,labelNames,normalizeSpawn}=await import('../src/interfaces.js');
+const {duplicateNames,repairInterfaces,labelNames,performsOp,normalizeSpawn}=await import('../src/interfaces.js');
 const {pickPiece,ROOT_PROMISE}=await import('../src/model.js');
 const {placeholders}=await import('../src/linker.js');
 class Sql {
@@ -155,7 +155,33 @@ test('v7.15.1: placeholders reads empty promised functions and start\'s empty op
   const cjs={'b.js':"exports.later = function () { return; };\nmodule.exports.todo = () => { throw 'TODO'; };\nexports.real = x => x * 2;"};
   assert.deepEqual(placeholders(cjs,['later','todo','real']).map(x=>x.name),['later','todo']);
   const start={'app.js':"const { createTicket } = require('./createTicket');\nfunction view() {}\nconst api = { create: createTicket, view, archive() {}, list: () => [] };\nmodule.exports = { start() { return api; } };"};
-  assert.deepEqual(placeholders(start,['start']),[{path:'app.js',name:'start',op:'view',local:'view'},{path:'app.js',name:'start',op:'archive',local:'archive'}],'an import and a body that returns a value pass');
+  assert.deepEqual(placeholders(start,['start']),[{path:'app.js',name:'start',op:'view',params:[]},{path:'app.js',name:'start',op:'archive',params:[]}],'an import and a body that returns a value pass');
+});
+
+test('v7.15.1: placeholders passes a void that does the work, start\'s getters, setters and lifecycle no-ops, and names start or a later assignment rebinds',()=>{
+  const one=(src,names=['start'])=>placeholders({'a.js':src},names).map(x=>x.op||x.name);
+  assert.deepEqual(one("const tickets = new Map();\nexports.deleteTicket = id => void tickets.delete(id);",['deleteTicket']),[],'void of a call does the work');
+  assert.deepEqual(one("const tickets = new Map();\nfunction deleteTicket(id) { return void tickets.delete(id); }\nmodule.exports = { deleteTicket };",['deleteTicket']),[]);
+  assert.deepEqual(one("const s = require('./store');\nfunction start() { return { delete: id => void s.remove(id) }; }\nmodule.exports = { start };"),[]);
+  assert.deepEqual(one("exports.init = function () { return void 0; };",['init']),['init'],'void 0 is still nothing');
+  assert.deepEqual(one("const { createTicket } = require('./createTicket');\nfunction start() { return { create: createTicket, close() {}, stop: () => {}, get current() { return null; }, set current(v) {} }; }\nmodule.exports = { start };"),[],'not operations');
+  assert.deepEqual(one("function update() {}\nfunction start() { const { update } = require('./u'); return { update }; }\nmodule.exports = { start };"),[],'destructured inside start');
+  assert.deepEqual(one("function update() {}\nfunction start(update) { return { update }; }\nmodule.exports = { start };"),[],'a parameter of start');
+  assert.deepEqual(one("const store = require('./store');\nlet update = () => {};\nupdate = (id, d) => store.update(id, d);\nfunction start() { return { update }; }\nmodule.exports = { start };"),[],'assigned again');
+  assert.deepEqual(placeholders({'a.js':"function update(id, changes) {}\nfunction start() { return { update }; }\nmodule.exports = { start };"},['start']),[{path:'a.js',name:'start',op:'update',params:['id','changes']}],'an empty operation still counts, with its parameters');
+});
+
+test('v7.15.1: performsOp needs every word of the operation, the verb first, and reads del, delete and remove as one verb only as the verb',()=>{
+  const f=(name,operation)=>({name,...(operation?{operation}:{})});
+  assert.ok(performsOp('update',f('updateTicket')));
+  assert.ok(performsOp('del',f('deleteTicket')));
+  assert.ok(performsOp('delete',f('removeTicket')));
+  assert.ok(performsOp('addComment',f('addCommentToTicket')));
+  assert.ok(performsOp('addComment',f('commentOnTicket','add comments to tickets')),'by its operation');
+  assert.ok(!performsOp('addComment',f('addTicket')),'not by its first word');
+  assert.ok(!performsOp('removeTag',f('deleteTicket')));
+  assert.ok(!performsOp('view',f('getTickets')));
+  assert.ok(!performsOp('update',f('ticketUpdater')),'the verb first');
 });
 
 // Root after fix A, as run9's split is now admitted: the entry worker
@@ -188,17 +214,96 @@ test('v7.15.1: run9 replay: the start carrier\'s update() {} and del() {} are se
   assert.equal(room.receive('root').length,0,'no completion report');
 });
 
-test('v7.15.1: run9 round 5 (view empty): the manager\'s Clef matcher names getTickets from Data Module',async()=>{
+// Following "return getTickets as view" fails run9's own test: app.view(id)
+// must deepStrictEqual the created ticket, and run9's round-4 view was
+// getTickets().find(...). A Clef hit is what to write view with.
+test('v7.15.1: run9 round 5 (view empty): the manager\'s Clef matcher names getTickets from Data Module to write view with, not to return as view',async()=>{
   const round5=run9Entry.replace("function view(id) {\n  const tickets = getTickets();\n  return tickets.find(ticket => ticket.id === id);\n}","function view() {}").replace('function update() {}','function update(id, data) { return updateTicket(id, data); }').replace('function del() {}','function del(id) { return deleteTicket(id); }');
   const ai=fakeAI({leaf:leafOf(round5),fn:(need,name)=>/view/.test(need)&&name==='getTickets'?0.82:0.1});
   const {room}=await entryWorker(ai);
   await room.turn('root.1');
   const [message]=room.receive('root.1');
-  assert.equal(message.body,"[contract] view is an empty placeholder: getTickets() — \"returns all stored tickets\" — is promised by \"Data Module\"; import it on its own line, const { getTickets } = require('./getTickets'), and return it as view. Publish the FULL updated file.");
+  assert.equal(message.body,"[contract] view is an empty placeholder: write view with getTickets() — \"returns all stored tickets\" — which \"Data Module\" promises; import it on its own line, const { getTickets } = require('./getTickets'), and call it from view. Publish the FULL updated file.");
+  assert.doesNotMatch(message.body,/return it as view/);
   const asked=ai.calls.filter(c=>c.kind==='fn');
   assert.equal(asked.length,1);
+  assert.equal(asked[0].state.request.need,'the view operation that start() returns as view');
   assert.deepEqual(asked[0].state.functions.map(f=>f.piece+':'+f.signature.split('(')[0]),['Data Module:addTicket','Data Module:getTickets','Create Ticket Module:createTicket','Update Ticket Module:updateTicket','Delete Ticket Module:deleteTicket'],'its direct children\'s promises, its own excluded');
-  assert.match(events(room,'contract_placeholder')[0].body,/view: getTickets from "Data Module" \(Clef p=0\.82\)\.$/);
+  assert.match(events(room,'contract_placeholder')[0].body,/view: write it with getTickets from "Data Module" \(Clef p=0\.82\)\.$/);
+});
+
+// Root with an entry worker and the given other children.
+async function rootWith(ai,kids) {
+  const {room}=setup(ai);
+  await room.provision('root',null,'Root objective',goal,ROOT_PROMISE);room.set('goal',goal);
+  await room.spawn('root',[{label:'Entry Module',task:'Write the entry',interfaces:[START]},...kids]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root.1'");
+  return room;
+}
+const piece=(label,...fns)=>({label,task:`Write code for ${label}.`,interfaces:fns.map(([name,does,params=[],operation])=>({name,does,params,...(operation?{operation}:{})}))});
+
+test('v7.15.1: a multi-word operation is never answered by its first word: addComment is not addTicket, removeTag is not deleteTicket; Clef hears the whole operation and its hit is what to write it with',async()=>{
+  const entry="const { createTicket } = require('./createTicket');\nconst { deleteTicket } = require('./deleteTicket');\nfunction addComment(ticketId, text) {}\nconst removeTag = (id, tag) => {};\nfunction start() { return { create: createTicket, delete: deleteTicket, addComment, removeTag }; }\nmodule.exports = { start };";
+  const kids=[piece('Data Module',['addTicket','stores a ticket with a new id and returns it',['ticket']]),piece('Create Ticket Module',['createTicket','creates a ticket',['data']]),piece('Delete Ticket Module',['deleteTicket','deletes a ticket by id',['id']]),
+    piece('Comments Module',['commentOnTicket','adds a comment to a ticket and returns the ticket',['ticketId','text']]),piece('Tags Module',['untagTicket','removes a tag from a ticket',['id','tag']])];
+  const ai=fakeAI({leaf:leafOf(entry),fn:(need,name)=>/add comment/.test(need)&&name==='commentOnTicket'||/remove tag/.test(need)&&name==='untagTicket'?0.9:0.1});
+  const room=await rootWith(ai,kids);
+  await room.turn('root.1');
+  assert.equal(room.receive('root.1')[0].body,"[contract] addComment is an empty placeholder: write addComment(ticketId, text) with commentOnTicket(ticketId, text) — \"adds a comment to a ticket and returns the ticket\" — which \"Comments Module\" promises; import it on its own line, const { commentOnTicket } = require('./commentOnTicket'), and call it from addComment. removeTag is an empty placeholder: write removeTag(id, tag) with untagTicket(id, tag) — \"removes a tag from a ticket\" — which \"Tags Module\" promises; import it on its own line, const { untagTicket } = require('./untagTicket'), and call it from removeTag. Publish the FULL updated file.");
+  assert.deepEqual(ai.calls.filter(c=>c.kind==='fn').map(c=>[c.state.request.need,c.state.functions.length]),[['the add comment operation that start() returns as addComment(ticketId, text)',5],['the remove tag operation that start() returns as removeTag(id, tag)',5]]);
+  // The function's operation says it performs addComment: returned as it, no model call.
+  const named=await rootWith(fakeAI({leaf:leafOf(entry.replace(',\n  removeTag','').replace('const removeTag = (id, tag) => {};\n','').replace(', removeTag }',' }'))}),
+    [kids[0],kids[1],kids[2],piece('Comments Module',['commentOnTicket','adds a comment to a ticket and returns the ticket',['ticketId','text'],'add comments to tickets'])]);
+  await named.turn('root.1');
+  assert.match(named.receive('root.1')[0].body,/^\[contract\] addComment is an empty placeholder: commentOnTicket\(ticketId, text\) .* is promised by "Comments Module"; .* and return it as addComment\./);
+});
+
+test('v7.15.1: a word hit whose arguments differ from the operation\'s is what to write it with, not the operation',async()=>{
+  const entry="function update(id, changes) {}\nfunction start() { return { update }; }\nmodule.exports = { start };";
+  const ai=fakeAI({leaf:leafOf(entry)});
+  const room=await rootWith(ai,[piece('Update Ticket Module',['updateTicket','saves a whole edited ticket',['ticket']])]);
+  await room.turn('root.1');
+  assert.equal(room.receive('root.1')[0].body,"[contract] update is an empty placeholder: write update(id, changes) with updateTicket(ticket) — \"saves a whole edited ticket\" — which \"Update Ticket Module\" promises; import it on its own line, const { updateTicket } = require('./updateTicket'), and call it from update. Publish the FULL updated file.");
+  assert.equal(ai.calls.filter(c=>c.kind==='fn').length,0);
+  // Two promises perform view by their words: Clef picks between them only, and a word hit is the operation.
+  const views=[piece('View Ticket Module',['viewTicket','returns one ticket by id',['id']]),piece('List Module',['viewTickets','returns all tickets'])],viewEntry=leafOf("function view(id) {}\nfunction start() { return { view }; }\nmodule.exports = { start };");
+  const pick=fakeAI({leaf:viewEntry,fn:(need,name)=>name==='viewTicket'?0.9:0.3}),picked=await rootWith(pick,views);
+  await picked.turn('root.1');
+  assert.equal(picked.receive('root.1')[0].body,"[contract] view is an empty placeholder: viewTicket(id) — \"returns one ticket by id\" — is promised by \"View Ticket Module\"; import it on its own line, const { viewTicket } = require('./viewTicket'), and return it as view. Publish the FULL updated file.");
+  assert.deepEqual(pick.calls.filter(c=>c.kind==='fn').map(c=>c.state.functions.map(f=>f.signature)),[['viewTicket(id)','viewTickets()']]);
+  // Clef down there: ask the manager, not a level up and not "implement it here".
+  const down=await rootWith(fakeAI({leaf:viewEntry}),views);
+  await down.turn('root.1');
+  assert.equal(down.receive('root.1')[0].body,'[contract] view is an empty placeholder: ask your manager for the function that performs it. Publish the FULL updated file.');
+});
+
+// Root -> App Shell (a manager, carries start) -> Entry (carries start) and
+// CLI Parser; Root's other children promise updateTicket and deleteTicket.
+async function nested(ai) {
+  const {room}=setup(ai);
+  await room.provision('root',null,'Root objective',goal,ROOT_PROMISE);room.set('goal',goal);
+  await room.spawn('root',[piece('App Shell'),piece('Ticket Store',['createTicket','creates a ticket',['data']]),piece('Update Ticket Module',['updateTicket','updates a ticket by id and returns it',['id','updates']]),piece('Delete Ticket Module',['deleteTicket','deletes a ticket by id',['id']])].map((c,i)=>i?c:{...c,interfaces:[START]}));
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id IN ('root','root.1')");
+  await room.spawn('root.1',[{label:'Entry',task:'Write start().',interfaces:[START]},piece('CLI Parser',['parseArgs','parses command-line arguments',['argv']])]);
+  for(const c of [...room.children('root'),...room.children('root.1')])if(c.id!=='root.1')room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root.1.1'");
+  return room;
+}
+const nestedEntry="const { createTicket } = require('./createTicket');\nfunction update() {}\nfunction del() {}\nfunction start() { return { create: createTicket, update, delete: del }; }\nmodule.exports = { start };";
+
+test('v7.15.1: a nested start carrier\'s empty operation is answered from a level up, as a function request is, not "implement it here"',async()=>{
+  const ai=fakeAI({leaf:()=>({summary:'Entry',files:[{path:'entry.js',content:nestedEntry}],done:true}),fn:()=>0.1});
+  const room=await nested(ai);
+  await room.turn('root.1.1');
+  assert.equal(room.receive('root.1.1')[0].body,"[contract] update is an empty placeholder: updateTicket(id, updates) — \"updates a ticket by id and returns it\" — is promised by \"Update Ticket Module\"; import it on its own line, const { updateTicket } = require('./updateTicket'), and return it as update. delete is an empty placeholder: deleteTicket(id) — \"deletes a ticket by id\" — is promised by \"Delete Ticket Module\"; import it on its own line, const { deleteTicket } = require('./deleteTicket'), and return it as delete. Publish the FULL updated file.");
+  assert.deepEqual(ai.calls.filter(c=>c.kind==='fn').map(c=>c.state.functions.map(f=>f.signature)),[['parseArgs(argv)'],['parseArgs(argv)']],'Clef at its own level first, then the operation word a level up');
+  // Clef failing below and nothing a level up: ask, not implement.
+  const failing=await nested(fakeAI({leaf:()=>({summary:'Entry',files:[{path:'entry.js',content:nestedEntry.replace(/update/g,'archive').replace('delete: del','').replace('function del() {}\n','')}],done:true})}));
+  await failing.turn('root.1.1');
+  assert.equal(failing.receive('root.1.1')[0].body,'[contract] archive is an empty placeholder: ask your manager for the function that performs it. Publish the FULL updated file.');
+  assert.match(events(failing,'contract_placeholder')[0].body,/archive: Clef failed; ask\.$/);
 });
 
 test('v7.15.1: a start() returning imported functions is accepted; an empty operation nobody promises is told to implement it here',async()=>{
@@ -227,4 +332,34 @@ test('v7.15.1: a promised function that only throws not implemented is sent back
   assert.equal(room.node('root.2').status,'done','the done after the third return is accepted');
   assert.equal(events(room,'contract_missing').length,0,'addTicket\'s one-line body is delivered');
   assert.equal(events(room,'contract_unmet')[0].body,'getTickets is still an empty placeholder after 3 returns; accepted, and the runner\'s test decides.');
+});
+
+test('v7.15.1: an export the worker fixed closes its contract problem though a placeholder remains',async()=>{
+  const data=["const tickets = [];\nfunction addTicket(t) { tickets.push(t); return t; }\nmodule.exports = { addTicket };","const tickets = [];\nfunction addTicket(t) { tickets.push(t); return t; }\nfunction getTickets() {}\nmodule.exports = { addTicket, getTickets };"];
+  const {room}=setup(fakeAI({leaf:n=>({summary:'Data',files:[{path:'data.js',content:data[Math.min(n,2)-1]}],done:true})}));
+  await room.provision('root',null,'Root objective',goal,ROOT_PROMISE);room.set('goal',goal);
+  await room.spawn('root',[{label:'Entry Module',task:'Write the entry',interfaces:[START]},{label:'Data Module',task:run9Root[1].task,interfaces:run9Root[1].functions.slice(0,2).map(f=>({...f,params:f.params||[]}))}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  room.db().exec("UPDATE agents SET phase='implement',status='ready' WHERE id='root.2'");
+  room.set('contract_returns:root.2',3);
+  await room.turn('root.2');
+  assert.deepEqual(room.problems("source='root.2' AND kind='contract'").map(p=>p.status),['open'],'getTickets not exported after 3 returns');
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root.2'");
+  await room.turn('root.2');
+  assert.deepEqual(room.problems("source='root.2' AND kind='contract'").map(p=>[p.status,p.outcome]),[['closed','resolved']]);
+  assert.equal(events(room,'contract_unmet').at(-1).body,'getTickets is still an empty placeholder after 3 returns; accepted, and the runner\'s test decides.');
+});
+
+test('v7.15.1: a Clef tie goes to the tied piece named for the function, else the event says it was a tie',async()=>{
+  const split=[{label:'Entry Module',task:'Write code that exports start().',functions:[{name:'start'}]},
+    {label:'Ticket store',task:'Write code that keeps tickets and exports printTicket(ticket) for the console.',functions:[{name:'printTicket',does:'prints one ticket',params:['ticket']},{name:'addTicket'}]},
+    {label:'Print Ticket',task:'Write code that prints tickets.',functions:[{name:'printTicket'}]}];
+  const ai=fakeAI({split:()=>split,piece:()=>0.9});
+  const {room,drain}=setup(ai);
+  await room.start(goal,1);await drain();
+  assert.equal(ai.calls.filter(c=>c.kind==='piece').length,1,'the task and the label disagree: Clef decides');
+  assert.equal(events(room,'interfaces_repaired')[0].body,'Deleted printTicket from "Ticket store" (listed by two pieces; kept on "Print Ticket", Clef tie, label matches); the pieces are kept.');
+  const tie=setup(fakeAI({split:()=>ambiguous,piece:()=>0.9}));
+  await tie.room.start(goal,1);await tie.drain();
+  assert.equal(events(tie.room,'interfaces_repaired')[0].body,'Deleted formatTicket from "Ticket printer" (listed by two pieces; kept on "Ticket views", Clef p=0.90, tied with "Ticket printer"); the pieces are kept.');
 });

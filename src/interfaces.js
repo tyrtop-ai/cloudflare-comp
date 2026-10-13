@@ -136,6 +136,14 @@ export function placePromised(spawn, promised = []) {
 const FILLER_WORDS = new Set('module modules piece component service handler handlers logic layer code file'.split(' '));
 const words = s => (String(s ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().match(/[a-z0-9]+/g) || []).map(w => w.length > 3 ? w.replace(/s$/, '') : w);
 export const labelNames = (label, name) => {const a = words(label).filter(w => !FILLER_WORDS.has(w)), b = words(name); return a.length === b.length && a.every((w, i) => w === b[i]);};
+// v7.15.1: a promised function performs an operation start() returns when
+// every word of the operation is in its name or its operation, the verb
+// first: update is updateTicket, addComment is never addTicket. del, delete
+// and remove are one verb, only as the verb (run9's del; removeTag is never
+// deleteTicket).
+const VERB = w => w === 'del' || w === 'remove' ? 'delete' : w;
+const covers = (a, b) => b.length > 0 && VERB(a[0]) === VERB(b[0]) && a.slice(1).every(w => b.slice(1).includes(w));
+export const performsOp = (op, f) => {const a = words(op); return a.length > 0 && (covers(a, words(f?.name)) || covers(a, words(f?.operation)));};
 // Each shared name R3 would delete: its holders (spawn indices), the item
 // with the most hint, and the plain pick, or null when Clef must choose.
 export function duplicateNames(spawn, promised = [], elsewhere = new Set()) {
