@@ -60,16 +60,36 @@ test('surface: arrow, direct and parenthesized immediately invoked functions; an
   assert.deepEqual(surf('module.exports = (() => {\n  return { add(a) { return a; }, list() { return []; } };\n})();'),api('ArrowFunctionExpression'),'module.exports = (() => {…})()');
   assert.deepEqual(surf('const api = (function () {\n  let add;\n  add = function (a) { return a; };\n  return { add, list };\n  function list() { return []; }\n})();\nmodule.exports = api;'),{...api('FunctionExpression'),name:'api'},'assigned in the body, and declared after the return');
   assert.deepEqual(surf('const api = (function (add) {\n  const tickets = [];\n  return { add, tickets, list() { return tickets; } };\n})(1);\nmodule.exports = api;').members,
-    [{type:'value',name:'add'},{type:'value',name:'tickets'},{type:'function',name:'list',params:[]}],'a parameter or a value keeps its kind');
+    [{type:'value',name:'add'},{type:'value',name:'tickets',data:true},{type:'function',name:'list',params:[]}],'a parameter or a value keeps its kind');
   assert.deepEqual(L.exportSurface('components/x/api.js','exports.api = (() => ({ add(a) { return a; } }))();\n').named,[{type:'object',of:'ArrowFunctionExpression',name:'api',members:[{type:'function',name:'add',params:['a']}]}],'exports.api = …');
   assert.deepEqual(L.exportSurface('components/x/api.mjs','export default (() => ({ add(a) { return a; } }))();\n').default.members,[{type:'function',name:'add',params:['a']}],'export default …');
   for(const [how,src] of [['returns a function','(function () { return function add(a) { return a; }; })()'],['returns a variable','(function () { const api = { add }; return api; })()'],
     ['two returns','(function () { if (globalThis.x) return {}; return { add() {} }; })()'],['a return inside a block','(function () { { return { add() {} }; } })()'],['no return','(function () { })()'],
-    ['async','(async () => ({ add() {} }))()'],['a generator','(function* () { return { add() {} }; })()'],['not invoked directly','(function () { return { add() {} }; }).call(this)'],['another call','createStore()']]) {
+    ['async','(async () => ({ add() {} }))()'],['a generator','(function* () { return { add() {} }; })()'],['not invoked directly','(function () { return { add() {} }; }).call(this)'],['another call','createStore()'],
+    ['an arrow returning a function','(() => function () { return { add() {} }; })()'],['an arrow returning an arrow','(() => () => { return { add() {} }; })()']]) {
     const d=surf(`const api = ${src};\nmodule.exports = api;`);
     assert.equal(d.type,'call',how);
     assert.equal(L.mayExportStart(L.exportSurface('components/x/api.js',`module.exports = ${src};`)),true,how);
   }
+  // Their body's own return used to be read as the outer function's, which threw out of exportSurface.
+  assert.deepEqual(L.exportSurface('components/x/api.js','const h = (() => () => { return { add() {} }; })();\nmodule.exports = { h };\n').default.members,[{type:'call',name:'h',of:'ArrowFunctionExpression'}]);
+});
+
+// v7.13.3 read every such module as a call, which may export start(); a local
+// given start() after it is built (app.start = …) still may.
+test('surface: an API built by an immediately invoked function and given start() afterwards may export start(), so it is still the entry',()=>{
+  const iife='const api = (function () {\n  function run() { return 1; }\n  return { run };\n})();\n';
+  for(const [how,src] of [['api.start = …',iife+'api.start = function () { return { run: api.run }; };\nmodule.exports = api;\n'],['Object.assign',iife+'Object.assign(api, { start() { return {}; } });\nmodule.exports = api;\n'],
+    ['through an alias',iife+'const app = api;\napp.start = () => ({});\nmodule.exports = api;\n'],['by key',iife+"api['start'] = () => ({});\nmodule.exports = api;\n"],['a computed key',iife+'const k = \'start\';\napi[k] = () => ({});\nmodule.exports = api;\n'],
+    ['an object literal',"const api = { run() {} };\napi.start = () => ({});\nmodule.exports = api;\n"],['export default',iife+'api.start = () => ({});\nexport default api;\n']]) {
+    const path=how==='export default'?'components/x/app.mjs':'components/x/app.js',s=L.exportSurface(path,src);
+    assert.equal(L.mayExportStart(s),true,how);
+    if(path.endsWith('.js'))assert.equal(typeof load(new Map([[path,src]]),path).start,'function',how);
+    const files=new Map([[path,src],['components/y/store.js','module.exports = { get() {} };\n']]);
+    assert.equal(L.chooseEntry(files,surfacesOf(files),[],[path]),path,how);
+  }
+  for(const [how,src] of [['another member',iife+'api.stop = () => {};\nmodule.exports = api;\n'],['a nested member',iife+'api.routes = {};\napi.routes.start = () => {};\nmodule.exports = api;\n'],['nothing added',iife+'module.exports = api;\n']])
+    assert.equal(L.mayExportStart(L.exportSurface('components/x/app.js',src)),false,how);
 });
 
 // Round 1, reconstructed from run7's events: createTicket.js declared its own
@@ -144,7 +164,7 @@ test('shape: a whole binding only passed on as a value is bound by name only whe
   for(const [how,use] of [['an object property','module.exports = { start() { return { view: getTicket }; } };'],['shorthand','module.exports = { start() { return { getTicket }; } };'],['an array element','module.exports = { routes: [getTicket] };'],
     ['an argument','register(getTicket);'],['a return value','function view() { return getTicket; }\nmodule.exports = { view };'],['an arrow\'s value','module.exports = { view: () => getTicket };'],
     ['an export','module.exports = getTicket;'],['a named export','exports.view = getTicket;'],['with typeof','if (typeof getTicket !== \'function\') throw new Error();\nmodule.exports = { view: getTicket };'],
-    ['another binding of the name is called','function call(getTicket) { return getTicket(1); }\nmodule.exports = { call, view: getTicket };']])
+    ['another binding of the name is called','function call(getTicket) { return getTicket(1); }\nmodule.exports = { call, view: getTicket };'],['an argument after a receiver','module.exports = { view: wrap.call(null, getTicket) };']])
     assert.deepEqual(fixes(req+use+'\n',store),fix,how);
   assert.deepEqual(fixes(req+'module.exports = { view: getTicket };\n','exports.getTicket = (id) => id;\nexports.listTickets = () => [];\n'),fix,'exports.getTicket = …');
   assert.deepEqual(fixes(req+'module.exports = { view: getTicket };\n','const lookup = new Map();\nmodule.exports = { getTicket: lookup.get, size: 0 };\n'),fix,'a member that is not a function');
@@ -152,17 +172,35 @@ test('shape: a whole binding only passed on as a value is bound by name only whe
   const value=req+'module.exports = { view: getTicket };\n';
   for(const [how,line] of [['called','getTicket(1);'],['read','getTicket.listTickets();'],['read by key',"getTicket['listTickets'];"],['destructured','const { listTickets } = getTicket;'],['spread','const all = { ...getTicket };'],
     ['spread as an argument','register(...getTicket);'],['key listing','Object.keys(getTicket);'],['copied','Object.assign({}, getTicket);'],['in','\'listTickets\' in getTicket;'],['for…in','for (const k in getTicket) {}'],
-    ['kept in a variable','const g = getTicket;'],['a fallback','register(getTicket || null);'],['compared','register(getTicket === null);'],['a computed key','const t = { [getTicket]: 1 };'],['eval','eval(\'getTicket\');']])
+    ['kept in a variable','const g = getTicket;'],['a fallback','register(getTicket || null);'],['compared','register(getTicket === null);'],['a computed key','const t = { [getTicket]: 1 };'],['eval','eval(\'getTicket\');'],
+    ['the receiver of call','all.call(getTicket);'],['the receiver of apply','all.apply(getTicket, []);'],['the receiver of bind','all.bind(getTicket);']])
     assert.deepEqual(fixes(value+line+'\n',store),[],how);
   assert.deepEqual(fixes(req+'if (typeof getTicket === \'function\') register();\n',store),[],'tested only, never passed on');
   for(const [how,target] of [['no member of that name','module.exports = { fetchTicket(id) { return id; } };\n'],['the module is the function','module.exports = function getTicket(id) { return id; };\n'],
     ['a function holding it','function api() {}\napi.getTicket = (id) => id;\nmodule.exports = api;\n'],['an instance','class Store { getTicket(id) { return id; } }\nmodule.exports = new Store();\n'],
     ['made by a call','const make = require(\'../c/make\');\nmodule.exports = make();\n']])
     assert.deepEqual(fixes(value,target),[],how);
+  // A member named like the binding that is the module's own data (its store,
+  // next to the functions over it) may be what the file means to hand on: the
+  // whole binding works, and the member would not.
+  const service="const ticketStore = require('../b/ticketStore.js');\nclass TicketService {\n  constructor(store) { this.store = store; }\n  create(t) { return this.store.createTicket(t); }\n}\nmodule.exports = new TicketService(ticketStore);\n";
+  const held=init=>`const ticketStore = ${init};\nfunction createTicket(t) { ticketStore.set?.(t.id, t); return t; }\nfunction getTicket(id) { return id; }\nmodule.exports = { ticketStore, createTicket, getTicket };\n`;
+  for(const init of ['new Map()','[]','{}','createStore()','null','0',"'tickets'",'`tickets`']) {
+    const files=new Map([['components/a/service.js',service],['components/b/ticketStore.js',held(init)]]);
+    assert.deepEqual(L.shapeFixes(files,surfacesOf(files)),[],init);
+  }
+  const files=new Map([['components/a/service.js',service],['components/b/ticketStore.js',held('new Map()')]]);
+  assert.deepEqual(load(files,'components/a/service.js').create({id:1,title:'x'}),{id:1,title:'x'},'the binding left alone works');
+  assert.deepEqual(fixes("const tickets = require('../b/tickets');\nmodule.exports = { start() { return { tickets }; } };\n",'const tickets = [];\nfunction createTicket(t) { tickets.push(t); return t; }\nmodule.exports = { tickets, createTicket };\n','components/b/tickets.js'),[],'a backing array');
+  assert.deepEqual(fixes(req+'module.exports = { view: getTicket };\n',"const getTicket = require('../c/get');\nmodule.exports = { getTicket, listTickets() { return []; } };\n"),[],'a call\'s result');
   // ES modules: a default import of a module with no default export.
   const esm=(app,target)=>{const m=new Map([['components/a/app.mjs',app],['components/b/store.mjs',target]]);return L.shapeFixes(m,surfacesOf(m)).map(e=>e.replace);};
   const use="import getTicket from '../b/store.mjs';\nexport function start() { return { view: getTicket }; }\n",named='export function getTicket(id) { return id; }\nexport function listTickets() { return []; }\n';
   assert.deepEqual(esm(use,named),["import { getTicket } from '../b/store.mjs';"]);
+  assert.deepEqual(esm("import getTicket from '../b/store.mjs';\nexport { getTicket };\n",named),["import { getTicket } from '../b/store.mjs';"],'export { getTicket }');
+  assert.deepEqual(esm("import getTicket from '../b/store.mjs';\nexport { getTicket as view };\ngetTicket.listTickets();\n",named),[],'export { getTicket as view }, and read');
+  assert.deepEqual(esm(use,"export { getTicket } from '../c/get.mjs';\nexport const tickets = [];\n"),["import { getTicket } from '../b/store.mjs';"],'a re-exported member');
+  assert.deepEqual(esm(use.replaceAll('getTicket','tickets'),named+'export const tickets = new Map();\n'),[],'a member that is the module\'s data');
   assert.deepEqual(esm(use,named+'export default { getTicket };\n'),[],'the target has a default export');
   assert.deepEqual(esm(use+'getTicket.listTickets();\n',named),[],'read as a namespace');
   assert.deepEqual(esm(use,'export function fetchTicket(id) { return id; }\n'),[],'no export of that name');

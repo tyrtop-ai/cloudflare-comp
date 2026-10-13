@@ -113,6 +113,8 @@ function describe(node, decls, depth=0, name=null) {
       return {type:'call',name,of:calleeName(node.callee)};
     }
     case 'VariableDeclarator': return {type:'value',name};
+    // Data the module holds, never a function (hasMember).
+    case 'ArrayExpression': case 'Literal': case 'TemplateLiteral': return {type:'value',name,data:true};
     default: return {type:'value',name};
   }
 }
@@ -127,6 +129,8 @@ function iifeObject(node, decls) {
   for(const p of fn.params)patternNames(p,hidden);
   for(const n of hidden)inner.set(n,null);
   if(fn.body.type==='ObjectExpression')return {object:fn.body,decls:inner};
+  // (() => function(){ return {…}; })() returns the function, not its object.
+  if(fn.body.type!=='BlockStatement')return null;
   const returns=[],look=n=>{
     if(n.type==='ReturnStatement')returns.push(n);
     for(const [key,value] of Object.entries(n))if(key!=='loc'&&key!=='start'&&key!=='end')
@@ -154,6 +158,9 @@ export function exportSurface(path, content) {
   const decls=topLevelDeclarations(ast);
   const surface={path,kind:'cjs',default:null,named:[]};
   const addNamed=(name,info)=>{surface.named=surface.named.filter(x=>x.name!==name);surface.named.push({...info,name});};
+  // The local the default export is held in (module.exports = api).
+  let held=null;
+  const setDefault=node=>{surface.default=describe(node,decls);held=node?.type==='Identifier'?node.name:null;};
   for(const statement of ast.body) {
     if(statement.type==='ExportNamedDeclaration') {
       surface.kind='esm';
@@ -163,11 +170,11 @@ export function exportSurface(path, content) {
       for(const s of statement.specifiers||[]) {
         const local=keyName(s.local),exported=keyName(s.exported);
         if(statement.source)addNamed(exported,{type:'reexport',from:statement.source.value});
-        else if(exported==='default')surface.default=describe({type:'Identifier',name:local},decls);
+        else if(exported==='default')setDefault({type:'Identifier',name:local});
         else addNamed(exported,describe({type:'Identifier',name:local},decls));
       }
     } else if(statement.type==='ExportDefaultDeclaration') {
-      surface.kind='esm';surface.default=describe(statement.declaration,decls);
+      surface.kind='esm';setDefault(statement.declaration);
     } else if(statement.type==='ExportAllDeclaration') {
       surface.kind='esm';addNamed('*',{type:'reexport',from:statement.source.value});
     } else if(statement.type==='ExpressionStatement'&&statement.expression.type==='AssignmentExpression') {
@@ -177,7 +184,7 @@ export function exportSurface(path, content) {
         if(isModuleExports(right.left)){left=right.left;right=right.right;break;}
         right=right.right;
       }
-      if(isModuleExports(left))surface.default=describe(right,decls);
+      if(isModuleExports(left))setDefault(right);
       else if(left.type==='MemberExpression' && (isModuleExports(left.object) || (left.object.type==='Identifier'&&left.object.name==='exports')))
         addNamed(keyName(left.property)??'?',describe(right,decls,0,keyName(left.property)));
     } else if(statement.type==='ExpressionStatement'&&statement.expression.type==='CallExpression'&&
@@ -186,6 +193,9 @@ export function exportSurface(path, content) {
       surface.open=true;
     }
   }
+  // const api = (function(){ … return { run }; })(); api.start = …: the
+  // local may get start() after it is built, so it is not known to lack it.
+  if(held&&!mayExportStart(surface)&&addsMember(ast,held,'start'))surface.open=true;
   return surface;
 }
 function renderInfo(info) {
@@ -1178,17 +1188,9 @@ function soleExport(surface, path, name, source, content, local) {
 // through an alias (const api = parse).
 function definesMember(source, name, local) {
   let found=false;
-  const aliases=new Set(local?[local]:[]);
-  const isExport=n=>n?.type==='Identifier'&&aliases.has(n.name)||isModuleExports(n);
   try {
-    const {ast}=parseSource(source);
-    for(let size=-1;size!==aliases.size;) {
-      size=aliases.size;
-      walk(ast,node=>{
-        const [to,from]=node.type==='VariableDeclarator'?[node.id,node.init]:node.type==='AssignmentExpression'&&node.operator==='='?[node.left,node.right]:[];
-        if(to?.type==='Identifier'&&isExport(from))aliases.add(to.name);
-      });
-    }
+    const {ast}=parseSource(source),aliases=aliasesOf(ast,local);
+    const isExport=n=>n?.type==='Identifier'&&aliases.has(n.name)||isModuleExports(n);
     walk(ast,(node,parent)=>{
       if(['MethodDefinition','PropertyDefinition','Property'].includes(node.type)&&!node.computed&&nameOf(node.key)===name)found=true;
       else if(node.type==='MemberExpression'&&parent?.type==='AssignmentExpression'&&parent.left===node&&(nameOf(node.property)===name||isExport(node.object)&&(node.computed||nameOf(node.property)==='__proto__')))found=true;
@@ -1197,6 +1199,33 @@ function definesMember(source, name, local) {
       else if(node.type==='CallExpression'&&node.arguments.some(isExport))found=true;
     });
   } catch {return true;}
+  return found;
+}
+// local and every variable that holds it or module.exports (const api = parse).
+function aliasesOf(ast, local) {
+  const aliases=new Set(local?[local]:[]);
+  const isExport=n=>n?.type==='Identifier'&&aliases.has(n.name)||isModuleExports(n);
+  for(let size=-1;size!==aliases.size;) {
+    size=aliases.size;
+    walk(ast,node=>{
+      const [to,from]=node.type==='VariableDeclarator'?[node.id,node.init]:node.type==='AssignmentExpression'&&node.operator==='='?[node.left,node.right]:[];
+      if(to?.type==='Identifier'&&isExport(from))aliases.add(to.name);
+    });
+  }
+  return aliases;
+}
+// The exported local (or an alias, or module.exports) is given a member
+// called name, or one this parse cannot name, outside its definition:
+// x.name = …, x[k] = …, or x passed to a call (Object.assign(x, { name })).
+function addsMember(ast, local, name) {
+  const aliases=aliasesOf(ast,local),is=n=>n?.type==='Identifier'&&aliases.has(n.name)||isModuleExports(n);
+  let found=false;
+  walk(ast,(node,parent)=>{
+    if(node.type==='MemberExpression'&&parent?.type==='AssignmentExpression'&&parent.left===node&&is(node.object)) {
+      const key=node.computed?stringValue(node.property):nameOf(node.property);
+      if(key===name||key===null||key==='__proto__')found=true;
+    } else if(node.type==='CallExpression'&&node.arguments.some(is))found=true;
+  });
   return found;
 }
 // The members a file reads off name, as name.member or by destructuring it
@@ -1271,18 +1300,22 @@ function usedAsFunction(content, at) {
   while(todo.length){const k=todo.pop();if(!refs.get(k).every(use[kinds.get(k)]))return false;}
   return true;
 }
-// The module exports an object, or a named set, with a member called name,
-// of any kind: module.exports is not a function, so the whole binding cannot be.
+// The module exports an object, or a named set, with a member called name
+// that may be the function the binding is named for: a function or class, or
+// a value from elsewhere (run7 deleteTicket.js: ticketStore.default). Never
+// the module's own data (an object, instance, array, literal or a call's
+// result): a store exported beside the functions over it, named like the
+// module, may be what the file means to hand on (new Service(ticketStore)).
 function hasMember(surface, name) {
-  const d=surface?.default;
-  return (d?.type==='object'?[...d.members,...surface.named]:d?[]:surface?.named||[]).some(x=>x.name===name);
+  const d=surface?.default,m=(d?.type==='object'?[...d.members,...surface.named]:d?[]:surface?.named||[]).find(x=>x.name===name);
+  return ['function','class','reexport'].includes(m?.type)||m?.type==='value'&&!m.data;
 }
 // Every use of the binding declared at `at` passes it on as a value: an
-// object property's value, an array element, an argument, a return value or
-// an export (typeof x also counts). Never called, read (x.m, x[k],
-// destructured, spread, Object.keys(x)) or kept in another variable, so
-// nothing in the file needs the module rather than one member (run7 entry.js:
-// return { view: getTicket }).
+// object property's value, an array element, an argument (not f.call(x),
+// whose callee reads x as this), a return value or an export (typeof x also
+// counts). Never called, read (x.m, x[k], destructured, spread,
+// Object.keys(x)) or kept in another variable, so nothing in the file needs
+// the module rather than one member (run7 entry.js: return { view: getTicket }).
 function onlyPassedOn(content, at) {
   let ast,bindingOf,dynamic;
   try {const p=parseSource(content);ast=p.ast;({bindingOf,dynamic}=scopeOf(ast,p.sourceType));} catch {return false;}
@@ -1296,11 +1329,13 @@ function onlyPassedOn(content, at) {
   const passed=e=>{
     const p=parents.get(e);
     return p.type==='Property'&&p.value===e&&parents.get(p)?.type==='ObjectExpression'||p.type==='ArrayExpression'||p.type==='ReturnStatement'||p.type==='ArrowFunctionExpression'&&p.body===e||p.type==='ExportDefaultDeclaration'
-      ||(p.type==='CallExpression'||p.type==='NewExpression')&&p.arguments.includes(e)&&!/^(?:Object|Reflect|JSON)\./.test(calleeName(p.callee))
+      ||(p.type==='CallExpression'||p.type==='NewExpression')&&p.arguments.includes(e)&&!/^(?:Object|Reflect|JSON)\./.test(calleeName(p.callee))&&!(p.arguments[0]===e&&/\.(?:call|apply|bind)$/.test(calleeName(p.callee)))
       ||p.type==='AssignmentExpression'&&p.operator==='='&&p.right===e&&(exportsOf(p.left)||p.left.type==='MemberExpression'&&exportsOf(p.left.object));
   };
   const typeOf=e=>parents.get(e).type==='UnaryExpression'&&parents.get(e).operator==='typeof';
-  return uses.some(passed)&&uses.every(e=>passed(e)||typeOf(e));
+  // export { X } names no reference scopeOf sees, but passes X on.
+  const reexported=scope===ast&&ast.body.some(s=>s.type==='ExportNamedDeclaration'&&!s.source&&s.specifiers.some(x=>nameOf(x.local)===own.name));
+  return (reexported||uses.some(passed))&&uses.every(e=>passed(e)||typeOf(e));
 }
 // Every use of name other than its one declaration calls it, name(...) or
 // new name(...): never name.member or name[key], and never passed on as a value.
