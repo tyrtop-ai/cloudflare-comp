@@ -380,7 +380,7 @@ test('v7.14: one error in a stack of several modules is one problem, and the mod
   // Root relinks first (D5); the relink changes nothing; the thrower's worker changes it.
   await runReady(room,['root',builder.id,compiler.id]);
   const [now]=room.problems('1=1');
-  assert.deepEqual([now.status,now.assignee,now.flags.builder_tried],['assigned','root.2',true]);
+  assert.deepEqual([now.status,now.assignee,now.flags.builder_tried],['assigned','root.2',[builder.id]]);
   assert.deepEqual(now.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relink',builder.id,'D5'],[builder.id,'returned','root',undefined],['root','assign','root.2','default']]);
   assert.match(tickets(room,'root.2')[0],/Problems: lookup\.js: smoke failed[^]*s\.view is not a function/);
   assert.equal(room.receive('root.3').length,0);
@@ -512,6 +512,37 @@ test('v7.14: an interface error inside a branch is relinked by that branch\'s bu
   assert.ok(relink.previous_attempt_error.startsWith(`Running the application failed after your renames: ${svcPath}: `),'the branch builder hears its own path');
   assert.equal(room.receive('root.1.2').length,0,'no worker changes code');
   assert.equal(room.get('repair_rounds:root.1'),'1');
+});
+
+// v7.14 review: Root's builder renamed only the path of another import in
+// the failing file (to root.2's config). That rename did not cause the
+// error, so the branch's own builder still relinks first, and Root neither
+// relinks nor spends a round on it (critique #23 counts only a builder's
+// own edit at the failing site).
+test('v7.14: a top-builder rename elsewhere in the failing file does not make it relink first; the branch builder does',async()=>{
+  const lookup="const makeStore = require('./store');\nconst { pageSize } = require('./config');\nconst s = makeStore();\nmodule.exports = { add: (d) => s.create(d), get: (id) => s.view(id), limit: () => pageSize };\n";
+  const app="const svc = require('./ticketService');\nfunction start() {\n  return { createTicket: svc.add, viewTicket: svc.get };\n}\nmodule.exports = { start };\n";
+  const link=user=>{
+    const svc=user.your_files.find(f=>f.path.endsWith('/ticketService.js'));
+    return {edits:user.scope==='branch'&&svc&&/s\.view is not a function/.test(user.previous_attempt_error||'')?[{file:svc.path,find:'s.view(id)',replace:'s.read(id)'}]:[],issues:[]};
+  };
+  const {room,calls}=liveRoom({link,runner:()=>viewRunner});
+  await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
+  await workers(room,'root',[['Tickets'],['Application entry','app.js',app],['Settings','config.js','module.exports = { pageSize: 20 };\n']]);
+  await workers(room,'root.1',[['Store','store.js',factoryStore],['Ticket service','ticketService.js',lookup]]);
+  const branch=await room.scheduleAssembly('root.1');
+  await room.turn(branch.id);
+  await room.turn('root.1');
+  const {builder,compiler}=await linkAndCompile(room);
+  assert.ok(events(room,'link_auto').some(e=>e.actor===builder.id&&/ticketService\.js: '\.\/config' →/.test(e.body)),'Root\'s builder renamed the config import in the failing file');
+  await runReady(room,['root','root.1',branch.id,builder.id,compiler.id]);
+  assert.equal(room.node(compiler.id).status,'done',trace(room));
+  const [row]=room.problems('1=1');
+  assert.deepEqual(row.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','delegate','root.1','D3'],['root.1','relink',branch.id,'D5']]);
+  assert.deepEqual([row.status,row.outcome],['closed','relinked']);
+  assert.ok(calls.link.some(c=>c.scope==='branch'&&/s\.view is not a function/.test(c.previous_attempt_error||'')));
+  assert.equal(room.receive('root.1.2').length,0,'no worker changes code');
+  assert.equal(room.get('repair_rounds:root'),'','Root spends no round');
 });
 
 // Rooms started before v7.14 keep Root-keyed build state (build_failure:root,

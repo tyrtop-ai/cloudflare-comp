@@ -486,7 +486,7 @@ test('room: a relink Root asks for that changes nothing is not run again; the pr
   await room.turn('root');                      // the builder tried: the entry worker changes its code (D4)
   assert.equal(builds.length,2,'one load/describe build and one run build; the unchanged bundle is not run again');
   const [row]=room.problems("status='assigned'");
-  assert.deepEqual([row.assignee,row.flags.builder_tried],['root.3',true]);
+  assert.deepEqual([row.assignee,row.flags.builder_tried],['root.3',[builder.id]],'this builder tried');
   const sent=tickets(room,'root.3');
   assert.equal(sent.length,1);
   assert.match(sent[0],/svc\.get is not a function[^]*Builder renames in the linked copy that failed[^]*view → get/);
@@ -1447,7 +1447,7 @@ test('room: a binding-shape fix does not hide the builder rename that broke the 
   assert.ok(builds.length>0);
   const failure=lastReport(room,compiler.id);
   assert.equal(failure.stage,'run');
-  assert.deepEqual(room.problems("status!='closed'").map(p=>[p.status,p.assignee,p.flags.builder_tried]),[['assigned','root.3',true]]);
+  assert.deepEqual(room.problems("status!='closed'").map(p=>[p.status,p.assignee,p.flags.builder_tried]),[['assigned','root.3',[builder.id]]]);
   const issue=failure.issues.find(i=>i.path===paths[2]);
   assert.match(issue.detail,/svc\.get is not a function[^]*Builder renames in the linked copy that failed[^]*: '\.\/store' → '\.\.\/record-sto-[0-9a-f]+\/store\.js', view → get, binding \{ makeStore \} → makeStore\.$/);
 });

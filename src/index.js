@@ -936,12 +936,26 @@ export class ControlRoom extends DurableObject {
     }
     return builder===to?current:null;
   }
-  // Whether a builder's own edits changed this file of its bundle: its
-  // published copy differs from the source it copied.
-  async editedBy(builderId, path) {
+  // Whether this builder's own edit to file `path` of its bundle caused an
+  // error (critique #23): a name or path it put into the failing line (or,
+  // when the error names no line of the file, into any line) appears in the
+  // error's message. A rename elsewhere in the file, such as the path of an
+  // unrelated import, does not. site: the file's path in the error's bundle.
+  async editCaused(builderId, path, site, detail) {
     const row=query(this.db(),'SELECT child,source_path FROM builder_sources WHERE builder=? AND destination=?',builderId,path)[0];
     if(!row||!this.files(builderId).some(f=>f.path===path))return false;
-    try {return await this.indexedContent(builderId,path)!==await this.indexedContent(row.child,row.source_path);} catch {return false;}
+    let copy,source;
+    try {copy=await this.indexedContent(builderId,path);source=await this.indexedContent(row.child,row.source_path);} catch {return false;}
+    if(copy===source)return false;
+    // The rename notes annotateRenames adds list every builder's renames.
+    const error=String(detail||'').replace(/\.? ?Builder renames in [^]*$/,''),a=copy.split('\n'),b=source.split('\n');
+    const at=error.match(new RegExp(site.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+':(\\d+):\\d+'));
+    const lines=at&&a.length===b.length?[Number(at[1])-1]:a.map((_,i)=>i);
+    const quoted=/'[^'\n]*'|"[^"\n]*"|`[^`\n]*`/g;
+    const words=t=>[...(t.match(quoted)||[]).map(s=>s.slice(1,-1)),...(t.replace(quoted,' ').match(/[A-Za-z_$][\w$]*/g)||[])];
+    const added=new Set(lines.flatMap(i=>{const old=new Set(words(b[i]??''));return words(a[i]??'').filter(w=>w&&!old.has(w));}));
+    const head=error.split('\n')[0],bare=head.replace(/\S*\/\S*/g,' ');
+    return [...added].some(w=>w.includes('/')?head.includes(w.replace(/^(?:\.\.?\/)+/,'')):new RegExp(`(?:^|[^\\w$])${w.replace(/\$/g,'\\$')}(?![\\w$])`).test(bare));
   }
   // A worker's repair message, from the ticket its manager sent. Problems
   // closed since are left out; a ticket whose problems all closed says so.
@@ -1428,9 +1442,10 @@ export class ControlRoom extends DurableObject {
     }).join('; ');
   }
   // A relink the manager asked for that changed nothing: its problems go
-  // back to the manager, marked so it does not ask the builder again.
+  // back to the manager, marked so it does not ask this builder again (a
+  // builder below, which never tried, still may).
   returnToManager(builderId, m, rows) {
-    for(const row of rows)this.moveProblem(row,{status:'open',assignee:'',flags:{...row.flags,builder_tried:true},trail:[...row.trail,{at:builderId,action:'returned',to:m,ts:Date.now()}]});
+    for(const row of rows)this.moveProblem(row,{status:'open',assignee:'',flags:{...row.flags,builder_tried:[...new Set([...[].concat(row.flags.builder_tried||[]),builderId])]},trail:[...row.trail,{at:builderId,action:'returned',to:m,ts:Date.now()}]});
     this.event(builderId,'problem_returned',`The relink changed nothing; ${rows.length} problem(s) go back to the manager.`,m);
   }
   // One builder turn at every level: link this manager's direct children
@@ -1706,16 +1721,16 @@ export class ControlRoom extends DurableObject {
     const builder=this.builderOf(m),fingerprint=this.assemblyFingerprint(m),state=this.read(`link_state:${m}`,null);
     const relinked=new Set(this.problems("holder=? AND status='closed' AND outcome='relinked'",m).filter(p=>p.flags.fingerprint===fingerprint).map(p=>p.signature));
     const depth=Math.max(1,...this.allNodes().map(x=>x.id.split('.').length-1));
-    // A load or run error in a file this manager's builder edited (its copy
-    // differs from the one it was given) is first this builder's to relink.
-    const edited=new Set();
+    // A load or run error that this manager's builder's own edit caused (a
+    // name or path it put into the failing line) is first this builder's to relink.
+    const caused=new Set();
     if(builder)for(const p of rows.filter(p=>['load','run'].includes(p.kind)))
       for(const x of p.parties.filter(x=>x.role==='site')) {
         const here=this.pathIn(p.facts.via||builder.id,x.path,builder.id);
-        if(here&&await this.editedBy(builder.id,here)){edited.add(p.id);break;}
+        if(here&&await this.editCaused(builder.id,here,x.path,p.detail)){caused.add(p.id);break;}
       }
     const ctx={holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,builder:builder?.id||null,maxHops:MAX_HOPS(depth),
-      canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),editedHere:p=>edited.has(p.id)};
+      canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),causedHere:p=>caused.has(p.id)};
     const decided=[];
     let exhausted='';
     for(const p of rows) {

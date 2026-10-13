@@ -54,7 +54,8 @@ export function lowestCommon(placed, kindOf, flags={}) {
 
 // The deterministic rules, first match decides. ctx: {holder, parent (id or
 // null), kindOf(id) for direct children, builder (id or null), canRelink(p),
-// editedHere(p) (this manager's builder changed the failing file), maxHops}. A decision is {rule, action, child?, side?, relay?, delegate?}:
+// causedHere(p) (this manager's builder's own edit caused the error), maxHops}.
+// A decision is {rule, action, child?, side?, relay?, delegate?}:
 // assign (child: a worker, a sub-manager or the builder), escalate,
 // exhausted (closed), or fail (a child whose repair rounds ran out).
 export function deterministicDecision(p, ctx) {
@@ -79,10 +80,11 @@ export function deterministicDecision(p, ctx) {
   if(!kids.length)return ctx.parent?{rule:'D7',action:'escalate'}:{rule:'D7',action:'exhausted',reason:'no party of this problem lies under this manager'};
   // D5 builder relink: an interface error between this manager's children
   // is first this manager's builder's to rename (v7.12's relink after a
-  // Container failure), once per signature and fingerprint. So is one in a
-  // file this manager's builder edited inside a child's branch: the child's
-  // builder cannot undo that edit (critique #23).
-  if((lcm||ctx.editedHere?.(p))&&['load','run'].includes(p.kind)&&isInterfaceError(p.detail)&&!flags.builder_tried&&ctx.builder&&ctx.canRelink(p))
+  // Container failure), once per signature and fingerprint and once per
+  // builder. So is one that this manager's builder's own edit caused inside a
+  // child's branch: the child's builder cannot undo that edit (critique #23).
+  if((lcm||ctx.causedHere?.(p))&&['load','run'].includes(p.kind)&&isInterfaceError(p.detail)&&ctx.builder&&
+    ![].concat(flags.builder_tried||[]).includes(ctx.builder)&&ctx.canRelink(p))
     return {rule:'D5',action:'assign',child:ctx.builder,builder:true};
   // D3 delegate: every party lies in one child branch; that branch decides.
   if(kids.length===1&&ctx.kindOf(kids[0])==='manager'&&flags.escalated_from!==kids[0])return {rule:'D3',action:'assign',child:kids[0],delegate:true};

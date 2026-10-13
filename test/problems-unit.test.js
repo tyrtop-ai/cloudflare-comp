@@ -64,14 +64,19 @@ test('D5: an interface error at the lowest common manager goes to its builder fi
   const kinds={'root.1':'worker','root.2':'worker'};
   assert.deepEqual(decide(p,view('root',kinds)),['D5','assign','root.9',null]);
   assert.equal(P.deterministicDecision(p,view('root',kinds)).builder,true);
-  // Tried, out of relinks, or not an interface error: the site's worker.
-  assert.deepEqual(decide({...p,flags:{builder_tried:true}},view('root',kinds)),['default','assign','root.2','site']);
+  // Tried by this builder, out of relinks, or not an interface error: the site's worker.
+  assert.deepEqual(decide({...p,flags:{builder_tried:['root.9']}},view('root',kinds)),['default','assign','root.2','site']);
   assert.deepEqual(decide(p,view('root',kinds,{relinks:false})),['default','assign','root.2','site']);
   assert.deepEqual(decide({...p,detail:'AssertionError: deleted ticket must be gone'},view('root',kinds)),['default','assign','root.2','site']);
   // A single-site interface error is the builder's first too (v7.12 relinked after any interface error).
   assert.deepEqual(decide(problem('run',[party('root.2','site')],{detail:"Cannot find module './x'"}),view('root',kinds)),['D5','assign','root.9',null]);
   // Not at a manager whose branch holds every party in one sub-manager: that one decides.
-  assert.deepEqual(decide({...p,parties:[party('root.1.1','site'),party('root.1.2','provider')]},view('root',{'root.1':'manager'})),['D3','assign','root.1',null]);
+  const deep={...p,parties:[party('root.1.1','site'),party('root.1.2','provider')]};
+  assert.deepEqual(decide(deep,view('root',{'root.1':'manager'})),['D3','assign','root.1',null]);
+  // Unless this manager's builder's own edit caused it (critique #23); a
+  // builder above that tried does not stop the branch's builder.
+  assert.deepEqual(decide(deep,{...view('root',{'root.1':'manager'}),causedHere:()=>true}),['D5','assign','root.9',null]);
+  assert.deepEqual(decide({...deep,flags:{builder_tried:['root.9']}},view('root.1',{'root.1.1':'worker','root.1.2':'worker'})),['D5','assign','root.1.9',null]);
 });
 
 test('D6: a mismatch between two children goes to the reader\'s side; a sub-manager gets it as a directive',()=>{
