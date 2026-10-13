@@ -870,20 +870,21 @@ export function startRank(content) {
 }
 // The compiler's entry: the one module that exports start(); of several, the
 // one whose start() returns an API to call (not a CLI or server that only
-// runs), then the one that imports the most others; when none is known to,
-// the candidate (by imports and name) among the modules that may export
-// start(), which the Container then decides; null when no module may.
-export function chooseEntry(files, surfaces) {
+// runs), then one of prefer's (v7.15: the start carrier's modules), then the
+// one that imports the most others; when none is known to, the candidate (by
+// imports and name) among the modules that may export start(), prefer's
+// first, which the Container then decides; null when no module may.
+export function chooseEntry(files, surfaces, {prefer=[]}={}) {
   const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
   const starters=js.filter(p=>surfaces.get(p)&&exportsStart(surfaces.get(p)));
   if(starters.length===1)return starters[0];
   if(!starters.length) {
-    const maybe=js.filter(p=>mayExportStart(surfaces.get(p)));
-    return maybe.length?entryCandidate(files,maybe):null;
+    const maybe=js.filter(p=>mayExportStart(surfaces.get(p))),planned=maybe.filter(p=>prefer.includes(p));
+    return maybe.length?entryCandidate(files,planned.length?planned:maybe):null;
   }
-  const rank=new Map(starters.map(p=>[p,startRank(files.get(p))]));
+  const rank=new Map(starters.map(p=>[p,startRank(files.get(p))])),planned=p=>prefer.includes(p)?1:0;
   const outDegree=new Map(starters.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>js.includes(r.target)).length]));
-  return starters.sort((a,b)=>rank.get(b)-rank.get(a)||outDegree.get(b)-outDegree.get(a)||a.localeCompare(b))[0];
+  return starters.sort((a,b)=>rank.get(b)-rank.get(a)||planned(b)-planned(a)||outDegree.get(b)-outDegree.get(a)||a.localeCompare(b))[0];
 }
 // What the runtime loader's start() throws when the entry it loaded has no
 // start() (one that only may export it): the compiler files the entry problem.

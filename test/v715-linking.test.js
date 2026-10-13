@@ -343,3 +343,97 @@ test('v7.15: a module exporting a promised name is offered in the branch boundar
   assert.ok(block&&/ticketLoader\.js/.test(block)&&/module\.js/.test(block),JSON.stringify(calls.link[0].other_modules_exports));
   assert.ok(updatePath);
 });
+
+// ------------------------------------------------------------- test 36
+// Two modules export start(), both returning an API: the start carrier's
+// is the entry, even when the other imports more modules. With none, the
+// entry problem goes to the carrier's module, not to one named app.js.
+test('v7.15: the entry problem goes to the start carrier\'s module, and chooseEntry prefers it',async()=>{
+  const files=new Map([['components/a/composer.js',"const { x } = require('../c/x.js');\nfunction start() { return { x }; }\nmodule.exports = { start };\n"],
+    ['components/b/cli.js',"const { x } = require('../c/x.js');\nconst { y } = require('../c/y.js');\nfunction start() { return { x, y }; }\nmodule.exports = { start };\n"],
+    ['components/c/x.js','module.exports = { x: () => 1 };\n'],['components/c/y.js','module.exports = { y: () => 2 };\n']]);
+  const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
+  assert.equal(L.chooseEntry(files,surfaces),'components/b/cli.js','without the plan: the one importing more');
+  assert.equal(L.chooseEntry(files,surfaces,{prefer:['components/a/composer.js']}),'components/a/composer.js');
+  // The room: no module exports start(); the carrier's module hears it.
+  const {room}=liveRoom();
+  await planned(room);
+  const [store,composer]=await pieces(room,'root',[['ticket storage','storage.js',storage,[fn('saveTickets','stores all tickets',['tickets']),fn('loadTickets','returns all tickets')]],
+    ['application composer','composer.js',"const { loadTickets } = require('./loadTickets');\nfunction compose() {\n  return { list: loadTickets };\n}\nmodule.exports = { compose };\n",[START]],
+    ['ticket app helpers','app.js',"function label(t) {\n  return '#' + t.id;\n}\nmodule.exports = { label };\n",[fn('label','formats a ticket label',['ticket'])]]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.equal(room.node(b.id).status,'done',trace(room));
+  const bundle=await room.linkedBundle(b.id),bs=new Map([...bundle].filter(([p])=>L.LINKABLE.test(p)).map(([p,c])=>[p,L.exportSurface(p,c)]));
+  assert.equal(L.entryCandidate(bundle),[...bundle.keys()].find(p=>p.endsWith('/app.js')),'by name, app.js would hear it');
+  assert.deepEqual(room.startModules(b.id,bundle),[composer]);
+  assert.equal(room.entryProblem(b.id,bundle,bs).path,composer);
+  await room.turn('root');
+  const compiler=room.compilerOf('root');
+  await room.turn(compiler.id);
+  const [p]=openProblems(room,'root');
+  assert.deepEqual([p.kind,p.parties[0].owner],['entry','root.2'],trace(room));
+  await room.turn('root');
+  assert.equal(tickets(room,'root.2').length,1);
+  assert.equal(tickets(room,'root.3').length,0);
+  assert.ok(store);
+});
+
+// ------------------------------------------------------------- test 37
+// The coverage gate maps operations with a model. Without a usable mapping
+// the plan files no gap: the runner tests the plan's operation functions
+// start() returned. A wrapper (create: (t) => createTicket(t)) is no gap.
+// A gap the model finds lists the top's children's operation functions,
+// never a grandchild's.
+const saveTicketStore="const rows = [];\nfunction getTickets() { return rows; }\nfunction saveTicket(t) { rows.push(t); return t; }\nmodule.exports = { getTickets, saveTicket };\n";
+const creator="const { saveTicket } = require('./saveTicket');\nlet next = 1;\nfunction createTicket(t) { return saveTicket({ id: next++, ...t }); }\nmodule.exports = { createTicket };\n";
+const viewer="const { getTickets } = require('./getTickets');\nfunction viewTickets() { return getTickets().slice(); }\nmodule.exports = { viewTickets };\n";
+const changer="const { getTickets } = require('./getTickets');\nfunction updateTicket(id, changes) { const t = getTickets().find(x => x.id === id); if (t) Object.assign(t, changes); return t || null; }\nfunction checkTicketUpdate(changes) { return !!changes; }\nmodule.exports = { updateTicket, checkTicketUpdate };\n";
+const composer="const { createTicket } = require('./createTicket');\nconst { viewTickets } = require('./viewTickets');\nconst { updateTicket } = require('./updateTicket');\nfunction start() {\n  return { create: (t) => createTicket(t), view: viewTickets, update: updateTicket };\n}\nmodule.exports = { start };\n";
+const crudTest=`const assert = require('node:assert/strict');
+const { start } = require('./index.js');
+(async () => {
+  const app = await start();
+  const t = await app.create({ title: 'Printer jam' });
+  assert.ok((await app.view()).some(x => x.id === t.id));
+  await app.update(t.id, { title: 'Fixed' });
+  assert.equal((await app.view()).find(x => x.id === t.id).title, 'Fixed');
+})().catch(e => { console.error(e); process.exitCode = 1; });
+`;
+async function plannedApp(coverage) {
+  const r=liveRoom({runner:()=>crudTest,coverage});
+  const {room}=r;
+  await planned(room,'Build a small issue tracker that lets someone create, view, and update tickets.');
+  await pieces(room,'root',[['ticket storage','storage.js',saveTicketStore,[fn('getTickets','returns all tickets'),fn('saveTicket','stores a ticket',['ticket'])]],
+    ['create ticket','createTicket.js',creator,[fn('createTicket','creates a ticket',['ticket'],'create a ticket')]],
+    ['view ticket','viewTickets.js',viewer,[fn('viewTickets','returns the tickets',[],'view tickets')]],
+    ['update branch',null,null,[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket')]],['entry module','app.js',composer,[START]]]);
+  await pieces(room,'root.4',[['update ticket','updateTicket.js',changer,[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket'),fn('checkTicketUpdate','checks changes',['changes'],'check an update')]],
+    ['update notes','notes.js',"module.exports = { note: (t) => t.title };\n",[fn('noteUpdate','notes an update')]]]);
+  await linkBranch(room,'root.4');
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  await room.turn('root');
+  await room.turn(room.compilerOf('root').id);
+  return r;
+}
+test('v7.15: the coverage fallback files no gap; a start() returning {create: (t)=>createTicket(t)} passes; the runner gets the plan\'s methods start() returned',async()=>{
+  const {room,calls}=await plannedApp(()=>({}));
+  assert.deepEqual(room.plannedOperations().map(o=>[o.method,o.operation,o.label]),[['createTicket','create a ticket','create ticket'],['viewTickets','view tickets','view ticket'],['updateTicket','update a ticket','update branch']],'the top\'s children only');
+  assert.equal(events(room,'api_incomplete').length,0,trace(room));
+  assert.equal(events(room,'api_planned').at(-1)?.body,'Not checked that start() has a method for every operation the goal names: the model gave no usable mapping. No gap is filed; the runner tests the plan\'s operation functions start() returned: view tickets -> view, update a ticket -> update.');
+  assert.deepEqual(calls.runner[0].operations_to_test,[{operation:'view tickets',method:'view'},{operation:'update a ticket',method:'update'}]);
+  assert.ok(events(room,'run_passed').length,trace(room));
+});
+test('v7.15: a coverage gap lists the top\'s children\'s operation functions, never a grandchild\'s, before the contract and cut first',async()=>{
+  const {room}=await plannedApp(()=>({operations:[{operation:'create a ticket',method:'create'},{operation:'view tickets',method:'view'},{operation:'delete a ticket',method:null}]}));
+  const [p]=openProblems(room,'root');
+  assert.equal(p?.kind,'entry',trace(room));
+  assert.match(p.detail,/^start\(\) returns no method for: delete a ticket; it returned methods create, view, update\. Each operation the goal names needs its own method on the object start\(\) returns, the operation imported from the module that performs it\. The plan's operation functions: createTicket \(create a ticket\) from create ticket; viewTickets \(view tickets\) from view ticket; updateTicket \(update a ticket\) from update branch\. Import the one for each missing operation and return it as start\(\)'s method for that operation\./);
+  assert.doesNotMatch(p.detail,/checkTicketUpdate|noteUpdate/);
+  const {gapProblem}=await import('../src/api-coverage.js');
+  const ops=room.plannedOperations(),described={type:'object',members:{create:{type:'function'}}},gaps=[{operation:'delete a ticket',method:null}];
+  assert.ok(gapProblem(described,gaps,'',946,ops).length<=946);
+  assert.doesNotMatch(gapProblem(described,gaps,'C'.repeat(700),946,ops),/plan's operation functions/,'cut first when the contract needs the room');
+  assert.match(gapProblem(described,gaps,'C'.repeat(500),946,ops),/The plan's operation functions: createTicket \(create a ticket\) from create ticket; and more\. Import/);
+});

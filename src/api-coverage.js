@@ -72,12 +72,29 @@ export const gapList = gaps => gaps.map(g=>g.same_as?`${g.operation} (${g.method
 // once start() returned three or four methods; the missing operations come
 // first, then the names start() returned, each list cut between items.
 const fit = (text, n) => text.length<=n?text:text.slice(0,Math.max(0,n-9)).replace(/,[^,]*$/,'')+' and more';
-export function gapProblem(described, gaps, contract, limit=946) {
+// v7.15: the plan's operation functions, [{operation, method, label}] (the
+// top's children's, what the top answers requests from), as one sentence
+// of at most room characters: items cut from the end, else none. It names
+// no method key, so it cannot contradict the entry contract's naming.
+export function planSentence(ops, room) {
+  const tail='. Import the one for each missing operation and return it as start()\'s method for that operation.';
+  for(let n=(ops||[]).length;n>0;n--) {
+    const text=`The plan's operation functions: ${ops.slice(0,n).map(o=>`${o.method} (${o.operation}) from ${o.label}`).join('; ')}${n<ops.length?'; and more':''}${tail}`;
+    if(text.length<=room)return text;
+  }
+  return '';
+}
+// plan: the plan's operation functions, a sentence before the contract that
+// is cut first.
+export function gapProblem(described, gaps, contract, limit=946, plan=[]) {
   const members=methodsOf(described),names=Object.keys(members).filter(k=>callable(members[k]));
   const returned=described?.type==='object'?(names.length?'methods '+names.join(', '):'no methods'):({function:'a function',class:'a class',array:'an array'}[described?.type]||'no object')+', not an object';
   const head='start() returns no method for: ',tail=`. Each operation the goal names needs its own method on the object start() returns, the operation imported from the module that performs it.${contract?' '+contract:''}`;
   const room=limit-head.length-'; it returned '.length-tail.length,list=fit(gapList(gaps),room-Math.min(returned.length,40));
-  return `${head}${list}; it returned ${fit(returned,room-list.length)}${tail}`;
+  const text=`${head}${list}; it returned ${fit(returned,room-list.length)}${tail}`,known=planSentence(plan,limit-text.length-1);
+  if(!known)return text;
+  const at=text.length-(contract?contract.length+1:0);
+  return `${text.slice(0,at)} ${known}${text.slice(at)}`;
 }
 // The mapping the runner tests, each method by the name start() returned it under.
 export const operationMethods = (described, operations) =>

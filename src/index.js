@@ -4,7 +4,7 @@ export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
-import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
+import { apiGaps, apiMethod, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -1816,7 +1816,7 @@ export class ControlRoom extends DurableObject {
       prior?.input===input&&prior.fingerprint===fingerprint)return;
     const compiler=this.compilerOf(top)||await this.spawnCompiler(top);
     if(!compiler)return;
-    const files=await this.linkedBundle(builder.id),surfaces=surfacesOf(files),entry=chooseEntry(files,surfaces);
+    const files=await this.linkedBundle(builder.id),surfaces=surfacesOf(files),entry=chooseEntry(files,surfaces,{prefer:this.startModules(builder.id,files)});
     this.save('compile_state',{input,entry,static:true});
     if(entry) {
       // An entry problem an earlier bundle had is settled.
@@ -1828,11 +1828,17 @@ export class ControlRoom extends DurableObject {
     this.reportProblems(compiler.id,top,input,'build',[this.entryProblem(builder.id,files,surfaces)],builder.id,wave||undefined);
     this.save('compile_reported',{...this.read('compile_reported',null),stage:'static'});
   }
+  // v7.15 §5.10: the modules of the piece the plan gives start (one carrier
+  // chain: the walk deletes start everywhere else), in the top builder's bundle.
+  startModules(builderId, files) {
+    const top=this.node(builderId)?.parent;
+    return top?this.carriersOf('start',top).filter(c=>c.id!==top).flatMap(c=>this.modulesOf(builderId,files,c.id)):[];
+  }
   // What the compiler files when no module exports start(): the module most
   // likely to compose the application hears the contract (the entry
   // instructions carry it), with the boundary of each of the top's children
-  // (what each offers to compose).
-  entryProblem(builderId, files, surfaces, path=entryCandidate(files)||'', detail='No application entry: no module exports start() to compose the application.') {
+  // (what each offers to compose). The start carrier's module first.
+  entryProblem(builderId, files, surfaces, path=entryCandidate(files,this.startModules(builderId,files))||entryCandidate(files)||'', detail='No application entry: no module exports start() to compose the application.') {
     const groups=new Map();
     for(const r of query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=? ORDER BY destination',builderId))
       if(files.has(r.destination))groups.set(r.child,[...(groups.get(r.child)||[]),r.destination]);
@@ -1900,7 +1906,7 @@ export class ControlRoom extends DurableObject {
     const report=async(stage,items)=>this.reportProblems(id,top,input,stage,await this.annotateRenames(builder.id,files,items),builder.id);
     // The entry: the module that exports start(). With none, the module most
     // likely to compose the application hears the requirement.
-    const entry=chooseEntry(files,surfaces);
+    const entry=chooseEntry(files,surfaces,{prefer:this.startModules(builder.id,files)});
     this.save('compile_state',{input,entry});
     if(!entry)return report('build',[this.entryProblem(builder.id,files,surfaces)]);
     this.event(id,'compile_entry',`Application entry: ${entry}.`);
@@ -1958,11 +1964,20 @@ export class ControlRoom extends DurableObject {
         this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
         // The contract leads the entry ticket (applyDecisions); here it would
         // repeat it and clip the builder's renames.
-        return report('run',[this.entryProblem(builder.id,files,surfaces,entry,gapProblem(described,gaps,''))]);
+        // The plan's operation functions close the text, cut first (spec 7.3).
+        return report('run',[this.entryProblem(builder.id,files,surfaces,entry,gapProblem(described,gaps,'',946,this.plannedOperations()))]);
       }
+      // With no usable mapping the plan files no gap: the runner tests the
+      // plan's operation functions start() returned, under the names it
+      // returned them (spec 7.2; a wrapper such as create: (t) =>
+      // createTicket(t) is not one of them, and is no gap either).
+      const planned=coverage?.operations?[]:this.plannedOperations().map(o=>({operation:o.operation,method:apiMethod(described,o.method)})).filter(o=>o.method);
       if(coverage?.operations) {
         operations=operationMethods(described,coverage.operations);
         this.event(id,'api_covered',clip('Each operation the goal names has a method: '+operations.map(o=>`${o.operation} -> ${o.method}`).join(', '),900));
+      } else if(planned.length) {
+        operations=planned;
+        this.event(id,'api_planned',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. No gap is filed; the runner tests the plan's operation functions start() returned: ${planned.map(o=>`${o.operation} -> ${o.method}`).join(', ')}.`,900));
       } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
         (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
