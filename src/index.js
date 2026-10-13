@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
-import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished } from './protocol.js';
+import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, canRead, addFirst, addLast, allFinished } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
 import { apiGaps, apiMethod, coverageCheckable, gapList, gapProblem, operationMethods, plannedGaps, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
@@ -320,8 +320,8 @@ export class ControlRoom extends DurableObject {
   }
   view(id, inbox = [], ownFiles = []) {
     // CRITICAL INVARIANT: the model never receives a global registry. An agent sees
-    // ONLY its parent, immediate siblings, and direct children. Descendants remain
-    // entirely hidden behind their parent-owner's public interface.
+    // ONLY its parent and direct children (a builder also its siblings, whose
+    // files it reads). Descendants remain hidden behind their owner's interface.
     const n = this.node(id);
     if (!n) throw new Error(`Unknown agent: ${id}`);
     const parent = n.parent ? this.node(n.parent) : null;
@@ -338,7 +338,8 @@ export class ControlRoom extends DurableObject {
       your_id: n.id, your_responsibility: worker ? this.withContract(n.task,n) : n.task, your_label: n.label, turn: n.turn,
       phase: this.manager(id) ? 'manager' : n.phase,
       parent: parent ? (isolatedWorker ? {label:'Manager'} : describe(parent)) : null,
-      neighbor_owners: isolatedWorker ? [] : this.siblings(n).map(describe),
+      // v7.15.1: nobody messages a sibling; only a builder lists them, as sources.
+      neighbor_owners: this.siblings(n).filter(s=>canRead(n,s)).map(describe),
       your_private_children: this.children(id).map(c => ({ ...describe(c), progress: clip(c.summary, 500) })),
       your_progress: n.summary,
       your_exposed_files: builderMode ? this.files(id).filter(f=>isBuilderGluePath(f.path)).slice(0,18) : this.visibleManifest(id),
@@ -360,7 +361,8 @@ export class ControlRoom extends DurableObject {
   async knowledgeContext(id) {
     const n = this.node(id);
     if (!n) throw new Error('Unknown owner');
-    const adjacent = [n.parent, ...this.siblings(n).map(x => x.id), ...this.children(id).map(x => x.id)].filter(Boolean);
+    // v7.15.1: a sibling's memory only for a builder, which reads its files.
+    const adjacent = [n.parent, ...this.siblings(n).filter(s => canRead(n,s)).map(x => x.id), ...this.children(id).map(x => x.id)].filter(Boolean);
     const local = await Promise.all([this.readKnowledge(id, 'public'), this.readKnowledge(id, 'private')]);
     // Only neighbor PUBLIC entries. Never traverse a neighbor's descendants.
     const neighbors = await Promise.all(adjacent.slice(0, 12).map(async owner => {
@@ -694,7 +696,8 @@ export class ControlRoom extends DurableObject {
     const sender = this.node(from);
     const resolved = to === 'parent' ? sender?.parent : to;
     const receiver = resolved ? this.node(resolved) : null;
-    // Structural check is absolute: A cannot address B1, even knowing its id.
+    // Structural check is absolute: A cannot address B1, even knowing its id,
+    // nor its sibling B; siblings reach each other through their manager.
     if (!sender || !receiver || sender.status === 'retired' || receiver.status === 'retired' || !canContact(sender, receiver)) {
       this.event(from,'blocked',`Rejected message to ${clip(to,75)}: outside your immediate ownership boundary.`);
       return false;
@@ -841,6 +844,9 @@ export class ControlRoom extends DurableObject {
     if(builder?.label!=='Temporary builder' || !builder.parent)throw new Error('Only a temporary builder can materialize children');
     const sources=[],failures=[];
     for(const {child,files} of this.assemblySources(builder.parent)) {
+      // v7.15.1: the builder reads for its manager, its own siblings only (a
+      // manager sibling's files are its linked bundle, published by its builder).
+      if(!canRead(builder,child))continue;
       for(const f of files) {
         const destination=materializedPath(f.sourceLabel,f.path,f.owner);
         let content;
@@ -2942,8 +2948,8 @@ export class ControlRoom extends DurableObject {
     }
     const receiver = this.node(id), source = this.node(from);
     if (!receiver || !source || receiver.status === 'retired' || source.status === 'retired' ||
-      !canContact(receiver, source) || !isPath(path) || !isPath(dest)) {
-      this.event(id, 'blocked', `Rejected artifact import from ${clip(from,70)}: outside immediate ownership boundary.`);
+      !canRead(receiver, source) || !isPath(path) || !isPath(dest)) {
+      this.event(id, 'blocked', `Rejected artifact import from ${clip(from,70)}: only a builder reads its manager's children's files.`);
       return false;
     }
     if (isPrivatePath(path) || !this.visibleManifest(from).some(f => f.path === path)) {
@@ -3534,7 +3540,8 @@ export class ControlRoom extends DurableObject {
     }
     // On a genuine miss, Clef examines direct-child responsibilities, PUBLIC
     // notebooks, file names, and short reads of exposed code from their repos.
-    const enriched=await this.childIndex(id,true);
+    // v7.15.1: never the asker itself; siblings now ask through this relay.
+    const enriched=(await this.childIndex(id,true)).filter(c=>c.id!==requester);
     const evidenced=await this.repoAnswer(id,key+' '+question,enriched);
     if(evidenced) {
       await this.managerAnswer(id,requester,key,evidenced);
@@ -3933,7 +3940,7 @@ export class ControlRoom extends DurableObject {
           action.ask=[];
         }
       }
-      if(this.env.MOCK_AI!=='true' && !this.manager(id) && this.node(id)?.label!=='Temporary builder' && action.imports.length) {
+      if(!this.manager(id) && this.node(id)?.label!=='Temporary builder' && action.imports.length) {
         this.event(id,'blocked','Only the temporary builder imports sibling Artifacts; workers ask their manager for interfaces.');
         action.imports=[];
       }
@@ -4076,27 +4083,25 @@ export class ControlRoom extends DurableObject {
     ];
     const after=[
       ...action.answers.map(a => async () => {
-        if(this.env.MOCK_AI!=='true' && !this.manager(id) && a.to!=='parent' && a.to!==this.node(id)?.parent) {
+        if(!this.manager(id) && a.to!=='parent' && a.to!==this.node(id)?.parent) {
           this.event(id,'blocked','Worker can only publish knowledge through its manager.');return;
         }
         if (!this.send(id,a.to,`[knowledge:${a.key}] ${a.value}`)) throw new Error('Answer recipient is not adjacent');
       }),
       ...action.ask.map(a => async () => {
-        // Legacy deterministic fixture still exercises the historical adjacent
-        // owner protocol; real inference uses manager-only opaque requests.
-        if(this.env.MOCK_AI==='true' && a.to!=='parent' && a.to!==this.node(id)?.parent) {
-          if(!await this.askKnowledge(id,a.to,a.key,a.question)) throw new Error('Mock adjacency lookup failed');
-        } else if(!this.node(id)?.parent) {
+        // v7.15.1: every ask goes to the worker's manager, whatever it names;
+        // the manager answers from its children or asks up (MOCK too).
+        if(!this.node(id)?.parent) {
           // A plan persisted before the guard above: drop it, never throw.
           action.wait=false;this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
         } else if(!this.askManager(id,a.key,a.question,a.name||'')) throw new Error('Worker has no available manager');
       }),
       ...action.recall.map(r => async () => { await this.recall(id,r.visibility,r.key); }),
       ...action.messages.map(m => async () => {
-        // Ordinary Qwen implementers cannot navigate sideways/downward to search.
-        // Builders are the single intentional integration exception.
-        if(this.env.MOCK_AI!=='true' && !this.manager(id) && this.node(id)?.label!=='Temporary builder' && m.to!=='parent' && m.to!==this.node(id)?.parent) {
-          this.event(id,'blocked','Worker messages must go to its manager.');return;
+        // v7.15.1: a worker (a builder too) messages only its manager, never
+        // a sibling; a builder's one exception is reading, not messaging.
+        if(!this.manager(id) && m.to!=='parent' && m.to!==this.node(id)?.parent) {
+          this.event(id,'blocked',`Worker messages must go to its manager; not sent to ${clip(m.to,70)}.`);return;
         }
         this.send(id,m.to,m.body);
       }),

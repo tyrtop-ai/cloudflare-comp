@@ -133,10 +133,19 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
         ...(typeof f.content==='string' ? {content:f.content} : {}) }))
   };
 }
-export function canContact(sender, receiver, map) {
+// v7.15.1, the author's rule: a worker talks only to its manager, a manager
+// to its parent and its own direct children (never grandchildren). Siblings
+// reach each other only through their manager. Gates messages and knowledge.
+export function canContact(sender, receiver) {
   if (!sender || !receiver || sender.id === receiver.id) return false;
-  return sender.parent === receiver.id || receiver.parent === sender.id ||
-    (sender.parent != null && sender.parent === receiver.parent);
+  return sender.parent === receiver.id || receiver.parent === sender.id;
+}
+// The one exception, for reading only: a builder acts for its manager, so it
+// reads the published files of that manager's direct children (its siblings)
+// to link them; nothing deeper or wider, and it never messages them.
+export function canRead(reader, owner) {
+  return canContact(reader, owner) || (reader?.label === 'Temporary builder' && reader.parent != null &&
+    owner?.id !== reader.id && owner?.parent === reader.parent);
 }
 export function addFirst(queue, id) { return [id, ...queue.filter(q => q !== id)]; }
 export function addLast(queue, id) { return queue.includes(id) ? queue : [...queue, id]; }

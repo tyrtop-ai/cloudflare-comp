@@ -61,13 +61,16 @@ test('a live map reindexes newly published child files, not stale cached answers
  assert.equal(getInference(),0);
 });
 test('a genuine ownership miss uses one Clef call and routes only to a direct child',async()=>{
- const {room,getInference}=await fixture();
+ const {room,ai,getInference}=await fixture();
+ const run=ai.run,offered=[];ai.run=async(model,payload)=>{offered.push(...(payload.state?.children||[]).map(c=>c.label));return run(model,payload);};
  await room.askKnowledge('root.1','root','retry semantics','Who owns retry semantics for this process?');
  await room.turn('root');
  assert.equal(getInference(),1);
+ // v7.15.1: siblings ask through this relay, so the asker is never offered as the owner; the second slot is now Queue.
+ assert.deepEqual(offered,['HTTP API','Queue']);
  const routed=room.db().exec('SELECT child FROM manager_routes').toArray();
- assert.deepEqual(routed.map(x=>x.child),['root.2']);
- assert.ok(room.receive('root.2').some(x=>x.body.includes('retry semantics')));
- assert.equal(room.receive('root.3').length,0);
- assert.ok(!JSON.stringify(room.receive('root.1')).includes('root.2.'));
+ assert.deepEqual(routed.map(x=>x.child),['root.3']);
+ assert.ok(room.receive('root.3').some(x=>x.body.includes('retry semantics')));
+ assert.equal(room.receive('root.2').length,0);
+ assert.ok(!JSON.stringify(room.receive('root.1')).includes('root.3.'));
 });

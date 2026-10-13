@@ -543,14 +543,14 @@ export function extractCode(text,wanted=()=>true) {
 }
 
 function mockDecision(c) {
-  const { your_id: id, turn, new_messages: inbox, your_private_children: children, neighbor_owners: peers } = c;
+  const { your_id: id, turn, new_messages: inbox, your_private_children: children } = c;
   const childDone = children.length > 0 && children.every(x => x.status === 'done' || x.status === 'retired');
   if (id === 'root') {
     const builder = children.find(x => x.label === 'Temporary builder');
     const producers = children.filter(x => x.label !== 'Temporary builder');
     if (!builder) return producers.length === 2 && producers.every(x => x.status === 'done') ? {
       summary: 'Both public strands returned. Spawn one disposable builder to assemble their artifacts.',
-      spawn: [{ label: 'Temporary builder', task: 'Assemble a runnable ticket application from the public Artifacts repositories of your immediate sibling strand owners A (UI) and B (backend). Import only their exposed files into YOUR repository, write server.js and package.json without unnecessary npm dependencies, and report integration issues to the owning sibling. Do not inspect B children. You have no execution tool: do not claim tests ran.' }], wait: true
+      spawn: [{ label: 'Temporary builder', task: 'Assemble a runnable ticket application from the public Artifacts repositories of your immediate sibling strand owners A (UI) and B (backend). Import only their exposed files into YOUR repository, write server.js and package.json without unnecessary npm dependencies, and report integration issues to your manager. Do not inspect B children. You have no execution tool: do not claim tests ran.' }], wait: true
     } : { summary: 'Waiting for my direct strand owners.', wait: true };
     if (builder.status === 'done') return {
       summary: 'Builder assembled a public deployment artifact. Retiring temporary builder; final files remain in its Artifacts repo. No execution/test verification was performed.',
@@ -559,12 +559,14 @@ function mockDecision(c) {
     return {summary: 'Waiting for temporary builder to return its assembled output.', wait: true};
   }
   if (id === 'root.1') {
+    // v7.15.1: a worker asks its manager, never its sibling B; the manager
+    // answers from B's published Artifacts or asks B itself.
     if (turn === 2) return {
-      summary: 'Frontend needs backend contract; asking B as the sole owner.',
-      messages: [{ to: 'root.2', body: 'I own frontend. What is your public HTTP contract for tickets?' }], wait: true
+      summary: 'Frontend needs the backend contract; asking my manager.',
+      messages: [{ to: 'parent', body: 'I own the frontend. What is the public HTTP contract for tickets?' }], wait: true
     };
     if (!inbox.some(x => x.body.includes('GET /api/tickets'))) return {
-      summary: 'B retains backend responsibility even while its descendants work.', wait: true
+      summary: 'Waiting for my manager to relay the backend contract.', wait: true
     };
     return {summary: 'Frontend built from B public interface.', files: [{path:'index.html',intent:'One page ticket UI for GET/POST /api/tickets.'}],done:true};
   }
@@ -580,8 +582,7 @@ function mockDecision(c) {
           {from:'root.2.2',path:'api.js',as:'api.js'},
           {from:'root.2.3',path:'backend.test.js',as:'tests/backend.test.js'}
         ],
-        remember:[{visibility:'public',key:'http contract',value:'GET /api/tickets -> {tickets:[]}; POST /api/tickets {title} -> {ticket:{id,title,status}}. B owns the interface.'}],
-        messages:[{to:'root.1',body:'GET /api/tickets -> {tickets:[]}; POST /api/tickets {title} -> {ticket:{id,title,status}}. B owns this interface.'}],done:true};
+        remember:[{visibility:'public',key:'http contract',value:'GET /api/tickets -> {tickets:[]}; POST /api/tickets {title} -> {ticket:{id,title,status}}. B owns the interface.'}],done:true};
     }
     return {summary:'B public backend interfaces and exported aliases are ready; descendants stay opaque.',done:true};
   }

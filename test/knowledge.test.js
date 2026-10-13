@@ -61,10 +61,12 @@ test('persistent public and private knowledge survive eviction and expose only a
   ]);
   assert.equal((await room.readKnowledge('root.2','private'))['storage owner'],'internal child root.2.1 owns database storage');
   assert.equal((await room.readKnowledge('root.2'))['ticket list response'],'GET /api/tickets -> array of objects');
-  const context=await room.knowledgeContext('root.1');
+  // v7.15.1: root.2's public topics are adjacent to its manager, not to its sibling root.1.
+  const context=await room.knowledgeContext('root');
   assert.ok(context.adjacent_public_memory.some(n=>n.owner==='root.2' && n.known_topics.includes('ticket list response')));
   assert.ok(JSON.stringify(context).includes('GET /api/tickets'));
   assert.ok(!JSON.stringify(context).includes('root.2.1'));
+  assert.ok(!(await room.knowledgeContext('root.1')).adjacent_public_memory.some(n=>n.owner==='root.2'));
   assert.ok(!room.visibleManifest('root.2').some(f=>f.path===PRIVATE_KNOWLEDGE));
   assert.ok(room.visibleManifest('root.2').some(f=>f.path===PUBLIC_KNOWLEDGE));
   assert.equal(await room.importFile('root.1','root.2',PRIVATE_KNOWLEDGE,'secret.json'),false);
@@ -76,33 +78,61 @@ test('persistent public and private knowledge survive eviction and expose only a
 test('cache hit answers from owner artifact without messaging or waking the owner',async()=>{
   const {room}=await setup();
   await room.remember('root.2',[{visibility:'public',key:'tickets api',value:'GET /api/tickets returns []'}]);
-  room.db().exec("UPDATE agents SET status='waiting' WHERE id=?",'root.2');
+  room.db().exec("UPDATE agents SET status='waiting' WHERE id IN ('root','root.2')");
   room.save('queue',[]);
-  assert.equal(await room.askKnowledge('root.1','root.2','tickets api','What does it return?'),true);
+  // v7.15.1: root.1 never asks its sibling; its manager answers from root.2's public Artifacts.
+  assert.equal(await room.askKnowledge('root.1','root.2','tickets api','What does it return?'),false);
+  assert.ok(room.snapshot().events.some(e=>e.actor==='root.1'&&e.kind==='blocked'&&e.body.includes('root.2')));
+  assert.equal(await room.askKnowledge('root.1','parent','tickets api','What does it return?'),true);
+  await room.turn('root');
   assert.equal(room.receive('root.2').length,0);
   assert.equal(room.node('root.2').status,'waiting');
-  assert.ok(room.snapshot().events.some(e=>e.kind==='memory_hit'&&e.recipient==='root.2'));
+  assert.ok(room.snapshot().events.some(e=>e.actor==='root'&&e.kind==='manager_cache'));
+  assert.ok(room.receive('root.1').some(m=>m.from==='root'&&/GET \/api\/tickets returns \[\]/.test(m.body)));
+  // The manager published the answer: the next lookup reads its Artifacts and wakes nobody.
+  room.acknowledge('root.1',room.receive('root.1'));
+  room.db().exec("UPDATE agents SET status='waiting' WHERE id IN ('root','root.2')");
+  room.save('queue',[]);
+  assert.equal(await room.askKnowledge('root.1','parent','tickets api','What does it return?'),true);
+  assert.equal(room.receive('root').length,0);
+  assert.equal(room.node('root').status,'waiting');
+  assert.ok(room.snapshot().events.some(e=>e.kind==='memory_hit'&&e.recipient==='root'));
   assert.match(room.receive('root.1')[0].body,/GET \/api\/tickets returns \[\]/);
-  assert.equal(room.receive('root.1')[0].from,'artifact:root.2');
+  assert.equal(room.receive('root.1')[0].from,'artifact:root');
 });
 
 test('cache miss consults responsible owner; answer publishes interface for subsequent artifact-only queries',async()=>{
   const {room}=await setup();
-  room.db().exec("UPDATE agents SET status='waiting' WHERE id=?",'root.2');
+  room.db().exec("UPDATE agents SET status='waiting' WHERE id IN ('root','root.2')");
   room.save('queue',[]);
-  assert.equal(await room.askKnowledge('root.1','root.2','ticket contract','What is your ticket API?'),true);
-  assert.ok(room.receive('root.2').some(x=>x.body.includes('[knowledge:ticket contract]')));
+  // v7.15.1: the lookup goes to root.1's manager, never to its sibling root.2.
+  assert.equal(await room.askKnowledge('root.1','root.2','ticket contract','What is your ticket API?'),false);
+  assert.equal(await room.askKnowledge('root.1','parent','ticket contract','What is your ticket API?'),true);
+  assert.ok(room.receive('root').some(x=>x.from==='root.1'&&x.body.includes('[knowledge:ticket contract]')));
+  assert.equal(room.node('root').status,'ready');
+  // The manager misses too and consults its responsible child.
+  await room.turn('root');
+  assert.ok(room.receive('root.2').some(x=>x.from==='root'&&x.body.includes('[knowledge:ticket contract]')));
   assert.equal(room.node('root.2').status,'ready');
   await room.remember('root.2',[{visibility:'public',key:'ticket contract',value:'GET /api/tickets gives an array'}]);
-  assert.equal(room.send('root.2','root.1','[knowledge:ticket contract] GET /api/tickets gives an array'),true);
+  assert.equal(room.send('root.2','root.1','[knowledge:ticket contract] GET /api/tickets gives an array'),false);
+  assert.equal(room.send('root.2','parent','[knowledge:ticket contract] GET /api/tickets gives an array'),true);
   room.acknowledge('root.2',room.receive('root.2'));
   room.db().exec("UPDATE agents SET status='waiting' WHERE id=?",'root.2');
+  await room.turn('root');
+  assert.ok(room.receive('root.1').some(x=>x.from==='root'&&x.body.includes('GET /api/tickets gives an array')),'the manager relays the answer');
+  assert.equal((await room.readKnowledge('root'))['ticket contract'],'GET /api/tickets gives an array');
+  room.acknowledge('root.1',room.receive('root.1'));
+  room.db().exec("UPDATE agents SET status='waiting' WHERE id IN ('root','root.2')");
   room.save('queue',[]);
-  assert.equal(await room.askKnowledge('root.1','root.2','ticket contract','Same question again'),true);
+  assert.equal(await room.askKnowledge('root.1','parent','ticket contract','Same question again'),true);
+  assert.equal(room.receive('root').length,0);
   assert.equal(room.receive('root.2').length,0);
+  assert.equal(room.node('root').status,'waiting');
   assert.equal(room.node('root.2').status,'waiting');
-  assert.equal(room.snapshot().events.filter(e=>e.kind==='memory_miss').length,1);
-  assert.equal(room.snapshot().events.filter(e=>e.kind==='memory_hit').length,1);
+  const asked=kind=>room.snapshot().events.filter(e=>e.actor==='root.1'&&e.kind===kind).length;
+  assert.equal(asked('memory_miss'),1);
+  assert.equal(asked('memory_hit'),1);
 });
 
 test('decided answer is written to Artifacts before messaging and survives a failed write retry',async()=>{
@@ -145,7 +175,9 @@ test('public memory and direct messages cannot expose agent IDs hidden by the ow
   const {room}=await setup();
   const [internal]=await room.spawn('root.2',[{label:'private storage',task:'Implement private storage behavior under tickets API owner'}]);
   assert.equal(internal.id,'root.2.1');
-  assert.equal(room.send('root.2','root.1',`Talk directly to ${internal.id} for help`),false);
+  // v7.15.1: from root.1's manager, so the hidden-ID guard (not the sibling rule) refuses it.
+  assert.equal(room.send('root','root.1',`Talk directly to ${internal.id} for help`),false);
+  assert.ok(room.snapshot().events.some(e=>e.actor==='root'&&e.kind==='blocked'&&/private agent ID/.test(e.body)));
   await assert.rejects(
     room.remember('root.2',[{visibility:'public',key:'storage',value:`Internal storage owner is ${internal.id}`}]),
     /private descendant ID/
