@@ -6,10 +6,10 @@
 // The room tests use the REAL container build runner as the executor.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ControlRoom,liveRoom,workers,linkAndCompile,runReady,step,openProblems,lastReport,tickets,settle,events,trace} from './helpers/room.js';
+import {ControlRoom,liveRoom,workers,linkAndCompile,runReady,step,openProblems,lastReport,tickets,settle,events,trace,GOAL} from './helpers/room.js';
 const L=await import('../src/linker.js');
 const {PLAIN_JS_CLAUSE}=await import('../src/problems.js');
-const {ENTRY_CONTRACT}=await import('../src/model.js');
+const {ENTRY_CONTRACT,ROOT_PROMISE}=await import('../src/model.js');
 
 async function tree(room,goal) {
   await room.provision('root',null,'Root objective',goal);
@@ -666,6 +666,55 @@ test('v7.14: Root cannot send a stuck branch\'s problem back to it; it closes on
   assert.deepEqual(second.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root.1','escalate','root','stuck'],['root','close','','stuck']]);
   assert.match(second.detail,/^Ticket form app cannot finish its branch: TicketForm Component stopped/);
   assert.ok(events(room,'paused').some(e=>e.actor==='root.1.1'));
+});
+// v7.15 × slice 2: a branch whose splitter cannot give its promised
+// createTicket to a piece fails C5 three times and is stuck at its split.
+// Its split request reads no inbox, so a ticket would never reach it: the
+// model's assign is refused, and a retask restarts the split with the new task.
+async function stuckSplitter(manager) {
+  const placed=user=>/exports createTicket\(/.test(user.assigned_code||'');
+  const r=liveRoom({room_id:'stuck-split',manager,
+    // The walk asks who owns a piece: its own strand, the first listed.
+    clef:input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:k.startsWith('owner_')&&k!=='owner_0'?0.05:0.9}]))}),
+    split:user=>({summary:'Split',spawn:[{label:'Writer',task:placed(user)?'Write code that stores new tickets and exports createTicket(title)':'Write code that stores new tickets',functions:[{name:placed(user)?'createTicket':'storeTicket'}]},
+      {label:'Checker',task:'Write code that validates ticket input',functions:[{name:'validateTicket'}]}]})});
+  const {room}=r;
+  await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
+  await room.spawn('root',[{label:'Create branch',task:'Write the ticket creation code',interfaces:[{name:'createTicket',does:'creates a ticket',params:['title']}]},
+    {label:'Entry',task:'Write app.js exporting start()',interfaces:[ROOT_PROMISE[0]]}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  room.db().exec("UPDATE agents SET phase='implement',status='done' WHERE id='root.2'");
+  room.set('status','running');
+  for(let i=0;i<3;i++)await step(room,'root.1');
+  const [stuck]=openProblems(room,'root');
+  assert.deepEqual([stuck?.kind,stuck?.source,room.node('root.1').phase,room.read('failures',{})['root.1']],['stuck','root.1','decompose',3],trace(room));
+  assert.match(stuck.detail,/split_rejected: The proposed functions fail 1 check\(s\): Your assignment promises createTicket\(title\)/);
+  await room.turn('root');
+  return {...r,stuck};
+}
+test('v7.15 × slice 2: a child stuck at its split (C5) is a branch: an assign is refused and never reaches it; Root closes it and the splitter pauses visibly',async()=>{
+  const {room,calls,stuck}=await stuckSplitter(user=>({actions:[{action:'assign',problems:[user.problems[0].id],child:'root.1',instructions:'Put createTicket on the writer piece.'}]}));
+  assert.equal(calls.manager.length,1);
+  const [input]=calls.manager;
+  assert.deepEqual([input.children.find(c=>c.id==='root.1').kind,input.problems[0].trigger],['manager','M5']);
+  assert.ok(events(room,'problem_decision_rejected').some(e=>/^assign root\.1: a stuck branch is retasked, retired or escalated, not assigned/.test(e.body)),trace(room));
+  assert.deepEqual(room.receive('root.1'),[],'no ticket its split would never read');
+  assert.equal(room.read('failures',{})['root.1'],3,'no fresh turn spent on it');
+  assert.deepEqual(room.problems('id=?',stuck.id).map(p=>[p.status,p.outcome]),[['closed','exhausted']]);
+  assert.ok(events(room,'paused').some(e=>e.actor==='root.1'),'never a silent stall');
+});
+test('v7.15 × slice 2: a child stuck at its split (C5) that Root\'s model retasks splits again through Clef with the new task, keeping its promise',async()=>{
+  const task='Write the ticket creation code: one piece stores new tickets and exports createTicket(title), another validates the input.';
+  const {room,calls,stuck}=await stuckSplitter(user=>({actions:[{action:'retask',child:'root.1',task,problems:[user.problems[0].id],reason:'createTicket needs a piece'}]}));
+  assert.deepEqual(room.problems('id=?',stuck.id).map(p=>[p.status,p.outcome]),[['closed','retasked']]);
+  assert.deepEqual([room.node('root.1').phase,room.node('root.1').status,room.read('failures',{})['root.1'],room.get('split_feedback:root.1')],['decompose','ready',0,'']);
+  const gates=calls.clef.filter(c=>c.questions.should_split).length,splits=calls.split.length;
+  await room.turn('root.1');
+  assert.equal(calls.clef.filter(c=>c.questions.should_split).length,gates+1,'Clef is asked again');
+  assert.equal(calls.split[splits].assigned_code,task);
+  assert.equal(calls.split[splits].previous_split_rejection,undefined);
+  assert.deepEqual(room.children('root.1').map(c=>[c.label,room.promisedOf(c.id).map(f=>f.name)]),[['Writer',['createTicket']],['Checker',['validateTicket']]],trace(room));
+  assert.deepEqual(room.promisedOf('root.1').map(f=>f.name),['createTicket']);
 });
 test('v7.14 (5c): the model cannot retire a worker a sibling imports; the default applies and the problem goes up as the branch\'s',async()=>{
   // The service imports the form (the runtime links './TicketForm' by its name).

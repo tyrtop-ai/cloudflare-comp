@@ -1922,7 +1922,10 @@ export class ControlRoom extends DurableObject {
   // relink budget, and what the rules read from its problems' history.
   async decisionContext(m, rows) {
     const n=this.node(m),children=new Map(this.children(m).map(c=>[c.id,c]));
-    const kindOf=id=>{const c=children.get(id);return !c?null:c.label==='Temporary builder'?'builder':c.label==='Compiler'?'compiler':this.manager(c.id)?'manager':'worker';};
+    // A child still at its split is a branch: its split request reads no
+    // inbox, so a ticket would never reach it, and a stuck one (C5 three
+    // times) is retasked, retired or escalated, never assigned.
+    const kindOf=id=>{const c=children.get(id);return !c?null:c.label==='Temporary builder'?'builder':c.label==='Compiler'?'compiler':this.manager(c.id)||c.phase==='decompose'?'manager':'worker';};
     const builder=this.builderOf(m),fingerprint=this.assemblyFingerprint(m),state=this.read(`link_state:${m}`,null);
     const relinked=new Set(this.problems("holder=? AND status='closed' AND outcome='relinked'",m).filter(p=>p.flags.fingerprint===fingerprint).map(p=>p.signature));
     const depth=Math.max(1,...this.allNodes().map(x=>x.id.split('.').length-1));
