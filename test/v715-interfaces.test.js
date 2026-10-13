@@ -412,6 +412,27 @@ test('v7.15: the third contract return accepts done and records contract_unmet; 
   assert.equal(room.read('failures',{})['root.3']||0,0);
 });
 
+// v7.15 × slice 2 (spec 10.1, test 38-39 in part): a retask restarts the
+// promise check, and a manager cannot retire the piece that carries its promise.
+test('v7.15 × slice 2: a retask clears contract_returns, so the new task\'s done is checked again; a direct carrier of a promised name is not retired',async()=>{
+  const {room}=await createWorker(()=>run6Create);
+  for(let k=0;k<4;k++)await room.turn('root.3');
+  assert.deepEqual([room.node('root.3').status,room.get('contract_returns:root.3'),events(room,'contract_unmet').length],['done','3',1]);
+  room.retaskChild('root','root.3','Write code that creates a ticket and exports createTicket(title, description).','the gap','model');
+  assert.equal(room.get('contract_returns:root.3'),'');
+  await room.turn('root.3');
+  assert.equal(room.node('root.3').status,'ready','sent back, not accepted at once');
+  assert.equal(events(room,'contract_missing').at(-1).body,'Done refused (1/3): createTicket promised and not exported; back to the worker.');
+  assert.equal(events(room,'contract_unmet').length,1);
+  assert.ok(room.receive('root.3').some(m=>m.body.startsWith('[contract] ')));
+  // Root promises start; "create ticket" promises createTicket and splits.
+  await room.spawn('root.3',[{label:'ticket record writer',task:'Write code that builds and stores the ticket record, exporting createTicket(title, description).',interfaces:[{name:'createTicket'}]},
+    {label:'ticket input checks',task:'Write code that validates a new ticket\'s title and description.',interfaces:[{name:'validateTicket',does:'checks a ticket\'s fields'}]}]);
+  const below=await room.retireBlocks('root.3'),top=await room.retireBlocks('root');
+  assert.deepEqual([below('root.3.1'),below('root.3.2')],['it carries createTicket, which this manager promises','']);
+  assert.deepEqual([top('root.1'),top('root.2')],['it carries start, which this manager promises',''],'getTickets is the storage piece\'s own, not Root\'s promise');
+});
+
 test('v7.15: a class or instance default does not satisfy a promise; named exports and members of a default object do',()=>{
   const m=(files,names)=>missingExports(new Map(Object.entries(files)),names);
   assert.deepEqual(m({'store.js':'class TicketStore { getTickets() { return []; } }\nmodule.exports = new TicketStore();\n'},['getTickets']),['getTickets'],'an instance\'s methods are unbound');

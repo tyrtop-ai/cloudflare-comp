@@ -2193,11 +2193,14 @@ export class ControlRoom extends DurableObject {
   // Why a direct child cannot be retired (spec 3.7.5): a module outside its
   // branch imports one of its modules in this manager's published bundle,
   // or one of them exports start() (what composes the application; nothing
-  // imports it); with no published bundle, it has published code. '' when
-  // it can be.
+  // imports it); with no published bundle, it has published code. Or it
+  // carries a function this manager promised (v7.15 §10.1): retired, no
+  // piece would write it. '' when it can be.
   async retireBlocks(m) {
     const b=this.builderOf(m),rows=b?query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=?',b.id):[];
-    if(!rows.length)return id=>(this.manager(id)?this.descendantsWithCode(id).length:productionFiles(this.files(id)).length)?'no linked bundle shows who imports its code':'';
+    const own=new Set(this.promisedOf(m).map(f=>f.name)),carried=id=>this.promisedOf(id).map(f=>f.name).filter(x=>own.has(x));
+    const promise=id=>carried(id).length?`it carries ${carried(id).join(', ')}, which this manager promises`:'';
+    if(!rows.length)return id=>promise(id)||((this.manager(id)?this.descendantsWithCode(id).length:productionFiles(this.files(id)).length)?'no linked bundle shows who imports its code':'');
     const owner=new Map(rows.map(r=>[r.destination,nextDirectChild(m,r.child)])),files=new Map(),importers=new Map(),starts=new Set();
     for(const r of rows)try{files.set(r.destination,await this.indexedContent(b.id,r.destination));}catch{}
     for(const [path,content] of files)if(content!=null&&LINKABLE.test(path)) {
@@ -2208,7 +2211,7 @@ export class ControlRoom extends DurableObject {
       }
     }
     return id=>importers.get(id)?.size?`${[...importers.get(id)].map(x=>this.node(x)?.label||x).join(', ')} import${importers.get(id).size>1?'':'s'} its code`:
-      starts.has(id)?'its code exports start(), which composes the application':'';
+      promise(id)||(starts.has(id)?'its code exports start(), which composes the application':'');
   }
   // ---------- retire and retask: validated manager decisions ----------
   // A node and every node below it, the node first.
@@ -2274,7 +2277,8 @@ export class ControlRoom extends DurableObject {
     db.exec("UPDATE agents SET task=?,status='ready' WHERE id=?",clip(task,2000),c);
     db.exec('DELETE FROM pending_turns WHERE agent=?',c);
     db.exec("DELETE FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",c);
-    for(const k of ['returned','split_feedback','nudged'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
+    // Its new task's done is checked against the promise again (v7.15 §10.1).
+    for(const k of ['returned','split_feedback','nudged','contract_returns'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
     this.clearFailures(c);
     this.event(m,'child_retasked',clip(`${node.label} is retasked (${rule}${reason?`: ${reason}`:''})${below.length?`; its branch of ${below.length} node(s) is retired and it splits again`:''}. New task: ${task}`,900),c);
     this.wake(c);
