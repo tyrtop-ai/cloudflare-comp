@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ControlRoom,liveRoom,workers,linkAndCompile,runReady,step,openProblems,lastReport,tickets,settle,events,trace} from './helpers/room.js';
 const L=await import('../src/linker.js');
+const {PLAIN_JS_CLAUSE}=await import('../src/problems.js');
 
 async function tree(room,goal) {
   await room.provision('root',null,'Root objective',goal);
@@ -367,4 +368,165 @@ test('v7.14: one model call per manager turn; another cluster waits for the next
   assert.equal(calls.manager.length,2);
   assert.equal(room.problems("status='open'").length,0);
   assert.notDeepEqual(calls.manager[0].problems.map(p=>p.id),calls.manager[1].problems.map(p=>p.id));
+});
+
+
+// ------------------------------------------------------------- test 5a-c: stuck workers
+// A worker that cannot get past the code gate is its manager's problem, not
+// a paused room: three failed turns at the gate file a stuck problem.
+const formService="const forms = [];\nmodule.exports = { submit: (data) => { const f = { id: forms.length + 1, ...data }; forms.push(f); return f; } };\n";
+const formEntry="const service = require('./formService');\nfunction start() {\n  return { createTicket: (d) => service.submit(d) };\n}\nmodule.exports = { start };\n";
+const plainForm="function renderTicketForm(values) {\n  return ['title', 'description'].map((k) => `${k}: ${values[k] || ''}`).join('\\n');\n}\nmodule.exports = { renderTicketForm };\n";
+// root → root.1 (a branch: the form worker and its service), root.2 the entry.
+async function formTree(room,task='Write a React component with form fields for title and description, and its submit handler.') {
+  await tree(room,'Build a small issue tracker that lets someone create tickets.');
+  await workers(room,'root',[['Ticket form app'],['Application entry','app.js',formEntry]]);
+  await room.spawn('root.1',[{label:'TicketForm Component',task}]);
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1.1'");
+  await workers(room,'root.1',[['Form service','formService.js',formService]]);
+  room.db().exec("UPDATE agents SET status='waiting' WHERE id='root.1'");
+}
+test('v7.14 (5a): a worker whose turns publish only .tsx is stuck; its manager retasks it to plain JavaScript (D8), and the branch links',async()=>{
+  const {room,calls}=liveRoom({runner:()=>formRunner,
+    leaf:user=>user.your_responsibility.includes(PLAIN_JS_CLAUSE)?{summary:'Plain JS form',done:true,files:[{path:'TicketForm.js',content:plainForm}]}:
+      {summary:'React form',done:true,files:[{path:'TicketForm.tsx',content:'export const TicketForm = () => <form />;\n'}]}});
+  await formTree(room);
+  await settle(room,40);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(calls.leaf.length,4,'three rejected turns, then the retasked one');
+  assert.equal(events(room,'paused').length,0,'the room never paused');
+  const [stuck]=room.problems("kind='stuck'");
+  assert.deepEqual([stuck.holder,stuck.source,stuck.status,stuck.outcome,stuck.flags.plain_js],['root.1','root.1.1','closed','retasked',true]);
+  assert.match(stuck.detail,/^TicketForm Component stopped after three failed turns at the code gate: [^]*non_code_rejected: Rejected non-code files: TicketForm\.tsx/);
+  assert.deepEqual(stuck.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root.1','retask','root.1.1','D8']]);
+  assert.ok(room.node('root.1.1').task.endsWith(PLAIN_JS_CLAUSE));
+  assert.ok(events(room,'child_retasked').some(e=>e.actor==='root.1'&&e.recipient==='root.1.1'));
+  assert.equal(calls.manager.length,0,'D8 needs no model');
+  assert.equal(Number(room.get('repair_rounds:root.1')),1,'a retask is a repair round');
+  assert.ok(room.files('root.1.1').some(f=>f.path==='TicketForm.js'));
+});
+// run3's root.3.3.3.4.1 "TicketForm Component" was asked for a React
+// component: every turn wrote JSX that does not parse, the targeted
+// corrections too, and after three failures the room paused for a Continue
+// that would only repeat it. Now its manager retasks it (D8) and the room
+// completes without a Continue.
+const jsxForm="import React, { useState } from 'react';\nexport default function TicketForm({ onSubmit }) {\n  const [title, setTitle] = useState('');\n  return (\n    <form onSubmit={() => onSubmit({ title })}>\n      <input value={title} onChange={(e) => setTitle(e.target.value)} />\n    </form>\n  );\n}\n";
+test('v7.14: run3\'s React worker that fails the parse gate three times is retasked by its manager instead of pausing the room',async()=>{
+  const {room,calls}=liveRoom({runner:()=>formRunner,file:()=>jsxForm,
+    leaf:user=>({summary:'TicketForm',done:true,files:[{path:'TicketForm.js',content:user.your_responsibility.includes(PLAIN_JS_CLAUSE)?plainForm:jsxForm}]})});
+  await formTree(room,'Write executable source code to implement the following specific piece: Write React component with form fields for title, description, priority, and submit handler.');
+  await settle(room,40);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(events(room,'paused').length,0,'no pause, no Continue');
+  const failures=room.snapshot().events.filter(e=>e.actor==='root.1.1'&&e.kind==='error');
+  assert.equal(failures.length,3);
+  assert.ok(failures.every(e=>/Worker artifact rejected: TicketForm\.js: /.test(e.body)));
+  assert.equal(calls.file.length,3,'each failure had its targeted correction');
+  const [stuck]=room.problems("kind='stuck'");
+  assert.match(stuck.detail,/does not parse as JavaScript/);
+  assert.deepEqual([stuck.outcome,stuck.trail.map(t=>t.rule)],['retasked',['D8']]);
+  assert.equal(calls.leaf.length,2,'the first turn, then the retasked one (the failed action was replayed, not re-asked)');
+  assert.ok(calls.leaf[1].your_responsibility.includes(PLAIN_JS_CLAUSE));
+  assert.equal(room.read('failures',{})['root.1.1'],0);
+});
+// The 5a branch after its retask, linked and run; then the same worker is
+// asked for a change and fails the gate three more times (not for TypeScript
+// or JSX, and D8 retasks once): M5, the manager's model decides.
+async function stuckTwice({service=formService,manager}) {
+  let broken=false;
+  const r=liveRoom({runner:()=>formRunner,manager,file:()=>'function renderTicketForm(values) {\n  return [\n',
+    leaf:user=>broken?{summary:'Priority',done:true,files:[{path:'TicketForm.js',content:'function renderTicketForm(values) {\n  return [\n'}]}:
+      user.your_responsibility.includes(PLAIN_JS_CLAUSE)?{summary:'Plain JS form',done:true,files:[{path:'TicketForm.js',content:plainForm}]}:
+      {summary:'React form',done:true,files:[{path:'TicketForm.tsx',content:'export const TicketForm = () => <form />;\n'}]}});
+  await tree(r.room,'Build a small issue tracker that lets someone create tickets.');
+  await workers(r.room,'root',[['Ticket form app'],['Application entry','app.js',formEntry]]);
+  await r.room.spawn('root.1',[{label:'TicketForm Component',task:'Write a React component with form fields for title and description.'}]);
+  r.room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1.1'");
+  await workers(r.room,'root.1',[['Form service','formService.js',service]]);
+  r.room.db().exec("UPDATE agents SET status='waiting' WHERE id='root.1'");
+  await settle(r.room,40);
+  assert.equal(r.room.get('status'),'complete',trace(r.room));
+  r.aliases=()=>r.room.db().exec("SELECT path FROM exposed_files WHERE owner='root.1' AND source='root.1.1'").toArray().length;
+  r.before=r.aliases();
+  broken=true;
+  r.room.send('root.1','root.1.1','Add a priority field to the form.');
+  await settle(r.room,40);
+  return r;
+}
+test('v7.14 (5b): a second stuck on the same worker goes to the model (M5), which retires it: nobody imports it, so its code leaves the bundle',async()=>{
+  const {room,calls,before,aliases}=await stuckTwice({manager:user=>({actions:[{action:'retire',child:user.problems[0].parties[0].child,reason:'the service takes the fields itself'}]})});
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(calls.manager.length,1);
+  const [input]=calls.manager,[p]=input.problems;
+  assert.deepEqual([p.kind,p.trigger,p.default,p.parties],['stuck','M5',{action:'escalate'},[{child:'root.1.1',file:'',role:'subject'}]]);
+  assert.match(p.detail,/does not parse as JavaScript/);
+  assert.equal(room.node('root.1.1').status,'retired');
+  const stuck=room.problems("kind='stuck'");
+  assert.deepEqual(stuck.map(s=>[s.outcome,s.trail.map(t=>t.rule).join()]),[['retasked','D8'],['retired','model']]);
+  assert.ok(events(room,'child_retired').some(e=>e.actor==='root.1'&&e.recipient==='root.1.1'));
+  assert.ok(before>0,'root.1 published aliases of the form');
+  assert.equal(aliases(),0,'they are gone');
+  assert.ok(!room.assemblySources('root.1').some(s=>s.child.id==='root.1.1'));
+  // root.1's builder relinked without the form, and so did Root's: the application runs without it.
+  const rootBuilder=room.builderOf('root');
+  assert.ok(!room.db().exec('SELECT destination FROM builder_sources WHERE builder=?',rootBuilder.id).toArray().some(r=>/TicketForm/.test(r.destination)));
+  assert.ok(room.read('retired_components:'+room.builderOf('root.1').id,[]).some(p=>p.endsWith('/TicketForm.js')));
+  assert.ok(room.compilePassed('root'));
+});
+test('v7.14 (5c): the model cannot retire a worker a sibling imports; the default applies and the problem goes up as the branch\'s',async()=>{
+  // The service imports the form (the runtime links './TicketForm' by its name).
+  const service="const { renderTicketForm } = require('./TicketForm');\nconst forms = [];\nmodule.exports = { submit: (data) => { const f = { id: forms.length + 1, ...data, text: renderTicketForm(data) }; forms.push(f); return f; } };\n";
+  const decisions=[];
+  const {room,calls}=await stuckTwice({service,manager:(user,n)=>{decisions.push(user);return n===1?{actions:[{action:'retire',child:'root.1.1',reason:'not needed'}]}:{actions:[]};}});
+  assert.equal(room.node('root.1.1').status,'waiting','not retired');
+  assert.ok(events(room,'problem_decision_rejected').some(e=>e.actor==='root.1'&&/retire root\.1\.1: Form service imports its code/.test(e.body)),trace(room));
+  // The default: root.1's branch cannot finish; Root holds it as root.1's (M5), and at the top it closes.
+  assert.equal(calls.manager.length,2);
+  assert.deepEqual(decisions[1].problems[0].parties,[{child:'root.1',file:'',role:'subject'}]);
+  assert.equal(decisions[1].can_escalate,false);
+  const [,second]=room.problems("kind='stuck'");
+  assert.deepEqual(second.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root.1','escalate','root','stuck'],['root','close','','stuck']]);
+  assert.match(second.detail,/^Ticket form app cannot finish its branch: TicketForm Component stopped after three failed turns/);
+  assert.equal(room.get('status'),'paused','the worker waits for a Continue, as before v7.14');
+});
+
+// ------------------------------------------------------------- stuck filing
+// Only the code gate's failures make a worker stuck; infrastructure (an
+// Artifacts commit, a network error) keeps pause-and-Continue. A stuck
+// problem closes when its worker next ends a turn without failure, or when
+// Continue wakes it.
+test('v7.14: three code-gate failures file a stuck problem; infrastructure pauses as before; a clean turn or Continue resolves it',async()=>{
+  const {room,drain}=liveRoom({leaf:()=>({summary:'Plain JS form',done:true,files:[{path:'TicketForm.js',content:plainForm}]})});
+  await formTree(room);
+  const gate='Operation 2/5 failed: Worker artifact rejected: TicketForm.js: does not parse as JavaScript';
+  for(const cause of ['Artifacts commit failed; staged files rolled back and will be rewritten: 503',gate,gate])room.incrementFailures('root.1.1',cause);
+  assert.equal(room.problems("kind='stuck'").length,0,'one of the three was infrastructure');
+  assert.ok(events(room,'paused').some(e=>e.actor==='root.1.1'));
+  assert.equal(room.node('root.1.1').status,'waiting');
+  room.clearFailures('root.1.1');
+  for(const cause of ['missing_code','split_rejected',gate])room.incrementFailures('root.1.1',cause);
+  const [stuck]=openProblems(room,'root.1');
+  assert.deepEqual([stuck.kind,stuck.source,stuck.parties[0].owner,stuck.parties[0].role],['stuck','root.1.1','root.1.1','subject']);
+  assert.equal(room.node('root.1').status,'ready','its manager is woken');
+  room.incrementFailures('root.1.1',gate);
+  assert.equal(room.problems("kind='stuck'").length,1,'filed once while open');
+  // Continue resets the count and resolves it.
+  room.db().exec("UPDATE agents SET status='waiting' WHERE id='root.1'");
+  room.set('status','paused');
+  await room.resume(1);
+  await drain();
+  assert.deepEqual(room.problems('id=?',stuck.id).map(p=>[p.status,p.outcome]),[['closed','resolved']]);
+  assert.equal(room.read('failures',{})['root.1.1'],0);
+  // A clean turn resolves one filed since.
+  room.db().exec("UPDATE agents SET status='waiting' WHERE id='root.1.1'");
+  for(const cause of ['missing_code','missing_code','missing_code'])room.incrementFailures('root.1.1',cause);
+  const [again]=openProblems(room,'root.1');
+  await step(room,'root.1.1');
+  assert.deepEqual(room.problems('id=?',again.id).map(p=>[p.status,p.outcome]),[['closed','resolved']]);
+  // The top has nobody above: it pauses.
+  const top=liveRoom();
+  await tree(top.room,'Build a tiny thing.');
+  for(let i=0;i<3;i++)top.room.incrementFailures('root','missing_code');
+  assert.equal(top.room.problems('1=1').length,0);
+  assert.ok(events(top.room,'paused').length);
 });

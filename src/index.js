@@ -33,6 +33,11 @@ const isRuntimeNode = n => !!n && RUNTIME_LABELS.includes(n.label);
 const ROOM_SCHEMA = '7.14';
 // Problem rows hold JSON in these columns.
 const PROBLEM_JSON = ['parties','facts','evidence','directive','flags','trail'];
+// A failed turn the code gate caused (spec 3.2): the worker's own output was
+// rejected, not the infrastructure (an Artifacts commit, a network error).
+const CODE_GATE = /^(?:missing_code|non_code_rejected|split_rejected|code_retry)\b|Worker artifact rejected|Leaf outputs must be executable|Leaf cannot finish without|Bad (?:decomposition|action) response/;
+// The events a stuck worker's manager reads as its last failures.
+const FAILURE_EVENTS = ['error','missing_code','non_code_rejected','split_rejected','code_retry'];
 const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
 // One module's exports on one line, for the facts a worker hears.
 const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
@@ -3066,7 +3071,7 @@ export class ControlRoom extends DurableObject {
       } else raw=await decide(this.inferenceEnv(),before);
       if (raw.parse_error) {
         this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${raw.raw}`);
-        this.incrementFailures(id);
+        this.incrementFailures(id,'Bad action response');
         return;
       }
       const action = normalizeAction(raw);
@@ -3095,7 +3100,7 @@ export class ControlRoom extends DurableObject {
             this.event(id,'missing_code',required ?
               `Leaf must publish its assigned module ${required}, not just other source files.`:
               'Leaf attempted to complete its code-writing assignment without any executable code.');
-            this.incrementFailures(id);
+            this.incrementFailures(id,'missing_code');
             return;
           }
         }
@@ -3159,7 +3164,7 @@ export class ControlRoom extends DurableObject {
             rejected:rejectedChildren,root_goal:this.topTask()||n.task
           });
           this.event(id,'split_rejected',`${reason} Clef will reconsider routing with this feedback; if it still chooses a split, Qwen must correct the partition.`);
-          this.incrementFailures(id);
+          this.incrementFailures(id,'split_rejected');
           return;
         } else if(split) {
           this.set(`split_feedback:${id}`,'');
@@ -3207,7 +3212,7 @@ export class ControlRoom extends DurableObject {
         }
         if(!action.spawn.length) {
           this.event(id,'split_rejected','Proposed late split contained only builder-owned assembly work. No implementation child was created.');
-          this.incrementFailures(id);
+          this.incrementFailures(id,'split_rejected');
           return;
         }
         const scope=await scopeChildren(this.inferenceEnv(),this.topTask()||n.task,n.task,action.spawn);
@@ -3224,7 +3229,7 @@ export class ControlRoom extends DurableObject {
            action.spawn.length>this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()) {
           this.event(id,'split_rejected','Late decomposition rejected. Preserve the assigned code-writing task for a corrected split, rather than executing an oversized leaf.');
           await this.rememberOwners(id,walk.rejected);
-          this.incrementFailures(id);
+          this.incrementFailures(id,'split_rejected');
           return;
         }
       }
@@ -3426,7 +3431,7 @@ export class ControlRoom extends DurableObject {
         this.event(id,'error',`Operation ${i+1}/${operations.length} failed: ${clip(message,1100)}`);
         // A deterministic commit failure (e.g. Artifacts push/network) must
         // replay at its persisted cursor.
-        this.incrementFailures(id);
+        this.incrementFailures(id,message);
         return;
       }
     }
@@ -3438,17 +3443,37 @@ export class ControlRoom extends DurableObject {
     if (this.node(id)?.status !== 'retired' && (this.receive(id).length ||
        (seenBuilderWake!==null && this.wakeGeneration(id)!==seenBuilderWake))) this.wake(id);
   }
-  incrementFailures(id) {
-    const failures=this.read('failures',{});
+  // A failed turn. The third in a row stops the agent. When all three were
+  // the code gate's, a worker's manager hears it as a stuck problem and
+  // decides (retask or retire it, spec 3.2) instead of the room pausing for
+  // a Continue that would repeat it; infrastructure keeps pause-and-Continue.
+  incrementFailures(id, cause='') {
+    const failures=this.read('failures',{}),gates=this.read('failure_gates',{});
     failures[id]=(failures[id]||0)+1;
-    this.save('failures',failures);
+    gates[id]=[...(gates[id]||[]),CODE_GATE.test(String(cause))].slice(-3);
+    this.save('failures',failures);this.save('failure_gates',gates);
     if (failures[id]>=3) {
       this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-      this.event(id,'paused','Stopped automatic retries after 3 failures. Continue to retry.');
+      if(!this.fileStuck(id,gates[id]))this.event(id,'paused','Stopped automatic retries after 3 failures. Continue to retry.');
     } else {
       this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
       this.save('queue',addLast(this.read('queue',[]),id));
     }
+  }
+  // A production worker below the top stopped by three code-gate failures:
+  // a stuck problem in its manager's inbox, once while it is open, with the
+  // last failures as its detail.
+  fileStuck(id, gates) {
+    const n=this.node(id);
+    if(!this.live()||!n?.parent||isRuntimeNode(n)||this.manager(id)||gates.length<3||!gates.every(Boolean))return false;
+    if(this.problems("source=? AND kind='stuck' AND status!='closed'",id).length)return true;
+    const last=query(this.db(),`SELECT kind,body FROM events WHERE actor=? AND kind IN (${FAILURE_EVENTS.map(()=>'?').join(',')}) ORDER BY id DESC LIMIT 4`,id,...FAILURE_EVENTS).reverse();
+    const detail=clip(`${n.label} stopped after three failed turns at the code gate: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
+    this.insertProblem({holder:n.parent,kind:'stuck',stage:'work',source:id,input:`turn:${n.turn}`,
+      parties:[{path:'',owner:id,owner_path:'',digest:'',role:'subject'}],detail,flags:{wave:crypto.randomUUID()}});
+    this.event(id,'stuck',`Stopped after three failed turns at the code gate; the manager decides: ${clip(detail,700)}`,n.parent);
+    this.wake(n.parent);
+    return true;
   }
   // A turn that ended without failure, or Continue: the count starts again
   // and the agent's stuck problems are resolved.
@@ -3528,7 +3553,7 @@ export class ControlRoom extends DurableObject {
     this.event(id,'turn_start',`Started turn concurrently with ${this.activeTurns.size-1} other agent(s).`);
     this.batching.add(id);
     try { await this.turn(id); }
-    catch (e) { this.event(id,'error',clip(e?.message||e,1300)); this.incrementFailures(id); }
+    catch (e) { this.event(id,'error',clip(e?.message||e,1300)); this.incrementFailures(id,String(e?.message||e)); }
     finally {
       this.batching.delete(id);
       try {await this.flushWrites(id);}
@@ -3617,9 +3642,9 @@ export class ControlRoom extends DurableObject {
     if (this.live() && this.get('run_nonce') && this.get('schema')!==ROOM_SCHEMA)
       return {error:'This room was started by a version before v7.14 and is not migrated; start a new experiment, which resets the room.'};
     this.configure(settings);
-    const failures=this.read('failures',{});
+    const failures=this.read('failures',{}),continued=[];
     for (const n of this.allNodes()) {
-      if ((failures[n.id]||0)>=3) { failures[n.id]=0;this.wake(n.id); }
+      if ((failures[n.id]||0)>=3) { failures[n.id]=0;continued.push(n.id);this.wake(n.id); }
       else if(n.phase==='decompose' && n.status==='waiting' &&
               this.canSplit(n.id,2) && this.get(`capacity_blocked:${n.id}`)==='1') {
         this.set(`capacity_blocked:${n.id}`,'0');
@@ -3627,6 +3652,7 @@ export class ControlRoom extends DurableObject {
       }
     }
     this.save('failures',failures);
+    for(const id of continued)this.clearFailures(id);
     // Continue is an explicit request to retry a quiescent builder when all
     // code producers are done. The ordinary idle nudge intentionally excludes
     // builders, to avoid uncontrolled model inference on every source revision.
