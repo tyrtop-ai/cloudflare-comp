@@ -1752,18 +1752,35 @@ test('room: start() that returns a value with nothing to call goes back to the e
 });
 
 test('room: an entry problem goes to the module of the child that holds the entry contract, not to a module the model named',async()=>{
+  // run3b's last link: every import resolves and the entry child wrote app.js,
+  // so no model is asked to name the entry; the problem goes straight to it.
+  const live=liveRoom();
+  const livePaths=await workersUnder(live.room,run3bGoal,run3bWorkers(run3bApp));
+  live.room.set('entry_child','root.4');
+  const lb=await live.room.scheduleAssembly('root');
+  await live.room.turn(lb.id);
+  assert.equal(live.calls.link.length,0);
+  assert.equal(live.builds.length,0);
+  assert.deepEqual(live.room.read('build_failure:root',null).issues.map(i=>i.path),[livePaths[3]]);
+  assert.match(live.room.read('build_failure:root',null).issues[0].detail,/^No application entry/);
   let paths;
-  // The model names the dispatcher, which exports no start(); the entry
-  // child's app.js is where start() belongs.
+  // The dispatcher imports a module nobody wrote, so the linker is asked. It
+  // names the dispatcher, which exports no start(); the entry child's app.js
+  // is where start() belongs. Relinks hear only what renaming can fix.
   const {room,calls,builds}=liveRoom({link:()=>({edits:[],entry:paths[2],issues:[]})});
-  paths=await workersUnder(room,run3bGoal,run3bWorkers(run3bApp));
+  paths=await workersUnder(room,run3bGoal,run3bWorkers(run3bApp).map(([label,file,source])=>[label,file,file==='commandDispatcher.js'?"const audit = require('./auditTrail');\n"+source:source]));
   room.set('entry_child','root.4');
   const builder=await room.scheduleAssembly('root');
   await room.turn(builder.id);
   assert.equal(builds.length,0);
-  assert.equal(calls.link.length,1);
+  assert.equal(calls.link.length,3);
+  for(const relink of calls.link.slice(1)) {
+    assert.deepEqual(relink.your_files.map(f=>f.path),[paths[2]],'app.js is not sent in full for a problem renaming cannot fix');
+    assert.match(relink.previous_attempt_error,/auditTrail/);
+    assert.doesNotMatch(relink.previous_attempt_error,/start\(\)|application entry/);
+  }
   const failure=room.read('build_failure:root',null);
-  assert.deepEqual(failure.issues.map(i=>i.path),[paths[3]],'app.js, not the dispatcher the model named');
+  assert.deepEqual(failure.issues.map(i=>i.path),[paths[3],paths[2]],'app.js, not the dispatcher the model named, first');
   assert.match(failure.issues[0].detail,/^The application entry \S+commandDispatcher\.js does not export start\(\)/);
   // With no entry at all, the entry child's module is asked, whatever the file names say.
   const other=liveRoom({link:()=>({edits:[],entry:null,issues:[]})});
@@ -1774,4 +1791,91 @@ test('room: an entry problem goes to the module of the child that holds the entr
   const f=other.room.read('build_failure:root',null);
   assert.deepEqual(f.issues.map(i=>i.path),[named[2]],'the entry child, not app.js');
   assert.match(f.issues[0].detail,/^No application entry/);
+});
+
+test('room: an entry whose start() its export surface cannot show is started in the container, not sent back',async()=>{
+  const ops="{ createTicket: (d) => store.create(d), viewTicket: (id) => store.read(id) }";
+  const forms={
+    freeze:`const store = require('./store');\nfunction start() {\n  return ${ops};\n}\nmodule.exports = Object.freeze({ start });\n`,
+    factory:`const store = require('./store');\nfunction createApp() {\n  return { start() { return ${ops}; } };\n}\nmodule.exports = createApp();\n`,
+    assign:`const store = require('./store');\nfunction start() {\n  return ${ops};\n}\nObject.assign(module.exports, { start });\n`};
+  for(const [form,app] of Object.entries(forms))for(const child of [false,true]) {
+    let paths;
+    const {room,calls}=liveRoom({link:()=>({edits:[],entry:paths[1],issues:[]}),runner:()=>viewTest});
+    paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Record store','store.js',recordStore],['Application','app.js',app]]);
+    if(child)room.set('entry_child','root.2');
+    const builder=await room.scheduleAssembly('root');
+    await room.turn(builder.id);
+    assert.equal(room.node(builder.id).status,'done',form);
+    assert.ok(room.read('run_passed:root',null),form);
+    // The entry child's module is the entry without asking the model.
+    assert.equal(calls.link.length,child?0:1,form);
+  }
+  for(const source of ['export { start } from "./core.js";\n','export * from "./core.js";\n',"const base = require('./base');\nmodule.exports = { ...base };\n"])
+    assert.equal(L.mayExportStart(L.exportSurface('components/a/app.js',source)),true,source);
+  for(const source of [run3bApp,run3bDispatcher,'module.exports = {};\n',"class App { start() {} }\nmodule.exports = App;\n"])
+    assert.equal(L.mayExportStart(L.exportSurface('components/a/app.js',source)),false,source);
+});
+
+test('entry: a default function named start is called by the runtime loader, as entry detection counts it',async()=>{
+  for(const [path,source] of [['components/a/app.js',"module.exports = function start() {\n  return { ping: () => 'pong' };\n};\n"],['components/a/app.mjs',"export default function start() {\n  return { ping: () => 'pong' };\n}\n"]]) {
+    assert.equal(L.exportsStart(L.exportSurface(path,source)),true);
+    const report=await execVerify({[path]:source,'glue/index.js':L.entryLoader(path),'package.json':L.RUNTIME_PACKAGE});
+    assert.equal(report.passed,true,report.log);
+    assert.deepEqual(Object.keys(JSON.parse(report.api_surface).members),['ping'],path);
+  }
+});
+
+test('entry choice: the entry child\'s module first; while a module exports start(), a proposal without it is not the entry',()=>{
+  const files=new Map([
+    ['components/r/repo.js','module.exports = { add() {} };\n'],
+    ['components/a/app.js',"const r = require('../r/repo.js');\nfunction start() { return r; }\nmodule.exports = { start };\n"],
+    ['components/p/repl.js',"function start() { return require('node:readline'); }\nmodule.exports = { start };\n"],
+    ['components/c/cli.js',"const app = require('../a/app.js').start();\napp.add(process.argv[2]);\n"],
+    ['components/f/factory.js',"const r = require('../r/repo.js');\nmodule.exports = (() => ({ start: () => r }))();\n"]]);
+  const surfaces=new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)]));
+  assert.equal(L.chooseEntry(files,surfaces,['components/c/cli.js']),'components/a/app.js','a starter by imports, not the CLI that runs at load');
+  assert.equal(L.chooseEntry(files,surfaces,['components/c/cli.js'],['components/p/repl.js']),'components/p/repl.js');
+  assert.equal(L.chooseEntry(files,surfaces,['components/a/app.js'],['components/f/factory.js']),'components/f/factory.js','one that may export start() is enough');
+  assert.equal(L.chooseEntry(files,surfaces,[],['components/c/cli.js']),'components/a/app.js','the entry child\'s module without start() is not');
+});
+
+test('room: with two modules exporting start(), the entry child\'s is started and the other worker hears nothing (run3b shape)',async()=>{
+  const repo="const tickets = [];\nlet nextId = 1;\nfunction createTicket(title) { const t = { id: nextId++, title }; tickets.push(t); return t; }\nfunction getTickets() { return [...tickets]; }\nmodule.exports = { createTicket, getTickets };\n";
+  const create="const { createTicket } = require('./ticketRepository');\nmodule.exports = (args) => createTicket(args[0]);\n";
+  const view="const { getTickets } = require('./ticketRepository');\nmodule.exports = () => getTickets();\n";
+  // The CLI controller imports more modules and its start() runs the command line.
+  const dispatcher="const create = require('./createTicketCommand');\nconst view = require('./viewTicketsCommand');\nconst commands = { create, view };\nfunction start() {\n  const [cmd, ...args] = process.argv.slice(2);\n  const run = commands[cmd];\n  if (run) console.log(run(args)); else console.log('Usage: create|view');\n}\nmodule.exports = { start };\n";
+  const app="const repo = require('./ticketRepository');\nfunction start() {\n  return { createTicket: (title) => repo.createTicket(title), listTickets: () => repo.getTickets() };\n}\nmodule.exports = { start };\n";
+  const listTest="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.createTicket('Printer jam');\n  assert.ok((await app.listTickets()).some(x => x.id === t.id));\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
+  const {room,calls}=liveRoom({runner:()=>listTest});
+  const paths=await workersUnder(room,'Build a small issue tracker that lets someone create and list tickets.',[['Ticket Repository','ticketRepository.js',repo],['Create Ticket Command','createTicketCommand.js',create],['View Tickets Command','viewTicketsCommand.js',view],['CLI Controller','commandDispatcher.js',dispatcher],['Application Entry','app.js',app]]);
+  room.set('entry_child','root.5');
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  const events=room.snapshot().events;
+  assert.ok(events.some(e=>e.kind==='link_entry'&&e.body===`Application entry: ${paths[4]}.`),'not the dispatcher, which imports more');
+  assert.equal(calls.link.length,0);
+  assert.equal(calls.runner.length,1);
+  assert.ok(room.read('run_passed:root',null));
+  assert.equal(room.get('entry_owner'),'root.5');
+});
+
+test('room: the entry problem leads the problems sent back, so the 12-problem cap never drops it',async()=>{
+  const names=Array.from({length:13},(_,i)=>`ticketOp${i}`);
+  const repoPath=materializedPath('Ticket Repository','ticketRepository.js','root.1');
+  const commands=`const { ${names.join(', ')} } = require('../${repoPath.split('/').slice(1).join('/')}');\nmodule.exports = { run: () => [${names.join(', ')}] };\n`;
+  const app="const repo = require('./ticketRepository');\nconst commands = require('./ticketCommands');\nconsole.log(commands.run(), repo);\n";
+  const {room,calls}=liveRoom();
+  const paths=await workersUnder(room,run3bGoal,[['Ticket Repository','ticketRepository.js',run3bRepo],['Ticket Commands','ticketCommands.js',commands],['Application Entry','app.js',app]]);
+  room.set('entry_child','root.3');
+  const builder=await room.scheduleAssembly('root');
+  await room.turn(builder.id);
+  assert.equal(calls.link.length,3,'the name mismatches are relinked');
+  for(const relink of calls.link.slice(1))assert.doesNotMatch(relink.previous_attempt_error,/application entry|start\(\)/);
+  const failure=room.read('build_failure:root',null);
+  assert.equal(failure.issues.length,12);
+  assert.equal(failure.issues[0].path,paths[2]);
+  assert.match(failure.issues[0].detail,/^No application entry/);
+  assert.ok(failure.issues.slice(1).every(i=>i.path===paths[1]));
 });

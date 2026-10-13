@@ -8,7 +8,7 @@ import { codeWritingTask, entrySpec, isCodeFile, sourceCodeError, sourceDependen
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, providedNames, exportsStart, mayExportStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, RUNTIME_PACKAGE, isInterfaceError, normalizeEditPaths, entryCandidate } from './linker.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET } from './assembly.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -939,12 +939,17 @@ export class ControlRoom extends DurableObject {
     return null;
   }
   resolveBuildSourceOwner(builder,path) {return this.buildSourceOrigin(builder,path)?.owner||null;}
+  // The components/ modules Root's entry child wrote: it holds the entry contract.
+  entryChildModules(builder,paths) {
+    const child=this.get('entry_child');
+    return child?[...paths].filter(p=>{if(!LINKABLE.test(p)||!p.startsWith('components/'))return false;const o=this.resolveBuildSourceOwner(builder,p);return !!o&&(o===child||o.startsWith(child+'.'));}):[];
+  }
   // The module an entry problem goes to: one of the modules Root's entry child
   // wrote (it holds the entry contract), the chosen entry first; with no entry
   // child, the chosen entry, else the closest candidate by imports and name.
+  // The entry is another module only when none of the child's may export start().
   entryModule(builder,files,entry=null) {
-    const child=this.get('entry_child');
-    const own=child?[...files.keys()].filter(p=>{const o=this.resolveBuildSourceOwner(builder,p);return !!o&&(o===child||o.startsWith(child+'.'));}):[];
+    const own=this.entryChildModules(builder,files.keys());
     if(entry&&(!own.length||own.includes(entry)))return entry;
     return entryCandidate(own.length?new Map(own.map(p=>[p,files.get(p)])):files);
   }
@@ -1079,7 +1084,9 @@ export class ControlRoom extends DurableObject {
   // it was shown; sources keep the worker originals for the manifest.
   // done: the edits earlier relinks in this turn applied.
   // entries: modules the model named as the entry on earlier attempts.
-  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false,current=null,done=[],entries=[]}={}) {
+  // owned: the modules Root's entry child wrote; the entry is one of them
+  // when one may export start().
+  async linkSnapshot(builderId, sources, diagnostic='', {isRoot=false,current=null,done=[],entries=[],owned=[]}={}) {
     const originals=new Map(sources.map(s=>[s.destination,s.content]));
     const files=new Map(sources.map(s=>[s.destination,current?.get(s.destination)??s.content]));
     const js=sources.filter(s=>LINKABLE.test(s.destination)).map(s=>s.destination);
@@ -1113,8 +1120,9 @@ export class ControlRoom extends DurableObject {
     const label=this.node(this.node(builderId).parent)?.label||'manager';
     const edits=new Map(),issues=[],proposals=[],rejected=[];
     // Which module is the application is not mechanical when none exports
-    // start(): Root asks the model to name it even if every import resolves.
-    const askEntry=isRoot&&!js.some(p=>exportsStart(surfaces.get(p)));
+    // start(): Root asks the model to name it even if every import resolves,
+    // unless the entry child wrote modules (an entry problem goes to them).
+    const askEntry=isRoot&&!owned.length&&!js.some(p=>exportsStart(surfaces.get(p)));
     if(needs.size||askEntry) {
       const own=[...needs].filter(p=>files.has(p));
       const interfaces=js.filter(p=>!needs.has(p)).map(p=>surfaceText(surfaces.get(p)));
@@ -1200,7 +1208,7 @@ export class ControlRoom extends DurableObject {
     let entry=null;
     if(isRoot) {
       const linkedSurfaces=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
-      entry=chooseEntry(linked,linkedSurfaces,[...proposals,...entries]);
+      entry=chooseEntry(linked,linkedSurfaces,[...proposals,...entries],owned);
     }
     const linkedSurfacesAll=new Map(js.map(p=>[p,exportSurface(p,linked.get(p))]));
     return {files:linked,entry,proposals,issues,unresolved:unresolvedImports(linked),mismatches:importMismatches(linked,linkedSurfacesAll),applied,rejected};
@@ -1360,6 +1368,7 @@ export class ControlRoom extends DurableObject {
     this.save('run_passed:root',null);this.save('build_passed:root',null);
     let state=this.read('link_state',null);
     if(state?.fingerprint!==fingerprint)state={fingerprint,relinks:0,diagnostic:''};
+    const owned=this.entryChildModules(id,sources.map(s=>s.destination));
     const goal=this.get('goal')||this.node('root')?.task||'';
     // A problem in a file a builder renamed goes back with those renames, so a
     // name that only a builder rename put in the failing copy is not taken for
@@ -1395,7 +1404,7 @@ export class ControlRoom extends DurableObject {
     let last=null,done=[],failed=null;
     for(;;) {
       this.event(id,'working',`Linking ${sources.length} file(s)${state.relinks?`; relink ${state.relinks} with the previous error`:''}.`);
-      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current:last?.files,done,entries:state.entries||[]});
+      const link=await this.linkSnapshot(id,sources,state.diagnostic,{isRoot:true,current:last?.files,done,entries:state.entries||[],owned});
       // An entry the model named on an earlier attempt still counts when a
       // later attempt names none.
       if(link.proposals.some(p=>!state.entries?.includes(p))){state.entries=[...new Set([...link.proposals,...(state.entries||[])])];this.save('link_state',state);}
@@ -1407,17 +1416,19 @@ export class ControlRoom extends DurableObject {
       const local=[...link.unresolved.map(u=>({path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`})),
         ...link.mismatches.map(m=>({path:m.path,detail:`The module ${m.detail}.`,target:m.target}))];
       // The runtime loader starts the entry's start(), and the runner tests only
-      // what start() returns: an entry without one goes to the worker before
-      // any container run (run3b's app.js ran a CLI at load and exported nothing).
-      if(!link.entry)local.push({path:this.entryModule(id,link.files)||'',detail:`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`,entry:true});
-      else if(!exportsStart(exportSurface(link.entry,link.files.get(link.entry))))
-        local.push({path:this.entryModule(id,link.files,link.entry),detail:`The application entry ${link.entry} does not export start(), so the application cannot be started. ${ENTRY_CONTRACT}`,entry:true});
+      // what start() returns: an entry known to lack one goes to the worker,
+      // first, before any container run (run3b's app.js ran a CLI at load and
+      // exported nothing).
+      if(!link.entry)local.unshift({path:this.entryModule(id,link.files)||'',detail:`No application entry: no module exports start() to compose the application. ${ENTRY_CONTRACT}`,entry:true});
+      else if(!mayExportStart(exportSurface(link.entry,link.files.get(link.entry))))
+        local.unshift({path:this.entryModule(id,link.files,link.entry),detail:`The application entry ${link.entry} does not export start(), so the application cannot be started. ${ENTRY_CONTRACT}`,entry:true});
       if(local.length) {
-        // Renaming cannot give a module start(): when none exports it, a relink
-        // could only name another entry that lacks it too.
-        const starts=[...link.files].some(([p,c])=>LINKABLE.test(p)&&p.startsWith('components/')&&exportsStart(exportSurface(p,c)));
-        if(state.relinks<2&&(starts||local.some(x=>!x.entry))) {
-          state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+local.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
+        // Renaming cannot give a module start(), and the entry lacks it only
+        // when no module has it: an entry problem alone goes to its worker,
+        // and a relink's linker hears only the others.
+        const renamable=local.filter(x=>!x.entry);
+        if(state.relinks<2&&renamable.length) {
+          state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+renamable.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
           this.save('link_state',state);
           this.event(id,'link_retry',clip(state.diagnostic,900));
           continue;
@@ -1455,7 +1466,7 @@ export class ControlRoom extends DurableObject {
       // With nothing to call (run3b: {"type":"object","members":{}}) the runner
       // cannot write a valid test, and no worker would hear why.
       if(!apiCallable(described)) {
-        return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:link.entry,detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`},...link.issues]),'run');
+        return this.sendBackToWorkers(id,fingerprint,await routed(link,[{path:this.entryModule(id,link.files,link.entry),detail:`start() must return an object whose methods perform the requested operations; it returned ${clip(api||'nothing',300)}. ${ENTRY_CONTRACT}`},...link.issues]),'run');
       }
       const outcome=await this.runApplication(id,fingerprint,files,api,goal,link);
       if(outcome.infrastructure)return this.blockBuilder(id,fingerprint,outcome.infrastructure);

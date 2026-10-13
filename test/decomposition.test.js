@@ -224,6 +224,13 @@ test('v7.13: the entry heuristic picks the entry child of every live Root split'
     assert.equal(entrySpec(specs),specs[specs.length-1],run);
   }
   assert.equal(entrySpec([{label:'Ticket store',task:'Write ticket storage'},{label:'Ticket views',task:'Format tickets'}]),null);
+  // A piece whose label only contains an entry word is not the composer, and
+  // a tie names no child rather than give the contract to a guess.
+  const menu=[{label:'Ticket Store',task:'Write code for an in-memory ticket store'},{label:'Main Menu',task:'Write code that prints the menu of available commands'},{label:'Issue Tracker',task:'Write code that wires the store and the command handlers together and exports start()'}];
+  assert.equal(entrySpec(menu),menu[2]);
+  const validation=[{label:'Ticket Store',task:'Write code for an in-memory ticket store'},{label:'Issue Tracker',task:'Write code that wires the store and the validator together and exports start()'},{label:'Ticket Entry Validation',task:'Write code that validates the fields of a new ticket entry'}];
+  assert.equal(entrySpec(validation),validation[1]);
+  assert.equal(entrySpec([{label:'Main',task:'Write the main loop'},{label:'Issue Tracker',task:'Write code that exports start()'}]),null,'a tie names none');
   assert.equal(entrySpec([{label:'Ticket store',task:'Write ticket storage'},{label:'Integration tests',task:'Write tests that compose the store and the views through start()'}]),null,'a test is never the entry');
 });
 

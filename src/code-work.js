@@ -11,15 +11,16 @@ export function codeWritingTask(task) {
   return `${base} Deliver working source files, not prose, plans, or design documents.`;
 }
 // The Root child that owns the application entry when the splitter marked
-// none: its label, else its task, says it is the entry or composes the
-// others (Application Entry, IssueTrackerApp, Assemble components into ...),
-// and it is not a test. Splitters list that child last: the last of equals wins.
+// none: its task says it is the entry module, exports start() or wires the
+// others together, and its label names the entry or the application as a
+// whole (Application Entry, Main, IssueTrackerApp), not a piece that has the
+// word (Main Menu, Ticket Entry Validation). A test is never it, and a tie
+// names none rather than guess.
 export function entrySpec(specs) {
-  const score=s=>/\btest/i.test(s.label)?0:(/\b(?:entry|main|bootstrap\w*|assembl\w*|compos(?:e|es|ing|ition)|orchestrat\w*|wir(?:e|es|ing))\b|\bapp(?:lication)?$/i.test(s.label)||/[a-z](?:App|Application)$/.test(s.label)?2:0)+
-    (/\bentry\b|\bmain module\b|\bstart\(\)|\b(?:assembl\w*|compos(?:e|es|ing)|orchestrat\w*|wires?)\b/i.test(s.task)?1:0);
-  let best=null,top=0;
-  for(const s of specs)if(score(s)&&score(s)>=top){best=s;top=score(s);}
-  return best;
+  const score=s=>/\btest/i.test(s.label)?0:(/^(?:(?:app|application|program) )?(?:entry|main|bootstrap)(?: (?:point|module|file))?$|\bapp(?:lication)?$/i.test(s.label.trim())||/[a-z](?:App|Application)$/.test(s.label)?1:0)+
+    (/\bstart\(\)|\b(?:entry|main) (?:module|point|file)\b|\bapplication entry\b|\bwir(?:e|es|ing)\b.*\btogether\b|\b(?:assembl\w*|compos(?:e|es|ing))\b.*\b(?:components|pieces|modules|application)\b/i.test(s.task)?1:0);
+  const scored=specs.map(s=>[s,score(s)]),top=Math.max(0,...scored.map(x=>x[1])),best=scored.filter(x=>x[1]===top);
+  return top&&best.length===1?best[0][0]:null;
 }
 
 const SOURCE=/\.(?:[cm]?jsx?|[cm]?tsx?|py|go|rs|java|kt|c|cc|cpp|h|hpp|cs|rb|php|swift|sql|sh|css|scss|html|vue|svelte|json|ya?ml|toml|wasm|graphql|proto)$/i;
