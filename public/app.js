@@ -99,9 +99,9 @@ function render(s) {
   $('event-count').textContent=`${s.events?.length||0} events`;
   $('files').innerHTML=fileRows.length?fileRows.map(f=>`<button type="button" class="file-row ${activeFile===f.agent+'/'+f.path?'active':''}" data-agent="${esc(f.agent)}" data-path="${esc(f.path)}"><span class="mono">${esc(f.agent)}/${esc(f.path)}</span><small>${f.virtual?'alias':'r'+f.revision}</small></button>`).join(''):'<p class="empty">No files committed yet.</p>';
   $('files').querySelectorAll('button[data-agent]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.agent,btn.dataset.path)));
-  // While a run is going, Start becomes a square stop button.
+  // While a run is going, Start becomes Stop, with a square where the arrow was.
   const running=s.status==='running';
-  $('start').innerHTML=running?'<span class="stop-square" aria-hidden="true"></span><span class="sr-only">Stop</span>':'Start <span>↗</span>';
+  $('start').innerHTML=running?`${s.stopping?'Stopping':'Stop'} <span class="stop-square" aria-hidden="true"></span>`:'Start <span>↗</span>';
   $('start').title=running?(s.stopping?'Stopping after the running turns finish':'Stop'):'Start';
   $('start').className=running?'primary stop':'primary';
   $('start').disabled=Boolean(s.stopping); $('continue').disabled=Boolean(s.busy) || (s.status==='complete' || s.status==='failed') || !s.agents?.length;

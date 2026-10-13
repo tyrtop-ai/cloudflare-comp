@@ -58,7 +58,6 @@ textarea { resize:vertical; min-height:150px; line-height:1.6; }
 .primary:hover { background:color-mix(in srgb,var(--fg) 82%,var(--bg)); }
 .primary:disabled { opacity:.5; cursor:not-allowed; }
 /* Running: the Start button is just a square, like an LLM chat's stop button. */
-.primary.stop { justify-content:flex-start; }
 .stop-square { display:inline-block; width:12px; height:12px; border-radius:2px; background:var(--bg); }
 .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 .page { padding-bottom:32px; }
