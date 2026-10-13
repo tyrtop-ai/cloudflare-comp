@@ -177,8 +177,10 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
 export const GOAL_START_REQUIREMENT = 'The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.';
 // v7.15 (author decision 1): Root's promise, written by the runtime at run
 // start in live rooms. Its carrier learns the operations from its own task
-// and asks for each one's function.
-export const ROOT_PROMISE = Object.freeze([Object.freeze({name:'start',does:'no arguments; returns an object with one method per goal operation, each the function that performs it, which you ask your manager for and import by its name',params:Object.freeze([])})]);
+// and asks for each one's function. The top itself has no manager, so it
+// reads start without ASK_CLAUSE.
+export const ASK_CLAUSE = ', which you ask your manager for and import by its name';
+export const ROOT_PROMISE = Object.freeze([Object.freeze({name:'start',does:'no arguments; returns an object with one method per goal operation, each the function that performs it'+ASK_CLAUSE,params:Object.freeze([])})]);
 export const ENTRY_CONTRACT = 'You write the application entry module: it imports the other pieces by the relative paths and names it expects, exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each the operation imported from the module that owns it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
 
 // When Clef says YES, a lightweight generative agent guesses the next layer.

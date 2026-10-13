@@ -3,7 +3,7 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, canContact, addFirst, addLast, allFinished } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT } from './model.js';
 import { apiGaps, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
@@ -583,7 +583,9 @@ export class ControlRoom extends DurableObject {
     return null;
   }
   // A worker's task as a model reads it: the stored task plus its contract.
-  withContract(task, n) {const own=contractText(this.promisedOf(n.id));return own?`${task}\n\n${own}`:task;}
+  // The top has no manager to ask: an atomic Root that followed the clause
+  // asked anyway and wedged on 'Worker has no available manager'.
+  withContract(task, n) {const own=contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')}));return own?`${task}\n\n${own}`:task;}
   canSplit(parentId, count=2) {
     return parentId.split('.').length <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + count <= this.settings().max_agents;
@@ -3084,6 +3086,12 @@ export class ControlRoom extends DurableObject {
         action.files=[];action.imports=[];action.exports=[];action.retire=[];action.messages=[];
         action.ask=[];action.answers=[];action.recall=[];action.remember=[];
       }
+      // The top has no manager to ask (v7.15 §5.12a, brought forward): an
+      // atomic Root that asked with wait failed every replay of the ask op.
+      if(!n.parent && !this.manager(id) && action.ask.length) {
+        this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
+        action.ask=[];action.wait=false;
+      }
       if(this.env.MOCK_AI!=='true' && !this.manager(id) && action.ask.length) {
         if(action.wait) {
           // Only a genuinely unguessable external dependency blocks progress.
@@ -3248,6 +3256,9 @@ export class ControlRoom extends DurableObject {
         // owner protocol; real inference uses manager-only opaque requests.
         if(this.env.MOCK_AI==='true' && a.to!=='parent' && a.to!==this.node(id)?.parent) {
           if(!await this.askKnowledge(id,a.to,a.key,a.question)) throw new Error('Mock adjacency lookup failed');
+        } else if(!this.node(id)?.parent) {
+          // A plan persisted before the guard above: drop it, never throw.
+          action.wait=false;this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
         } else if(!this.askManager(id,a.key,a.question)) throw new Error('Worker has no available manager');
       }),
       ...action.recall.map(r => async () => { await this.recall(id,r.visibility,r.key); }),

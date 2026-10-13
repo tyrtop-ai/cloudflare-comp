@@ -551,3 +551,30 @@ test('v7.15: ownerBranch reads only each level\'s other direct children\'s promi
   assert.deepEqual(room.ownerBranch('alpha','root.2.1'),{id:'root.1',label:'A'},'a retired child offers nothing');
   assert.deepEqual(room.offeredFunctions('root','root.2').map(o=>[o.id,o.items.map(f=>f.name)]),[['root.1',['alpha']]]);
 });
+
+test('v7.15: an atomic Root reads start without the clause on asking a manager, and an ask it sends anyway is dropped, never wedging it',async()=>{
+  const ai=fakeAI({gate:()=>0.02,leaf:n=>n===1
+    ?{summary:'Entry',files:[{path:'app.js',content:"const { addNumbers } = require('./addNumbers');\nexport function start(){ return { add: addNumbers }; }\n"}],ask:[{to:'parent',key:'add_numbers',question:'Which function adds two numbers?'}],wait:true}
+    :{summary:'Entry',files:[{path:'app.js',content:'export const add = (a, b) => a + b;\nexport function start(){ return { add }; }\n'}],done:true}});
+  const {room,drain}=setup(ai);
+  await room.start('Build a calculator that adds two numbers',1);await drain();
+  const first=ai.calls.find(c=>c.kind==='leaf').request;
+  assert.equal(first.parent,null);
+  assert.ok(first.your_responsibility.endsWith('start(): no arguments; returns an object with one method per goal operation, each the function that performs it.'),'the top has no manager to ask');
+  assert.doesNotMatch(first.your_responsibility,/ask your manager/);
+  assert.deepEqual(events(room,'ask_dropped').map(e=>e.body),['The top has no manager; it writes what it needs.']);
+  assert.equal(events(room,'error').length,0);
+  assert.equal(room.db().exec('SELECT * FROM route_workers').toArray().length,0);
+  assert.deepEqual([room.node('root').status,room.read('failures',{}).root],['ready',0],'not waiting for an answer nobody owes it');
+  await room.resume(1);await drain();
+  assert.equal(ai.calls.filter(c=>c.kind==='leaf').length,2,'Continue asks the model again');
+  assert.equal(events(room,'build_unavailable').length,1,'its done reaches the atomic build check');
+  // A plan persisted before the guard replays its ask op without throwing.
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");
+  room.db().exec('INSERT INTO pending_turns(agent,payload,cursor) VALUES (?,?,0)','root',JSON.stringify({action:normalizeAction({summary:'Entry',ask:[{to:'parent',key:'add_numbers',question:'Which function adds two numbers?'}],wait:true}),inbox:[],nextPhase:null,assemblyFingerprint:null,owned:''}));
+  await room.turn('root');
+  assert.equal(events(room,'error').length,0);
+  assert.equal(events(room,'ask_dropped').length,2);
+  assert.equal(room.db().exec('SELECT * FROM pending_turns').toArray().length,0);
+  assert.equal(room.node('root').status,'ready');
+});
