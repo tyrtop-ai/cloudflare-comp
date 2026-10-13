@@ -68,6 +68,8 @@ async function linkedRoom({link=true}={}) {
         {file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:app?.path??null,issues:[]})};
     }
     if(system.startsWith('You are the RUNNER'))return {response:runnerTest};
+    // Not a mapping: the coverage gate lets the run continue unchecked.
+    if(system.startsWith("You check an application's API"))return {response:'{}'};
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
   const exec={build:async({fingerprint,files})=>verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files})};
