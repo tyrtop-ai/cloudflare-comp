@@ -831,6 +831,19 @@ export function linkRenames(before, after) {
   } catch {return [];}
 }
 
+// v7.15: the names an edit binds to other names, [from, to]: identifier
+// renames, and an imported name replaced while the file keeps its local
+// name (run6's { createTicket } became { saveTickets: createTicket }).
+export function boundNames(before, after) {
+  const pairs=linkRenames(before,after).filter(r=>!r.startsWith("'")&&!r.startsWith('binding ')).map(r=>r.split(' → '));
+  const a=importRefs('x.js',before),b=importRefs('x.js',after);
+  if(a.length===b.length)a.forEach((r,i)=>{
+    const gone=[...r.names].filter(n=>!b[i].names.has(n)),added=[...b[i].names].filter(n=>!r.names.has(n));
+    gone.forEach((n,k)=>{if(added[k])pairs.push([n,added[k]]);});
+  });
+  return [...new Map(pairs.filter(([x,y])=>x&&y&&x!==y).map(p=>[p.join('|'),p])).values()];
+}
+
 export const tokenEstimate=text=>Math.ceil(String(text||'').length/3)+40;
 
 // ---------- entry selection and the runtime loader ----------

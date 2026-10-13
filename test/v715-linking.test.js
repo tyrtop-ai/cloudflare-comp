@@ -210,3 +210,56 @@ test('v7.15: a split import inside a branch is that branch\'s reader problem, an
   await room.turn('root.1');
   assert.match(tickets(room,'root.1.3')[0],/const \{ loadTickets \} = require\('\.\/loadTickets'\); const \{ saveTickets \} = require\('\.\/saveTickets'\);/);
 });
+
+// ------------------------------------------------------------- test 33
+// run6: the linker aliased the create worker's self-import to the storage
+// piece's saveTickets ({ saveTickets: createTicket }), which replaces the
+// whole store. A rename may not bind one planned function to another
+// piece's, nor remove a function the plan gives a module's piece.
+const storage="let all = [];\nfunction saveTickets(tickets) { all = tickets.slice(); return all; }\nfunction loadTickets() { return all.slice(); }\nmodule.exports = { saveTickets, loadTickets };\n";
+test('v7.15: the linker may not remove a planned export or bind createTicket to saveTickets (run6); the gap is the carrier\'s contract problem',async()=>{
+  // What an edit binds: an alias of an imported name, a renamed member read.
+  assert.deepEqual(L.boundNames("const { createTicket } = require('./a');\ncreateTicket(1);\n","const { saveTickets: createTicket } = require('./b');\ncreateTicket(1);\n"),[['createTicket','saveTickets']]);
+  assert.deepEqual(L.boundNames("const s = require('./a');\ns.addTicket(1);\n","const s = require('./a');\ns.saveTickets(1);\n"),[['addTicket','saveTickets']]);
+  assert.deepEqual(L.boundNames("const { a } = require('./x');\n","const { a } = require('./y');\n"),[],'a path is not a name');
+  const {room,calls}=liveRoom({link:user=>{
+    const create=user.your_files.find(f=>f.path.endsWith('createTicket.js')),store=user.all_module_paths.find(p=>p.endsWith('storage.js'));
+    return {edits:[{file:create.path,find:"{ createTicket } = require('./ticketStore')",replace:`{ saveTickets: createTicket } = require('${L.relativeSpecifier(create.path,store)}')`},
+      {file:store,find:'saveTickets',replace:'persistTickets'}],issues:[]};
+  }});
+  await planned(room);
+  await pieces(room,'root',[['ticket storage','storage.js',storage,[fn('saveTickets','stores all tickets',['tickets']),fn('loadTickets','returns all tickets')]],
+    ['create ticket','createTicket.js',run6Create,[fn('createTicket','creates a ticket and returns it',['title','description'],'create a ticket')]],
+    ['entry module','app.js',"const { loadTickets } = require('./loadTickets');\nconst { persistTickets } = require('./persistTickets');\nfunction start() {\n  return { list: loadTickets, replace: persistTickets };\n}\nmodule.exports = { start };\n",[START]]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.ok(calls.link.length>=1);
+  const rejected=events(room,'link_edit_rejected').map(e=>e.body);
+  assert.ok(rejected.some(x=>/createTicket\.js: .*it binds createTicket to saveTickets, which the plan names as different functions \(create ticket, ticket storage\)$/.test(x)),rejected.join('\n'));
+  assert.ok(rejected.some(x=>/storage\.js: "saveTickets" → "persistTickets": it removes saveTickets, a function the plan gives this module's piece$/.test(x)),rejected.join('\n'));
+  assert.doesNotMatch(events(room,'link_renamed').map(e=>e.body).join(' '),/createTicket\.js|persistTickets/,'neither edit was applied');
+  // What is left: the create worker's contract (its own createTicket), and
+  // the entry's read of persistTickets, which nobody exports.
+  assert.deepEqual(openProblems(room,'root').map(p=>[p.kind,p.parties[0].owner]).sort(),[['contract','root.2'],['unresolved','root.3']]);
+});
+// run8: the top linker bound addTicket to saveTickets. The add piece's
+// module exports its function under another name, so the entry's import
+// of addTicket resolves nowhere and the model reaches for saveTickets.
+test('v7.15: run8: the linker may not bind addTicket to saveTickets; the add piece hears that it does not export addTicket',async()=>{
+  const {room}=liveRoom({link:user=>{
+    const app=user.your_files.find(f=>f.path.endsWith('app.js')),store=user.all_module_paths.find(p=>p.endsWith('storage.js'));
+    return app?{edits:[{file:app.path,find:"{ addTicket } = require('./addTicket')",replace:`{ saveTickets: addTicket } = require('${L.relativeSpecifier(app.path,store)}')`}],issues:[]}:{edits:[],issues:[]};
+  }});
+  await planned(room);
+  await pieces(room,'root',[['ticket storage','storage.js',storage,[fn('saveTickets','stores all tickets',['tickets'])]],
+    ['add ticket','add.js',"const tickets = [];\nfunction newTicket(title) { const t = { id: tickets.length + 1, title }; tickets.push(t); return t; }\nmodule.exports = { newTicket };\n",[fn('addTicket','adds a ticket',['title'],'create a ticket')]],
+    ['entry module','app.js',"const { addTicket } = require('./addTicket');\nfunction start() {\n  return { create: addTicket };\n}\nmodule.exports = { start };\n",[START]]]);
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.ok(events(room,'link_edit_rejected').some(e=>/it binds addTicket to saveTickets, which the plan names as different functions \(add ticket, ticket storage\)$/.test(e.body)),trace(room));
+  const [p]=openProblems(room,'root');
+  assert.deepEqual([p.kind,p.parties.map(x=>[x.role,x.owner])],['contract',[['subject','root.2'],['site','root.3']]]);
+  await room.turn('root');
+  assert.match(tickets(room,'root.2')[0],/Your assignment promises addTicket; app\.js need it from you and your modules do not export it\./);
+  assert.equal(tickets(room,'root.1').length,0,'the storage piece is never asked');
+});

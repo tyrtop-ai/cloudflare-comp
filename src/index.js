@@ -9,7 +9,7 @@ import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeErr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, selfImports, splitImports, moduleSpecifiers } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, selfImports, splitImports, moduleSpecifiers, boundNames } from './linker.js';
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
@@ -1304,17 +1304,29 @@ export class ControlRoom extends DurableObject {
     // so a name copied into another file by a relink does not become known.
     const namesByFile=new Map(js.map(p=>[p,tokenNames(originals.get(p))]));
     const linked=new Map(files),applied=[...autoApplied];
+    const differ=(x,y)=>plan.has(x)&&plan.has(y)&&![...plan.get(x)].some(c=>plan.get(y).has(c));
+    const pieceOf=n=>[...plan.get(n)].map(c=>this.node(c)?.label||c).join(' and ');
     for(const [file,list] of edits) {
       const knownNames=new Set();
       for(const [p,names] of namesByFile)if(p!==file)for(const n of names)knownNames.add(n);
       // A new import path must reach a module; one that resolves nowhere would
       // carry into the next relink and go to the worker as if it were theirs.
       const had=new Set(componentImports(file,linked.get(file),linked).map(r=>r.specifier));
+      // v7.15 §5.9: the functions the plan gives this module's piece that it
+      // exports now stay exported, and no rename binds one planned function
+      // to another piece's (run6 bound createTicket to saveTickets, run8
+      // addTicket): renaming cannot make one operation another.
+      const given=[...plan.keys()].filter(n=>carries(ownerOf(file),n)),kept=given.filter(n=>!missingExports(new Map([[file,linked.get(file)]]),[n]).length);
+      const bound=new Set(boundNames(originals.get(file),linked.get(file)).map(p=>p.join('|')));
       const check=next=>{
         const bad=componentImports(file,next,linked).find(r=>r.error&&!had.has(r.specifier));
         if(bad)return `the new import path '${bad.specifier}' resolves to no module`;
         const cut=split.find(x=>x.path===file&&!moduleSpecifiers(next).includes(x.specifier));
-        return cut?`'${cut.specifier}' reads ${cut.names.join(', ')}, which live in different modules: an import line links to one module, so its reader imports each function on its own line`:null;
+        if(cut)return `'${cut.specifier}' reads ${cut.names.join(', ')}, which live in different modules: an import line links to one module, so its reader imports each function on its own line`;
+        const lost=missingExports(new Map([[file,next]]),kept);
+        if(lost.length)return `it removes ${lost.join(', ')}, a function the plan gives this module's piece`;
+        const [x,y]=boundNames(originals.get(file),next).find(([x,y])=>!bound.has(`${x}|${y}`)&&differ(x,y))||[];
+        return x?`it binds ${x} to ${y}, which the plan names as different functions (${pieceOf(x)}, ${pieceOf(y)})`:null;
       };
       const result=applyEdits(linked.get(file),list,{knownNames,original:originals.get(file),check,done:done.filter(e=>e.file===file),shapes:{path:file,files:linked,surfaces}});
       linked.set(file,result.content);
