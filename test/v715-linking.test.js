@@ -509,14 +509,14 @@ const { start } = require('./index.js');
   assert.equal((await app.view()).find(x => x.id === t.id).title, 'Fixed');
 })().catch(e => { console.error(e); process.exitCode = 1; });
 `;
-async function plannedApp(coverage) {
+async function plannedApp(coverage,app=composer) {
   const r=liveRoom({runner:()=>crudTest,coverage});
   const {room}=r;
   await planned(room,'Build a small issue tracker that lets someone create, view, and update tickets.');
   await pieces(room,'root',[['ticket storage','storage.js',saveTicketStore,[fn('getTickets','returns all tickets'),fn('saveTicket','stores a ticket',['ticket'])]],
     ['create ticket','createTicket.js',creator,[fn('createTicket','creates a ticket',['ticket'],'create a ticket')]],
     ['view ticket','viewTickets.js',viewer,[fn('viewTickets','returns the tickets',[],'view tickets')]],
-    ['update branch',null,null,[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket')]],['entry module','app.js',composer,[START]]]);
+    ['update branch',null,null,[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket')]],['entry module','app.js',app,[START]]]);
   await pieces(room,'root.4',[['update ticket','updateTicket.js',changer,[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket'),fn('checkTicketUpdate','checks changes',['changes'],'check an update')]],
     ['update notes','notes.js',"module.exports = { note: (t) => t.title };\n",[fn('noteUpdate','notes an update')]]]);
   await linkBranch(room,'root.4');
@@ -533,6 +533,20 @@ test('v7.15: the coverage fallback files no gap; a start() returning {create: (t
   assert.equal(events(room,'api_planned').at(-1)?.body,'Not checked that start() has a method for every operation the goal names: the model gave no usable mapping. No gap is filed; the runner tests the plan\'s operation functions start() returned: view tickets -> view, update a ticket -> update.');
   assert.deepEqual(calls.runner[0].operations_to_test,[{operation:'view tickets',method:'view'},{operation:'update a ticket',method:'update'}]);
   assert.ok(events(room,'run_passed').length,trace(room));
+});
+// run6's shape with no usable mapping: start() returned only { getTickets }
+// for three planned operations. Fewer methods than operations proves a
+// gap without the model; the runner would have tested reading alone.
+test('v7.15: with no usable mapping, start() returning fewer methods than the plan has operations is the entry\'s gap',async()=>{
+  const {room,calls}=await plannedApp(()=>'I think the API covers the goal.',"const { getTickets } = require('./getTickets');\nfunction start() {\n  return { getTickets };\n}\nmodule.exports = { start };\n");
+  assert.equal(events(room,'api_incomplete').at(-1)?.body,'start() returns no method for 3 of the 3 operation(s) the goal names: create a ticket, view tickets, update a ticket.',trace(room));
+  const [p]=openProblems(room,'root');
+  assert.equal(p?.kind,'entry');
+  assert.match(p.detail,/^start\(\) returns no method for: create a ticket, view tickets, update a ticket; it returned methods getTickets\./);
+  assert.equal(calls.runner.length,0,'never a read-only test');
+  const {plannedGaps}=await import('../src/api-coverage.js');
+  const ops=room.plannedOperations(),three={type:'object',members:{create:{type:'function'},view:{type:'function'},update:{type:'function'}}};
+  assert.deepEqual(plannedGaps(three,ops),[],'as many methods as operations: no gap, whatever their names');
 });
 test('v7.15: a coverage gap lists the top\'s children\'s operation functions, never a grandchild\'s, before the contract and cut first',async()=>{
   const {room}=await plannedApp(()=>({operations:[{operation:'create a ticket',method:'create'},{operation:'view tickets',method:'view'},{operation:'delete a ticket',method:null}]}));

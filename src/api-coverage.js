@@ -65,6 +65,17 @@ export function apiGaps(described, operations) {
   }
   return gaps;
 }
+// v7.15: with no usable mapping, the plan still proves a gap when start()
+// returned fewer methods than the top's children have operations (run6
+// returned { getTickets } for four): one method per operation. ops: the
+// plan's [{operation, method}]; the gaps are those whose function start()
+// did not return by name. [] otherwise: a wrapper such as create: (t) =>
+// createTicket(t) is no gap (spec 7.2).
+export function plannedGaps(described, ops) {
+  const members=methodsOf(described);
+  if(!coverageCheckable(described)||Object.keys(members).filter(k=>callable(members[k])).length>=(ops||[]).length)return [];
+  return ops.filter(o=>!apiMethod(described,o.method)).map(o=>({operation:o.operation,method:o.method}));
+}
 export const gapList = gaps => gaps.map(g=>g.same_as?`${g.operation} (${g.method} already performs ${g.same_as})`:g.operation).join(', ');
 // The entry worker's problem, within the 946 characters a routed problem
 // keeps, a contract given whole and last (the room gives none: its entry

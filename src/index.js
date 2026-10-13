@@ -4,7 +4,7 @@ export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
-import { apiGaps, apiMethod, coverageCheckable, gapList, gapProblem, operationMethods, untestedOperations } from './api-coverage.js';
+import { apiGaps, apiMethod, coverageCheckable, gapList, gapProblem, operationMethods, plannedGaps, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -2007,19 +2007,20 @@ export class ControlRoom extends DurableObject {
     if(!this.read('runner_test',null)?.test) {
       const checkable=coverageCheckable(described);
       const coverage=checkable?await apiCoverage(this.inferenceEnv(),{goal,api}):null;
-      const gaps=coverage?.operations?apiGaps(described,coverage.operations):[];
+      const ops=coverage?.operations||this.plannedOperations(),gaps=coverage?.operations?apiGaps(described,ops):plannedGaps(described,ops);
       if(gaps.length) {
-        this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${coverage.operations.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
+        this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${ops.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
         // The contract leads the entry ticket (applyDecisions); here it would
         // repeat it and clip the builder's renames.
         // The plan's operation functions close the text, cut first (spec 7.3).
         return report('run',[this.entryProblem(builder.id,files,surfaces,entry,gapProblem(described,gaps,'',946,this.plannedOperations()))]);
       }
-      // With no usable mapping the plan files no gap: the runner tests the
-      // plan's operation functions start() returned, under the names it
-      // returned them (spec 7.2; a wrapper such as create: (t) =>
-      // createTicket(t) is not one of them, and is no gap either).
-      const planned=coverage?.operations?[]:this.plannedOperations().map(o=>({operation:o.operation,method:apiMethod(described,o.method)})).filter(o=>o.method);
+      // With no usable mapping the plan files a gap only when start()
+      // returned fewer methods than it has operations (plannedGaps); else
+      // the runner tests the plan's operation functions start() returned,
+      // under the names it returned them (spec 7.2; a wrapper such as
+      // create: (t) => createTicket(t) is not one of them, and is no gap).
+      const planned=coverage?.operations?[]:ops.map(o=>({operation:o.operation,method:apiMethod(described,o.method)})).filter(o=>o.method);
       if(coverage?.operations) {
         operations=operationMethods(described,coverage.operations);
         this.event(id,'api_covered',clip('Each operation the goal names has a method: '+operations.map(o=>`${o.operation} -> ${o.method}`).join(', '),900));
