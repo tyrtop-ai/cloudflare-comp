@@ -99,6 +99,10 @@ const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)
 // v7.15.5 merge: in import form for a worker whose files are ES modules (esm).
 const importLine = (name, esm=false) => esm?`import { ${name} } from './${name}';`:`const { ${name} } = require('./${name}');`;
 const importLines = (fns, esm=false) => `Import each on its own line, by exactly its name, with the name as the path: ${fns.map(f=>importLine(f.name,esm)).join(' ')}`;
+// v7.15.7 (run14): the members of JavaScript's own values (an array's push,
+// find, map, filter, length; a promise's then): what a caller assumed an
+// imported call returns, never a name the builder can rename.
+const BUILTIN_MEMBERS=new Set([Array.prototype,String.prototype,Object.prototype,Promise.prototype,Function.prototype,Number.prototype].flatMap(p=>Object.getOwnPropertyNames(p)));
 // A function request's provided answer, as routeFunction gives it and the
 // plan gives the start carrier's up front (v7.15.5).
 const providedText = (f, owner) => clip(`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}. It is exported by "${owner}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`,600);
@@ -2285,12 +2289,27 @@ export class ControlRoom extends DurableObject {
   // imported factory returned (v7.14's lookup.js: const s = makeStore();
   // s.view(id), which the builder renames to read). A name on anything
   // else (tickets.find on an undefined local) is the module's own bug.
-  linkTarget(files, path, detail) {
+  // v7.15.7 (run14): a built-in is never a link error. tickets.push, with
+  // tickets = readTickets(), cost two relinks (a link-model call each, no
+  // rename) and D4's deleted text: push is an array's own, so the member
+  // named on such a local counts only when the builder can rename it: a
+  // name some linked module exports or some piece promises (v7.11's
+  // svc.get, the audit log's), or no built-in at all (v7.14's s.view, which
+  // the factory's read answers); a built-in nothing exports or promises is
+  // the caller's own assumption about what the call returns: a requirement
+  // on it, routed by its promise (R2a). surfaces: the bundle's, when known.
+  linkTarget(files, path, detail, surfaces=null) {
     const direct=errorTarget(files,path,detail);
     if(direct||!files.has(path))return direct;
-    const m=/([\w$]+)\.[\w$]+ is not a (?:function|constructor)/.exec(String(detail||''));
+    const m=/([\w$]+)\.([\w$]+) is not a (?:function|constructor)/.exec(String(detail||''));
+    if(m&&BUILTIN_MEMBERS.has(m[2])&&!this.linkableName(files,surfaces,m[2]))return null;
     const via=m&&new RegExp(`\\b(?:const|let|var)\\s+${m[1].replace(/\$/g,'\\$')}\\s*=\\s*(?:await\\s+)?(?:new\\s+)?([\\w$]+)\\s*[.(]`).exec(files.get(path))?.[1];
     return via?errorTarget(files,path,`${via} is not a function`):null;
+  }
+  // A name the builder can link to: one some linked module exports, or some piece promises.
+  linkableName(files, surfaces, name) {
+    if(this.planned()&&this.planIndex().has(name))return true;
+    return [...files.keys()].some(p=>LINKABLE.test(p)&&providedNames(surfaces?.get(p)||exportSurface(p,files.get(p))).has(name));
   }
   async compileRun(id, input, files, surfaces, entry, entryIssue) {
     const linked=this.node(id)?.label==='Compiler';
@@ -2323,7 +2342,7 @@ export class ControlRoom extends DurableObject {
       return [...groups].map(([detail,[first,...more]])=>{
         const frames=[first,...more].filter(p=>files.has(p)),failure=failureHead(output.get(detail)),own=issueOf.get(detail)?.facts||{};
         const path=files.has(first)?first:'',target=errorTarget(files,path,detail);
-        if(kind==='run'&&!(isInterfaceError(detail)&&frames.length&&this.linkTarget(files,path,detail))) {
+        if(kind==='run'&&!(isInterfaceError(detail)&&frames.length&&this.linkTarget(files,path,detail,surfaces))) {
           const requirement=readRequirement(test,output.get(detail),[...files.keys()].filter(p=>LINKABLE.test(p)),p=>providedNames(surfaces.get(p)||exportSurface(p,files.get(p))));
           // A module the Container names without a stack line is a frame too, after those the stack gives.
           requirement.frames.push(...frames.filter(p=>!requirement.frames.some(f=>f.path===p)).map(path=>({path,fn:''})));
