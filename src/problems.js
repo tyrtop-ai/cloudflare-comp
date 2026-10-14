@@ -775,7 +775,10 @@ export function validateManagerActions(actions, call, ctx) {
     const declined=open.find(id=>(byId.get(id).p.flags?.declined||[]).some(d=>d===child||d.startsWith(child+'.')));
     if(declined){refuse(a,`${child} declined problem ${declined}: it answered it done without changing a file; give it to another child, retask or retire it, or escalate`);continue;}
     // Review: the start carrier composes; a run requirement is never its (run13's entry, given one, wrote a stub of another piece's function), only one about start()'s own API (it names start) or, v7.15.13 (run18), about a stated method it writes (its promise names it).
-    const carried=ctx.promise?.carried?.[child]||[],carrier=carried.includes('start')&&open.find(id=>{const {p}=byId.get(id),r=p.facts?.requirement;return p.kind==='run'&&r&&![...(r.names||[]),r.method||''].some(nm=>carried.includes(nm));});
+    // Review: not one naming a function another child promises with no frame in the carrier's own (a threshold inside processInterfaces is never the entry's).
+    const carried=ctx.promise?.carried?.[child]||[],mine=carried.filter(nm=>nm!=='start'),others=new Set(Object.entries(ctx.promise?.carried||{}).filter(([c])=>c!==child).flatMap(([,ns])=>ns));
+    const foreignTo=r=>!(r.names||[]).includes('start')&&(![...(r.names||[]),r.method||''].some(nm=>mine.includes(nm))||!(r.frames||[]).some(f=>mine.includes(f.fn))&&(r.names||[]).some(nm=>others.has(nm)));
+    const carrier=carried.includes('start')&&open.find(id=>{const {p}=byId.get(id),r=p.facts?.requirement;return p.kind==='run'&&r&&foreignTo(r);});
     if(carrier){refuse(a,`${child} carries start() and only composes the application: problem ${carrier} is a requirement on the piece whose promise it is about, not on the start carrier`);continue;}
     const unchanged=open.find(id=>{const {p}=byId.get(id);return ['stuck','contract'].includes(p.kind)&&(ctx.recurrence?.(p,child)||0)>=STUCK_AFTER;});
     if(unchanged){refuse(a,`${child} already had problem ${unchanged} ${STUCK_AFTER} or more times without a fix: give it to another child, retask or retire it, or escalate`);continue;}

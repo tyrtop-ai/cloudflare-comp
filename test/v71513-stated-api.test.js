@@ -35,7 +35,7 @@ test('v7.15.13 (S1): goalMethods reads the methods a goal states start() returns
   assert.deepEqual(A.goalMethods('start() returns an object exposing analyze(snapshot)'),[{name:'analyze',params:['snapshot']}]);
   assert.deepEqual(A.goalMethods('start() returns { analyze, summarize }'),[{name:'analyze',params:[]},{name:'summarize',params:[]}]);
   assert.deepEqual(A.goalMethods('start() returns an object with methods analyze(snapshot) and report().'),[{name:'analyze',params:['snapshot']},{name:'report',params:[]}]);
-  assert.deepEqual(A.goalMethods('The `start()` function provides an object exposing createTicket and viewTicket, plus a Promise of each.'),[{name:'createTicket',params:[]},{name:'viewTicket',params:[]}],'camelCase names; a capitalised word is prose');
+  assert.deepEqual(A.goalMethods('The `start()` function provides an object exposing createTicket and viewTicket, plus a Promise of each.'),[],'review: a camelCase word with no call or brace form is prose');
   assert.deepEqual(A.goalMethods('start() returns { update(id, data), remove(id: string) }'),[{name:'update',params:['id','data']},{name:'remove',params:['id']}],'parameters by their names');
   assert.deepEqual(A.goalMethods(GOAL),[],'the issue tracker states none');
   assert.deepEqual(A.goalMethods(M.GOAL_START_REQUIREMENT),[],'"one method per operation named above" names none');
@@ -48,12 +48,42 @@ test('v7.15.13 (S1): goalMethods reads the methods a goal states start() returns
 });
 
 // ------------------------------------------------------------------ S2, S3: the requirement and Root's promise name them
+// Review (#1): prose the reader once took for methods; a false hit turned a goal's whole plan to stated mode.
+const NOT_STATED=['start() returns an object (the public API) exposing a report.','start() returns an object, which returns a Promise (resolving to the complete report).',
+  'start() returns an object that resolves to the report (sorted by severity).','start() returns immediately and never calls setTimeout or readFileSync.',
+  GOAL+' start() returns an object whose methods return tickets with createdAt and updatedAt timestamps.',GOAL+' The entry exports start(), which returns the tracker; it must work with no localStorage.',
+  GOAL+' start() returns the tracker, which keeps tickets in memory (no fileSystem access).',GOAL+' start() returns an object with one method per operation, and every ticket has an assigneeId.',
+  'start() returns an object; each method is camelCase like getUserById and returns JSON.','start() returns an object with analyze (i.e. the engine) and summarize.',
+  'analyze(snapshot) returns a Promise resolving to the complete report, and start() is called once.','The engine exposes analyze(snapshot) and the entry module exports start().',
+  'Build an issue tracker with start() as its entry; it must work with localStorage.','With no arguments, start() returns the engine; see process.argv.',
+  'start() returns an object exposing a report; modules use require(path).'];
+// Review (#2): phrasings of the diagnostics API the reader must hear.
+const STATED=[['start() returns an API object. That object exposes analyze(snapshot).',[{name:'analyze',params:['snapshot']}]],['Call start() once. It returns an object exposing analyze(snapshot).',[{name:'analyze',params:['snapshot']}]],
+  ['* `start()` returns an object exposing\n  `analyze(snapshot)`.',[{name:'analyze',params:['snapshot']}]],['start() returns an object with one method per operation, e.g. createTicket(title) and listTickets().',[{name:'createTicket',params:['title']},{name:'listTickets',params:[]}]],
+  ['start() returns an object whose analyze method takes a snapshot.',[{name:'analyze',params:[]}]],[DIAG.replace(/\n/g,'\r\n'),[{name:'analyze',params:['snapshot']}]],['start() → { analyze(snapshot) }',[{name:'analyze',params:['snapshot']}]],
+  ['start() returns { analyze(snapshot), config: { maxItems } }.',[{name:'analyze',params:['snapshot']}]],['start() returns an object that has analyze(snapshot) and report() methods.',[{name:'analyze',params:['snapshot']},{name:'report',params:[]}]],
+  ['start() returns an object exposing `analyze(snapshot)`, which returns a Promise (resolving to the complete report).',[{name:'analyze',params:['snapshot']}]],['start() returns an object whose parse method wraps JSON.parse(text).',[{name:'parse',params:[]}]],
+  ['start() returns an object exposing analyze(snapshot); modules use require(path).',[{name:'analyze',params:['snapshot']}]],['start() returns an object exposing `analyze(snapshot)`, which calls processInterfaces(interfaces).',[{name:'analyze',params:['snapshot']}]]];
+test('v7.15.13 review (#1, #2): goalMethods reads only call forms, brace lists and "the NAME method" after the verb, never prose, globals, dotted members or bare camelCase words; it hears a wrapped line, e.g., CRLF, an arrow and the sentence after start()\'s; statedReturns reads what the goal says a method returns',()=>{
+  for(const goal of NOT_STATED)assert.deepEqual(A.goalMethods(goal),[],goal);
+  for(const [goal,want] of STATED)assert.deepEqual(A.goalMethods(goal),want,goal);
+  assert.equal(M.goalStartRequirement(NOT_STATED[4]),M.GOAL_START_REQUIREMENT,'the tracker stays unstated');
+  assert.equal(M.rootPromise(NOT_STATED[4]),M.ROOT_PROMISE);
+  assert.equal(A.statedReturns(DIAG,'analyze'),'a Promise resolving to the complete report');
+  assert.equal(A.statedReturns(DIAG,'summarize'),'');
+});
+
 test('v7.15.13 (S2, S3): the start requirement names the stated methods, either form is stripped, and Root\'s promise exposes them within 300 characters; a goal without stated methods keeps GOAL_START_REQUIREMENT and ROOT_PROMISE',()=>{
   assert.equal(M.goalStartRequirement(DIAG),STATED_REQ);
   assert.equal(M.goalStartRequirement(GOAL),M.GOAL_START_REQUIREMENT);
   assert.equal(M.stripStartRequirement(DIAG+' '+STATED_REQ),DIAG,'the stated form, leaving the goal as written');
   assert.equal(M.stripStartRequirement(GOAL+' '+M.GOAL_START_REQUIREMENT),GOAL,'the generic form');
   assert.equal(M.stripStartRequirement(GOAL),GOAL,'nothing to strip');
+  // Review (#12): a goal quoting the requirement keeps what follows it; a name with $$ is not read as a replacement pattern.
+  const quoted='Goal copied from last run: X. '+M.GOAL_START_REQUIREMENT+' Then add Y.';
+  assert.equal(M.stripStartRequirement(quoted+' '+M.GOAL_START_REQUIREMENT),quoted);
+  assert.equal(M.goalStartRequirement('start() returns { a$$b }.'),M.GOAL_START_REQUIREMENT.replace('one method per operation named above','the methods named above (a$$b())'.replace(/\$/g,'$$$$')));
+  assert.ok(M.goalStartRequirement('start() returns { a$$b }.').includes('(a$$b())'));
   assert.deepEqual(M.rootPromise(DIAG),[{name:'start',does:ROOT_DOES,params:[]}]);
   assert.equal(M.rootPromise(GOAL),M.ROOT_PROMISE);
   const long='start() returns an object exposing '+Array.from({length:8},(_,i)=>`method${i}(parameterNumberOne${i}, parameterNumberTwo${i}, parameterNumberThree${i})`).join(', ')+'.';
@@ -62,15 +92,16 @@ test('v7.15.13 (S2, S3): the start requirement names the stated methods, either 
 });
 
 // ------------------------------------------------------------------ S5a: a label writes a name
-test('v7.15.13 (S5a): labelWrites: a label whose first word is the name\'s verb and whose other words are all in the other names the function; a generic name never',()=>{
-  for(const [label,name] of [['Process circuits','processCircuits'],['Analyze snapshot','analyze'],['Check admin down','checkAdminDown'],['Generate report','generateReport'],['Check admin down handler','checkAdminDown'],['Check flaps','checkFlaps']])assert.equal(I.labelWrites(label,name),true,`${label}/${name}`);
-  for(const [label,name] of [['View ticket','saveTickets'],['Ticket storage','readTickets'],['Process interfaces','process'],['Check DNS','processDns'],['','analyze'],['Analyze snapshot','']])assert.equal(I.labelWrites(label,name),false,`${label}/${name}`);
+test('v7.15.13 (S5a): labelWrites: a label whose words, filler aside, are exactly the name\'s, verb and object; a bare verb never (review #8)',()=>{
+  for(const [label,name] of [['Process circuits','processCircuits'],['Check admin down','checkAdminDown'],['Generate report','generateReport'],['Check admin down handler','checkAdminDown'],['Check flaps','checkFlaps'],['create ticket','createTicket'],['View Tickets Module','viewTickets']])assert.equal(I.labelWrites(label,name),true,`${label}/${name}`);
+  for(const [label,name] of [['View ticket','saveTickets'],['Ticket storage','readTickets'],['Process interfaces','process'],['Check DNS','processDns'],['','analyze'],['Analyze snapshot',''],['Analyze snapshot','analyze'],
+    ['Create ticket','createTicketStore'],['Check errors','checkErrorRate'],['Check errors','checkErrorsAndRestartServer'],['Process interfaces','processInterfacesAndCircuits'],['Delete ticket','removeTicket'],['Generate report','generate'],['Parse input','parse'],['Format output','format'],['Send email notifications','send']])assert.equal(I.labelWrites(label,name),false,`${label}/${name}`);
 });
 
 // ------------------------------------------------------------------ S7: placeholders
 test('v7.15.13 (S7): placeholderChildren reads Subproblem, Sub-problem 2, Subtask B and sub-task as placeholders, and a label that only starts so as a name',()=>{
-  const labels=['Subproblem','Sub-problem 2','Subtask B','sub-task','SUBPROBLEM #3','Subproblem solver','Piece A','Check errors'];
-  assert.deepEqual(M.placeholderChildren(labels.map(label=>({label,task:'Write code that checks it'}))).map(c=>c.label),['Subproblem','Sub-problem 2','Subtask B','sub-task','SUBPROBLEM #3','Piece A']);
+  const labels=['Subproblem','Sub-problem 2','Subtask B','sub-task','SUBPROBLEM #3','Sub problem 2','Sub-part A','Subpiece','Subproblem solver','Piece A','Check errors'];
+  assert.deepEqual(M.placeholderChildren(labels.map(label=>({label,task:'Write code that checks it'}))).map(c=>c.label),['Subproblem','Sub-problem 2','Subtask B','sub-task','SUBPROBLEM #3','Sub problem 2','Sub-part A','Subpiece','Piece A']);
 });
 
 // ------------------------------------------------------------------ S8: an empty answer says why
@@ -152,7 +183,8 @@ const PLAN18=[
 const FILES18={'Start entry point':['start.js',SRC.entry18],'Process interfaces':['processInterfaces.js',SRC.interfaces],'Process circuits':['processCircuits.js',SRC.circuits],'Process DNS':['processDNS.js',SRC.dns('processDNS')],'Process services':['processServices.js',SRC.services],'Generate report':['report.js',SRC.report]};
 const LINES18="const { processInterfaces } = require('./processInterfaces'); const { processCircuits } = require('./processCircuits'); const { processDNS } = require('./processDNS'); const { processServices } = require('./processServices'); const { generateReport } = require('./generateReport');";
 const TAIL18=` start() returns { analyze }: write analyze(snapshot) here; it runs the functions the other pieces promise: processInterfaces(interfaces) from "Process interfaces" (returns an array of interface findings), processCircuits(circuits) from "Process circuits" (returns an array of circuit findings), processDNS(dns) from "Process DNS" (returns an array of DNS findings), processServices(services) from "Process services" (returns an array of service findings) and generateReport(findings) from "Generate report" (returns the report with findings and summary). Import each on its own line, by exactly its name, with the name as the path: ${LINES18}`;
-const WRITTEN={name:'analyze',params:['snapshot'],does:"performs the goal's analyze: runs the functions the other pieces promise and returns the result",returns:'the result'};
+// Review (#11): the written method returns what the goal says analyze(snapshot) returns.
+const WRITTEN={name:'analyze',params:['snapshot'],does:"performs the goal's analyze: runs the functions the other pieces promise",returns:'a Promise resolving to the complete report'};
 // Run19's split (plan.json): "Analyze snapshot" promises analyze and uses the processors; "Process circuits" promises processCircuits.
 const PLAN19=[
   {label:'Entry module',task:'Write code that exports start() function, which returns an object with analyze(snapshot) method',functions:[{name:'start'}]},
@@ -206,14 +238,14 @@ test('v7.15.13 room 1 (run18\'s shape): the start carrier is composed to write a
   assert.doesNotMatch(room.node('root.1').task,/one method per other goal operation|ask your manager|goal operation/);
   assert.deepEqual(room.read('fn_answers:root.1',[]).map(a=>[a.key,a.kind,a.fn.name,a.fn.owner]),[['fn processInterfaces','provided','processInterfaces','Process interfaces'],['fn processCircuits','provided','processCircuits','Process circuits'],['fn processDNS','provided','processDNS','Process DNS'],['fn processServices','provided','processServices','Process services'],['fn generateReport','provided','generateReport','Generate report']]);
   const carrier=inputs.find(u=>u.your_label==='Start entry point');
-  assert.ok(carrier.your_responsibility.endsWith("start(): no arguments; returns { analyze }, written here; analyze(snapshot): performs the goal's analyze: runs the functions the other pieces promise and returns the result; returns the result."),carrier.your_responsibility.slice(-300));
+  assert.ok(carrier.your_responsibility.endsWith("start(): no arguments; returns { analyze }, written here; analyze(snapshot): performs the goal's analyze: runs the functions the other pieces promise; returns a Promise resolving to the complete report."),carrier.your_responsibility.slice(-300));
   assert.deepEqual(dbEvents(room,'interfaces_stripped').concat(dbEvents(room,'uses_dropped'),dbEvents(room,'scope_rejected')),[]);
   // The link: five renames by ownership, no model; the gate: analyze found, no model; the Container: one pass.
   assert.match(dbEvents(room,'link_auto')[0].body,/^Applied 5 rename\(s\) without the model: start\.js: '\.\/processInterfaces' → '\.\.\/process-in-[0-9a-f]{8}\/processInterfaces\.js' \(owner of processInterfaces by the plan\)/);
   assert.deepEqual(dbEvents(room,'api_covered').map(e=>e.body),['Each method the goal states start() returns is there: analyze']);
   assert.deepEqual([calls.coverage.length,calls.link.length,calls.manager.length,calls.runner.length,calls.split.length,dbEvents(room,'api_incomplete').length,dbEvents(room,'run_failed').length,dbEvents(room,'run_passed').length,dbEvents(room,'runner_invented').length,rounds(room)],[0,0,0,1,1,0,0,1,0,0]);
   assert.deepEqual(calls.runner[0].operations_to_test,[{operation:'analyze(snapshot)',method:'analyze'}]);
-  assert.deepEqual(calls.runner[0].method_descriptions,[{method:'analyze',does:WRITTEN.does,params:['snapshot'],returns:'the result'}]);
+  assert.deepEqual(calls.runner[0].method_descriptions,[{method:'analyze',does:WRITTEN.does,params:['snapshot'],returns:'a Promise resolving to the complete report'}]);
   assert.deepEqual(turns,{'Start entry point':1,'Process interfaces':1,'Process circuits':1,'Process DNS':1,'Process services':1,'Generate report':1},'every piece done on its first turn');
   assert.equal(dbEvents(room,'contract_returned').length,0);
 });
@@ -354,4 +386,65 @@ test('v7.15.13 (S6): an entry returning the performer under another name is a ga
   assert.ok(p.detail.startsWith("start() returns no method for: analyze(snapshot) (analyze); it returned methods analyzeSnapshot. Each operation the goal names needs its own method on the object start() returns, the operation imported from the module that performs it. The plan's operation functions: analyze (analyze(snapshot)) from Analyze snapshot. Import the one for each missing operation, each on its own line (const { analyze } = require('./analyze')), and return it as start()'s method for that operation."),p.detail);
   assert.deepEqual(p.parties.map(x=>[x.role,x.path.split('/').pop()]),[['subject','entry.js']],'the entry\'s problem');
   assert.deepEqual(A.goalMethods('start() returns { run }'),[{name:'run',params:[]}],'a stated generic name');
+});
+
+// ------------------------------------------------------------------ review fixes (#3 to #7)
+// Composed at Root for the diagnostics goal: the carrier's spec after composeStart, and the event.
+async function composed(spawn) {
+  const {room}=liveRoom();
+  await room.provision('root',null,'Root objective',DIAG+' '+STATED_REQ,M.rootPromise(DIAG));room.set('goal',DIAG+' '+STATED_REQ);
+  const out=room.composeStart('root',spawn);
+  return {room,entry:out[0],event:events(room,'start_composed').map(e=>e.body)};
+}
+const ENTRY={label:'Entry module',task:'Write start().',interfaces:[{name:'start'}]};
+const piece=(label,name,param,returns='findings',uses)=>({label,task:'Write '+label,interfaces:[fn(name,label,[param],returns)],...(uses?{uses}:{})});
+test('v7.15.13 review (#3, #4): a bare stated name is performed only by its exact name or by a function acting on its own words or parameters (analyzeSnapshot for analyze(snapshot), never analyzeInterfaces); an exact sibling beats the carrier\'s own word match; a performer named otherwise is returned under the stated key',async()=>{
+  // #3: analyzeInterfaces acts on another dataset: analyze is written here.
+  const a=await composed([ENTRY,piece('Analyze interfaces','analyzeInterfaces','interfaces'),piece('Check circuits','checkCircuits','circuits'),piece('Generate report','generateReport','findings','the report')]);
+  assert.deepEqual(a.event,['"Entry module" carries start: it returns analyze, written here from analyzeInterfaces(interfaces), checkCircuits(circuits), generateReport(findings), from the plan.']);
+  assert.deepEqual(a.entry.interfaces.map(f=>f.name),['start','analyze']);
+  // #4: the carrier's analyzeSnapshot never beats a sibling's exact analyze.
+  const e=await composed([{...ENTRY,interfaces:[{name:'start'},fn('analyzeSnapshot','analyzes',['snapshot'],'the report')]},piece('Analyze snapshot','analyze','snapshot','the report')]);
+  assert.deepEqual(e.event,['"Entry module" carries start: it returns analyze from "Analyze snapshot", from the plan.']);
+  // A sibling's analyzeSnapshot(snapshot) performs analyze, returned under the key.
+  const sibs=[piece('Analyze snapshot','analyzeSnapshot','snapshot','the report'),piece('Check circuits','checkCircuits','circuits')],r=await composed([ENTRY,...sibs]);
+  assert.deepEqual(r.event,['"Entry module" carries start: it returns analyze: analyzeSnapshot from "Analyze snapshot", from the plan.']);
+  assert.equal(r.entry.interfaces[0].does,'no arguments; returns { analyze: analyzeSnapshot }, each imported on its own line by its name');
+  assert.ok(r.entry.task.endsWith(` start() returns { analyze: analyzeSnapshot }, the functions other pieces promise for the goal's operations: analyzeSnapshot(snapshot) from "Analyze snapshot", returned under the key analyze (analyze: analyzeSnapshot). Import each on its own line, by exactly its name, with the name as the path: const { analyzeSnapshot } = require('./analyzeSnapshot'); Return each under the key the goal names, itself or a wrapper that calls it; do not write them here.`),r.entry.task);
+  await r.room.spawn('root',[r.entry,...sibs]);
+  assert.equal(r.room.entryContract('root.1'),"You write the application entry module: it exports start(); start() takes no arguments and returns { analyze: analyzeSnapshot }, each under the key the goal names, each imported on its own line with its name as the path (const { analyzeSnapshot } = require('./analyzeSnapshot')), not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.");
+  // Two loose candidates are none.
+  const two=await composed([ENTRY,piece('Snapshot analysis','analyzeSnapshot','snapshot'),piece('Snapshot analyzer','analyzeSnapshotRecord','snapshot')]);
+  assert.deepEqual(two.entry.interfaces.map(f=>f.name),['start','analyze'],'ambiguous: written here');
+});
+
+test('v7.15.13 review (#5): the written method runs only the top of the split\'s uses graph; the functions a sibling calls itself are named as facts, never imported or answered up front',async()=>{
+  const {entry,event}=await composed([ENTRY,piece('Process interfaces','processInterfaces','interfaces','findings',['checkAdminDown','checkErrors']),piece('Check admin down','checkAdminDown','iface','a finding or null'),piece('Check errors','checkErrors','iface','a finding or null'),piece('Generate report','generateReport','findings','the report')]);
+  assert.deepEqual(event,['"Entry module" carries start: it returns analyze, written here from processInterfaces(interfaces), generateReport(findings), from the plan.']);
+  assert.ok(entry.task.endsWith(`it runs the functions the other pieces promise: processInterfaces(interfaces) from "Process interfaces" (returns findings) and generateReport(findings) from "Generate report" (returns the report). Import each on its own line, by exactly its name, with the name as the path: const { processInterfaces } = require('./processInterfaces'); const { generateReport } = require('./generateReport'); checkAdminDown from "Check admin down" and checkErrors from "Check errors" are called by the pieces that use them: do not call them here.`),entry.task);
+  assert.deepEqual(entry.answers.map(a=>a.fn.name),['processInterfaces','generateReport']);
+  // A sibling performing the operation under another name is the one to call.
+  const b=await composed([ENTRY,{label:'Run diagnostics',task:'Write the engine',interfaces:[fn('runDiagnostics','runs all diagnostics on a snapshot',['snapshot'],'a Promise of the report')],uses:['checkInterfaces','checkCircuits']},piece('Check interfaces','checkInterfaces','interfaces'),piece('Check circuits','checkCircuits','circuits')]);
+  assert.deepEqual(b.event,['"Entry module" carries start: it returns analyze, written here from runDiagnostics(snapshot), from the plan.']);
+  assert.deepEqual(b.entry.answers.map(a=>a.fn.name),['runDiagnostics']);
+});
+
+// Root's split for the admission cases, Clef scripted by label and name.
+async function admitted(plan,{within,names=()=>0.9}) {
+  const {room}=liveRoom({clef:clefScript({within,names}),split:()=>({summary:'Split.',spawn:plan})});
+  await room.provision('root',null,'Root objective',DIAG+' '+STATED_REQ,M.rootPromise(DIAG));room.set('goal',DIAG+' '+STATED_REQ);
+  await room.turn('root');
+  return room;
+}
+test('v7.15.13 review (#6, #7): only a user in scope on its own admits a piece by its uses (two out-of-scope pieces using each other are both rejected), and a name such a user uses is kept against Clef\'s doubt',async()=>{
+  const base=[{label:'Start function',task:'Write code that exports start()',functions:[{name:'start'}]},{label:'Analyze snapshot',task:'Write analyze(snapshot)',functions:[fn('analyze','runs the processors',['snapshot'],'a Promise of the report')],uses:['processInterfaces']},
+    {label:'Process interfaces',task:'Write code that processes the interfaces dataset',functions:[fn('processInterfaces','processes interfaces',['interfaces'],'findings')],uses:['checkErrors']}];
+  const mutual=await admitted([...base,{label:'Email alerts',task:'Write code that emails each finding over SMTP',functions:[fn('sendAlertEmail','emails a finding',['finding'],'nothing')],uses:['renderAlertHtml']},
+    {label:'Alert templates',task:'Write HTML templates for alert emails',functions:[fn('renderAlertHtml','renders html',['finding'],'html')],uses:['sendAlertEmail']}],{within:l=>({'Email alerts':0.08,'Alert templates':0.07})[l]??0.9});
+  assert.deepEqual(events(mutual,'scope_rejected').map(e=>e.body),['Clef rejected proposed child "Email alerts" (p=0.080); outside Root and parent scope.','Clef rejected proposed child "Alert templates" (p=0.070); outside Root and parent scope.']);
+  const strip=await admitted([...base,{label:'Interface error check',task:'Write code that checks for interfaces with at least 100 errors',functions:[fn('checkErrors','checks errors',['interface'],'a finding or null')]}],{within:l=>l==='Interface error check'?0.47:0.9,names:(_l,n)=>n==='checkErrors'?0.3:0.9});
+  assert.deepEqual(events(strip,'scope_allowed').map(e=>e.body).filter(b=>b.includes('by the plan')),['Clef answered p=0.470 for "Interface error check", which promises checkErrors, which "Process interfaces" uses; admitted (in scope by the plan).']);
+  assert.deepEqual(events(strip,'interfaces_kept').map(e=>e.body),['Clef doubted checkErrors (p=0.300), but "Process interfaces" uses it; kept.']);
+  assert.deepEqual(events(strip,'uses_dropped'),[]);
+  assert.deepEqual(strip.promisedOf(strip.children('root').find(c=>c.label==='Interface error check').id).map(f=>f.name),['checkErrors']);
 });

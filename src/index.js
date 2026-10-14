@@ -4,7 +4,7 @@ export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
-import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods } from './api-coverage.js';
+import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -1831,8 +1831,9 @@ export class ControlRoom extends DurableObject {
     const plan=this.startPlanOf(id);
     if(!plan||!plan.theirs.length&&!(plan.stated.length&&plan.mine.length))return ENTRY_CONTRACT;
     // v7.15.13 (run18): a stated method is returned under the goal's name, in the goal's order, and one the carrier writes has no import line.
-    const key=f=>f.stated?.name||f.name,at=f=>plan.stated.findIndex(s=>s.name===key(f)),fns=[...plan.mine,...plan.theirs].sort((a,b)=>at(a)-at(b)),first=plan.theirs[0]?.name;
-    return `You write the application entry module: it exports start(); start() takes no arguments and returns { ${fns.map(key).join(', ')} }${plan.left.length?` and one method for ${listed(plan.left)}, the function that performs it, which you ask your manager for`:''}, each under its own name, ${plan.mine.length?plan.theirs.length?'the ones your assignment gives you written here and the others':'written here as your assignment says':'each'}${plan.theirs.length?` imported on its own line with its name as the path (const { ${first} } = require('./${first}'))`:''}, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.`;
+    // Review: a performer named otherwise is returned under the stated key ({ analyze: analyzeSnapshot }).
+    const key=f=>f.stated?.name||f.name,at=f=>plan.stated.findIndex(s=>s.name===key(f)),fns=[...plan.mine,...plan.theirs].sort((a,b)=>at(a)-at(b)),first=plan.theirs[0]?.name,renamed=fns.some(f=>key(f)!==f.name);
+    return `You write the application entry module: it exports start(); start() takes no arguments and returns { ${fns.map(f=>key(f)===f.name?f.name:`${key(f)}: ${f.name}`).join(', ')} }${plan.left.length?` and one method for ${listed(plan.left)}, the function that performs it, which you ask your manager for`:''}, each under ${renamed?'the key the goal names':'its own name'}, ${plan.mine.length?plan.theirs.length?'the ones your assignment gives you written here and the others':'written here as your assignment says':'each'}${plan.theirs.length?` imported on its own line with its name as the path (const { ${first} } = require('./${first}'))`:''}, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.`;
   }
   startPlanOf(id) {const n=this.node(id),own=this.promisedOf(id);return n?.parent&&this.planned()&&own.some(f=>f.name==='start')?this.startPlan(own.filter(f=>f.name!=='start'),this.planWalk(id)):null;}
   // The functions start() returns, for its carrier below the top: the plan
@@ -1871,19 +1872,29 @@ export class ControlRoom extends DurableObject {
   // "Analyze function"); one the carrier promises is its own; one nothing
   // performs is written here: the carrier gains the promise, so the contract
   // check, the linker and the coverage gate see it, and its task says what
-  // it runs, the siblings' functions, with an import line each, all answered
-  // up front. Nothing is asked for, and no "one method per other goal
-  // operation": run18's carrier read that clause beside the goal's analyze
-  // and asked for getGoalOperations.
+  // it runs, with an import line each, all answered up front. Nothing is
+  // asked for, and no "one method per other goal operation": run18's carrier
+  // read that clause beside the goal's analyze and asked for
+  // getGoalOperations. Review: a performer named otherwise than the key is
+  // returned under the key ({ analyze: analyzeSnapshot }); the written method
+  // runs only the top of the split's uses graph, the siblings no other
+  // sibling uses (processInterfaces, never the checks it calls itself, which
+  // would run each diagnostic twice), the rest named as facts; and it
+  // returns what the goal says it returns ("a Promise resolving to the
+  // complete report"), else the result.
   composeStated(m, spawn, at, siblings, {mine,theirs,written,stated}) {
-    const key=f=>f.stated?.name||f.name,ownNames=[...mine.map(key),...written.map(w=>w.name)],names=`{ ${stated.map(s=>s.name).join(', ')} }`,fit=xs=>xs.find(x=>x.length<=160)||xs.at(-1);
-    const writes=[...(theirs.length?[]:mine),...written],helpers=writes.length?siblings.filter(f=>!theirs.some(t=>t.name===f.name)):[];
+    const key=f=>f.stated?.name||f.name,keyed=f=>key(f)===f.name?f.name:`${key(f)}: ${f.name}`,as=f=>key(f)===f.name?'':`, returned under the key ${key(f)} (${keyed(f)})`;
+    const names=`{ ${stated.map(s=>{const f=[...mine,...theirs].find(x=>key(x)===s.name);return f?keyed(f):s.name;}).join(', ')} }`,ownNames=[...mine.map(key),...written.map(w=>w.name)],fit=xs=>xs.find(x=>x.length<=160)||xs.at(-1);
+    const used=new Set(spawn.flatMap((c,i)=>i===at||!(c?.interfaces||[]).length?[]:normalizeUses(c?.uses))),writes=[...(theirs.length?[]:mine),...written],others=writes.length?siblings.filter(f=>!theirs.some(t=>t.name===f.name)):[];
+    const helpers=others.filter(f=>!used.has(f.name)),facts=others.filter(f=>used.has(f.name)),them=xs=>xs.length>1?'them':'it';
     const does=fit([`no arguments; returns ${names}, ${theirs.length?ownNames.length?`${listed(ownNames)} written here and the rest imported on its own line by its name`:'each imported on its own line by its name':'written here'}`,`no arguments; returns ${names}`]);
-    const imported=theirs.length?` start() returns ${names}, the functions ${mine.length?'you and ':''}other pieces promise for the goal's operations: ${listed([...mine.map(f=>`${signature(f)}, yours to write here`),...theirs.map(f=>`${signature(f)} from "${f.owner}"${key(f)!==f.name?`, returned as ${key(f)}`:''}`)])}. ${importLines(theirs)} Return each under its name, itself or a wrapper that calls it; do not write them here.`:'';
-    const here=writes.length?`${theirs.length?' W':` start() returns ${names}: w`}rite ${listed(writes.map(signature))} here; ${writes.length>1?'they run':'it runs'} the functions the other pieces promise${helpers.length?`: ${listed(helpers.map(h=>`${signature(h)} from "${h.owner}"${h.returns?` (returns ${h.returns})`:''}`))}. ${importLines(helpers)}`:'.'}`:'';
-    const tail=imported+here,own=String(spawn[at].task||''),room=Math.max(200,2000-tail.length),task=(own.length>room?own.slice(0,room-1).replace(/\s+\S*$/,'')+'…':own)+tail;
-    const added=written.map(w=>({name:w.name,params:[...w.params],does:`performs the goal's ${w.name}: runs the functions the other pieces promise and returns the result`,returns:'the result'}));
-    const parts=[...theirs.map(f=>`${key(f)} from "${f.owner}"`),...(ownNames.length?[`${listed(ownNames)}, written here${helpers.length?` from ${helpers.map(signature).join(', ')}`:''}`]:[])];
+    const imported=theirs.length?` start() returns ${names}, the functions ${mine.length?'you and ':''}other pieces promise for the goal's operations: ${listed([...mine.map(f=>`${signature(f)}, yours to write here${as(f)}`),...theirs.map(f=>`${signature(f)} from "${f.owner}"${as(f)}`)])}. ${importLines(theirs)} Return each under ${[...mine,...theirs].some(f=>key(f)!==f.name)?'the key the goal names':'its name'}, itself or a wrapper that calls it; do not write them here.`:'';
+    const ran=helpers.length?`: ${listed(helpers.map(h=>`${signature(h)} from "${h.owner}"${h.returns?` (returns ${h.returns})`:''}`))}. ${importLines(helpers)}`:'.';
+    const told=facts.length?` ${listed(facts.map(f=>`${f.name} from "${f.owner}"`))} ${facts.length>1?'are':'is'} called by the pieces that use ${them(facts)}: do not call ${them(facts)} here.`:'';
+    const here=writes.length?`${theirs.length?' W':` start() returns ${names}: w`}rite ${listed(writes.map(f=>signature(f)+as(f)))} here; ${writes.length>1?'they run':'it runs'} the functions the other pieces promise${ran}${told}`:'';
+    const tail=imported+here,own=String(spawn[at].task||''),room=Math.max(200,2000-tail.length),task=(own.length>room?own.slice(0,room-1).replace(/\s+\S*$/,'')+'…':own)+tail,goal=this.userGoal();
+    const added=written.map(w=>{const r=statedReturns(goal,w.name);return {name:w.name,params:[...w.params],does:`performs the goal's ${w.name}: runs the functions the other pieces promise${r?'':' and returns the result'}`,returns:r||'the result'};});
+    const parts=[...theirs.map(f=>`${keyed(f)} from "${f.owner}"`),...(ownNames.length?[`${listed(ownNames)}, written here${helpers.length?` from ${helpers.map(signature).join(', ')}`:''}`]:[])];
     this.event(m,'start_composed',clip(`"${spawn[at].label}" carries start: it returns ${parts.join(', ')}, from the plan.`,600));
     const answers=[...theirs,...helpers].filter(f=>!GENERIC_NAMES.has(f.name)).map(f=>({key:requestKey({name:f.name}),kind:'provided',text:providedText(f,f.owner),fn:providedFn(f,f.owner)}));
     return spawn.map((c,i)=>i!==at?c:{...c,task,interfaces:[...c.interfaces.map(f=>f.name==='start'?{...f,does}:f),...added],answers});
@@ -3579,10 +3590,16 @@ export class ControlRoom extends DurableObject {
     // them); a name the goal states or the piece's label writes (labelWrites)
     // is kept (analyze left "Analyze snapshot" at p=0.385, processCircuits
     // "Process circuits" at 0.464, and five diagnostics went unreachable).
+    // Review: only a user in scope on its own (Clef's yes, a carried name or
+    // a stated one) admits a piece, never one admitted itself by uses (two
+    // out-of-scope pieces using each other admitted both); and a name such a
+    // user uses is kept too, so the piece admitted for it keeps it.
     const rejectedChildren=[],admitted=[],stated=new Set(goalMethods(this.userGoal()).map(s=>s.name)),usesOf=c=>c&&typeof c==='object'?normalizeUses(c.uses):[];
+    const fnsOf=c=>(c?.interfaces||[]).map(f=>f.name),onOwn=repaired.map((c,i)=>scope[i]>=0.5||carried(c).length>0||fnsOf(c).some(n=>stated.has(n)));
+    const usersOf=(i,name)=>repaired.filter((s,j)=>j!==i&&onOwn[j]&&usesOf(s).includes(name));
     repaired.forEach((child,i)=>{
-      const carries=carried(child),label=clip(child.label,70),p=scope[i].toFixed(3),fns=(child.interfaces||[]).map(f=>f.name);
-      const named=fns.filter(n=>stated.has(n)),users=repaired.filter((s,j)=>j!==i&&usesOf(s).some(u=>fns.includes(u))),used=fns.filter(n=>users.some(s=>usesOf(s).includes(n)));
+      const carries=carried(child),label=clip(child.label,70),p=scope[i].toFixed(3),fns=fnsOf(child);
+      const named=fns.filter(n=>stated.has(n)),used=fns.filter(n=>usersOf(i,n).length),users=[...new Set(used.flatMap(n=>usersOf(i,n)))];
       if(scope[i]>=0.5)this.event(id,'scope_allowed',late?`Clef accepted late child "${label}" (p=${p}).`:`Clef accepted proposed child "${label}" (p=${p}); within Root and parent scope.`);
       else if(carries.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which carries ${carries.join(', ')} that this manager was promised; admitted (in scope by construction).`);
       else if(named.length||used.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which promises ${listed(named.length?named:used)}, which ${named.length?'the goal states start() returns':`${listed(users.map(s=>`"${clip(s.label,70)}"`))} uses`}; admitted (in scope by the plan).`);
@@ -3593,8 +3610,9 @@ export class ControlRoom extends DurableObject {
       }
       // A carried name takes the parent's item: the description travels down unchanged.
       let interfaces=(child.interfaces||[]).map(f=>own.has(f.name)?promised.find(p=>p.name===f.name):f);
-      const no=(names[i]||[]).filter(x=>x.p<0.5),kept=no.filter(x=>stated.has(x.name)||labelWrites(child.label,x.name)),strip=no.filter(x=>!kept.includes(x));
-      for(const x of kept)this.event(id,'interfaces_kept',`Clef doubted ${x.name} (p=${x.p.toFixed(3)}), but ${stated.has(x.name)?'the goal states start() returns it':`"${label}" names it`}; kept.`);
+      const no=(names[i]||[]).filter(x=>x.p<0.5),why=x=>stated.has(x.name)?'the goal states start() returns it':labelWrites(child.label,x.name)?`"${label}" names it`:usersOf(i,x.name).length?`${listed(usersOf(i,x.name).map(s=>`"${clip(s.label,70)}"`))} ${usersOf(i,x.name).length>1?'use':'uses'} it`:'';
+      const kept=no.filter(x=>why(x)),strip=no.filter(x=>!kept.includes(x));
+      for(const x of kept)this.event(id,'interfaces_kept',`Clef doubted ${x.name} (p=${x.p.toFixed(3)}), but ${why(x)}; kept.`);
       for(const x of strip)this.event(id,'interfaces_stripped',`Clef judged ${x.name} (p=${x.p.toFixed(3)}) is not what "${label}" writes; the piece is kept without it.`);
       if(strip.length)interfaces=interfaces.filter(f=>!strip.some(x=>x.name===f.name));
       admitted.push({...child,interfaces});
@@ -3627,7 +3645,9 @@ export class ControlRoom extends DurableObject {
       if(!carries)walkable.push(c);
     }
     // A carrier never takes the Clef walk: its names were given to it.
-    const walk=await this.pruneOnDiscovery(id,walkable);
+    // v7.15.13 (run20): the plan's evidence for this strand, which Clef's lean below the bar does not outweigh: a sibling of this split uses the piece's function, or the goal states it.
+    const placed=c=>{const fns=fnsOf(c);return fns.some(n=>stated.has(n)||kept.some(k=>k!==c&&usesOf(k).includes(n)));};
+    const walk=await this.pruneOnDiscovery(id,walkable,placed);
     rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
     // Uses only name what a surviving sibling promises (planUses); a room
     // without promises keeps none.
@@ -3650,9 +3670,12 @@ export class ControlRoom extends DurableObject {
   // that Clef ranks above this one at OWNER_FLOOR or more is still the owner
   // (the best such answer up to the top): the kill was the only guard against
   // a store rebuilt beside its owner (run5's in-memory data store), and this
-  // keeps that guard when Clef leans to the owner. The top's own split has
-  // no level above; it is already checked against the goal.
-  async pruneOnDiscovery(id, children) {
+  // keeps that guard when Clef leans to the owner. v7.15.13 (run20): except
+  // for a piece the plan places in this strand (planned: a sibling of the
+  // split uses its function, or the goal states it), whose lean alone was
+  // the evidence against it. The top's own split has no level above; it is
+  // already checked against the goal.
+  async pruneOnDiscovery(id, children, planned=()=>false) {
     if(!this.node(id)?.parent||this.env.MOCK_AI==='true'||!children.length)return {kept:children,rejected:[]};
     const levels=new Map();
     const index=level=>{if(!levels.has(level))levels.set(level,this.childIndex(level));return levels.get(level);};
@@ -3670,10 +3693,9 @@ export class ControlRoom extends DurableObject {
         const found=candidates.find(c=>c.id===owner);
         if(found)return {owner:found,level};
         // Below the bar: a tie with this branch keeps the piece here.
-        // v7.15.13 (run20): and Clef's lean prunes only a piece whose function the owner promises, by name or as the same operation ("Check errors" was pruned as "Check error rate" at p=0.405).
+        // v7.15.13 (run20): but not a piece the plan places here (planned: "Process interfaces" used "Check errors", pruned as "Check error rate" at p=0.405).
         const top=ranks[0],mine=ranks.find(x=>x.id===branch.id)?.p??0,other=top&&top.id!==branch.id&&top.p>=OWNER_FLOOR&&top.p>mine&&candidates.find(c=>c.id===top.id);
-        const theirs=other?this.promisedOf(other.id).map(f=>f.name):[],covers=(child.interfaces||[]).some(f=>theirs.some(n=>n===f.name||sameOp(f.name,n)));
-        if(other&&covers&&!(best?.p>=top.p))best={owner:other,level,p:top.p};
+        if(other&&!planned(child)&&!(best?.p>=top.p))best={owner:other,level,p:top.p};
         branch=level;
       }
       return best||{error};

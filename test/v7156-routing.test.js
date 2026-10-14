@@ -352,6 +352,12 @@ test('v7.15.6: the rules: a requirement\'s route assigns a worker with its text,
   assert.match(P.validateManagerActions([{action:'assign',problems:['p1'],child:'root.1',instructions:'Make the test pass.'}],call,carrier).rejected[0].reason,/^root\.1 carries start\(\) and only composes the application: problem p1 is a requirement on the piece whose promise it is about/);
   const apiCall=[{id:'p2',p:{...p,facts:{requirement:{...r,text:'TypeError: app.listTickets is not a function',names:['listTickets','start']}}},dec:none}];
   assert.deepEqual(P.validateManagerActions([{action:'assign',problems:['p2'],child:'root.1',instructions:'Return listTickets from start().'}],apiCall,carrier).decisions.map(d=>[d.how,d.dec.child]),[['model','root.1']]);
+  // v7.15.13 review: a carrier that writes a stated analyze takes a requirement on it, but not one naming another child's function with no frame in its own (a threshold inside a processor).
+  const writes={...carrier,promise:{...carrier.promise,carried:{'root.1':['start','analyze'],'root.3':['viewTicket']}}},on=(id,req)=>[{id,p:{...p,facts:{requirement:{...r,method:'analyze',...req}}},dec:none}];
+  const assign=(id,req)=>P.validateManagerActions([{action:'assign',problems:[id],child:'root.1',instructions:'Fix analyze.'}],on(id,req),writes);
+  assert.deepEqual(assign('p3',{names:[]}).decisions.map(d=>d.dec.child),['root.1']);
+  assert.match(assign('p4',{names:['viewTicket']}).rejected[0].reason,/^root\.1 carries start\(\) and only composes the application: problem p4/);
+  assert.deepEqual(assign('p5',{names:['viewTicket'],frames:[{path:'components/entry-1/entry.js',fn:'analyze'}]}).decisions.map(d=>d.dec.child),['root.1'],'the frame is in its own analyze');
   // Review: after the reader declines, an unpromised mismatch never goes to its provider (run8's rule); it goes up, or closes.
   const unpromised={kind:'mismatch',parties:[{path:'a.js',owner:'root.3',owner_path:'a.js',role:'reader'},{path:'b.js',owner:'root.1',owner_path:'b.js',role:'provider'}],detail:'d',facts:{names:['getTickets'],unpromised:true,promised:['createData']},flags:{declined:['root.3']},trail:[]};
   assert.deepEqual([P.deterministicDecision(unpromised,ctx).action,P.deterministicDecision(unpromised,{...ctx,parent:'top'}).action],['exhausted','escalate']);

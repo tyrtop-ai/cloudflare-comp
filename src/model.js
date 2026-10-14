@@ -328,8 +328,11 @@ export const ROOT_PROMISE = Object.freeze([Object.freeze({name:'start',does:'no 
 // and asked for getGoalOperations. Either form of the requirement is
 // stripped by its fixed head and tail (userGoal, decompose's goal, the top's
 // clip in provision).
-export const goalStartRequirement = goal => {const m=goalMethods(goal);return m.length?GOAL_START_REQUIREMENT.replace('one method per operation named above',`the methods named above (${m.map(signature).join(', ')})`):GOAL_START_REQUIREMENT;};
-const START_REQUIREMENT=/ ?The finished application has one entry module that exports start\(\);[^]*?starting a server or prompting\.$/;
+// Review: the names go in through a replacer (a$$b stays a$$b), and only the
+// last copy of the requirement is stripped (a goal that quotes it keeps it).
+export const goalStartRequirement = goal => {const m=goalMethods(goal);return m.length?GOAL_START_REQUIREMENT.replace('one method per operation named above',()=>`the methods named above (${m.map(signature).join(', ')})`):GOAL_START_REQUIREMENT;};
+const HEAD='The finished application has one entry module that exports start\\(\\);';
+const START_REQUIREMENT=new RegExp(` ?${HEAD}(?:(?!${HEAD})[^])*?starting a server or prompting\\.$`);
 export const stripStartRequirement = text => String(text ?? '').replace(START_REQUIREMENT,'');
 export const rootPromise = goal => {
   const m=goalMethods(goal);
@@ -427,7 +430,7 @@ export function clipFeedback(feedback, room) {
 export function placeholderChildren(spawn) {
   if(!Array.isArray(spawn))return [];
   const label=s=>String(s?.label||'').trim(),task=s=>String(s?.task||'').trim();
-  return spawn.filter(c=>/^(?:piece|part|module|component|child|task|step|chunk|unit|section|item)\s*[-#:.]?\s*(?:[a-z]|\d{1,2})$|^sub-?(?:problem|task)(?:\s*[-#:.]?\s*(?:[a-z]|\d{1,2}))?$/i.test(label(c))||/^short name of (?:what this piece does|another piece)$/i.test(label(c))||
+  return spawn.filter(c=>/^(?:piece|part|module|component|child|task|step|chunk|unit|section|item)\s*[-#:.]?\s*(?:[a-z]|\d{1,2})$|^sub[-\s]?(?:problem|task|part|piece)(?:\s*[-#:.]?\s*(?:[a-z]|\d{1,2}))?$/i.test(label(c))||/^short name of (?:what this piece does|another piece)$/i.test(label(c))||
     !label(c)||/^(?:write code that\s*)?(?:\.{3}|…|implements (?:this|another) piece)?$/i.test(task(c)));
 }
 
