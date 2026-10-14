@@ -157,10 +157,11 @@ test('v7.15.2: an atomic top whose start() returns nothing hears an entry proble
   assert.match(repair.body,/tracker\.js: start\(\) must return an object whose methods perform the requested operations; it returned \{"type":"undefined"\}\./);
   // Root wrote every module: nothing is imported from pieces it never had (review).
   assert.doesNotMatch(repair.body,/NOTHING CHANGED|Your manager decided|builder can only rename|BUILD FAILED|imports? the other pieces|imported from/);
+  // v7.15.6: the same files again are reported again, with the same problem and no "nothing changed" (the budget bounds it).
   const again=calls.leaf[2].new_messages.find(m=>/^YOUR APPLICATION FAILED/.test(m.body)).body;
-  assert.match(again,/NOTHING CHANGED IN YOUR FILES/,'the same files again: told so');
-  assert.match(again,/each answer that changes nothing uses up one of your repair rounds/);
-  assert.doesNotMatch(again,/closes the problem unfixed/,'an atomic top\'s problem is reported again, never closed unfixed');
+  assert.doesNotMatch(again,/NOTHING CHANGED|closes the problem unfixed/);
+  assert.match(again,/tracker\.js: start\(\) must return an object whose methods perform the requested operations/);
+  assert.match(events(room,'problem_assigned').at(-1).body,/^1 problem\(s\) back to Root, which wrote every file and changed none since they were reported/);
   const rows=room.problems("source='root'");
   assert.ok(rows.every(p=>p.kind==='entry'&&p.holder==='root'&&p.parties[0].owner==='root'&&p.parties[0].path==='tracker.js'));
   assert.deepEqual(rows.filter(p=>p.status!=='closed').map(p=>p.status),['open'],'the report past the budget is not assigned');
@@ -304,20 +305,21 @@ test('v7.15.2 review: the runtime glue takes none of an atomic top\'s 8 file slo
     {path:'update.js',content:op('update',"(id, p) { return Object.assign(s.rows.get(id), p); }")},
     {path:'validate.js',content:"module.exports = t => !!t;\n"},
     {path:'view.js',content:op('view',"(id) { return undefined; }")}];
-  const {room,calls,drain}=liveRoom({clef:atomicGate,coverage:()=>crudCoverage,runner:()=>run10Test,triage:()=>({file:'view.js',problem:'view(id) never returns the ticket.'}),
+  const {room,calls,drain}=liveRoom({clef:atomicGate,coverage:()=>crudCoverage,runner:()=>run10Test,
     leaf:(_u,n)=>n===1?{summary:'Issue tracker in seven modules',files,done:true}:{summary:'Looking',files:[],done:false}});
   await room.start(GOAL,2);await drain();
-  assert.deepEqual(room.problems("source='root'").map(p=>p.parties[0].path),['view.js'],trace(room));
+  // v7.15.6: no triage names a file; the problem carries the requirement (its method under test).
+  assert.deepEqual(room.problems("source='root'").map(p=>[p.parties[0].path,p.facts.requirement.method,p.facts.requirement.test_line.line]),[['','view',6]],trace(room));
   assert.deepEqual(room.files('root').map(f=>f.path).filter(p=>!p.startsWith('memory/')).length,10,'seven modules and the three runtime files');
   const user=calls.leaf[1];
-  assert.equal(user.your_own_files[0].path,'view.js','the file its repair names comes first');
   assert.deepEqual(user.your_own_files.map(f=>f.path).sort(),files.map(f=>f.path).sort(),'all seven modules, none of the glue');
+  assert.match(user.new_messages.find(m=>/^YOUR APPLICATION FAILED/.test(m.body)).body,/Required: The runner's test failed with: TypeError: Cannot read properties of undefined \(reading 'title'\)\. Test line 6: assert\.equal\(\(await app\.view\(t\.id\)\)\.title, 'Printer jam'\)\. Problems: /);
   assert.deepEqual(user.your_exposed_files.map(f=>f.path).filter(p=>/^glue\/|^package\.json$/.test(p)),[]);
 });
 
 test('v7.15.2 review: an atomic top\'s write to the runner\'s test is refused and it hears why, not that it changed nothing',async()=>{
   const buggy=run10Module.replace('tickets.splice(index, 1);','');
-  const {room,calls,builds,drain}=liveRoom({clef:atomicGate,coverage:()=>crudCoverage,runner:()=>run10Test,triage:()=>({file:'module.js',problem:'deleteTicket does not remove the ticket.'}),
+  const {room,calls,builds,drain}=liveRoom({clef:atomicGate,coverage:()=>crudCoverage,runner:()=>run10Test,
     leaf:(user,n)=>{
       if(n===1)return {summary:'Issue tracker',files:[{path:'module.js',content:buggy}],done:true};
       // A weak writer "fixes" the failing assertion in the test (scratchpad replay).
@@ -335,5 +337,8 @@ test('v7.15.2 review: an atomic top\'s write to the runner\'s test is refused an
   assert.equal(events(room,'compile_unchanged').length,1);
   const third=calls.leaf[2];
   assert.match(third.last_turn_notes.join(' '),/^glue\/smoke\.js, package\.json were not written: glue\/index\.js \(the loader\), package\.json and glue\/smoke\.js \(the runner's test, fixed for the whole run\) are the runtime's/);
-  assert.match(third.new_messages.find(m=>/^YOUR APPLICATION FAILED/.test(m.body)).body,/NOTHING CHANGED IN YOUR FILES/);
+  // v7.15.6: the requirement again, never "nothing changed in your files".
+  const body=third.new_messages.find(m=>/^YOUR APPLICATION FAILED/.test(m.body)).body;
+  assert.doesNotMatch(body,/NOTHING CHANGED/);
+  assert.match(body,/Required: The runner's test requires: deleted ticket must be gone\. Test line 11: assert\.equal\(\(await app\.view\(\)\)\.some\(x => x\.id === t\.id\), false, 'deleted ticket must be gone'\)\./);
 });

@@ -7,10 +7,10 @@
 // the manager's model is asked only for a real choice (M1-M8), and every
 // action it returns is validated here.
 import {nextDirectChild} from './build-verification.js';
-import {isInterfaceError} from './linker.js';
+import {isInterfaceError, parseSource} from './linker.js';
 import {ENTRY_CONTRACT} from './model.js';
 import {clip} from './protocol.js';
-import {normalizeInterfaces, repairInterfaces} from './interfaces.js';
+import {normalizeInterfaces, repairInterfaces, signature, GENERIC_NAMES} from './interfaces.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
@@ -74,7 +74,183 @@ export function failureHead(output) {
 }
 // What a row fails with for progress: a load or run failure's head and the
 // files it is blamed on; any other problem's text is deterministic already.
-export const progressKey=p=>p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
+// v7.15.6 review: a requirement blames no file, so the child the wave's
+// failure was routed to stands in for it (flags.routed_to, set as the
+// ticket goes out): a fix that moves between pieces is progress, as in
+// v7.15.5, and the same piece told the same failure again is none (run9's
+// five-round chain completes, as before). failureKey is the failure alone,
+// the same across waves: the declines of one wave hold for the next.
+export const failureKey=p=>p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
+export const progressKey=p=>p.facts?.failure?`${failureKey(p)}${p.flags?.routed_to?`|>${p.flags.routed_to}`:''}`:p.signature;
+
+// ---------- v7.15.6: a run failure is a requirement, routed by the plan ----------
+// run13 (room 02775583): the fixed test required app.viewTicket(id) to throw
+// after a delete; no frame named a module, triage named nothing, and the
+// compiler's default put it on the entry, a pure composer, which was then
+// punished for changing nothing and wrote a stub deleteTicket.js. The
+// compiler now names no culprit: it reports what the run requires, and each
+// manager routes it as it answers a function request, by its direct
+// children's promises. readRequirement reads the runner's fixed test and
+// its output: text, what must hold (the failing assertion's message or the
+// error); method, the start() method under test (the nearest app.<m>( call
+// at or before the innermost smoke.js frame's line, through a helper of the
+// test when the line is inside one); names, the functions the failure names
+// (the innermost component frame's exported function first, then names in
+// the message); test_line, that call's line and text, and whether it sits
+// inside a try expecting a throw; assertion, the failing line when it is
+// another; frames, the component frames innermost first, as facts.
+const STACK=/\bat (?:((?:async )?[^\n()]*?) \()?([^\s()]+?):(\d+):\d+\)?/g;
+const ERROR_LINE=/(?:^|\): )[ \t]*(\[?(?:[A-Z]\w*)?(?:Error|Rejection)\b(?: \[\w+\])?):[ \t]*([^\n]*)/m;
+const FUNCTIONS=new Set(['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression']);
+const nodes=n=>Object.entries(n).filter(([k])=>!['loc','start','end'].includes(k)).flatMap(([,v])=>Array.isArray(v)?v:[v]).filter(v=>v&&typeof v==='object'&&typeof v.type==='string');
+function visit(node, fn, parents=[]) {fn(node,parents);for(const c of nodes(node))visit(c,fn,[...parents,node]);}
+const frameFn=name=>{const n=String(name||'').replace(/\s*\[as [^\]]*\]\s*$/,'').replace(/^(?:async |new )+/,'').split('.').pop();return /^[\w$]+$/.test(n)?n:'';};
+// The names a declaration's pattern binds (const { id } = await app.createTicket(...)).
+const patternNames=n=>!n?[]:n.type==='Identifier'?[n.name]:n.type==='ObjectPattern'?n.properties.flatMap(p=>patternNames(p.value||p.argument)):n.type==='ArrayPattern'?n.elements.flatMap(patternNames):n.type==='AssignmentPattern'?patternNames(n.left):n.type==='RestElement'?patternNames(n.argument):[];
+// The calls of start()'s object in the test (app.<m>(...)), each with the
+// names its result is bound to, its try blocks and functions. Review: a
+// helper's parameter that receives the object is the object inside the
+// helper (gone(tracker, id) called as gone(app, t.id)).
+function testShape(test) {
+  let ast;try {ast=parseSource(test).ast;} catch {return null;}
+  let app='app';const calls=[],tries=[],fns=[],named=new Map(),passes=[];
+  visit(ast,(n,parents)=>{
+    if(n.type==='VariableDeclarator'&&n.id.type==='Identifier'){const init=n.init?.type==='AwaitExpression'?n.init.argument:n.init;if(init?.type==='CallExpression'&&init.callee.type==='Identifier'&&init.callee.name==='start')app=n.id.name;if(init&&FUNCTIONS.has(init.type))named.set(n.id.name,init);}
+    if(FUNCTIONS.has(n.type)){fns.push(n);if(n.id?.name)named.set(n.id.name,n);}
+    if(n.type==='TryStatement')tries.push(n);
+    if(n.type==='CallExpression'&&n.callee.type==='Identifier')passes.push({name:n.callee.name,args:n.arguments.map(a=>a.type==='Identifier'?a.name:null)});
+    if(n.type==='CallExpression'&&n.callee.type==='MemberExpression'&&!n.callee.computed&&n.callee.object.type==='Identifier'&&n.callee.property.type==='Identifier') {
+      const up=parents.at(-1)?.type==='AwaitExpression'?parents.at(-2):parents.at(-1);
+      calls.push({object:n.callee.object.name,method:n.callee.property.name,line:n.loc.start.line,fn:[...parents].reverse().find(x=>FUNCTIONS.has(x.type))||null,binds:up?.type==='VariableDeclarator'?patternNames(up.id):[],
+        rejects:parents.some(x=>x.type==='CallExpression'&&x.callee.type==='MemberExpression'&&/^(?:rejects|throws)$/.test(x.callee.property?.name))});
+    }
+  });
+  const aliases=passes.flatMap(c=>{const f=named.get(c.name);return f?c.args.flatMap((a,i)=>a===app&&f.params[i]?.type==='Identifier'?[{name:f.params[i].name,fn:f}]:[]):[];});
+  return {app,calls:calls.filter(c=>c.object===app||aliases.some(a=>a.name===c.object&&a.fn===c.fn)),tries,fns,lines:String(test).split('\n')};
+}
+// A catch that fails the test expects no throw (review: assert.fail('createTicket threw: ' + e.message)).
+const FAILS=/process\.exit(?:Code)?\b|\bthrow\b|\bassert\.fail\(|\bassert(?:\.ok|\.equal|\.strictEqual)?\(\s*false\b|\breject\(/;
+// paths: the linked modules' paths; exportsOf(path): the names a module exports.
+export function readRequirement(test, output, paths=[], exportsOf=()=>new Set()) {
+  const s=String(output||''),keys=[...paths].sort((a,b)=>b.length-a.length),frames=[],smoke=[];
+  for(const m of s.matchAll(STACK)) {
+    const file=m[2],path=keys.find(k=>file===k||file.endsWith('/'+k));
+    if(path){if(!frames.some(f=>f.path===path&&f.fn===frameFn(m[1])))frames.push({path,fn:frameFn(m[1]),line:Number(m[3])});}
+    else if(/(?:^|\/)glue\/smoke\.js$/.test(file)&&!smoke.includes(Number(m[3])))smoke.push(Number(m[3]));
+  }
+  // The error line, with the lines a generated assertion message continues
+  // on, and Node's "+ actual - expected" block after any message (review:
+  // run11's "Viewed ticket should match created ticket" lost "actual undefined").
+  const hit=s.match(ERROR_LINE),kind=hit?.[1]||'',assertion=/^AssertionError/.test(kind);
+  let text=hit?(assertion?hit[2]:`${kind}: ${hit[2]}`).trim():s.split('\n').filter(l=>!/node:internal\/|triggerUncaughtException|^\s*\^?\s*$|^\s+at /.test(l)).join(' ').trim();
+  if(hit) {
+    const rest=[];
+    for(const l of s.slice(hit.index+hit[0].length).split('\n')){if(/^\s+at |^Node\.js/.test(l)||rest.length>24)break;if(l.trim()&&!/^[+-] (?:actual|expected)\b/.test(l))rest.push(l);}
+    // A diff's common lines belong to both sides: actual { id: 1, title: 'wrong' }, expected { id: 1, ... }.
+    const side=sign=>rest.filter(l=>!/^[+-] /.test(l)||l.startsWith(sign+' ')).map(l=>l.replace(/^[+-] /,'').trim()).join(' ');
+    if(rest.some(l=>/^[+-] /.test(l)))text+=`${!text||/:$/.test(text)?'':':'} actual ${side('+')||'(nothing)'}, expected ${side('-')||'(nothing)'}`;
+    else if(rest.length&&(/:$/.test(text)||!hit[2].trim()))text+=' '+rest.slice(0,4).map(l=>l.trim()).join(' ');
+  }
+  text=clip(text.replace(/\s+/g,' ').trim(),400);
+  // The method under test and its line: among the calls at or before the
+  // failing line in its scope, one on the line itself, else the one whose
+  // result the line uses (review: created.title asserted after
+  // listTickets() is createTicket's), else the nearest.
+  const shape=testShape(test);let call=null,at=null;
+  if(shape) {
+    const scopeOf=line=>[...shape.fns].reverse().find(f=>f.loc.start.line<=line&&line<=f.loc.end.line)||null;
+    const pick=(list,line)=>{const ids=new Set(String(shape.lines[line-1]||'').match(/[A-Za-z_$][\w$]*/g)||[]),on=list.filter(c=>c.line===line);return on.at(-1)||list.filter(c=>c.binds.some(b=>ids.has(b))).at(-1)||list.at(-1);};
+    for(const line of smoke){const scope=scopeOf(line),same=shape.calls.filter(c=>c.fn===scope&&c.line<=line);if(same.length){call=pick(same,line);at=line;break;}}
+    if(!call&&smoke.length){const before=shape.calls.filter(c=>c.line<=smoke[0]);if(before.length){call=pick(before,smoke[0]);at=smoke[0];}}
+  }
+  // Inside a try expecting a throw: assert.rejects/throws, or the innermost
+  // try around the call whose catch neither fails the test nor rethrows
+  // (run13's catch set errorCaught and read err.message); what that catch
+  // asserts about the error travels with it (review: a worker that threw
+  // another message than the catch checks cost a round).
+  const src=n=>String(test).slice(n.start,n.end);
+  const expects=c=>{
+    if(c.rejects)return {expects_throw:true};
+    const t=shape.tries.filter(t=>t.handler&&t.block.loc.start.line<=c.line&&c.line<=t.block.loc.end.line).at(-1);
+    if(!t||FAILS.test(src(t.handler).replace(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g,'')))return null;
+    const checks=(t.handler.body.body||[]).filter(x=>/\bassert\b/.test(src(x))).slice(0,2).map(x=>clip(src(x).replace(/\s+/g,' ').replace(/;$/,''),200));
+    return {expects_throw:true,...checks.length?{catch_checks:checks.join('; ')}:{}};
+  };
+  const lineText=n=>clip(String(shape?.lines[n-1]??'').trim().replace(/;$/,''),200);
+  // The functions the failure names: the innermost frame's exported
+  // function, then names in the message; a method missing from start()'s
+  // object (app.listTickets is not a function) names start, the API's own.
+  const thrown=frames.find(f=>f.fn&&exportsOf(f.path).has(f.fn)),api=!!shape&&new RegExp(`\\b${shape.app.replace(/\$/g,'\\$')}\\.[\\w$]+ is not a function`).test(text);
+  const names=[...new Set([thrown?.fn,...(text.match(/[A-Za-z_$][\w$]*/g)||[]).filter(w=>/[a-z][A-Z]/.test(w)&&!/(?:Error|Exception|Rejection)$/.test(w)),
+    ...[...text.matchAll(/([\w$.]+) is not (?:a function|defined|a constructor)/g)].map(m=>m[1].split('.').pop()),...api?['start']:[]].filter(Boolean))];
+  return {text,error:!assertion,method:call?.method||'',names,...call?{test_line:{line:call.line,text:lineText(call.line),...expects(call)||{}}}:{},
+    ...at&&call&&at!==call.line&&lineText(at)?{assertion:{line:at,text:lineText(at)}}:{},frames:frames.map(({path,fn})=>({path,fn}))};
+}
+// The promised functions a text names: by their exact name, or by every
+// word of a name of two or more words (run11's "viewed ticket should match
+// created ticket" names viewTicket and createTicket).
+const stem=w=>w.length>3?w.replace(/(?:ing|ied|ies|ed|es|s|e)$/,''):w;
+const wordsOf=s=>(String(s||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().match(/[a-z0-9]+/g)||[]).map(stem);
+// Review: a generic name (create, list) or start is named only as a call,
+// start( or app.start ("Failed to start: tickets.json is missing" sent
+// the start carrier, a pure composer, a storage requirement).
+export function namedFunctions(text, fns) {
+  const s=String(text||''),literal=new Set(s.match(/[A-Za-z_$][\w$]*/g)||[]),have=new Set(wordsOf(s));
+  const byName=f=>literal.has(f.name)&&(!(GENERIC_NAMES.has(f.name)||f.name==='start')||new RegExp(`\\b${f.name}\\(|\\bapp\\.${f.name}\\b`).test(s));
+  return [...new Map((fns||[]).filter(f=>f?.name&&(byName(f)||wordsOf(f.name).length>1&&wordsOf(f.name).every(w=>have.has(w)))).map(f=>[f.name,f])).values()];
+}
+// R3: a ticket is a requirement on the worker's own promised function. fn:
+// the promise the route named (a: by name, c: the method's performer, d:
+// Clef's rank, its first promise, with its others as more); module: the
+// frame's module (b); thrown: the error was thrown in it; relied: the
+// site's function, which relies on this provider party's (review).
+export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null}={}) {
+  const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
+  const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
+  const head=fn?`Your ${signature(fn)}${does}${rest}${on} ${thrown&&r?.error?'threw':verb}: ${need}.`:
+    module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`;
+  const line=r?.test_line?.line?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
+  const at=r?.assertion?.line?` It failed at line ${r.assertion.line}: ${r.assertion.text}.`:'';
+  return head+line+at;
+}
+// R2: where a requirement goes among a manager's direct children, as a
+// function request is answered, no model call until (d): (a) a function it
+// names that a direct child promises (the innermost frame's function first;
+// then the method under test, whose child is the site, the other named
+// functions' children its providers; no method and two named: Clef ranks
+// them); (b) the innermost frame's module, the child whose branch wrote it;
+// (c) the method's performer per the start plan; (d) Clef's ranks over the
+// children's promises. view: {promises: [{child, fns}], frameOwner(path) →
+// the direct child, performer(method) → {child, fn}, ranks: Clef's children
+// best first, or null when not asked}. Returns the candidates in order,
+// declined children left out (R4), and ask: the children Clef should rank
+// (an empty list: all of them), or null when its answer is not wanted.
+// Review: a candidate's providers are the other parties whether or not
+// they declined (a decline says nothing about a child's exports), and a
+// frame's child hears the other frames' children (run11's createTicket
+// hears writeData's signature after the write worker declines); a
+// failure naming start (app.x is not a function) is the start carrier's own.
+export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer=()=>null, ranks=null}={}, declined=[]) {
+  const out=[],skip=new Set(declined),has=c=>out.some(x=>x.child===c);
+  const fnsOf=child=>promises.find(x=>x.child===child)?.fns||[],fnOf=(child,name)=>fnsOf(child).find(f=>f.name===name)||null,promiser=name=>promises.find(x=>x.fns.some(f=>f.name===name))?.child||null;
+  const add=(child,how,extra={})=>{if(child&&!skip.has(child)&&!has(child))out.push({child,how,...extra,text:requirementText(r,extra)});};
+  const frames=(r.frames||[]).map(f=>({...f,child:frameOwner(f.path)})).filter(f=>f.child);
+  frames.forEach((f,i)=>{const fn=f.fn?fnOf(f.child,f.fn):null;add(f.child,fn?'a':'b',{fn,module:f.path,thrown:i===0,providers:[...new Set(frames.filter(x=>x.child!==f.child).map(x=>x.child))]});});
+  const named=[...new Set([...(r.names||[]),...namedFunctions(r.text,promises.flatMap(x=>x.fns)).map(f=>f.name)])].filter(n=>promiser(n));
+  // The method under test names its promise, or its performer per the start plan (run11's app.view is viewTicket).
+  const perf=r.method&&!promiser(r.method)?performer(r.method):null,site=named.includes('start')?'start':r.method&&promiser(r.method)?r.method:perf?.fn?.name&&promiser(perf.fn.name)?perf.fn.name:null,others=named.filter(n=>n!==site);
+  let ask=null;
+  const rank=c=>{const i=(ranks||[]).indexOf(c);return i<0?Infinity:i;};
+  const party=[...new Set(others.map(promiser))].filter(c=>c!==promiser(site)).sort((a,b)=>rank(a)-rank(b)),otherChildren=party.filter(c=>!skip.has(c)&&!has(c)),siteFn=site?fnOf(promiser(site),site):null;
+  if(site)add(promiser(site),site===r.method||site==='start'?'a':'c',{fn:siteFn,method:site==='start'?'':r.method,providers:party});
+  else if(otherChildren.length>1&&!ranks)ask=otherChildren;
+  for(const c of otherChildren)add(c,'a',{fn:fnOf(c,others.find(n=>promiser(n)===c)),relied:siteFn,providers:[promiser(site),...party.filter(x=>x!==c)].filter(Boolean)});
+  if(perf?.child&&!site)add(perf.child,'c',{fn:perf.fn,method:r.method});
+  // Clef's ranks: the ticket names the child's promise (R3), its first function with the others.
+  if(ranks)for(const c of ranks){const [fn,...rest]=fnsOf(c);add(c,'d',{fn:fn||null,more:rest.map(f=>f.name)});}
+  else if(!out.length)ask=ask||[];
+  return {candidates:out,ask};
+}
 
 // v7.15.1: a repair round makes progress when its report no longer fails as
 // the source's report of the manager's last round did (one of its keys, a
@@ -86,7 +262,9 @@ export const progressKey=p=>p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|$
 // rows: the source's problem rows in report order; counted: the waves the
 // manager paid a round for (all, when not given).
 export function reportProgress(rows, wave, counted=null) {
-  const keys=w=>new Set(rows.filter(p=>p.flags?.wave===w).map(progressKey)),now=keys(wave);
+  // Review: the route target joins the key once this wave has one (countRound, after the decision); before it (roundsLeft), the failure alone is compared.
+  const key=rows.some(p=>p.flags?.wave===wave&&p.flags?.routed_to)?progressKey:failureKey;
+  const keys=w=>new Set(rows.filter(p=>p.flags?.wave===w).map(key)),now=keys(wave);
   if(!now.size)return false;
   const waves=[...new Set(rows.map(p=>p.flags?.wave).filter(Boolean))];
   const before=waves.slice(0,waves.indexOf(wave)).filter(w=>!counted||counted.includes(w)).slice(-PROGRESS_LOOKBACK).map(keys);
@@ -117,13 +295,54 @@ export function lowestCommon(placed, kindOf, flags={}) {
 // The deterministic rules, first match decides. ctx: {holder, parent (id or
 // null), kindOf(id) for direct children, builder (id or null), canRelink(p),
 // causedHere(p) (this manager's builder's own edit caused the error), maxHops,
-// promiseAdd(p) (v7.15.5: the names to add to its provider's promise, or null)}.
+// promiseAdd(p) (v7.15.5: the names to add to its provider's promise, or null),
+// route(p) (v7.15.6: a requirement's candidates among the direct children)}.
 // A decision is {rule, action, child?, side?, relay?, delegate?}:
 // assign (child: a worker, a sub-manager or the builder), escalate,
 // exhausted (closed), or fail (a child whose repair rounds ran out).
 export function deterministicDecision(p, ctx) {
-  const flags=p.flags||{},placed=placeParties(ctx.holder,p.parties);
-  if((p.trail||[]).length>=ctx.maxHops)return {rule:'hops',action:'exhausted',reason:`${p.trail.length} decisions without a fix`};
+  const flags=p.flags||{},placed=placeParties(ctx.holder,p.parties),declined=new Set(flags.declined||[]),names=ids=>ids.map(id=>ctx.labelOf?.(id)||id).join(', ');
+  // Review: a route's declines are no hops (run13 with every child declining
+  // closed at root.2 at 6 with Create and Update untried), and below Root
+  // the bound sends the problem up, declined as a branch, for Root to decide.
+  const hops=(p.trail||[]).filter(t=>!declined.has(t.to)).length,why=`${hops} decisions without a fix`;
+  if(hops>=ctx.maxHops)return ctx.parent?{rule:'hops',action:'escalate',declined:true,reason:why}:{rule:'hops',action:'exhausted',reason:why};
+  if(p.kind!=='stuck') {
+    // v7.15.6 (run13, R2): a requirement is routed by the plan among the
+    // direct children, declined children left out (R4): a manager child
+    // routes it down the same way; none → up a level, at Root the model
+    // once (M4), then the run fails stating the requirement. Review: a
+    // Clef error defers it to the next turn; the words the parent's model
+    // decided it with lead the ticket at a manager child.
+    if(p.facts?.requirement&&ctx.route) {
+      const route=ctx.route(p),first=route?.candidates?.[0],said=p.directive?.instructions&&p.directive.side==='site'&&p.directive.by===ctx.parent?`${p.directive.instructions} `:'';
+      if(route?.defer)return {rule:'R2',route:true,action:'defer',reason:route.defer};
+      if(first)return {rule:`R2${first.how}`,route:true,action:'assign',child:first.child,side:'site',...ctx.kindOf(first.child)==='manager'?{delegate:true}:{instructions:said+first.text,facts_text:first.facts||'',providers:first.providers||[]}};
+      const why=`no piece takes the requirement${declined.size?` (declined by ${names([...declined])})`:''}: ${clip(p.facts.requirement.text,200)}`;
+      return ctx.parent?{rule:'R2',route:true,action:'escalate',declined:true,reason:why}:{rule:'R2',route:true,action:'exhausted',reason:why};
+    }
+    // v7.15.6 (R5): the parent asked this branch to take names on a promise (grow).
+    const g=p.directive;
+    if(g?.grow&&ctx.parent&&g.by===ctx.parent) {
+      const add=ctx.promiseAdd?.(p);
+      if(add?.relay)return {rule:'D9',action:'assign',child:add.child,side:'provider',grow:add.grow,instructions:add.instructions};
+      if(add&&!add.up)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
+      return {rule:'D9',action:'escalate',declined:true,reason:`no piece of this branch covers ${g.grow.names.join(', ')}`};
+    }
+  }
+  const dec=decideParties(p,ctx,placed,flags);
+  // v7.15.6 (R4): a child that answered the problem as done without changing
+  // a file declined it, a sign the route was wrong: the next party takes it,
+  // else it goes up a level; at Root, the model once (M4), then it closes.
+  if(dec.action==='assign'&&!dec.builder&&declined.has(dec.child)) {
+    // Never the provider of a name its piece did not promise (run8's rule, as the validator holds the model to it).
+    const f=p.facts||{},next=placed.find(x=>x.place==='child'&&!declined.has(x.child)&&x.child!==dec.child&&!(x.role==='provider'&&(f.unpromised||f.elsewhere?.length))),why=`${names([...declined])} answered it done without changing a file`;
+    if(next)return {rule:'declined',action:'assign',child:next.child,side:next.role,reason:why};
+    return ctx.parent?{rule:'declined',action:'escalate',declined:true,reason:why}:{rule:'declined',action:'exhausted',reason:why};
+  }
+  return dec;
+}
+function decideParties(p, ctx, placed, flags) {
   // A stuck child. A child manager whose repair rounds ran out cannot finish
   // its branch: it fails, unless the model retasks or retires it (M5). A
   // worker the code gate keeps rejecting for TypeScript, JSX or a non-code
@@ -166,8 +385,14 @@ export function deterministicDecision(p, ctx) {
   // one data piece here), so before D4. Review: a name D9 put on the
   // provider's promise that it still does not export is the provider's
   // (owed), never the reader's "never asked to add it".
+  // v7.15.6 (R5): any direct child whose assignment covers the names (one
+  // Clef call over the children's tasks and promises); a manager child gets
+  // it relayed down (grow); none here → up a level; none at Root → the
+  // reader changes its reads (D6, below), only then.
   const add=lcm&&ctx.promiseAdd?.(p);
   if(add?.owed)return {rule:'D9',action:'assign',child:add.child,side:'provider',instructions:add.instructions,facts:add.facts};
+  if(add?.up)return {rule:'D9',action:'escalate',reason:add.reason};
+  if(add?.relay)return {rule:'D9',action:'assign',child:add.child,side:'provider',grow:add.grow,instructions:add.instructions};
   if(add)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
   // D3 delegate: every party lies in one child branch; that branch decides.
   if(kids.length===1&&ctx.kindOf(kids[0])==='manager'&&flags.escalated_from!==kids[0])return {rule:'D3',action:'assign',child:kids[0],delegate:true};
@@ -188,9 +413,9 @@ export function deterministicDecision(p, ctx) {
 // The deterministic subset of the validator: an action names only a direct
 // child that can take it. Returns the reason it is refused, or null.
 export function validateDecision(dec, p, ctx) {
-  if(!['assign','escalate','exhausted','fail','retask'].includes(dec?.action))return 'unknown action';
+  if(!['assign','escalate','exhausted','fail','retask','defer'].includes(dec?.action))return 'unknown action';
   if(dec.action==='escalate')return ctx.parent?null:'the top manager has no parent to escalate to';
-  if(dec.action==='exhausted')return null;
+  if(dec.action==='exhausted'||dec.action==='defer')return null;
   const kind=ctx.kindOf(dec.child),status=ctx.statusOf?.(dec.child);
   if(!kind)return `${dec.child} is not a direct child`;
   if(kind==='compiler')return 'the compiler cannot be assigned a problem';
@@ -198,6 +423,8 @@ export function validateDecision(dec, p, ctx) {
   if(dec.action==='fail')return p.kind==='stuck'?null:'only a stuck child can be failed';
   if(dec.action==='retask')return ['worker','manager'].includes(kind)?null:'only a worker or a sub-manager can be retasked';
   if(kind==='builder')return ['load','run','mismatch'].includes(p.kind)&&ctx.canRelink(p)?null:'the builder takes only interface errors with relinks left';
+  // v7.15.6: a requirement's route and a promise grown by relay name a child by the plan, not by a party.
+  if(dec.route||dec.grow)return null;
   const placed=placeParties(ctx.holder,p.parties);
   return placed.some(x=>x.child===dec.child)?null:`${dec.child} holds no party of this problem`;
 }
@@ -214,7 +441,13 @@ export function validateDecision(dec, p, ctx) {
 export function modelTrigger(p, dec, ctx) {
   const f=p.facts||{},flags=p.flags||{};
   if(dec.rule==='hops')return null;
-  if((flags.no_change||0)>=STUCK_AFTER)return 'M4';
+  // v7.15.6 (R4): the same requirement routed to the same child a third time
+  // is the model's as any recurrence is (M4; review: a worker revising its
+  // file every round was never shown to the model); one nobody takes, or a
+  // problem every party declined, is the model's once at Root (M4, then
+  // flags.model_routed: it closes); below, the parent decides.
+  if(dec.route&&dec.action==='assign'&&!dec.delegate&&(ctx.recurrence?.(p,dec.child)||0)>=STUCK_AFTER)return 'M4';
+  if(dec.route||dec.rule==='declined')return dec.action==='exhausted'&&!flags.model_routed?'M4':null;
   if(p.kind==='stuck')return dec.rule==='D8'?null:'M5';
   if(['D1','D2','D3','D5'].includes(dec.rule)||dec.unique)return null;
   if(dec.rule==='D7')return dec.action==='exhausted'?'M7':null;
@@ -336,11 +569,16 @@ export function validateManagerActions(actions, call, ctx) {
     // branch cannot place itself, so it is retasked, retired or escalated.
     const branch=open.find(id=>byId.get(id).p.kind==='stuck'&&k!=='worker');
     if(branch){refuse(a,`a stuck branch is retasked, retired or escalated, not assigned (problem ${branch})`);continue;}
-    // M4: what a child returned unchanged twice, or a stuck worker already
-    // told twice what to write, does not go back to it; nor does a contract
-    // it was given twice (subject-only: no other side can take it).
-    const unchanged=open.find(id=>{const {p}=byId.get(id),f=p.flags||{};
-      return (f.no_change||0)>=STUCK_AFTER&&(f.no_change_by===child||String(f.no_change_by||'').startsWith(child+'.'))||['stuck','contract'].includes(p.kind)&&(ctx.recurrence?.(p,child)||0)>=STUCK_AFTER;});
+    // M4: what a child declined (v7.15.6: answered done without changing a
+    // file, in its branch or itself), or a stuck worker already told twice
+    // what to write, does not go back to it; nor does a contract it was
+    // given twice (subject-only: no other side can take it).
+    const declined=open.find(id=>(byId.get(id).p.flags?.declined||[]).some(d=>d===child||d.startsWith(child+'.')));
+    if(declined){refuse(a,`${child} declined problem ${declined}: it answered it done without changing a file; give it to another child, retask or retire it, or escalate`);continue;}
+    // Review: the start carrier composes; a run requirement is never its (run13's entry, given one, wrote a stub of another piece's function), only one about start()'s own API (it names start).
+    const carrier=(ctx.promise?.carried?.[child]||[]).includes('start')&&open.find(id=>{const {p}=byId.get(id);return p.kind==='run'&&p.facts?.requirement&&!(p.facts.requirement.names||[]).includes('start');});
+    if(carrier){refuse(a,`${child} carries start() and only composes the application: problem ${carrier} is a requirement on the piece whose promise it is about, not on the start carrier`);continue;}
+    const unchanged=open.find(id=>{const {p}=byId.get(id);return ['stuck','contract'].includes(p.kind)&&(ctx.recurrence?.(p,child)||0)>=STUCK_AFTER;});
     if(unchanged){refuse(a,`${child} already had problem ${unchanged} ${STUCK_AFTER} or more times without a fix: give it to another child, retask or retire it, or escalate`);continue;}
     const instructions=typeof a.instructions==='string'?a.instructions.trim():'';
     if(k!=='builder'&&(!instructions||instructions.length>900)){refuse(a,'instructions must be 1 to 900 characters');continue;}
@@ -441,9 +679,12 @@ export const OWN_ENTRY_CONTRACT='You wrote the whole application: your entry mod
 // atomic top's own repair.
 export function instructionsFor(p, side, own=false) {
   const f=p.facts||{},provider=(p.parties||[]).find(x=>x.role==='provider');
-  if(p.directive?.instructions)return p.directive.instructions;
+  // v7.15.6 (R4): the words a problem was decided with hold for that side only; the next party, after a decline, hears its own.
+  if(p.directive?.instructions&&(!p.directive.side||p.directive.side===side))return p.directive.instructions;
   // run11: the caller reorders its call; the function it calls stays.
   if(f.argorder&&side!=='provider')return `Change your call ${f.argorder.call} to pass its arguments in the order ${f.argorder.name} takes them, (${(f.argorder.params||[]).join(', ')}); ${f.argorder.name} itself stays as it is.`;
+  // v7.15.6 (R3): a run failure is the requirement it states, whoever takes it (a route names the promise).
+  if(f.requirement&&p.kind==='run')return requirementText(f.requirement);
   switch(p.kind) {
     case 'mismatch':return f.elsewhere?.length?`${list(f.elsewhere)} ${f.elsewhere.length>1?'are':'is'} not ${base(provider?.owner_path||provider?.path)||'the other module'}'s: the plan gives ${f.elsewhere.length>1?'them':'it'} to another piece. Import each on its own line, with its name as the path: ${oneLines(f.elsewhere,f.aliases,4,f.esm)} The builder links each line to the module that exports that function.`:
       f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.${f.promised?.length?` Each line takes the function's name as its path: ${oneLines(f.promised,{},4,f.esm)}`:''}`:
@@ -481,22 +722,29 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // the v7.13.3 entry contract alone is 532 and leads the manager's words.
 // kinds: the problems' kinds; when every one is a contract nothing was
 // built or run, so the head says the plan was checked instead (v7.15).
-// unchanged: the worker answered this problem done without changing a file
-// (run8's entry answered 'Fixed entry module' and wrote nothing): it hears
-// so right after the head, once; a second such answer closes it unfixed.
-export const UNCHANGED=' NOTHING CHANGED IN YOUR FILES: you answered this problem as fixed, but your published files are exactly as they were when it was sent. Change the code and publish the FULL updated file; another answer that changes nothing closes the problem unfixed.';
-// An atomic top's problem is never closed unfixed: it is reported again,
-// and each such round counts toward its repair budget (v7.15.2 review).
-export const OWN_UNCHANGED=' NOTHING CHANGED IN YOUR FILES: you answered this problem as fixed, but your published files are exactly as they were when it was sent. Change the code and publish the FULL updated file; each answer that changes nothing uses up one of your repair rounds, and the run fails when none is left.';
+// v7.15.6 (run13): a worker that answers a problem done without changing a
+// file declines it, and its manager routes it elsewhere (R4); it is never
+// told "nothing changed in your files" (the entry, punished so, wrote a
+// stub of another piece's function).
 // own: an atomic top's own repair (v7.15.2): no builder and no manager, and
 // what failed may be the coverage check or the runner's test, not a build.
 // written: every contract is about functions other pieces promise, which
 // the worker writes itself (v7.15.4).
 // piece(dir): who wrote a linked folder, for ownPaths (v7.15.5 review).
-export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],unchanged=false,own=false,written=false,piece=null}) {
+// requirement (v7.15.6, R3): every problem is a run requirement, routed by
+// the plan: the ticket is that requirement on the worker's own promise, the
+// other side's facts, and nothing else (no head, no raw output, 900 at
+// most; review: the tail is kept, the facts give way first, down to 160).
+export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false}) {
+  if(requirement) {
+    const tail=' Publish the FULL updated file.',room=900-tail.length;
+    let body=ownPaths(instructions,piece),more=facts?` What the other side provides: ${ownPaths(facts,piece).slice(0,300)}`:'';
+    if(body.length+more.length>room){body=clip(body,Math.max(room-more.length,room-160));more=clip(more,room-body.length);}
+    return body+more+tail;
+  }
   const head=(kinds.length&&kinds.every(k=>k==='contract')?(written?'YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE. Nothing was run; the plan was checked against your modules.':'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.'):
     (own?'YOUR APPLICATION FAILED ITS CONTAINER RUN. You wrote every file of the application':'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers')+
-    ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER))+(unchanged?own?OWN_UNCHANGED:UNCHANGED:'');
+    ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER));
   const decided=instructions?` ${own?'Required':'Your manager decided'}: ${ownPaths(instructions,piece).slice(0,900)}`:'';
   const shown=problems.map(x=>`${ownPaths(x.path,piece)||'(application)'}: ${ownPaths(x.detail,piece)}`).join('; ');
   const room=Math.max(0,2400-head.length-decided.length-' Problems: '.length-Math.min(shown.length,1100)-' What the other side provides: '.length);

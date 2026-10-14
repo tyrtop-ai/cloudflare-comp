@@ -390,10 +390,10 @@ test('v7.15.6: run13 replayed: a runner that keeps asserting the message has its
   assert.match(outcome.detail,/'Ticket does not exist'[\s\S]*at .*glue\/smoke\.js:53:\d+/);
   assert.equal(rest.length,0);
   assert.ok(SAY53.length<=160,String(SAY53.length));
-  assert.ok(issue.detail.startsWith(SAY53+' The runner\'s test failed: '),issue.detail);
+  assert.ok(issue.detail.startsWith(SAY53+' '),issue.detail);
   assert.deepEqual(issue.facts,{requirement:{invented:true}},'the flag is on the issue\'s facts, for the routing to lift into the problem\'s requirement');
   assert.equal(issue.requirement,undefined);
-  assert.match(issue.failure,/^glue\/smoke\.js: smoke failed \(exit 1\): AssertionError/,'the failure keeps its own text');
+  assert.match(issue.failure,/^smoke failed \(exit 1\): AssertionError/,'the failure keeps its own text (the path is the issue\'s own field now)');
   // Root hears it as the first sentence of the problem, whose progress key is the failure's own.
   const [p,...more]=openProblems(room,'root');
   assert.equal(more.length,0,trace(room));
@@ -408,7 +408,7 @@ test('v7.15.6: run13\'s real round 3: viewTicket returns nothing for a deleted i
   assert.match(events(room,'run_failed').at(-1)?.body||'',/AssertionError \[ERR_ASSERTION\]: Deleting ticket should result in an error when viewing\n\s+at .*glue\/smoke\.js:55:\d+/,trace(room));
   const [outcome]=outcomes.slice(-1),[issue]=outcome.issues;
   assert.equal(SAY55,'Test line 55 requires viewTicket to throw for a deleted id, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.');
-  assert.ok(issue.detail.startsWith(SAY55+' The runner\'s test failed: '),issue.detail);
+  assert.ok(issue.detail.startsWith(SAY55+' '),issue.detail);
   assert.deepEqual(issue.facts,{requirement:{invented:true}});
   const [p]=openProblems(room,'root');
   assert.ok(p.detail.startsWith(SAY55+' '),p.detail);

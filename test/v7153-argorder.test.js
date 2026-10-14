@@ -12,7 +12,7 @@
 // The room tests use the REAL container build runner as the executor.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {materializedPath,liveRoom,openProblems,lastReport,tickets,events,trace} from './helpers/room.js';
+import {materializedPath,liveRoom,openProblems,lastReport,tickets,events,trace,settle} from './helpers/room.js';
 const L=await import('../src/linker.js');
 const P=await import('../src/problems.js');
 const {ROOT_PROMISE}=await import('../src/model.js');
@@ -133,7 +133,10 @@ test('v7.15.3: every import form reaches the function it calls; two calls of one
   assert.deepEqual(L.swappedCalls(files,surfaces).map(x=>[x.target,x.text]),[['components/w/write.js',TEXT]]);
 });
 
-// Run11's run failure, as the compiler filed it (event 748).
+// Run11's run failure, as the compiler filed it (event 748). v7.15.6: no
+// run-time swapped-argument rule (swappedFrame is gone): the stack's frames
+// are facts the manager routes by, innermost first, and the write worker
+// declines to its caller (R4, below). The one-name call stays a loose hint.
 const run11Failure=`smoke failed (exit 1): /work/build-kXWv2y/${WRITE}:10
     throw new TypeError('filePath must be a string or an object with a path property');
           ^
@@ -144,17 +147,11 @@ TypeError: filePath must be a string or an object with a path property
     at /work/build-kXWv2y/glue/smoke.js:10:34
 
 Node.js v22.23.3`;
-test('v7.15.3: a stack that enters a provider from a call with its arguments out of order names the caller, even by one name',()=>{
-  for(const [source,call] of [[swappedCreate,'writeData(data, filePath)'],[oneNameCreate,'writeData(ticket, filePath)']]) {
-    const {files,surfaces}=linked(source),hit=L.swappedFrame(files,surfaces,run11Failure);
-    assert.deepEqual([hit?.path,hit?.target,hit?.call,hit?.text],[CREATE,WRITE,call,`createTicket.js calls ${call}, but writeData takes (filePath, data): pass the arguments in that order`]);
-  }
-  const {files,surfaces}=linked(fixedCreate);
-  assert.equal(L.swappedFrame(files,surfaces,run11Failure),null,'the call is in order: the provider stays the site');
+test('v7.15.6: run11\'s stack reads as a requirement with its frames innermost first; the one-name call is only a loose hint at link time',()=>{
   const one=linked(oneNameCreate);
-  assert.equal(L.swappedFrame(one.files,one.surfaces,run11Failure.replace(`${CREATE}:11:5`,`${CREATE}:4:3`)),null,'no call into the provider at that line');
-  assert.equal(L.swappedFrame(one.files,one.surfaces,'TypeError: boom\n    at /work/glue/smoke.js:3:1'),null,'no frame in a module');
-  // Without the stack, the one-name call is only a hint.
+  assert.equal(L.swappedFrame,undefined,'the run-time rule is gone');
+  const r=P.readRequirement("const { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = app.create({ title: 'T' }, 'f.json');\n})();\n",run11Failure,[...one.files.keys()],p=>L.providedNames(one.surfaces.get(p)));
+  assert.deepEqual([r.text,r.error,r.method,r.names,r.frames],['TypeError: filePath must be a string or an object with a path property',true,'create',['writeData','filePath'],[{path:WRITE,fn:'writeData'},{path:CREATE,fn:'createTicket'}]],'the names the message gives, promised or not; the manager keeps the promised ones');
   assert.deepEqual(L.swappedCalls(one.files,one.surfaces),[]);
   assert.deepEqual(L.swappedCalls(one.files,one.surfaces,{loose:true}).map(x=>x.loose),[true]);
 });
@@ -214,7 +211,7 @@ test('v7.15.3: at link time only run11\'s signal counts, a function passing its 
   assert.deepEqual(scan(at("function create(list, filePath) { list.forEach(data => writeData(data, filePath)); }\nmodule.exports = { create };\n")),[]);
 });
 
-test('v7.15.3: a wrapper that reorders what it took is not blocked at link time; the stack with an error about the arguments gives it to the caller, and triage reads it',()=>{
+test('v7.15.3: a wrapper that reorders what it took is not blocked at link time; loose, it is a hint',()=>{
   const W='components/ds/write.js',C='components/ct/entry.js';
   const write="async function writeData(filePath, data) { if (typeof filePath !== 'string') throw new TypeError('filePath must be a string'); }\nmodule.exports = { writeData };\n";
   const update="function updateTicket(id, updates, filePath) { if (typeof filePath !== 'string') throw new TypeError('filePath must be a string'); }\nmodule.exports = { updateTicket };\n";
@@ -223,29 +220,13 @@ test('v7.15.3: a wrapper that reorders what it took is not blocked at link time;
   for(const [provider,caller,call] of [[write,"const { writeData } = require('../ds/write.js');\nfunction saveTicket(filePath, data) {\n  return writeData(data, filePath);\n}\nmodule.exports = { saveTicket };\n",'writeData(data, filePath)'],
     [update,"const { updateTicket } = require('../ds/write.js');\nconst FILE = 'tickets.json';\nfunction start() {\n  return { update: (id, updates) => updateTicket(updates, id, FILE) };\n}\nmodule.exports = { start };\n",'updateTicket(updates, id, FILE)'],
     [update,"const { updateTicket } = require('../ds/write.js');\nfunction f(id, updates, filePath) {\n  return updateTicket(filePath, id, updates);\n}\nmodule.exports = { f };\n",'updateTicket(filePath, id, updates)']]) {
-    const {files,surfaces}=sources({[C]:caller,[W]:provider}),line=caller.split('\n').findIndex(l=>l.includes(call))+1;
+    const {files,surfaces}=sources({[C]:caller,[W]:provider});
     assert.deepEqual(L.swappedCalls(files,surfaces),[],call);
     assert.deepEqual(L.swappedCalls(files,surfaces,{loose:true}).map(x=>x.call),[call]);
-    const stack=`TypeError: filePath must be a string\n    at writeData (/work/b/${W}:1:80)\n    at Object.f (/work/b/${C}:${line}:10)\n    at /work/b/glue/smoke.js:3:1`;
-    assert.equal(L.swappedFrame(files,surfaces,stack)?.call,call);
   }
-});
-
-test('v7.15.3: at run time a member read alone is no evidence, and only an error about the arguments moves the problem to the caller',()=>{
-  const W='components/w/write.js',C='components/c/create.js';
-  const at=call=>sources({[W]:"function writeData(filePath, data) {\n  require('fs').mkdirSync('/tmp/x', { recursive: true });\n  throw new Error('disk full');\n}\nmodule.exports = { writeData };\n",
-    [C]:`const { writeData } = require('../w/write.js');\nconst config = { data: '/var/app/tickets.json' };\nfunction createTicket(ticket, filePath) {\n  ${call};\n  return ticket;\n}\nmodule.exports = { createTicket };\n`});
-  const frame=(call,error)=>{const {files,surfaces}=at(call);return L.swappedFrame(files,surfaces,`${error}\n    at writeData (/work/b/${W}:3:9)\n    at createTicket (/work/b/${C}:4:3)\n    at /work/b/glue/smoke.js:5:1`)?.call??null;};
-  // The review's probe: config.data is the path, so the call is right and writeData failed on its own.
-  assert.equal(frame('writeData(config.data, ticket)','Error: disk full'),null);
-  assert.equal(frame('writeData(config.data, ticket)','TypeError: filePath must be a string'),null,'one member read names nothing');
-  {const {files,surfaces}=at('writeData(config.data, ticket)');assert.deepEqual(L.swappedCalls(files,surfaces,{loose:true}),[],'nor is it a hint');}
-  // One variable out of place: the error decides.
-  assert.equal(frame('writeData(ticket, filePath)','Error: disk full'),null,'the provider\'s own failure stays its own');
-  assert.equal(frame('writeData(ticket, filePath)','Error: file_path is required'),'writeData(ticket, filePath)','the message names a misplaced parameter');
-  assert.equal(frame('writeData(ticket, filePath)','node:internal/fs/promises:636\n  path = getValidatedPath(path);\n         ^\n\nTypeError [ERR_INVALID_ARG_TYPE]: The "path" argument must be of type string. Received an instance of Object\n    at open (node:internal/fs/promises:636:10)'),
-    'writeData(ticket, filePath)','a TypeError, as run11\'s first writeData threw from node internals');
-  assert.equal(frame('writeData(ticket, filePath)',"/work/b/x.js:3\n    throw new TypeError('x');\n          ^\n\nError: disk full"),null,'the source line Node quotes is not the error');
+  // A member read alone is no hint either (the review's probe: config.data is the path).
+  const {files,surfaces}=sources({[W]:write,['components/c/create.js']:"const { writeData } = require('../ds/write.js');\nconst config = { data: '/var/app/tickets.json' };\nfunction createTicket(ticket, filePath) {\n  writeData(config.data, ticket);\n  return ticket;\n}\nmodule.exports = { createTicket };\n"});
+  assert.deepEqual(L.swappedCalls(files,surfaces,{loose:true}),[]);
 });
 
 test('v7.15.3: the plan\'s promise decides only when the definition cannot be read: a readable definition whose names differ is what runs',()=>{
@@ -405,31 +386,48 @@ async function compiled(create,write=writeModule,opts={runner:()=>createTest}) {
   await r.room.turn(r.room.compilerOf('root').id);
   return r;
 }
-test('v7.15.3: a run that throws inside writeData, entered from createTicket.js with one argument named out of place, goes to createTicket, not the write worker',async()=>{
-  const {room,calls}=await compiled(oneNameCreate);
+// v7.15.6 (run13, R2/R4): run11's TypeError inside writeData, called from
+// createTicket.js with one argument out of place, goes where the frames
+// say, innermost first: the write worker, which declines it (its code is
+// right), and then its caller, createTicket: two rounds, not four.
+test('v7.15.6: run11 replay: a run that throws inside writeData goes to the write worker first; it declines, and createTicket, the caller frame, takes it',async()=>{
+  const {room,calls}=await compiled(oneNameCreate,writeModule,{runner:()=>createTest,
+    leaf:user=>user.your_label==='Write ticket data'?{summary:'writeData is as promised; nothing to change',done:true}:{summary:'Fixed the order',done:true,files:[{path:'createTicket.js',content:fixedCreate}]}});
   const report=lastReport(room,room.compilerOf('root').id),[issue]=report?.issues||[];
   assert.equal(report?.stage,'run',trace(room));
-  assert.equal(issue.kind,'run');
-  assert.deepEqual([issue.path,issue.target],[CREATE,WRITE]);
-  assert.ok(issue.detail.startsWith('createTicket.js calls writeData(ticket, filePath), but writeData takes (filePath, data): pass the arguments in that order. '),issue.detail);
-  assert.match(issue.detail,/filePath must be a string or an object with a path property/);
-  assert.equal(calls.triage.length,0,'the stack named the modules');
+  assert.deepEqual([issue.kind,issue.path,issue.target],['run','',WRITE],'no owner; the frames are facts');
+  assert.doesNotMatch(issue.detail,/pass the arguments in that order/);
   const [p]=openProblems(room,'root');
-  assert.deepEqual(p.parties.map(x=>[x.role,x.owner]),[['site','root.2'],['provider','root.1.2']]);
-  await room.turn('root');
-  assert.deepEqual(room.problems('id=?',p.id).map(x=>[x.status,x.assignee,x.trail.at(-1).rule]),[['assigned','root.2','default']]);
-  assert.match(tickets(room,'root.2')[0],/Your manager decided: Change your call writeData\(ticket, filePath\) to pass its arguments in the order writeData takes them, \(filePath, data\); writeData itself stays as it is\./);
-  assert.equal(calls.manager.length,0);
+  assert.deepEqual(p.parties.map(x=>[x.role,x.owner]),[['site',''],['site','root.1.2'],['site','root.2']]);
+  assert.deepEqual([p.facts.requirement.text,p.facts.requirement.method,p.facts.requirement.frames.map(f=>f.fn)],['TypeError: filePath must be a string or an object with a path property','create',['writeData','createTicket']]);
+  await settle(room,60);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(calls.manager.length,0,trace(room));
+  // The dataStore branch first (R2a: writeData is its promise), down to the write worker.
+  assert.deepEqual(room.problems('id=?',p.id)[0].trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','delegate','root.1','R2a'],['root.1','assign','root.1.2','R2a'],['root.1','escalate','root','R2'],['root','assign','root.2','R2a']]);
+  const heard=label=>calls.leaf.filter(u=>u.your_label===label).map(u=>u.new_messages.map(m=>m.body).join('\n'));
+  const [write]=heard('Write ticket data');
+  assert.ok(write.startsWith('Your writeData(filePath, data) ("writes ticket data to storage") threw: TypeError: filePath must be a string or an object with a path property. Test line 7: const t = app.create({ title: \'Printer jam\' }, path.join(os.tmpdir(), \'v7153-tickets.json\')).'),write);
+  assert.doesNotMatch(write,/REAL CONTAINER BUILD FAILED|NOTHING CHANGED/);
+  // It declines; the problem goes up declined and comes to createTicket, with the same requirement on its own promise.
+  assert.deepEqual(events(room,'route_declined').map(e=>[e.actor,e.recipient]),[['root.1','root.1.2']]);
+  assert.deepEqual(room.problems('id=?',p.id)[0].flags.declined,['root.1.2','root.1']);
+  const [create]=heard('createTicket');
+  assert.ok(create.startsWith('Your createTicket(data, filePath) ("creates a new ticket with unique ID") must not fail with: TypeError: filePath must be a string or an object with a path property. Test line 7: '),create);
+  // Review: the caller hears what the other frame's piece exports (writeData's signature), declined or not.
+  assert.match(create,/ What the other side provides: module\.js exports: [^]*writeData\(filePath, data\)[^]* Publish the FULL updated file\.$/);
+  assert.equal(calls.leaf.length,2,'two rounds, not four');
+  assert.deepEqual([room.get('repair_rounds:root.1'),room.get('repair_rounds:root')],['1','1']);
 });
 test('v7.15.3: a run that throws inside the provider from a call in order stays the provider\'s',async()=>{
   const broken=writeModule.replace("  await fs.writeFile(path, JSON.stringify(data));","  throw new TypeError('storage offline');");
   const {room}=await compiled(fixedCreate,broken);
   const [issue]=lastReport(room,room.compilerOf('root').id)?.issues||[];
   assert.equal(issue?.kind,'run',trace(room));
-  assert.ok(issue.path.endsWith('/module.js'),issue.path);
+  assert.ok(issue.target.endsWith('/module.js'),issue.target);
   assert.doesNotMatch(issue.detail,/pass the arguments in that order/);
   const [p]=openProblems(room,'root');
-  assert.equal(p.parties[0].owner,'root.1.2');
+  assert.equal(p.parties[1].owner,'root.1.2');
   await room.turn('root');
   assert.equal(room.problems('id=?',p.id)[0].holder,'root.1','the dataStore branch, as before');
 });
@@ -438,17 +436,22 @@ test('v7.15.3: the provider\'s own error, not about the arguments, stays the pro
   const {room}=await compiled(oneNameCreate,full);
   const [issue]=lastReport(room,room.compilerOf('root').id)?.issues||[];
   assert.equal(issue?.kind,'run',trace(room));
-  assert.ok(issue.path.endsWith('/module.js'),issue.path);
+  assert.ok(issue.target.endsWith('/module.js'),issue.target);
   assert.match(issue.detail,/disk full/);
   assert.doesNotMatch(issue.detail,/pass the arguments in that order/);
-  assert.equal(openProblems(room,'root')[0].parties[0].owner,'root.1.2');
+  assert.equal(openProblems(room,'root')[0].parties[1].owner,'root.1.2');
 });
-test('v7.15.3: with no module in the stack, triage reads the calls whose arguments are out of order',async()=>{
+test('v7.15.6: with no module in the stack, the method under test names its performer per the start plan (R2c), with no model call',async()=>{
   // writeData stores nothing and returns; the runner's own assertion fails.
   const quiet="async function writeData(filePath, data) { return undefined; }\nmodule.exports = { writeData };\n";
   const assertTest=createTest.replace("assert.equal(t.title, 'Printer jam');","assert.equal(t.title, 'Paper jam');");
-  const r=await compiled(oneNameCreate,quiet,{runner:()=>assertTest,triage:()=>null});
-  assert.equal(r.calls.triage.length,1,trace(r.room));
-  // Names alone do not confirm it: the hint says so, and gives no order to follow (review).
-  assert.deepEqual(r.calls.triage[0].argument_order_checks,[`Unconfirmed, by names only (the order may be deliberate): ${CREATE} calls writeData(ticket, filePath); writeData takes (filePath, data)`]);
+  const r=await compiled(oneNameCreate,quiet,{runner:()=>assertTest});
+  const [p]=openProblems(r.room,'root');
+  assert.deepEqual([p.facts.requirement.method,p.facts.requirement.frames,p.facts.requirement.test_line.line],['create',[],7],trace(r.room));
+  await r.room.turn('root');
+  assert.deepEqual(r.room.problems('id=?',p.id).map(x=>[x.status,x.assignee,x.trail.at(-1).rule]),[['assigned','root.2','R2c']]);
+  assert.equal(r.calls.clef.length+r.calls.manager.length,0);
+  const [ticket]=tickets(r.room,'root.2');
+  assert.ok(ticket.startsWith("Your createTicket(data, filePath) (\"creates a new ticket with unique ID\"), which start() returns as create, must satisfy: Expected values to be strictly equal: actual 'Printer jam', expected 'Paper jam'. Test line 7: "),ticket);
+  assert.ok(ticket.includes(" It failed at line 8: assert.equal(t.title, 'Paper jam'). Publish the FULL updated file."),ticket);
 });

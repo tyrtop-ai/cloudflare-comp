@@ -39,7 +39,10 @@ AssertionError [ERR_ASSERTION]: ${message}
 
 Node.js v22.23.3
 `;
-// Run9's triage verdicts, rounds 1 to 5 (round 6 had none).
+// Run9's triage verdicts, rounds 1 to 5 (round 6 had none). v7.15.6: no
+// triage model; in a room without promises Clef ranks the children for each
+// requirement (R2d), scripted here to the file the round names, as run9's
+// triage blamed it.
 const TRIAGE=["The entry module's 'create' function is currently a placeholder with no implementation, but it needs to invoke the 'createTicket' function from 'components/create-tic-f07f9de6/createTicket.js' to fulfill the test's expectation of creating a ticket.",
   "The addTicket function currently pushes the ticket to the array but does not return it. The createTicket module expects a return value from addTicket to get the created ticket object (including its id), but since addTicket returns undefined, the test assertion for 'Ticket should be created' fails.",
   "The create function in entry.js calls createTicket() without required data parameter, causing addTicket to receive undefined.",
@@ -47,7 +50,7 @@ const TRIAGE=["The entry module's 'create' function is currently a placeholder w
   "The view function in entry.js is unimplemented and doesn't retrieve tickets from the data module. It should use data.getTickets() to fetch tickets and find the one with the matching ID, but currently returns undefined."];
 // Root's two workers, linked, and the compiler. Each run of the runner's
 // test in the Container answers the next scripted round, {message, line,
-// file, triage}, and triage blames that round's file (none: the entry);
+// file}, and Clef ranks that round's file's worker first (none: the entry);
 // past the script the test really runs, and passes. A worker's repair
 // always changes its file.
 async function room9(script) {
@@ -59,9 +62,9 @@ async function room9(script) {
     const output=node22(round.message,round.line);
     return {fingerprint,snapshot_hash,passed:false,issues:[{path:'glue/smoke.js',kind:'source',detail:`smoke failed (exit 1): ${output}`}],checks:[{name:'smoke',exit_code:1,log:output}],log:`smoke: exit 1\n${output}`};
   }};
-  const triage=user=>round?.triage?{file:user.modules.find(m=>m.path.endsWith(`/${round.file}.js`)).path,problem:round.triage}:null;
+  const clef=input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label===(round?.file==='data'?'Data Module':'Entry Module')?0.9:0.2}]))});
   const leaf=user=>({summary:'Fixed',done:true,files:user.your_label==='Entry Module'?[{path:'entry.js',content:`${app}// fix ${++repairs}\n`}]:[{path:'data.js',content:`${data}// fix ${++repairs}\n`}]});
-  const {room,calls}=liveRoom({runner:()=>runner,manager:()=>({actions:[]}),leaf,triage,executor});
+  const {room,calls}=liveRoom({runner:()=>runner,manager:()=>({actions:[]}),leaf,clef,executor});
   await room.provision('root',null,'Root objective','Build a small issue tracker that lets someone create tickets.');
   room.set('goal','Build a small issue tracker that lets someone create tickets.');
   await workers(room,'root',[['Entry Module','entry.js',app],['Data Module','data.js',data]]);
@@ -131,8 +134,10 @@ test('v7.15.1: reportProgress: a first report, one where a key of the last paid 
 });
 
 // Run9's rounds, through the real compiler: the failure moves through
-// assertions and files, then the bundle passes. Round 3 blames entry.js for
-// the assertion round 1 did, so it alone counts as a round without progress.
+// assertions and files, then the bundle passes. v7.15.6: the compiler
+// blames no file; the child each round's requirement is routed to keys
+// progress as the blamed file did (review), so round 2, routed elsewhere,
+// is progress and round 3, back where round 1 went, is none.
 test('v7.15.1: run9 replay: a failure that moves never exhausts Root, and the run completes',async()=>{
   const script=[{message:'Ticket should be created',line:9,file:'entry',triage:TRIAGE[0]},{message:'Ticket should be created',line:9,file:'data',triage:TRIAGE[1]},
     {message:'Ticket should be created',line:9,file:'entry',triage:TRIAGE[2]},{message:'Created ticket should have an id',line:10,file:'data',triage:TRIAGE[3]},
@@ -142,7 +147,8 @@ test('v7.15.1: run9 replay: a failure that moves never exhausts Root, and the ru
   const {room,calls}=await room9(script);
   await settle(room,80);
   assert.equal(room.get('status'),'complete',trace(room));
-  assert.equal(calls.triage.length,7);
+  assert.equal(calls.clef.length,7,'one Clef ranking per requirement');
+  assert.deepEqual(room.problems("kind='run'").map(p=>p.trail.find(t=>t.action==='assign')?.to),['root.1','root.2','root.1','root.2','root.1','root.1','root.1'],'each round went where Clef ranked');
   assert.deepEqual(verdicts(room),['progress','progress','no progress','progress','progress','progress','progress']);
   assert.deepEqual(['repair_rounds:root','repair_stalled:root','repair_rounds_total'].map(k=>room.get(k)),['7','0','7']);
   assert.match(rounds(room).at(-1),/^Repair round 7 \(7 of the run's 20\): progress \(what fails changed\); 3 round\(s\) without progress left\.$/);
@@ -163,8 +169,8 @@ test('v7.15.1: with no triage, a moving assertion in one file is progress every 
   assert.deepEqual(verdicts(room),Array(5).fill('progress'));
 });
 
-// The same failure, re-triaged in new words each round, as a model does.
-test('v7.15.1: the same failure, worded anew by triage each round, ends the manager after 3 rounds without progress',async()=>{
+// The same failure each round (v7.15.6: the requirement's text is the runner's own, whatever a round's words).
+test('v7.15.1: the same failure each round ends the manager after 3 rounds without progress',async()=>{
   const {room}=await room9(sameTriage(6).map(triage=>({message:'Ticket should be viewable',line:14,file:'entry',triage})));
   await settle(room,80);
   assert.equal(sent(room),4,trace(room));
@@ -174,6 +180,22 @@ test('v7.15.1: the same failure, worded anew by triage each round, ends the mana
   assert.equal(room.node('root').status,'failed');
   assert.equal(room.get('status'),'failed');
   assert.match(room.node('root').summary,/^Repair rounds exhausted: Root objective made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
+});
+
+// v7.15.6 review: the budget is not tighter than v7.15.5's: a chain fixed
+// one piece per round on one unchanged assertion counts the move between
+// pieces as progress (the route target, as the blamed file was).
+test('v7.15.6 review: a same-assertion chain whose fix moves between two pieces each round completes after five rounds and a new assertion, as in v7.15.5; six rounds exhaust Root',async()=>{
+  const chain=n=>[...Array.from({length:n},(_,i)=>({message:'Ticket should be created',line:9,file:i%2?'data':'entry'})),{message:'Created ticket should have an id',line:10,file:'data'}];
+  const five=await room9(chain(5));
+  await settle(five.room,80);
+  assert.equal(five.room.get('status'),'complete',trace(five.room));
+  assert.deepEqual(verdicts(five.room),['progress','progress','no progress','no progress','no progress','progress']);
+  assert.deepEqual(five.room.problems("kind='run'").map(p=>p.flags.routed_to),['root.1','root.2','root.1','root.2','root.1','root.2'],'the route target on each wave\'s row');
+  const six=await room9(chain(6));
+  await settle(six.room,80);
+  assert.deepEqual([six.room.get('status'),verdicts(six.room)],['failed',['progress','progress','no progress','no progress','no progress']],trace(six.room));
+  assert.match(six.room.node('root').summary,/made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
 });
 
 test('v7.15.1: ping-pong between two failures ends after 3 rounds without progress, not at the run\'s ceiling',async()=>{

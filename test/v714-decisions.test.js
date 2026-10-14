@@ -442,20 +442,24 @@ async function repoApp({leaf,manager}) {
   await settle(r.room,40);
   return r;
 }
-// M4: the model sees that a child returned a problem unchanged (its history
-// is kept in the trails, though a reopened problem has no assignee), and it
-// cannot give it to that child a third time.
-test('v7.14: a problem returned unchanged is shown to the model as such, and does not go to the same child a third time',async()=>{
-  const {room,calls}=await repoApp({leaf:()=>({summary:'No change',done:true,files:[{path:'app.js',content:addApp}]}),
+// M4: a child that answers a problem done without changing a file declines
+// it (v7.15.6, R4): the next party takes it without the model; with every
+// party declined, the model is asked once, sees who declined (the trails
+// keep the history, though a reopened problem has no assignee), and cannot
+// give it back to a child that declined.
+test('v7.14: a problem every party declined is shown to the model as such, and does not go back to a child that declined',async()=>{
+  const {room,calls}=await repoApp({leaf:user=>({summary:'No change',done:true,files:[user.your_label==='Repository'?{path:'repo.js',content:repoOnly}:{path:'app.js',content:addApp}]}),
     manager:user=>({actions:[{action:'assign',problems:[user.problems[0].id],child:'root.2',instructions:'Use create(d) from repo.js.'}]})});
-  assert.equal(calls.manager.length,3);
-  assert.deepEqual(calls.manager.map(u=>u.problems[0].trigger),['M8','M8','M4']);
+  assert.equal(calls.manager.length,2,trace(room));
+  assert.deepEqual(calls.manager.map(u=>u.problems[0].trigger),['M8','M4']);
   assert.equal(calls.manager[0].problems[0].history,undefined);
-  assert.deepEqual(calls.manager[1].problems[0].history,{assigned_before:['root.2'],returned_unchanged_by:'root.2',times:1});
-  assert.deepEqual(calls.manager[1].children.find(c=>c.id==='root.2').history,{assigned:1,returned_unchanged:1,last_outcome:'returned unchanged'});
-  assert.deepEqual(calls.manager[2].children.find(c=>c.id==='root.2').history,{assigned:2,returned_unchanged:2,last_outcome:'returned unchanged'});
-  assert.ok(events(room,'problem_decision_rejected').some(e=>/assign root\.2: root\.2 already had problem \w+ 2 or more times without a fix/.test(e.body)));
-  assert.equal(ticketsTo(room,'root.2'),2,'two tickets, not three');
+  assert.deepEqual(calls.manager[1].problems[0].history,{assigned_before:['root.2','root.1'],declined_by:['root.2','root.1']});
+  assert.deepEqual(calls.manager[1].children.find(c=>c.id==='root.2').history,{assigned:1,declined:1,last_outcome:'declined'});
+  assert.deepEqual(calls.manager[1].problems[0].default,{action:'close'});
+  assert.ok(events(room,'problem_decision_rejected').some(e=>/assign root\.2: root\.2 declined problem \w+: it answered it done without changing a file/.test(e.body)),trace(room));
+  assert.equal(ticketsTo(room,'root.2'),1,'one ticket; the next party took it, then the model could not send it back');
+  assert.equal(ticketsTo(room,'root.1'),1,'the provider, the next party (R4)');
+  assert.deepEqual(events(room,'route_declined').map(e=>e.recipient),['root.2','root.1']);
   assert.equal(room.get('status'),'failed');
 });
 // A retasked worker owes the fix as an assigned one does: a rerun that

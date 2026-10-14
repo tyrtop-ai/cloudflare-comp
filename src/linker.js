@@ -1599,28 +1599,9 @@ export function swappedCalls(files, surfaces, {promised=null, loose=false, at=nu
   }
   return out;
 }
-// A run's stack, innermost first: the first frame in a module of files and
-// the next frame in another module, the caller. Its call there into the
-// first module, with its arguments out of order (loose: one variable named
-// as another position's parameter, which the stack makes likely), is the
-// caller's to change (run11: thrown inside writeData, called from
-// createTicket.js:11), when the error is about the arguments: a TypeError,
-// or a message naming a parameter the call misplaced (run11: "TypeError:
-// filePath must be a string…"). Any other error, "disk full" say, is the
-// provider's own. null when the stack shows no such call.
-const FRAME=/\bat (?:[^\n()]*\()?([^\s()]+?):(\d+):\d+\)?/g;
-export function swappedFrame(files, surfaces, detail, {promised=null}={}) {
-  const text=String(detail||''),set=files instanceof Map?files:new Map(Object.entries(files)),keys=[...set.keys()].filter(p=>LINKABLE.test(p)).sort((a,b)=>b.length-a.length);
-  const frames=[...text.matchAll(FRAME)].map(m=>({path:keys.find(k=>m[1]===k||m[1].endsWith('/'+k)),line:Number(m[2])})).filter(f=>f.path);
-  const inner=frames[0],caller=inner&&frames.find(f=>f.path!==inner.path);
-  const hit=caller?swappedCalls(set,surfaces,{promised,loose:true,at:{path:caller.path,line:caller.line,target:inner.path}})[0]:null;
-  if(!hit)return null;
-  // The thrown error: the last "SomeError: message" (or "TypeError [CODE]:") before the stack.
-  const cut=text.search(/\n\s+at /),head=cut<0?text:text.slice(0,cut),error=[...head.matchAll(/^\s*([A-Z][\w$]*)(?:\s*\[[\w$]+\])?:/gm)].filter(m=>/(?:Error|Exception)$/.test(m[1])).at(-1);
-  if(!error)return null;
-  const words=new Set(head.slice(error.index).split(/[^\w$]+/).map(argKey));
-  return error[1]==='TypeError'||hit.misplaced.some(n=>words.has(argKey(n)))?hit:null;
-}
+// v7.15.6 (run13): no run-time swapped-argument rule. A run failure is routed
+// by the plan (the frames innermost first, the write worker declining to the
+// caller); the link-time check above, against the promised parameters, stays.
 
 // ---------- deterministic linking: no model call when the answer is mechanical ----------
 const normName=s=>String(s||'').toLowerCase().replace(/\.(?:m|c)?js$/,'').replace(/[^a-z0-9]/g,'');

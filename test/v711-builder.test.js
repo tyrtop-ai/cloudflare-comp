@@ -509,7 +509,10 @@ test('room: a branch builder leaves an import that points outside its branch for
   assert.deepEqual(link.unresolved.map(u=>u.specifier),['./ticketService']);
 });
 
-test('room: an assertion failure with no component frame is triaged by the compiler to the owning worker',async()=>{
+// v7.15.6 (run13): no triage model. A failure with no component frame is a
+// requirement the compiler files with no owner; a room without promises
+// routes it by Clef's ranks over the children's tasks (R2d).
+test('room: an assertion failure with no component frame is filed as a requirement with no owner, and a room without promises routes it by Clef\'s ranks',async()=>{
   let paths;
   const brokenRepo=repoSource.replace('this.#tickets.splice(i,1); return true;','return true;');
   const {room,calls}=liveRoom({
@@ -517,19 +520,22 @@ test('room: an assertion failure with no component frame is triaged by the compi
       const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
       return {edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:`require('../${paths.repoPath.split('/').slice(1).join('/')}')`},{file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],entry:app?.path??null,issues:[]};
     },
-    triage:()=>({file:paths.repoPath,problem:'delete(id) returns true without removing the ticket from #tickets.'})
+    clef:input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label==='Ticket repository'?0.9:0.2}]))})
   });
   paths=await twoWorkers(room,{repo:brokenRepo});
   const {compiler}=await linkAndCompile(room);
   assert.equal(calls.runner.length,1,'an application failure is not blamed on the runner test');
-  assert.equal(calls.triage.length,1);
-  assert.ok(calls.triage[0].modules.some(m=>m.content?.includes('#tickets')),'triage sees source when it fits');
   const failure=lastReport(room,compiler.id);
   assert.equal(failure.stage,'run');
-  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['run',paths.repoPath,'root']]);
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['run','','root']],'the compiler names no culprit');
   assert.match(failure.issues[0].detail,/deleted ticket must be gone/);
+  const [p]=openProblems(room,'root');
+  assert.deepEqual([p.facts.requirement.text,p.facts.requirement.method,p.facts.requirement.test_line.line,p.facts.requirement.frames],['deleted ticket must be gone','listTickets',11,[]]);
   await room.turn('root');
-  assert.equal(tickets(room,'root.1').length,1,'the repository worker receives it');
+  assert.equal(calls.clef.length,1,'one Clef call ranks the children');
+  assert.deepEqual(room.problems('id=?',p.id).map(x=>[x.status,x.assignee,x.trail.at(-1).rule]),[['assigned','root.1','R2d']]);
+  const [ticket]=tickets(room,'root.1');
+  assert.ok(ticket.startsWith("The runner's test requires: deleted ticket must be gone. Test line 11: assert.equal((await app.listTickets()).some(x => x.id === t.id), false, 'deleted ticket must be gone'). Publish the FULL updated file."),ticket);
   assert.equal(room.receive('root.2').length,0);
 });
 
@@ -548,8 +554,10 @@ test('room: the runner\'s test is static: a test that ran is never rewritten; it
   assert.equal(calls.runner.length,1,'the test that ran is not rewritten');
   const failure=lastReport(room,compiler.id);
   assert.equal(failure.stage,'run');
-  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['run',paths.appPath,'root']],'the entry module must satisfy the test');
+  assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['run','','root']],'the application must satisfy the test; the compiler names no owner (v7.15.6)');
   assert.match(failure.issues[0].detail,/app\.create is not a function/);
+  // v7.15.6 review: a method missing from start()'s object names start too, the carrier's own API.
+  assert.deepEqual([openProblems(room,'root')[0].facts.requirement.method,openProblems(room,'root')[0].facts.requirement.names],['create',['create','start']]);
   assert.match(failure.issues[0].detail,/The test stays fixed for this run/);
   assert.match(room.read('runner_test',null).test,/app\.create\(/);
   // The next round runs the same test, without asking the runner again.
@@ -708,7 +716,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
 
 test('end to end: a failed run goes back through a manager to a nested worker, which fixes it, and the builder reruns',async()=>{
   const pending=[];
-  const calls={leaf:[],link:0,runner:0,triage:0};
+  const calls={leaf:[],link:0,runner:0};
   const brokenRepo=repoSource.replace('this.#tickets.splice(i,1); return true;','return true;');
   const AI={run:async(_model,params)=>{
     if(params.questions) {
@@ -732,7 +740,8 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
     if(system.includes('LEAF CODE WRITER')) {
       const r=user.your_responsibility;
       calls.leaf.push(r.slice(0,300));
-      const repair=(user.new_messages||[]).some(m=>/REAL CONTAINER BUILD FAILED/.test(m.body));
+      // v7.15.6: a run requirement reads as the requirement itself, not as a build failure.
+      const repair=(user.new_messages||[]).some(m=>/REAL CONTAINER BUILD FAILED|The runner's test requires|must satisfy|must not fail with|threw:/.test(m.body));
       if(/application entry module/i.test(r))return {response:JSON.stringify({summary:'Entry',done:true,files:[{path:'app.js',content:appSource}]})};
       if(/ticket model/i.test(r))return {response:JSON.stringify({summary:'Model',done:true,files:[{path:'ticket.js',content:'module.exports = (title) => ({ title, status: "open" });\n'}]})};
       return {response:JSON.stringify({summary:repair?'Fixed delete':'Repository',done:true,files:[{path:'in-memory-ticket-repository.js',content:repair?repoSource:brokenRepo}]})};
@@ -745,11 +754,6 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
     }
     if(system.startsWith('You check an application\'s API'))return {response:'{}'};
     if(system.startsWith('You are the RUNNER')){calls.runner++;return {response:runnerTest};}
-    if(system.startsWith('You are the BUILDER doing triage')) {
-      calls.triage++;
-      const repo=user.modules.find(m=>m.path.endsWith('in-memory-ticket-repository.js'));
-      return {response:JSON.stringify({file:repo.path,problem:'delete(id) returns true without removing the ticket.'})};
-    }
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
   const exec={build:async({fingerprint,files})=>verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files})};
@@ -759,7 +763,6 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
   const events=room.snapshot().events;
   const trace=events.filter(e=>!['dispatch','turn_start','turn_end','expose','manager_shard','write','revision'].includes(e.kind)).slice(-25).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,160)}`).join('\n');
   assert.equal(room.get('status'),'complete',trace);
-  assert.equal(calls.triage,1);
   assert.equal(calls.runner,1,'the repaired source ran the same, static test');
   assert.ok(room.snapshot().events.some(e=>e.kind==='runner_reused'),'the second run reused the first test');
   assert.equal(calls.link,2);
@@ -1577,24 +1580,31 @@ test('room: a use renamed together with an undone definition goes back with it',
   assert.match(link.rejected[1].reason,/^it renames read → get to match [^]*store\.js, whose rename was undone/);
 });
 
-test('room: a long runner failure keeps the triage verdict, and the worker hears it',async()=>{
+test('room: a long runner failure is filed as its requirement, within the ticket\'s bound, and the worker hears it',async()=>{
   const mods=['validation','notifications','permissions','history','search'];
   const app="const store = require('./ticketStore');\n"+mods.map(n=>`const ${n} = require('./${n}Service');\n`).join('')+
     `function start() {\n  return {\n    createTicket: (d) => { ${mods.map(n=>`${n}.${n}Check(d);`).join(' ')} return store.create(d); },\n    viewTicket: (id) => store.read(id)\n  };\n}\nmodule.exports = { start };\n`;
   const store="module.exports = {\n  create(data) { return { id: 1, ...data }; },\n  read(id) { return { id, title: 'wrong' }; }\n};\n";
   const test=`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.createTicket({ title: 'Printer jam on the third floor near the east stairwell' });\n  assert.deepEqual(await app.viewTicket(t.id), { id: t.id, title: 'Printer jam on the third floor near the east stairwell', status: 'open', priority: 'normal', assignee: null, history: [] });\n})().catch(e => { console.error(e); process.exitCode = 1; });\n`;
-  const verdict='TRIAGE: ticketStore.read returns a fixed title instead of the stored ticket.';
   let paths;
-  const {room}=liveRoom({runner:()=>test,triage:()=>({file:paths.at(-1),problem:verdict}),link:()=>({edits:[],entry:paths.at(-1),issues:[]})});
+  // v7.15.6: no triage; Clef ranks the store for the requirement (a room without promises).
+  const {room}=liveRoom({runner:()=>test,link:()=>({edits:[],entry:paths.at(-1),issues:[]}),clef:input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label==='Ticket store'?0.9:0.2}]))})});
   paths=await workersUnder(room,'Build a small issue tracker that lets someone create and view tickets.',[['Ticket store','ticketStore.js',store],...mods.map(n=>[`${n} service`,`${n}Service.js`,`module.exports = { ${n}Check(t) { return true; } };\n`]),['Application entry','app.js',app]]);
   const {compiler}=await linkAndCompile(room);
   const failure=lastReport(room,compiler.id);
   assert.equal(failure.stage,'run');
-  assert.deepEqual(failure.issues.map(i=>i.path),[paths.at(-1)]);
-  assert.ok(failure.issues[0].detail.startsWith('Triage: '+verdict+' The runner\'s test failed: '),failure.issues[0].detail);
+  assert.deepEqual(failure.issues.map(i=>i.path),['']);
+  assert.ok(failure.issues[0].detail.startsWith('The runner\'s test failed: '),failure.issues[0].detail);
   assert.ok(failure.issues[0].detail.length<=950);
+  const [p]=openProblems(room,'root');
+  // v7.15.6 review: Node's diff reads as the two objects, common lines on both sides.
+  assert.ok(p.facts.requirement.text.startsWith("Expected values to be strictly deep-equal: actual { id: 1, title: 'wrong' }, expected { assignee: null, history: [], id: 1, priority: 'normal', status: 'open', title: 'Printer jam"),p.facts.requirement.text);
+  assert.ok(p.facts.requirement.text.length<=400);
+  assert.deepEqual([p.facts.requirement.method,p.facts.requirement.test_line.line],['viewTicket',6]);
   await room.turn('root');
-  assert.ok(tickets(room,'root.7')[0].includes(verdict));
+  const [ticket]=tickets(room,'root.1');
+  assert.ok(ticket.startsWith("The runner's test requires: Expected values to be strictly deep-equal: actual { id: 1, title: 'wrong' }, expected {"),ticket);
+  assert.ok(ticket.length<=900&&ticket.endsWith(' Publish the FULL updated file.'),ticket);
 });
 
 test('room: a note about the module a file reads from is told once and names only renamed names',async()=>{

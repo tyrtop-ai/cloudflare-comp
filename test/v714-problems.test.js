@@ -167,11 +167,12 @@ const { start } = require('./index.js');
   assert.equal(await app.viewTicket(t.id), null, 'deleted ticket must be gone');
 })().catch(e => { console.error(e); process.exitCode = 1; });
 `;
+// v7.15.6: a room without promises ranks each level's children by Clef (R2d) in place of the triage model.
+const ranking=(...labels)=>input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>{const i=labels.indexOf(input.state.children[Number(k.split('_')[1])].label);return [k,{noul:i<0?0.2:0.9-i/20}];}))});
 test('v7.14 (3): a compiler failure is routed down one level at a time, with a decision at each level',async()=>{
   const fixed=brokenRepo.replace('return rows.has(id);','return rows.delete(id);');
   let repoPath;
-  const {room,calls,builds}=liveRoom({runner:()=>deleteRunner,
-    triage:user=>({file:user.modules.find(m=>m.path.endsWith('/repository.js')).path,problem:'remove(id) reports the ticket without deleting it.'}),
+  const {room,calls,builds}=liveRoom({runner:()=>deleteRunner,clef:ranking('Tickets','Storage','Repository'),
     leaf:()=>({summary:'Repaired',done:true,files:[{path:'repository.js',content:fixed}]})});
   await tree(room,'Build a small issue tracker that lets someone create, view and delete tickets.');
   await workers(room,'root',[['Tickets'],['Application entry','app.js',crudEntry]]);
@@ -185,20 +186,22 @@ test('v7.14 (3): a compiler failure is routed down one level at a time, with a d
     assert.equal(room.node(m).status,'done',trace(room));
   }
   const {compiler}=await linkAndCompile(room);
-  assert.equal(calls.triage.length,1);
   const report=lastReport(room,compiler.id);
   assert.deepEqual(report.issues.map(i=>[i.kind,i.holder]),[['run','root']]);
-  assert.equal(room.problems('1=1')[0].parties[0].owner,'root.1.1.1');
-  // Each manager decides once and moves the problem exactly one level down.
+  const [filed]=room.problems('1=1');
+  // v7.15.6 review: the "+ actual - expected" block after a custom message is kept.
+  assert.deepEqual([filed.parties[0].owner,filed.facts.requirement.text,filed.facts.requirement.method],['',"deleted ticket must be gone: actual { id: 1, status: 'open', title: 'Printer jam' }, expected null",'viewTicket'],'no owner: a requirement');
+  // Each manager decides once and moves the problem exactly one level down; Clef ranks even a lone child.
   await room.turn('root');
   await room.turn('root.1');
   await room.turn('root.1.1');
+  assert.equal(calls.clef.length,3,trace(room));
   const [row]=room.problems('1=1');
-  assert.deepEqual(row.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','delegate','root.1','D3'],['root.1','delegate','root.1.1','D3'],['root.1.1','assign','root.1.1.1','D4']]);
+  assert.deepEqual(row.trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','delegate','root.1','R2d'],['root.1','delegate','root.1.1','R2d'],['root.1.1','assign','root.1.1.1','R2d']]);
   for(const t of row.trail)assert.equal(t.to.split('.').length,t.at.split('.').length+1,'one level per hop');
   const decisions=room.snapshot().events.filter(e=>/^problem_(?:delegated|relayed|assigned|escalated)$/.test(e.kind));
   assert.deepEqual(decisions.map(e=>[e.actor,e.kind,e.recipient]),[['root','problem_delegated','root.1'],['root.1','problem_delegated','root.1.1'],['root.1.1','problem_assigned','root.1.1.1']]);
-  assert.match(tickets(room,'root.1.1.1')[0],/Problems: repository\.js: Triage: remove\(id\) reports the ticket without deleting it\.[^]*deleted ticket must be gone/);
+  assert.equal(tickets(room,'root.1.1.1')[0],"The runner's test requires: deleted ticket must be gone: actual { id: 1, status: 'open', title: 'Printer jam' }, expected null. Test line 8: assert.equal(await app.viewTicket(t.id), null, 'deleted ticket must be gone'). Publish the FULL updated file.");
   assert.deepEqual(['root.1.1','root.1','root'].map(m=>room.get('repair_rounds:'+m)),['1','','']);
   invariant(room);
   // The repair: root.1.1's, root.1's and Root's builders relink; the compiler reruns and passes.
@@ -441,39 +444,40 @@ test('v7.14: out of repair rounds, the top fails the run; a lower manager tells 
 
 // A worker that finishes a repair without changing a file leaves the same
 // source and fingerprint behind: its problem opens again and its manager
-// decides it again (critique #4), with no new round. Slice 1 has no model
-// for a recurrence (M4), so the same ticket would go out until MAX_HOPS:
-// at STUCK_AFTER unchanged repairs the problem is closed instead, and with
+// decides it again (critique #4), with no new round. v7.15.6 (R4): the
+// worker declined it, so the next party takes it, and with every party
+// declined the problem is closed (the model once, when there is one); with
 // its builder still waiting and nothing else in flight the top fails rather
 // than pausing for a Continue that would repeat it (v7.14 review).
-test('v7.14: a repair that changes nothing reopens the problem once; a second closes it, and the top fails instead of pausing',async()=>{
+test('v7.14: a repair that changes nothing declines the problem to the next party; declined by every party it closes, and the top fails instead of pausing',async()=>{
   const {room}=liveRoom();
   await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
   await workers(room,'root',[['Repository','repository.js',repository],['Ticket service','ticketService.js',service]]);
   const b=await room.scheduleAssembly('root');
   await room.turn(b.id);
-  const finishUnchanged=()=>{room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.2'");room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");};
+  const finishUnchanged=id=>{room.db().exec("UPDATE messages SET delivered=1 WHERE recipient=?",id);room.db().exec("UPDATE agents SET status='done' WHERE id=?",id);};
   await room.turn('root');
   const id=room.problems("kind='mismatch'")[0].id,row=()=>room.problems('id=?',id)[0];
   assert.deepEqual([row().status,row().assignee],['assigned','root.2']);
   // Still undelivered: not reopened.
   await step(room,'root');
-  assert.equal(row().flags.no_change,undefined);
-  finishUnchanged();
+  assert.equal(row().flags.declined,undefined);
+  finishUnchanged('root.2');
   await step(room,'root');
-  assert.deepEqual([row().status,row().assignee,row().flags.no_change],['assigned','root.2',1]);
-  assert.ok(events(room,'problem_reopened').length);
-  assert.equal(tickets(room,'root.2').length,1,'a fresh ticket');
+  assert.deepEqual([row().status,row().assignee,row().flags.declined],['assigned','root.1',['root.2']],'the next party, the provider');
+  assert.deepEqual([...new Set(events(room,'route_declined').map(e=>e.recipient+': '+e.body))],['root.2: Ticket service answered the problem as done without changing a file: it declines it, and the manager routes it elsewhere.'],'one event per row it declined');
+  const sentTo=w=>room.db().exec('SELECT id FROM repair_tickets WHERE worker=?',w).toArray().length;
+  assert.deepEqual([sentTo('root.2'),sentTo('root.1')],[1,1],'no fresh ticket for the one that declined; one for the next party');
   assert.equal(Number(room.get('repair_rounds:root')),1,'the same wave: no new round');
-  finishUnchanged();
+  finishUnchanged('root.1');
   await step(room,'root');
-  assert.deepEqual([row().status,row().outcome,row().flags.no_change],['closed','exhausted',2]);
-  assert.deepEqual(row().trail.map(t=>[t.action,t.rule]),[['assign','D6'],['assign','D6'],['close','no_change']],'two tickets, not MAX_HOPS');
-  assert.equal(tickets(room,'root.2').length,0,'no third ticket');
-  assert.ok(events(room,'problem_exhausted').some(e=>/Ticket service finished 2 repairs without changing its files/.test(e.body)));
+  assert.deepEqual([row().status,row().outcome,row().flags.declined],['closed','exhausted',['root.2','root.1']]);
+  assert.deepEqual(row().trail.map(t=>[t.action,t.rule]),[['assign','D6'],['assign','declined'],['close','declined']],'one ticket per party, not MAX_HOPS');
+  assert.deepEqual([sentTo('root.2'),sentTo('root.1')],[1,1],'no third ticket');
+  assert.ok(events(room,'problem_exhausted').some(e=>/Ticket service, Repository answered it done without changing a file/.test(e.body)),trace(room));
   assert.equal(room.node(b.id).status,'waiting','its builder still waits on it');
   assert.equal(room.node('root').status,'failed');
-  assert.match(room.node('root').summary,/^Repair exhausted: a mismatch problem was closed without a fix \(Ticket service finished 2 repairs/);
+  assert.match(room.node('root').summary,/^Repair exhausted: a mismatch problem was closed without a fix \(Ticket service, Repository answered it done without changing a file\)/);
 });
 
 // A problem closed without a fix while other repairs of its report are in
@@ -639,7 +643,7 @@ const { start } = require('./index.js');
 })().catch(e => { console.error(e); process.exitCode = 1; });
 `;
   let repairs=[];
-  const {room,calls}=liveRoom({runner:()=>runner,triage:user=>({file:user.modules.find(m=>m.path.endsWith('/app.js')).path,problem:'deleteTicket does not delete.'}),
+  const {room,calls}=liveRoom({runner:()=>runner,clef:ranking('Application entry'),
     leaf:(u,n)=>({summary:'Repaired',done:true,files:[{path:'app.js',content:repairs[n-1]}]})});
   await tree(room,'Build a small issue tracker that lets someone create, view and delete tickets.');
   const [repoPath]=await workers(room,'root',[['Repository','repository.js',repo],['Application entry','app.js',app]]);
@@ -677,7 +681,10 @@ test('v7.14: a problem closed at the hop limit, with its reporter waiting and no
 // keeps it as the parent's, so when the worker returns its file unchanged
 // and the problem opens again, the manager relays it again (D1) instead of
 // escalating it back up (D2) as if nobody had decided.
-test('v7.14: a relayed problem reopened below is relayed again, not escalated',async()=>{
+// v7.15.6 (R4): a worker that declines a relayed problem leaves its branch
+// with nobody to take it: the branch escalates it, declined as a whole, and
+// the parent routes it to the other party.
+test('v7.14: a relayed problem its worker declines goes back up, declined as a branch, and the parent gives it to the other party',async()=>{
   const reader="const repo = require('./repository');\nmodule.exports = { add: (d) => repo.add(d), get: (id) => repo.read(id) };\n";
   const {room}=liveRoom();
   await tree(room,'Build a small issue tracker that lets someone create and view tickets.');
@@ -695,8 +702,12 @@ test('v7.14: a relayed problem reopened below is relayed again, not escalated',a
   assert.deepEqual([row().status,row().assignee,row().directive.by],['assigned','root.1.2','root'],'the decision stays Root\'s');
   room.db().exec("UPDATE messages SET delivered=1 WHERE recipient='root.1.2'");room.db().exec("UPDATE agents SET status='done' WHERE id='root.1.2'");
   await step(room,'root.1');
-  assert.deepEqual(row().trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relay','root.1','D6'],['root.1','assign','root.1.2','D1'],['root.1','assign','root.1.2','D1']]);
-  assert.equal(events(room,'problem_escalated').length,0);
+  assert.deepEqual(row().trail.map(t=>[t.at,t.action,t.to,t.rule]),[['root','relay','root.1','D6'],['root.1','assign','root.1.2','D1'],['root.1','escalate','root','declined']]);
+  assert.deepEqual([row().holder,row().status,row().flags.declined],['root','open',['root.1.2','root.1']]);
+  assert.equal(events(room,'problem_escalated').length,1);
+  await step(room,'root');
+  assert.deepEqual([row().status,row().assignee,row().directive.side,row().trail.at(-1).rule],['assigned','root.2','provider','declined'],'the other party, the provider, takes it');
+  assert.equal(room.db().exec('SELECT id FROM repair_tickets WHERE worker=?','root.1.2').toArray().length,1,'the one that declined is not asked again');
 });
 
 // Rooms started before v7.14 keep Root-keyed build state (build_failure:root,

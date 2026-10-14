@@ -77,20 +77,21 @@ const { start } = require('./index.js');
 `;
 
 // ------------------------------------------------------------------ rooms
-// A live room with a scripted linker, runner, triage and coverage check. Any
-// other model request fails the request (and so the turn, or, for a
-// manager's model, the decision: its defaults apply). leaf(user, n) answers
-// a worker's turn (a repair) when a test drives the room with drive();
+// A live room with a scripted linker, runner and coverage check. Any other
+// model request fails the request (and so the turn, or, for a manager's
+// model, the decision: its defaults apply). leaf(user, n) answers a
+// worker's turn (a repair) when a test drives the room with drive();
 // file(user, n) a worker's single-file correction; manager(user, n) a
 // manager's decision (an object, or raw text); split(user, n) the splitter;
-// clef(input, n) a Clef gate, scope or routing question. Every manager
-// request is recorded. coverage(user, n) answers the API coverage gate; by
-// default with no mapping, so the gate fails open, as these rooms predate
-// it (v7.13.3). raw holds every request's system prompt and user text as
-// sent: on the room's default model the runner's and coverage's end with
-// ' /no_think' (v7.13.4).
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,triage=()=>null,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,executor,room_id='v714-test'}={}) {
-  const calls={link:[],runner:[],triage:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],raw:[]};
+// clef(input, n) a Clef gate, scope or routing question (v7.15.6: a failed
+// run with no frame is routed by Clef's ranks over the children, never by
+// a triage model). Every manager request is recorded. coverage(user, n)
+// answers the API coverage gate; by default with no mapping, so the gate
+// fails open, as these rooms predate it (v7.13.3). raw holds every
+// request's system prompt and user text as sent: on the room's default
+// model the runner's and coverage's end with ' /no_think' (v7.13.4).
+export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,executor,room_id='v714-test'}={}) {
+  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
@@ -110,7 +111,6 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     if(file&&system.includes('building ONE file')){calls.file.push(user);return {response:file(user,calls.file.length)};}
     if(leaf&&system.includes('LEAF CODE WRITER')){calls.leaf.push(user);return {response:JSON.stringify(leaf(user,calls.leaf.length))};}
     if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}
-    if(system.startsWith('You are the BUILDER doing triage')){calls.triage.push(user);return {response:JSON.stringify(triage(user))};}
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
   const builds=[];

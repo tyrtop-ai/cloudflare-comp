@@ -612,30 +612,30 @@ test('v7.15: run8 replay (B): the entry reading .start() from view-tickets is th
 // run8's last step: the entry worker answered its repair ticket with
 // 'Fixed entry module…' and done:true but wrote no file. Nothing changed,
 // nothing was relinked, the manager went idle and the run paused for a
-// Continue. The problem goes back once, saying nothing changed in its
-// files, as an event; the second unchanged answer closes it through the
-// exhausted path, and the run ends visibly instead of idling.
-test('v7.15: run8 replay (C): a repair answered done with no file change is sent back once, saying so; the second closes it and the run ends visibly',async()=>{
+// Continue. v7.15.6 (run13, R4): the worker declined it; with no other
+// party the problem closes (the model once, when there is one), and the
+// run ends visibly instead of idling. It is never sent back saying
+// "nothing changed in your files" (run13's entry, told so, wrote a stub).
+test('v7.15: run8 replay (C): a repair answered done with no file change is declined; with no other party it closes and the run ends visibly',async()=>{
   const {room,calls}=liveRoom({leaf:()=>({summary:'Fixed entry module: start() now returns every operation.',done:true})});
   await planned(room);
   await pieces(room,'root',[['ticket storage','storage.js',"const rows = [];\nfunction saveTicket(t) { rows.push(t); return t; }\nmodule.exports = { saveTicket };\n",[fn('saveTicket','stores a ticket',['ticket'])]],
     ['entry module','app.js',entry,[START]]]);
   await settle(room);
-  assert.equal(calls.leaf.length,2,'asked once more, not forever');
-  const [first,second]=calls.leaf.map(c=>c.new_messages.map(m=>m.body).join('\n'));
+  assert.equal(calls.leaf.length,1,'asked once, not again');
+  const [first]=calls.leaf.map(c=>c.new_messages.map(m=>m.body).join('\n'));
   assert.doesNotMatch(first,/NOTHING CHANGED/);
-  assert.match(second,/^REAL CONTAINER BUILD FAILED on your owned source\.[^]* NOTHING CHANGED IN YOUR FILES: you answered this problem as fixed, but your published files are exactly as they were when it was sent\. /);
-  assert.match(second,/start\(\) must return an object whose methods perform the requested operations/,'with the problem text');
-  assert.deepEqual(events(room,'repair_unchanged').map(e=>[e.actor,e.recipient,e.body]),[['root','root.2','entry module answered its repair as done without changing a file; the problem goes back to it once with "nothing changed in your files".']]);
+  assert.match(first,/start\(\) must return an object whose methods perform the requested operations/,'with the problem text');
+  assert.deepEqual(events(room,'route_declined').map(e=>[e.actor,e.recipient,e.body]),[['root','root.2','entry module answered the problem as done without changing a file: it declines it, and the manager routes it elsewhere.']]);
   const [p]=room.problems("kind='entry'");
-  assert.deepEqual([p.status,p.outcome,p.trail.map(t=>[t.action,t.rule])],['closed','exhausted',[['assign','D4'],['assign','D4'],['close','no_change']]]);
+  assert.deepEqual([p.status,p.outcome,p.flags.declined,p.trail.map(t=>[t.action,t.rule])],['closed','exhausted',['root.2'],[['assign','D4'],['close','declined']]]);
   assert.equal(room.get('status'),'failed','never an idle pause with the problem open');
-  assert.match(room.node('root').summary,/^Repair exhausted: a entry problem was closed without a fix \(entry module finished 2 repairs without changing its files\)/);
+  assert.match(room.node('root').summary,/^Repair exhausted: a entry problem was closed without a fix \(entry module answered it done without changing a file\)/);
 });
 // The same bounce for an accepted contract return's problem: each 'fixed'
 // with no file used to replace it with a fresh one (a new wave, a new
-// round, no_change reset), so one worker spent all six of Root's rounds.
-test('v7.15: an accepted contract return answered done with no file change goes back once, saying so, and is then closed',async()=>{
+// round), so one worker spent all six of Root's rounds.
+test('v7.15: an accepted contract return answered done with no file change is declined and closed, never replaced',async()=>{
   const {room,calls}=liveRoom({leaf:()=>({summary:'Fixed: createTicket is exported now.',done:true}),
     runner:()=>"const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  assert.equal(app.create('Printer jam').title, 'Printer jam');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n"});
   await planned(room,'Build a small issue tracker that lets someone create tickets.');
@@ -644,14 +644,13 @@ test('v7.15: an accepted contract return answered done with no file change goes 
   room.set('contract_returns:root.1','3');
   assert.equal(await room.contractReturned('root.1'),false,'accepted');
   await settle(room,80);
-  assert.equal(calls.leaf.length,2,trace(room));
-  const [first,second]=calls.leaf.map(c=>c.new_messages.map(m=>m.body).join('\n'));
+  assert.equal(calls.leaf.length,1,trace(room));
+  const [first]=calls.leaf.map(c=>c.new_messages.map(m=>m.body).join('\n'));
   assert.match(first,/^YOUR ASSIGNMENT PROMISES FUNCTIONS[^]*Your assignment promises createTicket;/);
   assert.doesNotMatch(first,/NOTHING CHANGED/);
-  assert.match(second,/^YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT\.[^]* NOTHING CHANGED IN YOUR FILES/);
-  assert.equal(events(room,'repair_unchanged').length,1);
+  assert.equal(events(room,'route_declined').length,1);
   const rows=room.problems("kind='contract'");
-  assert.deepEqual(rows.map(p=>[p.source,p.status,p.outcome,p.flags.no_change,p.trail.map(t=>t.rule)]),[['root.1','closed','exhausted',2,['D4','D4','no_change']]],'one problem, never replaced');
+  assert.deepEqual(rows.map(p=>[p.source,p.status,p.outcome,p.flags.declined,p.trail.map(t=>t.rule)]),[['root.1','closed','exhausted',['root.1'],['D4','declined']]],'one problem, never replaced');
   assert.ok(Number(room.get('repair_rounds:root','0'))<=1,'one round, not all six');
   assert.ok(!events(room,'repair_exhausted').length,trace(room));
 });
