@@ -71,7 +71,7 @@ Open the `workers.dev` URL that Wrangler prints, paste the token, and press **St
 
 ## Status
 
-This is v7.15.1. Run9, the first live run on v7.15, was still fixing a bug each round when its flat six-round repair budget ran out; v7.15.1 makes that budget progress-aware. **No live run has yet finished with a correct, verified application.** Every run, and the known limitations: [docs/how-it-works.md](docs/how-it-works.md#status).
+This is v7.15.2. Run9, the first live run on v7.15, was still fixing a bug each round when its flat six-round repair budget ran out; v7.15.1 makes that budget progress-aware. In run10 a malformed split answer sent Root down the single-agent path; v7.15.2 repairs or retries such answers and runs a single-agent Root through the same compiler checks. **No live run has yet finished with a correct, verified application.** Every run, and the known limitations: [docs/how-it-works.md](docs/how-it-works.md#status).
 
 ## More
 
