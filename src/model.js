@@ -135,9 +135,14 @@ const OWNER_STOP_WORDS = ['ticket','tickets','please','what','which','does','hav
 // Route questions through a manager's direct-child public Artifacts index.
 // Clef classifies owners; it never reads Git itself or generates an answer.
 // The runtime supplies only direct children's role and PUBLIC repository facts.
-export async function routeOwner(env, question, candidates, {strict=false,keywords=true}={}) {
-  if (!candidates.length) return null;
-  if (candidates.length===1 && !strict) return candidates[0].id;
+// A strict owner needs OWNER_BAR; routing takes Clef's best at OWNER_FLOOR.
+export const OWNER_BAR = 0.6, OWNER_FLOOR = 0.35;
+export async function routeOwner(env, question, candidates, {strict=false,keywords=true,ranked=false}={}) {
+  // v7.15.3: ranked also returns Clef's answers, best first, which the prune
+  // walk reads when nobody reaches the bar (run5's store, now run11's kill is gone).
+  const out=(id,ranks=[])=>ranked?{id,ranks}:id;
+  if (!candidates.length) return out(null);
+  if (candidates.length===1 && !strict) return out(candidates[0].id);
   const tokenize=s=>new Set(String(s).toLowerCase().match(/[a-z0-9]{3,}/g)||[]);
   const terms=tokenize(question);
   if(strict) {
@@ -150,14 +155,14 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
   lexical.sort((a,b)=>b.score-a.score);
   // Direct, unambiguous lookup needs no inference. A split-time scope walk
   // always asks Clef: a child's task repeats its own branch's words.
-  if (keywords && lexical[0].score>0 && (candidates.length===1 || lexical[0].score>(lexical[1]?.score||0)+1)) return lexical[0].id;
+  if (keywords && lexical[0].score>0 && (candidates.length===1 || lexical[0].score>(lexical[1]?.score||0)+1)) return out(lexical[0].id);
   if(env.MOCK_AI==='true') {
-    if(lexical[0].score>0)return lexical[0].id;
+    if(lexical[0].score>0)return out(lexical[0].id);
     if(strict && terms.has('schema')) {
       const owner=candidates.find(c=>/\b(?:define|own|publish)\b/i.test(c.label+' '+c.task) && /\b(?:structure|model|fields|schema)\b/i.test(c.label+' '+c.task));
-      return owner?.id||null;
+      return out(owner?.id||null);
     }
-    return strict?null:candidates[0].id;
+    return out(strict?null:candidates[0].id);
   }
   const selected=env.SPLIT_MODEL||'@cf/cloudflare/clef-flash';
   const name=DECISION_MODELS[selected];
@@ -173,7 +178,7 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
   if(probabilities.some(x=>typeof x.p!=='number'||!Number.isFinite(x.p)||x.p<0||x.p>1))
     throw new Error('Clef returned invalid ownership probabilities');
   probabilities.sort((a,b)=>b.p-a.p);
-  return probabilities[0].p>=(strict?0.6:0.35)?probabilities[0].id:null;
+  return out(probabilities[0].p>=(strict?OWNER_BAR:OWNER_FLOOR)?probabilities[0].id:null,probabilities);
 }
 
 // v7.15 slice B: a worker's function request, answered at one level from the

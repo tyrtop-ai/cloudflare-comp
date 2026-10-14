@@ -38,10 +38,10 @@ const repoImpl={label:'TicketRepositoryImpl.ts',task:'Implement repository logic
 const service={label:'TicketService.ts',task:'Create service class that uses repository to fetch filtered tickets'};
 const controller={label:'TicketController.ts',task:'Implement controller handler to process HTTP requests with filter parameters'};
 // owner(question, labels at that level) names the owning label, or null; it may throw.
-function fakeAI({split,leaf,owner,gate=()=>0.9,calls=[]}) {
+function fakeAI({split,leaf,owner,gate=()=>0.9,within=()=>0.9,calls=[]}) {
   return {calls,run:async(_model,input)=>{
     if(input.questions?.should_split){calls.push({kind:'gate',state:input.state});return {answers:{should_split:{noul:gate(calls.filter(c=>c.kind==='gate').length)}}};}
-    if(input.questions?.within_0)return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.9}]))};
+    if(input.questions?.within_0)return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:within(input.state.proposed_children[Number(k.slice(7))].label)}]))};
     if(input.questions?.owner_0) {
       const labels=input.state.children.map(c=>c.label);
       calls.push({kind:'owner',question:input.state.question,labels});
@@ -146,19 +146,28 @@ test('a child with no owner one level up is kept when the next level finds its o
   assert.equal(events(room,'scope_pruned').length+events(room,'scope_killed').length,0);
 });
 
-test('a child no strand up to Root owns is killed and the rest of the split goes ahead',async()=>{
+// v7.15.3 (run11): this test encoded the kill after the scope check had
+// accepted the piece. What the scope check accepts is this strand's unless the
+// walk finds another owner; out of scope is the scope check's call, before any walk.
+test('v7.15.3: a child no other strand up to Root owns stays in this strand; only the scope check rejects one out of scope',async()=>{
   const form={label:'TicketForm Component',task:'Write a React component rendering the ticket creation form'};
-  const ai=fakeAI({split:()=>[validate,record,form],owner:(q,labels)=>about(q,'TicketForm Component')?null:labels.includes('Create Ticket')?'Create Ticket':null});
+  const wire={label:'Wire transfer',task:'Write code that wires money between bank accounts'};
+  const ai=fakeAI({split:()=>[validate,record,form,wire],within:label=>label===wire.label?0.1:0.9,
+    owner:(q,labels)=>about(q,'TicketForm Component')?null:labels.includes('Create Ticket')?'Create Ticket':null});
   const {room,store}=await nested(ai);
   const before=store.created;
   await room.turn('root.1.1');
-  assert.deepEqual(room.children('root.1.1').map(c=>c.label),['Validate fields','Build ticket record']);
-  assert.equal(store.created,before+2);
-  const killed=events(room,'scope_killed');
-  assert.equal(killed.length,1);
-  assert.equal(killed[0].body,"No strand up to Root owns TicketForm Component; out of the project's scope. Not spawned.");
+  assert.deepEqual(room.children('root.1.1').map(c=>c.label),['Validate fields','Build ticket record','TicketForm Component']);
+  assert.equal(store.created,before+3);
+  assert.equal(events(room,'scope_killed').length,0);
+  assert.deepEqual(events(room,'scope_kept').map(e=>e.body),[
+    'Clef placed proposed child "Validate fields" in this strand ("Create Ticket" under root.1); kept.',
+    'Clef placed proposed child "Build ticket record" in this strand ("Create Ticket" under root.1); kept.',
+    'No other strand up to Root owns proposed child "TicketForm Component"; kept in this strand, where the scope check placed it.']);
   assert.equal(ai.calls.filter(c=>c.kind==='owner'&&about(c.question,'TicketForm Component')).length,2,'asked at root.1 and at Root');
-  assert.equal((await room.readKnowledge('root.1.1')).owned_elsewhere,undefined,'a killed child has no owner to name');
+  assert.deepEqual(events(room,'scope_rejected').map(e=>e.body),['Clef rejected proposed child "Wire transfer" (p=0.100); outside Root and parent scope.']);
+  assert.equal(ai.calls.filter(c=>c.kind==='owner'&&about(c.question,'Wire transfer')).length,0,'a piece the scope check rejected is never walked');
+  assert.equal((await room.readKnowledge('root.1.1')).owned_elsewhere,undefined,'no piece has an owner to name');
 });
 
 test('a Clef error on the walk never kills a child',async()=>{
