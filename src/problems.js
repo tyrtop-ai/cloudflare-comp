@@ -398,8 +398,11 @@ export function instructionsFor(p, side, own=false) {
     case 'entry':return own?OWN_ENTRY_CONTRACT:ENTRY_CONTRACT;
     case 'stuck':return 'Finish your assignment.';
     case 'contract':{
-      const by=(f.requested_by||[]).filter(Boolean).slice(0,8);
-      return `Your assignment promises ${list(f.names)}; ${by.length?by.join(', '):'other pieces'} need ${(f.names||[]).length>1?'them':'it'} from you and your modules do not export ${(f.names||[]).length>1?'them':'it'}. Export each as a named export with exactly that name; keep your other exports.`;
+      const by=(f.requested_by||[]).filter(Boolean).slice(0,8),them=xs=>xs.length>1?'them':'it';
+      // v7.15.4: the promises of other pieces a worker still writes itself (run11's entry wrote all six).
+      const written=f.written?.length?`${list(f.written)} ${f.written.length>1?'are':'is'} promised by other pieces: import each on its own line, with its name as the path: ${oneLines(f.written)} Use ${them(f.written)}; do not write ${them(f.written)} in your modules.`:'';
+      if(!f.names?.length&&written)return written;
+      return `Your assignment promises ${list(f.names)}; ${by.length?by.join(', '):'other pieces'} need ${(f.names||[]).length>1?'them':'it'} from you and your modules do not export ${(f.names||[]).length>1?'them':'it'}. Export each as a named export with exactly that name; keep your other exports.${written&&' '+written}`;
     }
     default:return side==='provider'?'Fix your module so the call described below works.':'Fix the error below in your code.';
   }
@@ -427,8 +430,10 @@ export const UNCHANGED=' NOTHING CHANGED IN YOUR FILES: you answered this proble
 export const OWN_UNCHANGED=' NOTHING CHANGED IN YOUR FILES: you answered this problem as fixed, but your published files are exactly as they were when it was sent. Change the code and publish the FULL updated file; each answer that changes nothing uses up one of your repair rounds, and the run fails when none is left.';
 // own: an atomic top's own repair (v7.15.2): no builder and no manager, and
 // what failed may be the coverage check or the runner's test, not a build.
-export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],unchanged=false,own=false}) {
-  const head=(kinds.length&&kinds.every(k=>k==='contract')?'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.':
+// written: every contract is about functions other pieces promise, which
+// the worker writes itself (v7.15.4).
+export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],unchanged=false,own=false,written=false}) {
+  const head=(kinds.length&&kinds.every(k=>k==='contract')?(written?'YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE. Nothing was run; the plan was checked against your modules.':'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.'):
     (own?'YOUR APPLICATION FAILED ITS CONTAINER RUN. You wrote every file of the application':'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers')+
     ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER))+(unchanged?own?OWN_UNCHANGED:UNCHANGED:'');
   const decided=instructions?` ${own?'Required':'Your manager decided'}: ${String(instructions).slice(0,900)}`:'';

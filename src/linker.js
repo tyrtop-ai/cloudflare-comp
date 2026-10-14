@@ -1091,15 +1091,40 @@ function exportedValues(ast, decls) {
 // A getter, a setter or a lifecycle no-op beside the operations (close() {}
 // for an in-memory app) is not an operation start owes.
 const LIFECYCLE=new Set('close stop dispose destroy shutdown teardown cleanup reset init'.split(' '));
-export function placeholders(files, names) {
-  const out=[],want=new Set(names);
+// v7.15.4: foreign, the names other pieces promise. A function declared here
+// under one of them is not delivered either (run11's entryModule.js wrote
+// createTicket, readData, writeData, deleteTicket, updateTicket and
+// viewTicket over an in-memory object and imported none): a declaration, a
+// name bound to a function or class, or a function literal exported or
+// returned by start() under that name. Imports are never read. When every
+// operation start() returns is a local function, each one is listed (local)
+// with the names it uses, for the manager to check against the plan.
+const DATA=/^(?:Literal|TemplateLiteral|ObjectExpression|ArrayExpression|NewExpression)$/;
+export function placeholders(files, names, foreign=[]) {
+  const out=[],want=new Set(names),other=new Set(foreign.filter(n=>!want.has(n)));
   for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
     if(!LINKABLE.test(path))continue;
     let ast;try{ast=parseSource(content).ast;}catch{continue;}
     const decls=topLevelDeclarations(ast),again=new Set();
     walk(ast,node=>{if(node.type==='AssignmentExpression'&&node.left.type==='Identifier')again.add(node.left.name);});
     for(const n of again)decls.set(n,null);
+    const written=new Set(),write=n=>{if(other.has(n)&&!written.has(n)){written.add(n);out.push({path,name:n,foreign:true});}};
+    if(other.size)walk(ast,node=>{
+      if((node.type==='FunctionDeclaration'||node.type==='ClassDeclaration')&&node.id)write(node.id.name);
+      else if(node.type==='VariableDeclarator'&&node.id.type==='Identifier'&&(FUNCTIONS.has(node.init?.type)||node.init?.type==='ClassExpression'))write(node.id.name);
+    });
+    // The names a local function uses, through the local functions it calls;
+    // an import under an alias by its exported name (store.createTicket and
+    // a call of createTicket both use createTicket).
+    const alias=new Map();
+    if(other.size)for(const ref of importRefs(path,content))for(const [n,l] of ref.aliases)alias.set(l,n);
+    const uses=(fn,scope,got=new Set(),seen=new Set([fn]))=>{walk(fn,node=>{
+      if(node.type!=='Identifier')return;
+      got.add(alias.get(node.name)||node.name);
+      const d=scope.get(node.name);if(FUNCTIONS.has(d?.type)&&!seen.has(d)){seen.add(d);uses(d,scope,got,seen);}
+    });return got;};
     for(const [name,value] of exportedValues(ast,decls)) {
+      if(FUNCTIONS.has(value?.type))write(name);
       if(!want.has(name))continue;
       const fn=functionOf(value,decls);
       if(!fn)continue;
@@ -1118,10 +1143,19 @@ export function placeholders(files, names) {
       for(let r of returns) {
         if(r?.type==='Identifier')r=inner.get(r.name);
         if(r?.type!=='ObjectExpression')continue;
+        // local: every operation is a function written here (a spread, an
+        // import or a call is not); data beside them is no operation.
+        const ops=[];let local=true;
         for(const p of r.properties) {
-          const op=p.type==='Property'&&p.kind==='init'&&keyName(p.key),f=op&&!LIFECYCLE.has(op)&&(p.method?p.value:functionOf(p.value,inner));
-          if(f&&placeholder(f,content))out.push({path,name,op,params:f.params.map(paramText)});
+          if(p.type!=='Property'){local=false;continue;}
+          const op=p.kind==='init'&&keyName(p.key),f=op&&!LIFECYCLE.has(op)&&(p.method?p.value:functionOf(p.value,inner));
+          if(f&&placeholder(f,content)){out.push({path,name,op,params:f.params.map(paramText)});continue;}
+          if(!op||LIFECYCLE.has(op))continue;
+          if(p.method||FUNCTIONS.has(p.value.type))write(op);
+          if(f)ops.push({op,f,bound:p.value.type==='Identifier'?p.value.name:''});
+          else if(!DATA.test((p.value.type==='Identifier'?inner.get(p.value.name):p.value)?.type))local=false;
         }
+        if(other.size&&local)for(const o of ops)if(!written.has(o.op)&&!written.has(o.bound))out.push({path,name,op:o.op,params:o.f.params.map(paramText),local:true,uses:[...uses(o.f,inner)]});
       }
     }
   }
