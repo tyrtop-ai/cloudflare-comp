@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {liveRoom,events,trace} from './helpers/room.js';
 const {goalOps}=await import('../src/interfaces.js');
+const L=await import('../src/linker.js');
 const {ROOT_PROMISE}=await import('../src/model.js');
 const {normalizeAction}=await import('../src/protocol.js');
 
@@ -141,4 +142,37 @@ test('v7.15.5 review: the answer a later turn reads keeps "do not write" and eve
   const {text}=room.read('fn_answers:root.1',[]).find(a=>a.key==='fn goalOperation1');
   assert.match(text,/^No piece of the application promises goalOperation1\. Do not write goalOperation1 and do not import it\. /);
   assert.match(text,/const \{ deleteTicket \} = require\('\.\/deleteTicket'\); Return each under its name\./);
+});
+
+const perf=['createTicket','viewTicket','updateTicket','deleteTicket'],others=['createData',...perf];
+const goalImports="const { goalOperation1 } = require('./goalOperation1');\nconst { goalOperation2 } = require('./goalOperation2');\n";
+const bogus=goalImports+imports(['viewTicket','updateTicket'])+"exports.start = () => ({ createTicket: goalOperation1, viewTicket, updateTicket, deleteTicket: goalOperation2 });\n";
+
+test('v7.15.5 review: a performer\'s key bound to an import no piece promises delivers nothing, and the stray names the import, never the key',async()=>{
+  const one=src=>L.placeholders({'module.js':src},['start'],others,perf);
+  assert.deepEqual(one(bogus),[{path:'module.js',name:'start',missing:['createTicket','deleteTicket'],renamed:[],stray:['goalOperation1','goalOperation2']}]);
+  assert.deepEqual(one(goalImports+"exports.start = () => ({ op1: goalOperation1, op2: goalOperation2, again: goalOperation1 });\n")[0].stray,['goalOperation1','goalOperation2']);
+  const {room,turn}=await split(run12,()=>({summary:'Wrote it',files:[{path:'module.js',content:bogus}],done:true}));
+  await turn('root.1');
+  assert.equal(room.node('root.1').status,'ready',trace(room));
+  assert.equal(room.receive('root.1')[0].body,"[contract] start() returns no method for createTicket (Create Ticket Operation) and deleteTicket (Delete Ticket Operation): import each on its own line, by exactly its name, with the name as the path: const { createTicket } = require('./createTicket'); const { deleteTicket } = require('./deleteTicket'); and return each under its name. No piece promises goalOperation1 and goalOperation2: do not import or return them. Publish the FULL updated file.");
+});
+
+test('v7.15.5 review: an entry whose own second module wraps the performers is read through it; one that leaves view out there is sent back for view; an export it cannot read is given the doubt',async()=>{
+  const two=handlers=>({'handlers.js':handlers,'index.js':"const { create, view, update, remove } = require('./handlers');\nexports.start = () => ({ create, view, update, delete: remove });\n"});
+  const wrap=imports(perf)+"module.exports = { create: (d) => createTicket(d), view: (id) => viewTicket(id), update: (i, p) => updateTicket(i, p), remove: (id) => deleteTicket(id) };\n";
+  const one=files=>L.placeholders(files,['start'],others,perf).filter(x=>x.missing);
+  assert.deepEqual(one(two(wrap)),[]);
+  assert.deepEqual(one({'ops.js':imports(perf)+"exports.create = createTicket; exports.view = viewTicket; exports.update = updateTicket; exports.remove = deleteTicket;\n",'index.js':"const ops = require('./ops');\nexports.start = () => ({ create: ops.create, view: ops.view, update: ops.update, delete: ops.remove });\n"}),[],'a whole module of its own');
+  assert.deepEqual(one(two(wrap.replace('view: (id) => viewTicket(id)','view: (id) => null'))).map(x=>[x.path,x.missing]),[['index.js',['viewTicket']]]);
+  assert.deepEqual(one(two("module.exports = make();\n")),[],'module.exports = make(): the doubt');
+  const {room,turn}=await split(run12,()=>({summary:'Wrote it',files:Object.entries(two(wrap)).map(([path,content])=>({path,content})),done:true}));
+  await turn('root.1');
+  assert.equal(room.node('root.1').status,'done',trace(room));
+});
+
+test('v7.15.5 review: a key named after its performer\'s operation (create: createTicket) is never renamed; goalOperation3 still is',async()=>{
+  const {room,turn}=await split(run12,()=>({summary:'Wrote it',files:[{path:'module.js',content:imports(['createTicket','deleteTicket','viewTicket'])+"exports.start = () => ({ create: createTicket, delete: deleteTicket, goalOperation3: viewTicket });\n"}],done:true}));
+  await turn('root.1');
+  assert.equal(room.receive('root.1')[0].body,"[contract] start() returns no method for updateTicket (Update Ticket Operation): import it on its own line, by exactly its name, with the name as the path: const { updateTicket } = require('./updateTicket'); and return it under its name. Rename goalOperation3 to viewTicket: start() returns each function under its own name. Publish the FULL updated file.");
 });

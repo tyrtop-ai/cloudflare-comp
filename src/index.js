@@ -3402,9 +3402,10 @@ export class ControlRoom extends DurableObject {
     // v7.15.5: performers start() does not return (run12's view and update),
     // with the keys it returns under other names, all from the plan.
     if(x.missing) {
-      const by=new Map(this.startPerformers(id).map(f=>[f.name,f])),fns=x.missing.map(n=>by.get(n)).filter(Boolean),stray=x.stray||[];
+      // Review: a key named after its performer's operation (create: createTicket) is as ENTRY_CONTRACT asks, never renamed.
+      const by=new Map(this.startPerformers(id).map(f=>[f.name,f])),fns=x.missing.map(n=>by.get(n)).filter(Boolean),stray=x.stray||[],renamed=(x.renamed||[]).filter(([k,n])=>!performsOp(k,{name:n}));
       return {text:[`start() returns no method for ${listed(fns.map(f=>`${f.name} (${f.owner})`))}: ${importLines(fns).replace(/^Import each/,fns.length>1?'import each':'import it')} and return ${fns.length>1?'each':'it'} under its name.`,
-        x.renamed?.length?`Rename ${listed(x.renamed.map(([k,n])=>`${k} to ${n}`))}: start() returns each function under its own name.`:'',stray.length?`No piece promises ${listed(stray)}: do not import or return ${stray.length>1?'them':'it'}.`:''].filter(Boolean).join(' '),
+        renamed.length?`Rename ${listed(renamed.map(([k,n])=>`${k} to ${n}`))}: start() returns each function under its own name.`:'',stray.length?`No piece promises ${listed(stray)}: do not import or return ${stray.length>1?'them':'it'}.`:''].filter(Boolean).join(' '),
         how:`start(): ${fns.map(f=>`${f.name} from "${clip(f.owner,70)}"`).join(', ')}.`};
     }
     // v7.15.4: written here though another piece promises it (run11's
