@@ -161,7 +161,7 @@ test('v7.15.5 review: a performer\'s key bound to an import no piece promises de
   const {room,turn}=await split(run12,()=>({summary:'Wrote it',files:[{path:'module.js',content:bogus}],done:true}));
   await turn('root.1');
   assert.equal(room.node('root.1').status,'ready',trace(room));
-  assert.equal(room.receive('root.1')[0].body,"[contract] start() returns no method for createTicket (Create Ticket Operation) and deleteTicket (Delete Ticket Operation): import each on its own line, by exactly its name, with the name as the path: const { createTicket } = require('./createTicket'); const { deleteTicket } = require('./deleteTicket'); and return each under its name. No piece promises goalOperation1 and goalOperation2: do not import or return them. Publish the FULL updated file.");
+  assert.equal(room.receive('root.1')[0].body,"[contract] Your promise: start(). start() returns no method for createTicket (Create Ticket Operation) and deleteTicket (Delete Ticket Operation): import each on its own line, by exactly its name, with the name as the path: const { createTicket } = require('./createTicket'); const { deleteTicket } = require('./deleteTicket'); and return each under its name. No piece promises goalOperation1 and goalOperation2: do not import or return them. Publish the FULL updated file.");
 });
 
 test('v7.15.5 review: an entry whose own second module wraps the performers is read through it; one that leaves view out there is sent back for view; an export it cannot read is given the doubt',async()=>{
@@ -180,5 +180,5 @@ test('v7.15.5 review: an entry whose own second module wraps the performers is r
 test('v7.15.5 review: a key named after its performer\'s operation (create: createTicket) is never renamed; goalOperation3 still is',async()=>{
   const {room,turn}=await split(run12,()=>({summary:'Wrote it',files:[{path:'module.js',content:imports(['createTicket','deleteTicket','viewTicket'])+"exports.start = () => ({ create: createTicket, delete: deleteTicket, goalOperation3: viewTicket });\n"}],done:true}));
   await turn('root.1');
-  assert.equal(room.receive('root.1')[0].body,"[contract] start() returns no method for updateTicket (Update Ticket Operation): import it on its own line, by exactly its name, with the name as the path: const { updateTicket } = require('./updateTicket'); and return it under its name. Rename goalOperation3 to viewTicket: start() returns each function under its own name. Publish the FULL updated file.");
+  assert.equal(room.receive('root.1')[0].body,"[contract] Your promise: start(). start() returns no method for updateTicket (Update Ticket Operation): import it on its own line, by exactly its name, with the name as the path: const { updateTicket } = require('./updateTicket'); and return it under its name. Rename goalOperation3 to viewTicket: start() returns each function under its own name. Publish the FULL updated file.");
 });

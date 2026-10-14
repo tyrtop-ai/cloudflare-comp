@@ -116,13 +116,13 @@ test('review: the planners give a read-only piece only the read function, and a 
   const view="const { readTickets } = require('./readTickets');\n\nconst viewTicket = (data) => readTickets().find(t => t.id === data.id) || null;\n\nmodule.exports = { viewTicket };";
   const {room}=await worker([entry,store,{...op('View','viewTicket','Retrieves a ticket by ID'),uses:both}],'root.3',['viewTicket.js',view]);
   assert.equal(room.node('root.3').status,'done',JSON.stringify(room.receive('root.3')));
-  assert.equal(events(room,'contract_uses').length,0);
+  assert.equal(events(room,'contract_returned').length,0);
   // One owner of two: the uncalled one is still asked for.
   const two=[entry,store,{label:'Audit Log',task:'Write code that logs',functions:[fn('readLog','Returns the stored log entries'),fn('saveLog','Stores the log entries',['entries'])]},
     {...op('View','viewTicket','Retrieves a ticket by ID'),uses:[...both,'readLog','saveLog']}];
   const r2=await worker(two,'root.4',['viewTicket.js',view]);
   assert.equal(r2.room.node('root.4').status,'ready');
-  assert.equal(r2.room.receive('root.4')[0].body,'[contract] Your modules do not import and call readLog and saveLog. Logs live in Audit Log: import readLog and saveLog on their own lines and use them; do not keep your own logs. Publish the FULL updated file.');
+  assert.equal(r2.room.receive('root.4')[0].body,'[contract] Your promise: viewTicket(data). Your modules do not import and call readLog and saveLog. Logs live in Audit Log: import readLog and saveLog on their own lines and use them; do not keep your own logs. Publish the FULL updated file.');
 });
 
 test('review: the store itself keeps its data, and an id helper is no store',async()=>{
@@ -177,7 +177,7 @@ test('review: a create worker with an id counter or a default record beside the 
   const OWN="const tickets = [];\nlet nextTicketId = 1;\nfunction createTicket(data) {\n  const ticket = { id: nextTicketId++, ...data };\n  tickets.push(ticket);\n  return ticket;\n}\nmodule.exports = { createTicket };";
   const {room}=await worker(split,'root.3',['createTicket.js',OWN]);
   const [message]=room.receive('root.3');
-  assert.match(message.body,/^\[contract\] In createTicket\.js, the module keeps its own data in a module-level array \(tickets\);/);
+  assert.match(message.body,/^\[contract\] Your promise: createTicket\(data\)\. In createTicket\.js, the module keeps its own data in a module-level array \(tickets\)\./);
   assert.doesNotMatch(message.body,/CreateTicket\.js/);
 });
 
@@ -197,7 +197,7 @@ test('review: a view piece named getTicket is an operation piece: asked about th
   for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
   for(const id of ['root.4','root.3']){room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);await room.turn(id);}
   assert.equal(room.node('root.4').status,'ready');
-  assert.equal(room.receive('root.4')[0].body,'[contract] In getTicket.js, the module returns records written into its code; your modules do not import and call readTickets. Tickets live in Ticket Data Manager: import readTickets on its own line and use it; do not keep your own tickets. Publish the FULL updated file.');
+  assert.equal(room.receive('root.4')[0].body,'[contract] Your promise: getTicket(id). In getTicket.js, the module returns records written into its code. Your modules do not import and call readTickets. Tickets live in Ticket Data Manager: import readTickets on its own line and use it; do not keep your own tickets. Publish the FULL updated file.');
   assert.equal(room.node('root.3').status,'done',JSON.stringify(room.receive('root.3')));
   // Decided per piece, by a function or by the label.
   const kids=I.normalizeSpawn([entry,store,op('Create'),view,op('Update'),op('Delete')]).spawn,isOp=f=>/^(?:create|view|update|delete)/.test(f.name);

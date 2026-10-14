@@ -7,6 +7,9 @@
 import {parse as parseJs, tokenizer} from './vendor/acorn.mjs';
 import {resolveLocal,canonical} from './assembly-gate.js';
 import {NODE_BUILTINS} from './code-work.js';
+// v7.15.6: the one contract check words its findings as the plan states
+// them (a benign cycle: interfaces.js reads PROTECTED_NAMES inside a function).
+import {signature,performsOp,goalOps,dataAnswer} from './interfaces.js';
 
 export const LINKABLE = /\.(?:js|mjs|cjs)$/i;
 const OPTIONS = {ecmaVersion:'latest', allowHashBang:true, locations:true};
@@ -1520,7 +1523,9 @@ export function swappedCalls(files, surfaces, {promised=null, loose=false, at=nu
     let parsed;try {parsed=parseSource(content);} catch {continue;}
     const {ast,sourceType}=parsed,{bindingOf,dynamic}=scopeOf(ast,sourceType);
     if(dynamic)continue;
-    const target=spec=>{if(typeof spec!=='string'||!spec.startsWith('.'))return null;const r=resolveLocal(path,spec,set);return r.path&&r.path!==path&&surfaces.get(r.path)?r.path:null;};
+    // v7.15.6: an import that resolves to none of these files (a worker's
+    // own modules, before linking) is read against the plan's promise alone.
+    const target=spec=>{if(typeof spec!=='string'||!spec.startsWith('.'))return null;const r=resolveLocal(path,spec,set);if(r.error)return promised?spec:null;return r.path&&r.path!==path&&surfaces.get(r.path)?r.path:null;};
     // Top-level imports: local name → {to, name}; name null is the module itself.
     const bound=new Map();
     for(const s of ast.body) {
@@ -1678,6 +1683,117 @@ export function esmRequires(files) {
     });
     if(calls)out.push({path,lines});
   }
+  return out;
+}
+// ---------- v7.15.6: the one contract check ----------
+// One import line per function, named after it (run8), in the syntax the
+// worker's files are written in (run12's ES modules).
+const listedNames=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0]||'';
+const importLineOf=(name,esm)=>esm?`import { ${name} } from './${name}';`:`const { ${name} } = require('./${name}');`;
+const importLinesOf=(fns,esm)=>`Import each on its own line, by exactly its name, with the name as the path: ${fns.map(f=>importLineOf(f.name,esm)).join(' ')}`;
+const short=s=>{const t=String(s??'');return t.length>70?t.slice(0,69)+'…':t;};
+// v7.15.6 (run13): one contract check. Five detectors had grown, one per
+// run that found a new way around the contract, each with its own text,
+// bound and event. A worker's done is read in one pass against its whole
+// contract (exports cover the promise and no other piece's; imports cover
+// the uses), one finding per violation: {rule, name, path, text, how}.
+//   missing  a promised function not exported (missingExports), with the
+//            self-import that explains it (run6)
+//   empty    an empty placeholder (placeholders; run9's update() {})
+//   foreign  a function another piece promises, declared or exported here,
+//            or an operation start() returns written here that a promise
+//            performs (run11's entryModule.js, run13's stub deleteTicket.js;
+//            a wrapper that calls the import of the name is none)
+//   unwired  start() returns no method for a performer (run12's entry)
+//   unused   a planned use not imported and called; one of an owner's
+//            storage functions called meets them all (run12)
+//   own_data data kept beside a storage use (ownData; run12)
+//   esm      an ES module that calls require() (esmRequires; run12)
+//   params   a call passing the caller's own parameters on in another
+//            order than the promise's (swappedCalls, strict; run11)
+// promise: the worker's promised functions. uses: the plan's uses for it
+// ({name, owner, storage, params, does}). foreign: the functions other
+// pieces promise it, by name ({name, owner, does, params}; generic names
+// left out). performers: for a start carrier, the promises start()
+// returns. esm: its files are ES modules. promisedParams(specifier, name):
+// the params the plan promised name. goal: the goal (a start carrier is
+// not told to use a function that performs no operation of it). keeper:
+// the piece is itself the store, whose data is its own. performer(x): the
+// promise that performs a local operation x of start(), from the plan's
+// walk. text is null for an empty operation of start(): the plan's walk
+// words it, with Clef when the words do not decide (placeholderAnswer).
+export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),performers=[],esm=false,promisedParams=null,goal='',keeper=false,performer=()=>null}={}) {
+  const set=files instanceof Map?files:new Map(Object.entries(files)),out=[],names=promise.map(f=>f.name),base=p=>String(p||'').split('/').pop();
+  const line=n=>importLineOf(n,esm).replace(/;$/,''),said=f=>f?.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:'',does=f=>f?.does?': '+String(f.does).replace(/[.\s]+$/,''):'';
+  const missing=missingExports(set,names),self=missing.length?selfImports(set,missing):[];
+  for(const [i,name] of missing.entries()) {
+    const f=promise.find(p=>p.name===name)||{name},mine=self.filter(x=>x.names.includes(name)&&!x.told);
+    for(const x of mine)x.told=true;
+    out.push({rule:'missing',name,path:'',text:`${signature(f)}${f.does?` ("${String(f.does).replace(/[.\s]+$/,'')}")`:''} is promised by your assignment and is not exported by exactly that name.`+
+      mine.map(x=>` ${base(x.path)} imports ${listedNames(x.names)} from '${x.specifier}', but ${listedNames(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`).join('')+
+      (i===missing.length-1?` Export ${missing.length>1?'each':'it'} as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance.`:'')});
+  }
+  const hasStart=names.includes('start'),performs=f=>goalOps(goal,f).length>0;
+  const found=placeholders(set,names.filter(n=>!missing.includes(n)),[...foreign.keys()],performers.map(f=>f.name)),items=[];
+  for(const x of found) {
+    if(x.missing)items.push({...x,rule:'unwired'});
+    else if(x.foreign){const hit=foreign.get(x.name);if(hit)items.push({...x,rule:'foreign',hit});}
+    else if(x.local){const hit=performer(x);if(hit)items.push({...x,rule:'foreign',hit});}
+    else items.push({...x,rule:'empty'});
+  }
+  // The start carrier hears first of the functions that perform the goal's operations (run11's led with readData).
+  const written=items.filter(x=>x.rule==='foreign').sort((a,b)=>hasStart?performs(b.hit)-performs(a.hit):0),empty=items.filter(x=>x.rule==='empty');
+  // A performer a written function or an empty operation already names is answered there, once (run9's update() {}).
+  const told=new Set([...written.map(x=>x.hit.name),...performers.filter(f=>empty.some(x=>x.op&&performsOp(x.op,f))).map(f=>f.name)]);
+  for(const x of items.filter(x=>x.rule==='unwired')) {
+    const by=new Map(performers.map(f=>[f.name,f])),fns=x.missing.filter(n=>!told.has(n)).map(n=>by.get(n)).filter(Boolean);
+    if(!fns.length)continue;
+    // Review: a key named after its performer's operation (create: createTicket) is as ENTRY_CONTRACT asks, never renamed.
+    const stray=x.stray||[],renamed=(x.renamed||[]).filter(([k,n])=>!performsOp(k,{name:n}));
+    out.push({rule:'unwired',name:'start',path:x.path,missing:fns.map(f=>f.name),text:[`start() returns no method for ${listedNames(fns.map(f=>`${f.name} (${f.owner})`))}: ${importLinesOf(fns,esm).replace(/^Import each/,fns.length>1?'import each':'import it')} and return ${fns.length>1?'each':'it'} under its name.`,
+      renamed.length?`Rename ${listedNames(renamed.map(([k,n])=>`${k} to ${n}`))}: start() returns each function under its own name.`:'',stray.length?`No piece promises ${listedNames(stray)}: do not import or return ${stray.length>1?'them':'it'}.`:''].filter(Boolean).join(' '),
+      how:`start(): ${fns.map(f=>`${f.name} from "${short(f.owner)}"`).join(', ')}.`});
+  }
+  const onceEmpty=new Set(),onceWritten=new Set();
+  for(const x of empty) {
+    const k=x.op||x.name;
+    if(onceEmpty.has(k))continue;
+    onceEmpty.add(k);
+    if(x.op){out.push({rule:'empty',name:k,path:x.path,op:x.op,params:x.params,text:null});continue;}
+    const f=promise.find(p=>p.name===x.name)||{name:x.name};
+    out.push({rule:'empty',name:k,path:x.path,text:`${signature(f)}${does(f)} is promised by your assignment and is an empty placeholder: write it here.`,how:`${x.name} is its own to write.`});
+  }
+  for(const x of written) {
+    const k=x.op||x.name;
+    if(onceWritten.has(k))continue;
+    onceWritten.add(k);
+    const f=x.hit,o=short(f.owner);
+    let text,how=`${k}: ${x.op?`${f.name} from "${o}"`:`"${o}" promises it`}.`;
+    // Review: the start carrier is not told to use one that performs no operation of the goal (run11's readData).
+    if(!x.op)text=f.name==='start'?`start is promised by "${f.owner}", which composes the application: do not write start() here.`:
+      hasStart&&!performs(f)?`${f.name} is promised by "${f.owner}": do not write it here.`:`${f.name} is promised by "${f.owner}": import it on its own line, ${line(f.name)}, and use it; do not write it here.`;
+    // Both sides naming a different number of arguments is not the same operation: the operation is written with it.
+    else if(!x.params?.length||!f.params?.length||x.params.length===f.params.length)text=`${x.op} is written here, but ${signature(f)}${said(f)} is promised by "${f.owner}"; import it on its own line, ${line(f.name)}, and return it as ${x.op}; do not write it here.`;
+    else {text=`${x.op} is written here, but ${signature(f)}${said(f)} is promised by "${f.owner}"; write ${x.op} with it: import it on its own line, ${line(f.name)}, and call it from ${x.op}.`;how=`${x.op}: write it with ${f.name} from "${o}".`;}
+    out.push({rule:'foreign',name:k,path:x.path,hit:f,text,how});
+  }
+  // run12: an owner's storage uses are met when one of them is called (a
+  // view piece calls readTickets, never saveTickets), and a piece that is
+  // itself the store keeps the data.
+  const {unused,kept}=uses.length?ownData(set,uses.map(f=>f.name)):{unused:[],kept:[]},store=uses.filter(f=>f.storage);
+  const uncalled=store.filter(f=>store.filter(g=>g.owner===f.owner).every(g=>unused.includes(g.name))),local=keeper?[]:kept;
+  const homeless=local.length?store:uncalled,idle=uses.filter(f=>!f.storage&&unused.includes(f.name));
+  if(homeless.length) {
+    // Review: the path is never the first word, so its case is never changed (PROBE E's CreateTicket.js).
+    const group=[...local.map(k=>({rule:'own_data',name:k.name||'',path:k.path,kind:k.kind,text:`In ${base(k.path)}, the module ${k.kind==='state'?`keeps its own data in a module-level ${k.shape} (${k.name})`:k.kind==='fs'?'reads and writes files with fs':'returns records written into its code'}.`})),
+      ...(uncalled.length?[{rule:'unused',name:uncalled[0].name,names:uncalled.map(f=>f.name),path:'',text:`Your modules do not import and call ${listedNames(uncalled.map(f=>f.name))}.`}]:[])];
+    group.at(-1).text+=' '+dataAnswer(homeless);
+    out.push(...group);
+  }
+  for(const f of idle)out.push({rule:'unused',name:f.name,names:[f.name],path:'',text:`Your plan says you call ${signature(f)} from "${f.owner}": import it on its own line, ${line(f.name)}, and call it.`});
+  for(const x of esmRequires(set))out.push({rule:'esm',name:'',path:x.path,text:`${base(x.path)} is an ES module (it uses import or export), where require is not defined and the module fails to load: ${x.lines.length?`write ${x.lines.map(l=>`import { ${l.names.join(', ')} } from '${l.specifier}';`).join(' ')} in place of ${x.lines.length>1?'its require lines':'its require line'}`:'use import declarations in place of require()'}.`});
+  if(promisedParams)for(const x of swappedCalls(set,new Map([...set].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)])),{promised:promisedParams}))
+    out.push({rule:'params',name:x.name,path:x.path,call:x.call,params:x.params,text:`${x.text}.`});
   return out;
 }
 // The module a load or run error at path names through one of path's own

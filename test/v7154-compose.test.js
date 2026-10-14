@@ -119,10 +119,10 @@ test('v7.15.4: run11 replay: entryModule.js is sent back on done, naming each pr
   assert.equal(message.from,'runtime:contract');
   const line=(name,owner)=>`${name} is promised by "${owner}": import it on its own line, const { ${name} } = require('./${name}'), and use it; do not write it here.`;
   // Review: the functions that perform the goal's operations first; readData and writeData perform none, so the carrier is not told to use them.
-  assert.equal(message.body,['[contract]',line('createTicket','createTicket'),line('deleteTicket','deleteTicket'),line('updateTicket','updateTicket'),line('viewTicket','viewTicket'),
+  assert.equal(message.body,['[contract]','Your promise: start().',line('createTicket','createTicket'),line('deleteTicket','deleteTicket'),line('updateTicket','updateTicket'),line('viewTicket','viewTicket'),
     'readData is promised by "dataStore": do not write it here.','writeData is promised by "dataStore": do not write it here.','Publish the FULL updated file.'].join(' '));
   assert.doesNotMatch(message.body,/root\.|Read ticket data|Write ticket data/,'only the walk\'s labels: never an id or the branch below dataStore');
-  assert.equal(events(room,'contract_reimplemented')[0].body,'Done refused (1/3): createTicket, deleteTicket, updateTicket, viewTicket, readData and writeData are written here, and other pieces promise them; back to the worker. createTicket: "createTicket" promises it. deleteTicket: "deleteTicket" promises it. updateTicket: "updateTicket" promises it. viewTicket: "viewTicket" promises it. readData: "dataStore" promises it. writeData: "dataStore" promises it.');
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [foreign]; back to the worker. createTicket: "createTicket" promises it. deleteTicket: "deleteTicket" promises it. updateTicket: "updateTicket" promises it. viewTicket: "viewTicket" promises it. readData: "dataStore" promises it. writeData: "dataStore" promises it.');
   assert.deepEqual(only(calls,'leaf'),[],'no Clef or other model call');
   assert.equal(room.get('contract_returns:root.6'),'1','the contract-return limit bounds it');
   // The start carrier that imports them is accepted.
@@ -136,12 +136,12 @@ test('v7.15.4: a worker\'s helper with an unpromised name and its own promised f
   const helper="const { writeData } = require('./writeData');\nfunction makeId() { return `T-${Date.now()}`; }\nfunction createTicket(data, filePath) { const t = { ...data, id: makeId() }; writeData(filePath, t); return t; }\nmodule.exports = { createTicket };\n";
   const ok=await worker('root.2',['createTicket.js',helper]);
   assert.equal(ok.room.node('root.2').status,'done');
-  assert.equal(events(ok.room,'contract_reimplemented').length,0);
+  assert.equal(events(ok.room,'contract_returned').length,0);
   const own=await worker('root.2',['createTicket.js',run11.create]);
   assert.equal(own.room.node('root.2').status,'done','run11\'s createTicket.js defines its own createTicket');
   const wrote=helper.replace("const { writeData } = require('./writeData');","const fs = require('fs');\nfunction writeData(filePath, data) { fs.writeFileSync(filePath, JSON.stringify(data)); }");
   const {room}=await worker('root.2',['createTicket.js',wrote]);
-  assert.equal(room.receive('root.2')[0].body,'[contract] writeData is promised by "dataStore": import it on its own line, const { writeData } = require(\'./writeData\'), and use it; do not write it here. Publish the FULL updated file.');
+  assert.equal(room.receive('root.2')[0].body,'[contract] Your promise: createTicket(data, filePath). writeData is promised by "dataStore": import it on its own line, const { writeData } = require(\'./writeData\'), and use it; do not write it here. Publish the FULL updated file.');
   // A generic name another piece promises is never answered by name: a local get() is no copy of it.
   const generic=liveRoom({leaf:()=>({summary:'Wrote it',files:[{path:'createTicket.js',content:helper.replace('function makeId','function get(id) { return id; }\nfunction makeId')}],done:true})});
   await plan11(generic.room);
@@ -151,16 +151,16 @@ test('v7.15.4: a worker\'s helper with an unpromised name and its own promised f
   assert.equal(generic.room.node('root.2').status,'done');
   // A worker below dataStore hears its sibling's label, and start's carrier by its own label.
   const below=await worker('root.1.1',['module.js',"const fs = require('fs');\nfunction readData(p) { return fs.readFileSync(p, 'utf8'); }\nfunction writeData(p, d) { fs.writeFileSync(p, d); }\nfunction start() { return { readData }; }\nmodule.exports = { readData };\n"]);
-  assert.equal(below.room.receive('root.1.1')[0].body,'[contract] writeData is promised by "Write ticket data": import it on its own line, const { writeData } = require(\'./writeData\'), and use it; do not write it here. start is promised by "entryModule", which composes the application: do not write start() here. Publish the FULL updated file.');
+  assert.equal(below.room.receive('root.1.1')[0].body,'[contract] Your promise: readData(filePath). writeData is promised by "Write ticket data": import it on its own line, const { writeData } = require(\'./writeData\'), and use it; do not write it here. start is promised by "entryModule", which composes the application: do not write start() here. Publish the FULL updated file.');
 });
 
 test('v7.15.4: a start() whose operations are all written here, under other names, is sent back per operation from the plan; wrappers that call the promised functions pass',async()=>{
   const {room,calls}=await worker('root.6',['entry.js',local]);
-  assert.equal(room.receive('root.6')[0].body,'[contract] create is written here, but createTicket(data, filePath) — "creates a new ticket with unique ID" — is promised by "createTicket"; import it on its own line, const { createTicket } = require(\'./createTicket\'), and return it as create; do not write it here. '+
+  assert.equal(room.receive('root.6')[0].body,'[contract] Your promise: start(). create is written here, but createTicket(data, filePath) — "creates a new ticket with unique ID" — is promised by "createTicket"; import it on its own line, const { createTicket } = require(\'./createTicket\'), and return it as create; do not write it here. '+
     'view is written here, but viewTicket(id, filePath) — "retrieves a specific ticket by ID" — is promised by "viewTicket"; write view with it: import it on its own line, const { viewTicket } = require(\'./viewTicket\'), and call it from view. '+
     'update is written here, but updateTicket(id, updates, filePath) — "modifies an existing ticket by ID" — is promised by "updateTicket"; write update with it: import it on its own line, const { updateTicket } = require(\'./updateTicket\'), and call it from update. '+
     'delete is written here, but deleteTicket(id, filePath) — "removes a ticket by ID" — is promised by "deleteTicket"; write delete with it: import it on its own line, const { deleteTicket } = require(\'./deleteTicket\'), and call it from delete. Publish the FULL updated file.');
-  assert.match(events(room,'contract_reimplemented')[0].body,/^Done refused \(1\/3\): create, view, update and delete are written here, and other pieces promise them; back to the worker\. create: createTicket from "createTicket"\. view: write it with viewTicket/);
+  assert.match(events(room,'contract_returned')[0].body,/^Done refused \(1\/3\): rules: \[foreign\]; back to the worker\. create: createTicket from "createTicket"\. view: write it with viewTicket/);
   assert.deepEqual(only(calls,'leaf'),[]);
   const ok=await worker('root.6',['entry.js',wrappers]);
   assert.equal(ok.room.node('root.6').status,'done',trace(ok.room));
@@ -170,7 +170,7 @@ test('v7.15.4: a start() whose operations are all written here, under other name
   assert.equal(own.room.node('root.6').status,'done');
   // v7.15.5: and the goal's operations the plan's pieces perform are still owed (run12).
   const bare=await worker('root.6',['entry.js',local.replace('{ create, view, update, delete: remove, version: \'1\' }','{ archive: create }')]);
-  assert.match(bare.room.receive('root.6')[0].body,/^\[contract\] start\(\) returns no method for createTicket \(createTicket\), viewTicket \(viewTicket\), updateTicket \(updateTicket\) and deleteTicket \(deleteTicket\): /);
+  assert.match(bare.room.receive('root.6')[0].body,/^\[contract\] Your promise: start\(\)\. start\(\) returns no method for createTicket \(createTicket\), viewTicket \(viewTicket\), updateTicket \(updateTicket\) and deleteTicket \(deleteTicket\): /);
   assert.doesNotMatch(bare.room.receive('root.6').map(m=>m.body).join(' '),/archive/);
 });
 
@@ -178,7 +178,7 @@ test('v7.15.4 review: a carrier that wraps each promise to pass the file path, u
   for(const src of [sameName,service,facade,sameName.replace(/(\w+Ticket): \((.*?)\) => \1\((.*?)\),/g,'async $1($2) { return $1($3); },')]) {
     const {room,calls}=await worker('root.6',['entryModule.js',src]);
     assert.equal(room.node('root.6').status,'done',trace(room));
-    assert.equal(events(room,'contract_reimplemented').length+events(room,'contract_placeholder').length,0);
+    assert.equal(events(room,'contract_returned').length,0);
     assert.deepEqual(only(calls,'leaf'),[]);
   }
   const view=await worker('root.3',['viewTicket.js',"const store = require('./dataStore');\nconst readData = (filePath) => store.readData(filePath);\nfunction viewTicket(id, filePath) { return JSON.parse(readData(filePath)).find(t => t.id === id); }\nmodule.exports = { viewTicket };\n"]);
@@ -186,17 +186,17 @@ test('v7.15.4 review: a carrier that wraps each promise to pass the file path, u
   // Read and write imported, as the send-back asks, and the operations in memory: each operation is read on its own.
   const {room}=await worker('root.6',['entryModule.js',halfway('./readData','./writeData')]);
   assert.equal(room.node('root.6').status,'ready');
-  assert.match(room.receive('root.6')[0].body,/^\[contract\] create is written here, but createTicket\(data, filePath\) .* is promised by "createTicket"; write create with it: .* delete is written here, but deleteTicket\(id, filePath\) .* update is written here, .* view is written here, /);
-  assert.match(events(room,'contract_reimplemented')[0].body,/^Done refused \(1\/3\): create, delete, update and view are written here/);
+  assert.match(room.receive('root.6')[0].body,/^\[contract\] Your promise: start\(\)\. create is written here, but createTicket\(data, filePath\) .* is promised by "createTicket"; write create with it: .* delete is written here, but deleteTicket\(id, filePath\) .* update is written here, .* view is written here, /);
+  assert.match(events(room,'contract_returned')[0].body,/^Done refused \(1\/3\): rules: \[foreign\]; back to the worker\. create: write it with createTicket from "createTicket"\. delete: write it with deleteTicket from "deleteTicket"\. update: .* view: /);
 });
 
 test('v7.15.4: after 3 returns the done is accepted and the manager gets a contract problem naming the functions still written here',async()=>{
   const {room,again}=await worker('root.6',['entryModule.js',run11.entry]);
   await again();await again();
-  assert.deepEqual(events(room,'contract_reimplemented').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
+  assert.deepEqual(events(room,'contract_returned').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
   await again();
   assert.equal(room.node('root.6').status,'done');
-  assert.equal(events(room,'contract_unmet')[0].body,'createTicket, deleteTicket, updateTicket, viewTicket, readData and writeData still written here after 3 returns though other pieces promise them; accepted, and the gap goes to the manager.');
+  assert.equal(events(room,'contract_unmet')[0].body,'After 3 returns: createTicket still written here though "createTicket" promises it; deleteTicket still written here though "deleteTicket" promises it; updateTicket still written here though "updateTicket" promises it; viewTicket still written here though "viewTicket" promises it; readData still written here though "dataStore" promises it; writeData still written here though "dataStore" promises it; accepted, and the gap goes to the manager.');
   const [p,...more]=openProblems(room,'root').filter(x=>x.kind==='contract');
   assert.equal(more.length,0);
   assert.equal(p.detail,'entryModule writes createTicket, deleteTicket, updateTicket, viewTicket, readData, writeData itself, which "createTicket", "deleteTicket", "updateTicket", "viewTicket", "dataStore" promise; its modules must import them by name instead.');

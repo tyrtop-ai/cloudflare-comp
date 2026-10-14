@@ -380,10 +380,10 @@ test('v7.15: run6 replay (A): a worker missing a promised export is sent back be
   assert.equal(room.node('root.3').status,'ready','the trailing check wakes it on the [contract] message');
   const [message]=room.receive('root.3');
   assert.equal(message.from,'runtime:contract');
-  assert.equal(message.body,"[contract] Your published files do not export: createTicket(title, description): creates a ticket and returns it. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function createTicket(…) or exports.createTicket = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file. createTicket.js imports createTicket from './ticketStore', but createTicket is yours to write: write it in your own module instead of importing it.");
+  assert.equal(message.body,"[contract] Your promise: createTicket(title, description). createTicket(title, description) (\"creates a ticket and returns it\") is promised by your assignment and is not exported by exactly that name. createTicket.js imports createTicket from './ticketStore', but createTicket is yours to write: write it in your own module instead of importing it. Export it as a named export (export function createTicket(…) or exports.createTicket = …) or as a member of the exported object, not as a method of a class or instance. Publish the FULL updated file.");
   assert.equal(room.get('contract_returns:root.3'),'1');
   assert.equal(room.read('failures',{})['root.3']||0,0);
-  assert.equal(events(room,'contract_missing')[0].body,'Done refused (1/3): createTicket promised and not exported; back to the worker.');
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [missing]; back to the worker.');
   // Publishing wakes the manager for provisional linking, as before; the
   // return does not: no completion report and no returned mark.
   assert.equal(room.receive('root').length,0,'no completion report');
@@ -407,8 +407,8 @@ test('v7.15: the third contract return accepts done and records contract_unmet; 
   }
   await room.turn('root.3');
   assert.equal(room.node('root.3').status,'done','the done is accepted');
-  assert.deepEqual(events(room,'contract_missing').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
-  assert.equal(events(room,'contract_unmet')[0].body,'createTicket promised and still not exported after 3 returns; accepted, and the gap goes to the manager.');
+  assert.deepEqual(events(room,'contract_returned').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
+  assert.equal(events(room,'contract_unmet')[0].body,'After 3 returns: createTicket still not exported; accepted, and the gap goes to the manager.');
   assert.equal(events(room,'paused').length,0,'a contract return never pauses');
   assert.equal(room.read('failures',{})['root.3']||0,0);
 });
@@ -423,7 +423,7 @@ test('v7.15 × slice 2: a retask clears contract_returns, so the new task\'s don
   assert.equal(room.get('contract_returns:root.3'),'');
   await room.turn('root.3');
   assert.equal(room.node('root.3').status,'ready','sent back, not accepted at once');
-  assert.equal(events(room,'contract_missing').at(-1).body,'Done refused (1/3): createTicket promised and not exported; back to the worker.');
+  assert.equal(events(room,'contract_returned').at(-1).body,'Done refused (1/3): rules: [missing]; back to the worker.');
   assert.equal(events(room,'contract_unmet').length,1);
   assert.ok(room.receive('root.3').some(m=>m.body.startsWith('[contract] ')));
   // Root promises start; "create ticket" promises createTicket and splits.
@@ -522,7 +522,7 @@ test('v7.15: MOCK run completes with the fixture interfaces, and every mock work
   assert.deepEqual(room.promisedOf('root.2').map(f=>f.name),['addTicket','listTickets','createTicketHandler','verifyTicketAPI']);
   assert.deepEqual(['root.2.1','root.2.2','root.2.3'].map(id=>room.promisedOf(id).map(f=>f.name)),[['addTicket','listTickets'],['createTicketHandler'],['verifyTicketAPI']]);
   assert.equal(room.promisedOf('root.2.1')[0].does,'stores a ticket with a title and returns it','carried items take the parent\'s description');
-  assert.ok(!snap.events.some(e=>['contract_missing','contract_unmet','split_rejected','interfaces_repaired'].includes(e.kind)));
+  assert.ok(!snap.events.some(e=>['contract_returned','contract_unmet','split_rejected','interfaces_repaired'].includes(e.kind)));
   assert.ok(['root.2.1','root.2.2','root.2.3'].every(id=>snap.events.some(e=>e.actor===id&&e.kind==='done')));
   assert.deepEqual(snap.agents.find(a=>a.id==='root.2.2').interfaces.map(f=>f.name),['createTicketHandler']);
   assert.ok(room.view('root.2.1').your_responsibility.endsWith('addTicket(title): stores a ticket with a title and returns it; listTickets(): returns every stored ticket.'));
@@ -688,7 +688,7 @@ test('v7.15: a worker that exports its promised function and delegates to a same
   const {room}=await createWorker(()=>delegating);
   await room.turn('root.3');
   assert.equal(room.node('root.3').status,'done');
-  assert.equal(events(room,'contract_missing').length,0);
+  assert.equal(events(room,'contract_returned').length,0);
 });
 
 test('v7.15: a late split that drops the worker\'s promise is rejected, and the worker\'s next turn reads why',async()=>{
