@@ -68,14 +68,40 @@ test('v7.15.4: placeholders lists run11\'s entryModule.js writing six functions 
   assert.deepEqual(L.placeholders({'e.js':"function start() { return { createTicket(d) { return d; }, view: (id) => id }; }\nmodule.exports = { start };"},['start'],others).filter(x=>x.foreign).map(x=>x.name),['createTicket'],'a method start() returns under a promised name');
 });
 
-test('v7.15.4: placeholders lists start\'s operations, with the names each uses, only when every one is a local function',()=>{
+test('v7.15.4: placeholders lists each operation start() returns that is a function written here, with the names each uses',()=>{
   const ops=L.placeholders({'entry.js':local},['start'],['createTicket']);
   assert.deepEqual(ops.map(x=>[x.op,x.local,x.params]),[['create',true,['data','filePath']],['view',true,['id']],['update',true,['id','changes']],['delete',true,['id']]],'data beside them is no operation');
   assert.ok(!ops[0].uses.includes('createTicket'));
   const wrapped=L.placeholders({'entry.js':wrappers},['start'],['createTicket']);
   assert.deepEqual(wrapped.map(x=>[x.op,x.uses.includes({create:'createTicket',view:'viewTicket',update:'updateTicket',delete:'deleteTicket'}[x.op])]),[['create',true],['view',true],['update',true],['delete',true]],'an alias by its exported name, a member of an imported module, a call by name');
-  assert.deepEqual(L.placeholders({'entry.js':local.replace('delete: remove','delete: deleteTicket').replace('const tickets','const { deleteTicket } = require(\'./deleteTicket\');\nconst tickets')},['start'],['createTicket']),[],'one imported operation: not all local');
+  assert.deepEqual(L.placeholders({'entry.js':local.replace('delete: remove','delete: deleteTicket').replace('const tickets','const { deleteTicket } = require(\'./deleteTicket\');\nconst tickets')},['start'],['createTicket']).map(x=>x.op),['create','view','update'],'review: an imported operation is skipped, the others are still read');
   assert.deepEqual(L.placeholders({'entry.js':local},['start']),[],'no other piece\'s names: nothing is read');
+});
+
+// Review: a carrier passes the file path run11's promises take and start()
+// does not, so it wraps each promise, often under the promise's own name.
+const others=['readData','writeData','createTicket','viewTicket','updateTicket','deleteTicket'];
+const sameName="const { createTicket } = require('./createTicket');\nconst { viewTicket } = require('./viewTicket');\nconst { updateTicket } = require('./updateTicket');\nconst { deleteTicket } = require('./deleteTicket');\nconst FILE = 'tickets.json';\nfunction start() {\n  return {\n    createTicket: (data) => createTicket(data, FILE),\n    viewTicket: (id) => viewTicket(id, FILE),\n    updateTicket: (id, updates) => updateTicket(id, updates, FILE),\n    deleteTicket: (id) => deleteTicket(id, FILE),\n  };\n}\nmodule.exports = { start };\n";
+const service="const { createTicket } = require('./createTicket');\nconst { viewTicket } = require('./viewTicket');\nconst { updateTicket } = require('./updateTicket');\nconst { deleteTicket } = require('./deleteTicket');\nclass TicketService {\n  constructor(file) { this.file = file; }\n  create(data) { return createTicket(data, this.file); }\n  view(id) { return viewTicket(id, this.file); }\n  update(id, changes) { return updateTicket(id, changes, this.file); }\n  remove(id) { return deleteTicket(id, this.file); }\n}\nfunction start() {\n  const svc = new TicketService('tickets.json');\n  return { create: (data) => svc.create(data), view: (id) => svc.view(id), update: (id, changes) => svc.update(id, changes), delete: (id) => svc.remove(id) };\n}\nmodule.exports = { start };\n";
+const facade="const { createTicket } = require('./createTicket');\nconst { viewTicket } = require('./viewTicket');\nconst { updateTicket } = require('./updateTicket');\nconst { deleteTicket } = require('./deleteTicket');\nconst FILE = 'tickets.json';\nconst api = {\n  create: (data) => createTicket(data, FILE),\n  view: (id) => viewTicket(id, FILE),\n  update: (id, changes) => updateTicket(id, changes, FILE),\n  delete: (id) => deleteTicket(id, FILE),\n};\nfunction create(data) { return api.create(data); }\nfunction view(id) { return api.view(id); }\nfunction update(id, changes) { return api.update(id, changes); }\nfunction remove(id) { return api.delete(id); }\nfunction start() { return { create, view, update, delete: remove }; }\nmodule.exports = { start };\n";
+// Run11's entry minus the promised names: read and write imported, as the
+// send-back asked, and the four operations kept in memory under their own names.
+const halfway=(read,write)=>`const { readData } = require('${read}');\nconst { writeData } = require('${write}');\nconst tickets = {};\nconst create = (data) => { const id = Date.now(); tickets[id] = { id, ...data }; return tickets[id]; };\nconst view = (id) => { const t = tickets[id]; if (!t) throw new Error('Ticket not found'); return t; };\nconst update = (id, data) => { tickets[id] = { ...tickets[id], ...data }; return tickets[id]; };\nconst remove = (id) => { delete tickets[id]; return true; };\nconst start = () => ({ create, read: readData, write: writeData, delete: remove, update, view });\nexports.start = start;\n`;
+
+test('v7.15.4 review: a function under a promised name that calls the import of that name is no copy of it',()=>{
+  const foreign=(src,names=['start'])=>L.placeholders({'e.js':src},names,others).filter(x=>x.foreign).map(x=>x.name);
+  assert.deepEqual(foreign(sameName),[],'arrows start() returns under the promised names');
+  assert.deepEqual(foreign("const { createTicket } = require('./createTicket');\nfunction start() { return { async createTicket(d) { return createTicket(d, 'f'); } }; }\nmodule.exports = { start };"),[],'a method');
+  assert.deepEqual(foreign("const tickets = require('./createTicket');\nfunction createTicket(d) { return tickets.createTicket(d, 'f'); }\nfunction start() { return { createTicket }; }\nmodule.exports = { start };"),[],'a member of the imported module');
+  assert.deepEqual(foreign("const { createTicket: create } = require('./createTicket');\nconst createTicket = (d) => create(d, 'f');\nfunction start() { return { createTicket }; }\nmodule.exports = { start };"),[],'an alias');
+  assert.deepEqual(foreign("import * as data from './dataStore.mjs';\nexport const readData = (p) => data.readData(p);\nexport function viewTicket(id) { return id; }",['viewTicket']),[],'an ESM facade');
+  assert.deepEqual(foreign("const store = require('./store');\nexports.readData = (p) => store.readData(p);\nexports.viewTicket = (id) => id;",['viewTicket']),[],'a CommonJS facade');
+  assert.deepEqual(foreign("const { readData } = require('./readData');\nfunction start() { function readData(p) { return readData(p); } return { read: readData }; }\nmodule.exports = { start };"),['readData'],'a shadow that calls itself writes it');
+  assert.deepEqual(foreign("const { readData: read } = require('./readData');\nconst readData = (p) => JSON.parse(read(p) || '[]');\nconst writeData = (p, d) => d;\nmodule.exports = { readData, writeData };",[]),['writeData'],'only the wrapper reads its own import');
+  // A carrier that composes through a class or an object it keeps uses every promise.
+  for(const src of [service,facade])assert.deepEqual(L.placeholders({'e.js':src},['start'],others).map(x=>[x.op,x.uses.includes({create:'createTicket',view:'viewTicket',update:'updateTicket',delete:'deleteTicket'}[x.op])]),
+    [['create',true],['view',true],['update',true],['delete',true]]);
+  assert.deepEqual(L.placeholders({'e.js':halfway('./readData','./writeData')},['start'],others).map(x=>[x.op,x.uses.filter(n=>others.includes(n))]),[['create',[]],['delete',[]],['update',[]],['view',[]]],'imported read and write are skipped');
 });
 
 test('v7.15.4: reachableModules follows the entry\'s static imports through the bundle; a computed path gives every module the doubt',()=>{
@@ -139,6 +165,22 @@ test('v7.15.4: a start() whose operations are all written here, under other name
   // An operation nobody's promise performs is the carrier's to write.
   const own=await worker('root.6',['entry.js',local.replace('{ create, view, update, delete: remove, version: \'1\' }','{ archive: create }')]);
   assert.equal(own.room.node('root.6').status,'done');
+});
+
+test('v7.15.4 review: a carrier that wraps each promise to pass the file path, under its name, through a class or an object, is done on its first done; run11\'s entry minus the promised names is not',async()=>{
+  for(const src of [sameName,service,facade,sameName.replace(/(\w+Ticket): \((.*?)\) => \1\((.*?)\),/g,'async $1($2) { return $1($3); },')]) {
+    const {room,calls}=await worker('root.6',['entryModule.js',src]);
+    assert.equal(room.node('root.6').status,'done',trace(room));
+    assert.equal(events(room,'contract_reimplemented').length+events(room,'contract_placeholder').length,0);
+    assert.deepEqual(only(calls,'leaf'),[]);
+  }
+  const view=await worker('root.3',['viewTicket.js',"const store = require('./dataStore');\nconst readData = (filePath) => store.readData(filePath);\nfunction viewTicket(id, filePath) { return JSON.parse(readData(filePath)).find(t => t.id === id); }\nmodule.exports = { viewTicket };\n"]);
+  assert.equal(view.room.node('root.3').status,'done','a view worker\'s readData that calls the imported one');
+  // Read and write imported, as the send-back asks, and the operations in memory: each operation is read on its own.
+  const {room}=await worker('root.6',['entryModule.js',halfway('./readData','./writeData')]);
+  assert.equal(room.node('root.6').status,'ready');
+  assert.match(room.receive('root.6')[0].body,/^\[contract\] create is written here, but createTicket\(data, filePath\) .* is promised by "createTicket"; write create with it: .* delete is written here, but deleteTicket\(id, filePath\) .* update is written here, .* view is written here, /);
+  assert.match(events(room,'contract_reimplemented')[0].body,/^Done refused \(1\/3\): create, delete, update and view are written here/);
 });
 
 test('v7.15.4: after 3 returns the done is accepted and the manager gets a contract problem naming the functions still written here',async()=>{
