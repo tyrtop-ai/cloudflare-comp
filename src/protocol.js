@@ -17,7 +17,50 @@ export function contentOf(output) {
   if (Array.isArray(c)) return c.map(x => x.text || '').join('');
   return JSON.stringify(output ?? {});
 }
-export function parseObject(output) {
+// run10: a spawn item may arrive as a JSON string of the object.
+export const spawnObjects = spawn => Array.isArray(spawn) ? spawn.map(s => {
+  if (typeof s !== 'string' || !/^\s*\{/.test(s)) return s;
+  try { const o = JSON.parse(s); return o && typeof o === 'object' && !Array.isArray(o) ? o : s; } catch { return s; }
+}) : spawn;
+// A spawn item a child can be made from; normalizeAction keeps only these.
+export const spawnPiece = s => Boolean(s) && typeof s === 'object' && !Array.isArray(s) && typeof s.task === 'string' && s.task.trim().length >= 8;
+// A split's pieces: a spawn list of objects, each with a label and a task.
+export const splitShape = o => Array.isArray(o?.spawn) && o.spawn.length > 0 &&
+  spawnObjects(o.spawn).every(s => s && typeof s === 'object' && !Array.isArray(s) && typeof s.label === 'string' && typeof s.task === 'string');
+// run10's splitter wrapped every spawn item after the first in stray quotes
+// ([{..},"{..}"},{..}"},..]), so nothing parsed and Clef routed Root to one
+// module. A string-aware scan drops, in an array, a quote opening an object
+// where a value starts (the string it would open cannot end there), and a
+// quote after an object with the '}' it leaves unmatched. A string it reads
+// as closed is copied as it is, but an unescaped quote inside one ends it
+// early, so only a caller that vets the result opts in. Null when nothing
+// was dropped.
+export function repairQuotedObjects(text) {
+  const s = String(text ?? ''), stack = [];
+  let out = '', prev = '', stray = false, changed = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i], array = stack.at(-1) === '[';
+    if (/\s/.test(c)) { out += c; continue; }
+    if (c === '"') {
+      let j = i + 1;
+      while (j < s.length && s[j] !== '"') j += s[j] === '\\' ? 2 : 1;
+      if (array && (prev === '[' || prev === ',') && /^\s*\{/.test(s.slice(i + 1)) && !/^\s*[,\]]/.test(s.slice(j + 1))) { changed = true; continue; }
+      if (array && prev === '}' && /^\s*[,\]}]/.test(s.slice(i + 1))) { changed = stray = true; continue; }
+      out += s.slice(i, j + 1); i = j; prev = '"'; stray = false; continue;
+    }
+    if (c === '}' && stray && array) { stray = false; continue; }
+    stray = false;
+    if (c === '{' || c === '[') stack.push(c);
+    else if (c === '}' || c === ']') stack.pop();
+    out += c; prev = c;
+  }
+  return changed ? out : null;
+}
+// shape opts in to the repair and vets what it gives (decompose passes
+// splitShape); an answer that parses as it is stays as it was. Without it
+// nothing is repaired: in decide's code an unescaped '"}' read as run10's
+// stray pair cut the file's content and the cut code parsed (review).
+export function parseObject(output, shape = null) {
   if (output && typeof output === 'object' && !Array.isArray(output) &&
       ('summary' in output || 'spawn' in output || 'files' in output || 'done' in output)) return output;
   const raw = contentOf(output).trim();
@@ -28,11 +71,14 @@ export function parseObject(output) {
     try { const o = JSON.parse(part); if (o && typeof o === 'object' && !Array.isArray(o)) return o; }
     catch { /* Retain raw output for event log. */ }
   }
+  const text = stripReasoning(raw), i = text.indexOf('{'), j = text.lastIndexOf('}');
+  const fixed = shape && i >= 0 && i < j && !/\{\s*"/.test(text.slice(j + 1)) ? repairQuotedObjects(text.slice(i, j + 1)) : null;
+  if (fixed) try { const o = JSON.parse(fixed); if (o && typeof o === 'object' && !Array.isArray(o) && shape(o)) return o; } catch { /* Not run10's stray quotes. */ }
   // Braces in prose or reasoning before the answer defeat the first-'{'-to-last-'}' slice (run7).
   // Only an object that ends the text is the answer: reasoning the token cap
   // cut may quote the prompt's format example, and an object before a cut or
   // before more prose is that example or an aside, so those stay parse errors.
-  const text = stripReasoning(raw), found = jsonObjects(text).at(-1);
+  const found = jsonObjects(text).at(-1);
   if (found && /^\s*(?:```\s*)?$/.test(text.slice(found.end))) return found.value;
   return { parse_error: true, raw: clip(raw, 1500) };
 }
@@ -103,8 +149,7 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
     imports: (Array.isArray(raw.imports) ? raw.imports : [])
       .filter(f => f && isId(f.from) && isPath(f.path) && isPath(f.as || f.path))
       .map(f => ({ from: f.from, path: f.path, as: f.as || f.path })),
-    spawn: (Array.isArray(raw.spawn) ? raw.spawn : [])
-      .filter(s => s && typeof s.task === 'string' && s.task.trim().length >= 8)
+    spawn: spawnObjects(Array.isArray(raw.spawn) ? raw.spawn : []).filter(spawnPiece)
       // Module paths are not splitter output; function names are (v7.15, key
       // "functions"). Discard other fields so they cannot become requirements.
       .map(s => {
