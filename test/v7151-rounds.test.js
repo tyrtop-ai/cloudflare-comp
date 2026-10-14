@@ -52,11 +52,8 @@ const TRIAGE=["The entry module's 'create' function is currently a placeholder w
 // test in the Container answers the next scripted round, {message, line,
 // file}, and Clef ranks that round's file's worker first (none: the entry);
 // past the script the test really runs, and passes. A worker's repair
-// always changes its file. v7.15.13 (run20, R3): a piece that changed its
-// file for a failure without changing it is routed past for that failure,
-// so a third round of one failure with both pieces spent is Root's model's
-// (M4), once; manager answers it (none by default: the defaults close it).
-async function room9(script,manager=()=>({actions:[]})) {
+// always changes its file.
+async function room9(script) {
   let round=null,repairs=0;
   const executor={build:async({fingerprint,files})=>{
     const snapshot_hash=await snapshotHash(files);
@@ -67,7 +64,7 @@ async function room9(script,manager=()=>({actions:[]})) {
   }};
   const clef=input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label===(round?.file==='data'?'Data Module':'Entry Module')?0.9:0.2}]))});
   const leaf=user=>({summary:'Fixed',done:true,files:user.your_label==='Entry Module'?[{path:'entry.js',content:`${app}// fix ${++repairs}\n`}]:[{path:'data.js',content:`${data}// fix ${++repairs}\n`}]});
-  const {room,calls}=liveRoom({runner:()=>runner,manager,leaf,clef,executor});
+  const {room,calls}=liveRoom({runner:()=>runner,manager:()=>({actions:[]}),leaf,clef,executor});
   await room.provision('root',null,'Root objective','Build a small issue tracker that lets someone create tickets.');
   room.set('goal','Build a small issue tracker that lets someone create tickets.');
   await workers(room,'root',[['Entry Module','entry.js',app],['Data Module','data.js',data]]);
@@ -141,24 +138,17 @@ test('v7.15.1: reportProgress: a first report, one where a key of the last paid 
 // blames no file; the child each round's requirement is routed to keys
 // progress as the blamed file did (review), so round 2, routed elsewhere,
 // is progress and round 3, back where round 1 went, is none.
-// v7.15.13 (run20, R3): round 3's failure is round 1's and 2's, and both
-// pieces changed a file for it: both are routed past, and Root's model
-// places it once (M4), here on the entry as run9's triage did; the rest
-// moves as before.
 test('v7.15.1: run9 replay: a failure that moves never exhausts Root, and the run completes',async()=>{
   const script=[{message:'Ticket should be created',line:9,file:'entry',triage:TRIAGE[0]},{message:'Ticket should be created',line:9,file:'data',triage:TRIAGE[1]},
     {message:'Ticket should be created',line:9,file:'entry',triage:TRIAGE[2]},{message:'Created ticket should have an id',line:10,file:'data',triage:TRIAGE[3]},
     {message:'Ticket should be viewable',line:14,file:'entry',triage:TRIAGE[4]},{message:'Ticket should be updateable',line:19,file:'entry',triage:null},
     {message:'Ticket should be deletable',line:24,file:'entry',triage:null}];
   const failures=script.map(r=>`AssertionError [ERR_ASSERTION]: ${r.message} (test line ${r.line})`);
-  const {room,calls}=await room9(script,user=>({actions:[{action:'assign',problems:[user.problems[0].id],child:'root.1',instructions:'Pass the data to createTicket.'}]}));
+  const {room,calls}=await room9(script);
   await settle(room,80);
   assert.equal(room.get('status'),'complete',trace(room));
-  assert.equal(calls.clef.length,6,'one Clef ranking per requirement, none with both pieces routed past');
-  assert.deepEqual(room.problems("kind='run'").map(p=>p.trail.find(t=>t.action==='assign')?.to),['root.1','root.2','root.1','root.2','root.1','root.1','root.1'],'each round went where Clef ranked, round 3 where the model did');
-  assert.deepEqual(room.problems("kind='run'").map(p=>[p.trail.find(t=>t.action==='assign')?.rule,p.flags.exhausted]),[['R2d',undefined],['R2d',['root.1']],['model',['root.1','root.2']],['R2d',undefined],['R2d',undefined],['R2d',undefined],['R2d',undefined]]);
-  assert.deepEqual([calls.manager.map(u=>u.problems[0].trigger),calls.manager[0].problems[0].history.changed_without_progress,events(room,'route_exhausted').map(e=>e.body)],[['M4'],['root.1','root.2'],
-    ['Entry Module changed entry.js for this failure last round and it fails the same; the manager routes it elsewhere.','Data Module changed data.js for this failure last round and it fails the same; the manager routes it elsewhere.']]);
+  assert.equal(calls.clef.length,7,'one Clef ranking per requirement');
+  assert.deepEqual(room.problems("kind='run'").map(p=>p.trail.find(t=>t.action==='assign')?.to),['root.1','root.2','root.1','root.2','root.1','root.1','root.1'],'each round went where Clef ranked');
   assert.deepEqual(verdicts(room),['progress','progress','no progress','progress','progress','progress','progress']);
   assert.deepEqual(['repair_rounds:root','repair_stalled:root','repair_rounds_total'].map(k=>room.get(k)),['7','0','7']);
   assert.match(rounds(room).at(-1),/^Repair round 7 \(7 of the run's 20\): progress \(what fails changed\); 3 round\(s\) without progress left\.$/);
@@ -180,11 +170,11 @@ test('v7.15.1: with no triage, a moving assertion in one file is progress every 
 });
 
 // The same failure each round (v7.15.6: the requirement's text is the runner's own, whatever a round's words).
-// v7.15.13 (run20, R3): the entry changed its file for it and it fails the
-// same, so the next round routes past the entry; nobody else reaches Clef's
-// floor, Root's model is asked once and answers nothing, and the requirement
-// closes: one round, where the per-manager limit took four.
-test('v7.15.1: the same failure each round: the piece that changed its file for it is routed past, nobody else takes it, and the requirement closes after Root\'s model once',async()=>{
+// v7.15.13 (run20, R3): the entry changed its file for it in round 1 and
+// it fails the same, so round 2 routes past it; nobody else reaches Clef's
+// floor, Root's model is asked once and answers nothing, and the
+// requirement closes: one round, where the per-manager limit took four.
+test('v7.15.1: the same failure each round: the piece that changed its file for it is routed past the next round, nobody else takes it, and the requirement closes after Root\'s model once',async()=>{
   const {room,calls}=await room9(sameTriage(6).map(triage=>({message:'Ticket should be viewable',line:14,file:'entry',triage})));
   await settle(room,80);
   assert.equal(sent(room),1,trace(room));
@@ -199,25 +189,17 @@ test('v7.15.1: the same failure each round: the piece that changed its file for 
 // v7.15.6 review: the budget is not tighter than v7.15.5's: a chain fixed
 // one piece per round on one unchanged assertion counts the move between
 // pieces as progress (the route target, as the blamed file was).
-// v7.15.13 (run20, R3): each piece is routed the one failure once; with
-// both spent, Root's model places it once, and with no answer the
-// requirement closes after two rounds. The per-manager limit still ends a
-// chain that ping-pongs between two failures (below).
-test('v7.15.6 review: a same-assertion chain whose fix moves between two pieces: each piece once, both routed past the third round, then Root\'s model once and the requirement closes',async()=>{
+test('v7.15.6 review: a same-assertion chain whose fix moves between two pieces each round completes after five rounds and a new assertion, as in v7.15.5; six rounds exhaust Root',async()=>{
   const chain=n=>[...Array.from({length:n},(_,i)=>({message:'Ticket should be created',line:9,file:i%2?'data':'entry'})),{message:'Created ticket should have an id',line:10,file:'data'}];
   const five=await room9(chain(5));
   await settle(five.room,80);
-  assert.equal(five.room.get('status'),'failed',trace(five.room));
-  assert.deepEqual(verdicts(five.room),['progress','progress']);
-  assert.deepEqual(five.room.problems("kind='run'").map(p=>[p.flags.routed_to,p.flags.exhausted,p.status,p.outcome]),[['root.1',undefined,'closed','superseded'],['root.2',['root.1'],'closed','superseded'],[undefined,['root.1','root.2'],'closed','exhausted']],'the route target on each wave\'s row; the pieces routed past');
-  assert.deepEqual(five.calls.manager.map(u=>u.problems[0].trigger),['M4']);
-  assert.match(five.room.node('root').summary,/no piece takes the requirement \(Entry Module, Data Module changed a file for it without progress\): Ticket should be created/);
-  // The model's placement is tried once: the chain then goes on where the model put it.
-  const six=await room9(chain(6),user=>({actions:[{action:'assign',problems:[user.problems[0].id],child:'root.2',instructions:'Return the ticket you add.'}]}));
+  assert.equal(five.room.get('status'),'complete',trace(five.room));
+  assert.deepEqual(verdicts(five.room),['progress','progress','no progress','no progress','no progress','progress']);
+  assert.deepEqual(five.room.problems("kind='run'").map(p=>p.flags.routed_to),['root.1','root.2','root.1','root.2','root.1','root.2'],'the route target on each wave\'s row');
+  const six=await room9(chain(6));
   await settle(six.room,80);
   assert.deepEqual([six.room.get('status'),verdicts(six.room)],['failed',['progress','progress','no progress','no progress','no progress']],trace(six.room));
-  assert.deepEqual(six.room.problems("kind='run'").map(p=>p.trail.find(t=>t.action==='assign')?.rule),['R2d','R2d','model','model','model',undefined]);
-  assert.match(six.room.node('root').summary,/^Repair exhausted: a run problem was closed without a fix \(no piece takes the requirement \(Entry Module, Data Module changed a file for it without progress\)/,'past the rounds without progress, the model is not asked again and the requirement closes');
+  assert.match(six.room.node('root').summary,/made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
 });
 
 test('v7.15.1: ping-pong between two failures ends after 3 rounds without progress, not at the run\'s ceiling',async()=>{
