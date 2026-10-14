@@ -2360,7 +2360,8 @@ export class ControlRoom extends DurableObject {
     // (reading 'find')" inside viewTicket is a requirement on viewTicket,
     // not a relink. The issue's own facts ride along (the test slice marks
     // an assertion the runner invented on facts.requirement).
-    const failed=(kind,issues,test='')=>{
+    // v7.15.8 (run15): paramsOf, the parameters start()'s method lists, so a read's text names the producer as createTicket(data).
+    const failed=(kind,issues,test='',paramsOf=()=>null)=>{
       const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail])),issueOf=new Map(issues.map(x=>[x.detail,x]));
       for(const x of issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues)
         if(groups.has(x.detail))groups.get(x.detail).push(x.path);else groups.set(x.detail,[x.path]);
@@ -2368,7 +2369,7 @@ export class ControlRoom extends DurableObject {
         const frames=[first,...more].filter(p=>files.has(p)),failure=failureHead(output.get(detail)),own=issueOf.get(detail)?.facts||{};
         const path=files.has(first)?first:'',target=errorTarget(files,path,detail);
         if(kind==='run'&&!(isInterfaceError(detail)&&frames.length&&this.linkTarget(files,path,detail,surfaces))) {
-          const requirement=readRequirement(test,output.get(detail),[...files.keys()].filter(p=>LINKABLE.test(p)),p=>providedNames(surfaces.get(p)||exportSurface(p,files.get(p))));
+          const requirement=readRequirement(test,output.get(detail),[...files.keys()].filter(p=>LINKABLE.test(p)),p=>providedNames(surfaces.get(p)||exportSurface(p,files.get(p))),paramsOf);
           // A module the Container names without a stack line is a frame too, after those the stack gives.
           requirement.frames.push(...frames.filter(p=>!requirement.frames.some(f=>f.path===p)).map(path=>({path,fn:''})));
           // The test slice's lead on an assertion the runner invented stays first (run13's line 55).
@@ -2467,7 +2468,7 @@ export class ControlRoom extends DurableObject {
         (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
     const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,reach,methods:methodSet});
-    return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues,outcome.test)};
+    return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues,outcome.test,m=>Array.isArray(described?.members?.[m]?.params)?described.members[m].params:null)};
   }
 
   // ---------- an atomic top ----------

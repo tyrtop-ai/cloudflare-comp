@@ -100,7 +100,8 @@ export const progressKey=p=>p.facts?.failure?`${failureKey(p)}${p.flags?.routed_
 // inside a try expecting a throw; assertion, the failing line when it is
 // another; frames, the component frames innermost first, as facts.
 // v7.15.7 (run14b): an anonymous async frame, "at async /…/glue/smoke.js:9:26", has no name and no parentheses; rounds 4 and 5 lost "Test line 9" over it.
-const STACK=/\bat (?:async )?(?:((?:async )?[^\n()]*?) \()?([^\s()]+?):(\d+):\d+\)?/g;
+// v7.15.8 (run15): the column too, which names the member read on a line that reads two (viewResult.id, createResult.id).
+const STACK=/\bat (?:async )?(?:((?:async )?[^\n()]*?) \()?([^\s()]+?):(\d+):(\d+)\)?/g;
 const ERROR_LINE=/(?:^|\): )[ \t]*(\[?(?:[A-Z]\w*)?(?:Error|Rejection)\b(?: \[\w+\])?):[ \t]*([^\n]*)/m;
 const FUNCTIONS=new Set(['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression']);
 const nodes=n=>Object.entries(n).filter(([k])=>!['loc','start','end'].includes(k)).flatMap(([,v])=>Array.isArray(v)?v:[v]).filter(v=>v&&typeof v==='object'&&typeof v.type==='string');
@@ -112,32 +113,48 @@ const patternNames=n=>!n?[]:n.type==='Identifier'?[n.name]:n.type==='ObjectPatte
 // names its result is bound to, its try blocks and functions. Review: a
 // helper's parameter that receives the object is the object inside the
 // helper (gone(tracker, id) called as gone(app, t.id)).
+// v7.15.8 (run15): a result assigned to a declared binding (let r; r = await
+// app.createTicket(d)) is bound as a declaration's is; each call keeps its
+// text, and each pass to a helper its line, scope and the function it
+// reaches, so a binding reads back to the app call that produced it.
 function testShape(test) {
   let ast;try {ast=parseSource(test).ast;} catch {return null;}
-  let app='app';const calls=[],tries=[],fns=[],named=new Map(),passes=[];
+  let app='app';const calls=[],tries=[],fns=[],named=new Map(),passes=[],src=String(test);
   visit(ast,(n,parents)=>{
+    const scope=[...parents].reverse().find(x=>FUNCTIONS.has(x.type))||null;
     if(n.type==='VariableDeclarator'&&n.id.type==='Identifier'){const init=n.init?.type==='AwaitExpression'?n.init.argument:n.init;if(init?.type==='CallExpression'&&init.callee.type==='Identifier'&&init.callee.name==='start')app=n.id.name;if(init&&FUNCTIONS.has(init.type))named.set(n.id.name,init);}
     if(FUNCTIONS.has(n.type)){fns.push(n);if(n.id?.name)named.set(n.id.name,n);}
     if(n.type==='TryStatement')tries.push(n);
-    if(n.type==='CallExpression'&&n.callee.type==='Identifier')passes.push({name:n.callee.name,args:n.arguments.map(a=>a.type==='Identifier'?a.name:null)});
+    if(n.type==='CallExpression'&&n.callee.type==='Identifier')passes.push({name:n.callee.name,args:n.arguments.map(a=>a.type==='Identifier'?a.name:null),line:n.loc.start.line,fn:scope});
     if(n.type==='CallExpression'&&n.callee.type==='MemberExpression'&&!n.callee.computed&&n.callee.object.type==='Identifier'&&n.callee.property.type==='Identifier') {
       const up=parents.at(-1)?.type==='AwaitExpression'?parents.at(-2):parents.at(-1);
-      calls.push({object:n.callee.object.name,method:n.callee.property.name,line:n.loc.start.line,fn:[...parents].reverse().find(x=>FUNCTIONS.has(x.type))||null,binds:up?.type==='VariableDeclarator'?patternNames(up.id):[],
-        rejects:parents.some(x=>x.type==='CallExpression'&&x.callee.type==='MemberExpression'&&/^(?:rejects|throws)$/.test(x.callee.property?.name))});
+      calls.push({object:n.callee.object.name,method:n.callee.property.name,line:n.loc.start.line,fn:scope,binds:up?.type==='VariableDeclarator'?patternNames(up.id):up?.type==='AssignmentExpression'&&up.left.type==='Identifier'?[up.left.name]:[],
+        text:clip(src.slice(n.start,n.end).replace(/\s+/g,' '),120),rejects:parents.some(x=>x.type==='CallExpression'&&x.callee.type==='MemberExpression'&&/^(?:rejects|throws)$/.test(x.callee.property?.name))});
     }
   });
-  const aliases=passes.flatMap(c=>{const f=named.get(c.name);return f?c.args.flatMap((a,i)=>a===app&&f.params[i]?.type==='Identifier'?[{name:f.params[i].name,fn:f}]:[]):[];});
-  return {app,calls:calls.filter(c=>c.object===app||aliases.some(a=>a.name===c.object&&a.fn===c.fn)),tries,fns,lines:String(test).split('\n')};
+  for(const p of passes)p.to=named.get(p.name)||null;
+  const aliases=passes.flatMap(c=>c.to?c.args.flatMap((a,i)=>a===app&&c.to.params[i]?.type==='Identifier'?[{name:c.to.params[i].name,fn:c.to}]:[]):[]);
+  return {app,ast,calls:calls.filter(c=>c.object===app||aliases.some(a=>a.name===c.object&&a.fn===c.fn)),tries,fns,passes,lines:src.split('\n')};
 }
+// v7.15.8 (run15): the error forms that read a value the test holds: a
+// member of undefined or null (Node's two phrasings, and a destructuring),
+// a member called on a binding (r.save is not a function), a binding that
+// is undefined, null or not iterable. {member, value, receiver}.
+const READS=[[/Cannot read propert(?:y|ies) of (undefined|null) \(reading '([\w$]+)'\)/,m=>({member:m[2],value:m[1]})],[/Cannot read property '([\w$]+)' of (undefined|null)/,m=>({member:m[1],value:m[2]})],
+  [/Cannot destructure property '([\w$]+)' of '[^']*' as it is (undefined|null)/,m=>({member:m[1],value:m[2]})],[/(?<![\w$.])([\w$]+)\.([\w$]+) is not (?:a function|iterable|a constructor)/,m=>({receiver:m[1],member:m[2],call:true})],
+  [/(?<![\w$.])([\w$]+) is (undefined|null)\b/,m=>({receiver:m[1],value:m[2]})],[/(?<![\w$.])([\w$]+) is not iterable/,m=>({receiver:m[1],iterable:true})]];
+const readForm=text=>{for(const [re,f] of READS){const m=re.exec(text);if(m)return f(m);}return null;};
 // A catch that fails the test expects no throw (review: assert.fail('createTicket threw: ' + e.message)).
 const FAILS=/process\.exit(?:Code)?\b|\bthrow\b|\bassert\.fail\(|\bassert(?:\.ok|\.equal|\.strictEqual)?\(\s*false\b|\breject\(/;
 // paths: the linked modules' paths; exportsOf(path): the names a module exports.
-export function readRequirement(test, output, paths=[], exportsOf=()=>new Set()) {
-  const s=String(output||''),keys=[...paths].sort((a,b)=>b.length-a.length),frames=[],smoke=[];
+// v7.15.8 (run15): paramsOf(method): the parameters start()'s method lists, for the producer's signature in the text.
+export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(), paramsOf=()=>null) {
+  const s=String(output||''),keys=[...paths].sort((a,b)=>b.length-a.length),frames=[],smoke=[],cols=new Map();let inTest=null;
   for(const m of s.matchAll(STACK)) {
-    const file=m[2],path=keys.find(k=>file===k||file.endsWith('/'+k));
+    const file=m[2],path=keys.find(k=>file===k||file.endsWith('/'+k)),mine=/(?:^|\/)glue\/smoke\.js$/.test(file);
+    if(inTest===null&&(path||mine))inTest=!path;
     if(path){if(!frames.some(f=>f.path===path&&f.fn===frameFn(m[1])))frames.push({path,fn:frameFn(m[1]),line:Number(m[3])});}
-    else if(/(?:^|\/)glue\/smoke\.js$/.test(file)&&!smoke.includes(Number(m[3])))smoke.push(Number(m[3]));
+    else if(mine&&!smoke.includes(Number(m[3]))){smoke.push(Number(m[3]));cols.set(Number(m[3]),Number(m[4]));}
   }
   // The error line, with the lines a generated assertion message continues
   // on, and Node's "+ actual - expected" block after any message (review:
@@ -165,6 +182,47 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set())
     for(const line of smoke){const scope=scopeOf(line),same=shape.calls.filter(c=>c.fn===scope&&c.line<=line);if(same.length){call=pick(same,line);at=line;break;}}
     if(!call&&smoke.length){const before=shape.calls.filter(c=>c.line<=smoke[0]);if(before.length){call=pick(before,smoke[0]);at=smoke[0];}}
   }
+  // v7.15.8 (run15): a property read on a test binding is a requirement on
+  // the binding's producer. "Cannot read properties of undefined (reading
+  // 'id')" at smoke.js:13 (app.viewTicket(createResult.id)) went to View
+  // ticket four times; createResult is what app.createTicket(createData)
+  // returned on line 10, and Create ticket's createTicket returned nothing.
+  // On a test line (the innermost frame the test's own), the identifier
+  // whose member the error names (by the frame's column when the line reads
+  // two) is read back to the app call that produced it: a declaration or an
+  // assignment, a destructuring, a helper's parameter through the pass
+  // (gone(app, t.id) as v7.15.6 tracks it); that call is the method under
+  // test, and the text says what the test read. The call on the line is the
+  // method only when no such receiver resolves.
+  let read=null;
+  const form=shape&&inTest&&smoke.length?readForm(text):null;
+  if(form) {
+    const line=smoke[0],scope=[...shape.fns].reverse().find(f=>f.loc.start.line<=line&&line<=f.loc.end.line)||null,col=cols.get(line);
+    const producer=(name,line,scope,depth=0)=>{
+      const mine=shape.calls.filter(c=>c.line<=line&&c.binds.includes(name)),own=mine.filter(c=>c.fn===scope),hit=(own.length?own:mine).at(-1);
+      if(hit||depth>2||!scope)return hit||null;
+      const i=scope.params.findIndex(p=>(p.type==='AssignmentPattern'?p.left:p).type==='Identifier'&&(p.type==='AssignmentPattern'?p.left:p).name===name);
+      for(const pass of i<0?[]:shape.passes.filter(p=>p.to===scope&&p.args[i])){const r=producer(pass.args[i],pass.line,pass.fn,depth+1);if(r)return r;}
+      return null;
+    };
+    const receivers=[];
+    if(form.receiver)receivers.push({name:form.receiver});
+    else visit(shape.ast,n=>{
+      if(n.loc.start.line!==line)return;
+      if(n.type==='MemberExpression'&&n.object.type==='Identifier'&&(!n.computed&&n.property.type==='Identifier'&&n.property.name===form.member||n.computed&&n.property.type==='Literal'&&n.property.value===form.member))receivers.push({name:n.object.name,col:n.property.loc.start.column+1});
+      else if(n.type==='VariableDeclarator'&&n.id.type==='ObjectPattern'&&n.init?.type==='Identifier'&&n.id.properties.some(p=>p.type==='Property'&&!p.computed&&(p.key.name??p.key.value)===form.member))receivers.push({name:n.init.name,col:n.init.loc.start.column+1});
+    });
+    const ordered=[...receivers.filter(r=>r.col===col),...receivers.filter(r=>r.col!==col)];
+    let hit=null,who=null;
+    for(const r of ordered){hit=producer(r.name,line,scope);if(hit){who=r.name;break;}}
+    if(hit) {
+      const params=paramsOf(hit.method),sig=Array.isArray(params)?`${hit.method}(${params.map(String).join(', ')})`:hit.text.replace(/^[\w$]+\./,''),got=form.value==='null'?'null':'nothing';
+      const what=form.call?`calls ${who}.${form.member}()`:form.iterable?`iterates over ${who}`:form.member?`reads ${who}.${form.member}`:`reads ${who}`;
+      text=form.call?`the test ${what}, but what ${sig} returned has no ${form.member}()`:form.iterable?`the test ${what}, but what ${sig} returned is not iterable`:`the test ${what}, but ${sig} returned ${got}`;
+      read={line,text:clip(String(shape.lines[line-1]??'').trim().replace(/;$/,''),200),name:who,member:form.member||'',what,call:hit.text,call_line:hit.line,needs:form.call?`an object with ${form.member}()`:form.iterable?'an iterable':form.member?`an object with ${form.member}`:'a value'};
+      call=hit;at=hit.line;
+    }
+  }
   // Inside a try expecting a throw: assert.rejects/throws, or the innermost
   // try around the call whose catch neither fails the test nor rethrows
   // (run13's catch set errorCaught and read err.message); what that catch
@@ -185,10 +243,11 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set())
   // function, then names in the message; a method missing from start()'s
   // object (app.listTickets is not a function) names start, the API's own.
   const thrown=frames.find(f=>f.fn&&exportsOf(f.path).has(f.fn)),api=!!shape&&new RegExp(`\\b${shape.app.replace(/\$/g,'\\$')}\\.[\\w$]+ is not a function`).test(text);
-  const names=[...new Set([thrown?.fn,...(text.match(/[A-Za-z_$][\w$]*/g)||[]).filter(w=>/[a-z][A-Z]/.test(w)&&!/(?:Error|Exception|Rejection)$/.test(w)),
+  const names=[...new Set([thrown?.fn,...(text.match(/[A-Za-z_$][\w$]*/g)||[]).filter(w=>/[a-z][A-Z]/.test(w)&&!/(?:Error|Exception|Rejection)$/.test(w)&&w!==read?.name),
     ...[...text.matchAll(/([\w$.]+) is not (?:a function|defined|a constructor)/g)].map(m=>m[1].split('.').pop()),...api?['start']:[]].filter(Boolean))];
-  return {text,error:!assertion,method:call?.method||'',names,...call?{test_line:{line:call.line,text:lineText(call.line),...expects(call)||{}}}:{},
-    ...at&&call&&at!==call.line&&lineText(at)?{assertion:{line:at,text:lineText(at)}}:{},frames:frames.map(({path,fn})=>({path,fn}))};
+  // A read's text states what must hold, no longer the error (error false): the producer must return what the test reads.
+  return {text,error:!assertion&&!read,method:call?.method||'',names,...call?{test_line:{line:call.line,text:lineText(call.line),...expects(call)||{}}}:{},
+    ...at&&call&&at!==call.line&&lineText(at)?{assertion:{line:at,text:lineText(at)}}:{},...read?{read}:{},frames:frames.map(({path,fn})=>({path,fn}))};
 }
 // The promised functions a text names: by their exact name, or by every
 // word of a name of two or more words (run11's "viewed ticket should match
@@ -213,12 +272,20 @@ export function namedFunctions(text, fns) {
 // Integration: r.invented, the runner's sentence that the fixed test
 // requires this though nothing in the plan states it (run13's line 55),
 // leads the ticket, once, so the worker is not left to argue with its promise.
+// v7.15.8 (run15, R4): a result the test reads is a requirement on its
+// producer's return: "Your createTicket(data) ("creates a new ticket and
+// saves it") must return the created ticket: test line 13 reads
+// createResult.id, and createResult is what app.createTicket(createData)
+// returned on line 10." What it must return is the promise's returns when
+// stated (and not nothing), else what the test reads (an object with id).
+const NO_VALUE=/^\W*(?:nothing|undefined|void|none|no (?:value|return))\b/i;
 export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null}={}) {
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
   const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'',lead=typeof r?.invented==='string'?r.invented.trim()+' ':'';
-  const head=lead+(fn?`Your ${signature(fn)}${does}${rest}${on} ${thrown&&r?.error?'threw':verb}: ${need}.`:
+  const rd=fn&&r?.read&&fn.name===(r.method||fn.name)?r.read:null,back=rd?`must return ${fn.returns&&!NO_VALUE.test(fn.returns)?String(fn.returns).replace(/[.\s]+$/,''):rd.needs}: test line ${rd.line} ${rd.what}, and ${rd.name} is what ${rd.call} returned on line ${rd.call_line}.`:'';
+  const head=lead+(fn?`Your ${signature(fn)}${does}${rest}${on} ${back||`${thrown&&r?.error?'threw':verb}: ${need}.`}`:
     module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`);
-  const line=r?.test_line?.line?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
+  const line=r?.test_line?.line&&!back?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
   const at=r?.assertion?.line?` It failed at line ${r.assertion.line}: ${r.assertion.text}.`:'';
   return head+line+at;
 }
@@ -246,7 +313,8 @@ export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer
   const add=(child,how,extra={})=>{if(child&&!skip.has(child)&&!has(child))out.push({child,how,...extra,text:requirementText(r,extra)});};
   const frames=(r.frames||[]).map(f=>({...f,child:frameOwner(f.path)})).filter(f=>f.child);
   frames.forEach((f,i)=>{const fn=f.fn?fnOf(f.child,f.fn):null;add(f.child,fn?'a':'b',{fn,module:f.path,thrown:i===0,providers:[...new Set(frames.filter(x=>x.child!==f.child).map(x=>x.child))]});});
-  const named=[...new Set([...(r.names||[]),...namedFunctions(r.text,promises.flatMap(x=>x.fns)).map(f=>f.name)])].filter(n=>promiser(n));
+  // v7.15.8 (run15): a read's text is the reader's own and names its producer exactly (names); its words ("reads …Ticket") name no other promise (readTickets was read as a party).
+  const named=[...new Set([...(r.names||[]),...(r.read?[]:namedFunctions(r.text,promises.flatMap(x=>x.fns)).map(f=>f.name))])].filter(n=>promiser(n));
   // The method under test names its promise, or its performer per the start plan (run11's app.view is viewTicket).
   const perf=r.method&&!promiser(r.method)?performer(r.method):null,site=named.includes('start')?'start':r.method&&promiser(r.method)?r.method:perf?.fn?.name&&promiser(perf.fn.name)?perf.fn.name:null,others=named.filter(n=>n!==site);
   let ask=null;
