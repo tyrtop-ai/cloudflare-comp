@@ -131,6 +131,37 @@ export async function scopeInterfaces(env, originalGoal, parentTask, children, p
   return result;
 }
 
+// v7.15.5 (run12): no operation piece asked for a data function; each kept
+// its own tickets. A goal operation's piece the splitter gave no uses is
+// asked about each storage function a sibling promises, one question per
+// pair, in the scope check's step: p, by pair. MOCK adds none. Review: asked
+// whether its own code calls it, a view piece answered YES for saveTickets
+// ("reads or changes the data"), and was then sent back for not calling it.
+export async function scopeUses(env, originalGoal, parentTask, children, pairs) {
+  if (!pairs?.length) return [];
+  if (env.MOCK_AI === 'true') return pairs.map(x=>({...x,p:0}));
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef scope decision model');
+  const line=f=>`${signature(f)}${f.does?': '+f.does:''}`;
+  const state={original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
+    proposed_children:children.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900),functions:(c.interfaces||[]).map(line)}))};
+  const groups=[];
+  for(let start=0;start<pairs.length;start+=12)groups.push(pairs.slice(start,start+12).map((_,k)=>start+k));
+  const answered=await Promise.all(groups.map(async group=>{
+    const questions=Object.fromEntries(group.map(q=>{const {i,j,fn}=pairs[q];return [`uses_${q}`,{type:'noul',
+      instructions:`Proposed child ${j} ("${String(children[j].label).slice(0,70)}") keeps the application's data and exports ${line(fn)}. Does proposed child ${i} ("${String(children[i].label).slice(0,70)}") need to call ${fn.name} in its own code to do its own job, rather than keeping a copy of the data? A piece that only reads the data never calls a function that saves, writes or replaces it: answer NO for such a function then, and NO if child ${i} neither reads nor changes that data.`}];}));
+    const output=await env.AI.run(selector,{model:clef,state,questions});
+    return group.map(q=>{
+      const probability=output?.answers?.[`uses_${q}`]?.noul;
+      if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
+        throw new Error(`Clef returned no valid probability for ${pairs[q].fn.name} of child ${pairs[q].i}`);
+      return probability;
+    });
+  }));
+  return pairs.map((x,q)=>({...x,p:answered.flat()[q]}));
+}
+
 const OWNER_STOP_WORDS = ['ticket','tickets','please','what','which','does','have','need','request','provide','definition','about','the','this','your','from','data','system','project','implement','function','operation'];
 // Route questions through a manager's direct-child public Artifacts index.
 // Clef classifies owners; it never reads Git itself or generates an answer.
@@ -277,9 +308,18 @@ export const ASK_CLAUSE = ', which you ask your manager for and import by its na
 export const ROOT_PROMISE = Object.freeze([Object.freeze({name:'start',does:'no arguments; returns an object with one method per goal operation, each the function that performs it'+ASK_CLAUSE,params:Object.freeze([])})]);
 export const ENTRY_CONTRACT = 'You write the application entry module: it imports the other pieces by the relative paths and names it expects, exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each the operation imported from the module that owns it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
 
+// v7.15.5 (run12): Root's split promised a factory, createData(), for its
+// data piece, and no operation piece said it needed that data: each kept its
+// own tickets. Each piece now names the sibling functions it calls ("uses").
+// Review: list only what each piece calls; the one example gave a view
+// piece saveTickets too.
+export const SPLIT_USES = ' Give each piece "uses": the names of the functions its own code calls that other pieces of this split promise, or that your assignment says you call, and only those; a piece that creates, reads, changes or deletes stored records calls the functions of the piece that keeps them, for example {"label":"Create ticket","task":"Write code that creates a ticket and saves it","functions":[{"name":"createTicket","does":"creates a ticket and returns it","params":["data"]}],"uses":["readTickets","saveTickets"]}, and a piece that only reads them calls only the function that reads them: {"label":"View ticket","task":"Write code that finds one ticket by id","functions":[{"name":"viewTicket","does":"returns the ticket with this id","params":["id"]}],"uses":["readTickets"]}. Shared data lives in one piece, which promises the plain functions the others call to read and change it (readTickets(), saveTickets(tickets)), never a factory that returns an instance or an object of methods; no other piece keeps its own copy.';
 // When Clef says YES, a lightweight generative agent guesses the next layer.
 // No optimizing, no capacity prediction, no files, no agent registry.
-export async function decompose(env, context) {
+// Review: rooms without promises (v7.14) get exactly the v7.15.4 prompt and
+// retry, without SPLIT_USES or C7. The goal's words exempt its operations
+// from C7 (createService in a service catalog).
+export async function decompose(env, context, opts = {}) {
   if (env.MOCK_AI === 'true') return mockDecomposition(context);
   const available=Math.max(0,Number(context.max_child_writers ?? 256));
   const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into the smallest INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide as finely as the code naturally permits, with no predetermined number of children. The runtime has ${available} available agent slots for this split; use no more than that (and at least two if splitting). Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements; do not invent filenames or a new global architecture. DO name the functions each piece exports: give each piece "functions", the few functions (at most 5) that code outside that piece calls, each {"name":"camelCaseIdentifier","does":"one line","params":["optional hint"]}. Name each function after what it does and what it acts on (createTicket, not create). Names are binding: the piece must export exactly these names and other pieces import them by these names; a later builder can only rename, so choose plain descriptive names. A piece may export more; list only what others call. your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece, the one whose task writes it. Never give a function to two pieces. List only functions your pieces write: a piece that needs a function from elsewhere asks for it when it runs, so do not create a piece for it. If a function performs one of the operations the original goal names, add "operation":"<that operation in a few words>". The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON with one spawn item per piece, for example {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that implements this piece","functions":[{"name":"functionName","does":"what it does","params":["argument"]}]},{"label":"short name of another piece","task":"Write code that implements another piece","functions":[{"name":"otherFunctionName","does":"what it does","params":["argument"]}]}]}. Every spawn item is a JSON object, never a quoted string. Do not write code yourself.`;
@@ -288,6 +328,7 @@ export async function decompose(env, context) {
   // (a blind cut could end the JSON mid-string); only the rejection feedback
   // is clipped to the room left.
   const promised=Array.isArray(context.your_promised_functions)?context.your_promised_functions:[];
+  const {planned=promised.length>0,goal=String(context.root_scope||'').replace(' '+GOAL_START_REQUIREMENT,'')}=opts,uses=planned?SPLIT_USES:'';
   const fields={assigned_code:context.your_responsibility,
     your_promised_functions:promised.length?promised:undefined,
     original_goal_scope_boundary:context.root_scope || undefined,
@@ -306,11 +347,11 @@ export async function decompose(env, context) {
     const items=Array.isArray(parsed.spawn)?spawnObjects(parsed.spawn):[],pieces=items.filter(spawnPiece);
     // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
     if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
-    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised);
+    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||e.check!=='C7');
     return {parsed,text,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
   };
   const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
-  const first=vet(contentOf(await run(env,system,request,4096)));
+  const first=vet(contentOf(await run(env,system+uses,request,4096)));
   if(first.ok && !first.count)return done(first);
   const malformed=first.malformed?' Your previous answer was not a JSON object whose spawn items are objects, each with a "label" and a "task"; every spawn item is a JSON object, never a quoted string.':'';
   // Labels copied from the example ("Piece A", run4) give Clef and the prune
@@ -318,7 +359,7 @@ export async function decompose(env, context) {
   const specific=first.vague?.length?` Your previous answer used placeholder labels or tasks copied from the example (${first.vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
   const names=first.bad?.length?` Your previous answer's functions failed these checks: ${first.bad.map(e=>e.text).join(' ')} Correct them.`+
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
-  const retry=vet(contentOf(await run(env,system+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096)));
+  const retry=vet(contentOf(await run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096)));
   // The retry replaces the first answer only when it is not worse; a
   // malformed retry never replaces a partition that parsed (review).
   const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok || retry.malformed && !first.malformed ? first : retry;

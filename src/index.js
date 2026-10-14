@@ -3,14 +3,14 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
-import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations } from './api-coverage.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses } from './model.js';
+import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame, ownData } from './linker.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, usesText, dataAnswer } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
@@ -85,7 +85,7 @@ async function assumptionTopic(slug, childKey) {
   const hash=Array.from(bytes.slice(0,6),b=>b.toString(16).padStart(2,'0')).join('');
   return `${full.slice(0,87)}_${hash}`; // exactly 100 characters, 48-bit suffix
 }
-const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces';
+const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses';
 // v7.15 slice B: what a function request asks for, as answers and events say it.
 const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
 const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}` : xs[0]||'';
@@ -216,6 +216,8 @@ export class ControlRoom extends DurableObject {
     // v7.15: a node's promise, the functions its parent's split listed for it.
     // '[]' (a v7.14 room) is no promise and exactly v7.14 behavior.
     if (!cols.includes('interfaces')) db.exec("ALTER TABLE agents ADD COLUMN interfaces TEXT NOT NULL DEFAULT '[]'");
+    // v7.15.5: the functions of its siblings a node's split says it calls.
+    if (!cols.includes('uses')) db.exec("ALTER TABLE agents ADD COLUMN uses TEXT NOT NULL DEFAULT '[]'");
     db.exec('CREATE TABLE IF NOT EXISTS artifact_files (agent TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL, commit_hash TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(agent,path))');
     // Export index is populated on successful Artifacts writes, not at download time.
     db.exec('CREATE TABLE IF NOT EXISTS artifact_contents (agent TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(agent,path))');
@@ -499,7 +501,7 @@ export class ControlRoom extends DurableObject {
       build: this.read('last_build_report',null), build_infrastructure: this.get('compile_infrastructure',''),
       active_agents: [...this.activeTurns], max_parallel: this.settings().parallel, settings: this.settings(),
       budget: Number(this.get('budget','0')), queue: this.read('queue', []),
-      agents: this.allNodes().map(n=>({...n,interfaces:parse(n.interfaces,[])})),
+      agents: this.allNodes().map(n=>({...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])})),
       files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
       // Export manifests contain only aliases, never hidden child routing IDs.
       exports: this.allNodes().flatMap(n=>this.manager(n.id) ?
@@ -599,12 +601,12 @@ export class ControlRoom extends DurableObject {
     const readme=files.some(f=>f.path==='README.md')?'README.control-plane.md':'README.md';
     return {...app,files:[{path:readme,content:appReadme(app,files)},...files]};
   }
-  async provision(id, parent, label, task, interfaces=[]) {
+  async provision(id, parent, label, task, interfaces=[], uses=[]) {
     if (this.node(id)) throw new Error('Agent ID exists');
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
-    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?)',
-      id, parent, clip(label,70), clip(task,parent?2000:1801+GOAL_START_REQUIREMENT.length), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)));
+    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?)',
+      id, parent, clip(label,70), clip(task,parent?2000:1801+GOAL_START_REQUIREMENT.length), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)), JSON.stringify(normalizeUses(uses)));
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
@@ -628,6 +630,22 @@ export class ControlRoom extends DurableObject {
   // A room whose Root promises start (live, started under v7.15) answers
   // function requests from promises; MOCK and v7.14 rooms route as v7.14.
   planned() {return this.promisedOf('root').length>0;}
+  // v7.15.5: the functions of its siblings a node's split says it calls, as
+  // they promise them now, each with its owner's label; storage marks one
+  // that keeps the shared data (run12's operations each kept their own).
+  // Review: each from the nearest level of the plan's walk that offers it
+  // (an uncle's readTickets in a nested split), and storage only on a piece
+  // that performs no goal operation (p6's view piece promised getTicket).
+  plannedUses(id) {
+    const n=this.node(id),names=n?.parent?parse(n.uses,[]):[],out=new Map(),isOp=f=>this.isGoalOp(f);
+    for(let b=names.length?n:null;b?.parent&&out.size<names.length;b=this.node(b.parent)) {
+      const ops=this.opPieces(b.parent);
+      for(const o of this.offeredFunctions(b.parent,b.id))for(const f of o.items)if(names.includes(f.name)&&!out.has(f.name))out.set(f.name,{...f,owner:o.label,storage:!ops.has(o.id)&&storageFunction(f,isOp)});
+    }
+    return names.map(name=>out.get(name)).filter(Boolean);
+  }
+  // Review (p6): the ids of one level's pieces that perform a goal operation (operationPieces).
+  opPieces(level) {const kids=this.offeredFunctions(level),ops=operationPieces(kids.map(o=>({label:o.label,interfaces:o.items})),f=>this.isGoalOp(f),this.userGoal());return new Set(kids.filter((_,i)=>ops[i]).map(o=>o.id));}
   // The promises of one level's live direct children, minus the branch a
   // walk or request came from. Nothing else is read (author decision 2).
   offeredFunctions(level, exclude='') {
@@ -695,7 +713,8 @@ export class ControlRoom extends DurableObject {
   // A worker's task as a model reads it: the stored task plus its contract.
   // The top has no manager to ask: an atomic Root that followed the clause
   // asked anyway and wedged on 'Worker has no available manager'.
-  withContract(task, n) {const own=contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')}));return own?`${task}\n\n${own}`:task;}
+  // v7.15.5: then its uses, answered up front (none for the start carrier).
+  withContract(task, n) {const own=[contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')})),usesText(this.plannedUses(n.id))].filter(Boolean).join(' ');return own?`${task}\n\n${own}`:task;}
   canSplit(parentId, count=2) {
     return parentId.split('.').length <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + count <= this.settings().max_agents;
@@ -741,7 +760,7 @@ export class ControlRoom extends DurableObject {
       const id=`${parentId}.${batch.start_index+i}`;
       let child=this.node(id);
       // v7.15.5: answers a spec carries (composeStart) are there before the child can run.
-      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[]);}
+      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[]);}
       made.push(child);
     }
     return made;
@@ -1642,6 +1661,8 @@ export class ControlRoom extends DurableObject {
   // (run11's createTicket for create; readData for none). v7.15.5: and acts
   // on what the goal names (run12's createData, a factory, performs none).
   performsGoal(f) {return goalOps(this.userGoal(),f).length>0;}
+  // v7.15.5: a goal operation's function: tagged with one, or named for one.
+  isGoalOp(f) {return !!f?.operation||this.performsGoal(f);}
   // v7.15.5: the promises that perform the goal's operations, from levels
   // nearest first, each operation from the nearest level that has one, one
   // per operation there (review: createTicketStore and createTicketId
@@ -2954,7 +2975,11 @@ export class ControlRoom extends DurableObject {
       const placed=placePromised(named,promised);named=placed.spawn;
       for(const x of placed.placed)this.event(id,'interfaces_placed',`Last attempt before a pause: ${x.from.length?`${x.name} stays on "${clip(x.label,70)}" and is deleted from ${x.from.map(l=>`"${clip(l,70)}"`).join(', ')}`:`"${clip(x.label,70)}" carries ${x.name}`}, as its own text shows.`);
     }
-    const c5=interfaceErrors(named,promised).filter(e=>e.check==='C5');
+    // v7.15.5: in a room with promises a factory (C7, run12's createData) is
+    // rejected with C5, but kept on the last attempt before a pause.
+    const errors=interfaceErrors(named,promised,{goal:this.userGoal()}),factories=this.planned()?errors.filter(e=>e.check==='C7'):[];
+    if(place)for(const e of factories)this.event(id,'interfaces_factory_kept',`Last attempt before a pause: ${e.name}() on "${clip(e.label,70)}" is a factory; admitted as it is.`);
+    const c5=[...errors.filter(e=>e.check==='C5'),...(place?[]:factories)];
     if(c5.length)return {spawn:named,c5,rejectedScope:0,rejectedChildren:[]};
     const elsewhere=new Set(named.flatMap(c=>(c?.interfaces||[]).map(f=>f.name)).filter(name=>!own.has(name)&&!GENERIC_NAMES.has(name)&&this.ownerBranch(name,id)));
     // v7.15.1: a name two pieces list goes to one (run9 deleted updateTicket
@@ -2975,7 +3000,22 @@ export class ControlRoom extends DurableObject {
     const {spawn:repaired,removed}=repairInterfaces(named,promised,elsewhere,owners);
     if(removed.length)this.event(id,'interfaces_repaired',`Deleted ${removed.map(r=>`${r.name} from "${clip(r.label,70)}" (${r.why})`).join('; ')}; the pieces are kept.`);
     const carried=c=>(c.interfaces||[]).filter(f=>own.has(f.name)).map(f=>f.name);
-    const [scope,names]=await Promise.all([scoped,scopeInterfaces(env,goal,n.task,repaired,promised)]);
+    // v7.15.5 (run12): no operation piece said it needs the data piece's
+    // functions. A goal operation's piece given no uses, beside a sibling's
+    // storage functions, is asked about each in this step; YES adds it.
+    // Review (nested splits): a manager's own uses pass down to the pieces
+    // that carry its goal operations, and a use may name what the plan
+    // offers this level from above (outer); before, root.3's operations lost
+    // readTickets and saveTickets, which their uncle promised.
+    const planned=this.planned(),isOp=f=>this.isGoalOp(f),outer=planned?[...this.promisedElsewhere(id).keys()]:[],inherited=planned&&n.parent?parse(n.uses,[]):[];
+    if(inherited.length)repaired.forEach((c,i)=>{if(c&&!normalizeUses(c.uses).length&&(c.interfaces||[]).some(f=>own.has(f.name)&&isOp(f)))repaired[i]={...c,uses:inherited};});
+    const offered=planned?planUses(repaired,outer).spawn:[],pairs=planned?usePairs(offered,isOp,this.userGoal()):[];
+    const usesAsked=pairs.length?scopeUses(env,goal,n.task,repaired,pairs).catch(e=>{this.event(id,'uses_uncertain',`Clef failed on the pieces' uses (${clip(e?.message||e,300)}); none added.`);return [];}):[];
+    const [scope,names,asked]=await Promise.all([scoped,scopeInterfaces(env,goal,n.task,repaired,promised),usesAsked]),clefP=new Map();
+    for(const x of asked||[])if(x.p>=0.5) {
+      repaired[x.i]={...repaired[x.i],uses:[...new Set([...(offered[x.i].uses||[]),...(repaired[x.i].uses||[]),x.fn.name])]};
+      clefP.set(`${repaired[x.i].task}\n${x.fn.name}`,x.p);
+    }
     let rejectedScope=0;
     const rejectedChildren=[],admitted=[];
     repaired.forEach((child,i)=>{
@@ -3024,7 +3064,12 @@ export class ControlRoom extends DurableObject {
     // A carrier never takes the Clef walk: its names were given to it.
     const walk=await this.pruneOnDiscovery(id,walkable);
     rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
-    const survivors=kept.filter(c=>carried(c).length||walk.kept.includes(c));
+    // Uses only name what a surviving sibling promises (planUses); a room
+    // without promises keeps none.
+    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive,outer):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]},survivors=final.spawn;
+    if(final.dropped.length)this.event(id,'uses_dropped',`Not kept as uses: ${final.dropped.map(x=>`${x.name} on "${clip(x.label,70)}"`).join(', ')}; a piece uses only what another piece of this split, or the plan above it, promises, and the start carrier none.`);
+    const using=survivors.filter(c=>c.uses?.length);
+    if(using.length)this.event(id,'uses_planned',using.map(c=>`"${clip(c.label,70)}" uses ${c.uses.map(u=>clefP.has(`${c.task}\n${u}`)?`${u} (Clef p=${clefP.get(`${c.task}\n${u}`).toFixed(3)})`:u).join(', ')}`).join('; ')+'.');
     if(interfaceErrors(survivors,promised).some(e=>e.check==='C5'))throw new Error(`Admission lost a function promised to ${id}; this is a runtime bug.`);
     return {spawn:survivors,c5:[],rejectedScope,rejectedChildren};
   }
@@ -3387,9 +3432,23 @@ export class ControlRoom extends DurableObject {
     const said=new Set([...written.map(x=>x.hit.name),...performers.filter(f=>empty.some(x=>x.op&&performsOp(x.op,f))).map(f=>f.name)]),unwired=found.filter(x=>x.missing).map(x=>({...x,missing:x.missing.filter(n=>!said.has(n))})).filter(x=>x.missing.length);
     const unwiredNames=[...new Set(unwired.flatMap(x=>x.missing))];
     const emptyNames=[...new Set(empty.map(x=>x.op||x.name))],are=emptyNames.length>1?'are empty placeholders':'is an empty placeholder',writtenNames=[...new Set(written.map(x=>x.op||x.name))];
+    // v7.15.5: a planned use it does not import and call, and, beside a use
+    // of the store's functions, data it keeps itself (run12's createTicket.js
+    // kept its own array, viewTicket.js two records, its update module.js
+    // tickets.json, and deleteTicket.js called a factory for an array).
+    // Review: an owner's storage uses are met when one of them is called (a
+    // view piece calls readTickets, never saveTickets), and a piece that is
+    // itself the store, promising a storage function, keeps the data.
+    const uses=this.plannedUses(id),{unused,kept}=uses.length?ownData(files,uses.map(f=>f.name)):{unused:[],kept:[]},store=uses.filter(f=>f.storage);
+    const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&this.promisedOf(id).some(f=>storageFunction(f,x=>this.isGoalOp(x)));
+    const uncalled=store.filter(f=>store.filter(g=>g.owner===f.owner).every(g=>unused.includes(g.name))),local=keeper?[]:kept;
+    const homeless=local.length?store:uncalled,idle=uses.filter(f=>!f.storage&&unused.includes(f.name));
+    // Review: the path is never the first word, so its case is never changed (PROBE E's CreateTicket.js).
+    const base=p=>p.split('/').pop(),why=homeless.length?[...local.map(k=>`in ${base(k.path)}, the module ${k.kind==='state'?`keeps its own data in a module-level ${k.shape} (${k.name})`:k.kind==='fs'?'reads and writes files with fs':'returns records written into its code'}`),
+      ...(uncalled.length?[`your modules do not import and call ${list(uncalled.map(f=>f.name))}`]:[])]:[];
     // A contract problem is about a missing export or a function written here: closed once neither remains, whatever the placeholders.
     if(!missing.length&&!written.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
-    if(!missing.length&&!empty.length&&!written.length&&!unwired.length) {
+    if(!missing.length&&!empty.length&&!written.length&&!unwired.length&&!homeless.length&&!idle.length) {
       if(returns)this.set(key,'');
       return false;
     }
@@ -3399,6 +3458,7 @@ export class ControlRoom extends DurableObject {
       if(missing.length||written.length)this.fileContract(id,missing.map(name=>promised.find(p=>p.name===name)),written.map(x=>x.hit));
       if(empty.length)this.event(id,'contract_unmet',`${list(emptyNames)} ${are.replace(/^(?:are|is)/,'$& still')} after 3 returns; accepted, and the runner's test decides.`);
       if(unwired.length)this.event(id,'contract_unmet',`start() still returns no method for ${list(unwiredNames)} after 3 returns; accepted, and the compiler's checks decide.`);
+      if(homeless.length||idle.length)this.event(id,'contract_unmet',`${[...why,...(idle.length?[`${list(idle.map(f=>f.name))} not called`]:[])].join('; ')} after 3 returns; accepted, and the runner's test decides.`);
       return false;
     }
     this.set(key,returns+1);
@@ -3406,12 +3466,14 @@ export class ControlRoom extends DurableObject {
     const answers=await Promise.all(emptyNames.map(k=>answer(empty,k))),moved=await Promise.all(writtenNames.map(k=>answer(written,k))),wired=await Promise.all(unwired.map(x=>this.placeholderAnswer(id,x,promised)));
     const body=['[contract]',...(missing.length?[`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`]:[]),
       ...self.map(x=>`${x.path.split('/').pop()} imports ${list(x.names)} from '${x.specifier}', but ${list(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`),
-      ...wired.map(a=>a.text),...answers.map(a=>a.text),...moved.map(a=>a.text),...(missing.length?[]:['Publish the FULL updated file.'])].join(' ');
+      ...wired.map(a=>a.text),...answers.map(a=>a.text),...moved.map(a=>a.text),...(homeless.length?[`${why.join('; ').replace(/^./,c=>c.toUpperCase())}. ${dataAnswer(homeless)}`]:[]),
+      ...idle.map(f=>`Your plan says you call ${signature(f)} from "${f.owner}": import it on its own line, const { ${f.name} } = require('./${f.name}'), and call it.`),...(missing.length?[]:['Publish the FULL updated file.'])].join(' ');
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
     if(missing.length)this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${missing.join(', ')} promised and not exported; back to the worker.`);
     if(empty.length)this.event(id,'contract_placeholder',`Done refused (${returns+1}/3): ${list(emptyNames)} ${are}; back to the worker. ${answers.map(a=>a.how).join(' ')}`.trim());
     if(unwired.length)this.event(id,'contract_unwired',`Done refused (${returns+1}/3): start() returns no method for ${list(unwiredNames)}, which ${unwiredNames.length>1?'perform':'performs'} the goal's operations; back to the worker. ${wired.map(a=>a.how).join(' ')}`.trim());
     if(written.length)this.event(id,'contract_reimplemented',`Done refused (${returns+1}/3): ${list(writtenNames)} ${writtenNames.length>1?'are':'is'} written here, and other pieces promise ${writtenNames.length>1?'them':'it'}; back to the worker. ${moved.map(a=>a.how).join(' ')}`.trim());
+    if(homeless.length||idle.length)this.event(id,'contract_uses',`Done refused (${returns+1}/3): ${[...why,...(idle.length?[`${list(idle.map(f=>f.name))} ${idle.length>1?'are':'is'} not called`]:[])].join('; ')}; back to the worker with the plan's answer.`);
     return true;
   }
   // v7.15.4: the plan as a worker's walk reads it, as a function request is
@@ -4205,6 +4267,9 @@ export class ControlRoom extends DurableObject {
         // v7.15: a splitter sees its own promise only, never another node's.
         const promised=this.promisedOf(id);
         if(promised.length)before.your_promised_functions=promised;
+        // Review (nested splits): a manager's splitter hears its uses too, so its pieces can name them.
+        const uses=usesText(this.plannedUses(id));
+        if(uses)before.your_responsibility=`${before.your_responsibility}\n\n${uses}`;
       }
       const observedAssembly=n.label==='Temporary builder'?this.assemblyFingerprint(n.parent):null;
       if(n.label==='Temporary builder') {
@@ -4254,7 +4319,7 @@ export class ControlRoom extends DurableObject {
           return;
         }
         if (gate.split) {
-          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()});
+          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()},{planned:this.planned(),goal:this.userGoal()});
         } else {
           // A genuine leaf can implement in the SAME turn; no extra Qwen
           // decomposition request or artificial scheduler wave. It keeps the
@@ -4395,7 +4460,7 @@ export class ControlRoom extends DurableObject {
             // YES and the splitter gets this partition back to correct.
             const texts=admit.c5.map(e=>e.text);
             this.save(`split_feedback:${id}`,{kind:'interfaces',
-              reason:`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and give each promised function to exactly one of them.`,
+              reason:`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and ${[admit.c5.some(e=>e.check==='C5')&&'give each promised function to exactly one of them',admit.c5.some(e=>e.check==='C7')&&'promise plain functions in place of each factory'].filter(Boolean).join(', and ')}.`,
               proposed:admit.spawn.map(c=>({label:c.label,task:clip(c.task,300),functions:(c.interfaces||[]).map(f=>f.name)})),accepted:[],rejected:[],
               interfaces:texts,root_goal:this.topTask()||n.task});
             this.event(id,'split_rejected',`The proposed functions fail ${texts.length} check(s): ${texts.join(' ')}`);
