@@ -99,7 +99,8 @@ export const progressKey=p=>p.facts?.failure?`${failureKey(p)}${p.flags?.routed_
 // the message); test_line, that call's line and text, and whether it sits
 // inside a try expecting a throw; assertion, the failing line when it is
 // another; frames, the component frames innermost first, as facts.
-const STACK=/\bat (?:((?:async )?[^\n()]*?) \()?([^\s()]+?):(\d+):\d+\)?/g;
+// v7.15.7 (run14b): an anonymous async frame, "at async /…/glue/smoke.js:9:26", has no name and no parentheses; rounds 4 and 5 lost "Test line 9" over it.
+const STACK=/\bat (?:async )?(?:((?:async )?[^\n()]*?) \()?([^\s()]+?):(\d+):\d+\)?/g;
 const ERROR_LINE=/(?:^|\): )[ \t]*(\[?(?:[A-Z]\w*)?(?:Error|Rejection)\b(?: \[\w+\])?):[ \t]*([^\n]*)/m;
 const FUNCTIONS=new Set(['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression']);
 const nodes=n=>Object.entries(n).filter(([k])=>!['loc','start','end'].includes(k)).flatMap(([,v])=>Array.isArray(v)?v:[v]).filter(v=>v&&typeof v==='object'&&typeof v.type==='string');

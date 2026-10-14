@@ -9,6 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {liveRoom,verifyBuild,snapshotHash,tickets,events,trace,settle,step,linkAndCompile} from './helpers/room.js';
 const {ROOT_PROMISE}=await import('../src/model.js');
+const P=await import('../src/problems.js');
 
 const fn=(name,does='',params=[])=>({name,does,params});
 const GOAL='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
@@ -283,4 +284,22 @@ test('v7.15.7 (T3): a method the fixed test calls on the application that no pie
   assert.equal(room.get('status'),'complete',trace(room));
   assert.equal(room.node(compiler.id).status,'done');
   assert.equal(events(room,'promise_added').length,1);
+});
+
+// ------------------------------------------------------------------ run14b: an anonymous async frame
+test('v7.15.7: readRequirement reads an anonymous async frame (at async /…/glue/smoke.js:9:26): run14b\'s rounds 4 and 5 keep the test line, the method and the component frame, as round 3 had them',()=>{
+  const CREATE='components/create-tic-2/createTicket.js',paths=[CREATE],exportsOf=()=>new Set(['createTicket']);
+  // Round 4 (events.jsonl step 37): the stack of an awaited call ends in a frame with no name and no parentheses; round 3's synchronous call had "at /…/glue/smoke.js:9:36".
+  const round4=`smoke failed (exit 1): SyntaxError: Unexpected end of JSON input\n    at JSON.parse (<anonymous>)\n    at exports.createTicket (/work/build-FkEWif/${CREATE}:5:24)\n    at async /work/build-FkEWif/glue/smoke.js:9:26\n`;
+  assert.deepEqual(P.readRequirement(SMOKE,round4,paths,exportsOf),{text:'SyntaxError: Unexpected end of JSON input',error:true,method:'createTicket',names:['createTicket'],
+    test_line:{line:9,text:"const createResult = await app.createTicket({ title: 'Test Ticket', description: 'This is a test' })"},frames:[{path:CREATE,fn:'createTicket'}]});
+  assert.equal(P.failureHead(round4),'SyntaxError: Unexpected end of JSON input (test line 9)');
+  // Round 5 (step 43): the worker's console.error printed the error before rethrowing it, so the output holds two stacks; the same reading.
+  const round5=`smoke failed (exit 1): Error creating ticket: SyntaxError: Unexpected end of JSON input\n    at JSON.parse (<anonymous>)\n    at exports.createTicket (/work/build-qFMlkR/${CREATE}:7:39)\n    at async /work/build-qFMlkR/glue/smoke.js:9:26\nSyntaxError: Unexpected end of JSON input\n    at JSON.parse (<anonymous>)\n    at exports.createTicket (/work/build-qFMlkR/${CREATE}:7:39)\n    at async /work/build-qFMlkR/glue/smoke.js:9:26\n`;
+  const r5=P.readRequirement(SMOKE,round5,paths,exportsOf);
+  assert.deepEqual([r5.text,r5.method,r5.test_line.line,r5.frames],['SyntaxError: Unexpected end of JSON input','createTicket',9,[{path:CREATE,fn:'createTicket'}]]);
+  // A named async frame reads as before: the assertion's line, and the call whose result it checks.
+  const named=P.readRequirement(SMOKE,"AssertionError [ERR_ASSERTION]: Deleted ticket must be gone\n    at async run (/work/b/glue/smoke.js:46:12)",paths,()=>new Set());
+  assert.deepEqual([named.method,named.test_line,named.assertion.line,named.frames],['viewTicket',{line:42,text:'gone = await app.viewTicket(id)',expects_throw:true},46,[]]);
+  assert.equal(P.requirementText(P.readRequirement(SMOKE,round4,paths,exportsOf),{fn:PROMISES.create,thrown:true}),"Your createTicket(data) (\"creates a new ticket and saves it\") threw: SyntaxError: Unexpected end of JSON input. Test line 9: const createResult = await app.createTicket({ title: 'Test Ticket', description: 'This is a test' }).");
 });
