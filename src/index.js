@@ -1543,9 +1543,10 @@ export class ControlRoom extends DurableObject {
       const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
       const modules=fits?linkedJs.map(([path,content])=>({path,content})):
         linkedJs.map(([path,content])=>path===entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
-      // Calls whose arguments are out of order, even by one name, go with
-      // the source: the stack no longer shows where (run11).
-      const hints=swappedCalls(linked,surfacesOf(linked),{promised,loose:true}).map(x=>x.text);
+      // Calls whose arguments may be out of order, even by one variable, go
+      // with the source: the stack no longer shows where (run11). Names alone
+      // do not confirm it, and the order may be deliberate: they are hints.
+      const hints=swappedCalls(linked,surfacesOf(linked),{promised,loose:true}).map(x=>`Unconfirmed, by names only (the order may be deliberate): ${x.path} calls ${x.call}; ${x.name} takes (${x.params.join(', ')})`);
       const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail,hints});
       const owner=verdict&&linked.has(verdict.file)?verdict.file:entry;
       if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${clip(verdict.problem,700)}`);
@@ -1721,10 +1722,12 @@ export class ControlRoom extends DurableObject {
         ...misdirected?{elsewhere:names,aliases:aliases(m.path,names)}:promised&&names.every(n=>!promised.includes(n)&&!elsewhere(n,m.path))?{unpromised:true,promised}:{},
         provider_kind:d?.type||'',provider_text:clip(exportsText(m.target),700)}});
     }
-    // run11: createTicket.js called writeData(data, filePath), which takes
+    // run11: createTicket.js called writeData out of order, which takes
     // (filePath, data); the error was thrown inside writeData, and its worker
     // was blamed for four rounds. The caller changes (reader), before any
-    // Container run; no rename fixes it, so it never relinks.
+    // Container run; no rename fixes it, so it never relinks. Only a function
+    // passing its own parameters on in its own order is read here: this
+    // blocks the run, and a deliberate reversal would have no way out.
     for(const x of swappedCalls(files,surfaces,{promised:this.promisedParams(builderId)}))
       items.push({kind:'argorder',path:x.path,target:x.target,detail:x.text,
         facts:{argorder:{call:x.call,name:x.name,params:x.params,line:x.line,from:x.from},provider_text:clip(exportsText(x.target),700)}});
@@ -2047,8 +2050,9 @@ export class ControlRoom extends DurableObject {
     // Container reports one error once per module in its stack: one problem,
     // whose sites are those modules, the innermost first. When the stack
     // enters the innermost from a call whose arguments are out of order (with
-    // the stack's evidence one misplaced name is enough), the caller is the
-    // site and the innermost its provider: run11's writeData threw, called
+    // the stack's evidence one misplaced variable is enough) and the error is
+    // about the arguments, the caller is the site and the innermost its
+    // provider: run11's writeData threw a TypeError naming filePath, called
     // from createTicket.js:11, and its worker was blamed for four rounds.
     const promised=linked?this.promisedParams(this.builderOf(this.node(id)?.parent)?.id):null;
     const failed=(kind,issues)=>{

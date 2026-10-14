@@ -1189,12 +1189,13 @@ export function importMismatches(files, surfaces) {
 }
 
 // ---------- argument order (v7.15.3) ----------
-// run11: createTicket.js called writeData(data, filePath), and writeData
-// takes (filePath, data), as the plan promised. The error was thrown inside
+// run11: createTicket.js called writeData with its arguments out of order
+// (the export keeps only the fixed revision), and writeData takes
+// (filePath, data), as the plan promised. The error was thrown inside
 // writeData, so the stack frame put the problem on its worker for four
-// rounds until Root's model saw the order. A call to an imported function that passes
-// arguments named as its parameters in another order is the caller's to
-// change: no rename fixes it, and no model is asked.
+// rounds until Root's model saw the order. A call to an imported function
+// that passes arguments named as its parameters in another order is the
+// caller's to change: no rename fixes it, and no model is asked.
 // Case, leading underscores or $ and inner underscores do not count.
 const argKey=s=>String(s||'').replace(/^[_$]+/,'').replace(/_/g,'').toLowerCase();
 // A parameter as a definition (paramText) or a promise ("filePath", "data?",
@@ -1219,7 +1220,8 @@ function argPairs(names, params) {
 }
 // Swapped: two or more arguments named as different parameters, in those
 // parameters' positions but another order. Loose, for runtime evidence
-// only: one argument named as the parameter of a position another holds.
+// only: one variable (not a member read: config.data may well be the path)
+// named as the parameter of a position another holds.
 const swappedPairs=pairs=>pairs.length>=2&&pairs.some(([i,j])=>i!==j)&&pairs.map(p=>p[0]).sort().join()===pairs.map(p=>p[1]).sort().join();
 const loosePairs=(pairs,count)=>pairs.some(([i,j])=>i!==j&&j<count);
 // A variable, or the last name of a member read (ticket.filePath); a
@@ -1236,18 +1238,39 @@ function definedParams(surface, name) {
   if(d?.type==='object')return params(d.members.find(m=>m.name===name));
   return d?.type==='instance'?d.methods.find(m=>m.name===name)?.params||null:null;
 }
+// Names a module swaps back ([filePath, data] = [data, filePath]): a
+// function that does takes its arguments in either order.
+function swapsBack(content) {
+  const out=[],key=e=>e?.type==='Identifier'?argKey(e.name):null;
+  try {walk(parseSource(content).ast,n=>{
+    if(n.type!=='AssignmentExpression'||n.left.type!=='ArrayPattern'||n.right.type!=='ArrayExpression')return;
+    const a=n.left.elements.map(key),b=n.right.elements.map(key);
+    if(a.length>1&&a.every(Boolean)&&b.every(Boolean)&&a.join()!==b.join()&&[...a].sort().join()===[...b].sort().join())out.push(new Set(a));
+  });} catch {}
+  return out;
+}
 // Calls whose arguments another module's function takes in another order:
-// [{path, target, name, line, call, params, from, loose, text}], one per
-// distinct call. The definition's parameters decide when an argument is
-// named as one of them, else the plan's (promised(target, name): the
-// params the plan promised, or null). Only imports bound at a module's top
-// are read, through the references that reach them (a parameter or local
-// of that name is another variable); a spread argument, a parameter a
-// caller may leave out and a destructured one are never read, nor a call
-// that reverses what its function took in the callee's order. loose: a
-// single misplaced name counts too; at {path, line, target}: that call only.
+// [{path, target, name, line, call, params, from, loose, misplaced, text}],
+// one per distinct call. The definition's parameters decide; the plan's
+// (promised(target, name): the params it promised, or null) only when the
+// definition cannot be read (a factory's product): a definition whose names
+// merely differ from the caller's is what runs. Only imports bound at a
+// module's top are read, through the references that reach them; a spread
+// argument, a parameter a caller may leave out and a destructured one are
+// never read, nor a call beside another that passes the same names in the
+// callee's order (a link both ways, a symmetric check, an undirected edge),
+// nor one into a function that swaps them back.
+// Without loose (link time, which blocks the Container run with no escape
+// but a code change), only run11's signal: the misplaced arguments are the
+// calling function's own parameters, passed on in its own order, which is
+// not the callee's (createTicket(data, filePath) calls writeData(data,
+// filePath)). A member read, a local, a loop or destructured binding, or a
+// call that reorders what its function took may reverse them on purpose: a
+// refund transfer(p.to, p.from), an undo, compare(right, left).
+// loose (run-time evidence, a triage hint): any such call, one misplaced
+// variable enough; at {path, line, target}: that call only.
 export function swappedCalls(files, surfaces, {promised=null, loose=false, at=null}={}) {
-  const set=files instanceof Map?files:new Map(Object.entries(files)),out=[],seen=new Set();
+  const set=files instanceof Map?files:new Map(Object.entries(files)),out=[],seen=new Set(),back=new Map();
   for(const [path,content] of set) {
     if(!LINKABLE.test(path)||at&&path!==at.path)continue;
     let parsed;try {parsed=parseSource(content);} catch {continue;}
@@ -1272,10 +1295,10 @@ export function swappedCalls(files, surfaces, {promised=null, loose=false, at=nu
       }
     }
     if(!bound.size&&!/require\s*\(/.test(content))continue;
-    const imported=id=>id?.type==='Identifier'&&bindingOf.get(id)===ast?bound.get(id.name):null,fns=[];
+    const imported=id=>id?.type==='Identifier'&&bindingOf.get(id)===ast?bound.get(id.name):null,fns=[],calls=[];
     walk(ast,n=>{if(FUNCTIONS.has(n.type))fns.push(n);});
     walk(ast,node=>{
-      if(node.type!=='CallExpression'||at&&!(node.loc.start.line<=at.line&&at.line<=node.loc.end.line))return;
+      if(node.type!=='CallExpression')return;
       const c=node.callee;
       let hit=null,name=null;
       if(c.type==='Identifier'){const b=imported(c);if(b&&!b.space){hit=b;name=b.name;}}
@@ -1283,45 +1306,56 @@ export function swappedCalls(files, surfaces, {promised=null, loose=false, at=nu
         const b=imported(c.object),to=!b&&isRequire(c.object)?target(c.object.arguments[0].value):null;
         if(b?.name===null||to){hit=b||{to};name=nameOf(c.property);}
       }
-      if(!hit||at&&hit.to!==at.target||node.arguments.some(a=>a.type==='SpreadElement'))return;
-      const names=node.arguments.map(argName),surface=surfaces.get(hit.to),label=name??surface?.default?.name??c.name;
-      const def=definedParams(surface,name);
-      let params=def,from='definition',pairs=def&&argPairs(names,def);
-      if(def&&!pairs)return;
-      if(!def||!pairs.length) {
-        const plan=promised?.(hit.to,label);
-        pairs=plan?.length?argPairs(names,plan):null;
-        if(!pairs)return;
-        params=plan.map(p=>paramSlot(p).name??String(p));from='plan';
-      }
-      const strict=swappedPairs(pairs);
-      if(!strict&&!(loose&&loosePairs(pairs,names.length)))return;
-      // (left, right) => compare(right, left): a function given the callee's
-      // parameters in the callee's order passes them reversed on purpose.
-      const own=fns.filter(f=>f.start<=node.start&&node.end<=f.end).at(-1)?.params.map(p=>p.type==='Identifier'?argKey(p.name):null)||[];
-      const order=[...pairs].sort((a,b)=>a[1]-b[1]).map(([i])=>own.indexOf(argKey(names[i])));
-      if(pairs.length>=2&&order.every((k,x)=>k>=0&&(!x||k>order[x-1])))return;
-      const call=`${content.slice(c.start,c.end)}(${node.arguments.map(a=>argText(content.slice(a.start,a.end))).join(', ')})`,key=`${path}|${hit.to}|${call}`;
-      if(seen.has(key))return;
-      seen.add(key);
-      out.push({path,target:hit.to,name:label,line:node.loc.start.line,call,params,from,loose:!strict,
-        text:`${path.split('/').pop()} calls ${call}, but ${label} takes (${params.join(', ')}): pass the arguments in that order`});
+      if(!hit||node.arguments.some(a=>a.type==='SpreadElement'))return;
+      const surface=surfaces.get(hit.to),label=name??surface?.default?.name??c.name,def=definedParams(surface,name),plan=def?null:promised?.(hit.to,label);
+      const pairs=(def||plan)?.length?argPairs(node.arguments.map(argName),def||plan):null;
+      if(pairs?.length)calls.push({node,c,to:hit.to,label,pairs,params:def||plan.map(p=>paramSlot(p).name??String(p)),from:def?'definition':'plan',
+        fn:fns.filter(f=>f.start<=node.start&&node.end<=f.end).at(-1)||null});
     });
+    for(const x of calls) {
+      const {node,c,pairs}=x,moved=pairs.filter(([i,j])=>i!==j).sort((a,b)=>a[0]-b[0]),strict=swappedPairs(pairs);
+      if(at&&(x.to!==at.target||!(node.loc.start.line<=at.line&&at.line<=node.loc.end.line)))continue;
+      if(!loose) {
+        const own=(x.fn?.params||[]).map(p=>p.type==='AssignmentPattern'?p.left:p).map(p=>p.type==='Identifier'?p.name:null);
+        const ks=moved.map(([i])=>{const a=node.arguments[i];return a.type==='Identifier'&&bindingOf.get(a)===x.fn?own.indexOf(a.name):-1;});
+        if(!strict||!ks.every((k,n)=>k>=0&&(!n||k>ks[n-1])))continue;
+      } else if(!strict&&!loosePairs(pairs.filter(([i])=>node.arguments[i].type==='Identifier'),node.arguments.length))continue;
+      // At run time, both orders only in one function: a correct call
+      // elsewhere in the module does not excuse this one.
+      if(calls.some(y=>y!==x&&y.to===x.to&&y.label===x.label&&(!loose||y.fn===x.fn)&&moved.every(([,j])=>y.pairs.some(([i,k])=>i===j&&k===j))))continue;
+      const misplaced=[...new Set(moved.flat())].map(k=>paramSlot(x.params[k]).name).filter(Boolean);
+      if(!back.has(x.to))back.set(x.to,swapsBack(set.get(x.to)));
+      if(back.get(x.to).some(s=>misplaced.every(n=>s.has(argKey(n)))))continue;
+      const call=`${content.slice(c.start,c.end)}(${node.arguments.map(a=>argText(content.slice(a.start,a.end))).join(', ')})`,key=`${path}|${x.to}|${call}`;
+      if(seen.has(key))continue;
+      seen.add(key);
+      out.push({path,target:x.to,name:x.label,line:node.loc.start.line,call,params:x.params,from:x.from,loose:!strict,misplaced,
+        text:`${path.split('/').pop()} calls ${call}, but ${x.label} takes (${x.params.join(', ')}): pass the arguments in that order`});
+    }
   }
   return out;
 }
 // A run's stack, innermost first: the first frame in a module of files and
 // the next frame in another module, the caller. Its call there into the
-// first module, with its arguments out of order (loose: one argument named
+// first module, with its arguments out of order (loose: one variable named
 // as another position's parameter, which the stack makes likely), is the
 // caller's to change (run11: thrown inside writeData, called from
-// createTicket.js:11). null when the stack shows no such call.
+// createTicket.js:11), when the error is about the arguments: a TypeError,
+// or a message naming a parameter the call misplaced (run11: "TypeError:
+// filePath must be a string…"). Any other error, "disk full" say, is the
+// provider's own. null when the stack shows no such call.
 const FRAME=/\bat (?:[^\n()]*\()?([^\s()]+?):(\d+):\d+\)?/g;
 export function swappedFrame(files, surfaces, detail, {promised=null}={}) {
-  const set=files instanceof Map?files:new Map(Object.entries(files)),keys=[...set.keys()].filter(p=>LINKABLE.test(p)).sort((a,b)=>b.length-a.length);
-  const frames=[...String(detail||'').matchAll(FRAME)].map(m=>({path:keys.find(k=>m[1]===k||m[1].endsWith('/'+k)),line:Number(m[2])})).filter(f=>f.path);
+  const text=String(detail||''),set=files instanceof Map?files:new Map(Object.entries(files)),keys=[...set.keys()].filter(p=>LINKABLE.test(p)).sort((a,b)=>b.length-a.length);
+  const frames=[...text.matchAll(FRAME)].map(m=>({path:keys.find(k=>m[1]===k||m[1].endsWith('/'+k)),line:Number(m[2])})).filter(f=>f.path);
   const inner=frames[0],caller=inner&&frames.find(f=>f.path!==inner.path);
-  return caller?swappedCalls(set,surfaces,{promised,loose:true,at:{path:caller.path,line:caller.line,target:inner.path}})[0]||null:null;
+  const hit=caller?swappedCalls(set,surfaces,{promised,loose:true,at:{path:caller.path,line:caller.line,target:inner.path}})[0]:null;
+  if(!hit)return null;
+  // The thrown error: the last "SomeError: message" (or "TypeError [CODE]:") before the stack.
+  const cut=text.search(/\n\s+at /),head=cut<0?text:text.slice(0,cut),error=[...head.matchAll(/^\s*([A-Z][\w$]*)(?:\s*\[[\w$]+\])?:/gm)].filter(m=>/(?:Error|Exception)$/.test(m[1])).at(-1);
+  if(!error)return null;
+  const words=new Set(head.slice(error.index).split(/[^\w$]+/).map(argKey));
+  return error[1]==='TypeError'||hit.misplaced.some(n=>words.has(argKey(n)))?hit:null;
 }
 
 // ---------- deterministic linking: no model call when the answer is mechanical ----------

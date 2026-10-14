@@ -464,7 +464,8 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
 // failed assertion), the builder, which has seen the source, names the module
 // whose worker must change it. This is triage only; it edits nothing.
 export const TRIAGE_SYSTEM = `You are the BUILDER doing triage. The application's modules were linked and a separate runner's test failed. You cannot edit anything. Name the ONE module whose code must change so the test's expectation holds, and explain the problem in terms its worker can act on (what the module does now, what it should do, which other module's interface it must match). Return ONLY JSON: {"file":"components/...","problem":"..."}.`;
-// hints: calls whose arguments a static check found out of order (run11).
+// hints: calls whose arguments a static check, by names only, found
+// possibly out of order (run11); unconfirmed, as each says.
 export async function attributeFailure(env, {modules, test, failure, hints=[]}) {
   if (env.MOCK_AI === 'true') return null;
   const output=await run(env,TRIAGE_SYSTEM,JSON.stringify({modules,runner_test:String(test||'').slice(0,6000),failure:String(failure||'').slice(0,2500),...hints.length?{argument_order_checks:hints.slice(0,8)}:{}}),1200);

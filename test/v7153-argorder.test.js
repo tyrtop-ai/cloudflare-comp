@@ -1,10 +1,14 @@
-// v7.15.3 from live run11 (room 33635715): createTicket.js called
-// writeData(data, filePath), while writeData is defined, and was promised by
-// the plan, as writeData(filePath, data). The error was thrown inside
-// writeData, so the stack frame blamed the write worker for four repair
-// rounds until Root's model (M4) saw the swapped arguments. A link-time check
-// now gives the caller that problem before any Container run, and a run
-// whose stack enters a provider from such a call goes to the caller.
+// v7.15.3 from live run11 (room 33635715): createTicket.js called writeData
+// with its arguments out of order, while writeData is defined, and was
+// promised by the plan, as writeData(filePath, data). The error was thrown
+// inside writeData, so the stack frame blamed the write worker for four
+// repair rounds until Root's model (M4) saw the swapped arguments. The export
+// keeps createTicket.js only at revision 3, writeData(filePath, ticket), so
+// revision 2 was most likely writeData(ticket, filePath): one misplaced name,
+// which the stack-backed run-time rule gives the caller after the first
+// failed run. The strict variant, writeData(data, filePath) from
+// createTicket(data, filePath), is stopped by the link-time check before any
+// Container run.
 // The room tests use the REAL container build runner as the executor.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,8 +17,8 @@ const L=await import('../src/linker.js');
 const P=await import('../src/problems.js');
 const {ROOT_PROMISE}=await import('../src/model.js');
 
-// Run11's final modules, byte for byte (the export keeps createTicket.js at
-// revision 3, after Root's fix; revision 2 called writeData(data, filePath)).
+// Run11's final modules, byte for byte (the export keeps createTicket.js only
+// at revision 3, after Root's fix; revision 2 is not in it).
 const readModule="const fs = require('fs');\n\nexports.readData = function(filePath) {\n  return fs.readFileSync(filePath, 'utf-8');\n};";
 const writeModule=`const fs = require('fs').promises;
 
@@ -82,8 +86,13 @@ test('v7.15.3: correct order, one matching name, literals, destructured objects,
   for(const c of ['writeData(filePath, data)','writeData(filePath, ticket)','writeData(ticket, filePath)','writeData(data, \'tickets.json\')','writeData(\'tickets.json\', data)',
     'writeData({ data, filePath })','writeData({ filePath: data, data: filePath })','writeData(...[data, filePath])','writeData(data, data)'])
     assert.deepEqual(check(call(c),{promised:promise()}),[],c);
-  assert.deepEqual(check(call('writeData(ticket.data, ticket.filePath)')).map(x=>x.call),['writeData(ticket.data, ticket.filePath)'],'a member read counts by its last name');
-  assert.deepEqual(check(call('writeData(_data, FILE_PATH)')).map(x=>x.call),['writeData(_data, FILE_PATH)'],'case and underscores do not count');
+  // A member read counts by its last name, but at link time it may reverse
+  // on purpose (a refund's payment.to, payment.from): only as run-time
+  // evidence or a triage hint (review).
+  assert.deepEqual(check(call('writeData(ticket.data, ticket.filePath)')),[]);
+  assert.deepEqual(check(call('writeData(ticket.data, ticket.filePath)'),{loose:true}).map(x=>[x.call,x.loose]),[['writeData(ticket.data, ticket.filePath)',false]],'a member read counts by its last name');
+  const own=fixedCreate.replace('createTicket(data, filePath)','createTicket(_data, FILE_PATH)').replace('writeData(filePath, ticket)','writeData(_data, FILE_PATH)');
+  assert.deepEqual(check(own).map(x=>x.call),['writeData(_data, FILE_PATH)'],'case and underscores do not count');
   // A default makes the order ambiguous; so does a rest.
   const withDefault=writeModule.replace('writeData(filePath, data)','writeData(filePath, data = {})');
   assert.deepEqual(check(swappedCreate,{},{[WRITE]:withDefault}),[]);
@@ -165,6 +174,93 @@ test('v7.15.3: an argument-order problem is the reader\'s, decided without the m
   const run={...p,kind:'run',parties:[{path:CREATE,owner:'root.2',role:'site'},{path:WRITE,owner:'root.1.2',role:'provider'}],detail:`${TEXT}. Cannot read properties of undefined (reading 'path')`};
   assert.deepEqual(P.deterministicDecision(run,ctx).child,'root.2');
   assert.equal(P.deterministicDecision({...run,facts:{}},ctx).rule,'D5','without it, a builder relink as before');
+});
+
+// Review: each of these reverses its arguments on purpose and works. A
+// link-time argorder blocks the Container run with no way out but a code
+// change, and a worker that obeys writes a bug (both links one way, a
+// refund as a second charge), so the link only reads run11's signal.
+const sources=files=>{const m=new Map(Object.entries(files));return {files:m,surfaces:new Map([...m].map(([p,c])=>[p,L.exportSurface(p,c)]))};};
+const scan=(files,opts={})=>{const {files:m,surfaces}=sources(files);return L.swappedCalls(m,surfaces,opts);};
+const links="function addLink(sourceId, targetId, type) { return { sourceId, targetId, type }; }\nmodule.exports = { addLink };\n";
+const deliberate={
+  'a link both ways, destructured':{'components/links/links.js':links,'components/rel/relate.js':"const { addLink } = require('../links/links.js');\nfunction relate({ sourceId, targetId }) {\n  addLink(sourceId, targetId, 'blocks');\n  addLink(targetId, sourceId, 'blocked-by');\n}\nmodule.exports = { relate };\n"},
+  'a link both ways, from req.body':{'components/links/links.js':links,'components/rel/relate.js':"const { addLink } = require('../links/links.js');\nfunction relate(req) {\n  const { sourceId, targetId } = req.body;\n  addLink(sourceId, targetId, 'blocks');\n  addLink(targetId, sourceId, 'blocked-by');\n}\nmodule.exports = { relate };\n"},
+  'a link both ways, its own parameters':{'components/links/links.js':links,'components/rel/relate.js':"const { addLink } = require('../links/links.js');\nfunction relate(targetId, sourceId) {\n  addLink(sourceId, targetId, 'blocks');\n  addLink(targetId, sourceId, 'blocked-by');\n}\nmodule.exports = { relate };\n"},
+  'a check either way in a callback':{'components/deps/deps.js':"function isBlocking(ticket, other) { return (ticket.blocks||[]).includes(other.id); }\nmodule.exports = { isBlocking };\n",'components/c/conflict.js':"const { isBlocking } = require('../deps/deps.js');\nfunction hasConflict(ticket, others) {\n  return others.some(other => isBlocking(ticket, other) || isBlocking(other, ticket));\n}\nmodule.exports = { hasConflict };\n"},
+  'an undirected edge in a loop':{'components/g/graph.js':"function addEdge(graph, from, to) { (graph[from] ||= []).push(to); }\nmodule.exports = { addEdge };\n",'components/b/build.js':"const { addEdge } = require('../g/graph.js');\nfunction build(edges) {\n  const graph = {};\n  for (const [from, to] of edges) {\n    addEdge(graph, from, to);\n    addEdge(graph, to, from);\n  }\n  return graph;\n}\nmodule.exports = { build };\n"},
+  'a refund':{'components/l/ledger.js':"function transfer(from, to, amount) { return { from, to, amount }; }\nmodule.exports = { transfer };\n",'components/r/refund.js':"const { transfer } = require('../l/ledger.js');\nfunction refund(payment) {\n  return transfer(payment.to, payment.from, payment.amount);\n}\nmodule.exports = { refund };\n"},
+  'an undo':{'components/m/move.js':"function moveTicket(ticketId, fromStatus, toStatus) { return { ticketId, fromStatus, toStatus }; }\nmodule.exports = { moveTicket };\n",'components/u/undo.js':"const { moveTicket } = require('../m/move.js');\nfunction undo(history) {\n  const last = history.pop();\n  return moveTicket(last.ticketId, last.toStatus, last.fromStatus);\n}\nmodule.exports = { undo };\n"},
+  'a reverse index':{'components/i/index.js':"function put(index, key, value) { index[key] = value; return index; }\nmodule.exports = { put };\n",'components/v/invert.js':"const { put } = require('../i/index.js');\nfunction invert(map) {\n  const out = {};\n  for (const [key, value] of Object.entries(map)) put(out, value, key);\n  return out;\n}\nmodule.exports = { invert };\n"},
+  'a descending comparator, ESM, aliased, destructured':{'components/c/cmp.js':"export function compareDates(left, right) { return left - right; }\n",'components/s/sort.js':"import { compareDates as cmp } from '../c/cmp.js';\nexport function newestFirst(list) { return list.sort(({ createdAt: left }, { createdAt: right }) => cmp(right, left)); }\n"},
+  'a callee that takes either order':{'components/w/write.js':"function writeData(filePath, data) {\n  if (typeof filePath !== 'string') [filePath, data] = [data, filePath];\n  return [filePath, data];\n}\nmodule.exports = { writeData };\n",'components/c/create.js':"const { writeData } = require('../w/write.js');\nfunction create(data, filePath) { return writeData(data, filePath); }\nmodule.exports = { create };\n"},
+};
+test('v7.15.3: at link time only run11\'s signal counts, a function passing its own parameters on in its own order; deliberate reversals are never flagged',()=>{
+  for(const [name,files] of Object.entries(deliberate))assert.deepEqual(scan(files),[],name);
+  // Both orders of the same names in one function are no evidence at run time either.
+  for(const name of ['a link both ways, destructured','a link both ways, from req.body','a link both ways, its own parameters','a check either way in a callback','an undirected edge in a loop','a callee that takes either order'])
+    assert.deepEqual(scan(deliberate[name],{loose:true}),[],name);
+  // run11's signal holds with a default, an arrow, a parameter more, and an
+  // in-order call in another function of the module (at run time that one
+  // does not excuse it: only the same function does).
+  const W='components/w/write.js',write="function writeData(filePath, data) {}\nmodule.exports = { writeData };\n",at=caller=>({[W]:write,'components/c/create.js':"const { writeData } = require('../w/write.js');\n"+caller});
+  for(const caller of ["function create(data, filePath = 'tickets.json') { return writeData(data, filePath); }\nmodule.exports = { create };\n",
+    "module.exports = { create: (data, filePath) => writeData(data, filePath) };\n","function create(data, filePath, options) { return writeData(data, filePath); }\nmodule.exports = { create };\n"])
+    assert.deepEqual(scan(at(caller)).map(x=>x.call),['writeData(data, filePath)'],caller);
+  const two="function save(data, filePath) { return writeData(filePath, data); }\nfunction create(data, filePath) { return writeData(data, filePath); }\nmodule.exports = { save, create };\n";
+  assert.deepEqual(scan(at(two)),[],'both orders in the module: not at link time');
+  assert.deepEqual(scan(at(two),{loose:true}).map(x=>x.call),['writeData(data, filePath)']);
+  // A parameter shadowed in a callback is another variable.
+  assert.deepEqual(scan(at("function create(list, filePath) { list.forEach(data => writeData(data, filePath)); }\nmodule.exports = { create };\n")),[]);
+});
+
+test('v7.15.3: a wrapper that reorders what it took is not blocked at link time; the stack with an error about the arguments gives it to the caller, and triage reads it',()=>{
+  const W='components/ds/write.js',C='components/ct/entry.js';
+  const write="async function writeData(filePath, data) { if (typeof filePath !== 'string') throw new TypeError('filePath must be a string'); }\nmodule.exports = { writeData };\n";
+  const update="function updateTicket(id, updates, filePath) { if (typeof filePath !== 'string') throw new TypeError('filePath must be a string'); }\nmodule.exports = { updateTicket };\n";
+  // The review's shapes: run11's bug with the wrapper's own parameters in
+  // the callee's order, an entry's start() method, a rotation of three.
+  for(const [provider,caller,call] of [[write,"const { writeData } = require('../ds/write.js');\nfunction saveTicket(filePath, data) {\n  return writeData(data, filePath);\n}\nmodule.exports = { saveTicket };\n",'writeData(data, filePath)'],
+    [update,"const { updateTicket } = require('../ds/write.js');\nconst FILE = 'tickets.json';\nfunction start() {\n  return { update: (id, updates) => updateTicket(updates, id, FILE) };\n}\nmodule.exports = { start };\n",'updateTicket(updates, id, FILE)'],
+    [update,"const { updateTicket } = require('../ds/write.js');\nfunction f(id, updates, filePath) {\n  return updateTicket(filePath, id, updates);\n}\nmodule.exports = { f };\n",'updateTicket(filePath, id, updates)']]) {
+    const {files,surfaces}=sources({[C]:caller,[W]:provider}),line=caller.split('\n').findIndex(l=>l.includes(call))+1;
+    assert.deepEqual(L.swappedCalls(files,surfaces),[],call);
+    assert.deepEqual(L.swappedCalls(files,surfaces,{loose:true}).map(x=>x.call),[call]);
+    const stack=`TypeError: filePath must be a string\n    at writeData (/work/b/${W}:1:80)\n    at Object.f (/work/b/${C}:${line}:10)\n    at /work/b/glue/smoke.js:3:1`;
+    assert.equal(L.swappedFrame(files,surfaces,stack)?.call,call);
+  }
+});
+
+test('v7.15.3: at run time a member read alone is no evidence, and only an error about the arguments moves the problem to the caller',()=>{
+  const W='components/w/write.js',C='components/c/create.js';
+  const at=call=>sources({[W]:"function writeData(filePath, data) {\n  require('fs').mkdirSync('/tmp/x', { recursive: true });\n  throw new Error('disk full');\n}\nmodule.exports = { writeData };\n",
+    [C]:`const { writeData } = require('../w/write.js');\nconst config = { data: '/var/app/tickets.json' };\nfunction createTicket(ticket, filePath) {\n  ${call};\n  return ticket;\n}\nmodule.exports = { createTicket };\n`});
+  const frame=(call,error)=>{const {files,surfaces}=at(call);return L.swappedFrame(files,surfaces,`${error}\n    at writeData (/work/b/${W}:3:9)\n    at createTicket (/work/b/${C}:4:3)\n    at /work/b/glue/smoke.js:5:1`)?.call??null;};
+  // The review's probe: config.data is the path, so the call is right and writeData failed on its own.
+  assert.equal(frame('writeData(config.data, ticket)','Error: disk full'),null);
+  assert.equal(frame('writeData(config.data, ticket)','TypeError: filePath must be a string'),null,'one member read names nothing');
+  {const {files,surfaces}=at('writeData(config.data, ticket)');assert.deepEqual(L.swappedCalls(files,surfaces,{loose:true}),[],'nor is it a hint');}
+  // One variable out of place: the error decides.
+  assert.equal(frame('writeData(ticket, filePath)','Error: disk full'),null,'the provider\'s own failure stays its own');
+  assert.equal(frame('writeData(ticket, filePath)','Error: file_path is required'),'writeData(ticket, filePath)','the message names a misplaced parameter');
+  assert.equal(frame('writeData(ticket, filePath)','node:internal/fs/promises:636\n  path = getValidatedPath(path);\n         ^\n\nTypeError [ERR_INVALID_ARG_TYPE]: The "path" argument must be of type string. Received an instance of Object\n    at open (node:internal/fs/promises:636:10)'),
+    'writeData(ticket, filePath)','a TypeError, as run11\'s first writeData threw from node internals');
+  assert.equal(frame('writeData(ticket, filePath)',"/work/b/x.js:3\n    throw new TypeError('x');\n          ^\n\nError: disk full"),null,'the source line Node quotes is not the error');
+});
+
+test('v7.15.3: the plan\'s promise decides only when the definition cannot be read: a readable definition whose names differ is what runs',()=>{
+  const W='components/w/write.js',C='components/c/create.js',plan=params=>(target,name)=>target===W?params:null;
+  const at=(provider,caller)=>sources({[W]:provider,[C]:caller});
+  // The review's probe: saveTicket takes the path first, the plan promised
+  // (ticket, filePath), and the caller follows the code that runs.
+  const save=at("function saveTicket(file, record) { return require('fs').writeFileSync(file, JSON.stringify(record)); }\nmodule.exports = { saveTicket };\n",
+    "const { saveTicket } = require('../w/write.js');\nfunction create(filePath, ticket) { return saveTicket(filePath, ticket); }\nmodule.exports = { create };\n");
+  // writeData(content, path) against a plan of (filePath, data): writeData(data, filePath) is right.
+  const content=at("async function writeData(content, path) { require('fs').writeFileSync(path, JSON.stringify(content)); }\nmodule.exports = { writeData };\n",
+    "const { writeData } = require('../w/write.js');\nfunction createTicket(data, filePath) {\n  return writeData(data, filePath);\n}\nmodule.exports = { createTicket };\n");
+  const letters=at("function writeData(p, d) {}\nmodule.exports = { writeData };\n",content.files.get(C));
+  for(const [x,params] of [[save,['ticket','filePath']],[content,['filePath','data']],[letters,['filePath','data']]])
+    for(const loose of [false,true])assert.deepEqual(L.swappedCalls(x.files,x.surfaces,{promised:plan(params),loose}),[],x.files.get(W));
 });
 
 // ------------------------------------------------------------------ rooms
@@ -251,6 +347,21 @@ test('v7.15.3: beside a problem that relinks, the swapped call is never in what 
   for(const text of [...r.calls.link.map(x=>JSON.stringify(x)),...events(r.room,'link_retry').map(e=>e.body)])assert.doesNotMatch(text,/pass the arguments|writeData\(data, filePath\)/);
   assert.deepEqual(openProblems(r.room,'root').map(p=>p.kind).sort(),['argorder','unresolved'],trace(r.room));
 });
+test('v7.15.3: a correct link both ways reaches the Container: Root\'s builder files nothing for it (review)',async()=>{
+  const r=liveRoom(),goal='Build a small issue tracker that can link two tickets as blocks / blocked-by.';
+  await planned(r.room,goal);
+  const relate="const { addLink } = require('./links');\nfunction relateTickets(link) {\n  const { sourceId, targetId } = link;\n  return [addLink(sourceId, targetId, 'blocks'), addLink(targetId, sourceId, 'blocked-by')];\n}\nmodule.exports = { relateTickets };\n";
+  await pieces(r.room,'root',[['links','links.js',links,[fn('addLink','records a directed link',['sourceId','targetId','type'])]],
+    ['relate','relate.js',relate,[fn('relateTickets','links two tickets both ways',['link'])]],
+    ['entryModule','entryModule.js',"const { relateTickets } = require('./relate');\nfunction start() {\n  return { relate: relateTickets };\n}\nmodule.exports = { start };\n",[ROOT_PROMISE[0]]]]);
+  const b=await r.room.scheduleAssembly('root');
+  await r.room.turn(b.id);
+  assert.deepEqual(openProblems(r.room,'root'),[],trace(r.room));
+  await r.room.turn('root');
+  await r.room.turn(r.room.compilerOf('root').id);
+  assert.ok(r.builds.length>0,'the Container runs it: '+trace(r.room));
+  assert.equal(tickets(r.room,'root.2').length,0,'its worker is never told to reorder');
+});
 test('v7.15.3: the fixed call links clean; a swapped call inside one branch goes to its caller worker at that branch\'s manager',async()=>{
   const {room}=await run11Room(fixedCreate);
   const b=await room.scheduleAssembly('root');
@@ -320,11 +431,22 @@ test('v7.15.3: a run that throws inside the provider from a call in order stays 
   await room.turn('root');
   assert.equal(room.problems('id=?',p.id)[0].holder,'root.1','the dataStore branch, as before');
 });
+test('v7.15.3: the provider\'s own error, not about the arguments, stays the provider\'s even from a call with a variable out of place (review)',async()=>{
+  const full=writeModule.replace('  let path;\n',"  throw new Error('disk full');\n  let path;\n");
+  const {room}=await compiled(oneNameCreate,full);
+  const [issue]=lastReport(room,room.compilerOf('root').id)?.issues||[];
+  assert.equal(issue?.kind,'run',trace(room));
+  assert.ok(issue.path.endsWith('/module.js'),issue.path);
+  assert.match(issue.detail,/disk full/);
+  assert.doesNotMatch(issue.detail,/pass the arguments in that order/);
+  assert.equal(openProblems(room,'root')[0].parties[0].owner,'root.1.2');
+});
 test('v7.15.3: with no module in the stack, triage reads the calls whose arguments are out of order',async()=>{
   // writeData stores nothing and returns; the runner's own assertion fails.
   const quiet="async function writeData(filePath, data) { return undefined; }\nmodule.exports = { writeData };\n";
   const assertTest=createTest.replace("assert.equal(t.title, 'Printer jam');","assert.equal(t.title, 'Paper jam');");
   const r=await compiled(oneNameCreate,quiet,{runner:()=>assertTest,triage:()=>null});
   assert.equal(r.calls.triage.length,1,trace(r.room));
-  assert.deepEqual(r.calls.triage[0].argument_order_checks,['createTicket.js calls writeData(ticket, filePath), but writeData takes (filePath, data): pass the arguments in that order']);
+  // Names alone do not confirm it: the hint says so, and gives no order to follow (review).
+  assert.deepEqual(r.calls.triage[0].argument_order_checks,[`Unconfirmed, by names only (the order may be deliberate): ${CREATE} calls writeData(ticket, filePath); writeData takes (filePath, data)`]);
 });
