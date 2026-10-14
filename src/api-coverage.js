@@ -302,7 +302,8 @@ export function methodDescriptions(methods, described, performers) {
   return (methods||[]).flatMap(m=>{
     const own=String(members[m]?.name||'').replace(/^bound /,''),listed=Array.isArray(members[m]?.params)&&members[m].params.length?members[m].params.map(String):null;
     const f=fns.find(x=>x.name===m)||one(fns.filter(x=>x.name===own))||one(fns.filter(x=>performsOp(m,x)||sameOp(m,x.name)));
-    return f?[{method:m,...f.name!==m?{performed_by:f.name}:{},does:String(f.does||''),params:listed||(Array.isArray(f.params)?f.params.map(String):[])}]:[];
+    // v7.15.7 review (run14): with what the promise says a call returns, which the runner's first draft asserted (createResult) and was turned back for.
+    return f?[{method:m,...f.name!==m?{performed_by:f.name}:{},does:String(f.does||''),params:listed||(Array.isArray(f.params)?f.params.map(String):[]),...(f.returns?{returns:String(f.returns)}:{})}]:[];
   });
 }
 // The assertions of a runner draft that neither the goal, the API nor the
@@ -348,7 +349,8 @@ const CONTAINS=new Set(['includes','startsWith','endsWith','match','search','ind
 export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
   const src=String(test||''),nodes=testNodes(src);
   if(!nodes)return [];
-  const does=new Map((methods||[]).filter(m=>m?.method&&m.does).map(m=>[m.method,String(m.does)])),performs=new Map((methods||[]).filter(m=>m?.method).map(m=>[m.method,String(m.performed_by||m.method)]));
+  // v7.15.7 review: a description is read with what the promise returns ("deletes a ticket by ID; returns nothing"), so STATES_RETURN reads the shape run14's promises now state.
+  const does=new Map((methods||[]).filter(m=>m?.method&&(m.does||m.returns)).map(m=>[m.method,[String(m.does||''),m.returns?`returns ${m.returns}`:''].filter(Boolean).join('; ')])),performs=new Map((methods||[]).filter(m=>m?.method).map(m=>[m.method,String(m.performed_by||m.method)]));
   const corpus=[goal,api,...does.values(),...(methods||[]).flatMap(m=>m?.params||[])].join('\n'),low=corpus.toLowerCase();
   const string=n=>n?.type==='Literal'&&typeof n.value==='string'?n.value:n?.type==='TemplateLiteral'&&!n.expressions.length?n.quasis.map(q=>q.value.cooked).join(''):null;
   const regex=n=>n?.type==='Literal'&&n.regex?n.regex:null,claims=n=>string(n)!==null||!!regex(n),quote=n=>string(n)!==null?`'${string(n)}'`:src.slice(n.start,n.end);

@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
@@ -100,9 +100,19 @@ const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)
 const importLine = (name, esm=false) => esm?`import { ${name} } from './${name}';`:`const { ${name} } = require('./${name}');`;
 const importLines = (fns, esm=false) => `Import each on its own line, by exactly its name, with the name as the path: ${fns.map(f=>importLine(f.name,esm)).join(' ')}`;
 // A function request's provided answer, as routeFunction gives it and the
-// plan gives the start carrier's up front (v7.15.5).
-const providedText = (f, owner) => clip(`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}. It is exported by "${owner}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`,600);
-const providedFn = (f, owner) => ({name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),owner});
+// plan gives the start carrier's up front (v7.15.5). v7.15.7: with what a
+// call returns, as the promise states it (promiseText), kept on the answer.
+// Review: tiered as usesText is, within 600 characters, so the import line
+// and the closing sentence are never clipped: what it returns goes first,
+// then the does is cut to 80, then the params (a 30-character name with a
+// 160-character does, a 120-character returns and a 70-character owner ran
+// to 697 and lost the import line).
+const providedText = (f, owner) => {
+  const say=(ret,cut,params)=>`${promiseText({...f,params:params?f.params:f.params?.length?['…']:[],...(ret?{}:{returns:''}),...(cut?{does:String(f.does||'').slice(0,cut)}:{})})}. It is exported by "${owner}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`;
+  const tiers=[say(true,0,true),say(false,0,true),say(false,80,true),say(false,80,false)];
+  return clip(tiers.find(t=>t.length<=600)||tiers.at(-1),600);
+};
+const providedFn = (f, owner) => ({name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),...(f.returns?{returns:f.returns}:{}),owner});
 // Review: a name that stands for an operation rather than naming one (run12's goalOperation1).
 const OPERATION_PLACEHOLDER=/^(?:goal)?(?:op|operation|action|method|handler|function|func|fn)s?_?\d*$/i;
 // A function a manager's reply carries, cleaned as a promise item is.
@@ -3760,7 +3770,8 @@ export class ControlRoom extends DurableObject {
     const uses=this.plannedUses(id,this.read(`fn_answers:${id}`,[]).filter(a=>a.kind==='provided'&&validName(a.fn?.name)).map(a=>a.fn.name)),store=uses.filter(f=>f.storage);
     const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&(({isOp})=>promised.some(f=>storageFunction(f,isOp)))(this.levelOps(this.node(id).parent));
     const esm=[...files.values()].some(c=>esmSyntax(c));
-    const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,
+    // v7.15.7 review: the await rule is gated on the room (shaped): where any promise of the plan states what it returns, every promised name a worker calls is read for await, one R5 grows or the splitter left without returns too; a room where none states it (v7.15.5's and v7.15.6's replays) is read as before.
+    const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,shaped:this.allNodes().some(n=>parse(n.interfaces,[]).some(f=>f?.returns)),
       performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null});
     // Review (p1): a foreign function in a stub the builder leaves out of the bundle (dropped) is no gap of the application: no contract problem for it.
     const gap=found.filter(x=>x.rule==='missing'||x.rule==='foreign'&&!x.dropped),dropped=[...new Set(found.filter(x=>x.dropped).map(x=>x.path))],base=p=>String(p||'').split('/').pop(),list=listed;
@@ -3772,7 +3783,7 @@ export class ControlRoom extends DurableObject {
     }
     if(returns>=3) {
       const still={missing:x=>`${x.name} still not exported`,empty:x=>`${x.name} still an empty placeholder`,foreign:x=>`${x.name} still written ${x.dropped?`in ${base(x.path)}`:'here'} though "${x.hit.owner}" promises it`,unwired:x=>`start() still returns no method for ${list(x.missing)}`,
-        own_data:x=>`${base(x.path)} still keeps its own data`,unused:x=>`${list(x.names)} still not called`,esm:x=>`${base(x.path)} still calls require() in an ES module`,params:x=>`${base(x.path)} still calls ${x.name} out of order`};
+        own_data:x=>`${base(x.path)} still keeps its own data`,unused:x=>`${list(x.names)} still not called`,esm:x=>`${base(x.path)} still calls require() in an ES module`,params:x=>`${base(x.path)} still calls ${x.name} out of order`,await:x=>`${base(x.path)} still calls ${x.name} without await`};
       const then=[gap.length?'the gap goes to the manager':'',dropped.length?`the builder leaves ${list(dropped.map(base))} out of the bundle`:''].filter(Boolean);
       this.event(id,'contract_unmet',`After 3 returns: ${found.map(x=>still[x.rule](x)).join('; ')}; accepted, and ${then.length?then.join(' and '):"the compiler's checks decide"}.`);
       if(gap.length)this.fileContract(id,found.filter(x=>x.rule==='missing').map(x=>promised.find(p=>p.name===x.name)),found.filter(x=>x.rule==='foreign'&&!x.dropped).map(x=>x.hit));
