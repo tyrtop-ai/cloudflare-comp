@@ -144,6 +144,15 @@ export const labelNames = (label, name) => {const a = words(label).filter(w => !
 const VERB = w => w === 'del' || w === 'remove' ? 'delete' : w;
 const covers = (a, b) => b.length > 0 && VERB(a[0]) === VERB(b[0]) && a.slice(1).every(w => b.slice(1).includes(w));
 export const performsOp = (op, f) => {const a = words(op); return a.length > 0 && (covers(a, words(f?.name)) || covers(a, words(f?.operation)));};
+// v7.15.5: the goal's operations (verbs) a promised function performs: a
+// goal word is its verb, by its name or its operation, and what it acts on,
+// when it names anything, is in the goal too. run12's createData ("returns a
+// ticket data manager instance") performs no create: data is not in the goal.
+export const goalOps = (goal, f) => {
+  const g = new Set(words(goal)), on = s => {const w = words(s).slice(1).filter(x => x.length > 2); return !w.length || w.some(x => g.has(x));};
+  const hit = w => [f?.name, f?.operation].some(s => covers(words(w), words(s)) && on(s));
+  return [...new Set((String(goal ?? '').match(/[A-Za-z]+/g) || []).filter(hit).map(w => VERB(words(w)[0])))];
+};
 // Each shared name R3 would delete: its holders (spawn indices), the item
 // with the most hint, and the plain pick, or null when Clef must choose.
 export function duplicateNames(spawn, promised = [], elsewhere = new Set()) {

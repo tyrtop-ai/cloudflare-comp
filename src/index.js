@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
@@ -86,6 +86,14 @@ async function assumptionTopic(slug, childKey) {
 const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces';
 // v7.15 slice B: what a function request asks for, as answers and events say it.
 const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
+const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}` : xs[0]||'';
+// One import line per function, named after it (run8): the builder links
+// each line by the name alone, wherever the function's module lies.
+const importLines = fns => `Import each on its own line, by exactly its name, with the name as the path: ${fns.map(f=>`const { ${f.name} } = require('./${f.name}');`).join(' ')}`;
+// A function request's provided answer, as routeFunction gives it and the
+// plan gives the start carrier's up front (v7.15.5).
+const providedText = (f, owner) => clip(`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}. It is exported by "${owner}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`,600);
+const providedFn = (f, owner) => ({name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),owner});
 // A function a manager's reply carries, cleaned as a promise item is.
 const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&!Array.isArray(fn)?[fn]:[]); return f&&validName(f.name)?{...f,owner:clip(fn.owner,70)}:null; };
 // Hard safety ceilings. Actual per-room limits are chosen in the dashboard.
@@ -726,7 +734,8 @@ export class ControlRoom extends DurableObject {
     for(let i=0;i<planned.length;i++) {
       const id=`${parentId}.${batch.start_index+i}`;
       let child=this.node(id);
-      if(!child) child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[]);
+      // v7.15.5: answers a spec carries (composeStart) are there before the child can run.
+      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[]);}
       made.push(child);
     }
     return made;
@@ -1595,8 +1604,43 @@ export class ControlRoom extends DurableObject {
       left.length?`${entry.split('/').pop()} does not import ${left.join(', ')}, which other pieces promise, so their code never runs: import each and call it from the method start() returns for it.`:''].filter(Boolean).join(' ');
   }
   // Review: f performs an operation the goal names, by the goal's words
-  // (run11's createTicket for create; readData for none).
-  performsGoal(f) {return (this.userGoal().match(/[A-Za-z]+/g)||[]).some(w=>performsOp(w,f));}
+  // (run11's createTicket for create; readData for none). v7.15.5: and acts
+  // on what the goal names (run12's createData, a factory, performs none).
+  performsGoal(f) {return goalOps(this.userGoal(),f).length>0;}
+  // v7.15.5: the promises that perform the goal's operations, from levels
+  // nearest first, each operation from the nearest level that has one;
+  // generic names are never answered by name, so never listed.
+  goalPerformers(levels) {
+    const goal=this.userGoal(),out=[],near=new Set();
+    for(const items of levels) {
+      const here=new Set();
+      for(const f of items){const ops=goalOps(goal,f);if(!ops.length||GENERIC_NAMES.has(f.name)||ops.every(o=>near.has(o))||out.some(x=>x.name===f.name))continue;out.push(f);for(const o of ops)here.add(o);}
+      for(const o of here)near.add(o);
+    }
+    return out;
+  }
+  // The functions start() returns, for its carrier below the top: the plan
+  // as its walk reads it (run12's createTicket, viewTicket, updateTicket and
+  // deleteTicket, each with the label of the piece that promises it).
+  startPerformers(id) {const n=this.node(id);return n?.parent&&this.planned()&&this.promisedOf(id).some(f=>f.name==='start')?this.goalPerformers(this.planWalk(id)):[];}
+  // v7.15.5: a split that gives start to one piece composes it from the plan
+  // (run12's entry asked for goalOperation1 and goalOperation2 and wired two
+  // of four operations): its siblings' promises and the walk above name the
+  // performers, which its promise and assignment list with an import line
+  // each, and its requests for them are answered up front (answers, which
+  // spawn records as routeFunction does). No model call; none found, as before.
+  composeStart(m, spawn) {
+    const at=this.planned()?spawn.findIndex(c=>(c?.interfaces||[]).some(f=>f.name==='start')):-1;
+    if(at<0)return spawn;
+    const siblings=spawn.flatMap((c,i)=>i===at||RUNTIME_LABELS.includes(c.label)?[]:(c.interfaces||[]).map(f=>({...f,owner:c.label})));
+    const fns=this.goalPerformers([siblings,...this.planWalk(m)]);
+    if(!fns.length)return spawn;
+    const names=`{ ${fns.map(f=>f.name).join(', ')} }`,full=`no arguments; returns ${names}, each imported on its own line by its name`;
+    const does=full.length<=160?full:'no arguments; returns the functions your assignment names, each under its name and imported on its own line by its name';
+    const task=`${spawn[at].task} start() returns ${names}, the functions other pieces promise for the goal's operations: ${listed(fns.map(f=>`${signature(f)} from "${f.owner}"`))}. ${importLines(fns)} Return each under its name, itself or a wrapper that calls it; do not write them here.`;
+    this.event(m,'start_composed',clip(`"${spawn[at].label}" carries start: it returns ${fns.map(f=>`${f.name} from "${f.owner}"`).join(', ')}, from the plan.`,600));
+    return spawn.map((c,i)=>i!==at?c:{...c,task,interfaces:c.interfaces.map(f=>f.name==='start'?{...f,does}:f),answers:fns.map(f=>({key:requestKey({name:f.name}),kind:'provided',text:providedText(f,f.owner),fn:providedFn(f,f.owner)}))});
+  }
 
   // ---------- the problem inbox ----------
   // The run's goal (the requirement the runtime appended included), else the top's task.
@@ -3279,13 +3323,18 @@ export class ControlRoom extends DurableObject {
     // that such a promise performs and that calls none of them (run11). A
     // generic name (create, get) is never answered by name, nor read here.
     const elsewhere=this.planned()?this.promisedElsewhere(id):new Map();
-    const found=placeholders(files,names.filter(n=>!missing.includes(n)),[...elsewhere.keys()].filter(n=>!GENERIC_NAMES.has(n))).filter(x=>x.foreign?(x.hit=elsewhere.get(x.name)):!x.local||(x.hit=this.performerOf(id,x)));
+    // v7.15.5: the start carrier returns every function that performs a goal operation (run12's entry wired create and delete only).
+    const performers=names.includes('start')?this.startPerformers(id):[];
+    const found=placeholders(files,names.filter(n=>!missing.includes(n)),[...elsewhere.keys()].filter(n=>!GENERIC_NAMES.has(n)),performers.map(f=>f.name)).filter(x=>x.missing||(x.foreign?(x.hit=elsewhere.get(x.name)):!x.local||(x.hit=this.performerOf(id,x))));
     // Review: the start carrier hears first of the functions that perform the goal's operations (run11's led with readData).
-    const empty=found.filter(x=>!x.hit),written=found.filter(x=>x.hit).sort((a,b)=>names.includes('start')?this.performsGoal(b.hit)-this.performsGoal(a.hit):0),list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
+    const empty=found.filter(x=>!x.hit&&!x.missing),written=found.filter(x=>x.hit).sort((a,b)=>names.includes('start')?this.performsGoal(b.hit)-this.performsGoal(a.hit):0),list=listed;
+    // A performer a written function or an empty operation already names is answered there, once (run9's update() {}).
+    const said=new Set([...written.map(x=>x.hit.name),...performers.filter(f=>empty.some(x=>x.op&&performsOp(x.op,f))).map(f=>f.name)]),unwired=found.filter(x=>x.missing).map(x=>({...x,missing:x.missing.filter(n=>!said.has(n))})).filter(x=>x.missing.length);
+    const unwiredNames=[...new Set(unwired.flatMap(x=>x.missing))];
     const emptyNames=[...new Set(empty.map(x=>x.op||x.name))],are=emptyNames.length>1?'are empty placeholders':'is an empty placeholder',writtenNames=[...new Set(written.map(x=>x.op||x.name))];
     // A contract problem is about a missing export or a function written here: closed once neither remains, whatever the placeholders.
     if(!missing.length&&!written.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
-    if(!missing.length&&!empty.length&&!written.length) {
+    if(!missing.length&&!empty.length&&!written.length&&!unwired.length) {
       if(returns)this.set(key,'');
       return false;
     }
@@ -3294,17 +3343,19 @@ export class ControlRoom extends DurableObject {
       if(written.length)this.event(id,'contract_unmet',`${list(writtenNames)} still written here after 3 returns though other pieces promise ${writtenNames.length>1?'them':'it'}; accepted, and the gap goes to the manager.`);
       if(missing.length||written.length)this.fileContract(id,missing.map(name=>promised.find(p=>p.name===name)),written.map(x=>x.hit));
       if(empty.length)this.event(id,'contract_unmet',`${list(emptyNames)} ${are.replace(/^(?:are|is)/,'$& still')} after 3 returns; accepted, and the runner's test decides.`);
+      if(unwired.length)this.event(id,'contract_unmet',`start() still returns no method for ${list(unwiredNames)} after 3 returns; accepted, and the compiler's checks decide.`);
       return false;
     }
     this.set(key,returns+1);
     const answer=(xs,k)=>this.placeholderAnswer(id,xs.find(x=>(x.op||x.name)===k),promised);
-    const answers=await Promise.all(emptyNames.map(k=>answer(empty,k))),moved=await Promise.all(writtenNames.map(k=>answer(written,k)));
+    const answers=await Promise.all(emptyNames.map(k=>answer(empty,k))),moved=await Promise.all(writtenNames.map(k=>answer(written,k))),wired=await Promise.all(unwired.map(x=>this.placeholderAnswer(id,x,promised)));
     const body=['[contract]',...(missing.length?[`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`]:[]),
       ...self.map(x=>`${x.path.split('/').pop()} imports ${list(x.names)} from '${x.specifier}', but ${list(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`),
-      ...answers.map(a=>a.text),...moved.map(a=>a.text),...(missing.length?[]:['Publish the FULL updated file.'])].join(' ');
+      ...wired.map(a=>a.text),...answers.map(a=>a.text),...moved.map(a=>a.text),...(missing.length?[]:['Publish the FULL updated file.'])].join(' ');
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
     if(missing.length)this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${missing.join(', ')} promised and not exported; back to the worker.`);
     if(empty.length)this.event(id,'contract_placeholder',`Done refused (${returns+1}/3): ${list(emptyNames)} ${are}; back to the worker. ${answers.map(a=>a.how).join(' ')}`.trim());
+    if(unwired.length)this.event(id,'contract_unwired',`Done refused (${returns+1}/3): start() returns no method for ${list(unwiredNames)}, which ${unwiredNames.length>1?'perform':'performs'} the goal's operations; back to the worker. ${wired.map(a=>a.how).join(' ')}`.trim());
     if(written.length)this.event(id,'contract_reimplemented',`Done refused (${returns+1}/3): ${list(writtenNames)} ${writtenNames.length>1?'are':'is'} written here, and other pieces promise ${writtenNames.length>1?'them':'it'}; back to the worker. ${moved.map(a=>a.how).join(' ')}`.trim());
     return true;
   }
@@ -3338,6 +3389,14 @@ export class ControlRoom extends DurableObject {
   // getTickets().find(...), not getTickets). run9's start carrier returned
   // update() {} and del() {} and never asked for them.
   async placeholderAnswer(id, x, promised) {
+    // v7.15.5: performers start() does not return (run12's view and update),
+    // with the keys it returns under other names, all from the plan.
+    if(x.missing) {
+      const by=new Map(this.startPerformers(id).map(f=>[f.name,f])),fns=x.missing.map(n=>by.get(n)).filter(Boolean),stray=x.stray||[];
+      return {text:[`start() returns no method for ${listed(fns.map(f=>`${f.name} (${f.owner})`))}: ${importLines(fns).replace(/^Import each/,fns.length>1?'import each':'import it')} and return ${fns.length>1?'each':'it'} under its name.`,
+        x.renamed?.length?`Rename ${listed(x.renamed.map(([k,n])=>`${k} to ${n}`))}: start() returns each function under its own name.`:'',stray.length?`No piece promises ${listed(stray)}: do not import or return ${stray.length>1?'them':'it'}.`:''].filter(Boolean).join(' '),
+        how:`start(): ${fns.map(f=>`${f.name} from "${clip(f.owner,70)}"`).join(', ')}.`};
+    }
     // v7.15.4: written here though another piece promises it (run11's
     // entryModule.js): import it from the piece the walk names.
     if(x.hit) {
@@ -3778,11 +3837,8 @@ export class ControlRoom extends DurableObject {
       }
     }
     if(hit) {
-      const f=hit.item,fn={name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),owner:hit.child.label};
       this.event(m,'route_provided',how);
-      // One line per function, named after it (run8): the builder links it
-      // by the name alone, wherever the function's module lies.
-      await this.routeReply(m,hop.request_id,'provided',clip(`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}. It is exported by "${hit.child.label}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`,600),fn);
+      await this.routeReply(m,hop.request_id,'provided',providedText(hit.item,hit.child.label),providedFn(hit.item,hit.child.label));
       return;
     }
     // Sent, then targeted: a crash between the two leaves a hop with no
@@ -3801,6 +3857,21 @@ export class ControlRoom extends DurableObject {
   // unresolved import. A Clef error counts as inside.
   async needScope(m, worker, hop) {
     const want=wanted(hop);
+    // v7.15.5: never "import goalOperation1" (run12's entry asked for
+    // goalOperation1 and goalOperation2, and no piece promises either): the
+    // start carrier hears the functions that perform the goal's operations,
+    // and any worker a promised function whose words perform what it asked
+    // for (performsOp, either way), with no Clef call.
+    const ops=this.startPerformers(worker.id),like=ops.length?[]:this.requestPerformers(worker.id,hop),not=hop.name?` Do not write ${hop.name} and do not import it.`:'';
+    if(ops.length) {
+      this.event(m,'route_plan',`${want}: no piece promises it; "${worker.label}" carries start and is answered with the ${ops.length} functions that perform the goal's operations.`);
+      // The import lines first: the answer a later turn reads is cut at 600.
+      return `No piece of the application promises ${want}. start() returns the functions that perform the goal's operations, each under its own name. ${importLines(ops)} Return each under its name.${not} ${listed(ops.map(f=>`${signature(f)} is promised by "${f.owner}"`))}.`;
+    }
+    if(like.length) {
+      this.event(m,'route_plan',`${want}: no piece promises it; ${listed(like.map(f=>`${f.name} from "${f.owner}"`))} performs it by its words.`);
+      return `No piece of the application promises ${want}, but ${listed(like.map(f=>`${signature(f)}${f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:''} from "${f.owner}"`))} ${like.length>1?'perform':'performs'} it: import ${like.length>1?'the one you need':'it'} on its own line, by exactly its name, with the name as the path (const { ${like[0].name} } = require('./${like[0].name}');), and use it.${not}`;
+    }
     let inside=true;
     try {
       const p=await ownsNeed(this.inferenceEnv(),{assigned_code:worker.task,need:hop.question,name:hop.name});
@@ -3809,6 +3880,16 @@ export class ControlRoom extends DurableObject {
     } catch(e) {this.event(m,'route_scope',`${want}: Clef failed (${clip(e?.message||e,300)}); counted inside "${worker.label}"'s assignment.`);}
     return inside?`No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`:
       `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: const { ${hop.name} } = require('./${hop.name}');`:'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
+  }
+  // v7.15.5: the promised functions in id's walk, at the nearest level that
+  // has one, whose words perform what a request names, either way: every
+  // word of the request's name is in the promise's name or operation, or
+  // every word of the promise's name is in the request's (createTicketRecord
+  // asks for createTicket). Generic names are never matched by name.
+  requestPerformers(id, hop) {
+    if(!hop.name||GENERIC_NAMES.has(hop.name))return [];
+    for(const items of this.planWalk(id)){const hit=items.filter(f=>!GENERIC_NAMES.has(f.name)&&(performsOp(hop.name,f)||performsOp(f.name,{name:hop.name})));if(hit.length)return hit;}
+    return [];
   }
   // Revisit only requests whose chosen child has published new public data.
   // This does not wake an implementer or spend a generative inference.
@@ -4369,6 +4450,8 @@ export class ControlRoom extends DurableObject {
         this.event(id,'blocked','Implementers cannot publish child export aliases.');
         action.exports=[];
       }
+      // normalizeAction keeps only label, task and interfaces: answers are the runtime's alone.
+      if(action.spawn.length)action.spawn=this.composeStart(id,action.spawn);
       plan = {action,inbox,nextPhase,assemblyFingerprint:observedAssembly,owned};
       // Persist the accepted action BEFORE effects. On failure, resume its cursor
       // rather than asking the model again and duplicating already-sent messages.
