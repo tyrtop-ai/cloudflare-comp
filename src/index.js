@@ -2838,10 +2838,14 @@ export class ControlRoom extends DurableObject {
   }
   // Prune on discovery: before a manager with a parent spawns an admitted
   // child, walk up from its parent. At each level Clef picks the direct child
-  // that owns the child's topic: this branch keeps it, another branch prunes
-  // it (what that owner lacks stays here), and no owner up to the top kills
-  // it. A Clef error is no owner at that level and never kills. The top's own
-  // split has no level above; it is already checked against the goal.
+  // that owns the child's topic: this branch keeps it, and another branch
+  // prunes it (what that owner lacks stays here). Every child walked was just
+  // accepted by the scope check as part of this manager's assignment, so this
+  // strand owns it unless the walk finds a different owner: no owner up to
+  // the top, or a Clef error, keeps it and never kills it (run11's view split
+  // lost three such pieces, p 0.54 to 0.80, and went atomic). Out of scope is
+  // the scope check's call alone. The top's own split has no level above; it
+  // is already checked against the goal.
   async pruneOnDiscovery(id, children) {
     if(!this.node(id)?.parent||this.env.MOCK_AI==='true'||!children.length)return {kept:children,rejected:[]};
     const levels=new Map();
@@ -2866,22 +2870,18 @@ export class ControlRoom extends DurableObject {
     const kept=[],rejected=[];
     children.forEach((child,i)=>{
       const {branch,level,owner,error}=walked[i],label=clip(child.label,70);
-      if(branch) {
-        this.event(id,'scope_kept',`Clef placed proposed child "${label}" in this strand ("${clip(branch.label,70)}" under ${level.id}); kept.`);
-        kept.push(child);
-      } else if(owner) {
+      if(owner) {
         // Decided above this strand's manager: the splitter is not told by whom.
         const near=level.id===this.node(id)?.parent,name=near?owner.label:'';
         this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. ${near?'Import it from that strand instead of rebuilding it.':`Decided at ${level.id}: this strand is told only that it is owned ${OUTSIDE}, and imports it by name.`}`);
         rejected.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,...ownerNote(child.label,clip(assignedPiece(child.task),160),name)});
-      } else if(error) {
-        this.event(id,'scope_walk_uncertain',`No strand up to Root was shown to own "${label}", but Clef failed on the way (${clip(error,200)}); kept, since an error is no proof it is out of scope.`);
-        kept.push(child);
-      } else {
-        const note=`No strand up to Root owns ${child.label}; out of the project's scope.`;
-        this.event(id,'scope_killed',`${clip(note,300)} Not spawned.`);
-        rejected.push({label:child.label,task:clip(child.task,500),note});
+        return;
       }
+      // run11: a piece no other strand up to Root owns stays where the scope check placed it.
+      if(branch)this.event(id,'scope_kept',`Clef placed proposed child "${label}" in this strand ("${clip(branch.label,70)}" under ${level.id}); kept.`);
+      else if(error)this.event(id,'scope_walk_uncertain',`No other strand up to Root was shown to own "${label}", but Clef failed on the way (${clip(error,200)}); kept in this strand, where the scope check placed it.`);
+      else this.event(id,'scope_kept',`No other strand up to Root owns proposed child "${label}"; kept in this strand, where the scope check placed it.`);
+      kept.push(child);
     });
     return {kept,rejected};
   }
