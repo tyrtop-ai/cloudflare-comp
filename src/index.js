@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, ownData, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, usesText, dataAnswer } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, usesText, dataAnswer } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
@@ -621,12 +621,19 @@ export class ControlRoom extends DurableObject {
   // v7.15.5: the functions of its siblings a node's split says it calls, as
   // they promise them now, each with its owner's label; storage marks one
   // that keeps the shared data (run12's operations each kept their own).
+  // Review: each from the nearest level of the plan's walk that offers it
+  // (an uncle's readTickets in a nested split), and storage only on a piece
+  // that performs no goal operation (p6's view piece promised getTicket).
   plannedUses(id) {
-    const n=this.node(id),names=n?.parent?parse(n.uses,[]):[];
-    if(!names.length)return [];
-    const items=this.offeredFunctions(n.parent,id).flatMap(o=>o.items.map(f=>({...f,owner:o.label})));
-    return names.map(name=>items.find(f=>f.name===name)).filter(Boolean).map(f=>({...f,storage:storageFunction(f,x=>this.isGoalOp(x))}));
+    const n=this.node(id),names=n?.parent?parse(n.uses,[]):[],out=new Map(),isOp=f=>this.isGoalOp(f);
+    for(let b=names.length?n:null;b?.parent&&out.size<names.length;b=this.node(b.parent)) {
+      const ops=this.opPieces(b.parent);
+      for(const o of this.offeredFunctions(b.parent,b.id))for(const f of o.items)if(names.includes(f.name)&&!out.has(f.name))out.set(f.name,{...f,owner:o.label,storage:!ops.has(o.id)&&storageFunction(f,isOp)});
+    }
+    return names.map(name=>out.get(name)).filter(Boolean);
   }
+  // Review (p6): the ids of one level's pieces that perform a goal operation (operationPieces).
+  opPieces(level) {const kids=this.offeredFunctions(level),ops=operationPieces(kids.map(o=>({label:o.label,interfaces:o.items})),f=>this.isGoalOp(f),this.userGoal());return new Set(kids.filter((_,i)=>ops[i]).map(o=>o.id));}
   // The promises of one level's live direct children, minus the branch a
   // walk or request came from. Nothing else is read (author decision 2).
   offeredFunctions(level, exclude='') {
@@ -2871,7 +2878,7 @@ export class ControlRoom extends DurableObject {
     }
     // v7.15.5: in a room with promises a factory (C7, run12's createData) is
     // rejected with C5, but kept on the last attempt before a pause.
-    const errors=interfaceErrors(named,promised),factories=this.planned()?errors.filter(e=>e.check==='C7'):[];
+    const errors=interfaceErrors(named,promised,{goal:this.userGoal()}),factories=this.planned()?errors.filter(e=>e.check==='C7'):[];
     if(place)for(const e of factories)this.event(id,'interfaces_factory_kept',`Last attempt before a pause: ${e.name}() on "${clip(e.label,70)}" is a factory; admitted as it is.`);
     const c5=[...errors.filter(e=>e.check==='C5'),...(place?[]:factories)];
     if(c5.length)return {spawn:named,c5,rejectedScope:0,rejectedChildren:[]};
@@ -2897,7 +2904,13 @@ export class ControlRoom extends DurableObject {
     // v7.15.5 (run12): no operation piece said it needs the data piece's
     // functions. A goal operation's piece given no uses, beside a sibling's
     // storage functions, is asked about each in this step; YES adds it.
-    const planned=this.planned(),offered=planned?planUses(repaired).spawn:[],pairs=planned?usePairs(offered,f=>this.isGoalOp(f)):[];
+    // Review (nested splits): a manager's own uses pass down to the pieces
+    // that carry its goal operations, and a use may name what the plan
+    // offers this level from above (outer); before, root.3's operations lost
+    // readTickets and saveTickets, which their uncle promised.
+    const planned=this.planned(),isOp=f=>this.isGoalOp(f),outer=planned?[...this.promisedElsewhere(id).keys()]:[],inherited=planned&&n.parent?parse(n.uses,[]):[];
+    if(inherited.length)repaired.forEach((c,i)=>{if(c&&!normalizeUses(c.uses).length&&(c.interfaces||[]).some(f=>own.has(f.name)&&isOp(f)))repaired[i]={...c,uses:inherited};});
+    const offered=planned?planUses(repaired,outer).spawn:[],pairs=planned?usePairs(offered,isOp,this.userGoal()):[];
     const usesAsked=pairs.length?scopeUses(env,goal,n.task,repaired,pairs).catch(e=>{this.event(id,'uses_uncertain',`Clef failed on the pieces' uses (${clip(e?.message||e,300)}); none added.`);return [];}):[];
     const [scope,names,asked]=await Promise.all([scoped,scopeInterfaces(env,goal,n.task,repaired,promised),usesAsked]),clefP=new Map();
     for(const x of asked||[])if(x.p>=0.5) {
@@ -2954,8 +2967,8 @@ export class ControlRoom extends DurableObject {
     rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
     // Uses only name what a surviving sibling promises (planUses); a room
     // without promises keeps none.
-    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]},survivors=final.spawn;
-    if(final.dropped.length)this.event(id,'uses_dropped',`Not kept as uses: ${final.dropped.map(x=>`${x.name} on "${clip(x.label,70)}"`).join(', ')}; a piece uses only what another piece of this split promises, and the start carrier none.`);
+    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive,outer):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]},survivors=final.spawn;
+    if(final.dropped.length)this.event(id,'uses_dropped',`Not kept as uses: ${final.dropped.map(x=>`${x.name} on "${clip(x.label,70)}"`).join(', ')}; a piece uses only what another piece of this split, or the plan above it, promises, and the start carrier none.`);
     const using=survivors.filter(c=>c.uses?.length);
     if(using.length)this.event(id,'uses_planned',using.map(c=>`"${clip(c.label,70)}" uses ${c.uses.map(u=>clefP.has(`${c.task}\n${u}`)?`${u} (Clef p=${clefP.get(`${c.task}\n${u}`).toFixed(3)})`:u).join(', ')}`).join('; ')+'.');
     if(interfaceErrors(survivors,promised).some(e=>e.check==='C5'))throw new Error(`Admission lost a function promised to ${id}; this is a runtime bug.`);
@@ -3319,10 +3332,16 @@ export class ControlRoom extends DurableObject {
     // of the store's functions, data it keeps itself (run12's createTicket.js
     // kept its own array, viewTicket.js two records, its update module.js
     // tickets.json, and deleteTicket.js called a factory for an array).
+    // Review: an owner's storage uses are met when one of them is called (a
+    // view piece calls readTickets, never saveTickets), and a piece that is
+    // itself the store, promising a storage function, keeps the data.
     const uses=this.plannedUses(id),{unused,kept}=uses.length?ownData(files,uses.map(f=>f.name)):{unused:[],kept:[]},store=uses.filter(f=>f.storage);
-    const homeless=store.length&&(kept.length||store.some(f=>unused.includes(f.name)))?store:[],idle=uses.filter(f=>!f.storage&&unused.includes(f.name));
-    const base=p=>p.split('/').pop(),why=homeless.length?[...kept.map(k=>k.kind==='state'?`${base(k.path)} keeps its own data in a module-level ${k.shape} (${k.name})`:k.kind==='fs'?`${base(k.path)} reads and writes files with fs`:`${base(k.path)} returns records written into its code`),
-      ...(store.some(f=>unused.includes(f.name))?[`your modules do not import and call ${list(store.filter(f=>unused.includes(f.name)).map(f=>f.name))}`]:[])]:[];
+    const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&this.promisedOf(id).some(f=>storageFunction(f,x=>this.isGoalOp(x)));
+    const uncalled=store.filter(f=>store.filter(g=>g.owner===f.owner).every(g=>unused.includes(g.name))),local=keeper?[]:kept;
+    const homeless=local.length?store:uncalled,idle=uses.filter(f=>!f.storage&&unused.includes(f.name));
+    // Review: the path is never the first word, so its case is never changed (PROBE E's CreateTicket.js).
+    const base=p=>p.split('/').pop(),why=homeless.length?[...local.map(k=>`in ${base(k.path)}, the module ${k.kind==='state'?`keeps its own data in a module-level ${k.shape} (${k.name})`:k.kind==='fs'?'reads and writes files with fs':'returns records written into its code'}`),
+      ...(uncalled.length?[`your modules do not import and call ${list(uncalled.map(f=>f.name))}`]:[])]:[];
     // A contract problem is about a missing export or a function written here: closed once neither remains, whatever the placeholders.
     if(!missing.length&&!written.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
     if(!missing.length&&!empty.length&&!written.length&&!homeless.length&&!idle.length) {
@@ -4105,6 +4124,9 @@ export class ControlRoom extends DurableObject {
         // v7.15: a splitter sees its own promise only, never another node's.
         const promised=this.promisedOf(id);
         if(promised.length)before.your_promised_functions=promised;
+        // Review (nested splits): a manager's splitter hears its uses too, so its pieces can name them.
+        const uses=usesText(this.plannedUses(id));
+        if(uses)before.your_responsibility=`${before.your_responsibility}\n\n${uses}`;
       }
       const observedAssembly=n.label==='Temporary builder'?this.assemblyFingerprint(n.parent):null;
       if(n.label==='Temporary builder') {
@@ -4154,7 +4176,7 @@ export class ControlRoom extends DurableObject {
           return;
         }
         if (gate.split) {
-          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()});
+          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()},{planned:this.planned(),goal:this.userGoal()});
         } else {
           // A genuine leaf can implement in the SAME turn; no extra Qwen
           // decomposition request or artificial scheduler wave. It keeps the

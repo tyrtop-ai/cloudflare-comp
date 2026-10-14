@@ -209,9 +209,9 @@ async function worker(id,...sources) {
 const PLAN='Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines and use them; do not keep your own tickets.';
 
 test('v7.15.5: run12 replay: createTicket.js, viewTicket.js, the update module.js and deleteTicket.js are each sent back with the plan answer, with no model call',async()=>{
-  const cases=[['root.3','createTicket.js',SRC.create,'createTicket.js keeps its own data in a module-level array (tickets); your modules do not import and call readTickets and saveTickets.'],
-    ['root.4','viewTicket.js',SRC.view,'viewTicket.js returns records written into its code; your modules do not import and call readTickets.'],
-    ['root.5','module.js',SRC.update,'module.js reads and writes files with fs; your modules do not import and call readTickets and saveTickets.'],
+  const cases=[['root.3','createTicket.js',SRC.create,'in createTicket.js, the module keeps its own data in a module-level array (tickets); your modules do not import and call readTickets and saveTickets.'],
+    ['root.4','viewTicket.js',SRC.view,'in viewTicket.js, the module returns records written into its code; your modules do not import and call readTickets.'],
+    ['root.5','module.js',SRC.update,'in module.js, the module reads and writes files with fs; your modules do not import and call readTickets and saveTickets.'],
     ['root.6','deleteTicket.js',SRC.del,'Your modules do not import and call readTickets and saveTickets.']];
   for(const [id,path,src,why] of cases) {
     const {room,calls}=await worker(id,[path,src]);
@@ -246,7 +246,7 @@ test('v7.15.5: the fourth done is accepted and said; a non-storage use not calle
   for(let i=0;i<3;i++){room.receive('root.3');await again();}
   assert.equal(room.node('root.3').status,'done');
   assert.equal(events(room,'contract_uses').length,3);
-  assert.equal(events(room,'contract_unmet').at(-1).body,'createTicket.js keeps its own data in a module-level array (tickets); your modules do not import and call readTickets and saveTickets after 3 returns; accepted, and the runner\'s test decides.');
+  assert.equal(events(room,'contract_unmet').at(-1).body,'in createTicket.js, the module keeps its own data in a module-level array (tickets); your modules do not import and call readTickets and saveTickets after 3 returns; accepted, and the runner\'s test decides.');
   // The store keeps its own tickets: it has no uses, so nothing is read.
   const owner=await worker('root.2',['ticketStore.js',"const tickets = [];\nexports.readTickets = () => tickets.slice();\nexports.saveTickets = (list) => { tickets.splice(0, tickets.length, ...list); };\n"]);
   assert.equal(owner.room.node('root.2').status,'done');

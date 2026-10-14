@@ -75,7 +75,7 @@ export function normalizeSpawn(spawn, promised = []) {
 const notIdentifier = name => !IDENTIFIER.test(name) || RESERVED.has(name) || PROTECTED_NAMES.has(name);
 // C1-C5, in the order the repairs run. Promised names passed C1/C2 at the
 // parent's split (Root's start is the runtime's), so only new names are checked.
-export function interfaceErrors(spawn, promised = []) {
+export function interfaceErrors(spawn, promised = [], {goal = ''} = {}) {
   const own = new Set(promised.map(p => p.name)), errors = [];
   const kids = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object');
   for (const c of kids) for (const name of namesOf(c)) {
@@ -97,9 +97,15 @@ export function interfaceErrors(spawn, promised = []) {
     const holders = kids.filter(k => namesOf(k).includes(p.name));
     if (holders.length !== 1) errors.push({label: '', name: p.name, check: 'C5', text: `Your assignment promises ${described(p)}; ${holders.length ? `${holders.map(k => `"${k.label}"`).join(' and ')} ${holders.length > 2 ? 'all' : 'both'} list it; ` : ''}give it, unchanged, to exactly one piece, the one whose task writes it.`});
   }
-  // C7 (v7.15.5): a new name that is a factory (isFactory).
-  for (const c of kids) for (const f of c.interfaces || []) if (!own.has(f.name) && isFactory(f))
-    errors.push({label: c.label, name: f.name, check: 'C7', text: `"${c.label}": ${f.name}()${f.does ? ` ("${String(f.does).replace(/[.\s]+$/, '')}")` : ''} is a factory; promise the functions the other pieces call, e.g. ${storageExample(c.label, f.name)}, not a factory that returns them.`});
+  // C7 (v7.15.5): a new name that is a factory (isFactory), or a piece's
+  // only promise that sets up its data and takes nothing (setupOnly). The
+  // goal's words exempt its operations (review: createService in a catalog).
+  const record = recordOf(kids, goal);
+  for (const c of kids) for (const f of c.interfaces || []) if (!own.has(f.name)) {
+    const factory = isFactory(f, goal), example = storageExample(c.label, f.name, record);
+    if (factory) errors.push({label: c.label, name: f.name, check: 'C7', text: `"${c.label}": ${f.name}()${f.does ? ` ("${String(f.does).replace(/[.\s]+$/, '')}")` : ''} is a factory; promise the functions the other pieces call, e.g. ${example}, not a factory that returns them.`});
+    else if (setupOnly(c, f, goal)) errors.push({label: c.label, name: f.name, check: 'C7', text: `"${c.label}": ${f.name}() is its only function and takes nothing, so no other piece can call it to read or change the data; promise the functions the other pieces call, e.g. ${example}.`});
+  }
   return errors;
 }
 // R6, only on the last attempt before a pause, which would stop the run: a
@@ -223,20 +229,66 @@ export function nameMatch(offers, names) {
 // no piece could import a function that reads or saves tickets, and each
 // operation kept its own. A promised function that builds an instance, a
 // manager or an object of methods is a factory, a split error (C7). The
-// object follows the verb within four words, never past a preposition:
-// "returns all tickets from the repository" reads them.
-const GAP = String.raw`(?:\s+(?!(?:from|to|in|into|of|for|by|on|at|with|using|via|through)\b)[\w-]+){0,4}?`;
-const FACTORY_DOES = new RegExp(String.raw`\b(?:returns?|creates?|initiali[sz]es?|builds?|constructs?|makes?|instantiates?)\b${GAP}\s+(?:[\w-]*(?:manager|store|storage|repository|repo|service|database|db|api|client|controller|registry|tracker)\s+(?:instance|object)\b|instance\s+of\b|(?:manager|repository|factory)\b(?!['’]s)|object\s+(?:with|of|containing|exposing|holding)\b[^.;]{0,60}\bmethods?\b)`, 'i');
-const FACTORY_NAME = /^(?:create|make|build|new|init|initialize|get|setup)(?:[A-Z]\w*)?(?:Store|Storage|Repository|Repo|Manager|Service|Factory|Instance|Registry|Dao)$/;
-export const isFactory = f => !!f && typeof f.name === 'string' && f.name !== 'start' && (FACTORY_NAME.test(f.name) || FACTORY_DOES.test(String(f.does || '')));
+// object follows the verb, past one determiner and up to four modifiers,
+// never past a preposition or a second determiner: "returns all tickets from
+// the repository" and "returns every ticket the tracker object holds" read
+// tickets (review). A bare manager, repository, store or storage is the
+// object only where no noun of its own follows it: "a new manager record"
+// and "the manager assigned to a ticket" are records.
+const DET = String.raw`(?:\s+(?:a|an|the|its|one|every|each|all|some|this|that)(?![\w-]))?`;
+const GAP = String.raw`(?:\s+(?!(?:from|to|in|into|of|for|by|on|at|with|using|via|through|a|an|the|every|each|all|some|this|that|which|who|and|or)(?![\w-]))[\w-]+){0,4}?`;
+const BARE = String.raw`[\w-]*?(?:manager|repository|repo|factory|store|storage)(?!['’]s)(?=\s*(?:$|[.,;:!?()]|(?:and|or|that|which|with|for|to|holding|exposing|containing|providing|so)\b))`;
+const FACTORY_DOES = new RegExp(String.raw`\b(?:returns?|creates?|initiali[sz]es?|builds?|constructs?|makes?|instantiates?)\b${DET}${GAP}\s+(?:[\w-]*(?:manager|store|storage|repository|repo|service|database|db|api|client|controller|registry|tracker|access)\s+(?:instance|object)\b|instance\s+of\b|${BARE}|object\s+(?:with|of|containing|exposing|holding)\b[^.;]{0,60}\bmethods?\b)|\b(?:provides?|exposes?|offers?)\s+(?:\w+\s+)?methods\b`, 'i');
+// A name alone (createStore) is a factory only when its description is
+// empty or says construction in other words (review: createInstance
+// "Launches a new VM instance", getStorage "Returns the array of stored
+// tickets" are no factories).
+const FACTORY_NAME = /^(?:create|make|build|new|init|initialize|get|setup)(?:[A-Z]\w*)?(Store|Storage|Repository|Repo|Manager|Service|Factory|Instance|Registry|Dao)$/;
+const CONSTRUCTS = ['instance', 'object', 'methods?', 'api', 'factory'];
+export const isFactory = (f, goal = '') => {
+  if (!f || typeof f.name !== 'string' || f.name === 'start' || goalRecordOp(goal, f)) return false;
+  const does = String(f.does || ''), m = FACTORY_NAME.exec(f.name);
+  return FACTORY_DOES.test(does) || !!m && (!does.trim() || CONSTRUCTS.some(w => !new RegExp(`^${w}$`, 'i').test(m[1]) && new RegExp(`\\b${w}\\b`, 'i').test(does)));
+};
+// The goal's words past a leading imperative ("Build a small issue tracker"),
+// a plural in -ies or -xes as its singular (repositories, boxes).
+const stem = w => w.replace(/ie$/, 'y').replace(/(x|ch|sh)e$/, '$1');
+const goalSet = goal => {const all = String(goal ?? '').match(/[A-Za-z]+/g) || []; return new Set((/^\s*[A-Za-z]+\s+(?:a|an|the|my|our|some)\b/i.test(goal ?? '') ? all.slice(1) : all).flatMap(words).map(w => VERB(stem(w))));};
+// What a name acts on: its words after the verb, up to "by" (viewTicketById).
+const actsOn = name => {const w = words(name).map(stem), by = w.indexOf('by'); return by > 0 ? w.slice(1, by) : w.slice(1);};
+// Review: a function named for a goal operation on the goal's records, a
+// goal word as its verb and every word it acts on in the goal, or tagged
+// with an operation, is never a factory: createService in a service catalog
+// is its create operation. run12's createData acts on data, which its goal
+// never names.
+export const goalRecordOp = (goal, f) => {
+  if (f?.operation) return true;
+  const g = goalSet(goal), on = actsOn(f?.name);
+  return on.length > 0 && g.has(VERB(words(f?.name)[0])) && on.every(x => g.has(x));
+};
+// The goal's records as the split's operations name them (createTicket:
+// ticket), for C7's example; none without a goal (review: "Create Service"
+// was told readCreates()).
+const recordOf = (kids, goal) => {
+  const counts = new Map();
+  for (const c of kids) for (const f of c.interfaces || []) if (goalRecordOp(goal, {name: f.name})) {const k = actsOn(f.name).join(' '); counts.set(k, (counts.get(k) || 0) + 1);}
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0].split(' ') || [];
+};
+// Review (run12's rewordings): a piece whose only promise sets up its data
+// and takes nothing (createData(), initStore()) gives the others nothing to
+// call to read or change it.
+const SETUP = /^(?:create|init|initiali[sz]e|setup|make|build|new)[A-Z]/;
+const DATA_WORDS = new Set('data store storage manager repository repo database db persistence state'.split(' ').flatMap(words));
+const setupOnly = (c, f, goal) => (c.interfaces || []).length === 1 && !(f.params || []).length && SETUP.test(f.name) && actsOn(f.name).some(w => DATA_WORDS.has(w)) && !goalRecordOp(goal, f);
 // The data a store's label or name holds ("Ticket Data Manager": ticket), for
-// the example C7 gives and the noun of a plan answer.
-const STORE_WORDS = new Set([...FILLER_WORDS, ...'data manager management store storage repository repo service persistence memory database db access factory instance all in of the a an and for to'.split(' ')]);
-const plural = w => /(?:s|data)$/.test(w) ? w : w + 's';
+// the example C7 gives and the noun of a plan answer. Compared as words()
+// leaves them (review: "Data Access" gave readAcces()).
+const STORE_WORDS = new Set([...FILLER_WORDS, ...'data manager management store storage repository repo service persistence memory database db access factory instance helper helpers utility utilities util state backend all in of the a an and for to'.split(' ')].flatMap(words));
+const plural = w => /(?:s|data)$/.test(w) ? w : /(?:x|ch|sh)$/.test(w) ? w + 'es' : /[^aeiou]y$/.test(w) ? w.slice(0, -1) + 'ies' : w + 's';
 const camel = ws => ws.map((w, i) => i ? w[0].toUpperCase() + w.slice(1) : w).join('');
-const nameNoun = name => {const w = words(name).slice(1), by = w.indexOf('by'); return (by >= 0 ? w.slice(0, by) : w).filter(x => !STORE_WORDS.has(x));};
-export function storageExample(label, name) {
-  const ws = [words(label).filter(w => !STORE_WORDS.has(w)), nameNoun(name)].find(x => x.length) || ['item'];
+const nameNoun = name => actsOn(name).filter(x => !STORE_WORDS.has(x));
+export function storageExample(label, name, record = []) {
+  const ws = [record, words(label).filter(w => !STORE_WORDS.has(w)), nameNoun(name)].find(x => x.length) || ['item'];
   const n = camel([...ws.slice(0, -1), plural(ws.at(-1))]), N = n[0].toUpperCase() + n.slice(1);
   return `read${N}() and save${N}(${n})`;
 }
@@ -246,11 +298,13 @@ export const normalizeUses = raw => [...new Set((Array.isArray(raw) ? raw : type
   .map(u => validName(typeof u === 'string' ? u.replace(/^`+|`+$/g, '').replace(/\(.*$/, '') : u?.name ?? u?.function)).filter(Boolean))].slice(0, 8);
 // Only a name another piece of the split promises is kept, never its own.
 // The start carrier's are dropped: what it is told is the entry's own text.
-export function planUses(spawn) {
+// Review (nested splits): outer, the names the plan offers this level from
+// above (an uncle's readTickets), are kept too.
+export function planUses(spawn, outer = []) {
   const kids = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object'), dropped = [];
   const out = (Array.isArray(spawn) ? spawn : []).map(c => {
     if (!c || typeof c !== 'object') return c;
-    const own = namesOf(c), offered = new Set(kids.filter(k => k !== c).flatMap(namesOf)), {uses: raw, ...rest} = c;
+    const own = namesOf(c), offered = new Set([...outer, ...kids.filter(k => k !== c).flatMap(namesOf)]), {uses: raw, ...rest} = c;
     const all = normalizeUses(raw), uses = own.includes('start') ? [] : all.filter(name => offered.has(name) && !own.includes(name));
     for (const name of all) if (!uses.includes(name)) dropped.push({label: c.label, name});
     return uses.length ? {...rest, uses} : rest;
@@ -258,18 +312,43 @@ export function planUses(spawn) {
   return {spawn: out, dropped};
 }
 // A function that keeps the shared data: not a goal operation (isOp), named
-// read, save, get... or described as storing it. A factory is none.
+// read, save, get... or described as storing it. A factory is none. Review
+// (PROBE D): nor is a helper that acts only on an id, a counter or a
+// setting (getNextId "Returns the next free ticket id").
 const STORAGE_VERBS = new Set('read write save load get set store persist fetch put list find'.split(' '));
 const STORES = /\b(?:stor(?:e|es|ed|ing|age)|persist(?:s|ed|ent)?|in[- ]memory|database)\b/i;
-export const storageFunction = (f, isOp = () => false) => !!f && f.name !== 'start' && !isOp(f) && !isFactory(f) &&
-  (STORAGE_VERBS.has(words(f.name)[0]) || STORES.test(String(f.does || '')));
+const META = new Set('id ids next counter count number config configuration setting settings option options time date timestamp version uuid sequence seq'.split(' ').flatMap(words));
+export const storageFunction = (f, isOp = () => false) => {
+  if (!f || f.name === 'start' || isOp(f) || isFactory(f)) return false;
+  const on = actsOn(f.name);
+  return !(on.length && on.every(w => META.has(w))) && (STORAGE_VERBS.has(words(f.name)[0]) || STORES.test(String(f.does || '')));
+};
+// Review (p6): which pieces perform a goal operation, decided per piece: one
+// of its functions does (isOp; a store's readNotes for a goal that names
+// read is still the store's), or its label is a goal verb and goal words
+// ("View Ticket Operation", whose view piece promised getTicket). A goal
+// word a function of the split acts on (ticket) is no verb ("Ticket Store").
+// An operation piece's functions are never storage, and only it is asked
+// about uses.
+const ROLE_WORDS = new Set([...FILLER_WORDS, ...'operation op action feature function functionality command endpoint'.split(' ')].flatMap(words));
+export function operationPieces(spawn, isOp = () => false, goal = '') {
+  const kids = Array.isArray(spawn) ? spawn : [], g = goalSet(goal);
+  const objects = new Set(kids.flatMap(c => c && typeof c === 'object' ? (c.interfaces || []).flatMap(f => actsOn(f.name)) : []));
+  return kids.map(c => {
+    if (!c || typeof c !== 'object' || namesOf(c).includes('start')) return false;
+    if ((c.interfaces || []).some(f => isOp(f) && !STORAGE_VERBS.has(words(f.name)[0]))) return true;
+    const w = words(c.label).filter(x => !ROLE_WORDS.has(x));
+    return w.length > 0 && g.has(VERB(w[0])) && !objects.has(w[0]) && w.slice(1).every(x => g.has(x));
+  });
+}
 // Clef's fallback: each goal operation's piece the splitter gave no uses,
-// paired with each storage function a sibling promises (spawn indices).
-export function usePairs(spawn, isOp = () => false) {
-  const kids = Array.isArray(spawn) ? spawn : [], pairs = [];
+// paired with each storage function a sibling that is no operation piece
+// promises (spawn indices).
+export function usePairs(spawn, isOp = () => false, goal = '') {
+  const kids = Array.isArray(spawn) ? spawn : [], ops = operationPieces(kids, isOp, goal), pairs = [];
   kids.forEach((c, i) => {
-    if (!c || typeof c !== 'object' || (c.uses || []).length || namesOf(c).includes('start') || !(c.interfaces || []).some(isOp)) return;
-    kids.forEach((s, j) => {if (j !== i && s && typeof s === 'object') for (const f of s.interfaces || []) if (storageFunction(f, isOp)) pairs.push({i, j, fn: f});});
+    if (!ops[i] || (c.uses || []).length) return;
+    kids.forEach((s, j) => {if (j !== i && !ops[j] && s && typeof s === 'object') for (const f of s.interfaces || []) if (storageFunction(f, isOp)) pairs.push({i, j, fn: f});});
   });
   return pairs;
 }
