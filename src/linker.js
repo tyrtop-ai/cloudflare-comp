@@ -1188,6 +1188,142 @@ export function importMismatches(files, surfaces) {
   return importReads(files,surfaces).filter(x=>{const k=x.path+'|'+x.target+'|'+x.name;if(x.ok||seen.has(k))return false;seen.add(k);return true;}).map(({ok,...x})=>x);
 }
 
+// ---------- argument order (v7.15.3) ----------
+// run11: createTicket.js called writeData(data, filePath), and writeData
+// takes (filePath, data), as the plan promised. The error was thrown inside
+// writeData, so the stack frame put the problem on its worker for four
+// rounds until Root's model saw the order. A call to an imported function that passes
+// arguments named as its parameters in another order is the caller's to
+// change: no rename fixes it, and no model is asked.
+// Case, leading underscores or $ and inner underscores do not count.
+const argKey=s=>String(s||'').replace(/^[_$]+/,'').replace(/_/g,'').toLowerCase();
+// A parameter as a definition (paramText) or a promise ("filePath", "data?",
+// "id: string") writes it: its name, null for a pattern or prose, and
+// whether a caller may leave it out (a default, a rest, a ?).
+function paramSlot(text) {
+  const m=/^\s*(\.\.\.)?\s*([A-Za-z_$][\w$]*)\s*(\?|=[^]*)?\s*(?::[^]*)?$/.exec(String(text??''));
+  return m?{name:m[2],optional:!!(m[1]||m[3])}:{name:null,optional:false};
+}
+// [argument, parameter] for each argument named as exactly one parameter
+// (one letter, as in compare(b, a), names none). null: a parameter may be
+// left out, or two arguments name one, so the order is ambiguous.
+function argPairs(names, params) {
+  const slots=params.map(paramSlot);
+  if(slots.some(s=>s.optional))return null;
+  const keys=slots.map(s=>s.name?argKey(s.name):null),pairs=[];
+  for(const [i,n] of names.entries()) {
+    const k=n?argKey(n):'';
+    if(k.length>1&&keys.filter(x=>x===k).length===1)pairs.push([i,keys.indexOf(k)]);
+  }
+  return new Set(pairs.map(p=>p[1])).size<pairs.length?null:pairs;
+}
+// Swapped: two or more arguments named as different parameters, in those
+// parameters' positions but another order. Loose, for runtime evidence
+// only: one argument named as the parameter of a position another holds.
+const swappedPairs=pairs=>pairs.length>=2&&pairs.some(([i,j])=>i!==j)&&pairs.map(p=>p[0]).sort().join()===pairs.map(p=>p[1]).sort().join();
+const loosePairs=(pairs,count)=>pairs.some(([i,j])=>i!==j&&j<count);
+// A variable, or the last name of a member read (ticket.filePath); a
+// literal, an object, a call or anything else is named as nothing.
+const argName=a=>a?.type==='Identifier'?a.name:a?.type==='MemberExpression'&&!a.computed?nameOf(a.property):a?.type==='ChainExpression'?argName(a.expression):null;
+const argText=s=>{const t=s.replace(/\s+/g,' ');return t.length>40?t.slice(0,39)+'…':t;};
+// The parameters a module's definition of an export lists; name null is the
+// module itself as a function (const f = require('./f'); f(…)).
+function definedParams(surface, name) {
+  const params=x=>x?.type==='function'?x.params||[]:null,d=surface?.default;
+  if(name===null)return params(d);
+  const named=surface?.named?.find(n=>n.name===name);
+  if(named)return params(named);
+  if(d?.type==='object')return params(d.members.find(m=>m.name===name));
+  return d?.type==='instance'?d.methods.find(m=>m.name===name)?.params||null:null;
+}
+// Calls whose arguments another module's function takes in another order:
+// [{path, target, name, line, call, params, from, loose, text}], one per
+// distinct call. The definition's parameters decide when an argument is
+// named as one of them, else the plan's (promised(target, name): the
+// params the plan promised, or null). Only imports bound at a module's top
+// are read, through the references that reach them (a parameter or local
+// of that name is another variable); a spread argument, a parameter a
+// caller may leave out and a destructured one are never read, nor a call
+// that reverses what its function took in the callee's order. loose: a
+// single misplaced name counts too; at {path, line, target}: that call only.
+export function swappedCalls(files, surfaces, {promised=null, loose=false, at=null}={}) {
+  const set=files instanceof Map?files:new Map(Object.entries(files)),out=[],seen=new Set();
+  for(const [path,content] of set) {
+    if(!LINKABLE.test(path)||at&&path!==at.path)continue;
+    let parsed;try {parsed=parseSource(content);} catch {continue;}
+    const {ast,sourceType}=parsed,{bindingOf,dynamic}=scopeOf(ast,sourceType);
+    if(dynamic)continue;
+    const target=spec=>{if(typeof spec!=='string'||!spec.startsWith('.'))return null;const r=resolveLocal(path,spec,set);return r.path&&r.path!==path&&surfaces.get(r.path)?r.path:null;};
+    // Top-level imports: local name → {to, name}; name null is the module itself.
+    const bound=new Map();
+    for(const s of ast.body) {
+      if(s.type==='ImportDeclaration') {
+        const to=target(s.source.value);
+        if(to)for(const sp of s.specifiers)bound.set(sp.local.name,{to,name:sp.type==='ImportSpecifier'?nameOf(sp.imported):null,space:sp.type==='ImportNamespaceSpecifier'});
+      } else if(s.type==='VariableDeclaration')for(const d of s.declarations) {
+        const member=d.init?.type==='MemberExpression'&&!d.init.computed&&isRequire(d.init.object),req=member?d.init.object:d.init;
+        const to=isRequire(req)?target(req.arguments[0].value):null;
+        if(!to)continue;
+        if(d.id.type==='Identifier')bound.set(d.id.name,{to,name:member?nameOf(d.init.property):null});
+        else if(d.id.type==='ObjectPattern'&&!member)for(const p of d.id.properties) {
+          const local=p.type==='Property'&&!p.computed?(p.value.type==='AssignmentPattern'?p.value.left:p.value):null;
+          if(local?.type==='Identifier')bound.set(local.name,{to,name:nameOf(p.key)});
+        }
+      }
+    }
+    if(!bound.size&&!/require\s*\(/.test(content))continue;
+    const imported=id=>id?.type==='Identifier'&&bindingOf.get(id)===ast?bound.get(id.name):null,fns=[];
+    walk(ast,n=>{if(FUNCTIONS.has(n.type))fns.push(n);});
+    walk(ast,node=>{
+      if(node.type!=='CallExpression'||at&&!(node.loc.start.line<=at.line&&at.line<=node.loc.end.line))return;
+      const c=node.callee;
+      let hit=null,name=null;
+      if(c.type==='Identifier'){const b=imported(c);if(b&&!b.space){hit=b;name=b.name;}}
+      else if(c.type==='MemberExpression'&&!c.computed) {
+        const b=imported(c.object),to=!b&&isRequire(c.object)?target(c.object.arguments[0].value):null;
+        if(b?.name===null||to){hit=b||{to};name=nameOf(c.property);}
+      }
+      if(!hit||at&&hit.to!==at.target||node.arguments.some(a=>a.type==='SpreadElement'))return;
+      const names=node.arguments.map(argName),surface=surfaces.get(hit.to),label=name??surface?.default?.name??c.name;
+      const def=definedParams(surface,name);
+      let params=def,from='definition',pairs=def&&argPairs(names,def);
+      if(def&&!pairs)return;
+      if(!def||!pairs.length) {
+        const plan=promised?.(hit.to,label);
+        pairs=plan?.length?argPairs(names,plan):null;
+        if(!pairs)return;
+        params=plan.map(p=>paramSlot(p).name??String(p));from='plan';
+      }
+      const strict=swappedPairs(pairs);
+      if(!strict&&!(loose&&loosePairs(pairs,names.length)))return;
+      // (left, right) => compare(right, left): a function given the callee's
+      // parameters in the callee's order passes them reversed on purpose.
+      const own=fns.filter(f=>f.start<=node.start&&node.end<=f.end).at(-1)?.params.map(p=>p.type==='Identifier'?argKey(p.name):null)||[];
+      const order=[...pairs].sort((a,b)=>a[1]-b[1]).map(([i])=>own.indexOf(argKey(names[i])));
+      if(pairs.length>=2&&order.every((k,x)=>k>=0&&(!x||k>order[x-1])))return;
+      const call=`${content.slice(c.start,c.end)}(${node.arguments.map(a=>argText(content.slice(a.start,a.end))).join(', ')})`,key=`${path}|${hit.to}|${call}`;
+      if(seen.has(key))return;
+      seen.add(key);
+      out.push({path,target:hit.to,name:label,line:node.loc.start.line,call,params,from,loose:!strict,
+        text:`${path.split('/').pop()} calls ${call}, but ${label} takes (${params.join(', ')}): pass the arguments in that order`});
+    });
+  }
+  return out;
+}
+// A run's stack, innermost first: the first frame in a module of files and
+// the next frame in another module, the caller. Its call there into the
+// first module, with its arguments out of order (loose: one argument named
+// as another position's parameter, which the stack makes likely), is the
+// caller's to change (run11: thrown inside writeData, called from
+// createTicket.js:11). null when the stack shows no such call.
+const FRAME=/\bat (?:[^\n()]*\()?([^\s()]+?):(\d+):\d+\)?/g;
+export function swappedFrame(files, surfaces, detail, {promised=null}={}) {
+  const set=files instanceof Map?files:new Map(Object.entries(files)),keys=[...set.keys()].filter(p=>LINKABLE.test(p)).sort((a,b)=>b.length-a.length);
+  const frames=[...String(detail||'').matchAll(FRAME)].map(m=>({path:keys.find(k=>m[1]===k||m[1].endsWith('/'+k)),line:Number(m[2])})).filter(f=>f.path);
+  const inner=frames[0],caller=inner&&frames.find(f=>f.path!==inner.path);
+  return caller?swappedCalls(set,surfaces,{promised,loose:true,at:{path:caller.path,line:caller.line,target:inner.path}})[0]||null:null;
+}
+
 // ---------- deterministic linking: no model call when the answer is mechanical ----------
 const normName=s=>String(s||'').toLowerCase().replace(/\.(?:m|c)?js$/,'').replace(/[^a-z0-9]/g,'');
 const methodName=m=>String(m.name).replace(/^(?:static |get |set )/,'');

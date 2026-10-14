@@ -29,11 +29,12 @@ export const PLAIN_JS_CLAUSE='Write plain JavaScript (.js) with Node built-ins o
 export const PLAIN_JS=/non_code_rejected|Leaf outputs must be executable|\.(?:tsx?|jsx)\b|\bJSX\b|\bReact\b|TypeScript|Line \d+: "\s*<[A-Za-z]|external package '/i;
 export const COMPILER_TASK='Run the linked application: choose the entry, generate the runtime loader and package, load and start it in the Container, and have the runner test it. Report failures to the manager; never edit code.';
 
-export const KINDS=['unresolved','mismatch','binding','entry','load','run','stuck','contract'];
+export const KINDS=['unresolved','mismatch','binding','entry','load','run','stuck','contract','argorder'];
 // The party a problem goes to when nothing else decides: the reader of a
 // name or import, the entry module, the line that failed, the piece that
-// does not export what the plan promised for it (v7.15 contract).
-export const DEFAULT_ROLE={unresolved:'reader',mismatch:'reader',binding:'reader',entry:'subject',load:'site',run:'site',stuck:'subject',contract:'subject'};
+// does not export what the plan promised for it (v7.15 contract), the
+// caller that passes a function's arguments out of order (v7.15.3, run11).
+export const DEFAULT_ROLE={unresolved:'reader',mismatch:'reader',binding:'reader',entry:'subject',load:'site',run:'site',stuck:'subject',contract:'subject',argorder:'reader'};
 
 // Recurrence key: the kind, the worker files involved, and the detail's head
 // without bundle paths (they differ by level), absolute paths (the
@@ -137,7 +138,8 @@ export function deterministicDecision(p, ctx) {
   // Container failure), once per signature and fingerprint and once per
   // builder. So is one that this manager's builder's own edit caused inside a
   // child's branch: the child's builder cannot undo that edit (critique #23).
-  if((lcm||ctx.causedHere?.(p))&&['load','run'].includes(p.kind)&&isInterfaceError(p.detail)&&ctx.builder&&
+  // A call with its arguments out of order (run11) is no rename.
+  if((lcm||ctx.causedHere?.(p))&&['load','run'].includes(p.kind)&&!p.facts?.argorder&&isInterfaceError(p.detail)&&ctx.builder&&
     ![].concat(flags.builder_tried||[]).includes(ctx.builder)&&ctx.canRelink(p))
     return {rule:'D5',action:'assign',child:ctx.builder,builder:true};
   // D3 delegate: every party lies in one child branch; that branch decides.
@@ -384,6 +386,8 @@ export const OWN_ENTRY_CONTRACT='You wrote the whole application: your entry mod
 export function instructionsFor(p, side, own=false) {
   const f=p.facts||{},provider=(p.parties||[]).find(x=>x.role==='provider');
   if(p.directive?.instructions)return p.directive.instructions;
+  // run11: the caller reorders its call; the function it calls stays.
+  if(f.argorder&&side!=='provider')return `Change your call ${f.argorder.call} to pass its arguments in the order ${f.argorder.name} takes them, (${(f.argorder.params||[]).join(', ')}); ${f.argorder.name} itself stays as it is.`;
   switch(p.kind) {
     case 'mismatch':return f.elsewhere?.length?`${list(f.elsewhere)} ${f.elsewhere.length>1?'are':'is'} not ${base(provider?.owner_path||provider?.path)||'the other module'}'s: the plan gives ${f.elsewhere.length>1?'them':'it'} to another piece. Import each on its own line, with its name as the path: ${oneLines(f.elsewhere,f.aliases)} The builder links each line to the module that exports that function.`:
       f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.`:

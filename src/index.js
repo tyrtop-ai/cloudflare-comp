@@ -9,7 +9,7 @@ import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeErr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames } from './linker.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame } from './linker.js';
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
@@ -645,6 +645,16 @@ export class ControlRoom extends DurableObject {
     const plan=this.planIndex(),owners=new Map(),ownerOf=p=>{if(!owners.has(p))owners.set(p,this.buildSourceOrigin(builderId,p)?.owner||'');return owners.get(p);};
     const carries=(o,n)=>!!o&&[...plan.get(n)||[]].some(c=>o===c||o.startsWith(c+'.'));
     return {plan,ownerOf,carries,elsewhere:(n,p)=>plan.has(n)&&!carries(ownerOf(p),n)};
+  }
+  // v7.15.3: the params the plan promised for name on the piece that wrote
+  // module p, or the nearest promise of it above that piece, for the
+  // argument-order check (run11); null in a room without promises.
+  promisedParams(builderId) {
+    if(!builderId||!this.planned())return null;
+    return (p,name)=>{
+      for(let id=this.buildSourceOrigin(builderId,p)?.owner;id;id=this.node(id)?.parent){const f=this.promisedOf(id).find(x=>x.name===name);if(f)return f.params||null;}
+      return null;
+    };
   }
   // Every name the plan gives a live piece, with its deepest carriers.
   planIndex() {
@@ -1497,7 +1507,7 @@ export class ControlRoom extends DurableObject {
   }
   // linked: the top builder's components; entry: the module glue/index.js
   // starts; operations: the coverage gate's mapping the test must exercise.
-  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null}) {
+  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, promised=null}) {
     // The runner's test is static: the first test that runs in the Container is
     // the specification for the rest of the run and is never rewritten. A new
     // test every repair round moved the target the worker was fixing (run4).
@@ -1533,7 +1543,10 @@ export class ControlRoom extends DurableObject {
       const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
       const modules=fits?linkedJs.map(([path,content])=>({path,content})):
         linkedJs.map(([path,content])=>path===entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
-      const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail});
+      // Calls whose arguments are out of order, even by one name, go with
+      // the source: the stack no longer shows where (run11).
+      const hints=swappedCalls(linked,surfacesOf(linked),{promised,loose:true}).map(x=>x.text);
+      const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail,hints});
       const owner=verdict&&linked.has(verdict.file)?verdict.file:entry;
       if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${clip(verdict.problem,700)}`);
       // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
@@ -1708,6 +1721,13 @@ export class ControlRoom extends DurableObject {
         ...misdirected?{elsewhere:names,aliases:aliases(m.path,names)}:promised&&names.every(n=>!promised.includes(n)&&!elsewhere(n,m.path))?{unpromised:true,promised}:{},
         provider_kind:d?.type||'',provider_text:clip(exportsText(m.target),700)}});
     }
+    // run11: createTicket.js called writeData(data, filePath), which takes
+    // (filePath, data); the error was thrown inside writeData, and its worker
+    // was blamed for four rounds. The caller changes (reader), before any
+    // Container run; no rename fixes it, so it never relinks.
+    for(const x of swappedCalls(files,surfaces,{promised:this.promisedParams(builderId)}))
+      items.push({kind:'argorder',path:x.path,target:x.target,detail:x.text,
+        facts:{argorder:{call:x.call,name:x.name,params:x.params,line:x.line,from:x.from},provider_text:clip(exportsText(x.target),700)}});
     return items;
   }
   // v7.15 §6.2: a function this manager promised that no module of its
@@ -1807,10 +1827,11 @@ export class ControlRoom extends DurableObject {
       await this.publishLinked(id,link,sources,{top});
       const inside=this.inBranchProblems(id,link,top);
       const rejectedNote=link.rejected.length?` Rejected edits (not renames): ${clip(link.rejected.map(r=>`${r.edit.file}: ${r.reason}`).join('; '),500)}`:'';
-      // Renaming cannot add a function or split an import line: a contract
-      // or split-import problem never relinks.
-      if(inside.some(x=>x.kind!=='contract'&&!x.facts.split)&&state.relinks<MAX_RELINKS) {
-        state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+inside.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
+      // Renaming cannot add a function, split an import line or reorder a
+      // call's arguments: a contract, split-import or argument-order problem
+      // never relinks, and the linker's model never reads the last (run11).
+      if(inside.some(x=>x.kind!=='contract'&&x.kind!=='argorder'&&!x.facts.split)&&state.relinks<MAX_RELINKS) {
+        state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+inside.filter(x=>x.kind!=='argorder').map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
         this.save(`link_state:${manager}`,state);
         this.event(id,'link_retry',clip(state.diagnostic,900));
         continue;
@@ -2024,12 +2045,20 @@ export class ControlRoom extends DurableObject {
     // interface error names is its other party. The runtime loader's frame
     // repeats the error of a module it started, so it counts only alone. The
     // Container reports one error once per module in its stack: one problem,
-    // whose sites are those modules, the innermost first.
+    // whose sites are those modules, the innermost first. When the stack
+    // enters the innermost from a call whose arguments are out of order (with
+    // the stack's evidence one misplaced name is enough), the caller is the
+    // site and the innermost its provider: run11's writeData threw, called
+    // from createTicket.js:11, and its worker was blamed for four rounds.
+    const promised=linked?this.promisedParams(this.builderOf(this.node(id)?.parent)?.id):null;
     const failed=(kind,issues)=>{
       const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail]));
       for(const x of issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues)
         if(groups.has(x.detail))groups.get(x.detail).push(x.path);else groups.set(x.detail,[x.path]);
       return [...groups].map(([detail,[first,...more]])=>{
+        const swap=swappedFrame(files,surfaces,detail,{promised});
+        if(swap)return {kind,path:swap.path,sites:[first,...more].filter(p=>files.has(p)&&p!==swap.path&&p!==swap.target),target:swap.target,detail:`${swap.text}. ${detail}`,
+          facts:{argorder:{call:swap.call,name:swap.name,params:swap.params,line:swap.line,from:swap.from},provider_text:clip(exportsLine(swap.target,surfaces),700),failure:failureHead(output.get(detail))}};
         const path=files.has(first)?first:entry,target=errorTarget(files,path,detail);
         return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,
           facts:{...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure:failureHead(output.get(detail))}};
@@ -2089,7 +2118,7 @@ export class ControlRoom extends DurableObject {
       } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
         (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
-    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations});
+    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,promised});
     return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues)};
   }
 
