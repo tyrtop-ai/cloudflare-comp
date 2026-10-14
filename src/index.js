@@ -4,7 +4,7 @@ export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses } from './model.js';
-import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions } from './api-coverage.js';
+import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -1558,22 +1558,27 @@ export class ControlRoom extends DurableObject {
     return {report,digest};
   }
   // A test that catches its own failure and exits 0 would certify a broken
-  // application. Any catch must set a failing exit code or rethrow.
+  // application. Any catch must set a failing exit code or rethrow: the rule
+  // reads the whole script, so a catch that only assigns (the delete check's
+  // gone = null) is fine under an outer handler that sets process.exitCode
+  // = 1, and its correction names that handler (review).
   // v7.15.6: the runner is bounded by the plan, as the workers are. A draft
   // that compares an error message with a string or regex the goal, the API
-  // and the plan's descriptions (methods) do not state, or equates a literal
-  // with the direct result of a method whose description states no return
-  // value, is turned back with each such assertion named (run13's
-  // assert.equal(err.message, 'Ticket not found'), which the entry wrote a
-  // stub to satisfy; run12's assert.equal(deleteResult, true)). On the last
-  // attempt (last) it is accepted as it is, so the run is never blocked on
-  // it, and a failure on that line says the fixed test requires it anyway.
+  // and the plan's descriptions (methods) do not state, equates a success
+  // flag with the direct result of a method whose description states no
+  // such value, or requires a method to throw when nothing says it does, is
+  // turned back with each such assertion named (run13's
+  // assert.equal(err.message, 'Ticket not found') and assert.ok(errorCaught),
+  // which the entry wrote a stub to satisfy; run12's
+  // assert.equal(deleteResult, true)). On the last attempt (last) it is
+  // accepted as it is, so the run is never blocked on it, and a failure on
+  // that line says the fixed test requires it anyway.
   runnerTestError(test, {goal='', api='', methods=null, last=false}={}) {
     const text=String(test||'');
     if(/\bcatch\b/.test(text) && !/process\.exitCode\s*=\s*[1-9]|process\.exit\(\s*[1-9]|\bthrow\b/.test(text))
-      return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass';
+      return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass: keep a catch only around the one call that may throw, and end the script with .catch(e => { console.error(e); process.exitCode = 1; })';
     const invented=last?[]:inventedAssertions(text,{goal,api,methods});
-    return invented.length?invented.map(x=>`line ${x.line} asserts ${x.text}: ${x.why}`).join('; '):null;
+    return invented.length?invented.map(x=>`line ${x.line} asserts ${x.text}: ${x.why}`).join('; ')+(invented.some(x=>x.rule!=='result')?`; ${GONE_IDIOM}`:''):null;
   }
   // v7.15.5: the fixed runner test, when it was written for start()'s
   // methods (startMethods) or either side cannot say (an API that did not
@@ -1676,14 +1681,19 @@ export class ControlRoom extends DurableObject {
       issues=[{path:owner||'',triaged:true,failure:detail,detail:`${note?clip(note,400)+' ':''}${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
     }
     // v7.15.6: a failure on an assertion the plan does not state (the third
-    // draft keeps them) says so: the test is fixed, so the application must
-    // satisfy it anyway, and the requirement carries invented for the
-    // manager, on the issue's requirement when the compiler set one, else on
-    // its facts. The failure keeps its own text for the progress key.
-    const at=+(detail.match(/glue\/smoke\.js:(\d+)/)?.[1]||0),made=at?inventedAssertions(test,{goal,api,methods:described}).find(x=>x.line===at):null;
+    // draft keeps them) leads with one short sentence: the test is fixed,
+    // so the application must satisfy it anyway; the requirement carries
+    // invented on the issue's facts, for the routing to lift into the
+    // problem's. Only when the assertion itself failed (review: a TypeError
+    // inside deleteTicket at a flagged line is that module's own): an
+    // assertion error, or no component frame before the test's. The
+    // failure keeps its own text for the progress key.
+    const frames=detail.match(/^\s+at .*$/gm)||[],at=+(detail.match(/glue\/smoke\.js:(\d+)/)?.[1]||0);
+    const asserted=/AssertionError|ERR_ASSERTION|Missing expected (?:exception|rejection)/.test(detail)||!frames.slice(0,Math.max(0,frames.findIndex(f=>f.includes('glue/smoke.js')))).some(f=>f.includes('/components/'));
+    const made=at&&asserted?inventedAssertions(test,{goal,api,methods:described}).find(x=>x.line===at):null;
     if(made) {
-      const say=`Test line ${made.line} (${made.text}) requires ${made.rule==='message'?`the error message '${made.name}'`:`${made.name} to return ${made.what}`}, which neither the goal, the API nor the plan states; the test is fixed for this run, so the application must satisfy it anyway.`;
-      issues=issues.map(x=>({...x,failure:x.failure??x.detail,detail:`${say} ${x.detail}`,...x.requirement?{requirement:{...x.requirement,invented:true}}:{facts:{...x.facts,requirement:{...x.facts?.requirement,invented:true}}}}));
+      const say=`Test line ${made.line} requires ${clip(made.need,54)}, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.`;
+      issues=issues.map(x=>({...x,failure:x.failure??x.detail,detail:`${say} ${x.detail}`,facts:{...x.facts,requirement:{...x.facts?.requirement,invented:true}}}));
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
     return {passed:false,issues,detail,test};
