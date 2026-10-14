@@ -378,6 +378,19 @@ const list=names=>(names||[]).filter(Boolean).slice(0,8).join(', ')||'them';
 // One import line per function, named after it, under the reader's own
 // local name (run8 called load() and save()).
 const oneLines=(names,aliases={},cap=4)=>(names||[]).slice(0,cap).map(n=>`const { ${n}${aliases?.[n]?': '+aliases[n]:''} } = require('./${n}');`).join(' ');
+// v7.15.5 (run12): a worker imports by the plan's convention, never by a
+// path in the linked bundle (a text that names no function gives the form).
+const CONVENTION="each function imported on its own line with its name as the path (const { name } = require('./name')); the builder links each line to the module that exports it";
+// v7.15.5 (run12): a worker reads its own module names, never the linked
+// bundle's paths. deleteTicket.js copied '../ticket-dat-f17f9f79/ticketDataManager'
+// out of a builder-rename note into its source; the import worked only in
+// a linked copy, and its next revisions failed to load. A path under
+// components/ or a builder's hashed folder (ticket-dat-f17f9f79/), in a
+// stack frame, a problem or a note, becomes its file's name, unquoted, so
+// nothing in the text is an import path to copy.
+const LINKED=String.raw`(?:file:\/\/)?(?:\/[^\s'"\`()]*\/)?(?:\.\.?\/)*(?:components\/|[a-z0-9-]{1,10}-[0-9a-f]{8}\/)(?:[^\s'"\`()\/]+\/)*([^\s'"\`()\/:;,]+)`;
+const QUOTED_LINK=new RegExp(`(['"\`])${LINKED}\\1`,'g'),LINK=new RegExp(`(?<![\\w.$/-])${LINKED}`,'g');
+export const ownPaths=text=>String(text??'').replace(QUOTED_LINK,'$2').replace(LINK,'$1');
 // An atomic top's entry problem (v7.15.2): it wrote every module, so its
 // operations are its own, not imported from pieces it never had (review).
 export const OWN_ENTRY_CONTRACT='You wrote the whole application: your entry module exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each performing it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
@@ -390,14 +403,14 @@ export function instructionsFor(p, side, own=false) {
   if(f.argorder&&side!=='provider')return `Change your call ${f.argorder.call} to pass its arguments in the order ${f.argorder.name} takes them, (${(f.argorder.params||[]).join(', ')}); ${f.argorder.name} itself stays as it is.`;
   switch(p.kind) {
     case 'mismatch':return f.elsewhere?.length?`${list(f.elsewhere)} ${f.elsewhere.length>1?'are':'is'} not ${base(provider?.owner_path||provider?.path)||'the other module'}'s: the plan gives ${f.elsewhere.length>1?'them':'it'} to another piece. Import each on its own line, with its name as the path: ${oneLines(f.elsewhere,f.aliases)} The builder links each line to the module that exports that function.`:
-      f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.`:
+      f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.${f.promised?.length?` Each line takes the function's name as its path: ${oneLines(f.promised)}`:''}`:
       `Use the names ${base(provider?.owner_path||provider?.path)||'the other module'} already exports; do not change what it exports. Change your reads of ${list(f.names)}.`;
     case 'binding':return `${base(provider?.owner_path||provider?.path)||'The other module'} exports a single ${f.provider_kind||'function'} as module.exports: import it whole (const f = require(…)) and call it.`;
     case 'unresolved':{
       if(f.split)return `Import each function on its own line, with the function's name as the path, in place of the one import of ${list(f.names)} from '${f.specifier||''}': ${oneLines(f.names,f.aliases)} The builder links each line to the module that exports that function. Keep the names your code calls.`;
       const names=f.names?.length?` (${list(f.names)})`:'';
-      return f.named?`'${f.specifier||''}' is ${base(f.named)}, listed below with what it really exports: import it by its relative path and use the names it exports${names&&` in place of what it lacks${names}`}.`:
-        `No module in the application provides '${f.specifier||''}'${names}. Import one of the modules listed below by its relative path and real export names, or write what you need yourself.`;
+      return f.named?`'${f.specifier||''}' is ${base(f.named)}, listed below with what it really exports: use the names it exports${names&&` in place of what it lacks${names}`}, ${CONVENTION}.`:
+        `No module in the application provides '${f.specifier||''}'${names}. Use what the modules listed below really export, ${CONVENTION}; or write what you need yourself.`;
     }
     case 'entry':return own?OWN_ENTRY_CONTRACT:ENTRY_CONTRACT;
     case 'stuck':return 'Finish your assignment.';
@@ -414,14 +427,14 @@ export function instructionsFor(p, side, own=false) {
 
 // What a branch hears when another child of its manager exports what it lacks (M6 settled).
 export function importInstructions(p, u) {
-  return `${base(u.path)}, outside your branch, exports ${list(p.facts?.names)}: import it by its relative path (the builder above links it) and use the names it exports; nothing in your branch provides them.`;
+  return `${base(u.path)}, outside your branch, exports ${list(p.facts?.names)}: import each on its own line with its name as the path, and the builder above links it: ${oneLines(p.facts?.names)} Nothing in your branch provides them.`;
 }
 
 const READER='Fix the existing implementation, keep your exported names, and do not invent unrelated features.';
 const PROVIDER='Other modules call yours as described below; change your exports as decided and keep existing callers working.';
 // A worker's repair message: who decided, what the other side provides, and
-// every problem in its own file paths. Clipped to 2400 characters, problems
-// keeping at least 1100. The decision keeps what the ticket stored (900):
+// every problem in its own file paths (v7.15.5: ownPaths, no linked path).
+// Clipped to 2400 characters, problems keeping at least 1100. The decision keeps what the ticket stored (900):
 // the v7.13.3 entry contract alone is 532 and leads the manager's words.
 // kinds: the problems' kinds; when every one is a contract nothing was
 // built or run, so the head says the plan was checked instead (v7.15).
@@ -440,9 +453,9 @@ export function repairText({role='reader',instructions='',facts='',problems=[],k
   const head=(kinds.length&&kinds.every(k=>k==='contract')?(written?'YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE. Nothing was run; the plan was checked against your modules.':'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.'):
     (own?'YOUR APPLICATION FAILED ITS CONTAINER RUN. You wrote every file of the application':'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers')+
     ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER))+(unchanged?own?OWN_UNCHANGED:UNCHANGED:'');
-  const decided=instructions?` ${own?'Required':'Your manager decided'}: ${String(instructions).slice(0,900)}`:'';
-  const shown=problems.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ');
+  const decided=instructions?` ${own?'Required':'Your manager decided'}: ${ownPaths(instructions).slice(0,900)}`:'';
+  const shown=problems.map(x=>`${ownPaths(x.path)||'(application)'}: ${ownPaths(x.detail)}`).join('; ');
   const room=Math.max(0,2400-head.length-decided.length-' Problems: '.length-Math.min(shown.length,1100)-' What the other side provides: '.length);
-  const provided=facts&&room>40?` What the other side provides: ${String(facts).slice(0,Math.min(700,room))}`:'';
+  const provided=facts&&room>40?` What the other side provides: ${ownPaths(facts).slice(0,Math.min(700,room))}`:'';
   return (head+decided+provided+' Problems: '+shown).slice(0,2400);
 }

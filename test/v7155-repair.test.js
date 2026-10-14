@@ -97,3 +97,25 @@ test('v7.15.5: run12 replay: the top builder gives deleteTicket.js\'s import its
   assert.ok((await room.indexedContent(b.id,DEL)).startsWith("import { createData } from '../ticket-dat-f17f9f79/ticketDataManager.js';"),'the linked copy loads in Node');
   assert.equal(await room.indexedContent('root.6','deleteTicket.js'),run12.deleteFinal,'the worker\'s source is untouched');
 });
+
+// ------------------------------------------------------------------ B
+// Run12's texts as the deleteTicket worker read them (rounds 3 and 5).
+const round3Detail="The module imports 'getTickets' from components/ticket-dat-f17f9f79/ticketDataManager.js, which exports: createData. Builder renames in the linked copy that failed (your source does not have them): './dataStore' → '../ticket-dat-f17f9f79/ticketDataManager'.";
+const round5Detail="smoke failed (exit 1): file:///work/build-c34yV2/components/delete-tic-f57fa5c5/deleteTicket.js:6\n  const updatedTickets = tickets.filter(ticket => ticket.id !== ticketId);\n                                 ^\n\nTypeError: tickets.filter is not a function\n    at Object.deleteTicket [as goalOperation2] (file:///work/build-c34yV2/components/delete-tic-f57fa5c5/deleteTicket.js:6:34)\n    at /work/build-c34yV2/glue/smoke.js:14:34\n\nNode.js v22.23.3. Builder renames in the linked copy that failed (your source does not have them): '../ticket-dat-f17f9f79/ticketDataManager' → '../ticket-dat-f17f9f79/ticketDataManager.js'.";
+const loadDetail="module-import failed (exit 1): lve (node:internal/modules/esm/loader:747:20) {\n  code: 'ERR_MODULE_NOT_FOUND',\n  url: 'file:///work/build-m9fWES/components/ticket-dat-f17f9f79/ticketDataManager'\n}";
+test('v7.15.5: a worker\'s repair text names its modules by file name, never by a linked path, and gives imports by the plan\'s convention',()=>{
+  const text=P.repairText({instructions:'Fix components/delete-tic-f57fa5c5/deleteTicket.js.',facts:'ticketDataManager.js exports: exports.createData = function createData()',
+    problems:[{path:'deleteTicket.js',detail:round3Detail},{path:'deleteTicket.js',detail:round5Detail},{path:DEL,detail:loadDetail}]});
+  assert.doesNotMatch(text,LINKED,text);
+  assert.match(text,/Your manager decided: Fix deleteTicket\.js\./);
+  assert.match(text,/The module imports 'getTickets' from ticketDataManager\.js, which exports: createData\. Builder renames in the linked copy that failed \(your source does not have them\): '\.\/dataStore' → ticketDataManager\./,'its own path stays quoted; the linked one is a name to read, not a path to copy');
+  assert.match(text,/deleteTicket\.js: smoke failed \(exit 1\): deleteTicket\.js:6\n[^]*\(deleteTicket\.js:6:34\)\n    at \/work\/build-c34yV2\/glue\/smoke\.js:14:34/,'line and column stay; the runner\'s test is no module of the bundle');
+  assert.match(text,/url: ticketDataManager\n/);
+  assert.equal(P.ownPaths("require('./createTicket') and './x/y.js', subcomponents/a.js"),"require('./createTicket') and './x/y.js', subcomponents/a.js",'a worker\'s own paths are kept');
+  // The instructions give the plan's convention, never "by its relative path".
+  const unresolved=P.instructionsFor({kind:'unresolved',parties:[],facts:{specifier:'./goalOperation1',names:['goalOperation1']}},'reader');
+  assert.match(unresolved,/each function imported on its own line with its name as the path \(const \{ name \} = require\('\.\/name'\)\)/);
+  assert.doesNotMatch(unresolved,/relative path/);
+  const unpromised=P.instructionsFor({kind:'mismatch',parties:[{role:'provider',owner_path:'ticketDataManager.js'}],facts:{names:['getTickets','setTickets'],unpromised:true,promised:['createData']}},'reader');
+  assert.match(unpromised,/each imported on its own line by its name\. Each line takes the function's name as its path: const \{ createData \} = require\('\.\/createData'\);$/);
+});

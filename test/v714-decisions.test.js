@@ -292,7 +292,7 @@ test('v7.14 (2b): an escalated problem goes back down with the one provider\'s f
   [row]=room.problems('1=1');
   assert.deepEqual([row.holder,row.directive.side,row.directive.by],['root.1.1','reader','root.1']);
   assert.ok(!events(room,'problem_delegated').some(e=>e.actor==='root.1'),'not delegated back');
-  assert.match(row.directive.instructions,/^ticketStore\.js, outside your branch, exports search: import it by its relative path/);
+  assert.match(row.directive.instructions,/^ticketStore\.js, outside your branch, exports search: import each on its own line with its name as the path, and the builder above links it: const \{ search \} = require\('\.\/search'\);/);
   assert.match(row.directive.facts_text,/^ticketStore\.js exports: module\.exports = \{ search\(q\), put\(t\) \}/);
   // A1 relays it to the worker that reads search (D1): no decision of its own.
   await room.turn('root.1.1');

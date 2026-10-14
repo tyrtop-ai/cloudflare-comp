@@ -273,7 +273,7 @@ test('room: run6\'s start() returning only getTickets goes back to the entry wor
   assert.equal(sent.length,1,'the retrieval worker that wrote start() hears it');
   assert.equal(sent[0].split(ENTRY_CONTRACT).length-1,1,'the contract once, as the manager\'s decision');
   assert.ok(sent[0].includes(`Your manager decided: ${ENTRY_CONTRACT}`));
-  assert.match(sent[0],/'\.\/filterApplication' → '[^']+'\.$/,'the renames note is not cut');
+  assert.match(sent[0],/'\.\/ticketStorage' → ticketStorage\.js, '\.\/filterApplication' → filterApplication\.js\.$/,'the renames note is not cut, and names no linked path (v7.15.5)');
   for(const other of ['root.1','root.2','root.4','root.5'])assert.equal(r.receive(other).length,0,other);
 });
 

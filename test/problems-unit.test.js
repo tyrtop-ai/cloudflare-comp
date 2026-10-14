@@ -143,8 +143,9 @@ test('instructions and the repair text a worker reads',()=>{
   assert.equal(P.instructionsFor({...p,directive:{instructions:'Bind it whole.'}},'reader'),'Bind it whole.','a relayed decision is not re-decided');
   // An unresolved import: no '(them)' when no names are known; a module named as the import is named (v7.14 review).
   const unresolved=facts=>P.instructionsFor(problem('unresolved',[party('root.2','reader')],{facts}),'reader');
-  assert.equal(unresolved({specifier:'./statusParser',names:[]}),"No module in the application provides './statusParser'. Import one of the modules listed below by its relative path and real export names, or write what you need yourself.");
-  assert.match(unresolved({specifier:'./ticketRepository',names:['addTicket'],named:'components/t/ticketRepository.js'}),/^'\.\/ticketRepository' is ticketRepository\.js, listed below with what it really exports: import it by its relative path and use the names it exports in place of what it lacks \(addTicket\)\.$/);
+  // v7.15.5 (run12): an import is given by the plan's convention, never a path.
+  assert.equal(unresolved({specifier:'./statusParser',names:[]}),"No module in the application provides './statusParser'. Use what the modules listed below really export, each function imported on its own line with its name as the path (const { name } = require('./name')); the builder links each line to the module that exports it; or write what you need yourself.");
+  assert.match(unresolved({specifier:'./ticketRepository',names:['addTicket'],named:'components/t/ticketRepository.js'}),/^'\.\/ticketRepository' is ticketRepository\.js, listed below with what it really exports: use the names it exports in place of what it lacks \(addTicket\), each function imported on its own line with its name as the path \(const \{ name \} = require\('\.\/name'\)\); the builder links each line to the module that exports it\.$/);
   const text=P.repairText({role:'reader',instructions:'Use create.',facts:'store.js exports: create',problems:[{path:'svc.js',detail:'x'.repeat(3000)}]});
   assert.ok(text.startsWith('REAL CONTAINER BUILD FAILED on your owned source.'));
   assert.ok(text.length<=2400);
@@ -211,7 +212,7 @@ test('M6 settled without the model: a child escalated what its branch lacks and 
   const u={child:'root.1.2',path:'components/t/ticketStore.js',text:'ticketStore.js exports: module.exports = { search(q) }'};
   const d=P.deterministicDecision(up,{...ctx,uniqueProvider:()=>u});
   assert.deepEqual([d.rule,d.action,d.child,d.side,d.unique],['D6','assign','root.1.1','reader','root.1.2'],'back to the branch that escalated, as a directive, not delegated');
-  assert.match(d.instructions,/^ticketStore\.js, outside your branch, exports search: import it by its relative path/);
+  assert.match(d.instructions,/^ticketStore\.js, outside your branch, exports search: import each on its own line with its name as the path, and the builder above links it: const \{ search \} = require\('\.\/search'\); Nothing in your branch provides them\.$/);
   assert.equal(d.facts_text,u.text);
   assert.equal(P.modelTrigger(up,d,ctx),null);
   assert.equal(P.modelTrigger(up,P.deterministicDecision(up,ctx),ctx),'M6','no unique provider: the model');
