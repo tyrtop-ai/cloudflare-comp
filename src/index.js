@@ -3025,7 +3025,10 @@ export class ControlRoom extends DurableObject {
   // What the named children export, read from this manager's linked bundle
   // (a sub-manager by the modules its branch offers): the facts a decision
   // sends with its instructions, one line per module, with no ids.
-  async factsFrom(m, ids, recipient, problems=[]) {
+  // v7.15.7 (run14, T2): fns, the promises the plan's uses edge names, after
+  // the surface lines (the tail is what the 300-character bound cuts): their
+  // signature, what each does and, when the split stated it, what it returns.
+  async factsFrom(m, ids, recipient, problems=[], fns=[]) {
     const b=this.builderOf(m),rows=b?query(this.db(),'SELECT child,destination FROM builder_sources WHERE builder=? ORDER BY destination',b.id):[],lines=[];
     // The other side's modules the problems name, wherever they lie in a
     // branch: its boundary lists only what nothing in the branch imports.
@@ -3041,8 +3044,26 @@ export class ControlRoom extends DurableObject {
       const surfaces=surfacesOf(files),paths=[...new Set([...parties,...this.manager(id)?branchBoundary(files).exports:surfaces.keys()])].filter(p=>surfaces.has(p));
       lines.push(...paths.map(p=>exportsLine(p,surfaces)));
     }
+    const trim=s=>String(s||'').trim().replace(/[.\s]+$/,'');
+    if(fns.length)lines.push(`by the plan, ${fns.map(f=>`${signature(f)}${f.does?`: ${clip(trim(f.does),100)}`:''}${f.returns?`, returns ${clip(trim(f.returns),80)}`:''}`).join('; ')}`);
     const text=clip(lines.join(' | '),700);
     return this.leaksHiddenAgentIds(text,[recipient])?'':text;
+  }
+  // v7.15.7 (run14, T2): the plan's uses edge of a direct child of m, as
+  // providers: the siblings whose promises its planned uses name (a start
+  // carrier: its performers), with those promises. When a worker's own call
+  // is what fails, the frames name no other piece, and these are the facts
+  // its ticket carries (run14's createTicket never heard that readTickets()
+  // is async and returns an array).
+  useProviders(m, child) {
+    const names=(this.promisedOf(child).some(f=>f.name==='start')?this.startPerformers(child):this.plannedUses(child)).map(f=>f.name),offers=this.offeredFunctions(m,child),ids=[],fns=[];
+    for(const name of names) {
+      const o=offers.find(o=>o.items.some(f=>f.name===name));
+      if(!o)continue;
+      if(!ids.includes(o.id))ids.push(o.id);
+      fns.push({...o.items.find(f=>f.name===name),owner:o.label});
+    }
+    return {ids,fns};
   }
   // Why a direct child cannot be retired (spec 3.7.5): a module outside its
   // branch imports one of its modules in this manager's published bundle,
@@ -3292,7 +3313,12 @@ export class ControlRoom extends DurableObject {
       if(defer)route.defer=defer;
       else if(!route.candidates.length&&entry&&!declined.includes(entry))route.candidates.push({child:entry,how:'d',text:requirementText(r)});
       const first=route.candidates[0];
-      if(first?.providers?.length&&kindOf(first.child)==='worker')first.facts=await this.factsFrom(m,first.providers,first.child,[p]);
+      if(first&&kindOf(first.child)==='worker') {
+        // v7.15.7 (run14, T2): routed by its own promise (a) or frame (b) with no other piece in the frames, the worker hears what its planned uses provide (useProviders).
+        const uses=!first.providers?.length&&['a','b'].includes(first.how)?this.useProviders(m,first.child):null;
+        if(uses?.ids.length)first.facts=await this.factsFrom(m,uses.ids,first.child,[p],uses.fns);
+        else if(first.providers?.length)first.facts=await this.factsFrom(m,first.providers,first.child,[p]);
+      }
       out.set(p.id,route);
     }
     return out;

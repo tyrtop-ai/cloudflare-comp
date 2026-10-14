@@ -155,3 +155,35 @@ test('v7.15.7 (T1): the member named on a local bound to an imported call\'s res
   assert.deepEqual(['readTickets','push'].map(n=>planned.room.linkableName(files,null,n)),[true,false]);
 });
 
+// ------------------------------------------------------------------ T1 + T2: run14's round 1 replayed
+test('v7.15.7: run14 round 1 replayed through the real builders and compiler: tickets.push on readTickets()\'s result is a requirement on Create ticket (R2a) in one round, with no relink, no "REAL CONTAINER BUILD FAILED" and no renames note, and its ticket carries what its planned uses provide',async()=>{
+  const {room,calls}=await run14Room({executor:scripted(['round1']),leaf:user=>({summary:'Fixed',done:true,files:[{path:FILES[user.your_label],content:user.your_label==='Create ticket'?SRC.createFix:ROUND1[user.your_label]}]})});
+  // T2: the plan's uses edge of each worker, as providers under Root (the start carrier: its performers).
+  assert.deepEqual(room.useProviders('root','root.2'),{ids:['root.1'],fns:[{...PROMISES.read,owner:'Ticket storage'},{...PROMISES.save,owner:'Ticket storage'}]});
+  assert.deepEqual(room.useProviders('root','root.6').ids,['root.2','root.3','root.4','root.5']);
+  await settle(room,120);
+  assert.equal(room.get('status'),'complete',trace(room));
+  const [p,...more]=room.problems("kind='run'");
+  assert.equal(more.length,0,trace(room));
+  assert.deepEqual([p.parties.map(x=>[x.role,x.owner]),p.facts.requirement.names,p.facts.requirement.method,p.facts.requirement.frames,p.trail.map(t=>[t.at,t.action,t.to,t.rule])],
+    [[['site',''],['site','root.2']],['createTicket','push'],'createTicket',[{path:at(Object.fromEntries(room.problems('1=1').flatMap(q=>q.parties.map(x=>[x.path,1]))),/create-tic/),fn:'createTicket'}],[['root','assign','root.2','R2a']]],'push names no piece');
+  assert.equal(events(room,'problem_assigned').filter(e=>/relink/.test(e.body)).length,0,'no D5');
+  assert.deepEqual([events(room,'link_retry').length,calls.link.length,calls.manager.length,calls.clef.length],[0,0,0,0],'no relink, no model, no Clef');
+  assert.deepEqual(rounds(room),['root: 1/1 progress']);
+  const [ticket]=bodies(calls,'Create ticket');
+  assert.ok(ticket.startsWith("Your createTicket(data) (\"creates a new ticket and saves it\") threw: TypeError: tickets.push is not a function. Test line 9: const createResult = await app.createTicket({ title: 'Test Ticket', description: 'This is a test' }). What the other side provides: ticketStorage.js exports: "),ticket);
+  assert.match(ticket,/ What the other side provides: ticketStorage\.js exports: [^|]*readTickets\(\)[^|]*saveTickets\(tickets\) \| by the plan, readTickets\(\): reads all tickets from storage; saveTickets\(tickets\): saves tickets to storage Publish the FULL updated file\.$/);
+  assert.doesNotMatch(ticket,/REAL CONTAINER BUILD FAILED|Builder renames|Fix the error below/);
+  assert.equal(calls.leaf.filter(u=>u.your_label!=='Create ticket').length,0,'no other worker runs');
+});
+
+test('v7.15.7 (T2): the facts list each use\'s promise with what it returns when the split stated it; a worker without planned uses and no other frame hears nothing, as before',async()=>{
+  const {room}=await run14Room();
+  room.db().exec("UPDATE agents SET interfaces=? WHERE id='root.1'",JSON.stringify([{...PROMISES.read,returns:'the array of ticket objects'},PROMISES.save]));
+  const {ids,fns}=room.useProviders('root','root.2');
+  const facts=await room.factsFrom('root',ids,'root.2',[],fns);
+  assert.match(facts,/^ticketStorage\.js exports: [^|]*readTickets\(\)[^|]*saveTickets\(tickets\) \| by the plan, readTickets\(\): reads all tickets from storage, returns the array of ticket objects; saveTickets\(tickets\): saves tickets to storage$/);
+  room.db().exec("UPDATE agents SET uses='[]' WHERE id='root.3'");
+  assert.deepEqual(room.useProviders('root','root.3'),{ids:[],fns:[]});
+});
+
