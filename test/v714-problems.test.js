@@ -630,7 +630,11 @@ test('v7.14: a compiler that waited for the top builder is requested again once 
 // bytes as the failed bundle (the worker only adopted the builder's import
 // path) runs the compiler again, which reports again: the room does not
 // pause on a problem assigned to a worker who is done.
-test('v7.14: new source that links to the bundle that failed runs the compiler again',async()=>{
+// v7.15.13 (run20, R3): the entry changed its file for that failure and it
+// fails the same, so the next wave routes past it; with nobody else (Clef
+// ranks the entry alone) Root asks its model once, which this room lacks,
+// and the requirement closes: the compiler still ran the same bytes again.
+test('v7.14: new source that links to the bundle that failed runs the compiler again; the entry, having changed its file for nothing, is then routed past',async()=>{
   const repo="const rows = new Map();\nlet next = 1;\nmodule.exports = {\n  create(d) { const t = { id: next++, ...d }; rows.set(t.id, t); return { ...t }; },\n  read(id) { return rows.get(id) || null; },\n  remove(id) { return rows.delete(id); }\n};\n";
   const app="const repo = require('./repository');\nfunction start() {\n  return { createTicket: (d) => repo.create(d), viewTicket: (id) => repo.read(id), deleteTicket: (id) => true };\n}\nmodule.exports = { start };\n";
   const runner=`const assert = require('node:assert/strict');
@@ -651,12 +655,14 @@ const { start } = require('./index.js');
   const adopted=app.replace("'./repository'",`'../${repoPath.split('/').slice(1).join('/')}'`);
   repairs=[adopted,adopted.replace('deleteTicket: (id) => true','deleteTicket: (id) => repo.remove(id)')];
   await settle(room,40);
-  assert.equal(room.get('status'),'complete',trace(room));
-  assert.equal(calls.leaf.length,2);
+  assert.equal(room.get('status'),'failed',trace(room));
+  assert.equal(calls.leaf.length,1,'the entry is routed past once it changed its file for nothing');
   // The first test that ran is fixed for the run (run4), so the runner writes once.
   assert.equal(calls.runner.length,1);
-  assert.equal(events(room,'runner_reused').length,2,'the compiler ran the same bytes again for the new source');
+  assert.equal(events(room,'runner_reused').length,1,'the compiler ran the same bytes again for the new source, with the fixed test');
   assert.equal(events(room,'run_failed').length,2);
+  assert.deepEqual(events(room,'route_exhausted').map(e=>e.body),['Application entry changed app.js for this failure last round and it fails the same; the manager routes it elsewhere.']);
+  assert.match(room.node('root').summary,/no piece takes the requirement \(Application entry changed a file for it without progress\): deleted ticket must be gone/);
 });
 
 // v7.14 review: a problem closed after MAX_HOPS decisions leaves its

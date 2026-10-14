@@ -78,20 +78,44 @@ export function dependencyInstallDecision(files,pkg={}) {
   return {required:false,reason:`${declared.length} declared package(s), none used by source or npm scripts`};
 }
 
+// v7.15.13 (run20): Node's process warnings are no part of a failure. The
+// MODULE_TYPELESS_PACKAGE_JSON block printed after the stack (four lines
+// naming a module that was no site) pushed the first two frames out of the
+// 650-character tail, so the compiler read analyze.js as the throw site and
+// took checkPacketLoss.js, the warning's module, for a party: every line of
+// a `(node:N) …` block (its "Reparsing as ES module…", "To eliminate this
+// warning…" and "(Use `node --trace-warnings ...`)" lines too, stand-alone
+// as well), and ExperimentalWarning lines, are dropped before the summary
+// and the paths are read.
+const WARNING=/^(?:\(node:\d+\) |Reparsing as ES module\b|To eliminate this warning\b|\(Use `node --trace-|ExperimentalWarning\b)/;
+export function stripWarnings(log) {return String(log||'').split('\n').filter(line=>!WARNING.test(line.trim())).join('\n');}
+const HEADLINE=/^(?:Error:|SyntaxError:|TypeError:|ReferenceError:|.*does not provide an export named|npm error code )/;
 // Node's require stack contains the importer chain. Attributing the error to
 // every path in that chain produces spurious repair requests. The first real
 // owner is the missing import's immediate importer, except missing named
 // exports, where the exporter must repair its public interface.
+// v7.15.13 (run20): the summary keeps the throw site: the headline, the
+// stack lines right after it (at most 10), then the tail (650) without
+// repeating a line the block has (whole, or cut at the tail's start); the
+// headline and its first 8 frames are never cut within the 950. A log
+// without a headline keeps the tail, as before.
 export function briefDiagnostic(log) {
-  const output=String(log||'');
-  if(!output)return 'No command output';
-  const headline=output.split('\n').find(line=>/^(?:Error:|SyntaxError:|TypeError:|ReferenceError:|.*does not provide an export named|npm error code )/.test(line.trim()))?.trim()||'';
-  const tail=output.slice(-650);
-  return headline && !tail.includes(headline) ? (headline+'\n'+tail).slice(-950) : tail;
+  if(!String(log||''))return 'No command output';
+  const output=stripWarnings(log),lines=output.split('\n'),i=lines.findIndex(line=>HEADLINE.test(line.trim())),tail=output.slice(-650);
+  if(i<0)return tail;
+  const headline=lines[i].trim();
+  if(tail.includes(headline))return tail;
+  const frames=[];
+  for(const line of lines.slice(i+1)){if(frames.length>=10||!/^\s*at /.test(line))break;frames.push(line);}
+  const block=[headline,...frames.map(f=>f.trim())];
+  const rest=tail.split('\n').filter((line,j)=>{const t=line.trim();return !(block.includes(t)||j===0&&block.some(b=>t&&b.endsWith(t)));}).join('\n');
+  const keep=[headline,...frames.slice(0,8)].join('\n'),more=[...frames.slice(8),rest].filter(Boolean).join('\n'),room=950-keep.length-1;
+  return more&&room>0?keep+'\n'+more.slice(-room):keep.slice(0,950);
 }
 
 export function diagnosticPaths(label,log,files) {
-  const message=String(log||'');
+  // v7.15.13 (run20): a path named only in a warning is no failing site.
+  const message=stripWarnings(log);
   if(label==='module-import') {
     const named=message.match(/(?:requested module|module)\s+['"]([^'"]+)['"].*?does not provide an export named/s);
     if(named) {
