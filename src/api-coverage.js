@@ -4,7 +4,7 @@
 // and delete goal; the runner, told to use only the API's names, tested
 // reading alone and certified the application. Everything here is
 // deterministic; the model only proposes the mapping.
-import {parseSource} from './linker.js';
+import {parseSource, noValue} from './linker.js';
 import {performsOp} from './interfaces.js';
 
 const callable = d => d?.type==='function'||d?.type==='class';
@@ -354,8 +354,9 @@ export function methodDescriptions(methods, described, performers) {
 // third draft: if (createResult && createResult.id) … else list). With
 // returns stated ("the created ticket") the use is legitimate.
 export const GONE_IDIOM="accept a thrown error or a null or undefined result alike, for example: let gone; try { gone = await app.viewTicket(id); } catch (e) { gone = null; } assert.ok(gone == null, 'deleted ticket must be gone')";
-const STATES_RETURN=/(?:^|\b(?:and|then|or|which|that|it)\b|[,;:])\s*(?:return(?:s|ing)?(?!\s+(?:nothing|undefined|void|null|no\b))|yields?|produces?|computes?|calculates?|counts?|retrieves?|fetch(?:es)?|finds?|looks? up|loads?|reads?|gets?|lists?|search(?:es)?|checks?|tells?|reports?|resolves?|gives?(?: back)?|whether|true|false)\b/i;
-const EFFECT=/^\W*(?:(?:this|the) (?:function|method|operation) )?(?:creat|add|delet|remov|updat|modif|edit|chang|sav|stor|set|mark|clos|assign|writ|send|clear|reset|record|register|log|archiv|restor|insert)(?:e|es|s|ed|ing|y|ies|ied|ying)?\b/i;
+// v7.15.8 review (probe C1): a return stated after a sentence boundary ("Creates a ticket. Returns it."), in the passive ("the created ticket is returned", not "nothing is returned") or in other words (the result is, gives back, hands back, responds with) is stated.
+const STATES_RETURN=/(?:^|\b(?:and|then|or|which|that|it)\b|[,;:.!?])\s*(?:return(?:s|ing)?(?!\s+(?:nothing|undefined|void|null|none|no\b))|yields?|produces?|computes?|calculates?|counts?|retrieves?|fetch(?:es)?|finds?|looks? up|loads?|reads?|gets?|lists?|search(?:es)?|checks?|tells?|reports?|resolves?|giv(?:es?|ing)(?: (?:it|them))?(?: back)?|hands? (?:it |them )?back|responds? with|whether|true|false)\b|(?<!\b(?:nothing|none|undefined|null|no value|no result|no data)\s)\b(?:is|are|gets?) (?:then )?returned\b|\bthe (?:result|return value|value returned) is\b/i;
+export const EFFECT=/^\W*(?:(?:this|the) (?:function|method|operation) )?(?:creat|add|delet|remov|updat|modif|edit|chang|sav|stor|set|mark|clos|assign|writ|send|clear|reset|record|register|log|archiv|restor|insert)(?:e|es|s|ed|ing|y|ies|ied|ying)?\b/i;
 const BOOLEAN=/\b(?:true|false|whether|bool(?:ean)?|succe\w*|exist\w*|found|valid\w*|ok|flag)\b/i,SAYS_THROW=/\b(?:throw|error|reject|invalid|fail|exception)/i;
 const FLAGS=new Set(['ok','okay','success','successful','succeeded','done','deleted','removed','created','updated','saved','stored','added','completed','complete','yes','true','false']);
 const EQUALS=new Set(['equal','strictEqual','deepEqual','deepStrictEqual','notEqual','notStrictEqual','notDeepEqual','notDeepStrictEqual']);
@@ -365,7 +366,7 @@ export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
   const src=String(test||''),nodes=testNodes(src);
   if(!nodes)return [];
   // v7.15.7 review: a description is read with what the promise returns ("deletes a ticket by ID; returns nothing"), so STATES_RETURN reads the shape run14's promises now state.
-  const does=new Map((methods||[]).filter(m=>m?.method&&(m.does||m.returns)).map(m=>[m.method,[String(m.does||''),m.returns?`returns ${m.returns}`:''].filter(Boolean).join('; ')])),performs=new Map((methods||[]).filter(m=>m?.method).map(m=>[m.method,String(m.performed_by||m.method)]));
+  const does=new Map((methods||[]).filter(m=>m?.method&&(m.does||m.returns)).map(m=>[m.method,[String(m.does||''),m.returns?`returns ${noValue(m.returns)?'nothing':m.returns}`:''].filter(Boolean).join('; ')])),performs=new Map((methods||[]).filter(m=>m?.method).map(m=>[m.method,String(m.performed_by||m.method)]));
   const corpus=[goal,api,...does.values(),...(methods||[]).flatMap(m=>m?.params||[])].join('\n'),low=corpus.toLowerCase();
   const string=n=>n?.type==='Literal'&&typeof n.value==='string'?n.value:n?.type==='TemplateLiteral'&&!n.expressions.length?n.quasis.map(q=>q.value.cooked).join(''):null;
   const regex=n=>n?.type==='Literal'&&n.regex?n.regex:null,claims=n=>string(n)!==null||!!regex(n),quote=n=>string(n)!==null?`'${string(n)}'`:src.slice(n.start,n.end);
@@ -388,7 +389,7 @@ export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
   for(const n of nodes){if(n.type==='AssignmentExpression'&&n.left?.type==='Identifier')assigned.set(n.left.name,[...assigned.get(n.left.name)||[],n]);if(n.type==='VariableDeclarator'&&n.id?.type==='Identifier')declared.set(n.id.name,n.init||null);}
   // A flag set to true only inside a catch, declared false or bare: the try whose catch sets it.
   const flagTry=n=>{n=bare(n);const as=n?.type==='Identifier'?assigned.get(n.name):null,d=n?.type==='Identifier'?declared.get(n.name):undefined;return as?.length&&d!==undefined&&(d===null||d.type==='Literal'&&d.value===false)&&as.every(a=>isTrue(a.right)&&catchOf(a))?catchOf(as[0]):null;};
-  const out=[],add=(n,rule,name,what='',need='',use=null)=>out.push({line:n.loc?.start?.line??0,text:src.slice(n.start,n.end).replace(/\s+/g,' ').slice(0,160),rule,name,what,need,...use?{use:use.text,lines:[n.loc?.start?.line??0]}:{},
+  const out=[],add=(n,rule,name,what='',need='',use=null)=>out.push({line:n.loc?.start?.line??0,text:src.slice(n.start,n.end).replace(/\s+/g,' ').slice(0,160),rule,name,what,need,...use?{use:use.text,receiver:use.receiver||'',lines:[n.loc?.start?.line??0]}:{},
     why:rule==='message'?`neither the goal, the API nor the plan states ${need}: never assert an error message's text`
       :rule==='throw'?`neither the goal nor the description of ${name} ("${does.get(name)}") states that it throws`
       :`the description of ${name} ("${does.get(name)}") ${STATES_RETURN.test(does.get(name))?`does not state that it returns ${what}`:'states no return value'}: ${use?`get ${use.get} from a method that returns it, or `:''}check what it did through the other methods, not its result`});
@@ -404,20 +405,35 @@ export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
     return false;
   };
   // The use variant: a method whose description leads with an effect verb and states no return; a read guarded by a check of the binding is none.
+  // v7.15.8 review (probes C2, E5): a check is a null or undefined comparison or a typeof of the binding too; a read after an if under such a check that returns or throws, in the same function, or inside a try whose catch recovers (no throw, exit code or assert.fail) is guarded.
   const noReturn=m=>!!m&&does.has(m)&&EFFECT.test(does.get(m))&&!STATES_RETURN.test(does.get(m)),isName=(x,name)=>{x=bare(x);return x?.type==='Identifier'&&x.name===name;};
-  const checks=(t,name)=>isName(t,name)||t?.type==='LogicalExpression'&&(checks(t.left,name)||checks(t.right,name))||t?.type==='UnaryExpression'&&t.operator==='!'&&checks(t.argument,name);
-  const guarded=(n,name)=>n.optional||nodes.some(c=>c!==n&&within(n,c)&&(c.type==='LogicalExpression'&&isName(c.left,name)&&within(n,c.right)||(c.type==='IfStatement'||c.type==='ConditionalExpression')&&checks(c.test,name)&&!within(n,c.test)));
-  const used=new Map(),use=(n,m,key,text,get,what)=>{const line=n.loc?.start?.line??0;if(used.has(key)){const f=used.get(key);if(!f.lines.includes(line))f.lines.push(line);return;}add(n,'result',m,what,`${m} to return ${what}`,{text,get});used.set(key,out.at(-1));};
+  const nullish=x=>{x=bare(x);return x?.type==='Identifier'&&x.name==='undefined'||x?.type==='Literal'&&x.value===null;},typeofOf=x=>{x=bare(x);return x?.type==='UnaryExpression'&&x.operator==='typeof'&&bare(x.argument)?.type==='Identifier'?bare(x.argument).name:null;};
+  const checks=(t,name)=>isName(t,name)||t?.type==='LogicalExpression'&&(checks(t.left,name)||checks(t.right,name))||t?.type==='UnaryExpression'&&t.operator==='!'&&checks(t.argument,name)
+    ||t?.type==='BinaryExpression'&&COMPARES.has(t.operator)&&(isName(t.left,name)&&nullish(t.right)||isName(t.right,name)&&nullish(t.left)||typeofOf(t.left)===name||typeofOf(t.right)===name);
+  const exits=x=>x?.type==='ReturnStatement'||x?.type==='ThrowStatement'||x?.type==='BlockStatement'&&x.body.some(exits);
+  const fails=body=>nodes.some(x=>within(x,body)&&(x.type==='ThrowStatement'||x.type==='CallExpression'&&/^(?:assert\.fail|process\.exit)$/.test(src.slice(x.callee.start,x.callee.end))||x.type==='AssignmentExpression'&&src.slice(x.left.start,x.left.end)==='process.exitCode'));
+  // The function each node sits in (probe C3: a helper's parameters, and the names it declares, shadow a binding until it ends).
+  const scopeOf=new Map(),stack=[];for(const n of nodes){while(stack.length&&stack.at(-1).end<=n.start)stack.pop();scopeOf.set(n,stack.at(-1)||null);if(/Function/.test(n.type))stack.push(n);}
+  const guarded=(n,name)=>n.optional||nodes.some(c=>c!==n&&within(n,c)&&(c.type==='LogicalExpression'&&checks(c.left,name)&&within(n,c.right)||(c.type==='IfStatement'||c.type==='ConditionalExpression')&&checks(c.test,name)&&!within(n,c.test)))
+    ||nodes.some(c=>c.type==='IfStatement'&&c.end<=n.start&&scopeOf.get(c)===scopeOf.get(n)&&checks(c.test,name)&&exits(c.consequent))||(t=>!!t?.handler&&!fails(t.handler.body))(tryOf(n));
+  // v7.15.8 review (live review): a dependence the plan leaves no way around is a gap, accepted at the first draft and marked (runnerTestError, runApplication): the use's method states no return, no other described method lists, searches or queries, and every other takes an id (a parameter named so, or a description "by ID"); run15's create, view(id), update(id, data), delete(id). The failure then charges the plan (T4).
+  const ID_PARAM=/(?:^|[_-])id$|Id$|^(?:key|identifier)$/i,BY_ID=/\bby (?:its |the |an? |their )?(?:id|identifier|key)\b|\bwith (?:the|a) given (?:id|key)\b|\bfor (?:the|an?|a given|that) (?:id|key)\b|\bthe given id\b/i,LISTS=/\b(?:list|lists|listing|all|search|searches|query|queries|index|enumerat\w*|filter|filters)\b/i;
+  const gap=m=>!(methods||[]).some(o=>o?.method&&o.method!==m&&(LISTS.test(String(`${o.method} ${o.performed_by||''} ${does.get(o.method)||''}`).replace(/([a-z0-9])([A-Z])/g,'$1 $2'))||!((o.params||[]).some(p=>ID_PARAM.test(String(p)))||BY_ID.test(does.get(o.method)||''))));
+  const used=new Map(),use=(n,m,key,text,get,what,receiver)=>{const line=n.loc?.start?.line??0;if(used.has(key)){const f=used.get(key);if(!f.lines.includes(line))f.lines.push(line);return;}add(n,'result',m,what,`${m} to return ${what}`,{text,get,receiver});if(gap(m))out.at(-1).gap=true;used.set(key,out.at(-1));};
+  const paramNames=p=>!p?[]:p.type==='Identifier'?[p.name]:p.type==='AssignmentPattern'?paramNames(p.left):p.type==='RestElement'?paramNames(p.argument):p.type==='ObjectPattern'?p.properties.flatMap(x=>paramNames(x.value||x.argument)):p.type==='ArrayPattern'?p.elements.flatMap(paramNames):[];
+  const shadows=[],shadow=(end,name)=>{shadows.push({end,name,was:bound.get(name)});};
   for(const n of nodes) {
+    while(shadows.length&&shadows.at(-1).end<=n.start){const s=shadows.pop();if(s.was)bound.set(s.name,s.was);else bound.delete(s.name);}
+    if(/Function/.test(n.type))for(const p of n.params||[])for(const name of paramNames(p)){shadow(n.end,name);bound.delete(name);}
     const [id,init]=bindings(n);
-    if(id?.type==='Identifier'){const m=init?methodOf(bare(init)):null;if(m)bound.set(id.name,m);else bound.delete(id.name);if(init&&isMessage(init))msgs.add(id.name);else msgs.delete(id.name);}
+    if(id?.type==='Identifier'){const m=init?methodOf(bare(init)):null,f=scopeOf.get(n);if(f&&n.type==='VariableDeclarator')shadow(f.end,id.name);if(m)bound.set(id.name,m);else bound.delete(id.name);if(init&&isMessage(init))msgs.add(id.name);else msgs.delete(id.name);}
     // A member of a binding (createResult.id, createResult['id'], createResult.save()), a destructuring of one or of the direct result, the result passed on to another method.
-    if(n.type==='MemberExpression'&&key(n)!==null){const o=bare(n.object),r=o?.type==='Identifier'?o.name:null,m=r?bound.get(r):methodOf(o);if(noReturn(m)&&!(r&&guarded(n,r)))use(n,m,r||m,r?`reads ${r}.${key(n)}`:`reads ${key(n)} from what ${m} returned`,`the ${key(n)}`,`an object with ${key(n)}`);}
+    if(n.type==='MemberExpression'&&key(n)!==null){const o=bare(n.object),r=o?.type==='Identifier'?o.name:null,m=r?bound.get(r):methodOf(o);if(noReturn(m)&&!(r&&guarded(n,r)))use(n,m,r||m,r?`reads ${r}.${key(n)}`:`reads ${key(n)} from what ${m} returned`,`the ${key(n)}`,`an object with ${key(n)}`,r);}
     if(n.type==='VariableDeclarator'&&(n.id.type==='ObjectPattern'||n.id.type==='ArrayPattern')&&n.init) {
       const r=bare(n.init)?.type==='Identifier'?bare(n.init).name:null,m=r?bound.get(r):methodOf(bare(n.init)),k=n.id.type==='ObjectPattern'?n.id.properties.map(p=>p.type==='Property'?(p.key?.name??p.key?.value):null).find(x=>typeof x==='string'):null;
-      if(noReturn(m))use(n,m,r||m,r?(k?`reads ${r}.${k}`:`reads an element of ${r}`):(k?`reads ${k} from what ${m} returned`:`reads an element of what ${m} returned`),k?`the ${k}`:'the element',k?`an object with ${k}`:'an array');
+      if(noReturn(m))use(n,m,r||m,r?(k?`reads ${r}.${k}`:`reads an element of ${r}`):(k?`reads ${k} from what ${m} returned`:`reads an element of what ${m} returned`),k?`the ${k}`:'the element',k?`an object with ${k}`:'an array',r);
     }
-    if(n.type==='CallExpression'&&methodOf(n))for(const a of n.arguments||[]){const b=bare(a),r=b?.type==='Identifier'?b.name:null,m=r?bound.get(r):methodOf(b);if(noReturn(m))use(n,m,r||m,`passes ${r||`what ${m} returned`} on to ${methodOf(n)}`,`what ${methodOf(n)} needs`,`a value for ${methodOf(n)}`);}
+    if(n.type==='CallExpression'&&methodOf(n))for(const a of n.arguments||[]){const b=bare(a),r=b?.type==='Identifier'?b.name:null,m=r?bound.get(r):methodOf(b);if(noReturn(m))use(n,m,r||m,`passes ${r||`what ${m} returned`} on to ${methodOf(n)}`,`what ${methodOf(n)} needs`,`a value for ${methodOf(n)}`,r);}
     if(n.type==='BinaryExpression'&&COMPARES.has(n.operator)){compare(n,n.left,n.right,true)||compare(n,n.right,n.left,true);continue;}
     if(n.type!=='CallExpression')continue;
     const callee=bare(n.callee),args=n.arguments||[],name=assertion(n);
@@ -425,7 +441,8 @@ export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
     if(callee?.type==='MemberExpression'&&['test','exec'].includes(key(callee))&&regex(callee.object)&&isMessage(args[0])){if(!stated(callee.object))message(n,callee.object);continue;}
     if(EQUALS.has(name)||MATCHES.has(name))compare(n,args[0],args[1],EQUALS.has(name))||compare(n,args[1],args[0],EQUALS.has(name));
     else if(name==='ok'&&args[0]&&args[0].type!=='BinaryExpression') {
-      const m=resultOf(args[0]),t=flagTry(args[0]);
+      // v7.15.8 review (probe E5): assert.ok(t && t.id) asserts the result as assert.ok(t) does (its leftmost operand).
+      const left=x=>x?.type==='LogicalExpression'&&x.operator==='&&'?left(x.left):x,m=resultOf(args[0])||resultOf(left(args[0])),t=flagTry(args[0]);
       if(m&&EFFECT.test(does.get(m))&&!STATES_RETURN.test(does.get(m)))add(n,'result',m,'a truthy value',`${m} to return a truthy value`);
       else if(t)required(n,callsIn(t.block).at(-1));
     }

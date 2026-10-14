@@ -1145,10 +1145,11 @@ function exportedValues(ast, decls) {
       if(!st.source)for(const x of st.specifiers||[])out.set(keyName(x.exported),{type:'Identifier',name:keyName(x.local)});
     } else if(st.type==='ExportDefaultDeclaration') {
       const d=st.declaration,o=d?.type==='Identifier'?decls.get(d.name):d;
-      if(o?.type==='ObjectExpression')members(o);else if(FUNCTIONS.has(d?.type)&&d.id)out.set(d.id.name,d);
+      // v7.15.8 review (probe I2): a local name bound to a function, exported whole (run15's viewTicket.js revision 4), is that function under its name.
+      if(o?.type==='ObjectExpression')members(o);else if(FUNCTIONS.has(d?.type)&&d.id)out.set(d.id.name,d);else if(d?.type==='Identifier'&&functionOf(d,decls))out.set(d.name,functionOf(d,decls));
     } else if(st.type==='ExpressionStatement'&&st.expression.type==='AssignmentExpression') {
       const {left,right}=st.expression;
-      if(isModuleExports(left)){const o=right?.type==='Identifier'?decls.get(right.name):right;if(o?.type==='ObjectExpression')members(o);else if(FUNCTIONS.has(right?.type)&&right.id)out.set(right.id.name,right);}
+      if(isModuleExports(left)){const o=right?.type==='Identifier'?decls.get(right.name):right;if(o?.type==='ObjectExpression')members(o);else if(FUNCTIONS.has(right?.type)&&right.id)out.set(right.id.name,right);else if(right?.type==='Identifier'&&functionOf(right,decls))out.set(right.name,functionOf(right,decls));}
       else if(left.type==='MemberExpression'&&(isModuleExports(left.object)||left.object.type==='Identifier'&&left.object.name==='exports'))out.set(keyName(left.property),right);
     }
   }
@@ -1799,22 +1800,34 @@ export function unawaitedCalls(files, names) {
 // nested function: an arrow's expression body counts; return;, return
 // undefined, a throw-only body or no return does not; a generator yields
 // and is not read. {path, name, returns, line} per function without one.
-const NO_VALUE=/^\W*(?:nothing|undefined|void|none|no (?:value|return))\b/i;
-const noValue=e=>!e||e.type==='Identifier'&&e.name==='undefined'||e.type==='UnaryExpression'&&e.operator==='void';
+// v7.15.8 review (probes B1, E3): a returns that states no value in any
+// phrasing the splitter used: nothing, undefined, void, none, n/a, null, no
+// value or return, does not return, a bare dash or an empty filler, a
+// promise or thenable that names no resolved value (a Promise<void>, a
+// promise that resolves when saved, resolves with no value). An absent case
+// beside a value ("the ticket, or undefined", "null when missing, else the
+// ticket", "Ticket | undefined") is a value. One reading for the returns
+// rule, the ticket's head (requirementText) and the seam (normalizeInterfaces).
+const ABSENT_CASE=/(?:,\s*|\s+)(?:or|else|otherwise)\s+(?:undefined|null|nothing|none)\b[^;]*|^\W*(?:(?:it )?returns?\s+)?(?:undefined|null|nothing|none)\s+(?:when|if|for|unless|on)\b[^,;]*[,;]?\s*(?:else|otherwise)?\s*|\s*\|\s*(?:undefined|null|void)\b/gi;
+const NO_VALUE=/^[\s\-–—.]*$|\b(?:nothing|undefined|void|none|n\/a|null|no (?:value|return|result)s?|does ?n[o']t return|not returned|without (?:a |any )?return)\b|^\W*(?:a |an |the )?(?:promise|thenable)\b|^\W*(?:resolv|complet|settl|fulfil)\w*\b(?!\s+(?:to|with)\s+(?!nothing|undefined|void|no\b|null\b)\w)/i;
+// A promise that names what it resolves to or holds ("a promise that resolves with the ticket", "a promise of the created ticket") states a value.
+const PROMISED_VALUE=/^\W*(?:a |an |the )?(?:promise|thenable)\b(?:\s+(?:that|which)\s+)?\s*(?:(?:resolv|fulfil|settl|complet)\w*\s+(?:to|with)|(?:of|for|containing|holding|with))\s+(?!nothing|undefined|void|no\b|null\b)\w/i;
+export const noValue=s=>{const t=String(s??'').replace(/\b(?:a |an |the )?promise\s*<([^>]*)>/gi,'$1').replace(ABSENT_CASE,'').trim();return !PROMISED_VALUE.test(t)&&NO_VALUE.test(t);};
+const nothing=e=>!e||e.type==='Identifier'&&e.name==='undefined'||e.type==='UnaryExpression'&&e.operator==='void';
 function returnsValue(fn) {
   if(fn.generator)return true;
-  if(fn.body.type!=='BlockStatement')return !noValue(fn.body);
+  if(fn.body.type!=='BlockStatement')return !nothing(fn.body);
   let hit=false;
   const go=node=>{
     if(hit||!node||typeof node.type!=='string'||node!==fn.body&&(FUNCTIONS.has(node.type)||node.type==='ClassBody'))return;
-    if(node.type==='ReturnStatement'){if(!noValue(node.argument))hit=true;return;}
+    if(node.type==='ReturnStatement'){if(!nothing(node.argument))hit=true;return;}
     for(const [k,v] of Object.entries(node)){if(k==='loc'||k==='start'||k==='end')continue;for(const c of Array.isArray(v)?v:[v])if(c&&typeof c.type==='string')go(c);}
   };
   go(fn.body);
   return hit;
 }
 export function unreturned(files, promise) {
-  const want=new Map((promise||[]).filter(f=>f?.name&&f.returns&&!NO_VALUE.test(String(f.returns))).map(f=>[f.name,f])),out=[];
+  const want=new Map((promise||[]).filter(f=>f?.name&&f.returns&&!noValue(f.returns)).map(f=>[f.name,f])),out=[];
   if(!want.size)return out;
   for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
     if(!LINKABLE.test(path)||TEST_PATH.test(path))continue;

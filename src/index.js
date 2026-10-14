@@ -1646,7 +1646,8 @@ export class ControlRoom extends DurableObject {
     const text=String(test||'');
     if(/\bcatch\b/.test(text) && !/process\.exitCode\s*=\s*[1-9]|process\.exit\(\s*[1-9]|\bthrow\b/.test(text))
       return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass: keep a catch only around the one call that may throw, and end the script with .catch(e => { console.error(e); process.exitCode = 1; })';
-    const invented=last?[]:inventedAssertions(text,{goal,api,methods});
+    // v7.15.8 review: a dependence the plan leaves no way around (gap: no return stated, no method that lists, every other by id) is not turned back; the failure charges the plan (T4).
+    const invented=last?[]:inventedAssertions(text,{goal,api,methods}).filter(x=>!x.gap);
     // v7.15.8 (run15): a use of a result no description states ("line 13 reads createResult.id, but …") is named as an assertion of it is.
     return invented.length?invented.map(x=>`line ${x.line} ${x.use?`${x.use}, but ${x.why}`:`asserts ${x.text}: ${x.why}`}`).join('; ')+(invented.some(x=>x.rule!=='result')?`; ${GONE_IDIOM}`:''):null;
   }
@@ -1704,8 +1705,9 @@ export class ControlRoom extends DurableObject {
         // v7.15.6: the third draft is accepted as it asserts: the run is not
         // blocked on the runner's bounds, and a failure on such a line says
         // the fixed test requires it anyway (below).
-        const kept=last?inventedAssertions(draft,{goal,api,methods:described}):[];
-        if(kept.length)this.event(nodeId,'runner_invented',clip(`The runner's third draft still asserts what neither the goal, the API nor the plan states: ${kept.map(x=>`line ${x.line}: ${x.use||x.text}`).join('; ')}. It is accepted as it is, so the run is not blocked; a failure on it will say the fixed test requires it anyway.`,800));
+        // v7.15.8 review: a dependence the plan leaves no way around (gap) is accepted on any draft, and marked the same way.
+        const kept=inventedAssertions(draft,{goal,api,methods:described}).filter(x=>last||x.gap);
+        if(kept.length)this.event(nodeId,'runner_invented',clip(`The runner's ${last?'third draft still asserts':'draft depends on'} what neither the goal, the API nor the plan states${last?'':' and no other method could give'}: ${kept.map(x=>`line ${x.line}: ${x.use||x.text}`).join('; ')}. It is accepted as it is, so the run is not blocked; a failure on it will say the fixed test requires it anyway.`,800));
         test=draft;break;
       }
       correction='Your previous test was rejected before running: '+errors.join('; ');
@@ -1734,11 +1736,13 @@ export class ControlRoom extends DurableObject {
     // failure keeps its own text for the progress key.
     const frames=detail.match(/^\s+at .*$/gm)||[],at=+(detail.match(/glue\/smoke\.js:(\d+)/)?.[1]||0);
     const asserted=/AssertionError|ERR_ASSERTION|Missing expected (?:exception|rejection)/.test(detail)||!frames.slice(0,Math.max(0,frames.findIndex(f=>f.includes('glue/smoke.js')))).some(f=>f.includes('/components/'));
-    // v7.15.8 (run15): a use of a result is named once per receiver, at its first read; a read error (no assertion) on a later line of it is that finding's.
-    const found=at&&asserted?inventedAssertions(test,{goal,api,methods:described}):[],made=found.find(x=>x.line===at)||(!/AssertionError|ERR_ASSERTION/.test(detail)?found.find(x=>x.lines?.includes(at)):null)||null;
+    // v7.15.8 (run15): a use of a result is named once per receiver, at its first read, with every line of it.
+    // v7.15.8 review (probe D1): it leads only a failure that is a read on that receiver (R1's read, on a line of it): "app.deleteTicket is not a function" on such a line is start's own; an assertion the runner kept leads its own line's failure, as before.
+    const found=at&&asserted?inventedAssertions(test,{goal,api,methods:described}):[],read=found.some(x=>x.use)&&!/AssertionError|ERR_ASSERTION/.test(detail)?readRequirement(test,detail).read||null:null;
+    const made=found.find(x=>x.use?!!read&&x.receiver===read.name&&x.lines.includes(at):x.line===at)||null;
     if(made) {
-      // Integration: the sentence itself is the mark (facts.requirement.invented), so the ticket leads with it (requirementText).
-      const say=`Test line ${at} requires ${clip(made.need,54)}, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.`;
+      // Integration: the sentence itself is the mark (facts.requirement.invented), so the ticket leads with it (requirementText); a gap says no other method could give it.
+      const say=`Test line ${at} requires ${clip(made.need,54)}, which nothing in the plan states${made.gap?' and no other method could give':''}; the test is fixed for this run, so satisfy it anyway.`;
       issues=issues.map(x=>({...x,failure:x.failure??x.detail,detail:`${say} ${x.detail}`,facts:{...x.facts,requirement:{...x.facts?.requirement,invented:say}}}));
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);

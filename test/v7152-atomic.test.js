@@ -313,7 +313,8 @@ test('v7.15.2 review: the runtime glue takes none of an atomic top\'s 8 file slo
   assert.deepEqual(room.files('root').map(f=>f.path).filter(p=>!p.startsWith('memory/')).length,10,'seven modules and the three runtime files');
   const user=calls.leaf[1];
   assert.deepEqual(user.your_own_files.map(f=>f.path).sort(),files.map(f=>f.path).sort(),'all seven modules, none of the glue');
-  assert.match(user.new_messages.find(m=>/^YOUR APPLICATION FAILED/.test(m.body)).body,/Required: The runner's test failed with: TypeError: Cannot read properties of undefined \(reading 'title'\)\. Test line 6: assert\.equal\(\(await app\.view\(t\.id\)\)\.title, 'Printer jam'\)\. Problems: /);
+  // v7.15.8 review: a read on a call's own result is that call's requirement, in the reader's words (the TypeError stays in the problem's detail).
+  assert.match(user.new_messages.find(m=>/^YOUR APPLICATION FAILED/.test(m.body)).body,/Required: The runner's test requires: the test reads the title of what view\(id\) returned, but it returned nothing\. Test line 6: assert\.equal\(\(await app\.view\(t\.id\)\)\.title, 'Printer jam'\)\. Problems: \(application\): The runner's test failed: smoke failed \(exit 1\): TypeError: Cannot read properties of undefined \(reading 'title'\)/);
   assert.deepEqual(user.your_exposed_files.map(f=>f.path).filter(p=>/^glue\/|^package\.json$/.test(p)),[]);
 });
 

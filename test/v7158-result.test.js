@@ -101,11 +101,13 @@ const METHODS=[PROMISES.create,PROMISES.view,PROMISES.update,PROMISES.del].map(f
 const API=JSON.stringify({type:'object',members:Object.fromEntries(METHODS.map(m=>[m.method,{type:'function',name:m.method,params:m.params}]))});
 const WRAP=body=>`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n${body}\n})().catch(e => { console.error(e); process.exitCode = 1; });\n`;
 const TAIL=' Publish the FULL updated file.';
-// R3's correction for run15's third draft, and T4's sentence for a failure on line 13.
+// R3's correction for run15's third draft (in a room with a method that could give the id; in run15's own room the dependence is a plan gap, accepted at the first draft: review), and T4's sentence for a failure on line 13, as the ticket leads with it before R4's head (review: the need is not repeated).
 const USE13=`line 13 reads createResult.id, but the description of createTicket ("creates a new ticket and saves it") states no return value: get the id from a method that returns it, or check what it did through the other methods, not its result`;
-const SAY13='Test line 13 requires createTicket to return an object with id, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.';
-// R4's text for run15's read, without and with v7.15.7's returns on the promise.
-const HEAD15='Your createTicket(data) ("creates a new ticket and saves it") must return an object with id: test line 13 reads createResult.id, and createResult is what app.createTicket(createData) returned on line 10.';
+const SAY13='Test line 13 requires createTicket to return an object with id, which nothing in the plan states and no other method could give; the test is fixed for this run, so satisfy it anyway.';
+const LEAD13='Nothing in the plan states what test line 13 requires and no other method could give; the test is fixed for this run, so satisfy it anyway.';
+const METHODS_LIST=[...METHODS,{method:'listTickets',does:'returns all tickets',params:[]}];
+// R4's text for run15's read, without and with v7.15.7's returns on the promise (review: without, the head names the ticket the does says it creates and saves).
+const HEAD15='Your createTicket(data) ("creates a new ticket and saves it") must return the ticket it created and saved (an object with id): test line 13 reads createResult.id, and createResult is what app.createTicket(createData) returned on line 10.';
 const HEAD15_RETURNS='Your createTicket(data) ("creates a new ticket and saves it") must return the created ticket: test line 13 reads createResult.id, and createResult is what app.createTicket(createData) returned on line 10.';
 const RETURNS15='createTicket(data) is promised to return the created ticket, but returns nothing: return it.';
 
@@ -114,7 +116,7 @@ test('v7.15.8 (R1): run15\'s failure reads back to createTicket: createResult, w
   const paramsOf=m=>METHODS.find(x=>x.method===m)?.params||null;
   const r=P.readRequirement(SMOKE,OUT,['components/create-tic-f07f9de6/createTicket.js','components/view-ticke-f37fa29f/viewTicket.js'],()=>new Set(),paramsOf);
   assert.deepEqual(r,{text:'the test reads createResult.id, but createTicket(data) returned nothing',error:false,method:'createTicket',names:['createTicket'],test_line:{line:10,text:'const createResult = await app.createTicket(createData)'},
-    read:{line:13,text:'const viewResult = await app.viewTicket(createResult.id)',name:'createResult',member:'id',what:'reads createResult.id',call:'app.createTicket(createData)',call_line:10,needs:'an object with id'},frames:[]});
+    read:{line:13,text:'const viewResult = await app.viewTicket(createResult.id)',name:'createResult',member:'id',what:'reads createResult.id',call:'app.createTicket(createData)',call_line:10,got:'nothing',needs:'an object with id'},frames:[]});
   // Without the API's parameters, the test's own call names the producer.
   assert.equal(P.readRequirement(SMOKE,OUT,[],()=>new Set()).text,'the test reads createResult.id, but createTicket(createData) returned nothing');
   // v7.15.6's reading of the same line, for the record: the call on the line (viewTicket) with no read.
@@ -143,12 +145,12 @@ test('v7.15.8 (R1): every form of a read on a test binding resolves to its produ
   const two=head+"(async () => {\n  const app = await start();\n  const c = await app.createTicket({ title: 'T' });\n  const v = await app.viewTicket(c.id);\n  assert.equal(v.id, c.id);\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
   const member="TypeError: Cannot read properties of undefined (reading 'id')";
   assert.deepEqual([r(two,member+at(7,18))[2],r(two,member+at(7,24))[2],r(two,member+at(7,1))[2]],['reads v.id','reads c.id','reads v.id']);
-  // Inside a component frame the error is the module's own (the frames decide, as before); a read on a call's own result keeps the call; a line the reader cannot parse keeps today's rule.
+  // Inside a component frame the error is the module's own (the frames decide, as before); a read on a call's own result is that call's, with the read (review: the nested direct-result form gets R4's text).
   const inside=P.readRequirement(two,member+"\n    at viewTicket (/work/b/components/view-1/viewTicket.js:4:20)"+at(6,19),['components/view-1/viewTicket.js'],()=>new Set(['viewTicket']));
   assert.deepEqual([inside.method,inside.read,inside.error,inside.frames],['viewTicket',undefined,true,[{path:'components/view-1/viewTicket.js',fn:'viewTicket'}]]);
   const caught=head+"(async () => {\n  try {\n    const app = await start();\n    assert.equal((await app.viewTicket(1)).id, 1);\n  } catch (e) { console.error(e); process.exitCode = 1; }\n})();\n";
   const direct=P.readRequirement(caught,member+at(6,40),[],()=>new Set());
-  assert.deepEqual([direct.method,direct.read,direct.text,direct.test_line.expects_throw],['viewTicket',undefined,member,undefined]);
+  assert.deepEqual([direct.method,direct.read.what,direct.read.name,direct.text,direct.test_line.expects_throw],['viewTicket','reads the id of what viewTicket(1) returned','','the test reads the id of what viewTicket(1) returned, but it returned nothing',undefined]);
 });
 
 // ------------------------------------------------------------------ R4 and the route
@@ -157,7 +159,7 @@ test('v7.15.8 (R4): the ticket names what the test read and what the producer mu
   assert.equal(P.requirementText(r,{fn:PROMISES.create,method:'createTicket'}),HEAD15);
   assert.equal(P.requirementText(r,{fn:{...PROMISES.create,returns:'the created ticket'},method:'createTicket'}),HEAD15_RETURNS);
   assert.equal(P.requirementText(r,{fn:{...PROMISES.create,returns:'nothing'},method:'createTicket'}),HEAD15,'a promise that returns nothing: what the test reads');
-  assert.equal(P.requirementText({...r,invented:SAY13},{fn:PROMISES.create,method:'createTicket'}),`${SAY13} ${HEAD15}`);
+  assert.equal(P.requirementText({...r,invented:SAY13},{fn:PROMISES.create,method:'createTicket'}),`${LEAD13} ${HEAD15}`);
   assert.equal(P.requirementText(r,{fn:PROMISES.view,relied:PROMISES.create}),'Your viewTicket(id) ("returns a ticket by ID"), which createTicket(data) relies on, must satisfy: the test reads createResult.id, but createTicket(data) returned nothing. Test line 10: const createResult = await app.createTicket(createData).');
   assert.equal(P.requirementText(r,{module:'components/x/viewTicket.js',thrown:true}),'Your module viewTicket.js is in the failing call and must satisfy: the test reads createResult.id, but createTicket(data) returned nothing. Test line 10: const createResult = await app.createTicket(createData).');
   assert.equal(P.requirementText(r),'The runner\'s test requires: the test reads createResult.id, but createTicket(data) returned nothing. Test line 10: const createResult = await app.createTicket(createData).');
@@ -234,9 +236,11 @@ test('v7.15.8 (R2): with v7.15.7\'s returns on the promise, run15\'s createTicke
 test('v7.15.8 (R3): inventedAssertions, use: run15\'s third draft reads createResult.id, the result of a create whose description states no return, once per receiver with every line; with returns stated the use is legitimate; a guarded read is none; passing the result on, destructuring it and reading a call\'s own result are uses; the correction names the line',()=>{
   const {room}=liveRoom();
   const found=A.inventedAssertions(SMOKE,{goal:GOAL,api:API,methods:METHODS});
-  assert.deepEqual(found.map(x=>[x.line,x.lines,x.rule,x.name,x.what,x.need,x.use,x.text,x.why]),[[13,[13,20,23,29,34],'result','createTicket','an object with id','createTicket to return an object with id','reads createResult.id','createResult.id',USE13.replace('line 13 reads createResult.id, but ','')]]);
-  assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:METHODS}),USE13);
-  assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:METHODS,last:true}),null,'the third draft is accepted');
+  // Line 34's read sits in a try whose catch recovers (gone = null), so it is no dependence (review); in run15's room no method could give the id (view, update and delete take one): a gap, accepted at the first draft.
+  assert.deepEqual(found.map(x=>[x.line,x.lines,x.rule,x.name,x.what,x.need,x.use,x.receiver,x.gap,x.text,x.why]),[[13,[13,20,23,29],'result','createTicket','an object with id','createTicket to return an object with id','reads createResult.id','createResult',true,'createResult.id',USE13.replace('line 13 reads createResult.id, but ','')]]);
+  assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:METHODS}),null,'accepted at the first draft: the plan gap');
+  assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:METHODS_LIST}),USE13,'with a method that lists, the correction');
+  assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:METHODS_LIST,last:true}),null,'the third draft is accepted');
   const stated=METHODS.map(m=>m.method==='createTicket'?{...m,returns:'the created ticket'}:m);
   assert.deepEqual(A.inventedAssertions(SMOKE,{goal:GOAL,api:API,methods:stated}),[],'a draft that gets the id from a stated return passes');
   assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:stated}),null);
@@ -255,10 +259,13 @@ test('v7.15.8 (R3): inventedAssertions, use: run15\'s third draft reads createRe
   assert.deepEqual(uses("  const t = await app.createTicket({ title: 'T' });\n  assert.equal(t.id, 1);",[{method:'createTicket',does:'handles ticket creation',params:['data']}]),[]);
   assert.deepEqual(uses("  const t = await app.createTicket({ title: 'T' });\n  assert.equal(t.id, 1);",[{method:'viewTicket',does:'returns a ticket',params:['id']}]),[]);
   // Beside an assertion of the result: both named, the use after the line it reads.
-  const both=A.inventedAssertions(WRAP("  const t = await app.createTicket({ title: 'T' });\n  assert.ok(t, 'created');\n  await app.viewTicket(t.id);"),{goal:GOAL,api:API,methods:METHODS});
+  const both=A.inventedAssertions(WRAP("  const t = await app.createTicket({ title: 'T' });\n  assert.ok(t, 'created');\n  await app.viewTicket(t.id);"),{goal:GOAL,api:API,methods:METHODS_LIST});
   assert.deepEqual(both.map(x=>[x.line,x.use||x.text]),[[6,"assert.ok(t, 'created')"],[7,'reads t.id']]);
-  assert.equal(room.runnerTestError(WRAP("  const t = await app.createTicket({ title: 'T' });\n  assert.ok(t, 'created');\n  await app.viewTicket(t.id);"),{goal:GOAL,api:API,methods:METHODS}),
+  assert.equal(room.runnerTestError(WRAP("  const t = await app.createTicket({ title: 'T' });\n  assert.ok(t, 'created');\n  await app.viewTicket(t.id);"),{goal:GOAL,api:API,methods:METHODS_LIST}),
     `line 6 asserts assert.ok(t, 'created'): the description of createTicket ("creates a new ticket and saves it") states no return value: check what it did through the other methods, not its result; line 7 reads t.id, but the description of createTicket ("creates a new ticket and saves it") states no return value: get the id from a method that returns it, or check what it did through the other methods, not its result`);
+  // In run15's room the assertion alone is turned back; the dependence is the gap.
+  assert.equal(room.runnerTestError(WRAP("  const t = await app.createTicket({ title: 'T' });\n  assert.ok(t, 'created');\n  await app.viewTicket(t.id);"),{goal:GOAL,api:API,methods:METHODS}),
+    `line 6 asserts assert.ok(t, 'created'): the description of createTicket ("creates a new ticket and saves it") states no return value: check what it did through the other methods, not its result`);
 });
 
 // ------------------------------------------------------------------ the room
@@ -295,22 +302,21 @@ function scripted(out) {
 }
 const bodies=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).map(u=>u.new_messages.map(m=>m.body).join('\n'));
 const rounds=room=>room.db().exec("SELECT actor,body FROM events WHERE kind='repair_round' ORDER BY id").toArray().map(e=>`${e.actor}: ${e.body.match(/^Repair round (\d+) \((\d+) of/).slice(1).join('/')} ${e.body.match(/: (no progress|progress) /)[1]}`);
-// Run15's round-1 ticket, verbatim: the runner's sentence (R3 marked the fixed test's dependence), R4's text, the Data Store's facts from the uses edge.
-const TICKET15=`${SAY13} ${HEAD15} What the other side provides: readTickets(): reads all tickets | saveTickets(tickets): saves the updated tickets | module.js exports: module.exports = { readTickets(), saveTickets(newTickets) }${TAIL}`;
+// Run15's round-1 ticket, verbatim: the runner's sentence (R3 marked the fixed test's dependence as a plan gap; its need is not repeated before the head), R4's text, the Data Store's facts from the uses edge.
+const TICKET15=`${LEAD13} ${HEAD15} What the other side provides: readTickets(): reads all tickets | saveTickets(tickets): saves the updated tickets | module.js exports: module.exports = { readTickets(), saveTickets(newTickets) }${TAIL}`;
 
-test('v7.15.8: run15 replayed through the real builders, compiler and Container: the third draft is turned back twice for reading createResult.id and accepted marked; round 1 goes R2a to Create Ticket with R4\'s text, never to View Ticket, no model call, no relink; a createTicket that returns the ticket with an id completes the run in one round',async()=>{
+test('v7.15.8: run15 replayed through the real builders, compiler and Container: the fixed test\'s read of createResult.id is a plan gap, accepted at the first draft and marked; round 1 goes R2a to Create Ticket with R4\'s text, never to View Ticket, no model call, no relink; a createTicket that returns the ticket with an id completes the run in one round',async()=>{
   const {room,calls}=await run15Room({leaf:scriptedLeaf({'Create Ticket':[SRC.createFix]})});
   await settle(room,200);
   assert.equal(room.get('status'),'complete',trace(room));
-  // The runner: run15's test read createResult.id, which no description licensed; two drafts turned back with R3's correction, the third accepted and marked.
-  assert.equal(calls.runner.length,3);
-  assert.deepEqual(calls.runner.slice(1).map(u=>u.previous_test_error),Array(2).fill(`Your previous test was rejected before running: ${USE13}`));
-  assert.deepEqual(events(room,'runner_invented').map(e=>e.body.split(' It is accepted')[0]),["The runner's third draft still asserts what neither the goal, the API nor the plan states: line 13: reads createResult.id."]);
+  // The runner: run15's test read createResult.id, which no description licensed and no method could give (review): the first draft is accepted and marked.
+  assert.equal(calls.runner.length,1);
+  assert.deepEqual(events(room,'runner_invented').map(e=>e.body.split(' It is accepted')[0]),["The runner's draft depends on what neither the goal, the API nor the plan states and no other method could give: line 13: reads createResult.id."]);
   // The failure: one run problem, R2a to Create Ticket (root.3), the requirement on createTicket with the read, never View Ticket.
   const [p,...more]=room.problems("kind='run'");
   assert.equal(more.length,0,trace(room));
   assert.deepEqual([p.status,p.outcome,p.trail.map(t=>[t.at,t.action,t.to,t.rule]),p.facts.requirement.method,p.facts.requirement.text,p.facts.requirement.read,p.facts.requirement.invented,p.facts.requirement.frames],
-    ['closed','resolved',[['root','assign','root.3','R2a']],'createTicket','the test reads createResult.id, but createTicket(data) returned nothing',{line:13,text:'const viewResult = await app.viewTicket(createResult.id)',name:'createResult',member:'id',what:'reads createResult.id',call:'app.createTicket(createData)',call_line:10,needs:'an object with id'},SAY13,[]]);
+    ['closed','resolved',[['root','assign','root.3','R2a']],'createTicket','the test reads createResult.id, but createTicket(data) returned nothing',{line:13,text:'const viewResult = await app.viewTicket(createResult.id)',name:'createResult',member:'id',what:'reads createResult.id',call:'app.createTicket(createData)',call_line:10,got:'nothing',needs:'an object with id'},SAY13,[]]);
   assert.deepEqual(events(room,'problem_assigned').map(e=>e.recipient),['root.3'],'never View Ticket (root.4), never the entry');
   assert.deepEqual(bodies(calls,'Create ticket'),[]);
   assert.deepEqual(bodies(calls,'Create Ticket'),[TICKET15],'the round-1 ticket, verbatim');

@@ -4,7 +4,7 @@
 // worker may export more.
 // Pure: no room, no model. The runtime checks a split's names here before any
 // child exists; only a promised name without exactly one carrier rejects it.
-import { PROTECTED_NAMES } from './linker.js';
+import { PROTECTED_NAMES, noValue } from './linker.js';
 
 export const MAX_INTERFACES = 5;
 // Names that say what a function does but not what it acts on. Binding like
@@ -30,7 +30,9 @@ function item(raw) {
   const o = typeof raw === 'string' ? {name: raw} : raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
   if (!o || typeof o.name !== 'string') return null;
   let name = o.name.trim().replace(/^`+|`+$/g, ''), params = Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [], does = text(o.does, 160);
-  const returns = text(o.returns, 120).replace(/[.\s]+$/, '');
+  // v7.15.8 review: returns at the seam: a leading "returns" is the splitter's echo, and every no-value phrasing (n/a, -, none, no return, does not return, nothing is returned, void, undefined, a Promise<void>) is "nothing", so the returns rule, the ticket and the runner read one word.
+  let returns = text(o.returns, 120).replace(/[.\s]+$/, '').replace(/^\W*(?:it |this |the (?:function|method|call) )?returns?\s+/i, '');
+  if (returns && noValue(returns)) returns = 'nothing';
   const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name) || /^([A-Za-z_$][\w$]*)`?\s*(?:\(([^)]*)\)`?)?(?:\s*:|\s+-+|\s+[–—])\s*([\s\S]*)$/.exec(name);
   if (call) { name = call[1].trim(); if (!params.length) params = (call[2] || '').split(','); if (!does) does = text(call[3], 160); }
   name = name.slice(0, 64);

@@ -7,7 +7,8 @@
 // the manager's model is asked only for a real choice (M1-M8), and every
 // action it returns is validated here.
 import {nextDirectChild} from './build-verification.js';
-import {isInterfaceError, parseSource} from './linker.js';
+import {isInterfaceError, parseSource, noValue} from './linker.js';
+import {EFFECT} from './api-coverage.js';
 import {ENTRY_CONTRACT} from './model.js';
 import {clip} from './protocol.js';
 import {normalizeInterfaces, repairInterfaces, signature, GENERIC_NAMES} from './interfaces.js';
@@ -117,32 +118,41 @@ const patternNames=n=>!n?[]:n.type==='Identifier'?[n.name]:n.type==='ObjectPatte
 // app.createTicket(d)) is bound as a declaration's is; each call keeps its
 // text, and each pass to a helper its line, scope and the function it
 // reaches, so a binding reads back to the app call that produced it.
+// v7.15.8 review (probes A2, A3, A5, A12): every binding of a name with what
+// bound it (binds: a declaration, a destructuring, an assignment, in its
+// scope), each function's returns (rets) and a pass's argument nodes, so a
+// binding resolves to its latest initializer: an app call, a helper that
+// returns one, or an expression over one (tickets.find(…) over listTickets()).
+const un=n=>n?.type==='AwaitExpression'?un(n.argument):n?.type==='ParenthesizedExpression'?un(n.expression):n;
 function testShape(test) {
   let ast;try {ast=parseSource(test).ast;} catch {return null;}
-  let app='app';const calls=[],tries=[],fns=[],named=new Map(),passes=[],src=String(test);
+  let app='app';const calls=[],tries=[],fns=[],named=new Map(),passes=[],binds=[],rets=[],src=String(test);
   visit(ast,(n,parents)=>{
-    const scope=[...parents].reverse().find(x=>FUNCTIONS.has(x.type))||null;
-    if(n.type==='VariableDeclarator'&&n.id.type==='Identifier'){const init=n.init?.type==='AwaitExpression'?n.init.argument:n.init;if(init?.type==='CallExpression'&&init.callee.type==='Identifier'&&init.callee.name==='start')app=n.id.name;if(init&&FUNCTIONS.has(init.type))named.set(n.id.name,init);}
-    if(FUNCTIONS.has(n.type)){fns.push(n);if(n.id?.name)named.set(n.id.name,n);}
+    const scope=[...parents].reverse().find(x=>FUNCTIONS.has(x.type))||null,up=parents.at(-1)?.type==='AwaitExpression'?parents.at(-2):parents.at(-1);
+    if(n.type==='VariableDeclarator'&&n.id.type==='Identifier'){const init=un(n.init);if(init?.type==='CallExpression'&&init.callee.type==='Identifier'&&init.callee.name==='start')app=n.id.name;if(init&&FUNCTIONS.has(init.type))named.set(n.id.name,init);}
+    if(n.type==='VariableDeclarator'&&n.init)for(const name of patternNames(n.id))binds.push({name,line:n.loc.start.line,fn:scope,init:n.init});
+    if(n.type==='AssignmentExpression'&&n.operator==='='&&n.left.type==='Identifier')binds.push({name:n.left.name,line:n.loc.start.line,fn:scope,init:n.right});
+    if(FUNCTIONS.has(n.type)){fns.push(n);if(n.id?.name)named.set(n.id.name,n);if(n.body.type!=='BlockStatement')rets.push({fn:n,node:n.body,line:n.body.loc.start.line});}
+    if(n.type==='ReturnStatement'&&n.argument)rets.push({fn:scope,node:n.argument,line:n.loc.start.line});
     if(n.type==='TryStatement')tries.push(n);
-    if(n.type==='CallExpression'&&n.callee.type==='Identifier')passes.push({name:n.callee.name,args:n.arguments.map(a=>a.type==='Identifier'?a.name:null),line:n.loc.start.line,fn:scope});
+    if(n.type==='CallExpression'&&n.callee.type==='Identifier')passes.push({name:n.callee.name,args:n.arguments,line:n.loc.start.line,fn:scope});
     if(n.type==='CallExpression'&&n.callee.type==='MemberExpression'&&!n.callee.computed&&n.callee.object.type==='Identifier'&&n.callee.property.type==='Identifier') {
-      const up=parents.at(-1)?.type==='AwaitExpression'?parents.at(-2):parents.at(-1);
-      calls.push({object:n.callee.object.name,method:n.callee.property.name,line:n.loc.start.line,fn:scope,binds:up?.type==='VariableDeclarator'?patternNames(up.id):up?.type==='AssignmentExpression'&&up.left.type==='Identifier'?[up.left.name]:[],
+      calls.push({node:n,object:n.callee.object.name,method:n.callee.property.name,line:n.loc.start.line,fn:scope,binds:up?.type==='VariableDeclarator'?patternNames(up.id):up?.type==='AssignmentExpression'&&up.left.type==='Identifier'?[up.left.name]:[],
         text:clip(src.slice(n.start,n.end).replace(/\s+/g,' '),120),rejects:parents.some(x=>x.type==='CallExpression'&&x.callee.type==='MemberExpression'&&/^(?:rejects|throws)$/.test(x.callee.property?.name))});
     }
   });
   for(const p of passes)p.to=named.get(p.name)||null;
-  const aliases=passes.flatMap(c=>c.to?c.args.flatMap((a,i)=>a===app&&c.to.params[i]?.type==='Identifier'?[{name:c.to.params[i].name,fn:c.to}]:[]):[]);
-  return {app,ast,calls:calls.filter(c=>c.object===app||aliases.some(a=>a.name===c.object&&a.fn===c.fn)),tries,fns,passes,lines:src.split('\n')};
+  const aliases=passes.flatMap(c=>c.to?c.args.flatMap((a,i)=>a.type==='Identifier'&&a.name===app&&c.to.params[i]?.type==='Identifier'?[{name:c.to.params[i].name,fn:c.to}]:[]):[]);
+  return {app,ast,calls:calls.filter(c=>c.object===app||aliases.some(a=>a.name===c.object&&a.fn===c.fn)),tries,fns,passes,binds,rets,named,lines:src.split('\n')};
 }
 // v7.15.8 (run15): the error forms that read a value the test holds: a
 // member of undefined or null (Node's two phrasings, and a destructuring),
 // a member called on a binding (r.save is not a function), a binding that
 // is undefined, null or not iterable. {member, value, receiver}.
+// v7.15.8 review (probe A7): "undefined is not iterable" names the value, not a binding.
 const READS=[[/Cannot read propert(?:y|ies) of (undefined|null) \(reading '([\w$]+)'\)/,m=>({member:m[2],value:m[1]})],[/Cannot read property '([\w$]+)' of (undefined|null)/,m=>({member:m[1],value:m[2]})],
   [/Cannot destructure property '([\w$]+)' of '[^']*' as it is (undefined|null)/,m=>({member:m[1],value:m[2]})],[/(?<![\w$.])([\w$]+)\.([\w$]+) is not (?:a function|iterable|a constructor)/,m=>({receiver:m[1],member:m[2],call:true})],
-  [/(?<![\w$.])([\w$]+) is (undefined|null)\b/,m=>({receiver:m[1],value:m[2]})],[/(?<![\w$.])([\w$]+) is not iterable/,m=>({receiver:m[1],iterable:true})]];
+  [/(?<![\w$.])([\w$]+) is (undefined|null)\b/,m=>({receiver:m[1],value:m[2]})],[/(?<![\w$.])([\w$]+) is not iterable/,m=>/^(?:undefined|null)$/.test(m[1])?{value:m[1],iterable:true}:{receiver:m[1],iterable:true}]];
 const readForm=text=>{for(const [re,f] of READS){const m=re.exec(text);if(m)return f(m);}return null;};
 // A catch that fails the test expects no throw (review: assert.fail('createTicket threw: ' + e.message)).
 const FAILS=/process\.exit(?:Code)?\b|\bthrow\b|\bassert\.fail\(|\bassert(?:\.ok|\.equal|\.strictEqual)?\(\s*false\b|\breject\(/;
@@ -152,7 +162,8 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(),
   const s=String(output||''),keys=[...paths].sort((a,b)=>b.length-a.length),frames=[],smoke=[],cols=new Map();let inTest=null;
   for(const m of s.matchAll(STACK)) {
     const file=m[2],path=keys.find(k=>file===k||file.endsWith('/'+k)),mine=/(?:^|\/)glue\/smoke\.js$/.test(file);
-    if(inTest===null&&(path||mine))inTest=!path;
+    // v7.15.8 review (probe A8): the innermost frame that is not Node's own decides whether the error is the test line's; one in the glue or a dependency is not.
+    if(inTest===null&&!/^node:/.test(file))inTest=mine;
     if(path){if(!frames.some(f=>f.path===path&&f.fn===frameFn(m[1])))frames.push({path,fn:frameFn(m[1]),line:Number(m[3])});}
     else if(mine&&!smoke.includes(Number(m[3]))){smoke.push(Number(m[3]));cols.set(Number(m[3]),Number(m[4]));}
   }
@@ -176,9 +187,9 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(),
   // result the line uses (review: created.title asserted after
   // listTickets() is createTicket's), else the nearest.
   const shape=testShape(test);let call=null,at=null;
+  const scopeOf=line=>[...shape.fns].reverse().find(f=>f.loc.start.line<=line&&line<=f.loc.end.line)||null;
+  const pick=(list,line)=>{const ids=new Set(String(shape.lines[line-1]||'').match(/[A-Za-z_$][\w$]*/g)||[]),on=list.filter(c=>c.line===line);return on.at(-1)||list.filter(c=>c.binds.some(b=>ids.has(b))).at(-1)||list.at(-1);};
   if(shape) {
-    const scopeOf=line=>[...shape.fns].reverse().find(f=>f.loc.start.line<=line&&line<=f.loc.end.line)||null;
-    const pick=(list,line)=>{const ids=new Set(String(shape.lines[line-1]||'').match(/[A-Za-z_$][\w$]*/g)||[]),on=list.filter(c=>c.line===line);return on.at(-1)||list.filter(c=>c.binds.some(b=>ids.has(b))).at(-1)||list.at(-1);};
     for(const line of smoke){const scope=scopeOf(line),same=shape.calls.filter(c=>c.fn===scope&&c.line<=line);if(same.length){call=pick(same,line);at=line;break;}}
     if(!call&&smoke.length){const before=shape.calls.filter(c=>c.line<=smoke[0]);if(before.length){call=pick(before,smoke[0]);at=smoke[0];}}
   }
@@ -192,35 +203,66 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(),
   // two) is read back to the app call that produced it: a declaration or an
   // assignment, a destructuring, a helper's parameter through the pass
   // (gone(app, t.id) as v7.15.6 tracks it); that call is the method under
-  // test, and the text says what the test read. The call on the line is the
-  // method only when no such receiver resolves.
-  let read=null;
-  const form=shape&&inTest&&smoke.length?readForm(text):null;
+  // test, and the text says what the test read.
+  // v7.15.8 review: only Node's own error texts are read forms (probes J1,
+  // E1: an assertion's message names a binding in the runner's words); the
+  // frame's column names the one receiver (A9); a receiver resolves through
+  // its latest binding in its own scope (A2, A12), a helper's return (A3), a
+  // pass's inline argument (A4), or the identifiers of the expression that
+  // bound it, the text saying so (A5: created is tickets.find(…) over what
+  // listTickets() returned); a read on a call's own result is that call's
+  // (E2); a read on the app binding names start (A6); a receiver nothing
+  // resolves, inside a call's argument, threw before that call, so the call
+  // on the line is not the method.
+  let read=null,onApp=false;
+  const form=shape&&inTest&&smoke.length&&!assertion?readForm(text):null;
   if(form) {
-    const line=smoke[0],scope=[...shape.fns].reverse().find(f=>f.loc.start.line<=line&&line<=f.loc.end.line)||null,col=cols.get(line);
-    const producer=(name,line,scope,depth=0)=>{
-      const mine=shape.calls.filter(c=>c.line<=line&&c.binds.includes(name)),own=mine.filter(c=>c.fn===scope),hit=(own.length?own:mine).at(-1);
-      if(hit||depth>2||!scope)return hit||null;
-      const i=scope.params.findIndex(p=>(p.type==='AssignmentPattern'?p.left:p).type==='Identifier'&&(p.type==='AssignmentPattern'?p.left:p).name===name);
-      for(const pass of i<0?[]:shape.passes.filter(p=>p.to===scope&&p.args[i])){const r=producer(pass.args[i],pass.line,pass.fn,depth+1);if(r)return r;}
+    const line=smoke[0],scope=scopeOf(line),col=cols.get(line),expr=n=>clip(String(test).slice(n.start,n.end).replace(/\s+/g,' '),80);
+    // The identifiers an expression reads, in source order, less the parameters of functions inside it and the keys it names.
+    const idents=node=>{const out=[],skip=new Set();visit(node,(x,ps)=>{if(FUNCTIONS.has(x.type))for(const p of x.params)for(const nm of patternNames(p))skip.add(nm);const up=ps.at(-1);if(x.type==='Identifier'&&!skip.has(x.name)&&!(up?.type==='MemberExpression'&&up.property===x&&!up.computed)&&!(up?.type==='Property'&&up.key===x&&!up.computed&&!up.shorthand))out.push(x.name);});return [...new Set(out)];};
+    const resolve=(node,line,scope,depth)=>{
+      const e=un(node);if(!e||depth>3)return null;
+      const own=shape.calls.find(c=>c.node===e);if(own)return {call:own};
+      if(e.type==='Identifier')return producer(e.name,line,scope,depth);
+      if(e.type==='CallExpression'&&e.callee.type==='Identifier'&&shape.named.has(e.callee.name)){const f=shape.named.get(e.callee.name);for(const ret of shape.rets.filter(x=>x.fn===f)){const got=resolve(ret.node,ret.line,f,depth+1);if(got)return {...got,through:got.through||`${expr(e)} on line ${line}`};}return null;}
+      for(const name of idents(e)){const got=producer(name,line,scope,depth+1);if(got)return {...got,over:got.over||expr(e)};}
       return null;
     };
-    const receivers=[];
-    if(form.receiver)receivers.push({name:form.receiver});
-    else visit(shape.ast,n=>{
+    const producer=(name,line,scope,depth)=>{
+      if(depth>3)return null;
+      const own=shape.binds.filter(b=>b.name===name&&b.fn===scope&&b.line<=line).at(-1);
+      if(own)return resolve(own.init,own.line,scope,depth);
+      // A parameter: the argument at the pass on an outer frame's line (probe A1: the failing call site), else at the first pass.
+      const i=scope?scope.params.findIndex(p=>p.type!=='RestElement'&&patternNames(p).includes(name)):-1;
+      if(i>=0){const all=shape.passes.filter(p=>p.to===scope&&p.args[i]),sites=all.filter(p=>smoke.includes(p.line));for(const pass of sites.length?sites:all){const got=resolve(pass.args[i],pass.line,pass.fn,depth+1);if(got)return got;}return null;}
+      const outer=shape.binds.filter(b=>b.name===name&&b.line<=line&&b.fn!==scope&&(!b.fn||scope&&b.fn.start<=scope.start&&scope.end<=b.fn.end)).at(-1);
+      return outer?resolve(outer.init,outer.line,outer.fn,depth):null;
+    };
+    const receivers=[],push=(node,col)=>{const e=un(node);if(e&&!receivers.some(r=>r.node===e))receivers.push({node:e,name:e.type==='Identifier'?e.name:'',col});};
+    visit(shape.ast,n=>{
       if(n.loc.start.line!==line)return;
-      if(n.type==='MemberExpression'&&n.object.type==='Identifier'&&(!n.computed&&n.property.type==='Identifier'&&n.property.name===form.member||n.computed&&n.property.type==='Literal'&&n.property.value===form.member))receivers.push({name:n.object.name,col:n.property.loc.start.column+1});
-      else if(n.type==='VariableDeclarator'&&n.id.type==='ObjectPattern'&&n.init?.type==='Identifier'&&n.id.properties.some(p=>p.type==='Property'&&!p.computed&&(p.key.name??p.key.value)===form.member))receivers.push({name:n.init.name,col:n.init.loc.start.column+1});
+      if(form.receiver){if(n.type==='Identifier'&&n.name===form.receiver)push(n,n.loc.start.column+1);return;}
+      if(form.member&&n.type==='MemberExpression'&&(!n.computed&&n.property.type==='Identifier'&&n.property.name===form.member||n.computed&&n.property.type==='Literal'&&n.property.value===form.member))push(n.object,n.property.loc.start.column+1);
+      else if(form.member&&n.type==='VariableDeclarator'&&n.id.type==='ObjectPattern'&&n.init&&n.id.properties.some(p=>p.type==='Property'&&!p.computed&&(p.key.name??p.key.value)===form.member))push(n.init,un(n.init).loc.start.column+1);
+      else if(form.iterable&&n.type==='VariableDeclarator'&&n.id.type==='ArrayPattern'&&n.init)push(n.init,un(n.init).loc.start.column+1);
+      else if(form.iterable&&n.type==='ForOfStatement')push(n.right,un(n.right).loc.start.column+1);
+      else if(form.iterable&&n.type==='SpreadElement')push(n.argument,un(n.argument).loc.start.column+1);
     });
-    const ordered=[...receivers.filter(r=>r.col===col),...receivers.filter(r=>r.col!==col)];
-    let hit=null,who=null;
-    for(const r of ordered){hit=producer(r.name,line,scope);if(hit){who=r.name;break;}}
-    if(hit) {
-      const params=paramsOf(hit.method),sig=Array.isArray(params)?`${hit.method}(${params.map(String).join(', ')})`:hit.text.replace(/^[\w$]+\./,''),got=form.value==='null'?'null':'nothing';
-      const what=form.call?`calls ${who}.${form.member}()`:form.iterable?`iterates over ${who}`:form.member?`reads ${who}.${form.member}`:`reads ${who}`;
-      text=form.call?`the test ${what}, but what ${sig} returned has no ${form.member}()`:form.iterable?`the test ${what}, but what ${sig} returned is not iterable`:`the test ${what}, but ${sig} returned ${got}`;
-      read={line,text:clip(String(shape.lines[line-1]??'').trim().replace(/;$/,''),200),name:who,member:form.member||'',what,call:hit.text,call_line:hit.line,needs:form.call?`an object with ${form.member}()`:form.iterable?'an iterable':form.member?`an object with ${form.member}`:'a value'};
-      call=hit;at=hit.line;
+    if(form.receiver&&!receivers.length)receivers.push({node:null,name:form.receiver});
+    const byCol=receivers.filter(r=>r.col===col),ordered=byCol.length?byCol:receivers;
+    let found=null,who='';
+    for(const rc of ordered){if(rc.name===shape.app){onApp=true;break;}found=rc.node?resolve(rc.node,line,scope,0):producer(rc.name,line,scope,0);if(found){who=rc.name;break;}}
+    if(found) {
+      const c=found.call,params=paramsOf(c.method),sig=Array.isArray(params)?`${c.method}(${params.map(String).join(', ')})`:c.text.replace(/^[\w$]+\./,''),got=form.value?form.value==='null'?'null':'nothing':'';
+      const what=form.call?`calls ${who}.${form.member}()`:form.iterable?who?`iterates over ${who}`:`iterates over what ${sig} returned`:form.member?who?`reads ${who}.${form.member}`:`reads the ${form.member} of what ${sig} returned`:`reads ${who}`;
+      const is=form.call?`has no ${form.member}()`:form.iterable&&!got?'is not iterable':`is ${form.value||'undefined'}`;
+      text=found.over?`the test ${what}, but ${who}, ${found.over} over what ${sig} returned, ${is}`:!who?`the test ${what}, but it returned ${got||'nothing'}`:form.call||form.iterable&&!got?`the test ${what}, but what ${sig} returned ${is}`:`the test ${what}, but ${sig} returned ${got}`;
+      read={line,text:clip(String(shape.lines[line-1]??'').trim().replace(/;$/,''),200),name:who,member:form.member||'',what,call:c.text,call_line:c.line,got,...found.over?{over:found.over}:{},...found.through?{through:found.through}:{},
+        needs:form.call?`an object with ${form.member}()`:form.iterable?'an iterable':form.member?`an object with ${form.member}`:'a value'};
+      call=c;at=c.line;
+    } else if(!onApp) {
+      const inside=c=>c.line===line&&receivers.some(r=>r.node&&c.node.arguments.some(a=>a.start<=r.node.start&&r.node.end<=a.end));
+      if(shape.calls.some(inside)){const rest=shape.calls.filter(c=>c.fn===scope&&c.line<=line&&!inside(c));call=rest.length?pick(rest,line):null;at=line;}
     }
   }
   // Inside a try expecting a throw: assert.rejects/throws, or the innermost
@@ -241,9 +283,10 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(),
   const lineText=n=>clip(String(shape?.lines[n-1]??'').trim().replace(/;$/,''),200);
   // The functions the failure names: the innermost frame's exported
   // function, then names in the message; a method missing from start()'s
-  // object (app.listTickets is not a function) names start, the API's own.
-  const thrown=frames.find(f=>f.fn&&exportsOf(f.path).has(f.fn)),api=!!shape&&new RegExp(`\\b${shape.app.replace(/\$/g,'\\$')}\\.[\\w$]+ is not a function`).test(text);
-  const names=[...new Set([thrown?.fn,...(text.match(/[A-Za-z_$][\w$]*/g)||[]).filter(w=>/[a-z][A-Z]/.test(w)&&!/(?:Error|Exception|Rejection)$/.test(w)&&w!==read?.name),
+  // object (app.listTickets is not a function), or a read on it, names
+  // start, the API's own. A read names its producer alone.
+  const thrown=frames.find(f=>f.fn&&exportsOf(f.path).has(f.fn)),api=!!shape&&(onApp||new RegExp(`\\b${shape.app.replace(/\$/g,'\\$')}\\.[\\w$]+ is not a function`).test(text));
+  const names=read?[call.method]:[...new Set([thrown?.fn,...(text.match(/[A-Za-z_$][\w$]*/g)||[]).filter(w=>/[a-z][A-Z]/.test(w)&&!/(?:Error|Exception|Rejection)$/.test(w)),
     ...[...text.matchAll(/([\w$.]+) is not (?:a function|defined|a constructor)/g)].map(m=>m[1].split('.').pop()),...api?['start']:[]].filter(Boolean))];
   // A read's text states what must hold, no longer the error (error false): the producer must return what the test reads.
   return {text,error:!assertion&&!read,method:call?.method||'',names,...call?{test_line:{line:call.line,text:lineText(call.line),...expects(call)||{}}}:{},
@@ -278,11 +321,37 @@ export function namedFunctions(text, fns) {
 // createResult.id, and createResult is what app.createTicket(createData)
 // returned on line 10." What it must return is the promise's returns when
 // stated (and not nothing), else what the test reads (an object with id).
-const NO_VALUE=/^\W*(?:nothing|undefined|void|none|no (?:value|return))\b/i;
-export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null}={}) {
+// v7.15.8 review: the head names the thing, not only the shape. Without
+// returns, the does' leading effect verb and its object ("creates a new
+// ticket and saves it") give "must return the ticket it created and saved (an
+// object with id)", or "what it saved, with its id" when the does names no
+// object; with a returns that admits an absent case ("the ticket, or
+// undefined") the head reads the shape the test read and what came back
+// ("an object with title (it returned nothing)"), since the stated phrase is
+// what the worker already returned; a receiver read over another call's
+// result reads "what tickets.find(…) picks from it (an object with id)".
+const ABSENT=/\b(?:or|else|otherwise)\b[^.;]*\b(?:undefined|null|nothing|none)\b|\b(?:undefined|null|nothing|none)\b[^.;]*\b(?:when|if|for|unless|otherwise|else)\b/i;
+const PAST={send:'sent',write:'written',set:'set',reset:'reset',put:'put',log:'logged'};
+const past=v=>PAST[v]||(/e$/.test(v)?v+'d':/[^aeiou]y$/.test(v)?v.slice(0,-1)+'ied':v+'ed');
+const stemOf=v=>/ies$/.test(v)?v.slice(0,-3)+'y':/(?:ss|zz|x|ch|sh)es$/.test(v)?v.slice(0,-2):/ing$/.test(v)?v.slice(0,-3):/[^s]s$/.test(v)?v.slice(0,-1):v;
+const SKIP=/^(?:a|an|the|one|new|each|every|given|specified|existing|single|fresh|provided|supplied|incoming|current|unique|its|this|that)$/i,STOP=/^(?:and|to|in|into|from|by|with|for|on|at|of|it|them|this|that|then|or|as|using|via)$/i;
+function madeBy(does, needs, member) {
+  const m=/^\W*(?:(?:this|the) (?:function|method|operation) )?([a-z]+)\b((?:\s+[a-z][\w-]*)*)/i.exec(String(does||'')),verb=m&&EFFECT.test(m[1])?past(stemOf(m[1].toLowerCase())):'';
+  if(!verb)return '';
+  const words=m[2].match(/[a-z][\w-]*/gi)||[],stop=words.findIndex(w=>STOP.test(w)),noun=(stop<0?words:words.slice(0,stop)).filter(w=>!SKIP.test(w)&&!/ed$/i.test(w))[0]?.toLowerCase()||'';
+  const more=[...String(does).matchAll(/\b(?:and|then)\s+(?:then\s+)?([a-z]+)\b/gi)].map(x=>x[1].toLowerCase()).filter(v=>EFFECT.test(v)).map(v=>past(stemOf(v))).filter(v=>v!==verb);
+  const verbs=[verb,...more.slice(0,1)].join(' and ');
+  return noun?`the ${noun} it ${verbs} (${needs})`:member?`what it ${verbs}, with its ${member}`:`what it ${verbs} (${needs})`;
+}
+// v7.15.8 review: performer, the route named this promise as the performer of a generic start() key (R2c: start() returns create, createTicket performs it), so a read on that key is this promise's.
+export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null, performer=false}={}) {
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
-  const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'',lead=typeof r?.invented==='string'?r.invented.trim()+' ':'';
-  const rd=fn&&r?.read&&fn.name===(r.method||fn.name)?r.read:null,back=rd?`must return ${fn.returns&&!NO_VALUE.test(fn.returns)?String(fn.returns).replace(/[.\s]+$/,''):rd.needs}: test line ${rd.line} ${rd.what}, and ${rd.name} is what ${rd.call} returned on line ${rd.call_line}.`:'';
+  const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
+  const rd=fn&&r?.read&&(fn.name===r.method||performer)?r.read:null,ret=rd&&fn.returns&&!noValue(fn.returns)?String(fn.returns).replace(/[.\s]+$/,''):'';
+  const want=!rd?'':ret&&!ABSENT.test(ret)?ret:ret?`${rd.needs}${rd.got?` (it returned ${rd.got})`:''}`:rd.over?`what ${rd.over} picks from it (${rd.needs})`:madeBy(fn.does,rd.needs,rd.member)||rd.needs;
+  const back=rd?`must return ${want}: test line ${rd.line} ${rd.what}${rd.name?`, and ${rd.name} is ${rd.over?rd.over+' over ':''}what ${rd.call} returned on line ${rd.call_line}${rd.through?', through '+rd.through:''}`:`, ${rd.call} on line ${rd.call_line}`}.`:'';
+  // The runner's sentence leads once; before a head that states what the line requires, its need is not repeated (review).
+  const lead=typeof r?.invented!=='string'?'':(rd?r.invented.replace(/^Test line (\d+) requires .*?, which nothing in the plan states((?: and [^;]*)?);/,'Nothing in the plan states what test line $1 requires$2;'):r.invented).trim()+' ';
   const head=lead+(fn?`Your ${signature(fn)}${does}${rest}${on} ${back||`${thrown&&r?.error?'threw':verb}: ${need}.`}`:
     module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`);
   const line=r?.test_line?.line&&!back?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
@@ -320,10 +389,10 @@ export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer
   let ask=null;
   const rank=c=>{const i=(ranks||[]).indexOf(c);return i<0?Infinity:i;};
   const party=[...new Set(others.map(promiser))].filter(c=>c!==promiser(site)).sort((a,b)=>rank(a)-rank(b)),otherChildren=party.filter(c=>!skip.has(c)&&!has(c)),siteFn=site?fnOf(promiser(site),site):null;
-  if(site)add(promiser(site),site===r.method||site==='start'?'a':'c',{fn:siteFn,method:site==='start'?'':r.method,providers:party});
+  if(site)add(promiser(site),site===r.method||site==='start'?'a':'c',{fn:siteFn,method:site==='start'?'':r.method,providers:party,performer:site!==r.method&&site!=='start'});
   else if(otherChildren.length>1&&!ranks)ask=otherChildren;
   for(const c of otherChildren)add(c,'a',{fn:fnOf(c,others.find(n=>promiser(n)===c)),relied:siteFn,providers:[promiser(site),...party.filter(x=>x!==c)].filter(Boolean)});
-  if(perf?.child&&!site)add(perf.child,'c',{fn:perf.fn,method:r.method});
+  if(perf?.child&&!site)add(perf.child,'c',{fn:perf.fn,method:r.method,performer:true});
   // Clef's ranks: the ticket names the child's promise (R3), its first function with the others.
   if(ranks)for(const c of ranks){const [fn,...rest]=fnsOf(c);add(c,'d',{fn:fn||null,more:rest.map(f=>f.name)});}
   else if(!out.length)ask=ask||[];
