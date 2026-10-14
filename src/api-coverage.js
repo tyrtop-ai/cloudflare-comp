@@ -104,23 +104,51 @@ export function goalOperations(goal) {
   return out;
 }
 // v7.15.13 (run18): the methods a goal states start() returns, each {name,
-// params}: in a sentence (backticks removed) that mentions start() and a
-// form of return, expose, provide or "with", the identifiers after that
-// word, written as a call (analyze(snapshot)), inside braces ({ analyze,
-// summarize }) or in camelCase. A plain word is prose, so the runtime's own
-// "one method per operation named above" states none, as does the issue
-// tracker's goal. Valid names only, never start, deduplicated, at most 8.
-const STATES=/\b(?:return(?:s|ed|ing)?|expos(?:e|es|ed|ing)|provid(?:e|es|ed|ing)|with)\b/i;
+// params}: in a sentence that mentions start() and, after it, a form of
+// return, expose, provide or "with" (or an arrow), what that verb governs,
+// up to a relative clause (", which …"): items listed in braces ({ analyze,
+// summarize }), code-like calls written name(params) with no space before
+// the parenthesis and identifiers for parameters (analyze(snapshot),
+// listTickets()), and "the NAME method". The sentence after one that
+// mentions start() counts when it opens with It or That object ("That
+// object exposes analyze(snapshot)"); a wrapped line continues its sentence,
+// and e.g. ends none. Review: never a word before a parenthetical
+// ("an object (the public API)", "a Promise (resolving …)"), a capitalised
+// name or a global (Promise, setTimeout, require), a member of a dotted
+// path (JSON.parse), or a camelCase word with no call or brace form (the
+// tracker's "createdAt and updatedAt timestamps" turned its plan to two
+// methods nobody performs). Valid names only, never start, deduplicated, at
+// most 8; the runtime's own "one method per operation named above" states none.
+const STATES=/\b(?:return(?:s|ed|ing)?|expos(?:e|es|ed|ing)|provid(?:e|es|ed|ing)|with)\b|→|->|=>/i;
+const GLOBALS=new Set('require setTimeout setInterval setImmediate clearTimeout clearInterval queueMicrotask structuredClone fetch parseInt parseFloat isNaN isFinite eval encodeURIComponent decodeURIComponent'.split(' '));
+const NOT_METHOD=/^(?:one|each|every|single|generic|separate|public|private|async|helper|main|new|own|same|other|only|first|last|given|entry|start|its|that|this|an?|the)$/;
+const IT=/^(?:it|that object|the object|this object|the returned object|that api|the api object)\b/i;
+const callParams=s=>{const ps=String(s).trim()?String(s).split(','):[],m=ps.map(p=>/^\s*(?:\.\.\.)?([A-Za-z_$][\w$]*)\s*(?:[:=?][^,]*)?$/.exec(p));return m.every(Boolean)?m.map(x=>x[1]):null;};
+const BRACES=/\{((?:[^{}]|\{[^{}]*\})*)\}/g;
+const statedText=goal=>String(goal||'').replace(/\r\n?/g,'\n').replace(/\n(?![ \t]*(?:\n|[-*•+]\s|\d+[.)]\s))[ \t]*/g,' ').replace(/\b(e\.g|i\.e|etc)\./gi,'$1․').split(/(?<=[.!?;])\s+|\n+/).map(s=>s.replace(/`/g,''));
 export function goalMethods(goal) {
-  const out=[],add=(name,params='')=>{name=validName(name);if(name&&name!=='start'&&!out.some(m=>m.name===name)&&out.length<8)out.push({name,params:params.split(',').map(p=>validName((p.match(/[A-Za-z_$][\w$]*/)||[''])[0])).filter(Boolean).slice(0,6)});};
-  for(const sentence of String(goal||'').replace(/`/g,'').split(/(?<=[.!?;])\s+|\n+/)) {
-    const m=/\bstart\s*\(\s*\)/.test(sentence)?STATES.exec(sentence):null;
+  const out=[],add=(name,params=[])=>{if(validName(name)&&/^[a-z_$]/.test(name)&&name!=='start'&&!GLOBALS.has(name)&&!out.some(m=>m.name===name)&&out.length<8)out.push({name,params:params.slice(0,6)});};
+  let prev='';
+  for(const s of statedText(goal)) {
+    const at=s.search(/\bstart\s*\(\s*\)/),opener=at<0&&/\bstart\s*\(\s*\)/.test(prev)&&IT.test(s.replace(/^[\s*•+>-]+/,''));
+    prev=s;
+    if(at<0&&!opener)continue;
+    const from=Math.max(at,0),m=STATES.exec(s.slice(from));
     if(!m)continue;
-    const rest=sentence.slice(m.index+m[0].length);
-    for(const b of rest.matchAll(/\{([^{}]*)\}/g))for(const item of b[1].split(/,(?![^()]*\))/)){const c=/([A-Za-z_$][\w$]*)\s*(?:\(([^()]*)\))?/.exec(item);if(c)add(c[1],c[2]);}
-    for(const c of rest.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(([^()]*)\)|\b([a-z][a-z0-9]*[A-Z][\w$]*)\b/g))add(c[1]||c[3],c[2]);
+    const rest=s.slice(from+m.index+m[0].length).split(/,\s*(?:which|who|whose|where|because|so|while|but)\b/i)[0];
+    for(const b of rest.matchAll(BRACES))for(const item of b[1].split(/,(?![^()]*\))(?![^{}]*\})/)){const c=/^\s*([A-Za-z_$][\w$]*)\s*(?:\(([^()]*)\))?\s*$/.exec(item),ps=c&&(c[2]===undefined?[]:callParams(c[2]));if(ps)add(c[1],ps);}
+    const bare=rest.replace(BRACES,' ');
+    for(const c of bare.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\(([^()]*)\)/g)){const ps=callParams(c[2]);if(ps)add(c[1],ps);}
+    for(const c of bare.matchAll(/\b(?:whose|its|an?|the)\s+([a-z][\w$]*)\s+method\b/g))if(!NOT_METHOD.test(c[1]))add(c[1]);
   }
   return out;
+}
+// v7.15.13 review: what the goal says a stated method returns, from the
+// sentence whose subject it is ("analyze(snapshot) returns a Promise
+// resolving to the complete report"), or ''.
+export function statedReturns(goal, name) {
+  for(const s of statedText(goal)){const m=new RegExp(`^[\\s*•+>-]*${String(name).replace(/[$]/g,'\\$')}\\s*\\([^()]*\\)\\s+returns\\s+(.+?)[.;]?$`).exec(s);if(m)return m[1].replace(/․/g,'.').trim().slice(0,120);}
+  return '';
 }
 // v7.15.5: for each operation the goal names (goalOperations) that listed,
 // the plan's operations, has no function for, the function of the top's
