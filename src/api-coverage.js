@@ -229,8 +229,16 @@ export const operationMethods = (described, operations) =>
 // syntax check.
 export function untestedOperations(test, operations) {
   if(!Array.isArray(operations)||!operations.length)return [];
+  const nodes=testNodes(test);
+  if(!nodes)return [];
+  const methodOf=appMethods(nodes),called=new Set();
+  for(const n of nodes){const m=methodOf(n);if(m)called.add(m);}
+  return operations.filter(o=>o?.method&&!called.has(o.method));
+}
+// Every node of a parsed test, in source order; null when it does not parse.
+function testNodes(test) {
   let ast;
-  try{({ast}=parseSource(String(test||'')));}catch{return [];}
+  try{({ast}=parseSource(String(test||'')));}catch{return null;}
   const nodes=[];
   const walk=node=>{
     if(!node||typeof node.type!=='string')return;
@@ -242,11 +250,16 @@ export function untestedOperations(test, operations) {
     }
   };
   walk(ast);
-  const bare=n=>['AwaitExpression','ChainExpression','ParenthesizedExpression'].includes(n?.type)?bare(n.argument??n.expression):n;
-  const key=n=>n?.type!=='MemberExpression'?null:!n.computed?n.property?.name??null:n.property?.type==='Literal'&&typeof n.property.value==='string'?n.property.value:
-    n.property?.type==='TemplateLiteral'&&!n.property.expressions.length?n.property.quasis[0].value.cooked:null;
+  return nodes;
+}
+const bare=n=>['AwaitExpression','ChainExpression','ParenthesizedExpression'].includes(n?.type)?bare(n.argument??n.expression):n;
+const key=n=>n?.type!=='MemberExpression'?null:!n.computed?n.property?.name??null:n.property?.type==='Literal'&&typeof n.property.value==='string'?n.property.value:
+  n.property?.type==='TemplateLiteral'&&!n.property.expressions.length?n.property.quasis[0].value.cooked:null;
+const bindings=n=>n.type==='VariableDeclarator'?[n.id,n.init]:n.type==='AssignmentExpression'?[n.left,n.right]:[];
+// The app's method a node calls (app.NAME(...), a name bound from the app,
+// call/apply/bind), or null: the reading untestedOperations describes.
+function appMethods(nodes) {
   const started=n=>{n=bare(n);const f=bare(n?.callee);return n?.type==='CallExpression'&&(f?.type==='Identifier'?f.name==='start':key(f)==='start');};
-  const bindings=n=>n.type==='VariableDeclarator'?[n.id,n.init]:n.type==='AssignmentExpression'?[n.left,n.right]:[];
   const apps=new Set();
   for(const n of nodes){const [id,init]=bindings(n);if(id?.type==='Identifier'&&started(init))apps.add(id.name);}
   if(apps.size)for(const n of nodes)if(/Function/.test(n.type))for(const p of n.params||[])if(p.type==='Identifier')apps.add(p.name);
@@ -261,14 +274,138 @@ export function untestedOperations(test, operations) {
     }
     else if(id?.type==='Identifier'&&member?.type==='MemberExpression'&&isApp(member.object)&&key(member))local.set(id.name,key(member));
   }
-  const called=new Set();
-  for(const n of nodes) {
-    if(n.type!=='CallExpression'&&n.type!=='NewExpression')continue;
+  return n=>{
+    if(n?.type!=='CallExpression'&&n?.type!=='NewExpression')return null;
     const callee=bare(n.callee),name=key(callee),object=bare(callee?.object);
-    if(callee?.type==='Identifier'&&local.has(callee.name))called.add(local.get(callee.name));
+    if(callee?.type==='Identifier'&&local.has(callee.name))return local.get(callee.name);
     const through=['call','apply','bind'].includes(name)?(key(object)&&isApp(object.object)?key(object):object?.type==='Identifier'?local.get(object.name):null):null;
-    if(through)called.add(through);
-    else if(name&&isApp(object))called.add(name);
+    return through||(name&&isApp(object)?name:null);
+  };
+}
+
+// v7.15.6: the runner's test is bounded by the plan, as the workers are.
+// What the plan promises each method start() returned does, for the runner
+// (methods: startMethods; performers: the start carrier's plan, startPlan's
+// mine and theirs): the performer named as the member's key, else as the
+// member's own function (create: createTicket, a bound method), else the one
+// whose words the key covers, a verb by its synonyms too (review: remove and
+// del for delete; get, fetch, show, read, find for view; edit, modify,
+// change for update; add, new, insert for create). performed_by names the
+// plan's function behind a key that is not its name, and is no method of
+// app. params: the API member's when it lists them, what the test calls
+// (run11b's create took (data) against a promise of (data, filePath)), else
+// the promise's. A method no performer matches is described by the API alone.
+const SYNONYM={del:'delete',remove:'delete',get:'view',fetch:'view',show:'view',read:'view',find:'view',edit:'update',modify:'update',change:'update',add:'create',new:'create',insert:'create'};
+const opWords=s=>nameWords(s).map(w=>w.length>3?w.replace(/s$/,''):w),sameOp=(key,name)=>{const a=opWords(key),b=opWords(name),v=w=>SYNONYM[w]||w;return a.length>0&&b.length>0&&v(a[0])===v(b[0])&&a.slice(1).every(w=>b.slice(1).includes(w));};
+export function methodDescriptions(methods, described, performers) {
+  const members=methodsOf(described),fns=(performers||[]).filter(f=>f?.name&&f.name!=='start'),one=xs=>xs.length===1?xs[0]:null;
+  return (methods||[]).flatMap(m=>{
+    const own=String(members[m]?.name||'').replace(/^bound /,''),listed=Array.isArray(members[m]?.params)&&members[m].params.length?members[m].params.map(String):null;
+    const f=fns.find(x=>x.name===m)||one(fns.filter(x=>x.name===own))||one(fns.filter(x=>performsOp(m,x)||sameOp(m,x.name)));
+    return f?[{method:m,...f.name!==m?{performed_by:f.name}:{},does:String(f.does||''),params:listed||(Array.isArray(f.params)?f.params.map(String):[])}]:[];
+  });
+}
+// The assertions of a runner draft that neither the goal, the API nor the
+// plan's descriptions state, each {line, text, rule, name, what, need, why}.
+// Conservative (review): only what the plan plainly does not license is
+// named; a calculator's add(2, 3) === 5 is what its goal states.
+// message: an error's message compared with a string or regex none of them
+// contains (run13's assert.equal(err.message, 'Ticket not found');
+// assert.throws or rejects with /…/ or {message}; err.message === '…';
+// err.message.includes('…'); /…/.test(err.message); String(err)). An error
+// is a catch parameter, the parameter of a validator given to assert.throws
+// or rejects, or a name such as err, error or reason: a ticket's message
+// field is the application's data, and a literal the test passed into an
+// app method is its own. A regex is run on the corpus, its anchors and a
+// leading Error: dropped; one of metacharacters alone, or of the word error
+// alone, accepts any error and claims no message.
+// result: a success flag (true, false, 'ok', 'done', 'deleted', …) equated
+// with, or assert.ok of, the direct result of a method whose description
+// leads with an effect verb (removes, saves, …) and states no return value
+// (run12's assert.equal(deleteResult, true) for "Removes a ticket from the
+// data store"); or true or false equated with a described method whose
+// stated return is no boolean (run13's "removes a ticket and returns it"
+// === true). Numbers and other strings are never named.
+// throw: the test requires a described method to throw, by assert.rejects
+// or throws around its call, a flag set only in the catch and asserted, or
+// assert.fail after the call inside the try, when neither the goal nor its
+// description says it throws (run13's assert.ok(errorCaught) at line 55:
+// viewTicket "returns the ticket with the given ID"). need: what the test
+// requires, for a failure on the line (runApplication). GONE_IDIOM: the
+// check that accepts a throw, null or undefined alike, given once with the
+// correction (runnerTestError) for a message or throw finding.
+// A property of the result (created.id) is the application's data, a method
+// no description covers is bound by the API alone, and a draft that does not
+// parse is left to the syntax check.
+export const GONE_IDIOM="accept a thrown error or a null or undefined result alike, for example: let gone; try { gone = await app.viewTicket(id); } catch (e) { gone = null; } assert.ok(gone == null, 'deleted ticket must be gone')";
+const STATES_RETURN=/(?:^|\b(?:and|then|or|which|that|it)\b|[,;:])\s*(?:return(?:s|ing)?(?!\s+(?:nothing|undefined|void|null|no\b))|yields?|produces?|computes?|calculates?|counts?|retrieves?|fetch(?:es)?|finds?|looks? up|loads?|reads?|gets?|lists?|search(?:es)?|checks?|tells?|reports?|resolves?|gives?(?: back)?|whether|true|false)\b/i;
+const EFFECT=/^\W*(?:(?:this|the) (?:function|method|operation) )?(?:creat|add|delet|remov|updat|modif|edit|chang|sav|stor|set|mark|clos|assign|writ|send|clear|reset|record|register|log|archiv|restor|insert)(?:e|es|s|ed|ing|y|ies|ied|ying)?\b/i;
+const BOOLEAN=/\b(?:true|false|whether|bool(?:ean)?|succe\w*|exist\w*|found|valid\w*|ok|flag)\b/i,SAYS_THROW=/\b(?:throw|error|reject|invalid|fail|exception)/i;
+const FLAGS=new Set(['ok','okay','success','successful','succeeded','done','deleted','removed','created','updated','saved','stored','added','completed','complete','yes','true','false']);
+const EQUALS=new Set(['equal','strictEqual','deepEqual','deepStrictEqual','notEqual','notStrictEqual','notDeepEqual','notDeepStrictEqual']);
+const MATCHES=new Set(['match','doesNotMatch']),THROWS=new Set(['throws','rejects','doesNotThrow','doesNotReject']),COMPARES=new Set(['===','==','!==','!=']);
+const CONTAINS=new Set(['includes','startsWith','endsWith','match','search','indexOf']),ERROR_NAME=/^(?:e|err|error|ex|exception|reason)$|err(?:or)?$/i,DELETES=/^(?:delete|remove|del)$/;
+export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
+  const src=String(test||''),nodes=testNodes(src);
+  if(!nodes)return [];
+  const does=new Map((methods||[]).filter(m=>m?.method&&m.does).map(m=>[m.method,String(m.does)])),performs=new Map((methods||[]).filter(m=>m?.method).map(m=>[m.method,String(m.performed_by||m.method)]));
+  const corpus=[goal,api,...does.values(),...(methods||[]).flatMap(m=>m?.params||[])].join('\n'),low=corpus.toLowerCase();
+  const string=n=>n?.type==='Literal'&&typeof n.value==='string'?n.value:n?.type==='TemplateLiteral'&&!n.expressions.length?n.quasis.map(q=>q.value.cooked).join(''):null;
+  const regex=n=>n?.type==='Literal'&&n.regex?n.regex:null,claims=n=>string(n)!==null||!!regex(n),quote=n=>string(n)!==null?`'${string(n)}'`:src.slice(n.start,n.end);
+  // A regex as a claim about the message, or null when it accepts any error.
+  const pattern=r=>{const p=r.pattern.replace(/^\^/,'').replace(/\$$/,'').replace(/^(?:\(\?:)?(?:\\w[*+]|\w*)Error:(?:\\s[*+?]?|\s)*\)?\??/,'');return (p.replace(/\\./g,'').match(/[a-z]+/gi)||[]).some(w=>!/^\w*errors?$/i.test(w))?p:null;};
+  const methodOf=appMethods(nodes),own=new Set();
+  for(let i=0;i<nodes.length;i++)if(methodOf(nodes[i])&&nodes[i].arguments?.length)for(let j=i+1;j<nodes.length&&nodes[j].start<nodes[i].end;j++)if(nodes[j].start>=nodes[i].arguments[0].start&&string(nodes[j])!==null)own.add(string(nodes[j]));
+  const stated=n=>{const s=string(n);if(s!==null)return low.includes(s.replace(/^\w*Error: /,'').toLowerCase())||own.has(s);const p=pattern(regex(n));if(p===null)return true;try{return new RegExp(p,[...new Set(regex(n).flags.replace(/[gy]/g,'')+'i')].join('')).test(corpus);}catch{return true;}};
+  const assertion=n=>{const c=bare(n.callee);return c?.type==='Identifier'&&c.name==='assert'?'ok':c?.type==='MemberExpression'&&bare(c.object)?.type==='Identifier'&&bare(c.object).name==='assert'?key(c):null;};
+  // Errors: catch parameters, validator parameters, names such as err; messages: their .message, String(err), a name bound to one.
+  const errs=new Set(nodes.flatMap(n=>n.type==='CatchClause'&&n.param?.type==='Identifier'?[n.param.name]:n.type==='CallExpression'&&THROWS.has(assertion(n))&&/Function/.test(n.arguments?.[1]?.type||'')&&n.arguments[1].params?.[0]?.type==='Identifier'?[n.arguments[1].params[0].name]:[])),msgs=new Set();
+  const errorLike=o=>{o=bare(o);return o?.type==='Identifier'?errs.has(o.name)||ERROR_NAME.test(o.name):o?.type==='MemberExpression'?ERROR_NAME.test(key(o)||'')||errorLike(o.object):false;};
+  const isMessage=n=>{n=bare(n);if(n?.type==='Identifier')return msgs.has(n.name);if(n?.type==='CallExpression'){const c=bare(n.callee);return c?.type==='Identifier'&&c.name==='String'?errorLike(n.arguments?.[0]):key(c)==='toString'?errorLike(c.object):['toLowerCase','toUpperCase','trim'].includes(key(c)||'')&&isMessage(c.object);}return key(n)==='message'&&errorLike(n.object);};
+  const flag=n=>n?.type==='Literal'&&typeof n.value==='boolean'?n.raw:string(n)!==null&&FLAGS.has(string(n).trim().toLowerCase())?n.type==='Literal'?n.raw:src.slice(n.start,n.end):null,isTrue=n=>n?.type==='Literal'&&n.value===true;
+  const bound=new Map(),resultOf=n=>{n=bare(n);const m=n?.type==='Identifier'?bound.get(n.name):methodOf(n);return m&&does.has(m)?m:null;};
+  // The try a node's block or catch lies in (innermost), the app calls of a range (nodes, in order), the first argument's text.
+  const within=(n,c)=>!!c&&n.start>=c.start&&n.end<=c.end,tries=nodes.filter(n=>n.type==='TryStatement'),tryOf=n=>tries.filter(t=>within(n,t.block)).at(-1),catchOf=n=>tries.find(t=>within(n,t.handler?.body));
+  const callsIn=(range,before=Infinity)=>nodes.filter(c=>within(c,range)&&c.start<before&&methodOf(c)),argOf=c=>c.arguments?.[0]?src.slice(c.arguments[0].start,c.arguments[0].end):null;
+  const assigned=new Map(),declared=new Map();
+  for(const n of nodes){if(n.type==='AssignmentExpression'&&n.left?.type==='Identifier')assigned.set(n.left.name,[...assigned.get(n.left.name)||[],n]);if(n.type==='VariableDeclarator'&&n.id?.type==='Identifier')declared.set(n.id.name,n.init||null);}
+  // A flag set to true only inside a catch, declared false or bare: the try whose catch sets it.
+  const flagTry=n=>{n=bare(n);const as=n?.type==='Identifier'?assigned.get(n.name):null,d=n?.type==='Identifier'?declared.get(n.name):undefined;return as?.length&&d!==undefined&&(d===null||d.type==='Literal'&&d.value===false)&&as.every(a=>isTrue(a.right)&&catchOf(a))?catchOf(as[0]):null;};
+  const out=[],add=(n,rule,name,what='',need='')=>out.push({line:n.loc?.start?.line??0,text:src.slice(n.start,n.end).replace(/\s+/g,' ').slice(0,160),rule,name,what,need,
+    why:rule==='message'?`neither the goal, the API nor the plan states ${need}: never assert an error message's text`
+      :rule==='throw'?`neither the goal nor the description of ${name} ("${does.get(name)}") states that it throws`
+      :`the description of ${name} ("${does.get(name)}") ${STATES_RETURN.test(does.get(name))?`does not state that it returns ${what}`:'states no return value'}: check what it did through the other methods, not its result`});
+  const message=(n,x)=>add(n,'message',string(x)??pattern(regex(x)),'',string(x)!==null?`the error message ${quote(x)}`:`an error message matching ${quote(x)}`);
+  // n requires the app call c to throw, which its description and the goal say nothing of; after a delete of the same argument, the test says so.
+  const required=(n,c)=>{const m=c?methodOf(c):null;if(!m||!does.has(m)||SAYS_THROW.test(goal+'\n'+does.get(m)))return false;const what=nodes.some(d=>d.end<=c.start&&methodOf(d)&&DELETES.test(verbOf(performs.get(methodOf(d))||methodOf(d)))&&argOf(d)===argOf(c))?'throw for a deleted id':'throw';return add(n,'throw',m,what,`${m} to ${what}`);};
+  const compare=(n,x,y,equality)=>{
+    if(isMessage(x)&&claims(y)&&!stated(y))return message(n,y);
+    if(equality&&isTrue(y)&&flagTry(x))return required(n,callsIn(flagTry(x).block).at(-1));
+    const m=equality?resultOf(x):null,d=m?does.get(m):'';
+    if(m&&flag(y)!==null&&EFFECT.test(d)&&!STATES_RETURN.test(d))return add(n,'result',m,flag(y),`${m} to return ${flag(y)}`);
+    if(m&&typeof y?.value==='boolean'&&y.type==='Literal'&&STATES_RETURN.test(d)&&!BOOLEAN.test(d))return add(n,'result',m,y.raw,`${m} to return ${y.raw}`);
+    return false;
+  };
+  for(const n of nodes) {
+    const [id,init]=bindings(n);
+    if(id?.type==='Identifier'){const m=init?methodOf(bare(init)):null;if(m)bound.set(id.name,m);else bound.delete(id.name);if(init&&isMessage(init))msgs.add(id.name);else msgs.delete(id.name);}
+    if(n.type==='BinaryExpression'&&COMPARES.has(n.operator)){compare(n,n.left,n.right,true)||compare(n,n.right,n.left,true);continue;}
+    if(n.type!=='CallExpression')continue;
+    const callee=bare(n.callee),args=n.arguments||[],name=assertion(n);
+    if(callee?.type==='MemberExpression'&&CONTAINS.has(key(callee))&&isMessage(callee.object)){if(claims(args[0])&&!stated(args[0]))message(n,args[0]);continue;}
+    if(callee?.type==='MemberExpression'&&['test','exec'].includes(key(callee))&&regex(callee.object)&&isMessage(args[0])){if(!stated(callee.object))message(n,callee.object);continue;}
+    if(EQUALS.has(name)||MATCHES.has(name))compare(n,args[0],args[1],EQUALS.has(name))||compare(n,args[1],args[0],EQUALS.has(name));
+    else if(name==='ok'&&args[0]&&args[0].type!=='BinaryExpression') {
+      const m=resultOf(args[0]),t=flagTry(args[0]);
+      if(m&&EFFECT.test(does.get(m))&&!STATES_RETURN.test(does.get(m)))add(n,'result',m,'a truthy value',`${m} to return a truthy value`);
+      else if(t)required(n,callsIn(t.block).at(-1));
+    }
+    else if(name==='fail'&&tryOf(n))required(n,callsIn(tryOf(n).block,n.start).at(-1));
+    else if(THROWS.has(name)) {
+      const v=args[1],prop=v?.type==='ObjectExpression'?v.properties.find(p=>p.type==='Property'&&(p.key?.name??p.key?.value)==='message'):null,what=regex(v)?v:prop?.value,target=bare(args[0]);
+      if(claims(what)&&!stated(what))message(n,what);
+      else if(['throws','rejects'].includes(name)&&target)required(n,target.type==='Identifier'?callsIn(bare(declared.get(target.name))||{}).at(-1):callsIn(target).at(-1));
+    }
   }
-  return operations.filter(o=>o?.method&&!called.has(o.method));
+  return out;
 }
