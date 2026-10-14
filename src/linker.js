@@ -308,6 +308,28 @@ export function unresolvedImports(files) {
   }
   return problems;
 }
+// v7.15.4: the modules the entry runs, its static imports followed through
+// the linked bundle. Run11's entryModule.js imported nothing, and triage
+// blamed viewTicket.js, which never ran. null (everything may run) when a
+// module reached loads another by a computed path, or does not parse.
+// Review: or loads one this walk cannot follow: require read as a value
+// (const r = require), module.require, createRequire, new Worker.
+export function reachableModules(files, entry) {
+  const set=files instanceof Map?files:new Map(Object.entries(files));
+  if(!set.has(entry))return null;
+  const seen=new Set([entry]),queue=[entry];
+  while(queue.length) {
+    const path=queue.shift(),content=set.get(path);
+    if(!LINKABLE.test(path))continue;
+    let ast,computed=false;try{ast=parseSource(content).ast;}catch{return null;}
+    walk(ast,(node,parent)=>{if(node.type==='ImportExpression'&&node.source?.type!=='Literal'||node.type==='CallExpression'&&node.callee?.type==='Identifier'&&node.callee.name==='require'&&node.arguments[0]?.type!=='Literal')computed=true;
+      else if(node.type==='Identifier'&&(node.name==='createRequire'||node.name==='require'&&!notReference(node,parent)&&parent?.callee!==node&&parent?.object!==node)||
+        node.type==='MemberExpression'&&node.object.type==='Identifier'&&node.object.name==='module'&&keyName(node.property)==='require'||node.type==='NewExpression'&&/(?:^|\.)Worker$/.test(calleeName(node.callee)))computed=true;});
+    if(computed)return null;
+    for(const r of componentImports(path,content,set))if(r.target&&!seen.has(r.target)){seen.add(r.target);queue.push(r.target);}
+  }
+  return seen;
+}
 
 // ---------- rename-only verification ----------
 function tokens(text, sourceType) {
@@ -1013,6 +1035,8 @@ export function providedNames(surface) {
   if(d?.type==='class')for(const m of d.methods||[])names.add(methodName(m));
   return names;
 }
+// A surface whose exports this parse cannot list (the doubt missingExports gives; v7.15.4 review: the entry gate too).
+export const opaqueSurface=s=>!!(s.error||s.open||s.named.some(n=>n.name==='*')||['call','value'].includes(s.default?.type)||(s.default?.type==='object'&&s.default.members.some(m=>m.type==='spread')));
 // v7.15: the promised names no file provides in a shape a sibling can
 // destructure and call: a named export, a member of a default object, or a
 // default function or class of that name (the binding fix handles that
@@ -1022,8 +1046,7 @@ export function providedNames(surface) {
 // this parse cannot list is given the doubt, as in mayExportStart.
 export function missingExports(files, names) {
   const surfaces=[...(files instanceof Map?files:new Map(Object.entries(files)))].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>exportSurface(p,c));
-  const doubt=s=>s.error||s.open||s.named.some(n=>n.name==='*')||['call','value'].includes(s.default?.type)||(s.default?.type==='object'&&s.default.members.some(m=>m.type==='spread'));
-  if(surfaces.some(doubt))return [];
+  if(surfaces.some(opaqueSurface))return [];
   const provides=(s,name)=>s.named.some(n=>n.name===name)||(s.default?.type==='object'&&s.default.members.some(m=>m.name===name))||
     (['function','class'].includes(s.default?.type)&&s.default.name===name)||(name==='start'&&exportsStart(s));
   return [...new Set(names)].filter(name=>!surfaces.some(s=>provides(s,name)));
@@ -1091,15 +1114,52 @@ function exportedValues(ast, decls) {
 // A getter, a setter or a lifecycle no-op beside the operations (close() {}
 // for an in-memory app) is not an operation start owes.
 const LIFECYCLE=new Set('close stop dispose destroy shutdown teardown cleanup reset init'.split(' '));
-export function placeholders(files, names) {
-  const out=[],want=new Set(names);
+// v7.15.4: foreign, the names other pieces promise. A function declared here
+// under one of them is not delivered either (run11's entryModule.js wrote
+// createTicket, readData, writeData, deleteTicket, updateTicket and
+// viewTicket over an in-memory object and imported none): a declaration, a
+// name bound to a function or class, or a function literal exported or
+// returned by start() under that name. Imports are never read, nor is a
+// function under that name that calls the import of it (review: run11's
+// promises take filePath and start() none, so a carrier wraps them). Each
+// operation start() returns that is a local function is listed (local)
+// with the names it uses, for the manager to check against the plan.
+export function placeholders(files, names, foreign=[]) {
+  const out=[],want=new Set(names),other=new Set(foreign.filter(n=>!want.has(n)));
   for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
     if(!LINKABLE.test(path))continue;
     let ast;try{ast=parseSource(content).ast;}catch{continue;}
     const decls=topLevelDeclarations(ast),again=new Set();
     walk(ast,node=>{if(node.type==='AssignmentExpression'&&node.left.type==='Identifier')again.add(node.left.name);});
     for(const n of again)decls.set(n,null);
+    // Each relative import's local names, by the name it exports, and the
+    // bindings of a whole module (const store = require(...), import * as).
+    const imported=new Map(),whole=new Set();
+    if(other.size)for(const ref of importRefs(path,content)){const named=new Set();for(const n of ref.names){named.add(ref.aliases.get(n)||n);imported.set(ref.aliases.get(n)||n,n);}for(const l of ref.local)if(!named.has(l))whole.add(l);}
+    // A function under n that reads the import of n, by name, alias or as a
+    // member of the module, delegates to it: (d) => createTicket(d, FILE).
+    // self: the name it is bound to, which inside it is itself.
+    const delegates=(fn,n,self)=>{let hit=false;walk(fn,(node,parent)=>{
+      if(node.type==='Identifier'&&node.name!==self&&imported.get(node.name)===n&&!notReference(node,parent))hit=true;
+      else if(node.type==='MemberExpression'&&!node.computed&&keyName(node.property)===n&&(node.object.type==='Identifier'&&whole.has(node.object.name)||isRequire(node.object)))hit=true;
+    });return hit;};
+    const written=new Set(),write=(n,fn,self=null)=>{if(other.has(n)&&!written.has(n)&&!(fn&&delegates(fn,n,self))){written.add(n);out.push({path,name:n,foreign:true});}};
+    if(other.size)walk(ast,node=>{
+      if((node.type==='FunctionDeclaration'||node.type==='ClassDeclaration')&&node.id)write(node.id.name,node,node.id.name);
+      else if(node.type==='VariableDeclarator'&&node.id.type==='Identifier'&&(FUNCTIONS.has(node.init?.type)||node.init?.type==='ClassExpression'))write(node.id.name,node.init,node.id.name);
+    });
+    // The names a local function uses, through what each name it reads is
+    // bound to here: a function, a class, an instance or an object (review:
+    // a carrier whose ops call svc.create(), whose class calls createTicket);
+    // an import under an alias by its exported name (store.createTicket and
+    // a call of createTicket both use createTicket).
+    const uses=(fn,scope,got=new Set(),seen=new Set([fn]))=>{walk(fn,node=>{
+      if(node.type!=='Identifier')return;
+      got.add(imported.get(node.name)||node.name);
+      const d=scope.get(node.name);if(typeof d?.type==='string'&&!seen.has(d)){seen.add(d);uses(d,scope,got,seen);}
+    });return got;};
     for(const [name,value] of exportedValues(ast,decls)) {
+      if(FUNCTIONS.has(value?.type))write(name,value,value.id?.name);
       if(!want.has(name))continue;
       const fn=functionOf(value,decls);
       if(!fn)continue;
@@ -1118,10 +1178,19 @@ export function placeholders(files, names) {
       for(let r of returns) {
         if(r?.type==='Identifier')r=inner.get(r.name);
         if(r?.type!=='ObjectExpression')continue;
+        // Each operation that is a function written here, on its own (review:
+        // run11's entry with read and write imported kept create, view,
+        // update and delete in memory); an import, a spread or a call is not.
+        const ops=[];
         for(const p of r.properties) {
-          const op=p.type==='Property'&&p.kind==='init'&&keyName(p.key),f=op&&!LIFECYCLE.has(op)&&(p.method?p.value:functionOf(p.value,inner));
-          if(f&&placeholder(f,content))out.push({path,name,op,params:f.params.map(paramText)});
+          if(p.type!=='Property')continue;
+          const op=p.kind==='init'&&keyName(p.key),f=op&&!LIFECYCLE.has(op)&&(p.method?p.value:functionOf(p.value,inner));
+          if(f&&placeholder(f,content)){out.push({path,name,op,params:f.params.map(paramText)});continue;}
+          if(!op||LIFECYCLE.has(op))continue;
+          if(p.method||FUNCTIONS.has(p.value.type))write(op,p.value);
+          if(f)ops.push({op,f,bound:p.value.type==='Identifier'?p.value.name:''});
         }
+        if(other.size)for(const o of ops)if(!written.has(o.op)&&!written.has(o.bound))out.push({path,name,op:o.op,params:o.f.params.map(paramText),local:true,uses:[...uses(o.f,inner)]});
       }
     }
   }

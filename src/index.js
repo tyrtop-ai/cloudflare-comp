@@ -15,6 +15,7 @@ import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
+import { reachableModules, opaqueSurface } from './linker.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -1155,7 +1156,7 @@ export class ControlRoom extends DurableObject {
     if(!row)return '';
     const problems=parse(row.problems,[]).map(id=>this.problems('id=?',id)[0]).filter(p=>p&&p.status!=='closed');
     if(!problems.length)return '';
-    return repairText({role:row.role,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),unchanged:problems.some(p=>p.flags.no_change&&p.flags.no_change_by===row.worker),own:row.manager===row.worker,
+    return repairText({role:row.role,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),unchanged:problems.some(p=>p.flags.no_change&&p.flags.no_change_by===row.worker),own:row.manager===row.worker,
       problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
@@ -1506,8 +1507,9 @@ export class ControlRoom extends DurableObject {
     return null;
   }
   // linked: the top builder's components; entry: the module glue/index.js
-  // starts; operations: the coverage gate's mapping the test must exercise.
-  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, promised=null}) {
+  // starts; operations: the coverage gate's mapping the test must exercise;
+  // reach: the modules the entry reaches (null: any may run).
+  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, promised=null, reach=null}) {
     // The runner's test is static: the first test that runs in the Container is
     // the specification for the rest of the run and is never rewritten. A new
     // test every repair round moved the target the worker was fixing (run4).
@@ -1534,30 +1536,67 @@ export class ControlRoom extends DurableObject {
     if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
     const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
     let issues=run.report.issues.length?run.report.issues:[{path:'',detail}];
+    // v7.15.4: only code the entry reaches runs. Run11's round 8 went to
+    // viewTicket.js, which nothing imported, and its fix changed nothing.
+    // Review: a frame is proof its module ran, whatever the walk saw.
+    const ran=reach&&new Set([...reach,...issues.map(x=>x.path).filter(p=>linked.has(p))]),dead=p=>!!ran&&linked.has(p)&&!ran.has(p);
     if(!issues.some(x=>String(x.path).startsWith('components/')||linked.has(x.path))) {
       // No stack frame names a module. Triage, which sees the source, names
       // the module whose worker must change. The test stays as it is, so a
       // verdict against the test, or none, goes to the entry module: the
       // application must do what the test asks.
-      const linkedJs=[...linked].filter(([p])=>LINKABLE.test(p));
+      const linkedJs=[...linked].filter(([p])=>LINKABLE.test(p)&&!dead(p));
       const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
       const modules=fits?linkedJs.map(([path,content])=>({path,content})):
         linkedJs.map(([path,content])=>path===entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
       // Calls whose arguments may be out of order, even by one variable, go
       // with the source: the stack no longer shows where (run11). Names alone
       // do not confirm it, and the order may be deliberate: they are hints.
-      const hints=swappedCalls(linked,surfacesOf(linked),{promised,loose:true}).map(x=>`Unconfirmed, by names only (the order may be deliberate): ${x.path} calls ${x.call}; ${x.name} takes (${x.params.join(', ')})`);
+      // Only code the entry reaches runs, so only its calls are hints (v7.15.4).
+      const hints=swappedCalls(linked,surfacesOf(linked),{promised,loose:true}).filter(x=>!dead(x.path)).map(x=>`Unconfirmed, by names only (the order may be deliberate): ${x.path} calls ${x.call}; ${x.name} takes (${x.params.join(', ')})`);
       const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail,hints});
-      const owner=verdict&&linked.has(verdict.file)?verdict.file:entry;
-      if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${clip(verdict.problem,700)}`);
+      const named=verdict&&linked.has(verdict.file)?verdict.file:null,owner=named&&!dead(named)?named:entry;
+      // A verdict on a module the entry never reaches goes to the entry, with what it leaves out.
+      // Review: so does every verdict the entry gets, or none: triage sees only what it reaches.
+      const note=owner===entry&&ran?this.unreachedNote(nodeId,linked,entry,ran,named&&dead(named)?named:''):'';
+      if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${note?clip(note,500)+' ':''}${clip(verdict.problem,700)}`);
       // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
       const problem=clip(verdict?.problem||'',400).trim();
       // failure: the runner's own output, which says whether the failure moved (v7.15.1).
-      issues=[{path:owner||'',failure:detail,detail:`${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
+      issues=[{path:owner||'',triaged:true,failure:detail,detail:`${note?clip(note,400)+' ':''}${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
     return {passed:false,issues,detail,test};
   }
+  // v7.15.4: the functions other pieces promise the entry's piece (the walk
+  // up from it, in the plan's order), each with the modules of other pieces
+  // that export it in the compiler's bundle. None outside a planned split.
+  // Review: null when a module of another piece the entry reaches (reach)
+  // has exports this parse cannot list: it may provide any of them.
+  entryOffers(id, files, entry, surfaces=null, reach=null) {
+    const top=this.node(id)?.parent,b=top&&this.planned()?this.builderOf(top):null,owner=b&&this.buildSourceOrigin(b.id,entry)?.owner;
+    if(!owner)return new Map();
+    const out=new Map([...this.promisedElsewhere(owner).values()].filter(f=>f.name!=='start').map(f=>[f,[]]));
+    for(const [p,c] of files) {
+      if(!LINKABLE.test(p)||this.buildSourceOrigin(b.id,p)?.owner===owner)continue;
+      const surface=surfaces?.get(p)||exportSurface(p,c),have=providedNames(surface);
+      if(reach?.has(p)&&opaqueSurface(surface))return null;
+      for(const [f,paths] of out)if(have.has(f.name))paths.push(p);
+    }
+    return new Map([...out].filter(([,paths])=>paths.length));
+  }
+  // Why a failure on the entry, or one triage put on a module the entry
+  // never reaches (path), is the entry's: the promised functions that
+  // perform the goal's operations and that no module it reaches exports.
+  unreachedNote(id, files, entry, reach, path='', surfaces=null) {
+    const offers=this.entryOffers(id,files,entry,surfaces,reach)||new Map(),goal=[...offers.keys()].some(f=>this.performsGoal(f));
+    const left=[...offers].filter(([f,paths])=>(!goal||this.performsGoal(f))&&!paths.some(p=>reach.has(p))).map(([f])=>`${f.name} from "${f.owner}"`);
+    return [path?`Triage blamed ${path}, which no module the entry reaches imports, so its code never runs.`:'',
+      left.length?`${entry.split('/').pop()} does not import ${left.join(', ')}, which other pieces promise, so their code never runs: import each and call it from the method start() returns for it.`:''].filter(Boolean).join(' ');
+  }
+  // Review: f performs an operation the goal names, by the goal's words
+  // (run11's createTicket for create; readData for none).
+  performsGoal(f) {return (this.userGoal().match(/[A-Za-z]+/g)||[]).some(w=>performsOp(w,f));}
 
   // ---------- the problem inbox ----------
   // The run's goal (the requirement the runtime appended included), else the top's task.
@@ -2043,7 +2082,8 @@ export class ControlRoom extends DurableObject {
     const loader=entryLoader(entry);
     await this.putFile(id,'glue/index.js',loader,{runtimeGlue:true});
     await this.putFile(id,'package.json',RUNTIME_PACKAGE,{runtimeGlue:true});
-    const app=new Map([...files,['glue/index.js',loader],['package.json',RUNTIME_PACKAGE]]);
+    // v7.15.4: in a room with promises, the modules the entry reaches; rooms without keep v7.15.2's blame.
+    const app=new Map([...files,['glue/index.js',loader],['package.json',RUNTIME_PACKAGE]]),reach=this.planned()?reachableModules(files,entry):null;
     // A failure with no component path is the entry module's; the import an
     // interface error names is its other party. The runtime loader's frame
     // repeats the error of a module it started, so it counts only alone. The
@@ -2055,16 +2095,20 @@ export class ControlRoom extends DurableObject {
     // provider: run11's writeData threw a TypeError naming filePath, called
     // from createTicket.js:11, and its worker was blamed for four rounds.
     const promised=linked?this.promisedParams(this.builderOf(this.node(id)?.parent)?.id):null;
+    // v7.15.4 review: a frame is proof its module ran; a run failure the
+    // entry gets from one names the promised pieces it never runs, as
+    // runApplication's triage verdict does.
     const failed=(kind,issues)=>{
       const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail]));
       for(const x of issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues)
         if(groups.has(x.detail))groups.get(x.detail).push(x.path);else groups.set(x.detail,[x.path]);
+      const note=kind==='run'&&reach&&!issues.some(x=>x.triaged)?this.unreachedNote(id,files,entry,new Set([...reach,...issues.map(x=>x.path)]),'',surfaces):'';
       return [...groups].map(([detail,[first,...more]])=>{
         const swap=swappedFrame(files,surfaces,detail,{promised});
         if(swap)return {kind,path:swap.path,sites:[first,...more].filter(p=>files.has(p)&&p!==swap.path&&p!==swap.target),target:swap.target,detail:`${swap.text}. ${detail}`,
           facts:{argorder:{call:swap.call,name:swap.name,params:swap.params,line:swap.line,from:swap.from},provider_text:clip(exportsLine(swap.target,surfaces),700),failure:failureHead(output.get(detail))}};
         const path=files.has(first)?first:entry,target=errorTarget(files,path,detail);
-        return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,
+        return {kind,path,sites:more.filter(p=>p!==path),target,detail:(path===entry&&note?note+' ':'')+(path===first?detail:`${first?first+': ':''}${detail}`),
           facts:{...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure:failureHead(output.get(detail))}};
       });
     };
@@ -2086,6 +2130,22 @@ export class ControlRoom extends DurableObject {
     // cannot write a valid test, and no worker would hear why.
     if(!apiCallable(described)||apiGenericOnly(described))
       return {stage:'run',items:[entryIssue(entry,`start() must return an object whose methods perform the requested operations${apiGenericOnly(described)?', one per operation and named after it, not a single generic method':''}; it returned ${clip(api||'nothing',300)}.`)]};
+    // v7.15.4: an entry whose imports reach no module that exports a promised
+    // function runs none of the other pieces. Run11's entryModule.js wrote
+    // them all in memory and passed the runner's test with six pieces dead.
+    // Review: nor may a method start() returns run none of the promises that
+    // perform it (run11's entry with read and write imported kept create,
+    // view, update and delete in memory); a module the entry reaches whose
+    // exports this parse cannot list is given the doubt (entryOffers null).
+    const offers=linked&&reach?this.entryOffers(id,files,entry,surfaces,reach):null,methods=Object.keys(described?.members||{}).filter(k=>['function','class'].includes(described.members[k]?.type));
+    const left=offers?[...offers].filter(([,paths])=>!paths.some(p=>reach.has(p))).map(([f])=>f):[],unrun=left.filter(f=>methods.some(m=>performsOp(m,f)));
+    if(left.length&&(left.length===offers.size||unrun.length)) {
+      // Review: the performers of the goal's operations first, and the example line from one (run11's led with readData).
+      const none=left.length===offers.size,fns=(none?left:unrun).sort((a,b)=>this.performsGoal(b)-this.performsGoal(a)),ops=methods.filter(m=>unrun.some(f=>performsOp(m,f))),base=entry.split('/').pop();
+      this.event(id,'entry_unreached',clip(none?`${entry} reaches none of the ${new Set([...offers.values()].flat()).size} module(s) that export promised functions; the runner's test is not run against dead code.`:
+        `start() returns ${ops.join(', ')}, and ${entry} reaches no module that exports ${unrun.map(f=>f.name).join(', ')}, which perform${unrun.length>1?'':'s'} ${ops.length>1?'them':'it'}; the runner's test is not run against dead code.`,600));
+      return {stage:'run',items:[entryIssue(entry,clip(`${none?'start() runs none of the promised functions':`start() returns ${ops.join(', ')} but runs none of the promised functions that perform ${ops.length>1?'them':'it'}`}: import ${fns.map(f=>`${f.name} from "${f.owner}"`).join(', ')}, each on its own line (const { ${fns[0].name} } = require('./${fns[0].name}')), and ${none?'use them in the methods start() returns':'call each from the method start() returns for it'}. ${base} imports no module that exports ${fns.length>1?'them':'it'}, so ${fns.length>1?'their':'its'} code never runs.`,900))]};
+    }
     // Run6: start() returned { getTickets } for a create, view, update and
     // delete goal; the runner tested reading alone and the run completed.
     // Before the test is fixed, every operation the goal names needs its
@@ -2122,7 +2182,7 @@ export class ControlRoom extends DurableObject {
       } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
         (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
-    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,promised});
+    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,promised,reach});
     return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues)};
   }
 
@@ -3205,38 +3265,70 @@ export class ControlRoom extends DurableObject {
     // The top reads start without ASK_CLAUSE, as in its task (withContract):
     // an atomic Root has no manager to ask (v7.15.2 review).
     const top=!this.node(id)?.parent,promised=this.promisedOf(id).map(f=>top?{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')}:f),key=`contract_returns:${id}`,returns=Number(this.get(key,'0'))||0;
-    if(!promised.length)return false;
+    // v7.15.4: in a room with promises every worker is read for functions
+    // other pieces promise, its own promise or none (run11).
+    if(!promised.length&&!this.planned())return false;
     const files=new Map();
     for(const f of productionFiles(this.files(id)))if(LINKABLE.test(f.path))files.set(f.path,await this.indexedContent(id,f.path));
     // A self-import counts only for a name not exported: a file that exports
     // getTickets and delegates to store.getTickets() keeps its promise.
     const names=promised.map(f=>f.name),missing=missingExports(files,names),self=missing.length?selfImports(files,missing):[];
     // v7.15.1: an empty placeholder is not delivered either (run9's update and del).
-    const empty=placeholders(files,names.filter(n=>!missing.includes(n))),list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
-    const emptyNames=[...new Set(empty.map(x=>x.op||x.name))],are=emptyNames.length>1?'are empty placeholders':'is an empty placeholder';
-    // A contract problem is about a missing export: closed once it is exported, whatever the placeholders.
-    if(!missing.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
-    if(!missing.length&&!empty.length) {
+    // v7.15.4: nor is a function another piece promises, written here (hit:
+    // the promise the plan's walk names), nor a local operation of start()
+    // that such a promise performs and that calls none of them (run11). A
+    // generic name (create, get) is never answered by name, nor read here.
+    const elsewhere=this.planned()?this.promisedElsewhere(id):new Map();
+    const found=placeholders(files,names.filter(n=>!missing.includes(n)),[...elsewhere.keys()].filter(n=>!GENERIC_NAMES.has(n))).filter(x=>x.foreign?(x.hit=elsewhere.get(x.name)):!x.local||(x.hit=this.performerOf(id,x)));
+    // Review: the start carrier hears first of the functions that perform the goal's operations (run11's led with readData).
+    const empty=found.filter(x=>!x.hit),written=found.filter(x=>x.hit).sort((a,b)=>names.includes('start')?this.performsGoal(b.hit)-this.performsGoal(a.hit):0),list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
+    const emptyNames=[...new Set(empty.map(x=>x.op||x.name))],are=emptyNames.length>1?'are empty placeholders':'is an empty placeholder',writtenNames=[...new Set(written.map(x=>x.op||x.name))];
+    // A contract problem is about a missing export or a function written here: closed once neither remains, whatever the placeholders.
+    if(!missing.length&&!written.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
+    if(!missing.length&&!empty.length&&!written.length) {
       if(returns)this.set(key,'');
       return false;
     }
     if(returns>=3) {
-      if(missing.length) {
-        this.event(id,'contract_unmet',`${missing.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
-        this.fileContract(id,missing.map(name=>promised.find(p=>p.name===name)));
-      }
+      if(missing.length)this.event(id,'contract_unmet',`${missing.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
+      if(written.length)this.event(id,'contract_unmet',`${list(writtenNames)} still written here after 3 returns though other pieces promise ${writtenNames.length>1?'them':'it'}; accepted, and the gap goes to the manager.`);
+      if(missing.length||written.length)this.fileContract(id,missing.map(name=>promised.find(p=>p.name===name)),written.map(x=>x.hit));
       if(empty.length)this.event(id,'contract_unmet',`${list(emptyNames)} ${are.replace(/^(?:are|is)/,'$& still')} after 3 returns; accepted, and the runner's test decides.`);
       return false;
     }
     this.set(key,returns+1);
-    const answers=await Promise.all(emptyNames.map(op=>this.placeholderAnswer(id,empty.find(x=>(x.op||x.name)===op),promised)));
+    const answer=(xs,k)=>this.placeholderAnswer(id,xs.find(x=>(x.op||x.name)===k),promised);
+    const answers=await Promise.all(emptyNames.map(k=>answer(empty,k))),moved=await Promise.all(writtenNames.map(k=>answer(written,k)));
     const body=['[contract]',...(missing.length?[`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`]:[]),
       ...self.map(x=>`${x.path.split('/').pop()} imports ${list(x.names)} from '${x.specifier}', but ${list(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`),
-      ...answers.map(a=>a.text),...(missing.length?[]:['Publish the FULL updated file.'])].join(' ');
+      ...answers.map(a=>a.text),...moved.map(a=>a.text),...(missing.length?[]:['Publish the FULL updated file.'])].join(' ');
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
     if(missing.length)this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${missing.join(', ')} promised and not exported; back to the worker.`);
     if(empty.length)this.event(id,'contract_placeholder',`Done refused (${returns+1}/3): ${list(emptyNames)} ${are}; back to the worker. ${answers.map(a=>a.how).join(' ')}`.trim());
+    if(written.length)this.event(id,'contract_reimplemented',`Done refused (${returns+1}/3): ${list(writtenNames)} ${writtenNames.length>1?'are':'is'} written here, and other pieces promise ${writtenNames.length>1?'them':'it'}; back to the worker. ${moved.map(a=>a.how).join(' ')}`.trim());
     return true;
+  }
+  // v7.15.4: the plan as a worker's walk reads it, as a function request is
+  // answered: at each level up from id, the other children's promises, each
+  // with the label of the child that promises it (never an id or a cousin).
+  *planWalk(id) {
+    for(let b=this.node(id);b?.parent;b=this.node(b.parent))yield this.offeredFunctions(b.parent,b.id).flatMap(o=>o.items.map(f=>({...f,owner:o.label})));
+  }
+  // The functions other pieces promise id, each name once, from the nearest
+  // level that offers it. A name a lower split keeps inside another branch is
+  // not offered, so a worker may write its own (the lead decision).
+  promisedElsewhere(id) {
+    const own=new Set(this.promisedOf(id).map(f=>f.name)),out=new Map();
+    for(const items of this.planWalk(id))for(const f of items)if(!own.has(f.name)&&!out.has(f.name))out.set(f.name,f);
+    return out;
+  }
+  // The promise that performs a local operation start() returns, by its
+  // words (performsOp), from the nearest level that has one; none when the
+  // operation already calls one, as a wrapper that passes a file path does.
+  performerOf(id, x) {
+    const levels=[...this.planWalk(id)].map(items=>items.filter(f=>performsOp(x.op,f))),near=levels.find(l=>l.length);
+    if(!near||levels.flat().some(f=>x.uses?.includes(f.name)))return null;
+    return near.find(f=>f.params?.length===x.params?.length)||near[0];
   }
   // v7.15.1: the manager answers an empty operation from the plan as a
   // function request is answered (routeFunction): at each level up from the
@@ -3246,11 +3338,22 @@ export class ControlRoom extends DurableObject {
   // getTickets().find(...), not getTickets). run9's start carrier returned
   // update() {} and del() {} and never asked for them.
   async placeholderAnswer(id, x, promised) {
+    // v7.15.4: written here though another piece promises it (run11's
+    // entryModule.js): import it from the piece the walk names.
+    if(x.hit) {
+      const f=x.hit,line=`const { ${f.name} } = require('./${f.name}')`,does=f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:'';
+      // Review: the start carrier is not told to use one that performs no operation of the goal (run11's readData).
+      if(!x.op)return f.name==='start'?{text:`start is promised by "${f.owner}", which composes the application: do not write start() here.`,how:`start: "${clip(f.owner,70)}" promises it.`}:
+        promised.some(p=>p.name==='start')&&!this.performsGoal(f)?{text:`${f.name} is promised by "${f.owner}": do not write it here.`,how:`${f.name}: "${clip(f.owner,70)}" promises it.`}:
+        {text:`${f.name} is promised by "${f.owner}": import it on its own line, ${line}, and use it; do not write it here.`,how:`${f.name}: "${clip(f.owner,70)}" promises it.`};
+      if(!x.params?.length||!f.params?.length||x.params.length===f.params.length)
+        return {text:`${x.op} is written here, but ${signature(f)}${does} is promised by "${f.owner}"; import it on its own line, ${line}, and return it as ${x.op}; do not write it here.`,how:`${x.op}: ${f.name} from "${clip(f.owner,70)}".`};
+      return {text:`${x.op} is written here, but ${signature(f)}${does} is promised by "${f.owner}"; write ${x.op} with it: import it on its own line, ${line}, and call it from ${x.op}.`,how:`${x.op}: write it with ${f.name} from "${clip(f.owner,70)}".`};
+    }
     if(!x.op){const f=promised.find(p=>p.name===x.name);return {text:`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''} is promised by your assignment and is an empty placeholder: write it here.`,how:`${x.name} is its own to write.`};}
     const sig=x.params?.length?`${x.op}(${x.params.join(', ')})`:x.op,need=`the ${String(x.op).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase()} operation that start() returns as ${sig}`;
     let failed=false;
-    for(let b=this.node(id);b?.parent;b=this.node(b.parent)) {
-      const items=this.offeredFunctions(b.parent,b.id).flatMap(o=>o.items.map(f=>({...f,owner:o.label})));
+    for(const items of this.planWalk(id)) {
       if(!items.length)continue;
       const byWord=items.filter(f=>performsOp(x.op,f)),pool=byWord.length>1?byWord:items,ask=()=>matchFunction(this.inferenceEnv(),{need,name:''},pool);
       let hit=byWord.length===1?byWord[0]:null,how=hit?'operation word':'',m=null;
@@ -3276,7 +3379,8 @@ export class ControlRoom extends DurableObject {
   // given and answered without changing a file stays as it is: its manager's
   // reopenStalled sends it back once saying so, then closes it (run8's
   // 'fixed' with no file; replaced, it spent all six of Root's rounds).
-  fileContract(id, fns) {
+  // v7.15.4: written, the promises of other pieces it still writes itself (run11).
+  fileContract(id, fns, written=[]) {
     const n=this.node(id);
     if(!this.live()||!n?.parent)return;
     const prior=this.problems("source=? AND kind='contract' AND status!='closed'",id);
@@ -3284,10 +3388,12 @@ export class ControlRoom extends DurableObject {
     if(prior.some(p=>p.status==='assigned'&&p.assignee===id&&p.flags.revs===this.revisionKey(id)))return;
     this.closeProblems(prior,'superseded');
     const path=productionFiles(this.files(id)).map(f=>f.path).find(p=>LINKABLE.test(p))||'',them=fns.length>1?'them':'it';
+    const wrote=[...new Map(written.map(f=>[f.name,f])).values()],names=wrote.map(f=>f.name).join(', '),owners=[...new Set(wrote.map(f=>`"${f.owner}"`))];
     this.insertProblem({holder:n.parent,kind:'contract',stage:'work',source:id,input:`turn:${n.turn}`,
-      parties:[{path,owner:id,owner_path:path,digest:'',role:'subject'}],detail:`${n.label} was promised ${fns.map(signature).join(', ')} and its published modules do not export ${them}.`,
-      facts:{names:fns.map(f=>f.name),declared_by:n.label},flags:{wave:crypto.randomUUID()}});
-    this.event(id,'problems_reported',`1 problem goes to the manager: ${n.label} does not export ${fns.map(f=>f.name).join(', ')}, which its assignment promises.`,n.parent);
+      parties:[{path,owner:id,owner_path:path,digest:'',role:'subject'}],detail:[fns.length?`${n.label} was promised ${fns.map(signature).join(', ')} and its published modules do not export ${them}.`:'',
+        wrote.length?`${n.label} writes ${names} itself, which ${owners.join(', ')} promise${owners.length>1?'':'s'}; its modules must import ${wrote.length>1?'them':'it'} by name instead.`:''].filter(Boolean).join(' '),
+      facts:{names:fns.map(f=>f.name),declared_by:n.label,...(wrote.length?{written:wrote.map(f=>f.name)}:{})},flags:{wave:crypto.randomUUID()}});
+    this.event(id,'problems_reported',`1 problem goes to the manager: ${n.label} ${[fns.length?`does not export ${fns.map(f=>f.name).join(', ')}, which its assignment promises`:'',wrote.length?`writes ${names}, which other pieces promise`:''].filter(Boolean).join(', and ')}.`,n.parent);
     this.wake(n.parent);
   }
   complete(id) {
