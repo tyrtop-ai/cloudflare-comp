@@ -292,9 +292,9 @@ async function linkBranch(room,m) {
 }
 const startEntry="const { createTicket } = require('./createTicket');\nfunction start() {\n  return { create: createTicket };\n}\nmodule.exports = { start };\n";
 // Run11's tree: dataStore (two workers), createTicket, viewTicket, entry.
-async function run11Room(create,opts={},write=writeModule) {
+async function run11Room(create,opts={},write=writeModule,goal) {
   const r=liveRoom(opts);
-  await planned(r.room);
+  await planned(r.room,goal);
   await pieces(r.room,'root',[['dataStore',null,null,[fn('readData','reads ticket data from storage',['filePath']),fn('writeData','writes ticket data to storage',['filePath','data'])]],
     ['createTicket','createTicket.js',create,[fn('createTicket','creates a new ticket with unique ID',['data','filePath'])]],
     ['viewTicket','viewTicket.js',viewModule,[fn('viewTicket','retrieves a specific ticket by ID',['id','filePath'])]],
@@ -394,8 +394,10 @@ const { start } = require('./index.js');
   assert.equal(t.title, 'Printer jam');
 })().catch(e => { console.error(e); process.exitCode = 1; });
 `;
+// v7.15.5: the goal names create alone, as the test exercises it: start()
+// returns create alone, and a goal naming view too is an entry gap (run12).
 async function compiled(create,write=writeModule,opts={runner:()=>createTest}) {
-  const r=await run11Room(create,opts,write);
+  const r=await run11Room(create,opts,write,'Build a small issue tracker that lets someone create tickets.');
   const b=await r.room.scheduleAssembly('root');
   await r.room.turn(b.id);
   assert.deepEqual(openProblems(r.room,'root'),[],trace(r.room));

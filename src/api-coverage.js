@@ -5,6 +5,7 @@
 // reading alone and certified the application. Everything here is
 // deterministic; the model only proposes the mapping.
 import {parseSource} from './linker.js';
+import {performsOp} from './interfaces.js';
 
 const callable = d => d?.type==='function'||d?.type==='class';
 // A function, class or array start() returned is fully described and holds
@@ -14,6 +15,9 @@ const callable = d => d?.type==='function'||d?.type==='class';
 // unparsed or cut description is given the doubt.
 export const coverageCheckable = d => !!d&&!d.members_truncated&&(callable(d)||['object','array'].includes(d.type)&&!!d.members&&typeof d.members==='object');
 const methodsOf = d => coverageCheckable(d)&&d.type==='object'?d.members:{};
+// v7.15.5: the method names start() returned, sorted, which the runner's
+// fixed test is written against; null when the description cannot say.
+export const startMethods = d => coverageCheckable(d)?Object.keys(methodsOf(d)).filter(k=>callable(d.members[k])).sort():null;
 // A method as a model names it: "app.createTicket", "createTicket()",
 // "app['createTicket']" or with whitespace all mean createTicket.
 export function methodName(m) {
@@ -76,7 +80,102 @@ export function plannedGaps(described, ops) {
   if(!coverageCheckable(described)||Object.keys(members).filter(k=>callable(members[k])).length>=(ops||[]).length)return [];
   return ops.filter(o=>!apiMethod(described,o.method)).map(o=>({operation:o.operation,method:o.method}));
 }
-export const gapList = gaps => gaps.map(g=>g.same_as?`${g.operation} (${g.method} already performs ${g.same_as})`:g.operation).join(', ');
+// v7.15.5: the operations a goal names as one list of verbs on an object,
+// "create, view, update, and delete tickets" (run12), each {verb, object,
+// operation} in the goal's words. Conservative: only two or more known
+// operation verbs joined by commas and "and" or "or" are read, on an object
+// that is no pronoun; any other goal names none, and no count is checked.
+const OP_VERBS=new Set(('add create make submit post record register view read get show list see display browse find search update edit change modify rename move mark '+
+  'complete finish close reopen resolve assign comment tag archive restore delete remove del cancel export import upload download share track').split(' '));
+const opVerb = w => OP_VERBS.has(w)?w:OP_VERBS.has(w.replace(/s$/,''))?w.replace(/s$/,''):OP_VERBS.has(w.replace(/es$/,''))?w.replace(/es$/,''):null;
+const sameVerb = (a, b) => performsOp(a,{name:b});
+const nameWords = s => String(s||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().match(/[a-z]+/g)||[],verbOf = s => nameWords(s)[0]||'';
+// Review: an object that is a preposition is no object: "posts and comments
+// on threads" names no operation (plural nouns read as verbs). A determiner
+// before it is skipped ("delete some tickets").
+const NO_OBJECT=/^(?:it|them|this|that|these|those|one|ones|everything|anything|on|for|from|to|in|into|with|of|at|by|about|as|via)$/;
+export function goalOperations(goal) {
+  const out=[];
+  for(const m of String(goal||'').toLowerCase().matchAll(/\b([a-z]+)((?:\s*,\s*[a-z]+)*)\s*,?\s+(?:and|or)\s+([a-z]+)\s+(?:(?:a|an|the|all|any|their|your|its|my|our|existing|some|each|every|own)\s+){0,2}([a-z][a-z-]*)/g)) {
+    const verbs=[m[1],...m[2].split(',').map(v=>v.trim()).filter(Boolean),m[3]].map(opVerb),object=m[4];
+    if(verbs.some(v=>!v)||NO_OBJECT.test(object))continue;
+    for(const verb of verbs)if(!out.some(o=>sameVerb(o.verb,verb)&&o.object===object))out.push({verb,object,operation:`${verb} ${object}`});
+  }
+  return out;
+}
+// v7.15.5: for each operation the goal names (goalOperations) that listed,
+// the plan's operations, has no function for, the function of the top's
+// children (children: [{label, items}]) that performs it by its words
+// (performsOp): the one named for its verb and object (run12's createTicket
+// for "create tickets"), else the only one with its verb; none when two
+// could be meant. Run12's split tagged no operation, so the plan had none
+// and only the model's mapping was checked. Review: only from a piece whose
+// label names the verb (run12's "View Ticket Operation"), or, for one named
+// for the object too, a piece that promises it alone; never a function
+// named for storage. A Ticket Store's readTickets (run11's read: readData)
+// and run12's factory createData, which the gap text then told the entry to
+// return as a method, perform no operation.
+const STORAGE=/^(?:data|store|storage|db|database|manager|instance|repository|repo|service|state|cache|client|connection|factory)$/;
+export function goalPerformers(goal, children, listed=[]) {
+  const out=[];
+  for(const o of goalOperations(goal)) {
+    if([...listed,...out].some(x=>sameVerb(o.verb,x.operation)))continue;
+    const all=(children||[]).flatMap(c=>c.items.filter(f=>performsOp(o.verb,f)&&!nameWords(f.name).slice(1).some(w=>STORAGE.test(w))).map(f=>({f,label:c.label,alone:c.items.length===1,says:nameWords(c.label).some(w=>sameVerb(o.verb,w))})));
+    const named=all.filter(x=>performsOp(o.operation,x.f)&&(x.says||x.alone)),loose=all.filter(x=>x.says);
+    const pick=named.length?(named.length===1?named[0]:null):loose.length===1?loose[0]:null;
+    if(pick&&![...listed,...out].some(x=>x.method===pick.f.name))out.push({operation:o.operation,method:pick.f.name,label:pick.label});
+  }
+  return out;
+}
+// v7.15.5 (run12): the model's mapping is checked against the plan and the
+// goal, not only against the API. Run12's model mapped create and delete
+// alone, to goalOperation1 and goalOperation2; the gate passed and view and
+// update were never wired. Besides the mapping's own gaps (apiGaps), an
+// operation is unmatched when it is a plan operation function (plan:
+// [{operation, method, label}]) that no member of start() is, by its
+// function name as build_checked describes it, whose verb the goal names
+// (when its verbs are known); or, when the model listed fewer operations
+// than the goal names (goal: goalOperations), a goal operation the plan has
+// no function for; and when no mapped method has its verb. A mapped method
+// has a verb when its operation, its member or its function starts with
+// it; a member that is a plan function has that function's verb alone,
+// whatever the model called it (goalOperation1 is createTicket, never view).
+// Review: a member the mapping leaves out performs the operation its key or
+// function name starts with too (a wrapper, create: (d) => createTicket(d),
+// is named create; a bound method keeps its own name), and the runner tests
+// it: only the mapped members were read, so an API of four wrappers the
+// model mapped two of was told to add the two it had. And synonyms are the
+// model's call: a mapped operation in words neither the plan nor the goal
+// uses (add a ticket for create tickets) may stand for one unmatched, so
+// only more unmatched than those is a gap, each named with its piece.
+// extra: the members start() returns that the mapping left out and that
+// perform an operation, for the runner to test too. total: the operations
+// mapped, performed or missed, one in other words counted once (probe D
+// counted 7 for a goal naming 4).
+export function mappedGaps(described, mapped, plan=[], goal=[]) {
+  const members=methodsOf(described),gaps=apiGaps(described,mapped).map(g=>({...g})),missed=new Set(gaps.map(g=>g.operation)),listed=new Set(operationMethods(described,mapped).map(o=>o.method));
+  const fnOf=k=>String(members[k]?.name||'').replace(/^bound /,''),planOf=k=>k?plan.find(x=>x.method===fnOf(k)):null,said=k=>planOf(k)?[planOf(k).operation]:[k,fnOf(k)];
+  const names=mapped.filter(o=>!missed.has(o.operation)).map(o=>{const m=apiMethod(described,o.method);return planOf(m)?said(m):[o.operation,...said(m)];});
+  const others=Object.keys(members).filter(k=>callable(members[k])&&!listed.has(k)),extra=[],unmatched=[];
+  const performed=v=>!!v&&names.some(n=>n.some(x=>sameVerb(v,x))),needed=v=>!goal.length||goal.some(g=>sameVerb(g.verb,v));
+  const unmapped=(v,operation)=>{const i=others.findIndex(k=>said(k).some(x=>sameVerb(v,x)));if(i<0)return false;extra.push({operation,method:others.splice(i,1)[0]});return true;};
+  const gapFor=v=>gaps.find(g=>sameVerb(v,g.operation));
+  for(const p of plan) {
+    const member=apiMethod(described,p.method),v=verbOf(p.operation);
+    if(member){extra.push({operation:p.operation,method:member});continue;}
+    if(performed(v)||performed(verbOf(p.method))||!needed(v)||unmapped(v,p.operation))continue;
+    const same=gapFor(v);
+    if(!same)unmatched.push({operation:p.operation,method:p.method,fn:p.method,from:p.label,v});
+    else if(!same.same_as&&!same.fn)Object.assign(same,{fn:p.method,from:p.label});
+  }
+  if(mapped.length<goal.length)for(const g of goal)
+    if(!performed(g.verb)&&!gapFor(g.verb)&&!unmatched.some(u=>sameVerb(g.verb,u.v))&&!plan.some(p=>sameVerb(g.verb,p.operation)||sameVerb(g.verb,p.method))&&!unmapped(g.verb,g.operation))
+      unmatched.push({operation:g.operation,method:null,v:g.verb});
+  const verbs=[...goal.map(g=>g.verb),...plan.map(p=>verbOf(p.operation))],spare=names.filter(n=>!n.some(x=>verbs.some(v=>sameVerb(v,x)))).length;
+  const added=unmatched.length>spare?unmatched.map(({v,...u})=>u):[],more=extra.filter(o=>!listed.has(o.method)&&listed.add(o.method));
+  return {gaps:[...gaps,...added],total:mapped.length+more.length+added.length-Math.min(spare,added.length),extra:more};
+}
+export const gapList = gaps => gaps.map(g=>g.same_as?`${g.operation} (${g.method} already performs ${g.same_as})`:g.fn?`${g.operation} (${g.fn}${g.from?` from "${g.from}"`:''})`:g.operation).join(', ');
 // The entry worker's problem, within the 946 characters a routed problem
 // keeps, a contract given whole and last (the room gives none: its entry
 // ticket leads with the contract). Quoting the API JSON cut the contract
@@ -87,8 +186,11 @@ const fit = (text, n) => text.length<=n?text:text.slice(0,Math.max(0,n-9)).repla
 // top's children's, what the top answers requests from), as one sentence
 // of at most room characters: items cut from the end, else none. It names
 // no method key, so it cannot contradict the entry contract's naming.
-export function planSentence(ops, room) {
-  const tail='. Import the one for each missing operation and return it as start()\'s method for that operation.';
+// first: a missing function, whose import line closes it, as entry_unreached
+// gives one (v7.15.5 review: run12's deleteTicket copied whatever path a
+// problem showed, and with none the entry imported './module', its own file).
+export function planSentence(ops, room, first='') {
+  const tail=`. Import the one for each missing operation${first?`, each on its own line (const { ${first} } = require('./${first}')),`:''} and return it as start()'s method for that operation.`;
   for(let n=(ops||[]).length;n>0;n--) {
     const text=`The plan's operation functions: ${ops.slice(0,n).map(o=>`${o.method} (${o.operation}) from ${o.label}`).join('; ')}${n<ops.length?'; and more':''}${tail}`;
     if(text.length<=room)return text;
@@ -102,8 +204,11 @@ export function gapProblem(described, gaps, contract, limit=946, plan=[], {own=f
   const members=methodsOf(described),names=Object.keys(members).filter(k=>callable(members[k]));
   const returned=described?.type==='object'?(names.length?'methods '+names.join(', '):'no methods'):({function:'a function',class:'a class',array:'an array'}[described?.type]||'no object')+', not an object';
   const head='start() returns no method for: ',tail=`. Each operation the goal names needs its own method on the object start() returns, ${own?'one that performs it':'the operation imported from the module that performs it'}.${contract?' '+contract:''}`;
-  const room=limit-head.length-'; it returned '.length-tail.length,list=fit(gapList(gaps),room-Math.min(returned.length,40));
-  const text=`${head}${list}; it returned ${fit(returned,room-list.length)}${tail}`,known=planSentence(plan,limit-text.length-1);
+  const room=limit-head.length-'; it returned '.length-tail.length,first=own?'':gaps.find(g=>g.fn)?.fn||'';
+  const say=gs=>{const list=fit(gapList(gs),room-Math.min(returned.length,40));return `${head}${list}; it returned ${fit(returned,room-list.length)}${tail}`;};
+  // Review: a missing function's piece is said once, in the plan sentence when it names it.
+  const brief=say(gaps.map(g=>g.fn?{...g,from:''}:g)),told=planSentence(plan,limit-brief.length-1,first),whole=told&&gaps.every(g=>!g.fn||told.includes(`${g.fn} (`));
+  const text=whole?brief:say(gaps),known=whole?told:planSentence(plan,limit-text.length-1,first);
   if(!known)return text;
   const at=text.length-(contract?contract.length+1:0);
   return `${text.slice(0,at)} ${known}${text.slice(at)}`;
