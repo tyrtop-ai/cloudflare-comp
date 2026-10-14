@@ -1,6 +1,6 @@
 import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects, spawnPiece, splitShape } from './protocol.js';
 import { parse as parseJs } from './vendor/acorn.mjs';
-import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, returnsOf } from './interfaces.js';
+import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText } from './interfaces.js';
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 const HYBRID = '@cf/qwen/qwen3-30b-a3b-fp8';
 
@@ -98,8 +98,9 @@ export async function scopeChildren(env, originalGoal, parentTask, children) {
   return checked.flat();
 }
 // v7.15.7 (run14): a promise is read with what it returns, as the split
-// states it, by the names check, the uses check and the function match.
-const promiseLine=f=>`${signature(f)}${f.does?': '+f.does:''}${returnsOf(f)}`;
+// states it, by the names check, the uses check and the function match
+// (integration: the one renderer, promiseText).
+const promiseLine=f=>promiseText(f);
 // v7.15: Clef vets the names in the same step, in its own call so the
 // within_i scores above stay what they were (run6's sit near 0.5). One
 // question per name a piece adds; a promised name is never asked about, so

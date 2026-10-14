@@ -142,8 +142,8 @@ const bodies=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).map(u=>u.
 const rounds=room=>room.db().exec("SELECT actor,body FROM events WHERE kind='repair_round' ORDER BY id").toArray().map(e=>`${e.actor}: ${e.body.match(/^Repair round (\d+) \((\d+) of/).slice(1).join('/')} ${e.body.match(/: (no progress|progress) /)[1]}`);
 const pending=(room,id)=>room.db().exec("SELECT sender,body FROM messages WHERE recipient=? AND delivered=0 ORDER BY rowid",id).toArray().map(m=>[m.sender,m.body.startsWith('[build:repair] ')?room.buildRepairMessage(m.body.split(' ')[1]):m.body]);
 const TAIL=' Publish the FULL updated file.';
-// What run14's storage piece provides, as a ticket reads it: the plan's line per use first, the module's surface after (async there once the shape slice renders it).
-const STORAGE_FACTS=/^readTickets\(\): reads all tickets from storage \| saveTickets\(tickets\): saves tickets to storage \| ticketStorage\.js exports: [^|]*readTickets\(\)[^|]*saveTickets\(tickets\)$/;
+// What run14's storage piece provides, as a ticket reads it: the plan's line per use first, with async read from the module's surface (integration: one renderer, promiseText), the surface after.
+const STORAGE_FACTS='async readTickets(): reads all tickets from storage | async saveTickets(tickets): saves tickets to storage | ticketStorage.js exports: exports.readTickets = async function readTickets(); exports.saveTickets = async function saveTickets(tickets)';
 
 // ------------------------------------------------------------------ T1: a built-in is never a link error
 test('v7.15.7 (T1): a local bound to a named import\'s call is the caller\'s own whatever the member (push, add, view); the derived-binding relink applies to a whole-module binding\'s result (v7.14\'s makeStore) or a member some module exports or some piece promises',async()=>{
@@ -189,9 +189,9 @@ test('v7.15.7: run14 replayed through the real builders, compiler and Container:
   const [create]=bodies(calls,'Create ticket'),[view]=bodies(calls,'View ticket'),[update]=bodies(calls,'Update ticket');
   const head="Your createTicket(data) (\"creates a new ticket and saves it\") threw: TypeError: tickets.push is not a function. Test line 9: const createResult = await app.createTicket({ title: 'Test Ticket', description: 'This is a test' }). What the other side provides: ";
   assert.ok(create.startsWith(head)&&create.endsWith(TAIL),create);
-  assert.match(create.slice(head.length,-TAIL.length),STORAGE_FACTS);
-  assert.ok(view.startsWith("Your viewTicket(id) (\"returns a ticket by ID\") threw: TypeError: tickets.find is not a function. Test line 22: const viewedTicket = await app.viewTicket(id). What the other side provides: readTickets(): reads all tickets from storage | ticketStorage.js exports: "),view);
-  assert.ok(update.startsWith("Your updateTicket(id, data) (\"updates a ticket by ID\") threw: TypeError: tickets.map is not a function. Test line 28: await app.updateTicket(id, { title: 'Updated Ticket', description: 'This is an updated test' }). What the other side provides: readTickets(): reads all tickets from storage | saveTickets(tickets): saves tickets to storage | ticketStorage.js exports: "),update);
+  assert.equal(create.slice(head.length,-TAIL.length),STORAGE_FACTS);
+  assert.ok(view.startsWith("Your viewTicket(id) (\"returns a ticket by ID\") threw: TypeError: tickets.find is not a function. Test line 22: const viewedTicket = await app.viewTicket(id). What the other side provides: async readTickets(): reads all tickets from storage | ticketStorage.js exports: "),view);
+  assert.ok(update.startsWith("Your updateTicket(id, data) (\"updates a ticket by ID\") threw: TypeError: tickets.map is not a function. Test line 28: await app.updateTicket(id, { title: 'Updated Ticket', description: 'This is an updated test' }). What the other side provides: async readTickets(): reads all tickets from storage | async saveTickets(tickets): saves tickets to storage | ticketStorage.js exports: "),update);
   for(const t of [create,view,update]){assert.doesNotMatch(t,/REAL CONTAINER BUILD FAILED|Builder renames|Fix the error below|by the plan/);assert.ok(t.length<=900&&t.endsWith(TAIL),t);}
 });
 
@@ -215,7 +215,8 @@ test('v7.15.7 (T2): the facts list each use\'s promise first (what it does, what
   room.db().exec("UPDATE agents SET interfaces=? WHERE id='root.1'",JSON.stringify([{...PROMISES.read,returns:'the array of ticket objects'},PROMISES.save]));
   const {ids,fns}=room.useProviders('root','root.2');
   const facts=await room.factsFrom('root',ids,'root.2',[],fns);
-  assert.match(facts,/^readTickets\(\): reads all tickets from storage; returns the array of ticket objects \| saveTickets\(tickets\): saves tickets to storage \| ticketStorage\.js exports: [^|]*readTickets\(\)[^|]*saveTickets\(tickets\)$/);
+  // Integration: one renderer (promiseText), async read from the surface of the module that exports the use.
+  assert.equal(facts,'async readTickets(): reads all tickets from storage; returns the array of ticket objects | async saveTickets(tickets): saves tickets to storage | ticketStorage.js exports: exports.readTickets = async function readTickets(); exports.saveTickets = async function saveTickets(tickets)');
   // Review (probe D): View ticket's use of readTickets answered as provided (R5's growth, or a function request), not planned by the split, is a use all the same (as contractReturned reads it).
   room.db().exec("UPDATE agents SET uses='[]' WHERE id='root.3'");
   assert.deepEqual(room.useProviders('root','root.3'),{ids:[],fns:[]});
@@ -231,7 +232,7 @@ test('v7.15.7 (T2, review probe C): the facts get the room the body leaves, cut 
   four.room.db().exec("UPDATE agents SET interfaces=? WHERE id='root.3'",JSON.stringify([PROMISES.view,{...fn('nextId','returns the next free ticket id'),returns:'a number'},{...fn('validateTicket','checks a ticket has a title',['ticket']),returns:'true or throws'}]));
   four.room.db().exec("UPDATE agents SET uses=? WHERE id='root.2'",JSON.stringify(['readTickets','saveTickets','nextId','validateTicket']));
   const t4=await ticketOf(four.room);
-  assert.ok(t4.startsWith(body+' What the other side provides: readTickets(): reads all tickets from storage; returns the array of ticket objects | saveTickets(tickets): saves tickets to storage; returns nothing | nextId(): returns the next free ticket id; returns a number | validateTicket(ticket): checks a ticket has a title; returns true or throws | ticketStorage.js exports: '),t4);
+  assert.ok(t4.startsWith(body+' What the other side provides: async readTickets(): reads all tickets from storage; returns the array of ticket objects | async saveTickets(tickets): saves tickets to storage; returns nothing | nextId(): returns the next free ticket id; returns a number | validateTicket(ticket): checks a ticket has a title; returns true or throws | ticketStorage.js exports: '),t4);
   assert.ok(t4.length<=900&&t4.endsWith(TAIL),t4);
   const eight=await run14Room(),long=s=>`${s}, as the plan states it for every caller of this piece`;
   eight.room.db().exec("UPDATE agents SET interfaces=? WHERE id='root.1'",JSON.stringify([{...PROMISES.read,returns:'the array of ticket objects'},{...PROMISES.save,returns:'nothing'},fn('nextId',long('returns the next free id')),fn('clearTickets',long('empties the storage'))]));
@@ -240,7 +241,7 @@ test('v7.15.7 (T2, review probe C): the facts get the room the body leaves, cut 
   const {ids,fns}=eight.room.useProviders('root','root.2'),full=await eight.room.factsFrom('root',ids,'root.2',[],fns);
   const t8=await ticketOf(eight.room),facts8=t8.slice(t8.indexOf('provides: ')+10,-TAIL.length);
   assert.ok(t8.length<=900&&t8.endsWith(TAIL),t8);
-  assert.ok(facts8.startsWith('readTickets(): reads all tickets from storage; returns the array of ticket objects | saveTickets(tickets): saves tickets to storage; returns nothing | nextId(): returns the next free id, as the plan states it for every caller of this piece | '),facts8);
+  assert.ok(facts8.startsWith('async readTickets(): reads all tickets from storage; returns the array of ticket objects | async saveTickets(tickets): saves tickets to storage; returns nothing | nextId(): returns the next free id, as the plan states it for every caller of this piece | '),facts8);
   // Cut: a prefix of the facts ending at a ' | ' or '; ' boundary, never mid-word; the surface lines, last, give way first.
   assert.ok(full.length>facts8.length&&full.startsWith(facts8)&&/^(?: \| |; )/.test(full.slice(facts8.length)),`${facts8}\n--\n${full}`);
   assert.ok(facts8.includes('listTickets(): lists all tickets')&&!facts8.includes('.js exports'),facts8);
