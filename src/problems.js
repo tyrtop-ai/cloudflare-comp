@@ -751,12 +751,14 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // the plan: the ticket is that requirement on the worker's own promise, the
 // other side's facts, and nothing else (no head, no raw output, 900 at
 // most; review: the tail is kept, the facts give way first, down to 160).
+// v7.15.7 review: text cut to n at the last ' | ' or '; ' boundary before n, else the last word boundary; whole when it fits.
+const cutAt=(s,n)=>{s=String(s||'');if(s.length<=n)return s;const h=s.slice(0,Math.max(n,0)),at=Math.max(h.lastIndexOf(' | '),h.lastIndexOf('; '));return (at>0?h.slice(0,at):h.replace(/\s+\S*$/,'')).trimEnd();};
 export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false,operation=false}) {
   if(requirement) {
-    const tail=' Publish the FULL updated file.',room=900-tail.length;
-    let body=ownPaths(instructions,piece),more=facts?` What the other side provides: ${ownPaths(facts,piece).slice(0,300)}`:'';
-    if(body.length+more.length>room){body=clip(body,Math.max(room-more.length,room-160));more=clip(more,room-body.length);}
-    return body+more+tail;
+    // v7.15.7 review (run14): the facts get the room the body leaves (at least 160, as before), cut at a ' | ' or '; ' boundary and never mid-word: a flat 300 cut the plan's returns first and mid-word once a worker had a third use, while most of the 900 went unused.
+    const tail=' Publish the FULL updated file.',room=900-tail.length,lead=' What the other side provides: ';
+    const body=clip(ownPaths(instructions,piece),facts?room-160:room),cut=facts?cutAt(ownPaths(facts,piece),room-body.length-lead.length):'';
+    return body+(cut?lead+cut:'')+tail;
   }
   // v7.15.7 (T3): an operation of start() no piece promises, given back to its carrier at Root with nobody to cover it: nothing ran.
   const head=(kinds.length&&kinds.every(k=>k==='contract')?(written?'YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE. Nothing was run; the plan was checked against your modules.':'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.'):

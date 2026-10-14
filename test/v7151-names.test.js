@@ -308,7 +308,7 @@ test('v7.15.1: a nested start carrier\'s empty operation is answered from a leve
   assert.match(events(failing,'contract_returned')[0].body,/archive: Clef failed; ask\.$/);
 });
 
-test('v7.15.1: a start() returning imported functions is accepted; an empty operation nobody promises is imported, and its manager grows a promise with it (v7.15.7, T3)',async()=>{
+test('v7.15.1: a start() returning imported functions is accepted; an empty operation nobody promises and the goal does not name is told to implement it here (v7.15.7, T3: the plan grows only for an operation the goal names or the fixed test calls)',async()=>{
   const wired="const { createTicket } = require('./createTicket');\nconst { getTickets } = require('./getTickets');\nconst { updateTicket } = require('./updateTicket');\nconst { deleteTicket } = require('./deleteTicket');\nfunction start() { return { create: createTicket, view: getTickets, update: updateTicket, delete: deleteTicket }; }\nmodule.exports = { start };";
   const done=await entryWorker(fakeAI({leaf:leafOf(wired)}));
   await done.room.turn('root.1');
@@ -317,13 +317,10 @@ test('v7.15.1: a start() returning imported functions is accepted; an empty oper
   const archive=wired.replace('delete: deleteTicket }','delete: deleteTicket, archive }').replace('function start','function archive() {}\nfunction start');
   const {room}=await entryWorker(fakeAI({leaf:leafOf(archive),fn:()=>0.2}));
   await room.turn('root.1');
-  // v7.15.7 (T3, the audit's #18): never "implement it here" while a sibling's assignment may cover it: the carrier imports it, and one row at Root grows a piece's promise with it (R5), as a reader's unpromised import does.
-  assert.equal(room.receive('root.1')[0].body,"[contract] Your promise: start(). archive is an empty placeholder and no piece promises it: your manager places archive() on the promise of the piece whose assignment covers it. Import it on its own line, const { archive } = require('./archive'), and return it as archive; do not write it here. Publish the FULL updated file.");
-  const [row,...more]=room.problems("holder='root' AND status!='closed'");
-  assert.equal(more.length,0);
-  assert.deepEqual([row.kind,row.source,row.facts.names,row.facts.operation.op,row.facts.operation.name,row.facts.unpromised,row.parties.map(x=>[x.role,x.owner,x.owner_path])],['unresolved','root.1',['archive'],'archive','archive',true,[['reader','root.1','entry.js']]]);
-  assert.match(events(room,'problems_reported').at(-1).body,/^1 problem goes to the manager: Entry Module returns archive from start\(\) as an empty placeholder that no piece promises; the manager grows a piece's promise with archive\(\)\.$/);
-  assert.equal(room.read('operation_grown:root.1',[]).join(),'archive','once per operation per carrier');
+  // v7.15.7 (T3, the audit's #18; review): an operation the goal names (run9's update, delete) or the fixed test calls grows the plan at the manager (test/v7157-route.test.js); archive is an invented helper, the carrier's own: no row, the text as before.
+  assert.equal(room.receive('root.1')[0].body,'[contract] Your promise: start(). archive is an empty placeholder and no piece promises it: implement it here. Publish the FULL updated file.');
+  assert.equal(room.problems('1=1').length,0,'no row for an invented helper');
+  assert.deepEqual(room.read('operation_grown:root.1',[]),[]);
 });
 
 test('v7.15.1: a promised function that only throws not implemented is sent back to be written, its one-line sibling passes, and the third return accepts',async()=>{
