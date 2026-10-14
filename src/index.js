@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
@@ -1608,38 +1608,46 @@ export class ControlRoom extends DurableObject {
   // on what the goal names (run12's createData, a factory, performs none).
   performsGoal(f) {return goalOps(this.userGoal(),f).length>0;}
   // v7.15.5: the promises that perform the goal's operations, from levels
-  // nearest first, each operation from the nearest level that has one;
-  // generic names are never answered by name, so never listed.
-  goalPerformers(levels) {
-    const goal=this.userGoal(),out=[],near=new Set();
-    for(const items of levels) {
-      const here=new Set();
-      for(const f of items){const ops=goalOps(goal,f);if(!ops.length||GENERIC_NAMES.has(f.name)||ops.every(o=>near.has(o))||out.some(x=>x.name===f.name))continue;out.push(f);for(const o of ops)here.add(o);}
-      for(const o of here)near.add(o);
-    }
-    return out;
+  // nearest first, each operation from the nearest level that has one, one
+  // per operation there (review: createTicketStore and createTicketId
+  // perform none; viewAllTickets is no second view).
+  goalPerformers(levels) {return planPerformers(this.userGoal(),levels);}
+  // Review: the plan as a start carrier reads it: own, its other promises;
+  // levels, the walk from it. mine, the performers it writes; theirs, those
+  // it imports; left, the operations the goal lists that none performs
+  // (run9's create and update, generic names, and a getTicket for view
+  // were dropped from a closed list).
+  startPlan(own, levels) {
+    const goal=this.userGoal(),fns=planPerformers(goal,[own.map(f=>({...f,own:true})),...levels]);
+    return {mine:fns.filter(f=>f.own),theirs:fns.filter(f=>!f.own),left:goalLeft(goal,fns)};
   }
+  startPlanOf(id) {const n=this.node(id),own=this.promisedOf(id);return n?.parent&&this.planned()&&own.some(f=>f.name==='start')?this.startPlan(own.filter(f=>f.name!=='start'),this.planWalk(id)):null;}
   // The functions start() returns, for its carrier below the top: the plan
   // as its walk reads it (run12's createTicket, viewTicket, updateTicket and
   // deleteTicket, each with the label of the piece that promises it).
-  startPerformers(id) {const n=this.node(id);return n?.parent&&this.planned()&&this.promisedOf(id).some(f=>f.name==='start')?this.goalPerformers(this.planWalk(id)):[];}
+  startPerformers(id) {return this.startPlanOf(id)?.theirs||[];}
   // v7.15.5: a split that gives start to one piece composes it from the plan
   // (run12's entry asked for goalOperation1 and goalOperation2 and wired two
   // of four operations): its siblings' promises and the walk above name the
   // performers, which its promise and assignment list with an import line
   // each, and its requests for them are answered up front (answers, which
   // spawn records as routeFunction does). No model call; none found, as before.
+  // Review: an operation the goal lists that no performer performs is still
+  // asked for, and the list is closed only when none is left; generic names
+  // are listed, never answered up front.
   composeStart(m, spawn) {
     const at=this.planned()?spawn.findIndex(c=>(c?.interfaces||[]).some(f=>f.name==='start')):-1;
     if(at<0)return spawn;
     const siblings=spawn.flatMap((c,i)=>i===at||RUNTIME_LABELS.includes(c.label)?[]:(c.interfaces||[]).map(f=>({...f,owner:c.label})));
-    const fns=this.goalPerformers([siblings,...this.planWalk(m)]);
-    if(!fns.length)return spawn;
-    const names=`{ ${fns.map(f=>f.name).join(', ')} }`,full=`no arguments; returns ${names}, each imported on its own line by its name`;
-    const does=full.length<=160?full:'no arguments; returns the functions your assignment names, each under its name and imported on its own line by its name';
-    const task=`${spawn[at].task} start() returns ${names}, the functions other pieces promise for the goal's operations: ${listed(fns.map(f=>`${signature(f)} from "${f.owner}"`))}. ${importLines(fns)} Return each under its name, itself or a wrapper that calls it; do not write them here.`;
-    this.event(m,'start_composed',clip(`"${spawn[at].label}" carries start: it returns ${fns.map(f=>`${f.name} from "${f.owner}"`).join(', ')}, from the plan.`,600));
-    return spawn.map((c,i)=>i!==at?c:{...c,task,interfaces:c.interfaces.map(f=>f.name==='start'?{...f,does}:f),answers:fns.map(f=>({key:requestKey({name:f.name}),kind:'provided',text:providedText(f,f.owner),fn:providedFn(f,f.owner)}))});
+    const {mine,theirs,left}=this.startPlan(spawn[at].interfaces.filter(f=>f.name!=='start'),[siblings,...this.planWalk(m)]);
+    if(!theirs.length)return spawn;
+    const fns=[...mine,...theirs],names=`{ ${fns.map(f=>f.name).join(', ')} }`,how=mine.length?`${listed(mine.map(f=>f.name))} written here and the rest imported`:'each imported',ops=`one method ${left.length>1?'each ':''}for ${listed(left)}`;
+    const fit=xs=>xs.find(x=>x.length<=160)||xs.at(-1);
+    const does=left.length?fit([`no arguments; returns ${names}, ${how} on its own line by its name, and ${ops}${ASK_CLAUSE}`,`no arguments; returns ${names} and ${ops}${ASK_CLAUSE}`,`no arguments; returns the functions your assignment names and ${ops}${ASK_CLAUSE}`,`no arguments; returns the functions your assignment names and one method per other goal operation${ASK_CLAUSE}`]):
+      fit([`no arguments; returns ${names}, ${how} on its own line by its name`,'no arguments; returns the functions your assignment names, each under its name and imported on its own line by its name']);
+    const task=`${spawn[at].task} start() returns ${names}, the functions ${mine.length?'you and ':''}other pieces promise for the goal's operations: ${listed(fns.map(f=>f.own?`${signature(f)}, yours to write here`:`${signature(f)} from "${f.owner}"`))}. ${importLines(theirs)} Return each under its name, itself or a wrapper that calls it; do not write them here.${left.length?` start() also returns one method for each other operation the goal names (${listed(left)}): the function that performs it, which you ask your manager for by a name that says what it does and import by that name.`:''}`;
+    this.event(m,'start_composed',clip(`"${spawn[at].label}" carries start: it returns ${fns.map(f=>f.own?`${f.name} written here`:`${f.name} from "${f.owner}"`).join(', ')}, from the plan${left.length?`, and asks for ${listed(left)}`:''}.`,600));
+    return spawn.map((c,i)=>i!==at?c:{...c,task,interfaces:c.interfaces.map(f=>f.name==='start'?{...f,does}:f),answers:theirs.filter(f=>!GENERIC_NAMES.has(f.name)).map(f=>({key:requestKey({name:f.name}),kind:'provided',text:providedText(f,f.owner),fn:providedFn(f,f.owner)}))});
   }
 
   // ---------- the problem inbox ----------

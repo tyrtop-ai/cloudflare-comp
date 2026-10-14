@@ -112,10 +112,10 @@ test('v7.15.5: a split with no piece that performs a goal operation keeps today\
   assert.equal(v714.room.composeStart('root',specs),specs,'no promise at Root: no composition');
   assert.equal(events(room,'start_composed').length+events(v714.room,'start_composed').length,0);
   // A start carrier a level down: its siblings first, then the walk above, each operation once.
-  const nested=room.composeStart('root.1',[{label:'Entry',task:'Write start().',interfaces:[ROOT_PROMISE[0]]},{label:'CLI Parser',task:'Write the parser.',interfaces:[fn('parseArgs','parses arguments',['argv'])]},{label:'Ticket Update',task:'Write it.',interfaces:[fn('updateTicketFields','updates the fields of a ticket',['id','fields'])]}]);
-  assert.equal(nested[0].interfaces[0].does,'no arguments; returns { updateTicketFields, createTicket, viewTicket, deleteTicket }, each imported on its own line by its name');
-  assert.deepEqual(nested[0].answers.map(a=>[a.fn.name,a.fn.owner]),[['updateTicketFields','Ticket Update'],['createTicket','Create Ticket Operation'],['viewTicket','View Ticket Operation'],['deleteTicket','Delete Ticket Operation']],'Root\'s updateTicket is not a second update');
-  assert.deepEqual(nested.slice(1),[{label:'CLI Parser',task:'Write the parser.',interfaces:[fn('parseArgs','parses arguments',['argv'])]},{label:'Ticket Update',task:'Write it.',interfaces:[fn('updateTicketFields','updates the fields of a ticket',['id','fields'])]}]);
+  const nested=room.composeStart('root.1',[{label:'Entry',task:'Write start().',interfaces:[ROOT_PROMISE[0]]},{label:'CLI Parser',task:'Write the parser.',interfaces:[fn('parseArgs','parses arguments',['argv'])]},{label:'Ticket Update',task:'Write it.',interfaces:[fn('updateTicketById','updates the fields of a ticket by id',['id','fields'])]}]);
+  assert.equal(nested[0].interfaces[0].does,'no arguments; returns { updateTicketById, createTicket, viewTicket, deleteTicket }, each imported on its own line by its name');
+  assert.deepEqual(nested[0].answers.map(a=>[a.fn.name,a.fn.owner]),[['updateTicketById','Ticket Update'],['createTicket','Create Ticket Operation'],['viewTicket','View Ticket Operation'],['deleteTicket','Delete Ticket Operation']],'Root\'s updateTicket is not a second update');
+  assert.deepEqual(nested.slice(1),[{label:'CLI Parser',task:'Write the parser.',interfaces:[fn('parseArgs','parses arguments',['argv'])]},{label:'Ticket Update',task:'Write it.',interfaces:[fn('updateTicketById','updates the fields of a ticket by id',['id','fields'])]}]);
 });
 
 test('v7.15.5: run12 replay: the entry\'s goalOperation1 is answered with the goal operations\' performers and their import lines, never "import goalOperation1"',async()=>{
