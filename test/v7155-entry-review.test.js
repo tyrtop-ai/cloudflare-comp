@@ -21,11 +21,12 @@ const store=does=>['Ticket Data Manager','Write code that manages in-memory tick
 const imports=names=>names.map(n=>`const { ${n} } = require('./${n}');`).join('\n')+'\n';
 const four=imports(['createTicket','viewTicket','updateTicket','deleteTicket'])+"\nexports.start = () => ({ createTicket, viewTicket, updateTicket, deleteTicket });\n";
 const clef=(input)=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:k==='should_split'?0.847:k.startsWith('within_')?0.8:k.startsWith('names_')?0.9:k==='inside'?0.9:0.05}]))});
-// Root's real split turn over a plan; then every child waits to implement.
+// Root's real split turn over a plan, again only while C7 rejects a factory (admitted on the last attempt before a pause); then every child waits to implement.
 async function split(plan,leaf=null) {
-  const {room,calls}=liveRoom({clef,leaf,split:()=>({summary:'split',spawn:plan.map(([label,task,functions])=>({label,task,functions}))})});
+  const {room,calls}=liveRoom({clef,leaf,split:()=>({summary:'split',spawn:plan.map(([label,task,functions,uses])=>({label,task,functions,...(uses?{uses}:{})}))})});
   await room.provision('root',null,'Root objective',GOAL12,ROOT_PROMISE);room.set('goal',GOAL12);
   await room.turn('root');
+  for(let i=0;i<2&&!room.children('root').length&&/is a factory/.test(events(room,'split_rejected').at(-1)?.body||'');i++)await room.turn('root');
   room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id LIKE 'root.%'");room.save('queue',[]);
   return {room,calls,turn:async id=>{room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);await room.turn(id);}};
 }
@@ -40,7 +41,8 @@ async function ask(room,worker,need,name) {
   return JSON.parse(m.body.replace(/^\[route:\w+\] /,'')).value;
 }
 const own=(name,need)=>`No piece of the application promises ${name} (${need}). It is part of your assignment: write it in your own module.`;
-const run12=[entrySpec,['Ticket Data Manager','Write code that manages in-memory ticket storage',[fn('createData','Initializes and returns a ticket data manager instance')]],create,view,update,remove];
+// Run12's plan as C7 has the splitter correct it: the data piece promises readTickets and saveTickets in place of createData (a factory), and each operation names the ones it calls.
+const run12=[entrySpec,['Ticket Data Manager','Write code that manages in-memory ticket storage',[fn('readTickets','Returns all stored tickets'),fn('saveTickets','Replaces the stored tickets with the given list',['tickets'])]],...[create,view,update,remove].map(([label,task,functions])=>[label,task,functions,label.startsWith('View')?['readTickets']:['readTickets','saveTickets']])];
 
 test('v7.15.5 review: a goal operation\'s performer acts on the goal\'s noun, its head noun: a store, manager, repository, object, id or list of tickets performs none, nor does the goal\'s leading Build',()=>{
   const goal='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
@@ -55,6 +57,10 @@ test('v7.15.5 review: a goal operation\'s performer acts on the goal\'s noun, it
 test('v7.15.5 review: a data manager whose factory is named createTicketStore is not a performer: the entry is composed with the four operations, and an entry returning them is done on its first done',async()=>{
   const plan=[entrySpec,store('Initializes and returns a ticket store instance'),create,view,update,remove];
   const {room,calls,turn}=await split(plan,()=>({summary:'Wrote it',files:[{path:'module.js',content:four}],done:true}));
+  // C7 rejects the factory twice; the last attempt before a pause admits it, so the plan keeps it.
+  assert.equal(events(room,'split_rejected').length,2,trace(room));
+  assert.equal(events(room,'interfaces_factory_kept')[0].body,'Last attempt before a pause: createTicketStore() on "Ticket Data Manager" is a factory; admitted as it is.');
+  assert.deepEqual(room.promisedOf('root.2').map(f=>f.name),['createTicketStore']);
   assert.equal(startOf(room),'no arguments; returns { createTicket, viewTicket, updateTicket, deleteTicket }, each imported on its own line by its name',trace(room));
   assert.deepEqual(room.startPerformers('root.1').map(f=>f.name),['createTicket','viewTicket','updateTicket','deleteTicket']);
   await turn('root.1');

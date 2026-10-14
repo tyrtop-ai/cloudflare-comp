@@ -28,6 +28,9 @@ const plan12=[
   ['View Ticket Operation','Write code that implements the ticket viewing logic',[viewTicket]],
   ['Update Ticket Operation','Write code that implements the ticket update logic',[updateTicket]],
   ['Delete Ticket Operation','Write code that implements the ticket deletion logic',[deleteTicket]]];
+// Run12's plan as C7 has the splitter correct it: the data piece promises storage functions, and each operation names the ones it calls.
+const readTickets=fn('readTickets','Returns all stored tickets'),saveTickets=fn('saveTickets','Replaces the stored tickets with the given list',['tickets']);
+const corrected12=plan12.map(([label,task,interfaces])=>label==='Ticket Data Manager'?[label,task,[readTickets,saveTickets]]:/Operation$/.test(label)?[label,task,interfaces,label.startsWith('View')?['readTickets']:['readTickets','saveTickets']]:[label,task,interfaces]);
 // Run12's entry module.js, as its worker published it after round 1, and before.
 const entry12="const { createTicket } = require('./createTicket');\nconst { deleteTicket } = require('./deleteTicket');\n\nexports.start = () => {\n  return {\n    goalOperation1: createTicket,\n    goalOperation2: deleteTicket\n  };\n};\n";
 const first12="const { goalOperation1 } = require('./goalOperation1');\nconst { goalOperation2 } = require('./goalOperation2');\n\nexports.start = () => {\n  return {\n    goalOperation1,\n    goalOperation2\n  };\n};\n";
@@ -71,7 +74,8 @@ test('v7.15.5: run12\'s createTicket, viewTicket, updateTicket and deleteTicket 
 });
 
 test('v7.15.5: run12 replay: Root\'s split composes the entry: its promise and assignment name the four performers with an import line each, and its requests for them are answered up front, with no model call',async()=>{
-  const split=()=>({summary:'Split the issue tracker into modular components for each operation and data management.',spawn:plan12.map(([label,task,interfaces])=>({label,task,functions:interfaces.map(f=>f.name==='start'?{name:'start'}:f)}))});
+  // C7 rejects run12's createData, so the split is replayed as the splitter corrects it: the data piece promises readTickets and saveTickets, and each operation names its uses (no Clef pair fallback).
+  const split=()=>({summary:'Split the issue tracker into modular components for each operation and data management.',spawn:corrected12.map(([label,task,interfaces,uses])=>({label,task,functions:interfaces.map(f=>f.name==='start'?{name:'start'}:f),...(uses?{uses}:{})}))});
   const {room,calls}=liveRoom({clef,split});
   await room.provision('root',null,'Root objective',GOAL12,ROOT_PROMISE);room.set('goal',GOAL12);
   await room.turn('root');
@@ -81,7 +85,8 @@ test('v7.15.5: run12 replay: Root\'s split composes the entry: its promise and a
   const [start]=room.promisedOf('root.1');
   assert.deepEqual(start,{name:'start',does:'no arguments; returns { createTicket, viewTicket, updateTicket, deleteTicket }, each imported on its own line by its name',params:[]});
   assert.equal(room.node('root.1').task,`Write code that implements the entry point exporting start().${deliver} start() returns { createTicket, viewTicket, updateTicket, deleteTicket }, the functions other pieces promise for the goal's operations: ${FROM}. Import each on its own line, by exactly its name, with the name as the path: ${LINES} Return each under its name, itself or a wrapper that calls it; do not write them here.`);
-  assert.deepEqual(room.promisedOf('root.2'),[createData],'the siblings are as Root split them');
+  assert.deepEqual(room.promisedOf('root.2'),[readTickets,saveTickets],'the siblings are as Root split them');
+  assert.deepEqual(room.children('root').map(c=>JSON.parse(c.uses)),corrected12.map(([,,,uses])=>uses||[]),'the splitter\'s uses: Clef is asked about none');
   assert.deepEqual(room.read('fn_answers:root.2',[]),[],'only the start carrier is answered up front');
   assert.equal(events(room,'start_composed')[0].body,'"Entry Module" carries start: it returns createTicket from "Create Ticket Operation", viewTicket from "View Ticket Operation", updateTicket from "Update Ticket Operation", deleteTicket from "Delete Ticket Operation", from the plan.');
   // Answered up front, as routeFunction answers a request by name.
