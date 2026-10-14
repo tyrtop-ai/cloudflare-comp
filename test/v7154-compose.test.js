@@ -118,9 +118,11 @@ test('v7.15.4: run11 replay: entryModule.js is sent back on done, naming each pr
   const [message]=room.receive('root.6');
   assert.equal(message.from,'runtime:contract');
   const line=(name,owner)=>`${name} is promised by "${owner}": import it on its own line, const { ${name} } = require('./${name}'), and use it; do not write it here.`;
-  assert.equal(message.body,['[contract]',line('createTicket','createTicket'),line('readData','dataStore'),line('writeData','dataStore'),line('deleteTicket','deleteTicket'),line('updateTicket','updateTicket'),line('viewTicket','viewTicket'),'Publish the FULL updated file.'].join(' '));
+  // Review: the functions that perform the goal's operations first; readData and writeData perform none, so the carrier is not told to use them.
+  assert.equal(message.body,['[contract]',line('createTicket','createTicket'),line('deleteTicket','deleteTicket'),line('updateTicket','updateTicket'),line('viewTicket','viewTicket'),
+    'readData is promised by "dataStore": do not write it here.','writeData is promised by "dataStore": do not write it here.','Publish the FULL updated file.'].join(' '));
   assert.doesNotMatch(message.body,/root\.|Read ticket data|Write ticket data/,'only the walk\'s labels: never an id or the branch below dataStore');
-  assert.equal(events(room,'contract_reimplemented')[0].body,'Done refused (1/3): createTicket, readData, writeData, deleteTicket, updateTicket and viewTicket are written here, and other pieces promise them; back to the worker. createTicket: "createTicket" promises it. readData: "dataStore" promises it. writeData: "dataStore" promises it. deleteTicket: "deleteTicket" promises it. updateTicket: "updateTicket" promises it. viewTicket: "viewTicket" promises it.');
+  assert.equal(events(room,'contract_reimplemented')[0].body,'Done refused (1/3): createTicket, deleteTicket, updateTicket, viewTicket, readData and writeData are written here, and other pieces promise them; back to the worker. createTicket: "createTicket" promises it. deleteTicket: "deleteTicket" promises it. updateTicket: "updateTicket" promises it. viewTicket: "viewTicket" promises it. readData: "dataStore" promises it. writeData: "dataStore" promises it.');
   assert.deepEqual(only(calls,'leaf'),[],'no Clef or other model call');
   assert.equal(room.get('contract_returns:root.6'),'1','the contract-return limit bounds it');
   // The start carrier that imports them is accepted.
@@ -189,14 +191,15 @@ test('v7.15.4: after 3 returns the done is accepted and the manager gets a contr
   assert.deepEqual(events(room,'contract_reimplemented').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
   await again();
   assert.equal(room.node('root.6').status,'done');
-  assert.equal(events(room,'contract_unmet')[0].body,'createTicket, readData, writeData, deleteTicket, updateTicket and viewTicket still written here after 3 returns though other pieces promise them; accepted, and the gap goes to the manager.');
+  assert.equal(events(room,'contract_unmet')[0].body,'createTicket, deleteTicket, updateTicket, viewTicket, readData and writeData still written here after 3 returns though other pieces promise them; accepted, and the gap goes to the manager.');
   const [p,...more]=openProblems(room,'root').filter(x=>x.kind==='contract');
   assert.equal(more.length,0);
-  assert.equal(p.detail,'entryModule writes createTicket, readData, writeData, deleteTicket, updateTicket, viewTicket itself, which "createTicket", "dataStore", "deleteTicket", "updateTicket", "viewTicket" promise; its modules must import them by name instead.');
-  assert.deepEqual([p.facts.names,p.facts.written],[[],['createTicket','readData','writeData','deleteTicket','updateTicket','viewTicket']]);
-  assert.equal(events(room,'problems_reported').at(-1).body,'1 problem goes to the manager: entryModule writes createTicket, readData, writeData, deleteTicket, updateTicket, viewTicket, which other pieces promise.');
+  assert.equal(p.detail,'entryModule writes createTicket, deleteTicket, updateTicket, viewTicket, readData, writeData itself, which "createTicket", "deleteTicket", "updateTicket", "viewTicket", "dataStore" promise; its modules must import them by name instead.');
+  assert.deepEqual([p.facts.names,p.facts.written],[[],['createTicket','deleteTicket','updateTicket','viewTicket','readData','writeData']]);
+  assert.equal(events(room,'problems_reported').at(-1).body,'1 problem goes to the manager: entryModule writes createTicket, deleteTicket, updateTicket, viewTicket, readData, writeData, which other pieces promise.');
   const told=P.instructionsFor(p,'subject');
-  assert.equal(told,"createTicket, readData, writeData, deleteTicket, updateTicket, viewTicket are promised by other pieces: import each on its own line, with its name as the path: const { createTicket } = require('./createTicket'); const { readData } = require('./readData'); const { writeData } = require('./writeData'); const { deleteTicket } = require('./deleteTicket'); Use them; do not write them in your modules.");
+  // Review: a line for each of the six, the operations' first.
+  assert.equal(told,"createTicket, deleteTicket, updateTicket, viewTicket, readData, writeData are promised by other pieces: import each on its own line, with its name as the path: const { createTicket } = require('./createTicket'); const { deleteTicket } = require('./deleteTicket'); const { updateTicket } = require('./updateTicket'); const { viewTicket } = require('./viewTicket'); const { readData } = require('./readData'); const { writeData } = require('./writeData'); Use them; do not write them in your modules.");
   assert.match(P.repairText({instructions:told,kinds:['contract'],written:true,problems:[{path:'entryModule.js',detail:p.detail}]}),/^YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE\. Nothing was run; the plan was checked against your modules\./);
   assert.match(P.repairText({kinds:['contract'],problems:[]}),/^YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT\./,'a missing export, as before');
 });
@@ -247,7 +250,7 @@ test('v7.15.4: run11 replay: an entry whose imports reach no module that exports
   const [p,...more]=openProblems(room,'root');
   assert.equal(more.length,0,trace(room));
   assert.deepEqual([p.kind,p.source,p.parties[0].path],['entry',compiler.id,PATHS.entry]);
-  assert.equal(p.detail,'start() runs none of the promised functions: import readData from "dataStore", writeData from "dataStore", createTicket from "createTicket", viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket", each on its own line (const { readData } = require(\'./readData\')), and use them in the methods start() returns. entryModule.js imports no module that exports them, so their code never runs.');
+  assert.equal(p.detail,'start() runs none of the promised functions: import createTicket from "createTicket", viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket", readData from "dataStore", writeData from "dataStore", each on its own line (const { createTicket } = require(\'./createTicket\')), and use them in the methods start() returns. entryModule.js imports no module that exports them, so their code never runs.','review: the operations\' performers first');
   assert.match(events(room,'entry_unreached')[0].body,/entryModule\.js reaches none of the 6 module\(s\) that export promised functions/);
   assert.ok(!room.read('compile_passed',null));
 });
@@ -270,7 +273,7 @@ test('v7.15.4 review: start() methods whose performers the entry does not reach 
   // Round 8's shape: createTicket imported, the rest in memory.
   const round8=await compiled({entry:run11.entry.replace('// In-memory storage',`const { createTicket: create } = require('${linkedPaths.create}');\n// In-memory storage`).replace('create: createTicket','create')});
   assert.equal(round8.calls.runner.length,0);
-  assert.match(openProblems(round8.room,'root')[0].detail,/^start\(\) returns read, delete, update, view but runs none of the promised functions that perform them: import readData from "dataStore", viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket"/);
+  assert.match(openProblems(round8.room,'root')[0].detail,/^start\(\) returns read, delete, update, view but runs none of the promised functions that perform them: import viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket", readData from "dataStore", each on its own line \(const \{ viewTicket \} = require\('\.\/viewTicket'\)\)/);
   // A reached module of another piece whose exports this parse cannot list may provide them: the doubt.
   const opaque=await compiled({entry:halfway(linkedPaths.read,linkedPaths.write).replace('const tickets',`const tickets0 = require('${linkedPaths.create}');\nconst tickets`),
     files:{create:"const { writeData } = require('../datastore-1b07dcdb/components/write-tick-1a07db48/module.js');\nfunction make() { return { createTicket(data, filePath) { writeData(filePath, data); return data; } }; }\nmodule.exports = make();\n"}});

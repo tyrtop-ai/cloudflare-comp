@@ -375,7 +375,7 @@ const base=path=>String(path||'').split('/').pop();
 const list=names=>(names||[]).filter(Boolean).slice(0,8).join(', ')||'them';
 // One import line per function, named after it, under the reader's own
 // local name (run8 called load() and save()).
-const oneLines=(names,aliases={})=>(names||[]).slice(0,4).map(n=>`const { ${n}${aliases?.[n]?': '+aliases[n]:''} } = require('./${n}');`).join(' ');
+const oneLines=(names,aliases={},cap=4)=>(names||[]).slice(0,cap).map(n=>`const { ${n}${aliases?.[n]?': '+aliases[n]:''} } = require('./${n}');`).join(' ');
 // An atomic top's entry problem (v7.15.2): it wrote every module, so its
 // operations are its own, not imported from pieces it never had (review).
 export const OWN_ENTRY_CONTRACT='You wrote the whole application: your entry module exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each performing it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
@@ -399,8 +399,8 @@ export function instructionsFor(p, side, own=false) {
     case 'stuck':return 'Finish your assignment.';
     case 'contract':{
       const by=(f.requested_by||[]).filter(Boolean).slice(0,8),them=xs=>xs.length>1?'them':'it';
-      // v7.15.4: the promises of other pieces a worker still writes itself (run11's entry wrote all six).
-      const written=f.written?.length?`${list(f.written)} ${f.written.length>1?'are':'is'} promised by other pieces: import each on its own line, with its name as the path: ${oneLines(f.written)} Use ${them(f.written)}; do not write ${them(f.written)} in your modules.`:'';
+      // v7.15.4: the promises of other pieces a worker still writes itself (run11's entry wrote all six), a line for each (review: run11's had 4 of 6).
+      const written=f.written?.length?`${list(f.written)} ${f.written.length>1?'are':'is'} promised by other pieces: import each on its own line, with its name as the path: ${oneLines(f.written,{},8)} Use ${them(f.written)}; do not write ${them(f.written)} in your modules.`:'';
       if(!f.names?.length&&written)return written;
       return `Your assignment promises ${list(f.names)}; ${by.length?by.join(', '):'other pieces'} need ${(f.names||[]).length>1?'them':'it'} from you and your modules do not export ${(f.names||[]).length>1?'them':'it'}. Export each as a named export with exactly that name; keep your other exports.${written&&' '+written}`;
     }

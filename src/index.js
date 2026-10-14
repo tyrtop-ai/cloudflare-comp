@@ -2106,7 +2106,8 @@ export class ControlRoom extends DurableObject {
     const offers=linked&&reach?this.entryOffers(id,files,entry,surfaces,reach):null,methods=Object.keys(described?.members||{}).filter(k=>['function','class'].includes(described.members[k]?.type));
     const left=offers?[...offers].filter(([,paths])=>!paths.some(p=>reach.has(p))).map(([f])=>f):[],unrun=left.filter(f=>methods.some(m=>performsOp(m,f)));
     if(left.length&&(left.length===offers.size||unrun.length)) {
-      const none=left.length===offers.size,fns=none?left:unrun,ops=methods.filter(m=>unrun.some(f=>performsOp(m,f))),base=entry.split('/').pop();
+      // Review: the performers of the goal's operations first, and the example line from one (run11's led with readData).
+      const none=left.length===offers.size,fns=(none?left:unrun).sort((a,b)=>this.performsGoal(b)-this.performsGoal(a)),ops=methods.filter(m=>unrun.some(f=>performsOp(m,f))),base=entry.split('/').pop();
       this.event(id,'entry_unreached',clip(none?`${entry} reaches none of the ${new Set([...offers.values()].flat()).size} module(s) that export promised functions; the runner's test is not run against dead code.`:
         `start() returns ${ops.join(', ')}, and ${entry} reaches no module that exports ${unrun.map(f=>f.name).join(', ')}, which perform${unrun.length>1?'':'s'} ${ops.length>1?'them':'it'}; the runner's test is not run against dead code.`,600));
       return {stage:'run',items:[entryIssue(entry,clip(`${none?'start() runs none of the promised functions':`start() returns ${ops.join(', ')} but runs none of the promised functions that perform ${ops.length>1?'them':'it'}`}: import ${fns.map(f=>`${f.name} from "${f.owner}"`).join(', ')}, each on its own line (const { ${fns[0].name} } = require('./${fns[0].name}')), and ${none?'use them in the methods start() returns':'call each from the method start() returns for it'}. ${base} imports no module that exports ${fns.length>1?'them':'it'}, so ${fns.length>1?'their':'its'} code never runs.`,900))]};
@@ -3238,7 +3239,8 @@ export class ControlRoom extends DurableObject {
     // generic name (create, get) is never answered by name, nor read here.
     const elsewhere=this.planned()?this.promisedElsewhere(id):new Map();
     const found=placeholders(files,names.filter(n=>!missing.includes(n)),[...elsewhere.keys()].filter(n=>!GENERIC_NAMES.has(n))).filter(x=>x.foreign?(x.hit=elsewhere.get(x.name)):!x.local||(x.hit=this.performerOf(id,x)));
-    const empty=found.filter(x=>!x.hit),written=found.filter(x=>x.hit),list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
+    // Review: the start carrier hears first of the functions that perform the goal's operations (run11's led with readData).
+    const empty=found.filter(x=>!x.hit),written=found.filter(x=>x.hit).sort((a,b)=>names.includes('start')?this.performsGoal(b.hit)-this.performsGoal(a.hit):0),list=xs=>xs.length>1?`${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}`:xs[0];
     const emptyNames=[...new Set(empty.map(x=>x.op||x.name))],are=emptyNames.length>1?'are empty placeholders':'is an empty placeholder',writtenNames=[...new Set(written.map(x=>x.op||x.name))];
     // A contract problem is about a missing export or a function written here: closed once neither remains, whatever the placeholders.
     if(!missing.length&&!written.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
@@ -3299,7 +3301,9 @@ export class ControlRoom extends DurableObject {
     // entryModule.js): import it from the piece the walk names.
     if(x.hit) {
       const f=x.hit,line=`const { ${f.name} } = require('./${f.name}')`,does=f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:'';
+      // Review: the start carrier is not told to use one that performs no operation of the goal (run11's readData).
       if(!x.op)return f.name==='start'?{text:`start is promised by "${f.owner}", which composes the application: do not write start() here.`,how:`start: "${clip(f.owner,70)}" promises it.`}:
+        promised.some(p=>p.name==='start')&&!this.performsGoal(f)?{text:`${f.name} is promised by "${f.owner}": do not write it here.`,how:`${f.name}: "${clip(f.owner,70)}" promises it.`}:
         {text:`${f.name} is promised by "${f.owner}": import it on its own line, ${line}, and use it; do not write it here.`,how:`${f.name}: "${clip(f.owner,70)}" promises it.`};
       if(!x.params?.length||!f.params?.length||x.params.length===f.params.length)
         return {text:`${x.op} is written here, but ${signature(f)}${does} is promised by "${f.owner}"; import it on its own line, ${line}, and return it as ${x.op}; do not write it here.`,how:`${x.op}: ${f.name} from "${clip(f.owner,70)}".`};
