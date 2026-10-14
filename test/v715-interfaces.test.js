@@ -615,7 +615,7 @@ test('v7.15: an atomic Root reads start without the clause on asking a manager, 
   assert.deepEqual([room.node('root').status,room.read('failures',{}).root||0],['ready',0],'not waiting for an answer nobody owes it');
   await room.resume(1);await drain();
   assert.equal(ai.calls.filter(c=>c.kind==='leaf').length,2,'Continue asks the model again');
-  assert.equal(events(room,'build_unavailable').length,1,'its done reaches the atomic build check');
+  assert.equal(events(room,'build_infrastructure').length,1,'its done reaches the compiler\'s pipeline');
   // A plan persisted before the guard replays its ask op without throwing.
   room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");
   room.db().exec('INSERT INTO pending_turns(agent,payload,cursor) VALUES (?,?,0)','root',JSON.stringify({action:normalizeAction({summary:'Entry',ask:[{to:'parent',key:'add_numbers',question:'Which function adds two numbers?'}],wait:true}),inbox:[],nextPhase:null,assemblyFingerprint:null,owned:''}));

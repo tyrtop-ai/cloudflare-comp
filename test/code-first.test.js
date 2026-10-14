@@ -77,7 +77,9 @@ test('a leaf can publish complete code in one Qwen inference rather than separat
   await room.turn('root');
   assert.equal(modelCalls,1,'source returned inline; no redundant generation call');
   assert.equal(await artifacts.read(room.node('root').repo_name,'validateTitle.js'),source);
-  assert.ok(room.snapshot().events.some(e=>e.kind==='build_unavailable'),'root still requires an actual runnable build');
+  // v7.15.2: an atomic Root runs the compiler's pipeline: no module exports start(), so it hears an entry problem.
+  assert.ok(room.snapshot().events.some(e=>e.kind==='problems_reported'&&/No application entry/.test(e.body)),'root still requires an actual runnable build');
+  assert.notEqual(room.node('root').status,'done');
 });
 
 test('a leaf cannot finish a code-writing assignment by publishing a README',async()=>{
