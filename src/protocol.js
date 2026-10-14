@@ -151,8 +151,10 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
       .map(f => ({ from: f.from, path: f.path, as: f.as || f.path })),
     spawn: spawnObjects(Array.isArray(raw.spawn) ? raw.spawn : []).filter(spawnPiece)
       // Module paths are not splitter output; function names are (v7.15, key
-      // "functions"), and so are the siblings' functions a piece calls
-      // (v7.15.5, "uses"). Discard other fields so they cannot become requirements.
+      // "functions"), with what each returns (v7.15.7, "returns", kept by
+      // normalizeInterfaces beside does and params), and so are the siblings'
+      // functions a piece calls (v7.15.5, "uses"). Discard other fields so they
+      // cannot become requirements.
       .map(s => {
         const fns = Array.isArray(s.functions) ? s.functions : Array.isArray(s.interfaces) ? s.interfaces : null;
         const interfaces = fns?.length ? normalizeInterfaces(fns) : [], uses = normalizeUses(s.uses);

@@ -19,9 +19,11 @@ export function contractText(own) {
   const items=(Array.isArray(own)?own:[]).filter(f=>f&&typeof f.name==='string').slice(0,5);
   if(!items.length)return '';
   const head='Functions you export, by exactly these names, as named exports or members of the exported object (not as methods of a class or instance); parameters and descriptions are hints, and you may export more: ';
-  const render=(params,cut)=>head+items.map(f=>`${f.name}(${params?(f.params||[]).join(', '):f.params?.length?'…':''})${f.does?': '+(cut?String(f.does).slice(0,cut):f.does):''}${f.operation?` [goal operation: ${f.operation}]`:''}`).join('; ')+'.';
-  for(const [params,cut] of [[true,0],[false,0]]){const text=render(params,cut);if(text.length<=900)return text;}
-  return render(false,80);
+  // v7.15.7 (run14): what a call returns, after what it does; cut to 40
+  // before the floor, which keeps v7.15.6's length and drops it.
+  const render=(params,cut,ret)=>head+items.map(f=>`${f.name}(${params?(f.params||[]).join(', '):f.params?.length?'…':''})${f.does?': '+(cut?String(f.does).slice(0,cut):f.does):''}${ret&&f.returns?`${f.does?';':':'} returns `+(ret===true?f.returns:String(f.returns).slice(0,ret)):''}${f.operation?` [goal operation: ${f.operation}]`:''}`).join('; ')+'.';
+  for(const [params,cut,ret] of [[true,0,true],[false,0,true],[false,80,40]]){const text=render(params,cut,ret);if(text.length<=900)return text;}
+  return render(false,80,false);
 }
 // The piece a codeWritingTask() wraps, for notes that quote it.
 export const assignedPiece = task => String(task||'').replace(/ Deliver working source files, not prose, plans, or design documents\.$/,'')

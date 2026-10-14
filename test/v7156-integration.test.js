@@ -31,6 +31,7 @@ const SRC={
   // The entry's stub (run13b, revision 3) and its revision 2, which re-exported its own import.
   stub:"exports.deleteTicket = function(id) {\n  // Implementation for deleting a ticket\n  // This is a placeholder; actual implementation would interact with a data store\n  return { id, status: 'deleted' };\n};\n",
   selfStub:"const { deleteTicket } = require('./deleteTicket');\nmodule.exports = { deleteTicket };\n"};
+// v7.15.7: deleteTicket is async, and the round-3 facts now say so (export async function deleteTicket(id)).
 // Run13's fixed runner test (files/root.8__glue__smoke.js), byte for byte.
 const SMOKE=`const assert = require('node:assert/strict');
 const { start } = require('./index.js');
@@ -269,7 +270,7 @@ async function replay13(answers=ANSWERS13) {
   for(let i=0;i<8&&!['complete','failed'].includes(r.room.get('status'));i++){await r.room.resume(160);await r.drain();}
   return {...r,turns};
 }
-const TICKET13=`${SAY55} Your viewTicket(id) ("returns the ticket with the given ID") must satisfy: Deleting ticket should result in an error when viewing. Test line 50: await app.viewTicket(createdTicket.id) inside a try expecting a throw whose catch checks: assert.equal(err.message, 'Ticket not found', 'Deleting ticket should throw "Ticket not found"'). It failed at line 55: assert.ok(errorCaught, 'Deleting ticket should result in an error when viewing'). What the other side provides: module.js exports: export function deleteTicket(id) Publish the FULL updated file.`;
+const TICKET13=`${SAY55} Your viewTicket(id) ("returns the ticket with the given ID") must satisfy: Deleting ticket should result in an error when viewing. Test line 50: await app.viewTicket(createdTicket.id) inside a try expecting a throw whose catch checks: assert.equal(err.message, 'Ticket not found', 'Deleting ticket should throw "Ticket not found"'). It failed at line 55: assert.ok(errorCaught, 'Deleting ticket should result in an error when viewing'). What the other side provides: module.js exports: export async function deleteTicket(id) Publish the FULL updated file.`;
 
 test('integration: run13 replayed from the split to completion: rounds 1 to 3 land on Read tickets, Create ticket and View ticket with no model call; the entry is never ticketed; View ticket\'s fix completes the run',async()=>{
   const {room,calls,turns}=await replay13();

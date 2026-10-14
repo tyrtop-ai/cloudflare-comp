@@ -77,14 +77,15 @@ function topLevelDeclarations(ast) {
 function describe(node, decls, depth=0, name=null) {
   if(!node)return {type:'value',name};
   switch(node.type) {
+    // v7.15.7 (run14): async is part of the shape a caller must know.
     case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
-      return {type:'function',name:node.id?.name||name,params:node.params.map(paramText)};
+      return {type:'function',name:node.id?.name||name,params:node.params.map(paramText),...(node.async?{async:true}:{})};
     case 'ClassDeclaration': case 'ClassExpression': {
       const methods=[];
       for(const m of node.body.body) {
         if(m.type!=='MethodDefinition')continue;
         const n=keyName(m.key);if(!n)continue;
-        methods.push({name:(m.static?'static ':'')+(m.kind==='get'||m.kind==='set'?m.kind+' ':'')+n,params:m.value.params.map(paramText)});
+        methods.push({name:(m.static?'static ':'')+(m.kind==='get'||m.kind==='set'?m.kind+' ':'')+n,params:m.value.params.map(paramText),...(m.value.async?{async:true}:{})});
       }
       return {type:'class',name:node.id?.name||name,methods};
     }
@@ -99,7 +100,7 @@ function describe(node, decls, depth=0, name=null) {
       for(const p of node.properties) {
         if(p.type==='SpreadElement'){members.push({name:'...'+calleeName(p.argument),type:'spread'});continue;}
         const n=keyName(p.key);if(!n)continue;
-        if(p.method||p.kind==='get'||p.kind==='set')members.push({name:n,type:'function',params:p.value.params.map(paramText)});
+        if(p.method||p.kind==='get'||p.kind==='set')members.push({name:n,type:'function',params:p.value.params.map(paramText),...(p.value.async?{async:true}:{})});
         else members.push({...describe(p.value,decls,depth+1,n),name:n});
       }
       return {type:'object',members};
@@ -233,9 +234,10 @@ export function exportSurface(path, content) {
 }
 function renderInfo(info) {
   if(!info)return 'nothing';
-  const sig=x=>`${x.name}(${(x.params||[]).join(', ')})`;
+  // v7.15.7: an async function or method reads as one (static async open()).
+  const sig=x=>{const n=String(x.name),s=/^static /.test(n)?'static ':'';return `${s}${x.async?'async ':''}${n.slice(s.length)}(${(x.params||[]).join(', ')})`;};
   switch(info.type) {
-    case 'function': return `function ${info.name||''}(${(info.params||[]).join(', ')})`;
+    case 'function': return `${info.async?'async ':''}function ${info.name||''}(${(info.params||[]).join(', ')})`;
     case 'class': return `class ${info.name||''} { ${info.methods.map(sig).join('; ')} }`;
     case 'instance': return `new ${info.of}() { ${info.methods.map(sig).join('; ')} }`;
     case 'object': return `{ ${info.members.map(m=>m.type==='function'?sig(m):m.type==='class'?`${m.name}: class { ${m.methods.map(sig).join('; ')} }`:m.type==='object'?`${m.name}: {…}`:m.name).join(', ')} }`;
@@ -1682,6 +1684,57 @@ export function esmRequires(files) {
   }
   return out;
 }
+// v7.15.7 (run14): every promised function may be async (the storage
+// piece's readTickets and saveTickets were, and the promise did not say),
+// so a caller awaits every call to one. A call to an imported promised
+// function, by name, alias or as a member of a module bound whole (as the
+// binding fixes read them), whose result is used without await is listed
+// with its line as it should read: bound (const tickets = readTickets()),
+// read ((await readTickets()).find), passed (JSON.parse(await
+// readTickets())) or in any other expression. A result unused, awaited,
+// returned as it is (the caller awaits), .then-ed, inside
+// Promise.all/allSettled/race/any or for await passes; only promised
+// names are read, so a built-in or fs call never is, nor a local of the
+// name; tests are not read, and at most five lines of one file are.
+// {path, name, line, text}: text is the call's line with await before it.
+const TEST_PATH=/(?:^|\/)(?:tests?|__tests__)\/|\.(?:test|spec)\.[cm]?js$/i,PROMISE_ALL=/^Promise\.(?:all|allSettled|race|any)$/,THEN=new Set(['then','catch','finally']);
+export function unawaitedCalls(files, names) {
+  const want=new Set(names),out=[];
+  if(!want.size)return out;
+  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+    if(!LINKABLE.test(path)||TEST_PATH.test(path))continue;
+    let parsed;try{parsed=parseSource(content);}catch{continue;}
+    const {ast,sourceType}=parsed,{bindingOf,dynamic}=scopeOf(ast,sourceType);
+    if(dynamic)continue;
+    const named=new Map(),whole=new Set();
+    for(const ref of importRefs(path,content)){const locals=new Set();for(const n of ref.names){const l=ref.aliases.get(n)||n;locals.add(l);if(want.has(n))named.set(l,n);}for(const l of ref.local)if(!locals.has(l))whole.add(l);}
+    if(!named.size&&!whole.size&&!/require\s*\(/.test(content))continue;
+    const top=id=>id?.type==='Identifier'&&bindingOf.get(id)===ast;
+    const promised=c=>c.type==='Identifier'?(top(c)&&named.get(c.name))||null:
+      c.type==='MemberExpression'&&!c.computed&&(top(c.object)&&whole.has(c.object.name)||isRequire(c.object))&&want.has(nameOf(c.property))?nameOf(c.property):null;
+    const parents=new Map();
+    walk(ast,(node,parent)=>{parents.set(node,parent);});
+    const text=String(content),seen=new Set();
+    let hits=0;
+    walk(ast,node=>{
+      if(node.type!=='CallExpression'||hits>=5)return;
+      const name=promised(node.callee);
+      if(!name)return;
+      const p=parents.get(node),g=parents.get(p);
+      if(!p||p.type==='ExpressionStatement'||p.type==='AwaitExpression'||p.type==='ReturnStatement'||p.type==='ArrowFunctionExpression'&&p.body===node||p.type==='ForOfStatement'&&p.await&&p.right===node||
+        p.type==='UnaryExpression'&&p.operator==='void'||p.type==='MemberExpression'&&p.object===node&&THEN.has(nameOf(p.property))||
+        p.type==='ArrayExpression'&&g?.type==='CallExpression'&&g.arguments[0]===p&&PROMISE_ALL.test(calleeName(g.callee)))return;
+      // A member read of the result, or a call of it, needs the parentheses.
+      const wrap=p.type==='MemberExpression'&&p.object===node||p.type==='CallExpression'&&p.callee===node;
+      const from=text.lastIndexOf('\n',node.start-1)+1,to=(text.indexOf('\n',node.start)+1||text.length+1)-1;
+      const line=(text.slice(from,node.start)+(wrap?'(await ':'await ')+text.slice(node.start,node.end)+(wrap?')':'')+text.slice(node.end,to)).trim();
+      if(seen.has(line))return;
+      seen.add(line);hits++;
+      out.push({path,name,line:node.loc.start.line,text:line.length>160?line.slice(0,159)+'…':line});
+    });
+  }
+  return out;
+}
 // ---------- v7.15.6: the one contract check ----------
 // One import line per function, named after it (run8), in the syntax the
 // worker's files are written in (run12's ES modules).
@@ -1712,6 +1765,13 @@ const short=s=>{const t=String(s??'');return t.length>70?t.slice(0,69)+'…':t;}
 //            cost, accepted: a callee that swaps the arguments back (which
 //            swapsBack exempts at link time) is invisible here, so such a
 //            caller is sent back once for an order the promise states.
+//   await    a call to a promised function of another piece (foreign or a
+//            use) whose promise states what it returns, with the result
+//            used without await (unawaitedCalls; run14's createTicket read
+//            readTickets() as the array). Only a promise that states its
+//            shape is read: the splitter is asked for returns on every
+//            function since v7.15.7, and the older rooms' and replays'
+//            promises, which state none, are read as before.
 // promise: the worker's promised functions. uses: the plan's uses for it
 // ({name, owner, storage, params, does}). foreign: the functions other
 // pieces promise it, by name ({name, owner, does, params}; generic names
@@ -1808,6 +1868,8 @@ export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),perfo
   for(const x of esmRequires(set))out.push({rule:'esm',name:'',path:x.path,text:`${base(x.path)} is an ES module (it uses import or export), where require is not defined and the module fails to load: ${x.lines.length?`write ${x.lines.map(l=>`import { ${l.names.join(', ')} } from '${l.specifier}';`).join(' ')} in place of ${x.lines.length>1?'its require lines':'its require line'}`:'use import declarations in place of require()'}.`});
   if(promisedParams)for(const x of swappedCalls(set,new Map([...set].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)])),{promised:promisedParams}))
     out.push({rule:'params',name:x.name,path:x.path,call:x.call,params:x.params,text:`${x.text}.`});
+  for(const x of unawaitedCalls(set,[...foreign.values(),...uses].filter(f=>f?.returns).map(f=>f.name)))
+    out.push({rule:'await',name:x.name,path:x.path,line:x.line,text:`${x.name}() may be async: write ${x.text} inside an async function.`,how:`${x.name}: not awaited (${base(x.path)}:${x.line}).`});
   return out;
 }
 // The one send-back, as contractReturned sends it (clipped at 1800 there):
