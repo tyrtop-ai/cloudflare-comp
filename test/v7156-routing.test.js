@@ -469,17 +469,23 @@ test('v7.15.6 (R5): a name nobody under the lowest common manager covers goes up
 // ------------------------------------------------------------------ review: the route is bounded per problem
 // The reviewers' probes: View and Delete decline every wave while Update
 // changes its file; without the carry, every wave ticketed all three.
-test('v7.15.6 review: declines carry across report waves that fail the same way; the wave\'s route target keys progress; a worker routed the same failure a third time is the model\'s (M4)',async()=>{
+// v7.15.13 (run20, R3): Update, which changed its file for the failure
+// without changing it, is routed past on the next wave as the decliners
+// are (flags.exhausted); with nobody left Root asks its model once, which
+// answers nothing, and the requirement closes: one round, where the same
+// ticket went to Update four times.
+test('v7.15.6 review: declines carry across report waves that fail the same way; the wave\'s route target keys progress; a worker that changed its file for the failure is routed past the next wave, and with nobody left the model once, then the requirement closes',async()=>{
   const {room,calls}=await run13Room({executor:scripted(['round3','round3','round3','round3']),manager:()=>({actions:[]}),clef:rank(label=>label==='Update ticket'),
     leaf:user=>user.your_label==='Update ticket'?{summary:'Changed',done:true,files:[{path:'updateTicket.js',content:`// try ${user.turn}\n`+SRC.update}]}:{summary:'Looked: as promised',done:true}});
   await settle(room,300);
-  assert.equal(room.get('status'),'complete',trace(room));
-  assert.deepEqual(calls.leaf.map(u=>u.your_label),['View ticket','Delete ticket','Update ticket','Update ticket','Update ticket','Update ticket'],'View and Delete decline once, not every wave');
-  assert.equal(events(room,'route_declined').length,2);
-  assert.deepEqual(room.problems("kind='run'").map(p=>[p.flags.declined,p.flags.routed_to]),Array(4).fill([['root.4','root.6'],'root.5']),'the declines carried; the route target recorded');
-  assert.deepEqual(room.db().exec("SELECT body FROM events WHERE kind='repair_round' ORDER BY id").toArray().map(e=>e.body.match(/: (no progress|progress) /)[1]),['progress','no progress','no progress','no progress'],'the same failure to the same piece is no progress');
-  assert.deepEqual(['repair_rounds:root','repair_stalled:root'].map(k=>room.get(k)),['4','3']);
-  assert.deepEqual([calls.clef.length,calls.manager.map(u=>u.problems[0].trigger)],[4,['M4','M4']],'Clef once per wave; the third and fourth times Update is routed the same failure are the model\'s');
+  assert.equal(room.get('status'),'failed',trace(room));
+  assert.deepEqual(calls.leaf.map(u=>u.your_label),['View ticket','Delete ticket','Update ticket'],'View and Delete decline once, not every wave; Update once');
+  assert.deepEqual([events(room,'route_declined').length,events(room,'route_exhausted').map(e=>[e.recipient,e.body])],[2,[['root.5','Update ticket changed updateTicket.js for this failure last round and it fails the same; the manager routes it elsewhere.']]]);
+  assert.deepEqual(room.problems("kind='run'").map(p=>[p.flags.declined,p.flags.routed_to,p.flags.exhausted,p.outcome]),[[['root.4','root.6'],'root.5',undefined,'superseded'],[['root.4','root.6'],undefined,['root.5'],'exhausted']],'the declines carried; the route target recorded; the piece routed past');
+  assert.deepEqual(room.db().exec("SELECT body FROM events WHERE kind='repair_round' ORDER BY id").toArray().map(e=>e.body.match(/: (no progress|progress) /)[1]),['progress'],'the second wave assigns nobody: no round');
+  assert.deepEqual(['repair_rounds:root','repair_stalled:root'].map(k=>room.get(k)),['1','0']);
+  assert.deepEqual([calls.clef.length,calls.manager.map(u=>u.problems[0].trigger),calls.manager[0].problems[0].history],[2,['M4'],{assigned_before:[],declined_by:['root.4','root.6'],changed_without_progress:['root.5']}],'Clef once per wave over the children left; the model once, told who declined and who changed a file for nothing');
+  assert.match(room.node('root').summary,/^Repair exhausted: a run problem was closed without a fix \(no piece takes the requirement \(declined by View ticket, Delete ticket\) \(Update ticket changed a file for it without progress\): Deleting ticket should result in an error when viewing\)/);
 });
 
 test('v7.15.6 review: with everything declined Root asks its model once; its placement declined, the problem closes with the requirement and no second call; the model cannot hand it to the start carrier',async()=>{

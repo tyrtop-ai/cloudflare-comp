@@ -434,7 +434,13 @@ test('integration: run11\'s final failure replayed: "Viewed ticket should match 
 // made the same for every assertion); the same failure to the same worker
 // a third time is the model's (M4), and Root stops after three rounds without
 // progress, as before.
-test('integration: run9\'s live rounds replayed cost 7 rounds, 7 Clef rankings and no manager-model call, as v7.15.5 cost 7 rounds and no model call; the same failure six times ends Root after four rounds with the model asked twice',async()=>{
+// v7.15.13 (run20, R3): a piece that changed a file for a failure without
+// changing it is routed past for that failure: run9's third round of
+// "Ticket should be created", both pieces spent, is the model's once (here it
+// places it on the entry, as run9's triage did); the same failure six times
+// is the model's from the second round on, until the rounds without progress
+// run out, and then the requirement closes.
+test('integration: run9\'s live rounds replayed cost 7 rounds, 6 Clef rankings and one manager-model call (the third round of one failure, both pieces routed past); the same failure six times ends Root after four rounds, the model asked three times',async()=>{
   const runner=`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.createTicket({ title: 'Printer jam' });\n  assert.equal(t.title, 'Printer jam');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n`;
   const app="function start() {\n  return { createTicket: (d) => ({ id: 1, ...d }) };\n}\nmodule.exports = { start };\n",data="const rows = [];\nmodule.exports = { addTicket: (t) => { rows.push(t); return t; } };\n";
   const node22=(message,line)=>`node:internal/process/promises:394\n    triggerUncaughtException(err, true /* fromPromise */);\n    ^\n\nAssertionError [ERR_ASSERTION]: ${message}\n    at /work/build-${Math.random().toString(36).slice(2,8)}/glue/smoke.js:${line}:3 {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: undefined,\n  expected: true,\n  operator: '==',\n  diff: 'simple'\n}\n\nNode.js v22.23.3\n`;
@@ -449,7 +455,7 @@ test('integration: run9\'s live rounds replayed cost 7 rounds, 7 Clef rankings a
     }};
     const clef=input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label===(round?.file==='data'?'Data Module':'Entry Module')?0.9:0.2}]))});
     const leaf=user=>({summary:'Fixed',done:true,files:user.your_label==='Entry Module'?[{path:'entry.js',content:`${app}// fix ${++repairs}\n`}]:[{path:'data.js',content:`${data}// fix ${++repairs}\n`}]});
-    const r=liveRoom({runner:()=>runner,manager:()=>({actions:[]}),leaf,clef,executor});
+    const r=liveRoom({runner:()=>runner,manager:user=>({actions:[{action:'assign',problems:[user.problems[0].id],child:'root.1',instructions:'Pass the data to createTicket.'}]}),leaf,clef,executor});
     await r.room.provision('root',null,'Root objective','Build a small issue tracker that lets someone create tickets.');
     r.room.set('goal','Build a small issue tracker that lets someone create tickets.');
     await r.room.spawn('root',[{label:'Entry Module',task:'Write entry.js'},{label:'Data Module',task:'Write data.js'}]);
@@ -463,11 +469,13 @@ test('integration: run9\'s live rounds replayed cost 7 rounds, 7 Clef rankings a
   const live=await room9([['Ticket should be created',9,'entry'],['Ticket should be created',9,'data'],['Ticket should be created',9,'entry'],['Created ticket should have an id',10,'data'],['Ticket should be viewable',14,'entry'],['Ticket should be updateable',19,'entry'],['Ticket should be deletable',24,'entry']].map(([message,line,file])=>({message,line,file})));
   assert.equal(live.room.get('status'),'complete',trace(live.room));
   assert.deepEqual([live.room.get('repair_rounds:root'),live.room.get('repair_stalled:root'),verdicts(live.room)],['7','0',['progress','progress','no progress','progress','progress','progress','progress']],'as v7.15.5');
-  assert.deepEqual([live.calls.leaf.length,live.calls.clef.length,live.calls.manager.length],[7,7,0],'one Clef ranking per round in place of the triage model, and the model never asked');
-  assert.deepEqual(live.room.problems("kind='run'").map(p=>p.trail.find(t=>t.action==='assign')?.to),['root.1','root.2','root.1','root.2','root.1','root.1','root.1']);
+  assert.deepEqual([live.calls.leaf.length,live.calls.clef.length,live.calls.manager.map(u=>u.problems[0].trigger)],[7,6,['M4']],'one Clef ranking per round in place of the triage model, none with both pieces routed past; the model once');
+  assert.deepEqual(live.room.problems("kind='run'").map(p=>[p.trail.find(t=>t.action==='assign')?.to,p.flags.exhausted]),[['root.1',undefined],['root.2',['root.1']],['root.1',['root.1','root.2']],['root.2',undefined],['root.1',undefined],['root.1',undefined],['root.1',undefined]]);
+  assert.deepEqual(events(live.room,'route_exhausted').map(e=>e.recipient),['root.1','root.2']);
   const same=await room9(Array.from({length:6},()=>({message:'Ticket should be viewable',line:14,file:'entry'})));
-  assert.deepEqual([same.room.get('status'),same.room.get('repair_rounds:root'),verdicts(same.room),same.calls.manager.map(u=>u.problems[0].trigger)],['failed','4',['progress','no progress','no progress','no progress'],['M4','M4']],trace(same.room));
-  assert.match(same.room.node('root').summary,/made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
+  assert.deepEqual([same.room.get('status'),same.room.get('repair_rounds:root'),verdicts(same.room),same.calls.manager.map(u=>u.problems[0].trigger)],['failed','4',['progress','no progress','no progress','no progress'],['M4','M4','M4']],trace(same.room));
+  assert.deepEqual(same.room.problems("kind='run'").map(p=>[p.trail.find(t=>t.action==='assign')?.rule,p.flags.exhausted]),[['R2d',undefined],['model',['root.1']],['model',['root.1']],['model',['root.1']],[undefined,['root.1']]]);
+  assert.match(same.room.node('root').summary,/^Repair exhausted: a run problem was closed without a fix \(no piece takes the requirement \(Entry Module changed a file for it without progress\): Ticket should be viewable\)/,'past the rounds without progress, the model is not asked again');
 });
 
 // ------------------------------------------------------------------ the mirror audit's one small fix

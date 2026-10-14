@@ -69,6 +69,11 @@ const CODE_GATE = /^(?:missing_code|non_code_rejected|split_rejected|code_retry|
 // The events a stuck worker's manager reads as its last failures.
 const FAILURE_EVENTS = ['error','missing_code','non_code_rejected','split_rejected','code_retry','ask_unheard'];
 const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
+// v7.15.13 (run20): the parameters of a function a module exports, from its
+// surface (a named export, a default function, a default object's member, a
+// class's or an instance's method), null for any other name: a parameter
+// error's subject is read against them (readRequirement).
+const paramsIn = (s,name) => {const f=[...(s?.named||[]),...(s?.default?.type==='function'?[s.default]:[]),...(s?.default?.members||[]),...(s?.default?.methods||[])].find(x=>x?.type!=='class'&&String(x?.name||'').replace(/^static /,'')===name&&Array.isArray(x.params));return f?f.params.map(String):null;};
 // One module's exports on one line, for the facts a worker hears.
 const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
 // What start() returned, as the Container describes it, holds something the
@@ -1936,8 +1941,9 @@ export class ControlRoom extends DurableObject {
     const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
     const ids=list.map(x=>{
       const row={holder:manager,kind:x.kind,stage,source,input,parties:this.partiesOf(via,x),detail:x.detail,facts:{...x.facts,via},evidence:x.evidence};
-      const declined=prior.find(p=>p.flags.declined?.length&&failureKey(p)===failureKey(row))?.flags.declined;
-      return this.insertProblem({...row,flags:{wave,...declined?{declined}:{}}});
+      // v7.15.13 (run20, R3): and a child that changed a file for the failure without progress (flags.exhausted) stays skipped while the failure stays the same.
+      const same=prior.filter(p=>failureKey(p)===failureKey(row)),declined=same.find(p=>p.flags.declined?.length)?.flags.declined,exhausted=same.find(p=>p.flags.exhausted?.length)?.flags.exhausted;
+      return this.insertProblem({...row,flags:{wave,...declined?{declined}:{},...exhausted?{exhausted}:{}}});
     });
     if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,fingerprint:this.assemblyFingerprint(manager),stage,problems:ids,ts:Date.now()});
     else this.save(`link_reported:${manager}`,{fingerprint:input,stage,problems:ids,ts:Date.now()});
@@ -2430,7 +2436,9 @@ export class ControlRoom extends DurableObject {
         const frames=[first,...more].filter(p=>files.has(p)),failure=failureHead(output.get(detail)),own=issueOf.get(detail)?.facts||{};
         const path=files.has(first)?first:'',target=errorTarget(files,path,detail);
         if(kind==='run'&&!(isInterfaceError(detail)&&frames.length&&this.linkTarget(files,path,detail,surfaces))) {
-          const requirement=readRequirement(test,output.get(detail),[...files.keys()].filter(p=>LINKABLE.test(p)),p=>providedNames(surfaces.get(p)||exportSurface(p,files.get(p))),paramsOf);
+          // v7.15.13 (run20, R2): the surfaces give the thrown-in function's parameters, the linked copy the frame's line (a member read's receiver).
+          const surfaceOf=p=>surfaces.get(p)||exportSurface(p,files.get(p));
+          const requirement=readRequirement(test,output.get(detail),[...files.keys()].filter(p=>LINKABLE.test(p)),p=>providedNames(surfaceOf(p)),paramsOf,(p,fn)=>paramsIn(surfaceOf(p),fn),(p,n)=>String(files.get(p)??'').split('\n')[n-1]||'');
           // A module the Container names without a stack line is a frame too, after those the stack gives.
           requirement.frames.push(...frames.filter(p=>!requirement.frames.some(f=>f.path===p)).map(path=>({path,fn:''})));
           // The test slice's lead on an assertion the runner invented stays first (run13's line 55).
@@ -2657,6 +2665,7 @@ export class ControlRoom extends DurableObject {
       return;
     }
     this.reopenStalled(m);
+    this.routeExhausted(m);
     const rows=this.problemsHeld(m);
     if(!rows.length)return this.unfixable(m);
     const ctx=await this.decisionContext(m,rows),st={exhausted:''};
@@ -2946,7 +2955,8 @@ export class ControlRoom extends DurableObject {
       problems:call.map(({id,p,dec,trigger,placed})=>({id,kind:p.kind,stage:p.stage,trigger:trigger||'proposed',detail:clip(p.detail,700),
         parties:placed.map(x=>({child:x.child||(x.place==='outside'?'(outside this branch)':'(unknown)'),file:base(x.owner_path||x.path),role:x.role})),
         evidence:(p.evidence||[]).map(e=>clip(e,300)),default:{action:dec.action==='exhausted'?'close':dec.action,...dec.child?{child:dec.child}:{}},
-        ...given(p).length?{history:{assigned_before:given(p).map(t=>t.to),...p.flags.declined?.length?{declined_by:p.flags.declined}:{}}}:{}})),
+        // v7.15.13 (run20, R3): a fresh wave's row carries who declined or changed a file for its failure without progress; the model hears it.
+        ...given(p).length||p.flags.declined?.length||p.flags.exhausted?.length?{history:{assigned_before:given(p).map(t=>t.to),...p.flags.declined?.length?{declined_by:p.flags.declined}:{},...p.flags.exhausted?.length?{changed_without_progress:p.flags.exhausted}:{}}}:{}})),
       fixed_decisions:fixed.map(e=>({child:e.dec.child,instructions:clip(e.dec.instructions||instructionsFor(e.p,e.dec.side),300)})),
       // Rounds without progress left for these problems, within the run's (v7.15.1).
       rounds_left:Math.max(0,Math.min(this.stalledLeft(m,call.map(e=>e.p)),this.roundCap()-Number(this.get('repair_rounds_total','0'))))};
@@ -3412,6 +3422,30 @@ export class ControlRoom extends DurableObject {
         this.event(m,ticketed?'route_declined':'problem_reopened',ticketed?`${w.label} answered the problem as done without changing a file: it declines it, and the manager routes it elsewhere.`:`${w.label} finished its new task without changing its files; the problem is open again.`,w.id);
     }
   }
+  // v7.15.13 (run20, R3): a child that was assigned this failure in this
+  // manager's previous counted round, changed a file (flags.revs differs
+  // from its revision key) and left the failure as it was is no decline
+  // (reopenStalled), so run20's round 3 went back to Analyze function,
+  // which had changed analyze.js for nothing in round 2, until the budget
+  // ran out. It is skipped for this failure as a declined child is
+  // (flags.exhausted, read with declined by routeRequirements and carried
+  // by the failure key as declines are, reportProblems); a new failure
+  // clears it. At Root with every candidate declined or exhausted: the
+  // model once, then the requirement closes, as before.
+  routeExhausted(m) {
+    const waves=this.read(`repair_waves:${m}`,[]);
+    for(const p of this.problemsHeld(m).filter(p=>p.facts?.requirement&&p.facts.failure)) {
+      const prev=waves.filter(w=>w!==p.flags.wave).at(-1);
+      if(!prev)continue;
+      for(const r of this.problems('flags LIKE ?',`%"wave":${JSON.stringify(prev)}%`)) {
+        const w=r.assignee&&this.node(r.assignee),now=w&&this.revisionKey(w.id);
+        if(!w||w.parent!==m||r.id===p.id||!r.flags.revs||r.flags.revs===now||failureKey(r)!==failureKey(p)||(p.flags.exhausted||[]).includes(w.id))continue;
+        const before=new Map(parse(r.flags.revs,[])),changed=parse(now,[]).filter(([path,rev])=>before.get(path)!==rev).map(([path])=>path.split('/').pop());
+        if(this.moveProblem(p,{flags:{...p.flags,exhausted:[...(p.flags.exhausted||[]),w.id]}}))
+          this.event(m,'route_exhausted',`${w.label} changed ${changed.join(', ')||'its files'} for this failure last round and it fails the same; the manager routes it elsewhere.`,w.id);
+      }
+    }
+  }
   // v7.15.6 (run13, R2): where each run requirement this manager holds goes
   // among its direct children, as a function request is answered
   // (requirementRoute): by the functions it names against the children's
@@ -3435,7 +3469,8 @@ export class ControlRoom extends DurableObject {
     };
     const entry=this.planned()?null:this.entryChild(m);
     for(const p of list) {
-      const r=p.facts.requirement,declined=p.flags.declined||[],frameOwner=path=>{const o=p.parties.find(x=>x.path===path&&x.owner)?.owner,c=o&&nextDirectChild(m,o);return c&&live.some(x=>x.id===c)?c:null;};
+      // v7.15.13 (run20, R3): a child that changed a file for this failure without progress is skipped as a declined one.
+      const r=p.facts.requirement,declined=[...(p.flags.declined||[]),...(p.flags.exhausted||[])],frameOwner=path=>{const o=p.parties.find(x=>x.path===path&&x.owner)?.owner,c=o&&nextDirectChild(m,o);return c&&live.some(x=>x.id===c)?c:null;};
       const view={promises,frameOwner,performer,ranks:null};
       let route=requirementRoute(r,view,declined),defer='';
       if(route.ask&&live.length) {
@@ -3458,7 +3493,8 @@ export class ControlRoom extends DurableObject {
         // v7.15.7 (run14, T2): routed by its own promise (a) or frame (b) with no other piece in the frames, the worker hears what its planned uses provide (useProviders).
         const uses=!first.providers?.length&&['a','b'].includes(first.how)?this.useProviders(m,first.child):null;
         if(uses?.ids.length)first.facts=await this.factsFrom(m,uses.ids,first.child,[p],uses.fns);
-        else if(first.providers?.length)first.facts=await this.factsFrom(m,first.providers,first.child,[p]);
+        // v7.15.13 (run20, R2): the caller of a parameter error hears the callee's promise (signature, does, returns) with its surface.
+        else if(first.providers?.length)first.facts=await this.factsFrom(m,first.providers,first.child,[p],first.caller&&first.callee?[first.callee]:[]);
       }
       out.set(p.id,route);
     }
