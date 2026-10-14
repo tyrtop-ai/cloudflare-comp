@@ -133,7 +133,7 @@ test('v7.15.5: run12 replay: the entry\'s goalOperation1 is answered with the go
     'createTicket(data) is promised by "Create Ticket Operation", viewTicket(data) is promised by "View Ticket Operation", updateTicket(data) is promised by "Update Ticket Operation" and deleteTicket(data) is promised by "Delete Ticket Operation".');
   assert.doesNotMatch(reply.value,/require\('\.\/goalOperation1'\)|createData/);
   assert.equal(events(room,'route_plan')[0].body,'goalOperation1 (Function to perform goal operation 1): no piece promises it; "Entry Module" carries start and is answered with the 4 functions that perform the goal\'s operations.');
-  assert.deepEqual(kinds(calls),['fn'],'Clef matched the request once; the scope check is not asked');
+  assert.deepEqual(kinds(calls),[],'v7.15.5 merge: a placeholder from the start carrier is answered from the plan, with no Clef match and no scope check');
   assert.match(room.read('fn_answers:root.1',[])[0].text,/^No piece of the application promises goalOperation1\. Do not write goalOperation1 and do not import it\. .*require\('\.\/deleteTicket'\); Return each under its name\./,'the answer a later turn reads keeps every import line');
 });
 

@@ -255,7 +255,8 @@ test('v7.15.4: run11 replay: an entry whose imports reach no module that exports
   const [p,...more]=openProblems(room,'root');
   assert.equal(more.length,0,trace(room));
   assert.deepEqual([p.kind,p.source,p.parties[0].path],['entry',compiler.id,PATHS.entry]);
-  assert.equal(p.detail,'start() runs none of the promised functions: import createTicket from "createTicket", viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket", readData from "dataStore", writeData from "dataStore", each on its own line (const { createTicket } = require(\'./createTicket\')), and use them in the methods start() returns. entryModule.js imports no module that exports them, so their code never runs.','review: the operations\' performers first');
+  // v7.15.5 merge: only the performers composeStart gives the start carrier, never the store's readData and writeData.
+  assert.equal(p.detail,'start() runs none of the promised functions: import createTicket from "createTicket", viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket", each on its own line (const { createTicket } = require(\'./createTicket\')), and use them in the methods start() returns. entryModule.js imports no module that exports them, so their code never runs.','review: the operations\' performers first');
   assert.match(events(room,'entry_unreached')[0].body,/entryModule\.js reaches none of the 6 module\(s\) that export promised functions/);
   assert.ok(!room.read('compile_passed',null));
 });
@@ -278,7 +279,8 @@ test('v7.15.4 review: start() methods whose performers the entry does not reach 
   // Round 8's shape: createTicket imported, the rest in memory.
   const round8=await compiled({entry:run11.entry.replace('// In-memory storage',`const { createTicket: create } = require('${linkedPaths.create}');\n// In-memory storage`).replace('create: createTicket','create')});
   assert.equal(round8.calls.runner.length,0);
-  assert.match(openProblems(round8.room,'root')[0].detail,/^start\(\) returns read, delete, update, view but runs none of the promised functions that perform them: import viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket", readData from "dataStore", each on its own line \(const \{ viewTicket \} = require\('\.\/viewTicket'\)\)/);
+  // v7.15.5 merge: the in-memory read is no goal operation, and readData no performer of the start carrier's.
+  assert.match(openProblems(round8.room,'root')[0].detail,/^start\(\) returns delete, update, view but runs none of the promised functions that perform them: import viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket", each on its own line \(const \{ viewTicket \} = require\('\.\/viewTicket'\)\)/);
   // A reached module of another piece whose exports this parse cannot list may provide them: the doubt.
   const opaque=await compiled({entry:halfway(linkedPaths.read,linkedPaths.write).replace('const tickets',`const tickets0 = require('${linkedPaths.create}');\nconst tickets`),
     files:{create:"const { writeData } = require('../datastore-1b07dcdb/components/write-tick-1a07db48/module.js');\nfunction make() { return { createTicket(data, filePath) { writeData(filePath, data); return data; } }; }\nmodule.exports = make();\n"}});

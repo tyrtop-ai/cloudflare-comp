@@ -110,7 +110,9 @@ test('export surface lists names and parameters only',()=>{
   assert.equal(L.exportsStart(obj),true);
   const esm=L.exportSurface('components/c/x.mjs','export function listTickets(filter){}\nexport default class Store { all(){} }');
   assert.match(L.surfaceText(esm),/export default class Store/);
-  assert.match(L.surfaceText(esm),/listTickets: function listTickets\(filter\)/);
+  // v7.15.5 merge: as its declaration reads (run12's builder took 'export deleteTicket: function' for bad syntax).
+  assert.match(L.surfaceText(esm),/\n  export function listTickets\(filter\)$/);
+  assert.match(L.surfaceText(L.exportSurface('components/c/y.mjs','export const total = 3;\nexport class Box { open(){} }')),/export const total\n  export class Box \{ open\(\) \}$/);
   assert.doesNotMatch(L.surfaceText(cls),/\{\}/,'bodies are never included');
 });
 

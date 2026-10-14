@@ -245,7 +245,10 @@ export function surfaceText(surface) {
   if(surface.error)return `${surface.path}: (does not parse: ${surface.error})`;
   const lines=[];
   if(surface.default)lines.push(`  ${surface.kind==='esm'?'export default':'module.exports ='} ${renderInfo(surface.default)}`);
-  for(const n of surface.named)lines.push(`  ${surface.kind==='esm'?'export':'exports.'+''}${surface.kind==='esm'?' ':''}${n.name}${surface.kind==='esm'?':':' ='} ${renderInfo(n)}`);
+  // v7.15.5 merge: an ES module's named export reads as its declaration;
+  // run12's builder took 'export deleteTicket: function ...' for bad syntax.
+  const esm=n=>['function','class'].includes(n.type)?`export ${renderInfo(n)}`:/^value\b/.test(renderInfo(n))?`export const ${n.name}`:`export const ${n.name} = ${renderInfo(n)}`;
+  for(const n of surface.named)lines.push(surface.kind==='esm'?`  ${esm(n)}`:`  exports.${n.name} = ${renderInfo(n)}`);
   if(!lines.length)lines.push('  (exports nothing)');
   return `${surface.path}\n${lines.join('\n')}`;
 }
@@ -969,8 +972,12 @@ export function entryLoader(entry) {
 export const RUNTIME_PACKAGE=JSON.stringify({private:true,name:'recursive-linked-app',version:'0.0.0',scripts:{start:'node glue/index.js'}},null,2)+'\n';
 
 // Errors a rename can plausibly fix: a wrong path, export name or method name.
+// v7.15.5 merge: a module written in the wrong format is its worker's to
+// rewrite, never a rename ("require is not defined in ES module scope" cost
+// the probe a link model call and a repair round).
+const MODULE_FORMAT=/(?:require|module|exports|__dirname|__filename) is not defined in ES module scope|Cannot use import statement outside a module/;
 export function isInterfaceError(text) {
-  return /does not provide an export named|Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|is not a function|is not a constructor|Cannot read propert(?:y|ies) of undefined|is not defined/.test(String(text||''));
+  return !MODULE_FORMAT.test(String(text||''))&&/does not provide an export named|Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|is not a function|is not a constructor|Cannot read propert(?:y|ies) of undefined|is not defined/.test(String(text||''));
 }
 
 // Models often name the target module by its full components/... path. Turn
@@ -1653,6 +1660,25 @@ export function callOf(path, content, name) {
 // whose worker is given import lines, not require lines (run12's deleteTicket.js).
 export function esmSyntax(content) {
   try {return parseSource(content).ast.body.some(n=>/^(?:Import|Export\w*)Declaration$/.test(n.type));} catch {return false;}
+}
+// v7.15.5 merge: an ES module that calls require() it never defines, which
+// Node refuses at load ("require is not defined in ES module scope"). The
+// probe's run12 delete worker pasted its assignment's require lines into its
+// ESM file, the done check counted them as calls, and the Container failed
+// after a relink. Each: path and its require lines' {specifier, names}.
+export function esmRequires(files) {
+  const out=[];
+  for(const [path,content] of files) {
+    if(!LINKABLE.test(path)||!esmSyntax(content)||/\b(?:const|let|var|function)\s+require\b|\bcreateRequire\b/.test(String(content)))continue;
+    let ast;try{ast=parseSource(content).ast;}catch{continue;}
+    let calls=false;const lines=[];
+    walk(ast,n=>{
+      if(isRequire(n))calls=true;
+      if(n.type==='VariableDeclarator'&&isRequire(n.init)&&n.id.type==='ObjectPattern')lines.push({specifier:n.init.arguments[0].value,names:n.id.properties.filter(p=>p.type==='Property'&&!p.computed).map(p=>nameOf(p.key))});
+    });
+    if(calls)out.push({path,lines});
+  }
+  return out;
 }
 // The module a load or run error at path names through one of path's own
 // imports ("x is not a function", "x.y is not a constructor", "Cannot read

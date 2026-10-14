@@ -36,8 +36,9 @@ export const PLAIN_JS=/non_code_rejected|Leaf outputs must be executable|\.(?:ts
 // object ..., which you ask your manager for" is no factory, and the start
 // carrier is never a data piece; store as a leading verb (Store Ticket
 // Operation) is no store.
+// v7.15.5 merge: a camelCase label is read as its words (run11's dataStore).
 export const dataPiece=(label,items=[])=>{
-  const text=String(label||'').replace(/^\s*store\s+(?!(?:module|piece|component|service|layer)\b)/i,'');
+  const text=String(label||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').replace(/^\s*store\s+(?!(?:module|piece|component|service|layer)\b)/i,'');
   return !(items||[]).some(f=>f.name==='start')&&(/\b(?:data\s+(?:manager|store|access|layer|module|service)|store|storage|repository|database|persistence)\b/i.test(text)||
     (items||[]).some(f=>!(f.params||[]).length&&/\breturns?\s+(?:a|an|the)\b[^,;.]*\b(?:instance|manager|repository|database|client)\b/i.test(f.does||'')));
 };
@@ -425,9 +426,13 @@ const CONVENTION=esm=>`each function imported on its own line with its name as t
 const HASHED=/[a-z0-9-]{1,10}-[0-9a-f]{8}(?=\/)/g;
 const LINKED=String.raw`(?:file:\/\/)?(?:\/[^\s'"\`()]*\/)?(?:\.\.?\/)*(?:components\/)?[a-z0-9-]{1,10}-[0-9a-f]{8}\/(?:[^\s'"\`()\/]+\/)*([^\s'"\`()\/:;,]*[^\s'"\`()\/:;,.])((?::\d+){0,2})`;
 const QUOTED_LINK=new RegExp(`(['"\`])${LINKED}\\1`,'g'),LINK=new RegExp(`(?<![\\w.$/-])${LINKED}`,'g');
+// v7.15.5 merge: and what a clip left of one: a quoted path cut before its
+// hashed folder closed it ('../ticket-dat at the end), or a frame whose
+// folder the Container report cut (a5c5/deleteTicket.js:1:25).
+const CUT_LINK=/(['"`])(?:\.\.?\/|\/|components\/)[^'"`\s]*$/,CUT_FRAME=/(?<=^|\s)[0-9a-f]{1,7}\/([\w.-]+\.[cm]?js)((?::\d+){0,2})(?=$|[\s),;])/g;
 export const ownPaths=(text,piece=null)=>{
   const name=(path,file,at)=>{const label=piece?.(path.match(HASHED)?.at(-1)||'');return label?`${file}${at} of "${label}"`:file+at;};
-  return String(text??'').replace(QUOTED_LINK,(m,q,file,at)=>name(m,file,at)).replace(LINK,(m,file,at)=>name(m,file,at));
+  return String(text??'').replace(QUOTED_LINK,(m,q,file,at)=>name(m,file,at)).replace(LINK,(m,file,at)=>name(m,file,at)).replace(CUT_LINK,'…').replace(CUT_FRAME,'$1$2');
 };
 // An atomic top's entry problem (v7.15.2): it wrote every module, so its
 // operations are its own, not imported from pieces it never had (review).

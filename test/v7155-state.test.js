@@ -95,7 +95,7 @@ test('v7.15.5: ownData reads run12\'s four operations: each keeps its own ticket
 
 test('v7.15.5: a worker\'s uses read as the plan answers them, with owners and import lines; the start carrier\'s text is unchanged',()=>{
   const text=I.usesText([{...readTickets,owner:'Ticket Data Manager',storage:true},{...saveTickets,owner:'Ticket Data Manager',storage:true}]);
-  assert.equal(text,'Functions of other pieces you call, as your manager answers them: readTickets(): Returns all stored tickets, exported by "Ticket Data Manager": const { readTickets } = require(\'./readTickets\'); saveTickets(tickets): Replaces the stored tickets with the given list, exported by "Ticket Data Manager": const { saveTickets } = require(\'./saveTickets\'); Import each on its own line by exactly this name, with the name as the path, and call it; do not write it yourself. Tickets live in Ticket Data Manager: do not keep your own tickets.');
+  assert.equal(text,'Functions of other pieces you call, as your manager answers them: readTickets(): Returns all stored tickets, exported by "Ticket Data Manager": const { readTickets } = require(\'./readTickets\'); saveTickets(tickets): Replaces the stored tickets with the given list, exported by "Ticket Data Manager": const { saveTickets } = require(\'./saveTickets\'); Import each on its own line by exactly this name, with the name as the path (in an ES module, import { readTickets } from \'./readTickets\';), and call it; do not write it yourself. Tickets live in Ticket Data Manager: do not keep your own tickets.');
   assert.equal(I.usesText([]),'');
   assert.equal(I.dataAnswer([{name:'readTickets',owner:'Ticket Data Manager'}]),'Tickets live in Ticket Data Manager: import readTickets on its own line and use it; do not keep your own tickets.');
 });
@@ -136,7 +136,7 @@ test('v7.15.5: run12 replay: Root\'s split is rejected for the factory, in the s
   // Each worker's assignment lists its uses with import lines and owners; the start carrier's is its contract alone.
   room.db().exec("UPDATE agents SET phase='implement' WHERE id IN ('root.1','root.4')");
   const view=room.view('root.4').your_responsibility;
-  assert.ok(view.endsWith('Functions of other pieces you call, as your manager answers them: readTickets(): Returns all stored tickets, exported by "Ticket Data Manager": const { readTickets } = require(\'./readTickets\'); Import each on its own line by exactly this name, with the name as the path, and call it; do not write it yourself. Tickets live in Ticket Data Manager: do not keep your own tickets.'),view);
+  assert.ok(view.endsWith('Functions of other pieces you call, as your manager answers them: readTickets(): Returns all stored tickets, exported by "Ticket Data Manager": const { readTickets } = require(\'./readTickets\'); Import each on its own line by exactly this name, with the name as the path (in an ES module, import { readTickets } from \'./readTickets\';), and call it; do not write it yourself. Tickets live in Ticket Data Manager: do not keep your own tickets.'),view);
   assert.equal(room.view('root.1').your_responsibility,`${room.node('root.1').task}\n\n${contractText(room.promisedOf('root.1'))}`);
 });
 

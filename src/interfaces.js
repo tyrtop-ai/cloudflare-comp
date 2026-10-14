@@ -164,9 +164,16 @@ export const performsOp = (op, f) => {const a = words(op); return a.length > 0 &
 const SELECTOR = new Set('by with for from in into of on at via using to'.split(' '));
 const ROLE = new Set('handler service function func fn operation op action command'.split(' '));
 const objectOf = ws => {let o = ws.slice(1); const i = o.findIndex(w => SELECTOR.has(w)); if (i >= 0) o = o.slice(0, i); while (o.length && ROLE.has(o.at(-1))) o = o.slice(0, -1); return o.filter(w => !/^(?:a|an|the)$/.test(w));};
+// v7.15.5 merge: what a function acts on, filler aside, names a goal word and
+// no container or bookkeeping word the goal does not name. The head-noun rule
+// read createTicketRecord, viewTicketDetails and updateTicketStatus as no
+// operation while the compiler's plan demanded them, so the entry was never
+// told the functions it was then sent back for (probe names.out).
+const NON_RECORD = new Set('store storage manager management repository repo data database db cache instance object factory registry client connection list index key id ids count counter number total config configuration setting option uuid sequence seq'.split(' ').flatMap(words));
+const onGoal = (g, ws) => {const o = objectOf(ws), p = o.filter(w => !FILLER_OBJECT.has(w)); return p.some(w => g.has(w)) && !p.some(w => NON_RECORD.has(w) && !g.has(w));};
 export const goalOps = (goal, f) => {
   const g = new Set(words(goal)), all = String(goal ?? '').match(/[A-Za-z]+/g) || [], ws = /^\s*[A-Za-z]+\s+(?:a|an|the|my|our|some)\b/i.test(goal ?? '') ? all.slice(1) : all;
-  const on = s => {const w = words(s); return w.length < 2 || g.has(objectOf(w).at(-1));};
+  const on = s => {const w = words(s); return w.length < 2 || onGoal(g, w);};
   const hit = w => [f?.name, f?.operation].some(s => covers(words(w), words(s)) && on(s));
   return [...new Set(ws.filter(hit).map(w => VERB(words(w)[0])))];
 };
@@ -186,14 +193,17 @@ export const sameOp = (a, b) => {
 // specific name before a generic one (createTicket before create); each
 // operation from the nearest level (own first) that has one. Generic names
 // are listed: they are never answered by name, but start() returns them.
+// v7.15.5 merge: judged by piece (pieceOps), so a store's readTickets is no
+// read beside Read Ticket's readTicket; a head noun in the goal before one
+// only named (viewTicket before viewTicketDetails).
 export function planPerformers(goal, levels) {
   const g = new Set(words(goal)), out = [], near = new Set();
-  const rank = f => {const w = words(f.name); return w.length === 2 && g.has(w[1]) ? 0 : GENERIC_NAMES.has(f.name) ? 2 : 1;};
+  const rank = f => {const w = words(f.name); return w.length === 2 && g.has(w[1]) ? 0 : GENERIC_NAMES.has(f.name) ? 3 : g.has(objectOf(w).filter(x => !FILLER_OBJECT.has(x)).at(-1)) ? 1 : 2;};
   for (const items of levels) {
-    const best = new Map();
+    const best = new Map(), {verbs} = pieceOps(goal, levelPieces(items));
     for (const f of items) {
       if (out.some(x => x.name === f.name)) continue;
-      for (const o of goalOps(goal, f)) if (!near.has(o) && (!best.has(o) || rank(f) < rank(best.get(o)))) best.set(o, f);
+      for (const o of verbs(f)) if (!near.has(o) && (!best.has(o) || rank(f) < rank(best.get(o)))) best.set(o, f);
     }
     const picked = new Set(best.values());
     for (const f of items) if (picked.has(f)) out.push(f);
@@ -404,14 +414,36 @@ export function operationPieces(spawn, isOp = () => false, goal = '') {
     return w.length > 0 && g.has(VERB(w[0])) && !objects.has(w[0]) && w.slice(1).every(x => g.has(x));
   });
 }
+// v7.15.5 merge: one answer, for all four slices, to which goal operations
+// each function of one level performs (pieces: [{label, interfaces, own}];
+// own, the start carrier's other promises, are its to perform). A function
+// performs what its words name (goalOps); one on a piece that is no
+// operation piece (operationPieces: a Ticket Store) only what no operation
+// piece of its level performs. Probe G1, "create, read, update, and delete
+// tickets", the store listed first: the entry was composed with readTickets,
+// the compiler planned readTicket, and the done check and entry_unreached
+// sent the entry back and forth; the state slice called the store's
+// readTickets no storage, so a read piece kept its own records. G2's
+// listTasks, which only the store has, still performs list.
+export function pieceOps(goal, pieces, base = f => !!f?.operation || goalOps(goal, f).length > 0) {
+  const kids = (Array.isArray(pieces) ? pieces : []).map(c => c && typeof c === 'object' ? c : null);
+  const ops = operationPieces(kids, base, goal).map((x, i) => x || !!kids[i]?.own);
+  const taken = new Set(kids.flatMap((c, i) => ops[i] ? (c.interfaces || []).flatMap(f => goalOps(goal, f)) : []));
+  const at = f => kids.findIndex(c => c && (c.interfaces || []).some(x => x.name === f?.name));
+  const verbs = f => {const v = goalOps(goal, f), i = at(f); return i < 0 || ops[i] ? v : v.filter(o => !taken.has(o));};
+  return {ops, verbs, isOp: f => !!f?.operation || verbs(f).length > 0};
+}
+// A level's items, each with its owner's label (planWalk's), as pieces.
+export const levelPieces = items => {const key = f => f.own ? '\0' : f.owner ?? '', by = new Map(); for (const f of items || []) by.set(key(f), [...by.get(key(f)) || [], f]); return [...by].map(([k, interfaces]) => ({label: k === '\0' ? '' : k, own: k === '\0', interfaces}));};
 // Clef's fallback: each goal operation's piece the splitter gave no uses,
 // paired with each storage function a sibling that is no operation piece
-// promises (spawn indices).
+// promises (spawn indices). v7.15.5 merge: storage as the level reads it
+// (pieceOps): G1's store readTickets is paired too.
 export function usePairs(spawn, isOp = () => false, goal = '') {
-  const kids = Array.isArray(spawn) ? spawn : [], ops = operationPieces(kids, isOp, goal), pairs = [];
+  const kids = Array.isArray(spawn) ? spawn : [], ops = operationPieces(kids, isOp, goal), pairs = [], level = goal ? pieceOps(goal, kids, isOp).isOp : isOp;
   kids.forEach((c, i) => {
     if (!ops[i] || (c.uses || []).length) return;
-    kids.forEach((s, j) => {if (j !== i && !ops[j] && s && typeof s === 'object') for (const f of s.interfaces || []) if (storageFunction(f, isOp)) pairs.push({i, j, fn: f});});
+    kids.forEach((s, j) => {if (j !== i && !ops[j] && s && typeof s === 'object') for (const f of s.interfaces || []) if (storageFunction(f, level)) pairs.push({i, j, fn: f});});
   });
   return pairs;
 }
@@ -430,9 +462,16 @@ export function dataAnswer(items) {
 // A worker's uses as its assignment states them, answered before it runs:
 // each with its owner and the line that imports it (items {name, params,
 // does, owner, storage}).
+// v7.15.5 merge: within USES_TEXT characters where it can be, as
+// contractText is clipped: the does go first, then the owners, then the
+// params, never a name or its import line (probe: 8 uses gave 2699). An ES
+// module imports by the same path (run12's deleteTicket.js pasted the
+// require lines into one and failed to load).
+export const USES_TEXT = 600;
 export function usesText(items) {
   const xs = (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').slice(0, 8);
   if (!xs.length) return '';
-  const data = xs.filter(f => f.storage);
-  return `Functions of other pieces you call, as your manager answers them: ${xs.map(f => `${signature(f)}${f.does ? ': ' + String(f.does).slice(0, 80).replace(/[.\s]+$/, '') : ''}, exported by "${f.owner}": const { ${f.name} } = require('./${f.name}');`).join(' ')} Import each on its own line by exactly this name, with the name as the path, and call it; do not write it yourself.${data.length ? ` ${dataHome(data).head}: do not keep your own ${dataHome(data).noun}.` : ''}`;
+  const data = xs.filter(f => f.storage), first = xs[0].name;
+  const say = (does, owner, params) => `Functions of other pieces you call, as your manager answers them: ${xs.map(f => `${params ? signature(f) : f.name}${does && f.does ? ': ' + String(f.does).slice(0, 80).replace(/[.\s]+$/, '') : ''}${owner ? `, exported by "${f.owner}"` : ''}: const { ${f.name} } = require('./${f.name}');`).join(' ')} Import each on its own line by exactly this name, with the name as the path (in an ES module, import { ${first} } from './${first}';), and call it; do not write it yourself.${data.length ? ` ${dataHome(data).head}: do not keep your own ${dataHome(data).noun}.` : ''}`;
+  return [say(true, true, true), say(false, true, true), say(false, false, true)].find(t => t.length <= USES_TEXT) || say(false, false, false);
 }
