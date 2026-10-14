@@ -1,6 +1,6 @@
 # Recursive Control Plane: how it works
 
-> The detailed companion to the short [README](../README.md), for v7.15.5. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
+> The detailed companion to the short [README](../README.md), for v7.15.6. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
 
 A multi-agent code-writing control plane that runs entirely on Cloudflare. You give it a goal, and a tree of small agents:
 - splits the work, promising a few named functions for each piece;
@@ -12,7 +12,7 @@ Each failure goes to the lowest manager whose branch holds every module involved
 
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
-> **Status:** this is v7.15.5. Every live run up to run8 used v7.13.x or earlier; run9 to run12 used v7.15. Run11 was the first to finish with the runner's test passing, but its entry module reimplemented every function and imported none of the other pieces, so no live run has yet shown the composed system producing a correct, verified application. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
+> **Status:** this is v7.15.6. Every live run up to run8 used v7.13.x or earlier; run9 to run13 used v7.15. Run11 was the first to finish with the runner's test passing, but its entry module reimplemented every function and imported none of the other pieces, so no live run has yet shown the composed system producing a correct, verified application. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
 
 ## The idea
 
@@ -27,7 +27,7 @@ This project makes the opposite bet: **many small agents with small, bounded con
   - **Builders.** A builder's model sees its manager's direct children in the same way, plus the files it must fix, excerpted when they lie inside a branch built below.
   - **The runner** sees only the goal and the API the application returned.
 
-  The one model call that can read the whole application is the compiler's triage of a failed test that no stack frame attributes. It sees every module in full when they fit the model's context, and otherwise every module by its exports, with the entry in full. See [Known limitations](#known-limitations).
+  No model call reads the whole application. A failed test becomes a requirement, and the manager that owns both sides routes it by the plan, the same way it routes a function request.
 - **Each inference tree works only on its own scope.** Ownership works like functional programming.
   - A subtree owns its assignment and its promise, writes only to its own repositories, and shares no mutable state with its siblings.
   - Two subtrees never write to the same repository, so there is nothing to merge and nothing to conflict.
@@ -36,6 +36,7 @@ This project makes the opposite bet: **many small agents with small, bounded con
   - The builder that joins modules **may only rename import paths and identifiers, and change how an import binds its module when the target's exports call for it**. For example, `const { f } = require(p)` becomes `const f = require(p)` when `p` exports the single function `f`.
   - The runtime checks every edit token by token, though line breaks are not checked yet (see [Known limitations](#known-limitations)). [What a builder may change](#what-a-builder-may-change) gives the exact rule.
   - Anything these edits cannot fix becomes a problem that the managers settle, one level at a time.
+- **The repair half mirrors the construction half.** The split is the forward map: a goal becomes promises, each promise becomes a piece. A problem is an unmet promise, so it is routed by reading that map backwards, through the same hops a function request takes. The same map binds the code (a promised name links to its owner) and bounds the test (the runner asserts only what promises state). Every repair rule is the mirror of a construction step; a rule with no construction twin is a patch, and v7.15.6 removed four (the entry module as the default site of an unattributed failure, the "nothing changed" punishment, a model's triage over the source, and a stack heuristic for swapped arguments). Workers stay bounded throughout: a worker changes only its own files, within its promise, and never judges whose problem it is.
 
 ## Four roles
 
@@ -102,7 +103,7 @@ flowchart LR
   browser["Dashboard<br/>public/"] -->|"/api/* with APP_TOKEN"| worker["Worker<br/>src/index.js"]
   worker --> room[("ControlRoom DO<br/>one per room: tree, promises,<br/>scheduler, problem inbox")]
   room <--> shard[("ManagerShard DOs<br/>one per manager")]
-  room -->|"split, code, link, manager decisions,<br/>coverage, triage, runner test"| qwen["Workers AI<br/>Qwen3-30B-A3B"]
+  room -->|"split, code, link, manager decisions,<br/>coverage, runner test"| qwen["Workers AI<br/>Qwen3-30B-A3B"]
   room -->|"split gate, scope and names,<br/>function matching"| clef["Workers AI<br/>Clef-flash"]
   shard -->|"owner routing, prune walk"| clef
   room -->|"one commit per agent turn"| artifacts[("Artifacts<br/>one git repo per agent")]
@@ -228,48 +229,45 @@ The runtime makes these fixes itself, before the model is called and again after
 
 ### Problems move one level at a time
 
-A builder or the compiler files what it cannot fix with its manager, as rows in that manager's inbox. A worker that the code gate keeps rejecting, or whose accepted done still lacks a promised function, is filed by the runtime. Each problem has:
+A builder or the compiler files what it cannot fix with its manager, as rows in that manager's inbox. A worker whose accepted done breaks its contract is filed by the runtime. Each problem has:
 - **a kind:** `unresolved`, `mismatch`, `binding`, `entry`, `load`, `run`, `stuck` or `contract`;
-- **parties:** the reader of a name, its provider, the line that failed, or the subject, each with the worker that wrote it.
+- **parties:** the reader of a name, its provider, the line that failed, or the subject, each with the worker that wrote it;
+- for a failed run, **a requirement:** what must hold, the `start()` method the test was exercising, the functions the failure names, the test line, and the component stack frames, as facts. The compiler picks no culprit.
 
 Every manager runs the same steps on its inbox.
 
 **1. Place the parties.** Each party falls under one of the manager's direct children, or outside its branch. The manager is the *lowest common manager* when the parties fall under two or more of its children, or under one child that is a worker.
 
-**2. Apply the deterministic rules,** first match wins:
+**2. Route a requirement as a function request is routed,** among the direct children, with no model call until the last step:
+1. a function the requirement names that a direct child promises takes it; a manager child routes down the same way, one level at a time;
+2. otherwise the innermost frame's module goes to the child whose branch owns it;
+3. otherwise the method under test goes to the piece the plan says performs it;
+4. otherwise one Clef call ranks the children's promises against the requirement; below Root a miss goes up one level; at Root the manager's model decides once, and after that the run fails stating the requirement.
+
+When two promised functions are named, the one the method under test names is the site and the other a provider party.
+
+**3. Apply the deterministic rules for load and link failures,** first match wins:
 - **Hop limit.** A problem that has had `2 × depth + 2` decisions is closed.
 - **Stuck worker.** A worker stuck on TypeScript, JSX or a package import is retasked once to plain JavaScript. Any other stuck child is the model's choice; by default it goes up as this manager's own problem.
 - **Relay.** A decision from the parent travels as a side ("the reader changes"), never as a node below the child. The manager hands it to the child that holds that side.
 - **Escalate.** A party lies outside the branch and nobody above has decided, or no party lies under this manager. The problem goes to the parent; at Root, a problem with no party under it is closed.
-- **Relink.** An interface error between this manager's children, or one this manager's builder's own edit caused, goes to its builder to relink. This happens once per error and source.
+- **Relink.** An interface error between this manager's children (an import that does not resolve, a name the module does not export, a binding of the wrong shape), or one this manager's builder's own edit caused, goes to its builder to relink. This happens once per error and source.
 - **Delegate.** Every party lies in one sub-manager's branch, so that sub-manager decides.
-- **Assign.** Every party lies in one worker, so that worker gets it. In a two-sided mismatch, the reader changes by default.
-- **The reader rule.** In a room with promises, a reader that expects a name the provider's piece never promised, while that piece exports what it did promise, changes, with no model call. The provider is never asked to add the name. A promised function read through a path to the wrong module is the reader's too: it imports the function on its own line by its name.
+- **Assign.** Every party lies in one worker, so that worker gets it.
+- **Grow the plan.** A reader that imports a function no piece promises, or a requirement that names one, is the mirror of a split that left it out: the lowest common manager asks Clef which direct child's assignment covers it, adds the function to that child's promise and retasks the child; a manager child gets it relayed down; none at this level goes up a level; none at Root means the function is outside the application, and only then does the reader change its reads.
 
-**3. Ask the manager's model, only for a real choice.** The cases are:
-- nobody wrote what a module calls;
-- several modules agree on names their provider lacks;
-- a builder's note blames the provider;
-- the same child had the problem twice, or returned its files unchanged;
-- a child is stuck;
-- a child escalated the problem;
-- no party lies in the branch;
-- two children disagree and neither side is anchored.
+**4. A ticket is a requirement on the worker's own promised function:** "Your `viewTicket(id)` (returns the ticket with the given ID) must satisfy: … Test line 50: `await app.viewTicket(createdTicket.id)` inside a try expecting a throw." If the manager cannot phrase a ticket that way, the route is wrong, not the worker.
 
-The model gets one call per turn on the largest cluster of related problems.
-- It reads the manager's direct children with their promised functions, the problems with their parties and defaults, and the decisions it must keep.
-- It returns these actions:
-  - **assign**, with instructions and facts from named children;
-  - **escalate**;
-  - **retask** a child, with a new task that Clef must score in scope, and optionally new promised functions;
-  - **retire** a child that nothing else imports.
-- The runtime validates every action. Every function a manager promised must stay on exactly one child, so a retire or retask that would leave one with no piece is refused. What the model leaves out keeps its default, the rules' decision. Out of model calls, turn budget or repair rounds, the defaults decide.
+**5. No change is a routing signal.** A worker that answers a ticket without changing a file is not punished: the problem returns to its manager with that child declined, and the manager routes it to the next candidate (the next party, the next frame's owner, Clef's next rank, up a level). In run11 the write worker, blamed by a stack frame for its caller's swapped arguments, now declines once and the caller gets the ticket.
 
-**4. Apply it.** Each application is one synchronous block, and a row moves only if it is still as it was read.
-- A worker gets one `[build:repair]` ticket per turn, holding all of its problems in its own file paths, with its manager's decision and what the other side provides.
-- A worker that answers a ticket "done" without changing a file gets the problem back once, with "NOTHING CHANGED IN YOUR FILES". By default, a second unchanged answer closes it unfixed, so a branch that cannot be fixed fails visibly instead of idling.
-- **Retiring** a child removes its branch and its code from the bundle above.
-- **Retasking** a worker reruns it with the new task. Retasking a sub-manager retires its whole branch, and it splits again as a new child, which must give its promise to its new pieces.
+**6. Ask the manager's model, only for a real choice:** a requirement every candidate declined, a stuck child, a child that escalated, no party in the branch, or two children that disagree with neither side anchored. The model gets one call per turn on the largest cluster of related problems. It reads the manager's direct children with their promised functions, the problems with their parties and defaults, and the decisions it must keep, and returns **assign** (with instructions and facts from named children), **escalate**, **retask** (a new task that Clef must score in scope, optionally with new promised functions) or **retire** (a child that nothing else imports). The runtime validates every action: every function a manager promised must stay on exactly one child, and a declined child is not assigned again. What the model leaves out keeps the rules' decision.
+
+**7. Apply it.** Each application is one synchronous block, and a row moves only if it is still as it was read. A worker gets one `[build:repair]` ticket per turn, holding all of its problems in its own file paths. **Retiring** a child removes its branch and its code from the bundle above. **Retasking** a worker reruns it with the new task; retasking a sub-manager retires its whole branch, and it splits again as a new child, which must give its promise to its new pieces.
+
+**The same map binds the code and bounds the test.**
+- **One contract check** runs when a worker reports done: its modules export every function it promised and none that another piece promised (a wrapper that calls the import is fine), import and call the functions its plan says it uses, keep no data of their own beside a use of the store, call a used function with its promised parameters in order, and use one module system. One message names every violation with its import line, and after three returns the done is accepted and what is still missing goes to the manager.
+- **The linker binds by ownership.** An import of a promised name goes to the module its owner exports, whatever else exports that name. A module that declares another piece's promise and nothing of its own is left out of the bundle. Run13's stub `deleteTicket.js` in the entry's repository can no longer capture the entry's import.
+- **The runner's test is bounded by the plan.** The runner sees each `start()` method's promised description, and a draft that asserts an error message, a return value or a required throw that neither the goal, the API nor a promise states is sent back with the accepting form (`let gone; try { gone = await app.viewTicket(id); } catch (e) { gone = null; } assert.ok(gone == null)`). The third draft is accepted as it is, and a failure on an invented assertion says so in the ticket.
 
 **Bounds:**
 
@@ -279,12 +277,13 @@ The model gets one call per turn on the largest cluster of related problems.
 | Repair rounds per manager | 3 in a row without progress; a round with progress resets the count |
 | Repair rounds per run | min(40, 16 + 4 × managers), progress or not |
 | Manager model calls per manager | 8 |
-| Unchanged repairs per problem | 2 |
+| Declines per problem | each candidate once, then up a level |
 | Decisions per problem | 2 × depth + 2 |
-| Returns for a missing promised function | 3 |
+| Contract returns per worker | 3 |
+| Runner drafts | 3 |
 | Function requests sent at once | 8 |
 
-A round makes progress when its report no longer fails the way the manager's last round from the same source did, and fails like none of its last three rounds from that source, so ping-pong between two failures is not progress. For a load or run failure, progress compares the error line, the line of the runner's fixed test where it stopped and the files it is blamed on, never triage's wording. When Root runs out of rounds, the run fails. A lower manager that runs out tells its parent it cannot finish its branch. Infrastructure failures, and three failed turns a manager cannot settle, pause until you press **Continue**.
+A round makes progress when its report no longer fails the way the manager's last round from the same source did, and fails like none of its last three rounds from that source, so ping-pong between two failures is not progress. For a load or run failure, progress compares the error line, the line of the runner's fixed test where it stopped and the files it is blamed on. When Root runs out of rounds, the run fails. A lower manager that runs out tells its parent it cannot finish its branch. Infrastructure failures, and three failed turns a manager cannot settle, pause until you press **Continue**.
 
 ### Function requests, one level at a time
 
@@ -348,7 +347,7 @@ The default problem statement is just the product: "Build a small issue tracker 
 |---|---|---|
 | Workers and Static Assets | Serves the dashboard from `public/` and the `/api/*` routes, which require the `APP_TOKEN` bearer token. | One deployable unit for the UI and the API. |
 | Durable Objects (SQLite) | `ControlRoom`, one per room: the agent tree and promises, scheduler, message queues, the problem inbox, staged writes and the event log. `ManagerShard`, one per manager per run: route hops, inbox, lifecycle decisions and Clef owner selection. `BuildExecutor`, one per run: drives the Container for the compiler. | Consistent, durable state per room and per manager. An interrupted turn resumes from its saved position instead of calling the model again, and a manager's decision is applied in one synchronous block. |
-| Workers AI | Qwen3-30B-A3B (default) proposes splits with their promised functions, and writes code, link edits, managers' decisions, the API coverage mapping, failure triage and runner tests. Llama 3.2 1B and Qwen 3.8 27B can be selected instead. Clef-flash (or Clef) answers typed YES/NO questions as probabilities: split, scope, the names a split adds, owner and prune decisions, function matching for requests, and a retask's scope. | Fast, inexpensive models for each agent: Qwen3-30B-A3B activates about 3B parameters per token. Clef returns a probability rather than prose, so every gate is a threshold and needs no output parsing. |
+| Workers AI | Qwen3-30B-A3B (default) proposes splits with their promised functions, and writes code, link edits, managers' decisions, the API coverage mapping and runner tests. Llama 3.2 1B and Qwen 3.8 27B can be selected instead. Clef-flash (or Clef) answers typed YES/NO questions as probabilities: split, scope, the names a split adds, owner and prune decisions, function matching for requests, and a retask's scope. | Fast, inexpensive models for each agent: Qwen3-30B-A3B activates about 3B parameters per token. Clef returns a probability rather than prose, so every gate is a threshold and needs no output parsing. |
 | Artifacts | One git repository per agent, written with isomorphic-git (clone, commit, push) using short-lived write tokens. | Real git history per agent, with no shared branch. |
 | Containers | A Node 22 image runs `container/build-runner.mjs` as an unprivileged user under a 240-second timeout. | Generated code runs isolated from the control plane. |
 
@@ -388,11 +387,11 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Version.** This is v7.15.5. The full local suite passes with `npm test`, and `npm run check` passes.
+- **Version.** This is v7.15.6. The full local suite passes with `npm test`, and `npm run check` passes.
   - [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md): predicted interfaces, the promises, function requests, and what the linker and the compiler read from the plan.
   - [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md): the four roles, the problem inbox and the managers' decisions.
   - [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md): v7.13.0, the hotfixes v7.13.1 to v7.13.4, and the export connector.
-- **Live.** Every live run so far used the issue-tracker goal, Qwen3-30B-A3B for the splitter and the workers, and Clef-flash for the gates. Up to run8, they all ran on v7.13.x or earlier; run9 to run12 ran on v7.15.0 to v7.15.4. **Run11 was the first to finish with the runner's test passing, but its entry module reimplemented every function and imported none of the other pieces, so no live run has yet shown the composed system producing a correct, verified application.**
+- **Live.** Every live run so far used the issue-tracker goal, Qwen3-30B-A3B for the splitter and the workers, and Clef-flash for the gates. Up to run8, they all ran on v7.13.x or earlier; run9 to run13 ran on v7.15.0 to v7.15.5. **Run11 was the first to finish with the runner's test passing, but its entry module reimplemented every function and imported none of the other pieces, so no live run has yet shown the composed system producing a correct, verified application.**
 
 | Run | Room | Version | Outcome | Fixed in |
 |---|---|---|---|---|
@@ -408,6 +407,7 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 | run10 | b7079606 | v7.15.1 | Clef said split at Root twice, but both split answers were malformed JSON (every child after the first wrapped in stray quotes). On the third gate Clef said no, so Root wrote the whole application alone as one module, which the Container rejected | v7.15.2 |
 | run11 | 33635715 | v7.15.2 | **completed in 11.1 minutes, with the runner's test passing**, after 14 compiles and 13 repair rounds. Root split into six pieces and the data store into two. But the result is not the system working as designed: the walk killed three of viewTicket's four pieces (so viewTicket went single-agent), createTicket called writeData with its arguments out of order, which the stack blamed on the write worker for four rounds, and the repairs ended with an entry module that reimplemented every function locally and imported none of the other pieces | v7.15.3, v7.15.4 |
 | run12 | c846f779 | v7.15.4 | failed after 7.2 minutes and 9 repair rounds. Root's split gave the data piece only a factory, `createData()`, so no piece could share the tickets; each operation worker kept its own (an array, a hardcoded table, a JSON file). The entry, told to ask for "the function that performs" each goal operation, asked for `goalOperation1` and `goalOperation2` and wired create and delete only, and the coverage gate passed on those two because the model's mapping left view and update out. deleteTicket then alternated between functions the store never promised and the factory until no round made progress | v7.15.5 |
+| run13 | 02775583 | v7.15.5 | the first run that worked through the plan: a clean split with a storage piece, uses planned, the entry composed with four imports, linked with 11 renames and no model call, loaded first time, coverage 4/4, and two repair rounds that fixed real bugs in the right pieces. Round 3: the fixed test required `viewTicket` to throw for a deleted id, which no promise stated; with no stack frame and triage silent, the problem defaulted to the entry, a pure composer, which was punished for changing nothing and then wrote a stub `deleteTicket.js` that the linker bound the entry's import to. From there a contract loop ("import it, do not write it here") that the entry could not obey, since a worker cannot delete a file, burned rounds; exported at 5.4 minutes, still looping | v7.15.6 |
 
 The changelogs give each run's evidence, and the local replays of its files, which run through the real Container runner script with scripted models.
 
@@ -420,7 +420,7 @@ The changelogs give each run's evidence, and the local replays of its files, whi
 - **Promises are names, not behavior.** The return check, the branch check and the coverage fallback look at exported names and method counts, never at parameters, return shapes or what a function does. A file whose exports the parser cannot list is given the doubt.
 - **Function requests.** Clef can match a request to a function that does something else, and the gap then shows only when the application runs. A worker that needs anything outside its contract takes at least two model turns. A function that a split below a branch's top adds is internal to that branch: a worker elsewhere that needs it writes its own copy, or the gap reaches Root.
 - **A Root that does not split.** A Root that Clef does not split writes the application itself, with no builder and no compiler. Its code goes through the Container's build check, but the runner writes no test for it.
-- **Context.** Linker input at one level is not split when it exceeds the model's context; the builder logs a `link_oversize` event instead. A builder's request grows with its direct children and their boundaries, not with the whole tree. The compiler's triage of a test failure that no stack frame attributes is the one call that can read the whole application.
+- **Context.** Linker input at one level is not split when it exceeds the model's context; the builder logs a `link_oversize` event instead. A builder's request grows with its direct children and their boundaries, not with the whole tree.
 - **Plain JavaScript only.** Workers write `.js`, `.mjs` or `.cjs` using Node built-ins: no npm packages, TypeScript or JSX.
 - **Duplicated work.** Scope is checked when work is split, not afterwards:
   - the splitter is asked for non-overlapping pieces, and a new function name two pieces list is placed on one of them (by task, label or Clef), or dropped when none fits;
@@ -441,7 +441,7 @@ The changelogs give each run's evidence, and the local replays of its files, whi
 | `src/problems.js` | The managers' rules, as a pure module: limits, placement and the lowest common manager, the deterministic rules, when the model is asked, clusters, the validator of the model's actions (promises included), and a worker's repair text |
 | `src/linker.js` | Acorn-based export surfaces, unresolved-import and name-mismatch checks, `autoLink` and import binding fixes, verification of builder edits (renames and binding fixes only), boundaries and excerpts, the return check's export test, entry choice and the runtime loader |
 | `src/api-coverage.js` | The API coverage check: the goal's operations against the methods `start()` returned, the plan's fallback, and which mapped methods a runner test calls |
-| `src/model.js` | Workers AI calls and prompts: Clef gates and matches, and the Qwen splitter, worker, linker, manager, coverage, triage and runner |
+| `src/model.js` | Workers AI calls and prompts: Clef gates and matches, and the Qwen splitter, worker, linker, manager, coverage and runner |
 | `src/manager-shard.js` | `ManagerShard` Durable Object: per-manager route hops, inbox, lifecycle, alias planning, Clef owner selection |
 | `src/artifact-store.js`, `src/memory-fs.js` | Artifacts adapter: isomorphic-git over an in-memory filesystem, one commit per call |
 | `src/build-executor.js`, `src/build-verification.js` | `BuildExecutor` Container driver; snapshot hashing, attestation and repair addressing |
@@ -471,7 +471,8 @@ The design reached this shape over many versions:
 - in v7.15.2, from run10: split answers repaired or retried, and a single-agent Root run through the compiler's checks;
 - in v7.15.3, from run11: a call with its arguments out of order is the caller's problem, and the prune walk keeps a piece the scope check accepted unless another branch owns it;
 - in v7.15.4, from run11: no piece writes a function another piece promised (it imports it), every operation's promised piece must be reached from the entry, and triage blames only code the entry reaches;
-- in v7.15.5, from run12: the entry is composed from the plan (its assignment names the functions that perform the goal's operations), coverage is checked against the plan, a split that promises a factory goes back to the splitter, each piece's plan names the functions it uses from its siblings, ES module imports get their extension at link time, and a data piece's promise grows when a reader needs a function it lacks.
+- in v7.15.5, from run12: the entry is composed from the plan (its assignment names the functions that perform the goal's operations), coverage is checked against the plan, a split that promises a factory goes back to the splitter, each piece's plan names the functions it uses from its siblings, ES module imports get their extension at link time, and a data piece's promise grows when a reader needs a function it lacks;
+- in v7.15.6, from run13: the repair half mirrors the construction half. The compiler reports a requirement, managers route it by promises one level at a time, a no-change answer sends it to the next candidate, an uncovered requirement grows the plan at the manager that split, the linker binds promised names by ownership, one contract check replaces five detectors, and the runner's test is bounded by the plan; triage, the entry default, the "nothing changed" punishment and the swapped-argument heuristic are gone.
 
 [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md), [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md) and [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md) cover what changed since v7.12. [docs/history/CHANGELOG-v7.12.md](history/CHANGELOG-v7.12.md) documents the release before them. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](history/).
 
