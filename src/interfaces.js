@@ -534,3 +534,34 @@ export function usesText(items) {
   const say = (does, owner, params, returns = does > 0) => `Functions of other pieces you call, as your manager answers them: ${xs.map(f => `${params ? signature(f) : f.name}${does && f.does ? ': ' + String(f.does).slice(0, does).replace(/[.\s]+$/, '') : ''}${returns ? returnsOf({...f, does: does && f.does}) : ''}${owner ? `, exported by "${f.owner}"` : ''}: const { ${f.name} } = require('./${f.name}');`).join(' ')} Import each on its own line by exactly this name, with the name as the path (in an ES module, import { ${first} } from './${first}';), and call it; do not write it yourself.${data.length ? ` ${dataHome(data).head}: do not keep your own ${dataHome(data).noun}.` : ''}`;
   return [say(80, true, true), say(60, true, true), say(0, true, true, true), say(0, true, true), say(0, false, true)].find(t => t.length <= USES_TEXT) || say(0, false, false);
 }
+// v7.15.14 (run21): the tests a goal asks for are the compiler's: its runner
+// writes the one test against start(). Root's splitter turned "Build
+// automated tests exercising every diagnostic…" into 25 "Test …" pieces that
+// nothing imports and no promise reaches. A test piece is one whose label's
+// first word is test/tests/testing/spec/specs, or that ends "tests" or "test
+// suite", or names a test harness, or whose task writes tests (a writing verb
+// before tests, test suites, harnesses, cases or fixtures, or a clause that
+// starts with them); never one labelled Check, Validate, Verify or Assert
+// (run21's "Validate findings" and twenty "Check …" rules are production code).
+const TEST_FIRST = /^(?:test|tests|testing|spec|specs)$/i, NOT_TEST = /^(?:check|checks|validate|validates|verify|verifies|assert|asserts)$/i;
+const TEST_ADJ = '(?:(?:automated|unit|integration|end-to-end|e2e|regression|acceptance|comprehensive|the|a|an|some|all|its|their)\\s+)*', TEST_NOUN = '(?:tests|test suites?|test harness(?:es)?|test cases|test fixtures|fixtures|specs)\\b';
+const TEST_TASK = new RegExp(`\\b(?:write|writes|writing|add|adds|create|creates|build|builds|implement|implements|provide|provides)\\s+${TEST_ADJ}${TEST_NOUN}|(?:^|[:;.]\\s+)${TEST_ADJ}${TEST_NOUN}`, 'i');
+export function testLabel(label, task = '') {
+  const text = String(label ?? '').trim(), first = text.split(/\s+/)[0] || '';
+  if (NOT_TEST.test(first)) return false;
+  return TEST_FIRST.test(first) || /\b(?:tests|test suites?)$/i.test(text) || /\btest harness(?:es)?\b/i.test(text) || TEST_TASK.test(String(task ?? ''));
+}
+// The test pieces of a split: by testLabel, none of whose functions is a name
+// promised to this level (carried), a method the goal states start() returns,
+// or a name a piece that stays uses (a "Test …" piece a sibling calls is
+// production code, and what it uses stays too). [] when fewer than two pieces
+// would stay: the split is kept as it was.
+export function testPieces(spawn, {promised = [], stated = []} = {}) {
+  const list = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object'), keep = new Set([...promised, ...stated].map(f => typeof f === 'string' ? f : f?.name));
+  const fns = c => (Array.isArray(c.interfaces) ? c.interfaces : Array.isArray(c.functions) ? c.functions : []).map(f => typeof f === 'string' ? f : f?.name).filter(Boolean);
+  let out = list.filter(c => testLabel(c.label, c.task) && !fns(c).some(n => keep.has(n)));
+  for (let n = -1; n !== out.length;) {n = out.length; const used = new Set(list.filter(c => !out.includes(c)).flatMap(c => normalizeUses(c.uses))); out = out.filter(c => !fns(c).some(f => used.has(f)));}
+  return list.length - out.length < 2 ? [] : out;
+}
+// The event a split's dropped test pieces leave (test_pieces_dropped).
+export const testPiecesText = list => `Not spawned: ${list.length} test piece${list.length === 1 ? '' : 's'} (${list.slice(0, 6).map(c => JSON.stringify(String(c.label).slice(0, 70))).join(', ')}${list.length > 6 ? ', …' : ''}); the compiler's runner writes the goal's tests against start().`;

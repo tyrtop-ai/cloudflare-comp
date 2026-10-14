@@ -50,9 +50,9 @@ test('three-way split is refused in full with only two slots and never forces an
   assert.equal(room.node(target).phase,'decompose');
   assert.equal(room.node(target).status,'ready');
   assert.equal(room.allNodes().length,62);
-  assert.equal(modelCalls,7,'Clef gate, two Qwen split attempts, scope admission and one ownership walk call per child; no implementation');
-  assert.ok(room.snapshot().events.some(e=>e.kind==='split_rejected' && e.actor===target));
-  assert.ok(room.snapshot().events.some(e=>e.kind==='split_rejected'));
+  // v7.15.14: the splitter is held to min(max_children, the slots left), so three pieces in two slots are over the bound twice in the same call: a parse error retried under Clef's YES, with no admission call (before: 7 calls and split_rejected).
+  assert.equal(modelCalls,3,'Clef gate and two Qwen split attempts; no admission, no implementation');
+  assert.ok(room.snapshot().events.some(e=>e.kind==='error' && e.actor===target && e.body==='Bad decomposition response: too many pieces: the answer had 3 pieces after a retry, and a split has at most 2; never truncated.'));
   assert.equal(room.files(target).some(f=>f.path==='piece.js'),false,'oversized work was not forced onto a leaf');
 });
 

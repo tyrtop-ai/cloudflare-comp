@@ -292,6 +292,8 @@ test('v7.15.13 room 3 (run20\'s shape at Root): "Check errors", "Check speed" an
   const clef=clefScript({within:label=>WITHIN20[label]??0.9,names:(_label,name)=>name==='checkAdminDown'?0.461:0.9});
   const {room,calls}=liveRoom({clef,split:()=>({summary:'Split the engine into its pieces.',spawn:PLAN20})});
   await room.provision('root',null,'Root objective',DIAG+' '+M.goalStartRequirement(DIAG),M.rootPromise(DIAG));room.set('goal',DIAG+' '+M.goalStartRequirement(DIAG));
+  // v7.15.14: run20's Root split had 12 pieces, over the default 7 per split (max_children); this case is about admission, so the room allows them.
+  room.save('settings',{...room.settings(),max_children:12});
   await room.turn('root');
   assert.deepEqual(labels(room,'root'),PLAN20.map(p=>p.label),trace(room));
   assert.deepEqual(dbEvents(room,'scope_allowed').map(e=>e.body).filter(b=>b.includes('by the plan')),[

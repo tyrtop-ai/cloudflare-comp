@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites, testPieces, testPiecesText } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
@@ -140,11 +140,15 @@ const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&
 // (v7.15.12: lifted from 256 agents, 16 deep, 64 concurrent and 500 turns at
 // the author's request; the account's Workers AI and Durable Object limits
 // are the practical ones).
+// v7.15.14 (run21): max_children bounds the pieces of one split: Root's split
+// had 50 direct children (run19's 28), one Clef step vetted them all, their
+// repositories took 86 s to create, and every routing question at Root ran
+// over dozens; a piece still large is split again by its own manager.
 export const ROOM_LIMITS = Object.freeze({
-  max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000]
+  max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000], max_children: [2, 64]
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
-  max_agents: 64, max_depth: 10, parallel: 16,
+  max_agents: 64, max_depth: 10, parallel: 16, max_children: 7,
   model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
 });
 // The agent models the dashboard offers: the Qwen3 hybrid (default), four
@@ -155,7 +159,7 @@ export const CLOUDFLARE_MODELS = new Set(['@cf/qwen/qwen3-30b-a3b-fp8', '@cf/met
 export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid settings');
   const result = {...prior};
-  for (const key of ['max_agents','max_depth','parallel']) {
+  for (const key of ['max_agents','max_depth','parallel','max_children']) {
     if (raw[key] === undefined) continue;
     const n=Number(raw[key]);
     const [min,max]=ROOM_LIMITS[key];
@@ -327,6 +331,8 @@ export class ControlRoom extends DurableObject {
   }
   store() { return getArtifactStore(this.env); }
   settings() { return this.read('settings', DEFAULT_ROOM_SETTINGS); }
+  // A room saved before v7.15.14 has no max_children: the default.
+  maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
   // runner's test). A room saved before v7.15.10 has no worker or compiler
@@ -3540,6 +3546,9 @@ export class ControlRoom extends DurableObject {
     // C0 already ran in decompose for a first split; it reports what it read.
     const read=[...(Array.isArray(earlier)?earlier:[]).filter(x=>typeof x?.label==='string'&&own.has(x?.name)),...inferred];
     for(const x of read)this.event(id,'interfaces_inferred',`"${clip(x.label,70)}" says it exports ${x.name}(); it carries ${x.name}.`);
+    // v7.15.14 (run21): the goal's tests are the compiler's (its runner writes the one test against start()), so a test piece nothing uses is not spawned, before any Clef call: Root's split proposed 25, Clef vetted them and kept 17 nobody imports, each a repository to create.
+    const tests=testPieces(named,{promised,stated:goalMethods(this.userGoal())});
+    if(tests.length){named=named.filter(c=>!tests.includes(c));this.event(id,'test_pieces_dropped',testPiecesText(tests));}
     // The last attempt before a pause places what the pieces' own text shows (R6).
     if(place&&interfaceErrors(named,promised).some(e=>e.check==='C5')) {
       const placed=placePromised(named,promised);named=placed.spawn;
@@ -4932,7 +4941,8 @@ export class ControlRoom extends DurableObject {
         if (gate.split) {
           // run16: after a malformed turn the splitter answers without
           // thinking, as its own retry does; a thinking answer costs minutes.
-          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed});
+          // v7.15.14: the pieces of one split are at most max_children, within the slots left.
+          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:Math.min(this.maxChildren(),this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots())},{planned:this.planned(),goal:this.userGoal(),noThink:malformed});
         } else {
           // A genuine leaf can implement in the SAME turn; no extra Qwen
           // decomposition request or artificial scheduler wave. It keeps the
