@@ -1196,6 +1196,66 @@ export function placeholders(files, names, foreign=[]) {
   }
   return out;
 }
+// v7.15.5 (run12): a worker the plan says calls other pieces' functions
+// (uses), read with placeholders' parse. unused: each use no module here
+// imports and calls, by name, alias or as a member of a module bound whole.
+// kept: data a module keeps itself, where a use of a store's functions says
+// it lives elsewhere: a top-level array, object of values, Map or Set that a
+// function here changes, or returns while it starts empty (run12's
+// createTicket.js pushed to its own tickets), fs (its update module.js read
+// tickets.json), or a record of literals with an id (its viewTicket.js
+// returned two). One finding per kind and module; tests are not read.
+const MUTATORS=new Set('push pop shift unshift splice sort reverse fill copyWithin set delete clear add'.split(' '));
+const COLLECTIONS=new Set(['Map','Set','WeakMap','WeakSet']);
+const literalValue=v=>v?.type==='Literal'||v?.type==='TemplateLiteral'&&!v.expressions.length||v?.type==='UnaryExpression'&&v.argument.type==='Literal'||v?.type==='ArrayExpression'&&v.elements.every(literalValue);
+const literalRecord=o=>o.type==='ObjectExpression'&&o.properties.length>=2&&o.properties.every(p=>p.type==='Property'&&!p.computed&&!p.method&&literalValue(p.value))&&
+  o.properties.some(p=>/^_?id$/i.test(keyName(p.key)||'')&&p.value.type==='Literal'&&p.value.value!==null);
+export function ownData(files, uses=[]) {
+  const called=new Set(),kept=[];
+  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+    if(!LINKABLE.test(path)||/(?:^|\/)(?:tests?|__tests__)\/|\.(?:test|spec)\.[cm]?js$/i.test(path))continue;
+    let parsed;try{parsed=parseSource(content);}catch{continue;}
+    const {ast,sourceType}=parsed,imported=new Map(),whole=new Set();
+    for(const ref of importRefs(path,content)){const named=new Set();for(const n of ref.names){const l=ref.aliases.get(n)||n;named.add(l);imported.set(l,n);}for(const l of ref.local)if(!named.has(l))whole.add(l);}
+    walk(ast,node=>{
+      if(node.type!=='CallExpression')return;
+      const c=node.callee.type==='ChainExpression'?node.callee.expression:node.callee;
+      if(c.type==='Identifier'&&imported.has(c.name))called.add(imported.get(c.name));
+      else if(c.type==='MemberExpression'&&!c.computed&&(c.object.type==='Identifier'&&whole.has(c.object.name)||isRequire(c.object)))called.add(keyName(c.property));
+    });
+    // The module's own collections, and what its functions do with them.
+    const top=new Map(),{bindingOf}=scopeOf(ast,sourceType);
+    const data=e=>e?.type==='ArrayExpression'||e?.type==='NewExpression'&&e.callee.type==='Identifier'&&COLLECTIONS.has(e.callee.name)||
+      e?.type==='ObjectExpression'&&e.properties.every(p=>p.type==='Property'&&!p.method&&!FUNCTIONS.has(p.value.type));
+    for(const st of ast.body){const d=st.type==='ExportNamedDeclaration'?st.declaration:st;if(d?.type==='VariableDeclaration')for(const v of d.declarations)if(v.id.type==='Identifier'&&data(v.init))top.set(v.id.name,v.init);}
+    const mine=e=>e?.type==='Identifier'&&top.has(e.name)&&bindingOf.get(e)===ast?e.name:null;
+    const rootOf=e=>{while(e?.type==='MemberExpression'||e?.type==='ChainExpression')e=e.type==='ChainExpression'?e.expression:e.object;return mine(e);};
+    const fromData=e=>!e?null:e.type==='Identifier'?mine(e):e.type==='MemberExpression'?fromData(e.object):e.type==='ChainExpression'?fromData(e.expression):e.type==='AwaitExpression'?fromData(e.argument):
+      e.type==='CallExpression'?(e.callee.type==='MemberExpression'&&fromData(e.callee.object))||(/^(?:Array\.from|Object\.(?:values|entries|assign)|structuredClone)$/.test(calleeName(e.callee))?e.arguments.map(fromData).find(Boolean):null)||null:
+      e.type==='LogicalExpression'?fromData(e.left)||fromData(e.right):e.type==='ConditionalExpression'?fromData(e.consequent)||fromData(e.alternate):
+      e.type==='ArrayExpression'||e.type==='ObjectExpression'?(e.elements||e.properties).map(x=>x?.type==='SpreadElement'?fromData(x.argument):null).find(Boolean)||null:null;
+    const changed=new Set(),returned=new Set();
+    if(top.size)walk(ast,fn=>{
+      if(!FUNCTIONS.has(fn.type))return;
+      if(fn.body.type!=='BlockStatement'){const r=fromData(fn.body);if(r)returned.add(r);}
+      walk(fn.body,node=>{
+        let r=null;
+        if(node.type==='CallExpression'&&node.callee.type==='MemberExpression'&&!node.callee.computed&&MUTATORS.has(keyName(node.callee.property)))r=rootOf(node.callee.object);
+        if(!r&&node.type==='CallExpression'&&calleeName(node.callee)==='Object.assign')r=rootOf(node.arguments[0]);
+        if(node.type==='AssignmentExpression')r=rootOf(node.left);
+        if(node.type==='UpdateExpression'||node.type==='UnaryExpression'&&node.operator==='delete')r=node.argument.type==='MemberExpression'?rootOf(node.argument):null;
+        if(r)changed.add(r);
+        if(node.type==='ReturnStatement'){const x=fromData(node.argument);if(x)returned.add(x);}
+      });
+    });
+    const empty=e=>!(e.elements||e.properties||e.arguments).length;
+    for(const [name,init] of top)if(changed.has(name)||returned.has(name)&&empty(init)){kept.push({path,kind:'state',name,shape:init.type==='ArrayExpression'?'array':init.type==='ObjectExpression'?'object':init.callee.name});break;}
+    if(moduleSpecifiers(content).some(x=>/^(?:node:)?fs(?:\/promises)?$/.test(x)))kept.push({path,kind:'fs'});
+    let record=false;walk(ast,node=>{record||=literalRecord(node);});
+    if(record)kept.push({path,kind:'records'});
+  }
+  return {unused:[...new Set(uses)].filter(n=>!called.has(n)),kept};
+}
 // Every name a module reads from an import that resolves, in source order,
 // with ok=false where the target does not export it.
 export function importReads(files, surfaces) {

@@ -131,6 +131,35 @@ export async function scopeInterfaces(env, originalGoal, parentTask, children, p
   return result;
 }
 
+// v7.15.5 (run12): no operation piece asked for a data function; each kept
+// its own tickets. A goal operation's piece the splitter gave no uses is
+// asked about each storage function a sibling promises, one question per
+// pair, in the scope check's step: p, by pair. MOCK adds none.
+export async function scopeUses(env, originalGoal, parentTask, children, pairs) {
+  if (!pairs?.length) return [];
+  if (env.MOCK_AI === 'true') return pairs.map(x=>({...x,p:0}));
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef scope decision model');
+  const line=f=>`${signature(f)}${f.does?': '+f.does:''}`;
+  const state={original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
+    proposed_children:children.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900),functions:(c.interfaces||[]).map(line)}))};
+  const groups=[];
+  for(let start=0;start<pairs.length;start+=12)groups.push(pairs.slice(start,start+12).map((_,k)=>start+k));
+  const answered=await Promise.all(groups.map(async group=>{
+    const questions=Object.fromEntries(group.map(q=>{const {i,j,fn}=pairs[q];return [`uses_${q}`,{type:'noul',
+      instructions:`Proposed child ${j} ("${String(children[j].label).slice(0,70)}") keeps the application's data and exports ${line(fn)}. Does proposed child ${i} ("${String(children[i].label).slice(0,70)}") need to call ${fn.name} to read or change that data, rather than keeping a copy of its own? Answer NO if child ${i} neither reads nor changes the data ${fn.name} gives access to.`}];}));
+    const output=await env.AI.run(selector,{model:clef,state,questions});
+    return group.map(q=>{
+      const probability=output?.answers?.[`uses_${q}`]?.noul;
+      if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
+        throw new Error(`Clef returned no valid probability for ${pairs[q].fn.name} of child ${pairs[q].i}`);
+      return probability;
+    });
+  }));
+  return pairs.map((x,q)=>({...x,p:answered.flat()[q]}));
+}
+
 const OWNER_STOP_WORDS = ['ticket','tickets','please','what','which','does','have','need','request','provide','definition','about','the','this','your','from','data','system','project','implement','function','operation'];
 // Route questions through a manager's direct-child public Artifacts index.
 // Clef classifies owners; it never reads Git itself or generates an answer.
@@ -277,6 +306,10 @@ export const ASK_CLAUSE = ', which you ask your manager for and import by its na
 export const ROOT_PROMISE = Object.freeze([Object.freeze({name:'start',does:'no arguments; returns an object with one method per goal operation, each the function that performs it'+ASK_CLAUSE,params:Object.freeze([])})]);
 export const ENTRY_CONTRACT = 'You write the application entry module: it imports the other pieces by the relative paths and names it expects, exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each the operation imported from the module that owns it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
 
+// v7.15.5 (run12): Root's split promised a factory, createData(), for its
+// data piece, and no operation piece said it needed that data: each kept its
+// own tickets. Each piece now names the sibling functions it calls ("uses").
+export const SPLIT_USES = ' Give each piece "uses": the names of the functions other pieces of this split promise that its code calls; a piece that creates, reads, changes or deletes stored records uses the functions of the piece that keeps them, for example {"label":"Create ticket","task":"Write code that creates a ticket and saves it","functions":[{"name":"createTicket","does":"creates a ticket and returns it","params":["data"]}],"uses":["readTickets","saveTickets"]}. Shared data lives in one piece, which promises the plain functions the others call to read and change it (readTickets(), saveTickets(tickets)), never a factory that returns an instance or an object of methods; no other piece keeps its own copy.';
 // When Clef says YES, a lightweight generative agent guesses the next layer.
 // No optimizing, no capacity prediction, no files, no agent registry.
 export async function decompose(env, context) {
@@ -310,7 +343,7 @@ export async function decompose(env, context) {
     return {parsed,text,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
   };
   const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
-  const first=vet(contentOf(await run(env,system,request,4096)));
+  const first=vet(contentOf(await run(env,system+SPLIT_USES,request,4096)));
   if(first.ok && !first.count)return done(first);
   const malformed=first.malformed?' Your previous answer was not a JSON object whose spawn items are objects, each with a "label" and a "task"; every spawn item is a JSON object, never a quoted string.':'';
   // Labels copied from the example ("Piece A", run4) give Clef and the prune
@@ -318,7 +351,7 @@ export async function decompose(env, context) {
   const specific=first.vague?.length?` Your previous answer used placeholder labels or tasks copied from the example (${first.vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
   const names=first.bad?.length?` Your previous answer's functions failed these checks: ${first.bad.map(e=>e.text).join(' ')} Correct them.`+
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
-  const retry=vet(contentOf(await run(env,system+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096)));
+  const retry=vet(contentOf(await run(env,system+SPLIT_USES+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096)));
   // The retry replaces the first answer only when it is not worse; a
   // malformed retry never replaces a partition that parsed (review).
   const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok || retry.malformed && !first.malformed ? first : retry;

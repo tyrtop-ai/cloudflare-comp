@@ -97,6 +97,9 @@ export function interfaceErrors(spawn, promised = []) {
     const holders = kids.filter(k => namesOf(k).includes(p.name));
     if (holders.length !== 1) errors.push({label: '', name: p.name, check: 'C5', text: `Your assignment promises ${described(p)}; ${holders.length ? `${holders.map(k => `"${k.label}"`).join(' and ')} ${holders.length > 2 ? 'all' : 'both'} list it; ` : ''}give it, unchanged, to exactly one piece, the one whose task writes it.`});
   }
+  // C7 (v7.15.5): a new name that is a factory (isFactory).
+  for (const c of kids) for (const f of c.interfaces || []) if (!own.has(f.name) && isFactory(f))
+    errors.push({label: c.label, name: f.name, check: 'C7', text: `"${c.label}": ${f.name}()${f.does ? ` ("${String(f.does).replace(/[.\s]+$/, '')}")` : ''} is a factory; promise the functions the other pieces call, e.g. ${storageExample(c.label, f.name)}, not a factory that returns them.`});
   return errors;
 }
 // R6, only on the last attempt before a pause, which would stop the run: a
@@ -213,4 +216,81 @@ export function nameMatch(offers, names) {
     if (holders.length) return null;
   }
   return null;
+}
+
+// v7.15.5 (run12): Root's split gave its Ticket Data Manager one promise,
+// createData(), "Initializes and returns a ticket data manager instance", so
+// no piece could import a function that reads or saves tickets, and each
+// operation kept its own. A promised function that builds an instance, a
+// manager or an object of methods is a factory, a split error (C7). The
+// object follows the verb within four words, never past a preposition:
+// "returns all tickets from the repository" reads them.
+const GAP = String.raw`(?:\s+(?!(?:from|to|in|into|of|for|by|on|at|with|using|via|through)\b)[\w-]+){0,4}?`;
+const FACTORY_DOES = new RegExp(String.raw`\b(?:returns?|creates?|initiali[sz]es?|builds?|constructs?|makes?|instantiates?)\b${GAP}\s+(?:[\w-]*(?:manager|store|storage|repository|repo|service|database|db|api|client|controller|registry|tracker)\s+(?:instance|object)\b|instance\s+of\b|(?:manager|repository|factory)\b(?!['’]s)|object\s+(?:with|of|containing|exposing|holding)\b[^.;]{0,60}\bmethods?\b)`, 'i');
+const FACTORY_NAME = /^(?:create|make|build|new|init|initialize|get|setup)(?:[A-Z]\w*)?(?:Store|Storage|Repository|Repo|Manager|Service|Factory|Instance|Registry|Dao)$/;
+export const isFactory = f => !!f && typeof f.name === 'string' && f.name !== 'start' && (FACTORY_NAME.test(f.name) || FACTORY_DOES.test(String(f.does || '')));
+// The data a store's label or name holds ("Ticket Data Manager": ticket), for
+// the example C7 gives and the noun of a plan answer.
+const STORE_WORDS = new Set([...FILLER_WORDS, ...'data manager management store storage repository repo service persistence memory database db access factory instance all in of the a an and for to'.split(' ')]);
+const plural = w => /(?:s|data)$/.test(w) ? w : w + 's';
+const camel = ws => ws.map((w, i) => i ? w[0].toUpperCase() + w.slice(1) : w).join('');
+const nameNoun = name => {const w = words(name).slice(1), by = w.indexOf('by'); return (by >= 0 ? w.slice(0, by) : w).filter(x => !STORE_WORDS.has(x));};
+export function storageExample(label, name) {
+  const ws = [words(label).filter(w => !STORE_WORDS.has(w)), nameNoun(name)].find(x => x.length) || ['item'];
+  const n = camel([...ws.slice(0, -1), plural(ws.at(-1))]), N = n[0].toUpperCase() + n.slice(1);
+  return `read${N}() and save${N}(${n})`;
+}
+// A piece's uses, the functions its siblings promise that its code calls:
+// names, from an array of names or {name} items, or one string of them.
+export const normalizeUses = raw => [...new Set((Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;]+/) : [])
+  .map(u => validName(typeof u === 'string' ? u.replace(/^`+|`+$/g, '').replace(/\(.*$/, '') : u?.name ?? u?.function)).filter(Boolean))].slice(0, 8);
+// Only a name another piece of the split promises is kept, never its own.
+// The start carrier's are dropped: what it is told is the entry's own text.
+export function planUses(spawn) {
+  const kids = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object'), dropped = [];
+  const out = (Array.isArray(spawn) ? spawn : []).map(c => {
+    if (!c || typeof c !== 'object') return c;
+    const own = namesOf(c), offered = new Set(kids.filter(k => k !== c).flatMap(namesOf)), {uses: raw, ...rest} = c;
+    const all = normalizeUses(raw), uses = own.includes('start') ? [] : all.filter(name => offered.has(name) && !own.includes(name));
+    for (const name of all) if (!uses.includes(name)) dropped.push({label: c.label, name});
+    return uses.length ? {...rest, uses} : rest;
+  });
+  return {spawn: out, dropped};
+}
+// A function that keeps the shared data: not a goal operation (isOp), named
+// read, save, get... or described as storing it. A factory is none.
+const STORAGE_VERBS = new Set('read write save load get set store persist fetch put list find'.split(' '));
+const STORES = /\b(?:stor(?:e|es|ed|ing|age)|persist(?:s|ed|ent)?|in[- ]memory|database)\b/i;
+export const storageFunction = (f, isOp = () => false) => !!f && f.name !== 'start' && !isOp(f) && !isFactory(f) &&
+  (STORAGE_VERBS.has(words(f.name)[0]) || STORES.test(String(f.does || '')));
+// Clef's fallback: each goal operation's piece the splitter gave no uses,
+// paired with each storage function a sibling promises (spawn indices).
+export function usePairs(spawn, isOp = () => false) {
+  const kids = Array.isArray(spawn) ? spawn : [], pairs = [];
+  kids.forEach((c, i) => {
+    if (!c || typeof c !== 'object' || (c.uses || []).length || namesOf(c).includes('start') || !(c.interfaces || []).some(isOp)) return;
+    kids.forEach((s, j) => {if (j !== i && s && typeof s === 'object') for (const f of s.interfaces || []) if (storageFunction(f, isOp)) pairs.push({i, j, fn: f});});
+  });
+  return pairs;
+}
+const listed = xs => xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}` : xs[0];
+// Where the data lives, as the manager answers a worker that keeps its own
+// (run12): the storage uses' owners and names (items {name, owner}).
+function dataHome(items) {
+  const names = [...new Set(items.map(f => f.name))], ws = names.map(nameNoun).find(x => x.length);
+  const noun = ws ? camel([...ws.slice(0, -1), plural(ws.at(-1))]).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase() : 'data';
+  return {names, noun, head: `${noun[0].toUpperCase() + noun.slice(1)} ${/data$/.test(noun) ? 'lives' : 'live'} in ${listed([...new Set(items.map(f => f.owner))])}`};
+}
+export function dataAnswer(items) {
+  const {names, noun, head} = dataHome(items), many = names.length > 1;
+  return `${head}: import ${listed(names)} on ${many ? 'their own lines' : 'its own line'} and use ${many ? 'them' : 'it'}; do not keep your own ${noun}.`;
+}
+// A worker's uses as its assignment states them, answered before it runs:
+// each with its owner and the line that imports it (items {name, params,
+// does, owner, storage}).
+export function usesText(items) {
+  const xs = (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').slice(0, 8);
+  if (!xs.length) return '';
+  const data = xs.filter(f => f.storage);
+  return `Functions of other pieces you call, as your manager answers them: ${xs.map(f => `${signature(f)}${f.does ? ': ' + String(f.does).slice(0, 80).replace(/[.\s]+$/, '') : ''}, exported by "${f.owner}": const { ${f.name} } = require('./${f.name}');`).join(' ')} Import each on its own line by exactly this name, with the name as the path, and call it; do not write it yourself.${data.length ? ` ${dataHome(data).head}: do not keep your own ${dataHome(data).noun}.` : ''}`;
 }
