@@ -307,6 +307,10 @@ export async function ownsNeed(env, {assigned_code, need, name=''}) {
 // requirement to the goal when a run starts, so the splitters assign it like
 // any other part of the goal; the compiler repeats the contract in every
 // entry problem it files.
+// The longest goal /api/run accepts and start() keeps whole (a 2,800-character
+// diagnostics goal was refused at 1,800); the splitter's request has room for
+// it twice, as Root's assignment and the scope boundary, beside the feedback.
+export const GOAL_LIMIT = 4000;
 export const GOAL_START_REQUIREMENT = 'The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.';
 // v7.15 (author decision 1): Root's promise, written by the runtime at run
 // start in live rooms. Its carrier learns the operations from its own task
@@ -342,7 +346,7 @@ export async function decompose(env, context, opts = {}) {
     original_goal_scope_boundary:context.root_scope || undefined,
     previous_split_rejection:undefined,
     available_child_slots:available};
-  if(context.split_feedback)fields.previous_split_rejection=clipFeedback(context.split_feedback,8500-JSON.stringify(fields).length-30);
+  if(context.split_feedback)fields.previous_split_rejection=clipFeedback(context.split_feedback,12000-JSON.stringify(fields).length-30);
   const request=JSON.stringify(fields);
   // C0 runs first, so a piece whose task says it exports a promised name
   // costs no retry; C6 is the walk's, as this splitter sees no other branch.

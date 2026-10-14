@@ -233,9 +233,10 @@ test('v7.15: decompose retries once in the same call and keeps the better answer
   s=script([good]);await decompose(s.env,ctx({your_id:'root.1',your_promised_functions:[]}));
   assert.deepEqual(Object.keys(s.calls[0].request),['assigned_code','original_goal_scope_boundary','available_child_slots'],'no promise, no field');
   // Only the feedback is clipped, and the request stays valid JSON.
-  const huge={reason:'r'.repeat(3000),accepted:Array.from({length:20},(_,i)=>({label:'a'+i,task:'t'.repeat(300)})),rejected:Array.from({length:20},(_,i)=>({label:'x'+i,task:'t'.repeat(300),note:'n'.repeat(200)})),root_goal:'g'.repeat(1500)};
+  // v7.15.10: the room is 12,000 (a 4,000-character goal rides twice), so the feedback here is bigger than that.
+  const huge={reason:'r'.repeat(3000),accepted:Array.from({length:20},(_,i)=>({label:'a'+i,task:'t'.repeat(600)})),rejected:Array.from({length:20},(_,i)=>({label:'x'+i,task:'t'.repeat(600),note:'n'.repeat(200)})),root_goal:'g'.repeat(1500)};
   s=script([good]);await decompose(s.env,ctx({split_feedback:huge}));
-  assert.ok(s.calls[0].raw.length<=8500,String(s.calls[0].raw.length));
+  assert.ok(s.calls[0].raw.length<=12000,String(s.calls[0].raw.length));
   const fed=s.calls[0].request.previous_split_rejection;
   assert.equal(fed.rejected.length,0,'rejected entries go first');
   assert.ok(fed.accepted.length>0&&fed.accepted.length<20);

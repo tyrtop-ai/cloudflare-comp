@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../src/index.js');
 // Imported before the tests start: an import after them raced the v7.11 test that reads it.
-const {ENTRY_CONTRACT,GOAL_START_REQUIREMENT}=await import('../src/model.js');
+const {ENTRY_CONTRACT,GOAL_START_REQUIREMENT,GOAL_LIMIT}=await import('../src/model.js');
 class Sql {
   constructor(db){this.db=db||new DatabaseSync(':memory:');}
   exec(sql,...args){
@@ -168,12 +168,14 @@ const splitRoom=(spawnAt)=>{
   return setup({AI:ai});
 };
 
-// /api/run accepts 1800 characters; the requirement made the runtime cut the
+// /api/run accepts GOAL_LIMIT characters (1800 up to v7.15.9; a 2,800-character
+// diagnostics goal was refused); the requirement made the runtime cut the
 // goal to fit 2000, so the splitter and the export saw less than was asked.
-test('v7.14: an 1800-character goal reaches Root whole, ahead of the start() requirement',async()=>{
+test('v7.14: a goal of the full length reaches Root whole, ahead of the start() requirement',async()=>{
   const {room,drain}=setup({AI:{run:async()=>{throw new Error('stop here');}}});
-  const goal='Build a small issue tracker. '+'It tags tickets with labels and filters by them. '.repeat(40).slice(0,1771);
-  assert.equal(goal.length,1800);
+  const goal='Build a small issue tracker. '+'It tags tickets with labels and filters by them. '.repeat(100).slice(0,GOAL_LIMIT-29);
+  assert.equal(goal.length,GOAL_LIMIT);
+  assert.equal(GOAL_LIMIT,4000);
   await room.start(goal,1);await drain();
   assert.equal(room.node('root').task,goal+' '+GOAL_START_REQUIREMENT);
   assert.equal(room.get('goal'),room.node('root').task);

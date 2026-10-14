@@ -3,7 +3,7 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses } from './model.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
@@ -135,7 +135,7 @@ export const ROOM_LIMITS = Object.freeze({
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   max_agents: 64, max_depth: 10, parallel: 16,
-  model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
+  model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
 });
 // The agent models the dashboard offers: the Qwen3 hybrid (default), four
 // that answer without reasoning (Llama 4 Scout, Qwen2.5 Coder, DeepSeek V4
@@ -155,6 +155,12 @@ export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
   if (raw.model !== undefined) {
     if (typeof raw.model!=='string' || !CLOUDFLARE_MODELS.has(raw.model)) throw new Error('Unsupported Workers AI model');
     result.model=raw.model;
+  }
+  // v7.15.10: the workers' model may differ from the managers' (the splits,
+  // decisions, linking and the compiler's coverage and runner calls).
+  if (raw.worker_model !== undefined) {
+    if (typeof raw.worker_model!=='string' || !CLOUDFLARE_MODELS.has(raw.worker_model)) throw new Error('Unsupported Workers AI worker model');
+    result.worker_model=raw.worker_model;
   }
   if (raw.split_model !== undefined) {
     if (!DECISION_MODELS[raw.split_model]) throw new Error('Unsupported Clef decision model');
@@ -306,9 +312,12 @@ export class ControlRoom extends DurableObject {
   }
   store() { return getArtifactStore(this.env); }
   settings() { return this.read('settings', DEFAULT_ROOM_SETTINGS); }
-  inferenceEnv() {
+  // role: 'manager' (the default; splits, decisions, linking, the compiler's
+  // calls) or 'worker' (a leaf writing code). A room saved before v7.15.10
+  // has no worker model and keeps its one model for both.
+  inferenceEnv(role='manager') {
     const cfg=this.settings();
-    return {...this.env, MODEL_NAME:cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold};
+    return {...this.env, MODEL_NAME:role==='worker'?cfg.worker_model||cfg.model:cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold};
   }
   configure(raw) {
     const cfg=normalizeRoomSettings(raw, this.settings());
@@ -639,7 +648,7 @@ export class ControlRoom extends DurableObject {
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?)',
-      id, parent, clip(label,70), clip(task,parent?2000:1801+GOAL_START_REQUIREMENT.length), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)), JSON.stringify(normalizeUses(uses)));
+      id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+1+GOAL_START_REQUIREMENT.length), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)), JSON.stringify(normalizeUses(uses)));
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
@@ -4805,10 +4814,10 @@ export class ControlRoom extends DurableObject {
           delete before.root_scope;
           delete before.split_feedback;
           delete before.your_promised_functions;
-          raw=await decide(this.inferenceEnv(),before,{planned:this.planned()});
+          raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned()});
           this.set(`split_feedback:${id}`,'');
         }
-      } else raw=await decide(this.inferenceEnv(),before,{planned:this.planned()});
+      } else raw=await decide(this.inferenceEnv(!this.manager(id)&&!isRuntimeNode(n)?'worker':'manager'),before,{planned:this.planned()});
       // At the top, a split answer with no pieces (none, or code in their
       // place) is malformed too: Root's goal is always divisible, and an
       // atomic Root wrote run10's application as one module. Below it, a
@@ -5101,7 +5110,7 @@ export class ControlRoom extends DurableObject {
             // This avoids a second model request per file. If inline content
             // fails the source gate, fall back to a targeted single-file repair.
             const content=f.content!==undefined && attempt===0 ? f.content :
-              await generateFile(this.inferenceEnv(),{
+              await generateFile(this.inferenceEnv(isRuntimeNode(current)?'manager':'worker'),{
                 node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,
                 files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
                 children:this.children(id),assemblyInputs:[],
@@ -5437,8 +5446,8 @@ export class ControlRoom extends DurableObject {
     // v7.14: what the loader and the runner rely on is part of the goal, so
     // the splitters assign it like any other requirement. (The MOCK_AI
     // legacy fixtures run without it.)
-    const task=this.live()?`${clip(goal,1800)} ${GOAL_START_REQUIREMENT}`:goal;
-    this.set('goal',this.live()?task:clip(goal,1800));
+    const task=this.live()?`${clip(goal,GOAL_LIMIT)} ${GOAL_START_REQUIREMENT}`:goal;
+    this.set('goal',this.live()?task:clip(goal,GOAL_LIMIT));
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
@@ -5571,7 +5580,7 @@ export default {
       if (url.pathname==='/api/file' && request.method==='GET') return json(await stub.fileContent(url.searchParams.get('agent'),url.searchParams.get('path')));
       if (url.pathname==='/api/run' && request.method==='POST') {
         const goal=String(payload.goal||'').trim();
-        if (goal.length<8 || goal.length>1800) return json({error:'Goal must have 8–1800 characters'},400);
+        if (goal.length<8 || goal.length>GOAL_LIMIT) return json({error:`Goal must have 8–${GOAL_LIMIT} characters`},400);
         const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room);
         return json(started,started.error?400:200);
       }
