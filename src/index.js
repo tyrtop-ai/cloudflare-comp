@@ -13,7 +13,7 @@ import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImpor
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, dataAnswer } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
-import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
+import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
 import { callOf, esmSyntax, esmRequires } from './linker.js';
@@ -1757,12 +1757,16 @@ export class ControlRoom extends DurableObject {
   // wave: the report wave the rows join (a new one by default).
   reportProblems(source, manager, input, stage, items, via=source, wave=crypto.randomUUID()) {
     const db=this.db();
-    const superseded=query(db,"SELECT id FROM problems WHERE source=? AND status!='closed'",source).length;
+    // v7.15.6 review: a child that declined a failure declines it again when the next report fails the same way (failureKey): the new wave routes past it instead of ticketing every decliner again.
+    const prior=this.problems("source=? AND status!='closed'",source);
     db.exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),source);
-    if(superseded)this.event(source,'problem_superseded',`${superseded} earlier problem(s) from this source are replaced by this report.`,manager);
+    if(prior.length)this.event(source,'problem_superseded',`${prior.length} earlier problem(s) from this source are replaced by this report.`,manager);
     const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
-    const ids=list.map(x=>this.insertProblem({holder:manager,kind:x.kind,stage,source,input,parties:this.partiesOf(via,x),detail:x.detail,
-      facts:{...x.facts,via},evidence:x.evidence,flags:{wave}}));
+    const ids=list.map(x=>{
+      const row={holder:manager,kind:x.kind,stage,source,input,parties:this.partiesOf(via,x),detail:x.detail,facts:{...x.facts,via},evidence:x.evidence};
+      const declined=prior.find(p=>p.flags.declined?.length&&failureKey(p)===failureKey(row))?.flags.declined;
+      return this.insertProblem({...row,flags:{wave,...declined?{declined}:{}}});
+    });
     if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,fingerprint:this.assemblyFingerprint(manager),stage,problems:ids,ts:Date.now()});
     else this.save(`link_reported:${manager}`,{fingerprint:input,stage,problems:ids,ts:Date.now()});
     db.exec("UPDATE agents SET status='waiting' WHERE id=?",source);
@@ -2191,6 +2195,18 @@ export class ControlRoom extends DurableObject {
   // {runnerFailed,detail} or {passed,digest,report}. entryIssue(path,detail):
   // the entry problem; with no path, for the module most likely to compose
   // the application.
+  // v7.15.6 review: the module an error names through an imported binding:
+  // an import's own local (errorTarget), or a local bound to what an
+  // imported factory returned (v7.14's lookup.js: const s = makeStore();
+  // s.view(id), which the builder renames to read). A name on anything
+  // else (tickets.find on an undefined local) is the module's own bug.
+  linkTarget(files, path, detail) {
+    const direct=errorTarget(files,path,detail);
+    if(direct||!files.has(path))return direct;
+    const m=/([\w$]+)\.[\w$]+ is not a (?:function|constructor)/.exec(String(detail||''));
+    const via=m&&new RegExp(`\\b(?:const|let|var)\\s+${m[1].replace(/\$/g,'\\$')}\\s*=\\s*(?:await\\s+)?(?:new\\s+)?([\\w$]+)\\s*[.(]`).exec(files.get(path))?.[1];
+    return via?errorTarget(files,path,`${via} is not a function`):null;
+  }
   async compileRun(id, input, files, surfaces, entry, entryIssue) {
     const linked=this.node(id)?.label==='Compiler';
     this.event(id,'compile_entry',`Application entry: ${entry}.`);
@@ -2210,21 +2226,27 @@ export class ControlRoom extends DurableObject {
     // ticket is the requirement on the worker's own promise (R3). No entry
     // default: a problem may have no path. No run-time swapped-argument rule
     // (run11's write worker now declines to its caller, R4).
+    // Review: a run failure is a link failure only when the error names an
+    // imported binding (errorTarget): "Cannot read properties of undefined
+    // (reading 'find')" inside viewTicket is a requirement on viewTicket,
+    // not a relink. The issue's own facts ride along (the test slice marks
+    // an assertion the runner invented on facts.requirement).
     const failed=(kind,issues,test='')=>{
-      const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail]));
+      const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail])),issueOf=new Map(issues.map(x=>[x.detail,x]));
       for(const x of issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues)
         if(groups.has(x.detail))groups.get(x.detail).push(x.path);else groups.set(x.detail,[x.path]);
       return [...groups].map(([detail,[first,...more]])=>{
-        const frames=[first,...more].filter(p=>files.has(p)),failure=failureHead(output.get(detail));
-        if(kind==='run'&&!(isInterfaceError(detail)&&frames.length)) {
+        const frames=[first,...more].filter(p=>files.has(p)),failure=failureHead(output.get(detail)),own=issueOf.get(detail)?.facts||{};
+        const path=files.has(first)?first:'',target=errorTarget(files,path,detail);
+        if(kind==='run'&&!(isInterfaceError(detail)&&frames.length&&this.linkTarget(files,path,detail))) {
           const requirement=readRequirement(test,output.get(detail),[...files.keys()].filter(p=>LINKABLE.test(p)),p=>providedNames(surfaces.get(p)||exportSurface(p,files.get(p))));
           // A module the Container names without a stack line is a frame too, after those the stack gives.
           requirement.frames.push(...frames.filter(p=>!requirement.frames.some(f=>f.path===p)).map(path=>({path,fn:''})));
-          return {kind,path:'',sites:frames,detail:`The runner's test failed: ${clip(detail,700)} The test stays fixed for this run; the application must satisfy it.`,facts:{requirement,failure}};
+          return {kind,path:'',sites:frames,detail:`The runner's test failed: ${clip(detail,700)} The test stays fixed for this run; the application must satisfy it.`,
+            facts:{...own,requirement:{...own.requirement,...requirement,...own.requirement?.invented?{invented:true}:{}},failure}};
         }
-        const path=files.has(first)?first:'',target=errorTarget(files,path,detail);
         return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,
-          facts:{...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure}};
+          facts:{...own,...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure}};
       });
     };
     const check=await this.containerRun(id,`compile:${input}`,app);
@@ -2525,21 +2547,26 @@ export class ControlRoom extends DurableObject {
       this.event(m,'problem_decision_stale',clip(`${r.task?'Retasking':'Retiring'} ${label(r.child)} is not applied: without the rest of its decision, ${why}.`,400),r.child);
     });
     const decided=[];
-    for(const {p,dec} of entries) {
+    for(const e of entries) {
+      const {p,dec}=e;
       if(dec.action==='close'&&skip.has(dec.child))continue;
       if(dec.action==='retask'||dec.action==='assign'&&['worker','builder'].includes(kindOf(dec.child))) {
         if(st.exhausted)continue;
+        // v7.15.6 review: the child a failure goes to is its progress key's blamed file (progressKey), on the row before the round is counted.
+        if(dec.action==='assign'&&kindOf(dec.child)==='worker'&&p.facts?.failure&&p.flags.routed_to!==dec.child)this.moveProblem(p,{flags:{...p.flags,routed_to:dec.child}});
         st.exhausted=this.countRound(m,p.flags.wave);
         if(st.exhausted)continue;
       }
-      decided.push([p,dec]);
+      decided.push([p,dec,e.trigger]);
     }
+    // v7.15.6 review: the model places an exhausted problem once (M4); exhausted again, it closes.
+    const placed=(dec,trigger)=>dec.rule==='model'&&dec.action==='assign'&&trigger==='M4'?{model_routed:true}:{};
     const tickets=new Map(),relink=[],retasks=new Map(),sent=new Map();
     // A model decision's facts add to the problem's own (the provider's
     // exports, what the top's children offer the entry); they never replace them.
     const factsOf=(p,dec,own)=>dec.rule!=='model'||dec.facts_text==null?dec.facts_text??own:
       [...new Set([dec.facts_text,dec.side==='provider'?'':own].filter(Boolean))].join(' | ')||own||'';
-    for(const [p,dec] of decided) {
+    for(const [p,dec,trigger] of decided) {
       const kind=dec.child?kindOf(dec.child):null;
       if(dec.action==='exhausted') {
         const why=dec.reason||'no direct child holds it';
@@ -2579,19 +2606,22 @@ export class ControlRoom extends DurableObject {
       } else if(dec.action==='fail') {
         if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:trail(p,'fail',dec.child,dec.rule)}))
           this.failAgent(dec.child,`Repair rounds exhausted: ${p.detail}`);
+      } else if(dec.action==='defer') {
+        // v7.15.6 review: a Clef error while routing is no answer; the next turn decides (once per row: routeRequirements).
+        if(this.moveProblem(p,{flags:{...p.flags,route_deferred:(p.flags.route_deferred||0)+1}})){this.deferProblems(m,[{p}],dec.reason||'decided on the next turn');this.wake(m);}
       } else if(kind==='builder') {
         if(this.moveProblem(p,{status:'relinking',assignee:dec.child,flags:{...p.flags,fingerprint:this.assemblyFingerprint(m)},trail:trail(p,'relink',dec.child,dec.rule)}))relink.push(p);
       } else if(kind==='manager') {
         // relay: the decision travels as a side, never a node below the child.
         // v7.15.6 (R5): a promise grown by relay carries the names (grow) for the branch to place.
         const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.facts.provider_text??''),...dec.grow?{grow:dec.grow}:{}};
-        if(this.moveProblem(p,{holder:dec.child,directive,trail:trail(p,directive?'relay':'delegate',dec.child,dec.rule)})) {
+        if(this.moveProblem(p,{holder:dec.child,directive,flags:{...p.flags,...placed(dec,trigger)},trail:trail(p,directive?'relay':'delegate',dec.child,dec.rule)})) {
           this.event(m,directive?'problem_relayed':'problem_delegated',clip(`${p.kind} problem (${dec.rule}) to ${label(dec.child)}${directive?`, ${directive.side} changes: ${directive.instructions}`:', whose branch holds every party'}`,700),dec.child);
           this.wake(dec.child);
         }
       } else {
         const list=tickets.get(dec.child)||[];
-        list.push([p,dec]);tickets.set(dec.child,list);
+        list.push([p,dec,trigger]);tickets.set(dec.child,list);
       }
     }
     if(relink.length) {
@@ -2601,13 +2631,13 @@ export class ControlRoom extends DurableObject {
     }
     for(const [worker,list] of tickets) {
       const revs=this.revisionKey(worker),moved=[];
-      for(const [p,dec] of list) {
+      for(const [p,dec,trigger] of list) {
         // A relayed decision stays the parent's, so a reopened problem is relayed again (D1).
         // v7.15.6 (R3): a requirement the model or a party rule placed still reads as the requirement, after the decision's words.
         const said=dec.instructions&&p.facts.requirement&&!dec.route?`${dec.instructions} ${requirementText(p.facts.requirement)}`:dec.instructions;
         const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:said||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.directive?.facts_text??p.facts.provider_text??'')};
         // D9 owed: the facts the decision read again (no stale unpromised, review).
-        if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,...dec.facts?{facts:dec.facts}:{},flags:{...p.flags,revs},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
+        if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,...dec.facts?{facts:dec.facts}:{},flags:{...p.flags,revs,...placed(dec,trigger)},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
       }
       if(!moved.length)continue;
       // A stuck worker reads its manager's ticket on a fresh turn: its failed
@@ -3117,37 +3147,51 @@ export class ControlRoom extends DurableObject {
   // promises, by the innermost frame's module (the ownership the parties
   // carry), by the method's performer per the start plan, and only then
   // one Clef call ranking the children (routeOwner over their tasks and
-  // promises; a Clef error counts as no answer). Declined children are left
-  // out (R4). The first candidate's providers give the ticket its facts.
+  // promises; review: a Clef error defers the decision to the next turn).
+  // Declined children are left out (R4). The first candidate's providers
+  // give the ticket its facts. Review: the start carrier composes, so it is
+  // never ranked for a behavioural requirement, only for one about start()'s
+  // own API (it names start); in a room without promises the entry's owner
+  // takes what nothing else does, as v7.15.5's default did.
   async routeRequirements(m, rows, kindOf) {
     const out=new Map(),list=rows.filter(p=>p.facts?.requirement);
     if(!list.length)return out;
     const live=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)&&['worker','manager'].includes(kindOf(c.id)));
-    const promises=live.map(c=>({child:c.id,fns:parse(c.interfaces,[])})),ops=this.planned()?this.plannedOperations():[];
+    const promises=live.map(c=>({child:c.id,fns:parse(c.interfaces,[])})),ops=this.planned()?this.plannedOperations():[],starts=id=>this.promisedOf(id).some(f=>f.name==='start');
     const performer=method=>{
       const o=ops.find(o=>performsOp(method,{name:o.method})),w=o&&this.carriersOf(o.method,m).find(c=>c.id!==m),child=w&&nextDirectChild(m,w.id);
       return child&&live.some(c=>c.id===child)?{child,fn:{...this.promisedOf(w.id).find(f=>f.name===o.method)||{name:o.method,params:[]},owner:w.label}}:null;
     };
+    const entry=this.planned()?null:this.entryChild(m);
     for(const p of list) {
       const r=p.facts.requirement,declined=p.flags.declined||[],frameOwner=path=>{const o=p.parties.find(x=>x.path===path&&x.owner)?.owner,c=o&&nextDirectChild(m,o);return c&&live.some(x=>x.id===c)?c:null;};
       const view={promises,frameOwner,performer,ranks:null};
-      let route=requirementRoute(r,view,declined);
+      let route=requirementRoute(r,view,declined),defer='';
       if(route.ask&&live.length) {
-        const pool=(route.ask.length?live.filter(c=>route.ask.includes(c.id)):live).filter(c=>!declined.includes(c.id)),question=clip(`${r.text}${r.method?` (app.${r.method})`:''}${r.test_line?` ${r.test_line.text}`:''}`,1100);
+        const api=(r.names||[]).includes('start'),pool=(route.ask.length?live.filter(c=>route.ask.includes(c.id)):live).filter(c=>!declined.includes(c.id)&&(api||!starts(c.id)));
+        const question=clip(`${r.text}${r.method?` (app.${r.method})`:''}${r.test_line?` ${r.test_line.text}`:''}`,1100);
         let ranks=[];
         if(pool.length)try {
           // Strict and without the keyword shortcut: a lone child left is no answer by itself; Clef ranks it (run11's read worker).
           const a=await this.managerRouteOwner(m,question,pool.map(c=>({id:c.id,label:c.label,task:c.task,known_topics:parse(c.interfaces,[]).map(f=>`${signature(f)}: ${f.does||''}`),files:[],previews:[]})),true,false,true);
           ranks=a?.ranks?.length?a.ranks.filter(x=>x.p>=OWNER_FLOOR).map(x=>x.id):a?.id?[a.id]:[];
           this.event(m,'route_ranked',clip(`${ranks.length?`Clef ranks ${ranks.map(id=>this.node(id)?.label||id).join(', ')}`:'No direct child reaches Clef\'s floor'} for the requirement: ${r.text}`,600));
-        } catch(e) {this.event(m,'route_uncertain',clip(`Clef failed ranking the children for the requirement (${e?.message||e}); treated as no answer.`,400));}
+        } catch(e) {defer=p.flags.route_deferred?'':`Clef failed ranking the children for the requirement (${clip(e?.message||e,200)})`;this.event(m,'route_uncertain',clip(`Clef failed ranking the children for the requirement (${clip(e?.message||e,200)}); ${defer?'decided on the next turn':'treated as no answer'}.`,400));}
         route=requirementRoute(r,{...view,ranks},declined);
       }
+      // One deferral per row: a Clef that fails again is no answer, as before (a manager's turns cost no budget, so a wake loop must end).
+      if(defer)route.defer=defer;
+      else if(!route.candidates.length&&entry&&!declined.includes(entry))route.candidates.push({child:entry,how:'d',text:requirementText(r)});
       const first=route.candidates[0];
       if(first?.providers?.length&&kindOf(first.child)==='worker')first.facts=await this.factsFrom(m,first.providers,first.child,[p]);
       out.set(p.id,route);
     }
     return out;
+  }
+  // The direct child of m whose branch wrote the compiler's entry module, or null.
+  entryChild(m) {
+    const entry=this.read('compile_state',null)?.entry,top=this.allNodes().find(x=>!x.parent),b=top&&entry?this.builderOf(top.id):null,o=b?this.buildSourceOrigin(b.id,entry):null;
+    return o?.owner?nextDirectChild(m,o.owner):null;
   }
   async managerRouteOwner(id, question, candidates, strict=false, keywords=true, ranked=false) {
     const shard=this.managerStub(id);

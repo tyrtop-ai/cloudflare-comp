@@ -189,7 +189,8 @@ test('v7.14 (3): a compiler failure is routed down one level at a time, with a d
   const report=lastReport(room,compiler.id);
   assert.deepEqual(report.issues.map(i=>[i.kind,i.holder]),[['run','root']]);
   const [filed]=room.problems('1=1');
-  assert.deepEqual([filed.parties[0].owner,filed.facts.requirement.text,filed.facts.requirement.method],['','deleted ticket must be gone','viewTicket'],'no owner: a requirement');
+  // v7.15.6 review: the "+ actual - expected" block after a custom message is kept.
+  assert.deepEqual([filed.parties[0].owner,filed.facts.requirement.text,filed.facts.requirement.method],['',"deleted ticket must be gone: actual { id: 1, status: 'open', title: 'Printer jam' }, expected null",'viewTicket'],'no owner: a requirement');
   // Each manager decides once and moves the problem exactly one level down; Clef ranks even a lone child.
   await room.turn('root');
   await room.turn('root.1');
@@ -200,7 +201,7 @@ test('v7.14 (3): a compiler failure is routed down one level at a time, with a d
   for(const t of row.trail)assert.equal(t.to.split('.').length,t.at.split('.').length+1,'one level per hop');
   const decisions=room.snapshot().events.filter(e=>/^problem_(?:delegated|relayed|assigned|escalated)$/.test(e.kind));
   assert.deepEqual(decisions.map(e=>[e.actor,e.kind,e.recipient]),[['root','problem_delegated','root.1'],['root.1','problem_delegated','root.1.1'],['root.1.1','problem_assigned','root.1.1.1']]);
-  assert.equal(tickets(room,'root.1.1.1')[0],"The runner's test requires: deleted ticket must be gone. Test line 8: assert.equal(await app.viewTicket(t.id), null, 'deleted ticket must be gone'). Publish the FULL updated file.");
+  assert.equal(tickets(room,'root.1.1.1')[0],"The runner's test requires: deleted ticket must be gone: actual { id: 1, status: 'open', title: 'Printer jam' }, expected null. Test line 8: assert.equal(await app.viewTicket(t.id), null, 'deleted ticket must be gone'). Publish the FULL updated file.");
   assert.deepEqual(['root.1.1','root.1','root'].map(m=>room.get('repair_rounds:'+m)),['1','','']);
   invariant(room);
   // The repair: root.1.1's, root.1's and Root's builders relink; the compiler reruns and passes.

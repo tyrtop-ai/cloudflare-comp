@@ -135,8 +135,9 @@ test('v7.15.1: reportProgress: a first report, one where a key of the last paid 
 
 // Run9's rounds, through the real compiler: the failure moves through
 // assertions and files, then the bundle passes. v7.15.6: the compiler
-// blames no file, so rounds 2 and 3, which fail as round 1 did, are rounds
-// without progress; two in a row, and round 4 moves on.
+// blames no file; the child each round's requirement is routed to keys
+// progress as the blamed file did (review), so round 2, routed elsewhere,
+// is progress and round 3, back where round 1 went, is none.
 test('v7.15.1: run9 replay: a failure that moves never exhausts Root, and the run completes',async()=>{
   const script=[{message:'Ticket should be created',line:9,file:'entry',triage:TRIAGE[0]},{message:'Ticket should be created',line:9,file:'data',triage:TRIAGE[1]},
     {message:'Ticket should be created',line:9,file:'entry',triage:TRIAGE[2]},{message:'Created ticket should have an id',line:10,file:'data',triage:TRIAGE[3]},
@@ -148,7 +149,7 @@ test('v7.15.1: run9 replay: a failure that moves never exhausts Root, and the ru
   assert.equal(room.get('status'),'complete',trace(room));
   assert.equal(calls.clef.length,7,'one Clef ranking per requirement');
   assert.deepEqual(room.problems("kind='run'").map(p=>p.trail.find(t=>t.action==='assign')?.to),['root.1','root.2','root.1','root.2','root.1','root.1','root.1'],'each round went where Clef ranked');
-  assert.deepEqual(verdicts(room),['progress','no progress','no progress','progress','progress','progress','progress']);
+  assert.deepEqual(verdicts(room),['progress','progress','no progress','progress','progress','progress','progress']);
   assert.deepEqual(['repair_rounds:root','repair_stalled:root','repair_rounds_total'].map(k=>room.get(k)),['7','0','7']);
   assert.match(rounds(room).at(-1),/^Repair round 7 \(7 of the run's 20\): progress \(what fails changed\); 3 round\(s\) without progress left\.$/);
   // The key is the runner's own failure, stored with the problem.
@@ -179,6 +180,22 @@ test('v7.15.1: the same failure each round ends the manager after 3 rounds witho
   assert.equal(room.node('root').status,'failed');
   assert.equal(room.get('status'),'failed');
   assert.match(room.node('root').summary,/^Repair rounds exhausted: Root objective made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
+});
+
+// v7.15.6 review: the budget is not tighter than v7.15.5's: a chain fixed
+// one piece per round on one unchanged assertion counts the move between
+// pieces as progress (the route target, as the blamed file was).
+test('v7.15.6 review: a same-assertion chain whose fix moves between two pieces each round completes after five rounds and a new assertion, as in v7.15.5; six rounds exhaust Root',async()=>{
+  const chain=n=>[...Array.from({length:n},(_,i)=>({message:'Ticket should be created',line:9,file:i%2?'data':'entry'})),{message:'Created ticket should have an id',line:10,file:'data'}];
+  const five=await room9(chain(5));
+  await settle(five.room,80);
+  assert.equal(five.room.get('status'),'complete',trace(five.room));
+  assert.deepEqual(verdicts(five.room),['progress','progress','no progress','no progress','no progress','progress']);
+  assert.deepEqual(five.room.problems("kind='run'").map(p=>p.flags.routed_to),['root.1','root.2','root.1','root.2','root.1','root.2'],'the route target on each wave\'s row');
+  const six=await room9(chain(6));
+  await settle(six.room,80);
+  assert.deepEqual([six.room.get('status'),verdicts(six.room)],['failed',['progress','progress','no progress','no progress','no progress']],trace(six.room));
+  assert.match(six.room.node('root').summary,/made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
 });
 
 test('v7.15.1: ping-pong between two failures ends after 3 rounds without progress, not at the run\'s ceiling',async()=>{

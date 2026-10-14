@@ -307,15 +307,15 @@ test('v7.15.6: a failure with no frame is routed by the method under test to its
   const sent=room.receive('root.3').filter(m=>m.body.startsWith('[build:repair] ')).map(m=>room.buildRepairMessage(m.body.split(' ')[1]));
   assert.ok(sent[0].startsWith('Your viewTicket(id, filePath) ("retrieves a specific ticket by ID"), which start() returns as view, must satisfy: An error should be thrown when viewing a deleted ticket. Test line 6: assert.equal((await app.view(t.id, \'tickets.json\')).title, \'T\'). What the other side provides: deleteTicket.js exports: '),sent[0]);
   assert.ok(sent[0].length<=900&&sent[0].endsWith(' Publish the FULL updated file.'),sent[0]);
-  // Methods no promise's words perform pass the gate; a failure before any call of the test, with no frame, no name and no method, is ranked by Clef (R2d): the entry is no default, Clef names it.
+  // Methods no promise's words perform pass the gate; a failure before any call of the test, with no frame, no name and no method, is ranked by Clef (R2d) among the promise holders: the entry is no default, and the start carrier, a pure composer, is never ranked for a behavioural requirement (review).
   const memory=`const { deleteTicket } = require('${linkedPaths.del}');\nconst tickets = {};\nconst add = (data) => { const id = Date.now(); tickets[id] = { id, ...data }; return tickets[id]; };\nconst show = (id) => { const t = tickets[id]; if (!t) throw new Error('Ticket not found'); return t; };\nconst edit = (id, data) => { tickets[id] = { ...tickets[id], ...data }; return tickets[id]; };\nconst remove = (id, filePath) => deleteTicket(id, filePath);\nexports.start = () => ({ add, show, edit, remove });\n`;
-  const own=await compiled({entry:memory,fail:true,line:3,message:'The application should begin with no tickets',clef:input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label==='entryModule'?0.9:0.2}]))})});
+  const own=await compiled({entry:memory,fail:true,line:3,message:'The application should begin with no tickets',clef:input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label==='viewTicket'?0.9:0.2}]))})});
   const [o]=openProblems(own.room,'root');
   assert.deepEqual([o.parties[0].path,o.facts.requirement.method,o.facts.requirement.names,o.facts.requirement.test_line],['','',[],undefined]);
   await own.room.turn('root');
   assert.equal(own.calls.clef.length,1);
-  assert.deepEqual(own.calls.clef[0].state.children.map(c=>c.label),['dataStore','createTicket','viewTicket','updateTicket','deleteTicket','entryModule']);
-  assert.deepEqual(own.room.problems('id=?',o.id).map(x=>[x.assignee,x.trail.at(-1).rule]),[['root.6','R2d']]);
+  assert.deepEqual(own.calls.clef[0].state.children.map(c=>c.label),['dataStore','createTicket','viewTicket','updateTicket','deleteTicket'],'never the start carrier');
+  assert.deepEqual(own.room.problems('id=?',o.id).map(x=>[x.assignee,x.trail.at(-1).rule]),[['root.3','R2d']]);
   // A frame in the entry: the entry's module is the site (R2b), with no model.
   const frame=await compiled({entry:memory,fail:true,at:PATHS.entry});
   const [f]=openProblems(frame.room,'root');

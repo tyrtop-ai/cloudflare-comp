@@ -414,6 +414,8 @@ test('v7.15.6: run11 replay: a run that throws inside writeData goes to the writ
   assert.deepEqual(room.problems('id=?',p.id)[0].flags.declined,['root.1.2','root.1']);
   const [create]=heard('createTicket');
   assert.ok(create.startsWith('Your createTicket(data, filePath) ("creates a new ticket with unique ID") must not fail with: TypeError: filePath must be a string or an object with a path property. Test line 7: '),create);
+  // Review: the caller hears what the other frame's piece exports (writeData's signature), declined or not.
+  assert.match(create,/ What the other side provides: module\.js exports: [^]*writeData\(filePath, data\)[^]* Publish the FULL updated file\.$/);
   assert.equal(calls.leaf.length,2,'two rounds, not four');
   assert.deepEqual([room.get('repair_rounds:root.1'),room.get('repair_rounds:root')],['1','1']);
 });

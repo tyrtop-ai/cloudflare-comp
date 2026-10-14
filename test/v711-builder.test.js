@@ -556,7 +556,8 @@ test('room: the runner\'s test is static: a test that ran is never rewritten; it
   assert.equal(failure.stage,'run');
   assert.deepEqual(failure.issues.map(i=>[i.kind,i.path,i.holder]),[['run','','root']],'the application must satisfy the test; the compiler names no owner (v7.15.6)');
   assert.match(failure.issues[0].detail,/app\.create is not a function/);
-  assert.deepEqual([openProblems(room,'root')[0].facts.requirement.method,openProblems(room,'root')[0].facts.requirement.names],['create',['create']]);
+  // v7.15.6 review: a method missing from start()'s object names start too, the carrier's own API.
+  assert.deepEqual([openProblems(room,'root')[0].facts.requirement.method,openProblems(room,'root')[0].facts.requirement.names],['create',['create','start']]);
   assert.match(failure.issues[0].detail,/The test stays fixed for this run/);
   assert.match(room.read('runner_test',null).test,/app\.create\(/);
   // The next round runs the same test, without asking the runner again.
@@ -1596,12 +1597,13 @@ test('room: a long runner failure is filed as its requirement, within the ticket
   assert.ok(failure.issues[0].detail.startsWith('The runner\'s test failed: '),failure.issues[0].detail);
   assert.ok(failure.issues[0].detail.length<=950);
   const [p]=openProblems(room,'root');
-  assert.ok(p.facts.requirement.text.startsWith('Expected values to be strictly deep-equal: {'),p.facts.requirement.text);
+  // v7.15.6 review: Node's diff reads as the two objects, common lines on both sides.
+  assert.ok(p.facts.requirement.text.startsWith("Expected values to be strictly deep-equal: actual { id: 1, title: 'wrong' }, expected { assignee: null, history: [], id: 1, priority: 'normal', status: 'open', title: 'Printer jam"),p.facts.requirement.text);
   assert.ok(p.facts.requirement.text.length<=400);
   assert.deepEqual([p.facts.requirement.method,p.facts.requirement.test_line.line],['viewTicket',6]);
   await room.turn('root');
   const [ticket]=tickets(room,'root.1');
-  assert.ok(ticket.startsWith("The runner's test requires: Expected values to be strictly deep-equal: {"),ticket);
+  assert.ok(ticket.startsWith("The runner's test requires: Expected values to be strictly deep-equal: actual { id: 1, title: 'wrong' }, expected {"),ticket);
   assert.ok(ticket.length<=900&&ticket.endsWith(' Publish the FULL updated file.'),ticket);
 });
 

@@ -10,7 +10,7 @@ import {nextDirectChild} from './build-verification.js';
 import {isInterfaceError, parseSource} from './linker.js';
 import {ENTRY_CONTRACT} from './model.js';
 import {clip} from './protocol.js';
-import {normalizeInterfaces, repairInterfaces, signature} from './interfaces.js';
+import {normalizeInterfaces, repairInterfaces, signature, GENERIC_NAMES} from './interfaces.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
@@ -74,7 +74,14 @@ export function failureHead(output) {
 }
 // What a row fails with for progress: a load or run failure's head and the
 // files it is blamed on; any other problem's text is deterministic already.
-export const progressKey=p=>p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
+// v7.15.6 review: a requirement blames no file, so the child the wave's
+// failure was routed to stands in for it (flags.routed_to, set as the
+// ticket goes out): a fix that moves between pieces is progress, as in
+// v7.15.5, and the same piece told the same failure again is none (run9's
+// five-round chain completes, as before). failureKey is the failure alone,
+// the same across waves: the declines of one wave hold for the next.
+export const failureKey=p=>p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
+export const progressKey=p=>p.facts?.failure?`${failureKey(p)}${p.flags?.routed_to?`|>${p.flags.routed_to}`:''}`:p.signature;
 
 // ---------- v7.15.6: a run failure is a requirement, routed by the plan ----------
 // run13 (room 02775583): the fixed test required app.viewTicket(id) to throw
@@ -98,20 +105,31 @@ const FUNCTIONS=new Set(['FunctionDeclaration','FunctionExpression','ArrowFuncti
 const nodes=n=>Object.entries(n).filter(([k])=>!['loc','start','end'].includes(k)).flatMap(([,v])=>Array.isArray(v)?v:[v]).filter(v=>v&&typeof v==='object'&&typeof v.type==='string');
 function visit(node, fn, parents=[]) {fn(node,parents);for(const c of nodes(node))visit(c,fn,[...parents,node]);}
 const frameFn=name=>{const n=String(name||'').replace(/\s*\[as [^\]]*\]\s*$/,'').replace(/^(?:async |new )+/,'').split('.').pop();return /^[\w$]+$/.test(n)?n:'';};
-// The calls of start()'s object in the test (app.<m>(...)), its try blocks and functions.
+// The names a declaration's pattern binds (const { id } = await app.createTicket(...)).
+const patternNames=n=>!n?[]:n.type==='Identifier'?[n.name]:n.type==='ObjectPattern'?n.properties.flatMap(p=>patternNames(p.value||p.argument)):n.type==='ArrayPattern'?n.elements.flatMap(patternNames):n.type==='AssignmentPattern'?patternNames(n.left):n.type==='RestElement'?patternNames(n.argument):[];
+// The calls of start()'s object in the test (app.<m>(...)), each with the
+// names its result is bound to, its try blocks and functions. Review: a
+// helper's parameter that receives the object is the object inside the
+// helper (gone(tracker, id) called as gone(app, t.id)).
 function testShape(test) {
   let ast;try {ast=parseSource(test).ast;} catch {return null;}
-  let app='app';const calls=[],tries=[],fns=[];
+  let app='app';const calls=[],tries=[],fns=[],named=new Map(),passes=[];
   visit(ast,(n,parents)=>{
-    if(n.type==='VariableDeclarator'&&n.id.type==='Identifier'){const init=n.init?.type==='AwaitExpression'?n.init.argument:n.init;if(init?.type==='CallExpression'&&init.callee.type==='Identifier'&&init.callee.name==='start')app=n.id.name;}
-    if(FUNCTIONS.has(n.type))fns.push(n);
+    if(n.type==='VariableDeclarator'&&n.id.type==='Identifier'){const init=n.init?.type==='AwaitExpression'?n.init.argument:n.init;if(init?.type==='CallExpression'&&init.callee.type==='Identifier'&&init.callee.name==='start')app=n.id.name;if(init&&FUNCTIONS.has(init.type))named.set(n.id.name,init);}
+    if(FUNCTIONS.has(n.type)){fns.push(n);if(n.id?.name)named.set(n.id.name,n);}
     if(n.type==='TryStatement')tries.push(n);
-    if(n.type==='CallExpression'&&n.callee.type==='MemberExpression'&&!n.callee.computed&&n.callee.object.type==='Identifier'&&n.callee.property.type==='Identifier')
-      calls.push({object:n.callee.object.name,method:n.callee.property.name,line:n.loc.start.line,fn:[...parents].reverse().find(x=>FUNCTIONS.has(x.type))||null,
+    if(n.type==='CallExpression'&&n.callee.type==='Identifier')passes.push({name:n.callee.name,args:n.arguments.map(a=>a.type==='Identifier'?a.name:null)});
+    if(n.type==='CallExpression'&&n.callee.type==='MemberExpression'&&!n.callee.computed&&n.callee.object.type==='Identifier'&&n.callee.property.type==='Identifier') {
+      const up=parents.at(-1)?.type==='AwaitExpression'?parents.at(-2):parents.at(-1);
+      calls.push({object:n.callee.object.name,method:n.callee.property.name,line:n.loc.start.line,fn:[...parents].reverse().find(x=>FUNCTIONS.has(x.type))||null,binds:up?.type==='VariableDeclarator'?patternNames(up.id):[],
         rejects:parents.some(x=>x.type==='CallExpression'&&x.callee.type==='MemberExpression'&&/^(?:rejects|throws)$/.test(x.callee.property?.name))});
+    }
   });
-  return {app,calls:calls.filter(c=>c.object===app),tries,fns,lines:String(test).split('\n')};
+  const aliases=passes.flatMap(c=>{const f=named.get(c.name);return f?c.args.flatMap((a,i)=>a===app&&f.params[i]?.type==='Identifier'?[{name:f.params[i].name,fn:f}]:[]):[];});
+  return {app,calls:calls.filter(c=>c.object===app||aliases.some(a=>a.name===c.object&&a.fn===c.fn)),tries,fns,lines:String(test).split('\n')};
 }
+// A catch that fails the test expects no throw (review: assert.fail('createTicket threw: ' + e.message)).
+const FAILS=/process\.exit(?:Code)?\b|\bthrow\b|\bassert\.fail\(|\bassert(?:\.ok|\.equal|\.strictEqual)?\(\s*false\b|\breject\(/;
 // paths: the linked modules' paths; exportsOf(path): the names a module exports.
 export function readRequirement(test, output, paths=[], exportsOf=()=>new Set()) {
   const s=String(output||''),keys=[...paths].sort((a,b)=>b.length-a.length),frames=[],smoke=[];
@@ -120,32 +138,52 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set())
     if(path){if(!frames.some(f=>f.path===path&&f.fn===frameFn(m[1])))frames.push({path,fn:frameFn(m[1]),line:Number(m[3])});}
     else if(/(?:^|\/)glue\/smoke\.js$/.test(file)&&!smoke.includes(Number(m[3])))smoke.push(Number(m[3]));
   }
-  // The error line, with the lines a generated assertion message continues on.
+  // The error line, with the lines a generated assertion message continues
+  // on, and Node's "+ actual - expected" block after any message (review:
+  // run11's "Viewed ticket should match created ticket" lost "actual undefined").
   const hit=s.match(ERROR_LINE),kind=hit?.[1]||'',assertion=/^AssertionError/.test(kind);
   let text=hit?(assertion?hit[2]:`${kind}: ${hit[2]}`).trim():s.split('\n').filter(l=>!/node:internal\/|triggerUncaughtException|^\s*\^?\s*$|^\s+at /.test(l)).join(' ').trim();
-  // Node's diff legend ("+ actual - expected") is left out; its lines read as actual and expected.
-  if(hit&&(/:$/.test(text)||!hit[2].trim())) {
-    const parts=[];
-    for(const l of s.slice(hit.index+hit[0].length).split('\n').filter(l=>l.trim()&&!/^[+-] (?:actual|expected)\b/.test(l)).slice(0,4)){if(/^\s+at |^\s*}\s*$|^Node\.js/.test(l))break;parts.push(l.trim().replace(/^\+\s+/,'actual ').replace(/^-\s+/,'expected '));}
-    text+=parts.map((x,i)=>(i&&/^expected /.test(x)&&/^actual /.test(parts[i-1])?', ':' ')+x).join('');
+  if(hit) {
+    const rest=[];
+    for(const l of s.slice(hit.index+hit[0].length).split('\n')){if(/^\s+at |^Node\.js/.test(l)||rest.length>24)break;if(l.trim()&&!/^[+-] (?:actual|expected)\b/.test(l))rest.push(l);}
+    // A diff's common lines belong to both sides: actual { id: 1, title: 'wrong' }, expected { id: 1, ... }.
+    const side=sign=>rest.filter(l=>!/^[+-] /.test(l)||l.startsWith(sign+' ')).map(l=>l.replace(/^[+-] /,'').trim()).join(' ');
+    if(rest.some(l=>/^[+-] /.test(l)))text+=`${!text||/:$/.test(text)?'':':'} actual ${side('+')||'(nothing)'}, expected ${side('-')||'(nothing)'}`;
+    else if(rest.length&&(/:$/.test(text)||!hit[2].trim()))text+=' '+rest.slice(0,4).map(l=>l.trim()).join(' ');
   }
   text=clip(text.replace(/\s+/g,' ').trim(),400);
-  // The method under test and its line.
+  // The method under test and its line: among the calls at or before the
+  // failing line in its scope, one on the line itself, else the one whose
+  // result the line uses (review: created.title asserted after
+  // listTickets() is createTicket's), else the nearest.
   const shape=testShape(test);let call=null,at=null;
   if(shape) {
     const scopeOf=line=>[...shape.fns].reverse().find(f=>f.loc.start.line<=line&&line<=f.loc.end.line)||null;
-    for(const line of smoke){const scope=scopeOf(line),same=shape.calls.filter(c=>c.fn===scope&&c.line<=line);if(same.length){call=same.at(-1);at=line;break;}}
-    if(!call&&smoke.length){const before=shape.calls.filter(c=>c.line<=smoke[0]);if(before.length){call=before.at(-1);at=smoke[0];}}
+    const pick=(list,line)=>{const ids=new Set(String(shape.lines[line-1]||'').match(/[A-Za-z_$][\w$]*/g)||[]),on=list.filter(c=>c.line===line);return on.at(-1)||list.filter(c=>c.binds.some(b=>ids.has(b))).at(-1)||list.at(-1);};
+    for(const line of smoke){const scope=scopeOf(line),same=shape.calls.filter(c=>c.fn===scope&&c.line<=line);if(same.length){call=pick(same,line);at=line;break;}}
+    if(!call&&smoke.length){const before=shape.calls.filter(c=>c.line<=smoke[0]);if(before.length){call=pick(before,smoke[0]);at=smoke[0];}}
   }
   // Inside a try expecting a throw: assert.rejects/throws, or the innermost
   // try around the call whose catch neither fails the test nor rethrows
-  // (run13's catch set errorCaught and read err.message).
-  const expects=c=>{const t=shape.tries.filter(t=>t.handler&&t.block.loc.start.line<=c.line&&c.line<=t.block.loc.end.line).at(-1);return c.rejects||!!t&&!/process\.exit(?:Code)?\b|\bthrow\b/.test(String(test).slice(t.handler.start,t.handler.end).replace(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g,''));};
+  // (run13's catch set errorCaught and read err.message); what that catch
+  // asserts about the error travels with it (review: a worker that threw
+  // another message than the catch checks cost a round).
+  const src=n=>String(test).slice(n.start,n.end);
+  const expects=c=>{
+    if(c.rejects)return {expects_throw:true};
+    const t=shape.tries.filter(t=>t.handler&&t.block.loc.start.line<=c.line&&c.line<=t.block.loc.end.line).at(-1);
+    if(!t||FAILS.test(src(t.handler).replace(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g,'')))return null;
+    const checks=(t.handler.body.body||[]).filter(x=>/\bassert\b/.test(src(x))).slice(0,2).map(x=>clip(src(x).replace(/\s+/g,' ').replace(/;$/,''),200));
+    return {expects_throw:true,...checks.length?{catch_checks:checks.join('; ')}:{}};
+  };
   const lineText=n=>clip(String(shape?.lines[n-1]??'').trim().replace(/;$/,''),200);
-  // The functions the failure names: the innermost frame's exported function, then names in the message.
-  const thrown=frames.find(f=>f.fn&&exportsOf(f.path).has(f.fn)),names=[...new Set([thrown?.fn,...(text.match(/[A-Za-z_$][\w$]*/g)||[]).filter(w=>/[a-z][A-Z]/.test(w)&&!/(?:Error|Exception|Rejection)$/.test(w)),
-    ...[...text.matchAll(/([\w$.]+) is not (?:a function|defined|a constructor)/g)].map(m=>m[1].split('.').pop())].filter(Boolean))];
-  return {text,error:!assertion,method:call?.method||'',names,...call?{test_line:{line:call.line,text:lineText(call.line),...expects(call)?{expects_throw:true}:{}}}:{},
+  // The functions the failure names: the innermost frame's exported
+  // function, then names in the message; a method missing from start()'s
+  // object (app.listTickets is not a function) names start, the API's own.
+  const thrown=frames.find(f=>f.fn&&exportsOf(f.path).has(f.fn)),api=!!shape&&new RegExp(`\\b${shape.app.replace(/\$/g,'\\$')}\\.[\\w$]+ is not a function`).test(text);
+  const names=[...new Set([thrown?.fn,...(text.match(/[A-Za-z_$][\w$]*/g)||[]).filter(w=>/[a-z][A-Z]/.test(w)&&!/(?:Error|Exception|Rejection)$/.test(w)),
+    ...[...text.matchAll(/([\w$.]+) is not (?:a function|defined|a constructor)/g)].map(m=>m[1].split('.').pop()),...api?['start']:[]].filter(Boolean))];
+  return {text,error:!assertion,method:call?.method||'',names,...call?{test_line:{line:call.line,text:lineText(call.line),...expects(call)||{}}}:{},
     ...at&&call&&at!==call.line&&lineText(at)?{assertion:{line:at,text:lineText(at)}}:{},frames:frames.map(({path,fn})=>({path,fn}))};
 }
 // The promised functions a text names: by their exact name, or by every
@@ -153,18 +191,25 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set())
 // created ticket" names viewTicket and createTicket).
 const stem=w=>w.length>3?w.replace(/(?:ing|ied|ies|ed|es|s|e)$/,''):w;
 const wordsOf=s=>(String(s||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().match(/[a-z0-9]+/g)||[]).map(stem);
+// Review: a generic name (create, list) or start is named only as a call,
+// start( or app.start ("Failed to start: tickets.json is missing" sent
+// the start carrier, a pure composer, a storage requirement).
 export function namedFunctions(text, fns) {
-  const literal=new Set(String(text||'').match(/[A-Za-z_$][\w$]*/g)||[]),have=new Set(wordsOf(text));
-  return [...new Map((fns||[]).filter(f=>f?.name&&(literal.has(f.name)||wordsOf(f.name).length>1&&wordsOf(f.name).every(w=>have.has(w)))).map(f=>[f.name,f])).values()];
+  const s=String(text||''),literal=new Set(s.match(/[A-Za-z_$][\w$]*/g)||[]),have=new Set(wordsOf(s));
+  const byName=f=>literal.has(f.name)&&(!(GENERIC_NAMES.has(f.name)||f.name==='start')||new RegExp(`\\b${f.name}\\(|\\bapp\\.${f.name}\\b`).test(s));
+  return [...new Map((fns||[]).filter(f=>f?.name&&(byName(f)||wordsOf(f.name).length>1&&wordsOf(f.name).every(w=>have.has(w)))).map(f=>[f.name,f])).values()];
 }
 // R3: a ticket is a requirement on the worker's own promised function. fn:
-// the promise the route named (a: by name, c: the method's performer);
-// module: the frame's module (b); thrown: the error was thrown in it.
-export function requirementText(r, {fn=null, module='', method='', thrown=false}={}) {
+// the promise the route named (a: by name, c: the method's performer, d:
+// Clef's rank, its first promise, with its others as more); module: the
+// frame's module (b); thrown: the error was thrown in it; relied: the
+// site's function, which relies on this provider party's (review).
+export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null}={}) {
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
-  const head=fn?`Your ${signature(fn)}${does}${method&&method!==fn.name?`, which start() returns as ${method},`:''} ${thrown&&r?.error?'threw':verb}: ${need}.`:
+  const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
+  const head=fn?`Your ${signature(fn)}${does}${rest}${on} ${thrown&&r?.error?'threw':verb}: ${need}.`:
     module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`;
-  const line=r?.test_line?.line?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?' inside a try expecting a throw':''}.`:'';
+  const line=r?.test_line?.line?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
   const at=r?.assertion?.line?` It failed at line ${r.assertion.line}: ${r.assertion.text}.`:'';
   return head+line+at;
 }
@@ -180,22 +225,29 @@ export function requirementText(r, {fn=null, module='', method='', thrown=false}
 // best first, or null when not asked}. Returns the candidates in order,
 // declined children left out (R4), and ask: the children Clef should rank
 // (an empty list: all of them), or null when its answer is not wanted.
+// Review: a candidate's providers are the other parties whether or not
+// they declined (a decline says nothing about a child's exports), and a
+// frame's child hears the other frames' children (run11's createTicket
+// hears writeData's signature after the write worker declines); a
+// failure naming start (app.x is not a function) is the start carrier's own.
 export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer=()=>null, ranks=null}={}, declined=[]) {
   const out=[],skip=new Set(declined),has=c=>out.some(x=>x.child===c);
-  const fnOf=(child,name)=>promises.find(x=>x.child===child)?.fns.find(f=>f.name===name)||null,promiser=name=>promises.find(x=>x.fns.some(f=>f.name===name))?.child||null;
+  const fnsOf=child=>promises.find(x=>x.child===child)?.fns||[],fnOf=(child,name)=>fnsOf(child).find(f=>f.name===name)||null,promiser=name=>promises.find(x=>x.fns.some(f=>f.name===name))?.child||null;
   const add=(child,how,extra={})=>{if(child&&!skip.has(child)&&!has(child))out.push({child,how,...extra,text:requirementText(r,extra)});};
-  (r.frames||[]).forEach((f,i)=>{const child=frameOwner(f.path);if(!child)return;const fn=f.fn?fnOf(child,f.fn):null;add(child,fn?'a':'b',{fn,module:f.path,thrown:i===0});});
+  const frames=(r.frames||[]).map(f=>({...f,child:frameOwner(f.path)})).filter(f=>f.child);
+  frames.forEach((f,i)=>{const fn=f.fn?fnOf(f.child,f.fn):null;add(f.child,fn?'a':'b',{fn,module:f.path,thrown:i===0,providers:[...new Set(frames.filter(x=>x.child!==f.child).map(x=>x.child))]});});
   const named=[...new Set([...(r.names||[]),...namedFunctions(r.text,promises.flatMap(x=>x.fns)).map(f=>f.name)])].filter(n=>promiser(n));
   // The method under test names its promise, or its performer per the start plan (run11's app.view is viewTicket).
-  const perf=r.method&&!promiser(r.method)?performer(r.method):null,site=r.method&&promiser(r.method)?r.method:perf?.fn?.name&&promiser(perf.fn.name)?perf.fn.name:null,others=named.filter(n=>n!==site);
+  const perf=r.method&&!promiser(r.method)?performer(r.method):null,site=named.includes('start')?'start':r.method&&promiser(r.method)?r.method:perf?.fn?.name&&promiser(perf.fn.name)?perf.fn.name:null,others=named.filter(n=>n!==site);
   let ask=null;
   const rank=c=>{const i=(ranks||[]).indexOf(c);return i<0?Infinity:i;};
-  const otherChildren=[...new Set(others.map(promiser))].filter(c=>!skip.has(c)&&!has(c)&&c!==promiser(site)).sort((a,b)=>rank(a)-rank(b));
-  if(site)add(promiser(site),site===r.method?'a':'c',{fn:fnOf(promiser(site),site),method:r.method,providers:otherChildren});
+  const party=[...new Set(others.map(promiser))].filter(c=>c!==promiser(site)).sort((a,b)=>rank(a)-rank(b)),otherChildren=party.filter(c=>!skip.has(c)&&!has(c)),siteFn=site?fnOf(promiser(site),site):null;
+  if(site)add(promiser(site),site===r.method||site==='start'?'a':'c',{fn:siteFn,method:site==='start'?'':r.method,providers:party});
   else if(otherChildren.length>1&&!ranks)ask=otherChildren;
-  for(const c of otherChildren)add(c,'a',{fn:fnOf(c,others.find(n=>promiser(n)===c)),providers:otherChildren.filter(x=>x!==c)});
+  for(const c of otherChildren)add(c,'a',{fn:fnOf(c,others.find(n=>promiser(n)===c)),relied:siteFn,providers:[promiser(site),...party.filter(x=>x!==c)].filter(Boolean)});
   if(perf?.child&&!site)add(perf.child,'c',{fn:perf.fn,method:r.method});
-  if(ranks)for(const c of ranks)add(c,'d');
+  // Clef's ranks: the ticket names the child's promise (R3), its first function with the others.
+  if(ranks)for(const c of ranks){const [fn,...rest]=fnsOf(c);add(c,'d',{fn:fn||null,more:rest.map(f=>f.name)});}
   else if(!out.length)ask=ask||[];
   return {candidates:out,ask};
 }
@@ -210,7 +262,9 @@ export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer
 // rows: the source's problem rows in report order; counted: the waves the
 // manager paid a round for (all, when not given).
 export function reportProgress(rows, wave, counted=null) {
-  const keys=w=>new Set(rows.filter(p=>p.flags?.wave===w).map(progressKey)),now=keys(wave);
+  // Review: the route target joins the key once this wave has one (countRound, after the decision); before it (roundsLeft), the failure alone is compared.
+  const key=rows.some(p=>p.flags?.wave===wave&&p.flags?.routed_to)?progressKey:failureKey;
+  const keys=w=>new Set(rows.filter(p=>p.flags?.wave===w).map(key)),now=keys(wave);
   if(!now.size)return false;
   const waves=[...new Set(rows.map(p=>p.flags?.wave).filter(Boolean))];
   const before=waves.slice(0,waves.indexOf(wave)).filter(w=>!counted||counted.includes(w)).slice(-PROGRESS_LOOKBACK).map(keys);
@@ -248,15 +302,22 @@ export function lowestCommon(placed, kindOf, flags={}) {
 // exhausted (closed), or fail (a child whose repair rounds ran out).
 export function deterministicDecision(p, ctx) {
   const flags=p.flags||{},placed=placeParties(ctx.holder,p.parties),declined=new Set(flags.declined||[]),names=ids=>ids.map(id=>ctx.labelOf?.(id)||id).join(', ');
-  if((p.trail||[]).length>=ctx.maxHops)return {rule:'hops',action:'exhausted',reason:`${p.trail.length} decisions without a fix`};
+  // Review: a route's declines are no hops (run13 with every child declining
+  // closed at root.2 at 6 with Create and Update untried), and below Root
+  // the bound sends the problem up, declined as a branch, for Root to decide.
+  const hops=(p.trail||[]).filter(t=>!declined.has(t.to)).length,why=`${hops} decisions without a fix`;
+  if(hops>=ctx.maxHops)return ctx.parent?{rule:'hops',action:'escalate',declined:true,reason:why}:{rule:'hops',action:'exhausted',reason:why};
   if(p.kind!=='stuck') {
     // v7.15.6 (run13, R2): a requirement is routed by the plan among the
     // direct children, declined children left out (R4): a manager child
     // routes it down the same way; none → up a level, at Root the model
-    // once (M4), then the run fails stating the requirement.
+    // once (M4), then the run fails stating the requirement. Review: a
+    // Clef error defers it to the next turn; the words the parent's model
+    // decided it with lead the ticket at a manager child.
     if(p.facts?.requirement&&ctx.route) {
-      const first=ctx.route(p)?.candidates?.[0];
-      if(first)return {rule:`R2${first.how}`,route:true,action:'assign',child:first.child,side:'site',...ctx.kindOf(first.child)==='manager'?{delegate:true}:{instructions:first.text,facts_text:first.facts||'',providers:first.providers||[]}};
+      const route=ctx.route(p),first=route?.candidates?.[0],said=p.directive?.instructions&&p.directive.side==='site'&&p.directive.by===ctx.parent?`${p.directive.instructions} `:'';
+      if(route?.defer)return {rule:'R2',route:true,action:'defer',reason:route.defer};
+      if(first)return {rule:`R2${first.how}`,route:true,action:'assign',child:first.child,side:'site',...ctx.kindOf(first.child)==='manager'?{delegate:true}:{instructions:said+first.text,facts_text:first.facts||'',providers:first.providers||[]}};
       const why=`no piece takes the requirement${declined.size?` (declined by ${names([...declined])})`:''}: ${clip(p.facts.requirement.text,200)}`;
       return ctx.parent?{rule:'R2',route:true,action:'escalate',declined:true,reason:why}:{rule:'R2',route:true,action:'exhausted',reason:why};
     }
@@ -274,7 +335,8 @@ export function deterministicDecision(p, ctx) {
   // a file declined it, a sign the route was wrong: the next party takes it,
   // else it goes up a level; at Root, the model once (M4), then it closes.
   if(dec.action==='assign'&&!dec.builder&&declined.has(dec.child)) {
-    const next=placed.find(x=>x.place==='child'&&!declined.has(x.child)&&x.child!==dec.child),why=`${names([...declined])} answered it done without changing a file`;
+    // Never the provider of a name its piece did not promise (run8's rule, as the validator holds the model to it).
+    const f=p.facts||{},next=placed.find(x=>x.place==='child'&&!declined.has(x.child)&&x.child!==dec.child&&!(x.role==='provider'&&(f.unpromised||f.elsewhere?.length))),why=`${names([...declined])} answered it done without changing a file`;
     if(next)return {rule:'declined',action:'assign',child:next.child,side:next.role,reason:why};
     return ctx.parent?{rule:'declined',action:'escalate',declined:true,reason:why}:{rule:'declined',action:'exhausted',reason:why};
   }
@@ -351,9 +413,9 @@ function decideParties(p, ctx, placed, flags) {
 // The deterministic subset of the validator: an action names only a direct
 // child that can take it. Returns the reason it is refused, or null.
 export function validateDecision(dec, p, ctx) {
-  if(!['assign','escalate','exhausted','fail','retask'].includes(dec?.action))return 'unknown action';
+  if(!['assign','escalate','exhausted','fail','retask','defer'].includes(dec?.action))return 'unknown action';
   if(dec.action==='escalate')return ctx.parent?null:'the top manager has no parent to escalate to';
-  if(dec.action==='exhausted')return null;
+  if(dec.action==='exhausted'||dec.action==='defer')return null;
   const kind=ctx.kindOf(dec.child),status=ctx.statusOf?.(dec.child);
   if(!kind)return `${dec.child} is not a direct child`;
   if(kind==='compiler')return 'the compiler cannot be assigned a problem';
@@ -379,8 +441,13 @@ export function validateDecision(dec, p, ctx) {
 export function modelTrigger(p, dec, ctx) {
   const f=p.facts||{},flags=p.flags||{};
   if(dec.rule==='hops')return null;
-  // v7.15.6 (R4): a requirement nobody takes, or a problem every party declined, is the model's once at Root (M4); below, the parent decides.
-  if(dec.route||dec.rule==='declined')return dec.action==='exhausted'?'M4':null;
+  // v7.15.6 (R4): the same requirement routed to the same child a third time
+  // is the model's as any recurrence is (M4; review: a worker revising its
+  // file every round was never shown to the model); one nobody takes, or a
+  // problem every party declined, is the model's once at Root (M4, then
+  // flags.model_routed: it closes); below, the parent decides.
+  if(dec.route&&dec.action==='assign'&&!dec.delegate&&(ctx.recurrence?.(p,dec.child)||0)>=STUCK_AFTER)return 'M4';
+  if(dec.route||dec.rule==='declined')return dec.action==='exhausted'&&!flags.model_routed?'M4':null;
   if(p.kind==='stuck')return dec.rule==='D8'?null:'M5';
   if(['D1','D2','D3','D5'].includes(dec.rule)||dec.unique)return null;
   if(dec.rule==='D7')return dec.action==='exhausted'?'M7':null;
@@ -508,6 +575,9 @@ export function validateManagerActions(actions, call, ctx) {
     // given twice (subject-only: no other side can take it).
     const declined=open.find(id=>(byId.get(id).p.flags?.declined||[]).some(d=>d===child||d.startsWith(child+'.')));
     if(declined){refuse(a,`${child} declined problem ${declined}: it answered it done without changing a file; give it to another child, retask or retire it, or escalate`);continue;}
+    // Review: the start carrier composes; a run requirement is never its (run13's entry, given one, wrote a stub of another piece's function), only one about start()'s own API (it names start).
+    const carrier=(ctx.promise?.carried?.[child]||[]).includes('start')&&open.find(id=>{const {p}=byId.get(id);return p.kind==='run'&&p.facts?.requirement&&!(p.facts.requirement.names||[]).includes('start');});
+    if(carrier){refuse(a,`${child} carries start() and only composes the application: problem ${carrier} is a requirement on the piece whose promise it is about, not on the start carrier`);continue;}
     const unchanged=open.find(id=>{const {p}=byId.get(id);return ['stuck','contract'].includes(p.kind)&&(ctx.recurrence?.(p,child)||0)>=STUCK_AFTER;});
     if(unchanged){refuse(a,`${child} already had problem ${unchanged} ${STUCK_AFTER} or more times without a fix: give it to another child, retask or retire it, or escalate`);continue;}
     const instructions=typeof a.instructions==='string'?a.instructions.trim():'';
@@ -663,9 +733,15 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // piece(dir): who wrote a linked folder, for ownPaths (v7.15.5 review).
 // requirement (v7.15.6, R3): every problem is a run requirement, routed by
 // the plan: the ticket is that requirement on the worker's own promise, the
-// other side's facts, and nothing else (no head, no raw output, 900 at most).
+// other side's facts, and nothing else (no head, no raw output, 900 at
+// most; review: the tail is kept, the facts give way first, down to 160).
 export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false}) {
-  if(requirement)return clip(`${ownPaths(instructions,piece)}${facts?` What the other side provides: ${ownPaths(facts,piece).slice(0,300)}`:''} Publish the FULL updated file.`,900);
+  if(requirement) {
+    const tail=' Publish the FULL updated file.',room=900-tail.length;
+    let body=ownPaths(instructions,piece),more=facts?` What the other side provides: ${ownPaths(facts,piece).slice(0,300)}`:'';
+    if(body.length+more.length>room){body=clip(body,Math.max(room-more.length,room-160));more=clip(more,room-body.length);}
+    return body+more+tail;
+  }
   const head=(kinds.length&&kinds.every(k=>k==='contract')?(written?'YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE. Nothing was run; the plan was checked against your modules.':'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.'):
     (own?'YOUR APPLICATION FAILED ITS CONTAINER RUN. You wrote every file of the application':'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers')+
     ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER));
