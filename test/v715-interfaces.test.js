@@ -289,9 +289,11 @@ test('v7.15: run6 replay (A): Root\'s entry module carrying start is admitted at
   assert.ok(asked.every(q=>!/\bstart\(/.test(q)),'start is never put to Clef');
   assert.deepEqual(room.children('root').map(c=>c.label),run6Root.map(c=>c.label));
   assert.ok(events(room,'scope_allowed').some(e=>e.body==='Clef answered p=0.448 for "entry module", which carries start that this manager was promised; admitted (in scope by construction).'));
-  assert.deepEqual(room.promisedOf('root.1'),[START],'the parent\'s item, not the splitter\'s "starts the tracker"');
-  for(const c of room.children('root').slice(1))assert.deepEqual(room.promisedOf(c.id),[],c.label);
-  assert.equal(events(room,'interfaces_stripped').length,6);
+  // v7.15.13 (run19): a name the piece's label writes is kept whatever Clef says, so the four operations keep theirs and the entry is composed from them; the storage's two go.
+  assert.deepEqual(room.promisedOf('root.1'),[{...START,does:'no arguments; returns { createTicket, viewTickets, updateTicket, deleteTicket }, each imported on its own line by its name'}],'the parent\'s item composed from the plan, not the splitter\'s "starts the tracker"');
+  assert.deepEqual(room.children('root').slice(1).map(c=>room.promisedOf(c.id).map(f=>f.name)),[[],['createTicket'],['viewTickets'],['updateTicket'],['deleteTicket']]);
+  assert.deepEqual(events(room,'interfaces_stripped').map(e=>e.body),['Clef judged getTickets (p=0.100) is not what "ticket storage" writes; the piece is kept without it.','Clef judged saveTicket (p=0.100) is not what "ticket storage" writes; the piece is kept without it.']);
+  assert.deepEqual(events(room,'interfaces_kept').map(e=>e.body),[['createTicket','create ticket'],['viewTickets','view ticket'],['updateTicket','update ticket'],['deleteTicket','delete ticket']].map(([name,label])=>`Clef doubted ${name} (p=0.100), but "${label}" names it; kept.`));
   assert.equal(events(room,'split_rejected').length,0);
   assert.equal(ai.calls.filter(c=>c.kind==='owner').length,0,'Root\'s children are not walked');
   const notebook=JSON.parse(await room.indexedContent('root','memory/private/ownership.json'));

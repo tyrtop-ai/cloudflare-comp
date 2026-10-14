@@ -170,16 +170,20 @@ test('v7.15.1: with no triage, a moving assertion in one file is progress every 
 });
 
 // The same failure each round (v7.15.6: the requirement's text is the runner's own, whatever a round's words).
-test('v7.15.1: the same failure each round ends the manager after 3 rounds without progress',async()=>{
-  const {room}=await room9(sameTriage(6).map(triage=>({message:'Ticket should be viewable',line:14,file:'entry',triage})));
+// v7.15.13 (run20, R3): the entry changed its file for it in round 1 and
+// it fails the same, so round 2 routes past it; nobody else reaches Clef's
+// floor, Root's model is asked once and answers nothing, and the
+// requirement closes: one round, where the per-manager limit took four.
+test('v7.15.1: the same failure each round: the piece that changed its file for it is routed past the next round, nobody else takes it, and the requirement closes after Root\'s model once',async()=>{
+  const {room,calls}=await room9(sameTriage(6).map(triage=>({message:'Ticket should be viewable',line:14,file:'entry',triage})));
   await settle(room,80);
-  assert.equal(sent(room),4,trace(room));
-  assert.deepEqual(['repair_rounds:root','repair_stalled:root'].map(k=>room.get(k)),['4','3']);
-  assert.deepEqual(rounds(room).map(b=>b.match(/: (.*)$/)[1]),['progress (what fails changed); 3 round(s) without progress left.',
-    'no progress (it fails as a round before it did); 2 round(s) without progress left.','no progress (it fails as a round before it did); 1 round(s) without progress left.','no progress (it fails as a round before it did); 0 round(s) without progress left.']);
+  assert.equal(sent(room),1,trace(room));
+  assert.deepEqual(['repair_rounds:root','repair_stalled:root'].map(k=>room.get(k)),['1','0']);
+  assert.deepEqual(rounds(room).map(b=>b.match(/: (.*)$/)[1]),['progress (what fails changed); 3 round(s) without progress left.']);
+  assert.deepEqual([events(room,'route_exhausted').map(e=>e.body),calls.manager.map(u=>u.problems[0].trigger)],[['Entry Module changed entry.js for this failure last round and it fails the same; the manager routes it elsewhere.'],['M4']]);
   assert.equal(room.node('root').status,'failed');
   assert.equal(room.get('status'),'failed');
-  assert.match(room.node('root').summary,/^Repair rounds exhausted: Root objective made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
+  assert.match(room.node('root').summary,/^Repair exhausted: a run problem was closed without a fix \(no piece takes the requirement \(Entry Module changed a file for it without progress\): Ticket should be viewable\)/);
 });
 
 // v7.15.6 review: the budget is not tighter than v7.15.5's: a chain fixed

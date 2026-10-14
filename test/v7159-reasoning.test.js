@@ -23,6 +23,8 @@ const ctx=()=>({your_id:'root',your_responsibility:goal,root_scope:goal,max_chil
 const goodSplit={summary:'Split',spawn:[{label:'Entry module',task:'Write code that imports the ticket operations and exports start(), which returns create, view, update and delete',functions:[{name:'start'}]},
   {label:'Ticket store',task:'Write code that keeps tickets in memory and creates, reads, updates and deletes them',functions:[{name:'saveTicket',does:'stores a ticket',params:['ticket']}]}]};
 const EMPTY_HINT='Your previous answer held no JSON object: it was reasoning only, or the output budget cut it. Answer with the JSON object only, with no reasoning before it.';
+// v7.15.13 (run18): what the event log says of run16's envelope (emptyAnswer): its reasoning's length and finish_reason.
+const EMPTY_ANSWER='no answer: the model returned no text (reasoning 267 characters; finish_reason length)';
 const FORMAT_HINT='Your previous answer was not a JSON object whose spawn items are objects, each with a "label" and a "task"; every spawn item is a JSON object, never a quoted string.';
 
 // A splitter answering from a script of raw Workers AI outputs, one per call.
@@ -80,7 +82,9 @@ test('v7.15.9: two reasoning-only answers are a parse error that says so, never 
   const s=script([reasoningOnly,reasoningOnly]),out=await decompose(s.env,ctx());
   assert.equal(s.calls.length,2);
   assert.equal(out.parse_error,true);
-  assert.equal(out.raw,NO_ANSWER);
+  // v7.15.13 (run18): the envelope says what the empty answer held; NO_ANSWER is the text for any other shape.
+  assert.equal(out.raw,EMPTY_ANSWER);
+  assert.ok(NO_ANSWER.startsWith('no answer: '));
   assert.doesNotMatch(out.raw,/chatcmpl|choices/);
   // A worker's or manager's reasoning-only answer is a parse error too, with no envelope in the retry's quote.
   const d=script([reasoningOnly,{summary:'ok',wait:true}]),action=await decide(d.env,{your_id:'root',phase:'manager'});
@@ -143,7 +147,7 @@ test('v7.15.9: a turn of reasoning-only answers logs what came back, and the nex
   await room.start(goal,1);await drain();
   assert.equal(splits(ai).length,2);
   assert.equal(events(room,'error').length,1);
-  assert.equal(events(room,'error')[0].body,'Bad decomposition response: '+NO_ANSWER);
+  assert.equal(events(room,'error')[0].body,'Bad decomposition response: '+EMPTY_ANSWER);
   assert.equal(room.read('failures',{}).root,1);
   assert.equal(room.get('split_yes:root'),'1');
   await room.resume(1);await drain();

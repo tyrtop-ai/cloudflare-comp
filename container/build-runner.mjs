@@ -78,20 +78,61 @@ export function dependencyInstallDecision(files,pkg={}) {
   return {required:false,reason:`${declared.length} declared package(s), none used by source or npm scripts`};
 }
 
+// v7.15.13 (run20): Node's process warnings are no part of a failure. The
+// MODULE_TYPELESS_PACKAGE_JSON block printed after the stack (four lines
+// naming a module that was no site) pushed the first two frames out of the
+// 650-character tail, so the compiler read analyze.js as the throw site and
+// took checkPacketLoss.js, the warning's module, for a party: every line of
+// a `(node:N) …` block (its "Reparsing as ES module…", "To eliminate this
+// warning…" and "(Use `node --trace-warnings ...`)" lines too, stand-alone
+// as well), and ExperimentalWarning lines, are dropped before the summary
+// and the paths are read.
+const WARNING=/^(?:\(node:\d+\) |Reparsing as ES module\b|To eliminate this warning\b|\(Use `node --trace-|ExperimentalWarning\b)/;
+export function stripWarnings(log) {return String(log||'').split('\n').filter(line=>!WARNING.test(line.trim())).join('\n');}
+// v7.15.13 review: a headline is any error line (AssertionError [ERR_ASSERTION]:, RangeError: too), as before Error:, an export that is not provided, an npm error code.
+const HEADLINE=/^(?:(?:[A-Z]\w*)?(?:Error|Exception)(?: \[\w+\])?:|.*does not provide an export named|npm error code )/;
 // Node's require stack contains the importer chain. Attributing the error to
 // every path in that chain produces spurious repair requests. The first real
 // owner is the missing import's immediate importer, except missing named
 // exports, where the exporter must repair its public interface.
+// v7.15.13 (run20): the summary keeps the throw site: the error that ended
+// the process, then the tail (650); the headline and its first 8 frames
+// are never cut within the 950. A log without a headline keeps the tail,
+// as before. Review (#1, #2): that error is the LAST headline whose stack
+// follows it (an uncaught error, or the test's catch logging the failure,
+// is printed after anything the app or the test logged and handled
+// earlier); its block is the headline, the lines up to its stack (an
+// assertion's diff) and the stack's first 10 frames. When the tail holds
+// the block verbatim, and no error line before it, the tail is the
+// summary, as before; otherwise the
+// block leads and the tail is what follows the block, so no line is ever
+// filtered out of a stack. Review (#10): a log of warnings alone keeps its
+// raw tail.
 export function briefDiagnostic(log) {
-  const output=String(log||'');
-  if(!output)return 'No command output';
-  const headline=output.split('\n').find(line=>/^(?:Error:|SyntaxError:|TypeError:|ReferenceError:|.*does not provide an export named|npm error code )/.test(line.trim()))?.trim()||'';
-  const tail=output.slice(-650);
-  return headline && !tail.includes(headline) ? (headline+'\n'+tail).slice(-950) : tail;
+  const raw=String(log||'');
+  if(!raw)return 'No command output';
+  const output=stripWarnings(raw);
+  if(!output.trim())return raw.slice(-650);
+  const lines=output.split('\n'),tail=output.slice(-650),heads=lines.map((l,i)=>HEADLINE.test(l.trim())?i:-1).filter(i=>i>=0);
+  if(!heads.length)return tail;
+  const blockOf=i=>{
+    for(let j=i+1;j<lines.length&&j<=i+40&&!heads.includes(j);j++)if(/^\s*at /.test(lines[j])){let k=j;while(k<lines.length&&k-j<10&&/^\s*at /.test(lines[k]))k++;return {i,start:j,end:k};}
+    return {i,start:i+1,end:i+1};
+  };
+  const blocks=heads.map(blockOf),b=blocks.filter(x=>x.end>x.start).at(-1)||blocks.at(-1);
+  // The tail stands when it holds the block whole and no other error line before it (a short log: a logged error first would lead the reading).
+  const at=tail.indexOf(lines.slice(b.i,b.end).join('\n'));
+  if(at>=0&&!tail.slice(0,at).split('\n').some(l=>HEADLINE.test(l.trim())))return tail;
+  const headline=lines[b.i].trim(),frames=lines.slice(b.start,b.end),after=lines.slice(b.end).join('\n').slice(-650);
+  let head=[headline,...lines.slice(b.i+1,b.end)].join('\n');
+  if(head.length>950)head=[headline,...frames.slice(0,8)].join('\n').slice(0,950);
+  const room=950-head.length-1;
+  return after.trim()&&room>0?head+'\n'+after.slice(-room):head;
 }
 
 export function diagnosticPaths(label,log,files) {
-  const message=String(log||'');
+  // v7.15.13 (run20): a path named only in a warning is no failing site.
+  const message=stripWarnings(log);
   if(label==='module-import') {
     const named=message.match(/(?:requested module|module)\s+['"]([^'"]+)['"].*?does not provide an export named/s);
     if(named) {

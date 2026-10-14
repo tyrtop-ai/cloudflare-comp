@@ -175,6 +175,16 @@ export const labelNames = (label, name) => {const a = words(label).filter(w => !
 const VERB = w => w === 'del' || w === 'remove' ? 'delete' : w;
 const covers = (a, b) => b.length > 0 && VERB(a[0]) === VERB(b[0]) && a.slice(1).every(w => b.slice(1).includes(w));
 export const performsOp = (op, f) => {const a = words(op); return a.length > 0 && (covers(a, words(f?.name)) || covers(a, words(f?.operation)));};
+// v7.15.13 (run19): a piece whose label names a function writes it, whatever
+// Clef's doubt (analyze was stripped from "Analyze snapshot" at p=0.385):
+// the label, filler aside, is the name's words exactly (labelNames), verb
+// and object, and the name acts on something. "Process circuits" writes
+// processCircuits, "Check admin down" checkAdminDown; review: "Check
+// errors" does not write checkErrorRate (run20's interface errors and
+// service error rate), nor "Create ticket" createTicketStore, "Delete
+// ticket" removeTicket or "Generate report" a bare generate. A stated bare
+// name (analyze) is kept by the stated clause instead.
+export const labelWrites = (label, name) => words(name).length > 1 && labelNames(label, name);
 // v7.15.5: the goal's operations (verbs) a promised function performs: a
 // goal word is its verb, by its name or its operation, and what it acts on,
 // when it names anything, is in the goal too. run12's createData ("returns a
@@ -218,7 +228,28 @@ export const sameOp = (a, b) => {
 // v7.15.5 merge: judged by piece (pieceOps), so a store's readTickets is no
 // read beside Read Ticket's readTicket; a head noun in the goal before one
 // only named (viewTicket before viewTicketDetails).
-export function planPerformers(goal, levels) {
+// v7.15.13 (run18): with the methods the goal states start() returns
+// (stated: goalMethods' items), the performers are those alone: for each,
+// the function with its exact name at the nearest level that has one (the
+// carrier's own, its siblings, the walk above); review: only then, and only
+// when exactly one function of the whole walk performs it by its words
+// (performsOp) acting on nothing but the stated method's own words and
+// parameters, that one: analyzeSnapshot for analyze(snapshot), never
+// analyzeInterfaces, another dataset's; and never the carrier's
+// analyzeSnapshot beside a sibling's analyze. A stated method nothing
+// performs is the carrier's to write. Each carries stated, the goal's item
+// it stands for, whose name is the key start() returns it under.
+export function planPerformers(goal, levels, stated = null) {
+  if (stated?.length) {
+    const out = [], all = levels.flat();
+    for (const s of stated) {
+      const exact = levels.map(items => items.filter(f => f.name === s.name)).find(x => x.length), own = new Set([...objectOf(words(s.name)), ...(s.params || []).flatMap(words)]);
+      const loose = exact ? [] : all.filter(f => performsOp(s.name, f) && objectOf(words(f.name)).filter(w => !FILLER_OBJECT.has(w)).every(w => own.has(w)));
+      const by = exact || loose;
+      if (new Set(by.map(f => f.name)).size === 1 && !out.some(x => x.name === by[0].name)) out.push({...by[0], stated: {name: s.name, params: [...(s.params || [])]}});
+    }
+    return out;
+  }
   const g = new Set(words(goal)), out = [], near = new Set();
   const rank = f => {const w = words(f.name); return w.length === 2 && g.has(w[1]) ? 0 : GENERIC_NAMES.has(f.name) ? 3 : g.has(objectOf(w).filter(x => !FILLER_OBJECT.has(x)).at(-1)) ? 1 : 2;};
   for (const items of levels) {
@@ -238,7 +269,9 @@ export function planPerformers(goal, levels) {
 // around a word one of them performs or acts on, minus what they act on.
 // Run12's "create, view, update, and delete tickets" with getTicket for
 // view leaves view, as "create tickets and view them" does with createTicket.
-export function goalLeft(goal, fns) {
+// v7.15.13 (run18): a goal that states start()'s methods leaves nothing to ask for.
+export function goalLeft(goal, fns, stated = null) {
+  if (stated?.length) return [];
   const t = String(goal ?? '').match(/[A-Za-z]+|,/g) || [], done = new Set(fns.flatMap(f => goalOps(goal, f))), out = new Set();
   const nouns = new Set(fns.flatMap(f => [f.name, f.operation].flatMap(s => objectOf(words(s))))), verb = i => VERB(words(t[i])[0]);
   const joint = i => t[i] === ',' || /^(?:and|or)$/i.test(t[i] || ''), word = i => /^[A-Za-z]/.test(t[i] || '') && !joint(i) && !/^(?:it|them|they|these|those|one|ones)$/i.test(t[i]);

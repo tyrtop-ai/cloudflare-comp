@@ -156,15 +156,88 @@ const READS=[[/Cannot read propert(?:y|ies) of (undefined|null) \(reading '([\w$
 const readForm=text=>{for(const [re,f] of READS){const m=re.exec(text);if(m)return f(m);}return null;};
 // A catch that fails the test expects no throw (review: assert.fail('createTicket threw: ' + e.message)).
 const FAILS=/process\.exit(?:Code)?\b|\bthrow\b|\bassert\.fail\(|\bassert(?:\.ok|\.equal|\.strictEqual)?\(\s*false\b|\breject\(/;
+// v7.15.13 (run20, R2): the error forms thrown on a function's own
+// parameter X: X is not iterable, X is not a function, X.m is not a
+// function, a destructuring of X (or of the parameter itself, `{list}`
+// left undefined: review #11), and a member read of undefined or null,
+// whose receiver the frame's line names (the one at the frame's column
+// when the line reads two). {name, kind, member?, value?}.
+const PARAM=[[/(?<![\w$.])([\w$]+) is not iterable\b/,m=>({name:m[1],kind:'iterable'})],[/(?<![\w$.])([\w$]+)\.([\w$]+) is not a function\b/,m=>({name:m[1],kind:'member',member:m[2]})],
+  [/(?<![\w$.])([\w$]+) is not a function\b/,m=>({name:m[1],kind:'function'})],[/Cannot destructure property '([\w$]+)' of '([\w$]+)' as it is (undefined|null)/,m=>({name:/^(?:undefined|null)$/.test(m[2])?'':m[2],kind:'read',member:m[1],value:m[3],whole:/^(?:undefined|null)$/.test(m[2])})],
+  [/Cannot read propert(?:y|ies) of (undefined|null) \(reading '([\w$]+)'\)/,(m,line,col)=>({name:receiverOn(line,m[2],col),kind:'read',member:m[2],value:m[1]})],[/Cannot read property '([\w$]+)' of (undefined|null)/,(m,line,col)=>({name:receiverOn(line,m[1],col),kind:'read',member:m[1],value:m[2]})]];
+const receiverOn=(line,member,col)=>{const hits=[...String(line||'').matchAll(new RegExp(`(?<![\\w$.])([\\w$]+)\\s*\\??\\.\\s*(${member.replace(/\$/g,'\\$')})\\b`,'g'))];return (hits.find(h=>h.index+h[0].lastIndexOf(h[2])+1===col)||hits[0])?.[1]||'';};
+// The code at a frame: its parse, the offset of line:col, the innermost function there.
+const BLOCKS=new Set(['BlockStatement','ForStatement','ForInStatement','ForOfStatement','SwitchStatement','StaticBlock','CatchClause']);
+function codeAt(src, line, col) {
+  let ast;try{ast=parseSource(src).ast;}catch{return null;}
+  const lines=String(src).split('\n');if(!line||line>lines.length)return null;
+  const off=lines.slice(0,line-1).reduce((n,l)=>n+l.length+1,0)+Math.max(0,col-1);
+  return {ast,off,fn:fnAround(ast,off),line:lines[line-1]};
+}
+const fnAround=(ast,off)=>{let fn=null;visit(ast,n=>{if(FUNCTIONS.has(n.type)&&n.start<=off&&off<n.end&&(!fn||n.start>=fn.start))fn=n;});return fn;};
+const plainParam=(f,name)=>f?f.params.findIndex(p=>(p.type==='AssignmentPattern'?p.left:p).type==='Identifier'&&(p.type==='AssignmentPattern'?p.left:p).name===name):-1;
+// v7.15.13 review (#4): the name at off is f's own parameter binding: no declaration of it in a block around off (var anywhere in f), no assignment to it before off.
+function ownBinding(f, name, off) {
+  let mine=true;
+  visit(f,(n,parents)=>{
+    if(!mine||n===f)return;
+    const up=parents.at(-1),inner=parents.slice(1).some(x=>FUNCTIONS.has(x.type));
+    if(!inner&&n.type==='VariableDeclarator'&&patternNames(n.id).includes(name)){const scope=up?.kind==='var'?f:[...parents].reverse().find(x=>BLOCKS.has(x.type))||f;if(scope.start<=off&&off<scope.end)mine=false;}
+    if(!inner&&['FunctionDeclaration','ClassDeclaration'].includes(n.type)&&n.id?.name===name){const scope=[...parents].reverse().find(x=>BLOCKS.has(x.type))||f;if(scope.start<=off&&off<scope.end)mine=false;}
+    if(!inner&&n.type==='CatchClause'&&n.param&&patternNames(n.param).includes(name)&&n.start<=off&&off<n.end)mine=false;
+    if(n.start<off&&(n.type==='AssignmentExpression'&&patternNames(n.left).includes(name)||n.type==='UpdateExpression'&&n.argument.type==='Identifier'&&n.argument.name===name||/^For(?:In|Of)Statement$/.test(n.type)&&n.left.type==='Identifier'&&n.left.name===name))mine=false;
+  });
+  return mine;
+}
+// The parameter the error names, at the callee's frame: {index, name, kind, member?, value?}, or null.
+function paramAt(text, src, line, col) {
+  const at=codeAt(src,line,col);if(!at?.fn)return null;
+  for(const [re,make] of PARAM) {
+    const m=re.exec(text);if(!m)continue;
+    const form=make(m,at.line,col);
+    // review #11: "Cannot destructure property 'list' of 'undefined'" on the parameter {list} itself.
+    if(form.whole){const index=at.fn.params.findIndex(p=>{const q=p.type==='AssignmentPattern'?p.left:p;return q.type==='ObjectPattern'&&q.properties.some(x=>x.type==='Property'&&!x.computed&&(x.key.name??x.key.value)===form.member);});return index<0?null:{...form,index,name:`{${form.member}}`};}
+    const index=form.name?plainParam(at.fn,form.name):-1;
+    return index>=0&&ownBinding(at.fn,form.name,at.off)?{...form,index}:null;
+  }
+  return null;
+}
+// v7.15.13 review (#5): at a caller's frame, the call to the function below (by the frame's column, else by name) and what it passes at index:
+// {built: true} when the caller made the value (or passed nothing), {index} when it passes its own parameter on unchanged, null when this cannot be read.
+function passedAt(src, line, col, name, index) {
+  const at=codeAt(src,line,col);if(!at)return null;
+  const calls=[];visit(at.ast,n=>{if(/^(?:Call|New)Expression$/.test(n.type)&&n.loc.start.line<=line&&line<=n.loc.end.line)calls.push(n);});
+  const pos=n=>{const c=n.callee;return (c.type==='MemberExpression'?c.property:n.type==='NewExpression'?n:c).loc.start;},named=n=>{const c=n.callee;return c.type==='Identifier'?c.name:c.type==='MemberExpression'&&!c.computed?c.property.name:'';};
+  const call=calls.find(n=>pos(n).line===line&&pos(n).column+1===col)||calls.find(n=>name&&named(n)===name);
+  if(!call)return null;
+  const arg=un(call.arguments[index]);
+  if(!arg||arg.type==='SpreadElement'||call.arguments.slice(0,index).some(a=>a.type==='SpreadElement'))return arg?.type==='SpreadElement'?null:{built:true};
+  const g=arg.type==='Identifier'?fnAround(at.ast,call.start):null;
+  const j=g?plainParam(g,arg.name):-1;
+  return j>=0&&ownBinding(g,arg.name,call.start)?{index:j}:{built:true};
+}
+// v7.15.13 review (#6): the callee's promise agrees with the error: it takes a parameter at that place, a list for "not iterable" (a plural name, or list, array, each, all words; never "one" or "a single" for a singular name), a function for "not a function".
+const PLURAL=w=>/(?:[^s]s|ies|list|array|arr|items|rows|records)$/i.test(String(w||''));
+function agrees(promise, form) {
+  const pp=Array.isArray(promise?.params)?promise.params[form.index]:null,does=String(promise?.does||'');
+  if(pp==null)return false;
+  const list=form.kind==='iterable'||form.kind==='member'&&/^(?:map|filter|forEach|reduce|some|every|find|findIndex|flatMap|slice|push|sort|includes|join|entries|keys|values)$/.test(form.member);
+  if(list)return (PLURAL(pp)||/\b(?:list|lists|array|arrays|each|all|every|collection)\b/i.test(does))&&!(!PLURAL(pp)&&/\b(?:one|single)\b/i.test(does));
+  if(form.kind==='function')return /callback|\bcb\b|^cb$|fn$|func|function|handler|listener|predicate|comparator|hook/i.test(`${pp} ${does}`);
+  return true;
+}
 // paths: the linked modules' paths; exportsOf(path): the names a module exports.
 // v7.15.8 (run15): paramsOf(method): the parameters start()'s method lists, for the producer's signature in the text.
-export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(), paramsOf=()=>null) {
-  const s=String(output||''),keys=[...paths].sort((a,b)=>b.length-a.length),frames=[],smoke=[],cols=new Map();let inTest=null;
+// v7.15.13 (run20): code, the linked code at hand: signatureOf(path, fn), the parameters of a function the module exports (null for any other); sourceOf(path), the linked copy; promiseOf(path, fn), the plan's promise of that function.
+export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(), paramsOf=()=>null, code={}) {
+  const s=String(output||''),keys=[...paths].sort((a,b)=>b.length-a.length),frames=[],smoke=[],cols=new Map(),chain=[];let inTest=null;
   for(const m of s.matchAll(STACK)) {
     const file=m[2],path=keys.find(k=>file===k||file.endsWith('/'+k)),mine=/(?:^|\/)glue\/smoke\.js$/.test(file);
     // v7.15.8 review (probe A8): the innermost frame that is not Node's own decides whether the error is the test line's; one in the glue or a dependency is not.
     if(inTest===null&&!/^node:/.test(file))inTest=mine;
-    if(path){if(!frames.some(f=>f.path===path&&f.fn===frameFn(m[1])))frames.push({path,fn:frameFn(m[1]),line:Number(m[3])});}
+    // v7.15.13 review (#3): every frame not Node's own, in order and not deduped (a recursive call is its own caller); frames, deduped, are the facts.
+    if(!/^node:/.test(file))chain.push({path:path||'',fn:frameFn(m[1]),line:Number(m[3]),col:Number(m[4])});
+    if(path){if(!frames.some(f=>f.path===path&&f.fn===frameFn(m[1])))frames.push({path,fn:frameFn(m[1])});}
     else if(mine&&!smoke.includes(Number(m[3]))){smoke.push(Number(m[3]));cols.set(Number(m[3]),Number(m[4]));}
   }
   // The error line, with the lines a generated assertion message continues
@@ -265,6 +338,44 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(),
       if(shape.calls.some(inside)){const rest=shape.calls.filter(c=>c.fn===scope&&c.line<=line&&!inside(c));call=rest.length?pick(rest,line):null;at=line;}
     }
   }
+  // v7.15.13 (run20, R2): a parameter error is the caller's. "interfaces
+  // is not iterable" was thrown in checkSpeed(interfaces) on its own
+  // parameter: the plan says the checker takes the list, and
+  // processInterfaces passed one item (checkSpeed(iface)); routed by the
+  // innermost frame, Check speed would have heard it. By the mirror of
+  // v7.15.3 (a call with its arguments out of order is the caller's) and
+  // v7.15.7 (a built-in's member error on a named import's result is the
+  // caller's), the requirement is on the caller, with the callee's promise
+  // as the fact. When the innermost frame that is not Node's own is a
+  // linked module's exported function (signatureOf) and the error's subject
+  // is its own parameter binding (paramAt: never reassigned before the
+  // throw, never shadowed: review #4), callee is that function and the
+  // parameter, and the caller is the first frame up that built the value:
+  // a frame that passes its own parameter on unchanged is walked past
+  // (review #5: start()'s wrapper (snapshot) => analyze(snapshot)), and a
+  // walk that reaches the test, the glue or a dependency, a recursive call
+  // or a caller in the callee's own module (review #3) names no caller.
+  // Only when the plan's promise agrees with the error (review #6: it
+  // takes a list there for "not iterable"; "Checks one interface" with
+  // iface does not); otherwise the callee keeps the ticket, as before.
+  // Never on a test line (the reader above decides) or an assertion.
+  let caller=null,callee=null;
+  const c0=chain[0],codeOf=p=>{const t=code.sourceOf?.(p);return typeof t==='string'?t:null;};
+  if(!inTest&&!assertion&&c0?.path&&c0.fn&&chain.length>1&&Array.isArray(code.signatureOf?.(c0.path,c0.fn))&&codeOf(c0.path)!==null) {
+    const form=paramAt(text,codeOf(c0.path),c0.line,c0.col),promise=form?code.promiseOf?.(c0.path,c0.fn)||null:null;
+    if(form&&agrees(promise,form)) {
+      let index=form.index;const via=[];
+      for(let i=1;i<chain.length;i++) {
+        const f=chain[i],below=chain[i-1];
+        if(!f.path||i===1&&f.path===c0.path||codeOf(f.path)===null)break;
+        const got=passedAt(codeOf(f.path),f.line,f.col,below.fn,index);
+        if(!got)break;
+        if(got.built){if(!via.some(v=>!v))caller={path:f.path,fn:f.fn,line:f.line,...via.length?{via}:{}};break;}
+        index=got.index;via.push(f.fn||'');
+      }
+      if(caller)callee={path:c0.path,fn:c0.fn,param:form.name,index:form.index,kind:form.kind,...form.member?{member:form.member}:{},...form.value?{value:form.value}:{},promise};
+    }
+  }
   // Inside a try expecting a throw: assert.rejects/throws, or the innermost
   // try around the call whose catch neither fails the test nor rethrows
   // (run13's catch set errorCaught and read err.message); what that catch
@@ -290,7 +401,7 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set(),
     ...[...text.matchAll(/([\w$.]+) is not (?:a function|defined|a constructor)/g)].map(m=>m[1].split('.').pop()),...api?['start']:[]].filter(Boolean))];
   // A read's text states what must hold, no longer the error (error false): the producer must return what the test reads.
   return {text,error:!assertion&&!read,method:call?.method||'',names,...call?{test_line:{line:call.line,text:lineText(call.line),...expects(call)||{}}}:{},
-    ...at&&call&&at!==call.line&&lineText(at)?{assertion:{line:at,text:lineText(at)}}:{},...read?{read}:{},frames:frames.map(({path,fn})=>({path,fn}))};
+    ...at&&call&&at!==call.line&&lineText(at)?{assertion:{line:at,text:lineText(at)}}:{},...read?{read}:{},...caller?{caller,callee}:{},frames:frames.map(({path,fn})=>({path,fn}))};
 }
 // The promised functions a text names: by their exact name, or by every
 // word of a name of two or more words (run11's "viewed ticket should match
@@ -344,7 +455,16 @@ function madeBy(does, needs, member) {
   return noun?`the ${noun} it ${verbs} (${needs})`:member?`what it ${verbs}, with its ${member}`:`what it ${verbs} (${needs})`;
 }
 // v7.15.8 review: performer, the route named this promise as the performer of a generic start() key (R2c: start() returns create, createTicket performs it), so a read on that key is this promise's.
-export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null, performer=false}={}) {
+// v7.15.13 (run20, R2): caller, the candidate is the caller of r.callee,
+// whose promise (r.callee.promise, the plan's) the text quotes, its
+// parameter named as the promise names it (review #6), and the functions
+// the value was passed on through (via): "Your processInterfaces(interfaces)
+// ("Processes the interfaces dataset…") calls checkSpeed with a value that
+// is not iterable: checkSpeed(interfaces) ("Checks for interfaces with
+// negotiatedMbps < expectedMbps") takes the list of interfaces and returns
+// an array of findings. Test line 101: …".
+const article=s=>/^(?:a|an|the|its|their|this|that|one|some|each|every|all|no|nothing|undefined|null|void|true|false|whether|either|promise)\b/i.test(s)||!/^[a-z]/i.test(s)?s:`${/^[aeiou]/i.test(s)?'an':'a'} ${s}`;
+export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null, performer=false, caller=false, callee=null}={}) {
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
   const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
   const rd=fn&&r?.read&&(fn.name===r.method||performer)?r.read:null,ret=rd&&fn.returns&&!noValue(fn.returns)?String(fn.returns).replace(/[.\s]+$/,''):'';
@@ -356,6 +476,13 @@ export function requirementText(r, {fn=null, more=[], module='', method='', thro
     module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`);
   const line=r?.test_line?.line&&!back?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
   const at=r?.assertion?.line?` It failed at line ${r.assertion.line}: ${r.assertion.text}.`:'';
+  if(caller&&r?.callee?.promise) {
+    const c=r.callee,p=c.promise,pp=String(p.params?.[c.index]??c.param),pd=p.does?` ("${String(p.does).replace(/[.\s]+$/,'')}")`:'',ret=p.returns&&!noValue(p.returns)?` and returns ${article(String(p.returns).replace(/[.\s]+$/,''))}`:'';
+    const list=c.kind==='iterable'||c.kind==='member'&&/^(?:map|filter|forEach|reduce|some|every|find|findIndex|flatMap|slice|push|sort|includes|join|entries|keys|values)$/.test(c.member);
+    const got=c.kind==='iterable'?'a value that is not iterable':c.kind==='function'?'a value that is not a function':c.kind==='member'?`a value that has no ${c.member}()`:`${c.value==='null'?'null':'nothing'} for ${pp}`;
+    const takes=list?`the list of ${pp}`:c.kind==='function'?`${pp}, a function`:`${pp}, an object with ${c.member}${c.kind==='member'?'()':''}`,via=r.caller?.via||[];
+    return `${lead}${fn?`Your ${signature(fn)}${does}`:`Your module ${base(module)}`} calls ${via[0]||c.fn} with ${got}${via.length?`, passed on to ${c.fn}`:''}: ${signature(p)}${pd} takes ${takes}${ret}.${line}${at}`;
+  }
   return head+line+at;
 }
 // R2: where a requirement goes among a manager's direct children, as a
@@ -381,7 +508,9 @@ export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer
   const fnsOf=child=>promises.find(x=>x.child===child)?.fns||[],fnOf=(child,name)=>fnsOf(child).find(f=>f.name===name)||null,promiser=name=>name&&!GENERIC_NAMES.has(name)&&promises.find(x=>x.fns.some(f=>f.name===name))?.child||null;
   const add=(child,how,extra={})=>{if(child&&!skip.has(child)&&!has(child))out.push({child,how,...extra,text:requirementText(r,extra)});};
   const frames=(r.frames||[]).map(f=>({...f,child:frameOwner(f.path)})).filter(f=>f.child);
-  frames.forEach((f,i)=>{const fn=f.fn?fnOf(f.child,f.fn):null;add(f.child,fn?'a':'b',{fn,module:f.path,thrown:i===0,providers:[...new Set(frames.filter(x=>x.child!==f.child).map(x=>x.child))]});});
+  // v7.15.13 (run20, R2): a parameter error goes to the caller's frame first, by its module (b), the callee's promise in its text and the callee's owner among its providers; the callee's frame stays next, should the caller decline.
+  const calls=f=>!!r.caller&&f.path===r.caller.path&&f.fn===r.caller.fn,order=r.caller?[...frames.filter(calls),...frames.filter(f=>!calls(f))]:frames;
+  order.forEach(f=>{const fn=f.fn?fnOf(f.child,f.fn):null,c=calls(f);add(f.child,c?'b':fn?'a':'b',{fn,module:f.path,thrown:f===frames[0],providers:[...new Set(frames.filter(x=>x.child!==f.child).map(x=>x.child))],...c?{caller:true,callee:r.callee.promise}:{}});});
   // v7.15.8 (run15): a read's text is the reader's own and names its producer exactly (names); its words ("reads …Ticket") name no other promise (readTickets was read as a party).
   const named=[...new Set([...(r.names||[]),...(r.read?[]:namedFunctions(r.text,promises.flatMap(x=>x.fns)).map(f=>f.name))])].filter(n=>promiser(n));
   // The method under test names its promise, or its performer per the start plan (run11's app.view is viewTicket).
@@ -469,7 +598,8 @@ export function deterministicDecision(p, ctx) {
       const route=ctx.route(p),first=route?.candidates?.[0],said=p.directive?.instructions&&p.directive.side==='site'&&p.directive.by===ctx.parent?`${p.directive.instructions} `:'';
       if(route?.defer)return {rule:'R2',route:true,action:'defer',reason:route.defer};
       if(first)return {rule:`R2${first.how}`,route:true,action:'assign',child:first.child,side:'site',...ctx.kindOf(first.child)==='manager'?{delegate:true}:{instructions:said+first.text,facts_text:first.facts||'',providers:first.providers||[]}};
-      const why=`no piece takes the requirement${declined.size?` (declined by ${names([...declined])})`:''}: ${clip(p.facts.requirement.text,200)}`;
+      // v7.15.13 (run20, R3): a child that changed a file for this failure without progress is skipped as a declined one (flags.exhausted, read by the route).
+      const spent=(flags.exhausted||[]).filter(id=>ctx.kindOf(id)),why=`no piece takes the requirement${declined.size?` (declined by ${names([...declined])})`:''}${spent.length?` (${names(spent)} changed a file for it without progress)`:''}: ${clip(p.facts.requirement.text,200)}`;
       return ctx.parent?{rule:'R2',route:true,action:'escalate',declined:true,reason:why}:{rule:'R2',route:true,action:'exhausted',reason:why};
     }
     // v7.15.6 (R5): the parent asked this branch to take names on a promise (grow).
@@ -724,10 +854,16 @@ export function validateManagerActions(actions, call, ctx) {
     // file, in its branch or itself), or a stuck worker already told twice
     // what to write, does not go back to it; nor does a contract it was
     // given twice (subject-only: no other side can take it).
-    const declined=open.find(id=>(byId.get(id).p.flags?.declined||[]).some(d=>d===child||d.startsWith(child+'.')));
+    // v7.15.13 review (#9): a child (or a piece in its branch) that changed its files for the failure last round without progress is refused saying so, not as a decline.
+    const under=d=>d===child||d.startsWith(child+'.'),spent=open.find(id=>(byId.get(id).p.flags?.exhausted||[]).some(under));
+    if(spent){refuse(a,`${(byId.get(spent).p.flags.exhausted||[]).includes(child)?child:`a piece in ${child}'s branch`} changed its files for problem ${spent} last round without progress (it fails the same); give it to another child, retask or retire it, or escalate`);continue;}
+    const declined=open.find(id=>(byId.get(id).p.flags?.declined||[]).some(under));
     if(declined){refuse(a,`${child} declined problem ${declined}: it answered it done without changing a file; give it to another child, retask or retire it, or escalate`);continue;}
-    // Review: the start carrier composes; a run requirement is never its (run13's entry, given one, wrote a stub of another piece's function), only one about start()'s own API (it names start).
-    const carrier=(ctx.promise?.carried?.[child]||[]).includes('start')&&open.find(id=>{const {p}=byId.get(id);return p.kind==='run'&&p.facts?.requirement&&!(p.facts.requirement.names||[]).includes('start');});
+    // Review: the start carrier composes; a run requirement is never its (run13's entry, given one, wrote a stub of another piece's function), only one about start()'s own API (it names start) or, v7.15.13 (run18), about a stated method it writes (its promise names it).
+    // Review: not one naming a function another child promises with no frame in the carrier's own (a threshold inside processInterfaces is never the entry's).
+    const carried=ctx.promise?.carried?.[child]||[],mine=carried.filter(nm=>nm!=='start'),others=new Set(Object.entries(ctx.promise?.carried||{}).filter(([c])=>c!==child).flatMap(([,ns])=>ns));
+    const foreignTo=r=>!(r.names||[]).includes('start')&&(![...(r.names||[]),r.method||''].some(nm=>mine.includes(nm))||!(r.frames||[]).some(f=>mine.includes(f.fn))&&(r.names||[]).some(nm=>others.has(nm)));
+    const carrier=carried.includes('start')&&open.find(id=>{const {p}=byId.get(id),r=p.facts?.requirement;return p.kind==='run'&&r&&foreignTo(r);});
     if(carrier){refuse(a,`${child} carries start() and only composes the application: problem ${carrier} is a requirement on the piece whose promise it is about, not on the start carrier`);continue;}
     const unchanged=open.find(id=>{const {p}=byId.get(id);return ['stuck','contract'].includes(p.kind)&&(ctx.recurrence?.(p,child)||0)>=STUCK_AFTER;});
     if(unchanged){refuse(a,`${child} already had problem ${unchanged} ${STUCK_AFTER} or more times without a fix: give it to another child, retask or retire it, or escalate`);continue;}

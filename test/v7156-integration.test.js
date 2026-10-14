@@ -434,7 +434,10 @@ test('integration: run11\'s final failure replayed: "Viewed ticket should match 
 // made the same for every assertion); the same failure to the same worker
 // a third time is the model's (M4), and Root stops after three rounds without
 // progress, as before.
-test('integration: run9\'s live rounds replayed cost 7 rounds, 7 Clef rankings and no manager-model call, as v7.15.5 cost 7 rounds and no model call; the same failure six times ends Root after four rounds with the model asked twice',async()=>{
+// v7.15.13 (run20, R3): the same failure to the one piece that changes its
+// file for it is routed past it the next round; nobody else takes it, the
+// model is asked once (M4) and the requirement closes: one round, not four.
+test('integration: run9\'s live rounds replayed cost 7 rounds, 7 Clef rankings and no manager-model call, as v7.15.5 cost 7 rounds and no model call; the same failure six times: the entry routed past after one round, the model once, closed',async()=>{
   const runner=`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.createTicket({ title: 'Printer jam' });\n  assert.equal(t.title, 'Printer jam');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n`;
   const app="function start() {\n  return { createTicket: (d) => ({ id: 1, ...d }) };\n}\nmodule.exports = { start };\n",data="const rows = [];\nmodule.exports = { addTicket: (t) => { rows.push(t); return t; } };\n";
   const node22=(message,line)=>`node:internal/process/promises:394\n    triggerUncaughtException(err, true /* fromPromise */);\n    ^\n\nAssertionError [ERR_ASSERTION]: ${message}\n    at /work/build-${Math.random().toString(36).slice(2,8)}/glue/smoke.js:${line}:3 {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: undefined,\n  expected: true,\n  operator: '==',\n  diff: 'simple'\n}\n\nNode.js v22.23.3\n`;
@@ -466,8 +469,8 @@ test('integration: run9\'s live rounds replayed cost 7 rounds, 7 Clef rankings a
   assert.deepEqual([live.calls.leaf.length,live.calls.clef.length,live.calls.manager.length],[7,7,0],'one Clef ranking per round in place of the triage model, and the model never asked');
   assert.deepEqual(live.room.problems("kind='run'").map(p=>p.trail.find(t=>t.action==='assign')?.to),['root.1','root.2','root.1','root.2','root.1','root.1','root.1']);
   const same=await room9(Array.from({length:6},()=>({message:'Ticket should be viewable',line:14,file:'entry'})));
-  assert.deepEqual([same.room.get('status'),same.room.get('repair_rounds:root'),verdicts(same.room),same.calls.manager.map(u=>u.problems[0].trigger)],['failed','4',['progress','no progress','no progress','no progress'],['M4','M4']],trace(same.room));
-  assert.match(same.room.node('root').summary,/made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
+  assert.deepEqual([same.room.get('status'),same.room.get('repair_rounds:root'),verdicts(same.room),same.calls.manager.map(u=>u.problems[0].trigger),events(same.room,'route_exhausted').map(e=>e.recipient)],['failed','1',['progress'],['M4'],['root.1']],trace(same.room));
+  assert.match(same.room.node('root').summary,/no piece takes the requirement \(Entry Module changed a file for it without progress\): Ticket should be viewable/);
 });
 
 // ------------------------------------------------------------------ the mirror audit's one small fix

@@ -1,6 +1,6 @@
 # Recursive Control Plane: how it works
 
-> The detailed companion to the short [README](../README.md), for v7.15.12. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
+> The detailed companion to the short [README](../README.md), for v7.15.13. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
 
 A multi-agent code-writing control plane that runs entirely on Cloudflare. You give it a goal, and a tree of small agents:
 - splits the work, promising a few named functions for each piece;
@@ -12,7 +12,7 @@ Each failure goes to the lowest manager whose branch holds every module involved
 
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
-> **Status:** this is v7.15.12. Every live run up to run8 used v7.13.x or earlier; run9 to run16 used v7.15. Run16, on v7.15.8, is the first live run in which the composed system produced a correct, verified application: complete in 3.9 minutes, in one round, with the runner's test passing. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
+> **Status:** this is v7.15.13. Every live run up to run8 used v7.13.x or earlier; run9 to run20 used v7.15. Run16, on v7.15.8, is the first live run in which the composed system produced a correct, verified application: complete in 3.9 minutes, in one round, with the runner's test passing. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
 
 ## The idea
 
@@ -388,7 +388,7 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Version.** This is v7.15.12. The full local suite passes with `npm test`, and `npm run check` passes.
+- **Version.** This is v7.15.13. The full local suite passes with `npm test`, and `npm run check` passes.
   - [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md): predicted interfaces, the promises, function requests, and what the linker and the compiler read from the plan.
   - [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md): the four roles, the problem inbox and the managers' decisions.
   - [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md): v7.13.0, the hotfixes v7.13.1 to v7.13.4, and the export connector.
@@ -412,6 +412,10 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 | run14 | 9d30f367 | v7.15.6 | the first run that worked end to end through the plan: a clean split with a storage piece, uses planned, the entry composed, linked with 11 renames and no model call, loaded first time, coverage 4/4, the runner bounded (two drafts turned back for asserting return values no promise stated). It failed on a plan gap: `readTickets` was async and returned an array, and its promise said neither. Rounds 1 and 2 (`tickets.push is not a function`) took the link path, a link-model call each and the deleted "REAL CONTAINER BUILD FAILED" text; rounds 3 to 5 were routed right, to Create ticket, but carried no provider facts, so it parsed the array as JSON three times; exported at 4.2 minutes, round 5 | v7.15.7 |
 | run15 | 2cfdd78e | v7.15.6 | failed at 5.9 minutes after 5 repair rounds, 2 manager-model calls and a relink, on a plan gap and a routing gap: `createTicket`'s promise said "creates a new ticket and saves it" and nothing about returning it, the worker returned nothing, and the bounded runner, told it could not assert the result, used it instead (`app.viewTicket(createResult.id)`). Every round failed reading `id` of undefined; the call on the failing line was taken as the method under test, so View Ticket got five tickets it could not satisfy | v7.15.8 |
 | run16 | 743c7c77 | v7.15.8 | **complete in 3.9 minutes, in one round, with the composed system verified**: Root split into six pieces (the four operations, a storage piece promising `readTickets()` and `saveTickets(tickets)`, and the start carrier), uses and returns planned, the entry composed from the plan, two contract send-backs (View and Update called `readTickets` without `await`, each fixed in one revision), 11 renames by ownership and no model call, loaded first time, coverage 4/4, the runner's first draft accepted and passing. The splitter's first turn answered with reasoning and no JSON twice (126 s) before the next turn's answer (56 s) | v7.15.9 |
+| run17 | 52abfd41 | v7.15.10 | the first run of a second goal, an offline network diagnostics engine with 20 rules whose stated API is `start()` returning `{ analyze(snapshot) }`, with Qwen 3.8 27B as the manager model: Root's split request ran 206 s and Workers AI cut it (`3046: Request timeout`), so the room retried without a split | (a faster manager model) |
+| run18 | 662fbcf8 | v7.15.11 | the diagnostics goal with DeepSeek V4 Flash workers: the plan never read the stated API, so the entry, given the generic "one method per goal operation" promise, imported a `getGoalOperations` nobody wrote, the processors imported modules named after their assignment's headings, and two worker turns came back empty | v7.15.13 |
+| run19 | 91320cd3 | v7.15.11 | the diagnostics goal on Qwen3-30B-A3B, split into 28 pieces exactly as the goal describes; Clef's vetting stripped the true promises `analyze` and `processCircuits`, so the entry's import had no provider and the analyzer lost the circuits | v7.15.13 |
+| run20 | 91320cd3 | v7.15.12 | the same room started again: 22 pieces and three sub-splits, the entry composed, 24 renames by ownership, loaded first time, the runner's 100-line test calling `app.analyze(snapshot)`. One caller bug (`checkSpeed(iface)` where the promise takes the list) then failed five rounds: the Container's summary kept only Node's warnings, the throw site was lost and every round went to the analyzer, which kept changing its file for nothing; Clef had also rejected three of the five interface checks at p≈0.48 | v7.15.13 |
 
 The changelogs give each run's evidence, and the local replays of its files, which run through the real Container runner script with scripted models.
 
@@ -480,6 +484,8 @@ The design reached this shape over many versions:
 - in v7.15.7, from run14: a promise states its shape. Every promise says what a call returns, every promised function may be async and a caller awaits it, the contract check enforces that before any linking, and every surface shows `async`; a built-in or invented member on a named import's result is a requirement on the caller, never a relink; a ticket routed to a worker by its own promise or frame carries the facts of its planned uses; an operation of `start()` no piece promises grows the plan; and an anonymous async stack frame is read.
 - in v7.15.8, from run15: a property read on a test binding routes to the method that produced the binding, and the ticket names what was read and what to return; a promise that states a return value must return one, checked before any linking; a runner draft may not depend on a result its description states none for, and when nothing in the API could give it the plan gap is charged at the failure instead.
 - in v7.15.9, from run16: a reasoning-only model answer is no answer, and the splitter retries one without thinking; four more agent models in the dashboard.
+- in v7.15.10 to v7.15.12: goals up to 4,000 characters, separate manager, worker and compiler models, and logarithmic count sliders;
+- in v7.15.13, from runs 18 to 20: a goal that states what `start()` returns defines the operations the plan, the entry, the coverage gate and the runner read; a promise the plan itself names outranks Clef's doubt; the Container's summary keeps the throw site; an error on a promised function's parameter, when its promise agrees, is a requirement on the caller that built the value; and a piece that changed its file for a failure without progress is routed past for a round.
 
 [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md), [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md) and [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md) cover what changed since v7.12. [docs/history/CHANGELOG-v7.12.md](history/CHANGELOG-v7.12.md) documents the release before them. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](history/).
 
