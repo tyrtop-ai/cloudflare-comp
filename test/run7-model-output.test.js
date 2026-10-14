@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {liveRoom,workersUnder,linkAndCompile,settle,events,trace} from './helpers/room.js';
 const {stripReasoning,jsonObjects,parseObject}=await import('../src/protocol.js');
-const {apiCoverage,writeRunnerTest,extractCode,linkComponents,attributeFailure,decide,COVERAGE_SYSTEM}=await import('../src/model.js');
+const {apiCoverage,writeRunnerTest,extractCode,linkComponents,decide,COVERAGE_SYSTEM}=await import('../src/model.js');
 
 const DEFAULT_MODEL='@cf/qwen/qwen3-30b-a3b-fp8';
 const crudTest=`const assert = require('node:assert/strict');
@@ -233,9 +233,7 @@ test('/no_think: appended for the runner and coverage calls on the default model
   // Every other call on the default model is unchanged.
   const link=fakeAI([{edits:[],entry:null,issues:[]}],DEFAULT_MODEL);
   await linkComponents(link.env,{goal:'g',files:[],interfaces:[],allPaths:[]});
-  const triage=fakeAI(['{}'],DEFAULT_MODEL);
-  await attributeFailure(triage.env,{modules:[],test:'',failure:''});
-  for(const call of [...link.calls,...triage.calls])assert.doesNotMatch(call.content,/no_think/);
+  for(const call of link.calls)assert.doesNotMatch(call.content,/no_think/);
   // Another model never gets it.
   for(const model of ['@cf/qwen/qwen3.8-27b','@cf/meta/llama-3.2-1b-instruct',undefined]) {
     const r=fakeAI(['x'],model),c=fakeAI([mapping],model);

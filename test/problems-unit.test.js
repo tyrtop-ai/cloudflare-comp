@@ -195,7 +195,15 @@ test('model triggers: the model is asked only for a real choice (M1-M8)',()=>{
   assert.equal(P.STUCK_AFTER,2);
   assert.equal(trig(pair({anchored:true}),{...ctx,recurrence:()=>1}),null);
   assert.equal(trig(pair({anchored:true}),{...ctx,recurrence:(p,c)=>c==='root.2'?2:0}),'M4');
-  assert.equal(trig(pair({anchored:true},{flags:{no_change:2}})),'M4','returned unchanged twice');
+  // v7.15.6 (R4): a party that declined (answered done without changing a file) gives way to the next party without the model; every party declined is the model's once at Root (M4).
+  const one=pair({anchored:true},{flags:{declined:['root.2']}}),d1=P.deterministicDecision(one,ctx);
+  assert.deepEqual([d1.rule,d1.action,d1.child,d1.side],['declined','assign','root.1','provider']);
+  assert.equal(P.modelTrigger(one,d1,ctx),null);
+  const all=pair({anchored:true},{flags:{declined:['root.2','root.1']}}),d2=P.deterministicDecision(all,ctx);
+  assert.deepEqual([d2.rule,d2.action],['declined','exhausted']);
+  assert.match(d2.reason,/^Label root\.2, Label root\.1 answered it done without changing a file$/);
+  assert.equal(P.modelTrigger(all,d2,ctx),'M4','every party declined');
+  assert.deepEqual([P.deterministicDecision(all,{...ctx,parent:'top'}).action,P.modelTrigger(all,P.deterministicDecision(all,{...ctx,parent:'top'}),ctx)],['escalate',null],'below Root it goes up, and the parent decides');
   // Escalated by a child: M6, unless exactly one other child provides it (D6, below).
   const up=problem('mismatch',[party('root.3.1','reader'),party('root.3.2','provider')],{facts:{names:['search']},flags:{escalated_from:'root.3'}});
   assert.equal(trig(up,view('root',{'root.3':'manager'},{builder:null})),'M6');
@@ -289,17 +297,18 @@ test('validation: an unplaceable problem (M7) may go to any child that writes co
   assert.deepEqual([up.how,up.dec.action,up.dec.reason],['model','escalate','not in this branch']);
 });
 
-test('validation: a stuck worker may be told what to write, twice; a stuck branch is never assigned; what came back unchanged twice does not go back',()=>{
+test('validation: a stuck worker may be told what to write, twice; a stuck branch is never assigned; what a child declined does not go back to it',()=>{
   const ctx={...view('root.1',{'root.1.1':'worker','root.1.2':'manager','root.1.3':'worker'}),recurrence:()=>0};
   const stuck=problem('stuck',[party('root.1.1','subject','')]),branch=problem('stuck',[party('root.1.2','subject','')]);
-  const mismatch=problem('mismatch',[party('root.1.1','reader'),party('root.1.3','provider')],{flags:{no_change:2,no_change_by:'root.1.1'}});
-  const call=[{id:'p1',p:stuck,dec:{rule:'stuck',action:'escalate'}},{id:'p2',p:branch,dec:{rule:'stuck',action:'escalate'}},{id:'p3',p:mismatch,dec:{rule:'no_change',action:'exhausted'}}];
+  // v7.15.6 (R4): declined, not "returned unchanged twice".
+  const mismatch=problem('mismatch',[party('root.1.1','reader'),party('root.1.3','provider')],{flags:{declined:['root.1.1']}});
+  const call=[{id:'p1',p:stuck,dec:{rule:'stuck',action:'escalate'}},{id:'p2',p:branch,dec:{rule:'stuck',action:'escalate'}},{id:'p3',p:mismatch,dec:{rule:'declined',action:'exhausted'}}];
   const run=(actions,c=ctx)=>P.validateManagerActions(actions,call,c);
   const told=run([{action:'assign',problems:['p1'],child:'root.1.1',instructions:'Close the array literal.'}]);
   assert.deepEqual([told.rejected.length,told.decisions[0].how,told.decisions[0].dec.child],[0,'model','root.1.1']);
   assert.match(run([{action:'assign',problems:['p2'],child:'root.1.2',instructions:'Fix your branch.'}]).rejected[0].reason,/stuck branch is retasked, retired or escalated, not assigned/);
   assert.match(run([{action:'assign',problems:['p1'],child:'root.1.1',instructions:'Close it.'}],{...ctx,recurrence:(p,c)=>c==='root.1.1'?2:0}).rejected[0].reason,/root\.1\.1 already had problem p1 2 or more times/);
-  assert.match(run([{action:'assign',problems:['p3'],child:'root.1.1',instructions:'Use fmt.'}]).rejected[0].reason,/already had problem p3/);
+  assert.match(run([{action:'assign',problems:['p3'],child:'root.1.1',instructions:'Use fmt.'}]).rejected[0].reason,/^root\.1\.1 declined problem p3: it answered it done without changing a file; give it to another child/);
   assert.deepEqual(run([{action:'assign',problems:['p3'],child:'root.1.3',instructions:'Export pretty.'}]).decisions[2].dec.child,'root.1.3','the other side may take it');
   assert.match(MANAGER_SYSTEM,/M4 it recurs[^]*do not assign it to that child again/);
 });

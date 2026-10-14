@@ -183,7 +183,8 @@ test('v7.15.5: a name another piece promises still takes today\'s path (D6), and
 });
 
 test('v7.15.5: D9 only for names no piece promises, that no goal operation performs, once per name and provider; a piece that is no data piece is asked of Clef',async()=>{
-  const {room}=liveRoom({clef:input=>({answers:{inside:{noul:/formatDate/.test(input.state.needed_function.need)?0.8:0.2}}})});
+  // v7.15.6 (R5): with the import's provider refused, one ranked Clef call asks which other direct child covers the names; here none does.
+  const {room}=liveRoom({clef:input=>input.questions.inside?{answers:{inside:{noul:/formatDate/.test(input.state.needed_function.need)?0.8:0.2}}}:{answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.1}]))}});
   await planned(room);
   // The reader calls each name it reads (review: D9 adds only a function the reader calls).
   const reads=run12.deleteRound3.replace('setTickets }','setTickets, formatDate }')+'\nexport const stamp = (t) => formatDate(t.createdAt);\n';
@@ -196,13 +197,15 @@ test('v7.15.5: D9 only for names no piece promises, that no goal operation perfo
   assert.deepEqual(await adds([row(['updateTicket'])]),[],'a goal operation is its own piece\'s');
   assert.deepEqual(await adds([row(['createTicket'])]),[],'a name another piece promises');
   assert.deepEqual(await adds([row(['getTickets']),row(['setTickets','getTickets'])]),[['root.2',['getTickets','setTickets'],'its piece makes or holds the data'],['root.2',['getTickets','setTickets'],'its piece makes or holds the data']],'every row about one provider adds the union');
-  room.asked('root.2',['getTickets']);
-  assert.deepEqual(await adds([row(['getTickets'])]),[],'once per name per provider');
-  // Not a data piece: Clef on its task decides; a no is final too.
-  assert.deepEqual(await adds([row(['formatDate'],'root.7')]),[['root.7',['formatDate'],'Clef p=0.800: its assignment covers them']]);
+  // Not a data piece: Clef on its task decides; a no is final too, and then the other children are asked once (R5): the data piece, by one ranked call, never the operation pieces while a data piece is here.
   assert.deepEqual(await adds([row(['getTickets'],'root.7')]),[]);
-  assert.match(events(room,'promise_refused').at(-1).body,/^getTickets: Clef p=0\.200, outside "Ticket Formatter"'s assignment; the reader changes\.$/);
-  assert.deepEqual(room.read('promise_asked:root.7',[]),['getTickets']);
+  assert.deepEqual(events(room,'promise_refused').slice(-2).map(e=>e.body),['getTickets: Clef p=0.200, outside "Ticket Formatter"\'s assignment.','getTickets: no direct child\'s assignment covers it ("Ticket Data Manager", best p=0.100); the reader changes.']);
+  assert.deepEqual([room.read('promise_asked:root.7',[]),room.read('promise_asked:root.2',[])],[['getTickets'],['getTickets']]);
+  assert.deepEqual(await adds([row(['formatDate'],'root.7')]),[['root.7',['formatDate'],'Clef p=0.800: its assignment covers them']]);
+  // Once per name per child: with every child asked, nothing is asked again and the reader changes.
+  const refusals=events(room,'promise_refused').length;
+  assert.deepEqual(await adds([row(['getTickets'])]),[],'once per name per provider');
+  assert.equal(events(room,'promise_refused').length,refusals,'nobody left to ask');
   // The rule itself: D9 retasks the provider when the room offers an add; D6 otherwise; never the model's.
   const p={kind:'mismatch',parties:[{owner:'root.6',role:'reader'},{owner:'root.2',role:'provider'}],facts:{names:['getTickets'],unpromised:true},flags:{},trail:[]};
   const ctx={holder:'root',parent:null,kindOf,canRelink:()=>false,maxHops:8};

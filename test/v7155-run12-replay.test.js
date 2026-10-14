@@ -119,7 +119,7 @@ test('v7.15.5 merge: run12 replay: factory rejected, uses planned, entry compose
   assert.equal(calls.runner.length,1);
   assert.deepEqual(calls.runner[0].operations_to_test.map(o=>o.method),['createTicket','deleteTicket','viewTicket','updateTicket']);
   assert.equal(body('run_passed').length,1);
-  assert.equal(calls.manager.length+calls.triage.length,0);
+  assert.equal(calls.manager.length,0);
 });
 
 test('v7.15.5 merge: run12 replay: an entry that keeps run12\'s two methods is accepted after three returns, and coverage files view and update before any runner call, leading with the plan\'s contract',async()=>{

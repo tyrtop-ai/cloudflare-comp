@@ -216,13 +216,14 @@ test('v7.15.4: after 3 returns the done is accepted and the manager gets a contr
 const runnerTest="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.create({ title: 'T' }, 'tickets.json');\n  assert.equal((await app.view(t.id, 'tickets.json')).title, 'T');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
 const failure="node:internal/process/promises:394\n    triggerUncaughtException(err, true /* fromPromise */);\n    ^\n\nAssertionError [ERR_ASSERTION]: An error should be thrown when viewing a deleted ticket\n    at /work/build-LAjUSl/glue/smoke.js:38:3 {\n  generatedMessage: false\n}\n\nNode.js v22.23.3\n";
 // at: the path the Container's report names (a frame in that module).
-async function compiled({entry=run11.entry,planned=true,fail=false,triage=()=>null,at='glue/smoke.js',files:more={}}={}) {
+async function compiled({entry=run11.entry,planned=true,fail=false,clef=null,at='glue/smoke.js',line=38,message='An error should be thrown when viewing a deleted ticket',files:more={}}={}) {
+  const out=failure.replace('smoke.js:38:3',`smoke.js:${line}:3`).replace('An error should be thrown when viewing a deleted ticket',message);
   const executor={build:async({fingerprint,files})=>{
     const snapshot_hash=await snapshotHash(files);
     if(!fail||!files['glue/smoke.js'])return verifyBuild({fingerprint,snapshot_hash,files});
-    return {fingerprint,snapshot_hash,passed:false,issues:[{path:at,kind:'source',detail:`smoke failed (exit 1): ${failure}`}],checks:[{name:'smoke',exit_code:1,log:failure}],log:`smoke: exit 1\n${failure}`};
+    return {fingerprint,snapshot_hash,passed:false,issues:[{path:at,kind:'source',detail:`smoke failed (exit 1): ${out}`}],checks:[{name:'smoke',exit_code:1,log:out}],log:`smoke: exit 1\n${out}`};
   }};
-  const {room,calls}=liveRoom({runner:()=>runnerTest,triage,executor});
+  const {room,calls}=liveRoom({runner:()=>runnerTest,clef,executor});
   await room.provision('root',null,'Root objective',GOAL,...(planned?[ROOT_PROMISE]:[]));room.set('goal',GOAL);
   const put=async(parent,list)=>{
     await room.spawn(parent,list.map(([label,,,fns])=>({label,task:`Write ${label}.`,interfaces:planned?fns:[]})));
@@ -251,7 +252,7 @@ test('v7.15.4: run11 replay: an entry whose imports reach no module that exports
   const {room,calls,compiler,files}=await compiled();
   assert.deepEqual([...files.keys()].sort(),Object.values(PATHS).sort(),'run11\'s linked paths');
   assert.equal(calls.runner.length,0,'no test is written or run against dead code');
-  assert.equal(calls.triage.length,0);
+  assert.equal(calls.clef.length,0);
   const [p,...more]=openProblems(room,'root');
   assert.equal(more.length,0,trace(room));
   assert.deepEqual([p.kind,p.source,p.parties[0].path],['entry',compiler.id,PATHS.entry]);
@@ -288,50 +289,63 @@ test('v7.15.4 review: start() methods whose performers the entry does not reach 
   assert.equal(opaque.calls.runner.length,1,trace(opaque.room));
 });
 
-test('v7.15.4: triage of a failure in run11\'s dead read module goes to the entry; review: so does a verdict on the entry, naming the operation performers it does not import',async()=>{
-  const {room,calls}=await compiled({entry:wiredLinked,fail:true,triage:()=>({file:PATHS.read,problem:verdict})});
+// v7.15.6 (run13): no triage and no entry default. A failure with no frame
+// is a requirement: the method under test names its performer per the plan
+// (R2c), and the function the message names is its provider party.
+test('v7.15.6: a failure with no frame is routed by the method under test to its performer, never to the entry by default',async()=>{
+  const {room,calls}=await compiled({entry:wiredLinked,fail:true});
   assert.equal(calls.runner.length,1);
-  assert.deepEqual(calls.triage[0].modules.map(m=>m.path).sort(),[PATHS.create,PATHS.write,PATHS.view,PATHS.update,PATHS.del,PATHS.entry].sort(),'triage sees only the code the entry reaches');
   const [p,...more]=openProblems(room,'root');
   assert.equal(more.length,0,trace(room));
-  assert.deepEqual([p.kind,p.parties[0].path,p.parties[0].owner],['run',PATHS.entry,'root.6']);
-  assert.ok(p.detail.startsWith(`Triage blamed ${PATHS.read}, which no module the entry reaches imports, so its code never runs. Triage: ${verdict}`),p.detail);
-  assert.match(events(room,'run_triage')[0].body,new RegExp(`^Triage attributes the failed run to ${PATHS.entry}: Triage blamed ${PATHS.read}`));
-  // A verdict on a module the entry reaches is kept.
-  const kept=await compiled({entry:wiredLinked,fail:true,triage:()=>({file:PATHS.create,problem:'createTicket must await writeData.'})});
-  assert.equal(openProblems(kept.room,'root')[0].parties[0].path,PATHS.create);
-  assert.match(openProblems(kept.room,'root')[0].detail,/^Triage: createTicket must await writeData\. The runner's test failed/);
-  // Methods no promise's words perform pass the gate; triage, shown only what the entry reaches, names the entry.
+  assert.deepEqual([p.kind,p.parties.map(x=>x.path),p.facts.requirement.method,p.facts.requirement.frames],['run',[''],'view',[]]);
+  assert.equal(p.facts.requirement.text,'An error should be thrown when viewing a deleted ticket');
+  assert.ok(p.detail.startsWith('The runner\'s test failed: smoke failed (exit 1)'),p.detail);
+  assert.equal(events(room,'run_triage').length,0);
+  await room.turn('root');
+  assert.equal(calls.clef.length+calls.manager.length,0,'no model call');
+  assert.deepEqual(room.problems('id=?',p.id).map(x=>[x.status,x.assignee,x.trail.at(-1).rule]),[['assigned','root.3','R2c']]);
+  const sent=room.receive('root.3').filter(m=>m.body.startsWith('[build:repair] ')).map(m=>room.buildRepairMessage(m.body.split(' ')[1]));
+  assert.ok(sent[0].startsWith('Your viewTicket(id, filePath) ("retrieves a specific ticket by ID"), which start() returns as view, must satisfy: An error should be thrown when viewing a deleted ticket. Test line 6: assert.equal((await app.view(t.id, \'tickets.json\')).title, \'T\'). What the other side provides: deleteTicket.js exports: '),sent[0]);
+  assert.ok(sent[0].length<=900&&sent[0].endsWith(' Publish the FULL updated file.'),sent[0]);
+  // Methods no promise's words perform pass the gate; a failure before any call of the test, with no frame, no name and no method, is ranked by Clef (R2d): the entry is no default, Clef names it.
   const memory=`const { deleteTicket } = require('${linkedPaths.del}');\nconst tickets = {};\nconst add = (data) => { const id = Date.now(); tickets[id] = { id, ...data }; return tickets[id]; };\nconst show = (id) => { const t = tickets[id]; if (!t) throw new Error('Ticket not found'); return t; };\nconst edit = (id, data) => { tickets[id] = { ...tickets[id], ...data }; return tickets[id]; };\nconst remove = (id, filePath) => deleteTicket(id, filePath);\nexports.start = () => ({ add, show, edit, remove });\n`;
-  const note='entryModule.js does not import createTicket from "createTicket", viewTicket from "viewTicket", updateTicket from "updateTicket", which other pieces promise, so their code never runs: import each and call it from the method start() returns for it.';
-  const own=await compiled({entry:memory,fail:true,triage:()=>({file:PATHS.entry,problem:'show must throw Ticket not found.'})});
-  assert.deepEqual(own.calls.triage[0].modules.map(m=>m.path).sort(),[PATHS.del,PATHS.entry].sort());
-  assert.ok(openProblems(own.room,'root')[0].detail.startsWith(`${note} Triage: show must throw Ticket not found.`),openProblems(own.room,'root')[0].detail);
-  // A frame in the entry: the same note, with no triage.
+  const own=await compiled({entry:memory,fail:true,line:3,message:'The application should begin with no tickets',clef:input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label==='entryModule'?0.9:0.2}]))})});
+  const [o]=openProblems(own.room,'root');
+  assert.deepEqual([o.parties[0].path,o.facts.requirement.method,o.facts.requirement.names,o.facts.requirement.test_line],['','',[],undefined]);
+  await own.room.turn('root');
+  assert.equal(own.calls.clef.length,1);
+  assert.deepEqual(own.calls.clef[0].state.children.map(c=>c.label),['dataStore','createTicket','viewTicket','updateTicket','deleteTicket','entryModule']);
+  assert.deepEqual(own.room.problems('id=?',o.id).map(x=>[x.assignee,x.trail.at(-1).rule]),[['root.6','R2d']]);
+  // A frame in the entry: the entry's module is the site (R2b), with no model.
   const frame=await compiled({entry:memory,fail:true,at:PATHS.entry});
-  assert.equal(frame.calls.triage.length,0);
   const [f]=openProblems(frame.room,'root');
-  assert.deepEqual([f.kind,f.parties[0].path],['run',PATHS.entry]);
-  assert.ok(f.detail.startsWith(`${note} smoke failed (exit 1)`),f.detail);
+  assert.deepEqual([f.kind,f.parties.map(x=>x.path),f.facts.requirement.frames],['run',['',PATHS.entry],[{path:PATHS.entry,fn:''}]]);
+  await frame.room.turn('root');
+  assert.deepEqual(frame.room.problems('id=?',f.id).map(x=>[x.assignee,x.trail.at(-1).rule]),[['root.6','R2b']]);
+  assert.equal(frame.calls.clef.length,0);
 });
 
 test('v7.15.4 review: a frame is proof its module ran; loads the static walk cannot follow give every module the doubt',async()=>{
-  // The walk does not reach the read module from the wired entry, but a frame names it: it ran, and it is blamed.
+  // The walk does not reach the read module from the wired entry, but a frame names it: it ran, and it is a frame the manager routes by (R2b).
   const {room,calls}=await compiled({entry:wiredLinked,fail:true,at:PATHS.read});
-  assert.equal(calls.triage.length,0);
-  assert.deepEqual(openProblems(room,'root').map(p=>[p.kind,p.parties[0].path]),[['run',PATHS.read]],trace(room));
+  assert.deepEqual(openProblems(room,'root').map(p=>[p.kind,p.parties.map(x=>x.path)]),[['run',['',PATHS.read]]],trace(room));
+  await room.turn('root');
+  assert.deepEqual(room.problems("kind='run'").map(x=>[x.holder,x.trail.at(-1).rule]),[['root.1','R2b']],'the dataStore branch, which wrote it');
+  assert.equal(calls.clef.length,0);
   const load=(src)=>L.reachableModules(new Map([['components/e/entry.js',src],['components/a/a.js','module.exports = {};']]),'components/e/entry.js');
   for(const src of ["const r = require;\nconst a = r('../a/a.js');","const a = module.require('../a/a.js');","const { createRequire } = require('node:module');\nconst a = createRequire(__filename)('../a/a.js');","const { Worker } = require('node:worker_threads');\nnew Worker(require('path').join(__dirname, '../a/a.js'));"])
     assert.equal(load(src+'\nexports.start = () => ({});'),null,src);
   assert.deepEqual([...load("const a = require('../a/a.js');\nif (require.main === module) console.log(require.resolve('../a/a.js'));\nexports.start = () => a;")],['components/e/entry.js','components/a/a.js'],'require.main and require.resolve load nothing');
 });
 
-test('v7.15.4: a split room without promises runs run11\'s entry as before: no entry problem, and triage\'s verdict stands',async()=>{
-  const {room,calls}=await compiled({planned:false,fail:true,triage:()=>({file:PATHS.view,problem:'viewTicket must throw.'})});
+test('v7.15.4: a split room without promises runs run11\'s entry as before: no entry problem, and the failure is routed by Clef\'s ranks (v7.15.6)',async()=>{
+  const {room,calls}=await compiled({planned:false,fail:true,clef:input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:input.state.children[Number(k.split('_')[1])].label==='viewTicket'?0.9:0.2}]))})});
   assert.equal(calls.runner.length,1,'the runner\'s test runs');
   assert.equal(events(room,'entry_unreached').length,0);
-  assert.deepEqual(calls.triage[0].modules.map(m=>m.path).sort(),Object.values(PATHS).sort());
-  assert.equal(openProblems(room,'root')[0].parties[0].path,PATHS.view);
+  const [p]=openProblems(room,'root');
+  assert.deepEqual([p.parties[0].path,p.facts.requirement.method],['','view']);
+  await room.turn('root');
+  assert.deepEqual(room.problems('id=?',p.id).map(x=>[x.assignee,x.trail.at(-1).rule]),[['root.3','R2d']]);
   const passed=await compiled({planned:false});
   assert.ok(passed.room.read('compile_passed',null),trace(passed.room));
 });

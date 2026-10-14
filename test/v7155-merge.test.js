@@ -160,9 +160,11 @@ test('v7.15.5 merge: D9 never retasks an operation piece to keep data while a da
   for(const [id,[p,c]] of Object.entries(src)){room.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);await room.putFile(id,p,c);room.db().exec("UPDATE agents SET status='done' WHERE id=?",id);}
   const b=await room.scheduleAssembly('root');await room.turn(b.id);
   for(let i=0;i<3;i++)await room.turn('root');
-  assert.equal(events(room,'promise_added').length,0,trace(room));
+  // v7.15.6 (R5): the operation piece is never asked; the data piece, whose assignment covers the name (Clef), takes it on its promise, and the reader keeps its import.
+  assert.deepEqual(events(room,'promise_added').map(e=>e.body.split(': Delete')[0]),['"Ticket Data Manager" now promises getAllTickets() (Clef p=0.900: its assignment covers them)'],trace(room));
   assert.deepEqual(room.promisedOf('root.3').map(f=>f.name),['createTicket']);
-  assert.match(events(room,'problem_assigned').map(e=>e.body).join('\n'),/to Delete Ticket Operation/,trace(room));
+  assert.deepEqual(room.promisedOf('root.2').map(f=>f.name),['readTickets','saveTickets','getAllTickets']);
+  assert.doesNotMatch(events(room,'problem_assigned').map(e=>e.body).join('\n'),/to Delete Ticket Operation|to Create Ticket Operation/,trace(room));
 });
 
 test('v7.15.5 merge: uses keep every name and import line within their budget; a long splitter task never costs the composed start its import lines',async()=>{
