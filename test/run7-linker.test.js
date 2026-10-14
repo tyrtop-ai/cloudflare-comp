@@ -103,7 +103,8 @@ test('round 1: the store\'s real names reach the static check, the path links, a
   assert.deepEqual(L.autoLink(round1,blind),[],'v7.13.3: no module exports anything by name');
   assert.deepEqual(L.autoLink(round1,sur).map(e=>[e.file,e.replace,e.reason]),[[P.update,STORE_PATH,'only module exporting updateTicket'],[P.del,STORE_PATH,'only module exporting deleteTicket']]);
   const linked=new Map([...round1].map(([p,c])=>[p,c.replace("'./ticketStore'",STORE_PATH)]));
-  assert.deepEqual(L.importMismatches(linked,blind).map(m=>[m.path,m.detail]),[[P.create,"destructures 'create' from "+P.store],[P.update,"destructures 'updateTicket' from "+P.store],[P.del,"destructures 'deleteTicket' from "+P.store]].map(([p,d])=>[p,d+', which exports: nothing by name']),'the live problems sent to three workers');
+  // v7.15.6 integration (mirror audit): a store whose exports the parse cannot list is given the doubt; the live v7.13.3 check read it as "exports: nothing by name" and sent the problem to three workers.
+  assert.deepEqual(L.importMismatches(linked,blind),[],'the doubt, where v7.13.3 blamed three readers');
   assert.deepEqual(L.importMismatches(linked,sur).map(m=>[m.path,m.detail]),[[P.create,`destructures 'create' from ${P.store}, ${EXPORTS}`]]);
   // The model's edit, with the path linked already and in the same edit.
   const before=linked.get(P.create),find=`const { create } = require(${STORE_PATH});`,replace=find.replace('{ create }','{ createTicket }'),alias=find.replace('{ create }','{ createTicket: create }');

@@ -1356,7 +1356,8 @@ export class ControlRoom extends DurableObject {
     // stubsOf), left out of the surface the linker resolves by (the entry's
     // stub deleteTicket.js was "the only module exporting" it).
     const stubs=this.stubsOf(builderId),shadows=new Map(js.map(p=>[p,new Set(stubs(p,originals.get(p)).shadows)]));
-    const owner=n=>{if(GENERIC_NAMES.has(n))return null;const out=js.filter(p=>carries(ownerOf(p),n)&&exportNames(originalSurfaces.get(p)).names.has(n));return out.length===1?out[0]:null;},labelOf=n=>[...plan.get(n)||[]].map(c=>this.node(c)?.label||c).join(' and ');
+    // Integration (mirror audit, run7): a carrier whose one module the parser cannot read (module.exports = make()) is still the owner, as home reads it; the doubt goes to the plan, and a name really missing shows at run time as a link failure of the import.
+    const owner=n=>{if(GENERIC_NAMES.has(n))return null;const mods=js.filter(p=>carries(ownerOf(p),n)),out=mods.filter(p=>exportNames(originalSurfaces.get(p)).names.has(n));return out.length===1?out[0]:mods.length===1&&opaqueSurface(originalSurfaces.get(mods[0]))?mods[0]:null;},labelOf=n=>[...plan.get(n)||[]].map(c=>this.node(c)?.label||c).join(' and ');
     for(const [p,ns] of shadows)if(ns.size)this.event(builderId,'link_shadow_ignored',`${p}: exports ${[...ns].join(', ')}, which the plan gives to ${[...new Set([...ns].map(labelOf))].join(' and ')}; not a link target, the owner's module is.`);
     const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider,ownership:{owner,shadow:(p,n)=>!!shadows.get(p)?.has(n)}}).filter(e=>!isSplit(e.file,e.specifier)));
     autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));

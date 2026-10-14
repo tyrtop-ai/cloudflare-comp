@@ -467,3 +467,29 @@ test('integration: run9\'s live rounds replayed cost 7 rounds, 7 Clef rankings a
   assert.deepEqual([same.room.get('status'),same.room.get('repair_rounds:root'),verdicts(same.room),same.calls.manager.map(u=>u.problems[0].trigger)],['failed','4',['progress','no progress','no progress','no progress'],['M4','M4']],trace(same.room));
   assert.match(same.room.node('root').summary,/made no progress in 3 repair rounds in a row \(the per-manager limit\)/);
 });
+
+// ------------------------------------------------------------------ the mirror audit's one small fix
+// Run7's store built its API with an immediately invoked function, which
+// the parser then read as exporting nothing, and three readers were told the
+// store "exports nothing by name". A surface this parse cannot list is given
+// the doubt everywhere else; the linker's ownership map gave none, so a
+// reader's import of the promised name stayed unresolved and went to the
+// reader. The plan's owner is the owner, whether or not the parse lists it.
+test('integration: a carrier whose one module the parser cannot read is still the owner for the linker: a reader\'s import of its promised name binds by the plan with no model call and no problem',async()=>{
+  const store="const make = () => {\n  const tickets = [];\n  return { readTickets: () => tickets.slice(), saveTickets: (list) => { tickets.splice(0, tickets.length, ...list); } };\n};\nmodule.exports = make();\n";
+  assert.equal(L.opaqueSurface(L.exportSurface('store.js',store)),true);
+  const {room,calls}=liveRoom();
+  await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
+  await pieces(room,'root',[[{label:'Entry Module',task:'Write the entry',interfaces:[ROOT_PROMISE[0]]},[['module.js',"const { viewTicket } = require('./viewTicket');\nexports.start = () => ({ viewTicket });\n"]]],
+    [{label:'Ticket Store',task:'Write the ticket store',interfaces:[fn('readTickets','returns all tickets'),fn('saveTickets','stores all tickets',['tickets'])]},[['store.js',store]]],
+    [{label:'View Ticket',task:'Write viewTicket.js',interfaces:[fn('viewTicket','returns the ticket with the given ID',['id'])]},[['viewTicket.js',"const { readTickets } = require('./readTickets');\nfunction viewTicket(id) { return readTickets().find(t => t.id === id) || null; }\nmodule.exports = { viewTicket };\n"]]]]);
+  const b=await linkBranch(room,'root');
+  assert.equal(room.node(b.id).status,'done',trace(room));
+  assert.deepEqual(openProblems(room,'root'),[]);
+  assert.equal(calls.link.length+calls.manager.length,0,'no model');
+  assert.match(events(room,'link_auto')[0].body,/viewTicket\.js: '\.\/readTickets' → '\.\.\/ticket-sto-[0-9a-f]{8}\/store\.js' \(owner of readTickets by the plan\)/);
+  const bundle=await room.linkedBundle(b.id);
+  assert.deepEqual(L.unresolvedImports(bundle),[]);
+  await room.turn(room.compilerOf('root').id);
+  assert.match(events(room,'build_checked').at(-1)?.body||trace(room),/"viewTicket":\{"type":"function"/,'the opaque store loads and start() returns the reader\'s function');
+});

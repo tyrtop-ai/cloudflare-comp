@@ -1400,9 +1400,10 @@ export function importReads(files, surfaces) {
     const target=spec=>{if(typeof spec!=='string'||!spec.startsWith('.'))return null;const r=resolveLocal(path,spec,set);return r.path&&surfaces.get(r.path)?r.path:null;};
     const listOf=names=>[...names].slice(0,14).join(', ')||'nothing by name';
     const bindings=new Map(),classes=new Map();
+    // Integration (mirror audit, run7): a target whose exports this parse cannot list (module.exports = make()) is given the doubt, never read as "exports nothing by name".
     const check=(name,to,how)=>{
       const {names}=exportNames(surfaces.get(to));
-      if(name)out.push({path,target:to,name,ok:names.has(name),detail:`${how} '${name}' from ${to}, which exports: ${listOf(names)}`});
+      if(name&&!opaqueSurface(surfaces.get(to)))out.push({path,target:to,name,ok:names.has(name),detail:`${how} '${name}' from ${to}, which exports: ${listOf(names)}`});
     };
     walk(ast,node=>{
       if(node.type==='VariableDeclarator'&&node.init?.type==='CallExpression'&&node.init.callee?.type==='Identifier'&&node.init.callee.name==='require'&&node.init.arguments[0]?.type==='Literal') {
