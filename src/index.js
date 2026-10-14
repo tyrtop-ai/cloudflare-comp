@@ -71,9 +71,10 @@ const FAILURE_EVENTS = ['error','missing_code','non_code_rejected','split_reject
 const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
 // v7.15.13 (run20): the parameters of a function a module exports, from its
 // surface (a named export, a default function, a default object's member, a
-// class's or an instance's method), null for any other name: a parameter
-// error's subject is read against them (readRequirement).
-const paramsIn = (s,name) => {const f=[...(s?.named||[]),...(s?.default?.type==='function'?[s.default]:[]),...(s?.default?.members||[]),...(s?.default?.methods||[])].find(x=>x?.type!=='class'&&String(x?.name||'').replace(/^static /,'')===name&&Array.isArray(x.params));return f?f.params.map(String):null;};
+// class's or an instance's method, a named class's too: review #11), null
+// for any other name: a parameter error's subject is read against them
+// (readRequirement).
+export const paramsIn = (s,name) => {const f=[...(s?.named||[]),...(s?.named||[]).filter(n=>n.type==='class').flatMap(n=>n.methods||[]),...(s?.default?.type==='function'?[s.default]:[]),...(s?.default?.members||[]),...(s?.default?.methods||[])].find(x=>x?.type!=='class'&&String(x?.name||'').replace(/^(?:static |get |set )/,'')===name&&Array.isArray(x.params));return f?f.params.map(String):null;};
 // One module's exports on one line, for the facts a worker hears.
 const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
 // What start() returned, as the Container describes it, holds something the
@@ -1909,9 +1910,8 @@ export class ControlRoom extends DurableObject {
     const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
     const ids=list.map(x=>{
       const row={holder:manager,kind:x.kind,stage,source,input,parties:this.partiesOf(via,x),detail:x.detail,facts:{...x.facts,via},evidence:x.evidence};
-      // v7.15.13 (run20, R3): and a child that changed a file for the failure without progress (flags.exhausted) stays skipped while the failure stays the same.
-      const same=prior.filter(p=>failureKey(p)===failureKey(row)),declined=same.find(p=>p.flags.declined?.length)?.flags.declined,exhausted=same.find(p=>p.flags.exhausted?.length)?.flags.exhausted;
-      return this.insertProblem({...row,flags:{wave,...declined?{declined}:{},...exhausted?{exhausted}:{}}});
+      const declined=prior.find(p=>p.flags.declined?.length&&failureKey(p)===failureKey(row))?.flags.declined;
+      return this.insertProblem({...row,flags:{wave,...declined?{declined}:{}}});
     });
     if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,fingerprint:this.assemblyFingerprint(manager),stage,problems:ids,ts:Date.now()});
     else this.save(`link_reported:${manager}`,{fingerprint:input,stage,problems:ids,ts:Date.now()});
@@ -2404,9 +2404,10 @@ export class ControlRoom extends DurableObject {
         const frames=[first,...more].filter(p=>files.has(p)),failure=failureHead(output.get(detail)),own=issueOf.get(detail)?.facts||{};
         const path=files.has(first)?first:'',target=errorTarget(files,path,detail);
         if(kind==='run'&&!(isInterfaceError(detail)&&frames.length&&this.linkTarget(files,path,detail,surfaces))) {
-          // v7.15.13 (run20, R2): the surfaces give the thrown-in function's parameters, the linked copy the frame's line (a member read's receiver).
-          const surfaceOf=p=>surfaces.get(p)||exportSurface(p,files.get(p));
-          const requirement=readRequirement(test,output.get(detail),[...files.keys()].filter(p=>LINKABLE.test(p)),p=>providedNames(surfaceOf(p)),paramsOf,(p,fn)=>paramsIn(surfaceOf(p),fn),(p,n)=>String(files.get(p)??'').split('\n')[n-1]||'');
+          // v7.15.13 (run20, R2): the surfaces give the thrown-in function's parameters, the linked copies the code at each frame, the plan the callee's promise (the nearest promise of the name at or above the piece that wrote the module).
+          const surfaceOf=p=>surfaces.get(p)||exportSurface(p,files.get(p)),plan=this.planned()?this.builderOf(this.node(id)?.parent):null;
+          const promiseOf=(p,fn)=>{for(let o=plan&&this.buildSourceOrigin(plan.id,p)?.owner;o;o=this.node(o)?.parent){const f=this.promisedOf(o).find(x=>x.name===fn);if(f)return f;}return null;};
+          const requirement=readRequirement(test,output.get(detail),[...files.keys()].filter(p=>LINKABLE.test(p)),p=>providedNames(surfaceOf(p)),paramsOf,{signatureOf:(p,fn)=>paramsIn(surfaceOf(p),fn),sourceOf:p=>files.has(p)?String(files.get(p)):null,promiseOf});
           // A module the Container names without a stack line is a frame too, after those the stack gives.
           requirement.frames.push(...frames.filter(p=>!requirement.frames.some(f=>f.path===p)).map(path=>({path,fn:''})));
           // The test slice's lead on an assertion the runner invented stays first (run13's line 55).
@@ -3375,19 +3376,22 @@ export class ControlRoom extends DurableObject {
   // from its revision key) and left the failure as it was is no decline
   // (reopenStalled), so run20's round 3 went back to Analyze function,
   // which had changed analyze.js for nothing in round 2, until the budget
-  // ran out. It is skipped for this failure as a declined child is
-  // (flags.exhausted, read with declined by routeRequirements and carried
-  // by the failure key as declines are, reportProblems); a new failure
-  // clears it. At Root with every candidate declined or exhausted: the
+  // ran out. It is skipped this round as a declined child is
+  // (flags.exhausted, read with declined by routeRequirements). Review
+  // (#7-#9): for this round only, never carried to the next wave (a piece
+  // whose first try was partial is asked again after another has tried);
+  // only when that round's ticket held this failure alone (a fix of
+  // another problem on it is no try at this one) and this wave makes no
+  // progress. At Root with every candidate declined or exhausted: the
   // model once, then the requirement closes, as before.
   routeExhausted(m) {
     const waves=this.read(`repair_waves:${m}`,[]);
     for(const p of this.problemsHeld(m).filter(p=>p.facts?.requirement&&p.facts.failure)) {
       const prev=waves.filter(w=>w!==p.flags.wave).at(-1);
-      if(!prev)continue;
+      if(!prev||this.waveProgress(m,p.flags.wave))continue;
       for(const r of this.problems('flags LIKE ?',`%"wave":${JSON.stringify(prev)}%`)) {
-        const w=r.assignee&&this.node(r.assignee),now=w&&this.revisionKey(w.id);
-        if(!w||w.parent!==m||r.id===p.id||!r.flags.revs||r.flags.revs===now||failureKey(r)!==failureKey(p)||(p.flags.exhausted||[]).includes(w.id))continue;
+        const w=r.assignee&&this.node(r.assignee),now=w&&this.revisionKey(w.id),ticket=w&&query(this.db(),'SELECT problems FROM repair_tickets WHERE worker=? AND problems LIKE ? ORDER BY created DESC LIMIT 1',w.id,`%${r.id}%`)[0],alone=!!ticket&&parse(ticket.problems,[]).length===1;
+        if(!w||w.parent!==m||r.id===p.id||!alone||!r.flags.revs||r.flags.revs===now||failureKey(r)!==failureKey(p)||(p.flags.exhausted||[]).includes(w.id))continue;
         const before=new Map(parse(r.flags.revs,[])),changed=parse(now,[]).filter(([path,rev])=>before.get(path)!==rev).map(([path])=>path.split('/').pop());
         if(this.moveProblem(p,{flags:{...p.flags,exhausted:[...(p.flags.exhausted||[]),w.id]}}))
           this.event(m,'route_exhausted',`${w.label} changed ${changed.join(', ')||'its files'} for this failure last round and it fails the same; the manager routes it elsewhere.`,w.id);
