@@ -95,8 +95,25 @@ test('v7.15.5: goalPerformers finds run12\'s operation pieces by the goal\'s wor
     {operation:'update tickets',method:'updateTicket',label:'Update Ticket Operation'},{operation:'delete tickets',method:'deleteTicket',label:'Delete Ticket Operation'}]);
   // Two functions with the verb and neither named for the object: none is guessed.
   assert.deepEqual(C.goalPerformers('Build a tracker to create and close tickets.',[{label:'A',items:[fn('createIssue','')]},{label:'B',items:[fn('createRecord','')]},{label:'C',items:[fn('closeTicket','')]}]).map(o=>o.method),['closeTicket']);
-  // The only function with the verb performs it; an operation already listed is not looked for.
-  assert.deepEqual(C.goalPerformers('Build a tracker to create and close tickets.',[{label:'A',items:[fn('createIssue','')]},{label:'C',items:[fn('closeTicket','')]}],[{operation:'close a ticket',method:'closeTicket',label:'C'}]).map(o=>o.method),['createIssue']);
+  // The only function with the verb performs it when its piece's label names the verb; an operation already listed is not looked for.
+  assert.deepEqual(C.goalPerformers('Build a tracker to create and close tickets.',[{label:'Create Issue',items:[fn('createIssue','')]},{label:'C',items:[fn('closeTicket','')]}],[{operation:'close a ticket',method:'closeTicket',label:'C'}]).map(o=>o.method),['createIssue']);
+});
+
+test('v7.15.5 review: goalPerformers takes a performer only from a piece whose label names the verb or that promises it alone, never a storage function',()=>{
+  // Run12's split with the create piece promising addTicket: the factory createData is no create function.
+  const factory=kids.map(k=>k.label==='Create Ticket Operation'?{label:'Add Ticket Operation',items:[fn('addTicket','Adds a new ticket to the data store',['data'])]}:k);
+  assert.deepEqual(C.goalPerformers(GOAL,factory).map(o=>o.method),['viewTicket','updateTicket','deleteTicket']);
+  // A store's readTickets is no read function (run11's read: readData); a Get piece's getTicket is not read either.
+  const store=[{label:'Entry',items:[START]},{label:'Ticket Store',items:[fn('readTickets'),fn('writeTickets')]},{label:'Create',items:[fn('createTicket')]},{label:'Get',items:[fn('getTicket')]},{label:'Update',items:[fn('updateTicket')]},{label:'Delete',items:[fn('deleteTicket')]}];
+  const crud='Build a small issue tracker that lets someone create, read, update, and delete tickets.',plan=C.goalPerformers(crud,store);
+  assert.deepEqual(plan.map(o=>o.method),['createTicket','updateTicket','deleteTicket']);
+  const api={type:'object',members:{create:{type:'function',name:'createTicket'},update:{type:'function',name:'updateTicket'},delete:{type:'function',name:'deleteTicket'}}};
+  const {gaps}=C.mappedGaps(api,[{operation:'create a ticket',method:'create'},{operation:'read a ticket',method:null},{operation:'update a ticket',method:'update'},{operation:'delete a ticket',method:'delete'}],plan,C.goalOperations(crud));
+  assert.doesNotMatch(C.gapProblem(api,gaps,'',946,plan),/readTickets/);
+  // Only a function named for the verb in a piece the label does not name: none (run12's createData was the only create function).
+  assert.deepEqual(C.goalPerformers('Build a tracker to create and close tickets.',[{label:'A',items:[fn('createIssue')]},{label:'C',items:[fn('closeTicket')]}]).map(o=>o.method),['closeTicket']);
+  // A piece promising its operation alone, named for the verb and the object, performs it whatever its label.
+  assert.deepEqual(C.goalPerformers('Build a tracker to create and close tickets.',[{label:'Tickets',items:[fn('createTicket')]},{label:'Ticket Store',items:[fn('createTicketStore')]},{label:'C',items:[fn('closeTicket')]}]).map(o=>o.method),['createTicket','closeTicket']);
 });
 
 test('v7.15.5: mappedGaps: run12\'s mapping of create and delete leaves view and update, each named with its piece; a full API has none',()=>{
@@ -130,6 +147,43 @@ test('v7.15.5: mappedGaps: run12\'s mapping of create and delete leaves view and
   assert.equal(C.startMethods({type:'unparsed'}),null);
 });
 
+// Review probes: complete APIs the mapping lists only part of.
+const F=(name)=>({type:'function',name,params:['data']}),obj=m=>({type:'object',members:Object.fromEntries(Object.entries(m).map(([k,n])=>[k,F(n)]))});
+const maps=(...l)=>l.map(([operation,method])=>({operation,method}));
+test('v7.15.5 review: mappedGaps reads every member of start(), not only the mapped ones; an operation in other words is the model\'s call',()=>{
+  const plan=C.goalPerformers(GOAL,kids),goal=C.goalOperations(GOAL),cd=maps(['create a ticket','create'],['delete a ticket','delete']);
+  // A: four wrappers, the model maps create and delete: no gap, and the runner tests view and update too.
+  const wrappers=obj({create:'create',view:'view',update:'update',delete:'delete'});
+  assert.deepEqual(C.mappedGaps(wrappers,cd,plan,goal),{gaps:[],total:4,extra:[{operation:'view tickets',method:'view'},{operation:'update tickets',method:'update'}]});
+  // The model leaves out update alone (wrapper-omit), in a planned room and at an atomic top.
+  const three=maps(['create a ticket','create'],['view a ticket','view'],['delete a ticket','delete']);
+  for(const p of [plan,[]])assert.deepEqual(C.mappedGaps(wrappers,three,p,goal),{gaps:[],total:4,extra:[{operation:'update tickets',method:'update'}]});
+  // B: an atomic top's own functions; C: bound methods, by their keys.
+  assert.deepEqual(C.mappedGaps(obj({createTicket:'createTicket',viewTicket:'viewTicket',updateTicket:'updateTicket',deleteTicket:'deleteTicket'}),maps(['create a ticket','createTicket'],['delete a ticket','deleteTicket']),[],goal).extra.map(o=>o.method),['viewTicket','updateTicket']);
+  assert.deepEqual(C.mappedGaps(obj({create:'bound create',view:'bound get',update:'bound update',delete:'bound remove'}),cd,plan,goal).gaps,[]);
+  // D: wrappers in other words, all four mapped in the model's own words: synonyms are its call.
+  const d=C.mappedGaps(obj({add:'add',get:'get',edit:'edit',remove:'remove'}),maps(['add a ticket','add'],['get a ticket','get'],['edit a ticket','edit'],['remove a ticket','remove']),plan,goal);
+  assert.deepEqual([d.gaps,d.total],[[],4]);
+  // Run12 still gaps: goalOperation1 and goalOperation2 name no verb.
+  assert.equal(C.gapList(C.mappedGaps(run12Api,run12Coverage.operations,plan,goal).gaps),'view tickets (viewTicket from "View Ticket Operation"), update tickets (updateTicket from "Update Ticket Operation")');
+  // A member bound to a plan function performs that function's operation alone: view: createTicket is no view.
+  const wrong={type:'object',members:{create:F('createTicket'),view:F('createTicket'),delete:F('deleteTicket')}};
+  assert.deepEqual(C.mappedGaps(wrong,cd,plan,goal).gaps.map(g=>g.fn),['viewTicket','updateTicket']);
+  // One operation in other words stands for one: add for create, and update is still missing; the total counts it once.
+  const add=C.mappedGaps(obj({add:'add',view:'view',delete:'delete'}),maps(['add a ticket','add'],['view a ticket','view'],['delete a ticket','delete']),plan,goal);
+  assert.deepEqual([add.gaps.map(g=>g.fn),add.total],[['createTicket','updateTicket'],4]);
+  // Four mapped, two of them views and none an update: update is a gap.
+  const views=C.mappedGaps(obj({create:'create',view:'view',list:'list',delete:'delete'}),maps(['create a ticket','create'],['view a ticket','view'],['view all tickets','list'],['delete a ticket','delete']),plan,goal);
+  assert.equal(C.gapList(views.gaps),'update tickets (updateTicket from "Update Ticket Operation")');
+});
+
+test('v7.15.5 review: goalOperations reads no preposition as the object and skips a determiner',()=>{
+  assert.deepEqual(C.goalOperations('Build a forum with posts and comments on threads.'),[]);
+  assert.deepEqual(C.goalOperations('Build a notes app with lists and tags for each note.'),[]);
+  assert.deepEqual(C.goalOperations('Build a tracker to create, view, update and delete some tickets.').map(o=>o.operation),['create tickets','view tickets','update tickets','delete tickets']);
+  assert.deepEqual(C.goalOperations('Build a tracker where users create and close their own tickets.').map(o=>o.operation),['create tickets','close tickets']);
+});
+
 test('v7.15.5: run12 replayed: start() returning goalOperation1 and goalOperation2 is an entry gap naming viewTicket and updateTicket; the runner is never asked',async()=>{
   const {room,calls,paths}=await run12Room(run12,{coverage:()=>run12Coverage,runner:()=>{throw new Error('the runner is never asked');}});
   assert.match(events(room,'build_checked').at(-1)?.body||'',/"goalOperation1":\{"type":"function","name":"createTicket"/,trace(room));
@@ -141,9 +195,12 @@ test('v7.15.5: run12 replayed: start() returning goalOperation1 and goalOperatio
   const [p,...more]=openProblems(room,'root');
   assert.equal(more.length,0,trace(room));
   assert.deepEqual([p.kind,p.parties[0].owner,p.parties[0].path],['entry','root.1',paths.entry]);
-  assert.match(p.detail,/^start\(\) returns no method for: view tickets \(viewTicket from "View Ticket Operation"\), update tickets \(updateTicket from "Update Ticket Operation"\); it returned methods goalOperation1, goalOperation2\. /);
-  assert.match(p.detail,/The plan's operation functions: createTicket \(create tickets\) from Create Ticket Operation; viewTicket \(view tickets\) from View Ticket Operation; updateTicket \(update tickets\) from Update Ticket Operation; deleteTicket \(delete tickets\) from Delete Ticket Operation\./);
+  // Review: each missing function's piece once, in the plan sentence, and an import line with the name as the path.
+  assert.match(p.detail,/^start\(\) returns no method for: view tickets \(viewTicket\), update tickets \(updateTicket\); it returned methods goalOperation1, goalOperation2\. /);
+  assert.match(p.detail,/The plan's operation functions: createTicket \(create tickets\) from Create Ticket Operation; viewTicket \(view tickets\) from View Ticket Operation; updateTicket \(update tickets\) from Update Ticket Operation; deleteTicket \(delete tickets\) from Delete Ticket Operation\. Import the one for each missing operation, each on its own line \(const \{ viewTicket \} = require\('\.\/viewTicket'\)\), and return it as start\(\)'s method for that operation\./);
   assert.doesNotMatch(p.detail,/createData/);
+  // The builder's renames still fit whole (run12's ticket was 904 of 946 characters).
+  assert.ok(p.detail.length<=946&&p.detail.endsWith(`'./deleteTicket' → '../${paths.del.replace(/^components\//,'')}'.`),p.detail);
   await room.turn('root');
   assert.equal(tickets(room,'root.1').length,1,'the entry worker hears it');
   for(const id of ['root.2','root.3','root.4','root.5','root.6'])assert.equal(tickets(room,id).length,0,id);
@@ -157,6 +214,19 @@ test('v7.15.5: run12\'s pieces composed pass; a model that maps only create and 
     assert.ok(events(room,'run_passed').length,trace(room));
     assert.deepEqual(calls.runner[0].operations_to_test.map(o=>o.method),tested);
     assert.deepEqual(room.read('runner_test',null).methods,['create','delete','update','view']);
+  }
+});
+
+test('v7.15.5 review: run12\'s pieces behind wrappers pass when the model maps only some of them, or all in its own words',async()=>{
+  const wrap=(m)=>imports+`\nexports.start = () => ({ ${Object.entries(m).map(([k,f])=>`${k}: (d) => ${f}(d)`).join(', ')} });\n`;
+  const crud={create:'createTicket',view:'viewTicket',update:'updateTicket',delete:'deleteTicket'},own={add:'createTicket',get:'viewTicket',edit:'updateTicket',remove:'deleteTicket'};
+  for(const [m,coverage,tested] of [[crud,{operations:maps(['create a ticket','create'],['delete a ticket','delete'])},['create','delete','view','update']],
+    [crud,{operations:maps(['create a ticket','create'],['view a ticket','view'],['delete a ticket','delete'])},['create','view','delete','update']],
+    [own,{operations:maps(['add a ticket','add'],['get a ticket','get'],['edit a ticket','edit'],['remove a ticket','remove'])},['add','get','edit','remove']]]) {
+    const {room,calls}=await run12Room({...composed,entry:wrap(m)},{coverage:()=>coverage,runner:()=>crudTest(Object.fromEntries(Object.keys(crud).map((k,i)=>[k,Object.keys(m)[i]])))});
+    assert.equal(events(room,'api_incomplete').length,0,trace(room));
+    assert.deepEqual(calls.runner[0]?.operations_to_test.map(o=>o.method),tested,trace(room));
+    assert.ok(events(room,'run_passed').length,trace(room));
   }
 });
 
@@ -184,6 +254,35 @@ test('v7.15.5: a method-set change rewrites the runner\'s test once; the same se
   assert.equal(events(room,'run_passed').length,3,trace(room));
 });
 
+test('v7.15.5 review: an entry whose methods move between sets reuses each set\'s test, and the runner writes at most two after the first',async()=>{
+  const entryOf=m=>imports+`\nexports.start = () => ({ ${Object.entries(m).map(([k,f])=>`${k}: ${f}`).join(', ')} });\n`;
+  const A={createTicket:'createTicket',viewTicket:'viewTicket',updateTicket:'updateTicket',deleteTicket:'deleteTicket'},B={create:'createTicket',view:'viewTicket',update:'updateTicket',delete:'deleteTicket'};
+  const C={add:'createTicket',get:'viewTicket',edit:'updateTicket',remove:'deleteTicket'},keys=u=>Object.keys(JSON.parse(u.api_returned_by_start).members);
+  const coverage=u=>({operations:['create a ticket','view a ticket','update a ticket','delete a ticket'].map((operation,i)=>({operation,method:keys(u)[i]}))});
+  const runner=u=>{const k=keys(u);return crudTest({create:k[0],view:k[1],update:k[2],delete:k[3]});};
+  const {room,calls}=await run12Room({...composed,entry:entryOf(A)},{coverage,runner});
+  const round=async(m,n)=>{await room.putFile('root.1','module.js',entryOf(m)+`// round ${n}\n`);await linkAndCompile(room);};
+  // A -> B -> A -> B: one new test, for B; each set then runs its own.
+  for(const [n,m] of [B,A,B].entries())await round(m,n);
+  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length,events(room,'run_passed').length],[1,2,2,4],trace(room));
+  assert.match(events(room,'runner_reused').at(-2)?.body||'',/^Running the test written earlier for start\(\)'s methods createTicket, deleteTicket, updateTicket, viewTicket: /);
+  assert.deepEqual(room.read('runner_test',null).methods,['create','delete','update','view']);
+  // A third set: the second and last new test.
+  await round(C,3);
+  assert.deepEqual([events(room,'runner_rewritten').length,calls.runner.length,events(room,'run_passed').length],[2,3,5],trace(room));
+  // A fourth set that keeps every method the last test calls: that test runs, no model is asked.
+  await round({...C,list:'viewTicket'},4);
+  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length,events(room,'run_passed').length],[2,3,3,6],trace(room));
+  // One that drops a method it calls: the entry hears which to return, and no test is written.
+  await round({add:'createTicket',get:'viewTicket',edit:'updateTicket',drop:'deleteTicket'},5);
+  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length],[2,3,3],trace(room));
+  assert.equal(events(room,'runner_kept').at(-1)?.body,'start() no longer returns remove, which the runner\'s test calls; the test was written 3 times as start()\'s methods changed and is not written again.',trace(room));
+  const [p,...more]=openProblems(room,'root');
+  assert.equal(more.length,0,trace(room));
+  assert.deepEqual([p.kind,p.parties[0].owner],['entry','root.1']);
+  assert.match(p.detail,/^start\(\) no longer returns remove\. The runner's test calls app\.add, app\.edit, app\.get, app\.remove; it was written 3 times this run as start\(\)'s methods changed and stays as it is now\. Return each of add, edit, get, remove from start\(\) again, under that name, performing the operation it did\./);
+});
+
 test('v7.15.5: a room without a plan keeps v7.15.4\'s gate: the model\'s mapping of create and delete alone passes',async()=>{
   const app="const { createTicket, deleteTicket } = require('./tickets');\nexports.start = () => ({ goalOperation1: createTicket, goalOperation2: deleteTicket });\n";
   const store="const rows = [];\nlet next = 1;\nfunction createTicket(data) { const t = { id: next++, ...data }; rows.push(t); return t; }\nfunction deleteTicket(data) { const i = rows.findIndex(t => t.id === data.id); if (i !== -1) rows.splice(i, 1); return i !== -1; }\nmodule.exports = { createTicket, deleteTicket };\n";
@@ -201,4 +300,7 @@ test('v7.15.5: a room without a plan keeps v7.15.4\'s gate: the model\'s mapping
 
 test('v7.15.5: the runner checks effects through the other methods, not return values the API does not describe',()=>{
   assert.match(RUNNER_SYSTEM,/Assert only what the goal and the API state: check an effect through the other methods \(a deleted item can no longer be viewed\) rather than assume a return value the API does not describe\./);
+  // Review: no later phrase asks for a result to check (run12's test asserted delete returns true).
+  assert.match(RUNNER_SYSTEM,/by calling that method on app \(app\.method\(\.\.\.\)\) and check what it did\./);
+  assert.doesNotMatch(RUNNER_SYSTEM,/check its result/);
 });

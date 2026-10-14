@@ -313,7 +313,7 @@ test('room: a runner draft that skips a mapped method is turned back before it r
   await workersUnder(r,memoryGoal,memoryWorkers);
   const {compiler}=await linkAndCompile(r);
   assert.equal(calls.runner.length,2);
-  assert.match(calls.runner[1].previous_test_error,/^Your previous test was rejected before running: the test never calls createTicket \(operation create a ticket\); call app\.createTicket\(\.\.\.\) and check its result; the test never calls updateTicket \(operation update a ticket\)/);
+  assert.match(calls.runner[1].previous_test_error,/^Your previous test was rejected before running: the test never calls createTicket \(operation create a ticket\); call app\.createTicket\(\.\.\.\) and check what it did; the test never calls updateTicket \(operation update a ticket\)/);
   assert.match(calls.runner[1].previous_test_error,/the test never calls deleteTicket \(operation delete a ticket\)/);
   assert.doesNotMatch(calls.runner[1].previous_test_error,/viewTickets/);
   assert.deepEqual(calls.runner[1].operations_to_test,memoryMapping,'the correction keeps the mapping');

@@ -52,6 +52,8 @@ const isRuntimeNode = n => !!n && RUNTIME_LABELS.includes(n.label);
 // What the compiler's pipeline writes: the loader, the package and the
 // runner's test. An atomic top holds them among its own files (v7.15.2).
 const RUNTIME_GLUE = ['glue/index.js','package.json','glue/smoke.js'];
+// v7.15.5 review: new runner tests a run writes after its first, as start()'s methods change.
+const RUNNER_REWRITES = 2;
 // A room started before v7.14 (no schema mark) is reset, not migrated.
 const ROOM_SCHEMA = '7.14';
 // Problem rows hold JSON in these columns.
@@ -1510,12 +1512,23 @@ export class ControlRoom extends DurableObject {
   }
   // v7.15.5: the fixed runner test, when it was written for start()'s
   // methods (startMethods) or either side cannot say (an API that did not
-  // parse, a test fixed before v7.15.5). Run12's test called
+  // parse, a test fixed before v7.15.5): {test}. Run12's test called
   // app.goalOperation1 and app.goalOperation2, so an entry corrected to
-  // create, view, update and delete could never pass it.
+  // create, view, update and delete could never pass it. {} when a new one
+  // is written. Review: each method set keeps its own test, so a set seen
+  // before reuses it, and after RUNNER_REWRITES new tests the last one run
+  // stays: an entry alternating two sets wrote a test every round, run4's
+  // moving target. It is {test} while start() returns every method it
+  // calls, else {calls, missing} for the entry to return again.
   fixedTest(methods) {
     const t=this.read('runner_test',null);
-    return t?.test&&!(methods&&Array.isArray(t.methods)&&t.methods.join()!==methods.join())?t:null;
+    if(!t?.test)return {};
+    if(!methods||!Array.isArray(t.methods)||t.methods.join()===methods.join())return {test:t};
+    const kept=this.read('runner_tests',{});
+    if(kept[methods.join()])return {test:kept[methods.join()]};
+    if(Object.keys(kept).length<=RUNNER_REWRITES)return {};
+    const calls=t.methods.filter(m=>!untestedOperations(t.test,[{operation:m,method:m}]).length),missing=calls.filter(m=>!methods.includes(m));
+    return missing.length?{calls,missing,written:Object.keys(kept).length}:{test:t};
   }
   // linked: the top builder's components; entry: the module glue/index.js
   // starts; operations: the coverage gate's mapping the test must exercise;
@@ -1526,18 +1539,22 @@ export class ControlRoom extends DurableObject {
     // the specification for the rest of the run and is never rewritten. A new
     // test every repair round moved the target the worker was fixing (run4).
     // Only a test that was turned back before it ever ran is written again,
-    // and, once, one written for other methods than start() now returns
-    // (v7.15.5, run12): the new test is fixed while the methods stay.
-    const saved=this.read('runner_test',null),fixed=this.fixedTest(methods)?.test||null;
+    // and one written for other methods than start() now returns (v7.15.5,
+    // run12): the new test is fixed while the methods stay, each set keeps
+    // its own, and a run writes at most RUNNER_REWRITES of them (review).
+    const saved=this.read('runner_test',null),kept=this.fixedTest(methods).test,fixed=kept?.test||null;
     let correction='',test=fixed;
-    if(fixed)this.event(nodeId,'runner_reused','Running the same test as before: the first test that ran is fixed for the whole run.');
-    else if(saved?.test)this.event(nodeId,'runner_rewritten',clip(`start()'s methods changed since the runner's test was written: ${[['added',methods.filter(m=>!saved.methods.includes(m))],['removed',saved.methods.filter(m=>!methods.includes(m))]].filter(([,l])=>l.length).map(([w,l])=>`${w} ${l.join(', ')}`).join('; ')}. The runner writes a new test for the new methods, fixed while they stay the same.`,600));
+    // Review: a set seen before runs its own test, which is now the last one run.
+    const earlier=!!fixed&&fixed!==saved?.test;
+    if(fixed)this.event(nodeId,'runner_reused',earlier?clip(`Running the test written earlier for start()'s methods ${methods.join(', ')}: each set of methods keeps its own test.`,600):'Running the same test as before: the first test that ran is fixed for the whole run.');
+    if(earlier)this.save('runner_test',kept);
+    if(!fixed&&saved?.test)this.event(nodeId,'runner_rewritten',clip(`start()'s methods changed since the runner's test was written: ${[['added',methods.filter(m=>!saved.methods.includes(m))],['removed',saved.methods.filter(m=>!methods.includes(m))]].filter(([,l])=>l.length).map(([w,l])=>`${w} ${l.join(', ')}`).join('; ')}. The runner writes a new test for the new methods, fixed while they stay the same.`,600));
     for(let attempt=0;!test&&attempt<3;attempt++) {
       const out=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction}),draft=out?.test;
       // A test that skips a mapped operation would certify a partial
       // application (run6 tested getTickets alone), so it never runs.
       const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft),
-        ...untestedOperations(draft,operations).map(o=>`the test never calls ${o.method} (operation ${o.operation}); call app.${o.method}(...) and check its result`)].filter(Boolean):['the runner returned no test'];
+        ...untestedOperations(draft,operations).map(o=>`the test never calls ${o.method} (operation ${o.operation}); call app.${o.method}(...) and check what it did`)].filter(Boolean):['the runner returned no test'];
       if(!errors.length){test=draft;break;}
       correction='Your previous test was rejected before running: '+errors.join('; ');
       // The log shows what came back, not only the error (run7 showed seven syntax errors and no text).
@@ -1547,6 +1564,7 @@ export class ControlRoom extends DurableObject {
     const run=await this.containerRun(nodeId,`run:${input}`,new Map([...files,['glue/smoke.js',test]]));
     if(run.infrastructure)return {infrastructure:run.infrastructure};
     if(!fixed)this.save('runner_test',{api,test,operations,methods});
+    if(!fixed&&methods)this.save('runner_tests',{...this.read('runner_tests',{}),[methods.join()]:{api,test,operations,methods}});
     await this.putFile(nodeId,'glue/smoke.js',test,{runtimeGlue:true});
     if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
     const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
@@ -2169,10 +2187,15 @@ export class ControlRoom extends DurableObject {
     // and the runner's do, so the turn is retried: swallowed, one capacity
     // error fixed run6's read-only test unchecked for the whole run. An
     // answer that is no mapping, twice, fails open.
-    const goal=this.topTask(),methodSet=startMethods(described);
+    const goal=this.topTask(),methodSet=startMethods(described),fixed=this.fixedTest(methodSet);
+    // v7.15.5 review: after RUNNER_REWRITES new tests, start() returns the methods the last one calls.
+    if(fixed.missing) {
+      this.event(id,'runner_kept',clip(`start() no longer returns ${fixed.missing.join(', ')}, which the runner's test calls; the test was written ${fixed.written} times as start()'s methods changed and is not written again.`,600));
+      return {stage:'run',items:[entryIssue(entry,clip(`start() no longer returns ${fixed.missing.join(', ')}. The runner's test calls app.${fixed.calls.join(', app.')}; it was written ${fixed.written} times this run as start()'s methods changed and stays as it is now. Return each of ${fixed.calls.join(', ')} from start() again, under that name, performing the operation it did.`,900))]};
+    }
     let operations=null;
     // v7.15.5: a test fixed for other methods is written again, after this gate.
-    if(!this.fixedTest(methodSet)) {
+    if(!fixed.test) {
       const checkable=coverageCheckable(described);
       const coverage=checkable?await apiCoverage(this.inferenceEnv(),{goal,api}):null;
       // v7.15.5: the mapping is checked against the plan's operation functions
