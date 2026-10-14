@@ -591,15 +591,22 @@ export async function decideProblems(env, input, {onCall=()=>{}, retry=true}={})
 // Root goal and the live API returned by start() in the container. Run12's
 // test asserted that delete returns true, which neither the goal nor the API
 // says: effects are checked through the other methods (v7.15.5), and each
-// operation for what it did, not for "its result" (review).
-export const RUNNER_SYSTEM = `You are the RUNNER for an application you have not seen the source of. You get the user's goal and a description of the live API that start() returned when the application was started in a container. Write glue/smoke.js: a complete CommonJS Node script that does const assert = require('node:assert/strict'); const { start } = require('./index.js'); then, inside an async function, gets const app = await start() and exercises the operations the GOAL requests using only that API, with assert checks that the results are what the goal implies (for example: create something, read it back, list it, update it and read the change, delete it and confirm it is gone, all through the same app). Assert only what the goal and the API state: check an effect through the other methods (a deleted item can no longer be viewed) rather than assume a return value the API does not describe. operations_to_test, when given, lists each operation the goal names with the method that performs it: the test must exercise every one of them by calling that method on app (app.method(...)) and check what it did. Never skip an operation the goal names, and never print success or exit with success for a test that covers only some of them. Use only names that appear in the API description, and await every call because methods may be async. Any failed assertion or thrown error must end with process.exitCode = 1 or an uncaught rejection. Do not mock, do not import anything except node built-ins and ./index.js. Return ONLY the code, no markdown.`;
+// operation for what it did, not for "its result" (review). v7.15.6: the
+// runner is bounded by the plan as the workers are. It hears what the plan
+// promises each method does (method_descriptions) and may assert only what
+// the goal, the API and those state: run13's test required viewTicket to
+// throw 'Ticket not found' after a delete, a message no piece had promised,
+// and the entry wrote a stub to satisfy it.
+export const RUNNER_SYSTEM = `You are the RUNNER for an application you have not seen the source of. You get the user's goal and a description of the live API that start() returned when the application was started in a container. Write glue/smoke.js: a complete CommonJS Node script that does const assert = require('node:assert/strict'); const { start } = require('./index.js'); then, inside an async function, gets const app = await start() and exercises the operations the GOAL requests using only that API, with assert checks that the results are what the goal implies (for example: create something, read it back, list it, update it and read the change, delete it and confirm it is gone, all through the same app). Assert only what the goal and the API state: check an effect through the other methods (a deleted item can no longer be viewed) rather than assume a return value the API does not describe. method_descriptions, when given, states for each method of start() what the plan promises it does and its parameters: assert only what the goal, the API and these descriptions state. For a missing or deleted item accept either a null or undefined result or a thrown error. Never assert the text of an error message, and never assert a return value that no description states. operations_to_test, when given, lists each operation the goal names with the method that performs it: the test must exercise every one of them by calling that method on app (app.method(...)) and check what it did. Never skip an operation the goal names, and never print success or exit with success for a test that covers only some of them. Use only names that appear in the API description, and await every call because methods may be async. Any failed assertion or thrown error must end with process.exitCode = 1 or an uncaught rejection. Do not mock, do not import anything except node built-ins and ./index.js. Return ONLY the code, no markdown.`;
 // Returns {test,head}: the code found in the answer, and the start of what
-// the model returned for the event log.
-export async function writeRunnerTest(env, {goal, api, operations=null, correction=''}) {
+// the model returned for the event log. methods: what the plan promises each
+// of start()'s methods does, [{method, does, params}] (v7.15.6).
+export async function writeRunnerTest(env, {goal, api, operations=null, methods=null, correction=''}) {
   if (env.MOCK_AI === 'true') return null;
   const output=await run(env,RUNNER_SYSTEM,JSON.stringify({
     goal:String(goal||'').slice(0,1500),
     api_returned_by_start:api,
+    method_descriptions:methods?.length?methods:undefined,
     operations_to_test:operations?.length?operations:undefined,
     previous_test_error:correction||undefined
   }).slice(0,12000),4096,{noThink:true});

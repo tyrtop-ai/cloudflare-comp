@@ -4,7 +4,7 @@ export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses } from './model.js';
-import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps } from './api-coverage.js';
+import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -1559,11 +1559,21 @@ export class ControlRoom extends DurableObject {
   }
   // A test that catches its own failure and exits 0 would certify a broken
   // application. Any catch must set a failing exit code or rethrow.
-  runnerTestError(test) {
+  // v7.15.6: the runner is bounded by the plan, as the workers are. A draft
+  // that compares an error message with a string or regex the goal, the API
+  // and the plan's descriptions (methods) do not state, or equates a literal
+  // with the direct result of a method whose description states no return
+  // value, is turned back with each such assertion named (run13's
+  // assert.equal(err.message, 'Ticket not found'), which the entry wrote a
+  // stub to satisfy; run12's assert.equal(deleteResult, true)). On the last
+  // attempt (last) it is accepted as it is, so the run is never blocked on
+  // it, and a failure on that line says the fixed test requires it anyway.
+  runnerTestError(test, {goal='', api='', methods=null, last=false}={}) {
     const text=String(test||'');
     if(/\bcatch\b/.test(text) && !/process\.exitCode\s*=\s*[1-9]|process\.exit\(\s*[1-9]|\bthrow\b/.test(text))
       return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass';
-    return null;
+    const invented=last?[]:inventedAssertions(text,{goal,api,methods});
+    return invented.length?invented.map(x=>`line ${x.line} asserts ${x.text}: ${x.why}`).join('; '):null;
   }
   // v7.15.5: the fixed runner test, when it was written for start()'s
   // methods (startMethods) or either side cannot say (an API that did not
@@ -1604,13 +1614,25 @@ export class ControlRoom extends DurableObject {
     if(fixed)this.event(nodeId,'runner_reused',earlier?clip(`Running the test written earlier for start()'s methods ${methods.join(', ')}: each set of methods keeps its own test.`,600):'Running the same test as before: the first test that ran is fixed for the whole run.');
     if(earlier)this.save('runner_test',kept);
     if(!fixed&&saved?.test)this.event(nodeId,'runner_rewritten',clip(`start()'s methods changed since the runner's test was written: ${[['added',methods.filter(m=>!saved.methods.includes(m))],['removed',saved.methods.filter(m=>!methods.includes(m))]].filter(([,l])=>l.length).map(([w,l])=>`${w} ${l.join(', ')}`).join('; ')}. The runner writes a new test for the new methods, fixed while they stay the same.`,600));
+    // v7.15.6: what the plan promises each of start()'s methods does, from
+    // the start carrier's plan (startPlan): the runner hears it, and its
+    // draft is bounded by it (runnerTestError). None in a room without one.
+    let parsed=null;try{parsed=JSON.parse(api);}catch{}
+    const plan=this.startPlanOf(this.entryOwner(nodeId,entry)),described=methodDescriptions(methods,parsed,plan?[...plan.mine,...plan.theirs]:[]);
     for(let attempt=0;!test&&attempt<3;attempt++) {
-      const out=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction}),draft=out?.test;
+      const out=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,methods:described,correction}),draft=out?.test,last=attempt===2;
       // A test that skips a mapped operation would certify a partial
       // application (run6 tested getTickets alone), so it never runs.
-      const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft),
+      const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft,{goal,api,methods:described,last}),
         ...untestedOperations(draft,operations).map(o=>`the test never calls ${o.method} (operation ${o.operation}); call app.${o.method}(...) and check what it did`)].filter(Boolean):['the runner returned no test'];
-      if(!errors.length){test=draft;break;}
+      if(!errors.length) {
+        // v7.15.6: the third draft is accepted as it asserts: the run is not
+        // blocked on the runner's bounds, and a failure on such a line says
+        // the fixed test requires it anyway (below).
+        const kept=last?inventedAssertions(draft,{goal,api,methods:described}):[];
+        if(kept.length)this.event(nodeId,'runner_invented',clip(`The runner's third draft still asserts what neither the goal, the API nor the plan states: ${kept.map(x=>`line ${x.line}: ${x.text}`).join('; ')}. It is accepted as it is, so the run is not blocked; a failure on it will say the fixed test requires it anyway.`,800));
+        test=draft;break;
+      }
       correction='Your previous test was rejected before running: '+errors.join('; ');
       // The log shows what came back, not only the error (run7 showed seven syntax errors and no text).
       this.event(nodeId,'runner_rejected',clip(correction,800)+(typeof out?.head==='string'?` The runner returned: ${JSON.stringify(out.head)}`:''));
@@ -1652,6 +1674,16 @@ export class ControlRoom extends DurableObject {
       const problem=clip(verdict?.problem||'',400).trim();
       // failure: the runner's own output, which says whether the failure moved (v7.15.1).
       issues=[{path:owner||'',triaged:true,failure:detail,detail:`${note?clip(note,400)+' ':''}${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
+    }
+    // v7.15.6: a failure on an assertion the plan does not state (the third
+    // draft keeps them) says so: the test is fixed, so the application must
+    // satisfy it anyway, and the requirement carries invented for the
+    // manager, on the issue's requirement when the compiler set one, else on
+    // its facts. The failure keeps its own text for the progress key.
+    const at=+(detail.match(/glue\/smoke\.js:(\d+)/)?.[1]||0),made=at?inventedAssertions(test,{goal,api,methods:described}).find(x=>x.line===at):null;
+    if(made) {
+      const say=`Test line ${made.line} (${made.text}) requires ${made.rule==='message'?`the error message '${made.name}'`:`${made.name} to return ${made.what}`}, which neither the goal, the API nor the plan states; the test is fixed for this run, so the application must satisfy it anyway.`;
+      issues=issues.map(x=>({...x,failure:x.failure??x.detail,detail:`${say} ${x.detail}`,...x.requirement?{requirement:{...x.requirement,invented:true}}:{facts:{...x.facts,requirement:{...x.facts?.requirement,invented:true}}}}));
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
     return {passed:false,issues,detail,test};

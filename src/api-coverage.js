@@ -229,8 +229,16 @@ export const operationMethods = (described, operations) =>
 // syntax check.
 export function untestedOperations(test, operations) {
   if(!Array.isArray(operations)||!operations.length)return [];
+  const nodes=testNodes(test);
+  if(!nodes)return [];
+  const methodOf=appMethods(nodes),called=new Set();
+  for(const n of nodes){const m=methodOf(n);if(m)called.add(m);}
+  return operations.filter(o=>o?.method&&!called.has(o.method));
+}
+// Every node of a parsed test, in source order; null when it does not parse.
+function testNodes(test) {
   let ast;
-  try{({ast}=parseSource(String(test||'')));}catch{return [];}
+  try{({ast}=parseSource(String(test||'')));}catch{return null;}
   const nodes=[];
   const walk=node=>{
     if(!node||typeof node.type!=='string')return;
@@ -242,11 +250,16 @@ export function untestedOperations(test, operations) {
     }
   };
   walk(ast);
-  const bare=n=>['AwaitExpression','ChainExpression','ParenthesizedExpression'].includes(n?.type)?bare(n.argument??n.expression):n;
-  const key=n=>n?.type!=='MemberExpression'?null:!n.computed?n.property?.name??null:n.property?.type==='Literal'&&typeof n.property.value==='string'?n.property.value:
-    n.property?.type==='TemplateLiteral'&&!n.property.expressions.length?n.property.quasis[0].value.cooked:null;
+  return nodes;
+}
+const bare=n=>['AwaitExpression','ChainExpression','ParenthesizedExpression'].includes(n?.type)?bare(n.argument??n.expression):n;
+const key=n=>n?.type!=='MemberExpression'?null:!n.computed?n.property?.name??null:n.property?.type==='Literal'&&typeof n.property.value==='string'?n.property.value:
+  n.property?.type==='TemplateLiteral'&&!n.property.expressions.length?n.property.quasis[0].value.cooked:null;
+const bindings=n=>n.type==='VariableDeclarator'?[n.id,n.init]:n.type==='AssignmentExpression'?[n.left,n.right]:[];
+// The app's method a node calls (app.NAME(...), a name bound from the app,
+// call/apply/bind), or null: the reading untestedOperations describes.
+function appMethods(nodes) {
   const started=n=>{n=bare(n);const f=bare(n?.callee);return n?.type==='CallExpression'&&(f?.type==='Identifier'?f.name==='start':key(f)==='start');};
-  const bindings=n=>n.type==='VariableDeclarator'?[n.id,n.init]:n.type==='AssignmentExpression'?[n.left,n.right]:[];
   const apps=new Set();
   for(const n of nodes){const [id,init]=bindings(n);if(id?.type==='Identifier'&&started(init))apps.add(id.name);}
   if(apps.size)for(const n of nodes)if(/Function/.test(n.type))for(const p of n.params||[])if(p.type==='Identifier')apps.add(p.name);
@@ -261,14 +274,80 @@ export function untestedOperations(test, operations) {
     }
     else if(id?.type==='Identifier'&&member?.type==='MemberExpression'&&isApp(member.object)&&key(member))local.set(id.name,key(member));
   }
-  const called=new Set();
-  for(const n of nodes) {
-    if(n.type!=='CallExpression'&&n.type!=='NewExpression')continue;
+  return n=>{
+    if(n?.type!=='CallExpression'&&n?.type!=='NewExpression')return null;
     const callee=bare(n.callee),name=key(callee),object=bare(callee?.object);
-    if(callee?.type==='Identifier'&&local.has(callee.name))called.add(local.get(callee.name));
+    if(callee?.type==='Identifier'&&local.has(callee.name))return local.get(callee.name);
     const through=['call','apply','bind'].includes(name)?(key(object)&&isApp(object.object)?key(object):object?.type==='Identifier'?local.get(object.name):null):null;
-    if(through)called.add(through);
-    else if(name&&isApp(object))called.add(name);
+    return through||(name&&isApp(object)?name:null);
+  };
+}
+
+// v7.15.6: the runner's test is bounded by the plan, as the workers are.
+// What the plan promises each method start() returned does, for the runner
+// (methods: startMethods; performers: the start carrier's plan, startPlan's
+// mine and theirs): the performer named as the member's key, else as the
+// member's own function (create: createTicket, a bound method), else the one
+// whose words the key covers (delete and remove for deleteTicket). A method
+// no performer matches is described by the API alone.
+export function methodDescriptions(methods, described, performers) {
+  const members=methodsOf(described),fns=(performers||[]).filter(f=>f?.name&&f.name!=='start'),one=xs=>xs.length===1?xs[0]:null;
+  return (methods||[]).flatMap(m=>{
+    const own=String(members[m]?.name||'').replace(/^bound /,'');
+    const f=fns.find(x=>x.name===m)||one(fns.filter(x=>x.name===own))||one(fns.filter(x=>performsOp(m,x)));
+    return f?[{method:m,...f.name!==m?{function:f.name}:{},does:String(f.does||''),params:Array.isArray(f.params)?f.params.map(String):[]}]:[];
+  });
+}
+// The assertions of a runner draft that neither the goal, the API nor the
+// plan's descriptions state, each {line, text, rule, name, what, why}.
+// message: an error's message compared with a string or regex that none of
+// them contains (run13's assert.equal(err.message, 'Ticket not found');
+// assert.throws or rejects with /…/ or {message}; err.message === '…';
+// err.message.includes('…'), /…/.test(err.message)). result: a literal
+// (true, 1, 'done'; never null or undefined, which say nothing came back)
+// equated with the direct result of a method whose description states no
+// return value (run12's assert.equal(deleteResult, true) for "Removes a
+// ticket from the data store"). A property of the result (created.id) is
+// the application's data, a method no description covers is bound by the
+// API alone, and a draft that does not parse is left to the syntax check.
+const STATES_RETURN=/\b(?:return|yield|produc|comput|calculat|count|retriev|fetch|find|look(?:s|ing)? up|load|read|get|list|search|check|tell|report|resolv|gives? back|whether|true|false)/i;
+const EQUALS=new Set(['equal','strictEqual','deepEqual','deepStrictEqual','notEqual','notStrictEqual','notDeepEqual','notDeepStrictEqual']);
+const MATCHES=new Set(['match','doesNotMatch']),THROWS=new Set(['throws','rejects','doesNotThrow','doesNotReject']),COMPARES=new Set(['===','==','!==','!=']);
+const CONTAINS=new Set(['includes','startsWith','endsWith','match','search','indexOf']);
+export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
+  const src=String(test||''),nodes=testNodes(src);
+  if(!nodes)return [];
+  const does=new Map((methods||[]).filter(m=>m?.method&&m.does).map(m=>[m.method,String(m.does)]));
+  const corpus=[goal,api,...does.values(),...(methods||[]).flatMap(m=>m?.params||[])].join('\n').toLowerCase(),stated=s=>corpus.includes(String(s).toLowerCase());
+  const string=n=>n?.type==='Literal'&&typeof n.value==='string'?n.value:n?.type==='TemplateLiteral'&&!n.expressions.length?n.quasis.map(q=>q.value.cooked).join(''):null;
+  const pattern=n=>n?.type==='Literal'&&n.regex?n.regex.pattern.replace(/^\^|\$$/g,'').replace(/\\(.)/g,'$1'):null;
+  const text=n=>string(n)??pattern(n),isMessage=n=>key(bare(n))==='message';
+  const primitive=n=>n?.type==='Literal'&&['boolean','number','string'].includes(typeof n.value)?n.raw??JSON.stringify(n.value):n?.type==='TemplateLiteral'&&!n.expressions.length?src.slice(n.start,n.end):null;
+  const assertion=n=>{const c=bare(n.callee);return c?.type==='Identifier'&&c.name==='assert'?'ok':c?.type==='MemberExpression'&&bare(c.object)?.type==='Identifier'&&bare(c.object).name==='assert'?key(c):null;};
+  const methodOf=appMethods(nodes),bound=new Map();
+  // The method whose direct result n is (bound to a name, or the call itself), when its description states no return value.
+  const resultOf=n=>{n=bare(n);const m=n?.type==='Identifier'?bound.get(n.name):methodOf(n);return m&&does.has(m)&&!STATES_RETURN.test(does.get(m))?m:null;};
+  const out=[],add=(n,rule,name,what='')=>out.push({line:n.loc?.start?.line??0,text:src.slice(n.start,n.end).replace(/\s+/g,' ').slice(0,160),rule,name,what,
+    why:rule==='message'?`neither the goal, the API nor the plan states the message '${name}': accept a null or undefined result or any thrown error for a missing or deleted item, and never assert an error message's text`
+      :`the description of ${name} ("${does.get(name)}") states no return value: check what it did through the other methods, not its result`});
+  const compare=(n,x,y,equality)=>{
+    if(isMessage(x)&&text(y)!==null&&!stated(text(y)))return add(n,'message',text(y));
+    if(equality&&primitive(y)!==null&&resultOf(x))return add(n,'result',resultOf(x),primitive(y));
+    return false;
+  };
+  for(const n of nodes) {
+    const [id,init]=bindings(n);
+    if(id?.type==='Identifier'){const m=init?methodOf(bare(init)):null;if(m)bound.set(id.name,m);else bound.delete(id.name);}
+    if(n.type==='BinaryExpression'&&COMPARES.has(n.operator)){compare(n,n.left,n.right,true)||compare(n,n.right,n.left,true);continue;}
+    if(n.type!=='CallExpression')continue;
+    const callee=bare(n.callee),args=n.arguments||[],name=assertion(n);
+    if(callee?.type==='MemberExpression'&&CONTAINS.has(key(callee))&&isMessage(callee.object)){if(text(args[0])!==null&&!stated(text(args[0])))add(n,'message',text(args[0]));continue;}
+    if(callee?.type==='MemberExpression'&&['test','exec'].includes(key(callee))&&pattern(callee.object)!==null&&isMessage(args[0])){if(!stated(pattern(callee.object)))add(n,'message',pattern(callee.object));continue;}
+    if(EQUALS.has(name)||MATCHES.has(name))compare(n,args[0],args[1],EQUALS.has(name))||compare(n,args[1],args[0],EQUALS.has(name));
+    else if(THROWS.has(name)) {
+      const v=args[1],prop=v?.type==='ObjectExpression'?v.properties.find(p=>p.type==='Property'&&(p.key?.name??p.key?.value)==='message'):null,what=pattern(v)??(prop?text(prop.value):null);
+      if(what!==null&&!stated(what))add(n,'message',what);
+    }
   }
-  return operations.filter(o=>o?.method&&!called.has(o.method));
+  return out;
 }
