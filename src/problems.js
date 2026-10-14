@@ -376,8 +376,12 @@ const list=names=>(names||[]).filter(Boolean).slice(0,8).join(', ')||'them';
 // One import line per function, named after it, under the reader's own
 // local name (run8 called load() and save()).
 const oneLines=(names,aliases={})=>(names||[]).slice(0,4).map(n=>`const { ${n}${aliases?.[n]?': '+aliases[n]:''} } = require('./${n}');`).join(' ');
-// What the deciding manager tells the side that changes, by kind.
-export function instructionsFor(p, side) {
+// An atomic top's entry problem (v7.15.2): it wrote every module, so its
+// operations are its own, not imported from pieces it never had (review).
+export const OWN_ENTRY_CONTRACT='You wrote the whole application: your entry module exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each performing it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
+// What the deciding manager tells the side that changes, by kind. own: an
+// atomic top's own repair.
+export function instructionsFor(p, side, own=false) {
   const f=p.facts||{},provider=(p.parties||[]).find(x=>x.role==='provider');
   if(p.directive?.instructions)return p.directive.instructions;
   switch(p.kind) {
@@ -391,7 +395,7 @@ export function instructionsFor(p, side) {
       return f.named?`'${f.specifier||''}' is ${base(f.named)}, listed below with what it really exports: import it by its relative path and use the names it exports${names&&` in place of what it lacks${names}`}.`:
         `No module in the application provides '${f.specifier||''}'${names}. Import one of the modules listed below by its relative path and real export names, or write what you need yourself.`;
     }
-    case 'entry':return ENTRY_CONTRACT;
+    case 'entry':return own?OWN_ENTRY_CONTRACT:ENTRY_CONTRACT;
     case 'stuck':return 'Finish your assignment.';
     case 'contract':{
       const by=(f.requested_by||[]).filter(Boolean).slice(0,8);
@@ -418,10 +422,15 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // (run8's entry answered 'Fixed entry module' and wrote nothing): it hears
 // so right after the head, once; a second such answer closes it unfixed.
 export const UNCHANGED=' NOTHING CHANGED IN YOUR FILES: you answered this problem as fixed, but your published files are exactly as they were when it was sent. Change the code and publish the FULL updated file; another answer that changes nothing closes the problem unfixed.';
-// own: an atomic top's own repair (v7.15.2): no builder and no manager.
+// An atomic top's problem is never closed unfixed: it is reported again,
+// and each such round counts toward its repair budget (v7.15.2 review).
+export const OWN_UNCHANGED=' NOTHING CHANGED IN YOUR FILES: you answered this problem as fixed, but your published files are exactly as they were when it was sent. Change the code and publish the FULL updated file; each answer that changes nothing uses up one of your repair rounds, and the run fails when none is left.';
+// own: an atomic top's own repair (v7.15.2): no builder and no manager, and
+// what failed may be the coverage check or the runner's test, not a build.
 export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],unchanged=false,own=false}) {
   const head=(kinds.length&&kinds.every(k=>k==='contract')?'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.':
-    `REAL CONTAINER BUILD FAILED on your owned source. ${own?'You wrote every file of the application':'The builder can only rename import paths and identifiers'}, so this problem needs a change in your code. `+(role==='provider'?PROVIDER:READER))+(unchanged?UNCHANGED:'');
+    (own?'YOUR APPLICATION FAILED ITS CONTAINER RUN. You wrote every file of the application':'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers')+
+    ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER))+(unchanged?own?OWN_UNCHANGED:UNCHANGED:'');
   const decided=instructions?` ${own?'Required':'Your manager decided'}: ${String(instructions).slice(0,900)}`:'';
   const shown=problems.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ');
   const room=Math.max(0,2400-head.length-decided.length-' Problems: '.length-Math.min(shown.length,1100)-' What the other side provides: '.length);

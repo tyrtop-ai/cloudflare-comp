@@ -96,11 +96,12 @@ export function planSentence(ops, room) {
   return '';
 }
 // plan: the plan's operation functions, a sentence before the contract that
-// is cut first.
-export function gapProblem(described, gaps, contract, limit=946, plan=[]) {
+// is cut first. own: an atomic top, whose operations are its own code, not
+// imported from another piece's module (v7.15.2 review).
+export function gapProblem(described, gaps, contract, limit=946, plan=[], {own=false}={}) {
   const members=methodsOf(described),names=Object.keys(members).filter(k=>callable(members[k]));
   const returned=described?.type==='object'?(names.length?'methods '+names.join(', '):'no methods'):({function:'a function',class:'a class',array:'an array'}[described?.type]||'no object')+', not an object';
-  const head='start() returns no method for: ',tail=`. Each operation the goal names needs its own method on the object start() returns, the operation imported from the module that performs it.${contract?' '+contract:''}`;
+  const head='start() returns no method for: ',tail=`. Each operation the goal names needs its own method on the object start() returns, ${own?'one that performs it':'the operation imported from the module that performs it'}.${contract?' '+contract:''}`;
   const room=limit-head.length-'; it returned '.length-tail.length,list=fit(gapList(gaps),room-Math.min(returned.length,40));
   const text=`${head}${list}; it returned ${fit(returned,room-list.length)}${tail}`,known=planSentence(plan,limit-text.length-1);
   if(!known)return text;
