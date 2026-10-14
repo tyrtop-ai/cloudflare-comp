@@ -1124,9 +1124,21 @@ const LIFECYCLE=new Set('close stop dispose destroy shutdown teardown cleanup re
 // promises take filePath and start() none, so a carrier wraps them). Each
 // operation start() returns that is a local function is listed (local)
 // with the names it uses, for the manager to check against the plan.
-export function placeholders(files, names, foreign=[]) {
-  const out=[],want=new Set(names),other=new Set(foreign.filter(n=>!want.has(n)));
-  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+// v7.15.5: performers, the promises that perform the goal's operations: one
+// start() does not return, by key, by its import as the value or by a
+// wrapper that calls it, is listed (missing), with the keys a performer is
+// returned under instead (renamed) and those bound to an import no piece
+// promises (stray). run12's entry returned { goalOperation1: createTicket,
+// goalOperation2: deleteTicket }. A return this parse cannot list (a spread,
+// a computed key, an object filled in later) is given the doubt.
+// Review: a value imported from another of these files is read there, its
+// export through that file's own imports (an entry whose handlers.js wraps
+// the performers); one bound to an import no piece promises and no file
+// here exports names that import (stray), never the key, and delivers no
+// performer: { createTicket: goalOperation1 } returns no createTicket.
+export function placeholders(files, names, foreign=[], performers=[]) {
+  const out=[],want=new Set(names),other=new Set(foreign.filter(n=>!want.has(n))),perf=new Set(performers.filter(n=>other.has(n))),set=files instanceof Map?files:new Map(Object.entries(files));
+  for(const [path,content] of set) {
     if(!LINKABLE.test(path))continue;
     let ast;try{ast=parseSource(content).ast;}catch{continue;}
     const decls=topLevelDeclarations(ast),again=new Set();
@@ -1134,8 +1146,8 @@ export function placeholders(files, names, foreign=[]) {
     for(const n of again)decls.set(n,null);
     // Each relative import's local names, by the name it exports, and the
     // bindings of a whole module (const store = require(...), import * as).
-    const imported=new Map(),whole=new Set();
-    if(other.size)for(const ref of importRefs(path,content)){const named=new Set();for(const n of ref.names){named.add(ref.aliases.get(n)||n);imported.set(ref.aliases.get(n)||n,n);}for(const l of ref.local)if(!named.has(l))whole.add(l);}
+    const imported=new Map(),whole=new Set(),ownFile=new Map();
+    if(other.size)for(const ref of importRefs(path,content)){const named=new Set(),t=resolveLocal(path,ref.specifier,set).path;for(const n of ref.names){const l=ref.aliases.get(n)||n;named.add(l);imported.set(l,n);if(t)ownFile.set(l,[t,n]);}for(const l of ref.local)if(!named.has(l)){whole.add(l);if(t)ownFile.set(l,[t,null]);}}
     // A function under n that reads the import of n, by name, alias or as a
     // member of the module, delegates to it: (d) => createTicket(d, FILE).
     // self: the name it is bound to, which inside it is itself.
@@ -1153,9 +1165,14 @@ export function placeholders(files, names, foreign=[]) {
     // a carrier whose ops call svc.create(), whose class calls createTicket);
     // an import under an alias by its exported name (store.createTicket and
     // a call of createTicket both use createTicket).
+    // Review: and what another of these files exports under the name (opaque: one it cannot read).
+    let opaque=false;
+    const from=(t,n,got)=>{const u=n&&exportUses(set,t,n);if(!u)opaque=true;else for(const x of u)got.add(x);};
     const uses=(fn,scope,got=new Set(),seen=new Set([fn]))=>{walk(fn,node=>{
+      if(node.type==='MemberExpression'&&!node.computed&&node.object.type==='Identifier'&&ownFile.get(node.object.name)?.[1]===null)from(ownFile.get(node.object.name)[0],keyName(node.property),got);
       if(node.type!=='Identifier')return;
       got.add(imported.get(node.name)||node.name);
+      if(ownFile.get(node.name)?.[1])from(...ownFile.get(node.name),got);
       const d=scope.get(node.name);if(typeof d?.type==='string'&&!seen.has(d)){seen.add(d);uses(d,scope,got,seen);}
     });return got;};
     for(const [name,value] of exportedValues(ast,decls)) {
@@ -1175,14 +1192,26 @@ export function placeholders(files, names, foreign=[]) {
       }
       for(const n of [...hidden,...again])inner.set(n,null);
       const returns=fn.body.type==='BlockStatement'?fn.body.body.filter(x=>x.type==='ReturnStatement').map(x=>x.argument):[fn.body];
+      const got=new Set(),renamed=[],stray=[];
+      let doubt=!returns.length;
       for(let r of returns) {
-        if(r?.type==='Identifier')r=inner.get(r.name);
-        if(r?.type!=='ObjectExpression')continue;
+        if(r?.type==='Identifier'){if(filled(ast,r.name))doubt=true;r=inner.get(r.name);}
+        if(r?.type!=='ObjectExpression'){doubt=true;continue;}
         // Each operation that is a function written here, on its own (review:
         // run11's entry with read and write imported kept create, view,
         // update and delete in memory); an import, a spread or a call is not.
         const ops=[];
         for(const p of r.properties) {
+          if(perf.size) {
+            const key=p.type==='Property'&&!p.computed&&keyName(p.key);
+            opaque=false;
+            const by=key?[...uses(p.value,inner)].filter(n=>perf.has(n)):[],bound=key&&p.value.type==='Identifier'&&!ownFile.has(p.value.name)&&imported.get(p.value.name),bogus=bound&&!other.has(bound)&&!want.has(bound);
+            if(!key||opaque)doubt=true;
+            else if(perf.has(key)&&!bogus)got.add(key);
+            for(const n of by)got.add(n);
+            if(key&&!perf.has(key)&&by.length===1)renamed.push([key,by[0]]);
+            else if(bogus&&!stray.includes(bound))stray.push(bound);
+          }
           if(p.type!=='Property')continue;
           const op=p.kind==='init'&&keyName(p.key),f=op&&!LIFECYCLE.has(op)&&(p.method?p.value:functionOf(p.value,inner));
           if(f&&placeholder(f,content)){out.push({path,name,op,params:f.params.map(paramText)});continue;}
@@ -1192,9 +1221,40 @@ export function placeholders(files, names, foreign=[]) {
         }
         if(other.size)for(const o of ops)if(!written.has(o.op)&&!written.has(o.bound))out.push({path,name,op:o.op,params:o.f.params.map(paramText),local:true,uses:[...uses(o.f,inner)]});
       }
+      const missing=[...perf].filter(n=>!got.has(n));
+      if(!doubt&&missing.length)out.push({path,name,missing,renamed,stray});
     }
   }
   return out;
+}
+// Review: the names export n of file t uses, through t's own imports and
+// the other files it imports from set, two files deep; null when t has no
+// export n this parse can read (module.exports = make()).
+function exportUses(set, t, n, depth=0) {
+  let ast;try{ast=parseSource(set.get(t)).ast;}catch{return null;}
+  const decls=topLevelDeclarations(ast),value=exportedValues(ast,decls).get(n);
+  if(!value||depth>1)return null;
+  const imported=new Map(),own=new Map(),got=new Set(),seen=new Set();
+  let unknown=false;
+  for(const ref of importRefs(t,set.get(t))){const to=resolveLocal(t,ref.specifier,set).path;for(const x of ref.names){const l=ref.aliases.get(x)||x;imported.set(l,x);if(to)own.set(l,[to,x]);}}
+  const visit=node=>walk(node,x=>{
+    if(x.type!=='Identifier')return;
+    got.add(imported.get(x.name)||x.name);
+    if(own.has(x.name)&&!seen.has(x.name)){seen.add(x.name);const u=exportUses(set,...own.get(x.name),depth+1);if(!u)unknown=true;else for(const y of u)got.add(y);}
+    const d=decls.get(x.name);if(typeof d?.type==='string'&&!seen.has(d)){seen.add(d);visit(d);}
+  });
+  visit(value);
+  return unknown?null:got;
+}
+// A local object filled in after it is made: app.create = …, or passed to a
+// call (Object.assign(app, ops)); what start() returns is then not its literal.
+function filled(node, name) {
+  let hit=false;
+  walk(node,n=>{
+    if(n.type==='AssignmentExpression'&&n.left.type==='MemberExpression'&&n.left.object.type==='Identifier'&&n.left.object.name===name)hit=true;
+    else if((n.type==='CallExpression'||n.type==='NewExpression')&&n.arguments.some(a=>a.type==='Identifier'&&a.name===name))hit=true;
+  });
+  return hit;
 }
 // Every name a module reads from an import that resolves, in source order,
 // with ok=false where the target does not export it.

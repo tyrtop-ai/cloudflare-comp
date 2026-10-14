@@ -165,8 +165,13 @@ test('v7.15.4: a start() whose operations are all written here, under other name
   const ok=await worker('root.6',['entry.js',wrappers]);
   assert.equal(ok.room.node('root.6').status,'done',trace(ok.room));
   // An operation nobody's promise performs is the carrier's to write.
-  const own=await worker('root.6',['entry.js',local.replace('{ create, view, update, delete: remove, version: \'1\' }','{ archive: create }')]);
+  const imports="const { createTicket } = require('./createTicket');\nconst { viewTicket } = require('./viewTicket');\nconst { updateTicket } = require('./updateTicket');\nconst { deleteTicket } = require('./deleteTicket');\n";
+  const own=await worker('root.6',['entry.js',imports+local.replace('{ create, view, update, delete: remove, version: \'1\' }','{ archive: create, createTicket, viewTicket, updateTicket, deleteTicket }')]);
   assert.equal(own.room.node('root.6').status,'done');
+  // v7.15.5: and the goal's operations the plan's pieces perform are still owed (run12).
+  const bare=await worker('root.6',['entry.js',local.replace('{ create, view, update, delete: remove, version: \'1\' }','{ archive: create }')]);
+  assert.match(bare.room.receive('root.6')[0].body,/^\[contract\] start\(\) returns no method for createTicket \(createTicket\), viewTicket \(viewTicket\), updateTicket \(updateTicket\) and deleteTicket \(deleteTicket\): /);
+  assert.doesNotMatch(bare.room.receive('root.6').map(m=>m.body).join(' '),/archive/);
 });
 
 test('v7.15.4 review: a carrier that wraps each promise to pass the file path, under its name, through a class or an object, is done on its first done; run11\'s entry minus the promised names is not',async()=>{

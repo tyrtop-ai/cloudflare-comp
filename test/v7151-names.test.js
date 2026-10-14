@@ -302,7 +302,9 @@ test('v7.15.1: a nested start carrier\'s empty operation is answered from a leve
   // Clef failing below and nothing a level up: ask, not implement.
   const failing=await nested(fakeAI({leaf:()=>({summary:'Entry',files:[{path:'entry.js',content:nestedEntry.replace(/update/g,'archive').replace('delete: del','').replace('function del() {}\n','')}],done:true})}));
   await failing.turn('root.1.1');
-  assert.equal(failing.receive('root.1.1')[0].body,'[contract] archive is an empty placeholder: ask your manager for the function that performs it. Publish the FULL updated file.');
+  // v7.15.5: and the update and delete the plan's pieces perform are owed (run12); create, named after its operation, is kept (review).
+  assert.equal(failing.receive('root.1.1')[0].body,"[contract] start() returns no method for updateTicket (Update Ticket Module) and deleteTicket (Delete Ticket Module): import each on its own line, by exactly its name, with the name as the path: const { updateTicket } = require('./updateTicket'); const { deleteTicket } = require('./deleteTicket'); and return each under its name. "+
+    'archive is an empty placeholder: ask your manager for the function that performs it. Publish the FULL updated file.');
   assert.match(events(failing,'contract_placeholder')[0].body,/archive: Clef failed; ask\.$/);
 });
 

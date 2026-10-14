@@ -144,6 +144,69 @@ export const labelNames = (label, name) => {const a = words(label).filter(w => !
 const VERB = w => w === 'del' || w === 'remove' ? 'delete' : w;
 const covers = (a, b) => b.length > 0 && VERB(a[0]) === VERB(b[0]) && a.slice(1).every(w => b.slice(1).includes(w));
 export const performsOp = (op, f) => {const a = words(op); return a.length > 0 && (covers(a, words(f?.name)) || covers(a, words(f?.operation)));};
+// v7.15.5: the goal's operations (verbs) a promised function performs: a
+// goal word is its verb, by its name or its operation, and what it acts on,
+// when it names anything, is in the goal too. run12's createData ("returns a
+// ticket data manager instance") performs no create: data is not in the goal.
+// Review: what it acts on is its head noun, the last word after the verb up
+// to a selector (deleteTicketById), past a role word (createTicketHandler):
+// createTicketStore, createTicketId and viewTicketList act on no ticket.
+// The goal's leading imperative (Build a small issue tracker) is no operation.
+const SELECTOR = new Set('by with for from in into of on at via using to'.split(' '));
+const ROLE = new Set('handler service function func fn operation op action command'.split(' '));
+const objectOf = ws => {let o = ws.slice(1); const i = o.findIndex(w => SELECTOR.has(w)); if (i >= 0) o = o.slice(0, i); while (o.length && ROLE.has(o.at(-1))) o = o.slice(0, -1); return o.filter(w => !/^(?:a|an|the)$/.test(w));};
+export const goalOps = (goal, f) => {
+  const g = new Set(words(goal)), all = String(goal ?? '').match(/[A-Za-z]+/g) || [], ws = /^\s*[A-Za-z]+\s+(?:a|an|the|my|our|some)\b/i.test(goal ?? '') ? all.slice(1) : all;
+  const on = s => {const w = words(s); return w.length < 2 || g.has(objectOf(w).at(-1));};
+  const hit = w => [f?.name, f?.operation].some(s => covers(words(w), words(s)) && on(s));
+  return [...new Set(ws.filter(hit).map(w => VERB(words(w)[0])))];
+};
+// Review: two names of one operation: one verb, and what they act on differs
+// only by filler (createTicketRecord, deleteTicketById, createNewTicket for
+// createTicket). A new noun is another function: createTicketStore and
+// createTicketId are not createTicket, nor viewAllTickets viewTicket.
+const FILLER_OBJECT = new Set('record entry item new single existing one'.split(' '));
+export const sameOp = (a, b) => {
+  const x = words(a), y = words(b);
+  if (!x.length || !y.length || VERB(x[0]) !== VERB(y[0])) return false;
+  const p = objectOf(x).filter(w => !FILLER_OBJECT.has(w)), q = objectOf(y).filter(w => !FILLER_OBJECT.has(w));
+  return p.length === q.length && p.every(w => q.includes(w));
+};
+// Review: at each level, one performer per operation, the one named exactly
+// verb and goal noun first (viewTicket before viewAllTickets), then a
+// specific name before a generic one (createTicket before create); each
+// operation from the nearest level (own first) that has one. Generic names
+// are listed: they are never answered by name, but start() returns them.
+export function planPerformers(goal, levels) {
+  const g = new Set(words(goal)), out = [], near = new Set();
+  const rank = f => {const w = words(f.name); return w.length === 2 && g.has(w[1]) ? 0 : GENERIC_NAMES.has(f.name) ? 2 : 1;};
+  for (const items of levels) {
+    const best = new Map();
+    for (const f of items) {
+      if (out.some(x => x.name === f.name)) continue;
+      for (const o of goalOps(goal, f)) if (!near.has(o) && (!best.has(o) || rank(f) < rank(best.get(o)))) best.set(o, f);
+    }
+    const picked = new Set(best.values());
+    for (const f of items) if (picked.has(f)) out.push(f);
+    for (const o of best.keys()) near.add(o);
+  }
+  return out;
+}
+// Review: the operations the goal lists beside those fns perform, that none
+// of them performs: each list of single words joined by commas, and or or,
+// around a word one of them performs or acts on, minus what they act on.
+// Run12's "create, view, update, and delete tickets" with getTicket for
+// view leaves view, as "create tickets and view them" does with createTicket.
+export function goalLeft(goal, fns) {
+  const t = String(goal ?? '').match(/[A-Za-z]+|,/g) || [], done = new Set(fns.flatMap(f => goalOps(goal, f))), out = new Set();
+  const nouns = new Set(fns.flatMap(f => [f.name, f.operation].flatMap(s => objectOf(words(s))))), verb = i => VERB(words(t[i])[0]);
+  const joint = i => t[i] === ',' || /^(?:and|or)$/i.test(t[i] || ''), word = i => /^[A-Za-z]/.test(t[i] || '') && !joint(i) && !/^(?:it|them|they|these|those|one|ones)$/i.test(t[i]);
+  for (let i = 0; i < t.length; i++) {
+    if (!word(i) || !done.has(verb(i)) && !nouns.has(verb(i))) continue;
+    for (const step of [-1, 1]) for (let j = i; ;) {let k = j + step; while (joint(k)) k += step; if (k === j + step || !word(k)) break; j = k; out.add(verb(k));}
+  }
+  return [...out].filter(v => !done.has(v) && !nouns.has(v));
+}
 // Each shared name R3 would delete: its holders (spawn indices), the item
 // with the most hint, and the plain pick, or null when Clef must choose.
 export function duplicateNames(spawn, promised = [], elsewhere = new Set()) {
