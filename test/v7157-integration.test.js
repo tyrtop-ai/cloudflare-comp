@@ -174,3 +174,264 @@ test('v7.15.7 integration (d): linkableName reads an async export as a name the 
   const target=d=>room.linkTarget(files,'createTicket.js',`TypeError: ${d}`);
   assert.deepEqual([target('tickets.saveTickets is not a function'),target('tickets.push is not a function')],['ticketStorage.js',null]);
 });
+
+// ------------------------------------------------------------------ run14 replayed end to end
+// Run14 from Root's split through the real room, builders, compiler and
+// Container with scripted models: the splitter answers run14's plan with
+// what each call returns, Clef says split at Root and atomic below and
+// accepts every name and scope, each worker publishes run14's own
+// revisions (Create ticket its live revisions 1, 3 and 5, then the fix;
+// View and Update ticket as published, synchronous, then awaited), the
+// runner the live fixed smoke.js, the coverage check its mapping.
+const ANSWERS14={'Ticket storage':[[['ticketStorage.js',SRC.storage]]],
+  'Create ticket':[[['createTicket.js',SRC.create1]],[['createTicket.js',SRC.create3]],[['createTicket.js',SRC.create5]],[['createTicket.js',SRC.createFix]]],
+  'View ticket':[[['viewTicket.js',SRC.view]],[['viewTicket.js',SRC.viewFix]]],
+  'Update ticket':[[['updateTicket.js',SRC.update]],[['updateTicket.js',SRC.updateFix]]],
+  'Delete ticket':[[['deleteTicket.js',SRC.del]]],'Entry module':[[['entry.js',SRC.entry]]]};
+// A leaf that answers each label from its script of revisions (the last repeats), counting its turns and keeping what it was shown.
+const scriptedLeaf=answers=>{const turns={},inputs=[];return {turns,inputs,leaf:u=>{const n=(turns[u.your_label]=(turns[u.your_label]||0)+1),list=answers[u.your_label]||[],files=list[Math.min(n,list.length)-1]||[];inputs.push(u);return {summary:'implemented source',done:true,files:files.map(([path,content])=>({path,content}))};}};};
+// Clef at the split: yes at Root, no below; every scope, name and use accepted.
+const clefSplit=top=>input=>{const task=String(input.state?.assigned_behavior||'');return {answers:Object.fromEntries(Object.keys(input.questions||{}).map(k=>[k,{noul:k==='should_split'?(top.test(task)?0.85:0.2):/^(?:within|names|uses)/.test(k)?0.9:0.05}]))};};
+async function replayFromSplit({answers,split,clef,runner,coverage=COVERAGE14}) {
+  const s=scriptedLeaf(answers),r=liveRoom({clef,split,leaf:s.leaf,coverage:()=>coverage,runner:()=>runner});
+  await r.room.start(GOAL,160);await r.drain();
+  for(let i=0;i<10&&!['complete','failed'].includes(r.room.get('status'));i++){await r.room.resume(160);await r.drain();}
+  return {...r,...s};
+}
+const SENT14=sig=>`[contract] Your promise: ${sig}. readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function.${TAIL}`;
+const TICKET14=`Your createTicket(data) ("creates a new ticket and saves it") threw: SyntaxError: Unexpected end of JSON input. Test line 9: const createResult = await app.createTicket({ title: 'Test Ticket', description: 'This is a test' }). What the other side provides: ${STORAGE_FACTS}${TAIL}`;
+
+test('v7.15.7 integration: run14 replayed from the split to completion: the split states the shape; revisions 1 and 3 and the synchronous view and update are turned back by the await rule before any linking, with the shape; revision 5, awaited, is the first to reach the Container and fails on the array; its ticket is R2a to Create ticket with the uses\' facts in the same shape, no relink, no link-model call; the fix completes the run in one round',async()=>{
+  const {room,calls,turns,inputs}=await replayFromSplit({answers:ANSWERS14,split:()=>({summary:'Split the issue tracker into its pieces.',spawn:PLAN14}),clef:clefSplit(/^Build/),runner:SMOKE14});
+  assert.equal(room.get('status'),'complete',trace(room));
+  // The split, as live: six pieces, the uses planned, the entry composed; the promises carry what each call returns.
+  assert.deepEqual(room.children('root').map(c=>c.label),[...PLAN14.map(p=>p.label),'Temporary builder','Compiler']);
+  assert.deepEqual(room.promisedOf('root.1'),[{name:'readTickets',does:'reads all tickets from storage',params:[],returns:'the array of ticket objects'},{name:'saveTickets',does:'saves tickets to storage',params:['tickets'],returns:'nothing'}]);
+  assert.deepEqual(room.promisedOf('root.4'),[{name:'updateTicket',does:'updates a ticket by ID',params:['id','data']}],'a promise without returns, as before');
+  assert.deepEqual(dbEvents(room,'uses_planned').map(e=>e.body),['"Create ticket" uses readTickets, saveTickets; "View ticket" uses readTickets; "Update ticket" uses readTickets, saveTickets; "Delete ticket" uses readTickets, saveTickets.']);
+  assert.match(dbEvents(room,'start_composed')[0].body,/^"Entry module" carries start: it returns createTicket from "Create ticket", viewTicket from "View ticket", updateTicket from "Update ticket", deleteTicket from "Delete ticket", from the plan\./);
+  // Create ticket's assignment: its contract and uses state the shape (the uses text keeps what each returns where the does must go).
+  const create=inputs.find(u=>u.your_label==='Create ticket');
+  assert.ok(create.your_responsibility.includes('createTicket(data): creates a new ticket and saves it; returns the created ticket. Functions of other pieces you call, as your manager answers them: readTickets(): returns the array of ticket objects, exported by "Ticket storage": const { readTickets } = require(\'./readTickets\'); saveTickets(tickets): returns nothing, exported by "Ticket storage": const { saveTickets } = require(\'./saveTickets\');'),create.your_responsibility);
+  assert.ok(inputs.find(u=>u.your_label==='Ticket storage').your_responsibility.endsWith('readTickets(): reads all tickets from storage; returns the array of ticket objects; saveTickets(tickets): saves tickets to storage; returns nothing.'));
+  // The contract send-backs, verbatim: revision 1, view and update as published, then revision 3 (JSON.parse(readTickets()): the bound form, never the wrapped line), each stating the shape.
+  const sent=room.db().exec("SELECT recipient,body FROM messages WHERE sender='runtime:contract' ORDER BY id").toArray().map(m=>[m.recipient,m.body]);
+  assert.deepEqual(sent,[['root.2',SENT14('createTicket(data)')],['root.3',SENT14('viewTicket(id)')],['root.4',SENT14('updateTicket(id, data)')],['root.2',SENT14('createTicket(data)')]]);
+  assert.deepEqual(dbEvents(room,'contract_returned').map(e=>[e.actor,e.body]),[['root.2','Done refused (1/3): rules: [await]; back to the worker. readTickets: not awaited (createTicket.js:5).'],['root.3','Done refused (1/3): rules: [await]; back to the worker. readTickets: not awaited (viewTicket.js:4).'],['root.4','Done refused (1/3): rules: [await]; back to the worker. readTickets: not awaited (updateTicket.js:5).'],['root.2','Done refused (2/3): rules: [await]; back to the worker. readTickets: not awaited (createTicket.js:4).']]);
+  // No revision reaches the Container before it awaits: every refusal precedes the first link, and the one failed run is revision 5's (the array parsed as JSON), never revision 1's push or revision 3's "[object Promise]".
+  const firstLink=dbEvents(room,'assembly_final_requested')[0].id;
+  assert.ok(dbEvents(room,'contract_returned').every(e=>e.id<firstLink),trace(room));
+  assert.deepEqual([dbEvents(room,'compile_requested').length,dbEvents(room,'build_checked').length,dbEvents(room,'run_failed').length,dbEvents(room,'run_passed').length,dbEvents(room,'link_retry').length],[2,2,1,1,0],'two Container cycles: one failure, one pass; no relink');
+  assert.match(dbEvents(room,'run_failed')[0].body,/SyntaxError: Unexpected end of JSON input/);
+  assert.doesNotMatch(dbEvents(room,'run_failed')[0].body,/tickets\.push|\[object Promise\]/);
+  // The failure's ticket: R2a to Create ticket, the requirement on its promise with the test line (the anonymous async frame read), the uses' facts in the shape the send-back stated: async, the array.
+  const [p,...more]=room.problems("kind='run'");
+  assert.equal(more.length,0);
+  assert.deepEqual([p.status,p.outcome,p.trail.map(t=>[t.at,t.action,t.to,t.rule]),p.facts.requirement.text,p.facts.requirement.method,p.facts.requirement.test_line,p.facts.requirement.frames.map(f=>[/create-tic/.test(f.path),f.fn])],
+    ['closed','resolved',[['root','assign','root.2','R2a']],'SyntaxError: Unexpected end of JSON input','createTicket',{line:9,text:"const createResult = await app.createTicket({ title: 'Test Ticket', description: 'This is a test' })"},[[true,'createTicket']]]);
+  assert.deepEqual(bodies(calls,'Create ticket'),['',SENT14('createTicket(data)'),SENT14('createTicket(data)'),TICKET14],'the round-1 ticket, verbatim');
+  assert.deepEqual(bodies(calls,'View ticket'),['',SENT14('viewTicket(id)')]);
+  assert.deepEqual(bodies(calls,'Update ticket'),['',SENT14('updateTicket(id, data)')]);
+  assert.ok(SENT14('x').includes('readTickets() may be async and returns the array of ticket objects')&&TICKET14.includes(' What the other side provides: async readTickets(): reads all tickets from storage; returns the array of ticket objects | async saveTickets(tickets): saves tickets to storage; returns nothing | '),'one shape in both texts (seam c)');
+  assert.ok(TICKET14.length<=900);
+  assert.equal(dbEvents(room,'problem_assigned').filter(e=>e.recipient==='root.6').length,0,'the start carrier is never ticketed');
+  for(const text of calls.leaf.flatMap(u=>u.new_messages.map(m=>m.body)))assert.doesNotMatch(text,/REAL CONTAINER BUILD FAILED|NOTHING CHANGED|Your manager decided|Builder renames|Fix the error below|by the plan|components\//);
+  // The counts: one repair round (the live run spent five, two of them link rounds with a link-model call each); six first turns, four refusals answered and one ticket: eleven model calls to workers; one splitter, one runner draft, one coverage call, no linker, no manager, nine Clef calls (the gate at each of seven nodes, the scope check and the names check).
+  assert.deepEqual(rounds(room),['root: 1/1 progress']);
+  assert.deepEqual(turns,{'Ticket storage':1,'Create ticket':4,'View ticket':2,'Update ticket':2,'Delete ticket':1,'Entry module':1});
+  assert.deepEqual({split:calls.split.length,link:calls.link.length,runner:calls.runner.length,coverage:calls.coverage.length,manager:calls.manager.length,clef:calls.clef.length,leaf:calls.leaf.length},{split:1,link:0,runner:1,coverage:1,manager:0,clef:9,leaf:11});
+  assert.deepEqual([calls.clef.filter(c=>c.questions?.should_split).length,dbEvents(room,'route_ranked').length,dbEvents(room,'runner_rejected').length,dbEvents(room,'runner_invented').length],[7,0,0,0],'the live fixed test asserts only what the plan states');
+  assert.match(dbEvents(room,'link_auto')[0].body,/^Applied 11 rename\(s\) without the model/);
+  assert.equal(dbEvents(room,'api_covered').length,1,'coverage is checked once; the fixed test is reused');
+});
+
+// ------------------------------------------------------------------ v7.15.6's replays, which v7.15.7 keeps
+// Run13 (room 02775583, v7.15.5) from the split: its sources as published
+// and the revisions its rounds fixed, its fixed test, its plan with a storage
+// branch; rounds 1 to 3 as test/v7156-integration pins them.
+const imports=names=>names.map(n=>`const { ${n} } = require('./${n}');`).join('\n')+'\n';
+const SRC13={
+  entry:imports(['createTicket','viewTicket','updateTicket','deleteTicket'])+"\nfunction start() {\n  return {\n    createTicket,\n    viewTicket,\n    updateTicket,\n    deleteTicket\n  };\n}\n\nmodule.exports = { start };\n",
+  read1:"const fs = require('fs');\n\nfunction readTickets() {\n  const data = fs.readFileSync('tickets.json', 'utf8');\n  return JSON.parse(data);\n}\n\nmodule.exports = { readTickets };\n",
+  read:"const fs = require('fs');\n\nfunction readTickets() {\n  if (fs.existsSync('tickets.json')) {\n    const data = fs.readFileSync('tickets.json', 'utf8');\n    return JSON.parse(data);\n  }\n  return [];\n}\n\nmodule.exports = { readTickets };\n",
+  save:"const fs = require('fs');\n\nfunction saveTickets(tickets) {\n  const data = JSON.stringify(tickets, null, 2);\n  fs.writeFileSync('tickets.json', data, 'utf8');\n}\n\nmodule.exports = { saveTickets };\n",
+  create1:"import { readTickets } from './readTickets';\nimport { saveTickets } from './saveTickets';\n\nexport function createTicket(data) {\n  const tickets = readTickets();\n  tickets.push(data);\n  saveTickets(tickets);\n  return data;\n}\n",
+  create:"import { readTickets } from './readTickets';\nimport { saveTickets } from './saveTickets';\n\nexport function createTicket(data) {\n  const tickets = readTickets();\n  const newTicket = { ...data, id: Date.now() };\n  tickets.push(newTicket);\n  saveTickets(tickets);\n  return newTicket;\n}\n",
+  view:"import { readTickets } from './readTickets';\n\nexport function viewTicket(id) {\n  const tickets = readTickets();\n  return tickets.find(ticket => ticket.id === id);\n}\n",
+  viewFix:"import { readTickets } from './readTickets';\n\nexport function viewTicket(id) {\n  const tickets = readTickets();\n  const ticket = tickets.find(ticket => ticket.id === id);\n  if (!ticket) {\n    throw new Error('Ticket not found');\n  }\n  return ticket;\n}\n",
+  update:"const { readTickets } = require('./readTickets');\nconst { saveTickets } = require('./saveTickets');\n\nfunction updateTicket(id, data) {\n  const tickets = readTickets();\n  const ticket = tickets.find(t => t.id === id);\n  if (!ticket) {\n    throw new Error('Ticket not found');\n  }\n  Object.assign(ticket, data);\n  saveTickets(tickets);\n  return ticket;\n}\n\nmodule.exports = { updateTicket };\n",
+  del:"import { readTickets } from './readTickets';\nimport { saveTickets } from './saveTickets';\n\nexport async function deleteTicket(id) {\n  const tickets = await readTickets();\n  const deletedTicket = tickets.find(ticket => ticket.id === id);\n  const updatedTickets = tickets.filter(ticket => ticket.id !== id);\n  await saveTickets(updatedTickets);\n  return deletedTicket;\n}\n"};
+const SMOKE13=`const assert = require('node:assert/strict');
+const { start } = require('./index.js');
+
+(async () => {
+  try {
+    const app = await start();
+
+    // Create a ticket
+    const createdTicket = await app.createTicket({
+      title: 'Sample Ticket',
+      description: 'This is a sample ticket description.',
+      status: 'open'
+    });
+    assert(createdTicket.id, 'Created ticket should have an id');
+    assert.equal(createdTicket.title, 'Sample Ticket', 'Created ticket title should match');
+    assert.equal(createdTicket.description, 'This is a sample ticket description.', 'Created ticket description should match');
+    assert.equal(createdTicket.status, 'open', 'Created ticket status should match');
+
+    // View the ticket
+    const viewedTicket = await app.viewTicket(createdTicket.id);
+    assert.equal(viewedTicket.id, createdTicket.id, 'Viewed ticket id should match created ticket id');
+    assert.equal(viewedTicket.title, 'Sample Ticket', 'Viewed ticket title should match');
+    assert.equal(viewedTicket.description, 'This is a sample ticket description.', 'Viewed ticket description should match');
+    assert.equal(viewedTicket.status, 'open', 'Viewed ticket status should match');
+
+    // Update the ticket
+    const updatedTicket = await app.updateTicket(createdTicket.id, {
+      title: 'Updated Ticket',
+      description: 'This is an updated description.',
+      status: 'closed'
+    });
+    assert.equal(updatedTicket.id, createdTicket.id, 'Updated ticket id should match created ticket id');
+    assert.equal(updatedTicket.title, 'Updated Ticket', 'Updated ticket title should match');
+    assert.equal(updatedTicket.description, 'This is an updated description.', 'Updated ticket description should match');
+    assert.equal(updatedTicket.status, 'closed', 'Updated ticket status should match');
+
+    // View the updated ticket
+    const viewedUpdatedTicket = await app.viewTicket(createdTicket.id);
+    assert.equal(viewedUpdatedTicket.id, createdTicket.id, 'Viewed updated ticket id should match');
+    assert.equal(viewedUpdatedTicket.title, 'Updated Ticket', 'Viewed updated ticket title should match');
+    assert.equal(viewedUpdatedTicket.description, 'This is an updated description.', 'Viewed updated ticket description should match');
+    assert.equal(viewedUpdatedTicket.status, 'closed', 'Viewed updated ticket status should match');
+
+    // Delete the ticket
+    await app.deleteTicket(createdTicket.id);
+
+    // Attempt to view the deleted ticket
+    let errorCaught = false;
+    try {
+      await app.viewTicket(createdTicket.id);
+    } catch (err) {
+      errorCaught = true;
+      assert.equal(err.message, 'Ticket not found', 'Deleting ticket should throw "Ticket not found"');
+    }
+    assert.ok(errorCaught, 'Deleting ticket should result in an error when viewing');
+
+    process.exitCode = 0;
+  } catch (err) {
+    console.error(err);
+    process.exitCode = 1;
+  }
+})();
+`;
+const P13={read:fn('readTickets','reads all tickets from storage'),save:fn('saveTickets','saves tickets to storage',['tickets']),create:fn('createTicket','creates a new ticket and returns it',['data']),
+  view:fn('viewTicket','returns the ticket with the given ID',['id']),update:fn('updateTicket','updates a ticket and returns the modified version',['id','data']),del:fn('deleteTicket','removes a ticket and returns it',['id'])};
+const PLAN13=[
+  {label:'Entry module',task:'Write code that exports start() which returns an object with methods for each operation',functions:[{name:'start'}]},
+  {label:'Data storage',task:'Write code that handles reading and saving tickets to persistent storage',functions:[P13.read,P13.save]},
+  {label:'Create ticket',task:'Write code that creates a new ticket and saves it',functions:[P13.create],uses:['readTickets','saveTickets']},
+  {label:'View ticket',task:'Write code that finds a ticket by ID',functions:[P13.view],uses:['readTickets']},
+  {label:'Update ticket',task:'Write code that modifies an existing ticket',functions:[P13.update],uses:['readTickets','saveTickets']},
+  {label:'Delete ticket',task:'Write code that removes a ticket by ID',functions:[P13.del],uses:['readTickets','saveTickets']}];
+const STORAGE13=[{label:'Read tickets from storage',task:'Write code that implements reading tickets from a file',functions:[P13.read]},{label:'Save tickets to storage',task:'Write code that implements saving tickets to a file',functions:[P13.save]}];
+const ANSWERS13={'Entry module':[[['entry.js',SRC13.entry]]],'Read tickets from storage':[[['module.js',SRC13.read1]],[['module.js',SRC13.read]]],'Save tickets to storage':[[['saveTickets.js',SRC13.save]]],
+  'Create ticket':[[['createTicket.js',SRC13.create1]],[['createTicket.js',SRC13.create]]],'View ticket':[[['viewTicket.js',SRC13.view]],[['viewTicket.js',SRC13.viewFix]]],'Update ticket':[[['updateTicket.js',SRC13.update]]],'Delete ticket':[[['module.js',SRC13.del]]]};
+const SAY55=`Test line 55 requires viewTicket to throw for a deleted id, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.`;
+const TICKET13=`${SAY55} Your viewTicket(id) ("returns the ticket with the given ID") must satisfy: Deleting ticket should result in an error when viewing. Test line 50: await app.viewTicket(createdTicket.id) inside a try expecting a throw whose catch checks: assert.equal(err.message, 'Ticket not found', 'Deleting ticket should throw "Ticket not found"'). It failed at line 55: assert.ok(errorCaught, 'Deleting ticket should result in an error when viewing'). What the other side provides: module.js exports: export async function deleteTicket(id) Publish the FULL updated file.`;
+
+test('v7.15.7 integration: run13\'s rounds 1 to 3 replay as in v7.15.6 (an unshaped room: no promise states returns, so the await rule reads nothing and the facts read the same, with async only where a surface is): Read tickets, Create ticket and View ticket by the plan, the same rounds, turns and tickets, no model call, the entry never ticketed, the run complete',async()=>{
+  const {room,calls,turns}=await replayFromSplit({answers:ANSWERS13,split:u=>({summary:'Split the issue tracker into its pieces.',spawn:/reading and saving tickets/.test(String(u.assigned_code||''))?STORAGE13:PLAN13}),clef:clefSplit(/^Build|reading and saving tickets/),runner:SMOKE13});
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(room.shaped(),false);
+  assert.deepEqual(room.children('root.2').map(c=>c.label),[...STORAGE13.map(p=>p.label),'Temporary builder']);
+  assert.equal(calls.link.length,0,'linked with no model call, as live');
+  assert.deepEqual([calls.runner.length,dbEvents(room,'runner_invented').length,calls.coverage.length,calls.manager.length,dbEvents(room,'route_ranked').length,dbEvents(room,'contract_returned').length],[3,1,1,0,0,0]);
+  assert.deepEqual(room.problems("kind='run'").map(p=>p.trail.map(t=>[t.at,t.action,t.to,t.rule])),[[['root','delegate','root.2','R2a'],['root.2','assign','root.2.1','R2a']],[['root','assign','root.3','R2a']],[['root','assign','root.4','R2a']]]);
+  assert.deepEqual(rounds(room),['root.2: 1/1 progress','root: 1/2 progress','root: 2/3 progress']);
+  assert.deepEqual(turns,{'Entry module':1,'Read tickets from storage':2,'Save tickets to storage':1,'Create ticket':2,'View ticket':2,'Update ticket':1,'Delete ticket':1},'seven first turns and three repairs: ten model calls to workers');
+  assert.equal(bodies(calls,'Read tickets from storage')[1],"Your readTickets() (\"reads all tickets from storage\") threw: Error: ENOENT: no such file or directory, open 'tickets.json'. Test line 9: const createdTicket = await app.createTicket({. Publish the FULL updated file.");
+  assert.equal(bodies(calls,'Create ticket')[1],"Your createTicket(data) (\"creates a new ticket and returns it\") must satisfy: Created ticket should have an id. Test line 9: const createdTicket = await app.createTicket({. It failed at line 14: assert(createdTicket.id, 'Created ticket should have an id'). What the other side provides: readTickets(): reads all tickets from storage | saveTickets(tickets): saves tickets to storage | module.js exports: module.exports = { readTickets() } | saveTickets.js exports: module.exports = { saveTickets(tickets) } Publish the FULL updated file.");
+  assert.equal(bodies(calls,'View ticket')[1],TICKET13,'the round-3 ticket, verbatim');
+  assert.equal(dbEvents(room,'problem_assigned').filter(e=>e.recipient==='root.1').length,0,'the start carrier is never ticketed');
+  assert.equal(dbEvents(room,'run_passed').length,1);
+});
+
+// Run12's round 3 (room c846f779, v7.15.4): the data piece promised only a
+// factory and the readers imported getTickets and setTickets by the plan's
+// convention; the plan grows at Root in one round with no model call, the
+// readers keep their imports, and an unshaped room grows them without returns.
+test('v7.15.7 integration: run12\'s round 3 replays as in v7.15.6: getTickets and setTickets go on the data piece\'s promise in one round with no model call and, the room unshaped, without returns; the readers keep their imports and pass their contract checks; the relinked bundle runs green',async()=>{
+  const factory="exports.createData = function() {\n  const tickets = [];\n  return { list: () => tickets };\n};\n";
+  const grown="const tickets = [];\nexports.createData = function() { return { list: () => tickets }; };\nexports.getTickets = () => tickets.map(t => ({ ...t }));\nexports.setTickets = (list) => { tickets.splice(0, tickets.length, ...list.map(t => ({ ...t }))); };\n";
+  const OPS={create:imports(['getTickets','setTickets'])+"let next = 1;\n\nfunction createTicket(data) {\n  const ticket = { id: next++, ...data };\n  setTickets([...getTickets(), ticket]);\n  return ticket;\n}\n\nmodule.exports = { createTicket };\n",
+    view:imports(['getTickets'])+"\nconst viewTicket = (data) => getTickets().find(t => t.id === data.id) || null;\n\nmodule.exports = { viewTicket };\n",
+    update:imports(['getTickets','setTickets'])+"\nfunction updateTicket(data) {\n  const tickets = getTickets();\n  const ticket = tickets.find(t => t.id === data.id);\n  if (!ticket) return null;\n  Object.assign(ticket, data);\n  setTickets(tickets);\n  return ticket;\n}\n\nmodule.exports = { updateTicket };\n",
+    del:"import { getTickets } from './getTickets';\nimport { setTickets } from './setTickets';\n\nexport function deleteTicket(data) {\n  const tickets = getTickets();\n  setTickets(tickets.filter(ticket => ticket.id !== data.id));\n}\n"};
+  const smoke=`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.createTicket({ title: 'Printer jam' });\n  assert.equal((await app.viewTicket({ id: t.id })).title, 'Printer jam');\n  await app.updateTicket({ id: t.id, title: 'Paper jam' });\n  assert.equal((await app.viewTicket({ id: t.id })).title, 'Paper jam');\n  await app.deleteTicket({ id: t.id });\n  assert.equal(await app.viewTicket({ id: t.id }), null, 'a deleted ticket can no longer be viewed');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n`;
+  const {room,calls}=liveRoom({coverage:()=>COVERAGE14,runner:()=>smoke,leaf:u=>u.your_label==='Ticket Data Manager'?{summary:'added the accessors',done:true,files:[{path:'ticketDataManager.js',content:grown}]}:{summary:'as promised',done:true}});
+  await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
+  await pieces(room,'root',[[{label:'Entry Module',task:'Write code that implements the entry point exporting start().',interfaces:[{name:'start'}]},[['module.js',imports(['createTicket','viewTicket','updateTicket','deleteTicket'])+'\nexports.start = () => ({ createTicket, viewTicket, updateTicket, deleteTicket });\n']]],
+    [{label:'Ticket Data Manager',task:'Write code that manages in-memory ticket storage and provides data access functions',interfaces:[fn('createData','Initializes and returns a ticket data manager instance')]},[['ticketDataManager.js',factory]]],
+    [{label:'Create Ticket Operation',task:'Write code that implements the ticket creation logic',interfaces:[fn('createTicket','Adds a new ticket to the data store',['data'])]},[['createTicket.js',OPS.create]]],
+    [{label:'View Ticket Operation',task:'Write code that implements the ticket viewing logic',interfaces:[fn('viewTicket','Retrieves a ticket by ID from the data store',['data'])]},[['viewTicket.js',OPS.view]]],
+    [{label:'Update Ticket Operation',task:'Write code that implements the ticket update logic',interfaces:[fn('updateTicket','Modifies an existing ticket in the data store',['data'])]},[['module.js',OPS.update]]],
+    [{label:'Delete Ticket Operation',task:'Write code that implements the ticket deletion logic',interfaces:[fn('deleteTicket','Removes a ticket from the data store',['data'])]},[['deleteTicket.js',OPS.del]]]],{compose:true});
+  await settle(room,200);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.deepEqual(dbEvents(room,'promise_added').map(e=>e.body),['"Ticket Data Manager" now promises getTickets(), setTickets() (its piece makes or holds the data): Create Ticket Operation, View Ticket Operation, Update Ticket Operation and Delete Ticket Operation import them from its module and no piece promised them. It is retasked to write them; the reader keeps its import.']);
+  assert.deepEqual(room.promisedOf('root.2').map(f=>[f.name,f.returns]),[['createData',undefined],['getTickets',undefined],['setTickets',undefined]],'unshaped: grown without returns, as in v7.15.6');
+  assert.deepEqual(calls.leaf.map(u=>u.your_label),['Ticket Data Manager'],'only the data piece runs again; no reader is ticketed');
+  assert.deepEqual([calls.manager.length,calls.clef.length,calls.link.length,dbEvents(room,'contract_returned').length],[0,0,3,0],'a data piece takes the names with no model call; the linker\'s model was asked only before the plan grew, for imports nothing exported, as before');
+  assert.deepEqual(rounds(room),['root: 1/1 progress'],'the retask is the one round');
+  for(const [id,file,src] of [['root.3','createTicket.js',OPS.create],['root.4','viewTicket.js',OPS.view],['root.5','module.js',OPS.update],['root.6','deleteTicket.js',OPS.del]]) {
+    assert.equal(await room.indexedContent(id,file),src,`${id} kept its import`);
+    assert.equal(await room.contractReturned(id),false,`${id}'s done passes the contract with the answered names`);
+  }
+  assert.match(dbEvents(room,'link_auto').at(-1).body,/createTicket\.js: '\.\/getTickets' → '\.\.\/ticket-dat-[0-9a-f]{8}\/ticketDataManager\.js' \(owner of getTickets by the plan\)/);
+  assert.deepEqual([dbEvents(room,'api_incomplete').length,dbEvents(room,'run_passed').length,calls.runner.length],[0,1,1]);
+});
+
+// Run9's deleted duplicate (room 92cc686b, v7.15.0): no piece promises update
+// or delete, and the entry returns update() {} and del() {}; the plan grows,
+// the gainers write, the carrier imports, the app runs.
+test('v7.15.7 integration: run9\'s deleted duplicate through the real builders, compiler and Container completes in one round: update() and del() grow the plan on the pieces Clef names, the carrier imports them in the same wave with no ticket, the linker binds them by the plan, the runner passes',async()=>{
+  const HEAD9="const { createTicket } = require('./createTicket');\nconst { getTickets } = require('./getTickets');\n\nfunction create(data) {\n  return createTicket(data);\n}\n\nfunction view(id) {\n  const tickets = getTickets();\n  return tickets.find(ticket => ticket.id === id);\n}\n\n";
+  const ENTRY9=HEAD9+"function update() {}\nfunction del() {}\n\nfunction start() {\n  return { create, view, update, delete: del };\n}\n\nmodule.exports = { start };\n";
+  const IMPORTS9=HEAD9.replace("const { getTickets } = require('./getTickets');\n","const { getTickets } = require('./getTickets');\nconst { update } = require('./update');\nconst { del } = require('./del');\n")+"function start() {\n  return { create, view, update, delete: del };\n}\n\nmodule.exports = { start };\n";
+  const PLAN9=[
+    {label:'Entry Module',task:'Write code that imports the ticket operations and exports start(), which returns an object with create, view, update and delete.',interfaces:[{name:'start',does:ROOT_PROMISE[0].does,params:[]}]},
+    {label:'Data Module',task:'Write code that keeps tickets in memory and lets the other modules add, read, change and remove them.',interfaces:[fn('addTicket','stores a ticket with a new id and returns it',['ticket']),fn('getTickets','returns all stored tickets')]},
+    {label:'Create Ticket Module',task:'Write code that creates a ticket from the given data.',interfaces:[fn('createTicket','creates a ticket and returns it',['data'])]},
+    {label:'View Tickets Module',task:'Write code that retrieves tickets.',interfaces:[]},
+    {label:'Update Ticket Module',task:'Write code that updates a ticket by id.',interfaces:[]},
+    {label:'Delete Ticket Module',task:'Write code that deletes a ticket by id.',interfaces:[]}];
+  const FILES9={'Entry Module':'entry.js','Data Module':'data.js','Create Ticket Module':'createTicket.js','View Tickets Module':'viewTickets.js','Update Ticket Module':'updateTicket.js','Delete Ticket Module':'deleteTicket.js'};
+  const DATA="const tickets = [];\nlet next = 1;\nfunction addTicket(ticket) {\n  const t = { id: next++, ...ticket };\n  tickets.push(t);\n  return t;\n}\nfunction getTickets() {\n  return tickets;\n}\nmodule.exports = { addTicket, getTickets };\n";
+  const CREATE="const { addTicket } = require('./addTicket');\nfunction createTicket(data) {\n  return addTicket(data);\n}\nmodule.exports = { createTicket };\n";
+  const VIEW="const { getTickets } = require('./getTickets');\nfunction listTickets() {\n  return getTickets();\n}\nmodule.exports = { listTickets };\n";
+  const UPDATE0="const { getTickets } = require('./getTickets');\nfunction updateTicket(id, changes) {\n  const t = getTickets().find(x => x.id === id);\n  if (t) Object.assign(t, changes);\n  return t;\n}\nmodule.exports = { updateTicket };\n";
+  const DEL0="const { getTickets } = require('./getTickets');\nfunction deleteTicket(id) {\n  const tickets = getTickets();\n  const i = tickets.findIndex(x => x.id === id);\n  if (i >= 0) tickets.splice(i, 1);\n}\nmodule.exports = { deleteTicket };\n";
+  const SMOKE9=`const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.create({ title: 'Printer jam' });\n  assert.ok(t && t.id, 'created ticket has an id');\n  assert.equal((await app.view(t.id)).title, 'Printer jam');\n  await app.update(t.id, { title: 'Paper jam' });\n  assert.equal((await app.view(t.id)).title, 'Paper jam');\n  await app.delete(t.id);\n  const gone = await app.view(t.id);\n  assert.ok(gone == null, 'deleted ticket must be gone');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n`;
+  const n={};
+  const leaf=u=>{
+    const k=(n[u.your_label]=(n[u.your_label]||0)+1),task=String(u.your_responsibility||'');
+    const content={'Entry Module':k===1?ENTRY9:IMPORTS9,'Data Module':DATA,'Create Ticket Module':CREATE,'View Tickets Module':VIEW,
+      'Update Ticket Module':/\badd update\(/.test(task)?UPDATE0.replace('module.exports = { updateTicket };',"function update(id, changes) {\n  return updateTicket(id, changes);\n}\nmodule.exports = { updateTicket, update };"):UPDATE0,
+      'Delete Ticket Module':/\badd del\(/.test(task)?DEL0.replace('module.exports = { deleteTicket };',"function del(id) {\n  return deleteTicket(id);\n}\nmodule.exports = { deleteTicket, del };"):DEL0}[u.your_label];
+    return {summary:'implemented source',done:true,files:[{path:FILES9[u.your_label],content}]};
+  };
+  const {room,calls}=liveRoom({leaf,clef:rank((label,q)=>q.startsWith('update(')&&label==='Update Ticket Module'||q.startsWith('del(')&&label==='Delete Ticket Module'),runner:()=>SMOKE9,coverage:()=>({operations:[['create a ticket','create'],['view a ticket','view'],['update a ticket','update'],['delete a ticket','delete']].map(([operation,method])=>({operation,method}))})});
+  await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
+  await room.spawn('root',PLAN9);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='ready' WHERE id=?",c.id);
+  await settle(room,300);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.deepEqual([rounds(room),calls.manager.length,calls.link.length,calls.runner.length,dbEvents(room,'run_failed').length],[['root: 1/1 progress'],0,0,1,0],'one round for both operations; no model link; the first Container run passes');
+  assert.deepEqual(dbEvents(room,'promise_added').map(e=>e.body.split(' (')[0]),['"Update Ticket Module" now promises update()','"Delete Ticket Module" now promises del()']);
+  assert.equal(tickets(room,'root.1').length,0,'no ticket to the carrier');
+  assert.equal(dbEvents(room,'problem_assigned').filter(e=>e.recipient==='root.1').length,0);
+  assert.deepEqual(room.problems("kind='unresolved'").map(p=>[p.facts.operation.op,p.status,p.outcome,p.assignee]),[['update','closed','resolved','root.5'],['delete','closed','resolved','root.6']]);
+  assert.match(dbEvents(room,'link_auto').at(-1).body,/entry\.js: '\.\/update' → '[^']*updateTicket\.js' \(owner of update by the plan\)/);
+  assert.doesNotMatch(await room.indexedContent('root.1','entry.js'),/function (?:update|del)\s*\(/,'the carrier never writes them');
+});
