@@ -49,16 +49,16 @@ const PLAN14=[
 const USES14=[own('readTickets','Ticket storage','reads all tickets from storage',[],true,'the array of ticket objects'),own('saveTickets','Ticket storage','saves tickets to storage',['tickets'],true,'nothing')];
 const PERF14=PLAN14.slice(1,5).map(p=>own(p.functions[0].name,p.label,p.functions[0].does,p.functions[0].params,false,p.functions[0].returns));
 const noReturns=xs=>xs.map(({returns,...f})=>f);
-const line=t=>`readTickets() may be async: write ${t} inside an async function.`;
+const line=t=>`readTickets() may be async and returns the array of ticket objects: write ${t} inside an async function.`;
 
 test('v7.15.7: contractCheck, await: run14\'s createTicket.js revisions 1 to 3 are each refused for reading readTickets() without await, with the line to write; revision 5, which awaits both calls, passes; view and update likewise, delete and the entry pass; a promise that states no shape is not read',()=>{
   const check=(path,src,uses=USES14)=>L.contractCheck({[path]:src},{promise:[fn('createTicket','creates a new ticket and saves it',['data'],'the created ticket')],uses});
   const one=L.contractCheck({'createTicket.js':SRC.create1},{promise:[fn('createTicket','',['data'])],uses:USES14});
   assert.deepEqual(view(one),[['await','readTickets','createTicket.js',line('const tickets = await readTickets();')]]);
   assert.deepEqual([one[0].line,one[0].how],[5,'readTickets: not awaited (createTicket.js:5).']);
-  assert.equal(L.contractBody([fn('createTicket','',['data'])],one),'[contract] Your promise: createTicket(data). readTickets() may be async: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
+  assert.equal(L.contractBody([fn('createTicket','',['data'])],one),'[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
   assert.deepEqual(check('createTicket.js',SRC.create2).map(x=>[x.rule,x.line,x.text]),[['await',4,line('const tickets = await readTickets();')]]);
-  assert.deepEqual(view(check('createTicket.js',SRC.create3)),[['await','readTickets','createTicket.js',line('const tickets = JSON.parse(await readTickets());')]],'the parse of the result, as written');
+  assert.deepEqual(view(check('createTicket.js',SRC.create3)),[['await','readTickets','createTicket.js',line('const tickets = await readTickets();')]],'the parse of the result: the bound form (review), never the wrapped line');
   assert.deepEqual(check('createTicket.js',SRC.create5),[],'awaited: saveTickets(JSON.stringify(tickets)) is awaited too, and a result unused would pass');
   assert.deepEqual(view(L.contractCheck({'viewTicket.js':SRC.view},{promise:[fn('viewTicket','',['id'])],uses:[USES14[0]]})),[['await','readTickets','viewTicket.js',line('const tickets = await readTickets();')]]);
   assert.deepEqual(L.contractCheck({'updateTicket.js':SRC.update},{promise:[fn('updateTicket','',['id','data'])],uses:USES14}).map(x=>[x.rule,x.line]),[['await',5]],'saveTickets(updatedTickets) unused passes');
@@ -78,7 +78,7 @@ test('v7.15.7: the await rule reads a promised function\'s result used without a
   assert.deepEqual(flag(head+'let tickets;\nfunction f() { tickets = readTickets() || []; }'),[['readTickets',4,'function f() { tickets = await readTickets() || []; }']]);
   assert.deepEqual(flag(head+'function f() { for (const t of readTickets()) {} }'),[['readTickets',3,'function f() { for (const t of await readTickets()) {} }']]);
   assert.deepEqual(flag(head+'function f() { if (readTickets().length) return 1; }'),[['readTickets',3,'function f() { if ((await readTickets()).length) return 1; }']]);
-  assert.deepEqual(flag(head+'function f(x) { const ok = saveTickets(x); return ok; }'),[['saveTickets',3,'function f(x) { const ok = await saveTickets(x); return ok; }']]);
+  assert.deepEqual(flag(head+'function f(x) { const ok = saveTickets(x); return !ok; }'),[['saveTickets',3,'function f(x) { const ok = await saveTickets(x); return !ok; }']]);
   for(const [why,src] of [['unused',head+'function f(x) { saveTickets(x); }'],['awaited',head+'async function f() { const t = await readTickets(); return t; }'],['returned as it is',head+'function f() { return readTickets(); }'],
     ['an arrow body',head+'const f = () => readTickets();'],['.then-ed',head+'const p = readTickets().then(ts => ts.length).catch(() => 0);'],['void',head+'function f() { void readTickets(); }'],
     ['Promise.all',head+'async function f() { const [a, b] = await Promise.all([readTickets(), readTickets()]); return a.concat(b); }'],['for await',head+'async function f() { for await (const t of readTickets()) {} }'],
@@ -90,7 +90,7 @@ test('v7.15.7: the await rule reads a promised function\'s result used without a
   assert.deepEqual(flag("const store = require('./ticketStorage');\nconst t = store.readTickets();\nstore.readTickets().then(x => x);\nconst u = store.other();"),[['readTickets',2,'const t = await store.readTickets();']],'a module bound whole: only its promised member');
   assert.deepEqual(flag("const t = require('./ticketStorage').readTickets();"),[['readTickets',1,'const t = await require(\'./ticketStorage\').readTickets();']]);
   assert.deepEqual(flag("import { readTickets } from './readTickets';\nexport function viewTicket(id) { const tickets = readTickets(); return tickets.find(t => t.id === id); }",'v.mjs'),[['readTickets',2,'export function viewTicket(id) { const tickets = await readTickets(); return tickets.find(t => t.id === id); }']]);
-  assert.deepEqual(flag("import * as store from './ticketStorage';\nexport const all = () => { const t = store.readTickets(); return t; };",'v.mjs'),[['readTickets',2,'export const all = () => { const t = await store.readTickets(); return t; };']]);
+  assert.deepEqual(flag("import * as store from './ticketStorage';\nexport const all = () => { const t = store.readTickets(); return t.length; };",'v.mjs'),[['readTickets',2,'export const all = () => { const t = await store.readTickets(); return t.length; };']]);
   // One line once, at most five lines of a file; a file that does not parse is skipped; no names, nothing read.
   const many=head+Array.from({length:7},(_,i)=>`const t${i} = readTickets();`).join('\n')+'\nconst again = readTickets();',lines=src=>flag(src).map(x=>x[1]);
   assert.deepEqual(lines(many),[3,4,5,6,7]);
@@ -135,7 +135,8 @@ test('v7.15.7: a promise states what it returns: normalizeInterfaces keeps retur
   // The uses text: what each returns beside what it does, kept when the does must go, dropped before the owners.
   assert.equal(I.usesText([USES14[0]]),'Functions of other pieces you call, as your manager answers them: readTickets(): reads all tickets from storage; returns the array of ticket objects, exported by "Ticket storage": const { readTickets } = require(\'./readTickets\'); Import each on its own line by exactly this name, with the name as the path (in an ES module, import { readTickets } from \'./readTickets\';), and call it; do not write it yourself. Tickets live in Ticket storage: do not keep your own tickets.');
   const long=n=>own(n,'Owner','d'.repeat(80),['x'],false,'r'.repeat(30));
-  assert.equal(I.usesText([long('alphaOne'),long('betaTwo')]),'Functions of other pieces you call, as your manager answers them: alphaOne(x): returns rrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, exported by "Owner": const { alphaOne } = require(\'./alphaOne\'); betaTwo(x): returns rrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, exported by "Owner": const { betaTwo } = require(\'./betaTwo\'); Import each on its own line by exactly this name, with the name as the path (in an ES module, import { alphaOne } from \'./alphaOne\';), and call it; do not write it yourself.');
+  assert.equal(I.usesText([long('alphaOne'),long('betaTwo')]),`Functions of other pieces you call, as your manager answers them: alphaOne(x): ${'d'.repeat(60)}; returns rrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, exported by "Owner": const { alphaOne } = require('./alphaOne'); betaTwo(x): ${'d'.repeat(60)}; returns rrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, exported by "Owner": const { betaTwo } = require('./betaTwo'); Import each on its own line by exactly this name, with the name as the path (in an ES module, import { alphaOne } from './alphaOne';), and call it; do not write it yourself.`,'the does cut to 60 (review) before they go');
+  assert.equal(I.usesText([long('alphaOne'),long('betaTwo'),long('gammaThree')]),'Functions of other pieces you call, as your manager answers them: alphaOne(x): returns rrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, exported by "Owner": const { alphaOne } = require(\'./alphaOne\'); betaTwo(x): returns rrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, exported by "Owner": const { betaTwo } = require(\'./betaTwo\'); gammaThree(x): returns rrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, exported by "Owner": const { gammaThree } = require(\'./gammaThree\'); Import each on its own line by exactly this name, with the name as the path (in an ES module, import { alphaOne } from \'./alphaOne\';), and call it; do not write it yourself.');
   assert.doesNotMatch(I.usesText(Array.from({length:6},(_,i)=>long(`functionNumber${i}`))),/returns|exported by/,'past the bound, the returns go before the owners do not come back');
   assert.equal(I.usesText(noReturns([USES14[0]])),'Functions of other pieces you call, as your manager answers them: readTickets(): reads all tickets from storage, exported by "Ticket storage": const { readTickets } = require(\'./readTickets\'); Import each on its own line by exactly this name, with the name as the path (in an ES module, import { readTickets } from \'./readTickets\';), and call it; do not write it yourself. Tickets live in Ticket storage: do not keep your own tickets.','v7.15.5\'s text');
   // No check rejects a split for a missing returns; C5's text reads it with does.
@@ -175,21 +176,22 @@ test('v7.15.7: the worker prompt says every imported function may be async and i
 
 // Run14's tree as its split leaves it, in a room with scripted models: Root
 // a manager, the six pieces workers with their promises and uses.
-async function room14(opts={}) {
+async function room14(opts={},plan=PLAN14) {
   const env=liveRoom(opts),{room}=env;
   await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
-  await room.spawn('root',PLAN14.map(p=>({label:p.label,task:p.task,interfaces:p.functions,...(p.uses?{uses:p.uses}:{})})));
+  await room.spawn('root',plan.map(p=>({label:p.label,task:p.task,interfaces:p.functions,...(p.uses?{uses:p.uses}:{})})));
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
   return {...env,by:label=>room.children('root').find(c=>c.label===label)};
 }
 // One worker's turns, answered with these files in order (the last repeats).
-async function worker14(label,...sources) {
-  const {room,calls,by}=await room14({leaf:(_u,n)=>({summary:'Wrote it',files:[{path:sources[Math.min(n,sources.length)-1][0],content:sources[Math.min(n,sources.length)-1][1]}],done:true})});
+async function workerOn(plan,label,...sources) {
+  const {room,calls,by}=await room14({leaf:(_u,n)=>({summary:'Wrote it',files:[{path:sources[Math.min(n,sources.length)-1][0],content:sources[Math.min(n,sources.length)-1][1]}],done:true})},plan);
   const id=by(label).id,again=async()=>{room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);await room.turn(id);};
   await again();
   return {room,calls,id,again};
 }
+const worker14=(label,...sources)=>workerOn(PLAN14,label,...sources);
 const only=calls=>Object.entries(calls).filter(([k,v])=>!['raw','leaf'].includes(k)&&v.length).map(([k])=>k);
 
 test('v7.15.7: run14 replay: Create ticket\'s first done (revision 1) is refused before any linking, with the line to write and no model call; its awaited revision is accepted; a worker that insists is accepted after three returns, and the unmet text names the call',async()=>{
@@ -197,7 +199,7 @@ test('v7.15.7: run14 replay: Create ticket\'s first done (revision 1) is refused
   assert.equal(room.node(id).status,'ready',trace(room));
   const [message]=room.receive(id);
   assert.equal(message.from,'runtime:contract');
-  assert.equal(message.body,'[contract] Your promise: createTicket(data). readTickets() may be async: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
+  assert.equal(message.body,'[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
   assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [await]; back to the worker. readTickets: not awaited (createTicket.js:5).');
   assert.deepEqual(only(calls),[],'no Clef or other model call');
   assert.equal(room.get('contract_returns:'+id),'1');
@@ -246,4 +248,121 @@ test('v7.15.7: run14\'s split with returns, through the real room: the promise k
   // The facts a manager reads of a worker's modules show async.
   await room.putFile(storage.id,'ticketStorage.js',SRC.storage);
   assert.deepEqual(await room.boundaryView(storage.id),{exports:'ticketStorage.js exports: exports.readTickets = async function readTickets(); exports.saveTickets = async function saveTickets(tickets)'});
+});
+
+// ---- v7.15.7 review: the correctness and live reviews' findings, each pinned where it failed. ----
+test('v7.15.7 review: the await rule follows a bound result to its references: a binding only awaited, returned, an arrow\'s body, .then-ed, Promise.resolve-d or put into a Promise.all array passes (the probes\' P1, P2, P23, P25, P26, P27), an array of calls passed whole to Promise.all too, and an optional call is read through its chain; a reference read as a member, passed on or never made is refused; a write ends the follow',()=>{
+  const names=['readTickets','saveTickets','viewTicket'],flag=(src,path='v.js')=>L.unawaitedCalls({[path]:src},names).map(x=>[x.name,x.line,x.text]);
+  const head="const { readTickets } = require('./readTickets');\nconst { saveTickets } = require('./saveTickets');\nconst { viewTicket } = require('./viewTicket');\n";
+  for(const [why,src] of [
+    ['P1 .then via a variable',head+'exports.viewTicket = function(id) { const p = readTickets(); return p.then(ts => ts.find(t => t.id === id)); };'],
+    ['P2 stored, then awaited',head+'exports.f = async function() { const p = readTickets(); const ts = await p; return ts; };'],
+    ['P3 an array of calls passed whole to Promise.all',head+'exports.f = async function(a, b) { const ps = [saveTickets(a), saveTickets(b)]; await Promise.all(ps); };'],
+    ['an array of calls spread into a Promise.all array',head+'exports.f = async function(a) { const ps = [saveTickets(a)]; return Promise.all([...ps, readTickets()]); };'],
+    ['P12 Promise.resolve adopts the promise',head+'exports.f = function() { return Promise.resolve(readTickets()); };'],
+    ['P23 a sync wrapper returning the promise',head+'exports.updateTicket = function(id, data) { const result = saveTickets(data); return result; };'],
+    ['P24 await of an optional call',head+'exports.f = async function() { const ts = await readTickets?.(); return ts; };'],
+    ['P25 a then callback binding and returning',head+'exports.f = function() { return readTickets().then(ts => { const done = saveTickets(ts); return done; }); };'],
+    ['P26 bound and returned in an async function',head+'exports.f = async function(id) { const p = saveTickets(id); return p; };'],
+    ['P27 bound, then an element of a Promise.all array',head+'exports.f = async function(a, b) { const p = saveTickets(a); const q = saveTickets(b); return Promise.all([p, q]); };'],
+    ['bound, then the body of an arrow',head+'const ts = readTickets();\nexports.all = () => ts;'],
+    ['a write ends the follow',head+'exports.f = async function() { let p = readTickets(); p = await p; return p.length; };'],
+  ])assert.deepEqual(flag(src),[],why);
+  assert.deepEqual(flag(head+'exports.f = function(x) { const p = readTickets(); p.push(x); return saveTickets(p); };'),[['readTickets',4,'exports.f = function(x) { const p = await readTickets(); p.push(x); return saveTickets(p); };']],'a member read of the binding');
+  assert.deepEqual(flag(head+'exports.f = function() { const p = readTickets(); return count(p); };'),[['readTickets',4,'exports.f = function() { const p = await readTickets(); return count(p); };']],'passed on');
+  assert.deepEqual(flag(head+'exports.f = function() { const p = readTickets(); };'),[['readTickets',4,'exports.f = function() { const p = await readTickets(); };']],'bound and never read');
+  assert.deepEqual(flag(head+'exports.f = async function() { let p = readTickets(); p = other(p); return p; };'),[['readTickets',4,'exports.f = async function() { let p = await readTickets(); p = other(p); return p; };']],'the write\'s own right side is read before the follow ends');
+  assert.deepEqual(flag(head+'exports.f = function(ids) { return ids.map(id => { const t = viewTicket(id); return t.title; }); };'),[['viewTicket',4,'exports.f = function(ids) { return ids.map(id => { const t = await viewTicket(id); return t.title; }); };']]);
+  assert.deepEqual(flag(head+'exports.f = function() { const ts = readTickets?.(); return ts.length; };'),[['readTickets',4,'exports.f = function() { const ts = await readTickets?.(); return ts.length; };']],'an optional call, through its chain');
+  assert.deepEqual(flag(head+'exports.f = async function(a, b) { const ps = [saveTickets(a), saveTickets(b)]; ps.push(1); await Promise.all(ps); };'),[['saveTickets',4,'exports.f = async function(a, b) { const ps = [await saveTickets(a), await saveTickets(b)]; ps.push(1); await Promise.all(ps); };']],'an array binding read otherwise');
+});
+
+test('v7.15.7 review: the send-back states the shape the rule has in hand and, for a result passed to another call, proposes the bound form, never the wrapped line (run14b\'s revision 5 wrote JSON.parse(await readTickets()) and the Container refused the array): revision 3 reads "write const tickets = await readTickets();"; a default parameter\'s or a yield\'s call is moved into the body; one finding per line with every await; a long line is cut around the call; require(...).name is promised only with a relative path; a module bound whole, or a name destructured, inside a function is read',()=>{
+  const uses=USES14,check=(src,path='createTicket.js')=>view(L.contractCheck({[path]:src},{promise:[fn('createTicket','creates a new ticket and saves it',['data'],'the created ticket')],uses}));
+  const SHAPE='readTickets() may be async and returns the array of ticket objects: ';
+  assert.deepEqual(check(SRC.create3),[['await','readTickets','createTicket.js',SHAPE+'write const tickets = await readTickets(); inside an async function.']]);
+  assert.deepEqual(check(SRC.create1),[['await','readTickets','createTicket.js',SHAPE+'write const tickets = await readTickets(); inside an async function.']]);
+  assert.deepEqual(check(SRC.create5),[]);
+  assert.equal(L.contractBody([fn('createTicket','',['data'])],L.contractCheck({'createTicket.js':SRC.create3},{promise:[fn('createTicket','',['data'])],uses})),'[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
+  // The gate (shaped): a promise without returns is read in a room where another states it, and says no shape.
+  assert.deepEqual(view(L.contractCheck({'createTicket.js':SRC.create1},{promise:[fn('createTicket','',['data'])],uses:noReturns(USES14),shaped:true})),[['await','readTickets','createTicket.js','readTickets() may be async: write const tickets = await readTickets(); inside an async function.']]);
+  assert.deepEqual(L.contractCheck({'createTicket.js':SRC.create1},{promise:[fn('createTicket','',['data'])],uses:noReturns(USES14)}),[],'unshaped, as before');
+  const names=['readTickets','saveTickets'],flag=(src,path='v.js')=>L.unawaitedCalls({[path]:src},names).map(x=>[x.name,x.line,x.text,x.move||false]);
+  const head="const { readTickets } = require('./readTickets');\nconst { saveTickets } = require('./saveTickets');\n";
+  assert.deepEqual(flag(head+'function f() { return JSON.parse(readTickets()); }'),[['readTickets',3,'const tickets = await readTickets();',false]],'unbound: named after the function');
+  assert.deepEqual(flag(head+'function f() { let n = Number(String(readTickets())); return n; }'),[['readTickets',3,'let n = await readTickets();',false]],'through nested calls, with the declaration\'s kind');
+  assert.deepEqual(flag(head+'function f() { return new Set(readTickets()); }'),[['readTickets',3,'const tickets = await readTickets();',false]]);
+  assert.deepEqual(flag(head+'function f(x) { saveTickets(JSON.stringify(readTickets())); }'),[['readTickets',3,'const tickets = await readTickets();',false]]);
+  assert.deepEqual(flag(head+'function f(ts = readTickets()) { return ts.length; }'),[['readTickets',3,'',true]],'a default parameter');
+  assert.deepEqual(flag(head+'function* g() { const ts = yield readTickets(); }'),[['readTickets',3,'',true]],'a yield');
+  assert.deepEqual(view(L.contractCheck({'v.js':head+'function f(ts = readTickets()) { return ts.length; }'},{promise:[],uses})),[['await','readTickets','v.js',SHAPE+'move the call into the function body and await it.']]);
+  assert.deepEqual(flag(head+'function f() { return `${readTickets()}` + readTickets().length; }'),[['readTickets',3,'function f() { return `${await readTickets()}` + (await readTickets()).length; }',false]],'one finding per line, every await');
+  const [cut]=flag(head+`function start() { const pad = "${'p'.repeat(200)}"; const tickets = readTickets(); const more = "${'m'.repeat(200)}"; return { tickets }; }`);
+  assert.ok(cut[2].length<=160&&cut[2].startsWith('…')&&cut[2].endsWith('…')&&cut[2].includes('"; const tickets = await readTickets(); const more = "'),cut[2]);
+  assert.deepEqual(flag("exports.f = function() { const ts = require('fs').readTickets(); return ts.length; };"),[],'a built-in module\'s member of the name');
+  assert.deepEqual(flag("exports.f = function() { const ts = require('./storage').readTickets(); return ts.length; };"),[['readTickets',1,"exports.f = function() { const ts = await require('./storage').readTickets(); return ts.length; };",false]]);
+  assert.deepEqual(flag("exports.f = function() { const s = require('./storage'); const ts = s.readTickets(); return ts.length; };"),[['readTickets',1,"exports.f = function() { const s = require('./storage'); const ts = await s.readTickets(); return ts.length; };",false]],'a module bound whole inside a function');
+  assert.deepEqual(flag("exports.f = function() { const { readTickets } = require('./storage'); return readTickets().length; };"),[['readTickets',1,"exports.f = function() { const { readTickets } = require('./storage'); return (await readTickets()).length; };",false]],'a name destructured inside a function');
+});
+
+test('v7.15.7 review: the rule is gated on the room: where any promise states what it returns, every promised name a worker calls is read for await, one the splitter left without returns too, and the send-back says no shape for it; a room where no promise states it is read as in v7.15.6',async()=>{
+  const plan=PLAN14.map(p=>p.label==='Ticket storage'?{...p,functions:noReturns(p.functions)}:p);
+  const {room,id,again}=await workerOn(plan,'Create ticket',['createTicket.js',SRC.create1],['createTicket.js',SRC.create5]);
+  assert.equal(room.node(id).status,'ready',trace(room));
+  assert.equal(room.receive(id)[0].body,'[contract] Your promise: createTicket(data). readTickets() may be async: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
+  await again();
+  assert.equal(room.node(id).status,'done',trace(room));
+  const old=await workerOn(PLAN14.map(p=>({...p,functions:noReturns(p.functions)})),'Create ticket',['createTicket.js',SRC.create1]);
+  assert.equal(old.room.node(old.id).status,'done',trace(old.room));
+  assert.deepEqual(events(old.room,'contract_returned'),[]);
+});
+
+test('v7.15.7 review: the runner hears what each method returns: methodDescriptions and the runner\'s method_descriptions carry returns (clipped as does is), the result rule reads it (run14\'s first draft, assert.ok(createResult), is no invention against a promise that returns the created ticket, and still one against a promise that returns nothing), and RUNNER_SYSTEM says so',async()=>{
+  const A=await import('../src/api-coverage.js');
+  const api={type:'object',members:{createTicket:{type:'function',params:['data']},deleteTicket:{type:'function',params:['id']}}};
+  const md=A.methodDescriptions(['createTicket','deleteTicket'],api,PERF14);
+  assert.deepEqual(md,[{method:'createTicket',does:'creates a new ticket and saves it',params:['data'],returns:'the created ticket'},{method:'deleteTicket',does:'deletes a ticket by ID',params:['id'],returns:'nothing'}]);
+  assert.deepEqual(A.methodDescriptions(['createTicket'],api,noReturns(PERF14)),[{method:'createTicket',does:'creates a new ticket and saves it',params:['data']}],'none without');
+  const draft="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const createResult = await app.createTicket({ title: 'x' });\n  assert.ok(createResult, 'Create should return a result');\n  const deleteResult = await app.deleteTicket(createResult.id);\n  assert.equal(deleteResult, true);\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
+  assert.deepEqual(A.inventedAssertions(draft,{goal:GOAL,api:JSON.stringify(api),methods:md}).map(x=>[x.line,x.rule,x.why]),[[8,'result','the description of deleteTicket ("deletes a ticket by ID; returns nothing") states no return value: check what it did through the other methods, not its result']]);
+  assert.deepEqual(A.inventedAssertions(draft,{goal:GOAL,api:JSON.stringify(api),methods:md.map(({returns,...m})=>m)}).map(x=>[x.line,x.rule]),[[6,'result'],[8,'result']],'without returns, as in v7.15.6');
+  const calls=[],env={MOCK_AI:'false',AI:{run:async(_m,{messages})=>{calls.push(JSON.parse(messages[1].content.replace(/ \/no_think$/,'')));return {response:'```js\nconst x = 1;\n```'};}}};
+  await M.writeRunnerTest(env,{goal:'g',api:JSON.stringify(api),methods:[...md,{method:'x',does:'d',params:[],returns:'r'.repeat(200)}]});
+  assert.deepEqual(calls[0].method_descriptions.map(m=>m.returns),['the created ticket','nothing','r'.repeat(120)]);
+  assert.match(M.RUNNER_SYSTEM,/method_descriptions, when given, states for each method of start\(\) what the plan promises it does, its parameters and what it returns \(performed_by names the plan's function behind the method and is not a method of app\): assert only what the goal, the API and these descriptions state/);
+});
+
+test('v7.15.7 review: a [route:provided] answer and the composed start\'s answers are tiered as the uses text is, so the import line and "Do not write it yourself." are never clipped: what a call returns goes first, then the does is cut; run14\'s sizes keep everything',async()=>{
+  const long='Create ticket '+'x'.repeat(56),does='d'.repeat(160),returns='r'.repeat(120),name='createNewTicketRecordEntryItem';
+  const plan=[PLAN14[0],{label:long,task:'Write code that creates a new ticket',functions:[fn(name,does,['data'],returns)],uses:['readTickets','saveTickets']},...PLAN14.slice(2)];
+  const {room,drain}=liveRoom({split:()=>({summary:'Split the issue tracker',spawn:plan}),clef:input=>({answers:Object.fromEntries(Object.keys(input.questions||{}).map(k=>[k,{noul:0.9}]))})});
+  await room.start(GOAL,1);await drain();
+  const entry=room.children('root').find(c=>c.label==='Entry module'),a=room.read(`fn_answers:${entry.id}`,[]).find(x=>x.fn.name===name);
+  assert.ok(a,trace(room));
+  assert.ok(a.text.length<=600&&a.text.endsWith('Do not write it yourself.')&&a.text.includes(`const { ${name} } = require('./${name}');`),a.text);
+  assert.ok(a.text.startsWith(`${name}(data): ${does}. It is exported by "${long}". Import ${name} on its own line`)&&!a.text.includes('returns'),a.text);
+  assert.equal(a.fn.returns,returns,'kept on the answer\'s fn');
+  const b=room.read(`fn_answers:${entry.id}`,[]).find(x=>x.fn.name==='viewTicket');
+  assert.equal(b.text,'viewTicket(id): returns a ticket by ID; returns the ticket, or undefined. It is exported by "View ticket". Import viewTicket on its own line, by exactly this name, with the name as the path: const { viewTicket } = require(\'./viewTicket\'); the builder links the line to the module that exports it. Do not write it yourself.');
+});
+
+test('v7.15.7 review: promiseText reads the surface for async (one line per use for a ticket\'s facts: async readTickets(): reads all tickets from storage; returns the array of ticket objects); a does loses its final stop once, in normalizeInterfaces, so no text reads ".;"; the filler check ignores a trailing stop; the uses text cuts the does to 60 before dropping it',()=>{
+  const s=L.exportSurface('ticketStorage.js',SRC.storage);
+  assert.equal(I.promiseText(USES14[0],s.named),'async readTickets(): reads all tickets from storage; returns the array of ticket objects');
+  assert.equal(I.promiseText(USES14[1],s),'async saveTickets(tickets): saves tickets to storage; returns nothing','the whole surface too');
+  assert.equal(I.promiseText(USES14[0],L.exportSurface('s.js',"module.exports = { async readTickets() { return []; } };")),'async readTickets(): reads all tickets from storage; returns the array of ticket objects','an exported object\'s method');
+  assert.equal(I.promiseText({name:'open',params:[]},L.exportSurface('c.js','class Store { static async open() {} }\nmodule.exports = Store;')),'async open()','a class\'s static method');
+  assert.equal(I.promiseText(USES14[0],L.exportSurface('s.js',"exports.readTickets = function () { return []; };").named),'readTickets(): reads all tickets from storage; returns the array of ticket objects','a sync export');
+  assert.equal(I.promiseText(USES14[0]),'readTickets(): reads all tickets from storage; returns the array of ticket objects','without a surface, as before');
+  const [c]=I.normalizeInterfaces([{name:'createTicket',does:'creates a new ticket and saves it.',params:['data'],returns:'the created ticket.'}]);
+  assert.deepEqual(c,{name:'createTicket',does:'creates a new ticket and saves it',params:['data'],returns:'the created ticket'});
+  assert.ok(contractText([c]).endsWith(': createTicket(data): creates a new ticket and saves it; returns the created ticket.'),contractText([c]));
+  assert.match(I.interfaceErrors([{label:'A',task:'Write a',interfaces:[]}],[c],{goal:GOAL})[0].text,/^Your assignment promises createTicket\(data\): creates a new ticket and saves it; returns the created ticket; give it/);
+  assert.deepEqual(I.normalizeInterfaces(['viewTicket(id): returns a ticket by ID.']),[{name:'viewTicket',does:'returns a ticket by ID',params:['id']}],'the string form too');
+  assert.deepEqual(I.normalizeInterfaces([{name:'y',does:'One line.',returns:'What a call returns, in a few words.'}]),[{name:'y',does:'',params:[]}],'the filler with a final stop');
+  const many=n=>Array.from({length:n},(_,i)=>own(`useNumber${i}`,'Owner','d'.repeat(80),['a'],false,'r'.repeat(20)));
+  const t2=I.usesText(many(2));
+  assert.ok(t2.length<=I.USES_TEXT&&t2.includes('useNumber0(a): '+'d'.repeat(60)+'; returns '+'r'.repeat(20)+', exported by "Owner"')&&!t2.includes('d'.repeat(61)),t2);
+  assert.ok(I.usesText(many(1)).includes('useNumber0(a): '+'d'.repeat(80)+'; returns'),'whole where it fits');
+  assert.doesNotMatch(I.usesText(many(3)),/dddd/,'past 60 they go');
 });

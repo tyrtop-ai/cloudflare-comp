@@ -16,7 +16,8 @@ const RESERVED = new Set('await break case catch class const continue debugger d
 const EXAMPLE = /^(?:(?:other)?functionName|fnName|name|listedName|camelCaseIdentifier|example\w*|foo|bar)$/i;
 // The splitter prompt's example does, params and returns, copied: no hint at all.
 const FILLER = /^(?:one line|what it does|optional hint|argument|what it returns|what a call returns(?:, in a few words)?)$/i;
-const text = (v, n) => typeof v === 'string' && !FILLER.test(v.trim()) ? v.trim().slice(0, n) : '';
+// Review: the filler is read past a final stop ("What it returns.").
+const text = (v, n) => typeof v === 'string' && !FILLER.test(v.trim().replace(/[.\s]+$/, '')) ? v.trim().slice(0, n) : '';
 const escape = s => s.replace(/[$]/g, '\\$');
 
 // One item: an object, or a string such as "createTicket(title, description)",
@@ -24,6 +25,7 @@ const escape = s => s.replace(/[$]/g, '\\$');
 // backticks or not; the text after the signature is its does. v7.15.7
 // (run14): returns, what a call gives back, kept beside does (120 chars,
 // without its final stop), so a caller knows the shape before any code exists.
+// Review: does loses its final stop here, once, so no text reads ".;".
 function item(raw) {
   const o = typeof raw === 'string' ? {name: raw} : raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
   if (!o || typeof o.name !== 'string') return null;
@@ -34,7 +36,7 @@ function item(raw) {
   name = name.slice(0, 64);
   if (!name) return null;
   const operation = text(o.operation, 80);
-  return {name, does, params: params.map(p => text(p, 40)).filter(Boolean).slice(0, 6), ...(operation ? {operation} : {}), ...(returns ? {returns} : {})};
+  return {name, does: does.replace(/[.\s]+$/, ''), params: params.map(p => text(p, 40)).filter(Boolean).slice(0, 6), ...(operation ? {operation} : {}), ...(returns ? {returns} : {})};
 }
 // Cleaned, merged by name, at most 8 kept so the more-than-five check still fires.
 export function normalizeInterfaces(raw) {
@@ -58,7 +60,13 @@ export const signature = f => `${f.name}(${(f.params || []).join(', ')})`;
 // storage piece's readTickets() returned an array, asynchronously, and its
 // promise said neither; one without returns reads as it did.
 export const returnsOf = f => f?.returns ? `${f.does ? ';' : ':'} returns ${f.returns}` : '';
-export const promiseText = f => `${signature(f)}${f.does ? ': ' + String(f.does).replace(/[.\s]+$/, '') : ''}${returnsOf(f)}`;
+// Review: with the export surface of its module (exportSurface's named list,
+// or the surface itself, an exported object's members and a class's methods
+// too), async where the export is, so a ticket's facts read one line per
+// use: async readTickets(): reads all tickets from storage; returns the
+// array of ticket objects (the ROUTE slice's facts line, at the merge).
+const asyncIn = (name, surface) => (Array.isArray(surface) ? surface : [...(surface?.named || []), ...(surface?.default?.members || []), ...(surface?.default?.methods || [])]).some(n => n?.async && String(n.name).replace(/^static /, '') === name);
+export const promiseText = (f, surface = null) => `${surface && asyncIn(f.name, surface) ? 'async ' : ''}${signature(f)}${f.does ? ': ' + String(f.does).replace(/[.\s]+$/, '') : ''}${returnsOf(f)}`;
 const described = f => `${signature(f)}${f.does ? ': ' + f.does : ''}${returnsOf(f)}`;
 const namesOf = c => (c.interfaces || []).map(f => f.name);
 // C0: a piece whose own text says it exports a promised name carries it. A
@@ -478,16 +486,16 @@ export function dataAnswer(items, esm = null) {
 // each with its owner and the line that imports it (items {name, params,
 // does, owner, storage}).
 // v7.15.5 merge: within USES_TEXT characters where it can be, as
-// contractText is clipped: the does go first, then what each returns
-// (v7.15.7), then the owners, then the params, never a name or its import
-// line (probe: 8 uses gave 2699). An ES
-// module imports by the same path (run12's deleteTicket.js pasted the
+// contractText is clipped: the does go first (cut to 80, then to 60 before
+// they go: review), then what each returns (v7.15.7), then the owners, then
+// the params, never a name or its import line (probe: 8 uses gave 2699). An
+// ES module imports by the same path (run12's deleteTicket.js pasted the
 // require lines into one and failed to load).
 export const USES_TEXT = 600;
 export function usesText(items) {
   const xs = (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').slice(0, 8);
   if (!xs.length) return '';
   const data = xs.filter(f => f.storage), first = xs[0].name;
-  const say = (does, owner, params, returns = does) => `Functions of other pieces you call, as your manager answers them: ${xs.map(f => `${params ? signature(f) : f.name}${does && f.does ? ': ' + String(f.does).slice(0, 80).replace(/[.\s]+$/, '') : ''}${returns ? returnsOf({...f, does: does && f.does}) : ''}${owner ? `, exported by "${f.owner}"` : ''}: const { ${f.name} } = require('./${f.name}');`).join(' ')} Import each on its own line by exactly this name, with the name as the path (in an ES module, import { ${first} } from './${first}';), and call it; do not write it yourself.${data.length ? ` ${dataHome(data).head}: do not keep your own ${dataHome(data).noun}.` : ''}`;
-  return [say(true, true, true), say(false, true, true, true), say(false, true, true), say(false, false, true)].find(t => t.length <= USES_TEXT) || say(false, false, false);
+  const say = (does, owner, params, returns = does > 0) => `Functions of other pieces you call, as your manager answers them: ${xs.map(f => `${params ? signature(f) : f.name}${does && f.does ? ': ' + String(f.does).slice(0, does).replace(/[.\s]+$/, '') : ''}${returns ? returnsOf({...f, does: does && f.does}) : ''}${owner ? `, exported by "${f.owner}"` : ''}: const { ${f.name} } = require('./${f.name}');`).join(' ')} Import each on its own line by exactly this name, with the name as the path (in an ES module, import { ${first} } from './${first}';), and call it; do not write it yourself.${data.length ? ` ${dataHome(data).head}: do not keep your own ${dataHome(data).noun}.` : ''}`;
+  return [say(80, true, true), say(60, true, true), say(0, true, true, true), say(0, true, true), say(0, false, true)].find(t => t.length <= USES_TEXT) || say(0, false, false);
 }

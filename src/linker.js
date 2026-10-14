@@ -1688,16 +1688,30 @@ export function esmRequires(files) {
 // piece's readTickets and saveTickets were, and the promise did not say),
 // so a caller awaits every call to one. A call to an imported promised
 // function, by name, alias or as a member of a module bound whole (as the
-// binding fixes read them), whose result is used without await is listed
-// with its line as it should read: bound (const tickets = readTickets()),
-// read ((await readTickets()).find), passed (JSON.parse(await
-// readTickets())) or in any other expression. A result unused, awaited,
-// returned as it is (the caller awaits), .then-ed, inside
-// Promise.all/allSettled/race/any or for await passes; only promised
-// names are read, so a built-in or fs call never is, nor a local of the
-// name; tests are not read, and at most five lines of one file are.
-// {path, name, line, text}: text is the call's line with await before it.
+// binding fixes read them; review: inside a function too, and
+// require('./x').name by a relative path only), whose result is used
+// without await is listed with its line as it should read: bound (const
+// tickets = readTickets()), read ((await readTickets()).find) or in any
+// other expression. A result unused, awaited, returned as it is (the
+// caller awaits), .then-ed, given to Promise.resolve, inside
+// Promise.all/allSettled/race/any or for await passes. Review: a result
+// bound to a variable is followed to the binding's references and passes
+// when each adopts it so (const p = readTickets(); return p.then(…)), an
+// array of calls bound and given whole to Promise.all too; a reference
+// written over ends the follow, and a binding never read is refused. A
+// result passed to another call (JSON.parse(readTickets())) proposes the
+// bound form, const tickets = await readTickets();, never the wrapped
+// line: run14b's revision 5 wrote JSON.parse(await readTickets()) and the
+// Container refused the array. A default parameter's or a yield's call is
+// moved into the body (move). One finding per line, with every await of
+// the line, a long line cut around the first; only promised names are
+// read, so a built-in or fs call never is, nor a local of the name; tests
+// are not read, and at most five lines of one file are.
+// {path, name, line, text, move?}: text is the line as it should read.
 const TEST_PATH=/(?:^|\/)(?:tests?|__tests__)\/|\.(?:test|spec)\.[cm]?js$/i,PROMISE_ALL=/^Promise\.(?:all|allSettled|race|any)$/,THEN=new Set(['then','catch','finally']);
+const relativeRequire=n=>isRequire(n)&&n.arguments[0].value.startsWith('.');
+// The bound form's name: what the call reads (readTickets: tickets), else result.
+const boundName=name=>{const w=String(name).replace(/^[a-z]+(?=[A-Z])/,'');return w&&w!==name?w[0].toLowerCase()+w.slice(1):'result';};
 export function unawaitedCalls(files, names) {
   const want=new Set(names),out=[];
   if(!want.size)return out;
@@ -1706,32 +1720,70 @@ export function unawaitedCalls(files, names) {
     let parsed;try{parsed=parseSource(content);}catch{continue;}
     const {ast,sourceType}=parsed,{bindingOf,dynamic}=scopeOf(ast,sourceType);
     if(dynamic)continue;
-    const named=new Map(),whole=new Set();
-    for(const ref of importRefs(path,content)){const locals=new Set();for(const n of ref.names){const l=ref.aliases.get(n)||n;locals.add(l);if(want.has(n))named.set(l,n);}for(const l of ref.local)if(!locals.has(l))whole.add(l);}
-    if(!named.size&&!whole.size&&!/require\s*\(/.test(content))continue;
-    const top=id=>id?.type==='Identifier'&&bindingOf.get(id)===ast;
-    const promised=c=>c.type==='Identifier'?(top(c)&&named.get(c.name))||null:
-      c.type==='MemberExpression'&&!c.computed&&(top(c.object)&&whole.has(c.object.name)||isRequire(c.object))&&want.has(nameOf(c.property))?nameOf(c.property):null;
-    const parents=new Map();
-    walk(ast,(node,parent)=>{parents.set(node,parent);});
-    const text=String(content),seen=new Set();
-    let hits=0;
-    walk(ast,node=>{
-      if(node.type!=='CallExpression'||hits>=5)return;
-      const name=promised(node.callee);
-      if(!name)return;
-      const p=parents.get(node),g=parents.get(p);
-      if(!p||p.type==='ExpressionStatement'||p.type==='AwaitExpression'||p.type==='ReturnStatement'||p.type==='ArrowFunctionExpression'&&p.body===node||p.type==='ForOfStatement'&&p.await&&p.right===node||
-        p.type==='UnaryExpression'&&p.operator==='void'||p.type==='MemberExpression'&&p.object===node&&THEN.has(nameOf(p.property))||
-        p.type==='ArrayExpression'&&g?.type==='CallExpression'&&g.arguments[0]===p&&PROMISE_ALL.test(calleeName(g.callee)))return;
-      // A member read of the result, or a call of it, needs the parentheses.
-      const wrap=p.type==='MemberExpression'&&p.object===node||p.type==='CallExpression'&&p.callee===node;
-      const from=text.lastIndexOf('\n',node.start-1)+1,to=(text.indexOf('\n',node.start)+1||text.length+1)-1;
-      const line=(text.slice(from,node.start)+(wrap?'(await ':'await ')+text.slice(node.start,node.end)+(wrap?')':'')+text.slice(node.end,to)).trim();
-      if(seen.has(line))return;
-      seen.add(line);hits++;
-      out.push({path,name,line:node.loc.start.line,text:line.length>160?line.slice(0,159)+'…':line});
+    // Each binding of a relative import, by scope and name: the promised name it holds, or '*' for a module bound whole.
+    const held=new Map(),hold=(name,scope,v)=>{if(!scope)return;if(!held.has(scope))held.set(scope,new Map());held.get(scope).set(name,v);};
+    walk(ast,n=>{
+      if(n.type==='VariableDeclarator'&&relativeRequire(n.init)){if(n.id.type==='Identifier')hold(n.id.name,bindingOf.get(n.id),'*');else if(n.id.type==='ObjectPattern')for(const p of n.id.properties)if(p.type==='Property'&&!p.computed&&p.value?.type==='Identifier'&&want.has(nameOf(p.key)))hold(p.value.name,bindingOf.get(p.value),nameOf(p.key));}
+      else if(n.type==='ImportDeclaration'&&String(n.source?.value).startsWith('.'))for(const sp of n.specifiers){if(sp.type!=='ImportSpecifier')hold(sp.local.name,ast,'*');else if(want.has(nameOf(sp.imported)))hold(sp.local.name,ast,nameOf(sp.imported));}
     });
+    if(!held.size&&!/require\s*\(/.test(content))continue;
+    const of=id=>id?.type==='Identifier'?held.get(bindingOf.get(id))?.get(id.name):undefined;
+    const promised=c=>c.type==='Identifier'?(v=>v&&v!=='*'?v:null)(of(c)):
+      c.type==='MemberExpression'&&!c.computed&&want.has(nameOf(c.property))&&(of(c.object)==='*'||relativeRequire(c.object))?nameOf(c.property):null;
+    const text=String(content),parents=new Map(),refs=new Map();
+    walk(ast,(node,parent)=>{parents.set(node,parent);});
+    for(const [n,s] of bindingOf){if(!s)continue;if(!refs.has(s))refs.set(s,new Map());const m=refs.get(s);m.set(n.name,[...(m.get(n.name)||[]),n]);}
+    // The parent past an optional chain (await readTickets?.()).
+    const parentOf=n=>{const p=parents.get(n);return p?.type==='ChainExpression'?parents.get(p):p;};
+    const allOf=(c,a)=>c?.type==='CallExpression'&&c.arguments[0]===a&&PROMISE_ALL.test(calleeName(c.callee));
+    // n, a call or a reference to its binding (array: to an array of calls), sits where a promise is adopted.
+    const adopted=(n,array=false)=>{const p=parentOf(n),g=p&&parentOf(p);
+      return !p||p.type==='ExpressionStatement'||p.type==='AwaitExpression'||p.type==='ReturnStatement'||p.type==='ArrowFunctionExpression'&&p.body===n||p.type==='ForOfStatement'&&p.await&&p.right===n||
+        p.type==='UnaryExpression'&&p.operator==='void'||p.type==='MemberExpression'&&p.object===n&&THEN.has(nameOf(p.property))||
+        p.type==='CallExpression'&&p.arguments[0]===n&&(calleeName(p.callee)==='Promise.resolve'||array&&PROMISE_ALL.test(calleeName(p.callee)))||
+        p.type==='ArrayExpression'&&allOf(g,p)||p.type==='SpreadElement'&&g?.type==='ArrayExpression'&&allOf(parentOf(g),g);};
+    // The binding a result (or an array of results) is declared into: true when every reference adopts it, false when one does not or none reads it, null when not bound.
+    const followed=n=>{let p=parentOf(n),array=false;if(p?.type==='ArrayExpression'){array=true;n=p;p=parentOf(p);}
+      if(p?.type!=='VariableDeclarator'||p.init!==n||p.id.type!=='Identifier')return null;
+      const list=(refs.get(bindingOf.get(p.id))?.get(p.id.name)||[]).filter(r=>r!==p.id).sort((a,b)=>a.start-b.start);
+      let stop=Infinity;
+      for(const r of list){if(r.start>=stop)break;const q=parents.get(r);if(q?.type==='AssignmentExpression'&&q.left===r){stop=q.end;continue;}if(!adopted(r,array))return false;}
+      return list.length>0;};
+    // A result passed to another call: the bound form, named by the binding the outer call's result goes to, else after the function.
+    const boundForm=(n,name)=>{let c=n,p=parentOf(n);while(p&&(p.type==='CallExpression'||p.type==='NewExpression')&&p.arguments.includes(c)){c=p;p=parentOf(p);}
+      if(c===n)return null;const d=p?.type==='VariableDeclarator'&&p.init===c&&p.id.type==='Identifier'?p:null;return `${d?parents.get(d).kind:'const'} ${d?d.id.name:boundName(name)} = await ${text.slice(n.start,n.end)};`;};
+    const found=[];
+    walk(ast,node=>{
+      if(node.type!=='CallExpression')return;
+      const name=promised(node.callee);
+      if(!name||adopted(node)||followed(node)===true)return;
+      const p=parentOf(node);
+      if(p.type==='AssignmentPattern'||p.type==='YieldExpression'){found.push({node,name,move:true});return;}
+      const form=boundForm(node,name);
+      found.push({node,name,form,wrap:!form&&(p.type==='MemberExpression'&&p.object===node||p.type==='CallExpression'&&p.callee===node)});
+    });
+    const lines=new Map();
+    for(const h of found)lines.set(h.node.loc.start.line,[...(lines.get(h.node.loc.start.line)||[]),h]);
+    const seen=new Set();let hits=0;
+    for(const [ln,hs] of lines) {
+      if(hits>=5)break;
+      const bound=hs.find(h=>h.form),move=hs.every(h=>h.move);
+      let line='';
+      if(bound)line=bound.form;
+      else if(!move) {
+        // The line with every await of it, a member read or a call of the result in parentheses; cut around the first when long.
+        const from=text.lastIndexOf('\n',hs[0].node.start-1)+1,to=(text.indexOf('\n',hs[0].node.start)+1||text.length+1)-1;
+        let at=from,span=null;
+        for(const h of hs.filter(h=>!h.move).sort((a,b)=>a.node.start-b.node.start)){if(h.node.start<at)continue;line+=text.slice(at,h.node.start);const s=line.length;line+=(h.wrap?'(await ':'await ')+text.slice(h.node.start,h.node.end)+(h.wrap?')':'');span??=[s,line.length];at=h.node.end;}
+        line+=text.slice(at,to);
+        const lead=line.length-line.trimStart().length;line=line.trim();
+        if(line.length>160){const s=Math.max(0,span[0]-lead-60),e=Math.min(line.length,span[1]-lead+60);line=(s?'…':'')+line.slice(s,e)+(e<line.length?'…':'');if(line.length>160)line=line.slice(0,159)+'…';}
+      }
+      const key=move?`move:${ln}`:line;
+      if(seen.has(key))continue;
+      seen.add(key);hits++;
+      out.push({path,name:hs[0].name,line:ln,text:line,...(move?{move:true}:{})});
+    }
   }
   return out;
 }
@@ -1766,12 +1818,16 @@ const short=s=>{const t=String(s??'');return t.length>70?t.slice(0,69)+'…':t;}
 //            swapsBack exempts at link time) is invisible here, so such a
 //            caller is sent back once for an order the promise states.
 //   await    a call to a promised function of another piece (foreign or a
-//            use) whose promise states what it returns, with the result
-//            used without await (unawaitedCalls; run14's createTicket read
-//            readTickets() as the array). Only a promise that states its
-//            shape is read: the splitter is asked for returns on every
-//            function since v7.15.7, and the older rooms' and replays'
-//            promises, which state none, are read as before.
+//            use) with the result used without await (unawaitedCalls;
+//            run14's createTicket read readTickets() as the array), told
+//            with the shape the promise states ("may be async and returns
+//            the array of ticket objects"). Gated on the room (review):
+//            with shaped, which a room sets when any promise of its plan
+//            states returns (the splitter is asked for it on every function
+//            since v7.15.7), every promised name is read, one without
+//            returns too; without it only a promise that states its shape
+//            is, so the older rooms' and replays' promises, which state
+//            none, are read as before.
 // promise: the worker's promised functions. uses: the plan's uses for it
 // ({name, owner, storage, params, does}). foreign: the functions other
 // pieces promise it, by name ({name, owner, does, params}; generic names
@@ -1783,7 +1839,7 @@ const short=s=>{const t=String(s??'');return t.length>70?t.slice(0,69)+'…':t;}
 // promise that performs a local operation x of start(), from the plan's
 // walk. text is null for an empty operation of start(): the plan's walk
 // words it, with Clef when the words do not decide (placeholderAnswer).
-export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),performers=[],esm=false,promisedParams=null,goal='',keeper=false,performer=()=>null}={}) {
+export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),performers=[],esm=false,promisedParams=null,goal='',keeper=false,performer=()=>null,shaped=false}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files)),out=[],names=promise.map(f=>f.name),base=p=>String(p||'').split('/').pop();
   const line=n=>importLineOf(n,esm).replace(/;$/,''),said=f=>f?.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:'',does=f=>f?.does?': '+String(f.does).replace(/[.\s]+$/,''):'';
   // Review: the rule once for the list, the export form before it and no
@@ -1868,8 +1924,10 @@ export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),perfo
   for(const x of esmRequires(set))out.push({rule:'esm',name:'',path:x.path,text:`${base(x.path)} is an ES module (it uses import or export), where require is not defined and the module fails to load: ${x.lines.length?`write ${x.lines.map(l=>`import { ${l.names.join(', ')} } from '${l.specifier}';`).join(' ')} in place of ${x.lines.length>1?'its require lines':'its require line'}`:'use import declarations in place of require()'}.`});
   if(promisedParams)for(const x of swappedCalls(set,new Map([...set].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)])),{promised:promisedParams}))
     out.push({rule:'params',name:x.name,path:x.path,call:x.call,params:x.params,text:`${x.text}.`});
-  for(const x of unawaitedCalls(set,[...foreign.values(),...uses].filter(f=>f?.returns).map(f=>f.name)))
-    out.push({rule:'await',name:x.name,path:x.path,line:x.line,text:`${x.name}() may be async: write ${x.text} inside an async function.`,how:`${x.name}: not awaited (${base(x.path)}:${x.line}).`});
+  // Review: the shape in hand is said (run14b's revision 5 obeyed "write JSON.parse(await readTickets())" and the Container refused the array), and a default parameter's or a yield's call is moved into the body.
+  const shapes=new Map([...foreign.values(),...uses].filter(f=>f?.name).map(f=>[f.name,f.returns||'']));
+  for(const x of unawaitedCalls(set,[...shapes].filter(([,r])=>shaped||r).map(([n])=>n)))
+    out.push({rule:'await',name:x.name,path:x.path,line:x.line,text:`${x.name}() may be async${shapes.get(x.name)?` and returns ${shapes.get(x.name)}`:''}: ${x.move?'move the call into the function body and await it':`write ${x.text} inside an async function`}.`,how:`${x.name}: not awaited (${base(x.path)}:${x.line}).`});
   return out;
 }
 // The one send-back, as contractReturned sends it (clipped at 1800 there):

@@ -102,7 +102,16 @@ const importLines = (fns, esm=false) => `Import each on its own line, by exactly
 // A function request's provided answer, as routeFunction gives it and the
 // plan gives the start carrier's up front (v7.15.5). v7.15.7: with what a
 // call returns, as the promise states it (promiseText), kept on the answer.
-const providedText = (f, owner) => clip(`${promiseText(f)}. It is exported by "${owner}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`,600);
+// Review: tiered as usesText is, within 600 characters, so the import line
+// and the closing sentence are never clipped: what it returns goes first,
+// then the does is cut to 80, then the params (a 30-character name with a
+// 160-character does, a 120-character returns and a 70-character owner ran
+// to 697 and lost the import line).
+const providedText = (f, owner) => {
+  const say=(ret,cut,params)=>`${promiseText({...f,params:params?f.params:f.params?.length?['…']:[],...(ret?{}:{returns:''}),...(cut?{does:String(f.does||'').slice(0,cut)}:{})})}. It is exported by "${owner}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`;
+  const tiers=[say(true,0,true),say(false,0,true),say(false,80,true),say(false,80,false)];
+  return clip(tiers.find(t=>t.length<=600)||tiers.at(-1),600);
+};
 const providedFn = (f, owner) => ({name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),...(f.returns?{returns:f.returns}:{}),owner});
 // Review: a name that stands for an operation rather than naming one (run12's goalOperation1).
 const OPERATION_PLACEHOLDER=/^(?:goal)?(?:op|operation|action|method|handler|function|func|fn)s?_?\d*$/i;
@@ -3761,7 +3770,8 @@ export class ControlRoom extends DurableObject {
     const uses=this.plannedUses(id,this.read(`fn_answers:${id}`,[]).filter(a=>a.kind==='provided'&&validName(a.fn?.name)).map(a=>a.fn.name)),store=uses.filter(f=>f.storage);
     const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&(({isOp})=>promised.some(f=>storageFunction(f,isOp)))(this.levelOps(this.node(id).parent));
     const esm=[...files.values()].some(c=>esmSyntax(c));
-    const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,
+    // v7.15.7 review: the await rule is gated on the room (shaped): where any promise of the plan states what it returns, every promised name a worker calls is read for await, one R5 grows or the splitter left without returns too; a room where none states it (v7.15.5's and v7.15.6's replays) is read as before.
+    const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,shaped:this.allNodes().some(n=>parse(n.interfaces,[]).some(f=>f?.returns)),
       performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null});
     // Review (p1): a foreign function in a stub the builder leaves out of the bundle (dropped) is no gap of the application: no contract problem for it.
     const gap=found.filter(x=>x.rule==='missing'||x.rule==='foreign'&&!x.dropped),dropped=[...new Set(found.filter(x=>x.dropped).map(x=>x.path))],base=p=>String(p||'').split('/').pop(),list=listed;
