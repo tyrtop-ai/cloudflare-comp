@@ -312,6 +312,8 @@ export function unresolvedImports(files) {
 // the linked bundle. Run11's entryModule.js imported nothing, and triage
 // blamed viewTicket.js, which never ran. null (everything may run) when a
 // module reached loads another by a computed path, or does not parse.
+// Review: or loads one this walk cannot follow: require read as a value
+// (const r = require), module.require, createRequire, new Worker.
 export function reachableModules(files, entry) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   if(!set.has(entry))return null;
@@ -320,7 +322,9 @@ export function reachableModules(files, entry) {
     const path=queue.shift(),content=set.get(path);
     if(!LINKABLE.test(path))continue;
     let ast,computed=false;try{ast=parseSource(content).ast;}catch{return null;}
-    walk(ast,node=>{if(node.type==='ImportExpression'&&node.source?.type!=='Literal'||node.type==='CallExpression'&&node.callee?.type==='Identifier'&&node.callee.name==='require'&&node.arguments[0]?.type!=='Literal')computed=true;});
+    walk(ast,(node,parent)=>{if(node.type==='ImportExpression'&&node.source?.type!=='Literal'||node.type==='CallExpression'&&node.callee?.type==='Identifier'&&node.callee.name==='require'&&node.arguments[0]?.type!=='Literal')computed=true;
+      else if(node.type==='Identifier'&&(node.name==='createRequire'||node.name==='require'&&!notReference(node,parent)&&parent?.callee!==node&&parent?.object!==node)||
+        node.type==='MemberExpression'&&node.object.type==='Identifier'&&node.object.name==='module'&&keyName(node.property)==='require'||node.type==='NewExpression'&&/(?:^|\.)Worker$/.test(calleeName(node.callee)))computed=true;});
     if(computed)return null;
     for(const r of componentImports(path,content,set))if(r.target&&!seen.has(r.target)){seen.add(r.target);queue.push(r.target);}
   }
@@ -1031,6 +1035,8 @@ export function providedNames(surface) {
   if(d?.type==='class')for(const m of d.methods||[])names.add(methodName(m));
   return names;
 }
+// A surface whose exports this parse cannot list (the doubt missingExports gives; v7.15.4 review: the entry gate too).
+export const opaqueSurface=s=>!!(s.error||s.open||s.named.some(n=>n.name==='*')||['call','value'].includes(s.default?.type)||(s.default?.type==='object'&&s.default.members.some(m=>m.type==='spread')));
 // v7.15: the promised names no file provides in a shape a sibling can
 // destructure and call: a named export, a member of a default object, or a
 // default function or class of that name (the binding fix handles that
@@ -1040,8 +1046,7 @@ export function providedNames(surface) {
 // this parse cannot list is given the doubt, as in mayExportStart.
 export function missingExports(files, names) {
   const surfaces=[...(files instanceof Map?files:new Map(Object.entries(files)))].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>exportSurface(p,c));
-  const doubt=s=>s.error||s.open||s.named.some(n=>n.name==='*')||['call','value'].includes(s.default?.type)||(s.default?.type==='object'&&s.default.members.some(m=>m.type==='spread'));
-  if(surfaces.some(doubt))return [];
+  if(surfaces.some(opaqueSurface))return [];
   const provides=(s,name)=>s.named.some(n=>n.name===name)||(s.default?.type==='object'&&s.default.members.some(m=>m.name===name))||
     (['function','class'].includes(s.default?.type)&&s.default.name===name)||(name==='start'&&exportsStart(s));
   return [...new Set(names)].filter(name=>!surfaces.some(s=>provides(s,name)));

@@ -15,7 +15,7 @@ import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
-import { reachableModules } from './linker.js';
+import { reachableModules, opaqueSurface } from './linker.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -1528,8 +1528,9 @@ export class ControlRoom extends DurableObject {
     let issues=run.report.issues.length?run.report.issues:[{path:'',detail}];
     // v7.15.4: only code the entry reaches runs. Run11's round 8 went to
     // viewTicket.js, which nothing imported, and its fix changed nothing.
-    const dead=p=>!!reach&&linked.has(p)&&!reach.has(p);
-    if(!issues.some(x=>(String(x.path).startsWith('components/')||linked.has(x.path))&&!dead(x.path))) {
+    // Review: a frame is proof its module ran, whatever the walk saw.
+    const ran=reach&&new Set([...reach,...issues.map(x=>x.path).filter(p=>linked.has(p))]),dead=p=>!!ran&&linked.has(p)&&!ran.has(p);
+    if(!issues.some(x=>String(x.path).startsWith('components/')||linked.has(x.path))) {
       // No stack frame names a module. Triage, which sees the source, names
       // the module whose worker must change. The test stays as it is, so a
       // verdict against the test, or none, goes to the entry module: the
@@ -1541,12 +1542,13 @@ export class ControlRoom extends DurableObject {
       const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail});
       const named=verdict&&linked.has(verdict.file)?verdict.file:null,owner=named&&!dead(named)?named:entry;
       // A verdict on a module the entry never reaches goes to the entry, with what it leaves out.
-      const note=named&&dead(named)?this.unreachedNote(nodeId,linked,entry,reach,named):'';
+      // Review: so does every verdict the entry gets, or none: triage sees only what it reaches.
+      const note=owner===entry&&ran?this.unreachedNote(nodeId,linked,entry,ran,named&&dead(named)?named:''):'';
       if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${note?clip(note,500)+' ':''}${clip(verdict.problem,700)}`);
       // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
       const problem=clip(verdict?.problem||'',400).trim();
       // failure: the runner's own output, which says whether the failure moved (v7.15.1).
-      issues=[{path:owner||'',failure:detail,detail:`${note?clip(note,400)+' ':''}${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
+      issues=[{path:owner||'',triaged:true,failure:detail,detail:`${note?clip(note,400)+' ':''}${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
     return {passed:false,issues,detail,test};
@@ -1554,23 +1556,32 @@ export class ControlRoom extends DurableObject {
   // v7.15.4: the functions other pieces promise the entry's piece (the walk
   // up from it, in the plan's order), each with the modules of other pieces
   // that export it in the compiler's bundle. None outside a planned split.
-  entryOffers(id, files, entry, surfaces=null) {
+  // Review: null when a module of another piece the entry reaches (reach)
+  // has exports this parse cannot list: it may provide any of them.
+  entryOffers(id, files, entry, surfaces=null, reach=null) {
     const top=this.node(id)?.parent,b=top&&this.planned()?this.builderOf(top):null,owner=b&&this.buildSourceOrigin(b.id,entry)?.owner;
     if(!owner)return new Map();
     const out=new Map([...this.promisedElsewhere(owner).values()].filter(f=>f.name!=='start').map(f=>[f,[]]));
     for(const [p,c] of files) {
       if(!LINKABLE.test(p)||this.buildSourceOrigin(b.id,p)?.owner===owner)continue;
-      const have=providedNames(surfaces?.get(p)||exportSurface(p,c));
+      const surface=surfaces?.get(p)||exportSurface(p,c),have=providedNames(surface);
+      if(reach?.has(p)&&opaqueSurface(surface))return null;
       for(const [f,paths] of out)if(have.has(f.name))paths.push(p);
     }
     return new Map([...out].filter(([,paths])=>paths.length));
   }
-  // Why a failure triage put on a module the entry never reaches is the
-  // entry's: the promised functions no module it reaches exports.
-  unreachedNote(id, files, entry, reach, path) {
-    const left=[...this.entryOffers(id,files,entry)].filter(([,paths])=>!paths.some(p=>reach.has(p))).map(([f])=>`${f.name} from "${f.owner}"`);
-    return `Triage blamed ${path}, which no module the entry reaches imports, so its code never runs.${left.length?` ${entry.split('/').pop()} does not import ${left.join(', ')}.`:''}`;
+  // Why a failure on the entry, or one triage put on a module the entry
+  // never reaches (path), is the entry's: the promised functions that
+  // perform the goal's operations and that no module it reaches exports.
+  unreachedNote(id, files, entry, reach, path='', surfaces=null) {
+    const offers=this.entryOffers(id,files,entry,surfaces,reach)||new Map(),goal=[...offers.keys()].some(f=>this.performsGoal(f));
+    const left=[...offers].filter(([f,paths])=>(!goal||this.performsGoal(f))&&!paths.some(p=>reach.has(p))).map(([f])=>`${f.name} from "${f.owner}"`);
+    return [path?`Triage blamed ${path}, which no module the entry reaches imports, so its code never runs.`:'',
+      left.length?`${entry.split('/').pop()} does not import ${left.join(', ')}, which other pieces promise, so their code never runs: import each and call it from the method start() returns for it.`:''].filter(Boolean).join(' ');
   }
+  // Review: f performs an operation the goal names, by the goal's words
+  // (run11's createTicket for create; readData for none).
+  performsGoal(f) {return (this.userGoal().match(/[A-Za-z]+/g)||[]).some(w=>performsOp(w,f));}
 
   // ---------- the problem inbox ----------
   // The run's goal (the requirement the runtime appended included), else the top's task.
@@ -2053,14 +2064,17 @@ export class ControlRoom extends DurableObject {
     // repeats the error of a module it started, so it counts only alone. The
     // Container reports one error once per module in its stack: one problem,
     // whose sites are those modules, the innermost first.
-    // v7.15.4: a run failure is blamed only on a module the entry reaches.
+    // v7.15.4 review: a frame is proof its module ran; a run failure the
+    // entry gets from one names the promised pieces it never runs, as
+    // runApplication's triage verdict does.
     const failed=(kind,issues)=>{
-      const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail])),ran=p=>files.has(p)&&!(kind==='run'&&reach&&!reach.has(p));
-      for(const x of issues.some(x=>ran(x.path))?issues.filter(x=>ran(x.path)):issues)
+      const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail]));
+      for(const x of issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues)
         if(groups.has(x.detail))groups.get(x.detail).push(x.path);else groups.set(x.detail,[x.path]);
+      const note=kind==='run'&&reach&&!issues.some(x=>x.triaged)?this.unreachedNote(id,files,entry,new Set([...reach,...issues.map(x=>x.path)]),'',surfaces):'';
       return [...groups].map(([detail,[first,...more]])=>{
-        const path=ran(first)?first:entry,target=errorTarget(files,path,detail);
-        return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,
+        const path=files.has(first)?first:entry,target=errorTarget(files,path,detail);
+        return {kind,path,sites:more.filter(p=>p!==path),target,detail:(path===entry&&note?note+' ':'')+(path===first?detail:`${first?first+': ':''}${detail}`),
           facts:{...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure:failureHead(output.get(detail))}};
       });
     };
@@ -2085,11 +2099,17 @@ export class ControlRoom extends DurableObject {
     // v7.15.4: an entry whose imports reach no module that exports a promised
     // function runs none of the other pieces. Run11's entryModule.js wrote
     // them all in memory and passed the runner's test with six pieces dead.
-    const offers=linked&&reach?this.entryOffers(id,files,entry,surfaces):new Map(),providers=new Set([...offers.values()].flat());
-    if(providers.size&&![...providers].some(p=>reach.has(p))) {
-      const fns=[...offers.keys()];
-      this.event(id,'entry_unreached',clip(`${entry} reaches none of the ${providers.size} module(s) that export promised functions; the runner's test is not run against dead code.`,600));
-      return {stage:'run',items:[entryIssue(entry,clip(`start() runs none of the promised functions: import ${fns.map(f=>`${f.name} from "${f.owner}"`).join(', ')}, each on its own line (const { ${fns[0].name} } = require('./${fns[0].name}')), and use them in the methods start() returns. ${entry.split('/').pop()} imports no module that exports them, so their code never runs.`,900))]};
+    // Review: nor may a method start() returns run none of the promises that
+    // perform it (run11's entry with read and write imported kept create,
+    // view, update and delete in memory); a module the entry reaches whose
+    // exports this parse cannot list is given the doubt (entryOffers null).
+    const offers=linked&&reach?this.entryOffers(id,files,entry,surfaces,reach):null,methods=Object.keys(described?.members||{}).filter(k=>['function','class'].includes(described.members[k]?.type));
+    const left=offers?[...offers].filter(([,paths])=>!paths.some(p=>reach.has(p))).map(([f])=>f):[],unrun=left.filter(f=>methods.some(m=>performsOp(m,f)));
+    if(left.length&&(left.length===offers.size||unrun.length)) {
+      const none=left.length===offers.size,fns=none?left:unrun,ops=methods.filter(m=>unrun.some(f=>performsOp(m,f))),base=entry.split('/').pop();
+      this.event(id,'entry_unreached',clip(none?`${entry} reaches none of the ${new Set([...offers.values()].flat()).size} module(s) that export promised functions; the runner's test is not run against dead code.`:
+        `start() returns ${ops.join(', ')}, and ${entry} reaches no module that exports ${unrun.map(f=>f.name).join(', ')}, which perform${unrun.length>1?'':'s'} ${ops.length>1?'them':'it'}; the runner's test is not run against dead code.`,600));
+      return {stage:'run',items:[entryIssue(entry,clip(`${none?'start() runs none of the promised functions':`start() returns ${ops.join(', ')} but runs none of the promised functions that perform ${ops.length>1?'them':'it'}`}: import ${fns.map(f=>`${f.name} from "${f.owner}"`).join(', ')}, each on its own line (const { ${fns[0].name} } = require('./${fns[0].name}')), and ${none?'use them in the methods start() returns':'call each from the method start() returns for it'}. ${base} imports no module that exports ${fns.length>1?'them':'it'}, so ${fns.length>1?'their':'its'} code never runs.`,900))]};
     }
     // Run6: start() returned { getTickets } for a create, view, update and
     // delete goal; the runner tested reading alone and the run completed.
