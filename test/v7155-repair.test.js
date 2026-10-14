@@ -138,11 +138,11 @@ test('v7.15.5: run12 round 3 replay: getTickets and setTickets, which no piece p
   assert.ok((await room.indexedContent(b.id,DEL)).includes("from '../ticket-dat-f17f9f79/ticketDataManager.js'"),'the builder\'s extensionless rename got its extension (A)');
   await room.turn('root');
   assert.equal(calls.manager.length,0,'the rules decide; the manager\'s model is not asked');
-  assert.deepEqual(room.promisedOf('root.2'),[fn('createData','Initializes and returns a ticket data manager instance'),fn('getTickets','Delete Ticket Operation imports it from your module'),fn('setTickets','Delete Ticket Operation imports it from your module',['updatedTickets'])]);
+  assert.deepEqual(room.promisedOf('root.2'),[fn('createData','Initializes and returns a ticket data manager instance'),fn('getTickets','Delete Ticket Operation calls it: const tickets = getTickets();'),fn('setTickets','Delete Ticket Operation calls it: setTickets(updatedTickets);',['updatedTickets'])],'each says how its reader calls it (review)');
   const [added,...again]=events(room,'promise_added');
   assert.equal(again.length,0);
   assert.equal(added.body,'"Ticket Data Manager" now promises getTickets(), setTickets(updatedTickets) (its piece makes or holds the data): Delete Ticket Operation imports them from its module and no piece promised them. It is retasked to write them; the reader keeps its import.');
-  assert.match(events(room,'child_retasked').at(-1).body,/^Ticket Data Manager is retasked \(D9: getTickets, setTickets for Delete Ticket Operation\); it now promises createData, getTickets, setTickets\. New task: Write code that manages in-memory ticket storage[^]* Keep what your module exports and add getTickets, setTickets: Delete Ticket Operation imports them from your module\.$/);
+  assert.match(events(room,'child_retasked').at(-1).body,/^Ticket Data Manager is retasked \(D9: getTickets, setTickets for Delete Ticket Operation\); it now promises createData, getTickets, setTickets\. New task: Write code that manages in-memory ticket storage[^]* Keep what your module exports and add getTickets, setTickets: Delete Ticket Operation imports them from your module\. Keep the data at module level, shared by all your functions\.$/);
   const own=JSON.parse(await room.indexedContent('root','memory/private/ownership.json'));
   assert.deepEqual(own.children.find(c=>c.id==='root.2').interfaces.map(f=>f.name),['createData','getTickets','setTickets'],'the ownership record follows');
   assert.deepEqual(room.problems("kind='mismatch'").map(p=>[p.status,p.assignee,p.trail.at(-1).rule]),[['assigned','root.2','D9'],['assigned','root.2','D9']],'the provider owes the fix');
@@ -185,7 +185,9 @@ test('v7.15.5: a name another piece promises still takes today\'s path (D6), and
 test('v7.15.5: D9 only for names no piece promises, that no goal operation performs, once per name and provider; a piece that is no data piece is asked of Clef',async()=>{
   const {room}=liveRoom({clef:input=>({answers:{inside:{noul:/formatDate/.test(input.state.needed_function.need)?0.8:0.2}}})});
   await planned(room);
-  await pieces(room,run12Pieces(run12.deleteRound3,[['Ticket Formatter','format.js',"exports.formatTicket = (t) => '#' + t.id;\n",[fn('formatTicket','formats a ticket for display',['ticket'])],'Write code that formats tickets and their dates for display']]));
+  // The reader calls each name it reads (review: D9 adds only a function the reader calls).
+  const reads=run12.deleteRound3.replace('setTickets }','setTickets, formatDate }')+'\nexport const stamp = (t) => formatDate(t.createdAt);\n';
+  await pieces(room,run12Pieces(reads,[['Ticket Formatter','format.js',"exports.formatTicket = (t) => '#' + t.id;\n",[fn('formatTicket','formats a ticket for display',['ticket'])],'Write code that formats tickets and their dates for display']]));
   const kindOf=id=>room.node(id)?'worker':null;
   const row=(names,provider='root.2')=>({id:names.join('-')+provider,kind:'mismatch',facts:{names,unpromised:true,promised:['createData']},
     parties:[{role:'reader',owner:'root.6',owner_path:'deleteTicket.js',path:DEL},{role:'provider',owner:provider,owner_path:'x.js',path:'x.js'}]});
@@ -242,4 +244,117 @@ test('v7.15.5 review: autoLink gives each quoted form of an ESM import its exten
   const edits=L.autoLink(files,new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)])));
   assert.deepEqual(edits.map(e=>[e.find,e.replace]),[["'./lib'","'./lib.js'"],['"./lib"','"./lib.js"']]);
   assert.deepEqual(L.unresolvedImports(new Map([[A,L.applyEdits(files.get(A),edits).content],['components/a-11111111/lib.js',files.get('components/a-11111111/lib.js')]])),[]);
+});
+
+const kindOfIn=room=>id=>room.node(id)?'worker':null;
+const rowOf=(names,{reader='root.6',reader_path='deleteTicket.js',provider='root.2',kind='mismatch',facts={}}={})=>({id:`${kind}:${names.join('-')}:${reader}:${provider}`,kind,
+  facts:{names,...kind==='mismatch'?{unpromised:true,promised:['createData']}:{},...facts},
+  parties:[{role:'reader',owner:reader,owner_path:reader_path,path:reader_path},...provider?[{role:'provider',owner:provider,owner_path:'x.js',path:'x.js'}]:[]]});
+const addsOf=async(room,rows)=>[...(await room.promiseAdds('root',rows,kindOfIn(room))).entries()].map(([id,a])=>[id,a.owed?'owed':a.child,a.names]);
+
+test('v7.15.5 review: after D9, a provider rerun that exports nothing new makes the reopened rows the provider\'s (owed), never the reader\'s "never asked to add them"',async()=>{
+  const {room}=liveRoom({link:run12Linker,leaf:()=>({summary:'done',done:true,files:[{path:'ticketDataManager.js',content:run12.data}]})});
+  await planned(room);
+  await pieces(room,run12Pieces(run12.deleteRound3));
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  await room.turn('root');
+  assert.equal(events(room,'promise_added').length,1,trace(room));
+  // Its three returns are refused by the contract check, then its done is accepted unchanged.
+  for(let i=0;i<6&&room.node('root.2').status!=='done';i++)await room.turn('root.2');
+  assert.equal(room.node('root.2').status,'done',trace(room));
+  await room.turn('root');
+  assert.equal(tickets(room,'root.6').length,0,'the reader keeps its import: no ticket tells it to change');
+  const rows=room.problems("kind='mismatch'");
+  assert.deepEqual(rows.map(p=>[p.status,p.assignee,p.trail.at(-1).rule,p.facts.unpromised,p.directive?.side]),[['assigned','root.2','D9',undefined,'provider'],['assigned','root.2','D9',undefined,'provider']],trace(room));
+  const [ticket,...more]=tickets(room,'root.2');
+  assert.equal(more.length,0,'one ticket with the reopened rows and its own contract problem');
+  assert.match(ticket,/Your assignment promises getTickets, setTickets, which Delete Ticket Operation imports from your module, and your modules do not export them\. Export each as a named export with exactly that name/);
+  assert.doesNotMatch(ticket+room.read('fn_answers:root.6',[]).map(a=>a.text).join(' '),/never asked to add/);
+});
+
+test('v7.15.5 review: the start carrier is no data piece, as provider or reader; a store verb is no store',async()=>{
+  assert.equal(P.dataPiece('Entry Module',[ROOT_PROMISE[0]]),false,'"which you ask your manager for" is not what start returns');
+  assert.equal(P.dataPiece('Ticket Store Entry',[ROOT_PROMISE[0]]),false,'whatever its label, the start carrier');
+  assert.equal(P.dataPiece('Store Ticket Operation',[fn('storeTicket','Stores a ticket in the data store',['ticket'])]),false);
+  assert.ok(P.dataPiece('Ticket Store')&&P.dataPiece('Store')&&P.dataPiece('Store Module'));
+  assert.ok(P.dataPiece('Tickets',[fn('createData','Initializes and returns a ticket data manager instance')]));
+  assert.equal(P.dataPiece('Tickets',[fn('loadAll','Loads the tickets, which the manager returns to the client')]),false,'what it returns is its own subject');
+  const {room}=liveRoom();
+  await planned(room);
+  await pieces(room,run12Pieces(run12.deleteRound3.replace('getTickets, setTickets','getStore, getTickets, setTickets')+'\nexport const peek = () => getStore();\n'));
+  // A reader linked to the entry's module.js: no add, no Clef (liveRoom has none).
+  assert.deepEqual(await addsOf(room,[rowOf(['getStore'],{provider:'root.1'})]),[]);
+  // The entry reading other names for its operations from the data piece (run12 asked for goalOperation1).
+  for(const name of ['addTicket','getTicket','editTicket','goalOperation1'])
+    assert.deepEqual(await addsOf(room,[rowOf([name],{reader:'root.1',reader_path:'module.js'})]),[],name);
+  assert.deepEqual(room.read('promise_asked:root.1',[]),[]);
+});
+
+test('v7.15.5 review: D9 adds only a function the reader calls, never its provider\'s name in another case, and never a name two providers would gain',async()=>{
+  assert.equal(L.callOf('v.js',"const store = require('./store');\nexports.view = (d) => store.records.find(t => t.id === d.id);\n",'records'),null,'a value read');
+  assert.deepEqual(L.callOf('d.js',run12.deleteRound3,'setTickets'),{params:['updatedTickets'],line:'setTickets(updatedTickets);'});
+  assert.deepEqual(L.callOf('d.js',"const s = require('./s');\nconst t = s.getTickets(1 + 2);\n",'getTickets'),{params:[],line:'const t = s.getTickets(1 + 2);'});
+  const {room}=liveRoom();
+  await planned(room);
+  const reader=run12.deleteRound3.replace('getTickets, setTickets','getTickets, setTickets, createdata, records')+'\nexport const fresh = () => createdata();\nexport const all = () => records.length;\n';
+  await pieces(room,run12Pieces(reader,[['Ticket Store','store.js',"exports.openStore = () => [];\n",[fn('openStore','Opens and returns a store instance')]],
+    ['Ticket Report','report.js',"const { getTickets } = require('./store');\nexports.report = () => getTickets().length;\n",[fn('report','counts the tickets')]]]));
+  assert.deepEqual(await addsOf(room,[rowOf(['createdata'])]),[],'createData in another case: the reader\'s (D6)');
+  assert.deepEqual(await addsOf(room,[rowOf(['records'])]),[],'never called: a value, the reader\'s');
+  const two=[rowOf(['getTickets']),rowOf(['getTickets'],{reader:'root.8',reader_path:'report.js',provider:'root.7'})];
+  assert.deepEqual(await addsOf(room,two),[],'getTickets on two pieces would break one carrier per name');
+  assert.deepEqual(await addsOf(room,[two[1]]),[[two[1].id,'root.7',['getTickets']]],'one provider alone gains it');
+});
+
+test('v7.15.5 review: a goal operation is the goal\'s verb alone or on a goal word, not any goal word',async()=>{
+  const {room}=liveRoom();
+  await planned(room);
+  await pieces(room,run12Pieces(run12.deleteRound3));
+  const op=room.goalOperation(room.planIndex());
+  assert.deepEqual(['tickets','ticketStore','createStore','updateAll','getTickets','addTicket'].filter(op),[]);
+  assert.deepEqual(['removeTicket','update','createTicket','deleteTickets'].filter(op),['removeTicket','update','createTicket','deleteTickets']);
+  const reader=run12.deleteRound3.replace('getTickets, setTickets','ticketStore, tickets')+'\nexport const all = () => tickets().concat(ticketStore());\n';
+  await room.putFile('root.6','deleteTicket.js',reader);
+  assert.deepEqual(await addsOf(room,[rowOf(['ticketStore','tickets'])]),[[rowOf(['ticketStore','tickets']).id,'root.2',['ticketStore','tickets']]]);
+});
+
+test('v7.15.5 review: a D9 retask keeps the ticket its provider was sent in the same decision',async()=>{
+  const {room}=liveRoom({link:run12Linker});
+  await planned(room);
+  await pieces(room,run12Pieces(run12.deleteRound3));
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  room.fileContract('root.2',[fn('createData','Initializes and returns a ticket data manager instance')]);
+  await room.turn('root');
+  assert.equal(events(room,'promise_added').length,1,trace(room));
+  const contract=room.problems("kind='contract'")[0];
+  assert.deepEqual([contract.status,contract.assignee],['assigned','root.2']);
+  const [ticket,...more]=tickets(room,'root.2');
+  assert.equal(more.length,0);
+  assert.match(ticket||'',/Your assignment promises createData; other pieces need it from you/,'run12 replay: the D4 ticket reaches the retasked provider');
+});
+
+test('v7.15.5 review: run12 with the plan\'s convention: deleteTicket imports getTickets and setTickets by name, no module exports them, and the one data piece is retasked to write them (D9)',async()=>{
+  const del="import { getTickets } from './getTickets';\nimport { setTickets } from './setTickets';\n\nexport function deleteTicket(data) {\n  const tickets = getTickets();\n  setTickets(tickets.filter(ticket => ticket.id !== data.ticketId));\n  return true;\n}\n";
+  const {room,calls}=liveRoom({leaf:()=>({summary:'added getTickets and setTickets',done:true,files:[{path:'ticketDataManager.js',content:withAccessors}]})});
+  await planned(room);
+  await pieces(room,run12Pieces(del));
+  const b=await room.scheduleAssembly('root');
+  await room.turn(b.id);
+  assert.deepEqual(openProblems(room,'root').map(p=>[p.kind,p.facts.names]),[['unresolved',['getTickets']],['unresolved',['setTickets']]],trace(room));
+  await room.turn('root');
+  assert.equal(calls.manager.length,0);
+  assert.match(events(room,'promise_added').map(e=>e.body).join(' '),/^"Ticket Data Manager" now promises getTickets\(\), setTickets\(\) \(its piece makes or holds the data\)/,trace(room));
+  assert.deepEqual(room.promisedOf('root.2').map(f=>f.name),['createData','getTickets','setTickets']);
+  assert.deepEqual(room.problems("kind='unresolved'").map(p=>[p.status,p.assignee,p.trail.at(-1).rule,p.parties.map(x=>x.role+':'+x.owner).join(' ')]),
+    [['assigned','root.2','D9','reader:root.6 provider:root.2'],['assigned','root.2','D9','reader:root.6 provider:root.2']]);
+  assert.equal(tickets(room,'root.6').length,0,'no "write what you need yourself"');
+  assert.match(room.read('fn_answers:root.6',[]).map(a=>a.text).join(' '),/Keep your import of getTickets as it is/);
+  await room.turn('root.2');
+  assert.equal(room.node('root.2').status,'done',trace(room));
+  await room.turn('root');
+  await room.turn(room.children('root').find(c=>c.label==='Temporary builder').id);
+  assert.match(events(room,'link_auto').at(-1).body,/deleteTicket\.js: '\.\/getTickets' → '\.\.\/ticket-dat-f17f9f79\/ticketDataManager\.js'/,trace(room));
+  assert.deepEqual(room.problems("kind='unresolved'").map(p=>[p.status,p.outcome]),[['closed','resolved'],['closed','resolved']]);
 });

@@ -32,8 +32,15 @@ export const PLAIN_JS=/non_code_rejected|Leaf outputs must be executable|\.(?:ts
 // (Ticket Data Manager, Ticket Store), or one whose promise has a factory, a
 // function of no parameters that returns an instance, a manager or a
 // repository (createData: "Initializes and returns a ticket data manager instance").
-export const dataPiece=(label,items=[])=>/\b(?:data\s+(?:manager|store|access|layer|module|service)|store|storage|repository|database|persistence)\b/i.test(String(label||''))||
-  (items||[]).some(f=>!(f.params||[]).length&&/\breturns?\b/i.test(f.does||'')&&/\b(?:instance|manager|repository|database|client)\b/i.test(f.does||''));
+// Review: what it returns is the item's own subject, so start's "returns an
+// object ..., which you ask your manager for" is no factory, and the start
+// carrier is never a data piece; store as a leading verb (Store Ticket
+// Operation) is no store.
+export const dataPiece=(label,items=[])=>{
+  const text=String(label||'').replace(/^\s*store\s+(?!(?:module|piece|component|service|layer)\b)/i,'');
+  return !(items||[]).some(f=>f.name==='start')&&(/\b(?:data\s+(?:manager|store|access|layer|module|service)|store|storage|repository|database|persistence)\b/i.test(text)||
+    (items||[]).some(f=>!(f.params||[]).length&&/\breturns?\s+(?:a|an|the)\b[^,;.]*\b(?:instance|manager|repository|database|client)\b/i.test(f.does||'')));
+};
 export const COMPILER_TASK='Run the linked application: choose the entry, generate the runtime loader and package, load and start it in the Container, and have the runner test it. Report failures to the manager; never edit code.';
 
 export const KINDS=['unresolved','mismatch','binding','entry','load','run','stuck','contract','argorder'];
@@ -150,6 +157,17 @@ export function deterministicDecision(p, ctx) {
   if((lcm||ctx.causedHere?.(p))&&['load','run'].includes(p.kind)&&!p.facts?.argorder&&isInterfaceError(p.detail)&&ctx.builder&&
     ![].concat(flags.builder_tried||[]).includes(ctx.builder)&&ctx.canRelink(p))
     return {rule:'D5',action:'assign',child:ctx.builder,builder:true};
+  // D9 (v7.15.5, run12): what a reader imports from a provider that does not
+  // export it, that no piece promises, and that the provider's piece covers,
+  // goes on the provider's promise: it is retasked to write it, and the
+  // reader keeps its import. The room decides what qualifies (promiseAdd),
+  // for an unresolved import of the plan's convention too (its provider the
+  // one data piece here), so before D4. Review: a name D9 put on the
+  // provider's promise that it still does not export is the provider's
+  // (owed), never the reader's "never asked to add it".
+  const add=lcm&&ctx.promiseAdd?.(p);
+  if(add?.owed)return {rule:'D9',action:'assign',child:add.child,side:'provider',instructions:add.instructions,facts:add.facts};
+  if(add)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
   // D3 delegate: every party lies in one child branch; that branch decides.
   if(kids.length===1&&ctx.kindOf(kids[0])==='manager'&&flags.escalated_from!==kids[0])return {rule:'D3',action:'assign',child:kids[0],delegate:true};
   // D4 single owner: every party lies in one worker.
@@ -159,12 +177,6 @@ export function deterministicDecision(p, ctx) {
   // it from there, without the model (M6 settled as D6 against that child).
   const u=flags.escalated_from&&kids.length===1&&kids[0]===flags.escalated_from?ctx.uniqueProvider?.(p):null;
   if(u)return {rule:'D6',action:'assign',child:kids[0],side:'reader',unique:u.child,instructions:importInstructions(p,u),facts_text:u.text};
-  // D9 (v7.15.5, run12): what a reader imports from a provider that does not
-  // export it, that no piece promises, and that the provider's piece covers,
-  // goes on the provider's promise: it is retasked to write it, and the
-  // reader keeps its import. The room decides what qualifies (promiseAdd).
-  const add=lcm&&ctx.promiseAdd?.(p);
-  if(add)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
   // D6 reader adapts (and the default for every other two-sided problem):
   // the default party's child changes; a sub-manager gets it as a directive.
   const role=DEFAULT_ROLE[p.kind]||'reader';

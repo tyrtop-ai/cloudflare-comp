@@ -1498,15 +1498,19 @@ export function importRefs(path, content) {
   });
   return refs.filter(r=>r.specifier.startsWith('.'));
 }
-// v7.15.5: the names a file passes at its first call of an imported name
-// (under its local alias, or as a member), the params hint of a function
-// added to a promise (D9); [] when never called or passed something else.
-export function callArgs(path, content, name) {
-  let ast;try {ast=parseSource(content).ast;} catch {return [];}
+// v7.15.5: a file's first call of an imported name (under its local alias,
+// or as a member), for a function added to a promise (D9): the names it
+// passes, the params hint ([] when it passes something else), and the line
+// it is on. null when the file never calls it: a value read (review:
+// store.records.find(...) put records() on a promise).
+export function callOf(path, content, name) {
+  let ast;try {ast=parseSource(content).ast;} catch {return null;}
   const local=importRefs(path,content).map(r=>r.aliases.get(name)).find(Boolean)||name;
-  let args=null;
-  walk(ast,node=>{if(!args&&node.type==='CallExpression'&&(node.callee.type==='Identifier'&&node.callee.name===local||node.callee.type==='MemberExpression'&&!node.callee.computed&&nameOf(node.callee.property)===name))args=node.arguments.map(argName);});
-  return args?.every(Boolean)?args:[];
+  let call=null;
+  walk(ast,node=>{if(!call&&node.type==='CallExpression'&&(node.callee.type==='Identifier'&&node.callee.name===local||node.callee.type==='MemberExpression'&&!node.callee.computed&&nameOf(node.callee.property)===name))call=node;});
+  if(!call)return null;
+  const args=call.arguments.map(argName),text=String(content);
+  return {params:args.every(Boolean)?args:[],line:text.slice(text.lastIndexOf('\n',call.start-1)+1,(text.indexOf('\n',call.start)+1||text.length+1)-1).trim()};
 }
 // v7.15.5 review: a file in ESM syntax (import or export declarations),
 // whose worker is given import lines, not require lines (run12's deleteTicket.js).
