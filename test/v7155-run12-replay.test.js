@@ -97,13 +97,14 @@ test('v7.15.5 merge: run12 replay: factory rejected, uses planned, entry compose
   assert.deepEqual(body('route_plan').map(b=>b.split(':')[0]),['goalOperation1 (Function to perform goal operation 1)','goalOperation2 (Function to perform goal operation 2)']);
   assert.ok(!clef.includes('fn')&&!clef.includes('inside'),clef.join(','));
   // 4. Run12's own sources, each sent back with the plan's answer.
-  assert.match(contract(room,'root.2')[0],/^\[contract\] Your published files do not export: readTickets\(\): Returns all stored tickets; saveTickets\(tickets\)/);
-  const DATA='Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines and use them; do not keep your own tickets.';
-  assert.equal(contract(room,'root.3')[0],`[contract] In createTicket.js, the module keeps its own data in a module-level array (tickets); your modules do not import and call readTickets and saveTickets. ${DATA} Publish the FULL updated file.`);
-  assert.equal(contract(room,'root.4')[0],'[contract] In viewTicket.js, the module returns records written into its code; your modules do not import and call readTickets. Tickets live in Ticket Data Manager: import readTickets on its own line and use it; do not keep your own tickets. Publish the FULL updated file.');
-  assert.equal(contract(room,'root.5')[0],`[contract] In module.js, the module reads and writes files with fs; your modules do not import and call readTickets and saveTickets. ${DATA} Publish the FULL updated file.`);
-  assert.equal(contract(room,'root.6')[0],`[contract] Your modules do not import and call readTickets and saveTickets. ${DATA} Publish the FULL updated file.`);
-  assert.equal(contract(room,'root.1')[0],"[contract] start() returns no method for viewTicket (View Ticket Operation) and updateTicket (Update Ticket Operation): import each on its own line, by exactly its name, with the name as the path: const { viewTicket } = require('./viewTicket'); const { updateTicket } = require('./updateTicket'); and return each under its name. Rename goalOperation1 to createTicket and goalOperation2 to deleteTicket: start() returns each function under its own name. Publish the FULL updated file.");
+  // v7.15.6 review: the missing rule once for the list, the export form first; the plan's answer with the import lines in the worker's syntax (deleteTicket.js is an ES module).
+  assert.equal(contract(room,'root.2')[0],'[contract] Your promise: readTickets(), saveTickets(tickets). Export each function your assignment promises by exactly its name, as a named export (export function readTickets(…) or exports.readTickets = …) or as a member of the exported object, not as a method of a class or instance. Not exported: readTickets(), saveTickets(tickets). Publish the FULL updated file.');
+  const DATA="Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines (const { readTickets } = require('./readTickets'); const { saveTickets } = require('./saveTickets');) and use them; do not keep your own tickets.";
+  assert.equal(contract(room,'root.3')[0],`[contract] Your promise: createTicket(data). In createTicket.js, the module keeps its own data in a module-level array (tickets). Your modules do not import and call readTickets and saveTickets. ${DATA} Publish the FULL updated file.`);
+  assert.equal(contract(room,'root.4')[0],"[contract] Your promise: viewTicket(data). In viewTicket.js, the module returns records written into its code. Your modules do not import and call readTickets. Tickets live in Ticket Data Manager: import readTickets on its own line (const { readTickets } = require('./readTickets');) and use it; do not keep your own tickets. Publish the FULL updated file.");
+  assert.equal(contract(room,'root.5')[0],`[contract] Your promise: updateTicket(data). In module.js, the module reads and writes files with fs. Your modules do not import and call readTickets and saveTickets. ${DATA} Publish the FULL updated file.`);
+  assert.equal(contract(room,'root.6')[0],"[contract] Your promise: deleteTicket(data). Your modules do not import and call readTickets and saveTickets. Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines (import { readTickets } from './readTickets'; import { saveTickets } from './saveTickets';) and use them; do not keep your own tickets. Publish the FULL updated file.");
+  assert.equal(contract(room,'root.1')[0],"[contract] Your promise: start(). start() returns no method for viewTicket (View Ticket Operation) and updateTicket (Update Ticket Operation): import each on its own line, by exactly its name, with the name as the path: const { viewTicket } = require('./viewTicket'); const { updateTicket } = require('./updateTicket'); and return each under its name. Rename goalOperation1 to createTicket and goalOperation2 to deleteTicket: start() returns each function under its own name. Publish the FULL updated file.");
   assert.deepEqual(turns,{'root.1':3,'root.2':2,'root.3':2,'root.4':2,'root.5':2,'root.6':2});
   // 5. Linked with no model: each import by its name, deleteTicket.js's ESM imports with their extension; the Container never fails.
   assert.equal(calls.link.length,0);
@@ -125,8 +126,8 @@ test('v7.15.5 merge: run12 replay: factory rejected, uses planned, entry compose
 test('v7.15.5 merge: run12 replay: an entry that keeps run12\'s two methods is accepted after three returns, and coverage files view and update before any runner call, leading with the plan\'s contract',async()=>{
   const {room,calls,body}=await replay(W=>({...W,'root.1':(n,u)=>n===1?W['root.1'][0]:(u.new_messages||[]).some(m=>/^REAL CONTAINER|^YOUR /.test(m.body))?['module.js',FOUR]:['module.js',RUN12.entry]}));
   assert.equal(room.get('status'),'complete',trace(room));
-  assert.equal(body('contract_unwired').length,3);
-  assert.match(body('contract_unmet').join('\n'),/start\(\) still returns no method for viewTicket and updateTicket after 3 returns; accepted, and the compiler's checks decide\./);
+  assert.equal(body('contract_returned').filter(b=>b.includes('rules: [unwired]')).length,3);
+  assert.match(body('contract_unmet').join('\n'),/After 3 returns: start\(\) still returns no method for viewTicket and updateTicket; accepted, and the compiler's checks decide\./);
   const gap=body('api_incomplete');
   assert.deepEqual(gap,['start() returns no method for 2 of the 4 operation(s) the goal names: view tickets (viewTicket from "View Ticket Operation"), update tickets (updateTicket from "Update Ticket Operation").']);
   const assigned=body('problem_assigned').find(b=>/to Entry Module/.test(b));
@@ -142,8 +143,8 @@ test('v7.15.5 merge: run12 replay: a delete worker that pastes require lines int
   const pasted=ESM_DELETE.replace(/import \{ (\w+) \} from '(\.\/\w+)';/g,"const { $1 } = require('$2');");
   const {room,calls,body,turns}=await replay(W=>({...W,'root.6':[W['root.6'][0],['deleteTicket.js',pasted],W['root.6'][1]]}));
   assert.equal(room.get('status'),'complete',trace(room));
-  assert.deepEqual(body('contract_esm'),['Done refused (2/3): deleteTicket.js is an ES module that calls require(), which fails to load; back to the worker with the import form.']);
-  assert.equal(contract(room,'root.6')[1],"[contract] deleteTicket.js is an ES module (it uses import or export), where require is not defined and the module fails to load: write import { readTickets } from './readTickets'; import { saveTickets } from './saveTickets'; in place of its require lines. Publish the FULL updated file.");
+  assert.deepEqual(body('contract_returned').filter(b=>b.includes('rules: [esm]')),['Done refused (2/3): rules: [esm]; back to the worker.']);
+  assert.equal(contract(room,'root.6')[1],"[contract] Your promise: deleteTicket(data). deleteTicket.js is an ES module (it uses import or export), where require is not defined and the module fails to load: write import { readTickets } from './readTickets'; import { saveTickets } from './saveTickets'; in place of its require lines. Publish the FULL updated file.");
   assert.equal(turns['root.6'],3);
   assert.equal(body('build_failed').length,0,trace(room));
   assert.equal(calls.link.length,0);

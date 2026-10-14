@@ -206,20 +206,23 @@ async function worker(id,...sources) {
   await turn();
   return {room,calls,again:turn};
 }
-const PLAN='Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines and use them; do not keep your own tickets.';
+// v7.15.6 review: with the import lines in the worker's syntax (deleteTicket.js is an ES module).
+const PLAN="Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines (const { readTickets } = require('./readTickets'); const { saveTickets } = require('./saveTickets');) and use them; do not keep your own tickets.";
+const PLAN_ONE="Tickets live in Ticket Data Manager: import readTickets on its own line (const { readTickets } = require('./readTickets');) and use it; do not keep your own tickets.";
+const PLAN_ESM="Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines (import { readTickets } from './readTickets'; import { saveTickets } from './saveTickets';) and use them; do not keep your own tickets.";
 
 test('v7.15.5: run12 replay: createTicket.js, viewTicket.js, the update module.js and deleteTicket.js are each sent back with the plan answer, with no model call',async()=>{
-  const cases=[['root.3','createTicket.js',SRC.create,'in createTicket.js, the module keeps its own data in a module-level array (tickets); your modules do not import and call readTickets and saveTickets.'],
-    ['root.4','viewTicket.js',SRC.view,'in viewTicket.js, the module returns records written into its code; your modules do not import and call readTickets.'],
-    ['root.5','module.js',SRC.update,'in module.js, the module reads and writes files with fs; your modules do not import and call readTickets and saveTickets.'],
+  const cases=[['root.3','createTicket.js',SRC.create,'in createTicket.js, the module keeps its own data in a module-level array (tickets). Your modules do not import and call readTickets and saveTickets.'],
+    ['root.4','viewTicket.js',SRC.view,'in viewTicket.js, the module returns records written into its code. Your modules do not import and call readTickets.'],
+    ['root.5','module.js',SRC.update,'in module.js, the module reads and writes files with fs. Your modules do not import and call readTickets and saveTickets.'],
     ['root.6','deleteTicket.js',SRC.del,'Your modules do not import and call readTickets and saveTickets.']];
   for(const [id,path,src,why] of cases) {
     const {room,calls}=await worker(id,[path,src]);
     assert.equal(room.node(id).status,'ready',`${path} is sent back before any linking`);
     const [message]=room.receive(id);
     assert.equal(message.from,'runtime:contract');
-    assert.equal(message.body,`[contract] ${why.replace(/^./,c=>c.toUpperCase())} ${id==='root.4'?PLAN.replace('readTickets and saveTickets on their own lines and use them','readTickets on its own line and use it'):PLAN} Publish the FULL updated file.`);
-    assert.match(events(room,'contract_uses')[0].body,/^Done refused \(1\/3\): .*; back to the worker with the plan's answer\.$/);
+    assert.equal(message.body,`[contract] Your promise: ${{'root.3':'createTicket','root.4':'viewTicket','root.5':'updateTicket','root.6':'deleteTicket'}[id]}(data). ${why.replace(/^./,c=>c.toUpperCase())} ${id==='root.4'?PLAN_ONE:id==='root.6'?PLAN_ESM:PLAN} Publish the FULL updated file.`);
+    assert.match(events(room,'contract_returned')[0].body,/^Done refused \(1\/3\): rules: \[(?:own_data, )?unused\]; back to the worker\.$/);
     assert.equal(room.get(`contract_returns:${id}`),'1','the contract-return limit bounds it');
     assert.equal(calls.leaf.length,1);
     assert.deepEqual(Object.entries(calls).filter(([k,v])=>!['raw','leaf'].includes(k)&&v.length).map(([k])=>k),[],'no Clef or other model call');
@@ -230,8 +233,8 @@ test('v7.15.5: run12 replay: createTicket.js, viewTicket.js, the update module.j
 test('v7.15.5: the operations that import and call the storage functions pass; the send-back closes once they do',async()=>{
   for(const [id,path,k] of [['root.3','createTicket.js','create'],['root.4','viewTicket.js','view'],['root.5','module.js','update'],['root.6','deleteTicket.js','del']]) {
     const ok=await worker(id,[path,FIXED[k]]);
-    assert.equal(ok.room.node(id).status,'done',`${path}: ${JSON.stringify(events(ok.room,'contract_uses'))}`);
-    assert.equal(events(ok.room,'contract_uses').length,0);
+    assert.equal(ok.room.node(id).status,'done',`${path}: ${JSON.stringify(events(ok.room,'contract_returned'))}`);
+    assert.equal(events(ok.room,'contract_returned').length,0);
   }
   const {room,again}=await worker('root.3',['createTicket.js',SRC.create],['createTicket.js',FIXED.create]);
   assert.equal(room.node('root.3').status,'ready');
@@ -245,8 +248,8 @@ test('v7.15.5: the fourth done is accepted and said; a non-storage use not calle
   const {room,again}=await worker('root.3',['createTicket.js',SRC.create]);
   for(let i=0;i<3;i++){room.receive('root.3');await again();}
   assert.equal(room.node('root.3').status,'done');
-  assert.equal(events(room,'contract_uses').length,3);
-  assert.equal(events(room,'contract_unmet').at(-1).body,'in createTicket.js, the module keeps its own data in a module-level array (tickets); your modules do not import and call readTickets and saveTickets after 3 returns; accepted, and the runner\'s test decides.');
+  assert.equal(events(room,'contract_returned').length,3);
+  assert.equal(events(room,'contract_unmet').at(-1).body,'After 3 returns: createTicket.js still keeps its own data; readTickets and saveTickets still not called; accepted, and the compiler\'s checks decide.');
   // The store keeps its own tickets: it has no uses, so nothing is read.
   const owner=await worker('root.2',['ticketStore.js',"const tickets = [];\nexports.readTickets = () => tickets.slice();\nexports.saveTickets = (list) => { tickets.splice(0, tickets.length, ...list); };\n"]);
   assert.equal(owner.room.node('root.2').status,'done');
@@ -256,5 +259,5 @@ test('v7.15.5: the fourth done is accepted and said; a non-storage use not calle
   await r2.spawn('root',[{label:'Ticket Formatter',task:'Write code that formats tickets.',interfaces:[fn('formatTicket','renders a ticket as text',['ticket'])]}]);
   r2.db().exec("UPDATE agents SET uses='[\"readTickets\",\"saveTickets\",\"formatTicket\"]',status='ready' WHERE id='root.3'");
   await r2.turn('root.3');
-  assert.equal(r2.receive('root.3')[0].body,'[contract] Your plan says you call formatTicket(ticket) from "Ticket Formatter": import it on its own line, const { formatTicket } = require(\'./formatTicket\'), and call it. Publish the FULL updated file.');
+  assert.equal(r2.receive('root.3')[0].body,'[contract] Your promise: createTicket(data). Your plan says you call formatTicket(ticket) from "Ticket Formatter": import it on its own line, const { formatTicket } = require(\'./formatTicket\'), and call it. Publish the FULL updated file.');
 });

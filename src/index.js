@@ -9,14 +9,15 @@ import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeErr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame, ownData } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, dataAnswer } from './interfaces.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame } from './linker.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
 import { callOf, esmSyntax, esmRequires } from './linker.js';
+import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { branchDirectory } from './assembly.js';
@@ -687,6 +688,15 @@ export class ControlRoom extends DurableObject {
     const carries=(o,n)=>!!o&&[...plan.get(n)||[]].some(c=>o===c||o.startsWith(c+'.'));
     return {plan,ownerOf,carries,elsewhere:(n,p)=>plan.has(n)&&!carries(ownerOf(p),n)};
   }
+  // v7.15.6 review: the stub test the builder's selection, the linker's
+  // shadows and the contract check share (stubExports): module p declares
+  // a function under a name the plan gives another piece. A generic name
+  // (get, create) is never one, as contractReturned reads them: a Settings
+  // piece promising get and set dropped an entry's own config.js.
+  stubsOf(builderId) {
+    const {plan,elsewhere}=this.planOf(builderId);
+    return (p,content)=>stubExports(p,content,[...plan.keys()].filter(n=>!GENERIC_NAMES.has(n)&&elsewhere(n,p)));
+  }
   // v7.15.3: the params the plan promised for name on the piece that wrote
   // module p, or the nearest promise of it above that piece, for the
   // argument-order check (run11); null in a room without promises.
@@ -861,7 +871,8 @@ export class ControlRoom extends DurableObject {
       // components, never by its raw descendants (a retired child's stay in
       // the builder's repository, out of the bundle).
       if(live && this.manager(child.id)) {
-        const builder=this.builderOf(child.id),retired=new Set(builder?this.read(`retired_components:${builder.id}`,[]):[]);
+        // v7.15.6: and the stubs its last link dropped (dropped_components, recomputed every link).
+        const builder=this.builderOf(child.id),retired=new Set(builder?[...this.read(`retired_components:${builder.id}`,[]),...this.read(`dropped_components:${builder.id}`,[])]:[]);
         const files=builder?this.files(builder.id).filter(f=>f.path.startsWith('components/')&&!retired.has(f.path))
           .map(f=>({path:f.path,revision:f.revision,owner:builder.id,sourceLabel:child.label,delegated:true})):[];
         return {child,files,delegated:true};
@@ -1276,7 +1287,25 @@ export class ControlRoom extends DurableObject {
       }
       sources.push(...from);
     }
-    return sources;
+    // v7.15.6 (run13): a module whose every export is a function it declares
+    // under a name the plan gives another piece is a stub, never a link
+    // target: it is left out of the bundle (the builder's selection, not a
+    // rename). The entry's stub deleteTicket.js shadowed Delete ticket's,
+    // and its import bound to it. A facade that re-exports or wraps the
+    // owner's import stays (review).
+    const {plan}=this.planOf(builderId),stubs=this.stubsOf(builderId),kept=[],dropped=[];
+    for(const s of sources) {
+      const {shadows,stub}=LINKABLE.test(s.destination)?stubs(s.destination,s.content):{shadows:[],stub:false};
+      if(!stub){kept.push(s);continue;}
+      this.db().exec('DELETE FROM builder_sources WHERE builder=? AND destination=?',builderId,s.destination);
+      dropped.push(s.destination);
+      this.event(builderId,'link_shadow_dropped',`${s.destination}: every export (${shadows.join(', ')}) is a function the plan gives to ${[...new Set(shadows.map(n=>[...plan.get(n)].map(c=>this.node(c)?.label||c).join(' and ')))].join(' and ')}; left out of the bundle.`);
+    }
+    // A copy an earlier link published leaves the bundle the level above
+    // reads, for this link only (review: a path retired for good stayed out
+    // once its worker rewrote it as a helper its sibling imports).
+    this.save(`dropped_components:${builderId}`,dropped);
+    return kept;
   }
   // current: the previous relink's linked files. A relink edits those, so
   // renames accepted earlier in the turn are kept and the model edits what
@@ -1316,7 +1345,15 @@ export class ControlRoom extends DurableObject {
     // One import line for functions in different modules (run8) cannot be
     // linked by renaming: no automatic path, no model, no edit of its path.
     const split=splitImports(originals,originalSurfaces,home),isSplit=(file,spec)=>split.some(x=>x.path===file&&x.specifier===spec);
-    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider}).filter(e=>!isSplit(e.file,e.specifier)));
+    // v7.15.6 (run13): the plan's ownership for the linker. owner(n): the
+    // module of n's carrier that exports it (never a generic name, review);
+    // shadow: a non-owner's export of a promised name it declares (a stub's,
+    // stubsOf), left out of the surface the linker resolves by (the entry's
+    // stub deleteTicket.js was "the only module exporting" it).
+    const stubs=this.stubsOf(builderId),shadows=new Map(js.map(p=>[p,new Set(stubs(p,originals.get(p)).shadows)]));
+    const owner=n=>{if(GENERIC_NAMES.has(n))return null;const out=js.filter(p=>carries(ownerOf(p),n)&&exportNames(originalSurfaces.get(p)).names.has(n));return out.length===1?out[0]:null;},labelOf=n=>[...plan.get(n)||[]].map(c=>this.node(c)?.label||c).join(' and ');
+    for(const [p,ns] of shadows)if(ns.size)this.event(builderId,'link_shadow_ignored',`${p}: exports ${[...ns].join(', ')}, which the plan gives to ${[...new Set([...ns].map(labelOf))].join(' and ')}; not a link target, the owner's module is.`);
+    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider,ownership:{owner,shadow:(p,n)=>!!shadows.get(p)?.has(n)}}).filter(e=>!isSplit(e.file,e.specifier)));
     autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
     if(autoApplied.length)this.event(builderId,'link_auto',`Applied ${linkEdits(autoApplied)} without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
@@ -3602,6 +3639,10 @@ export class ControlRoom extends DurableObject {
   // split promised for it is sent back, at most 3 times by its own counter
   // (failures resets after every turn). run6's create worker exported
   // addTicket and imported its own createTicket from './ticketStore'.
+  // v7.15.6 (run13): one contract check (contractCheck, with every rule the
+  // runs since found), one send-back text, one bound, one event; after the
+  // bound, one contract_unmet, and the contract problem for what is still
+  // missing or written here.
   async contractReturned(id) {
     // The top reads start without ASK_CLAUSE, as in its task (withContract):
     // an atomic Root has no manager to ask (v7.15.2 review).
@@ -3611,73 +3652,37 @@ export class ControlRoom extends DurableObject {
     if(!promised.length&&!this.planned())return false;
     const files=new Map();
     for(const f of productionFiles(this.files(id)))if(LINKABLE.test(f.path))files.set(f.path,await this.indexedContent(id,f.path));
-    // A self-import counts only for a name not exported: a file that exports
-    // getTickets and delegates to store.getTickets() keeps its promise.
-    const names=promised.map(f=>f.name),missing=missingExports(files,names),self=missing.length?selfImports(files,missing):[];
-    // v7.15.1: an empty placeholder is not delivered either (run9's update and del).
-    // v7.15.4: nor is a function another piece promises, written here (hit:
-    // the promise the plan's walk names), nor a local operation of start()
-    // that such a promise performs and that calls none of them (run11). A
-    // generic name (create, get) is never answered by name, nor read here.
-    const elsewhere=this.planned()?this.promisedElsewhere(id):new Map();
-    // v7.15.5: the start carrier returns every function that performs a goal operation (run12's entry wired create and delete only).
-    const performers=names.includes('start')?this.startPerformers(id):[];
-    const found=placeholders(files,names.filter(n=>!missing.includes(n)),[...elsewhere.keys()].filter(n=>!GENERIC_NAMES.has(n)),performers.map(f=>f.name)).filter(x=>x.missing||(x.foreign?(x.hit=elsewhere.get(x.name)):!x.local||(x.hit=this.performerOf(id,x))));
-    // Review: the start carrier hears first of the functions that perform the goal's operations (run11's led with readData).
-    const empty=found.filter(x=>!x.hit&&!x.missing),written=found.filter(x=>x.hit).sort((a,b)=>names.includes('start')?this.performsGoal(b.hit)-this.performsGoal(a.hit):0),list=listed;
-    // A performer a written function or an empty operation already names is answered there, once (run9's update() {}).
-    const said=new Set([...written.map(x=>x.hit.name),...performers.filter(f=>empty.some(x=>x.op&&performsOp(x.op,f))).map(f=>f.name)]),unwired=found.filter(x=>x.missing).map(x=>({...x,missing:x.missing.filter(n=>!said.has(n))})).filter(x=>x.missing.length);
-    const unwiredNames=[...new Set(unwired.flatMap(x=>x.missing))];
-    const emptyNames=[...new Set(empty.map(x=>x.op||x.name))],are=emptyNames.length>1?'are empty placeholders':'is an empty placeholder',writtenNames=[...new Set(written.map(x=>x.op||x.name))];
-    // v7.15.5: a planned use it does not import and call, and, beside a use
-    // of the store's functions, data it keeps itself (run12's createTicket.js
-    // kept its own array, viewTicket.js two records, its update module.js
-    // tickets.json, and deleteTicket.js called a factory for an array).
-    // Review: an owner's storage uses are met when one of them is called (a
-    // view piece calls readTickets, never saveTickets), and a piece that is
-    // itself the store, promising a storage function, keeps the data.
-    const uses=this.plannedUses(id),{unused,kept}=uses.length?ownData(files,uses.map(f=>f.name)):{unused:[],kept:[]},store=uses.filter(f=>f.storage);
-    const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&(({isOp})=>this.promisedOf(id).some(f=>storageFunction(f,isOp)))(this.levelOps(this.node(id).parent));
-    const uncalled=store.filter(f=>store.filter(g=>g.owner===f.owner).every(g=>unused.includes(g.name))),local=keeper?[]:kept;
-    const homeless=local.length?store:uncalled,idle=uses.filter(f=>!f.storage&&unused.includes(f.name));
-    // v7.15.5 merge: an ES module that calls require() fails to load; its
-    // worker hears the import form, and every import line here is in the
-    // syntax its files are written in (esm).
-    const esm=[...files.values()].some(c=>esmSyntax(c)),esmReq=esmRequires(files);
-    // Review: the path is never the first word, so its case is never changed (PROBE E's CreateTicket.js).
-    const base=p=>p.split('/').pop(),why=homeless.length?[...local.map(k=>`in ${base(k.path)}, the module ${k.kind==='state'?`keeps its own data in a module-level ${k.shape} (${k.name})`:k.kind==='fs'?'reads and writes files with fs':'returns records written into its code'}`),
-      ...(uncalled.length?[`your modules do not import and call ${list(uncalled.map(f=>f.name))}`]:[])]:[];
-    // A contract problem is about a missing export or a function written here: closed once neither remains, whatever the placeholders.
-    if(!missing.length&&!written.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
-    if(!missing.length&&!empty.length&&!written.length&&!unwired.length&&!homeless.length&&!idle.length&&!esmReq.length) {
+    // The plan as this worker reads it: the functions other pieces promise
+    // (a generic name, create or get, is never read here), the performers
+    // start() returns (v7.15.5), its uses, and whether it is itself the
+    // store (review: a piece promising a storage function keeps the data).
+    const names=promised.map(f=>f.name),elsewhere=this.planned()?this.promisedElsewhere(id):new Map(),foreign=new Map([...elsewhere].filter(([n])=>!GENERIC_NAMES.has(n)));
+    const uses=this.plannedUses(id),store=uses.filter(f=>f.storage);
+    const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&(({isOp})=>promised.some(f=>storageFunction(f,isOp)))(this.levelOps(this.node(id).parent));
+    const esm=[...files.values()].some(c=>esmSyntax(c));
+    const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,
+      performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null});
+    // Review (p1): a foreign function in a stub the builder leaves out of the bundle (dropped) is no gap of the application: no contract problem for it.
+    const gap=found.filter(x=>x.rule==='missing'||x.rule==='foreign'&&!x.dropped),dropped=[...new Set(found.filter(x=>x.dropped).map(x=>x.path))],base=p=>String(p||'').split('/').pop(),list=listed;
+    // A contract problem is about a missing export or a function written here: closed once neither remains, whatever else.
+    if(!gap.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
+    if(!found.length) {
       if(returns)this.set(key,'');
       return false;
     }
     if(returns>=3) {
-      if(missing.length)this.event(id,'contract_unmet',`${missing.join(', ')} promised and still not exported after 3 returns; accepted, and the gap goes to the manager.`);
-      if(written.length)this.event(id,'contract_unmet',`${list(writtenNames)} still written here after 3 returns though other pieces promise ${writtenNames.length>1?'them':'it'}; accepted, and the gap goes to the manager.`);
-      if(missing.length||written.length)this.fileContract(id,missing.map(name=>promised.find(p=>p.name===name)),written.map(x=>x.hit));
-      if(empty.length)this.event(id,'contract_unmet',`${list(emptyNames)} ${are.replace(/^(?:are|is)/,'$& still')} after 3 returns; accepted, and the runner's test decides.`);
-      if(unwired.length)this.event(id,'contract_unmet',`start() still returns no method for ${list(unwiredNames)} after 3 returns; accepted, and the compiler's checks decide.`);
-      if(homeless.length||idle.length)this.event(id,'contract_unmet',`${[...why,...(idle.length?[`${list(idle.map(f=>f.name))} not called`]:[])].join('; ')} after 3 returns; accepted, and the runner's test decides.`);
-      if(esmReq.length)this.event(id,'contract_unmet',`${list(esmReq.map(x=>base(x.path)))} still call${esmReq.length>1?'':'s'} require() in an ES module after 3 returns; accepted, and the Container decides.`);
+      const still={missing:x=>`${x.name} still not exported`,empty:x=>`${x.name} still an empty placeholder`,foreign:x=>`${x.name} still written ${x.dropped?`in ${base(x.path)}`:'here'} though "${x.hit.owner}" promises it`,unwired:x=>`start() still returns no method for ${list(x.missing)}`,
+        own_data:x=>`${base(x.path)} still keeps its own data`,unused:x=>`${list(x.names)} still not called`,esm:x=>`${base(x.path)} still calls require() in an ES module`,params:x=>`${base(x.path)} still calls ${x.name} out of order`};
+      const then=[gap.length?'the gap goes to the manager':'',dropped.length?`the builder leaves ${list(dropped.map(base))} out of the bundle`:''].filter(Boolean);
+      this.event(id,'contract_unmet',`After 3 returns: ${found.map(x=>still[x.rule](x)).join('; ')}; accepted, and ${then.length?then.join(' and '):"the compiler's checks decide"}.`);
+      if(gap.length)this.fileContract(id,found.filter(x=>x.rule==='missing').map(x=>promised.find(p=>p.name===x.name)),found.filter(x=>x.rule==='foreign'&&!x.dropped).map(x=>x.hit));
       return false;
     }
     this.set(key,returns+1);
-    const answer=(xs,k)=>this.placeholderAnswer(id,xs.find(x=>(x.op||x.name)===k),promised,esm);
-    const answers=await Promise.all(emptyNames.map(k=>answer(empty,k))),moved=await Promise.all(writtenNames.map(k=>answer(written,k))),wired=await Promise.all(unwired.map(x=>this.placeholderAnswer(id,x,promised,esm)));
-    const body=['[contract]',...(missing.length?[`Your published files do not export: ${missing.map(name=>{const f=promised.find(p=>p.name===name);return `${signature(f)}${f.does?': '+f.does:''}`;}).join('; ')}. Your assignment promises these functions to the rest of the application by exactly these names. Export each as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance, and publish the FULL updated file.`]:[]),
-      ...self.map(x=>`${x.path.split('/').pop()} imports ${list(x.names)} from '${x.specifier}', but ${list(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`),
-      ...wired.map(a=>a.text),...answers.map(a=>a.text),...moved.map(a=>a.text),...(homeless.length?[`${why.join('; ').replace(/^./,c=>c.toUpperCase())}. ${dataAnswer(homeless)}`]:[]),
-      ...idle.map(f=>`Your plan says you call ${signature(f)} from "${f.owner}": import it on its own line, ${importLine(f.name,esm).replace(/;$/,'')}, and call it.`),
-      ...esmReq.map(x=>`${base(x.path)} is an ES module (it uses import or export), where require is not defined and the module fails to load: ${x.lines.length?`write ${x.lines.map(l=>`import { ${l.names.join(', ')} } from '${l.specifier}';`).join(' ')} in place of ${x.lines.length>1?'its require lines':'its require line'}`:'use import declarations in place of require()'}.`),...(missing.length?[]:['Publish the FULL updated file.'])].join(' ');
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
-    if(missing.length)this.event(id,'contract_missing',`Done refused (${returns+1}/3): ${missing.join(', ')} promised and not exported; back to the worker.`);
-    if(empty.length)this.event(id,'contract_placeholder',`Done refused (${returns+1}/3): ${list(emptyNames)} ${are}; back to the worker. ${answers.map(a=>a.how).join(' ')}`.trim());
-    if(unwired.length)this.event(id,'contract_unwired',`Done refused (${returns+1}/3): start() returns no method for ${list(unwiredNames)}, which ${unwiredNames.length>1?'perform':'performs'} the goal's operations; back to the worker. ${wired.map(a=>a.how).join(' ')}`.trim());
-    if(written.length)this.event(id,'contract_reimplemented',`Done refused (${returns+1}/3): ${list(writtenNames)} ${writtenNames.length>1?'are':'is'} written here, and other pieces promise ${writtenNames.length>1?'them':'it'}; back to the worker. ${moved.map(a=>a.how).join(' ')}`.trim());
-    if(homeless.length||idle.length)this.event(id,'contract_uses',`Done refused (${returns+1}/3): ${[...why,...(idle.length?[`${list(idle.map(f=>f.name))} ${idle.length>1?'are':'is'} not called`]:[])].join('; ')}; back to the worker with the plan's answer.`);
-    if(esmReq.length)this.event(id,'contract_esm',`Done refused (${returns+1}/3): ${list(esmReq.map(x=>base(x.path)))} ${esmReq.length>1?'are ES modules that call':'is an ES module that calls'} require(), which fails to load; back to the worker with the import form.`);
+    // An empty operation of start() is worded by the plan's walk (Clef when the words do not decide).
+    for(const x of found)if(x.text===null)Object.assign(x,await this.placeholderAnswer(id,x,esm));
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(contractBody(promised,found),1800));
+    this.event(id,'contract_returned',`Done refused (${returns+1}/3): rules: [${[...new Set(found.map(x=>x.rule))].join(', ')}]; back to the worker. ${found.map(x=>x.how).filter(Boolean).join(' ')}`.trim());
     return true;
   }
   // v7.15.4: the plan as a worker's walk reads it, as a function request is
@@ -3711,29 +3716,8 @@ export class ControlRoom extends DurableObject {
   // as the operation; a Clef hit is what to write it with (run9's view(id) is
   // getTickets().find(...), not getTickets). run9's start carrier returned
   // update() {} and del() {} and never asked for them.
-  async placeholderAnswer(id, x, promised, esm=false) {
-    // v7.15.5: performers start() does not return (run12's view and update),
-    // with the keys it returns under other names, all from the plan.
-    if(x.missing) {
-      // Review: a key named after its performer's operation (create: createTicket) is as ENTRY_CONTRACT asks, never renamed.
-      const by=new Map(this.startPerformers(id).map(f=>[f.name,f])),fns=x.missing.map(n=>by.get(n)).filter(Boolean),stray=x.stray||[],renamed=(x.renamed||[]).filter(([k,n])=>!performsOp(k,{name:n}));
-      return {text:[`start() returns no method for ${listed(fns.map(f=>`${f.name} (${f.owner})`))}: ${importLines(fns,esm).replace(/^Import each/,fns.length>1?'import each':'import it')} and return ${fns.length>1?'each':'it'} under its name.`,
-        renamed.length?`Rename ${listed(renamed.map(([k,n])=>`${k} to ${n}`))}: start() returns each function under its own name.`:'',stray.length?`No piece promises ${listed(stray)}: do not import or return ${stray.length>1?'them':'it'}.`:''].filter(Boolean).join(' '),
-        how:`start(): ${fns.map(f=>`${f.name} from "${clip(f.owner,70)}"`).join(', ')}.`};
-    }
-    // v7.15.4: written here though another piece promises it (run11's
-    // entryModule.js): import it from the piece the walk names.
-    if(x.hit) {
-      const f=x.hit,line=importLine(f.name,esm).replace(/;$/,''),does=f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:'';
-      // Review: the start carrier is not told to use one that performs no operation of the goal (run11's readData).
-      if(!x.op)return f.name==='start'?{text:`start is promised by "${f.owner}", which composes the application: do not write start() here.`,how:`start: "${clip(f.owner,70)}" promises it.`}:
-        promised.some(p=>p.name==='start')&&!this.performsGoal(f)?{text:`${f.name} is promised by "${f.owner}": do not write it here.`,how:`${f.name}: "${clip(f.owner,70)}" promises it.`}:
-        {text:`${f.name} is promised by "${f.owner}": import it on its own line, ${line}, and use it; do not write it here.`,how:`${f.name}: "${clip(f.owner,70)}" promises it.`};
-      if(!x.params?.length||!f.params?.length||x.params.length===f.params.length)
-        return {text:`${x.op} is written here, but ${signature(f)}${does} is promised by "${f.owner}"; import it on its own line, ${line}, and return it as ${x.op}; do not write it here.`,how:`${x.op}: ${f.name} from "${clip(f.owner,70)}".`};
-      return {text:`${x.op} is written here, but ${signature(f)}${does} is promised by "${f.owner}"; write ${x.op} with it: import it on its own line, ${line}, and call it from ${x.op}.`,how:`${x.op}: write it with ${f.name} from "${clip(f.owner,70)}".`};
-    }
-    if(!x.op){const f=promised.find(p=>p.name===x.name);return {text:`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''} is promised by your assignment and is an empty placeholder: write it here.`,how:`${x.name} is its own to write.`};}
+  // v7.15.6: the other answers are contractCheck's; this one needs the walk.
+  async placeholderAnswer(id, x, esm=false) {
     const sig=x.params?.length?`${x.op}(${x.params.join(', ')})`:x.op,need=`the ${String(x.op).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase()} operation that start() returns as ${sig}`;
     let failed=false;
     for(const items of this.planWalk(id)) {

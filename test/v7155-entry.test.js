@@ -168,18 +168,18 @@ test('v7.15.5: run12 replay: the entry\'s module.js is sent back on done naming 
   assert.equal(room.node('root.1').status,'ready','sent back before any linking');
   const [message]=room.receive('root.1');
   assert.equal(message.from,'runtime:contract');
-  assert.equal(message.body,"[contract] start() returns no method for viewTicket (View Ticket Operation) and updateTicket (Update Ticket Operation): import each on its own line, by exactly its name, with the name as the path: const { viewTicket } = require('./viewTicket'); const { updateTicket } = require('./updateTicket'); and return each under its name. Rename goalOperation1 to createTicket and goalOperation2 to deleteTicket: start() returns each function under its own name. Publish the FULL updated file.");
-  assert.equal(events(room,'contract_unwired')[0].body,'Done refused (1/3): start() returns no method for viewTicket and updateTicket, which perform the goal\'s operations; back to the worker. start(): viewTicket from "View Ticket Operation", updateTicket from "Update Ticket Operation".');
+  assert.equal(message.body,"[contract] Your promise: start(). start() returns no method for viewTicket (View Ticket Operation) and updateTicket (Update Ticket Operation): import each on its own line, by exactly its name, with the name as the path: const { viewTicket } = require('./viewTicket'); const { updateTicket } = require('./updateTicket'); and return each under its name. Rename goalOperation1 to createTicket and goalOperation2 to deleteTicket: start() returns each function under its own name. Publish the FULL updated file.");
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [unwired]; back to the worker. start(): viewTicket from "View Ticket Operation", updateTicket from "Update Ticket Operation".');
   assert.deepEqual(kinds(calls),[],'no Clef call');
   assert.equal(calls.leaf.length,1);
   await again();await again();
-  assert.deepEqual(events(room,'contract_unwired').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
+  assert.deepEqual(events(room,'contract_returned').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
   await again();
   assert.equal(room.node('root.1').status,'done');
-  assert.equal(events(room,'contract_unmet')[0].body,'start() still returns no method for viewTicket and updateTicket after 3 returns; accepted, and the compiler\'s checks decide.');
+  assert.equal(events(room,'contract_unmet')[0].body,'After 3 returns: start() still returns no method for viewTicket and updateTicket; accepted, and the compiler\'s checks decide.');
   // Its first module.js, which imported goalOperation1 and goalOperation2.
   const before=await entry([first12]);
-  assert.equal(before.room.receive('root.1')[0].body,`[contract] start() returns no method for createTicket (Create Ticket Operation), viewTicket (View Ticket Operation), updateTicket (Update Ticket Operation) and deleteTicket (Delete Ticket Operation): import each on its own line, by exactly its name, with the name as the path: ${LINES} and return each under its name. No piece promises goalOperation1 and goalOperation2: do not import or return them. Publish the FULL updated file.`);
+  assert.equal(before.room.receive('root.1')[0].body,`[contract] Your promise: start(). start() returns no method for createTicket (Create Ticket Operation), viewTicket (View Ticket Operation), updateTicket (Update Ticket Operation) and deleteTicket (Delete Ticket Operation): import each on its own line, by exactly its name, with the name as the path: ${LINES} and return each under its name. No piece promises goalOperation1 and goalOperation2: do not import or return them. Publish the FULL updated file.`);
 });
 
 test('v7.15.5: an entry that returns every performer, by name or through wrappers, is done on its first done; a room without promises is unchanged',async()=>{
@@ -198,5 +198,5 @@ test('v7.15.5: an entry that returns every performer, by name or through wrapper
   assert.equal(room.get('contract_returns:root.1'),'');
   const v714=await entry([entry12],{planned:false});
   assert.equal(v714.room.node('root.1').status,'done');
-  assert.equal(events(v714.room,'contract_unwired').length,0);
+  assert.equal(events(v714.room,'contract_returned').length,0);
 });

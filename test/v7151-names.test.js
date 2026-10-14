@@ -207,8 +207,8 @@ test('v7.15.1: run9 replay: the start carrier\'s update() {} and del() {} are se
   assert.equal(room.node('root.1').status,'ready','sent back before any linking');
   const [message]=room.receive('root.1');
   assert.equal(message.from,'runtime:contract');
-  assert.equal(message.body,"[contract] update is an empty placeholder: updateTicket(id, updates) — \"updates a ticket by id and returns it\" — is promised by \"Update Ticket Module\"; import it on its own line, const { updateTicket } = require('./updateTicket'), and return it as update. delete is an empty placeholder: deleteTicket(id) — \"deletes a ticket by id and returns true\" — is promised by \"Delete Ticket Module\"; import it on its own line, const { deleteTicket } = require('./deleteTicket'), and return it as delete. Publish the FULL updated file.");
-  assert.equal(events(room,'contract_placeholder')[0].body,'Done refused (1/3): update and delete are empty placeholders; back to the worker. update: updateTicket from "Update Ticket Module" (operation word). delete: deleteTicket from "Delete Ticket Module" (operation word).');
+  assert.equal(message.body,"[contract] Your promise: start(). update is an empty placeholder: updateTicket(id, updates) — \"updates a ticket by id and returns it\" — is promised by \"Update Ticket Module\"; import it on its own line, const { updateTicket } = require('./updateTicket'), and return it as update. delete is an empty placeholder: deleteTicket(id) — \"deletes a ticket by id and returns true\" — is promised by \"Delete Ticket Module\"; import it on its own line, const { deleteTicket } = require('./deleteTicket'), and return it as delete. Publish the FULL updated file.");
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [empty]; back to the worker. update: updateTicket from "Update Ticket Module" (operation word). delete: deleteTicket from "Delete Ticket Module" (operation word).');
   assert.equal(ai.calls.filter(c=>c.kind==='fn').length,0);
   assert.equal(room.get('contract_returns:root.1'),'1','the contract-return limit bounds it');
   assert.equal(room.receive('root').length,0,'no completion report');
@@ -223,13 +223,13 @@ test('v7.15.1: run9 round 5 (view empty): the manager\'s Clef matcher names getT
   const {room}=await entryWorker(ai);
   await room.turn('root.1');
   const [message]=room.receive('root.1');
-  assert.equal(message.body,"[contract] view is an empty placeholder: write view with getTickets() — \"returns all stored tickets\" — which \"Data Module\" promises; import it on its own line, const { getTickets } = require('./getTickets'), and call it from view. Publish the FULL updated file.");
+  assert.equal(message.body,"[contract] Your promise: start(). view is an empty placeholder: write view with getTickets() — \"returns all stored tickets\" — which \"Data Module\" promises; import it on its own line, const { getTickets } = require('./getTickets'), and call it from view. Publish the FULL updated file.");
   assert.doesNotMatch(message.body,/return it as view/);
   const asked=ai.calls.filter(c=>c.kind==='fn');
   assert.equal(asked.length,1);
   assert.equal(asked[0].state.request.need,'the view operation that start() returns as view');
   assert.deepEqual(asked[0].state.functions.map(f=>f.piece+':'+f.signature.split('(')[0]),['Data Module:addTicket','Data Module:getTickets','Create Ticket Module:createTicket','Update Ticket Module:updateTicket','Delete Ticket Module:deleteTicket'],'its direct children\'s promises, its own excluded');
-  assert.match(events(room,'contract_placeholder')[0].body,/view: write it with getTickets from "Data Module" \(Clef p=0\.82\)\.$/);
+  assert.match(events(room,'contract_returned')[0].body,/view: write it with getTickets from "Data Module" \(Clef p=0\.82\)\.$/);
 });
 
 // Root with an entry worker and the given other children.
@@ -251,13 +251,13 @@ test('v7.15.1: a multi-word operation is never answered by its first word: addCo
   const ai=fakeAI({leaf:leafOf(entry),fn:(need,name)=>/add comment/.test(need)&&name==='commentOnTicket'||/remove tag/.test(need)&&name==='untagTicket'?0.9:0.1});
   const room=await rootWith(ai,kids);
   await room.turn('root.1');
-  assert.equal(room.receive('root.1')[0].body,"[contract] addComment is an empty placeholder: write addComment(ticketId, text) with commentOnTicket(ticketId, text) — \"adds a comment to a ticket and returns the ticket\" — which \"Comments Module\" promises; import it on its own line, const { commentOnTicket } = require('./commentOnTicket'), and call it from addComment. removeTag is an empty placeholder: write removeTag(id, tag) with untagTicket(id, tag) — \"removes a tag from a ticket\" — which \"Tags Module\" promises; import it on its own line, const { untagTicket } = require('./untagTicket'), and call it from removeTag. Publish the FULL updated file.");
+  assert.equal(room.receive('root.1')[0].body,"[contract] Your promise: start(). addComment is an empty placeholder: write addComment(ticketId, text) with commentOnTicket(ticketId, text) — \"adds a comment to a ticket and returns the ticket\" — which \"Comments Module\" promises; import it on its own line, const { commentOnTicket } = require('./commentOnTicket'), and call it from addComment. removeTag is an empty placeholder: write removeTag(id, tag) with untagTicket(id, tag) — \"removes a tag from a ticket\" — which \"Tags Module\" promises; import it on its own line, const { untagTicket } = require('./untagTicket'), and call it from removeTag. Publish the FULL updated file.");
   assert.deepEqual(ai.calls.filter(c=>c.kind==='fn').map(c=>[c.state.request.need,c.state.functions.length]),[['the add comment operation that start() returns as addComment(ticketId, text)',5],['the remove tag operation that start() returns as removeTag(id, tag)',5]]);
   // The function's operation says it performs addComment: returned as it, no model call.
   const named=await rootWith(fakeAI({leaf:leafOf(entry.replace(',\n  removeTag','').replace('const removeTag = (id, tag) => {};\n','').replace(', removeTag }',' }'))}),
     [kids[0],kids[1],kids[2],piece('Comments Module',['commentOnTicket','adds a comment to a ticket and returns the ticket',['ticketId','text'],'add comments to tickets'])]);
   await named.turn('root.1');
-  assert.match(named.receive('root.1')[0].body,/^\[contract\] addComment is an empty placeholder: commentOnTicket\(ticketId, text\) .* is promised by "Comments Module"; .* and return it as addComment\./);
+  assert.match(named.receive('root.1')[0].body,/^\[contract\] Your promise: start\(\)\. addComment is an empty placeholder: commentOnTicket\(ticketId, text\) .* is promised by "Comments Module"; .* and return it as addComment\./);
 });
 
 test('v7.15.1: a word hit whose arguments differ from the operation\'s is what to write it with, not the operation',async()=>{
@@ -265,18 +265,18 @@ test('v7.15.1: a word hit whose arguments differ from the operation\'s is what t
   const ai=fakeAI({leaf:leafOf(entry)});
   const room=await rootWith(ai,[piece('Update Ticket Module',['updateTicket','saves a whole edited ticket',['ticket']])]);
   await room.turn('root.1');
-  assert.equal(room.receive('root.1')[0].body,"[contract] update is an empty placeholder: write update(id, changes) with updateTicket(ticket) — \"saves a whole edited ticket\" — which \"Update Ticket Module\" promises; import it on its own line, const { updateTicket } = require('./updateTicket'), and call it from update. Publish the FULL updated file.");
+  assert.equal(room.receive('root.1')[0].body,"[contract] Your promise: start(). update is an empty placeholder: write update(id, changes) with updateTicket(ticket) — \"saves a whole edited ticket\" — which \"Update Ticket Module\" promises; import it on its own line, const { updateTicket } = require('./updateTicket'), and call it from update. Publish the FULL updated file.");
   assert.equal(ai.calls.filter(c=>c.kind==='fn').length,0);
   // Two promises perform view by their words: Clef picks between them only, and a word hit is the operation.
   const views=[piece('View Ticket Module',['viewTicket','returns one ticket by id',['id']]),piece('List Module',['viewTickets','returns all tickets'])],viewEntry=leafOf("function view(id) {}\nfunction start() { return { view }; }\nmodule.exports = { start };");
   const pick=fakeAI({leaf:viewEntry,fn:(need,name)=>name==='viewTicket'?0.9:0.3}),picked=await rootWith(pick,views);
   await picked.turn('root.1');
-  assert.equal(picked.receive('root.1')[0].body,"[contract] view is an empty placeholder: viewTicket(id) — \"returns one ticket by id\" — is promised by \"View Ticket Module\"; import it on its own line, const { viewTicket } = require('./viewTicket'), and return it as view. Publish the FULL updated file.");
+  assert.equal(picked.receive('root.1')[0].body,"[contract] Your promise: start(). view is an empty placeholder: viewTicket(id) — \"returns one ticket by id\" — is promised by \"View Ticket Module\"; import it on its own line, const { viewTicket } = require('./viewTicket'), and return it as view. Publish the FULL updated file.");
   assert.deepEqual(pick.calls.filter(c=>c.kind==='fn').map(c=>c.state.functions.map(f=>f.signature)),[['viewTicket(id)','viewTickets()']]);
   // Clef down there: ask the manager, not a level up and not "implement it here".
   const down=await rootWith(fakeAI({leaf:viewEntry}),views);
   await down.turn('root.1');
-  assert.equal(down.receive('root.1')[0].body,'[contract] view is an empty placeholder: ask your manager for the function that performs it. Publish the FULL updated file.');
+  assert.equal(down.receive('root.1')[0].body,'[contract] Your promise: start(). view is an empty placeholder: ask your manager for the function that performs it. Publish the FULL updated file.');
 });
 
 // Root -> App Shell (a manager, carries start) -> Entry (carries start) and
@@ -297,15 +297,15 @@ test('v7.15.1: a nested start carrier\'s empty operation is answered from a leve
   const ai=fakeAI({leaf:()=>({summary:'Entry',files:[{path:'entry.js',content:nestedEntry}],done:true}),fn:()=>0.1});
   const room=await nested(ai);
   await room.turn('root.1.1');
-  assert.equal(room.receive('root.1.1')[0].body,"[contract] update is an empty placeholder: updateTicket(id, updates) — \"updates a ticket by id and returns it\" — is promised by \"Update Ticket Module\"; import it on its own line, const { updateTicket } = require('./updateTicket'), and return it as update. delete is an empty placeholder: deleteTicket(id) — \"deletes a ticket by id\" — is promised by \"Delete Ticket Module\"; import it on its own line, const { deleteTicket } = require('./deleteTicket'), and return it as delete. Publish the FULL updated file.");
+  assert.equal(room.receive('root.1.1')[0].body,"[contract] Your promise: start(). update is an empty placeholder: updateTicket(id, updates) — \"updates a ticket by id and returns it\" — is promised by \"Update Ticket Module\"; import it on its own line, const { updateTicket } = require('./updateTicket'), and return it as update. delete is an empty placeholder: deleteTicket(id) — \"deletes a ticket by id\" — is promised by \"Delete Ticket Module\"; import it on its own line, const { deleteTicket } = require('./deleteTicket'), and return it as delete. Publish the FULL updated file.");
   assert.deepEqual(ai.calls.filter(c=>c.kind==='fn').map(c=>c.state.functions.map(f=>f.signature)),[['parseArgs(argv)'],['parseArgs(argv)']],'Clef at its own level first, then the operation word a level up');
   // Clef failing below and nothing a level up: ask, not implement.
   const failing=await nested(fakeAI({leaf:()=>({summary:'Entry',files:[{path:'entry.js',content:nestedEntry.replace(/update/g,'archive').replace('delete: del','').replace('function del() {}\n','')}],done:true})}));
   await failing.turn('root.1.1');
   // v7.15.5: and the update and delete the plan's pieces perform are owed (run12); create, named after its operation, is kept (review).
-  assert.equal(failing.receive('root.1.1')[0].body,"[contract] start() returns no method for updateTicket (Update Ticket Module) and deleteTicket (Delete Ticket Module): import each on its own line, by exactly its name, with the name as the path: const { updateTicket } = require('./updateTicket'); const { deleteTicket } = require('./deleteTicket'); and return each under its name. "+
+  assert.equal(failing.receive('root.1.1')[0].body,"[contract] Your promise: start(). start() returns no method for updateTicket (Update Ticket Module) and deleteTicket (Delete Ticket Module): import each on its own line, by exactly its name, with the name as the path: const { updateTicket } = require('./updateTicket'); const { deleteTicket } = require('./deleteTicket'); and return each under its name. "+
     'archive is an empty placeholder: ask your manager for the function that performs it. Publish the FULL updated file.');
-  assert.match(events(failing,'contract_placeholder')[0].body,/archive: Clef failed; ask\.$/);
+  assert.match(events(failing,'contract_returned')[0].body,/archive: Clef failed; ask\.$/);
 });
 
 test('v7.15.1: a start() returning imported functions is accepted; an empty operation nobody promises is told to implement it here',async()=>{
@@ -313,11 +313,11 @@ test('v7.15.1: a start() returning imported functions is accepted; an empty oper
   const done=await entryWorker(fakeAI({leaf:leafOf(wired)}));
   await done.room.turn('root.1');
   assert.equal(done.room.node('root.1').status,'done');
-  assert.equal(events(done.room,'contract_placeholder').length,0);
+  assert.equal(events(done.room,'contract_returned').length,0);
   const archive=wired.replace('delete: deleteTicket }','delete: deleteTicket, archive }').replace('function start','function archive() {}\nfunction start');
   const {room}=await entryWorker(fakeAI({leaf:leafOf(archive),fn:()=>0.2}));
   await room.turn('root.1');
-  assert.equal(room.receive('root.1')[0].body,'[contract] archive is an empty placeholder and no piece promises it: implement it here. Publish the FULL updated file.');
+  assert.equal(room.receive('root.1')[0].body,'[contract] Your promise: start(). archive is an empty placeholder and no piece promises it: implement it here. Publish the FULL updated file.');
 });
 
 test('v7.15.1: a promised function that only throws not implemented is sent back to be written, its one-line sibling passes, and the third return accepts',async()=>{
@@ -327,13 +327,13 @@ test('v7.15.1: a promised function that only throws not implemented is sent back
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   room.db().exec("UPDATE agents SET phase='implement',status='ready' WHERE id='root.2'");
   await room.turn('root.2');
-  assert.equal(room.receive('root.2')[0].body,'[contract] getTickets(): returns all stored tickets is promised by your assignment and is an empty placeholder: write it here. Publish the FULL updated file.');
+  assert.equal(room.receive('root.2')[0].body,'[contract] Your promise: addTicket(ticket), getTickets(). getTickets(): returns all stored tickets is promised by your assignment and is an empty placeholder: write it here. Publish the FULL updated file.');
   await room.turn('root.2');await room.turn('root.2');
-  assert.deepEqual(events(room,'contract_placeholder').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
+  assert.deepEqual(events(room,'contract_returned').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
   await room.turn('root.2');
   assert.equal(room.node('root.2').status,'done','the done after the third return is accepted');
-  assert.equal(events(room,'contract_missing').length,0,'addTicket\'s one-line body is delivered');
-  assert.equal(events(room,'contract_unmet')[0].body,'getTickets is still an empty placeholder after 3 returns; accepted, and the runner\'s test decides.');
+  assert.ok(events(room,'contract_returned').every(e=>e.body.includes('rules: [empty];')),'addTicket\'s one-line body is delivered');
+  assert.equal(events(room,'contract_unmet')[0].body,'After 3 returns: getTickets still an empty placeholder; accepted, and the compiler\'s checks decide.');
 });
 
 test('v7.15.1: an export the worker fixed closes its contract problem though a placeholder remains',async()=>{
@@ -349,7 +349,7 @@ test('v7.15.1: an export the worker fixed closes its contract problem though a p
   room.db().exec("UPDATE agents SET status='ready' WHERE id='root.2'");
   await room.turn('root.2');
   assert.deepEqual(room.problems("source='root.2' AND kind='contract'").map(p=>[p.status,p.outcome]),[['closed','resolved']]);
-  assert.equal(events(room,'contract_unmet').at(-1).body,'getTickets is still an empty placeholder after 3 returns; accepted, and the runner\'s test decides.');
+  assert.equal(events(room,'contract_unmet').at(-1).body,'After 3 returns: getTickets still an empty placeholder; accepted, and the compiler\'s checks decide.');
 });
 
 test('v7.15.1: a Clef tie goes to the tied piece named for the function, else the event says it was a tie',async()=>{

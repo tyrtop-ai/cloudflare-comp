@@ -53,7 +53,7 @@ test('v7.15.5 merge: a goal that says read, the store listed first: entry, compi
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1'");
   await room.putFile('root.1','module.js',entryWith(['readTickets','createTicket','updateTicket','deleteTicket']));
   assert.equal(await room.contractReturned('root.1'),true);
-  assert.match(events(room,'contract_unwired')[0].body,/start\(\) returns no method for readTicket, which performs the goal's operations/);
+  assert.match(events(room,'contract_returned')[0].body,/^Done refused \(1\/3\): rules: \[unwired\]; back to the worker\. start\(\): readTicket from "Read Ticket"\.$/);
   // As composed, it is done, linked, reached and run.
   room.set('contract_returns:root.1','');
   await room.putFile('root.1','module.js',entryWith(['createTicket','readTicket','updateTicket','deleteTicket']));
@@ -103,7 +103,7 @@ test('v7.15.5 merge: with read in the goal, the store\'s readTickets is storage:
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.4'");
   await room.putFile('root.4','readTicket.js',"const { readTickets } = require('./readTickets');\nconst readTicket = (data) => { readTickets();\n  const tickets = {\n    '123': { id: '123', subject: 'Server Issue', status: 'Open' },\n    '456': { id: '456', subject: 'Login Problem', status: 'Closed' }\n  };\n  return tickets[data.id] || null;\n};\nmodule.exports = { readTicket };\n");
   assert.equal(await room.contractReturned('root.4'),true);
-  assert.equal(room.receive('root.4')[0].body,'[contract] In readTicket.js, the module returns records written into its code. Tickets live in Ticket Store: import readTickets on its own line and use it; do not keep your own tickets. Publish the FULL updated file.');
+  assert.equal(room.receive('root.4')[0].body,"[contract] Your promise: readTicket(data). In readTicket.js, the module returns records written into its code. Tickets live in Ticket Store: import readTickets on its own line (const { readTickets } = require('./readTickets');) and use it; do not keep your own tickets. Publish the FULL updated file.");
   // D9's goal filter reads names as goalOps does: createTicketStore creates no ticket.
   assert.deepEqual(['createTicketStore','createTicket','readTicket','tickets','updateAll'].filter(room.goalOperation(room.planIndex())),['createTicket','readTicket']);
 });
@@ -117,14 +117,14 @@ test('v7.15.5 merge: an ES module that calls require() is sent back with the imp
   assert.match(room.view('root.3').your_responsibility,/with the name as the path \(in an ES module, import \{ readTickets \} from '\.\/readTickets';\), and call it/);
   await room.putFile('root.3','deleteTicket.js',esmReq);
   assert.equal(await room.contractReturned('root.3'),true);
-  assert.equal(room.receive('root.3')[0].body,"[contract] deleteTicket.js is an ES module (it uses import or export), where require is not defined and the module fails to load: write import { readTickets } from './readTickets'; import { saveTickets } from './saveTickets'; in place of its require lines. Publish the FULL updated file.");
-  assert.equal(events(room,'contract_esm')[0].body,'Done refused (1/3): deleteTicket.js is an ES module that calls require(), which fails to load; back to the worker with the import form.');
+  assert.equal(room.receive('root.3')[0].body,"[contract] Your promise: deleteTicket(data). deleteTicket.js is an ES module (it uses import or export), where require is not defined and the module fails to load: write import { readTickets } from './readTickets'; import { saveTickets } from './saveTickets'; in place of its require lines. Publish the FULL updated file.");
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [esm]; back to the worker.');
   await room.putFile('root.3','deleteTicket.js',esmReq.replace(/const \{ (\w+) \} = require\('(\.\/\w+)'\);/g,"import { $1 } from '$2';"));
   assert.equal(await room.contractReturned('root.3'),false);
   // An ESM start carrier missing performers hears import lines.
   await room.putFile('root.1','module.js',"import { deleteTicket } from './deleteTicket';\nexport function start() { return { deleteTicket }; }\n");
   assert.equal(await room.contractReturned('root.1'),true);
-  assert.match(room.receive('root.1')[0].body,/^\[contract\] start\(\) returns no method for createTicket \(Create Ticket Operation\): import it on its own line, by exactly its name, with the name as the path: import \{ createTicket \} from '\.\/createTicket'; and return it under its name\./);
+  assert.match(room.receive('root.1')[0].body,/^\[contract\] Your promise: start\(\)\. start\(\) returns no method for createTicket \(Create Ticket Operation\): import it on its own line, by exactly its name, with the name as the path: import \{ createTicket \} from '\.\/createTicket'; and return it under its name\./);
   assert.doesNotMatch(room.receive('root.1')[0].body,/require\(/);
   // The Container's module-format error is the worker's, never a relink.
   assert.equal(L.isInterfaceError('ReferenceError: require is not defined in ES module scope, you can use import instead'),false);
