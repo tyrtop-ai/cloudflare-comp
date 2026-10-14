@@ -17,6 +17,7 @@ import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgre
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
 import { callOf, esmSyntax, esmRequires } from './linker.js';
+import { exportNames } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { branchDirectory } from './assembly.js';
@@ -1276,7 +1277,20 @@ export class ControlRoom extends DurableObject {
       }
       sources.push(...from);
     }
-    return sources;
+    // v7.15.6 (run13): a module whose every export is a function the plan
+    // gives another piece is a stub, never a link target: it is left out of
+    // the bundle (the builder's selection, not a rename). The entry's stub
+    // deleteTicket.js shadowed Delete ticket's, and its import bound to it.
+    const {plan,elsewhere}=this.planOf(builderId),kept=[];
+    for(const s of sources) {
+      const surface=LINKABLE.test(s.destination)?exportSurface(s.destination,s.content):null,names=surface&&!opaqueSurface(surface)?[...exportNames(surface).names]:[];
+      if(!names.length||!names.every(n=>elsewhere(n,s.destination))){kept.push(s);continue;}
+      this.db().exec('DELETE FROM builder_sources WHERE builder=? AND destination=?',builderId,s.destination);
+      // A copy an earlier link published leaves the bundle the level above reads.
+      if(this.files(builderId).some(f=>f.path===s.destination))this.save(`retired_components:${builderId}`,[...new Set([...this.read(`retired_components:${builderId}`,[]),s.destination])]);
+      this.event(builderId,'link_shadow_dropped',`${s.destination}: every export (${names.join(', ')}) is a function the plan gives to ${[...new Set(names.map(n=>[...plan.get(n)].map(c=>this.node(c)?.label||c).join(' and ')))].join(' and ')}; left out of the bundle.`);
+    }
+    return kept;
   }
   // current: the previous relink's linked files. A relink edits those, so
   // renames accepted earlier in the turn are kept and the model edits what
@@ -1316,7 +1330,13 @@ export class ControlRoom extends DurableObject {
     // One import line for functions in different modules (run8) cannot be
     // linked by renaming: no automatic path, no model, no edit of its path.
     const split=splitImports(originals,originalSurfaces,home),isSplit=(file,spec)=>split.some(x=>x.path===file&&x.specifier===spec);
-    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider}).filter(e=>!isSplit(e.file,e.specifier)));
+    // v7.15.6 (run13): the plan's ownership for the linker. owner(n): the
+    // module of n's carrier that exports it; shadow: a non-owner's export
+    // of a promised name, left out of the surface the linker resolves by
+    // (the entry's stub deleteTicket.js was "the only module exporting" it).
+    const owner=n=>{const out=js.filter(p=>carries(ownerOf(p),n)&&exportNames(originalSurfaces.get(p)).names.has(n));return out.length===1?out[0]:null;},labelOf=n=>[...plan.get(n)||[]].map(c=>this.node(c)?.label||c).join(' and ');
+    for(const p of js){const ns=[...exportNames(originalSurfaces.get(p)).names].filter(n=>elsewhere(n,p));if(ns.length)this.event(builderId,'link_shadow_ignored',`${p}: exports ${ns.join(', ')}, which the plan gives to ${[...new Set(ns.map(labelOf))].join(' and ')}; not a link target, the owner's module is.`);}
+    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider,ownership:{owner,shadow:(p,n)=>elsewhere(n,p)}}).filter(e=>!isSplit(e.file,e.specifier)));
     autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
     if(autoApplied.length)this.event(builderId,'link_auto',`Applied ${linkEdits(autoApplied)} without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));

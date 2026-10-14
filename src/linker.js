@@ -1704,9 +1704,18 @@ export function errorTarget(files, path, detail) {
 // branch it cannot see. provider(target, names), v7.15: whether the plan
 // gives those names to target's piece; of several modules exporting them,
 // or one that a module named like the path would block, it picks that one.
-export function autoLink(files, surfaces, {scope='application',provider=null}={}) {
+// v7.15.6 (run13): ownership {owner(name), shadow(path, name)}, the plan's:
+// owner, the module of the piece the plan gives a promised name to (null:
+// unpromised, or no module of that piece exports it); shadow, whether
+// path's piece does not carry the promised name, so its export of it is no
+// link target. An import of promised names binds to their owner's module,
+// wherever its path points now; "only module exporting the name" stays
+// for unpromised names.
+export function autoLink(files, surfaces, {scope='application',provider=null,ownership=null}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
+  const owner=ownership?.owner||(()=>null),shadow=ownership?.shadow||(()=>false);
+  const exported=t=>{const {names}=exportNames(surfaces.get(t));return ownership?new Set([...names].filter(n=>!shadow(t,n))):names;};
   const edits=[];
   for(const path of js) {
     const content=set.get(path),refs=importRefs(path,content),fixed=new Set();
@@ -1720,9 +1729,14 @@ export function autoLink(files, surfaces, {scope='application',provider=null}={}
       edits.push({file:path,find,replace:find[0]+to+find[0],reason:'an ESM import names its module by the full file name',target:resolveLocal(path,to,set).path,specifier:lit.value});
     }
     for(const ref of refs) {
-      if(!resolveLocal(path,ref.specifier,set).error)continue;
+      const wanted=new Set([...ref.names,...ref.members].filter(Boolean)),at=resolveLocal(path,ref.specifier,set);
+      let pick=null,why='';
+      // run13: the entry's './deleteTicket' reached its own stub of that
+      // name, which won; the plan's owner binds it, resolved or not.
+      const homes=[...wanted].map(owner),home=homes.length&&homes.every(h=>h&&h===homes[0])?homes[0]:null;
+      if(home&&home!==path){if(at.path===home)continue;pick=home;why=`owner of ${[...wanted].join(', ')} by the plan`;}
+      else if(!at.error)continue;
       const others=js.filter(t=>t!==path&&surfaces.get(t));
-      const wanted=new Set([...ref.names,...ref.members].filter(Boolean));
       const key=normName(ref.specifier.split('/').pop());
       const exactName=t=>{const cls=normName(surfaces.get(t)?.default?.name);return normName(t.split('/').pop())===key||!!cls&&cls===key;};
       const nameMatch=t=>{
@@ -1735,25 +1749,26 @@ export function autoLink(files, surfaces, {scope='application',provider=null}={}
         const pool=exact.length?exact:others.filter(loose);
         return pool.length===1?pool[0]:null;
       };
-      const provides=t=>{const {names}=exportNames(surfaces.get(t));return [...wanted].every(n=>names.has(n));};
+      const provides=t=>{const names=exported(t);return [...wanted].every(n=>names.has(n));};
       // A name match must also export something the file uses (createTicket
       // is not ticket.js). A name read off the binding counts only if it is
       // exported by name or as a member; a destructured one may also be a
       // lone function or class, or one of its methods.
-      const shares=t=>{const {names}=exportNames(surfaces.get(t)),d=surfaces.get(t)?.default,lone=new Set(d?.type==='function'||d?.type==='class'?[d.name,...(d.methods||[]).map(methodName)]:[]);return [...wanted].some(n=>names.has(n)||ref.names.has(n)&&lone.has(n));};
+      const shares=t=>{const names=exported(t),d=surfaces.get(t)?.default,lone=new Set(d?.type==='function'||d?.type==='class'?[d.name,...(d.methods||[]).map(methodName)]:[]);return [...wanted].some(n=>names.has(n)||ref.names.has(n)&&lone.has(n));};
       // Without the static check naming what differs, the file would leave
       // the linker's view still wrong.
       const flagged=t=>t&&importMismatches(new Map([[path,content.slice(0,ref.start+1)+relativeSpecifier(path,t)+content.slice(ref.end-1)],[t,set.get(t)]]),surfaces).some(m=>m.target===t)?t:null;
-      let pick=null,why='';
-      if(wanted.size) {
+      if(!pick&&wanted.size) {
         const pool=others.filter(provides),planned=provider?pool.filter(t=>provider(t,[...wanted])):[];
         const plannedWhy=`planned provider of ${[...wanted].join(', ')}`;
         if(pool.length===1){if(!others.some(t=>t!==pool[0]&&exactName(t))){pick=pool[0];why=`only module exporting ${[...wanted].join(', ')}`;}else if(planned.length===1){pick=pool[0];why=plannedWhy;}}
         else if(pool.length>1){const both=pool.filter(nameMatch);if(planned.length===1){pick=planned[0];why=plannedWhy;}else if(both.length===1){pick=both[0];why=`exports ${[...wanted].join(', ')} and matches the name`;}}
         else if((pick=flagged(byName(t=>nameMatch(t)&&shares(t)))))why=`only module whose name matches; none exports all of ${[...wanted].join(', ')}`;
-      } else if((pick=byName()))why='only module whose name matches';
+      } else if(!pick&&(pick=byName()))why='only module whose name matches';
       if(!pick)continue;
       const raw=content.slice(ref.start,ref.end),quote=raw[0],to=quote+relativeSpecifier(path,pick)+quote;
+      // A path the plan binds keeps no extension fix of its old path.
+      if(fixed.has(raw)){const i=edits.findIndex(e=>e.file===path&&e.find===raw&&e.specifier===ref.specifier);if(i>=0)edits.splice(i,1);}
       // Two import lines with one path text (const { loadTickets } =
       // require('./dataStore'); and the same for saveTickets) are linked
       // each on its own: a find of the path alone would point both at the

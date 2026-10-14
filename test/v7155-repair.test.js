@@ -157,29 +157,33 @@ test('v7.15.5: run12 round 3 replay: getTickets and setTickets, which no piece p
   await room.turn('root');
   const b2=room.children('root').find(c=>c.label==='Temporary builder');
   await room.turn(b2.id);
-  assert.match(events(room,'link_auto').at(-1).body,/deleteTicket\.js: '\.\/dataStore' → '\.\.\/ticket-dat-f17f9f79\/ticketDataManager\.js' \(only module exporting getTickets, setTickets\)/,trace(room));
+  assert.match(events(room,'link_auto').at(-1).body,/deleteTicket\.js: '\.\/dataStore' → '\.\.\/ticket-dat-f17f9f79\/ticketDataManager\.js' \(owner of getTickets, setTickets by the plan\)/,trace(room));
   assert.deepEqual(room.problems("kind='mismatch'").map(p=>[p.status,p.outcome]),[['closed','resolved'],['closed','resolved']]);
   assert.equal(await room.indexedContent('root.6','deleteTicket.js'),run12.deleteRound3,'the reader kept its import');
 });
 
-test('v7.15.5: a name another piece promises still takes today\'s path (D6), and the reader\'s ticket names no linked path',async()=>{
-  const {room}=liveRoom();
+// v7.15.6 (run13): a name another piece promises, read through a path that
+// reaches the data manager, is bound to that piece's module by the plan
+// (before: a mismatch row and the reader's D6 ticket); D9 stays for names
+// no piece promises, and the reader's source is never touched.
+test('v7.15.5: a name another piece promises, read through the data manager\'s path, is bound to that piece\'s module by the plan; D9 never applies',async()=>{
+  const {room,calls}=liveRoom();
   await planned(room);
   // run12's later revisions read the data manager by its linked path; here a seventh piece promises getTickets and setTickets.
   const misread="import { getTickets, setTickets } from '../ticket-dat-f17f9f79/ticketDataManager.js';\n\nexport function deleteTicket(data) {\n  const tickets = getTickets();\n  setTickets(tickets.filter(ticket => ticket.id !== data.ticketId));\n  return true;\n}";
   await pieces(room,run12Pieces(misread,[['Ticket Access','ticketAccess.js',withAccessors.replace('exports.createData = function() { return { list: () => tickets }; };\n',''),[fn('getTickets','returns the tickets'),fn('setTickets','replaces the tickets',['tickets'])]]]));
   const b=await room.scheduleAssembly('root');
   await room.turn(b.id);
-  const held=openProblems(room,'root');
-  assert.deepEqual(held.map(p=>[p.kind,p.facts.elsewhere,p.facts.unpromised]),[['mismatch',['getTickets','setTickets'],undefined],['mismatch',['getTickets','setTickets'],undefined]],trace(room));
+  assert.equal(room.node(b.id).status,'done',trace(room));
+  assert.deepEqual(openProblems(room,'root'),[],'nothing for the manager: the plan links it');
+  assert.match(events(room,'link_auto').at(-1).body,/deleteTicket\.js: '\.\.\/ticket-dat-f17f9f79\/ticketDataManager\.js' → '\.\.\/ticket-acc-[0-9a-f]{8}\/ticketAccess\.js' \(owner of getTickets, setTickets by the plan\)/,trace(room));
+  assert.ok((await room.indexedContent(b.id,DEL)).startsWith("import { getTickets, setTickets } from '../ticket-acc-"),'the linked copy reads Ticket Access');
+  assert.equal(calls.manager.length+calls.link.length,0,'no model');
   await room.turn('root');
   assert.equal(events(room,'promise_added').length,0);
   assert.deepEqual(room.promisedOf('root.2').map(f=>f.name),['createData']);
-  const [ticket,...more]=tickets(room,'root.6');
-  assert.equal(more.length,0);
-  assert.match(ticket,/getTickets, setTickets are not ticketDataManager\.js's: the plan gives them to another piece\. Import each on its own line, with its name as the path: import \{ getTickets \} from '\.\/getTickets'; import \{ setTickets \} from '\.\/setTickets';/,'deleteTicket.js is ESM: import lines (review)');
-  assert.match(ticket,/The module imports 'getTickets' from ticketDataManager\.js of "Ticket Data Manager", which exports: createData\./);
-  assert.doesNotMatch(ticket,LINKED,ticket);
+  assert.equal(tickets(room,'root.6').length,0,'the reader is never asked to change its import');
+  assert.equal(await room.indexedContent('root.6','deleteTicket.js'),misread,'the worker\'s source is untouched');
 });
 
 test('v7.15.5: D9 only for names no piece promises, that no goal operation performs, once per name and provider; a piece that is no data piece is asked of Clef',async()=>{

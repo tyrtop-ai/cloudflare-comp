@@ -146,8 +146,8 @@ test('v7.15: run8 replay (C): one import line per function links across a sub-ma
   assert.equal(room.node(b.id).status,'done',trace(room));
   assert.equal(openProblems(room,'root').length+openProblems(room,'root.1').length,0);
   const auto=events(room,'link_auto').map(e=>e.body).join(' ');
-  assert.match(auto,/updateTicket\.js: '\.\/loadTickets' → '[^']+' \(only module exporting loadTickets\)/,auto);
-  assert.match(auto,/updateTicket\.js: '\.\/saveTickets' → '[^']+' \(planned provider of saveTickets\)/,auto);
+  assert.match(auto,/updateTicket\.js: '\.\/loadTickets' → '[^']+' \(owner of loadTickets by the plan\)/,auto);
+  assert.match(auto,/updateTicket\.js: '\.\/saveTickets' → '[^']+' \(owner of saveTickets by the plan\)/,auto);
   const linked=await room.indexedContent(b.id,updatePath),rel=p=>L.relativeSpecifier(updatePath,p);
   // The bundle's paths: the data store's modules as Root's builder holds them.
   const bundle=room.db().exec('SELECT destination FROM builder_sources WHERE builder=?',b.id).toArray().map(r=>r.destination);
@@ -275,26 +275,27 @@ test('v7.15: the linker may not point a planned function at a module whose piece
   assert.equal(room.problems("facts LIKE '%unpromised%' OR facts LIKE '%elsewhere%'").length,0,'nobody is told to stop using loadTickets');
 });
 // A reader's own path that reaches the wrong piece's module: the name is
-// another piece's promise, not one the reader made up. It imports it on its
-// own line by its name; the module's piece is never asked to add it.
-test('v7.15: a planned function read through a path that reaches another piece\'s module is the reader\'s to import by its name',async()=>{
+// another piece's promise, not one the reader made up. v7.15.6 (run13): the
+// builder binds the import to the module the plan gives the name to, as it
+// links any promised name; nobody is asked, and the module's piece is never
+// told to add it (before: a mismatch row, and the reader's D6 ticket).
+test('v7.15: a planned function read through a path that reaches another piece\'s module is bound to its owner\'s module by the plan',async()=>{
   const {room,calls}=liveRoom();
   await planned(room);
-  const loadPath=materializedPath('load tickets','ticketLoader.js','root.1'),readerPath=materializedPath('update ticket','updateTicket.js','root.3'),rel=L.relativeSpecifier(readerPath,loadPath);
+  const loadPath=materializedPath('load tickets','ticketLoader.js','root.1'),savePath=materializedPath('save tickets','saveModule.js','root.2'),readerPath=materializedPath('update ticket','updateTicket.js','root.3'),rel=L.relativeSpecifier(readerPath,loadPath);
   const reader=updater.replace("require('./loadTickets')",`require('${rel}')`).replace("const { saveTickets } = require('./saveTickets')",`const { saveTickets: save } = require('${rel}')`).replace('saveTickets(all)','save(all)');
   await pieces(room,'root',[['load tickets','ticketLoader.js',loader,[fn('loadTickets','returns all tickets')]],['save tickets','saveModule.js',saver,[fn('saveTickets','stores all tickets',['tickets'])]],
     ['update ticket','updateTicket.js',reader,[fn('updateTicket','updates a ticket by id',['id','changes'],'update a ticket')]],['entry module','app.js',run8Entry,[START]]]);
   const b=await room.scheduleAssembly('root');
   await room.turn(b.id);
-  const [p,...more]=openProblems(room,'root');
-  assert.equal(more.length,0,trace(room));
-  assert.deepEqual([p.kind,p.facts.elsewhere,p.facts.aliases,p.facts.unpromised,p.parties.map(x=>[x.role,x.owner])],['mismatch',['saveTickets'],{saveTickets:'save'},undefined,[['reader','root.3'],['provider','root.1']]]);
-  await room.turn('root');
-  assert.equal(calls.manager.length,0,'the reader\'s: no choice to make');
-  assert.match(tickets(room,'root.3')[0],/saveTickets is not ticketLoader\.js's: the plan gives it to another piece\. Import each on its own line, with its name as the path: const \{ saveTickets: save \} = require\('\.\/saveTickets'\); The builder links each line/);
-  assert.equal(tickets(room,'root.1').length,0,'the loader is never asked to add saveTickets');
-  const P=await import('../src/problems.js');
-  assert.equal(P.modelTrigger(p,{rule:'D6',action:'assign',child:'root.3'},{recurrence:()=>0}),null);
+  assert.equal(room.node(b.id).status,'done',trace(room));
+  assert.deepEqual(openProblems(room,'root'),[],'nothing for the manager: the plan links it');
+  const auto=events(room,'link_auto').map(e=>e.body).join(' '),to=L.relativeSpecifier(readerPath,savePath);
+  assert.ok(auto.includes(`updateTicket.js: { saveTickets: save } = require('${rel}' → { saveTickets: save } = require('${to}' (owner of saveTickets by the plan)`),auto);
+  const linked=await room.indexedContent(b.id,readerPath);
+  assert.ok(linked.includes(`const { saveTickets: save } = require('${to}')`)&&linked.includes(`const { loadTickets } = require('${rel}')`),linked);
+  assert.equal(calls.manager.length+calls.link.length,0,'no model: nothing to choose');
+  assert.equal(tickets(room,'root.1').length+tickets(room,'root.3').length,0,'the loader is never asked to add saveTickets, and the reader never to change its import');
 });
 
 // ------------------------------------------------------------- test 33
