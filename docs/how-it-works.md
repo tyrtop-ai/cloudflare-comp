@@ -1,6 +1,6 @@
 # Recursive Control Plane: how it works
 
-> The detailed companion to the short [README](../README.md), for v7.15.3. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
+> The detailed companion to the short [README](../README.md), for v7.15.4. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
 
 A multi-agent code-writing control plane that runs entirely on Cloudflare. You give it a goal, and a tree of small agents:
 - splits the work, promising a few named functions for each piece;
@@ -12,7 +12,7 @@ Each failure goes to the lowest manager whose branch holds every module involved
 
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
-> **Status:** this is v7.15.3. Every live run up to run8 used v7.13.x or earlier; run9 to run11 used v7.15. Run11 was the first to finish with the runner's test passing, but its entry module reimplemented every function and imported none of the other pieces, so no live run has yet shown the composed system producing a correct, verified application. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
+> **Status:** this is v7.15.4. Every live run up to run8 used v7.13.x or earlier; run9 to run11 used v7.15. Run11 was the first to finish with the runner's test passing, but its entry module reimplemented every function and imported none of the other pieces, so no live run has yet shown the composed system producing a correct, verified application. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
 
 ## The idea
 
@@ -388,7 +388,7 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Version.** This is v7.15.3. The full local suite passes with `npm test`, and `npm run check` passes.
+- **Version.** This is v7.15.4. The full local suite passes with `npm test`, and `npm run check` passes.
   - [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md): predicted interfaces, the promises, function requests, and what the linker and the compiler read from the plan.
   - [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md): the four roles, the problem inbox and the managers' decisions.
   - [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md): v7.13.0, the hotfixes v7.13.1 to v7.13.4, and the export connector.
@@ -406,7 +406,7 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 | run8 | 48a10b1d | v7.13.4 | paused after 9.6 minutes and 5 repair rounds: one import line for two modules, reader and provider confused, a repair answered "fixed" with no file | v7.15 |
 | run9 | 92cc686b | v7.15.0 | failed after 6.5 minutes, when Root's flat budget of six repair rounds ran out. Clef made every split decision, every relink after the first needed no model call, the app loaded and started on every round, and each repair round fixed a real bug. It ended on two gaps: names that two pieces both listed were deleted from both, so no piece promised update or delete, and `start()` returned empty placeholder functions | v7.15.1 |
 | run10 | b7079606 | v7.15.1 | Clef said split at Root twice, but both split answers were malformed JSON (every child after the first wrapped in stray quotes). On the third gate Clef said no, so Root wrote the whole application alone as one module, which the Container rejected | v7.15.2 |
-| run11 | 33635715 | v7.15.2 | **completed in 11.1 minutes, with the runner's test passing**, after 14 compiles and 13 repair rounds. Root split into six pieces and the data store into two. But the result is not the system working as designed: the walk killed three of viewTicket's four pieces (so viewTicket went single-agent), createTicket called writeData with its arguments out of order, which the stack blamed on the write worker for four rounds, and the repairs ended with an entry module that reimplemented every function locally and imported none of the other pieces | v7.15.3, in part |
+| run11 | 33635715 | v7.15.2 | **completed in 11.1 minutes, with the runner's test passing**, after 14 compiles and 13 repair rounds. Root split into six pieces and the data store into two. But the result is not the system working as designed: the walk killed three of viewTicket's four pieces (so viewTicket went single-agent), createTicket called writeData with its arguments out of order, which the stack blamed on the write worker for four rounds, and the repairs ended with an entry module that reimplemented every function locally and imported none of the other pieces | v7.15.3, v7.15.4 |
 
 The changelogs give each run's evidence, and the local replays of its files, which run through the real Container runner script with scripted models.
 
@@ -468,7 +468,8 @@ The design reached this shape over many versions:
 - in v7.15, promised functions: each split names them, a worker asks its manager for what it needs, and the linker and the compiler read the plan;
 - in v7.15.1, from run9: repair rounds that count only when they make no progress, duplicate names placed on one piece, and empty placeholders sent back;
 - in v7.15.2, from run10: split answers repaired or retried, and a single-agent Root run through the compiler's checks;
-- in v7.15.3, from run11: a call with its arguments out of order is the caller's problem, and the prune walk keeps a piece the scope check accepted unless another branch owns it.
+- in v7.15.3, from run11: a call with its arguments out of order is the caller's problem, and the prune walk keeps a piece the scope check accepted unless another branch owns it;
+- in v7.15.4, from run11: no piece writes a function another piece promised (it imports it), every operation's promised piece must be reached from the entry, and triage blames only code the entry reaches.
 
 [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md), [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md) and [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md) cover what changed since v7.12. [docs/history/CHANGELOG-v7.12.md](history/CHANGELOG-v7.12.md) documents the release before them. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](history/).
 
