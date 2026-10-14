@@ -177,8 +177,8 @@ test('v7.15.5: a name another piece promises still takes today\'s path (D6), and
   assert.deepEqual(room.promisedOf('root.2').map(f=>f.name),['createData']);
   const [ticket,...more]=tickets(room,'root.6');
   assert.equal(more.length,0);
-  assert.match(ticket,/getTickets, setTickets are not ticketDataManager\.js's: the plan gives them to another piece\. Import each on its own line, with its name as the path: const \{ getTickets \} = require\('\.\/getTickets'\); const \{ setTickets \} = require\('\.\/setTickets'\);/);
-  assert.match(ticket,/The module imports 'getTickets' from ticketDataManager\.js, which exports: createData\./);
+  assert.match(ticket,/getTickets, setTickets are not ticketDataManager\.js's: the plan gives them to another piece\. Import each on its own line, with its name as the path: import \{ getTickets \} from '\.\/getTickets'; import \{ setTickets \} from '\.\/setTickets';/,'deleteTicket.js is ESM: import lines (review)');
+  assert.match(ticket,/The module imports 'getTickets' from ticketDataManager\.js of "Ticket Data Manager", which exports: createData\./);
   assert.doesNotMatch(ticket,LINKED,ticket);
 });
 
@@ -212,4 +212,34 @@ test('v7.15.5: D9 only for names no piece promises, that no goal operation perfo
   assert.deepEqual([P.deterministicDecision(p,ctx).rule,P.deterministicDecision(p,ctx).child],['D6','root.6']);
   assert.ok(P.dataPiece('Ticket Data Manager')&&P.dataPiece('Tickets',[fn('createData','Initializes and returns a ticket data manager instance')])&&P.dataPiece('Ticket Store'));
   assert.ok(!P.dataPiece('Create Ticket Operation',[fn('createTicket','Adds a new ticket to the data store',['data'])])&&!P.dataPiece('View Tickets',[fn('viewTickets','Returns the tickets in the store')]));
+});
+
+// ------------------------------------------------------------------ review
+test('v7.15.5 review: a manager model\'s retask task names no linked path',()=>{
+  const p={id:'p1',kind:'mismatch',parties:[{owner:'root.6',role:'reader',path:DEL},{owner:'root.2',role:'provider'}],facts:{names:['getTickets']},flags:{},trail:[],detail:"The module imports 'getTickets' from components/ticket-dat-f17f9f79/ticketDataManager.js, which exports: createData."};
+  const ctx={holder:'root',parent:null,kindOf:id=>id.startsWith('root.')?'worker':null,production:['root.2','root.6'],scope:()=>0.9,canRelink:()=>false,maxHops:8};
+  const v=P.validateManagerActions([{action:'retask',child:'root.6',task:"Rewrite deleteTicket.js: import { createData } from '../ticket-dat-f17f9f79/ticketDataManager' and filter its list.",problems:['p1']}],[{id:'p1',p,dec:{action:'assign',child:'root.6'}}],ctx);
+  assert.deepEqual(v.retask.map(r=>r.task),['Rewrite deleteTicket.js: import { createData } from ticketDataManager and filter its list.']);
+  assert.doesNotMatch(v.retask[0].task,LINKED);
+});
+
+test('v7.15.5 review: linked paths keep their piece\'s label, a worker\'s own components/ folder stays, and an ESM reader gets import lines',()=>{
+  assert.equal(P.ownPaths("components/form.js: The module imports 'render' from './components/form'; require('./components/helpers')"),"components/form.js: The module imports 'render' from './components/form'; require('./components/helpers')");
+  // run12: Entry Module and Update Ticket Operation each wrote module.js.
+  const detail="Error: ENOENT\n    at updateTicket (/work/build-9IXpCc/components/update-tic-f27fa10c/module.js:6:35)\n    at Object.update (/work/build-9IXpCc/components/entry-modu-ee7f9ac0/module.js:9:28)\n    at /work/build-9IXpCc/glue/smoke.js:20:21";
+  const piece=dir=>({'update-tic-f27fa10c':'Update Ticket Operation','entry-modu-ee7f9ac0':''})[dir]??null;
+  const text=P.repairText({instructions:"Fix module.js. The module imports 'update' from components/update-tic-f27fa10c/module.js.",problems:[{path:'module.js',detail}],piece});
+  assert.match(text,/at updateTicket \(module\.js:6:35 of "Update Ticket Operation"\)\n    at Object\.update \(module\.js:9:28\)\n/,'the entry\'s own frame is its file; the other piece\'s is named');
+  assert.match(text,/The module imports 'update' from module\.js of "Update Ticket Operation"\./);
+  assert.doesNotMatch(text,LINKED);
+  const esm={kind:'mismatch',parties:[{role:'provider',owner_path:'ticketDataManager.js'}],facts:{names:['getTickets'],unpromised:true,promised:['createData'],esm:true}};
+  assert.match(P.instructionsFor(esm,'reader'),/Each line takes the function's name as its path: import \{ createData \} from '\.\/createData';$/);
+  assert.match(P.instructionsFor({kind:'unresolved',parties:[],facts:{specifier:'./x',names:['x'],esm:true}},'reader'),/\(import \{ name \} from '\.\/name';\)/);
+});
+
+test('v7.15.5 review: autoLink gives each quoted form of an ESM import its extension',()=>{
+  const A='components/a-11111111/app.js',files=new Map([[A,"import { f } from './lib';\nimport { h } from \"./lib\";\nexport const g = f + h;\n"],['components/a-11111111/lib.js','export const f = 1, h = 2;\n']]);
+  const edits=L.autoLink(files,new Map([...files].map(([p,c])=>[p,L.exportSurface(p,c)])));
+  assert.deepEqual(edits.map(e=>[e.find,e.replace]),[["'./lib'","'./lib.js'"],['"./lib"','"./lib.js"']]);
+  assert.deepEqual(L.unresolvedImports(new Map([[A,L.applyEdits(files.get(A),edits).content],['components/a-11111111/lib.js',files.get('components/a-11111111/lib.js')]])),[]);
 });

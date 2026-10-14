@@ -1508,6 +1508,11 @@ export function callArgs(path, content, name) {
   walk(ast,node=>{if(!args&&node.type==='CallExpression'&&(node.callee.type==='Identifier'&&node.callee.name===local||node.callee.type==='MemberExpression'&&!node.callee.computed&&nameOf(node.callee.property)===name))args=node.arguments.map(argName);});
   return args?.every(Boolean)?args:[];
 }
+// v7.15.5 review: a file in ESM syntax (import or export declarations),
+// whose worker is given import lines, not require lines (run12's deleteTicket.js).
+export function esmSyntax(content) {
+  try {return parseSource(content).ast.body.some(n=>/^(?:Import|Export\w*)Declaration$/.test(n.type));} catch {return false;}
+}
 // The module a load or run error at path names through one of path's own
 // imports ("x is not a function", "x.y is not a constructor", "Cannot read
 // properties of undefined (reading 'x')", where path imports x): the other
@@ -1539,11 +1544,12 @@ export function autoLink(files, surfaces, {scope='application',provider=null}={}
   for(const path of js) {
     const content=set.get(path),refs=importRefs(path,content),fixed=new Set();
     // v7.15.5 (run12): an ESM import that names its module without the
-    // extension gets it, a rename, before any Container run.
+    // extension gets it, a rename, before any Container run; one edit per
+    // quoted form ('./lib' and "./lib" are two finds, review).
     for(const lit of esmLiterals(content)) {
-      const to=!fixed.has(lit.value)&&esmPath(path,lit.value,set),find=content.slice(lit.start,lit.end);
+      const find=content.slice(lit.start,lit.end),to=!fixed.has(find)&&esmPath(path,lit.value,set);
       if(!to)continue;
-      fixed.add(lit.value);
+      fixed.add(find);
       edits.push({file:path,find,replace:find[0]+to+find[0],reason:'an ESM import names its module by the full file name',target:resolveLocal(path,to,set).path,specifier:lit.value});
     }
     for(const ref of refs) {

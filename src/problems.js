@@ -302,7 +302,8 @@ export function validateManagerActions(actions, call, ctx) {
       continue;
     }
     if(kind==='retask') {
-      const task=typeof a.task==='string'?a.task.trim():'',p=ctx.scope?.(a);
+      // v7.15.5 review: the model reads the problems' linked paths; its new task reaches the worker as written.
+      const task=typeof a.task==='string'?ownPaths(a.task.trim()):'',p=ctx.scope?.(a);
       if(task.length<8||task.length>1700){refuse(a,'a retask needs a task of 8 to 1700 characters');continue;}
       if(!(p>=0.5)){refuse(a,`the new task is outside the goal or this manager's responsibility (p=${Number(p||0).toFixed(3)})`);continue;}
       // v7.15 §10.1: a retask keeps the child's promise; interfaces replace
@@ -392,20 +393,30 @@ const base=path=>String(path||'').split('/').pop();
 const list=names=>(names||[]).filter(Boolean).slice(0,8).join(', ')||'them';
 // One import line per function, named after it, under the reader's own
 // local name (run8 called load() and save()).
-const oneLines=(names,aliases={},cap=4)=>(names||[]).slice(0,cap).map(n=>`const { ${n}${aliases?.[n]?': '+aliases[n]:''} } = require('./${n}');`).join(' ');
+// v7.15.5 review: in import form for a reader written in ESM (facts.esm):
+// run12's deleteTicket.js would throw "require is not defined" on a pasted require.
+const oneLines=(names,aliases={},cap=4,esm=false)=>(names||[]).slice(0,cap).map(n=>esm?`import { ${n}${aliases?.[n]?' as '+aliases[n]:''} } from './${n}';`:`const { ${n}${aliases?.[n]?': '+aliases[n]:''} } = require('./${n}');`).join(' ');
 // v7.15.5 (run12): a worker imports by the plan's convention, never by a
 // path in the linked bundle (a text that names no function gives the form).
-const CONVENTION="each function imported on its own line with its name as the path (const { name } = require('./name')); the builder links each line to the module that exports it";
+const CONVENTION=esm=>`each function imported on its own line with its name as the path (${esm?"import { name } from './name';":"const { name } = require('./name')"}); the builder links each line to the module that exports it`;
 // v7.15.5 (run12): a worker reads its own module names, never the linked
 // bundle's paths. deleteTicket.js copied '../ticket-dat-f17f9f79/ticketDataManager'
 // out of a builder-rename note into its source; the import worked only in
 // a linked copy, and its next revisions failed to load. A path under
 // components/ or a builder's hashed folder (ticket-dat-f17f9f79/), in a
 // stack frame, a problem or a note, becomes its file's name, unquoted, so
-// nothing in the text is an import path to copy.
-const LINKED=String.raw`(?:file:\/\/)?(?:\/[^\s'"\`()]*\/)?(?:\.\.?\/)*(?:components\/|[a-z0-9-]{1,10}-[0-9a-f]{8}\/)(?:[^\s'"\`()\/]+\/)*([^\s'"\`()\/:;,]+)`;
+// nothing in the text is an import path to copy. Review: a path is linked
+// only through a builder's hashed folder (a worker's own components/form.js
+// stays), and another piece's file keeps its piece's label, as run12's
+// Entry Module and Update Ticket Operation both wrote module.js: piece(dir)
+// is '' for the reader's own folder, else the label of the piece that wrote it.
+const HASHED=/[a-z0-9-]{1,10}-[0-9a-f]{8}(?=\/)/g;
+const LINKED=String.raw`(?:file:\/\/)?(?:\/[^\s'"\`()]*\/)?(?:\.\.?\/)*(?:components\/)?[a-z0-9-]{1,10}-[0-9a-f]{8}\/(?:[^\s'"\`()\/]+\/)*([^\s'"\`()\/:;,]*[^\s'"\`()\/:;,.])((?::\d+){0,2})`;
 const QUOTED_LINK=new RegExp(`(['"\`])${LINKED}\\1`,'g'),LINK=new RegExp(`(?<![\\w.$/-])${LINKED}`,'g');
-export const ownPaths=text=>String(text??'').replace(QUOTED_LINK,'$2').replace(LINK,'$1');
+export const ownPaths=(text,piece=null)=>{
+  const name=(path,file,at)=>{const label=piece?.(path.match(HASHED)?.at(-1)||'');return label?`${file}${at} of "${label}"`:file+at;};
+  return String(text??'').replace(QUOTED_LINK,(m,q,file,at)=>name(m,file,at)).replace(LINK,(m,file,at)=>name(m,file,at));
+};
 // An atomic top's entry problem (v7.15.2): it wrote every module, so its
 // operations are its own, not imported from pieces it never had (review).
 export const OWN_ENTRY_CONTRACT='You wrote the whole application: your entry module exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each performing it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
@@ -417,22 +428,22 @@ export function instructionsFor(p, side, own=false) {
   // run11: the caller reorders its call; the function it calls stays.
   if(f.argorder&&side!=='provider')return `Change your call ${f.argorder.call} to pass its arguments in the order ${f.argorder.name} takes them, (${(f.argorder.params||[]).join(', ')}); ${f.argorder.name} itself stays as it is.`;
   switch(p.kind) {
-    case 'mismatch':return f.elsewhere?.length?`${list(f.elsewhere)} ${f.elsewhere.length>1?'are':'is'} not ${base(provider?.owner_path||provider?.path)||'the other module'}'s: the plan gives ${f.elsewhere.length>1?'them':'it'} to another piece. Import each on its own line, with its name as the path: ${oneLines(f.elsewhere,f.aliases)} The builder links each line to the module that exports that function.`:
-      f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.${f.promised?.length?` Each line takes the function's name as its path: ${oneLines(f.promised)}`:''}`:
+    case 'mismatch':return f.elsewhere?.length?`${list(f.elsewhere)} ${f.elsewhere.length>1?'are':'is'} not ${base(provider?.owner_path||provider?.path)||'the other module'}'s: the plan gives ${f.elsewhere.length>1?'them':'it'} to another piece. Import each on its own line, with its name as the path: ${oneLines(f.elsewhere,f.aliases,4,f.esm)} The builder links each line to the module that exports that function.`:
+      f.unpromised?`${base(provider?.owner_path||provider?.path)||'The other module'} exports what the plan gives its piece (${list(f.promised)}) and not ${list(f.names)}, and it is never asked to add ${(f.names||[]).length>1?'them':'it'}. Change your reads of ${list(f.names)}: use the functions it exports, each imported on its own line by its name.${f.promised?.length?` Each line takes the function's name as its path: ${oneLines(f.promised,{},4,f.esm)}`:''}`:
       `Use the names ${base(provider?.owner_path||provider?.path)||'the other module'} already exports; do not change what it exports. Change your reads of ${list(f.names)}.`;
     case 'binding':return `${base(provider?.owner_path||provider?.path)||'The other module'} exports a single ${f.provider_kind||'function'} as module.exports: import it whole (const f = require(…)) and call it.`;
     case 'unresolved':{
-      if(f.split)return `Import each function on its own line, with the function's name as the path, in place of the one import of ${list(f.names)} from '${f.specifier||''}': ${oneLines(f.names,f.aliases)} The builder links each line to the module that exports that function. Keep the names your code calls.`;
+      if(f.split)return `Import each function on its own line, with the function's name as the path, in place of the one import of ${list(f.names)} from '${f.specifier||''}': ${oneLines(f.names,f.aliases,4,f.esm)} The builder links each line to the module that exports that function. Keep the names your code calls.`;
       const names=f.names?.length?` (${list(f.names)})`:'';
-      return f.named?`'${f.specifier||''}' is ${base(f.named)}, listed below with what it really exports: use the names it exports${names&&` in place of what it lacks${names}`}, ${CONVENTION}.`:
-        `No module in the application provides '${f.specifier||''}'${names}. Use what the modules listed below really export, ${CONVENTION}; or write what you need yourself.`;
+      return f.named?`'${f.specifier||''}' is ${base(f.named)}, listed below with what it really exports: use the names it exports${names&&` in place of what it lacks${names}`}, ${CONVENTION(f.esm)}.`:
+        `No module in the application provides '${f.specifier||''}'${names}. Use what the modules listed below really export, ${CONVENTION(f.esm)}; or write what you need yourself.`;
     }
     case 'entry':return own?OWN_ENTRY_CONTRACT:ENTRY_CONTRACT;
     case 'stuck':return 'Finish your assignment.';
     case 'contract':{
       const by=(f.requested_by||[]).filter(Boolean).slice(0,8),them=xs=>xs.length>1?'them':'it';
       // v7.15.4: the promises of other pieces a worker still writes itself (run11's entry wrote all six), a line for each (review: run11's had 4 of 6).
-      const written=f.written?.length?`${list(f.written)} ${f.written.length>1?'are':'is'} promised by other pieces: import each on its own line, with its name as the path: ${oneLines(f.written,{},8)} Use ${them(f.written)}; do not write ${them(f.written)} in your modules.`:'';
+      const written=f.written?.length?`${list(f.written)} ${f.written.length>1?'are':'is'} promised by other pieces: import each on its own line, with its name as the path: ${oneLines(f.written,{},8,f.esm)} Use ${them(f.written)}; do not write ${them(f.written)} in your modules.`:'';
       if(!f.names?.length&&written)return written;
       return `Your assignment promises ${list(f.names)}; ${by.length?by.join(', '):'other pieces'} need ${(f.names||[]).length>1?'them':'it'} from you and your modules do not export ${(f.names||[]).length>1?'them':'it'}. Export each as a named export with exactly that name; keep your other exports.${written&&' '+written}`;
     }
@@ -442,7 +453,7 @@ export function instructionsFor(p, side, own=false) {
 
 // What a branch hears when another child of its manager exports what it lacks (M6 settled).
 export function importInstructions(p, u) {
-  return `${base(u.path)}, outside your branch, exports ${list(p.facts?.names)}: import each on its own line with its name as the path, and the builder above links it: ${oneLines(p.facts?.names)} Nothing in your branch provides them.`;
+  return `${base(u.path)}, outside your branch, exports ${list(p.facts?.names)}: import each on its own line with its name as the path, and the builder above links it: ${oneLines(p.facts?.names,{},4,p.facts?.esm)} Nothing in your branch provides them.`;
 }
 
 const READER='Fix the existing implementation, keep your exported names, and do not invent unrelated features.';
@@ -464,13 +475,14 @@ export const OWN_UNCHANGED=' NOTHING CHANGED IN YOUR FILES: you answered this pr
 // what failed may be the coverage check or the runner's test, not a build.
 // written: every contract is about functions other pieces promise, which
 // the worker writes itself (v7.15.4).
-export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],unchanged=false,own=false,written=false}) {
+// piece(dir): who wrote a linked folder, for ownPaths (v7.15.5 review).
+export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],unchanged=false,own=false,written=false,piece=null}) {
   const head=(kinds.length&&kinds.every(k=>k==='contract')?(written?'YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE. Nothing was run; the plan was checked against your modules.':'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.'):
     (own?'YOUR APPLICATION FAILED ITS CONTAINER RUN. You wrote every file of the application':'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers')+
     ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER))+(unchanged?own?OWN_UNCHANGED:UNCHANGED:'');
-  const decided=instructions?` ${own?'Required':'Your manager decided'}: ${ownPaths(instructions).slice(0,900)}`:'';
-  const shown=problems.map(x=>`${ownPaths(x.path)||'(application)'}: ${ownPaths(x.detail)}`).join('; ');
+  const decided=instructions?` ${own?'Required':'Your manager decided'}: ${ownPaths(instructions,piece).slice(0,900)}`:'';
+  const shown=problems.map(x=>`${ownPaths(x.path,piece)||'(application)'}: ${ownPaths(x.detail,piece)}`).join('; ');
   const room=Math.max(0,2400-head.length-decided.length-' Problems: '.length-Math.min(shown.length,1100)-' What the other side provides: '.length);
-  const provided=facts&&room>40?` What the other side provides: ${ownPaths(facts).slice(0,Math.min(700,room))}`:'';
+  const provided=facts&&room>40?` What the other side provides: ${ownPaths(facts,piece).slice(0,Math.min(700,room))}`:'';
   return (head+decided+provided+' Problems: '+shown).slice(0,2400);
 }
