@@ -45,7 +45,7 @@ test('a Start refused for bad settings leaves the previous run intact',async()=>
   await r.start('Build a small issue tracker that lets someone create, view, update, and delete tickets.',30,{},'aaaaaaaa-bbbb');await drain();
   const before=r.snapshot();
   assert.ok(before.agents.length>0);
-  const refused=await r.start('Build a small issue tracker app please',10,{parallel:999},'aaaaaaaa-bbbb');
+  const refused=await r.start('Build a small issue tracker app please',10,{parallel:99999},'aaaaaaaa-bbbb');
   assert.match(refused.error,/Invalid parallel/);
   const after=r.snapshot();
   assert.equal(after.status,before.status);

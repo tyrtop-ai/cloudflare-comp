@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recursive Control Plane — Persistent Artifact Memory</title>
-  <link rel="stylesheet" href="/styles.css?v=7.15.11" />
+  <link rel="stylesheet" href="/styles.css?v=7.15.12" />
 </head>
 <body>
   <div class="page">
@@ -23,14 +23,14 @@
           <label for="goal">Problem statement</label>
           <textarea id="goal" rows="4">Build a small issue tracker that lets someone create, view, update, and delete tickets.</textarea>
           <div class="control-heading">Runtime settings <span>Per room · applied on Start / Continue</span></div>
-          <div class="range-control"><label for="budget">Turn budget <output id="budget-value" for="budget">100</output></label>
-            <input id="budget" type="range" min="1" max="500" step="1" value="100" /></div>
-          <div class="range-control"><label for="parallel-limit">Concurrent agents <output id="parallel-value" for="parallel">16</output></label>
-            <input id="parallel-limit" type="range" min="1" max="64" step="1" value="16" /></div>
-          <div class="range-control"><label for="max-agents">Total agents <output id="max-agents-value" for="max-agents">64</output></label>
-            <input id="max-agents" type="range" min="2" max="256" step="1" value="64" /></div>
-          <div class="range-control"><label for="max-depth">Recursion depth <output id="max-depth-value" for="max-depth">10</output></label>
-            <input id="max-depth" type="range" min="1" max="16" step="1" value="10" /></div>
+          <div class="range-control"><label for="budget">Turn budget <input id="budget-value" class="count" type="number" inputmode="numeric" min="1" max="10000000" step="1" value="100" aria-label="Turn budget, exact value" /></label>
+            <input id="budget" type="range" min="0" max="1000" step="1" value="0" data-min="1" data-max="10000000" /></div>
+          <div class="range-control"><label for="parallel-limit">Concurrent agents <input id="parallel-value" class="count" type="number" inputmode="numeric" min="1" max="10000" step="1" value="16" aria-label="Concurrent agents, exact value" /></label>
+            <input id="parallel-limit" type="range" min="0" max="1000" step="1" value="0" data-min="1" data-max="10000" /></div>
+          <div class="range-control"><label for="max-agents">Total agents <input id="max-agents-value" class="count" type="number" inputmode="numeric" min="2" max="100000" step="1" value="64" aria-label="Total agents, exact value" /></label>
+            <input id="max-agents" type="range" min="0" max="1000" step="1" value="0" data-min="2" data-max="100000" /></div>
+          <div class="range-control"><label for="max-depth">Recursion depth <input id="max-depth-value" class="count" type="number" inputmode="numeric" min="1" max="1000" step="1" value="10" aria-label="Recursion depth, exact value" /></label>
+            <input id="max-depth" type="range" min="0" max="1000" step="1" value="0" data-min="1" data-max="1000" /></div>
           <label for="model">Manager model (splits, decisions, linking)</label>
           <select id="model">
             <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 A3B · 3B active (default)</option>
@@ -120,6 +120,6 @@
       </section>
     </div>
   </div>
-  <script type="module" src="/app.js?v=7.15.11"></script>
+  <script type="module" src="/app.js?v=7.15.12"></script>
 </body>
 </html>

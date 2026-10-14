@@ -7,7 +7,7 @@ import {register} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
 import {liveRoom,twoWorkers,linkAndCompile,trace,GOAL} from './helpers/room.js';
 register('./cloudflare-loader.mjs',import.meta.url);
-const {ControlRoom,normalizeRoomSettings,DEFAULT_ROOM_SETTINGS,CLOUDFLARE_MODELS,default:worker}=await import('../src/index.js');
+const {ControlRoom,normalizeRoomSettings,DEFAULT_ROOM_SETTINGS,CLOUDFLARE_MODELS,ROOM_LIMITS,normalizeTurnBudget,default:worker}=await import('../src/index.js');
 const {GOAL_LIMIT,GOAL_START_REQUIREMENT}=await import('../src/model.js');
 
 const HYBRID='@cf/qwen/qwen3-30b-a3b-fp8',SCOUT='@cf/meta/llama-4-scout-17b-16e-instruct',DEEPSEEK='@cf/deepseek-ai/deepseek-v4-flash-0731',CLEF='@cf/cloudflare/clef-flash';
@@ -154,4 +154,21 @@ test('v7.15.10: a goal of the full length reaches Root whole in a live room, wit
   assert.equal(room.node('root').task,goal+' '+GOAL_START_REQUIREMENT);
   assert.equal(room.userGoal(),goal);
   assert.equal(room.snapshot().goal,room.node('root').task,'the export shows the task as Root holds it');
+});
+
+// v7.15.12: the dashboard's number boxes and sliders carry the server's
+// ceilings, lifted at the author's request.
+test('v7.15.12: the count controls carry ROOM_LIMITS, and the room takes values up to them',()=>{
+  const bounds={};
+  for(const m of html.matchAll(/<input id="([a-z-]+)" class="count" type="number" inputmode="numeric" min="(\d+)" max="(\d+)"/g)) bounds[m[1]]=[Number(m[2]),Number(m[3])];
+  assert.deepEqual(bounds,{'budget-value':ROOM_LIMITS.budget,'parallel-value':ROOM_LIMITS.parallel,'max-agents-value':ROOM_LIMITS.max_agents,'max-depth-value':ROOM_LIMITS.max_depth});
+  for(const m of html.matchAll(/<input id="([a-z-]+)" type="range" min="0" max="1000" step="1" value="0" data-min="(\d+)" data-max="(\d+)"/g))
+    assert.deepEqual([Number(m[2]),Number(m[3])],bounds[m[1]==='parallel-limit'?'parallel-value':m[1]+'-value'],m[1]);
+  assert.deepEqual(ROOM_LIMITS,{max_agents:[2,100000],max_depth:[1,1000],parallel:[1,10000],budget:[1,10000000]});
+  const top=normalizeRoomSettings({max_agents:100000,max_depth:1000,parallel:10000});
+  assert.deepEqual([top.max_agents,top.max_depth,top.parallel],[100000,1000,10000]);
+  assert.throws(()=>normalizeRoomSettings({parallel:10001}),/Invalid parallel: expected 1–10000/);
+  assert.throws(()=>normalizeRoomSettings({max_agents:1}),/Invalid max_agents: expected 2–100000/);
+  assert.equal(normalizeTurnBudget(10000000),10000000);
+  assert.throws(()=>normalizeTurnBudget(10000001),/Invalid budget: expected 1–10000000/);
 });

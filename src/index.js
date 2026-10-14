@@ -129,9 +129,13 @@ const providedFn = (f, owner) => ({name:f.name,params:f.params||[],does:f.does||
 const OPERATION_PLACEHOLDER=/^(?:goal)?(?:op|operation|action|method|handler|function|func|fn)s?_?\d*$/i;
 // A function a manager's reply carries, cleaned as a promise item is.
 const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&!Array.isArray(fn)?[fn]:[]); return f&&validName(f.name)?{...f,owner:clip(fn.owner,70)}:null; };
-// Hard safety ceilings. Actual per-room limits are chosen in the dashboard.
+// Hard safety ceilings. Actual per-room limits are chosen in the dashboard,
+// whose count sliders run logarithmically from each floor to its ceiling
+// (v7.15.12: lifted from 256 agents, 16 deep, 64 concurrent and 500 turns at
+// the author's request; the account's Workers AI and Durable Object limits
+// are the practical ones).
 export const ROOM_LIMITS = Object.freeze({
-  max_agents: [2, 256], max_depth: [1, 16], parallel: [1, 64], budget: [1, 500]
+  max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000]
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   max_agents: 64, max_depth: 10, parallel: 16,

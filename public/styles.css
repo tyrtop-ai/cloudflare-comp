@@ -161,6 +161,7 @@ pre { font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:10p
 .range-control {margin-top:17px;}
 .range-control label {display:flex;align-items:baseline;justify-content:space-between;margin:0 0 8px;gap:12px;}
 .range-control output {font:600 13px ui-monospace,monospace;color:var(--fg);}
+.range-control input.count {width:11ch;margin:0;padding:3px 6px;font:600 13px ui-monospace,monospace;color:var(--fg);text-align:right;}
 input[type=range] {padding:0;border:0;background:transparent;box-shadow:none;accent-color:var(--link);cursor:pointer;height:22px;}
 input[type=range]:focus {box-shadow:none;}
 

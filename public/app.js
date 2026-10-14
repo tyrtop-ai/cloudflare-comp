@@ -199,24 +199,40 @@ async function action(route,data={}) {
   try { $('error').textContent=''; await call(route,'POST',data);await refresh(); }
   catch(err){showError(err);}
 }
+// v7.15.12: the four count sliders run logarithmically from the setting's
+// floor to its ceiling (the server's ROOM_LIMITS, on the slider's data-min and
+// data-max), in 1000 steps, with a number box for the exact value; the box is
+// what Start and Continue send. The threshold slider stays linear.
+const LOG_STEPS=1000;
+const numberOf=id=>$(id==='parallel-limit'?'parallel-value':id+'-value');
+const boundsOf=id=>{const s=$(id);return [Number(s?.dataset?.min??s?.getAttribute?.('data-min')??1)||1,Number(s?.dataset?.max??s?.getAttribute?.('data-max')??1)||1];};
+function logValue(id,pos) {const [lo,hi]=boundsOf(id);return Math.max(lo,Math.min(hi,Math.round(lo*Math.pow(hi/lo,Number(pos)/LOG_STEPS))));}
+function logPosition(id,value) {const [lo,hi]=boundsOf(id),x=Math.max(lo,Math.min(hi,Number(value)||lo));return hi>lo?Math.round(LOG_STEPS*Math.log(x/lo)/Math.log(hi/lo)):0;}
+function countSetting(id) {const [lo,hi]=boundsOf(id),v=Math.round(Number(numberOf(id)?.value));return Number.isFinite(v)&&v>0?Math.max(lo,Math.min(hi,v)):lo;}
+const setCount=(id,value)=>{const box=numberOf(id),slider=$(id);if(box)box.value=value;if(slider)slider.value=logPosition(id,value);};
 const ranges=['budget','parallel-limit','max-agents','max-depth','split-threshold'];
 for(const id of ranges) {
-  const input=$(id), display=$(id==='parallel-limit'?'parallel-value':id+'-value');
-  if (input && display) {
-    const sync=()=>{display.textContent=input.value+(id==='split-threshold'?'%':'');};
+  const input=$(id), display=numberOf(id);
+  if (!input || !display) continue;
+  if (id==='split-threshold') {
+    const sync=()=>{display.textContent=input.value+'%';};
     input.addEventListener('input',sync);sync();
+  } else {
+    input.addEventListener('input',()=>{display.value=logValue(id,input.value);controlsDirty=true;});
+    display.addEventListener('change',()=>{setCount(id,countSetting(id));controlsDirty=true;});
+    input.value=logPosition(id,display.value);
   }
 }
 let controlsDirty=false;
-const settings=()=>({parallel:Number($('parallel-limit').value),
-  max_agents:Number($('max-agents').value), max_depth:Number($('max-depth').value),
+const settings=()=>({parallel:countSetting('parallel-limit'),
+  max_agents:countSetting('max-agents'), max_depth:countSetting('max-depth'),
   model:$('model').value, worker_model:$('worker-model').value, compiler_model:$('compiler-model').value, split_model:$('split-model').value,
   split_threshold:Number($('split-threshold').value)/100});
 const applySnapshotSettings=s=>{
   if(controlsDirty || !s.settings) return;
   const c=s.settings;
-  const values={'parallel-limit':c.parallel,'max-agents':c.max_agents,'max-depth':c.max_depth, 'split-threshold':Math.round((c.split_threshold??0.7)*100)};
-  for(const [id,value] of Object.entries(values)) { if($(id) && value!=null) {$(id).value=value;$(id).dispatchEvent?.(new Event('input'));} }
+  for(const [id,value] of Object.entries({'parallel-limit':c.parallel,'max-agents':c.max_agents,'max-depth':c.max_depth})) if($(id) && value!=null) setCount(id,value);
+  if($('split-threshold')) {$('split-threshold').value=Math.round((c.split_threshold??0.7)*100);$('split-threshold').dispatchEvent?.(new Event('input'));}
   if(c.model) $('model').value=c.model;
   if($('worker-model')) $('worker-model').value=c.worker_model||c.model||$('worker-model').value;
   if($('compiler-model')) $('compiler-model').value=c.compiler_model||c.model||$('compiler-model').value;
@@ -232,10 +248,10 @@ $('model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();}
 $('worker-model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('compiler-model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('split-model').addEventListener('change',()=>{controlsDirty=true;});
-for(const id of ['parallel-limit','max-agents','max-depth','split-threshold']) $(id).addEventListener('input',()=>{controlsDirty=true;});
+$('split-threshold').addEventListener('input',()=>{controlsDirty=true;});
 updateModelHint();
-$('start').addEventListener('click',()=>current?.status==='running'?action('/api/stop'):action('/api/run',{goal:$('goal').value,budget:Number($('budget').value),settings:settings()}));
-$('continue').addEventListener('click',()=>action('/api/continue',{budget:Number($('budget').value),settings:settings()}));
+$('start').addEventListener('click',()=>current?.status==='running'?action('/api/stop'):action('/api/run',{goal:$('goal').value,budget:countSetting('budget'),settings:settings()}));
+$('continue').addEventListener('click',()=>action('/api/continue',{budget:countSetting('budget'),settings:settings()}));
 $('reset').addEventListener('click',()=>{if(confirm('Clear the room session? Existing Artifacts repos will remain.'))action('/api/reset');});
 $('export').addEventListener('click',async()=>{
   try {

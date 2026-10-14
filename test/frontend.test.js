@@ -12,8 +12,8 @@ function renderWithPage(includeParallel, snapshot = {}) {
   const ids = [...markup.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(match => match[1]);
   const elements = new Map(ids.map(id => [id, {
     id,
-    value:'', textContent:'', className:'', innerHTML:'', disabled:false,
-    addEventListener(){}, querySelectorAll(){return []},
+    value:'', textContent:'', className:'', innerHTML:'', disabled:false, listeners:{},
+    addEventListener(type,fn){(this.listeners[type]??=[]).push(fn);}, querySelectorAll(){return []},
   }]));
   const document = {
     getElementById(id){return elements.get(id)||null;},
@@ -28,11 +28,16 @@ function renderWithPage(includeParallel, snapshot = {}) {
     setInterval(){},
   };
   // No token is provided, so the initial refresh does not call fetch.
+  // v7.15.12: the sliders read their bounds from data-min and data-max.
+  for(const m of markup.matchAll(/<input id="([a-z-]+)" type="range"[^>]*data-min="(\d+)" data-max="(\d+)"/g)) elements.get(m[1]).dataset={min:m[2],max:m[3]};
+  for(const m of markup.matchAll(/<input id="([a-z-]+)" class="count"[^>]*value="(\d+)"/g)) elements.get(m[1]).value=m[2];
   runInNewContext(script,context,{filename:'public/app.js'});
   context.render({status:'paused',busy:false,step:4,max_parallel:4,
     active_agents:['root.1','root.2'],agents:[],files:[],events:[],...snapshot});
+  elements.context=context;
   return elements;
 }
+const fire=(el,type)=>{for(const fn of el.listeners[type]||[])fn();};
 
 test('v4.5 app renders against cached v4.2 HTML without a parallel counter',()=>{
   const elements=renderWithPage(false);
@@ -46,8 +51,8 @@ test('current HTML displays concurrent agent count',()=>{
 });
 
 test('HTML uses versioned JS and CSS asset URLs',()=>{
-  assert.match(html, /src="\/app\.js\?v=7\.15\.11"/);
-  assert.match(html, /href="\/styles\.css\?v=7\.15\.11"/);
+  assert.match(html, /src="\/app\.js\?v=7\.15\.12"/);
+  assert.match(html, /href="\/styles\.css\?v=7\.15\.12"/);
 });
 
 test('v7.13: the split threshold control defaults to 70%',()=>{
@@ -343,4 +348,40 @@ test('v7.15: the node detail lists a node\'s promised functions',()=>{
   assert.match(pick('root.1'),/<p>Write code that creates tickets<\/p><p class="faint">promises: createTicket\(title, description\), saveTicket\(\)<\/p>/);
   assert.match(pick('root'),/<p class="faint">promises: start\(\)<\/p>/);
   assert.doesNotMatch(pick('root.2'),/promises:/,'no promise, no line');
+});
+
+// v7.15.12: the four count sliders are logarithmic, from the floor to the
+// ceiling on the slider's data attributes, with a number box for the exact
+// value; the box is what the room is sent.
+test('v7.15.12: count sliders are logarithmic with a number box; the box and the slider follow each other',()=>{
+  for(const [id,lo,hi,start] of [['budget',1,10000000,100],['parallel-limit',1,10000,16],['max-agents',2,100000,64],['max-depth',1,1000,10]])
+    assert.match(html,new RegExp(`<input id="${id==='parallel-limit'?'parallel-value':id+'-value'}" class="count" type="number" inputmode="numeric" min="${lo}" max="${hi}" step="1" value="${start}"[^>]*>[^<]*</label>\\s*<input id="${id}" type="range" min="0" max="1000" step="1" value="0" data-min="${lo}" data-max="${hi}"`),id);
+  const elements=renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}}),{context}=elements;
+  const pos=(lo,hi,v)=>Math.round(1000*Math.log(v/lo)/Math.log(hi/lo));
+  assert.equal(elements.get('parallel-value').value,4);
+  assert.equal(elements.get('parallel-limit').value,pos(1,10000,4));
+  assert.equal(elements.get('max-agents-value').value,64);
+  assert.equal(elements.get('max-agents').value,pos(2,100000,64));
+  assert.equal(elements.get('budget-value').value,'100','the budget is per Start, not in the snapshot');
+  assert.equal(elements.get('budget').value,pos(1,10000000,100));
+  // The ends of each slider are the floor and the ceiling; the middle is geometric.
+  assert.equal(context.logValue('budget',0),1);
+  assert.equal(context.logValue('budget',1000),10000000);
+  assert.equal(context.logValue('max-agents',500),Math.round(2*Math.sqrt(100000/2)));
+  assert.equal(context.logPosition('max-depth',1000),1000);
+  assert.equal(context.logPosition('max-depth',0),0,'below the floor reads as the floor');
+  // Dragging the slider fills the box; typing in the box moves the slider and is clamped to the bounds.
+  const slider=elements.get('max-depth'),box=elements.get('max-depth-value');
+  slider.value=1000;fire(slider,'input');
+  assert.equal(box.value,1000);
+  box.value='7';fire(box,'change');
+  assert.equal(box.value,7);
+  assert.equal(slider.value,pos(1,1000,7));
+  box.value='5000';fire(box,'change');
+  assert.equal(box.value,1000,'clamped to the ceiling');
+  box.value='abc';fire(box,'change');
+  assert.equal(box.value,1,'nonsense reads as the floor');
+  assert.equal(context.countSetting('max-depth'),1);
+  box.value='250';
+  assert.equal(context.countSetting('max-depth'),250,'what Start and Continue send');
 });
