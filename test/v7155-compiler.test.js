@@ -234,14 +234,15 @@ test('v7.15.5: a method-set change rewrites the runner\'s test once; the same se
   const named=composed.entry.replace(/exports\.start = .*\n$/,'exports.start = () => ({ createTicket, viewTicket, updateTicket, deleteTicket });\n');
   const tests=[crudTest({create:'createTicket',view:'viewTicket',update:'updateTicket',delete:'deleteTicket'}),crudTest()];
   const byName={operations:[{operation:'create a ticket',method:'createTicket'},{operation:'view a ticket',method:'viewTicket'},{operation:'update a ticket',method:'updateTicket'},{operation:'delete a ticket',method:'deleteTicket'}]};
-  const {room,calls}=await run12Room({...composed,entry:named},{coverage:(_u,n)=>n===1?byName:fullCoverage,runner:(_u,n)=>tests[n-1]});
+  // v7.15.8 (R3): the fixture's test reads t.id from a create whose description states no return, so a new test costs three drafts (two turned back, the third accepted and marked).
+  const {room,calls}=await run12Room({...composed,entry:named},{coverage:(_u,n)=>n===1?byName:fullCoverage,runner:u=>tests[Object.keys(JSON.parse(u.api_returned_by_start).members).includes('createTicket')?0:1]});
   assert.ok(events(room,'run_passed').length,trace(room));
   assert.deepEqual(room.read('runner_test',null).methods,['createTicket','deleteTicket','updateTicket','viewTicket']);
   // The entry renames its methods: the test fixed for the old names is written again, once.
   await room.putFile('root.1','module.js',composed.entry);
   await linkAndCompile(room);
   assert.equal(events(room,'runner_rewritten').at(-1)?.body,'start()\'s methods changed since the runner\'s test was written: added create, delete, update, view; removed createTicket, deleteTicket, updateTicket, viewTicket. The runner writes a new test for the new methods, fixed while they stay the same.',trace(room));
-  assert.deepEqual([calls.coverage.length,calls.runner.length],[2,2],'the gate runs again for the new API');
+  assert.deepEqual([calls.coverage.length,calls.runner.length],[2,6],'the gate runs again for the new API');
   assert.equal(events(room,'run_passed').length,2,trace(room));
   assert.deepEqual(room.read('runner_test',null),{api:events(room,'build_checked').at(-1).body.split('start() returned: ')[1],test:tests[1].trim(),
     operations:fullCoverage.operations.map(o=>({operation:o.operation,method:o.method})),methods:['create','delete','update','view']});
@@ -250,7 +251,7 @@ test('v7.15.5: a method-set change rewrites the runner\'s test once; the same se
   await linkAndCompile(room);
   assert.equal(events(room,'runner_reused').length,1,trace(room));
   assert.equal(events(room,'runner_rewritten').length,1);
-  assert.deepEqual([calls.coverage.length,calls.runner.length],[2,2]);
+  assert.deepEqual([calls.coverage.length,calls.runner.length],[2,6]);
   assert.equal(events(room,'run_passed').length,3,trace(room));
 });
 
@@ -264,18 +265,19 @@ test('v7.15.5 review: an entry whose methods move between sets reuses each set\'
   const round=async(m,n)=>{await room.putFile('root.1','module.js',entryOf(m)+`// round ${n}\n`);await linkAndCompile(room);};
   // A -> B -> A -> B: one new test, for B; each set then runs its own.
   for(const [n,m] of [B,A,B].entries())await round(m,n);
-  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length,events(room,'run_passed').length],[1,2,2,4],trace(room));
+  // v7.15.8 (R3): the fixture's test reads t.id from a create whose description states no return, so a new test costs three drafts (two turned back, the third accepted and marked).
+  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length,events(room,'run_passed').length],[1,2,6,4],trace(room));
   assert.match(events(room,'runner_reused').at(-2)?.body||'',/^Running the test written earlier for start\(\)'s methods createTicket, deleteTicket, updateTicket, viewTicket: /);
   assert.deepEqual(room.read('runner_test',null).methods,['create','delete','update','view']);
   // A third set: the second and last new test.
   await round(C,3);
-  assert.deepEqual([events(room,'runner_rewritten').length,calls.runner.length,events(room,'run_passed').length],[2,3,5],trace(room));
+  assert.deepEqual([events(room,'runner_rewritten').length,calls.runner.length,events(room,'run_passed').length],[2,9,5],trace(room));
   // A fourth set that keeps every method the last test calls: that test runs, no model is asked.
   await round({...C,list:'viewTicket'},4);
-  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length,events(room,'run_passed').length],[2,3,3,6],trace(room));
+  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length,events(room,'run_passed').length],[2,3,9,6],trace(room));
   // One that drops a method it calls: the entry hears which to return, and no test is written.
   await round({add:'createTicket',get:'viewTicket',edit:'updateTicket',drop:'deleteTicket'},5);
-  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length],[2,3,3],trace(room));
+  assert.deepEqual([events(room,'runner_rewritten').length,calls.coverage.length,calls.runner.length],[2,3,9],trace(room));
   assert.equal(events(room,'runner_kept').at(-1)?.body,'start() no longer returns remove, which the runner\'s test calls; the test was written 3 times as start()\'s methods changed and is not written again.',trace(room));
   const [p,...more]=openProblems(room,'root');
   assert.equal(more.length,0,trace(room));

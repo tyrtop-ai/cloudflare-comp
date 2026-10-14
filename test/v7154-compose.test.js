@@ -286,7 +286,8 @@ test('v7.15.4 review: start() methods whose performers the entry does not reach 
   const opaque=await compiled({entry:halfway(linkedPaths.read,linkedPaths.write).replace('const tickets',`const tickets0 = require('${linkedPaths.create}');\nconst tickets`),
     files:{create:"const { writeData } = require('../datastore-1b07dcdb/components/write-tick-1a07db48/module.js');\nfunction make() { return { createTicket(data, filePath) { writeData(filePath, data); return data; } }; }\nmodule.exports = make();\n"}});
   assert.equal(events(opaque.room,'entry_unreached').length,0);
-  assert.equal(opaque.calls.runner.length,1,trace(opaque.room));
+  // v7.15.8 (R3): the fixture's test reads t.id from a create whose description states no return, so a new test costs three drafts (two turned back, the third accepted and marked).
+  assert.equal(opaque.calls.runner.length,3,trace(opaque.room));
 });
 
 // v7.15.6 (run13): no triage and no entry default. A failure with no frame
@@ -294,7 +295,7 @@ test('v7.15.4 review: start() methods whose performers the entry does not reach 
 // (R2c), and the function the message names is its provider party.
 test('v7.15.6: a failure with no frame is routed by the method under test to its performer, never to the entry by default',async()=>{
   const {room,calls}=await compiled({entry:wiredLinked,fail:true});
-  assert.equal(calls.runner.length,1);
+  assert.equal(calls.runner.length,3,'v7.15.8 (R3): t.id read from a create that states no return: two drafts turned back, the third accepted');
   const [p,...more]=openProblems(room,'root');
   assert.equal(more.length,0,trace(room));
   assert.deepEqual([p.kind,p.parties.map(x=>x.path),p.facts.requirement.method,p.facts.requirement.frames],['run',[''],'view',[]]);

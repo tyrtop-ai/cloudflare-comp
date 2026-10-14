@@ -65,7 +65,7 @@ test('v7.15.5 merge: a goal that says read, the store listed first: entry, compi
   assert.equal(events(room,'entry_unreached').length,0,trace(room));
   assert.equal(events(room,'api_incomplete').length,0,trace(room));
   assert.ok(events(room,'run_passed').length,trace(room));
-  assert.equal(calls.runner.length,1);
+  assert.equal(calls.runner.length,3,'v7.15.8 (R3): t.id read from a create that states no return: two drafts turned back, the third accepted');
 });
 
 test('v7.15.5 merge: a store\'s function performs an operation no operation piece performs (list tasks), in the entry and the compiler alike',async()=>{

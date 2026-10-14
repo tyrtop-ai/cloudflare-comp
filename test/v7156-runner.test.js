@@ -168,8 +168,9 @@ test('v7.15.6: every way of comparing an error\'s message with a literal or rege
 });
 
 test('v7.15.6: run12\'s delete returning true is a success flag its description does not state; numbers, other strings, properties, null, a computed result and an undescribed method are not',()=>{
-  assert.deepEqual(found(RUN12,{methods:RUN12_METHODS}),[[15,'result','goalOperation2','true',"assert.equal(deleteResult, true, 'Delete operation should return true on success')"]]);
-  assert.equal(inventedAssertions(RUN12,{methods:RUN12_METHODS})[0].why,'the description of goalOperation2 ("Removes a ticket from the data store") states no return value: check what it did through the other methods, not its result');
+  // v7.15.8 (R3): line 9 reads createdTicket.id, the result of a create that states no return: the use variant, named once per receiver.
+  assert.deepEqual(found(RUN12,{methods:RUN12_METHODS}),[[9,'result','goalOperation1','an object with id','createdTicket.id'],[15,'result','goalOperation2','true',"assert.equal(deleteResult, true, 'Delete operation should return true on success')"]]);
+  assert.equal(inventedAssertions(RUN12,{methods:RUN12_METHODS})[1].why,'the description of goalOperation2 ("Removes a ticket from the data store") states no return value: check what it did through the other methods, not its result');
   const deletes=[{method:'deleteTicket',does:'deletes a ticket',params:['id']}];
   assert.deepEqual(found(wrap("assert.strictEqual(await app.deleteTicket(1), true);\nassert.equal(false, await app.deleteTicket(1));\nconst r = await app.deleteTicket(1);\nassert(r === true);\nconst { deleteTicket } = app;\nconst ok = await deleteTicket(1);\nassert.deepEqual(ok, 'deleted');\nassert.equal(ok, `OK`);\nassert.ok(r, 'deleted');\nassert(r);"),{methods:deletes}).map(x=>[x[0],x[3]]),[[5,'true'],[6,'false'],[8,'true'],[11,"'deleted'"],[12,'`OK`'],[13,'a truthy value'],[14,'a truthy value']]);
   assert.equal(inventedAssertions(wrap("assert.ok(await app.deleteTicket(1));"),{methods:deletes})[0].need,'deleteTicket to return a truthy value');
@@ -296,7 +297,7 @@ test('v7.15.6: runnerTestError names each assertion beyond the plan after the ca
   assert.equal(room.runnerTestError(RUN13,{goal:GOAL,api:API13,methods:DESCRIBED,last:true}),null);
   assert.equal(room.runnerTestError(ACCEPTING,{goal:GOAL,api:API13,methods:DESCRIBED}),null);
   assert.equal(room.runnerTestError(BOUNDED,{goal:GOAL,api:API13,methods:DESCRIBED}),`line 54 asserts ${THROW_LINE}: ${THROW_WHY}; ${GONE_IDIOM}`);
-  assert.equal(room.runnerTestError(RUN12,{methods:RUN12_METHODS}),`line 15 asserts assert.equal(deleteResult, true, 'Delete operation should return true on success'): the description of goalOperation2 ("Removes a ticket from the data store") states no return value: check what it did through the other methods, not its result`);
+  assert.equal(room.runnerTestError(RUN12,{methods:RUN12_METHODS}),`line 9 reads createdTicket.id, but the description of goalOperation1 ("Adds a new ticket to the data store") states no return value: get the id from a method that returns it, or check what it did through the other methods, not its result; line 15 asserts assert.equal(deleteResult, true, 'Delete operation should return true on success'): the description of goalOperation2 ("Removes a ticket from the data store") states no return value: check what it did through the other methods, not its result`);
   // Review: the catch rule reads the whole script: the accepting check's catch is fine under the outer handler, and a bare swallowing catch is told to add one.
   const swallows="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  try { const app = await start(); await app.deleteTicket(1); assert.equal(await app.viewTicket(1), 'gone'); } catch (e) { console.error(e); }\n})();\n";
   const CATCH='the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass: keep a catch only around the one call that may throw, and end the script with .catch(e => { console.error(e); process.exitCode = 1; })';

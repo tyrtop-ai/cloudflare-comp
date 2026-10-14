@@ -338,6 +338,21 @@ export function methodDescriptions(methods, described, performers) {
 // A property of the result (created.id) is the application's data, a method
 // no description covers is bound by the API alone, and a draft that does not
 // parse is left to the syntax check.
+// use (v7.15.8, run15; a variant of result): reading a member of, or
+// passing on, the direct result of a method whose description leads with an
+// effect verb and states no return value (and no returns) is the same
+// invention as asserting it. Run15's third draft stopped asserting
+// createResult and then read createResult.id on line 13 (and passed it on
+// to viewTicket, updateTicket and deleteTicket); the worker's createTicket
+// returned nothing, and the run spent its rounds on it. Named once per
+// receiver, at its first read (lines keeps the others, for a failure on
+// one): "line 13 reads createResult.id, but the description of createTicket
+// ("creates a new ticket and saves it") states no return value: get the id
+// from a method that returns it, or check what it did through the other
+// methods, not its result". A guarded read is no dependence: r?.id, r &&
+// r.id, a read inside an if or a conditional whose test checks r (run14's
+// third draft: if (createResult && createResult.id) … else list). With
+// returns stated ("the created ticket") the use is legitimate.
 export const GONE_IDIOM="accept a thrown error or a null or undefined result alike, for example: let gone; try { gone = await app.viewTicket(id); } catch (e) { gone = null; } assert.ok(gone == null, 'deleted ticket must be gone')";
 const STATES_RETURN=/(?:^|\b(?:and|then|or|which|that|it)\b|[,;:])\s*(?:return(?:s|ing)?(?!\s+(?:nothing|undefined|void|null|no\b))|yields?|produces?|computes?|calculates?|counts?|retrieves?|fetch(?:es)?|finds?|looks? up|loads?|reads?|gets?|lists?|search(?:es)?|checks?|tells?|reports?|resolves?|gives?(?: back)?|whether|true|false)\b/i;
 const EFFECT=/^\W*(?:(?:this|the) (?:function|method|operation) )?(?:creat|add|delet|remov|updat|modif|edit|chang|sav|stor|set|mark|clos|assign|writ|send|clear|reset|record|register|log|archiv|restor|insert)(?:e|es|s|ed|ing|y|ies|ied|ying)?\b/i;
@@ -373,10 +388,10 @@ export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
   for(const n of nodes){if(n.type==='AssignmentExpression'&&n.left?.type==='Identifier')assigned.set(n.left.name,[...assigned.get(n.left.name)||[],n]);if(n.type==='VariableDeclarator'&&n.id?.type==='Identifier')declared.set(n.id.name,n.init||null);}
   // A flag set to true only inside a catch, declared false or bare: the try whose catch sets it.
   const flagTry=n=>{n=bare(n);const as=n?.type==='Identifier'?assigned.get(n.name):null,d=n?.type==='Identifier'?declared.get(n.name):undefined;return as?.length&&d!==undefined&&(d===null||d.type==='Literal'&&d.value===false)&&as.every(a=>isTrue(a.right)&&catchOf(a))?catchOf(as[0]):null;};
-  const out=[],add=(n,rule,name,what='',need='')=>out.push({line:n.loc?.start?.line??0,text:src.slice(n.start,n.end).replace(/\s+/g,' ').slice(0,160),rule,name,what,need,
+  const out=[],add=(n,rule,name,what='',need='',use=null)=>out.push({line:n.loc?.start?.line??0,text:src.slice(n.start,n.end).replace(/\s+/g,' ').slice(0,160),rule,name,what,need,...use?{use:use.text,lines:[n.loc?.start?.line??0]}:{},
     why:rule==='message'?`neither the goal, the API nor the plan states ${need}: never assert an error message's text`
       :rule==='throw'?`neither the goal nor the description of ${name} ("${does.get(name)}") states that it throws`
-      :`the description of ${name} ("${does.get(name)}") ${STATES_RETURN.test(does.get(name))?`does not state that it returns ${what}`:'states no return value'}: check what it did through the other methods, not its result`});
+      :`the description of ${name} ("${does.get(name)}") ${STATES_RETURN.test(does.get(name))?`does not state that it returns ${what}`:'states no return value'}: ${use?`get ${use.get} from a method that returns it, or `:''}check what it did through the other methods, not its result`});
   const message=(n,x)=>add(n,'message',string(x)??pattern(regex(x)),'',string(x)!==null?`the error message ${quote(x)}`:`an error message matching ${quote(x)}`);
   // n requires the app call c to throw, which its description and the goal say nothing of; after a delete of the same argument, the test says so.
   const required=(n,c)=>{const m=c?methodOf(c):null;if(!m||!does.has(m)||SAYS_THROW.test(goal+'\n'+does.get(m)))return false;const what=nodes.some(d=>d.end<=c.start&&methodOf(d)&&DELETES.test(verbOf(performs.get(methodOf(d))||methodOf(d)))&&argOf(d)===argOf(c))?'throw for a deleted id':'throw';return add(n,'throw',m,what,`${m} to ${what}`);};
@@ -388,9 +403,21 @@ export function inventedAssertions(test, {goal='',api='',methods=null}={}) {
     if(m&&typeof y?.value==='boolean'&&y.type==='Literal'&&STATES_RETURN.test(d)&&!BOOLEAN.test(d))return add(n,'result',m,y.raw,`${m} to return ${y.raw}`);
     return false;
   };
+  // The use variant: a method whose description leads with an effect verb and states no return; a read guarded by a check of the binding is none.
+  const noReturn=m=>!!m&&does.has(m)&&EFFECT.test(does.get(m))&&!STATES_RETURN.test(does.get(m)),isName=(x,name)=>{x=bare(x);return x?.type==='Identifier'&&x.name===name;};
+  const checks=(t,name)=>isName(t,name)||t?.type==='LogicalExpression'&&(checks(t.left,name)||checks(t.right,name))||t?.type==='UnaryExpression'&&t.operator==='!'&&checks(t.argument,name);
+  const guarded=(n,name)=>n.optional||nodes.some(c=>c!==n&&within(n,c)&&(c.type==='LogicalExpression'&&isName(c.left,name)&&within(n,c.right)||(c.type==='IfStatement'||c.type==='ConditionalExpression')&&checks(c.test,name)&&!within(n,c.test)));
+  const used=new Map(),use=(n,m,key,text,get,what)=>{const line=n.loc?.start?.line??0;if(used.has(key)){const f=used.get(key);if(!f.lines.includes(line))f.lines.push(line);return;}add(n,'result',m,what,`${m} to return ${what}`,{text,get});used.set(key,out.at(-1));};
   for(const n of nodes) {
     const [id,init]=bindings(n);
     if(id?.type==='Identifier'){const m=init?methodOf(bare(init)):null;if(m)bound.set(id.name,m);else bound.delete(id.name);if(init&&isMessage(init))msgs.add(id.name);else msgs.delete(id.name);}
+    // A member of a binding (createResult.id, createResult['id'], createResult.save()), a destructuring of one or of the direct result, the result passed on to another method.
+    if(n.type==='MemberExpression'&&key(n)!==null){const o=bare(n.object),r=o?.type==='Identifier'?o.name:null,m=r?bound.get(r):methodOf(o);if(noReturn(m)&&!(r&&guarded(n,r)))use(n,m,r||m,r?`reads ${r}.${key(n)}`:`reads ${key(n)} from what ${m} returned`,`the ${key(n)}`,`an object with ${key(n)}`);}
+    if(n.type==='VariableDeclarator'&&(n.id.type==='ObjectPattern'||n.id.type==='ArrayPattern')&&n.init) {
+      const r=bare(n.init)?.type==='Identifier'?bare(n.init).name:null,m=r?bound.get(r):methodOf(bare(n.init)),k=n.id.type==='ObjectPattern'?n.id.properties.map(p=>p.type==='Property'?(p.key?.name??p.key?.value):null).find(x=>typeof x==='string'):null;
+      if(noReturn(m))use(n,m,r||m,r?(k?`reads ${r}.${k}`:`reads an element of ${r}`):(k?`reads ${k} from what ${m} returned`:`reads an element of what ${m} returned`),k?`the ${k}`:'the element',k?`an object with ${k}`:'an array');
+    }
+    if(n.type==='CallExpression'&&methodOf(n))for(const a of n.arguments||[]){const b=bare(a),r=b?.type==='Identifier'?b.name:null,m=r?bound.get(r):methodOf(b);if(noReturn(m))use(n,m,r||m,`passes ${r||`what ${m} returned`} on to ${methodOf(n)}`,`what ${methodOf(n)} needs`,`a value for ${methodOf(n)}`);}
     if(n.type==='BinaryExpression'&&COMPARES.has(n.operator)){compare(n,n.left,n.right,true)||compare(n,n.right,n.left,true);continue;}
     if(n.type!=='CallExpression')continue;
     const callee=bare(n.callee),args=n.arguments||[],name=assertion(n);

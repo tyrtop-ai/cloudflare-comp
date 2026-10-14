@@ -116,8 +116,9 @@ test('v7.15.5 merge: run12 replay: factory rejected, uses planned, entry compose
   assert.equal(calls.coverage.length,1);
   assert.deepEqual(body('api_covered'),['Each operation the goal names has a method: create a ticket -> createTicket, delete a ticket -> deleteTicket, view tickets -> viewTicket, update tickets -> updateTicket']);
   assert.equal(body('api_incomplete').length,0);
-  // 7. The runner is asked once, for the four methods, and its test passes.
-  assert.equal(calls.runner.length,1);
+  // 7. The runner is asked for the four methods and its test passes; v7.15.8 (R3): its draft reads t.id from a create whose description states no return, so two are turned back and the third accepted and marked.
+  assert.equal(calls.runner.length,3);
+  assert.equal(body('runner_rejected').length,2);
   assert.deepEqual(calls.runner[0].operations_to_test.map(o=>o.method),['createTicket','deleteTicket','viewTicket','updateTicket']);
   assert.equal(body('run_passed').length,1);
   assert.equal(calls.manager.length,0);
@@ -133,8 +134,8 @@ test('v7.15.5 merge: run12 replay: an entry that keeps run12\'s two methods is a
   const assigned=body('problem_assigned').find(b=>/to Entry Module/.test(b));
   assert.match(assigned,/: You write the application entry module: it exports start\(\); start\(\) takes no arguments and returns \{ createTicket, viewTicket, updateTicket, deleteTicket \}, each under its own name/);
   assert.doesNotMatch(assigned,/each named after that operation/);
-  // The runner is asked once start() returns the four, and only then.
-  assert.equal(calls.runner.length,1);
+  // The runner is asked once start() returns the four, and only then (v7.15.8, R3: three drafts for the one test).
+  assert.equal(calls.runner.length,3);
   assert.deepEqual(calls.runner[0].operations_to_test.map(o=>o.method).sort(),['createTicket','deleteTicket','updateTicket','viewTicket']);
   assert.equal(body('run_passed').length,1);
 });

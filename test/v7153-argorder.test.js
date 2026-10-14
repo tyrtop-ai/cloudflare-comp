@@ -452,6 +452,7 @@ test('v7.15.6: with no module in the stack, the method under test names its perf
   assert.deepEqual(r.room.problems('id=?',p.id).map(x=>[x.status,x.assignee,x.trail.at(-1).rule]),[['assigned','root.2','R2c']]);
   assert.equal(r.calls.clef.length+r.calls.manager.length,0);
   const [ticket]=tickets(r.room,'root.2');
-  assert.ok(ticket.startsWith("Your createTicket(data, filePath) (\"creates a new ticket with unique ID\"), which start() returns as create, must satisfy: Expected values to be strictly equal: actual 'Printer jam', expected 'Paper jam'. Test line 7: "),ticket);
+  // v7.15.8 (R3): t.title is read from a create whose description states no return; the third draft is accepted and marked, so the ticket leads with the runner's sentence (T4).
+  assert.ok(ticket.startsWith("Test line 8 requires create to return an object with title, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway. Your createTicket(data, filePath) (\"creates a new ticket with unique ID\"), which start() returns as create, must satisfy: Expected values to be strictly equal: actual 'Printer jam', expected 'Paper jam'. Test line 7: "),ticket);
   assert.ok(ticket.includes(" It failed at line 8: assert.equal(t.title, 'Paper jam'). Publish the FULL updated file."),ticket);
 });

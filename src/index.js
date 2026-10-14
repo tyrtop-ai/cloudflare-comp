@@ -1647,7 +1647,8 @@ export class ControlRoom extends DurableObject {
     if(/\bcatch\b/.test(text) && !/process\.exitCode\s*=\s*[1-9]|process\.exit\(\s*[1-9]|\bthrow\b/.test(text))
       return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass: keep a catch only around the one call that may throw, and end the script with .catch(e => { console.error(e); process.exitCode = 1; })';
     const invented=last?[]:inventedAssertions(text,{goal,api,methods});
-    return invented.length?invented.map(x=>`line ${x.line} asserts ${x.text}: ${x.why}`).join('; ')+(invented.some(x=>x.rule!=='result')?`; ${GONE_IDIOM}`:''):null;
+    // v7.15.8 (run15): a use of a result no description states ("line 13 reads createResult.id, but …") is named as an assertion of it is.
+    return invented.length?invented.map(x=>`line ${x.line} ${x.use?`${x.use}, but ${x.why}`:`asserts ${x.text}: ${x.why}`}`).join('; ')+(invented.some(x=>x.rule!=='result')?`; ${GONE_IDIOM}`:''):null;
   }
   // v7.15.5: the fixed runner test, when it was written for start()'s
   // methods (startMethods) or either side cannot say (an API that did not
@@ -1704,7 +1705,7 @@ export class ControlRoom extends DurableObject {
         // blocked on the runner's bounds, and a failure on such a line says
         // the fixed test requires it anyway (below).
         const kept=last?inventedAssertions(draft,{goal,api,methods:described}):[];
-        if(kept.length)this.event(nodeId,'runner_invented',clip(`The runner's third draft still asserts what neither the goal, the API nor the plan states: ${kept.map(x=>`line ${x.line}: ${x.text}`).join('; ')}. It is accepted as it is, so the run is not blocked; a failure on it will say the fixed test requires it anyway.`,800));
+        if(kept.length)this.event(nodeId,'runner_invented',clip(`The runner's third draft still asserts what neither the goal, the API nor the plan states: ${kept.map(x=>`line ${x.line}: ${x.use||x.text}`).join('; ')}. It is accepted as it is, so the run is not blocked; a failure on it will say the fixed test requires it anyway.`,800));
         test=draft;break;
       }
       correction='Your previous test was rejected before running: '+errors.join('; ');
@@ -1733,10 +1734,11 @@ export class ControlRoom extends DurableObject {
     // failure keeps its own text for the progress key.
     const frames=detail.match(/^\s+at .*$/gm)||[],at=+(detail.match(/glue\/smoke\.js:(\d+)/)?.[1]||0);
     const asserted=/AssertionError|ERR_ASSERTION|Missing expected (?:exception|rejection)/.test(detail)||!frames.slice(0,Math.max(0,frames.findIndex(f=>f.includes('glue/smoke.js')))).some(f=>f.includes('/components/'));
-    const made=at&&asserted?inventedAssertions(test,{goal,api,methods:described}).find(x=>x.line===at):null;
+    // v7.15.8 (run15): a use of a result is named once per receiver, at its first read; a read error (no assertion) on a later line of it is that finding's.
+    const found=at&&asserted?inventedAssertions(test,{goal,api,methods:described}):[],made=found.find(x=>x.line===at)||(!/AssertionError|ERR_ASSERTION/.test(detail)?found.find(x=>x.lines?.includes(at)):null)||null;
     if(made) {
       // Integration: the sentence itself is the mark (facts.requirement.invented), so the ticket leads with it (requirementText).
-      const say=`Test line ${made.line} requires ${clip(made.need,54)}, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.`;
+      const say=`Test line ${at} requires ${clip(made.need,54)}, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.`;
       issues=issues.map(x=>({...x,failure:x.failure??x.detail,detail:`${say} ${x.detail}`,facts:{...x.facts,requirement:{...x.facts?.requirement,invented:say}}}));
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);

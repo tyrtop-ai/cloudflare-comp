@@ -352,7 +352,7 @@ test('integration: run12 round 3 replayed to completion: getTickets and setTicke
     assert.equal(await room.contractReturned(id),false,`${id}'s done passes the contract with the answered names`);
   }
   assert.match(dbEvents(room,'link_auto').at(-1).body,/^Applied 11 rename\(s\) without the model: [^]*createTicket\.js: '\.\/getTickets' → '\.\.\/ticket-dat-[0-9a-f]{8}\/ticketDataManager\.js' \(owner of getTickets by the plan\)/,'the grown names bind by the plan, as the planned ones do');
-  assert.deepEqual([dbEvents(room,'api_incomplete').length,dbEvents(room,'run_passed').length,calls.runner.length],[0,1,1]);
+  assert.deepEqual([dbEvents(room,'api_incomplete').length,dbEvents(room,'run_passed').length,calls.runner.length],[0,1,3],'v7.15.8 (R3): t.id read from a create that states no return: two drafts turned back, the third accepted');
 });
 
 // (c) Run11's swapped call: createTicket.js passes writeData's arguments with

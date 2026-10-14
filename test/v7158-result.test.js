@@ -230,3 +230,109 @@ test('v7.15.8 (R2): with v7.15.7\'s returns on the promise, run15\'s createTicke
   assert.equal(live.room.node(live.id).status,'done',trace(live.room));
   assert.deepEqual(events(live.room,'contract_returned'),[]);
 });
+// ------------------------------------------------------------------ R3: the use variant
+test('v7.15.8 (R3): inventedAssertions, use: run15\'s third draft reads createResult.id, the result of a create whose description states no return, once per receiver with every line; with returns stated the use is legitimate; a guarded read is none; passing the result on, destructuring it and reading a call\'s own result are uses; the correction names the line',()=>{
+  const {room}=liveRoom();
+  const found=A.inventedAssertions(SMOKE,{goal:GOAL,api:API,methods:METHODS});
+  assert.deepEqual(found.map(x=>[x.line,x.lines,x.rule,x.name,x.what,x.need,x.use,x.text,x.why]),[[13,[13,20,23,29,34],'result','createTicket','an object with id','createTicket to return an object with id','reads createResult.id','createResult.id',USE13.replace('line 13 reads createResult.id, but ','')]]);
+  assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:METHODS}),USE13);
+  assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:METHODS,last:true}),null,'the third draft is accepted');
+  const stated=METHODS.map(m=>m.method==='createTicket'?{...m,returns:'the created ticket'}:m);
+  assert.deepEqual(A.inventedAssertions(SMOKE,{goal:GOAL,api:API,methods:stated}),[],'a draft that gets the id from a stated return passes');
+  assert.equal(room.runnerTestError(SMOKE,{goal:GOAL,api:API,methods:stated}),null);
+  assert.deepEqual(A.inventedAssertions(SMOKE,{goal:GOAL,api:API,methods:METHODS.map(m=>m.method==='createTicket'?{...m,returns:'nothing'}:m)}).map(x=>x.line),[13],'returns nothing: a use all the same');
+  // Run14's third draft: the read guarded by a check of the binding, the fallback a list; r?.id and r ? r.id : null too.
+  const guarded=WRAP("  const createResult = await app.createTicket({ title: 'T' });\n  let id;\n  if (createResult && createResult.id) {\n    id = createResult.id;\n  } else {\n    const tickets = await app.listTickets();\n    id = tickets[0].id;\n  }\n  const c2 = await app.createTicket({ title: 'U' });\n  const i2 = c2?.id;\n  const i3 = c2 ? c2.id : null;\n  if (c2) assert.ok(c2.id);\n  assert.ok(id || i2 || i3);");
+  assert.deepEqual(A.inventedAssertions(guarded,{goal:GOAL,api:API,methods:METHODS}),[]);
+  const uses=(body,m=METHODS)=>A.inventedAssertions(WRAP(body),{goal:GOAL,api:API,methods:m}).map(x=>[x.line,x.name,x.use,x.what]);
+  assert.deepEqual(uses("  const t = await app.createTicket({ title: 'T' });\n  await app.viewTicket(t);"),[[6,'createTicket','passes t on to viewTicket','a value for viewTicket']]);
+  assert.deepEqual(uses("  const { id } = await app.createTicket({ title: 'T' });\n  await app.viewTicket(id);"),[[5,'createTicket','reads id from what createTicket returned','an object with id']]);
+  assert.deepEqual(uses("  const t = await app.createTicket({ title: 'T' });\n  const { id, title } = t;\n  const [first] = await app.createTicket({ title: 'U' });"),[[6,'createTicket','reads t.id','an object with id'],[7,'createTicket','reads an element of what createTicket returned','an array']],'one finding per receiver: t, and the second call\'s own result');
+  assert.deepEqual(uses("  await app.viewTicket((await app.createTicket({ title: 'T' })).id);"),[[5,'createTicket','reads id from what createTicket returned','an object with id']]);
+  assert.deepEqual(uses("  const t = await app.createTicket({ title: 'T' });\n  t.save();\n  assert.equal(t['title'], 'T');"),[[6,'createTicket','reads t.save','an object with save']]);
+  // Not a use: a method whose description states a return (view), leads with no effect verb, or is not described; a binding rebound; a result only logged.
+  assert.deepEqual(uses("  const v = await app.viewTicket(1);\n  assert.equal(v.title, 'x');\n  const u = await app.updateTicket(1, { title: 'y' });\n  console.log(u);\n  let t = await app.createTicket({ title: 'T' });\n  t = { id: 1 };\n  assert.equal(t.id, 1);"),[]);
+  assert.deepEqual(uses("  const t = await app.createTicket({ title: 'T' });\n  assert.equal(t.id, 1);",[{method:'createTicket',does:'handles ticket creation',params:['data']}]),[]);
+  assert.deepEqual(uses("  const t = await app.createTicket({ title: 'T' });\n  assert.equal(t.id, 1);",[{method:'viewTicket',does:'returns a ticket',params:['id']}]),[]);
+  // Beside an assertion of the result: both named, the use after the line it reads.
+  const both=A.inventedAssertions(WRAP("  const t = await app.createTicket({ title: 'T' });\n  assert.ok(t, 'created');\n  await app.viewTicket(t.id);"),{goal:GOAL,api:API,methods:METHODS});
+  assert.deepEqual(both.map(x=>[x.line,x.use||x.text]),[[6,"assert.ok(t, 'created')"],[7,'reads t.id']]);
+  assert.equal(room.runnerTestError(WRAP("  const t = await app.createTicket({ title: 'T' });\n  assert.ok(t, 'created');\n  await app.viewTicket(t.id);"),{goal:GOAL,api:API,methods:METHODS}),
+    `line 6 asserts assert.ok(t, 'created'): the description of createTicket ("creates a new ticket and saves it") states no return value: check what it did through the other methods, not its result; line 7 reads t.id, but the description of createTicket ("creates a new ticket and saves it") states no return value: get the id from a method that returns it, or check what it did through the other methods, not its result`);
+});
+
+// ------------------------------------------------------------------ the room
+// Run15's tree as its split leaves it, the pieces done with run15's own
+// files, the entry composed from the plan; the runner answers run15's fixed
+// test, the coverage check its mapping.
+async function pieces(room,parent,list,{compose=false}={}) {
+  const specs=list.map(([spec])=>spec);
+  await room.spawn(parent,compose?room.composeStart(parent,specs):specs);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",parent);
+  const first=room.children(parent).filter(c=>c.label!=='Temporary builder').length-list.length+1;
+  for(const [i,[,files]] of list.entries()) {
+    const id=`${parent}.${first+i}`;
+    room.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
+    for(const [path,content] of files)await room.putFile(id,path,content);
+    room.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
+  }
+}
+async function run15Room(opts={},plan=PLAN15,files=FILES) {
+  const r=liveRoom({runner:()=>SMOKE,coverage:()=>COVERAGE,...opts}),{room}=r;
+  await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
+  await pieces(room,'root',plan.map(p=>[p,[files[p.label]]]),{compose:true});
+  return r;
+}
+// A leaf that answers each label from a script of revisions (the last repeats; a label without one republishes its source).
+const scriptedLeaf=(script,files=FILES)=>{const n={};return u=>{const k=(n[u.your_label]=(n[u.your_label]||0)+1),list=script[u.your_label]||[];return {summary:'Fixed',done:true,files:[{path:files[u.your_label][0],content:list[Math.min(k,list.length)-1]??files[u.your_label][1]}]};};};
+// A Container whose smoke run answers the scripted output (the load check is real); for a test that stops at the route.
+function scripted(out) {
+  return {build:async({fingerprint,files})=>{
+    const snapshot_hash=await snapshotHash(files);
+    if(!files['glue/smoke.js'])return verifyBuild({fingerprint,snapshot_hash,files});
+    return {fingerprint,snapshot_hash,passed:false,issues:[{path:'glue/smoke.js',kind:'source',detail:`smoke failed (exit 1): ${out}`}],checks:[{name:'smoke',exit_code:1,log:out}],log:`smoke: exit 1\n${out}`};
+  }};
+}
+const bodies=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).map(u=>u.new_messages.map(m=>m.body).join('\n'));
+const rounds=room=>room.db().exec("SELECT actor,body FROM events WHERE kind='repair_round' ORDER BY id").toArray().map(e=>`${e.actor}: ${e.body.match(/^Repair round (\d+) \((\d+) of/).slice(1).join('/')} ${e.body.match(/: (no progress|progress) /)[1]}`);
+// Run15's round-1 ticket, verbatim: the runner's sentence (R3 marked the fixed test's dependence), R4's text, the Data Store's facts from the uses edge.
+const TICKET15=`${SAY13} ${HEAD15} What the other side provides: readTickets(): reads all tickets | saveTickets(tickets): saves the updated tickets | module.js exports: module.exports = { readTickets(), saveTickets(newTickets) }${TAIL}`;
+
+test('v7.15.8: run15 replayed through the real builders, compiler and Container: the third draft is turned back twice for reading createResult.id and accepted marked; round 1 goes R2a to Create Ticket with R4\'s text, never to View Ticket, no model call, no relink; a createTicket that returns the ticket with an id completes the run in one round',async()=>{
+  const {room,calls}=await run15Room({leaf:scriptedLeaf({'Create Ticket':[SRC.createFix]})});
+  await settle(room,200);
+  assert.equal(room.get('status'),'complete',trace(room));
+  // The runner: run15's test read createResult.id, which no description licensed; two drafts turned back with R3's correction, the third accepted and marked.
+  assert.equal(calls.runner.length,3);
+  assert.deepEqual(calls.runner.slice(1).map(u=>u.previous_test_error),Array(2).fill(`Your previous test was rejected before running: ${USE13}`));
+  assert.deepEqual(events(room,'runner_invented').map(e=>e.body.split(' It is accepted')[0]),["The runner's third draft still asserts what neither the goal, the API nor the plan states: line 13: reads createResult.id."]);
+  // The failure: one run problem, R2a to Create Ticket (root.3), the requirement on createTicket with the read, never View Ticket.
+  const [p,...more]=room.problems("kind='run'");
+  assert.equal(more.length,0,trace(room));
+  assert.deepEqual([p.status,p.outcome,p.trail.map(t=>[t.at,t.action,t.to,t.rule]),p.facts.requirement.method,p.facts.requirement.text,p.facts.requirement.read,p.facts.requirement.invented,p.facts.requirement.frames],
+    ['closed','resolved',[['root','assign','root.3','R2a']],'createTicket','the test reads createResult.id, but createTicket(data) returned nothing',{line:13,text:'const viewResult = await app.viewTicket(createResult.id)',name:'createResult',member:'id',what:'reads createResult.id',call:'app.createTicket(createData)',call_line:10,needs:'an object with id'},SAY13,[]]);
+  assert.deepEqual(events(room,'problem_assigned').map(e=>e.recipient),['root.3'],'never View Ticket (root.4), never the entry');
+  assert.deepEqual(bodies(calls,'Create ticket'),[]);
+  assert.deepEqual(bodies(calls,'Create Ticket'),[TICKET15],'the round-1 ticket, verbatim');
+  assert.deepEqual(calls.leaf.map(u=>u.your_label),['Create Ticket']);
+  assert.ok(TICKET15.length<=900&&TICKET15.endsWith(TAIL));
+  for(const text of calls.leaf.flatMap(u=>u.new_messages.map(m=>m.body)))assert.doesNotMatch(text,/REAL CONTAINER BUILD FAILED|NOTHING CHANGED|Your manager decided|Builder renames|Fix the error below|by the plan|components\/|viewTicket\(id\) must/);
+  // The counts: one round with progress (the live run spent four on View Ticket and a relink); no manager, Clef or link model call; one relink-free bundle after the fix; the test fixed for the run.
+  assert.deepEqual(rounds(room),['root: 1/1 progress']);
+  assert.deepEqual([calls.manager.length,calls.clef.length,calls.link.length,calls.coverage.length,events(room,'link_retry').length,events(room,'problem_model_call').length,events(room,'route_ranked').length],[0,0,0,1,0,0,0]);
+  assert.deepEqual([events(room,'run_failed').length,events(room,'run_passed').length,events(room,'runner_reused').length],[1,1,1]);
+});
+
+test('v7.15.8: run15\'s failure at the route (a scripted Container): the ticket is R2a to Create Ticket in the first round whatever View Ticket exports; a View Ticket that declines is not asked (the requirement is not its)',async()=>{
+  const {room,calls}=await run15Room({executor:scripted(OUT.replace(/^smoke failed \(exit 1\): /,''))});
+  const builder=await room.scheduleAssembly('root');await room.turn(builder.id);await room.turn('root');
+  await room.turn(room.children('root').find(c=>c.label==='Compiler').id);
+  await room.turn('root');
+  const [p]=room.problems("kind='run'");
+  assert.deepEqual([p.status,p.assignee,p.trail.map(t=>[t.at,t.action,t.to,t.rule])],['assigned','root.3',[['root','assign','root.3','R2a']]],trace(room));
+  assert.deepEqual([calls.manager.length,calls.clef.length,calls.link.length],[0,0,0]);
+  const ticket=room.buildRepairMessage(room.db().exec("SELECT body FROM messages WHERE recipient='root.3' ORDER BY rowid").toArray().at(-1).body.split(' ')[1]);
+  assert.equal(ticket,TICKET15);
+  assert.equal(room.db().exec("SELECT count(*) AS n FROM messages WHERE recipient='root.4'").toArray()[0].n,0,'View Ticket hears nothing');
+});
+

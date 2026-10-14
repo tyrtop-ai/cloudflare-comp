@@ -385,7 +385,7 @@ test('v7.15.7 integration: run12\'s round 3 replays as in v7.15.6: getTickets an
     assert.equal(await room.contractReturned(id),false,`${id}'s done passes the contract with the answered names`);
   }
   assert.match(dbEvents(room,'link_auto').at(-1).body,/createTicket\.js: '\.\/getTickets' → '\.\.\/ticket-dat-[0-9a-f]{8}\/ticketDataManager\.js' \(owner of getTickets by the plan\)/);
-  assert.deepEqual([dbEvents(room,'api_incomplete').length,dbEvents(room,'run_passed').length,calls.runner.length],[0,1,1]);
+  assert.deepEqual([dbEvents(room,'api_incomplete').length,dbEvents(room,'run_passed').length,calls.runner.length],[0,1,3],'v7.15.8 (R3): t.id read from a create that states no return: two drafts turned back, the third accepted');
 });
 
 // Run9's deleted duplicate (room 92cc686b, v7.15.0): no piece promises update
