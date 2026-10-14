@@ -1,15 +1,16 @@
 // v7.15.10: a 2,818-character goal was refused at 1,800; the managers' and
-// the workers' models are chosen separately.
+// the workers' models are chosen separately. v7.15.11: and the compiler's.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {register} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
+import {liveRoom,twoWorkers,linkAndCompile,trace,GOAL} from './helpers/room.js';
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom,normalizeRoomSettings,DEFAULT_ROOM_SETTINGS,CLOUDFLARE_MODELS,default:worker}=await import('../src/index.js');
 const {GOAL_LIMIT,GOAL_START_REQUIREMENT}=await import('../src/model.js');
 
-const HYBRID='@cf/qwen/qwen3-30b-a3b-fp8',SCOUT='@cf/meta/llama-4-scout-17b-16e-instruct',CLEF='@cf/cloudflare/clef-flash';
+const HYBRID='@cf/qwen/qwen3-30b-a3b-fp8',SCOUT='@cf/meta/llama-4-scout-17b-16e-instruct',DEEPSEEK='@cf/deepseek-ai/deepseek-v4-flash-0731',CLEF='@cf/cloudflare/clef-flash';
 const html=readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
 const options=id=>[...html.match(new RegExp(`<select id="${id}">([\\s\\S]*?)</select>`))[1].matchAll(/<option value="([^"]+)">/g)].map(m=>m[1]);
 
@@ -21,10 +22,44 @@ test('v7.15.10: the worker model is a setting of its own, validated like the man
   assert.equal(normalizeRoomSettings({model:SCOUT}).worker_model,HYBRID,'the manager model alone leaves the worker model');
   assert.throws(()=>normalizeRoomSettings({worker_model:'ollama:qwen3:1.7b'}),/Unsupported Workers AI worker model/);
   assert.throws(()=>normalizeRoomSettings({worker_model:7}),/Unsupported Workers AI worker model/);
-  // Both pickers offer the same models, the settings' list, the default first.
+  // v7.15.11: the compiler's model, the same way.
+  assert.equal(DEFAULT_ROOM_SETTINGS.compiler_model,HYBRID);
+  assert.equal(normalizeRoomSettings({compiler_model:DEEPSEEK}).compiler_model,DEEPSEEK);
+  assert.equal(normalizeRoomSettings({model:SCOUT,worker_model:SCOUT}).compiler_model,HYBRID);
+  assert.throws(()=>normalizeRoomSettings({compiler_model:'gpt-4'}),/Unsupported Workers AI compiler model/);
+  // The three pickers offer the same models, the settings' list, the default first.
   assert.deepEqual(new Set(options('model')),CLOUDFLARE_MODELS);
   assert.deepEqual(options('worker-model'),options('model'));
+  assert.deepEqual(options('compiler-model'),options('model'));
   assert.equal(options('worker-model')[0],DEFAULT_ROOM_SETTINGS.worker_model);
+  assert.equal(options('compiler-model')[0],DEFAULT_ROOM_SETTINGS.compiler_model);
+});
+
+// v7.15.11: the compiler's calls go to the compiler model; the linker's to the
+// manager model. A linked room (the export test's), compiled through the real
+// Container, with every model call's name recorded.
+test('v7.15.11: the coverage and runner calls go to the compiler model, the linker\'s call to the manager model',async()=>{
+  let paths;
+  const {room,env}=liveRoom({room_id:'compiler-model-room-0001',link:user=>{
+    const app=user.your_files.find(f=>f.path.endsWith('/app.js'));
+    return {edits:app?[{file:app.path,find:"require('./ticketRepository')",replace:`require('../${paths.repoPath.split('/').slice(1).join('/')}')`},
+      {file:app.path,find:'repo.get(id)',replace:'repo.read(id)'}]:[],issues:[]};
+  }});
+  const names=[],inner=env.AI.run;
+  env.AI.run=async(model,input)=>{names.push({model,head:input.messages?.[0]?.content?.slice(0,28)||'clef'});return inner(model,input);};
+  paths=await twoWorkers(room);
+  room.set('goal',GOAL+' '+GOAL_START_REQUIREMENT);
+  room.configure({model:HYBRID,worker_model:SCOUT,compiler_model:DEEPSEEK});
+  const {compiler}=await linkAndCompile(room);
+  assert.equal(room.node(compiler.id).status,'done',trace(room));
+  const by=head=>[...new Set(names.filter(n=>n.head.startsWith(head)).map(n=>n.model))];
+  assert.deepEqual(by('You are a LINKER'),[HYBRID]);
+  assert.deepEqual(by('You check an application'),[DEEPSEEK]);
+  assert.deepEqual(by('You are the RUNNER'),[DEEPSEEK]);
+  assert.ok(!names.some(n=>n.model===SCOUT),'no worker wrote code in this room');
+  assert.equal(room.inferenceEnv('compiler').MODEL_NAME,DEEPSEEK);
+  room.save('settings',{...room.settings(),compiler_model:undefined,worker_model:undefined});
+  assert.equal(room.inferenceEnv('compiler').MODEL_NAME,HYBRID,'a room saved before the setting keeps its one model');
 });
 
 class Sql {

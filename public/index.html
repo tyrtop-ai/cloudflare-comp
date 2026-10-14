@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recursive Control Plane — Persistent Artifact Memory</title>
-  <link rel="stylesheet" href="/styles.css?v=7.15.10" />
+  <link rel="stylesheet" href="/styles.css?v=7.15.11" />
 </head>
 <body>
   <div class="page">
@@ -31,7 +31,7 @@
             <input id="max-agents" type="range" min="2" max="256" step="1" value="64" /></div>
           <div class="range-control"><label for="max-depth">Recursion depth <output id="max-depth-value" for="max-depth">10</output></label>
             <input id="max-depth" type="range" min="1" max="16" step="1" value="10" /></div>
-          <label for="model">Manager model (splits, decisions, linking, the compiler's test)</label>
+          <label for="model">Manager model (splits, decisions, linking)</label>
           <select id="model">
             <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 A3B · 3B active (default)</option>
             <option value="@cf/meta/llama-4-scout-17b-16e-instruct">Llama 4 Scout · 17B active, no reasoning</option>
@@ -43,6 +43,16 @@
           </select>
           <label for="worker-model">Worker model (the code writers)</label>
           <select id="worker-model">
+            <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 A3B · 3B active (default)</option>
+            <option value="@cf/meta/llama-4-scout-17b-16e-instruct">Llama 4 Scout · 17B active, no reasoning</option>
+            <option value="@cf/qwen/qwen2.5-coder-32b-instruct">Qwen2.5 Coder · 32B, no reasoning</option>
+            <option value="@cf/deepseek-ai/deepseek-v4-flash-0731">DeepSeek V4 Flash · reasoning off</option>
+            <option value="@cf/mistralai/mistral-small-3.1-24b-instruct">Mistral Small 3.1 · 24B, no reasoning</option>
+            <option value="@cf/qwen/qwen3.8-27b">Qwen 3.8 · 27B (comparison)</option>
+            <option value="@cf/meta/llama-3.2-1b-instruct">Llama 3.2 · 1B (experimental)</option>
+          </select>
+          <label for="compiler-model">Compiler model (API coverage check, the runner's test)</label>
+          <select id="compiler-model">
             <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 A3B · 3B active (default)</option>
             <option value="@cf/meta/llama-4-scout-17b-16e-instruct">Llama 4 Scout · 17B active, no reasoning</option>
             <option value="@cf/qwen/qwen2.5-coder-32b-instruct">Qwen2.5 Coder · 32B, no reasoning</option>
@@ -110,6 +120,6 @@
       </section>
     </div>
   </div>
-  <script type="module" src="/app.js?v=7.15.10"></script>
+  <script type="module" src="/app.js?v=7.15.11"></script>
 </body>
 </html>

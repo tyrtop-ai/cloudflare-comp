@@ -135,7 +135,7 @@ export const ROOM_LIMITS = Object.freeze({
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   max_agents: 64, max_depth: 10, parallel: 16,
-  model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
+  model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
 });
 // The agent models the dashboard offers: the Qwen3 hybrid (default), four
 // that answer without reasoning (Llama 4 Scout, Qwen2.5 Coder, DeepSeek V4
@@ -161,6 +161,11 @@ export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
   if (raw.worker_model !== undefined) {
     if (typeof raw.worker_model!=='string' || !CLOUDFLARE_MODELS.has(raw.worker_model)) throw new Error('Unsupported Workers AI worker model');
     result.worker_model=raw.worker_model;
+  }
+  // v7.15.11: and the compiler's (the API coverage mapping and the runner's test).
+  if (raw.compiler_model !== undefined) {
+    if (typeof raw.compiler_model!=='string' || !CLOUDFLARE_MODELS.has(raw.compiler_model)) throw new Error('Unsupported Workers AI compiler model');
+    result.compiler_model=raw.compiler_model;
   }
   if (raw.split_model !== undefined) {
     if (!DECISION_MODELS[raw.split_model]) throw new Error('Unsupported Clef decision model');
@@ -312,12 +317,13 @@ export class ControlRoom extends DurableObject {
   }
   store() { return getArtifactStore(this.env); }
   settings() { return this.read('settings', DEFAULT_ROOM_SETTINGS); }
-  // role: 'manager' (the default; splits, decisions, linking, the compiler's
-  // calls) or 'worker' (a leaf writing code). A room saved before v7.15.10
-  // has no worker model and keeps its one model for both.
+  // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
+  // leaf writing code) or 'compiler' (the API coverage mapping and the
+  // runner's test). A room saved before v7.15.10 has no worker or compiler
+  // model and keeps its one model for all three.
   inferenceEnv(role='manager') {
-    const cfg=this.settings();
-    return {...this.env, MODEL_NAME:role==='worker'?cfg.worker_model||cfg.model:cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold};
+    const cfg=this.settings(),model=role==='worker'?cfg.worker_model:role==='compiler'?cfg.compiler_model:cfg.model;
+    return {...this.env, MODEL_NAME:model||cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold};
   }
   configure(raw) {
     const cfg=normalizeRoomSettings(raw, this.settings());
@@ -1709,7 +1715,7 @@ export class ControlRoom extends DurableObject {
     let parsed=null;try{parsed=JSON.parse(api);}catch{}
     const plan=this.startPlanOf(this.entryOwner(nodeId,entry)),described=methodDescriptions(methods,parsed,plan?[...plan.mine,...plan.theirs]:[]);
     for(let attempt=0;!test&&attempt<3;attempt++) {
-      const out=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,methods:described,correction}),draft=out?.test,last=attempt===2;
+      const out=await writeRunnerTest(this.inferenceEnv('compiler'),{goal,api,operations,methods:described,correction}),draft=out?.test,last=attempt===2;
       // A test that skips a mapped operation would certify a partial
       // application (run6 tested getTickets alone), so it never runs.
       const errors=draft?[...verifySource('glue/smoke.js',draft,new Map([...files,['glue/smoke.js',String(draft)]])),this.runnerTestError(draft,{goal,api,methods:described,last}),
@@ -2456,7 +2462,7 @@ export class ControlRoom extends DurableObject {
     // v7.15.5: a test fixed for other methods is written again, after this gate.
     if(!fixed.test) {
       const checkable=coverageCheckable(described);
-      const coverage=checkable?await apiCoverage(this.inferenceEnv(),{goal,api}):null;
+      const coverage=checkable?await apiCoverage(this.inferenceEnv('compiler'),{goal,api}):null;
       // v7.15.5: the mapping is checked against the plan's operation functions
       // and the goal's operations too (mappedGaps): run12's model mapped create
       // and delete alone and the gate passed. A room without promises has

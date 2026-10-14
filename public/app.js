@@ -210,7 +210,7 @@ for(const id of ranges) {
 let controlsDirty=false;
 const settings=()=>({parallel:Number($('parallel-limit').value),
   max_agents:Number($('max-agents').value), max_depth:Number($('max-depth').value),
-  model:$('model').value, worker_model:$('worker-model').value, split_model:$('split-model').value,
+  model:$('model').value, worker_model:$('worker-model').value, compiler_model:$('compiler-model').value, split_model:$('split-model').value,
   split_threshold:Number($('split-threshold').value)/100});
 const applySnapshotSettings=s=>{
   if(controlsDirty || !s.settings) return;
@@ -219,16 +219,18 @@ const applySnapshotSettings=s=>{
   for(const [id,value] of Object.entries(values)) { if($(id) && value!=null) {$(id).value=value;$(id).dispatchEvent?.(new Event('input'));} }
   if(c.model) $('model').value=c.model;
   if($('worker-model')) $('worker-model').value=c.worker_model||c.model||$('worker-model').value;
+  if($('compiler-model')) $('compiler-model').value=c.compiler_model||c.model||$('compiler-model').value;
   if(c.split_model) $('split-model').value=c.split_model;
   updateModelHint();
 };
 const updateModelHint=()=>{
-  $('model-hint').textContent=[$('model').value,$('worker-model').value].some(v=>String(v).includes('1b-instruct')) ?
+  $('model-hint').textContent=[$('model').value,$('worker-model').value,$('compiler-model').value].some(v=>String(v).includes('1b-instruct')) ?
     'Experimental 1B implementers: expect weaker code and JSON reliability. Clef decides YES/NO; Llama guesses and codes.' :
-    'Clef scores YES/NO; the manager model proposes the split when YES and the worker model writes the code. All models run on Cloudflare Workers AI.';
+    'Clef scores YES/NO; the manager model proposes the split when YES, the worker model writes the code and the compiler model writes the test. All models run on Cloudflare Workers AI.';
 };
 $('model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('worker-model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
+$('compiler-model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('split-model').addEventListener('change',()=>{controlsDirty=true;});
 for(const id of ['parallel-limit','max-agents','max-depth','split-threshold']) $(id).addEventListener('input',()=>{controlsDirty=true;});
 updateModelHint();
