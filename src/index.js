@@ -15,6 +15,7 @@ import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
+import { reachableModules } from './linker.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -1496,8 +1497,9 @@ export class ControlRoom extends DurableObject {
     return null;
   }
   // linked: the top builder's components; entry: the module glue/index.js
-  // starts; operations: the coverage gate's mapping the test must exercise.
-  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null}) {
+  // starts; operations: the coverage gate's mapping the test must exercise;
+  // reach: the modules the entry reaches (null: any may run).
+  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, reach=null}) {
     // The runner's test is static: the first test that runs in the Container is
     // the specification for the rest of the run and is never rewritten. A new
     // test every repair round moved the target the worker was fixing (run4).
@@ -1524,25 +1526,50 @@ export class ControlRoom extends DurableObject {
     if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
     const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
     let issues=run.report.issues.length?run.report.issues:[{path:'',detail}];
-    if(!issues.some(x=>String(x.path).startsWith('components/')||linked.has(x.path))) {
+    // v7.15.4: only code the entry reaches runs. Run11's round 8 went to
+    // viewTicket.js, which nothing imported, and its fix changed nothing.
+    const dead=p=>!!reach&&linked.has(p)&&!reach.has(p);
+    if(!issues.some(x=>(String(x.path).startsWith('components/')||linked.has(x.path))&&!dead(x.path))) {
       // No stack frame names a module. Triage, which sees the source, names
       // the module whose worker must change. The test stays as it is, so a
       // verdict against the test, or none, goes to the entry module: the
       // application must do what the test asks.
-      const linkedJs=[...linked].filter(([p])=>LINKABLE.test(p));
+      const linkedJs=[...linked].filter(([p])=>LINKABLE.test(p)&&!dead(p));
       const fits=linkedJs.reduce((n,[p,c])=>n+tokenEstimate(p+c),0)<=BUILDER_CONTEXT_BUDGET-3000;
       const modules=fits?linkedJs.map(([path,content])=>({path,content})):
         linkedJs.map(([path,content])=>path===entry?{path,content}:{path,exports:surfaceText(exportSurface(path,content))});
       const verdict=await attributeFailure(this.inferenceEnv(),{modules,test,failure:detail});
-      const owner=verdict&&linked.has(verdict.file)?verdict.file:entry;
-      if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${clip(verdict.problem,700)}`);
+      const named=verdict&&linked.has(verdict.file)?verdict.file:null,owner=named&&!dead(named)?named:entry;
+      // A verdict on a module the entry never reaches goes to the entry, with what it leaves out.
+      const note=named&&dead(named)?this.unreachedNote(nodeId,linked,entry,reach,named):'';
+      if(verdict)this.event(nodeId,'run_triage',`Triage attributes the failed run to ${owner}: ${note?clip(note,500)+' ':''}${clip(verdict.problem,700)}`);
       // The verdict first: the problem is clipped to fit, and the runner output is the longer part.
       const problem=clip(verdict?.problem||'',400).trim();
       // failure: the runner's own output, which says whether the failure moved (v7.15.1).
-      issues=[{path:owner||'',failure:detail,detail:`${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
+      issues=[{path:owner||'',failure:detail,detail:`${note?clip(note,400)+' ':''}${problem?`Triage: ${problem}${/[.!?]$/.test(problem)?'':'.'} `:''}The runner's test failed: ${clip(detail,600)} The test stays fixed for this run; the application must satisfy it.`}];
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
     return {passed:false,issues,detail,test};
+  }
+  // v7.15.4: the functions other pieces promise the entry's piece (the walk
+  // up from it, in the plan's order), each with the modules of other pieces
+  // that export it in the compiler's bundle. None outside a planned split.
+  entryOffers(id, files, entry, surfaces=null) {
+    const top=this.node(id)?.parent,b=top&&this.planned()?this.builderOf(top):null,owner=b&&this.buildSourceOrigin(b.id,entry)?.owner;
+    if(!owner)return new Map();
+    const out=new Map([...this.promisedElsewhere(owner).values()].filter(f=>f.name!=='start').map(f=>[f,[]]));
+    for(const [p,c] of files) {
+      if(!LINKABLE.test(p)||this.buildSourceOrigin(b.id,p)?.owner===owner)continue;
+      const have=providedNames(surfaces?.get(p)||exportSurface(p,c));
+      for(const [f,paths] of out)if(have.has(f.name))paths.push(p);
+    }
+    return new Map([...out].filter(([,paths])=>paths.length));
+  }
+  // Why a failure triage put on a module the entry never reaches is the
+  // entry's: the promised functions no module it reaches exports.
+  unreachedNote(id, files, entry, reach, path) {
+    const left=[...this.entryOffers(id,files,entry)].filter(([,paths])=>!paths.some(p=>reach.has(p))).map(([f])=>`${f.name} from "${f.owner}"`);
+    return `Triage blamed ${path}, which no module the entry reaches imports, so its code never runs.${left.length?` ${entry.split('/').pop()} does not import ${left.join(', ')}.`:''}`;
   }
 
   // ---------- the problem inbox ----------
@@ -2019,18 +2046,20 @@ export class ControlRoom extends DurableObject {
     const loader=entryLoader(entry);
     await this.putFile(id,'glue/index.js',loader,{runtimeGlue:true});
     await this.putFile(id,'package.json',RUNTIME_PACKAGE,{runtimeGlue:true});
-    const app=new Map([...files,['glue/index.js',loader],['package.json',RUNTIME_PACKAGE]]);
+    // v7.15.4: in a room with promises, the modules the entry reaches; rooms without keep v7.15.2's blame.
+    const app=new Map([...files,['glue/index.js',loader],['package.json',RUNTIME_PACKAGE]]),reach=this.planned()?reachableModules(files,entry):null;
     // A failure with no component path is the entry module's; the import an
     // interface error names is its other party. The runtime loader's frame
     // repeats the error of a module it started, so it counts only alone. The
     // Container reports one error once per module in its stack: one problem,
     // whose sites are those modules, the innermost first.
+    // v7.15.4: a run failure is blamed only on a module the entry reaches.
     const failed=(kind,issues)=>{
-      const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail]));
-      for(const x of issues.some(x=>files.has(x.path))?issues.filter(x=>files.has(x.path)):issues)
+      const groups=new Map(),output=new Map(issues.map(x=>[x.detail,x.failure??x.detail])),ran=p=>files.has(p)&&!(kind==='run'&&reach&&!reach.has(p));
+      for(const x of issues.some(x=>ran(x.path))?issues.filter(x=>ran(x.path)):issues)
         if(groups.has(x.detail))groups.get(x.detail).push(x.path);else groups.set(x.detail,[x.path]);
       return [...groups].map(([detail,[first,...more]])=>{
-        const path=files.has(first)?first:entry,target=errorTarget(files,path,detail);
+        const path=ran(first)?first:entry,target=errorTarget(files,path,detail);
         return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,
           facts:{...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure:failureHead(output.get(detail))}};
       });
@@ -2053,6 +2082,15 @@ export class ControlRoom extends DurableObject {
     // cannot write a valid test, and no worker would hear why.
     if(!apiCallable(described)||apiGenericOnly(described))
       return {stage:'run',items:[entryIssue(entry,`start() must return an object whose methods perform the requested operations${apiGenericOnly(described)?', one per operation and named after it, not a single generic method':''}; it returned ${clip(api||'nothing',300)}.`)]};
+    // v7.15.4: an entry whose imports reach no module that exports a promised
+    // function runs none of the other pieces. Run11's entryModule.js wrote
+    // them all in memory and passed the runner's test with six pieces dead.
+    const offers=linked&&reach?this.entryOffers(id,files,entry,surfaces):new Map(),providers=new Set([...offers.values()].flat());
+    if(providers.size&&![...providers].some(p=>reach.has(p))) {
+      const fns=[...offers.keys()];
+      this.event(id,'entry_unreached',clip(`${entry} reaches none of the ${providers.size} module(s) that export promised functions; the runner's test is not run against dead code.`,600));
+      return {stage:'run',items:[entryIssue(entry,clip(`start() runs none of the promised functions: import ${fns.map(f=>`${f.name} from "${f.owner}"`).join(', ')}, each on its own line (const { ${fns[0].name} } = require('./${fns[0].name}')), and use them in the methods start() returns. ${entry.split('/').pop()} imports no module that exports them, so their code never runs.`,900))]};
+    }
     // Run6: start() returned { getTickets } for a create, view, update and
     // delete goal; the runner tested reading alone and the run completed.
     // Before the test is fixed, every operation the goal names needs its
@@ -2089,7 +2127,7 @@ export class ControlRoom extends DurableObject {
       } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
         (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
-    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations});
+    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,reach});
     return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues)};
   }
 

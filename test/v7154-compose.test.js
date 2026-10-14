@@ -2,10 +2,11 @@
 // with the runner's test passing, but the start carrier entryModule.js had
 // rewritten createTicket, readData, writeData, deleteTicket, updateTicket and
 // viewTicket in memory and imported none of them: six pieces were dead code.
-// A worker may not write a function another piece promises.
+// A worker may not write a function another piece promises, and the
+// compiler blames, and runs its test against, only code the entry reaches.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {liveRoom,openProblems,events,trace,GOAL} from './helpers/room.js';
+import {liveRoom,verifyBuild,snapshotHash,openProblems,events,trace,GOAL} from './helpers/room.js';
 const L=await import('../src/linker.js');
 const P=await import('../src/problems.js');
 const {ROOT_PROMISE}=await import('../src/model.js');
@@ -25,6 +26,9 @@ const run11={
   update:"const fs = require('fs');\n\nfunction updateTicket(id, updates, filePath) {\n  const data = fs.readFileSync(filePath, 'utf8');\n  const tickets = JSON.parse(data);\n  const ticket = tickets.find(t => t.id === id);\n  if (ticket) {\n    Object.assign(ticket, updates);\n    fs.writeFileSync(filePath, JSON.stringify(tickets, null, 2));\n  }\n}\n\nmodule.exports = { updateTicket };",
   view:"const fs = require('fs');\n\nfunction viewTicket(id, filePath) {\n  const data = fs.readFileSync(filePath, 'utf8');\n  const tickets = JSON.parse(data);\n  const ticket = tickets.find(ticket => ticket.id === id);\n  if (!ticket) {\n    throw new Error('Ticket not found');\n  }\n  return ticket;\n}\n\nmodule.exports = { viewTicket };",
   entry:"\"use strict\";\nObject.defineProperty(exports, \"__esModule\", { value: true });\nexports.start = void 0;\n\n// In-memory storage for tickets\nconst tickets = {};\n\n// Local implementations for all required functions\nconst createTicket = (data) => {\n  const id = Date.now();\n  tickets[id] = { id, ...data };\n  return tickets[id];\n};\n\nconst readData = (id) => {\n  return tickets[id];\n};\n\nconst writeData = (data) => {\n  const id = data.id;\n  tickets[id] = data;\n  return { success: true, data };\n};\n\nconst deleteTicket = (id) => {\n  const ticket = tickets[id];\n  delete tickets[id];\n  return true;\n};\n\nconst updateTicket = (id, data) => {\n  tickets[id] = { ...tickets[id], ...data };\n  return tickets[id];\n};\n\nconst viewTicket = (id) => {\n  const ticket = readData(id);\n  if (!ticket) {\n    throw new Error('Ticket not found');\n  }\n  return ticket;\n};\n\nconst start = () => {\n  return {\n    create: createTicket,\n    read: readData,\n    write: writeData,\n    delete: deleteTicket,\n    update: updateTicket,\n    view: viewTicket\n  };\n};\n\nexports.start = start;"};
+const PATHS={create:'components/createtick-f17f9f79/createTicket.js',read:'components/datastore-1b07dcdb/components/read-ticke-1d07e001/module.js',write:'components/datastore-1b07dcdb/components/write-tick-1a07db48/module.js',
+  del:'components/deletetick-f27fa10c/deleteTicket.js',update:'components/updatetick-f37fa29f/module.js',view:'components/viewticket-f07f9de6/viewTicket.js',entry:'components/entrymodul-f57fa5c5/entryModule.js'};
+const bundle=(entry=run11.entry)=>new Map(Object.entries(PATHS).map(([k,p])=>[p,k==='entry'?entry:run11[k]]));
 // The start carrier, its operations imported one per line (wired), or
 // written here with other names (local), or as wrappers that pass a file path.
 const wired="const { createTicket } = require('./createTicket');\nconst { viewTicket } = require('./viewTicket');\nconst { updateTicket } = require('./updateTicket');\nconst { deleteTicket } = require('./deleteTicket');\n\nconst start = () => ({ create: createTicket, view: viewTicket, update: updateTicket, delete: deleteTicket });\n\nexports.start = start;\n";
@@ -72,6 +76,14 @@ test('v7.15.4: placeholders lists start\'s operations, with the names each uses,
   assert.deepEqual(wrapped.map(x=>[x.op,x.uses.includes({create:'createTicket',view:'viewTicket',update:'updateTicket',delete:'deleteTicket'}[x.op])]),[['create',true],['view',true],['update',true],['delete',true]],'an alias by its exported name, a member of an imported module, a call by name');
   assert.deepEqual(L.placeholders({'entry.js':local.replace('delete: remove','delete: deleteTicket').replace('const tickets','const { deleteTicket } = require(\'./deleteTicket\');\nconst tickets')},['start'],['createTicket']),[],'one imported operation: not all local');
   assert.deepEqual(L.placeholders({'entry.js':local},['start']),[],'no other piece\'s names: nothing is read');
+});
+
+test('v7.15.4: reachableModules follows the entry\'s static imports through the bundle; a computed path gives every module the doubt',()=>{
+  assert.deepEqual([...L.reachableModules(bundle(),PATHS.entry)],[PATHS.entry],'run11: the entry imports nothing');
+  const some=run11.entry.replace('// In-memory storage','const { createTicket: create } = require(\'../createtick-f17f9f79/createTicket.js\');\n// In-memory storage');
+  assert.deepEqual([...L.reachableModules(bundle(some),PATHS.entry)],[PATHS.entry,PATHS.create,PATHS.write]);
+  assert.equal(L.reachableModules(bundle(some.replace("require('../createtick","require(dir + '/../createtick")),PATHS.entry),null);
+  assert.equal(L.reachableModules(bundle(),'components/missing.js'),null);
 });
 
 test('v7.15.4: run11 replay: entryModule.js is sent back on done, naming each promised function it wrote and the piece that promises it, with no model call',async()=>{
@@ -145,4 +157,82 @@ test('v7.15.4: after 3 returns the done is accepted and the manager gets a contr
   assert.equal(told,"createTicket, readData, writeData, deleteTicket, updateTicket, viewTicket are promised by other pieces: import each on its own line, with its name as the path: const { createTicket } = require('./createTicket'); const { readData } = require('./readData'); const { writeData } = require('./writeData'); const { deleteTicket } = require('./deleteTicket'); Use them; do not write them in your modules.");
   assert.match(P.repairText({instructions:told,kinds:['contract'],written:true,problems:[{path:'entryModule.js',detail:p.detail}]}),/^YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE\. Nothing was run; the plan was checked against your modules\./);
   assert.match(P.repairText({kinds:['contract'],problems:[]}),/^YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT\./,'a missing export, as before');
+});
+
+// ------------------------------------------------------------- compiler
+// Run11's linked application, through the real builders and compiler: the
+// Container's load and start() check run for real; a run of the runner's
+// test answers with a failed assertion (no component frame) when fail is set.
+const runnerTest="const assert = require('node:assert/strict');\nconst { start } = require('./index.js');\n(async () => {\n  const app = await start();\n  const t = await app.create({ title: 'T' }, 'tickets.json');\n  assert.equal((await app.view(t.id, 'tickets.json')).title, 'T');\n})().catch(e => { console.error(e); process.exitCode = 1; });\n";
+const failure="node:internal/process/promises:394\n    triggerUncaughtException(err, true /* fromPromise */);\n    ^\n\nAssertionError [ERR_ASSERTION]: An error should be thrown when viewing a deleted ticket\n    at /work/build-LAjUSl/glue/smoke.js:38:3 {\n  generatedMessage: false\n}\n\nNode.js v22.23.3\n";
+async function compiled({entry=run11.entry,planned=true,fail=false,triage=()=>null}={}) {
+  const executor={build:async({fingerprint,files})=>{
+    const snapshot_hash=await snapshotHash(files);
+    if(!fail||!files['glue/smoke.js'])return verifyBuild({fingerprint,snapshot_hash,files});
+    return {fingerprint,snapshot_hash,passed:false,issues:[{path:'glue/smoke.js',kind:'source',detail:`smoke failed (exit 1): ${failure}`}],checks:[{name:'smoke',exit_code:1,log:failure}],log:`smoke: exit 1\n${failure}`};
+  }};
+  const {room,calls}=liveRoom({runner:()=>runnerTest,triage,executor});
+  await room.provision('root',null,'Root objective',GOAL,...(planned?[ROOT_PROMISE]:[]));room.set('goal',GOAL);
+  const put=async(parent,list)=>{
+    await room.spawn(parent,list.map(([label,,,fns])=>({label,task:`Write ${label}.`,interfaces:planned?fns:[]})));
+    room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",parent);
+    for(const [i,[,file,content]] of list.entries()) {
+      const id=`${parent}.${i+1}`;
+      if(!file){room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",id);continue;}
+      room.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
+      await room.putFile(id,file,content);
+      room.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
+    }
+  };
+  await put('root',[['dataStore',null,null,[readData,writeData]],['createTicket','createTicket.js',run11.create,[createTicket]],['viewTicket','viewTicket.js',run11.view,[viewTicket]],
+    ['updateTicket','module.js',run11.update,[updateTicket]],['deleteTicket','deleteTicket.js',run11.del,[deleteTicket]],['entryModule','entryModule.js',entry,[START]]]);
+  await put('root.1',[['Read ticket data','module.js',run11.read,[readData]],['Write ticket data','module.js',run11.write,[writeData]]]);
+  const branch=await room.scheduleAssembly('root.1');await room.turn(branch.id);await room.turn('root.1');
+  room.db().exec("UPDATE agents SET status='done' WHERE id='root.1'");
+  const builder=await room.scheduleAssembly('root');await room.turn(builder.id);
+  await room.turn('root');
+  const compiler=room.children('root').find(c=>c.label==='Compiler');
+  await room.turn(compiler.id);
+  return {room,calls,compiler,files:await room.linkedBundle(builder.id)};
+}
+
+test('v7.15.4: run11 replay: an entry whose imports reach no module that exports a promised function gets an entry problem before the runner\'s test',async()=>{
+  const {room,calls,compiler,files}=await compiled();
+  assert.deepEqual([...files.keys()].sort(),Object.values(PATHS).sort(),'run11\'s linked paths');
+  assert.equal(calls.runner.length,0,'no test is written or run against dead code');
+  assert.equal(calls.triage.length,0);
+  const [p,...more]=openProblems(room,'root');
+  assert.equal(more.length,0,trace(room));
+  assert.deepEqual([p.kind,p.source,p.parties[0].path],['entry',compiler.id,PATHS.entry]);
+  assert.equal(p.detail,'start() runs none of the promised functions: import readData from "dataStore", writeData from "dataStore", createTicket from "createTicket", viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket", each on its own line (const { readData } = require(\'./readData\')), and use them in the methods start() returns. entryModule.js imports no module that exports them, so their code never runs.');
+  assert.match(events(room,'entry_unreached')[0].body,/entryModule\.js reaches none of the 6 module\(s\) that export promised functions/);
+  assert.ok(!room.read('compile_passed',null));
+});
+
+test('v7.15.4: triage of a failure in run11\'s dead viewTicket.js goes to the entry, naming the promised functions it does not import',async()=>{
+  // Round 8's shape: the entry imports createTicket and keeps view in memory.
+  const entry=run11.entry.replace('// In-memory storage',"const { createTicket: create } = require('../createtick-f17f9f79/createTicket.js');\n// In-memory storage").replace('create: createTicket','create');
+  const verdict="The viewTicket module returns null when a ticket is not found, but the test expects an error to be thrown.";
+  const {room,calls}=await compiled({entry,fail:true,triage:()=>({file:PATHS.view,problem:verdict})});
+  assert.equal(calls.runner.length,1);
+  assert.deepEqual(calls.triage[0].modules.map(m=>m.path).sort(),[PATHS.create,PATHS.write,PATHS.entry].sort(),'triage sees only the code the entry reaches');
+  const [p,...more]=openProblems(room,'root');
+  assert.equal(more.length,0,trace(room));
+  assert.deepEqual([p.kind,p.parties[0].path,p.parties[0].owner],['run',PATHS.entry,'root.6']);
+  assert.ok(p.detail.startsWith(`Triage blamed ${PATHS.view}, which no module the entry reaches imports, so its code never runs. entryModule.js does not import readData from "dataStore", viewTicket from "viewTicket", updateTicket from "updateTicket", deleteTicket from "deleteTicket". Triage: ${verdict}`),p.detail);
+  assert.match(events(room,'run_triage')[0].body,new RegExp(`^Triage attributes the failed run to ${PATHS.entry}: Triage blamed ${PATHS.view}`));
+  // A verdict on a module the entry reaches is kept.
+  const kept=await compiled({entry,fail:true,triage:()=>({file:PATHS.create,problem:'createTicket must await writeData.'})});
+  assert.equal(openProblems(kept.room,'root')[0].parties[0].path,PATHS.create);
+  assert.match(openProblems(kept.room,'root')[0].detail,/^Triage: createTicket must await writeData\. The runner's test failed/);
+});
+
+test('v7.15.4: a split room without promises runs run11\'s entry as before: no entry problem, and triage\'s verdict stands',async()=>{
+  const {room,calls}=await compiled({planned:false,fail:true,triage:()=>({file:PATHS.view,problem:'viewTicket must throw.'})});
+  assert.equal(calls.runner.length,1,'the runner\'s test runs');
+  assert.equal(events(room,'entry_unreached').length,0);
+  assert.deepEqual(calls.triage[0].modules.map(m=>m.path).sort(),Object.values(PATHS).sort());
+  assert.equal(openProblems(room,'root')[0].parties[0].path,PATHS.view);
+  const passed=await compiled({planned:false});
+  assert.ok(passed.room.read('compile_passed',null),trace(passed.room));
 });

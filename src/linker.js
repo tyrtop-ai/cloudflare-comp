@@ -308,6 +308,24 @@ export function unresolvedImports(files) {
   }
   return problems;
 }
+// v7.15.4: the modules the entry runs, its static imports followed through
+// the linked bundle. Run11's entryModule.js imported nothing, and triage
+// blamed viewTicket.js, which never ran. null (everything may run) when a
+// module reached loads another by a computed path, or does not parse.
+export function reachableModules(files, entry) {
+  const set=files instanceof Map?files:new Map(Object.entries(files));
+  if(!set.has(entry))return null;
+  const seen=new Set([entry]),queue=[entry];
+  while(queue.length) {
+    const path=queue.shift(),content=set.get(path);
+    if(!LINKABLE.test(path))continue;
+    let ast,computed=false;try{ast=parseSource(content).ast;}catch{return null;}
+    walk(ast,node=>{if(node.type==='ImportExpression'&&node.source?.type!=='Literal'||node.type==='CallExpression'&&node.callee?.type==='Identifier'&&node.callee.name==='require'&&node.arguments[0]?.type!=='Literal')computed=true;});
+    if(computed)return null;
+    for(const r of componentImports(path,content,set))if(r.target&&!seen.has(r.target)){seen.add(r.target);queue.push(r.target);}
+  }
+  return seen;
+}
 
 // ---------- rename-only verification ----------
 function tokens(text, sourceType) {
