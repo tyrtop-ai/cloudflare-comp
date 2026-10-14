@@ -3925,12 +3925,20 @@ export class ControlRoom extends DurableObject {
           this.set(`split_feedback:${id}`,'');
         }
       } else raw=await decide(this.inferenceEnv(),before,{planned:this.planned()});
-      if (raw.parse_error) {
-        this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${raw.raw}`);
+      // At the top, a split answer with no pieces (none, or code in their
+      // place) is malformed too: Root's goal is always divisible, and an
+      // atomic Root wrote run10's application as one module. Below it, a
+      // splitter may decline a small piece, and Clef reconsiders (review).
+      const noPieces=splitting && !raw.parse_error && !n.parent && this.env.MOCK_AI!=='true' && !normalizeAction(raw).spawn.length;
+      if (raw.parse_error || noPieces) {
+        this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${noPieces?`no pieces: ${clip(JSON.stringify(raw),1400)}`:raw.raw}`);
         // A malformed split (decompose returns it as a parse error) is retried
         // under the same YES and counts as a failure; it is never feedback
         // for Clef to reconsider, which only a parsed partition's rejection is.
-        if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,'1');
+        // The YES lasts until the pause: then Continue, or the manager deciding
+        // the stuck problem, asks Clef afresh, so no node is pinned to the
+        // splitter (review).
+        if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,(this.read('failures',{})[id]||0)<2?'1':'');
         this.incrementFailures(id,'Bad action response');
         return;
       }
@@ -4033,8 +4041,9 @@ export class ControlRoom extends DurableObject {
           // decides when the smallest code unit has been reached.
           action.spawn=[];action.done=false;action.wait=false;nextPhase='implement';
         } else if(!split || (rejectedScope && action.spawn.length<2)) {
-          // Semantic only: a parsed partition out of scope, too small,
-          // duplicated or over capacity goes back to Clef with this feedback.
+          // Semantic only: a parsed partition out of scope, too small (below
+          // the top, none: the splitter declined), duplicated or over capacity
+          // goes back to Clef with this feedback.
           const reason=rejectedScope
             ? `Only ${action.spawn.length} in-scope child(ren) remained after Clef rejected ${rejectedScope}; not a viable code split.`
             : 'Qwen proposed no valid partition into distinct code-writing children within the available capacity.';

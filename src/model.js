@@ -1,4 +1,4 @@
-import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects, splitShape } from './protocol.js';
+import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects, spawnPiece, splitShape } from './protocol.js';
 import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature } from './interfaces.js';
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
@@ -292,26 +292,31 @@ export async function decompose(env, context) {
   const request=JSON.stringify(fields);
   // C0 runs first, so a piece whose task says it exports a promised name
   // costs no retry; C6 is the walk's, as this splitter sees no other branch.
-  // run10: an answer without a list of objects (unparsed, or a fallback
-  // object with no spawn) is malformed, the splitter's error to retry.
+  // run10: an answer that did not parse, or whose items are not pieces
+  // (quoted, "...", no task) and leave fewer than two, is malformed: the
+  // splitter's error to retry. Stray items beside two pieces are dropped, as
+  // normalizeAction drops them. A parsed answer with no spawn items is the
+  // splitter declining, not malformed (review: a child that cannot split).
   const vet=(text,parsed=parseObject(text,splitShape))=>{
-    const items=spawnObjects(parsed.spawn);
-    if(parsed.parse_error||!Array.isArray(items)||!items.length||!items.every(s=>s&&typeof s==='object'&&!Array.isArray(s)))return {parsed,text,ok:false,malformed:true,count:Infinity};
-    const {spawn,inferred}=normalizeSpawn(items,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised);
+    const items=Array.isArray(parsed.spawn)?spawnObjects(parsed.spawn):[],pieces=items.filter(spawnPiece);
+    // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
+    if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
+    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised);
     return {parsed,text,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
   };
   const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
   const first=vet(contentOf(await run(env,system,request,4096)));
   if(first.ok && !first.count)return done(first);
-  const malformed=first.malformed?' Your previous answer was not a JSON object with a spawn list; every spawn item is a JSON object, never a quoted string.':'';
+  const malformed=first.malformed?' Your previous answer was not a JSON object whose spawn items are objects, each with a "label" and a "task"; every spawn item is a JSON object, never a quoted string.':'';
   // Labels copied from the example ("Piece A", run4) give Clef and the prune
   // walk nothing to place, so they are turned back before anyone sees them.
   const specific=first.vague?.length?` Your previous answer used placeholder labels or tasks copied from the example (${first.vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
   const names=first.bad?.length?` Your previous answer's functions failed these checks: ${first.bad.map(e=>e.text).join(' ')} Correct them.`+
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
   const retry=vet(contentOf(await run(env,system+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096)));
-  // The retry replaces the first answer only when it is not worse.
-  const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok ? first : retry;
+  // The retry replaces the first answer only when it is not worse; a
+  // malformed retry never replaces a partition that parsed (review).
+  const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok || retry.malformed && !first.malformed ? first : retry;
   // Malformed twice is a parse error, which the turn retries with Clef's YES
   // kept: never a partition Clef reconsiders (run10's Root became atomic).
   return best.malformed?{parse_error:true,raw:clip(best.text.trim(),1500)}:done(best);
