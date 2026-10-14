@@ -455,9 +455,12 @@ function dataHome(items) {
   const noun = ws ? camel([...ws.slice(0, -1), plural(ws.at(-1))]).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase() : 'data';
   return {names, noun, head: `${noun[0].toUpperCase() + noun.slice(1)} ${/data$/.test(noun) ? 'lives' : 'live'} in ${listed([...new Set(items.map(f => f.owner))])}`};
 }
-export function dataAnswer(items) {
+// v7.15.6 review: with esm given, the import lines in the worker's syntax
+// (run12's deleteTicket.js is an ES module and heard no form).
+export function dataAnswer(items, esm = null) {
   const {names, noun, head} = dataHome(items), many = names.length > 1;
-  return `${head}: import ${listed(names)} on ${many ? 'their own lines' : 'its own line'} and use ${many ? 'them' : 'it'}; do not keep your own ${noun}.`;
+  const lines = esm === null ? '' : ` (${names.map(n => esm ? `import { ${n} } from './${n}';` : `const { ${n} } = require('./${n}');`).join(' ')})`;
+  return `${head}: import ${listed(names)} on ${many ? 'their own lines' : 'its own line'}${lines} and use ${many ? 'them' : 'it'}; do not keep your own ${noun}.`;
 }
 // A worker's uses as its assignment states them, answered before it runs:
 // each with its owner and the line that imports it (items {name, params,

@@ -281,7 +281,7 @@ test('v7.15.2 review: an atomic top\'s repair texts never tell it to import its 
   await one.room.start(GOAL,6);await one.drain();
   const contract=one.calls.leaf[1].new_messages.find(m=>m.body.startsWith('[contract]'));
   assert.ok(contract,JSON.stringify(one.calls.leaf[1].new_messages));
-  assert.match(contract.body,/start\(\) \("no arguments; returns an object with one method per goal operation, each the function that performs it"\) is promised by your assignment and is not exported by exactly that name\./);
+  assert.match(contract.body,/Export each function your assignment promises by exactly its name, as a named export \(export function start\(…\) or exports\.start = …\) or as a member of the exported object, not as a method of a class or instance\. Not exported: start\(\)\./);
   assert.doesNotMatch(contract.body,/ask your manager|import (?:it )?by its name/);
   // start() without update and delete: the coverage gap asks for methods that perform them, not imports.
   const two=liveRoom({clef:atomicGate,coverage:()=>crudCoverage,runner:()=>run10Test,

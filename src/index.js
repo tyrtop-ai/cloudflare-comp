@@ -9,15 +9,15 @@ import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeErr
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame, ownData } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, dataAnswer } from './interfaces.js';
+import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame } from './linker.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
 import { callOf, esmSyntax, esmRequires } from './linker.js';
-import { contractCheck, exportNames } from './linker.js';
+import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { branchDirectory } from './assembly.js';
@@ -688,6 +688,15 @@ export class ControlRoom extends DurableObject {
     const carries=(o,n)=>!!o&&[...plan.get(n)||[]].some(c=>o===c||o.startsWith(c+'.'));
     return {plan,ownerOf,carries,elsewhere:(n,p)=>plan.has(n)&&!carries(ownerOf(p),n)};
   }
+  // v7.15.6 review: the stub test the builder's selection, the linker's
+  // shadows and the contract check share (stubExports): module p declares
+  // a function under a name the plan gives another piece. A generic name
+  // (get, create) is never one, as contractReturned reads them: a Settings
+  // piece promising get and set dropped an entry's own config.js.
+  stubsOf(builderId) {
+    const {plan,elsewhere}=this.planOf(builderId);
+    return (p,content)=>stubExports(p,content,[...plan.keys()].filter(n=>!GENERIC_NAMES.has(n)&&elsewhere(n,p)));
+  }
   // v7.15.3: the params the plan promised for name on the piece that wrote
   // module p, or the nearest promise of it above that piece, for the
   // argument-order check (run11); null in a room without promises.
@@ -862,7 +871,8 @@ export class ControlRoom extends DurableObject {
       // components, never by its raw descendants (a retired child's stay in
       // the builder's repository, out of the bundle).
       if(live && this.manager(child.id)) {
-        const builder=this.builderOf(child.id),retired=new Set(builder?this.read(`retired_components:${builder.id}`,[]):[]);
+        // v7.15.6: and the stubs its last link dropped (dropped_components, recomputed every link).
+        const builder=this.builderOf(child.id),retired=new Set(builder?[...this.read(`retired_components:${builder.id}`,[]),...this.read(`dropped_components:${builder.id}`,[])]:[]);
         const files=builder?this.files(builder.id).filter(f=>f.path.startsWith('components/')&&!retired.has(f.path))
           .map(f=>({path:f.path,revision:f.revision,owner:builder.id,sourceLabel:child.label,delegated:true})):[];
         return {child,files,delegated:true};
@@ -1277,19 +1287,24 @@ export class ControlRoom extends DurableObject {
       }
       sources.push(...from);
     }
-    // v7.15.6 (run13): a module whose every export is a function the plan
-    // gives another piece is a stub, never a link target: it is left out of
-    // the bundle (the builder's selection, not a rename). The entry's stub
-    // deleteTicket.js shadowed Delete ticket's, and its import bound to it.
-    const {plan,elsewhere}=this.planOf(builderId),kept=[];
+    // v7.15.6 (run13): a module whose every export is a function it declares
+    // under a name the plan gives another piece is a stub, never a link
+    // target: it is left out of the bundle (the builder's selection, not a
+    // rename). The entry's stub deleteTicket.js shadowed Delete ticket's,
+    // and its import bound to it. A facade that re-exports or wraps the
+    // owner's import stays (review).
+    const {plan}=this.planOf(builderId),stubs=this.stubsOf(builderId),kept=[],dropped=[];
     for(const s of sources) {
-      const surface=LINKABLE.test(s.destination)?exportSurface(s.destination,s.content):null,names=surface&&!opaqueSurface(surface)?[...exportNames(surface).names]:[];
-      if(!names.length||!names.every(n=>elsewhere(n,s.destination))){kept.push(s);continue;}
+      const {shadows,stub}=LINKABLE.test(s.destination)?stubs(s.destination,s.content):{shadows:[],stub:false};
+      if(!stub){kept.push(s);continue;}
       this.db().exec('DELETE FROM builder_sources WHERE builder=? AND destination=?',builderId,s.destination);
-      // A copy an earlier link published leaves the bundle the level above reads.
-      if(this.files(builderId).some(f=>f.path===s.destination))this.save(`retired_components:${builderId}`,[...new Set([...this.read(`retired_components:${builderId}`,[]),s.destination])]);
-      this.event(builderId,'link_shadow_dropped',`${s.destination}: every export (${names.join(', ')}) is a function the plan gives to ${[...new Set(names.map(n=>[...plan.get(n)].map(c=>this.node(c)?.label||c).join(' and ')))].join(' and ')}; left out of the bundle.`);
+      dropped.push(s.destination);
+      this.event(builderId,'link_shadow_dropped',`${s.destination}: every export (${shadows.join(', ')}) is a function the plan gives to ${[...new Set(shadows.map(n=>[...plan.get(n)].map(c=>this.node(c)?.label||c).join(' and ')))].join(' and ')}; left out of the bundle.`);
     }
+    // A copy an earlier link published leaves the bundle the level above
+    // reads, for this link only (review: a path retired for good stayed out
+    // once its worker rewrote it as a helper its sibling imports).
+    this.save(`dropped_components:${builderId}`,dropped);
     return kept;
   }
   // current: the previous relink's linked files. A relink edits those, so
@@ -1331,12 +1346,14 @@ export class ControlRoom extends DurableObject {
     // linked by renaming: no automatic path, no model, no edit of its path.
     const split=splitImports(originals,originalSurfaces,home),isSplit=(file,spec)=>split.some(x=>x.path===file&&x.specifier===spec);
     // v7.15.6 (run13): the plan's ownership for the linker. owner(n): the
-    // module of n's carrier that exports it; shadow: a non-owner's export
-    // of a promised name, left out of the surface the linker resolves by
-    // (the entry's stub deleteTicket.js was "the only module exporting" it).
-    const owner=n=>{const out=js.filter(p=>carries(ownerOf(p),n)&&exportNames(originalSurfaces.get(p)).names.has(n));return out.length===1?out[0]:null;},labelOf=n=>[...plan.get(n)||[]].map(c=>this.node(c)?.label||c).join(' and ');
-    for(const p of js){const ns=[...exportNames(originalSurfaces.get(p)).names].filter(n=>elsewhere(n,p));if(ns.length)this.event(builderId,'link_shadow_ignored',`${p}: exports ${ns.join(', ')}, which the plan gives to ${[...new Set(ns.map(labelOf))].join(' and ')}; not a link target, the owner's module is.`);}
-    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider,ownership:{owner,shadow:(p,n)=>elsewhere(n,p)}}).filter(e=>!isSplit(e.file,e.specifier)));
+    // module of n's carrier that exports it (never a generic name, review);
+    // shadow: a non-owner's export of a promised name it declares (a stub's,
+    // stubsOf), left out of the surface the linker resolves by (the entry's
+    // stub deleteTicket.js was "the only module exporting" it).
+    const stubs=this.stubsOf(builderId),shadows=new Map(js.map(p=>[p,new Set(stubs(p,originals.get(p)).shadows)]));
+    const owner=n=>{if(GENERIC_NAMES.has(n))return null;const out=js.filter(p=>carries(ownerOf(p),n)&&exportNames(originalSurfaces.get(p)).names.has(n));return out.length===1?out[0]:null;},labelOf=n=>[...plan.get(n)||[]].map(c=>this.node(c)?.label||c).join(' and ');
+    for(const [p,ns] of shadows)if(ns.size)this.event(builderId,'link_shadow_ignored',`${p}: exports ${[...ns].join(', ')}, which the plan gives to ${[...new Set([...ns].map(labelOf))].join(' and ')}; not a link target, the owner's module is.`);
+    const autoApplied=applyAuto(files,autoLink(originals,originalSurfaces,{scope:top?'application':'branch',provider,ownership:{owner,shadow:(p,n)=>!!shadows.get(p)?.has(n)}}).filter(e=>!isSplit(e.file,e.specifier)));
     autoApplied.push(...applyAuto(files,shapeFixes(files,surfaces)));
     if(autoApplied.length)this.event(builderId,'link_auto',`Applied ${linkEdits(autoApplied)} without the model: `+
       clip(autoApplied.map(e=>`${e.file.split('/').pop()}: ${e.find} → ${e.replace} (${e.reason})`).join('; '),900));
@@ -3603,7 +3620,8 @@ export class ControlRoom extends DurableObject {
     const esm=[...files.values()].some(c=>esmSyntax(c));
     const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,
       performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null});
-    const gap=found.filter(x=>x.rule==='missing'||x.rule==='foreign'),base=p=>String(p||'').split('/').pop(),list=listed;
+    // Review (p1): a foreign function in a stub the builder leaves out of the bundle (dropped) is no gap of the application: no contract problem for it.
+    const gap=found.filter(x=>x.rule==='missing'||x.rule==='foreign'&&!x.dropped),dropped=[...new Set(found.filter(x=>x.dropped).map(x=>x.path))],base=p=>String(p||'').split('/').pop(),list=listed;
     // A contract problem is about a missing export or a function written here: closed once neither remains, whatever else.
     if(!gap.length)this.db().exec("UPDATE problems SET status='closed',outcome='resolved',updated=? WHERE source=? AND kind='contract' AND status!='closed'",Date.now(),id);
     if(!found.length) {
@@ -3611,17 +3629,17 @@ export class ControlRoom extends DurableObject {
       return false;
     }
     if(returns>=3) {
-      const still={missing:x=>`${x.name} still not exported`,empty:x=>`${x.name} still an empty placeholder`,foreign:x=>`${x.name} still written here though "${x.hit.owner}" promises it`,unwired:x=>`start() still returns no method for ${list(x.missing)}`,
+      const still={missing:x=>`${x.name} still not exported`,empty:x=>`${x.name} still an empty placeholder`,foreign:x=>`${x.name} still written ${x.dropped?`in ${base(x.path)}`:'here'} though "${x.hit.owner}" promises it`,unwired:x=>`start() still returns no method for ${list(x.missing)}`,
         own_data:x=>`${base(x.path)} still keeps its own data`,unused:x=>`${list(x.names)} still not called`,esm:x=>`${base(x.path)} still calls require() in an ES module`,params:x=>`${base(x.path)} still calls ${x.name} out of order`};
-      this.event(id,'contract_unmet',`After 3 returns: ${found.map(x=>still[x.rule](x)).join('; ')}; accepted, and ${gap.length?'the gap goes to the manager':"the compiler's checks decide"}.`);
-      if(gap.length)this.fileContract(id,found.filter(x=>x.rule==='missing').map(x=>promised.find(p=>p.name===x.name)),found.filter(x=>x.rule==='foreign').map(x=>x.hit));
+      const then=[gap.length?'the gap goes to the manager':'',dropped.length?`the builder leaves ${list(dropped.map(base))} out of the bundle`:''].filter(Boolean);
+      this.event(id,'contract_unmet',`After 3 returns: ${found.map(x=>still[x.rule](x)).join('; ')}; accepted, and ${then.length?then.join(' and '):"the compiler's checks decide"}.`);
+      if(gap.length)this.fileContract(id,found.filter(x=>x.rule==='missing').map(x=>promised.find(p=>p.name===x.name)),found.filter(x=>x.rule==='foreign'&&!x.dropped).map(x=>x.hit));
       return false;
     }
     this.set(key,returns+1);
     // An empty operation of start() is worded by the plan's walk (Clef when the words do not decide).
     for(const x of found)if(x.text===null)Object.assign(x,await this.placeholderAnswer(id,x,esm));
-    const body=['[contract]',...(promised.length?[`Your promise: ${promised.map(signature).join(', ')}.`]:[]),...found.map(x=>x.text),'Publish the FULL updated file.'].join(' ');
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(body,1800));
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(contractBody(promised,found),1800));
     this.event(id,'contract_returned',`Done refused (${returns+1}/3): rules: [${[...new Set(found.map(x=>x.rule))].join(', ')}]; back to the worker. ${found.map(x=>x.how).filter(Boolean).join(' ')}`.trim());
     return true;
   }

@@ -122,7 +122,7 @@ test('review: the planners give a read-only piece only the read function, and a 
     {...op('View','viewTicket','Retrieves a ticket by ID'),uses:[...both,'readLog','saveLog']}];
   const r2=await worker(two,'root.4',['viewTicket.js',view]);
   assert.equal(r2.room.node('root.4').status,'ready');
-  assert.equal(r2.room.receive('root.4')[0].body,'[contract] Your promise: viewTicket(data). Your modules do not import and call readLog and saveLog. Logs live in Audit Log: import readLog and saveLog on their own lines and use them; do not keep your own logs. Publish the FULL updated file.');
+  assert.equal(r2.room.receive('root.4')[0].body,"[contract] Your promise: viewTicket(data). Your modules do not import and call readLog and saveLog. Logs live in Audit Log: import readLog and saveLog on their own lines (const { readLog } = require('./readLog'); const { saveLog } = require('./saveLog');) and use them; do not keep your own logs. Publish the FULL updated file.");
 });
 
 test('review: the store itself keeps its data, and an id helper is no store',async()=>{
@@ -197,7 +197,7 @@ test('review: a view piece named getTicket is an operation piece: asked about th
   for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
   for(const id of ['root.4','root.3']){room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);await room.turn(id);}
   assert.equal(room.node('root.4').status,'ready');
-  assert.equal(room.receive('root.4')[0].body,'[contract] Your promise: getTicket(id). In getTicket.js, the module returns records written into its code. Your modules do not import and call readTickets. Tickets live in Ticket Data Manager: import readTickets on its own line and use it; do not keep your own tickets. Publish the FULL updated file.');
+  assert.equal(room.receive('root.4')[0].body,"[contract] Your promise: getTicket(id). In getTicket.js, the module returns records written into its code. Your modules do not import and call readTickets. Tickets live in Ticket Data Manager: import readTickets on its own line (const { readTickets } = require('./readTickets');) and use it; do not keep your own tickets. Publish the FULL updated file.");
   assert.equal(room.node('root.3').status,'done',JSON.stringify(room.receive('root.3')));
   // Decided per piece, by a function or by the label.
   const kids=I.normalizeSpawn([entry,store,op('Create'),view,op('Update'),op('Delete')]).spawn,isOp=f=>/^(?:create|view|update|delete)/.test(f.name);

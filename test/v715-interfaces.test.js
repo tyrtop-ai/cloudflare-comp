@@ -380,7 +380,7 @@ test('v7.15: run6 replay (A): a worker missing a promised export is sent back be
   assert.equal(room.node('root.3').status,'ready','the trailing check wakes it on the [contract] message');
   const [message]=room.receive('root.3');
   assert.equal(message.from,'runtime:contract');
-  assert.equal(message.body,"[contract] Your promise: createTicket(title, description). createTicket(title, description) (\"creates a ticket and returns it\") is promised by your assignment and is not exported by exactly that name. createTicket.js imports createTicket from './ticketStore', but createTicket is yours to write: write it in your own module instead of importing it. Export it as a named export (export function createTicket(…) or exports.createTicket = …) or as a member of the exported object, not as a method of a class or instance. Publish the FULL updated file.");
+  assert.equal(message.body,"[contract] Your promise: createTicket(title, description). Export each function your assignment promises by exactly its name, as a named export (export function createTicket(…) or exports.createTicket = …) or as a member of the exported object, not as a method of a class or instance. Not exported: createTicket(title, description). createTicket.js imports createTicket from './ticketStore', but createTicket is yours to write: write it in your own module instead of importing it. Publish the FULL updated file.");
   assert.equal(room.get('contract_returns:root.3'),'1');
   assert.equal(room.read('failures',{})['root.3']||0,0);
   assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [missing]; back to the worker.');

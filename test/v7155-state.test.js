@@ -206,7 +206,10 @@ async function worker(id,...sources) {
   await turn();
   return {room,calls,again:turn};
 }
-const PLAN='Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines and use them; do not keep your own tickets.';
+// v7.15.6 review: with the import lines in the worker's syntax (deleteTicket.js is an ES module).
+const PLAN="Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines (const { readTickets } = require('./readTickets'); const { saveTickets } = require('./saveTickets');) and use them; do not keep your own tickets.";
+const PLAN_ONE="Tickets live in Ticket Data Manager: import readTickets on its own line (const { readTickets } = require('./readTickets');) and use it; do not keep your own tickets.";
+const PLAN_ESM="Tickets live in Ticket Data Manager: import readTickets and saveTickets on their own lines (import { readTickets } from './readTickets'; import { saveTickets } from './saveTickets';) and use them; do not keep your own tickets.";
 
 test('v7.15.5: run12 replay: createTicket.js, viewTicket.js, the update module.js and deleteTicket.js are each sent back with the plan answer, with no model call',async()=>{
   const cases=[['root.3','createTicket.js',SRC.create,'in createTicket.js, the module keeps its own data in a module-level array (tickets). Your modules do not import and call readTickets and saveTickets.'],
@@ -218,7 +221,7 @@ test('v7.15.5: run12 replay: createTicket.js, viewTicket.js, the update module.j
     assert.equal(room.node(id).status,'ready',`${path} is sent back before any linking`);
     const [message]=room.receive(id);
     assert.equal(message.from,'runtime:contract');
-    assert.equal(message.body,`[contract] Your promise: ${{'root.3':'createTicket','root.4':'viewTicket','root.5':'updateTicket','root.6':'deleteTicket'}[id]}(data). ${why.replace(/^./,c=>c.toUpperCase())} ${id==='root.4'?PLAN.replace('readTickets and saveTickets on their own lines and use them','readTickets on its own line and use it'):PLAN} Publish the FULL updated file.`);
+    assert.equal(message.body,`[contract] Your promise: ${{'root.3':'createTicket','root.4':'viewTicket','root.5':'updateTicket','root.6':'deleteTicket'}[id]}(data). ${why.replace(/^./,c=>c.toUpperCase())} ${id==='root.4'?PLAN_ONE:id==='root.6'?PLAN_ESM:PLAN} Publish the FULL updated file.`);
     assert.match(events(room,'contract_returned')[0].body,/^Done refused \(1\/3\): rules: \[(?:own_data, )?unused\]; back to the worker\.$/);
     assert.equal(room.get(`contract_returns:${id}`),'1','the contract-return limit bounds it');
     assert.equal(calls.leaf.length,1);

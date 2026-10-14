@@ -1268,6 +1268,21 @@ export function placeholders(files, names, foreign=[], performers=[]) {
   }
   return out;
 }
+// v7.15.6 review: a stub, one test for the builder's selection, the
+// linker's shadows and the contract check, so the three never disagree: a
+// module that declares a function under a name another piece promises
+// (placeholders' foreign hit, with the wrapper exemption). A facade that
+// re-exports or wraps the owner's import declares nothing: it stays in the
+// bundle and its imports bind to the owners (the review's entry whose
+// ops.js re-exported the four performers was dropped, and its entry.js
+// could not resolve './ops'). shadows: the exports so declared; stub: every
+// export is one (an opaque surface is never known to be).
+export function stubExports(path, content, foreign) {
+  const surface=exportSurface(path,content),names=[...exportNames(surface).names];
+  if(!names.length||!foreign.length||opaqueSurface(surface))return {shadows:[],stub:false};
+  const declared=new Set(placeholders(new Map([[path,content]]),[],foreign).filter(x=>x.foreign).map(x=>x.name)),shadows=names.filter(n=>declared.has(n));
+  return {shadows,stub:shadows.length===names.length};
+}
 // Review: the names export n of file t uses, through t's own imports and
 // the other files it imports from set, two files deep; null when t has no
 // export n this parse can read (module.exports = make()).
@@ -1710,7 +1725,11 @@ const short=s=>{const t=String(s??'');return t.length>70?t.slice(0,69)+'…':t;}
 //   own_data data kept beside a storage use (ownData; run12)
 //   esm      an ES module that calls require() (esmRequires; run12)
 //   params   a call passing the caller's own parameters on in another
-//            order than the promise's (swappedCalls, strict; run11)
+//            order than the promise's (swappedCalls, strict; run11). Read
+//            at done time against the plan, before linking, with one known
+//            cost, accepted: a callee that swaps the arguments back (which
+//            swapsBack exempts at link time) is invisible here, so such a
+//            caller is sent back once for an order the promise states.
 // promise: the worker's promised functions. uses: the plan's uses for it
 // ({name, owner, storage, params, does}). foreign: the functions other
 // pieces promise it, by name ({name, owner, does, params}; generic names
@@ -1725,14 +1744,13 @@ const short=s=>{const t=String(s??'');return t.length>70?t.slice(0,69)+'…':t;}
 export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),performers=[],esm=false,promisedParams=null,goal='',keeper=false,performer=()=>null}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files)),out=[],names=promise.map(f=>f.name),base=p=>String(p||'').split('/').pop();
   const line=n=>importLineOf(n,esm).replace(/;$/,''),said=f=>f?.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:'',does=f=>f?.does?': '+String(f.does).replace(/[.\s]+$/,''):'';
+  // Review: the rule once for the list, the export form before it and no
+  // quoted descriptions, on the first finding (the rest carry no text):
+  // five promised functions with 160-character descriptions overran the
+  // 1800-character send-back, losing the export form and the publish line.
   const missing=missingExports(set,names),self=missing.length?selfImports(set,missing):[];
-  for(const [i,name] of missing.entries()) {
-    const f=promise.find(p=>p.name===name)||{name},mine=self.filter(x=>x.names.includes(name)&&!x.told);
-    for(const x of mine)x.told=true;
-    out.push({rule:'missing',name,path:'',text:`${signature(f)}${f.does?` ("${String(f.does).replace(/[.\s]+$/,'')}")`:''} is promised by your assignment and is not exported by exactly that name.`+
-      mine.map(x=>` ${base(x.path)} imports ${listedNames(x.names)} from '${x.specifier}', but ${listedNames(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`).join('')+
-      (i===missing.length-1?` Export ${missing.length>1?'each':'it'} as a named export (export function ${missing[0]}(…) or exports.${missing[0]} = …) or as a member of the exported object, not as a method of a class or instance.`:'')});
-  }
+  for(const [i,name] of missing.entries())out.push({rule:'missing',name,path:'',text:i?'':`Export each function your assignment promises by exactly its name, as a named export (export function ${name}(…) or exports.${name} = …) or as a member of the exported object, not as a method of a class or instance. Not exported: ${missing.map(n=>signature(promise.find(p=>p.name===n)||{name:n})).join(', ')}.`+
+    self.map(x=>` ${base(x.path)} imports ${listedNames(x.names)} from '${x.specifier}', but ${listedNames(x.names)} ${x.names.length>1?'are':'is'} yours to write: write it in your own module instead of importing it.`).join('')});
   const hasStart=names.includes('start'),performs=f=>goalOps(goal,f).length>0;
   const found=placeholders(set,names.filter(n=>!missing.includes(n)),[...foreign.keys()],performers.map(f=>f.name)),items=[];
   for(const x of found) {
@@ -1763,19 +1781,27 @@ export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),perfo
     const f=promise.find(p=>p.name===x.name)||{name:x.name};
     out.push({rule:'empty',name:k,path:x.path,text:`${signature(f)}${does(f)} is promised by your assignment and is an empty placeholder: write it here.`,how:`${x.name} is its own to write.`});
   }
+  // Review (p1): a function written in a module other than the one that
+  // imports the name (run13's stub deleteTicket.js beside entry.js, which
+  // imported it) hears the file action, since a worker cannot delete a
+  // file: no export of it, or a re-export of the import, in its syntax,
+  // each passing the leaf gate (an empty file does not; nor export {}).
+  // dropped: its module is a stub the builder leaves out of the bundle.
+  const importers=n=>[...set].filter(([p,c])=>LINKABLE.test(p)&&importRefs(p,c).some(r=>r.names.has(n)||r.members.has(n))).map(([p])=>p),foreignNames=[...foreign.keys()];
   for(const x of written) {
     const k=x.op||x.name;
     if(onceWritten.has(k))continue;
     onceWritten.add(k);
-    const f=x.hit,o=short(f.owner);
+    const f=x.hit,o=short(f.owner),by=x.op?null:importers(f.name).find(p=>p!==x.path),{shadows,stub}=x.op?{shadows:[],stub:false}:stubExports(x.path,set.get(x.path),foreignNames);
     let text,how=`${k}: ${x.op?`${f.name} from "${o}"`:`"${o}" promises it`}.`;
     // Review: the start carrier is not told to use one that performs no operation of the goal (run11's readData).
     if(!x.op)text=f.name==='start'?`start is promised by "${f.owner}", which composes the application: do not write start() here.`:
+      by?`${base(x.path)} ${shadows.includes(f.name)?'exports':'declares'} ${f.name}, which "${f.owner}" promises: leave it ${shadows.includes(f.name)?'with no export of it':'without that function'} (${esm?'export default {}':'module.exports = {}'}) or re-export the import (${esm?`import { ${f.name} } from './${f.name}'; export { ${f.name} };`:`const { ${f.name} } = require('./${f.name}'); module.exports = { ${f.name} }`}); ${base(by)} already imports it.`:
       hasStart&&!performs(f)?`${f.name} is promised by "${f.owner}": do not write it here.`:`${f.name} is promised by "${f.owner}": import it on its own line, ${line(f.name)}, and use it; do not write it here.`;
     // Both sides naming a different number of arguments is not the same operation: the operation is written with it.
     else if(!x.params?.length||!f.params?.length||x.params.length===f.params.length)text=`${x.op} is written here, but ${signature(f)}${said(f)} is promised by "${f.owner}"; import it on its own line, ${line(f.name)}, and return it as ${x.op}; do not write it here.`;
     else {text=`${x.op} is written here, but ${signature(f)}${said(f)} is promised by "${f.owner}"; write ${x.op} with it: import it on its own line, ${line(f.name)}, and call it from ${x.op}.`;how=`${x.op}: write it with ${f.name} from "${o}".`;}
-    out.push({rule:'foreign',name:k,path:x.path,hit:f,text,how});
+    out.push({rule:'foreign',name:k,path:x.path,hit:f,text,how,dropped:stub});
   }
   // run12: an owner's storage uses are met when one of them is called (a
   // view piece calls readTickets, never saveTickets), and a piece that is
@@ -1787,7 +1813,8 @@ export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),perfo
     // Review: the path is never the first word, so its case is never changed (PROBE E's CreateTicket.js).
     const group=[...local.map(k=>({rule:'own_data',name:k.name||'',path:k.path,kind:k.kind,text:`In ${base(k.path)}, the module ${k.kind==='state'?`keeps its own data in a module-level ${k.shape} (${k.name})`:k.kind==='fs'?'reads and writes files with fs':'returns records written into its code'}.`})),
       ...(uncalled.length?[{rule:'unused',name:uncalled[0].name,names:uncalled.map(f=>f.name),path:'',text:`Your modules do not import and call ${listedNames(uncalled.map(f=>f.name))}.`}]:[])];
-    group.at(-1).text+=' '+dataAnswer(homeless);
+    // Review: with the import lines in the worker's syntax, as the idle and unwired sentences give them (run12's deleteTicket.js is an ES module).
+    group.at(-1).text+=' '+dataAnswer(homeless,esm);
     out.push(...group);
   }
   for(const f of idle)out.push({rule:'unused',name:f.name,names:[f.name],path:'',text:`Your plan says you call ${signature(f)} from "${f.owner}": import it on its own line, ${line(f.name)}, and call it.`});
@@ -1796,6 +1823,10 @@ export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),perfo
     out.push({rule:'params',name:x.name,path:x.path,call:x.call,params:x.params,text:`${x.text}.`});
   return out;
 }
+// The one send-back, as contractReturned sends it (clipped at 1800 there):
+// the promise, one sentence per finding (the missing rule once for its
+// list), and the publish line.
+export const contractBody=(promise,found)=>['[contract]',...(promise.length?[`Your promise: ${promise.map(signature).join(', ')}.`]:[]),...found.map(x=>x.text).filter(Boolean),'Publish the FULL updated file.'].join(' ');
 // The module a load or run error at path names through one of path's own
 // imports ("x is not a function", "x.y is not a constructor", "Cannot read
 // properties of undefined (reading 'x')", where path imports x): the other
@@ -1834,16 +1865,7 @@ export function autoLink(files, surfaces, {scope='application',provider=null,own
   const exported=t=>{const {names}=exportNames(surfaces.get(t));return ownership?new Set([...names].filter(n=>!shadow(t,n))):names;};
   const edits=[];
   for(const path of js) {
-    const content=set.get(path),refs=importRefs(path,content),fixed=new Set();
-    // v7.15.5 (run12): an ESM import that names its module without the
-    // extension gets it, a rename, before any Container run; one edit per
-    // quoted form ('./lib' and "./lib" are two finds, review).
-    for(const lit of esmLiterals(content)) {
-      const find=content.slice(lit.start,lit.end),to=!fixed.has(find)&&esmPath(path,lit.value,set);
-      if(!to)continue;
-      fixed.add(find);
-      edits.push({file:path,find,replace:find[0]+to+find[0],reason:'an ESM import names its module by the full file name',target:resolveLocal(path,to,set).path,specifier:lit.value});
-    }
+    const content=set.get(path),refs=importRefs(path,content),boundRaw=new Set(),boundAt=new Set();
     for(const ref of refs) {
       const wanted=new Set([...ref.names,...ref.members].filter(Boolean)),at=resolveLocal(path,ref.specifier,set);
       let pick=null,why='';
@@ -1882,15 +1904,31 @@ export function autoLink(files, surfaces, {scope='application',provider=null,own
         else if((pick=flagged(byName(t=>nameMatch(t)&&shares(t)))))why=`only module whose name matches; none exports all of ${[...wanted].join(', ')}`;
       } else if(!pick&&(pick=byName()))why='only module whose name matches';
       if(!pick)continue;
-      const raw=content.slice(ref.start,ref.end),quote=raw[0],to=quote+relativeSpecifier(path,pick)+quote;
-      // A path the plan binds keeps no extension fix of its old path.
-      if(fixed.has(raw)){const i=edits.findIndex(e=>e.file===path&&e.find===raw&&e.specifier===ref.specifier);if(i>=0)edits.splice(i,1);}
+      const raw=content.slice(ref.start,ref.end),quote=raw[0],to=quote+relativeSpecifier(path,pick)+quote,shared=refs.filter(r=>content.slice(r.start,r.end)===raw).length>1;
       // Two import lines with one path text (const { loadTickets } =
       // require('./dataStore'); and the same for saveTickets) are linked
       // each on its own: a find of the path alone would point both at the
       // first one's module.
-      const [from,end]=refs.filter(r=>content.slice(r.start,r.end)===raw).length>1?ref.span:[ref.start,ref.end],find=content.slice(from,end);
+      const [from,end]=shared?ref.span:[ref.start,ref.end],find=content.slice(from,end);
+      if(shared)boundAt.add(ref.start);else boundRaw.add(raw);
       edits.push({file:path,find,replace:find.slice(0,ref.start-from)+to+find.slice(ref.end-from),reason:why,target:pick,specifier:ref.specifier});
+    }
+    // v7.15.5 (run12): an ESM import that names its module without the
+    // extension gets it, a rename, before any Container run; one edit per
+    // quoted form ('./lib' and "./lib" are two finds, review), after the
+    // binds above (v7.15.6 review): a line the plan rebinds keeps no fix of
+    // its old path, and a line of the same literal it leaves keeps its fix
+    // (an entry importing a stub's deleteTicket and its own slug from one
+    // helpers.js lost the extension on the slug line, which Node's ESM
+    // loader cannot find).
+    const fixed=new Set();
+    for(const lit of esmLiterals(content)) {
+      const find=content.slice(lit.start,lit.end);
+      if(fixed.has(find)||boundRaw.has(find)||boundAt.has(lit.start))continue;
+      const to=esmPath(path,lit.value,set);
+      if(!to)continue;
+      fixed.add(find);
+      edits.push({file:path,find,replace:find[0]+to+find[0],reason:'an ESM import names its module by the full file name',target:resolveLocal(path,to,set).path,specifier:lit.value});
     }
   }
   return edits;

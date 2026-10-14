@@ -103,7 +103,7 @@ test('v7.15.5 merge: with read in the goal, the store\'s readTickets is storage:
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.4'");
   await room.putFile('root.4','readTicket.js',"const { readTickets } = require('./readTickets');\nconst readTicket = (data) => { readTickets();\n  const tickets = {\n    '123': { id: '123', subject: 'Server Issue', status: 'Open' },\n    '456': { id: '456', subject: 'Login Problem', status: 'Closed' }\n  };\n  return tickets[data.id] || null;\n};\nmodule.exports = { readTicket };\n");
   assert.equal(await room.contractReturned('root.4'),true);
-  assert.equal(room.receive('root.4')[0].body,'[contract] Your promise: readTicket(data). In readTicket.js, the module returns records written into its code. Tickets live in Ticket Store: import readTickets on its own line and use it; do not keep your own tickets. Publish the FULL updated file.');
+  assert.equal(room.receive('root.4')[0].body,"[contract] Your promise: readTicket(data). In readTicket.js, the module returns records written into its code. Tickets live in Ticket Store: import readTickets on its own line (const { readTickets } = require('./readTickets');) and use it; do not keep your own tickets. Publish the FULL updated file.");
   // D9's goal filter reads names as goalOps does: createTicketStore creates no ticket.
   assert.deepEqual(['createTicketStore','createTicket','readTicket','tickets','updateAll'].filter(room.goalOperation(room.planIndex())),['createTicket','readTicket']);
 });
