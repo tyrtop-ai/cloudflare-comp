@@ -175,6 +175,14 @@ export const labelNames = (label, name) => {const a = words(label).filter(w => !
 const VERB = w => w === 'del' || w === 'remove' ? 'delete' : w;
 const covers = (a, b) => b.length > 0 && VERB(a[0]) === VERB(b[0]) && a.slice(1).every(w => b.slice(1).includes(w));
 export const performsOp = (op, f) => {const a = words(op); return a.length > 0 && (covers(a, words(f?.name)) || covers(a, words(f?.operation)));};
+// v7.15.13 (run19): a piece whose label names a function writes it, whatever
+// Clef's doubt (analyze was stripped from "Analyze snapshot" at p=0.385):
+// the label's first word is the name's verb and the other words of either
+// are all in the other. "Process circuits" writes processCircuits, "Analyze
+// snapshot" analyze, "Check admin down" checkAdminDown; "View ticket" does
+// not write saveTickets, nor "Ticket storage" readTickets. A generic name
+// says nothing of what it acts on, so no label writes one.
+export const labelWrites = (label, name) => {const a = words(label).filter(w => !FILLER_WORDS.has(w)), b = words(name); return a.length > 0 && b.length > 0 && !GENERIC_NAMES.has(name) && VERB(a[0]) === VERB(b[0]) && (a.slice(1).every(w => b.slice(1).includes(w)) || b.slice(1).every(w => a.slice(1).includes(w)));};
 // v7.15.5: the goal's operations (verbs) a promised function performs: a
 // goal word is its verb, by its name or its operation, and what it acts on,
 // when it names anything, is in the goal too. run12's createData ("returns a
@@ -218,7 +226,24 @@ export const sameOp = (a, b) => {
 // v7.15.5 merge: judged by piece (pieceOps), so a store's readTickets is no
 // read beside Read Ticket's readTicket; a head noun in the goal before one
 // only named (viewTicket before viewTicketDetails).
-export function planPerformers(goal, levels) {
+// v7.15.13 (run18): with the methods the goal states start() returns
+// (stated: goalMethods' items), the performers are those alone: for each,
+// the function of the nearest level (the carrier's own first, then its
+// siblings, then the walk above) with its name, else the one there that
+// performs it by its words (performsOp: analyze is analyzeSnapshot), exactly
+// one; two is none, and a stated method nothing performs is the carrier's
+// to write. Each carries stated, the goal's item it stands for.
+export function planPerformers(goal, levels, stated = null) {
+  if (stated?.length) {
+    const out = [];
+    for (const s of stated) for (const items of levels) {
+      const same = items.filter(f => f.name === s.name), by = same.length ? same : items.filter(f => performsOp(s.name, f));
+      if (!by.length) continue;
+      if (by.length === 1 && !out.some(x => x.name === by[0].name)) out.push({...by[0], stated: {name: s.name, params: [...(s.params || [])]}});
+      break;
+    }
+    return out;
+  }
   const g = new Set(words(goal)), out = [], near = new Set();
   const rank = f => {const w = words(f.name); return w.length === 2 && g.has(w[1]) ? 0 : GENERIC_NAMES.has(f.name) ? 3 : g.has(objectOf(w).filter(x => !FILLER_OBJECT.has(x)).at(-1)) ? 1 : 2;};
   for (const items of levels) {
@@ -238,7 +263,9 @@ export function planPerformers(goal, levels) {
 // around a word one of them performs or acts on, minus what they act on.
 // Run12's "create, view, update, and delete tickets" with getTicket for
 // view leaves view, as "create tickets and view them" does with createTicket.
-export function goalLeft(goal, fns) {
+// v7.15.13 (run18): a goal that states start()'s methods leaves nothing to ask for.
+export function goalLeft(goal, fns, stated = null) {
+  if (stated?.length) return [];
   const t = String(goal ?? '').match(/[A-Za-z]+|,/g) || [], done = new Set(fns.flatMap(f => goalOps(goal, f))), out = new Set();
   const nouns = new Set(fns.flatMap(f => [f.name, f.operation].flatMap(s => objectOf(words(s))))), verb = i => VERB(words(t[i])[0]);
   const joint = i => t[i] === ',' || /^(?:and|or)$/i.test(t[i] || ''), word = i => /^[A-Za-z]/.test(t[i] || '') && !joint(i) && !/^(?:it|them|they|these|those|one|ones)$/i.test(t[i]);

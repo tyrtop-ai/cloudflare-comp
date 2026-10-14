@@ -21,6 +21,18 @@ export function contentOf(output) {
   if (m && typeof m === 'object') return '';
   return JSON.stringify(output ?? {});
 }
+// What the event log says of an answer with no text (run16).
+export const NO_ANSWER = 'no answer: the model returned only reasoning, or its output budget ran out before the JSON';
+// v7.15.13 (run18): and why, when the envelope says: a chat completion whose
+// message has no content reports how much it reasoned and how it stopped
+// (two of run18's workers answered nothing after 177 s, and the room logged
+// "Bad action response: " with nothing after it). Any other shape is NO_ANSWER.
+export function emptyAnswer(output) {
+  const c = output?.choices?.[0], m = c?.message;
+  if (!m || typeof m !== 'object' || typeof m.content === 'string' && m.content.trim()) return NO_ANSWER;
+  const reasoning = [m.reasoning, m.reasoning_content].find(x => typeof x === 'string') || '';
+  return `no answer: the model returned no text (reasoning ${reasoning.length} characters; finish_reason ${c.finish_reason ?? m.finish_reason ?? 'not given'})`;
+}
 // run10: a spawn item may arrive as a JSON string of the object.
 export const spawnObjects = spawn => Array.isArray(spawn) ? spawn.map(s => {
   if (typeof s !== 'string' || !/^\s*\{/.test(s)) return s;

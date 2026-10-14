@@ -3,14 +3,14 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses } from './model.js';
-import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM } from './api-coverage.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
+import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
@@ -614,7 +614,7 @@ export class ControlRoom extends DurableObject {
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state};
   }
   // The goal as the user wrote it, without the requirement the runtime appends.
-  userGoal() { const g=this.topTask(),r=' '+GOAL_START_REQUIREMENT; return g.endsWith(r)?g.slice(0,-r.length):g; }
+  userGoal() { return stripStartRequirement(this.topTask()); }
   // The runnable application, for /api/app, /api/app.zip and the GitHub export:
   // the top builder's linked components (its current sources) and the
   // compiler's loader, package and runner test, minus assembly metadata,
@@ -658,7 +658,7 @@ export class ControlRoom extends DurableObject {
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?)',
-      id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+1+GOAL_START_REQUIREMENT.length), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)), JSON.stringify(normalizeUses(uses)));
+      id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)), JSON.stringify(normalizeUses(uses)));
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
@@ -781,6 +781,9 @@ export class ControlRoom extends DurableObject {
     }
     const goal=this.userGoal(),carriers=top?this.carriersOf('start',top.id).filter(c=>c.id!==top.id):[],plan=carriers.length===1?this.startPlanOf(carriers[0].id):null;
     if(!plan)return [...out,...goalPerformers(goal,kids,out)];
+    // v7.15.13 (run18): a stated method's performer, under the goal's own signature; such a plan lists nothing else.
+    for(const f of [...plan.mine.map(f=>({...f,owner:carriers[0].label})),...plan.theirs])if(f.stated&&!out.some(x=>x.method===f.name))out.push({operation:signature(f.stated),method:f.name,label:f.owner});
+    if(plan.stated.length)return out;
     const said=goalOperations(goal),seenVerb=v=>out.some(x=>performsOp(v,{name:x.operation})||performsOp(v,{name:x.method}));
     for(const f of [...plan.mine.map(f=>({...f,owner:carriers[0].label})),...plan.theirs]) {
       const v=goalOps(goal,f)[0];
@@ -1806,9 +1809,13 @@ export class ControlRoom extends DurableObject {
   // it imports; left, the operations the goal lists that none performs
   // (run9's create and update, generic names, and a getTicket for view
   // were dropped from a closed list).
+  // v7.15.13 (run18): stated, the methods the goal states start() returns
+  // (goalMethods), are the plan when the goal has them: mine and theirs are
+  // their performers, left is empty, and written are those nothing performs,
+  // the carrier's to write (composeStated gives it the promise).
   startPlan(own, levels) {
-    const goal=this.userGoal(),fns=planPerformers(goal,[own.map(f=>({...f,own:true})),...levels]);
-    return {mine:fns.filter(f=>f.own),theirs:fns.filter(f=>!f.own),left:goalLeft(goal,fns)};
+    const goal=this.userGoal(),stated=goalMethods(goal),fns=planPerformers(goal,[own.map(f=>({...f,own:true})),...levels],stated),found=new Set(fns.map(f=>f.stated?.name));
+    return {mine:fns.filter(f=>f.own),theirs:fns.filter(f=>!f.own),left:goalLeft(goal,fns,stated),written:stated.filter(s=>!found.has(s.name)),stated};
   }
   // v7.15.5 merge: the entry contract a start carrier's repair ticket leads
   // with. A composed carrier hears its plan's names and import convention:
@@ -1817,9 +1824,10 @@ export class ControlRoom extends DurableObject {
   // update and delete, and a rename after the runner's test costs a rewrite.
   entryContract(id) {
     const plan=this.startPlanOf(id);
-    if(!plan?.theirs.length)return ENTRY_CONTRACT;
-    const fns=[...plan.mine,...plan.theirs],first=plan.theirs[0].name;
-    return `You write the application entry module: it exports start(); start() takes no arguments and returns { ${fns.map(f=>f.name).join(', ')} }${plan.left.length?` and one method for ${listed(plan.left)}, the function that performs it, which you ask your manager for`:''}, each under its own name, ${plan.mine.length?'the ones your assignment gives you written here and the others':'each'} imported on its own line with its name as the path (const { ${first} } = require('./${first}')), not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.`;
+    if(!plan||!plan.theirs.length&&!(plan.stated.length&&plan.mine.length))return ENTRY_CONTRACT;
+    // v7.15.13 (run18): a stated method is returned under the goal's name, in the goal's order, and one the carrier writes has no import line.
+    const key=f=>f.stated?.name||f.name,at=f=>plan.stated.findIndex(s=>s.name===key(f)),fns=[...plan.mine,...plan.theirs].sort((a,b)=>at(a)-at(b)),first=plan.theirs[0]?.name;
+    return `You write the application entry module: it exports start(); start() takes no arguments and returns { ${fns.map(key).join(', ')} }${plan.left.length?` and one method for ${listed(plan.left)}, the function that performs it, which you ask your manager for`:''}, each under its own name, ${plan.mine.length?plan.theirs.length?'the ones your assignment gives you written here and the others':'written here as your assignment says':'each'}${plan.theirs.length?` imported on its own line with its name as the path (const { ${first} } = require('./${first}'))`:''}, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.`;
   }
   startPlanOf(id) {const n=this.node(id),own=this.promisedOf(id);return n?.parent&&this.planned()&&own.some(f=>f.name==='start')?this.startPlan(own.filter(f=>f.name!=='start'),this.planWalk(id)):null;}
   // The functions start() returns, for its carrier below the top: the plan
@@ -1839,8 +1847,9 @@ export class ControlRoom extends DurableObject {
     const at=this.planned()?spawn.findIndex(c=>(c?.interfaces||[]).some(f=>f.name==='start')):-1;
     if(at<0)return spawn;
     const siblings=spawn.flatMap((c,i)=>i===at||RUNTIME_LABELS.includes(c.label)?[]:(c.interfaces||[]).map(f=>({...f,owner:c.label})));
-    const {mine,theirs,left}=this.startPlan(spawn[at].interfaces.filter(f=>f.name!=='start'),[siblings,...this.planWalk(m)]);
-    if(!theirs.length)return spawn;
+    const plan=this.startPlan(spawn[at].interfaces.filter(f=>f.name!=='start'),[siblings,...this.planWalk(m)]),{mine,theirs,left,written,stated}=plan;
+    if(stated.length?!mine.length&&!theirs.length&&!written.length:!theirs.length)return spawn;
+    if(stated.length)return this.composeStated(m,spawn,at,siblings,plan);
     const fns=[...mine,...theirs],names=`{ ${fns.map(f=>f.name).join(', ')} }`,how=mine.length?`${listed(mine.map(f=>f.name))} written here and the rest imported`:'each imported',ops=`one method ${left.length>1?'each ':''}for ${listed(left)}`;
     const fit=xs=>xs.find(x=>x.length<=160)||xs.at(-1);
     const does=left.length?fit([`no arguments; returns ${names}, ${how} on its own line by its name, and ${ops}${ASK_CLAUSE}`,`no arguments; returns ${names} and ${ops}${ASK_CLAUSE}`,`no arguments; returns the functions your assignment names and ${ops}${ASK_CLAUSE}`,`no arguments; returns the functions your assignment names and one method per other goal operation${ASK_CLAUSE}`]):
@@ -1850,6 +1859,29 @@ export class ControlRoom extends DurableObject {
     const own=String(spawn[at].task||''),room=Math.max(200,2000-tail.length),task=(own.length>room?own.slice(0,room-1).replace(/\s+\S*$/,'')+'…':own)+tail;
     this.event(m,'start_composed',clip(`"${spawn[at].label}" carries start: it returns ${fns.map(f=>f.own?`${f.name} written here`:`${f.name} from "${f.owner}"`).join(', ')}, from the plan${left.length?`, and asks for ${listed(left)}`:''}.`,600));
     return spawn.map((c,i)=>i!==at?c:{...c,task,interfaces:c.interfaces.map(f=>f.name==='start'?{...f,does}:f),answers:theirs.filter(f=>!GENERIC_NAMES.has(f.name)).map(f=>({key:requestKey({name:f.name}),kind:'provided',text:providedText(f,f.owner),fn:providedFn(f,f.owner)}))});
+  }
+  // v7.15.13 (run18): the carrier of a goal that states start()'s methods
+  // is composed from them. A stated method a sibling or the walk promises is
+  // returned from there, under the goal's name (run20's analyze from
+  // "Analyze function"); one the carrier promises is its own; one nothing
+  // performs is written here: the carrier gains the promise, so the contract
+  // check, the linker and the coverage gate see it, and its task says what
+  // it runs, the siblings' functions, with an import line each, all answered
+  // up front. Nothing is asked for, and no "one method per other goal
+  // operation": run18's carrier read that clause beside the goal's analyze
+  // and asked for getGoalOperations.
+  composeStated(m, spawn, at, siblings, {mine,theirs,written,stated}) {
+    const key=f=>f.stated?.name||f.name,ownNames=[...mine.map(key),...written.map(w=>w.name)],names=`{ ${stated.map(s=>s.name).join(', ')} }`,fit=xs=>xs.find(x=>x.length<=160)||xs.at(-1);
+    const writes=[...(theirs.length?[]:mine),...written],helpers=writes.length?siblings.filter(f=>!theirs.some(t=>t.name===f.name)):[];
+    const does=fit([`no arguments; returns ${names}, ${theirs.length?ownNames.length?`${listed(ownNames)} written here and the rest imported on its own line by its name`:'each imported on its own line by its name':'written here'}`,`no arguments; returns ${names}`]);
+    const imported=theirs.length?` start() returns ${names}, the functions ${mine.length?'you and ':''}other pieces promise for the goal's operations: ${listed([...mine.map(f=>`${signature(f)}, yours to write here`),...theirs.map(f=>`${signature(f)} from "${f.owner}"${key(f)!==f.name?`, returned as ${key(f)}`:''}`)])}. ${importLines(theirs)} Return each under its name, itself or a wrapper that calls it; do not write them here.`:'';
+    const here=writes.length?`${theirs.length?' W':` start() returns ${names}: w`}rite ${listed(writes.map(signature))} here; ${writes.length>1?'they run':'it runs'} the functions the other pieces promise${helpers.length?`: ${listed(helpers.map(h=>`${signature(h)} from "${h.owner}"${h.returns?` (returns ${h.returns})`:''}`))}. ${importLines(helpers)}`:'.'}`:'';
+    const tail=imported+here,own=String(spawn[at].task||''),room=Math.max(200,2000-tail.length),task=(own.length>room?own.slice(0,room-1).replace(/\s+\S*$/,'')+'…':own)+tail;
+    const added=written.map(w=>({name:w.name,params:[...w.params],does:`performs the goal's ${w.name}: runs the functions the other pieces promise and returns the result`,returns:'the result'}));
+    const parts=[...theirs.map(f=>`${key(f)} from "${f.owner}"`),...(ownNames.length?[`${listed(ownNames)}, written here${helpers.length?` from ${helpers.map(signature).join(', ')}`:''}`]:[])];
+    this.event(m,'start_composed',clip(`"${spawn[at].label}" carries start: it returns ${parts.join(', ')}, from the plan.`,600));
+    const answers=[...theirs,...helpers].filter(f=>!GENERIC_NAMES.has(f.name)).map(f=>({key:requestKey({name:f.name}),kind:'provided',text:providedText(f,f.owner),fn:providedFn(f,f.owner)}));
+    return spawn.map((c,i)=>i!==at?c:{...c,task,interfaces:[...c.interfaces.map(f=>f.name==='start'?{...f,does}:f),...added],answers});
   }
 
   // ---------- the problem inbox ----------
@@ -2426,7 +2458,12 @@ export class ControlRoom extends DurableObject {
     try{described=JSON.parse(api);}catch{described=api?{type:'unparsed'}:null;}
     // With nothing to call (run3b: {"type":"object","members":{}}) the runner
     // cannot write a valid test, and no worker would hear why.
-    if(!apiCallable(described)||apiGenericOnly(described))
+    // v7.15.13 (run18): a stated method is a key the goal states, so start()
+    // returns it by that name (never by its function's name: { analyzeSnapshot:
+    // analyze } would have the runner test a key the goal never named); a lone
+    // generic method the goal states is what the goal asked for.
+    const stated=goalMethods(this.userGoal()),named=startMethods(described)||[];
+    if(!apiCallable(described)||apiGenericOnly(described)&&!stated.some(s=>named.includes(s.name)))
       return {stage:'run',items:[entryIssue(entry,`start() must return an object whose methods perform the requested operations${apiGenericOnly(described)?', one per operation and named after it, not a single generic method':''}; it returned ${clip(api||'nothing',300)}.`)]};
     // v7.15.4: an entry whose imports reach no module that exports a promised
     // function runs none of the other pieces. Run11's entryModule.js wrote
@@ -2463,8 +2500,23 @@ export class ControlRoom extends DurableObject {
       return {stage:'run',items:[entryIssue(entry,clip(`start() no longer returns ${fixed.missing.join(', ')}. The runner's test calls app.${fixed.calls.join(', app.')}; it was written ${fixed.written} times this run as start()'s methods changed and stays as it is now. Return each of ${fixed.calls.join(', ')} from start() again, under that name, performing the operation it did.`,900))]};
     }
     let operations=null;
+    // v7.15.13 (run18): a goal that states what start() returns is checked
+    // against those methods, with no model call (goalOperations reads nothing
+    // from run18's goal, whose API is analyze(snapshot)); a missing one is a
+    // gap for the entry, as a mapped gap is.
+    if(!fixed.test&&stated.length&&coverageCheckable(described)) {
+      const found=stated.map(s=>({operation:signature(s),method:named.includes(s.name)?s.name:null})),plan=this.plannedOperations(),carrier=this.node(this.entryOwner(id,entry))?.label;
+      const gaps=found.filter(o=>!o.method).map(o=>{const p=plan.find(x=>x.operation===o.operation);return {operation:o.operation,...(p?{fn:p.method,from:p.label}:{})};});
+      if(gaps.length) {
+        this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${stated.length} method(s) the goal states: ${gaps.map(o=>o.operation).join(', ')}.`,900));
+        // A performer the carrier itself writes is no import (own), as an atomic top's.
+        return {stage:'run',items:[entryIssue(entry,gapProblem(described,gaps,'',946,plan,{own:!linked||gaps.every(g=>g.from&&g.from===carrier)}))]};
+      }
+      operations=found;
+      this.event(id,'api_covered',clip(`Each method the goal states start() returns is there: ${found.map(o=>o.method).join(', ')}`,900));
+    }
     // v7.15.5: a test fixed for other methods is written again, after this gate.
-    if(!fixed.test) {
+    else if(!fixed.test) {
       const checkable=coverageCheckable(described);
       const coverage=checkable?await apiCoverage(this.inferenceEnv('compiler'),{goal,api}):null;
       // v7.15.5: the mapping is checked against the plan's operation functions
@@ -3484,11 +3536,20 @@ export class ControlRoom extends DurableObject {
       clefP.set(`${repaired[x.i].task}\n${x.fn.name}`,x.p);
     }
     let rejectedScope=0;
-    const rejectedChildren=[],admitted=[];
+    // v7.15.13 (run19, run20): the plan outranks Clef's doubt. A piece whose
+    // function a sibling of this split uses, or that the goal states start()
+    // returns, is in scope ("Check errors", "Check speed" and "Check
+    // utilization" were rejected at p≈0.48 while "Process interfaces" used
+    // them); a name the goal states or the piece's label writes (labelWrites)
+    // is kept (analyze left "Analyze snapshot" at p=0.385, processCircuits
+    // "Process circuits" at 0.464, and five diagnostics went unreachable).
+    const rejectedChildren=[],admitted=[],stated=new Set(goalMethods(this.userGoal()).map(s=>s.name)),usesOf=c=>c&&typeof c==='object'?normalizeUses(c.uses):[];
     repaired.forEach((child,i)=>{
-      const carries=carried(child),label=clip(child.label,70),p=scope[i].toFixed(3);
+      const carries=carried(child),label=clip(child.label,70),p=scope[i].toFixed(3),fns=(child.interfaces||[]).map(f=>f.name);
+      const named=fns.filter(n=>stated.has(n)),users=repaired.filter((s,j)=>j!==i&&usesOf(s).some(u=>fns.includes(u))),used=fns.filter(n=>users.some(s=>usesOf(s).includes(n)));
       if(scope[i]>=0.5)this.event(id,'scope_allowed',late?`Clef accepted late child "${label}" (p=${p}).`:`Clef accepted proposed child "${label}" (p=${p}); within Root and parent scope.`);
       else if(carries.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which carries ${carries.join(', ')} that this manager was promised; admitted (in scope by construction).`);
+      else if(named.length||used.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which promises ${listed(named.length?named:used)}, which ${named.length?'the goal states start() returns':`${listed(users.map(s=>`"${clip(s.label,70)}"`))} uses`}; admitted (in scope by the plan).`);
       else {
         this.event(id,'scope_rejected',late?`Clef rejected late child "${label}" (p=${p}).`:`Clef rejected proposed child "${label}" (p=${p}); outside Root and parent scope.`);
         rejectedScope++;rejectedChildren.push({label:child.label,task:clip(child.task,500),probability:scope[i]});
@@ -3496,9 +3557,10 @@ export class ControlRoom extends DurableObject {
       }
       // A carried name takes the parent's item: the description travels down unchanged.
       let interfaces=(child.interfaces||[]).map(f=>own.has(f.name)?promised.find(p=>p.name===f.name):f);
-      const no=(names[i]||[]).filter(x=>x.p<0.5);
-      for(const x of no)this.event(id,'interfaces_stripped',`Clef judged ${x.name} (p=${x.p.toFixed(3)}) is not what "${label}" writes; the piece is kept without it.`);
-      if(no.length)interfaces=interfaces.filter(f=>!no.some(x=>x.name===f.name));
+      const no=(names[i]||[]).filter(x=>x.p<0.5),kept=no.filter(x=>stated.has(x.name)||labelWrites(child.label,x.name)),strip=no.filter(x=>!kept.includes(x));
+      for(const x of kept)this.event(id,'interfaces_kept',`Clef doubted ${x.name} (p=${x.p.toFixed(3)}), but ${stated.has(x.name)?'the goal states start() returns it':`"${label}" names it`}; kept.`);
+      for(const x of strip)this.event(id,'interfaces_stripped',`Clef judged ${x.name} (p=${x.p.toFixed(3)}) is not what "${label}" writes; the piece is kept without it.`);
+      if(strip.length)interfaces=interfaces.filter(f=>!strip.some(x=>x.name===f.name));
       admitted.push({...child,interfaces});
     });
     // The walk by name (C6): a name that another branch's promise holds, at
@@ -3572,8 +3634,10 @@ export class ControlRoom extends DurableObject {
         const found=candidates.find(c=>c.id===owner);
         if(found)return {owner:found,level};
         // Below the bar: a tie with this branch keeps the piece here.
+        // v7.15.13 (run20): and Clef's lean prunes only a piece whose function the owner promises, by name or as the same operation ("Check errors" was pruned as "Check error rate" at p=0.405).
         const top=ranks[0],mine=ranks.find(x=>x.id===branch.id)?.p??0,other=top&&top.id!==branch.id&&top.p>=OWNER_FLOOR&&top.p>mine&&candidates.find(c=>c.id===top.id);
-        if(other&&!(best?.p>=top.p))best={owner:other,level,p:top.p};
+        const theirs=other?this.promisedOf(other.id).map(f=>f.name):[],covers=(child.interfaces||[]).some(f=>theirs.some(n=>n===f.name||sameOp(f.name,n)));
+        if(other&&covers&&!(best?.p>=top.p))best={owner:other,level,p:top.p};
         branch=level;
       }
       return best||{error};
@@ -3945,6 +4009,8 @@ export class ControlRoom extends DurableObject {
   // v7.15.5 merge: the start carrier's own performer first, the one its
   // promise names (G1: readTicket, never the store's readTickets).
   performerOf(id, x) {
+    // v7.15.13 (run18): an operation the carrier itself promises (a stated method written here) is its own.
+    if(this.promisedOf(id).some(f=>f.name===x.op))return null;
     const levels=[...this.planWalk(id)].map(items=>items.filter(f=>performsOp(x.op,f))),plan=this.startPerformers(id).filter(f=>performsOp(x.op,f)),near=plan.length?plan:levels.find(l=>l.length);
     if(!near||levels.flat().some(f=>x.uses?.includes(f.name)))return null;
     return near.find(f=>f.params?.length===x.params?.length)||near[0];
@@ -4789,7 +4855,9 @@ export class ControlRoom extends DurableObject {
         // YES stands too; asked again, Clef saw "no valid partition" and Root
         // wrote the whole application as one module.
         const malformed=!namesOnly&&this.get(`split_yes:${id}`)==='1';
-        const gate=namesOnly||malformed?{split:true}:await shouldSplit(this.inferenceEnv(),n.task,before);
+        // v7.15.13 (run20): the gate hears what the piece calls; five workers whose uses named their siblings' checks were told to split and proposed those checks again.
+        const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:n.task;
+        const gate=namesOnly||malformed?{split:true}:await shouldSplit(this.inferenceEnv(),gateTask,before);
         this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
         if (gate.split && !this.canSplit(id,2)) {
           // Clef chose to split but the room has no agent slots or depth left.
@@ -5456,14 +5524,15 @@ export class ControlRoom extends DurableObject {
     // v7.14: what the loader and the runner rely on is part of the goal, so
     // the splitters assign it like any other requirement. (The MOCK_AI
     // legacy fixtures run without it.)
-    const task=this.live()?`${clip(goal,GOAL_LIMIT)} ${GOAL_START_REQUIREMENT}`:goal;
+    // v7.15.13 (run18): the requirement and Root's promise name the methods the goal states start() returns.
+    const whole=clip(goal,GOAL_LIMIT),task=this.live()?`${whole} ${goalStartRequirement(whole)}`:goal;
     this.set('goal',this.live()?task:clip(goal,GOAL_LIMIT));
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
-      try { await this.provision('root',null,'Root objective',task,this.live()?ROOT_PROMISE:[]); await this.drive(budget); }
+      try { await this.provision('root',null,'Root objective',task,this.live()?rootPromise(whole):[]); await this.drive(budget); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};

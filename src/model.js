@@ -1,6 +1,8 @@
-import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects, spawnPiece, splitShape } from './protocol.js';
+import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects, spawnPiece, splitShape, NO_ANSWER, emptyAnswer } from './protocol.js';
 import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText } from './interfaces.js';
+import { goalMethods } from './api-coverage.js';
+export { NO_ANSWER };
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 const HYBRID = '@cf/qwen/qwen3-30b-a3b-fp8';
 // Workers AI's newer chat models take max_completion_tokens with a
@@ -318,6 +320,24 @@ export const GOAL_START_REQUIREMENT = 'The finished application has one entry mo
 // reads start without ASK_CLAUSE.
 export const ASK_CLAUSE = ', which you ask your manager for and import by its name';
 export const ROOT_PROMISE = Object.freeze([Object.freeze({name:'start',does:'no arguments; returns an object with one method per goal operation, each the function that performs it'+ASK_CLAUSE,params:Object.freeze([])})]);
+// v7.15.13 (run18): a goal that states what start() returns ("start()
+// returns an object exposing analyze(snapshot)", goalMethods) is appended
+// the requirement with those methods named, beside the goal's own sentence,
+// and Root's promise names them too: run18's carrier read "one method per
+// goal operation, which you ask your manager for" beside the goal's analyze
+// and asked for getGoalOperations. Either form of the requirement is
+// stripped by its fixed head and tail (userGoal, decompose's goal, the top's
+// clip in provision).
+export const goalStartRequirement = goal => {const m=goalMethods(goal);return m.length?GOAL_START_REQUIREMENT.replace('one method per operation named above',`the methods named above (${m.map(signature).join(', ')})`):GOAL_START_REQUIREMENT;};
+const START_REQUIREMENT=/ ?The finished application has one entry module that exports start\(\);[^]*?starting a server or prompting\.$/;
+export const stripStartRequirement = text => String(text ?? '').replace(START_REQUIREMENT,'');
+export const rootPromise = goal => {
+  const m=goalMethods(goal);
+  if(!m.length)return ROOT_PROMISE;
+  const say=xs=>`no arguments; returns an object exposing ${xs.map(signature).join(', ')}${xs.length<m.length?' and more':''}, each the function that performs it${ASK_CLAUSE}`;
+  let does=say(m);for(let n=m.length-1;does.length>300&&n>0;n--)does=say(m.slice(0,n));
+  return [{name:'start',does,params:[]}];
+};
 export const ENTRY_CONTRACT = 'You write the application entry module: it imports the other pieces by the relative paths and names it expects, exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each the operation imported from the module that owns it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
 
 // v7.15.5 (run12): Root's split promised a factory, createData(), for its
@@ -340,7 +360,7 @@ export async function decompose(env, context, opts = {}) {
   // (a blind cut could end the JSON mid-string); only the rejection feedback
   // is clipped to the room left.
   const promised=Array.isArray(context.your_promised_functions)?context.your_promised_functions:[];
-  const {planned=promised.length>0,goal=String(context.root_scope||'').replace(' '+GOAL_START_REQUIREMENT,'')}=opts,uses=planned?SPLIT_USES:'';
+  const {planned=promised.length>0,goal=stripStartRequirement(context.root_scope||'')}=opts,uses=planned?SPLIT_USES:'';
   const fields={assigned_code:context.your_responsibility,
     your_promised_functions:promised.length?promised:undefined,
     original_goal_scope_boundary:context.root_scope || undefined,
@@ -355,15 +375,15 @@ export async function decompose(env, context, opts = {}) {
   // splitter's error to retry. Stray items beside two pieces are dropped, as
   // normalizeAction drops them. A parsed answer with no spawn items is the
   // splitter declining, not malformed (review: a child that cannot split).
-  const vet=(text,parsed=parseObject(text,splitShape))=>{
+  const vet=(output,text=contentOf(output),parsed=parseObject(text,splitShape))=>{
     const items=Array.isArray(parsed.spawn)?spawnObjects(parsed.spawn):[],pieces=items.filter(spawnPiece);
     // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
-    if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
+    if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,output,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
     const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||e.check!=='C7');
-    return {parsed,text,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
+    return {parsed,text,output,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
   };
   const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
-  const first=vet(contentOf(await run(env,system+uses,request,4096,{noThink:Boolean(opts.noThink)})));
+  const first=vet(await run(env,system+uses,request,4096,{noThink:Boolean(opts.noThink)}));
   if(first.ok && !first.count)return done(first);
   // run16: an answer with no text is reasoning with no JSON after it (Root's
   // splitter thought for 126 s and its output budget ran out). An answer the
@@ -376,16 +396,15 @@ export async function decompose(env, context, opts = {}) {
   const specific=first.vague?.length?` Your previous answer used placeholder labels or tasks copied from the example (${first.vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
   const names=first.bad?.length?` Your previous answer's functions failed these checks: ${first.bad.map(e=>e.text).join(' ')} Correct them.`+
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
-  const retry=vet(contentOf(await run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096,{noThink:Boolean(opts.noThink)||first.malformed})));
+  const retry=vet(await run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096,{noThink:Boolean(opts.noThink)||first.malformed}));
   // The retry replaces the first answer only when it is not worse; a
   // malformed retry never replaces a partition that parsed (review).
   const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok || retry.malformed && !first.malformed ? first : retry;
   // Malformed twice is a parse error, which the turn retries with Clef's YES
   // kept: never a partition Clef reconsiders (run10's Root became atomic).
-  return best.malformed?{parse_error:true,raw:clip(best.text.trim(),1500)||NO_ANSWER}:done(best);
+  // v7.15.13 (run18): an empty answer says what its envelope held (emptyAnswer).
+  return best.malformed?{parse_error:true,raw:clip(best.text.trim(),1500)||emptyAnswer(best.output)}:done(best);
 }
-// What the event log says of an answer with no text (run16).
-export const NO_ANSWER='no answer: the model returned only reasoning, or its output budget ran out before the JSON';
 // The rejection feedback within the room left: rejected, then accepted,
 // then proposed entries go from the end, then the reason is cut.
 export function clipFeedback(feedback, room) {
@@ -403,10 +422,12 @@ export function clipFeedback(feedback, room) {
 }
 // A child whose label or task is the prompt's example, or a bare
 // "Piece A" / "Part 2" style name, says nothing about the code it writes.
+// v7.15.13 (run19, run20): nor does "Subproblem", "Sub-task 2" or "Subtask
+// B", which two splitters gave five children each (all pruned).
 export function placeholderChildren(spawn) {
   if(!Array.isArray(spawn))return [];
   const label=s=>String(s?.label||'').trim(),task=s=>String(s?.task||'').trim();
-  return spawn.filter(c=>/^(?:piece|part|module|component|child|task|step|chunk|unit|section|item)\s*[-#:.]?\s*(?:[a-z]|\d{1,2})$/i.test(label(c))||/^short name of (?:what this piece does|another piece)$/i.test(label(c))||
+  return spawn.filter(c=>/^(?:piece|part|module|component|child|task|step|chunk|unit|section|item)\s*[-#:.]?\s*(?:[a-z]|\d{1,2})$|^sub-?(?:problem|task)(?:\s*[-#:.]?\s*(?:[a-z]|\d{1,2}))?$/i.test(label(c))||/^short name of (?:what this piece does|another piece)$/i.test(label(c))||
     !label(c)||/^(?:write code that\s*)?(?:\.{3}|…|implements (?:this|another) piece)?$/i.test(task(c)));
 }
 
@@ -470,7 +491,9 @@ export async function decide(env, context, {planned = false} = {}) {
   if (!parsed.parse_error) return parsed;
   output = await run(env, system + '\nRETRY: Strictly valid short JSON. No markdown.',
     JSON.stringify(context).slice(0, 15000) + '\nMalformed previous output: ' + contentOf(output).slice(0, 200), Math.min(8192,decisionTokens+1024));
-  return parseObject(output);
+  parsed = parseObject(output);
+  // v7.15.13 (run18): an empty answer says what its envelope held ("Bad action response: " said nothing).
+  return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
 }
 
 export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false }) {

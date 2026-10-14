@@ -101,7 +101,9 @@ test('v7.15.1: run9 replay: Root keeps updateTicket on Update Ticket Module and 
   const {room,drain}=setup(ai);
   await room.start(goal,1);await drain();
   assert.equal(ai.calls.filter(c=>c.kind==='piece').length,0,'the plain pick needs no model call');
-  assert.deepEqual(promisedNames(room),{'Entry Module':['start'],'Data Module':['addTicket','getTickets'],'Create Ticket Module':['createTicket'],'View Tickets Module':[],'Update Ticket Module':['updateTicket'],'Delete Ticket Module':['deleteTicket']});
+  // v7.15.13 (run19): "View Tickets Module" names viewTickets, so Clef's 0.413 no longer strips it.
+  assert.deepEqual(promisedNames(room),{'Entry Module':['start'],'Data Module':['addTicket','getTickets'],'Create Ticket Module':['createTicket'],'View Tickets Module':['viewTickets'],'Update Ticket Module':['updateTicket'],'Delete Ticket Module':['deleteTicket']});
+  assert.deepEqual(events(room,'interfaces_kept').map(e=>e.body),['Clef doubted viewTickets (p=0.413), but "View Tickets Module" names it; kept.']);
   assert.equal(room.promisedOf(room.children('root')[4].id)[0].does,'updates a ticket by id and returns it','the winner keeps its own item');
   assert.deepEqual(events(room,'interfaces_repaired').map(e=>e.body),['Deleted updateTicket from "Data Module" (listed by two pieces; kept on "Update Ticket Module", label matches); deleteTicket from "Data Module" (listed by two pieces; kept on "Delete Ticket Module", label matches); the pieces are kept.']);
 });

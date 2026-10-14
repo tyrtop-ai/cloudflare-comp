@@ -5,7 +5,7 @@
 // reading alone and certified the application. Everything here is
 // deterministic; the model only proposes the mapping.
 import {parseSource, noValue} from './linker.js';
-import {performsOp} from './interfaces.js';
+import {performsOp, validName} from './interfaces.js';
 
 const callable = d => d?.type==='function'||d?.type==='class';
 // A function, class or array start() returned is fully described and holds
@@ -100,6 +100,25 @@ export function goalOperations(goal) {
     const verbs=[m[1],...m[2].split(',').map(v=>v.trim()).filter(Boolean),m[3]].map(opVerb),object=m[4];
     if(verbs.some(v=>!v)||NO_OBJECT.test(object))continue;
     for(const verb of verbs)if(!out.some(o=>sameVerb(o.verb,verb)&&o.object===object))out.push({verb,object,operation:`${verb} ${object}`});
+  }
+  return out;
+}
+// v7.15.13 (run18): the methods a goal states start() returns, each {name,
+// params}: in a sentence (backticks removed) that mentions start() and a
+// form of return, expose, provide or "with", the identifiers after that
+// word, written as a call (analyze(snapshot)), inside braces ({ analyze,
+// summarize }) or in camelCase. A plain word is prose, so the runtime's own
+// "one method per operation named above" states none, as does the issue
+// tracker's goal. Valid names only, never start, deduplicated, at most 8.
+const STATES=/\b(?:return(?:s|ed|ing)?|expos(?:e|es|ed|ing)|provid(?:e|es|ed|ing)|with)\b/i;
+export function goalMethods(goal) {
+  const out=[],add=(name,params='')=>{name=validName(name);if(name&&name!=='start'&&!out.some(m=>m.name===name)&&out.length<8)out.push({name,params:params.split(',').map(p=>validName((p.match(/[A-Za-z_$][\w$]*/)||[''])[0])).filter(Boolean).slice(0,6)});};
+  for(const sentence of String(goal||'').replace(/`/g,'').split(/(?<=[.!?;])\s+|\n+/)) {
+    const m=/\bstart\s*\(\s*\)/.test(sentence)?STATES.exec(sentence):null;
+    if(!m)continue;
+    const rest=sentence.slice(m.index+m[0].length);
+    for(const b of rest.matchAll(/\{([^{}]*)\}/g))for(const item of b[1].split(/,(?![^()]*\))/)){const c=/([A-Za-z_$][\w$]*)\s*(?:\(([^()]*)\))?/.exec(item);if(c)add(c[1],c[2]);}
+    for(const c of rest.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(([^()]*)\)|\b([a-z][a-z0-9]*[A-Z][\w$]*)\b/g))add(c[1]||c[3],c[2]);
   }
   return out;
 }
