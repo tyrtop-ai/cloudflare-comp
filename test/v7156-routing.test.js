@@ -305,7 +305,8 @@ test('v7.15.6: requirementRoute orders the candidates: the frames innermost firs
   assert.ok(text.length<=900&&!text.includes('components/'),text);
   assert.ok(text.endsWith(' What the other side provides: module.js exports: deleteTicket(id) Publish the FULL updated file.'),text);
   const crowded=P.repairText({requirement:true,instructions:'Your viewTicket(id) must satisfy: '+'y'.repeat(850),facts:'module.js exports: '+'f(), '.repeat(80)});
-  assert.ok(crowded.length===900&&crowded.endsWith(' Publish the FULL updated file.')&&crowded.includes(' What the other side provides: module.js exports: f(), '),crowded);
+  // v7.15.7 review: the facts fill the room the body leaves, cut at a boundary (here a word's: at most four characters unused), never mid-word.
+  assert.ok(crowded.length>=896&&crowded.length<=900&&crowded.endsWith('f(), Publish the FULL updated file.')&&crowded.includes(' What the other side provides: module.js exports: f(), '),crowded);
   assert.equal(P.repairText({requirement:true,instructions:'Your viewTicket(id) must satisfy: '+'z'.repeat(1200),facts:''}).length,900);
   assert.ok(P.repairText({requirement:true,instructions:'Your viewTicket(id) must satisfy: x.',facts:''}).endsWith('must satisfy: x. Publish the FULL updated file.'));
   assert.equal(P.instructionsFor({kind:'run',parties:[],facts:{requirement:round3}},'site'),"The runner's test requires: Deleting ticket should result in an error when viewing. Test line 50: await app.viewTicket(createdTicket.id) inside a try expecting a throw. It failed at line 55: assert.ok(errorCaught, 'x').");
