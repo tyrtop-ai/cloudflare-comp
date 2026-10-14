@@ -16,6 +16,10 @@ import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materiali
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
+import { callOf, esmSyntax } from './linker.js';
+import { dataPiece } from './problems.js';
+import { MAX_INTERFACES } from './interfaces.js';
+import { branchDirectory } from './assembly.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -1190,7 +1194,9 @@ export class ControlRoom extends DurableObject {
     if(!row)return '';
     const problems=parse(row.problems,[]).map(id=>this.problems('id=?',id)[0]).filter(p=>p&&p.status!=='closed');
     if(!problems.length)return '';
-    return repairText({role:row.role,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),unchanged:problems.some(p=>p.flags.no_change&&p.flags.no_change_by===row.worker),own:row.manager===row.worker,
+    // v7.15.5 review: another piece's linked file is named with its label (run12's Entry Module and Update Ticket Operation each wrote module.js).
+    const dirs=new Map(this.allNodes().map(n=>[branchDirectory(n.label,n.id),n])),piece=d=>{const n=dirs.get(d);return !n?null:n.id===row.worker?'':n.label;};
+    return repairText({role:row.role,piece,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),unchanged:problems.some(p=>p.flags.no_change&&p.flags.no_change_by===row.worker),own:row.manager===row.worker,
       problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
@@ -1878,7 +1884,8 @@ export class ControlRoom extends DurableObject {
     for(const x of swappedCalls(files,surfaces,{promised:this.promisedParams(builderId)}))
       items.push({kind:'argorder',path:x.path,target:x.target,detail:x.text,
         facts:{argorder:{call:x.call,name:x.name,params:x.params,line:x.line,from:x.from},provider_text:clip(exportsText(x.target),700)}});
-    return items;
+    // v7.15.5 review: a reader in ESM syntax is given import lines (run12's deleteTicket.js).
+    return items.map(x=>esmSyntax(files.get(x.path))?{...x,facts:{...x.facts,esm:true}}:x);
   }
   // v7.15 §6.2: a function this manager promised that no module of its
   // linked branch exports is a contract problem for the piece below that
@@ -2473,10 +2480,11 @@ export class ControlRoom extends DurableObject {
     const plain=new Set(this.problems("kind='stuck' AND outcome='retasked'").filter(p=>p.flags.plain_js).map(p=>p.parties[0]?.owner));
     const unique=new Map();
     for(const p of rows)if(p.flags.escalated_from&&p.facts.names?.length)unique.set(p.id,await this.uniqueProvider(m,p));
+    const adds=await this.promiseAdds(m,rows,kindOf);
     return {holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,taskOf:id=>children.get(id)?.task,labelOf:id=>children.get(id)?.label||id,
       builder:builder?.id||null,maxHops:MAX_HOPS(depth),
       canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),causedHere:p=>caused.has(p.id),
-      plainJsDone:id=>plain.has(id),uniqueProvider:p=>unique.get(p.id)||null,
+      plainJsDone:id=>plain.has(id),uniqueProvider:p=>unique.get(p.id)||null,promiseAdd:p=>adds.get(p.id)||null,
       // The same problem assigned before to this child or inside its branch
       // (M4); for a stuck worker, its earlier stuck problems that what it was told did not settle.
       recurrence:(p,child)=>query(this.db(),`SELECT assignee FROM problems WHERE ${p.kind==='stuck'?"kind='stuck' AND outcome!='resolved' AND source":'signature'}=? AND id!=? AND assignee!=''`,p.kind==='stuck'?p.source:p.signature,p.id).filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
@@ -2525,7 +2533,7 @@ export class ControlRoom extends DurableObject {
       }
       decided.push([p,dec]);
     }
-    const tickets=new Map(),relink=[],retasks=new Map();
+    const tickets=new Map(),relink=[],retasks=new Map(),sent=new Map();
     // A model decision's facts add to the problem's own (the provider's
     // exports, what the top's children offer the entry); they never replace them.
     const factsOf=(p,dec,own)=>dec.rule!=='model'||dec.facts_text==null?dec.facts_text??own:
@@ -2548,6 +2556,12 @@ export class ControlRoom extends DurableObject {
         // Its child is retired or retasked by this decision.
         if(this.moveProblem(p,{status:'closed',outcome:dec.outcome,trail:trail(p,dec.outcome==='retired'?'retire':'retask',dec.child,dec.rule)}))
           this.event(m,'problem_closed',clip(`${p.kind} problem closed: ${label(dec.child)} is ${dec.outcome}: ${p.detail}`,600),dec.child);
+      } else if(dec.action==='retask'&&dec.promise_add) {
+        // D9: the provider owes the fix as an assigned worker does; its rerun is relinked, or reopens the problem when it changes nothing.
+        // An unresolved import names it as its provider from now on (owed, review).
+        const provider=p.parties.some(x=>x.role==='provider')?{}:{parties:[...p.parties,{path:'',owner:dec.child,owner_path:dec.promise_add.path||'',digest:'',role:'provider'}]};
+        if(this.moveProblem(p,{status:'assigned',assignee:dec.child,...provider,flags:{...p.flags,revs:this.revisionKey(dec.child)},trail:trail(p,'retask',dec.child,dec.rule)}))
+          retasks.set(dec.child,{task:dec.task,rule:dec.rule,reason:`${dec.promise_add.names.join(', ')} for ${dec.promise_add.by}`,interfaces:dec.interfaces,add:dec.promise_add});
       } else if(dec.action==='retask') {
         if(this.moveProblem(p,{status:'closed',outcome:'retasked',flags:{...p.flags,...dec.plain_js?{plain_js:true}:{}},trail:trail(p,'retask',dec.child,dec.rule)}))
           retasks.set(dec.child,{task:dec.task,rule:dec.rule,reason:dec.plain_js?'the code gate rejected its output three times; it writes plain JavaScript':''});
@@ -2586,7 +2600,8 @@ export class ControlRoom extends DurableObject {
       for(const [p,dec] of list) {
         // A relayed decision stays the parent's, so a reopened problem is relayed again (D1).
         const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.directive?.facts_text??p.facts.provider_text??'')};
-        if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,flags:{...p.flags,revs},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
+        // D9 owed: the facts the decision read again (no stale unpromised, review).
+        if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,...dec.facts?{facts:dec.facts}:{},flags:{...p.flags,revs},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
       }
       if(!moved.length)continue;
       // A stuck worker reads its manager's ticket on a fresh turn: its failed
@@ -2598,7 +2613,7 @@ export class ControlRoom extends DurableObject {
       const instructions=clip([...contract,...said].join(' '),900);
       const facts=clip([...new Set(moved.flatMap(p=>String(p.directive.facts_text||'').split(' | ')).filter(Boolean))].join(' | '),1400);
       this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,m,worker,JSON.stringify(moved.map(p=>p.id)),role,instructions,facts,now);
-      this.send(m,worker,'[build:repair] '+ticket);
+      this.send(m,worker,'[build:repair] '+ticket);sent.set(worker,ticket);
       this.event(m,'problem_assigned',clip(`${moved.length} problem(s) to ${label(worker)} (${[...new Set(list.map(([,d])=>d.rule))].join(', ')}): ${instructions}`,800),worker);
       // run8 paused silently after its entry answered a repair 'fixed' and
       // wrote nothing. Back once, saying so; the next unchanged answer closes it.
@@ -2606,7 +2621,8 @@ export class ControlRoom extends DurableObject {
         this.event(m,'repair_unchanged',`${label(worker)} answered its repair as done without changing a file; the problem goes back to it once with "nothing changed in your files".`,worker);
     }
     for(const r of acts.retask)if(!skip.has(r.child)&&!retasks.has(r.child))retasks.set(r.child,{task:r.task,rule:'model',reason:r.reason,interfaces:r.interfaces});
-    for(const [child,r] of retasks){this.retaskChild(m,child,r.task,r.reason,r.rule,r.interfaces);if(r.interfaces)st.promised=true;}
+    // A retask drops the child's undelivered tickets: one sent in this decision goes again (review: D9 dropped a D4 ticket).
+    for(const [child,r] of retasks){if(r.add)this.promiseAdded(m,r.add);this.retaskChild(m,child,r.task,r.reason,r.rule,r.interfaces);if(r.interfaces)st.promised=true;if(sent.has(child))this.send(m,child,'[build:repair] '+sent.get(child));}
     for(const r of acts.retire)this.retireChild(m,r.child,r.reason);
   }
   // Problems a later turn decides (another cluster first, or no budget now).
@@ -2719,6 +2735,101 @@ export class ControlRoom extends DurableObject {
       }
     }
     return found.length===1?found[0]:null;
+  }
+  // v7.15.5 (run12): deleteTicket.js imported getTickets and setTickets from
+  // ticketDataManager.js, whose piece promised only the factory createData;
+  // D6 told it the provider "is never asked to add them", and it flip-flopped
+  // between those names and createData() for six rounds. Names a reader
+  // imports from a provider that does not export them, that no piece
+  // promises and that perform no goal operation go on the provider's promise
+  // (D9) when its piece covers them: a factory or data piece (dataPiece), or
+  // Clef says its task asks for them (a Clef error counts as no). Once per
+  // name per provider, added or refused (promise_asked); the provider is a
+  // direct worker child, as a sub-manager's promise is its whole branch's.
+  // Every row about one provider adds the union. {problem id: the add}.
+  // Review: an unresolved import of the plan's convention (require('./getTickets'),
+  // what B tells readers to write) that no module exports goes to the one
+  // data piece here. Never for the start carrier, as reader (its imports are
+  // the operations: addTicket, goalOperation1) or provider; never a name the
+  // reader does not call (store.records), nor the provider's own name in
+  // another case (createdata); a name two providers would gain goes to
+  // neither. A row whose names D9 put on the provider's promise, which it
+  // still does not export, is the provider's (owed: reopened, or relinked).
+  async promiseAdds(m, rows, kindOf) {
+    const out=new Map(),by=new Map(),label=id=>this.node(id)?.label||id,found=[];
+    if(!this.planned())return out;
+    const plan=this.planIndex(),goalOp=this.goalOperation(plan),starts=id=>this.promisedOf(id).some(f=>f.name==='start');
+    const worker=id=>!!id&&nextDirectChild(m,id)===id&&kindOf(id)==='worker'&&!starts(id);
+    const live=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)),datas=live.filter(c=>worker(c.id)&&dataPiece(c.label,this.promisedOf(c.id)));
+    const exported=new Map(),exportsOf=async id=>{
+      if(!exported.has(id)){const files=await this.childModules(id);exported.set(id,{path:[...files.keys()][0]||'',names:new Set([...files].flatMap(([path,text])=>[...providedNames(exportSurface(path,text))]))});}
+      return exported.get(id);
+    };
+    const fold=n=>String(n).toLowerCase().replace(/[^a-z0-9]/g,'');
+    for(const p of rows) {
+      const f=p.facts||{},reader=p.parties.find(x=>x.role==='reader');
+      if(!['mismatch','unresolved'].includes(p.kind)||f.split||f.elsewhere?.length||!f.names?.length||!reader?.owner||starts(reader.owner))continue;
+      const child=p.parties.find(x=>x.role==='provider')?.owner||(p.kind==='unresolved'?(f.named?this.buildSourceOrigin(f.via,f.named)?.owner:datas.length===1?datas[0].id:null):null);
+      if(!worker(child)||nextDirectChild(m,reader.owner)===child)continue;
+      const promise=this.promisedOf(child).map(x=>x.name),done=new Set(this.read(`promise_asked:${child}`,[])),them=f.names.length>1?'them':'it';
+      if(f.names.every(n=>promise.includes(n)&&done.has(n))) {
+        const {unpromised,promised,...facts}=f;
+        out.set(p.id,{owed:true,child,names:f.names,facts,instructions:`Your assignment promises ${f.names.join(', ')}, which ${label(reader.owner)} imports from your module, and your modules do not export ${them}. Export each as a named export with exactly that name; keep your other exports.`});
+        continue;
+      }
+      if(p.kind==='mismatch'&&!f.unpromised)continue;
+      const own=await exportsOf(child),mine=new Set([...promise,...own.names].map(fold));
+      if(f.names.some(n=>!validName(n)||plan.has(n)||done.has(n)||goalOp(n)||mine.has(fold(n))))continue;
+      // An unresolved name some module exports is a link to make, never a second carrier's.
+      if(p.kind==='unresolved'&&(await Promise.all(live.map(c=>exportsOf(c.id)))).some(e=>f.names.some(n=>e.names.has(n))))continue;
+      let text='';try{text=await this.indexedContent(reader.owner,reader.owner_path)??'';}catch{}
+      const calls=f.names.map(n=>callOf(reader.owner_path,text,n));
+      if(calls.some(c=>!c))continue;
+      found.push({p,child,reader:reader.owner,names:f.names,calls,path:own.path});
+    }
+    const gainers=n=>new Set(found.filter(x=>x.names.includes(n)).map(x=>x.child)).size;
+    for(const x of found.filter(x=>x.names.every(n=>gainers(n)===1))) {
+      const g=by.get(x.child)||{names:new Set(),rows:[],readers:new Map(),path:x.path},r=g.readers.get(x.reader)||{names:[],calls:new Map()};
+      x.names.forEach((n,i)=>{g.names.add(n);if(!r.names.includes(n))r.names.push(n);if(!r.calls.has(n))r.calls.set(n,x.calls[i]);});
+      g.rows.push(x.p);g.readers.set(x.reader,r);by.set(x.child,g);
+    }
+    for(const [child,x] of by) {
+      const n=this.node(child),own=this.promisedOf(child),names=[...x.names];
+      if(own.length+names.length>MAX_INTERFACES)continue;
+      const readers=[...x.readers.keys()].map(label).join(' and ');
+      let why=dataPiece(n.label,own)?'its piece makes or holds the data':'';
+      if(!why)try {
+        const pr=await ownsNeed(this.inferenceEnv(),{assigned_code:n.task,need:`${names.join(', ')}, which ${readers} import${x.readers.size>1?'':'s'} from this piece's module`,name:names[0]});
+        if(pr>=0.5)why=`Clef p=${pr.toFixed(3)}: its assignment covers them`;
+        else {this.asked(child,names);this.event(m,'promise_refused',`${names.join(', ')}: Clef p=${pr.toFixed(3)}, outside "${n.label}"'s assignment; the reader changes.`,child);continue;}
+      } catch(e) {this.event(m,'promise_refused',clip(`${names.join(', ')}: Clef failed (${e?.message||e}); the reader changes.`,400),child);continue;}
+      // The reader's call is the hint: getTickets(), setTickets(updatedTickets),
+      // and its line says what it does with it (review: "imports it" said nothing).
+      const items=names.map(name=>{const [r,{calls}]=[...x.readers].find(([,v])=>v.calls.has(name)),call=calls.get(name);return {name,does:clip(`${label(r)} calls it: ${call.line}`,200),params:call.params};});
+      const add={child,names,path:x.path,items:normalizeInterfaces(items),interfaces:normalizeInterfaces([...own,...items]),readers:[...x.readers].map(([id,r])=>({id,names:r.names})),by:readers,why,
+        task:`${n.task} Keep what your module exports and add ${names.join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module. Keep the data at module level, shared by all your functions.`};
+      for(const p of x.rows)out.set(p.id,add);
+    }
+    return out;
+  }
+  // v7.15.5 review: a name performs a goal operation when its verb is one of
+  // the goal's operation verbs (a goal word a promised function starts with:
+  // createTicket's create) and it acts on nothing or on a word of the goal:
+  // removeTicket and update do; tickets, ticketStore and createStore do not.
+  goalOperation(plan) {
+    const goal=this.userGoal().match(/[A-Za-z]+/g)||[],names=[...plan.keys()],verbs=goal.filter(w=>names.some(k=>performsOp(w,{name:k})));
+    return n=>verbs.some(v=>performsOp(n,{name:v})||goal.some(o=>o!==v&&performsOp(`${v} ${o}`,{name:n})));
+  }
+  asked(child, names) {this.save(`promise_asked:${child}`,[...new Set([...this.read(`promise_asked:${child}`,[]),...names])]);}
+  // D9 applied, before the retask: each name is asked once, and each reader
+  // keeps its import: its answered requests say who now promises the name.
+  promiseAdded(m, add) {
+    const n=this.node(add.child);
+    this.asked(add.child,add.names);
+    for(const r of add.readers)for(const f of add.items.filter(f=>r.names.includes(f.name)))
+      this.recordAnswer(r.id,{key:requestKey({name:f.name}),kind:'provided',fn:{name:f.name,params:f.params,does:f.does,owner:n.label},
+        text:`${signature(f)} is now promised by "${n.label}", which writes it. Keep your import of ${f.name} as it is; the builder links it to the module that exports it. Do not write it yourself.`});
+    this.event(m,'promise_added',clip(`"${n.label}" now promises ${add.items.map(signature).join(', ')} (${add.why}): ${add.by} import${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from its module and no piece promised ${add.names.length>1?'them':'it'}. It is retasked to write ${add.names.length>1?'them':'it'}; the reader keeps its import.`,700),add.child);
   }
   // What the named children export, read from this manager's linked bundle
   // (a sub-manager by the modules its branch offers): the facts a decision

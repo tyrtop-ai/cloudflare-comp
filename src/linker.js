@@ -5,7 +5,7 @@
 // deterministic; the model only proposes find/replace edits, and these
 // functions decide whether each edit is a rename or that shape fix.
 import {parse as parseJs, tokenizer} from './vendor/acorn.mjs';
-import {resolveLocal} from './assembly-gate.js';
+import {resolveLocal,canonical} from './assembly-gate.js';
 import {NODE_BUILTINS} from './code-work.js';
 
 export const LINKABLE = /\.(?:js|mjs|cjs)$/i;
@@ -289,13 +289,39 @@ export function moduleSpecifiers(content) {
   return [...new Set(found.filter(x=>typeof x==='string'))];
 }
 const isBuiltin=spec=>spec.startsWith('node:')||NODE_BUILTINS.has(spec)||NODE_BUILTINS.has(spec.split('/')[0]);
-export function componentImports(path, content, fileSet) {
+// v7.15.5 (run12): Node's ESM loader takes a relative path only as the
+// file's full name. deleteTicket.js's import from
+// '../ticket-dat-f17f9f79/ticketDataManager' failed to load in the Container
+// while the linker, resolving it as require does, counted it resolved. The
+// literals a file imports, re-exports or import()s (ESM in a CommonJS file too).
+const ESM_LOADS=new Set(['ImportDeclaration','ExportNamedDeclaration','ExportAllDeclaration','ImportExpression']);
+function esmLiterals(content) {
+  let ast;try {ast=parseSource(content).ast;} catch {return [];}
   const out=[];
+  walk(ast,node=>{if(ESM_LOADS.has(node.type)&&node.source?.type==='Literal'&&isSpecifier(node.source.value))out.push(node.source);});
+  return out;
+}
+// The specifier an ESM import must be written as: the one module it names
+// without the extension (or as a folder, its index), the extension added.
+// null when it names a file exactly, no module, or two (x.js and x.mjs).
+const joined=(path,spec)=>canonical(`${path.split('/').slice(0,-1).join('/')}/${String(spec).split(/[?#]/)[0]}`);
+export function esmPath(path, spec, files) {
+  const bare=String(spec).split(/[?#]/)[0].replace(/\/$/,''),p=isSpecifier(spec)&&joined(path,bare);
+  if(!p||files.has(p))return null;
+  const hits=['.js','.mjs','.cjs','/index.js','/index.mjs','/index.cjs'].filter(x=>files.has(p+x));
+  return hits.length===1?bare+hits[0]:null;
+}
+export function componentImports(path, content, fileSet) {
+  const out=[],esm=new Set(esmLiterals(content).map(l=>l.value));
   for(const spec of moduleSpecifiers(content)) {
     if(isBuiltin(spec))continue;
     if(!spec.startsWith('.')) {out.push({specifier:spec,error:`'${spec}' is a third-party package; only Node built-ins and published modules are available`});continue;}
     const result=resolveLocal(path,spec,fileSet);
-    out.push(result.error?{specifier:spec,error:result.error}:{specifier:spec,target:result.path});
+    if(result.error){out.push({specifier:spec,error:result.error});continue;}
+    // require would find it, so its target stays (what runs, who imports
+    // whom), but it is unresolved until it names the file exactly.
+    const fix=esm.has(spec)&&joined(path,spec)!==result.path?esmPath(path,spec,fileSet)??'':null;
+    out.push(fix===null?{specifier:spec,target:result.path}:{specifier:spec,target:result.path,error:`ESM import ${spec} from ${path} names no file: Node's ESM loader needs the full file name${fix&&` (${fix})`}`});
   }
   return out;
 }
@@ -979,19 +1005,24 @@ export function normalizeEditPaths(edit, allPaths, files=null) {
     }
   }
   const known=files||new Set(allPaths),find=String(edit.find??'');
-  const fix=spec=>{
+  // v7.15.5 (run12): in an ESM import, a path require would find gets its
+  // extension (the builder wrote '../ticket-dat-f17f9f79/ticketDataManager').
+  const fix=(spec,esm)=>{
     // A string the find already has is one the model kept, not one it wrote.
-    if(find===spec||find.includes(`'${spec}'`)||find.includes(`"${spec}"`)||isBuiltin(spec)||resolveLocal(edit.file,spec,known).path)return spec;
+    if(find===spec||find.includes(`'${spec}'`)||find.includes(`"${spec}"`)||isBuiltin(spec))return spec;
+    if(resolveLocal(edit.file,spec,known).path)return esm&&esmPath(edit.file,spec,known)||spec;
     const hit=namedModule(edit.file,spec,allPaths);
     return hit?relativeSpecifier(edit.file,hit):spec;
   };
   // Only specifier positions; a replacement that is one string, or one bare
   // path standing for a relative path, is the specifier itself (applyEdits
-  // adds the quotes).
+  // adds the quotes), ESM when the find's path is an ESM import of the file.
+  const text=files instanceof Map?files.get(edit.file):null,was=quotedString.exec(find)?.[2]??find;
+  const esm=()=>text!=null&&esmLiterals(text).some(l=>l.value===was);
   const whole=quotedString.exec(replace);
-  if(whole)replace=whole[1]+fix(whole[2])+whole[1];
-  else if(/^[^'"`\s]+$/.test(replace)&&[replace,find].some(s=>/^(['"]?)\.{1,2}\/[^'"`\s]+\1$/.test(s)))replace=fix(replace);
-  else replace=replace.replace(/(\b(?:require|import)\s*\(\s*|\bfrom\s*|\bimport\s*)(['"])([^'"\n]+)\2/g,(m,pre,q,spec)=>pre+q+fix(spec)+q);
+  if(whole)replace=whole[1]+fix(whole[2],esm())+whole[1];
+  else if(/^[^'"`\s]+$/.test(replace)&&[replace,find].some(s=>/^(['"]?)\.{1,2}\/[^'"`\s]+\1$/.test(s)))replace=fix(replace,esm());
+  else replace=replace.replace(/(\b(?:require|import)\s*\(\s*|\bfrom\s*|\bimport\s*)(['"])([^'"\n]+)\2/g,(m,pre,q,spec)=>pre+q+fix(spec,!pre.startsWith('require'))+q);
   return replace===edit.replace?edit:{...edit,replace};
 }
 // When no module exports start() or composes the others, the worker most
@@ -1604,6 +1635,25 @@ export function importRefs(path, content) {
   });
   return refs.filter(r=>r.specifier.startsWith('.'));
 }
+// v7.15.5: a file's first call of an imported name (under its local alias,
+// or as a member), for a function added to a promise (D9): the names it
+// passes, the params hint ([] when it passes something else), and the line
+// it is on. null when the file never calls it: a value read (review:
+// store.records.find(...) put records() on a promise).
+export function callOf(path, content, name) {
+  let ast;try {ast=parseSource(content).ast;} catch {return null;}
+  const local=importRefs(path,content).map(r=>r.aliases.get(name)).find(Boolean)||name;
+  let call=null;
+  walk(ast,node=>{if(!call&&node.type==='CallExpression'&&(node.callee.type==='Identifier'&&node.callee.name===local||node.callee.type==='MemberExpression'&&!node.callee.computed&&nameOf(node.callee.property)===name))call=node;});
+  if(!call)return null;
+  const args=call.arguments.map(argName),text=String(content);
+  return {params:args.every(Boolean)?args:[],line:text.slice(text.lastIndexOf('\n',call.start-1)+1,(text.indexOf('\n',call.start)+1||text.length+1)-1).trim()};
+}
+// v7.15.5 review: a file in ESM syntax (import or export declarations),
+// whose worker is given import lines, not require lines (run12's deleteTicket.js).
+export function esmSyntax(content) {
+  try {return parseSource(content).ast.body.some(n=>/^(?:Import|Export\w*)Declaration$/.test(n.type));} catch {return false;}
+}
 // The module a load or run error at path names through one of path's own
 // imports ("x is not a function", "x.y is not a constructor", "Cannot read
 // properties of undefined (reading 'x')", where path imports x): the other
@@ -1633,7 +1683,16 @@ export function autoLink(files, surfaces, {scope='application',provider=null}={}
   const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
   const edits=[];
   for(const path of js) {
-    const content=set.get(path),refs=importRefs(path,content);
+    const content=set.get(path),refs=importRefs(path,content),fixed=new Set();
+    // v7.15.5 (run12): an ESM import that names its module without the
+    // extension gets it, a rename, before any Container run; one edit per
+    // quoted form ('./lib' and "./lib" are two finds, review).
+    for(const lit of esmLiterals(content)) {
+      const find=content.slice(lit.start,lit.end),to=!fixed.has(find)&&esmPath(path,lit.value,set);
+      if(!to)continue;
+      fixed.add(find);
+      edits.push({file:path,find,replace:find[0]+to+find[0],reason:'an ESM import names its module by the full file name',target:resolveLocal(path,to,set).path,specifier:lit.value});
+    }
     for(const ref of refs) {
       if(!resolveLocal(path,ref.specifier,set).error)continue;
       const others=js.filter(t=>t!==path&&surfaces.get(t));

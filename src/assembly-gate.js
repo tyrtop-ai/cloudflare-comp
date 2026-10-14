@@ -6,7 +6,7 @@ import {isBuilderGluePath} from './assembly.js';
 const SCRIPT=/\.(?:js|cjs|mjs)$/i;
 const CODE=/\.(?:js|cjs|mjs|jsx|ts|tsx)$/i;
 
-function canonical(path) {
+export function canonical(path) {
   const out=[];
   for (const part of path.split('/')) {
     if (!part || part==='.')continue;
