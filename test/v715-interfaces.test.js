@@ -56,7 +56,7 @@ function fakeAI({gate=()=>0.9,split,within=()=>0.9,names=()=>0.9,owner=()=>null,
         return {answers:Object.fromEntries(labels.map((label,i)=>['owner_'+i,{noul:label===pick?0.93:0.05}]))};
       }
     }
-    const system=input.messages?.[0]?.content||'',request=input.messages?.[1]?.content;
+    const system=input.messages?.[0]?.content||'',request=input.messages?.[1]?.content?.replace(/ \/no_think$/,'');
     if(system.includes('CODE SPLITTER')){calls.push({kind:'split',request:JSON.parse(request),system});const n=calls.filter(c=>c.kind==='split').length;return {response:JSON.stringify({summary:'Split',spawn:split(n)})};}
     if(system.includes('LEAF CODE WRITER')&&leaf){calls.push({kind:'leaf',request:JSON.parse(request)});return {response:JSON.stringify(leaf(calls.filter(c=>c.kind==='leaf').length))};}
     if(system.includes('Return ONLY the complete text')&&file){calls.push({kind:'file',request:JSON.parse(request)});return {response:file()};}

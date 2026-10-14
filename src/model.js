@@ -3,6 +3,10 @@ import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText } from './interfaces.js';
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 const HYBRID = '@cf/qwen/qwen3-30b-a3b-fp8';
+// Workers AI's newer chat models take max_completion_tokens with a
+// reasoning_effort, the lowest each supports (DeepSeek V4 can be told none);
+// the others take max_tokens. The Qwen3 hybrid has a soft switch instead.
+const EFFORT = Object.freeze({'@cf/qwen/qwen3.8-27b':'low','@cf/deepseek-ai/deepseek-v4-flash-0731':'none'});
 
 export async function run(env, system, user, maxTokens, {noThink=false}={}) {
   const selected=model(env);
@@ -10,8 +14,8 @@ export async function run(env, system, user, maxTokens, {noThink=false}={}) {
   // against max_tokens: run7's runner and coverage calls each took time in
   // proportion to their caps, as if reasoning filled them.
   const messages=[{ role: 'system', content: system }, { role: 'user', content: noThink&&selected===HYBRID?user+' /no_think':user }];
-  const tokenParam = selected === '@cf/qwen/qwen3.8-27b'
-    ? {max_completion_tokens:maxTokens,reasoning_effort:'low'}
+  const tokenParam = selected in EFFORT
+    ? {max_completion_tokens:maxTokens,reasoning_effort:EFFORT[selected]}
     : {max_tokens:maxTokens};
   return env.AI.run(selected, {messages,...tokenParam,temperature:0.2});
 }
@@ -355,22 +359,29 @@ export async function decompose(env, context, opts = {}) {
     return {parsed,text,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
   };
   const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
-  const first=vet(contentOf(await run(env,system+uses,request,4096)));
+  const first=vet(contentOf(await run(env,system+uses,request,4096,{noThink:Boolean(opts.noThink)})));
   if(first.ok && !first.count)return done(first);
-  const malformed=first.malformed?' Your previous answer was not a JSON object whose spawn items are objects, each with a "label" and a "task"; every spawn item is a JSON object, never a quoted string.':'';
+  // run16: an answer with no text is reasoning with no JSON after it (Root's
+  // splitter thought for 126 s and its output budget ran out). An answer the
+  // parser could not read is retried without thinking, the runner's switch,
+  // and an empty one is told what it held.
+  const empty=!first.text.trim();
+  const malformed=empty?' Your previous answer held no JSON object: it was reasoning only, or the output budget cut it. Answer with the JSON object only, with no reasoning before it.':first.malformed?' Your previous answer was not a JSON object whose spawn items are objects, each with a "label" and a "task"; every spawn item is a JSON object, never a quoted string.':'';
   // Labels copied from the example ("Piece A", run4) give Clef and the prune
   // walk nothing to place, so they are turned back before anyone sees them.
   const specific=first.vague?.length?` Your previous answer used placeholder labels or tasks copied from the example (${first.vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
   const names=first.bad?.length?` Your previous answer's functions failed these checks: ${first.bad.map(e=>e.text).join(' ')} Correct them.`+
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
-  const retry=vet(contentOf(await run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096)));
+  const retry=vet(contentOf(await run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096,{noThink:Boolean(opts.noThink)||first.malformed})));
   // The retry replaces the first answer only when it is not worse; a
   // malformed retry never replaces a partition that parsed (review).
   const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok || retry.malformed && !first.malformed ? first : retry;
   // Malformed twice is a parse error, which the turn retries with Clef's YES
   // kept: never a partition Clef reconsiders (run10's Root became atomic).
-  return best.malformed?{parse_error:true,raw:clip(best.text.trim(),1500)}:done(best);
+  return best.malformed?{parse_error:true,raw:clip(best.text.trim(),1500)||NO_ANSWER}:done(best);
 }
+// What the event log says of an answer with no text (run16).
+export const NO_ANSWER='no answer: the model returned only reasoning, or its output budget ran out before the JSON';
 // The rejection feedback within the room left: rejected, then accepted,
 // then proposed entries go from the end, then the reason is cut.
 export function clipFeedback(feedback, room) {

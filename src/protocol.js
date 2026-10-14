@@ -12,9 +12,13 @@ export function contentOf(output) {
   if (typeof output === 'string') return output;
   if (typeof output?.response === 'string') return output.response;
   if (output?.response && typeof output.response === 'object') return JSON.stringify(output.response);
-  const c = output?.choices?.[0]?.message?.content;
+  const m = output?.choices?.[0]?.message, c = m?.content;
   if (typeof c === 'string') return c;
   if (Array.isArray(c)) return c.map(x => x.text || '').join('');
+  // run16: a chat completion whose content is null holds only the model's
+  // reasoning (its output budget ran out before the answer): no answer, and
+  // never the envelope as text for a parser to read as an object.
+  if (m && typeof m === 'object') return '';
   return JSON.stringify(output ?? {});
 }
 // run10: a spawn item may arrive as a JSON string of the object.

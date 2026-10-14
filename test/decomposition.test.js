@@ -135,7 +135,7 @@ test('v7.11: the child that composes the application stays a worker; the start()
   let splitter='',request=null;
   const ai={run:async(_model,params)=>{
     if(params.questions) return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
-    splitter=params.messages[0].content;request=JSON.parse(params.messages[1].content);
+    splitter=params.messages[0].content;request=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
     return response({summary:'Seven jobs; the last one composes the others',spawn:[
       {label:'Define Ticket data model with properties',task:'Write code that defines a Ticket data model'},
       {label:'Implement in-memory TicketStore with CRUD methods',task:'Write code for the TicketStore class'},
@@ -163,7 +163,7 @@ const splitRoom=(spawnAt)=>{
   let splits=0;
   const ai={run:async(_model,params)=>{
     if(params.questions) return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
-    return response({summary:'Pieces',spawn:spawnAt(++splits,JSON.parse(params.messages[1].content))});
+    return response({summary:'Pieces',spawn:spawnAt(++splits,JSON.parse(params.messages[1].content.replace(/ \/no_think$/,'')))});
   }};
   return setup({AI:ai});
 };

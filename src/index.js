@@ -137,7 +137,11 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   max_agents: 64, max_depth: 10, parallel: 16,
   model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
 });
-const CLOUDFLARE_MODELS = new Set(['@cf/qwen/qwen3.8-27b', '@cf/qwen/qwen3-30b-a3b-fp8', '@cf/meta/llama-3.2-1b-instruct']);
+// The agent models the dashboard offers: the Qwen3 hybrid (default), four
+// that answer without reasoning (Llama 4 Scout, Qwen2.5 Coder, DeepSeek V4
+// Flash with its reasoning off, Mistral Small 3.1), and two comparisons.
+export const CLOUDFLARE_MODELS = new Set(['@cf/qwen/qwen3-30b-a3b-fp8', '@cf/meta/llama-4-scout-17b-16e-instruct', '@cf/qwen/qwen2.5-coder-32b-instruct',
+  '@cf/deepseek-ai/deepseek-v4-flash-0731', '@cf/mistralai/mistral-small-3.1-24b-instruct', '@cf/qwen/qwen3.8-27b', '@cf/meta/llama-3.2-1b-instruct']);
 export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid settings');
   const result = {...prior};
@@ -4777,7 +4781,9 @@ export class ControlRoom extends DurableObject {
           return;
         }
         if (gate.split) {
-          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()},{planned:this.planned(),goal:this.userGoal()});
+          // run16: after a malformed turn the splitter answers without
+          // thinking, as its own retry does; a thinking answer costs minutes.
+          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed});
         } else {
           // A genuine leaf can implement in the SAME turn; no extra Qwen
           // decomposition request or artificial scheduler wave. It keeps the

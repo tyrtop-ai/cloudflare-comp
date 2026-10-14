@@ -50,7 +50,7 @@ function fakeAI({split,leaf,owner,gate=()=>0.9,within=()=>0.9,calls=[]}) {
     }
     const system=input.messages?.[0]?.content||'';
     if(system.includes('CODE SPLITTER')) {
-      const request=JSON.parse(input.messages[1].content);
+      const request=JSON.parse(input.messages[1].content.replace(/ \/no_think$/,''));
       calls.push({kind:'split',request});
       return {response:JSON.stringify({summary:'Split',spawn:split(calls.filter(c=>c.kind==='split').length)})};
     }

@@ -50,7 +50,7 @@ test('rejected 1-of-4 partition returns to Clef and can become direct implementa
       return {answers:Object.fromEntries(Object.keys(input.questions).map((key,i)=>[key,{noul:i===0?0.91:0.04}]))};
     }
     if(input.messages[0].content.includes('CODE SPLITTER')){
-      calls.push({kind:'split',request:JSON.parse(input.messages[1].content)});
+      calls.push({kind:'split',request:JSON.parse(input.messages[1].content.replace(/ \/no_think$/,''))});
       return answer({summary:'Wrong scope',spawn:bogus});
     }
     if(input.messages[0].content.includes('LEAF CODE WRITER')){
@@ -93,7 +93,7 @@ test('Clef can keep split decision and Qwen sees rejection details to correct th
       return {answers:Object.fromEntries(Object.keys(input.questions).map(key=>[key,{noul:0.94}]))};
     }
     if(input.messages[0].content.includes('CODE SPLITTER')){
-      const request=JSON.parse(input.messages[1].content);
+      const request=JSON.parse(input.messages[1].content.replace(/ \/no_think$/,''));
       splits.push(request);
       return answer({summary:'Code pieces',spawn:splits.length===1?bogus:[
         {label:'Ticket model',task:'Write code implementing ticket model state'},

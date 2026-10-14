@@ -224,7 +224,7 @@ const applySnapshotSettings=s=>{
 const updateModelHint=()=>{
   $('model-hint').textContent=$('model').value.includes('1b-instruct') ?
     'Experimental 1B implementers: expect weaker code and JSON reliability. Clef decides YES/NO; Llama guesses and codes.' :
-    'Clef scores YES/NO; Qwen guesses the split when YES. All models run on Cloudflare Workers AI.';
+    'Clef scores YES/NO; the agent model proposes the split when YES. All models run on Cloudflare Workers AI.';
 };
 $('model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('split-model').addEventListener('change',()=>{controlsDirty=true;});

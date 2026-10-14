@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {shouldSplit,splitProbability,decompose,run,DECISION_MODELS} from '../src/model.js';
 import {register} from 'node:module';
 register('./cloudflare-loader.mjs',import.meta.url);
-const {normalizeRoomSettings,DEFAULT_ROOM_SETTINGS}=await import('../src/index.js');
+const {normalizeRoomSettings,DEFAULT_ROOM_SETTINGS,CLOUDFLARE_MODELS}=await import('../src/index.js');
+import {readFileSync} from 'node:fs';
 
 const minimal={your_id:'root',your_responsibility:'Build CRUD issue tracker with frontend, storage and backend',neighbor_owners:[],your_private_children:[]};
 
@@ -93,4 +94,29 @@ test('many independently written modules are Clef scope-checked in parallel batc
   assert.equal(calls.length,3);
   assert.ok(calls.every(x=>Object.keys(x.questions).length<=12));
   assert.ok(calls.every(x=>x.state.original_goal==='Build a codebase'));
+});
+
+// v7.15.9: the dashboard offers four more agent models. Each takes Workers
+// AI's request shape for its family: max_tokens, or max_completion_tokens
+// with the lowest reasoning_effort the model supports.
+test('v7.15.9: the model picker and the settings agree, and each model is called in its request shape',async()=>{
+  const html=readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
+  const select=html.match(/<select id="model">([\s\S]*?)<\/select>/)[1];
+  const offered=[...select.matchAll(/<option value="([^"]+)">/g)].map(m=>m[1]);
+  assert.deepEqual(new Set(offered),CLOUDFLARE_MODELS);
+  assert.equal(offered[0],DEFAULT_ROOM_SETTINGS.model,'the default is the first option');
+  for(const model of ['@cf/meta/llama-4-scout-17b-16e-instruct','@cf/qwen/qwen2.5-coder-32b-instruct','@cf/deepseek-ai/deepseek-v4-flash-0731','@cf/mistralai/mistral-small-3.1-24b-instruct'])
+    assert.equal(normalizeRoomSettings({model}).model,model);
+  const shape=async model=>{let called;await run({MODEL_NAME:model,AI:{run:async(name,args)=>{called={name,args};return {response:'ok'};}}},'s','u',300);return called;};
+  const deepseek=await shape('@cf/deepseek-ai/deepseek-v4-flash-0731');
+  assert.equal(deepseek.args.max_completion_tokens,300);
+  assert.equal(deepseek.args.reasoning_effort,'none');
+  assert.equal(deepseek.args.max_tokens,undefined);
+  for(const model of ['@cf/meta/llama-4-scout-17b-16e-instruct','@cf/qwen/qwen2.5-coder-32b-instruct','@cf/mistralai/mistral-small-3.1-24b-instruct']) {
+    const c=await shape(model);
+    assert.equal(c.name,model);
+    assert.equal(c.args.max_tokens,300,model);
+    assert.equal(c.args.reasoning_effort,undefined,model);
+    assert.equal(c.args.messages[1].content,'u','no soft switch on another model');
+  }
 });

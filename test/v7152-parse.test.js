@@ -142,7 +142,7 @@ function fakeAI({split,gate=()=>0.847,leaf}) {
     if(input.questions?.should_split){calls.push({kind:'gate',state:input.state});return {answers:{should_split:{noul:gate(calls.filter(c=>c.kind==='gate').length,input.state)}}};}
     if(input.questions)return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.9}]))};
     const system=input.messages?.[0]?.content||'';
-    if(system.includes('CODE SPLITTER')){const request=JSON.parse(input.messages[1].content);calls.push({kind:'split',system,request});const a=split(calls.filter(c=>c.kind==='split').length,request);return {response:typeof a==='string'?a:JSON.stringify(a)};}
+    if(system.includes('CODE SPLITTER')){const request=JSON.parse(input.messages[1].content.replace(/ \/no_think$/,''));calls.push({kind:'split',system,request});const a=split(calls.filter(c=>c.kind==='split').length,request);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(system.includes('LEAF CODE WRITER')&&leaf){calls.push({kind:'leaf'});return {response:JSON.stringify(leaf)};}
     throw new Error('Unexpected model call');
   }};
