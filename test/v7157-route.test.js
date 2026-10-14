@@ -187,3 +187,100 @@ test('v7.15.7 (T2): the facts list each use\'s promise with what it returns when
   assert.deepEqual(room.useProviders('root','root.3'),{ids:[],fns:[]});
 });
 
+// ------------------------------------------------------------------ T3: an operation no piece promises grows the plan
+// Run9's split after the duplicate names were deleted from both pieces: no
+// piece promises update or delete; the entry returns update() {} and del() {}.
+const START={name:'start',does:ROOT_PROMISE[0].does,params:[]};
+const RUN9=[
+  {label:'Entry Module',task:'Write code that imports the ticket operations and exports start(), which returns an object with create, view, update and delete.',interfaces:[START]},
+  {label:'Data Module',task:'Write code that keeps tickets in memory and lets the other modules add, read, change and remove them.',interfaces:[fn('addTicket','stores a ticket with a new id and returns it',['ticket']),fn('getTickets','returns all stored tickets')]},
+  {label:'Create Ticket Module',task:'Write code that creates a ticket from the given data.',interfaces:[fn('createTicket','creates a ticket and returns it',['data'])]},
+  {label:'View Tickets Module',task:'Write code that retrieves tickets.',interfaces:[]},
+  {label:'Update Ticket Module',task:'Write code that updates a ticket by id.',interfaces:[]},
+  {label:'Delete Ticket Module',task:'Write code that deletes a ticket by id.',interfaces:[]}];
+const RUN9_ENTRY="const { createTicket } = require('./createTicket');\nconst { getTickets } = require('./getTickets');\n\nfunction create(data) {\n  return createTicket(data);\n}\n\nfunction view(id) {\n  const tickets = getTickets();\n  return tickets.find(ticket => ticket.id === id);\n}\n\nfunction update() {}\nfunction del() {}\n\nfunction start() {\n  return { create, view, update, delete: del };\n}\n\nmodule.exports = { start };\n";
+async function run9Room(clef) {
+  const r=liveRoom({clef,leaf:()=>({summary:'Entry',done:true,files:[{path:'entry.js',content:RUN9_ENTRY}]})}),{room}=r;
+  await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
+  await room.spawn('root',RUN9);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root.1'");
+  return r;
+}
+test('v7.15.7 (T3, audit #18): run9\'s deleted duplicate: the empty update() {} and del() {} grow the plan on the pieces Clef names, by one ranked call each, and the carrier imports them instead of writing them',async()=>{
+  const {room,calls}=await run9Room(rank((label,q)=>q.startsWith('update(')&&label==='Update Ticket Module'||q.startsWith('del(')&&label==='Delete Ticket Module'));
+  await room.turn('root.1');
+  assert.equal(room.receive('root.1')[0].body,"[contract] Your promise: start(). update is an empty placeholder and no piece promises it: your manager places update() on the promise of the piece whose assignment covers it. Import it on its own line, const { update } = require('./update'), and return it as update; do not write it here. delete is an empty placeholder and no piece promises it: your manager places del() on the promise of the piece whose assignment covers it. Import it on its own line, const { del } = require('./del'), and return it as delete; do not write it here. Publish the FULL updated file.");
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [empty]; back to the worker. update: no piece promises it; the manager grows a promise with update(). delete: no piece promises it; the manager grows a promise with del().');
+  const rows=room.problems("holder='root' AND status!='closed'");
+  assert.deepEqual(rows.map(p=>[p.kind,p.source,p.facts.names,p.facts.operation.op,p.facts.operation.name,p.parties.map(x=>x.role+':'+x.owner).join(' ')]),[['unresolved','root.1',['update'],'update','update','reader:root.1'],['unresolved','root.1',['del'],'delete','del','reader:root.1']]);
+  await room.turn('root');
+  assert.deepEqual([calls.clef.length,calls.clef.filter(c=>c.state.functions).length],[4,2],'a function match per operation (nothing performs it), then a ranked placement per operation');
+  assert.deepEqual(calls.clef.filter(c=>c.state.children).map(c=>[c.state.question,c.state.children.map(x=>x.label)]),[
+    ['update(): performs the goal\'s update operation; Entry Module returns it from start() as update',['Data Module','Create Ticket Module','View Tickets Module','Update Ticket Module','Delete Ticket Module']],
+    ['del(): performs the goal\'s delete operation; Entry Module returns it from start() as delete',['Data Module','Create Ticket Module','View Tickets Module','Update Ticket Module','Delete Ticket Module']]],'one ranked call per operation over every sibling, the data piece no shortcut');
+  assert.deepEqual(events(room,'promise_added').map(e=>e.body),[
+    '"Update Ticket Module" now promises update() (Clef p=0.900: its assignment covers them): Entry Module returns it from start() and no piece promised it. It is retasked to write it; the reader imports it.',
+    '"Delete Ticket Module" now promises del() (Clef p=0.900: its assignment covers them): Entry Module returns it from start() and no piece promised it. It is retasked to write it; the reader imports it.']);
+  assert.deepEqual([room.promisedOf('root.5'),room.promisedOf('root.6')].map(l=>l.map(f=>[f.name,f.does,f.params])),[[['update','performs the goal\'s update operation; Entry Module returns it from start() as update',[]]],[['del','performs the goal\'s delete operation; Entry Module returns it from start() as delete',[]]]]);
+  assert.equal(room.node('root.5').task,'Write code that updates a ticket by id. Keep what your module exports and add update() (performs the goal\'s update operation; Entry Module returns it from start() as update): Entry Module imports it from your module.');
+  assert.deepEqual(room.problems('1=1').map(p=>[p.status,p.assignee,p.trail.at(-1).rule,p.parties.map(x=>x.role).join(' ')]),[['assigned','root.5','D9','reader provider'],['assigned','root.6','D9','reader provider']]);
+  assert.equal(tickets(room,'root.1').length,0,'the carrier is never told to write it');
+  assert.deepEqual(room.read('fn_answers:root.1',[]).map(a=>[a.kind,a.fn.owner,a.text]),[
+    ['provided','Update Ticket Module','update() is now promised by "Update Ticket Module", which writes it. Import it on its own line, const { update } = require(\'./update\'), and return it from start(); the builder links it to the module that exports it. Do not write it yourself.'],
+    ['provided','Delete Ticket Module','del() is now promised by "Delete Ticket Module", which writes it. Import it on its own line, const { del } = require(\'./del\'), and return it from start(); the builder links it to the module that exports it. Do not write it yourself.']]);
+  assert.equal(calls.manager.length,0);
+  // The gainer's done settles the row once it exports the operation (its contract passes); until then the row is its.
+  await room.putFile('root.5','updateTicket.js',"function update(id, data) { return { id, ...data }; }\nmodule.exports = { update };\n");
+  room.db().exec("UPDATE agents SET status='done' WHERE id='root.5'");
+  assert.equal(await room.contractReturned('root.5'),false);
+  assert.deepEqual(room.problems("source='root.1'").map(p=>[p.facts.operation.op,p.status,p.outcome]),[['update','closed','resolved'],['delete','assigned','']]);
+  // Sent back again with the same placeholders, the carrier hears the same answer and files nothing twice.
+  await step(room,'root.1');
+  assert.equal(room.problems("source='root.1'").length,2,'once per operation per carrier');
+});
+
+test('v7.15.7 (T3): an operation no sibling\'s assignment covers, at Root, goes back to its carrier to write, only then, with a ticket that says nothing ran',async()=>{
+  const {room,calls}=await run9Room(rank(()=>false));
+  await room.turn('root.1');
+  await room.turn('root');
+  assert.equal(calls.clef.filter(c=>c.state.children).length,2);
+  assert.match(events(room,'promise_refused').at(-1).body,/^del: no direct child's assignment covers it \("Data Module", "Create Ticket Module", "View Tickets Module", "Update Ticket Module", "Delete Ticket Module", best p=0\.200\); the reader changes\.$/);
+  assert.deepEqual(room.problems('1=1').map(p=>[p.status,p.assignee,p.trail.at(-1).rule]),[['assigned','root.1','D4'],['assigned','root.1','D4']]);
+  assert.equal(events(room,'promise_added').length,0);
+  const [ticket]=tickets(room,'root.1');
+  assert.ok(ticket.startsWith('YOUR start() RETURNS AN OPERATION NO PIECE PROMISES. Nothing was run; the plan was checked against your modules. Fix the existing implementation, keep your exported names, and do not invent unrelated features. Your manager decided: No piece promises update, and no piece\'s assignment covers it (your manager asked each): write update() here, in your own module, and return it from start() as update. No piece promises del, and no piece\'s assignment covers it (your manager asked each): write del() here, in your own module, and return it from start() as delete. Problems: entry.js: Entry Module returns update from start() as an empty placeholder'),ticket);
+  assert.doesNotMatch(ticket,/REAL CONTAINER BUILD FAILED/);
+});
+
+test('v7.15.7 (T3): a sibling\'s module that already exports the operation unpromised is a link to make: the carrier imports it and no row is filed',async()=>{
+  const {room}=await run9Room(rank(()=>false));
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.5'");
+  await room.putFile('root.5','updateTicket.js',"function update(id, data) { return { id, ...data }; }\nmodule.exports = { update };\n");
+  await room.turn('root.1');
+  assert.match(room.receive('root.1')[0].body,/update is an empty placeholder: no piece promises it, but "Update Ticket Module"'s module exports update; import it on its own line, const \{ update \} = require\('\.\/update'\), and return it as update\. delete is an empty placeholder and no piece promises it: your manager places del\(\)/);
+  assert.deepEqual(room.problems("holder='root'").map(p=>p.facts.operation.op),['delete']);
+});
+
+test('v7.15.7 (T3): a method the fixed test calls on the application that no piece promises (app.listTickets is not a function) grows the plan at Root before any route: the piece Clef names promises it and is retasked, the start carrier hears the import line, and is not ticketed',async()=>{
+  const withList=SRC.view.replace('module.exports = { viewTicket };',"function listTickets() {\n  return readTickets();\n}\n\nmodule.exports = { viewTicket, listTickets };");
+  const {room,calls}=await run14Room({executor:scripted(['listTickets']),clef:rank((label,q)=>q.startsWith('listTickets(')&&label==='View ticket'),
+    leaf:user=>({summary:'Fixed',done:true,files:[{path:FILES[user.your_label],content:user.your_label==='View ticket'?withList:ROUND1[user.your_label]}]})});
+  const {compiler}=await linkAndCompile(room);
+  const [p]=room.problems("kind='run'");
+  assert.deepEqual([p.holder,p.facts.requirement.names,p.facts.requirement.method,p.facts.requirement.test_line.text,p.parties.map(x=>x.role+':'+x.owner)],['root',['listTickets','start'],'listTickets','const tickets = await app.listTickets()',['site:']],trace(room));
+  await room.turn('root');
+  assert.deepEqual(calls.clef.map(c=>[c.state.question,c.state.children.map(x=>x.label)]),[['listTickets(): the application\'s test calls it: const tickets = await app.listTickets()',['Ticket storage','Create ticket','View ticket','Update ticket','Delete ticket']]],'one ranked call over every sibling of the carrier');
+  assert.deepEqual(events(room,'promise_added').map(e=>e.body),['"View ticket" now promises listTickets() (Clef p=0.900: its assignment covers them): Entry module returns it from start() and no piece promised it. It is retasked to write it; the reader imports it.']);
+  assert.deepEqual(room.promisedOf('root.3').map(f=>f.name),['viewTicket','listTickets']);
+  assert.deepEqual(room.problems('id=?',p.id).map(x=>[x.status,x.assignee,x.trail.map(t=>[t.at,t.action,t.to,t.rule])]),[['assigned','root.3',[['root','retask','root.3','D9']]]]);
+  assert.equal(tickets(room,'root.6').length,0,'the carrier is not ticketed while the plan grows');
+  assert.match(room.read('fn_answers:root.6',[]).find(a=>a.fn?.name==='listTickets').text,/^listTickets\(\) is now promised by "View ticket", which writes it\. Import it on its own line, const \{ listTickets \} = require\('\.\/listTickets'\), and return it from start\(\)/);
+  assert.deepEqual([rounds(room),calls.manager.length],[['root: 1/1 progress'],0]);
+  // The retasked piece writes it; the relinked bundle runs; the next report, promised now, is routed as any requirement (R2).
+  await settle(room,120);
+  assert.equal(room.get('status'),'complete',trace(room));
+  assert.equal(room.node(compiler.id).status,'done');
+  assert.equal(events(room,'promise_added').length,1);
+});

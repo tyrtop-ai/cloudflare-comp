@@ -324,6 +324,10 @@ export function deterministicDecision(p, ctx) {
     // Clef error defers it to the next turn; the words the parent's model
     // decided it with lead the ticket at a manager child.
     if(p.facts?.requirement&&ctx.route) {
+      // v7.15.7 (T3): a method the fixed test calls that no piece promises grows the plan first (D9, the room's promiseAdds at the top), as a reader's unpromised import does; it is routed (R2) once a piece promises it.
+      const add=ctx.promiseAdd?.(p);
+      if(add?.relay)return {rule:'D9',action:'assign',child:add.child,side:'provider',grow:add.grow,instructions:add.instructions};
+      if(add&&!add.owed&&!add.up)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
       const route=ctx.route(p),first=route?.candidates?.[0],said=p.directive?.instructions&&p.directive.side==='site'&&p.directive.by===ctx.parent?`${p.directive.instructions} `:'';
       if(route?.defer)return {rule:'R2',route:true,action:'defer',reason:route.defer};
       if(first)return {rule:`R2${first.how}`,route:true,action:'assign',child:first.child,side:'site',...ctx.kindOf(first.child)==='manager'?{delegate:true}:{instructions:said+first.text,facts_text:first.facts||'',providers:first.providers||[]}};
@@ -700,6 +704,8 @@ export function instructionsFor(p, side, own=false) {
       `Use the names ${base(provider?.owner_path||provider?.path)||'the other module'} already exports; do not change what it exports. Change your reads of ${list(f.names)}.`;
     case 'binding':return `${base(provider?.owner_path||provider?.path)||'The other module'} exports a single ${f.provider_kind||'function'} as module.exports: import it whole (const f = require(…)) and call it.`;
     case 'unresolved':{
+      // v7.15.7 (T3): an operation of start() grown for its carrier that no piece's assignment covers, at Root: the carrier's own to write, only then.
+      if(f.operation)return `No piece promises ${f.operation.name||list(f.names)}, and no piece's assignment covers it (your manager asked each): write ${f.operation.name||list(f.names)}(${(f.operation.params||[]).join(', ')}) here, in your own module, and return it from start() as ${f.operation.op||f.operation.name}.`;
       if(f.split)return `Import each function on its own line, with the function's name as the path, in place of the one import of ${list(f.names)} from '${f.specifier||''}': ${oneLines(f.names,f.aliases,4,f.esm)} The builder links each line to the module that exports that function. Keep the names your code calls.`;
       const names=f.names?.length?` (${list(f.names)})`:'';
       return f.named?`'${f.specifier||''}' is ${base(f.named)}, listed below with what it really exports: use the names it exports${names&&` in place of what it lacks${names}`}, ${CONVENTION(f.esm)}.`:
@@ -744,14 +750,16 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // the plan: the ticket is that requirement on the worker's own promise, the
 // other side's facts, and nothing else (no head, no raw output, 900 at
 // most; review: the tail is kept, the facts give way first, down to 160).
-export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false}) {
+export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false,operation=false}) {
   if(requirement) {
     const tail=' Publish the FULL updated file.',room=900-tail.length;
     let body=ownPaths(instructions,piece),more=facts?` What the other side provides: ${ownPaths(facts,piece).slice(0,300)}`:'';
     if(body.length+more.length>room){body=clip(body,Math.max(room-more.length,room-160));more=clip(more,room-body.length);}
     return body+more+tail;
   }
+  // v7.15.7 (T3): an operation of start() no piece promises, given back to its carrier at Root with nobody to cover it: nothing ran.
   const head=(kinds.length&&kinds.every(k=>k==='contract')?(written?'YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE. Nothing was run; the plan was checked against your modules.':'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.'):
+    operation?`YOUR start() RETURNS AN OPERATION NO PIECE PROMISES. Nothing was run; the plan was checked against your modules. ${READER}`:
     (own?'YOUR APPLICATION FAILED ITS CONTAINER RUN. You wrote every file of the application':'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers')+
     ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER));
   const decided=instructions?` ${own?'Required':'Your manager decided'}: ${ownPaths(instructions,piece).slice(0,900)}`:'';
