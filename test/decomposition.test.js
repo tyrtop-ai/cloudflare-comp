@@ -4,6 +4,8 @@ import { register } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../src/index.js');
+// Imported before the tests start: an import after them raced the v7.11 test that reads it.
+const {ENTRY_CONTRACT,GOAL_START_REQUIREMENT}=await import('../src/model.js');
 class Sql {
   constructor(db){this.db=db||new DatabaseSync(':memory:');}
   exec(sql,...args){
@@ -75,9 +77,10 @@ test('Clef NO implements in the same turn but cannot declare an unverified atomi
   const {room,drain,store}=setup({AI:ai});
   await room.start('Implement an add(a,b) function returning the sum of two integers',1);await drain();
   assert.equal(room.node('root').phase,'implement');
-  assert.equal(room.node('root').status,'ready');
+  // v7.15.2: its done runs the compiler's pipeline; with no Container it waits for Continue, not another model turn.
+  assert.equal(room.node('root').status,'waiting');
   assert.equal(room.snapshot().status,'paused');
-  assert.ok(room.snapshot().events.some(e=>e.kind==='build_unavailable'));
+  assert.ok(room.snapshot().events.some(e=>e.kind==='build_infrastructure'&&/BUILD_EXECUTORS binding unavailable/.test(e.body)));
   assert.equal(calls.length,3);
   assert.equal((await store.read(room.node('root').repo_name,'add.js')), 'export const add = (a,b) => a+b; export function start(){ return { add }; }');
   assert.ok(room.snapshot().events.some(e=>e.kind==='atomic'));
@@ -156,7 +159,6 @@ test('v7.11: the child that composes the application stays a worker; the start()
   assert.equal(room.get('goal'),'Build a small issue tracker '+GOAL_START_REQUIREMENT);
 });
 
-const {ENTRY_CONTRACT,GOAL_START_REQUIREMENT}=await import('../src/model.js');
 const splitRoom=(spawnAt)=>{
   let splits=0;
   const ai={run:async(_model,params)=>{

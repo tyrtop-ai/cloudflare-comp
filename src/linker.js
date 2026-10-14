@@ -874,13 +874,14 @@ export function startRank(content) {
 // one that imports the most others; when none is known to, the candidate (by
 // imports and name) among the modules that may export start(), prefer's
 // first, which the Container then decides; null when no module may.
-export function chooseEntry(files, surfaces, {prefer=[]}={}) {
-  const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
+// scope: where modules live; '' for an atomic top's own files (v7.15.2, run10).
+export function chooseEntry(files, surfaces, {prefer=[],scope='components/'}={}) {
+  const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith(scope)).sort();
   const starters=js.filter(p=>surfaces.get(p)&&exportsStart(surfaces.get(p)));
   if(starters.length===1)return starters[0];
   if(!starters.length) {
     const maybe=js.filter(p=>mayExportStart(surfaces.get(p))),planned=maybe.filter(p=>prefer.includes(p));
-    return maybe.length?entryCandidate(files,planned.length?planned:maybe):null;
+    return maybe.length?entryCandidate(files,planned.length?planned:maybe,scope):null;
   }
   const rank=new Map(starters.map(p=>[p,startRank(files.get(p))])),planned=p=>prefer.includes(p)?1:0;
   const outDegree=new Map(starters.map(p=>[p,componentImports(p,files.get(p),files).filter(r=>js.includes(r.target)).length]));
@@ -981,9 +982,9 @@ const appNamed=p=>{
   const base=p.split('/').pop().replace(/\.(?:m|c)?js$/i,'');
   return /^(?:app|main|index|entry|cli|server|tracker|application)$/i.test(base)||/[-_.](?:app|application)$/i.test(base)||/[a-z0-9](?:App|Application)$/.test(base);
 };
-// only: the modules that may be picked (all by default).
-export function entryCandidate(files, only=null) {
-  const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')).sort();
+// only: the modules that may be picked (all by default); scope as chooseEntry's.
+export function entryCandidate(files, only=null, scope='components/') {
+  const js=[...files.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith(scope)).sort();
   const allowed=js.filter(p=>!only||only.includes(p));
   if(!allowed.length)return null;
   const imports=new Map(js.map(p=>[p,componentImports(p,files.get(p),files).map(r=>r.target).filter(t=>t&&t!==p&&js.includes(t))]));
