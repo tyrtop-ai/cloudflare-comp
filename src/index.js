@@ -4,7 +4,7 @@ export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
-import { apiGaps, apiMethod, coverageCheckable, gapList, gapProblem, operationMethods, plannedGaps, untestedOperations } from './api-coverage.js';
+import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -665,13 +665,15 @@ export class ControlRoom extends DurableObject {
   }
   // The goal operations the top's live direct children promise functions
   // for, one per operation: what the top itself answers requests from.
+  // v7.15.5: and, for an operation the goal names that no split tagged
+  // (run12's tagged none), the function that performs it by its words.
   plannedOperations() {
-    const top=this.allNodes().find(n=>!n.parent),seen=new Set(),out=[];
-    for(const c of top?this.offeredFunctions(top.id):[])for(const f of c.items) {
+    const top=this.allNodes().find(n=>!n.parent),seen=new Set(),out=[],kids=top?this.offeredFunctions(top.id):[];
+    for(const c of kids)for(const f of c.items) {
       const key=String(f.operation||'').toLowerCase().replace(/\s+/g,' ').trim();
       if(key&&!seen.has(key)){seen.add(key);out.push({operation:f.operation,method:f.name,label:c.label});}
     }
-    return out;
+    return [...out,...goalPerformers(this.userGoal(),kids,out)];
   }
   // The modules of piece w in a builder's bundle: those its workers wrote,
   // through every builder below.
@@ -1506,17 +1508,30 @@ export class ControlRoom extends DurableObject {
       return 'the test catches errors without setting process.exitCode = 1 or rethrowing, so a failure would pass';
     return null;
   }
+  // v7.15.5: the fixed runner test, when it was written for start()'s
+  // methods (startMethods) or either side cannot say (an API that did not
+  // parse, a test fixed before v7.15.5). Run12's test called
+  // app.goalOperation1 and app.goalOperation2, so an entry corrected to
+  // create, view, update and delete could never pass it.
+  fixedTest(methods) {
+    const t=this.read('runner_test',null);
+    return t?.test&&!(methods&&Array.isArray(t.methods)&&t.methods.join()!==methods.join())?t:null;
+  }
   // linked: the top builder's components; entry: the module glue/index.js
   // starts; operations: the coverage gate's mapping the test must exercise;
-  // reach: the modules the entry reaches (null: any may run).
-  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, promised=null, reach=null}) {
+  // reach: the modules the entry reaches (null: any may run); methods:
+  // start()'s method names (startMethods).
+  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, promised=null, reach=null, methods=null}) {
     // The runner's test is static: the first test that runs in the Container is
     // the specification for the rest of the run and is never rewritten. A new
     // test every repair round moved the target the worker was fixing (run4).
-    // Only a test that was turned back before it ever ran is written again.
-    const fixed=this.read('runner_test',null)?.test||null;
+    // Only a test that was turned back before it ever ran is written again,
+    // and, once, one written for other methods than start() now returns
+    // (v7.15.5, run12): the new test is fixed while the methods stay.
+    const saved=this.read('runner_test',null),fixed=this.fixedTest(methods)?.test||null;
     let correction='',test=fixed;
     if(fixed)this.event(nodeId,'runner_reused','Running the same test as before: the first test that ran is fixed for the whole run.');
+    else if(saved?.test)this.event(nodeId,'runner_rewritten',clip(`start()'s methods changed since the runner's test was written: ${[['added',methods.filter(m=>!saved.methods.includes(m))],['removed',saved.methods.filter(m=>!methods.includes(m))]].filter(([,l])=>l.length).map(([w,l])=>`${w} ${l.join(', ')}`).join('; ')}. The runner writes a new test for the new methods, fixed while they stay the same.`,600));
     for(let attempt=0;!test&&attempt<3;attempt++) {
       const out=await writeRunnerTest(this.inferenceEnv(),{goal,api,operations,correction}),draft=out?.test;
       // A test that skips a mapped operation would certify a partial
@@ -1531,7 +1546,7 @@ export class ControlRoom extends DurableObject {
     if(!test)return {passed:false,runnerFailed:true,detail:correction};
     const run=await this.containerRun(nodeId,`run:${input}`,new Map([...files,['glue/smoke.js',test]]));
     if(run.infrastructure)return {infrastructure:run.infrastructure};
-    if(!fixed)this.save('runner_test',{api,test,operations});
+    if(!fixed)this.save('runner_test',{api,test,operations,methods});
     await this.putFile(nodeId,'glue/smoke.js',test,{runtimeGlue:true});
     if(run.report.passed)return {passed:true,report:run.report,digest:run.digest};
     const detail=run.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||run.report.log.slice(-900);
@@ -2154,27 +2169,34 @@ export class ControlRoom extends DurableObject {
     // and the runner's do, so the turn is retried: swallowed, one capacity
     // error fixed run6's read-only test unchecked for the whole run. An
     // answer that is no mapping, twice, fails open.
-    const goal=this.topTask();
+    const goal=this.topTask(),methodSet=startMethods(described);
     let operations=null;
-    if(!this.read('runner_test',null)?.test) {
+    // v7.15.5: a test fixed for other methods is written again, after this gate.
+    if(!this.fixedTest(methodSet)) {
       const checkable=coverageCheckable(described);
       const coverage=checkable?await apiCoverage(this.inferenceEnv(),{goal,api}):null;
-      const ops=coverage?.operations||this.plannedOperations(),gaps=coverage?.operations?apiGaps(described,ops):plannedGaps(described,ops);
+      // v7.15.5: the mapping is checked against the plan's operation functions
+      // and the goal's operations too (mappedGaps): run12's model mapped create
+      // and delete alone and the gate passed. A room without promises has
+      // neither, and checks the mapping alone as before.
+      const plan=this.plannedOperations(),mapped=coverage?.operations;
+      const {gaps,total,extra}=mapped?mappedGaps(described,mapped,plan,this.planned()?goalOperations(this.userGoal()):[]):{gaps:plannedGaps(described,plan),total:plan.length,extra:[]};
       if(gaps.length) {
-        this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${ops.length} operation(s) the goal names: ${gapList(gaps)}.`,900));
+        this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${total} operation(s) the goal names: ${gapList(gaps)}.`,900));
         // The contract leads the entry ticket (applyDecisions); here it would
         // repeat it and clip the builder's renames.
         // The plan's operation functions close the text, cut first (spec 7.3).
-        return {stage:'run',items:[entryIssue(entry,gapProblem(described,gaps,'',946,this.plannedOperations(),{own:!linked}))]};
+        return {stage:'run',items:[entryIssue(entry,gapProblem(described,gaps,'',946,plan,{own:!linked}))]};
       }
       // With no usable mapping the plan files a gap only when start()
       // returned fewer methods than it has operations (plannedGaps); else
       // the runner tests the plan's operation functions start() returned,
       // under the names it returned them (spec 7.2; a wrapper such as
       // create: (t) => createTicket(t) is not one of them, and is no gap).
-      const planned=coverage?.operations?[]:ops.map(o=>({operation:o.operation,method:apiMethod(described,o.method)})).filter(o=>o.method);
-      if(coverage?.operations) {
-        operations=operationMethods(described,coverage.operations);
+      const planned=mapped?[]:plan.map(o=>({operation:o.operation,method:apiMethod(described,o.method)})).filter(o=>o.method);
+      if(mapped) {
+        // With the plan's functions start() returns that the mapping left out.
+        operations=[...operationMethods(described,mapped),...extra];
         this.event(id,'api_covered',clip('Each operation the goal names has a method: '+operations.map(o=>`${o.operation} -> ${o.method}`).join(', '),900));
       } else if(planned.length) {
         operations=planned;
@@ -2182,7 +2204,7 @@ export class ControlRoom extends DurableObject {
       } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
         (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
-    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,promised,reach});
+    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,promised,reach,methods:methodSet});
     return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues)};
   }
 
