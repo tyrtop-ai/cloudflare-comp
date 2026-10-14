@@ -2565,7 +2565,7 @@ export class ControlRoom extends DurableObject {
     db.exec("DELETE FROM messages WHERE (recipient=? OR sender=?) AND delivered=0 AND body LIKE '[route:%'",c,c);
     // Its new task's done is checked against the promise again, and the
     // answers to its old task's requests go (v7.15 §10.1).
-    for(const k of ['returned','split_feedback','nudged','contract_returns','fn_answers','turn_notes'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
+    for(const k of ['returned','split_feedback','split_yes','nudged','contract_returns','fn_answers','turn_notes'])db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
     this.clearFailures(c);
     const promise=this.promisedOf(c).map(f=>f.name);
     this.event(m,'child_retasked',clip(`${node.label} is retasked (${rule}${reason?`: ${reason}`:''})${below.length?`; its branch of ${below.length} node(s) is retired and it splits again`:''}${promise.length?`; it ${interfaces?'now promises':'keeps its promise of'} ${promise.join(', ')}`:''}. New task: ${task}`,900),c);
@@ -3884,8 +3884,12 @@ export class ControlRoom extends DurableObject {
         // itself (a splitter that kept naming createComment for addComment).
         const lastTry=(this.read('failures',{})[id]||0)>=2;
         const namesOnly=before.split_feedback?.kind==='interfaces'&&(!n.parent||!lastTry);
-        const gate=namesOnly?{split:true}:await shouldSplit(this.inferenceEnv(),n.task,before);
-        this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
+        // run10: a malformed split answer was the splitter's error, so Clef's
+        // YES stands too; asked again, Clef saw "no valid partition" and Root
+        // wrote the whole application as one module.
+        const malformed=!namesOnly&&this.get(`split_yes:${id}`)==='1';
+        const gate=namesOnly||malformed?{split:true}:await shouldSplit(this.inferenceEnv(),n.task,before);
+        this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
         if (gate.split && !this.canSplit(id,2)) {
           // Clef chose to split but the room has no agent slots or depth left.
           // Do not force a weak leaf to implement work Clef would divide.
@@ -3923,9 +3927,14 @@ export class ControlRoom extends DurableObject {
       } else raw=await decide(this.inferenceEnv(),before,{planned:this.planned()});
       if (raw.parse_error) {
         this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${raw.raw}`);
+        // A malformed split (decompose returns it as a parse error) is retried
+        // under the same YES and counts as a failure; it is never feedback
+        // for Clef to reconsider, which only a parsed partition's rejection is.
+        if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,'1');
         this.incrementFailures(id,'Bad action response');
         return;
       }
+      if(splitting && this.get(`split_yes:${id}`))this.set(`split_yes:${id}`,'');
       const action = normalizeAction(raw);
       // v7.15 §5.12a, before the code gates: the top has no manager to ask
       // (an atomic Root that asked with wait failed every replay of the ask
@@ -4024,6 +4033,8 @@ export class ControlRoom extends DurableObject {
           // decides when the smallest code unit has been reached.
           action.spawn=[];action.done=false;action.wait=false;nextPhase='implement';
         } else if(!split || (rejectedScope && action.spawn.length<2)) {
+          // Semantic only: a parsed partition out of scope, too small,
+          // duplicated or over capacity goes back to Clef with this feedback.
           const reason=rejectedScope
             ? `Only ${action.spawn.length} in-scope child(ren) remained after Clef rejected ${rejectedScope}; not a viable code split.`
             : 'Qwen proposed no valid partition into distinct code-writing children within the available capacity.';

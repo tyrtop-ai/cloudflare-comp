@@ -12,7 +12,7 @@ export const GENERIC_NAMES = new Set('init run main handle process validate crea
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
 const RESERVED = new Set('await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield'.split(' '));
 // The prompts' and LEAF_DEPENDENCY_RULE's example names, and stock fillers.
-const EXAMPLE = /^(?:functionName|fnName|name|listedName|camelCaseIdentifier|example\w*|foo|bar)$/i;
+const EXAMPLE = /^(?:(?:other)?functionName|fnName|name|listedName|camelCaseIdentifier|example\w*|foo|bar)$/i;
 // The splitter prompt's example does and params, copied: no hint at all.
 const FILLER = /^(?:one line|what it does|optional hint|argument)$/i;
 const text = (v, n) => typeof v === 'string' && !FILLER.test(v.trim()) ? v.trim().slice(0, n) : '';

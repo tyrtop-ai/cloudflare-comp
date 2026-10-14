@@ -35,7 +35,10 @@ test('the first turn cannot implement or mark a divisible app done before decomp
   assert.equal(room.node('root').phase,'decompose');
   assert.equal(room.snapshot().files.length,0);
   assert.equal(room.children('root').length,0);
-  assert.ok(room.snapshot().events.some(e=>e.kind==='split_rejected'));
+  // v7.15.2 (run10): an answer with no spawn list is the splitter's error, retried under Clef's YES, never a partition for Clef to reconsider.
+  assert.ok(room.snapshot().events.some(e=>e.kind==='error'&&e.body.startsWith('Bad decomposition response: ')));
+  assert.ok(!room.snapshot().events.some(e=>e.kind==='split_rejected'||e.kind==='atomic'));
+  assert.equal(room.read('split_feedback:root',null),null);
 });
 
 test('independent behavioral components are spawned and cannot create code on the decomposition pass',async()=>{

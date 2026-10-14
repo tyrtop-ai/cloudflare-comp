@@ -1,4 +1,4 @@
-import { parseObject, contentOf, stripReasoning, jsonObjects } from './protocol.js';
+import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects, splitShape } from './protocol.js';
 import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature } from './interfaces.js';
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
@@ -277,7 +277,7 @@ export const ENTRY_CONTRACT = 'You write the application entry module: it import
 export async function decompose(env, context) {
   if (env.MOCK_AI === 'true') return mockDecomposition(context);
   const available=Math.max(0,Number(context.max_child_writers ?? 256));
-  const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into the smallest INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide as finely as the code naturally permits, with no predetermined number of children. The runtime has ${available} available agent slots for this split; use no more than that (and at least two if splitting). Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements; do not invent filenames or a new global architecture. DO name the functions each piece exports: give each piece "functions", the few functions (at most 5) that code outside that piece calls, each {"name":"camelCaseIdentifier","does":"one line","params":["optional hint"]}. Name each function after what it does and what it acts on (createTicket, not create). Names are binding: the piece must export exactly these names and other pieces import them by these names; a later builder can only rename, so choose plain descriptive names. A piece may export more; list only what others call. your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece, the one whose task writes it. Never give a function to two pieces. List only functions your pieces write: a piece that needs a function from elsewhere asks for it when it runs, so do not create a piece for it. If a function performs one of the operations the original goal names, add "operation":"<that operation in a few words>". The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON: {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that ...","functions":[{"name":"functionName","does":"what it does","params":["argument"]}]},...]}. Do not write code yourself.`;
+  const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into the smallest INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide as finely as the code naturally permits, with no predetermined number of children. The runtime has ${available} available agent slots for this split; use no more than that (and at least two if splitting). Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements; do not invent filenames or a new global architecture. DO name the functions each piece exports: give each piece "functions", the few functions (at most 5) that code outside that piece calls, each {"name":"camelCaseIdentifier","does":"one line","params":["optional hint"]}. Name each function after what it does and what it acts on (createTicket, not create). Names are binding: the piece must export exactly these names and other pieces import them by these names; a later builder can only rename, so choose plain descriptive names. A piece may export more; list only what others call. your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece, the one whose task writes it. Never give a function to two pieces. List only functions your pieces write: a piece that needs a function from elsewhere asks for it when it runs, so do not create a piece for it. If a function performs one of the operations the original goal names, add "operation":"<that operation in a few words>". The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON with one spawn item per piece, for example {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that implements this piece","functions":[{"name":"functionName","does":"what it does","params":["argument"]}]},{"label":"short name of another piece","task":"Write code that implements another piece","functions":[{"name":"otherFunctionName","does":"what it does","params":["argument"]}]}]}. Every spawn item is a JSON object, never a quoted string. Do not write code yourself.`;
   // Root's goal is a scope boundary for this splitter, never a request for
   // an agent to design the whole app. The request is built field by field
   // (a blind cut could end the JSON mid-string); only the rejection feedback
@@ -292,22 +292,29 @@ export async function decompose(env, context) {
   const request=JSON.stringify(fields);
   // C0 runs first, so a piece whose task says it exports a promised name
   // costs no retry; C6 is the walk's, as this splitter sees no other branch.
-  const vet=parsed=>{
-    if(parsed.parse_error||!Array.isArray(parsed.spawn))return {parsed,ok:false,count:Infinity};
-    const {spawn,inferred}=normalizeSpawn(parsed.spawn,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised);
-    return {parsed,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
+  // run10: an answer without a list of objects (unparsed, or a fallback
+  // object with no spawn) is malformed, the splitter's error to retry.
+  const vet=(text,parsed=parseObject(text,splitShape))=>{
+    const items=spawnObjects(parsed.spawn);
+    if(parsed.parse_error||!Array.isArray(items)||!items.length||!items.every(s=>s&&typeof s==='object'&&!Array.isArray(s)))return {parsed,text,ok:false,malformed:true,count:Infinity};
+    const {spawn,inferred}=normalizeSpawn(items,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised);
+    return {parsed,text,spawn,inferred,vague,bad,ok:spawn.length>=2&&spawn.length<=available,count:vague.length+bad.length};
   };
   const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
-  const first=vet(parseObject(await run(env,system,request,4096)));
+  const first=vet(contentOf(await run(env,system,request,4096)));
   if(first.ok && !first.count)return done(first);
+  const malformed=first.malformed?' Your previous answer was not a JSON object with a spawn list; every spawn item is a JSON object, never a quoted string.':'';
   // Labels copied from the example ("Piece A", run4) give Clef and the prune
   // walk nothing to place, so they are turned back before anyone sees them.
   const specific=first.vague?.length?` Your previous answer used placeholder labels or tasks copied from the example (${first.vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
   const names=first.bad?.length?` Your previous answer's functions failed these checks: ${first.bad.map(e=>e.text).join(' ')} Correct them.`+
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
-  const retry=vet(parseObject(await run(env,system+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+specific+names,request,4096)));
+  const retry=vet(contentOf(await run(env,system+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+specific+names,request,4096)));
   // The retry replaces the first answer only when it is not worse.
-  return done(retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok ? first : retry);
+  const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok ? first : retry;
+  // Malformed twice is a parse error, which the turn retries with Clef's YES
+  // kept: never a partition Clef reconsiders (run10's Root became atomic).
+  return best.malformed?{parse_error:true,raw:clip(best.text.trim(),1500)}:done(best);
 }
 // The rejection feedback within the room left: rejected, then accepted,
 // then proposed entries go from the end, then the reason is cut.
@@ -329,8 +336,8 @@ export function clipFeedback(feedback, room) {
 export function placeholderChildren(spawn) {
   if(!Array.isArray(spawn))return [];
   const label=s=>String(s?.label||'').trim(),task=s=>String(s?.task||'').trim();
-  return spawn.filter(c=>/^(?:piece|part|module|component|child|task|step|chunk|unit|section|item)\s*[-#:.]?\s*(?:[a-z]|\d{1,2})$/i.test(label(c))||/^short name of what this piece does$/i.test(label(c))||
-    !label(c)||/^(?:write code that\s*)?(?:\.{3}|…)?$/i.test(task(c)));
+  return spawn.filter(c=>/^(?:piece|part|module|component|child|task|step|chunk|unit|section|item)\s*[-#:.]?\s*(?:[a-z]|\d{1,2})$/i.test(label(c))||/^short name of (?:what this piece does|another piece)$/i.test(label(c))||
+    !label(c)||/^(?:write code that\s*)?(?:\.{3}|…|implements (?:this|another) piece)?$/i.test(task(c)));
 }
 
 function mockDecomposition(c) {

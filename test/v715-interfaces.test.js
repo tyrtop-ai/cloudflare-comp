@@ -501,7 +501,9 @@ test('v7.15: prompts: the shared prompt still says a worker is never shown sibli
   assert.match(LEAF_DEPENDENCY_RULE,/import it with a relative path and the export name you expect \(the exact name your manager gave you when you asked\), each function on its own import line with the function's name as the path, for example const \{ listedName \} = require\('\.\/listedName'\); and const \{ otherName \} = require\('\.\/otherName'\); never several functions from one path, since the builder links each line to the one module that exports that function;/);
   await decompose(env,{your_id:'root.1',your_responsibility:'Write ticket storage',max_child_writers:10});
   const splitter=prompts.pop();
-  assert.match(splitter,/"spawn":\[\{"label":"short name of what this piece does","task":"Write code that \.\.\.","functions":\[\{"name":"functionName","does":"what it does","params":\["argument"\]\}\]\},\.\.\.\]/);
+  // v7.15.2 (run10): two complete items and no '...' in the list, whose ',...]' preceded run10's quoted items.
+  assert.ok(splitter.includes('Return ONLY JSON with one spawn item per piece, for example {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that implements this piece","functions":[{"name":"functionName","does":"what it does","params":["argument"]}]},{"label":"short name of another piece","task":"Write code that implements another piece","functions":[{"name":"otherFunctionName","does":"what it does","params":["argument"]}]}]}. Every spawn item is a JSON object, never a quoted string.'));
+  assert.doesNotMatch(splitter.slice(splitter.indexOf('"spawn":[')),/\.\.\./);
   assert.match(splitter,/give each piece "functions", the few functions \(at most 5\) that code outside that piece calls/);
   assert.match(splitter,/your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece/);
   assert.match(splitter,/TypeScript, interfaces or \.ts files/);
