@@ -3,7 +3,7 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
+import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, attributeFailure, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems } from './model.js';
 import { apiGaps, apiMethod, coverageCheckable, gapList, gapProblem, operationMethods, plannedGaps, untestedOperations } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
@@ -2737,11 +2737,11 @@ export class ControlRoom extends DurableObject {
         this.event(m,'problem_reopened',`${w.label} finished without changing its files; the problem is open again.`,w.id);
     }
   }
-  async managerRouteOwner(id, question, candidates, strict=false, keywords=true) {
+  async managerRouteOwner(id, question, candidates, strict=false, keywords=true, ranked=false) {
     const shard=this.managerStub(id);
-    if(!shard)return routeOwner(this.inferenceEnv(),question,candidates,{strict,keywords});
+    if(!shard)return routeOwner(this.inferenceEnv(),question,candidates,{strict,keywords,ranked});
     const cfg=this.settings();
-    return shard.selectOwner({question,candidates,strict,keywords,split_model:cfg.split_model,split_threshold:cfg.split_threshold});
+    return shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold});
   }
   // v7.15: one admission for every split, first or late, before any child
   // exists. Names first and deterministic: C0 reads what a task says it
@@ -2844,40 +2844,47 @@ export class ControlRoom extends DurableObject {
   // strand owns it unless the walk finds a different owner: no owner up to
   // the top, or a Clef error, keeps it and never kills it (run11's view split
   // lost three such pieces, p 0.54 to 0.80, and went atomic). Out of scope is
-  // the scope check's call alone. The top's own split has no level above; it
-  // is already checked against the goal.
+  // the scope check's call alone. With no owner at the bar, another branch
+  // that Clef ranks above this one at OWNER_FLOOR or more is still the owner
+  // (the best such answer up to the top): the kill was the only guard against
+  // a store rebuilt beside its owner (run5's in-memory data store), and this
+  // keeps that guard when Clef leans to the owner. The top's own split has
+  // no level above; it is already checked against the goal.
   async pruneOnDiscovery(id, children) {
     if(!this.node(id)?.parent||this.env.MOCK_AI==='true'||!children.length)return {kept:children,rejected:[]};
     const levels=new Map();
     const index=level=>{if(!levels.has(level))levels.set(level,this.childIndex(level));return levels.get(level);};
     const walked=await Promise.all(children.map(async child=>{
       const question=`Which branch's assigned code already covers this proposed piece? ${child.label}: ${child.task}`;
-      let branch=this.node(id),error='';
+      let branch=this.node(id),error='',best=null;
       while(branch?.parent) {
         const level=this.node(branch.parent);
-        let owner=null,candidates=[];
+        let owner=null,ranks=[],candidates=[];
         try {
           candidates=await index(level.id);
-          owner=await this.managerRouteOwner(level.id,question,candidates,true,false);
+          ({id:owner=null,ranks=[]}=await this.managerRouteOwner(level.id,question,candidates,true,false,true)||{});
         } catch(e) {error||=String(e?.message||e);}
         if(owner===branch.id)return {branch,level};
         const found=candidates.find(c=>c.id===owner);
         if(found)return {owner:found,level};
+        // Below the bar: a tie with this branch keeps the piece here.
+        const top=ranks[0],mine=ranks.find(x=>x.id===branch.id)?.p??0,other=top&&top.id!==branch.id&&top.p>=OWNER_FLOOR&&top.p>mine&&candidates.find(c=>c.id===top.id);
+        if(other&&!(best?.p>=top.p))best={owner:other,level,p:top.p};
         branch=level;
       }
-      return {error};
+      return best||{error};
     }));
     const kept=[],rejected=[];
     children.forEach((child,i)=>{
-      const {branch,level,owner,error}=walked[i],label=clip(child.label,70);
+      const {branch,level,owner,p,error}=walked[i],label=clip(child.label,70);
       if(owner) {
         // Decided above this strand's manager: the splitter is not told by whom.
-        const near=level.id===this.node(id)?.parent,name=near?owner.label:'';
-        this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id}); not spawned. ${near?'Import it from that strand instead of rebuilding it.':`Decided at ${level.id}: this strand is told only that it is owned ${OUTSIDE}, and imports it by name.`}`);
+        const near=level.id===this.node(id)?.parent,name=near?owner.label:'',why=p===undefined?'':`, Clef's best answer (p=${p.toFixed(3)}, below ${OWNER_BAR})`;
+        this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id})${why}; not spawned. ${near?'Import it from that strand instead of rebuilding it.':`Decided at ${level.id}: this strand is told only that it is owned ${OUTSIDE}, and imports it by name.`}`);
         rejected.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,...ownerNote(child.label,clip(assignedPiece(child.task),160),name)});
         return;
       }
-      // run11: a piece no other strand up to Root owns stays where the scope check placed it.
+      // run11: a piece no other strand up to Root owns, at the bar or as Clef's best, stays where the scope check placed it.
       if(branch)this.event(id,'scope_kept',`Clef placed proposed child "${label}" in this strand ("${clip(branch.label,70)}" under ${level.id}); kept.`);
       else if(error)this.event(id,'scope_walk_uncertain',`No other strand up to Root was shown to own "${label}", but Clef failed on the way (${clip(error,200)}); kept in this strand, where the scope check placed it.`);
       else this.event(id,'scope_kept',`No other strand up to Root owns proposed child "${label}"; kept in this strand, where the scope check placed it.`);

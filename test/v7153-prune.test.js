@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {register} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
 register('./cloudflare-loader.mjs',import.meta.url);
-const {ControlRoom}=await import('../src/index.js');
+const {ControlRoom,ManagerShard}=await import('../src/index.js');
 const {ROOT_PROMISE}=await import('../src/model.js');
 class Sql {
   constructor(){this.db=new DatabaseSync(':memory:');}
@@ -29,7 +29,8 @@ class Store {
 const events=(room,kind)=>room.snapshot().events.filter(e=>e.kind===kind);
 const about=(question,label)=>question.includes(`${label}: `);
 // A scripted Clef and Qwen: within(label) and gate(n) give probabilities;
-// owner(question,labels) names the owning label or null.
+// owner(question,labels) names the owning label (0.93, the rest 0.05), or
+// gives each label's answer ({label:p}, missing ones 0.05), or null.
 function fakeAI({gate=()=>0.746,split,within,owner=()=>null}) {
   const calls=[];
   return {calls,run:async(_model,input)=>{
@@ -39,9 +40,9 @@ function fakeAI({gate=()=>0.746,split,within,owner=()=>null}) {
       if(keys[0].startsWith('within_'))return {answers:Object.fromEntries(keys.map(k=>[k,{noul:within(kids[Number(k.slice(7))].label)}]))};
       if(keys[0].startsWith('names_'))return {answers:Object.fromEntries(keys.map(k=>[k,{noul:0.9}]))};
       if(keys[0].startsWith('owner_')) {
-        const labels=input.state.children.map(c=>c.label),pick=owner(input.state.question,labels);
+        const labels=input.state.children.map(c=>c.label),pick=owner(input.state.question,labels),p=label=>pick&&typeof pick==='object'?pick[label]??0.05:label===pick?0.93:0.05;
         calls.push({kind:'owner',question:input.state.question,labels});
-        return {answers:Object.fromEntries(labels.map((label,i)=>['owner_'+i,{noul:label===pick?0.93:0.05}]))};
+        return {answers:Object.fromEntries(labels.map((label,i)=>['owner_'+i,{noul:p(label)}]))};
       }
     }
     const system=input.messages?.[0]?.content||'';
@@ -135,4 +136,86 @@ test('v7.15.3: in run11\'s tree a piece another branch owns, by name or by Clef,
   assert.equal(failed.children('root.3').length,0);
   assert.deepEqual(failed.read('split_feedback:root.3',null).rejected.map(({label,owner})=>({label,owner})),
     [{label:'Load ticket data',owner:'dataStore'},{label:'Save tickets file',owner:'dataStore'}]);
+});
+
+// Review of v7.15.3: with the kill gone, the walk's strict bar (0.6) alone
+// would let a piece Clef leans to another branch be rebuilt beside it.
+const near=(label,owner,p)=>`Proposed child "${label}" is owned by "${owner.label}" (${owner.id}), Clef's best answer (p=${p}, below 0.6); not spawned. Import it from that strand instead of rebuilding it.`;
+test('v7.15.3: below the bar, a piece Clef ranks first to another branch at 0.35 or more is pruned to it; first to this strand, tied with it, or below 0.35, it stays',async()=>{
+  const format={label:'formatTicket',task:'Write code that formats a ticket as display text',functions:[fn('formatTicket','returns a ticket as display text','ticket')]};
+  // readTicketFile rebuilds dataStore's readData(filePath) (run11's root.1.1 is fs.readFileSync(filePath)).
+  const ranks={readTicketFile:{dataStore:0.55,viewTicket:0.3},parseTicketData:{viewTicket:0.5,dataStore:0.45},findTicketById:{createTicket:0.45,viewTicket:0.45},formatTicket:{updateTicket:0.3}};
+  const ai=fakeAI({split:()=>[...run11View,format],within:label=>run11Within[label]??0.8,owner:q=>ranks[Object.keys(ranks).find(l=>about(q,l))]});
+  const room=await run11(ai);
+  await room.turn('root.3');
+  assert.deepEqual(events(room,'scope_pruned').map(e=>e.body),[near('readTicketFile',{label:'dataStore',id:'root.1'},'0.550')]);
+  assert.deepEqual(events(room,'scope_kept').map(e=>e.body),['parseTicketData','findTicketById','formatTicket'].map(kept));
+  assert.deepEqual(room.children('root.3').map(c=>c.label),['viewTicketFunction','parseTicketData','findTicketById','formatTicket']);
+  assert.equal(ai.calls.filter(c=>c.kind==='owner').length,4,'one Clef call a piece, the same one the walk always made');
+  assert.equal((await room.readKnowledge('root.3')).owned_elsewhere,'readTicketFile is owned outside this branch; import it by name and write here only what it lacks.');
+});
+
+// Run5 (f73243d3) root.2.2 "Ticket creation logic", step 11, with run5's
+// labels, tasks and scope answers in a v7.15 tree: Clef named no owner of
+// "In-memory data store" at root.2 or at Root, and the kill stopped a second
+// store beside root.1's JSON file.
+const run5Root=[
+  ['Data storage handler','Write code that manages reading from and writing to a JSON file for ticket persistence using Node.js built-in modules.',[fn('loadTickets','reads all tickets from the JSON file','filePath'),fn('saveTickets','writes all tickets to the JSON file','filePath','tickets')]],
+  ['Create ticket logic','Write code that handles ticket creation, validates input, and updates the data store.',[fn('createTicket','creates a ticket','data')]],
+  ['View tickets logic','Write code that retrieves all tickets or filters them by ID, status, or priority from the data store.',[fn('viewTickets','returns tickets','filter')]],
+  ['Update ticket logic','Write code that modifies existing tickets by ID, ensuring data integrity and persistence.',[fn('updateTicket','updates a ticket','id','updates')]],
+  ['Delete ticket logic','Write code that removes tickets by ID from the data store.',[fn('deleteTicket','deletes a ticket','id')]],
+  ['Application entry point','Write code that imports and combines all modules, exporting a start() function.',[{name:'start',does:ROOT_PROMISE[0].does,params:[]}]]
+].map(([label,task,interfaces])=>({label,task:task+deliver,interfaces}));
+const run5Create=[
+  ['Input validation','Write code that validates ticket data structure and content requirements for creation/update operations.',[fn('validateTicket','validates ticket data','data')]],
+  ['Ticket creation logic','Write code that handles ticket creation workflow including validation and data store integration.',[fn('createTicket','creates a ticket','data')]]
+].map(([label,task,interfaces])=>({label,task:task+deliver,interfaces}));
+const run5Split=[
+  {label:'Ticket validation logic',task:'Write code that checks a new ticket has a title and a valid priority',functions:[fn('checkNewTicket','checks a new ticket','data')]},
+  {label:'In-memory data store',task:'Write code that keeps tickets in an in-memory array and exports functions to add and list them',functions:[fn('addToStore','adds a ticket to the in-memory array','ticket'),fn('listStore','returns the in-memory tickets')]},
+  {label:'Ticket creation workflow',task:'Write code that exports createTicket(data), validating and storing the new ticket',functions:[{name:'createTicket'}]},
+  {label:'Entry module export',task:'Write code that exports a wrapper object with a create() method implementing the ticket workflow',functions:[]}];
+const run5Within={'Ticket validation logic':0.876,'In-memory data store':0.917,'Ticket creation workflow':0.836,'Entry module export':0.752};
+async function run5(store) {
+  const ai=fakeAI({split:()=>run5Split,within:label=>run5Within[label],owner:(q,labels)=>{
+    const top=labels.includes('Input validation');
+    if(about(q,'Ticket validation logic'))return top?'Input validation':null;
+    if(about(q,'Entry module export'))return top?'Ticket creation logic':null;
+    // root.2 leans to this strand; Root's answer is store(labels).
+    return top?{'Ticket creation logic':0.4,'Input validation':0.1}:store;
+  }});
+  const room=new ControlRoom({storage:{sql:new Sql()},waitUntil:()=>{}},{AI:ai,TEST_ARTIFACT_STORE:new Store()});
+  await room.provision('root',null,'Root objective',goal,ROOT_PROMISE);room.set('goal',goal);
+  await room.spawn('root',run5Root);
+  await room.spawn('root.2',run5Create);
+  for(const id of ['root','root.2'])room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",id);
+  for(const n of room.allNodes())if(!['root','root.2','root.2.2'].includes(n.id))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",n.id);
+  room.db().exec("UPDATE agents SET phase='decompose',status='ready' WHERE id='root.2.2'");
+  await room.turn('root.2.2');
+  return {room,ai};
+}
+test('v7.15.3: run5 replay: a store Clef ranks first to the Data storage handler at Root, below the bar, is pruned there, past root.2\'s lean to this strand; one Clef ranks to nobody is kept',async()=>{
+  const {room,ai}=await run5({'Data storage handler':0.5,'Create ticket logic':0.3});
+  assert.deepEqual(events(room,'scope_pruned').map(e=>e.body),[
+    'Proposed child "Ticket validation logic" is owned by "Input validation" (root.2.1); not spawned. Import it from that strand instead of rebuilding it.',
+    'Proposed child "In-memory data store" is owned by "Data storage handler" (root.1), Clef\'s best answer (p=0.500, below 0.6); not spawned. Decided at root: this strand is told only that it is owned outside this branch, and imports it by name.']);
+  assert.deepEqual(room.children('root.2.2').map(c=>c.label),['Ticket creation workflow','Entry module export']);
+  assert.equal(ai.calls.filter(c=>c.kind==='owner'&&about(c.question,'In-memory data store')).length,2,'asked at root.2, then at Root');
+  assert.equal((await room.readKnowledge('root.2.2')).owned_elsewhere,
+    'Ticket validation logic is owned outside this branch; import it by name and write here only what it lacks. In-memory data store is owned outside this branch; import it by name and write here only what it lacks.');
+  // The trade-off: when Clef leans to no branch at all, the store is kept.
+  const {room:missed}=await run5(null);
+  assert.deepEqual(events(missed,'scope_kept').map(e=>e.body).filter(b=>b.includes('In-memory')),[kept('In-memory data store')]);
+  assert.deepEqual(missed.children('root.2.2').map(c=>c.label),['In-memory data store','Ticket creation workflow','Entry module export']);
+});
+
+test('v7.15.3: the manager DO hands the walk Clef\'s answers below the bar; routing callers still get an id',async()=>{
+  const ai={run:async()=>({answers:{owner_0:{noul:0.55},owner_1:{noul:0.3}}})};
+  const shard=new ManagerShard({storage:{sql:new Sql()}},{AI:ai});
+  const candidates=run11Root.slice(0,3).filter((_,i)=>i!==1).map((c,i)=>({id:['root.1','root.3'][i],label:c.label,task:c.task,known_topics:[],files:[]}));
+  const question='Which branch\'s assigned code already covers this proposed piece? readTicketFile: Write code that reads the raw tickets file at the given path';
+  assert.equal(await shard.selectOwner({question,candidates,strict:true,keywords:false}),null);
+  assert.deepEqual(await shard.selectOwner({question,candidates,strict:true,keywords:false,ranked:true}),{id:null,ranks:[{id:'root.1',p:0.55},{id:'root.3',p:0.3}]});
+  assert.deepEqual(await shard.selectOwner({question,candidates:[],strict:true,ranked:true}),{id:null,ranks:[]});
 });
