@@ -16,7 +16,7 @@ import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materiali
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
-import { callOf, esmSyntax, esmRequires } from './linker.js';
+import { callOf, esmSyntax } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
@@ -645,11 +645,15 @@ export class ControlRoom extends DurableObject {
   // that performs no goal operation (p6's view piece promised getTicket).
   // v7.15.5 merge: storage as the level reads it (levelOps): G1's store
   // readTickets, beside Read Ticket's readTicket, is storage.
-  plannedUses(id) {
-    const n=this.node(id),names=n?.parent?parse(n.uses,[]):[],out=new Map();
+  // Integration (R5): answered, the names its manager answered it as
+  // provided (a promise grown for its import, or a request), read the same
+  // way from the plan as it stands now and marked answered: a storage one
+  // called meets its owner's planned storage uses, and none is ever idle.
+  plannedUses(id, answered=[]) {
+    const n=this.node(id),planned=n?.parent?parse(n.uses,[]):[],names=[...new Set([...planned,...answered])],out=new Map();
     for(let b=names.length?n:null;b?.parent&&out.size<names.length;b=this.node(b.parent)) {
       const ops=this.opPieces(b.parent),{isOp}=this.levelOps(b.parent);
-      for(const o of this.offeredFunctions(b.parent,b.id))for(const f of o.items)if(names.includes(f.name)&&!out.has(f.name))out.set(f.name,{...f,owner:o.label,storage:!ops.has(o.id)&&storageFunction(f,isOp)});
+      for(const o of this.offeredFunctions(b.parent,b.id))for(const f of o.items)if(names.includes(f.name)&&!out.has(f.name))out.set(f.name,{...f,owner:o.label,storage:!ops.has(o.id)&&storageFunction(f,isOp),...planned.includes(f.name)?{}:{answered:true}});
     }
     return names.map(name=>out.get(name)).filter(Boolean);
   }
@@ -1704,8 +1708,9 @@ export class ControlRoom extends DurableObject {
     const asserted=/AssertionError|ERR_ASSERTION|Missing expected (?:exception|rejection)/.test(detail)||!frames.slice(0,Math.max(0,frames.findIndex(f=>f.includes('glue/smoke.js')))).some(f=>f.includes('/components/'));
     const made=at&&asserted?inventedAssertions(test,{goal,api,methods:described}).find(x=>x.line===at):null;
     if(made) {
+      // Integration: the sentence itself is the mark (facts.requirement.invented), so the ticket leads with it (requirementText).
       const say=`Test line ${made.line} requires ${clip(made.need,54)}, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.`;
-      issues=issues.map(x=>({...x,failure:x.failure??x.detail,detail:`${say} ${x.detail}`,facts:{...x.facts,requirement:{...x.facts?.requirement,invented:true}}}));
+      issues=issues.map(x=>({...x,failure:x.failure??x.detail,detail:`${say} ${x.detail}`,facts:{...x.facts,requirement:{...x.facts?.requirement,invented:say}}}));
     }
     this.event(nodeId,'run_failed',`The application failed the runner's test. ${clip(detail,900)}`);
     return {passed:false,issues,detail,test};
@@ -2322,9 +2327,9 @@ export class ControlRoom extends DurableObject {
           // A module the Container names without a stack line is a frame too, after those the stack gives.
           requirement.frames.push(...frames.filter(p=>!requirement.frames.some(f=>f.path===p)).map(path=>({path,fn:''})));
           // The test slice's lead on an assertion the runner invented stays first (run13's line 55).
-          const lead=own.requirement?.invented?/^Test line \d+ requires .*? satisfy it anyway\. /.exec(detail)?.[0]||'':'';
+          const lead=typeof own.requirement?.invented==='string'&&detail.startsWith(own.requirement.invented)?own.requirement.invented+' ':'';
           return {kind,path:'',sites:frames,detail:`${lead}The runner's test failed: ${clip(detail.slice(lead.length),700)} The test stays fixed for this run; the application must satisfy it.`,
-            facts:{...own,requirement:{...own.requirement,...requirement,...own.requirement?.invented?{invented:true}:{}},failure}};
+            facts:{...own,requirement:{...own.requirement,...requirement},failure}};
         }
         return {kind,path,sites:more.filter(p=>p!==path),target,detail:path===first?detail:`${first?first+': ':''}${detail}`,
           facts:{...own,...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure}};
@@ -2591,7 +2596,10 @@ export class ControlRoom extends DurableObject {
       plainJsDone:id=>plain.has(id),uniqueProvider:p=>unique.get(p.id)||null,promiseAdd:p=>adds.get(p.id)||null,route:p=>routes.get(p.id)||null,
       // The same problem assigned before to this child or inside its branch
       // (M4); for a stuck worker, its earlier stuck problems that what it was told did not settle.
-      recurrence:(p,child)=>query(this.db(),`SELECT assignee FROM problems WHERE ${p.kind==='stuck'?"kind='stuck' AND outcome!='resolved' AND source":'signature'}=? AND id!=? AND assignee!=''`,p.kind==='stuck'?p.source:p.signature,p.id).filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
+      // Integration: a load or run failure is the same by its failure (failureKey), as progress reads it: with no triage prose, Node's crash preamble gave every run9 assertion one signature, and the entry's fifth round was the model's (M4) three times where v7.15.5 asked it never.
+      recurrence:(p,child)=>(p.kind==='stuck'?query(this.db(),"SELECT assignee FROM problems WHERE kind='stuck' AND outcome!='resolved' AND source=? AND id!=? AND assignee!=''",p.source,p.id):
+        p.facts?.failure?this.problems("kind=? AND id!=? AND assignee!=''",p.kind,p.id).filter(r=>failureKey(r)===failureKey(p)):query(this.db(),"SELECT assignee FROM problems WHERE signature=? AND id!=? AND assignee!=''",p.signature,p.id))
+        .filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
       production:[...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>c.id),
       leaks:(text,to)=>this.leaksHiddenAgentIds(text,[to]),busy:id=>[...this.activeTurns].some(a=>a===id||a.startsWith(id+'.')),
       // v7.15 §10.1: what this manager promised, and what each child carries;
@@ -3747,7 +3755,8 @@ export class ControlRoom extends DurableObject {
     // start() returns (v7.15.5), its uses, and whether it is itself the
     // store (review: a piece promising a storage function keeps the data).
     const names=promised.map(f=>f.name),elsewhere=this.planned()?this.promisedElsewhere(id):new Map(),foreign=new Map([...elsewhere].filter(([n])=>!GENERIC_NAMES.has(n)));
-    const uses=this.plannedUses(id),store=uses.filter(f=>f.storage);
+    // Integration: with the names its manager answered as provided (run12's deleteTicket keeps its import of getTickets, which R5 put on the data piece's promise, and is not sent back for the planned readTickets).
+    const uses=this.plannedUses(id,this.read(`fn_answers:${id}`,[]).filter(a=>a.kind==='provided'&&validName(a.fn?.name)).map(a=>a.fn.name)),store=uses.filter(f=>f.storage);
     const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&(({isOp})=>promised.some(f=>storageFunction(f,isOp)))(this.levelOps(this.node(id).parent));
     const esm=[...files.values()].some(c=>esmSyntax(c));
     const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,

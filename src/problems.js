@@ -145,7 +145,8 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set())
   let text=hit?(assertion?hit[2]:`${kind}: ${hit[2]}`).trim():s.split('\n').filter(l=>!/node:internal\/|triggerUncaughtException|^\s*\^?\s*$|^\s+at /.test(l)).join(' ').trim();
   if(hit) {
     const rest=[];
-    for(const l of s.slice(hit.index+hit[0].length).split('\n')){if(/^\s+at |^Node\.js/.test(l)||rest.length>24)break;if(l.trim()&&!/^[+-] (?:actual|expected)\b/.test(l))rest.push(l);}
+    // Integration: a string diff's caret line (^ under the first differing character) is no text of either side.
+    for(const l of s.slice(hit.index+hit[0].length).split('\n')){if(/^\s+at |^Node\.js/.test(l)||rest.length>24)break;if(l.trim()&&!/^[+-] (?:actual|expected)\b|^[\s^]+$/.test(l))rest.push(l);}
     // A diff's common lines belong to both sides: actual { id: 1, title: 'wrong' }, expected { id: 1, ... }.
     const side=sign=>rest.filter(l=>!/^[+-] /.test(l)||l.startsWith(sign+' ')).map(l=>l.replace(/^[+-] /,'').trim()).join(' ');
     if(rest.some(l=>/^[+-] /.test(l)))text+=`${!text||/:$/.test(text)?'':':'} actual ${side('+')||'(nothing)'}, expected ${side('-')||'(nothing)'}`;
@@ -172,6 +173,8 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set())
   const expects=c=>{
     if(c.rejects)return {expects_throw:true};
     const t=shape.tries.filter(t=>t.handler&&t.block.loc.start.line<=c.line&&c.line<=t.block.loc.end.line).at(-1);
+    // Integration: assert.fail after the call inside the try requires the throw, whatever the catch rethrows (the classifier's throw rule reads it so).
+    if(t&&/\bassert\.fail\(/.test(src(t.block).replace(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g,'')))return {expects_throw:true};
     if(!t||FAILS.test(src(t.handler).replace(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g,'')))return null;
     const checks=(t.handler.body.body||[]).filter(x=>/\bassert\b/.test(src(x))).slice(0,2).map(x=>clip(src(x).replace(/\s+/g,' ').replace(/;$/,''),200));
     return {expects_throw:true,...checks.length?{catch_checks:checks.join('; ')}:{}};
@@ -191,12 +194,14 @@ export function readRequirement(test, output, paths=[], exportsOf=()=>new Set())
 // created ticket" names viewTicket and createTicket).
 const stem=w=>w.length>3?w.replace(/(?:ing|ied|ies|ed|es|s|e)$/,''):w;
 const wordsOf=s=>(String(s||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().match(/[a-z0-9]+/g)||[]).map(stem);
-// Review: a generic name (create, list) or start is named only as a call,
-// start( or app.start ("Failed to start: tickets.json is missing" sent
-// the start carrier, a pure composer, a storage requirement).
+// Review: start is named only as a call, start( or app.start ("Failed to
+// start: tickets.json is missing" sent the start carrier, a pure composer,
+// a storage requirement). Integration: a generic name (create, list, get) is
+// never matched by name, as a function request never is (requestNames), the
+// linker never binds one and the contract never reads one as foreign.
 export function namedFunctions(text, fns) {
   const s=String(text||''),literal=new Set(s.match(/[A-Za-z_$][\w$]*/g)||[]),have=new Set(wordsOf(s));
-  const byName=f=>literal.has(f.name)&&(!(GENERIC_NAMES.has(f.name)||f.name==='start')||new RegExp(`\\b${f.name}\\(|\\bapp\\.${f.name}\\b`).test(s));
+  const byName=f=>literal.has(f.name)&&!GENERIC_NAMES.has(f.name)&&(f.name!=='start'||/\bstart\(|\bapp\.start\b/.test(s));
   return [...new Map((fns||[]).filter(f=>f?.name&&(byName(f)||wordsOf(f.name).length>1&&wordsOf(f.name).every(w=>have.has(w)))).map(f=>[f.name,f])).values()];
 }
 // R3: a ticket is a requirement on the worker's own promised function. fn:
@@ -204,11 +209,14 @@ export function namedFunctions(text, fns) {
 // Clef's rank, its first promise, with its others as more); module: the
 // frame's module (b); thrown: the error was thrown in it; relied: the
 // site's function, which relies on this provider party's (review).
+// Integration: r.invented, the runner's sentence that the fixed test
+// requires this though nothing in the plan states it (run13's line 55),
+// leads the ticket, once, so the worker is not left to argue with its promise.
 export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null}={}) {
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
-  const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
-  const head=fn?`Your ${signature(fn)}${does}${rest}${on} ${thrown&&r?.error?'threw':verb}: ${need}.`:
-    module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`;
+  const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'',lead=typeof r?.invented==='string'?r.invented.trim()+' ':'';
+  const head=lead+(fn?`Your ${signature(fn)}${does}${rest}${on} ${thrown&&r?.error?'threw':verb}: ${need}.`:
+    module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`);
   const line=r?.test_line?.line?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
   const at=r?.assertion?.line?` It failed at line ${r.assertion.line}: ${r.assertion.text}.`:'';
   return head+line+at;
@@ -232,7 +240,8 @@ export function requirementText(r, {fn=null, more=[], module='', method='', thro
 // failure naming start (app.x is not a function) is the start carrier's own.
 export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer=()=>null, ranks=null}={}, declined=[]) {
   const out=[],skip=new Set(declined),has=c=>out.some(x=>x.child===c);
-  const fnsOf=child=>promises.find(x=>x.child===child)?.fns||[],fnOf=(child,name)=>fnsOf(child).find(f=>f.name===name)||null,promiser=name=>promises.find(x=>x.fns.some(f=>f.name===name))?.child||null;
+  // Integration: a generic name (get, list) names no child, as a function request by it reaches none (requestNames) and the linker binds none.
+  const fnsOf=child=>promises.find(x=>x.child===child)?.fns||[],fnOf=(child,name)=>fnsOf(child).find(f=>f.name===name)||null,promiser=name=>name&&!GENERIC_NAMES.has(name)&&promises.find(x=>x.fns.some(f=>f.name===name))?.child||null;
   const add=(child,how,extra={})=>{if(child&&!skip.has(child)&&!has(child))out.push({child,how,...extra,text:requirementText(r,extra)});};
   const frames=(r.frames||[]).map(f=>({...f,child:frameOwner(f.path)})).filter(f=>f.child);
   frames.forEach((f,i)=>{const fn=f.fn?fnOf(f.child,f.fn):null;add(f.child,fn?'a':'b',{fn,module:f.path,thrown:i===0,providers:[...new Set(frames.filter(x=>x.child!==f.child).map(x=>x.child))]});});

@@ -95,6 +95,8 @@ const OUT={
   round1:files=>`Error: ENOENT: no such file or directory, open 'tickets.json'\n    at Object.readFileSync (node:fs:440:20)\n    at readTickets (/work/build-DqdiJj/${at(files,/read-ticke/)}:4:19)\n    at Object.createTicket (file:///work/build-DqdiJj/${at(files,/create-tic/)}:5:19)\n    at /work/build-DqdiJj/glue/smoke.js:9:37 {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: 'tickets.json'\n}\n`,
   round2:()=>"AssertionError [ERR_ASSERTION]: Created ticket should have an id\n    at /work/build-bi8Pj3/glue/smoke.js:14:5 {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: undefined,\n  expected: true,\n  operator: '==',\n  diff: 'simple'\n}\n",
   round3:()=>"AssertionError [ERR_ASSERTION]: Deleting ticket should result in an error when viewing\n    at /work/build-Xzdoma/glue/smoke.js:55:12 {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: false,\n  expected: true,\n  operator: '==',\n  diff: 'simple'\n}\n"};
+// The test slice's sentence for run13's line 55, which the third draft keeps (runner_invented); it leads every ticket for that failure (integration).
+const SAY55='Test line 55 requires viewTicket to throw for a deleted id, which nothing in the plan states; the test is fixed for this run, so satisfy it anyway.';
 const PROMISES={read:fn('readTickets','reads all tickets from storage'),save:fn('saveTickets','saves tickets to storage',['tickets']),create:fn('createTicket','creates a new ticket and returns it',['data']),
   view:fn('viewTicket','returns the ticket with the given ID',['id']),update:fn('updateTicket','updates a ticket and returns the modified version',['id','data']),del:fn('deleteTicket','removes a ticket and returns it',['id'])};
 // Pieces under parent as finished splits leave them: [label, file, content, functions]; no file is a sub-manager.
@@ -156,8 +158,9 @@ test('v7.15.6: run13 replay: round 1 goes by the frame to the read worker, round
   assert.deepEqual(bodies(calls,'Read tickets from storage'),["Your readTickets() (\"reads all tickets from storage\") threw: Error: ENOENT: no such file or directory, open 'tickets.json'. Test line 9: const createdTicket = await app.createTicket({. Publish the FULL updated file."]);
   assert.deepEqual(bodies(calls,'Create ticket'),["Your createTicket(data) (\"creates a new ticket and returns it\") must satisfy: Created ticket should have an id. Test line 9: const createdTicket = await app.createTicket({. It failed at line 14: assert(createdTicket.id, 'Created ticket should have an id'). Publish the FULL updated file."]);
   const [view]=bodies(calls,'View ticket');
-  // Review: the ticket says what the catch checks about the throw (a worker that threw another message cost a round).
-  assert.ok(view.startsWith("Your viewTicket(id) (\"returns the ticket with the given ID\") must satisfy: Deleting ticket should result in an error when viewing. Test line 50: await app.viewTicket(createdTicket.id) inside a try expecting a throw whose catch checks: assert.equal(err.message, 'Ticket not found', 'Deleting ticket should throw \"Ticket not found\"'). It failed at line 55: assert.ok(errorCaught, 'Deleting ticket should result in an error when viewing'). What the other side provides: module.js exports: "),view);
+  // Review: the ticket says what the catch checks about the throw (a worker that threw another message cost a round). Integration: the runner's sentence (the third draft kept line 55) leads it, once.
+  assert.ok(view.startsWith(`${SAY55} Your viewTicket(id) (\"returns the ticket with the given ID\") must satisfy: Deleting ticket should result in an error when viewing. Test line 50: await app.viewTicket(createdTicket.id) inside a try expecting a throw whose catch checks: assert.equal(err.message, 'Ticket not found', 'Deleting ticket should throw \"Ticket not found\"'). It failed at line 55: assert.ok(errorCaught, 'Deleting ticket should result in an error when viewing'). What the other side provides: module.js exports: `),view);
+  assert.equal((view.match(/which nothing in the plan states/g)||[]).length,1,'once');
   assert.match(view,/deleteTicket\(id\)[^]* Publish the FULL updated file\.$/);
   assert.ok(view.length<=900);
   for(const text of calls.leaf.flatMap(u=>u.new_messages.map(m=>m.body)))assert.doesNotMatch(text,/REAL CONTAINER BUILD FAILED|NOTHING CHANGED|Your manager decided|Builder renames|components\//);
@@ -177,9 +180,9 @@ test('v7.15.6: run13 round 3: View ticket declines to Delete ticket, the provide
   assert.deepEqual(calls.leaf.map(u=>u.your_label),['View ticket','Delete ticket','Update ticket']);
   for(const text of calls.leaf.flatMap(u=>u.new_messages.map(m=>m.body)))assert.doesNotMatch(text,/NOTHING CHANGED/);
   // Review: a provider party hears what it is asked for, and the declined site still provides its facts; Clef's rank hears its own promise; the start carrier is never ranked.
-  assert.ok(bodies(calls,'Delete ticket')[0].startsWith('Your deleteTicket(id) ("removes a ticket and returns it"), which viewTicket(id) relies on, must satisfy: Deleting ticket should result in an error when viewing. Test line 50:'),bodies(calls,'Delete ticket')[0]);
+  assert.ok(bodies(calls,'Delete ticket')[0].startsWith(`${SAY55} Your deleteTicket(id) ("removes a ticket and returns it"), which viewTicket(id) relies on, must satisfy: Deleting ticket should result in an error when viewing. Test line 50:`),bodies(calls,'Delete ticket')[0]);
   assert.match(bodies(calls,'Delete ticket')[0],/ What the other side provides: viewTicket\.js exports: [^]*viewTicket\(id\)[^]* Publish the FULL updated file\.$/);
-  assert.ok(bodies(calls,'Update ticket')[0].startsWith('Your updateTicket(id, data) ("updates a ticket and returns the modified version") must satisfy: Deleting ticket should result in an error when viewing. Test line 50:'),bodies(calls,'Update ticket')[0]);
+  assert.ok(bodies(calls,'Update ticket')[0].startsWith(`${SAY55} Your updateTicket(id, data) ("updates a ticket and returns the modified version") must satisfy: Deleting ticket should result in an error when viewing. Test line 50:`),bodies(calls,'Update ticket')[0]);
   assert.equal(calls.clef.length,2,'Clef ranks only once the names and frames are spent, and again past the next decline');
   assert.deepEqual(calls.clef.map(u=>u.state.children.map(c=>c.label)),[['Data storage','Create ticket','Update ticket'],['Data storage','Create ticket']],'never the start carrier, never a declined child');
   assert.deepEqual(calls.manager.map(u=>u.problems[0].trigger),['M4'],'the model once, at Root, with everything declined');
@@ -245,9 +248,9 @@ test('v7.15.6: readRequirement reads the failing test line, the method under tes
   assert.deepEqual(P.namedFunctions('Deleting ticket should result in an error when viewing',fns).map(f=>f.name),['viewTicket','deleteTicket']);
   assert.deepEqual(P.namedFunctions("TypeError: Cannot read properties of null (reading 'title')",fns),[]);
   assert.deepEqual(P.namedFunctions('viewTicket returned undefined; the lookup is empty',[...fns,fn('lookup')]).map(f=>f.name),['viewTicket','lookup'],'a one-word name only by its name');
-  // Review: a generic name or start is named only as a call ("Failed to start" named the start carrier for a storage failure).
+  // Review: start is named only as a call ("Failed to start" named the start carrier for a storage failure); integration: a generic name (list) never, as a function request by it reaches no piece.
   assert.deepEqual(P.namedFunctions('Error: Failed to start: tickets.json is missing; the list is empty',fns),[]);
-  assert.deepEqual(P.namedFunctions('Error: start() returned nothing; list() returned []',fns).map(f=>f.name),['start','list']);
+  assert.deepEqual(P.namedFunctions('Error: start() returned nothing; list() returned []',fns).map(f=>f.name),['start']);
   assert.deepEqual(P.namedFunctions('TypeError: app.start is not a function',fns).map(f=>f.name),['start']);
   assert.deepEqual(P.readRequirement(SMOKE,"smoke failed (exit 1): Error: Failed to start: tickets.json is missing\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n",[],exportsOf).names,[]);
 });
@@ -487,7 +490,7 @@ test('v7.15.6 review: with everything declined Root asks its model once; its pla
   assert.deepEqual([calls.manager.map(u=>u.problems[0].trigger),p.flags.model_routed,p.flags.declined],[['M4'],true,['root.4','root.6','root.5','root.3']]);
   assert.ok(events(room,'problem_decision_rejected').some(e=>/^assign root\.1: root\.1 carries start\(\) and only composes the application: problem \w+ is a requirement on the piece whose promise it is about/.test(e.body)),trace(room));
   assert.equal(bodies(calls,'Entry module').length,0,'the start carrier never hears a behavioural requirement');
-  assert.ok(bodies(calls,'Create ticket')[0].startsWith("Make viewTicket throw after a delete. The runner's test requires: Deleting ticket should result in an error when viewing. Test line 50:"),bodies(calls,'Create ticket')[0]);
+  assert.ok(bodies(calls,'Create ticket')[0].startsWith(`Make viewTicket throw after a delete. ${SAY55} The runner's test requires: Deleting ticket should result in an error when viewing. Test line 50:`),bodies(calls,'Create ticket')[0]);
   assert.equal(room.get('status'),'failed');
   assert.match(room.node('root').summary,/no piece takes the requirement \(declined by View ticket, Delete ticket, Update ticket, Create ticket\): Deleting ticket should result in an error when viewing/);
 });

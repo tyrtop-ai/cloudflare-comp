@@ -1787,9 +1787,14 @@ export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),perfo
   // run12: an owner's storage uses are met when one of them is called (a
   // view piece calls readTickets, never saveTickets), and a piece that is
   // itself the store keeps the data.
-  const {unused,kept}=uses.length?ownData(set,uses.map(f=>f.name)):{unused:[],kept:[]},store=uses.filter(f=>f.storage);
-  const uncalled=store.filter(f=>store.filter(g=>g.owner===f.owner).every(g=>unused.includes(g.name))),local=keeper?[]:kept;
-  const homeless=local.length?store:uncalled,idle=uses.filter(f=>!f.storage&&unused.includes(f.name));
+  // Integration: a use the manager answered (R5's growth, a request) is read
+  // only as one more of its owner's storage functions, so a planned use it
+  // stands in for is met (run12's deleteTicket calls getTickets for the
+  // planned readTickets); the plan never said the worker calls it, so an
+  // answered name alone raises nothing.
+  const planned=uses.filter(f=>!f.answered),{unused,kept}=uses.length?ownData(set,uses.map(f=>f.name)):{unused:[],kept:[]},store=planned.filter(f=>f.storage),group=uses.filter(f=>f.storage);
+  const uncalled=store.filter(f=>group.filter(g=>g.owner===f.owner).every(g=>unused.includes(g.name))),local=keeper?[]:kept;
+  const homeless=local.length?store:uncalled,idle=planned.filter(f=>!f.storage&&unused.includes(f.name));
   if(homeless.length) {
     // Review: the path is never the first word, so its case is never changed (PROBE E's CreateTicket.js).
     const group=[...local.map(k=>({rule:'own_data',name:k.name||'',path:k.path,kind:k.kind,text:`In ${base(k.path)}, the module ${k.kind==='state'?`keeps its own data in a module-level ${k.shape} (${k.name})`:k.kind==='fs'?'reads and writes files with fs':'returns records written into its code'}.`})),
