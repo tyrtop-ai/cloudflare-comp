@@ -49,6 +49,9 @@ const PLAN14=[
 const USES14=[own('readTickets','Ticket storage','reads all tickets from storage',[],true,'the array of ticket objects'),own('saveTickets','Ticket storage','saves tickets to storage',['tickets'],true,'nothing')];
 const PERF14=PLAN14.slice(1,5).map(p=>own(p.functions[0].name,p.label,p.functions[0].does,p.functions[0].params,false,p.functions[0].returns));
 const noReturns=xs=>xs.map(({returns,...f})=>f);
+// v7.15.8 (run15, R2): Create ticket's promise states the created ticket, which run14's revisions never returned; RETURNS is the returns rule's sentence, and create5Returns revision 5 with the return.
+const RETURNS='createTicket(data) is promised to return the created ticket, but returns nothing: return it.';
+SRC.create5Returns=SRC.create5.replace("    await saveTickets(JSON.stringify(tickets));\n","    await saveTickets(JSON.stringify(tickets));\n    return data;\n");
 const line=t=>`readTickets() may be async and returns the array of ticket objects: write ${t} inside an async function.`;
 
 test('v7.15.7: contractCheck, await: run14\'s createTicket.js revisions 1 to 3 are each refused for reading readTickets() without await, with the line to write; revision 5, which awaits both calls, passes; view and update likewise, delete and the entry pass; a promise that states no shape is not read',()=>{
@@ -57,16 +60,17 @@ test('v7.15.7: contractCheck, await: run14\'s createTicket.js revisions 1 to 3 a
   assert.deepEqual(view(one),[['await','readTickets','createTicket.js',line('const tickets = await readTickets();')]]);
   assert.deepEqual([one[0].line,one[0].how],[5,'readTickets: not awaited (createTicket.js:5).']);
   assert.equal(L.contractBody([fn('createTicket','',['data'])],one),'[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
-  assert.deepEqual(check('createTicket.js',SRC.create2).map(x=>[x.rule,x.line,x.text]),[['await',4,line('const tickets = await readTickets();')]]);
-  assert.deepEqual(view(check('createTicket.js',SRC.create3)),[['await','readTickets','createTicket.js',line('const tickets = await readTickets();')]],'the parse of the result: the bound form (review), never the wrapped line');
-  assert.deepEqual(check('createTicket.js',SRC.create5),[],'awaited: saveTickets(JSON.stringify(tickets)) is awaited too, and a result unused would pass');
+  assert.deepEqual(check('createTicket.js',SRC.create2).map(x=>[x.rule,x.line,x.text]),[['await',4,line('const tickets = await readTickets();')],['returns',3,RETURNS]]);
+  assert.deepEqual(view(check('createTicket.js',SRC.create3)),[['await','readTickets','createTicket.js',line('const tickets = await readTickets();')],['returns','createTicket','createTicket.js',RETURNS]],'the parse of the result: the bound form (review), never the wrapped line');
+  assert.deepEqual(view(check('createTicket.js',SRC.create5)),[['returns','createTicket','createTicket.js',RETURNS]],'awaited: saveTickets(JSON.stringify(tickets)) is awaited too, and a result unused would pass; v7.15.8: it returns nothing against a promise of the created ticket');
+  assert.deepEqual(check('createTicket.js',SRC.create5Returns),[],'awaited and returning');
   assert.deepEqual(view(L.contractCheck({'viewTicket.js':SRC.view},{promise:[fn('viewTicket','',['id'])],uses:[USES14[0]]})),[['await','readTickets','viewTicket.js',line('const tickets = await readTickets();')]]);
   assert.deepEqual(L.contractCheck({'updateTicket.js':SRC.update},{promise:[fn('updateTicket','',['id','data'])],uses:USES14}).map(x=>[x.rule,x.line]),[['await',5]],'saveTickets(updatedTickets) unused passes');
   assert.deepEqual(L.contractCheck({'deleteTicket.js':SRC.del},{promise:[fn('deleteTicket','',['id'])],uses:USES14}),[]);
   assert.deepEqual(L.contractCheck({'entry.js':SRC.entry},{promise:[ROOT_PROMISE[0]],foreign:new Map(PERF14.map(f=>[f.name,f])),performers:PERF14,goal:GOAL}),[],'returned, never called');
   // A foreign promise (not a planned use) is read the same way; one that states no shape (the v7.15.5 and v7.15.6 rooms and replays) is not.
   assert.deepEqual(view(L.contractCheck({'createTicket.js':SRC.create1},{promise:[fn('createTicket','',['data'])],foreign:new Map(USES14.map(f=>[f.name,f]))})),[['await','readTickets','createTicket.js',line('const tickets = await readTickets();')]]);
-  assert.deepEqual(check('createTicket.js',SRC.create1,noReturns(USES14)),[]);
+  assert.deepEqual(check('createTicket.js',SRC.create1,noReturns(USES14)).map(x=>x.rule),['returns'],'the uses state no shape: only its own promise\'s returns is read');
   assert.deepEqual(L.contractCheck({'createTicket.js':SRC.create1},{promise:[fn('createTicket','',['data'])],foreign:new Map(noReturns(USES14).map(f=>[f.name,f]))}),[]);
 });
 
@@ -195,12 +199,12 @@ const worker14=(label,...sources)=>workerOn(PLAN14,label,...sources);
 const only=calls=>Object.entries(calls).filter(([k,v])=>!['raw','leaf'].includes(k)&&v.length).map(([k])=>k);
 
 test('v7.15.7: run14 replay: Create ticket\'s first done (revision 1) is refused before any linking, with the line to write and no model call; its awaited revision is accepted; a worker that insists is accepted after three returns, and the unmet text names the call',async()=>{
-  const {room,calls,id,again}=await worker14('Create ticket',['createTicket.js',SRC.create1],['createTicket.js',SRC.create5]);
+  const {room,calls,id,again}=await worker14('Create ticket',['createTicket.js',SRC.create1],['createTicket.js',SRC.create5Returns]);
   assert.equal(room.node(id).status,'ready',trace(room));
   const [message]=room.receive(id);
   assert.equal(message.from,'runtime:contract');
-  assert.equal(message.body,'[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
-  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [await]; back to the worker. readTickets: not awaited (createTicket.js:5).');
+  assert.equal(message.body,`[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. ${RETURNS} Publish the FULL updated file.`);
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [await, returns]; back to the worker. readTickets: not awaited (createTicket.js:5). createTicket: returns nothing (createTicket.js:4).');
   assert.deepEqual(only(calls),[],'no Clef or other model call');
   assert.equal(room.get('contract_returns:'+id),'1');
   await again();
@@ -280,9 +284,10 @@ test('v7.15.7 review: the await rule follows a bound result to its references: a
 test('v7.15.7 review: the send-back states the shape the rule has in hand and, for a result passed to another call, proposes the bound form, never the wrapped line (run14b\'s revision 5 wrote JSON.parse(await readTickets()) and the Container refused the array): revision 3 reads "write const tickets = await readTickets();"; a default parameter\'s or a yield\'s call is moved into the body; one finding per line with every await; a long line is cut around the call; require(...).name is promised only with a relative path; a module bound whole, or a name destructured, inside a function is read',()=>{
   const uses=USES14,check=(src,path='createTicket.js')=>view(L.contractCheck({[path]:src},{promise:[fn('createTicket','creates a new ticket and saves it',['data'],'the created ticket')],uses}));
   const SHAPE='readTickets() may be async and returns the array of ticket objects: ';
-  assert.deepEqual(check(SRC.create3),[['await','readTickets','createTicket.js',SHAPE+'write const tickets = await readTickets(); inside an async function.']]);
-  assert.deepEqual(check(SRC.create1),[['await','readTickets','createTicket.js',SHAPE+'write const tickets = await readTickets(); inside an async function.']]);
-  assert.deepEqual(check(SRC.create5),[]);
+  assert.deepEqual(check(SRC.create3),[['await','readTickets','createTicket.js',SHAPE+'write const tickets = await readTickets(); inside an async function.'],['returns','createTicket','createTicket.js',RETURNS]]);
+  assert.deepEqual(check(SRC.create1),[['await','readTickets','createTicket.js',SHAPE+'write const tickets = await readTickets(); inside an async function.'],['returns','createTicket','createTicket.js',RETURNS]]);
+  assert.deepEqual(check(SRC.create5),[['returns','createTicket','createTicket.js',RETURNS]]);
+  assert.deepEqual(check(SRC.create5Returns),[]);
   assert.equal(L.contractBody([fn('createTicket','',['data'])],L.contractCheck({'createTicket.js':SRC.create3},{promise:[fn('createTicket','',['data'])],uses})),'[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
   // The gate (shaped): a promise without returns is read in a room where another states it, and says no shape.
   assert.deepEqual(view(L.contractCheck({'createTicket.js':SRC.create1},{promise:[fn('createTicket','',['data'])],uses:noReturns(USES14),shaped:true})),[['await','readTickets','createTicket.js','readTickets() may be async: write const tickets = await readTickets(); inside an async function.']]);
@@ -307,9 +312,9 @@ test('v7.15.7 review: the send-back states the shape the rule has in hand and, f
 
 test('v7.15.7 review: the rule is gated on the room: where any promise states what it returns, every promised name a worker calls is read for await, one the splitter left without returns too, and the send-back says no shape for it; a room where no promise states it is read as in v7.15.6',async()=>{
   const plan=PLAN14.map(p=>p.label==='Ticket storage'?{...p,functions:noReturns(p.functions)}:p);
-  const {room,id,again}=await workerOn(plan,'Create ticket',['createTicket.js',SRC.create1],['createTicket.js',SRC.create5]);
+  const {room,id,again}=await workerOn(plan,'Create ticket',['createTicket.js',SRC.create1],['createTicket.js',SRC.create5Returns]);
   assert.equal(room.node(id).status,'ready',trace(room));
-  assert.equal(room.receive(id)[0].body,'[contract] Your promise: createTicket(data). readTickets() may be async: write const tickets = await readTickets(); inside an async function. Publish the FULL updated file.');
+  assert.equal(room.receive(id)[0].body,`[contract] Your promise: createTicket(data). readTickets() may be async: write const tickets = await readTickets(); inside an async function. ${RETURNS} Publish the FULL updated file.`);
   await again();
   assert.equal(room.node(id).status,'done',trace(room));
   const old=await workerOn(PLAN14.map(p=>({...p,functions:noReturns(p.functions)})),'Create ticket',['createTicket.js',SRC.create1]);

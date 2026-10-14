@@ -3881,7 +3881,7 @@ export class ControlRoom extends DurableObject {
     }
     if(returns>=3) {
       const still={missing:x=>`${x.name} still not exported`,empty:x=>`${x.name} still an empty placeholder`,foreign:x=>`${x.name} still written ${x.dropped?`in ${base(x.path)}`:'here'} though "${x.hit.owner}" promises it`,unwired:x=>`start() still returns no method for ${list(x.missing)}`,
-        own_data:x=>`${base(x.path)} still keeps its own data`,unused:x=>`${list(x.names)} still not called`,esm:x=>`${base(x.path)} still calls require() in an ES module`,params:x=>`${base(x.path)} still calls ${x.name} out of order`,await:x=>`${base(x.path)} still calls ${x.name} without await`};
+        own_data:x=>`${base(x.path)} still keeps its own data`,unused:x=>`${list(x.names)} still not called`,esm:x=>`${base(x.path)} still calls require() in an ES module`,params:x=>`${base(x.path)} still calls ${x.name} out of order`,await:x=>`${base(x.path)} still calls ${x.name} without await`,returns:x=>`${base(x.path)} still returns nothing from ${x.name}, promised to return ${x.returns}`};
       const then=[gap.length?'the gap goes to the manager':'',dropped.length?`the builder leaves ${list(dropped.map(base))} out of the bundle`:''].filter(Boolean);
       this.event(id,'contract_unmet',`After 3 returns: ${found.map(x=>still[x.rule](x)).join('; ')}; accepted, and ${then.length?then.join(' and '):"the compiler's checks decide"}.`);
       if(gap.length)this.fileContract(id,found.filter(x=>x.rule==='missing').map(x=>promised.find(p=>p.name===x.name)),found.filter(x=>x.rule==='foreign'&&!x.dropped).map(x=>x.hit));

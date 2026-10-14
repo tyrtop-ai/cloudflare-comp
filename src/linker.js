@@ -1787,6 +1787,46 @@ export function unawaitedCalls(files, names) {
   }
   return out;
 }
+// v7.15.8 (run15): a promised function whose promise states what it returns
+// must return a value. Run15's createTicket.js pushed the ticket and saved
+// it, returned nothing, and the fixed test read createResult.id; with
+// v7.15.7's returns stated ("the created ticket") the file would still have
+// reached the Container and failed the same way. For each promised name
+// whose returns is stated and is not nothing, undefined or void, the
+// exported function (a declaration, an expression, an arrow, an object's
+// member, a local name it is bound to; a class or a value this parse cannot
+// read is given the doubt) must have a return with a value outside any
+// nested function: an arrow's expression body counts; return;, return
+// undefined, a throw-only body or no return does not; a generator yields
+// and is not read. {path, name, returns, line} per function without one.
+const NO_VALUE=/^\W*(?:nothing|undefined|void|none|no (?:value|return))\b/i;
+const noValue=e=>!e||e.type==='Identifier'&&e.name==='undefined'||e.type==='UnaryExpression'&&e.operator==='void';
+function returnsValue(fn) {
+  if(fn.generator)return true;
+  if(fn.body.type!=='BlockStatement')return !noValue(fn.body);
+  let hit=false;
+  const go=node=>{
+    if(hit||!node||typeof node.type!=='string'||node!==fn.body&&(FUNCTIONS.has(node.type)||node.type==='ClassBody'))return;
+    if(node.type==='ReturnStatement'){if(!noValue(node.argument))hit=true;return;}
+    for(const [k,v] of Object.entries(node)){if(k==='loc'||k==='start'||k==='end')continue;for(const c of Array.isArray(v)?v:[v])if(c&&typeof c.type==='string')go(c);}
+  };
+  go(fn.body);
+  return hit;
+}
+export function unreturned(files, promise) {
+  const want=new Map((promise||[]).filter(f=>f?.name&&f.returns&&!NO_VALUE.test(String(f.returns))).map(f=>[f.name,f])),out=[];
+  if(!want.size)return out;
+  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+    if(!LINKABLE.test(path)||TEST_PATH.test(path))continue;
+    let ast;try{ast=parseSource(content).ast;}catch{continue;}
+    const decls=topLevelDeclarations(ast);
+    for(const [name,value] of exportedValues(ast,decls)) {
+      const f=want.get(name),fn=f&&!out.some(x=>x.name===name)?functionOf(value,decls):null;
+      if(fn&&!returnsValue(fn))out.push({path,name,returns:String(f.returns).replace(/[.\s]+$/,''),line:fn.loc.start.line});
+    }
+  }
+  return out;
+}
 // ---------- v7.15.6: the one contract check ----------
 // One import line per function, named after it (run8), in the syntax the
 // worker's files are written in (run12's ES modules).
@@ -1828,6 +1868,12 @@ const short=s=>{const t=String(s??'');return t.length>70?t.slice(0,69)+'…':t;}
 //            returns too; without it only a promise that states its shape
 //            is, so the older rooms' and replays' promises, which state
 //            none, are read as before.
+//   returns  a promised function whose promise states what it returns and
+//            that returns nothing (unreturned; run15's createTicket.js, a
+//            push and a save with no return, read by the fixed test as
+//            createResult.id): "createTicket(data) is promised to return
+//            the created ticket, but returns nothing: return it." Not for
+//            a function already missing or an empty placeholder.
 // promise: the worker's promised functions. uses: the plan's uses for it
 // ({name, owner, storage, params, does}). foreign: the functions other
 // pieces promise it, by name ({name, owner, does, params}; generic names
@@ -1928,6 +1974,10 @@ export function contractCheck(files, {promise=[],uses=[],foreign=new Map(),perfo
   const shapes=new Map([...foreign.values(),...uses].filter(f=>f?.name).map(f=>[f.name,f.returns||'']));
   for(const x of unawaitedCalls(set,[...shapes].filter(([,r])=>shaped||r).map(([n])=>n)))
     out.push({rule:'await',name:x.name,path:x.path,line:x.line,text:`${x.name}() may be async${shapes.get(x.name)?` and returns ${shapes.get(x.name)}`:''}: ${x.move?'move the call into the function body and await it':`write ${x.text} inside an async function`}.`,how:`${x.name}: not awaited (${base(x.path)}:${x.line}).`});
+  // v7.15.8 (run15): a promise that states a return value must return one.
+  const silent=new Set([...missing,...empty.map(x=>x.name)]);
+  for(const x of unreturned(set,promise.filter(f=>!silent.has(f.name))))
+    out.push({rule:'returns',name:x.name,path:x.path,line:x.line,returns:x.returns,text:`${signature(promise.find(p=>p.name===x.name))} is promised to return ${x.returns}, but returns nothing: return it.`,how:`${x.name}: returns nothing (${base(x.path)}:${x.line}).`});
   return out;
 }
 // The one send-back, as contractReturned sends it (clipped at 1800 there):

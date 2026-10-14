@@ -168,3 +168,65 @@ test('v7.15.8 (R4): the ticket names what the test read and what the producer mu
   assert.equal(route.ask,null);
 });
 
+// ------------------------------------------------------------------ R2: the returns rule
+test('v7.15.8 (R2): contractCheck, returns: run15\'s createTicket.js against a promise of the created ticket is refused for returning nothing, with the sentence; a function that returns a value in any form passes; a promise without returns, or of nothing, reads nothing',()=>{
+  const promise=[{...PROMISES.create,returns:'the created ticket'}];
+  const found=L.contractCheck({'createTicket.js':SRC.create},{promise});
+  assert.deepEqual(found.map(x=>[x.rule,x.name,x.path,x.line,x.text,x.how]),[['returns','createTicket','createTicket.js',4,RETURNS15,'createTicket: returns nothing (createTicket.js:4).']]);
+  assert.equal(L.contractBody(promise,found),`[contract] Your promise: createTicket(data). ${RETURNS15}${TAIL}`);
+  assert.deepEqual(L.contractCheck({'createTicket.js':SRC.createFix},{promise}),[]);
+  assert.deepEqual(L.contractCheck({'createTicket.js':SRC.create},{promise:[PROMISES.create]}),[],'no returns stated: as before');
+  for(const returns of ['nothing','undefined','void','Nothing (it saves the ticket)','no value'])assert.deepEqual(L.contractCheck({'createTicket.js':SRC.create},{promise:[{...PROMISES.create,returns}]}),[],returns);
+  // Must not flag: a call's result returned, generators, a return inside a branch, a class (and its instance), an arrow's expression body, a local function exported under the name, an object's method, a value this parse cannot read.
+  const ok={delegate:"const { saveTickets } = require('./saveTickets');\nexports.createTicket = (t) => { return saveTickets(t); };\n",generator:"module.exports = { createTicket: function* (d) { yield d; } };\n",asyncGenerator:"exports.createTicket = async function* (d) { yield d; };\n",
+    branch:"function createTicket(d) {\n  if (d) { return d; }\n  throw new Error('no');\n}\nmodule.exports = { createTicket };\n",tryReturn:"module.exports = { createTicket(d) { try { return d; } finally { } } };\n",instance:"class Store { createTicket(d) { return d; } }\nmodule.exports = new Store();\n",className:"export class createTicket { run() { return 1; } }\n",
+    arrow:"export const createTicket = (d) => ({ id: 1, ...d });\n",alias:"function make(d) { return d; }\nexports.createTicket = make;\n",returnsNull:"exports.createTicket = (d) => { return null; };\n",opaque:"module.exports = require('./impl');\n"};
+  for(const [k,src] of Object.entries(ok))assert.deepEqual(L.unreturned({'createTicket.js':src},promise),[],k);
+  // Flagged: no return, return;, return undefined, a throw-only body, a return inside a nested function only, void.
+  const bad={none:"exports.createTicket = async (d) => { await save(d); };\n",bare:"export function createTicket(d) { return; }\n",undef:"export async function createTicket(d) { return undefined; }\n",throwOnly:"exports.createTicket = function (d) { throw new Error('x'); };\n",
+    nested:"export function createTicket(d) { [d].forEach(x => { return x; }); }\n",voidArrow:"exports.createTicket = (d) => void save(d);\n"};
+  for(const [k,src] of Object.entries(bad))assert.deepEqual(L.unreturned({'createTicket.js':src},promise).map(x=>x.name),['createTicket'],k);
+  // Not doubled with missing or empty, and a test file is not read.
+  assert.deepEqual(L.contractCheck({'createTicket.js':"exports.createTicket = function (d) {};\n"},{promise}).map(x=>x.rule),['empty']);
+  assert.deepEqual(L.contractCheck({'x.js':"exports.other = () => 1;\n"},{promise}).map(x=>x.rule),['missing']);
+  assert.deepEqual(L.unreturned({'test/createTicket.test.js':bad.none},promise),[]);
+});
+
+// ------------------------------------------------------------------ R2 at a worker's done
+// One worker's turns under run15's plan, answered with these files in order (the last repeats), for the contract check at its done.
+async function workerOn(plan,label,...sources) {
+  const env=liveRoom({leaf:(_u,n)=>({summary:'Wrote it',files:[{path:sources[Math.min(n,sources.length)-1][0],content:sources[Math.min(n,sources.length)-1][1]}],done:true})}),{room,calls}=env;
+  await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
+  await room.spawn('root',plan);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
+  const id=room.children('root').find(c=>c.label===label).id,again=async()=>{room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);await room.turn(id);};
+  await again();
+  return {room,calls,id,again};
+}
+test('v7.15.8 (R2): with v7.15.7\'s returns on the promise, run15\'s createTicket.js is sent back at its done, before any link, for returning nothing (and, the room shaped, for reading readTickets() without await); the createTicket that returns the ticket is accepted; a worker that insists is accepted after three returns with the unmet text',async()=>{
+  const shaped=PLAN15.map(p=>p.label==='Create Ticket'?{...p,interfaces:[{...PROMISES.create,returns:'the created ticket'}]}:p);
+  const {room,calls,id,again}=await workerOn(shaped,'Create Ticket',['createTicket.js',SRC.create],['createTicket.js',SRC.createFix]);
+  assert.equal(room.node(id).status,'ready',trace(room));
+  const [message]=room.receive(id);
+  assert.equal(message.from,'runtime:contract');
+  assert.equal(message.body,`[contract] Your promise: createTicket(data). readTickets() may be async: write const tickets = await readTickets(); inside an async function. ${RETURNS15}${TAIL}`);
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [await, returns]; back to the worker. readTickets: not awaited (createTicket.js:5). createTicket: returns nothing (createTicket.js:4).');
+  assert.deepEqual([calls.clef.length,calls.manager.length,calls.link.length,events(room,'assembly_final_requested').length],[0,0,0,0],'no model call, no link');
+  await again();
+  assert.equal(room.node(id).status,'done',trace(room));
+  assert.equal(room.get('contract_returns:'+id),'');
+  // Awaited but still returning nothing: the returns rule alone.
+  const awaited=SRC.create.replace('export function','export async function').replace('const tickets = readTickets();','const tickets = await readTickets();').replace('saveTickets(tickets);','await saveTickets(tickets);');
+  const insists=await workerOn(shaped,'Create Ticket',['createTicket.js',awaited]);
+  assert.equal(insists.room.receive(insists.id)[0].body,`[contract] Your promise: createTicket(data). ${RETURNS15}${TAIL}`);
+  for(let i=0;i<2;i++)await insists.again();
+  assert.deepEqual(events(insists.room,'contract_returned').map(e=>e.body),Array(3).fill(null).map((_,i)=>`Done refused (${i+1}/3): rules: [returns]; back to the worker. createTicket: returns nothing (createTicket.js:4).`));
+  await insists.again();
+  assert.equal(insists.room.node(insists.id).status,'done',trace(insists.room));
+  assert.equal(events(insists.room,'contract_unmet')[0].body,"After 3 returns: createTicket.js still returns nothing from createTicket, promised to return the created ticket; accepted, and the compiler's checks decide.");
+  // Run15's own room (no returns anywhere): the same file is done on its first done, as live.
+  const live=await workerOn(PLAN15,'Create Ticket',['createTicket.js',SRC.create]);
+  assert.equal(live.room.node(live.id).status,'done',trace(live.room));
+  assert.deepEqual(events(live.room,'contract_returned'),[]);
+});
