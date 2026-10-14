@@ -3,7 +3,7 @@
 // its OWN direct children and decides, one level at a time: assign (to a
 // worker, a sub-manager or its builder), escalate to its parent, retire or
 // retask a child, or close it. This module is pure: the room supplies the
-// tree, the rows and the state. Deterministic rules (D1-D8) decide first;
+// tree, the rows and the state. Deterministic rules (D1-D9) decide first;
 // the manager's model is asked only for a real choice (M1-M8), and every
 // action it returns is validated here.
 import {nextDirectChild} from './build-verification.js';
@@ -27,6 +27,13 @@ export const PLAIN_JS_CLAUSE='Write plain JavaScript (.js) with Node built-ins o
 // Express and pg imports) is retasked once with PLAIN_JS_CLAUSE, without the
 // model (D8).
 export const PLAIN_JS=/non_code_rejected|Leaf outputs must be executable|\.(?:tsx?|jsx)\b|\bJSX\b|\bReact\b|TypeScript|Line \d+: "\s*<[A-Za-z]|external package '/i;
+// v7.15.5 (run12): a piece that makes or holds the application's data, whose
+// assignment covers a data function a reader needs (D9): one named for it
+// (Ticket Data Manager, Ticket Store), or one whose promise has a factory, a
+// function of no parameters that returns an instance, a manager or a
+// repository (createData: "Initializes and returns a ticket data manager instance").
+export const dataPiece=(label,items=[])=>/\b(?:data\s+(?:manager|store|access|layer|module|service)|store|storage|repository|database|persistence)\b/i.test(String(label||''))||
+  (items||[]).some(f=>!(f.params||[]).length&&/\breturns?\b/i.test(f.does||'')&&/\b(?:instance|manager|repository|database|client)\b/i.test(f.does||''));
 export const COMPILER_TASK='Run the linked application: choose the entry, generate the runtime loader and package, load and start it in the Container, and have the runner test it. Report failures to the manager; never edit code.';
 
 export const KINDS=['unresolved','mismatch','binding','entry','load','run','stuck','contract','argorder'];
@@ -101,7 +108,8 @@ export function lowestCommon(placed, kindOf, flags={}) {
 
 // The deterministic rules, first match decides. ctx: {holder, parent (id or
 // null), kindOf(id) for direct children, builder (id or null), canRelink(p),
-// causedHere(p) (this manager's builder's own edit caused the error), maxHops}.
+// causedHere(p) (this manager's builder's own edit caused the error), maxHops,
+// promiseAdd(p) (v7.15.5: the names to add to its provider's promise, or null)}.
 // A decision is {rule, action, child?, side?, relay?, delegate?}:
 // assign (child: a worker, a sub-manager or the builder), escalate,
 // exhausted (closed), or fail (a child whose repair rounds ran out).
@@ -151,6 +159,12 @@ export function deterministicDecision(p, ctx) {
   // it from there, without the model (M6 settled as D6 against that child).
   const u=flags.escalated_from&&kids.length===1&&kids[0]===flags.escalated_from?ctx.uniqueProvider?.(p):null;
   if(u)return {rule:'D6',action:'assign',child:kids[0],side:'reader',unique:u.child,instructions:importInstructions(p,u),facts_text:u.text};
+  // D9 (v7.15.5, run12): what a reader imports from a provider that does not
+  // export it, that no piece promises, and that the provider's piece covers,
+  // goes on the provider's promise: it is retasked to write it, and the
+  // reader keeps its import. The room decides what qualifies (promiseAdd).
+  const add=lcm&&ctx.promiseAdd?.(p);
+  if(add)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
   // D6 reader adapts (and the default for every other two-sided problem):
   // the default party's child changes; a sub-manager gets it as a directive.
   const role=DEFAULT_ROLE[p.kind]||'reader';
@@ -325,7 +339,8 @@ export function validateManagerActions(actions, call, ctx) {
       return !placed.some(x=>x.child===child)&&(placed.some(x=>x.place==='child')||!production(child));
     });
     if(bad){refuse(a,k==='builder'?'the builder takes only interface errors with relinks left':`${child} holds no party of problem ${bad}`);continue;}
-    // A provider is never asked to add a name its piece did not promise (run8).
+    // A provider is never asked to add a name its piece did not promise (run8);
+    // only the rules put such a name on its promise, by a retask (D9).
     const asked=open.find(id=>{const {p}=byId.get(id),placed=placeParties(ctx.holder,p.parties).filter(x=>x.child===child);
       return (p.facts?.unpromised||p.facts?.elsewhere?.length)&&placed.length&&placed.every(x=>x.role==='provider');});
     if(asked){refuse(a,`${child} holds only the provider of problem ${asked}, which exports what the plan gives it; the reader changes, never the provider, for a name it did not promise`);continue;}
