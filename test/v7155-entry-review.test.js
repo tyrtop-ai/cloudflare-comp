@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {liveRoom,events,trace} from './helpers/room.js';
 const {goalOps}=await import('../src/interfaces.js');
 const {ROOT_PROMISE}=await import('../src/model.js');
+const {normalizeAction}=await import('../src/protocol.js');
 
 const GOAL12='Build a small issue tracker that lets someone create, view, update, and delete tickets. The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.';
 const fn=(name,does,params=[])=>({name,does,params});
@@ -29,6 +30,16 @@ async function split(plan,leaf=null) {
 }
 const startOf=(room,id='root.1')=>room.promisedOf(id).find(f=>f.name==='start').does;
 const answered=(room,id='root.1')=>room.read(`fn_answers:${id}`,[]).map(a=>a.key);
+const kinds=calls=>calls.clef.map(c=>Object.keys(c.questions)[0].replace(/_\d+(?:_\d+)?$/,''));
+// A worker's request, answered by Root's turn: the reply's value.
+async function ask(room,worker,need,name) {
+  const [a]=normalizeAction({ask:[{need,name}]}).ask;room.askManager(worker,a.key,a.question,a.name||'');
+  room.wake('root');await room.turn('root');
+  const m=room.receive(worker).filter(x=>/^\[route:/.test(x.body)).at(-1);
+  return JSON.parse(m.body.replace(/^\[route:\w+\] /,'')).value;
+}
+const own=(name,need)=>`No piece of the application promises ${name} (${need}). It is part of your assignment: write it in your own module.`;
+const run12=[entrySpec,['Ticket Data Manager','Write code that manages in-memory ticket storage',[fn('createData','Initializes and returns a ticket data manager instance')]],create,view,update,remove];
 
 test('v7.15.5 review: a goal operation\'s performer acts on the goal\'s noun, its head noun: a store, manager, repository, object, id or list of tickets performs none, nor does the goal\'s leading Build',()=>{
   const goal='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
@@ -90,4 +101,44 @@ test('v7.15.5 review: a carrier that also promises createTicket returns it as it
   assert.doesNotMatch(room.node('root.1').task,/require\('\.\/createTicket'\)/);
   assert.deepEqual(answered(room),['fn viewTicket','fn updateTicket','fn deleteTicket']);
   assert.deepEqual(room.startPerformers('root.1').map(f=>f.name),['viewTicket','updateTicket','deleteTicket']);
+});
+
+test('v7.15.5 review: a request with a new noun (createTicketStore, createTicketId) is not answered with the shorter promise by words; one that differs by filler is, never told not to write it',async()=>{
+  const {room,calls}=await split(run12);
+  let before=calls.clef.length;
+  assert.equal(await ask(room,'root.6','creates the shared in-memory ticket store the operations read and write','createTicketStore'),own('createTicketStore','creates the shared in-memory ticket store the operations read and write'));
+  assert.deepEqual(kinds({clef:calls.clef.slice(before)}),['fn','inside'],'the scope check decides, as before');
+  assert.equal(await ask(room,'root.2','generates a unique id for a new ticket','createTicketId'),own('createTicketId','generates a unique id for a new ticket'));
+  before=calls.clef.length;
+  const by=await ask(room,'root.2','removes a ticket by its id','deleteTicketById');
+  assert.equal(by,'No piece of the application promises deleteTicketById (removes a ticket by its id), but deleteTicket(id) — "Removes a ticket" — from "Delete Ticket Operation" performs it: import it on its own line, by exactly its name, with the name as the path (const { deleteTicket } = require(\'./deleteTicket\');), and use it. No piece exports deleteTicketById: do not import it.');
+  assert.deepEqual(kinds({clef:calls.clef.slice(before)}),['fn']);
+});
+
+test('v7.15.5 review: the start carrier hears the performers only when it asks for an operation: a helper it may write is judged by the scope check, a wrapper of create is answered from the plan',async()=>{
+  const {room,calls}=await split(run12);
+  const before=calls.clef.length;
+  assert.equal(await ask(room,'root.1','validates the input object before passing it to an operation','validateTicketInput'),own('validateTicketInput','validates the input object before passing it to an operation'));
+  assert.deepEqual(kinds({clef:calls.clef.slice(before)}),['fn','inside']);
+  assert.equal(await ask(room,'root.1','creates the ticket store to pass to each operation','createTicketStore'),own('createTicketStore','creates the ticket store to pass to each operation'));
+  assert.match(await ask(room,'root.1','calls the create operation','createTicketHandler'),/^No piece of the application promises createTicketHandler\. Do not write createTicketHandler and do not import it\. start\(\) returns the functions that perform the goal's operations/);
+  assert.match(await ask(room,'root.1','the third operation start() returns','operation3'),/^No piece of the application promises operation3\. Do not write operation3/);
+});
+
+test('v7.15.5 review: with getTicket for view, the carrier\'s request for viewTicket goes to the scope check, never "do not write viewTicket"; goalOperation1 hears the three and to ask for view',async()=>{
+  const {room,calls}=await split([entrySpec,create,op('View Ticket Operation','getTicket','Retrieves a ticket by ID',['id']),update,remove]);
+  const before=calls.clef.length;
+  assert.equal(await ask(room,'root.1','Function to view a ticket by id','viewTicket'),own('viewTicket','Function to view a ticket by id'));
+  assert.deepEqual(kinds({clef:calls.clef.slice(before)}),['fn','inside']);
+  assert.equal(await ask(room,'root.1','Function to perform goal operation 1','goalOperation1'),"No piece of the application promises goalOperation1. Do not write goalOperation1 and do not import it. start() returns the functions that perform the goal's operations, each under its own name. Import each on its own line, by exactly its name, with the name as the path: const { createTicket } = require('./createTicket'); const { updateTicket } = require('./updateTicket'); const { deleteTicket } = require('./deleteTicket'); Return each under its name. For view, ask your manager for the function that performs it by a name that says what it does. "+
+    'createTicket(data) is promised by "Create Ticket Operation", updateTicket(id, patch) is promised by "Update Ticket Operation" and deleteTicket(id) is promised by "Delete Ticket Operation".');
+});
+
+test('v7.15.5 review: the answer a later turn reads keeps "do not write" and every import line, however long the question',async()=>{
+  const {room}=await split(run12);
+  const need='Function that performs the first goal operation that start() must return, taking the ticket data from the caller and returning the created ticket object';
+  await ask(room,'root.1',need,'goalOperation1');
+  const {text}=room.read('fn_answers:root.1',[]).find(a=>a.key==='fn goalOperation1');
+  assert.match(text,/^No piece of the application promises goalOperation1\. Do not write goalOperation1 and do not import it\. /);
+  assert.match(text,/const \{ deleteTicket \} = require\('\.\/deleteTicket'\); Return each under its name\./);
 });

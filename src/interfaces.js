@@ -161,6 +161,17 @@ export const goalOps = (goal, f) => {
   const hit = w => [f?.name, f?.operation].some(s => covers(words(w), words(s)) && on(s));
   return [...new Set(ws.filter(hit).map(w => VERB(words(w)[0])))];
 };
+// Review: two names of one operation: one verb, and what they act on differs
+// only by filler (createTicketRecord, deleteTicketById, createNewTicket for
+// createTicket). A new noun is another function: createTicketStore and
+// createTicketId are not createTicket, nor viewAllTickets viewTicket.
+const FILLER_OBJECT = new Set('record entry item new single existing one'.split(' '));
+export const sameOp = (a, b) => {
+  const x = words(a), y = words(b);
+  if (!x.length || !y.length || VERB(x[0]) !== VERB(y[0])) return false;
+  const p = objectOf(x).filter(w => !FILLER_OBJECT.has(w)), q = objectOf(y).filter(w => !FILLER_OBJECT.has(w));
+  return p.length === q.length && p.every(w => q.includes(w));
+};
 // Review: at each level, one performer per operation, the one named exactly
 // verb and goal noun first (viewTicket before viewAllTickets), then a
 // specific name before a generic one (createTicket before create); each

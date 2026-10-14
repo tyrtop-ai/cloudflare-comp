@@ -124,12 +124,12 @@ test('v7.15.5: run12 replay: the entry\'s goalOperation1 is answered with the go
   room.wake('root');await room.turn('root');
   const [reply]=replies(room,'root.1');
   assert.equal(reply.kind,'unowned');
-  assert.equal(reply.value,`No piece of the application promises goalOperation1 (Function to perform goal operation 1). start() returns the functions that perform the goal's operations, each under its own name. Import each on its own line, by exactly its name, with the name as the path: ${LINES} Return each under its name. Do not write goalOperation1 and do not import it. `+
+  assert.equal(reply.value,`No piece of the application promises goalOperation1. Do not write goalOperation1 and do not import it. start() returns the functions that perform the goal's operations, each under its own name. Import each on its own line, by exactly its name, with the name as the path: ${LINES} Return each under its name. `+
     'createTicket(data) is promised by "Create Ticket Operation", viewTicket(data) is promised by "View Ticket Operation", updateTicket(data) is promised by "Update Ticket Operation" and deleteTicket(data) is promised by "Delete Ticket Operation".');
   assert.doesNotMatch(reply.value,/require\('\.\/goalOperation1'\)|createData/);
   assert.equal(events(room,'route_plan')[0].body,'goalOperation1 (Function to perform goal operation 1): no piece promises it; "Entry Module" carries start and is answered with the 4 functions that perform the goal\'s operations.');
   assert.deepEqual(kinds(calls),['fn'],'Clef matched the request once; the scope check is not asked');
-  assert.match(room.read('fn_answers:root.1',[])[0].text,/Return each under its name\. Do not write goalOperation1 and do not import it\./,'the answer a later turn reads keeps every import line');
+  assert.match(room.read('fn_answers:root.1',[])[0].text,/^No piece of the application promises goalOperation1\. Do not write goalOperation1 and do not import it\. .*require\('\.\/deleteTicket'\); Return each under its name\./,'the answer a later turn reads keeps every import line');
 });
 
 test('v7.15.5: an unowned request a promised function performs by its words is answered with that function; one nothing performs is judged as before',async()=>{
@@ -137,7 +137,7 @@ test('v7.15.5: an unowned request a promised function performs by its words is a
   ask(room,'root.6','creates a ticket record in the store','createTicketRecord');
   room.wake('root');await room.turn('root');
   const [reply]=replies(room,'root.6');
-  assert.equal(reply.value,'No piece of the application promises createTicketRecord (creates a ticket record in the store), but createTicket(data) — "Adds a new ticket to the data store" — from "Create Ticket Operation" performs it: import it on its own line, by exactly its name, with the name as the path (const { createTicket } = require(\'./createTicket\');), and use it. Do not write createTicketRecord and do not import it.');
+  assert.equal(reply.value,'No piece of the application promises createTicketRecord (creates a ticket record in the store), but createTicket(data) — "Adds a new ticket to the data store" — from "Create Ticket Operation" performs it: import it on its own line, by exactly its name, with the name as the path (const { createTicket } = require(\'./createTicket\');), and use it. No piece exports createTicketRecord: do not import it.');
   assert.ok(!kinds(calls).includes('inside'));
   ask(room,'root.6','formats a date for display','formatDate');
   room.wake('root');await room.turn('root');

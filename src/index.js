@@ -10,7 +10,7 @@ import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, placeholders, selfImports, splitImports, moduleSpecifiers, boundNames, swappedCalls, swappedFrame } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, STUCK_AFTER, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText } from './problems.js';
@@ -94,6 +94,8 @@ const importLines = fns => `Import each on its own line, by exactly its name, wi
 // plan gives the start carrier's up front (v7.15.5).
 const providedText = (f, owner) => clip(`${signature(f)}${f.does?': '+String(f.does).replace(/[.\s]+$/,''):''}. It is exported by "${owner}". Import ${f.name} on its own line, by exactly this name, with the name as the path: const { ${f.name} } = require('./${f.name}'); the builder links the line to the module that exports it. Do not write it yourself.`,600);
 const providedFn = (f, owner) => ({name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),owner});
+// Review: a name that stands for an operation rather than naming one (run12's goalOperation1).
+const OPERATION_PLACEHOLDER=/^(?:goal)?(?:op|operation|action|method|handler|function|func|fn)s?_?\d*$/i;
 // A function a manager's reply carries, cleaned as a promise item is.
 const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&!Array.isArray(fn)?[fn]:[]); return f&&validName(f.name)?{...f,owner:clip(fn.owner,70)}:null; };
 // Hard safety ceilings. Actual per-room limits are chosen in the dashboard.
@@ -3867,18 +3869,24 @@ export class ControlRoom extends DurableObject {
     const want=wanted(hop);
     // v7.15.5: never "import goalOperation1" (run12's entry asked for
     // goalOperation1 and goalOperation2, and no piece promises either): the
-    // start carrier hears the functions that perform the goal's operations,
-    // and any worker a promised function whose words perform what it asked
-    // for (performsOp, either way), with no Clef call.
-    const ops=this.startPerformers(worker.id),like=ops.length?[]:this.requestPerformers(worker.id,hop),not=hop.name?` Do not write ${hop.name} and do not import it.`:'';
-    if(ops.length) {
+    // start carrier's request for an operation hears the functions that
+    // perform the goal's operations, and any worker a promised function that
+    // names the same operation (sameOp), with no Clef call. Review: only a
+    // request for an operation a performer covers, or a placeholder name;
+    // a helper, a store, or an operation no performer covers (getTicket for
+    // view) is judged as before.
+    const plan=this.startPlanOf(worker.id),ops=plan?.theirs||[],goal=this.userGoal(),asked=hop.name?goalOps(goal,{name:hop.name}):[];
+    const covered=new Set([...ops,...(plan?.mine||[])].flatMap(f=>goalOps(goal,f)));
+    if(ops.length&&(OPERATION_PLACEHOLDER.test(hop.name||'')||/\bgoal operations?\b|\boperations? #?\d/i.test(hop.question||'')||asked.length&&asked.every(o=>covered.has(o)))) {
       this.event(m,'route_plan',`${want}: no piece promises it; "${worker.label}" carries start and is answered with the ${ops.length} functions that perform the goal's operations.`);
-      // The import lines first: the answer a later turn reads is cut at 600.
-      return `No piece of the application promises ${want}. start() returns the functions that perform the goal's operations, each under its own name. ${importLines(ops)} Return each under its name.${not} ${listed(ops.map(f=>`${signature(f)} is promised by "${f.owner}"`))}.`;
+      // The name alone and the import lines first: the answer a later turn reads is cut at 600 (review).
+      return `No piece of the application promises ${hop.name||want}.${hop.name?` Do not write ${hop.name} and do not import it.`:''} start() returns the functions that perform the goal's operations, each under its own name. ${importLines(ops)} Return each under its name.${plan.left.length?` For ${listed(plan.left)}, ask your manager for the function that performs ${plan.left.length>1?'each':'it'} by a name that says what it does.`:''} ${listed(ops.map(f=>`${signature(f)} is promised by "${f.owner}"`))}.`;
     }
+    // Review: a promise that names the same operation is offered; whether the worker writes its own is not decided by words.
+    const like=this.requestPerformers(worker.id,hop);
     if(like.length) {
       this.event(m,'route_plan',`${want}: no piece promises it; ${listed(like.map(f=>`${f.name} from "${f.owner}"`))} performs it by its words.`);
-      return `No piece of the application promises ${want}, but ${listed(like.map(f=>`${signature(f)}${f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:''} from "${f.owner}"`))} ${like.length>1?'perform':'performs'} it: import ${like.length>1?'the one you need':'it'} on its own line, by exactly its name, with the name as the path (const { ${like[0].name} } = require('./${like[0].name}');), and use it.${not}`;
+      return `No piece of the application promises ${want}, but ${listed(like.map(f=>`${signature(f)}${f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:''} from "${f.owner}"`))} ${like.length>1?'perform':'performs'} it: import ${like.length>1?'the one you need':'it'} on its own line, by exactly its name, with the name as the path (const { ${like[0].name} } = require('./${like[0].name}');), and use it. No piece exports ${hop.name}: do not import it.`;
     }
     let inside=true;
     try {
@@ -3890,13 +3898,13 @@ export class ControlRoom extends DurableObject {
       `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: const { ${hop.name} } = require('./${hop.name}');`:'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
   }
   // v7.15.5: the promised functions in id's walk, at the nearest level that
-  // has one, whose words perform what a request names, either way: every
-  // word of the request's name is in the promise's name or operation, or
-  // every word of the promise's name is in the request's (createTicketRecord
-  // asks for createTicket). Generic names are never matched by name.
+  // has one, that name the operation a request names (createTicketRecord
+  // asks for createTicket). Generic names are never matched by name. Review:
+  // by sameOp, one verb and the same thing acted on, filler aside: a request
+  // for createTicketStore or createTicketId is not one for createTicket.
   requestPerformers(id, hop) {
     if(!hop.name||GENERIC_NAMES.has(hop.name))return [];
-    for(const items of this.planWalk(id)){const hit=items.filter(f=>!GENERIC_NAMES.has(f.name)&&(performsOp(hop.name,f)||performsOp(f.name,{name:hop.name})));if(hit.length)return hit;}
+    for(const items of this.planWalk(id)){const hit=items.filter(f=>!GENERIC_NAMES.has(f.name)&&(sameOp(hop.name,f.name)||!!f.operation&&sameOp(hop.name,f.operation)));if(hit.length)return hit;}
     return [];
   }
   // Revisit only requests whose chosen child has published new public data.
