@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:tyrtop": "wrangler deploy --domain ai.tyrtop.com",
     "test": "node --test test/*.test.js",
     "check": "node scripts/check.mjs"
   },

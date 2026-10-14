@@ -73,6 +73,16 @@ npx wrangler containers list
 
 Always deploy with `wrangler deploy` (`npm run deploy`). `wrangler versions upload` does not deploy Container changes.
 
+### Optional: your own domain
+
+To serve the Worker on a hostname of a domain whose DNS is on Cloudflare in the same account, deploy with `--domain`. Wrangler creates the DNS record and certificate (remove any existing A or CNAME record for that hostname first):
+
+```bash
+npx wrangler deploy --domain ai.example.com
+```
+
+The `workers.dev` URL keeps working. The domain is passed on the command line, not set in `wrangler.jsonc`, so the default `npm run deploy` works on any account. The author's own deployment uses `npm run deploy:tyrtop`, which serves it at `ai.tyrtop.com`.
+
 ## 5. Set the access token
 
 The API requires a bearer token stored as a Worker secret:
