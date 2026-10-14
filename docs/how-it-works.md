@@ -1,6 +1,6 @@
 # Recursive Control Plane: how it works
 
-> The detailed companion to the short [README](../README.md), for v7.15.1. The [v7.15.1 section of CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md#v7151) gives the details of what changed after run9.
+> The detailed companion to the short [README](../README.md), for v7.15.3. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
 
 A multi-agent code-writing control plane that runs entirely on Cloudflare. You give it a goal, and a tree of small agents:
 - splits the work, promising a few named functions for each piece;
@@ -12,7 +12,7 @@ Each failure goes to the lowest manager whose branch holds every module involved
 
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
-> **Status:** this is v7.15.1. Every live run up to run8 used v7.13.x or earlier; run9 was the first on v7.15 and ended when its flat budget of six repair rounds ran out, which v7.15.1 makes progress-aware. No live run has yet finished with a correct, verified application. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
+> **Status:** this is v7.15.3. Every live run up to run8 used v7.13.x or earlier; run9 to run11 used v7.15. Run11 was the first to finish with the runner's test passing, but its entry module reimplemented every function and imported none of the other pieces, so no live run has yet shown the composed system producing a correct, verified application. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
 
 ## The idea
 
@@ -154,7 +154,7 @@ flowchart TD
    A child that carries a name its parent promised is in scope by construction, and it takes its parent's description of that name.
 5. **Prune walk (below Root).** Each admitted child is walked up the tree.
    - **By name first.** At each level, the promises of that level's other direct children are compared with the names the child adds. A child made only of names that one other branch promises is pruned to that branch, with no Clef call. Otherwise such names are deleted from it.
-   - **Then by Clef,** for a child that carries none of its parent's names. At each level, Clef picks the direct child that owns its topic. If the asking branch owns it, the branch keeps the child. If another branch owns it, the child is pruned, and a short note tells the new children to import it from that strand. If no strand up to Root owns it, the child is killed.
+   - **Then by Clef,** for a child that carries none of its parent's names. At each level, Clef picks the direct child that owns its topic. If the asking branch owns it, the branch keeps the child. If another branch owns it, the child is pruned, and a short note tells the new children to import it from that strand. If no level names an owner at Clef's bar (0.6), the child is pruned to the other branch Clef ranks first at 0.35 or more; otherwise, or if Clef fails on the way, it stays in the splitting strand. Only the scope check (step 4) drops a child as out of scope.
    - A split needs at least two distinct children that survive and fit the room's agent and depth limits. A rejected split goes back to Clef and Qwen with the reasons.
 6. **Spawn.** Each child gets its own Artifacts repository, and its promise is recorded. The parent becomes a manager permanently: it never writes code.
 7. **Workers ask, then write.** When Clef says NO, the agent is a worker.
@@ -388,11 +388,11 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Version.** This is v7.15.1. The full local suite passes with `npm test`, and `npm run check` passes.
+- **Version.** This is v7.15.3. The full local suite passes with `npm test`, and `npm run check` passes.
   - [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md): predicted interfaces, the promises, function requests, and what the linker and the compiler read from the plan.
   - [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md): the four roles, the problem inbox and the managers' decisions.
   - [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md): v7.13.0, the hotfixes v7.13.1 to v7.13.4, and the export connector.
-- **Live.** Every live run so far used the issue-tracker goal, Qwen3-30B-A3B for the splitter and the workers, and Clef-flash for the gates. Up to run8, they all ran on v7.13.x or earlier; run9 ran on v7.15.0. **No live run has yet finished with a correct, verified application.**
+- **Live.** Every live run so far used the issue-tracker goal, Qwen3-30B-A3B for the splitter and the workers, and Clef-flash for the gates. Up to run8, they all ran on v7.13.x or earlier; run9 to run11 ran on v7.15.0 to v7.15.2. **Run11 was the first to finish with the runner's test passing, but its entry module reimplemented every function and imported none of the other pieces, so no live run has yet shown the composed system producing a correct, verified application.**
 
 | Run | Room | Version | Outcome | Fixed in |
 |---|---|---|---|---|
@@ -405,6 +405,8 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 | run7 | 4203fa2a | v7.13.3 | did not complete in 38 minutes: an immediately invoked store read as exporting nothing, whole modules bound as values, unreadable runner and coverage output | v7.13.4 |
 | run8 | 48a10b1d | v7.13.4 | paused after 9.6 minutes and 5 repair rounds: one import line for two modules, reader and provider confused, a repair answered "fixed" with no file | v7.15 |
 | run9 | 92cc686b | v7.15.0 | failed after 6.5 minutes, when Root's flat budget of six repair rounds ran out. Clef made every split decision, every relink after the first needed no model call, the app loaded and started on every round, and each repair round fixed a real bug. It ended on two gaps: names that two pieces both listed were deleted from both, so no piece promised update or delete, and `start()` returned empty placeholder functions | v7.15.1 |
+| run10 | b7079606 | v7.15.1 | Clef said split at Root twice, but both split answers were malformed JSON (every child after the first wrapped in stray quotes). On the third gate Clef said no, so Root wrote the whole application alone as one module, which the Container rejected | v7.15.2 |
+| run11 | 33635715 | v7.15.2 | **completed in 11.1 minutes, with the runner's test passing**, after 14 compiles and 13 repair rounds. Root split into six pieces and the data store into two. But the result is not the system working as designed: the walk killed three of viewTicket's four pieces (so viewTicket went single-agent), createTicket called writeData with its arguments out of order, which the stack blamed on the write worker for four rounds, and the repairs ended with an entry module that reimplemented every function locally and imported none of the other pieces | v7.15.3, in part |
 
 The changelogs give each run's evidence, and the local replays of its files, which run through the real Container runner script with scripted models.
 
@@ -464,7 +466,9 @@ The design reached this shape over many versions:
 - in v7.13, prune on discovery, builders that read their children's boundaries, and the hotfixes from four live runs;
 - in v7.14, four uniform roles, with Root as the final stop;
 - in v7.15, promised functions: each split names them, a worker asks its manager for what it needs, and the linker and the compiler read the plan;
-- in v7.15.1, from run9: repair rounds that count only when they make no progress, duplicate names placed on one piece, and empty placeholders sent back.
+- in v7.15.1, from run9: repair rounds that count only when they make no progress, duplicate names placed on one piece, and empty placeholders sent back;
+- in v7.15.2, from run10: split answers repaired or retried, and a single-agent Root run through the compiler's checks;
+- in v7.15.3, from run11: a call with its arguments out of order is the caller's problem, and the prune walk keeps a piece the scope check accepted unless another branch owns it.
 
 [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md), [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md) and [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md) cover what changed since v7.12. [docs/history/CHANGELOG-v7.12.md](history/CHANGELOG-v7.12.md) documents the release before them. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](history/).
 
