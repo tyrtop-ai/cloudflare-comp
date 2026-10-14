@@ -2971,7 +2971,7 @@ export class ControlRoom extends DurableObject {
     for(const [child,x] of by) {
       const c=this.node(child),own=this.promisedOf(child),names=[...x.names];
       if(own.length+names.length>MAX_INTERFACES)continue;
-      const readers=[...x.readers.keys()].map(label).join(' and ');
+      const readers=listed([...x.readers.keys()].map(label)); // integration: run12's four readers, not 'A and B and C and D'
       // The reader's call is the hint: getTickets(), setTickets(updatedTickets),
       // and its line says what it does with it (review: "imports it" said nothing).
       const items=names.map(name=>{const [r,{calls}]=[...x.readers].find(([,v])=>v.calls.has(name)),call=calls.get(name);return {name,does:clip(`${label(r)} calls it: ${call.line}`,200),params:call.params};});
