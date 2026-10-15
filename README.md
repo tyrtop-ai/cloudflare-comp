@@ -2,6 +2,23 @@
 
 My entry for Cloudflare's "build the next Git platform" competition.
 
+## Run it
+
+Requirements: Node.js 22.13 or newer, Docker running locally, and a Cloudflare account with Workers AI, Artifacts, Durable Objects and Containers (Containers need the Workers Paid plan).
+
+```bash
+git clone https://github.com/tyrtop-ai/cloudflare-comp.git
+cd cloudflare-comp
+npm ci && npm test                  # local checks with fakes; no Cloudflare account needed
+npx wrangler login
+npm run deploy                      # Docker must be running: this builds the Container image
+npx wrangler secret put APP_TOKEN   # any long random string
+```
+
+Open the `workers.dev` URL that Wrangler prints, paste in your token and press **Start**. You can watch the tree grow, click any agent to see what it talks to, and download the finished app as a zip. [INSTALL-CLOUDFLARE.md](INSTALL-CLOUDFLARE.md) covers the Artifacts namespace, the API, exports and troubleshooting.
+
+## The idea
+
 The idea behind it is that many small agents beat one big orchestrator agent with limited context. Context windows are a hard limit, so instead of fighting them with bigger models, the architecture keeps every agent's context small: no agent here ever holds the whole project.
 
 The second intuition is that many small agents working on the same distributed problem will independently come up with solutions that are similar enough to need only minimal tape-up. So the pieces are joined by a builder that is only allowed to rename things, never to write code.
@@ -68,21 +85,6 @@ The yes/no questions go to Clef, a classifier that answers with a probability, s
 - The first test the runner writes stays fixed for the whole run, so repairs can't move the goalposts.
 - Everything runs on Cloudflare: Workers, Durable Objects (one per room and one per manager), Workers AI, Artifacts and Containers.
 - You can pick separate models for managers, workers and the compiler, and set how many pieces a split can have.
-
-## Run it
-
-Requirements: Node.js 22.13 or newer, Docker running locally, and a Cloudflare account with Workers AI, Artifacts, Durable Objects and Containers (Containers need the Workers Paid plan).
-
-```bash
-git clone https://github.com/tyrtop-ai/cloudflare-comp.git
-cd cloudflare-comp
-npm ci && npm test                  # local checks with fakes; no Cloudflare account needed
-npx wrangler login
-npm run deploy                      # Docker must be running: this builds the Container image
-npx wrangler secret put APP_TOKEN   # any long random string
-```
-
-Open the `workers.dev` URL that Wrangler prints, paste in your token and press **Start**. You can watch the tree grow, click any agent to see what it talks to, and download the finished app as a zip. [INSTALL-CLOUDFLARE.md](INSTALL-CLOUDFLARE.md) covers the Artifacts namespace, the API, exports and troubleshooting.
 
 ## Where it's at
 
