@@ -3,7 +3,10 @@
 // workers; everything else is the real ControlRoom.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liveRoom, events } from './helpers/room.js';
+import { liveRoom, events, fileBlocks } from './helpers/room.js';
+import { systemPrompt } from '../src/prompts.js';
+import { lintText, composedTexts } from './helpers/prompt-lint.js';
+import { contractLine } from '../src/contracts.js';
 import { cardContracts } from '../src/card.js';
 import { GOAL_START_REQUIREMENT } from '../src/model.js';
 
@@ -35,7 +38,8 @@ const clef = (p = {}) => input => ({answers: Object.fromEntries(Object.keys(inpu
   k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(GOAL) ? 0.9 : 0.1) : k.startsWith('requirement_') ? (p.requirement ?? 0.9) : 0.9}]))});
 const v8Room = ({card = () => CARD, split = () => PIECES, clefOpts} = {}) => liveRoom({
   card, split, clef: clef(clefOpts),
-  leaf: user => {const f = FILES[user.your_label]; return f ? {summary: `wrote ${f.path}`, files: [f], done: true} : {summary: 'nothing', done: false};}
+  // v8 S6: workers answer in the raw file-block format (§3.2).
+  leaf: user => {const f = FILES[user.your_label]; return f ? fileBlocks([f], {summary: `wrote ${f.path}`, done: true}) : fileBlocks([], {summary: 'nothing', done: false});}
 });
 
 test('v8 room: the card comes first, Root promises its deliverables, and a doc piece finishes on README.md', async () => {
@@ -67,8 +71,13 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.deepEqual(promise.map(c => [c.name, c.kind, c.path, c.serves]), [['README.md', 'doc', 'README.md', ['R1']], ['hello', 'command', 'hello.py', ['R2']]]);
   assert.deepEqual(promise[1].examples, [{given: 'python3 hello.py', expect: ['Hello']}]);
   assert.ok(!promise.some(c => c.name === 'start'));
-  // The splitter heard Root's contracts; the split admitted a doc contract piece.
-  assert.deepEqual(calls.split[0].your_promised_functions.map(c => c.name), ['README.md', 'hello']);
+  // The splitter heard Root's contracts (v8 S6: contracts_you_deliver, under the v8 splitter prompt); the split admitted a doc contract piece.
+  assert.deepEqual(calls.split[0].contracts_you_deliver.map(c => c.name), ['README.md', 'hello']);
+  assert.ok(calls.raw.some(r => r.system === systemPrompt('splitter')) && calls.raw.some(r => r.system === systemPrompt('worker')));
+  assert.equal(events(room, 'format_fallback').length, 0);
+  // v8 S6 review: every request's room-written text passes the prompt lint, the injected data taken out.
+  const data = [GOAL, ...PIECES.pieces.flatMap(p => [p.task, p.label]), ...CARD.deliverables.flatMap(d => [contractLine(d), d.name, d.path, d.does]), ...room.promisedOf('root').map(contractLine)];
+  for (const r of calls.raw) for (const t of composedTexts(JSON.parse(r.text.replace(/ \/no_think$/, '')), data)) assert.deepEqual(lintText('composed', t, {room: true}), [], t);
   const kids = room.children('root').map(c => ({...c, interfaces: JSON.parse(c.interfaces)}));
   assert.deepEqual(kids.map(c => c.label), ['Run guide', 'Hello script']);
   assert.deepEqual(kids[0].interfaces.map(c => [c.name, c.kind, c.path, c.serves]), [['README.md', 'doc', 'README.md', ['R1']]]);

@@ -136,10 +136,11 @@ export class ManagerShard extends DurableObject {
   // routing every inference through the room's coordinator isolate.
   // traced: also return the Clef calls made here, {owner, spans}, for the
   // room's span record (the room cannot see inside this DO's isolate).
-  async selectOwner({question,candidates,strict=false,keywords=true,ranked=false,split_model='@cf/cloudflare/clef-flash',split_threshold=0.7,traced=false}) {
+  async selectOwner({question,candidates,strict=false,keywords=true,ranked=false,split_model='@cf/cloudflare/clef-flash',split_threshold=0.7,traced=false,pipeline='v7'}) {
     const spans=[],out=owner=>traced?{owner,spans}:owner;
     if(!Array.isArray(candidates)||candidates.length===0)return out(ranked?{id:null,ranks:[]}:null);
-    const env={...this.env,SPLIT_MODEL:split_model,SPLIT_THRESHOLD:split_threshold,...(traced?{TRACE:r=>spans.push(r)}:{})};
+    // v8 (S6): the room's pipeline picks the owner question (CLEF.owner under v8).
+    const env={...this.env,SPLIT_MODEL:split_model,SPLIT_THRESHOLD:split_threshold,PIPELINE:pipeline,...(traced?{TRACE:r=>spans.push(r)}:{})};
     const owner=await routeOwner(env,question,candidates,{strict,keywords,ranked});
     this.put('owner_queries',Number(this.get('owner_queries','0'))+1);
     return out(owner);

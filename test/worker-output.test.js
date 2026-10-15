@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {register} from 'node:module';
 register('./cloudflare-loader.mjs',import.meta.url);
-const {parseWorkerAnswer,workerAction,hasWorkerBlocks}=await import('../src/worker-output.js');
+const {parseWorkerAnswer,workerAction,hasWorkerBlocks,singleFileText}=await import('../src/worker-output.js');
 const {decide}=await import('../src/model.js');
 
 const block=(path,content)=>`=== FILE: ${path} ===\n${content}\n=== END FILE ===\n`;
@@ -43,24 +43,87 @@ test('a block the token cap left open is reported in truncated and never committ
   assert.match(raw.files[1].intent,/cut off/);
 });
 
-test('markers are read at the top level only: a header inside an open block is content; an END naming the path closes it',()=>{
-  const readme='# Format\n=== FILE: example.txt ===\nhello\n=== CONTROL ===\nmore readme';
+// v8 S6 review: S1 read a marker inside an open block as content; small
+// models leave out END lines far more often than files hold marker lines,
+// so a marker line outside a fence now closes the open block (implicit_end).
+test('a marker line outside a fence closes the open block (implicit_end); inside a fence it is content; an END naming the path closes it',()=>{
+  const readme='# Format\n```\n=== FILE: example.txt ===\nhello\n=== CONTROL ===\n```\nmore readme';
   const r=parseWorkerAnswer(`=== FILE: README.md ===\n${readme}\n=== END FILE: README.md ===\n=== CONTROL ===\n{"done":false,"wait":true}`);
   assert.deepEqual(r.files,[{path:'README.md',content:readme}]);
-  assert.deepEqual([r.truncated,r.action.done,r.action.wait],[[],false,true]);
+  assert.deepEqual([r.truncated,r.implicit_end,r.action.done,r.action.wait],[[],[],false,true]);
   // An END naming another path is content too.
   const other=parseWorkerAnswer('=== FILE: a.md ===\nx\n=== END FILE: b.md ===\ny\n=== END FILE ===\n');
   assert.deepEqual(other.files,[{path:'a.md',content:'x\n=== END FILE: b.md ===\ny'}]);
-  // A literal bare END line closes the block (the documented limit): the rest is not a file.
+  // A literal bare END line closes the block: the rest is not a file.
   const cut=parseWorkerAnswer('=== FILE: doc.md ===\nline1\n=== END FILE ===\nline after\n=== END FILE ===\n');
   assert.deepEqual(cut.files,[{path:'doc.md',content:'line1'}]);
+  // A missing END between two files: the first is committed as written, and the next opens (format.mjs missing_end_middle).
+  const two=parseWorkerAnswer('=== FILE: a.py ===\nprint(1)\n=== FILE: b.py ===\nprint(2)\n=== END FILE ===\n=== CONTROL ===\n{"done":true}');
+  assert.deepEqual([two.files,two.implicit_end,two.truncated],[[{path:'a.py',content:'print(1)'},{path:'b.py',content:'print(2)'}],['a.py'],[]]);
+  assert.deepEqual(workerAction('=== FILE: a.py ===\nprint(1)\n=== FILE: b.py ===\nprint(2)\n').implicit_end,['a.py']);
 });
 
-test('a later truncated copy never replaces an earlier complete one; an unclosed block still lets its CONTROL line be read',()=>{
+test('a later truncated copy never replaces an earlier complete one; a CONTROL line closes an open block, which is committed',()=>{
   const r=parseWorkerAnswer(block('a.js','const a = 1;')+'=== FILE: a.js ===\nconst a=');
   assert.deepEqual([r.files,r.truncated],[[{path:'a.js',content:'const a = 1;'}],[]]);
-  const open=parseWorkerAnswer('=== FILE: b.md ===\nstart of b\n=== CONTROL ===\n{"summary":"asking","wait":true,"ask":[{"need":"stores a ticket","name":"saveTicket"}]}');
-  assert.deepEqual([open.files,open.truncated,open.action.wait,open.action.ask.map(a=>a.name)],[[],['b.md'],true,['saveTicket']]);
+  const open=parseWorkerAnswer('=== FILE: b.md ===\nstart of b\n=== CONTROL ===\n{"summary":"asking","wait":true,"ask":[{"need":"stores a record","name":"save_record"}]}');
+  assert.deepEqual([open.files,open.truncated,open.implicit_end,open.action.wait,open.action.ask.map(a=>a.name)],[[{path:'b.md',content:'start of b'}],[],['b.md'],true,['save_record']]);
+});
+
+// v8 S6 review: every case of probes/v8s6/format.mjs and format2.mjs.
+test('review probes: lenient markers, paths and control blocks',()=>{
+  const read=t=>{const r=parseWorkerAnswer(t,{placed:'convert.py'});return {files:r.files,trunc:r.truncated,control:r.control,ce:!!r.control_error,fb:r.fallback??null};};
+  const a=[{path:'a.py',content:'print(1)'}],done={done:true};
+  const cases={
+    missing_end_last:['=== FILE: a.py ===\nprint(1)\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    control_trailing_prose:['=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"summary":"wrote a","done":true}\n\nLet me know if you need anything else!',{files:a,control:{summary:'wrote a',done:true}}],
+    control_prose_with_braces:['=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"summary":"wrote a","done":true}\nNote: the dict {x} is used.',{files:a,control:{summary:'wrote a',done:true}}],
+    control_template_copy:['=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"summary": "wrote a", "done": true|false, "wait": true|false}',{files:a,control:{summary:'wrote a',done:false,wait:false}}],
+    control_pieces_ellipsis:['=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"summary": "wrote a", "done": true, "pieces": [...]}',{files:a,control:{summary:'wrote a',done:true,pieces:[]}}],
+    control_quoted_ellipsis:['=== CONTROL ===\n{"done": true, "ask": "[...]"}',{files:[],control:{done:true,ask:[]}}],
+    control_fenced:['=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n```json\n{"summary":"wrote a","done":true}\n```',{files:a,control:{summary:'wrote a',done:true}}],
+    fence_around_all:['```\n=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"done":true}\n```',{files:a,control:done}],
+    fence_per_file:['=== FILE: a.py ===\n```python\nprint(1)\n```\n=== END FILE ===\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    thinking_tagged:['<think>I will write === FILE: draft.py ===\nx\n=== END FILE === maybe</think>\n=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    thinking_untagged_draft:['Okay, let me draft.\n=== FILE: a.py ===\nprint(0)\n=== END FILE ===\nHmm, better:\n=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    thinking_untagged_close_only:['Okay, the user wants a file. </think>\n=== FILE: a.py ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    angle_path:['=== FILE: <convert.py> ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"done":true}',{files:[{path:'convert.py',content:'print(1)'}],control:done}],
+    backtick_path:['=== FILE: `convert.py` ===\nprint(1)\n=== END FILE ===\n=== CONTROL ===\n{"done":true}',{files:[{path:'convert.py',content:'print(1)'}],control:done}],
+    dotslash_path:['=== FILE: ./src/convert.py ===\nprint(1)\n=== END FILE ===',{files:[{path:'src/convert.py',content:'print(1)'}],control:done}],
+    bold_markers:['**=== FILE: a.py ===**\nprint(1)\n**=== END FILE ===**\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    backtick_markers:['`=== FILE: a.py ===`\nprint(1)\n`=== END FILE ===`\n__=== CONTROL ===__\n{"done":true}',{files:a,control:done}],
+    indented_markers:['  === FILE: a.py ===\nprint(1)\n  === END FILE ===\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    end_named:['=== FILE: a.py ===\nprint(1)\n=== END FILE: a.py ===\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    end_wrong_case:['=== FILE: a.py ===\nprint(1)\n=== End File ===\n=== CONTROL ===\n{"done":true}',{files:a,control:done}],
+    no_control:['=== FILE: a.py ===\nprint(1)\n=== END FILE ===',{files:a,control:done}],
+    control_before_files:['=== CONTROL ===\n{"done":true}\n=== FILE: a.py ===\nprint(1)\n=== END FILE ===',{files:a,control:done}],
+    ask_only:['=== CONTROL ===\n{"summary":"need","wait":true,"ask":[{"need":"converts celsius","name":"to_celsius"}]}',{files:[],control:{summary:'need',wait:true,ask:[{need:'converts celsius',name:'to_celsius'}]}}],
+    markdown_file_with_fence:['=== FILE: README.md ===\n```bash\npython convert.py 100 C\n```\n=== END FILE ===\n=== CONTROL ===\n{"done":true}',{files:[{path:'README.md',content:'```bash\npython convert.py 100 C\n```'}],control:done}],
+    single_fence_only:['Here is the file:\n```python\nprint(1)\n```',{files:[{path:'convert.py',content:'print(1)'}],control:done,fb:'single_fence'}],
+  };
+  for(const [name,[text,want]] of Object.entries(cases))
+    assert.deepEqual(read(text),{trunc:[],ce:false,fb:null,...want},name);
+  // A control block that holds a list of pieces is read whole.
+  const pieces=parseWorkerAnswer('=== CONTROL ===\n{"summary":"too big","done":false,"pieces":[{"label":"Parser","task":"Write the parser","contracts":[{"name":"parse_line","kind":"function","does":"parses"}],"uses":[]}]}');
+  assert.equal(pieces.control.pieces[0].contracts[0].name,'parse_line');
+});
+
+test('review probes: an old JSON action, fenced or with raw newlines in its strings, is read as JSON, never as the placed file',()=>{
+  const F='```',good=JSON.stringify({summary:'wrote',done:true,files:[{path:'a.py',content:'print(1)\n'}]});
+  const rawNl='{"summary":"wrote","done":true,"files":[{"path":"a.py","content":"print(1)\nprint(2)\n"}]}';
+  for(const [name,text,content] of [['json_fallback',good,'print(1)\n'],['json_fallback_fenced',F+'json\n'+good+'\n'+F,'print(1)\n'],
+    ['json_rawnewline',rawNl,'print(1)\nprint(2)\n'],['json_rawnewline_fenced',F+'json\n'+rawNl+'\n'+F,'print(1)\nprint(2)\n'],['json_prose_then','Here you go:\n'+good,'print(1)\n']]) {
+    const r=parseWorkerAnswer(text,{placed:'convert.py'});
+    assert.deepEqual([r.fallback,r.files],['json',[{path:'a.py',content}]],name);
+  }
+});
+
+test('review probes: the single-file answer is the file\'s text, never prose, fences or markers around it',()=>{
+  const cases=[['convert.py','Here is the corrected file:\n```python\nprint(1)\n```','print(1)'],['convert.py','```python\nprint(1)\n```\nThis fixes the bug.','print(1)'],
+    ['convert.py','=== FILE: convert.py ===\nprint(1)\n=== END FILE ===','print(1)'],['convert.py','Okay, the user wants me to fix it.\n</think>\n\nprint(1)','print(1)'],
+    ['GUIDE.md','```markdown\n# Guide\n\n```bash\nrun it\n```\n```','# Guide\n\n```bash\nrun it\n```'],['GUIDE.md','# Guide\n\n```bash\nrun it\n```','# Guide\n\n```bash\nrun it\n```'],
+    ['convert.py','=== FILE: convert.py ===\nprint(1)\nprint(2)','print(1)\nprint(2)'],['styles.css','body { margin: 0; }','body { margin: 0; }']];
+  for(const [path,answer,want] of cases)assert.equal(singleFileText({response:answer},path),want,answer);
 });
 
 test('a block whose whole content is one fence is unfenced; a fence among other lines stays',()=>{

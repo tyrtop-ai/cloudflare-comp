@@ -160,3 +160,41 @@ test('v7.15.9: a turn of reasoning-only answers logs what came back, and the nex
   assert.equal(room.node('root').phase,'manager');
   assert.equal(room.get('split_yes:root'),'','the YES is spent');
 });
+
+// ------------------------------------------------------------------ v8 (S6)
+// Under v8 the retry keeps the system text (PRINCIPLES + ROLE.splitter +
+// FORMAT.splitter) and hears what its answer held in the user JSON
+// (previous_answer_problems, RETRY.*), still without thinking.
+test('v8: the splitter retries a reasoning-only answer without thinking, told in its user JSON what the answer held',async()=>{
+  const {systemPrompt,RETRY}=await import('../src/prompts.js');
+  const v8env=answers=>{const s=script(answers);s.env.PIPELINE='v8';return s;};
+  const pieces={reason:'Split',pieces:[{label:'Formulas',task:'Write the two conversion functions',contracts:[{name:'to_fahrenheit',does:'converts Celsius to Fahrenheit'}]},
+    {label:'Command line',task:'Write the command that reads a value and prints it converted',contracts:[{name:'convert',kind:'command',path:'convert.py',does:'prints the converted value'}]}]};
+  const c={your_id:'root',your_responsibility:'A tool that converts temperatures.',root_scope:'A tool that converts temperatures.',max_child_writers:10};
+  const s=v8env([reasoningOnly,pieces]),out=await decompose(s.env,c);
+  assert.equal(s.calls.length,2);
+  assert.equal(s.calls[0].system,systemPrompt('splitter'));
+  assert.equal(s.calls[1].system,systemPrompt('splitter'),'the system text never changes on a retry');
+  assert.match(s.calls[1].user,/\} \/no_think$/);
+  const retry=JSON.parse(s.calls[1].user.replace(/ \/no_think$/,''));
+  assert.deepEqual(retry.previous_answer_problems,[RETRY.empty]);
+  assert.equal(retry.assignment,c.your_responsibility);
+  assert.deepEqual(out.spawn.map(x=>x.label),['Formulas','Command line']);
+  assert.equal(out.summary,'Split','the reason is the split\'s summary');
+  // A malformed answer hears RETRY.malformed; one that parsed but failed a check keeps thinking and hears the check.
+  const g=v8env(['{"reason":"x","pieces":[{"label":"A" "task":"x"}]}',pieces]);
+  await decompose(g.env,c);
+  assert.deepEqual(JSON.parse(g.calls[1].user.replace(/ \/no_think$/,'')).previous_answer_problems,[RETRY.malformed]);
+  const copy=v8env([{reason:'x',pieces:[{label:'Piece A',task:'Write code that implements this piece'},{label:'Piece B',task:'Write code that implements another piece'}]},pieces]);
+  await decompose(copy.env,c);
+  assert.doesNotMatch(copy.calls[1].user,/no_think/);
+  assert.deepEqual(JSON.parse(copy.calls[1].user).previous_answer_problems,[RETRY.vague(['Piece A','Piece B'])]);
+  // A worker's unreadable answer is asked again under the same system text, the reason in its user JSON.
+  const d=v8env([reasoningOnly,'=== FILE: a.md ===\n# A\n=== END FILE ===\n=== CONTROL ===\n{"done":true}']);
+  const action=await decide(d.env,{your_id:'root.1',phase:'implement',your_label:'Guide'});
+  assert.equal(d.calls[0].system,systemPrompt('worker'));
+  assert.equal(d.calls[1].system,systemPrompt('worker'));
+  assert.match(JSON.parse(d.calls[1].user).previous_answer_problems[0],/^Your previous answer could not be read \(it was empty: no answer: the model returned no text/);
+  assert.deepEqual(action.files,[{path:'a.md',content:'# A'}]);
+  assert.equal(action.done,true);
+});
