@@ -576,6 +576,11 @@ export function lowestCommon(placed, kindOf, flags={}) {
 // A decision is {rule, action, child?, side?, relay?, delegate?}:
 // assign (child: a worker, a sub-manager or the builder), escalate,
 // exhausted (closed), or fail (a child whose repair rounds ran out).
+// v7.15.15 (G1, review #1, #10): a growth that is no placement: a request
+// answered (the name is promised now, a module exports it, or nobody up to
+// Root covers it: the requester writes it), closed as it is answered; or one
+// whose chosen child is still splitting, which waits for it.
+const settled=add=>add?.answered?{rule:'D9',action:'exhausted',answered:add.answered,reason:add.reason||''}:add?.wait?{rule:'D9',action:'defer',wait:add.wait,reason:add.reason||''}:null;
 export function deterministicDecision(p, ctx) {
   const flags=p.flags||{},placed=placeParties(ctx.holder,p.parties),declined=new Set(flags.declined||[]),names=ids=>ids.map(id=>ctx.labelOf?.(id)||id).join(', ');
   // Review: a route's declines are no hops (run13 with every child declining
@@ -593,6 +598,7 @@ export function deterministicDecision(p, ctx) {
     if(p.facts?.requirement&&ctx.route) {
       // v7.15.7 (T3): a method the fixed test calls that no piece promises grows the plan first (D9, the room's promiseAdds at the top), as a reader's unpromised import does; it is routed (R2) once a piece promises it.
       const add=ctx.promiseAdd?.(p);
+      if(settled(add))return settled(add);
       if(add?.relay)return {rule:'D9',action:'assign',child:add.child,side:'provider',grow:add.grow,instructions:add.instructions};
       if(add&&!add.owed&&!add.up)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
       const route=ctx.route(p),first=route?.candidates?.[0],said=p.directive?.instructions&&p.directive.side==='site'&&p.directive.by===ctx.parent?`${p.directive.instructions} `:'';
@@ -606,6 +612,7 @@ export function deterministicDecision(p, ctx) {
     const g=p.directive;
     if(g?.grow&&ctx.parent&&g.by===ctx.parent) {
       const add=ctx.promiseAdd?.(p);
+      if(settled(add))return settled(add);
       if(add?.relay)return {rule:'D9',action:'assign',child:add.child,side:'provider',grow:add.grow,instructions:add.instructions};
       if(add&&!add.up)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
       return {rule:'D9',action:'escalate',declined:true,reason:`no piece of this branch covers ${g.grow.names.join(', ')}`};
@@ -671,6 +678,7 @@ function decideParties(p, ctx, placed, flags) {
   // it relayed down (grow); none here → up a level; none at Root → the
   // reader changes its reads (D6, below), only then.
   const add=lcm&&ctx.promiseAdd?.(p);
+  if(settled(add))return settled(add);
   if(add?.owed)return {rule:'D9',action:'assign',child:add.child,side:'provider',instructions:add.instructions,facts:add.facts};
   if(add?.up)return {rule:'D9',action:'escalate',reason:add.reason};
   if(add?.relay)return {rule:'D9',action:'assign',child:add.child,side:'provider',grow:add.grow,instructions:add.instructions};
@@ -1035,6 +1043,9 @@ export function repairText({role='reader',instructions='',facts='',problems=[],k
   }
   // v7.15.7 (T3): an operation of start() no piece promises, given back to its carrier at Root with nobody to cover it: nothing ran.
   const head=(kinds.length&&kinds.every(k=>k==='contract')?(written?'YOUR MODULES WRITE FUNCTIONS OTHER PIECES PROMISE. Nothing was run; the plan was checked against your modules.':'YOUR ASSIGNMENT PROMISES FUNCTIONS YOUR PUBLISHED MODULES DO NOT EXPORT. Nothing was run; the plan was checked against your exports.'):
+    // v7.15.15 review (#7): by the path that found it: the compiler's gap (the application ran; start() returned no method for it) and the linker's import (the link failed) are no placeholder.
+    operation?.path==='gap'?`START() RETURNS NO METHOD FOR ${String(operation.gap===true?operation.op:operation.gap).toUpperCase()} AND NO PIECE PROMISES ONE: write ${operation.name} here and return it from start() as ${operation.op}. The application was linked and run, and no piece's assignment covers it (your manager asked each). ${READER}`:
+    operation?.path==='import'?`YOUR IMPORT OF ${operation.name} DID NOT LINK AND NO PIECE PROMISES IT: write ${operation.name} here and return it from start() as ${operation.op}. The linker found no module that exports it, and no piece's assignment covers it (your manager asked each). ${READER}`:
     operation?`YOUR start() RETURNS AN OPERATION NO PIECE PROMISES. Nothing was run; the plan was checked against your modules. ${READER}`:
     (own?'YOUR APPLICATION FAILED ITS CONTAINER RUN. You wrote every file of the application':'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers')+
     ', so this problem needs a change in your code. '+(role==='provider'?PROVIDER:READER));

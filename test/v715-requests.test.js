@@ -240,13 +240,19 @@ test('v7.15: a request nobody up to Root promises gets unowned, and the worker\'
     assert.equal(events(room,'route_unowned')[0].actor,'root');
     assert.equal(room.wakeGeneration(worker),seen,'not woken before its own manager answers');
     await managerTurn(room,'root.2');
+    // v7.15.15 (G1, review #3): outside, the worker's manager files the growth row; each manager decides it in its own turn (root.2, then up to root), and the worker waits.
+    if(p<0.5) {
+      assert.deepEqual([replies(room,worker).length,room.wakeGeneration(worker)],[0,seen],'waits on its request');
+      assert.deepEqual(rows(room,'problems').map(r=>[r.holder,r.kind,r.source]),[['root.2','unresolved',worker]]);
+      for(const id of ['root.2','root'])await managerTurn(room,id);
+    }
     const [reply]=replies(room,worker);
     assert.deepEqual([reply.kind,reply.value],['unowned',text]);
     assert.deepEqual(ai.calls.filter(c=>c.kind==='inside').map(c=>c.state.assigned_code),[room.node(worker).task],'the worker\'s own assignment');
     assert.equal(events(room,'route_scope')[0].body,`formatDate (formats a date for display): Clef p=${p.toFixed(3)}, ${p>=0.5?'inside':'outside'} "Ticket retrieval function"'s assignment.`);
-    assert.equal(rows(room,'problems').length,0,'no problem is filed');
-    // v7.15.15 (G1): one ranked placement per level, the worker's branch and the start carrier left out.
-    assert.deepEqual(events(room,'promise_refused').map(e=>[e.actor,e.body]),p>=0.5?[]:[['root.2','formatDate: no direct child\'s assignment covers it ("Filter application logic", best p=0.050); it goes up a level.'],['root','formatDate: no direct child\'s assignment covers it ("ticket storage", best p=0.050); "Ticket retrieval function" writes it.']]);
+    assert.deepEqual(rows(room,'problems').map(r=>[r.status,r.outcome]),p>=0.5?[]:[['closed','exhausted']],'inside, no problem is filed');
+    // v7.15.15 (G1): one ranked placement per level, each in its manager's own turn, the worker's branch and the start carrier left out.
+    assert.deepEqual(events(room,'promise_refused').map(e=>[e.actor,e.body]),p>=0.5?[]:[['root.2','formatDate: no direct child\'s assignment covers it ("Filter application logic", best p=0.050); it goes up a level.'],['root','formatDate: no direct child\'s assignment covers it ("ticket storage", best p=0.050); Ticket retrieval function writes it.']]);
     assert.equal(events(room,'promise_added').length,0);
     assert.notEqual(room.node(worker).status,'failed','contrast out_of_scope');
     assert.equal(events(room,'scope_rejected').length,0);

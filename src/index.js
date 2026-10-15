@@ -16,7 +16,7 @@ import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materiali
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
-import { callOf, esmSyntax, placeholders } from './linker.js';
+import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
@@ -137,8 +137,17 @@ const OPERATION_PLACEHOLDER=/^(?:goal)?(?:op|operation|action|method|handler|fun
 const growable = name => !!validName(name)&&!GENERIC_NAMES.has(name)&&!RESERVED_WORD.test(name);
 // v7.15.15 (G2, G3): the operation fact a start() key is grown with, as growOperation files it.
 const operationFact = (label, op, name, params=[]) => ({op,name,params,line:`start() returns it as ${op}: ${name}(${params.join(', ')})`,does:`performs the goal's ${String(op).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase()} operation; ${label} returns it from start() as ${op}`});
-// v7.15.15 (G2, run23): the function a gap's operation names, verb and thing ("view a ticket": viewTicket); a list keeps its plural.
-const operationName = o => {const w=(String(o||'').toLowerCase().match(/[a-z]+/g)||[]).filter(x=>!/^(?:a|an|the|all|any|some|each|every|existing|one|their|its|your|my|our)$/.test(x));if(w.length<2)return '';const last=/^(?:list|search|browse|filter|count)$/.test(w[0])?w.at(-1):w.at(-1).replace(/ies$/,'y').replace(/([^s])s$/,'$1');return [w[0],...w.slice(1,-1),last].map((x,i)=>i?x[0].toUpperCase()+x.slice(1):x).join('');};
+// v7.15.15 (G2, run23): the function a gap's operation names: its verb and
+// head noun ("view a ticket", "view the ticket's details", "view a ticket by
+// id": viewTicket), else the goal's noun (a stated remove: removeTicket); a
+// list keeps its plural (review #6, #9).
+const NOT_NOUN=/^(?:a|an|the|all|any|some|each|every|existing|one|their|its|your|my|our|new|single|specific|given)$/,LISTS=/^(?:list|search|browse|filter|count)$/;
+const operationName = (o, noun='') => {const w=(String(o||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().replace(/'s\b/g,'').match(/[a-z]+/g)||[]).filter(x=>!NOT_NOUN.test(x)),n=w[1]||noun;if(!w.length||!n)return '';const head=LISTS.test(w[0])?n.replace(/([^s])$/,'$1s'):n.replace(/ies$/,'y').replace(/([^s])s$/,'$1');return w[0]+head[0].toUpperCase()+head.slice(1);};
+// v7.15.15 review (#4): two names of one function: one verb by its synonyms
+// and the very same object (getTickets and readTickets; never viewTicket and
+// readTickets, one ticket against all of them).
+const VERB_CLASS={get:'view',read:'view',fetch:'view',load:'view',show:'view',find:'view',retrieve:'view',display:'view',add:'create',make:'create',insert:'create',remove:'delete',del:'delete',erase:'delete',destroy:'delete',edit:'update',modify:'update',change:'update',store:'save',write:'save',persist:'save'};
+const functionKey = n => {const w=String(n||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);return w.length>1?[VERB_CLASS[w[0]]||w[0],...w.slice(1)].join(' '):'';};
 // A function a manager's reply carries, cleaned as a promise item is.
 const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&!Array.isArray(fn)?[fn]:[]); return f&&validName(f.name)?{...f,owner:clip(fn.owner,70)}:null; };
 // Hard safety ceilings. Actual per-room limits are chosen in the dashboard,
@@ -1294,7 +1303,7 @@ export class ControlRoom extends DurableObject {
     const dirs=new Map(this.allNodes().map(n=>[branchDirectory(n.label,n.id),n])),piece=d=>{const n=dirs.get(d);return !n?null:n.id===row.worker?'':n.label;};
     // v7.15.6 (R3): run requirements routed by the plan read as the requirement on the worker's own promise, nothing more.
     return repairText({role:row.role,piece,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),own:row.manager===row.worker,
-      requirement:row.manager!==row.worker&&problems.every(p=>p.kind==='run'&&p.facts.requirement),operation:problems.every(p=>p.kind==='unresolved'&&!!p.facts.operation),problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
+      requirement:row.manager!==row.worker&&problems.every(p=>p.kind==='run'&&p.facts.requirement),operation:problems.every(p=>p.kind==='unresolved'&&!!p.facts.operation)&&{...problems[0].facts.operation,path:problems[0].source===row.worker?'placeholder':problems[0].facts.operation.gap?'gap':'import'},problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
     const builder=this.node(builderId);
@@ -2004,19 +2013,28 @@ export class ControlRoom extends DurableObject {
       return {...x,detail:detail+(/[.!?]$/.test(detail)?' ':'. ')+clip(notes.map(n=>n[1]).join(' '),Math.min(500,room))};
     });
   }
-  // v7.15.15 (G3, run23): the operation fact of an import the start carrier
-  // makes, by its name alone, of a function that performs a goal operation
-  // (goalOps) or is a method the goal states, which no piece promises: the
-  // key start() returns it under (view: viewTicket, else its name) and the
-  // params of its call there. run23's entry imported viewTicket, the linker
-  // could only refuse to bind it to the store's readTickets, and D4 told the
-  // entry to "write what you need yourself" five rounds running.
-  importedOperation(builderId, path, content, names) {
-    if(!this.planned()||names.length!==1||!growable(names[0]))return null;
-    const [name]=names,owner=this.buildSourceOrigin(builderId,path)?.owner,carrier=owner&&this.promisedOf(owner).some(f=>f.name==='start')?this.node(owner):null,s=goalMethods(this.userGoal()).find(x=>x.name===name);
-    if(!carrier||this.planIndex().has(name)||!s&&!this.performsGoal({name})||this.performedOp(name,s))return null;
-    const local=importRefs(path,content).map(r=>r.aliases.get(name)).find(Boolean)||name,key=new RegExp(`([A-Za-z_$][\\w$]*)\\s*:\\s*${local.replace(/\$/g,'\\$')}\\b`).exec(String(content).replace(/^.*\brequire\s*\(.*$|^\s*import\b.*$/gm,''))?.[1];
-    return operationFact(carrier.label,key||name,name,callOf(path,content,name)?.params||(s?[...(s.params||[])]:[]));
+  // v7.15.15 (G3, run23): the operation facts of an import line the start
+  // carrier makes of functions no piece promises, each one that performs a
+  // goal operation (goalOps) or a method the goal states, by its own name or
+  // by the key start() returns it under (review #5: run23b's view:
+  // handleViewTicket; view: getTicket), with that key (review #8: read from
+  // start()'s own object, view: (id) => viewTicket(id) is view) and the
+  // params of its call there; one per name of a line naming two. run23's
+  // entry imported viewTicket, the linker could only refuse to bind it to the
+  // store's readTickets, and D4 told the entry to "write what you need
+  // yourself" five rounds running.
+  importedOperations(builderId, path, content, names) {
+    const owner=this.planned()?this.buildSourceOrigin(builderId,path)?.owner:'',carrier=owner&&this.promisedOf(owner).some(f=>f.name==='start')?this.node(owner):null;
+    if(!carrier)return [];
+    const stated=goalMethods(this.userGoal()),plan=this.planIndex(),keys=startKeys(content)||new Map(),refs=importRefs(path,content),out=[],seen=new Set();
+    for(const name of names.filter(n=>growable(n)&&!plan.has(n))) {
+      const local=refs.map(r=>r.aliases.get(name)).find(Boolean)||name,key=[...keys].find(([,v])=>v.includes(local))?.[0]||'';
+      const s=stated.find(x=>x.name===name||x.name===key),by=[name,key].find(n=>n&&(s?.name===n||this.performsGoal({name:n})));
+      if(!by||this.performedOp(by,s)||seen.has(s?.name||goalOps(this.userGoal(),{name:by})[0]))continue;
+      seen.add(s?.name||goalOps(this.userGoal(),{name:by})[0]);
+      out.push({name,operation:operationFact(carrier.label,key||name,name,callOf(path,content,name)?.params||(s?[...(s.params||[])]:[]))});
+    }
+    return out;
   }
   // What a link leaves that renaming cannot fix inside this branch, with the
   // facts the manager decides on, read from the whole linked bundle. An
@@ -2059,10 +2077,12 @@ export class ControlRoom extends DurableObject {
       }
       if(names.length&&names.every(x=>owed.includes(x)))continue;
       const {named,offered}=importOffers(files,surfaces,u.path,u.specifier,names);
-      // v7.15.15 (G3, run23): the start carrier's import of an operation no piece promises is the plan's gap, grown as G2's (the operation fact), never the reader's to write.
-      const operation=this.importedOperation(builderId,u.path,files.get(u.path),names);
-      items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}${operation?`. No piece promises ${operation.name}, which performs a goal operation; the plan grows a piece's promise with it.`:''}`,
-        facts:{specifier:u.specifier,names,named,provider_text:clip([...new Set([...lead,...offered])].map(exportsText).join(' | '),700),...operation?{unpromised:true,esm:esmSyntax(files.get(u.path)||''),operation}:{}}});
+      // v7.15.15 (G3, run23): the start carrier's import of an operation no piece promises is the plan's gap, grown as G2's (the operation fact, one row per such name), never the reader's to write.
+      const ops=this.importedOperations(builderId,u.path,files.get(u.path),names),rest=names.filter(n=>!ops.some(o=>o.name===n)),provider_text=clip([...new Set([...lead,...offered])].map(exportsText).join(' | '),700);
+      for(const {name,operation} of ops)items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}. No piece promises ${name}, which performs a goal operation; the plan grows a piece's promise with it.`,
+        facts:{specifier:u.specifier,names:[name],named,provider_text,unpromised:true,esm:esmSyntax(files.get(u.path)||''),operation}});
+      if(rest.length||!ops.length)items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`,
+        facts:{specifier:u.specifier,names:ops.length?rest:names,named,provider_text}});
     }
     // run8: the entry called .start() on every module, and providers added
     // start() exports to satisfy it, so start() returned {create:{start},
@@ -2620,15 +2640,28 @@ export class ControlRoom extends DurableObject {
   gapOperations(id, entry, files, surfaces, gaps, linked=true) {
     const owner=linked&&this.planned()?this.entryOwner(id,entry):'',carrier=owner&&this.promisedOf(owner).some(f=>f.name==='start')?this.node(owner):null;
     if(!carrier)return {grown:[],rest:gaps};
-    const stated=goalMethods(this.userGoal()),esm=esmSyntax(files.get(entry)||''),grown=[],rest=[],seen=new Set();
+    const goal=this.userGoal(),stated=goalMethods(goal),esm=esmSyntax(files.get(entry)||''),grown=[],rest=[],seen=new Set(),noun=this.goalNoun();
     for(const g of gaps) {
-      const s=stated.find(s=>signature(s)===g.operation),name=s?s.name:operationName(g.operation);
-      if(g.fn||g.same_as||!growable(name)||seen.has(name)||!s&&!this.performsGoal({name})||this.performedOp(name,s)||this.linkableName(files,surfaces,name,entry)){rest.push(g);continue;}
-      seen.add(name);
+      // Review (#6): a stated method with a generic name (remove(id), view(id)) grows under a specific one, removeTicket, and start() returns it under the stated key.
+      const s=stated.find(s=>signature(s)===g.operation),generic=s&&(GENERIC_NAMES.has(s.name)||s.name==='view'||Object.hasOwn(VERB_CLASS,s.name)),name=s&&!generic?s.name:operationName(s?s.name:g.operation,noun);
+      // Review (#9): one name per operation per batch (view a ticket and view a ticket by id are one).
+      const op=s?s.name:goalOps(goal,{name})[0]||name;
+      if(g.fn||g.same_as||!growable(name)||seen.has(op)||!s&&!this.performsGoal({name})||this.performedOp(name,s)||this.linkableName(files,surfaces,name,entry)){rest.push(g);continue;}
+      seen.add(op);
       grown.push({kind:'unresolved',path:entry,detail:`start() returns no method for ${g.operation}, and no piece promises a function that performs it.`,
-        facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:{...operationFact(carrier.label,name,name,s?[...(s.params||[])]:[]),gap:true},provider_text:''}});
+        facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:{...operationFact(carrier.label,s?s.name:name,name,s?[...(s.params||[])]:[]),gap:g.operation},provider_text:''}});
     }
     return {grown,rest};
+  }
+  // v7.15.15 review (#6): the thing the goal's operations act on (tickets),
+  // by the goal's operation list, else the goal word the plan's functions
+  // act on most, else "a ticket tracker"'s noun.
+  goalNoun() {
+    const goal=this.userGoal(),said=goalOperations(goal)[0]?.object;
+    if(said)return said;
+    const g=new Set(String(goal).toLowerCase().match(/[a-z]+/g)||[]),count=new Map();
+    for(const name of this.planIndex().keys())for(const w of name.replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().split(' ').slice(1)){const one=w.replace(/s$/,'');if(g.has(one)||g.has(one+'s'))count.set(one,(count.get(one)||0)+1);}
+    return [...count].sort((a,b)=>b[1]-a[1])[0]?.[0]||/\ban?\s+(?:small\s+|simple\s+)?([a-z]+)\s+(?:tracker|manager|app|application|system|service|tool|board|store)\b/i.exec(goal)?.[1]?.toLowerCase()||'';
   }
 
   // ---------- an atomic top ----------
@@ -2847,7 +2880,8 @@ export class ControlRoom extends DurableObject {
     for(const e of entries) {
       const {p,dec}=e;
       if(dec.action==='close'&&skip.has(dec.child))continue;
-      if(dec.action==='retask'||dec.action==='assign'&&['worker','builder'].includes(kindOf(dec.child))) {
+      // v7.15.15 (G1): a function request's growth is construction, not a repair: no round.
+      if((dec.action==='retask'||dec.action==='assign'&&['worker','builder'].includes(kindOf(dec.child)))&&!p.facts?.operation?.request) {
         if(st.exhausted)continue;
         // v7.15.6 review: the child a failure goes to is its progress key's blamed file (progressKey), on the row before the round is counted.
         if(dec.action==='assign'&&kindOf(dec.child)==='worker'&&p.facts?.failure&&p.flags.routed_to!==dec.child)this.moveProblem(p,{flags:{...p.flags,routed_to:dec.child}});
@@ -2865,7 +2899,13 @@ export class ControlRoom extends DurableObject {
       [...new Set([dec.facts_text,dec.side==='provider'?'':own].filter(Boolean))].join(' | ')||own||'';
     for(const [p,dec,trigger] of decided) {
       const kind=dec.child?kindOf(dec.child):null;
-      if(dec.action==='exhausted') {
+      if(dec.answered) {
+        // v7.15.15 (G1): the requests the row holds are answered, and it closes.
+        if(this.moveProblem(p,{status:'closed',outcome:dec.answered.write?'exhausted':'resolved',trail:[...p.trail,{at:m,action:'close',to:'',rule:dec.rule,reason:dec.reason,ts:now}]})) {
+          this.event(m,'problem_closed',clip(`${p.kind} problem closed (${dec.reason}): ${p.detail}`,600));
+          this.answerRequests((p.facts.requests||[]).map(r=>({...r,name:p.facts.names[0]})),dec.answered);
+        }
+      } else if(dec.action==='exhausted') {
         const why=dec.reason||'no direct child holds it';
         if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:[...p.trail,{at:m,action:'close',to:'',rule:dec.rule,reason:why,ts:now}]})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${why}): ${p.detail}`,600));
@@ -2903,6 +2943,9 @@ export class ControlRoom extends DurableObject {
       } else if(dec.action==='fail') {
         if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:trail(p,'fail',dec.child,dec.rule)}))
           this.failAgent(dec.child,`Repair rounds exhausted: ${p.detail}`);
+      } else if(dec.action==='defer'&&dec.wait) {
+        // v7.15.15 review (#10): the child it goes to is still splitting: it waits, decided again when this manager next runs (a child's progress wakes it), with no second ranking.
+        if(this.moveProblem(p,{flags:{...p.flags,grow_wait:dec.wait}}))this.deferProblems(m,[{p}],dec.reason||'its child is still splitting');
       } else if(dec.action==='defer') {
         // v7.15.6 review: a Clef error while routing is no answer; the next turn decides (once per row: routeRequirements).
         if(this.moveProblem(p,{flags:{...p.flags,route_deferred:(p.flags.route_deferred||0)+1}})){this.deferProblems(m,[{p}],dec.reason||'decided on the next turn');this.wake(m);}
@@ -3136,9 +3179,13 @@ export class ControlRoom extends DurableObject {
         continue;
       }
       if(!grow&&p.kind==='mismatch'&&!f.unpromised)continue;
+      // v7.15.15 review (#1, #2): a function request (G1) is decided again against the whole plan: a name some piece promises now (another requester's growth, a split since) is answered from its holder.
+      const request=grow?!!grow.request:!!f.operation?.request;
+      if(request&&names.every(x=>plan.has(x))){out.set(p.id,{answered:{provided:true},reason:`${names.join(', ')} is promised now`});continue;}
       if(names.some(x=>!validName(x)||plan.has(x)||goalOp(x)&&!operation))continue;
       // A name some module here exports is a link to make, never a second carrier's.
-      if((await Promise.all(live.map(c=>exportsOf(c.id)))).some(e=>names.some(x=>e.names.has(x))))continue;
+      const exporter=(await Promise.all(live.map(async c=>({c,e:await exportsOf(c.id)})))).find(({e})=>names.some(x=>e.names.has(x)));
+      if(exporter){if(request)out.set(p.id,{answered:{exported:exporter.c.label},reason:`"${exporter.c.label}"'s module exports ${names.join(', ')}`});continue;}
       // An operation's call is the line that returns or tests it, with the parameters the carrier declared or the test passes.
       const argsOf=(line,x)=>(new RegExp(`\\b${x}\\(([^()]*)\\)`).exec(String(line||''))?.[1]||'').split(',').map(s=>s.trim()).filter(Boolean).map((s,i)=>validName(s)||`arg${i+1}`);
       let calls=grow?.calls||(operation?names.map(x=>({line:operation.line,params:operation.params||argsOf(operation.line,x),does:operation.does})):null);
@@ -3149,10 +3196,18 @@ export class ControlRoom extends DurableObject {
       }
       // The import's provider: a direct child, or the branch holding it (v7.15.5: the one data piece for an import by convention).
       const named=grow||operation?null:p.parties.find(x=>x.role==='provider')?.owner||(p.kind==='unresolved'?(f.named?this.buildSourceOrigin(f.via,f.named)?.owner:datas.length===1?datas[0].id:null):null);
-      found.push({p,provider:named?nextDirectChild(m,named):null,reader:reader.owner,path:reader.owner_path,names,calls,operation:!!operation,api:!!api||!!grow?.api,gap:!!grow?.gap||!!f.operation?.gap,esm});
+      found.push({p,provider:named?nextDirectChild(m,named):null,reader:reader.owner,path:reader.owner_path,names,calls,operation:!!operation,api:!!api||!!grow?.api,gap:!!grow?.gap||!!f.operation?.gap,request,esm});
     }
     const chosen=[];
+    // v7.15.15 review (#10): a child whose split is still in flight (run23's Ticket management at 40.8 s) is no place yet: the row waits until it is a manager with children or a worker, then goes on it or its branch, with no second ranking.
+    const unsettled=id=>this.node(id)?.phase==='decompose'&&!this.children(id).some(k=>!isRuntimeNode(k)&&!['retired','failed'].includes(k.status));
     for(const x of found) {
+      const waited=x.p.flags?.grow_wait,held=waited&&live.find(c=>c.id===waited.child);
+      if(held) {
+        if(unsettled(held.id)){out.set(x.p.id,{wait:waited,reason:`"${held.label}" is still splitting`});continue;}
+        if(branch(held.id)){this.asked(held.id,x.names);out.set(x.p.id,this.relayAdd(x,held.id,waited.why,label));continue;}
+        chosen.push({...x,child:held.id,why:waited.why});continue;
+      }
       // v7.15.7 review (T3(ii), probe H): a row that came up from the reader's own manager was looked at there (mine); an api row at the top was not: the carrier's branch is a candidate (it relays down to the carrier's siblings), never the carrier itself.
       const mine=x.reader===m||x.api?null:nextDirectChild(m,x.reader),pool=[];
       for(const c of live.filter(c=>c.id!==mine&&c.id!==x.reader&&(!starts(c.id)||x.api&&branch(c.id))&&(worker(c.id)||branch(c.id))&&!x.names.every(nm=>askedOf(c.id).has(nm)))) {
@@ -3177,21 +3232,21 @@ export class ControlRoom extends DurableObject {
         const a=await this.managerRouteOwner(m,question,rest.map(c=>({id:c.id,label:c.label,task:c.task,known_topics:this.promisedOf(c.id).map(g=>promiseText(g)),files:[],previews:[]})),true,false,true);
         const best=a?.ranks?.[0],id=a?.id||null;
         if(id){child=id;why=best?`Clef p=${best.p.toFixed(3)}: its assignment covers them`:'its assignment names them';}
-        else {for(const c of rest)this.asked(c.id,x.names);this.event(m,'promise_refused',clip(`${x.names.join(', ')}: no direct child's assignment covers ${them} (${rest.map(c=>`"${c.label}"`).join(', ')}${best?`, best p=${best.p.toFixed(3)}`:''})${n.parent?'; it goes up a level':'; the reader changes'}.`,500));}
-      } catch(e) {this.event(m,'promise_refused',clip(`${x.names.join(', ')}: Clef failed (${e?.message||e}) over the children${n.parent?'; it goes up a level':'; the reader changes'}.`,400));}
-      if(!child){if(n.parent)out.set(x.p.id,{up:true,names:x.names,reason:`no piece under ${n.label} covers ${x.names.join(', ')}`});continue;}
+        else {for(const c of rest)this.asked(c.id,x.names);this.event(m,'promise_refused',clip(`${x.names.join(', ')}: no direct child's assignment covers ${them} (${rest.map(c=>`"${c.label}"`).join(', ')}${best?`, best p=${best.p.toFixed(3)}`:''})${n.parent?'; it goes up a level':x.request?`; ${label(x.reader)} writes it`:'; the reader changes'}.`,500));}
+      } catch(e) {this.event(m,'promise_refused',clip(`${x.names.join(', ')}: Clef failed (${e?.message||e}) over the children${n.parent?'; it goes up a level':x.request?`; ${label(x.reader)} writes it`:'; the reader changes'}.`,400));}
+      // v7.15.15 (G1): a request nobody up to Root covers is the requester's to write (its manager answers it so).
+      if(!child){if(n.parent)out.set(x.p.id,{up:true,names:x.names,reason:`no piece under ${n.label} covers ${x.names.join(', ')}`});else if(x.request)out.set(x.p.id,{answered:{write:true},reason:`no piece's assignment covers ${x.names.join(', ')}`});continue;}
+      if(unsettled(child)){out.set(x.p.id,{wait:{child,why},reason:`"${label(child)}" is still splitting`});continue;}
       if(branch(child)) {
         this.asked(child,x.names);
-        out.set(x.p.id,{relay:true,child,names:x.names,grow:{names:x.names,reader:{owner:x.reader,owner_path:x.path},calls:x.calls.map(c=>({line:c.line,params:c.params,...c.does?{does:c.does}:{}})),...x.operation?{operation:true}:{},...x.api?{api:true}:{},...x.gap?{gap:true}:{}},
-          instructions:`${x.names.join(', ')}, which ${label(x.reader)} imports, ${x.names.length>1?'are':'is'} this branch's to write (${why}): a piece of it promises and exports ${them}.`});
-        this.event(m,'promise_relayed',clip(`${x.names.join(', ')} (${why}): "${label(child)}" places ${them} on one of its pieces' promise; ${label(x.reader)} ${x.operation?`imports ${them}`:'keeps its import'}.`,500),child);
+        out.set(x.p.id,this.relayAdd(x,child,why,label));
         continue;
       }
       chosen.push({...x,child,why});
     }
     const gainers=nm=>new Set(chosen.filter(x=>x.names.includes(nm)).map(x=>x.child)).size,shaped=this.shaped();
     for(const x of chosen.filter(x=>x.names.every(nm=>gainers(nm)===1))) {
-      const g=by.get(x.child)||{names:new Set(),rows:[],readers:new Map(),why:x.why,operation:x.operation,api:x.api,gap:x.gap},r=g.readers.get(x.reader)||{names:[],calls:new Map(),esm:x.esm};
+      const g=by.get(x.child)||{names:new Set(),rows:[],readers:new Map(),why:x.why,operation:x.operation,api:x.api,gap:x.gap,request:x.request},r=g.readers.get(x.reader)||{names:[],calls:new Map(),esm:x.esm};
       x.names.forEach((nm,i)=>{g.names.add(nm);if(!r.names.includes(nm))r.names.push(nm);if(!r.calls.has(nm))r.calls.set(nm,x.calls[i]);});
       g.rows.push(x.p);g.readers.set(x.reader,r);by.set(x.child,g);
     }
@@ -3203,12 +3258,21 @@ export class ControlRoom extends DurableObject {
       // and its line says what it does with it (review: "imports it" said nothing).
       // v7.15.7 integration: in a shaped room the grown promise states what it returns as far as the reader's line shows it (resultOf); a placeholder's line (start() returns it) is no call of it.
       const items=names.map(name=>{const [r,{calls}]=[...x.readers].find(([,v])=>v.calls.has(name)),call=calls.get(name),returns=shaped&&(!x.operation||x.api)?resultOf(call.line,name):'';return {name,does:clip(call.does||`${label(r)} calls it: ${call.line}`,200),params:call.params,...(returns?{returns}:{})};});
-      const add={child,names,path:(await exportsOf(child)).path,items:normalizeInterfaces(items),interfaces:normalizeInterfaces([...own,...items]),readers:[...x.readers].map(([id,r])=>({id,names:r.names,esm:!!r.esm})),by:readers,why:x.why,operation:!!x.operation,api:!!x.api,gap:!!x.gap,
+      const add={child,names,path:(await exportsOf(child)).path,items:normalizeInterfaces(items),interfaces:normalizeInterfaces([...own,...items]),readers:[...x.readers].map(([id,r])=>({id,names:r.names,esm:!!r.esm})),by:readers,why:x.why,operation:!!x.operation&&!x.request,api:!!x.api,gap:!!x.gap,request:!!x.request,
+        // v7.15.15 review (#1): the requests the growth answers, the branches it was relayed through (each promises it too), and the key a gap's carrier returns it under.
+        requests:x.rows.flatMap(p=>(p.facts.requests||[]).map(r=>({...r,name:p.facts.names[0]}))),relays:[...new Set(x.rows.flatMap(p=>(p.trail||[]).filter(t=>t.action==='relay').map(t=>t.to)))],ops:Object.fromEntries(x.rows.filter(p=>p.facts.operation?.op).map(p=>[p.facts.names[0],p.facts.operation.op])),
         task:x.operation?`${c.task} Keep what your module exports and add ${items.map(f=>`${signature(f)} (${f.does})`).join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.`:
           `${c.task} Keep what your module exports and add ${names.join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.${dataPiece(c.label,own)?' Keep the data at module level, shared by all your functions.':''}`};
       for(const p of x.rows)out.set(p.id,add);
     }
     return out;
+  }
+  // The relay of a grown name to a branch (R5): the names, the reader, the calls and what kind of growth it is, for the branch to place on one of its pieces.
+  relayAdd(x, child, why, label) {
+    const them=x.names.length>1?'them':'it';
+    this.event(x.p.holder,'promise_relayed',clip(`${x.names.join(', ')} (${why}): "${label(child)}" places ${them} on one of its pieces' promise; ${label(x.reader)} ${x.operation?`imports ${them}`:'keeps its import'}.`,500),child);
+    return {relay:true,child,names:x.names,grow:{names:x.names,reader:{owner:x.reader,owner_path:x.path},calls:x.calls.map(c=>({line:c.line,params:c.params,...c.does?{does:c.does}:{}})),...x.operation?{operation:true}:{},...x.api?{api:true}:{},...x.gap?{gap:true}:{},...x.request?{request:true}:{}},
+      instructions:`${x.names.join(', ')}, which ${label(x.reader)} imports, ${x.names.length>1?'are':'is'} this branch's to write (${why}): a piece of it promises and exports ${them}.`};
   }
   // v7.15.5 review: a name performs a goal operation when its verb is one of
   // the goal's operation verbs (a goal word a promised function starts with:
@@ -3228,9 +3292,10 @@ export class ControlRoom extends DurableObject {
     this.asked(add.child,add.names);
     // v7.15.7 review (T3): a grown operation's name is the plan's for the linker, generic or not (run9's update rested on the only-exporter fallback).
     if(add.operation)this.save('grown_operations',[...new Set([...this.read('grown_operations',[]),...add.names])]);
-    for(const r of add.readers)for(const f of add.items.filter(f=>r.names.includes(f.name))) {
+    // v7.15.15 (G1): a requester hears its answer through its request (answerRequests), never a second one here.
+    for(const r of add.request?[]:add.readers)for(const f of add.items.filter(f=>r.names.includes(f.name))) {
       // v7.15.7 (T3): a start carrier hears where the operation now lives and the import line to return it by (it had none to keep).
-      const text=`${signature(f)} is now promised by "${n.label}", which writes it. ${add.operation?`Import it on its own line, ${importLine(f.name,r.esm).replace(/;$/,'')}, and return it from start()`:`Keep your import of ${f.name} as it is`}; the builder links it to the module that exports it. Do not write it yourself.`;
+      const text=`${signature(f)} is now promised by "${n.label}", which writes it. ${add.operation?`Import it on its own line, ${importLine(f.name,r.esm).replace(/;$/,'')}, and return it from start()${add.gap&&add.ops?.[f.name]&&add.ops[f.name]!==f.name?` as ${add.ops[f.name]}`:''}`:`Keep your import of ${f.name} as it is`}; the builder links it to the module that exports it. Do not write it yourself.`;
       this.recordAnswer(r.id,{key:requestKey({name:f.name}),kind:'provided',fn:{name:f.name,params:f.params,does:f.does,...(f.returns?{returns:f.returns}:{}),owner:n.label},text});
       // v7.15.7 review (T3(ii)): a method the fixed test calls is the carrier's to return now: it hears the line as a message and runs in this decision, as the gainer does, so the next bundle returns it (one Container run, no ticket to the carrier). A carrier whose contract was refused for the empty operation reruns by itself.
       // v7.15.15 (G2, run23): so does a carrier whose start() lacked an operation the plan grew (gap), from its own manager wherever the gainer lies: its ticket is only the line to import and return it.
@@ -3238,6 +3303,55 @@ export class ControlRoom extends DurableObject {
       if(add.api&&up===m||add.gap&&up)this.send(up,r.id,`${text} Publish the FULL updated file.`);
     }
     this.event(m,'promise_added',clip(`"${n.label}" now promises ${add.items.map(signature).join(', ')} (${add.why}): ${add.by} ${add.operation?`return${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from start()`:`import${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from its module`} and no piece promised ${add.names.length>1?'them':'it'}. It is retasked to write ${add.names.length>1?'them':'it'}; the reader ${add.operation?`imports ${add.names.length>1?'them':'it'}`:'keeps its import'}.`,700),add.child);
+    // v7.15.15 review (#1): each branch the growth was relayed through promises it too, so a later request finds it by name on the way up (routeFunction) and a start carrier's walk names it.
+    for(const b of add.relays||[]) {
+      const own=this.promisedOf(b),items=add.items.filter(f=>!own.some(g=>g.name===f.name));
+      if(!items.length||!this.node(b))continue;
+      this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces([...own,...items])),b);
+      this.event(b,'promise_mirrored',clip(`"${this.node(b).label}" promises ${items.map(signature).join(', ')} too: "${n.label}", one of its pieces, now writes ${items.length>1?'them':'it'}.`,400));
+      for(const id of [b,this.node(b).parent].filter(Boolean))this.syncOwnership(id).catch(()=>{});
+    }
+    // The gainer's promise is written by the retask that follows (retaskChild): its item is the answer until then.
+    if(add.requests?.length)this.answerRequests(add.requests,{provided:true,items:add.items,owner:n.label});
+  }
+  // v7.15.15 (G1): the requests a growth row settles, each answered by the
+  // requester's own manager as its request would have been (routeReply): a
+  // provided answer from the holder its walk shows (the gainer, or the
+  // branch above it), the module that exports it, or, nobody covering it,
+  // its own to write. A requester no longer waiting (retasked) hears nothing.
+  answerRequests(requests, answered) {
+    for(const r of requests) {
+      const w=this.node(r.worker),up=w?.parent,name=r.name;
+      if(!up||!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id).length)continue;
+      const own=answered.items?.find(f=>f.name===name),offer=answered.provided?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=`const { ${name} } = require('./${name}');`;
+      const [kind,value,fn]=offer?['provided',providedText(offer.item,offer.owner),providedFn(offer.item,offer.owner)]:
+        answered.exported?['unowned',`No piece of the application promises ${r.want}, but "${answered.exported}"'s module exports it: import it on its own line, with the name as the path: ${line} The builder links it to that module. Do not write it yourself.`,null]:
+        ['unowned',`No piece of the application promises ${r.want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`,null];
+      this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id);
+      this.recordAnswer(r.worker,{key:r.topic,kind,text:clip(value,600),...(fn?{fn}:{})});
+      const remaining=query(this.db(),'SELECT COUNT(*) AS n FROM route_workers WHERE worker=?',r.worker)[0].n;
+      this.send(up,r.worker,'[route:'+kind+'] '+JSON.stringify({id:r.request_id,key:r.topic,value:clip(value,1400),...(fn?{fn}:{})}),{wake:!remaining});
+      this.event(up,kind==='provided'?'route_provided':'route_unowned',clip(kind==='provided'?`${r.want}: no piece promised it; "${offer.owner}" promises it now.`:value,500),r.worker);
+    }
+  }
+  // v7.15.15 review (#1): a promised name as worker id finds it: on its walk
+  // (the nearest level that offers it, as routeFunction answers), else from
+  // its deepest holder anywhere in the plan.
+  offerFor(id, name) {
+    for(const items of this.planWalk(id)){const f=items.find(f=>f.name===name);if(f)return {item:f,owner:f.owner};}
+    const c=[...(this.planIndex().get(name)||[])].find(c=>c!==id),n=c&&this.node(c);
+    return n?{item:this.promisedOf(c).find(f=>f.name===name),owner:n.label}:null;
+  }
+  // v7.15.15 review (#4): the promise anywhere that is the function a request
+  // names under another name: one that performs the same goal operation
+  // (performedOp), or one verb by its synonyms and the same object
+  // (getTickets beside readTickets). null for none, or two.
+  renameOf(id, name) {
+    const goal=this.userGoal(),key=functionKey(name),plan=this.planIndex(),hits=new Set();
+    if(this.performsGoal({name})&&this.performedOp(name)){const ops=goalOps(goal,{name});for(const p of this.plannedOperations())if(goalOps(goal,{name:p.method,operation:p.operation}).some(v=>ops.includes(v))&&plan.has(p.method))hits.add(p.method);}
+    if(key)for(const n of plan.keys())if(n!==name&&functionKey(n)===key)hits.add(n);
+    const [hit,...more]=[...hits];
+    return hit&&!more.length?this.offerFor(id,hit):null;
   }
   // What the named children export, read from this manager's linked bundle
   // (a sub-manager by the modules its branch offers): the facts a decision
@@ -4518,7 +4632,8 @@ export class ControlRoom extends DurableObject {
     // v7.15 §5.12e: nobody up to Root promises it; the worker's own manager
     // asks Clef whether it is the worker's to write, before the row goes.
     // v7.15.15 (G1, run23): or, outside its assignment, grown onto the piece whose assignment covers it, and provided from there.
-    if(planned&&kind==='unowned'){const s=await this.needScope(manager,upstream,hop);if(typeof s==='string')value=s;else ({kind,value,fn}=s);}
+    // v7.15.15 review (#3): a growth row the managers decide holds the request: the requester keeps waiting on it (route_workers), and this hop is done.
+    if(planned&&kind==='unowned'){const s=await this.needScope(manager,upstream,{...hop,request_id});if(s?.wait){await this.removeManagerHop(manager,request_id);return;}if(typeof s==='string')value=s;else ({kind,value,fn}=s);}
     const body=v=>'[route:'+kind+'] '+JSON.stringify({id:request_id,key:hop.topic,value:clip(v,1400),...(fn?{fn}:{})});
     if(worker) {
       this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',upstream.id,request_id);
@@ -4675,59 +4790,48 @@ export class ControlRoom extends DurableObject {
     } catch(e) {this.event(m,'route_scope',`${want}: Clef failed (${clip(e?.message||e,300)}); counted inside "${worker.label}"'s assignment.`);}
     if(inside)return `No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`;
     // v7.15.15 (G1, run23): outside it, the plan grows, as an operation no piece promises does (growOperation, R5): run23's entry heard "import viewTicket" for a function nobody would write, and five rounds followed.
-    const grown=growable(hop.name)?await this.growRequest(m,worker,hop):null;
+    const grown=growable(hop.name)?await this.requestGrowth(m,worker,hop):null;
     if(grown)return grown;
     return growable(hop.name)?`No piece of the application promises ${want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`:
       `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: const { ${hop.name} } = require('./${hop.name}');`:'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
   }
-  // v7.15.15 (G1, run23): a function no piece promises, outside its
-  // requester's assignment, is placed as growOperation places an operation
-  // (promiseAdds, R5), from the requester's manager up, one level at a time:
-  // one ranked Clef call over the level's direct children (the requester's
-  // branch, start carriers and those already asked for it left out), the
-  // best at or above the bar takes it; a branch places it on one of its
-  // pieces the same way. The piece gets promise_added and a retask (D9: its
-  // next done is checked against the grown promise, so a turn in flight is
-  // sent back by the contract check), and the requester the provided answer
-  // for its new owner. Nobody up to Root: null, and the requester writes it.
-  async growRequest(m, worker, hop) {
-    const name=hop.name,want=wanted(hop);
-    if(this.planIndex().has(name))return null;
+  // v7.15.15 (G1, run23; review #1-#4, #11): a function no piece promises,
+  // outside its requester's assignment, grows the plan as an operation no
+  // piece promises does (growOperation, G2, G3): first the whole plan is read
+  // again, every level (a name some piece promises now, another requester's
+  // growth or a split since, is provided from its holder; one the plan has
+  // under another name, readTickets for getTickets, or a goal operation a
+  // performer already performs, is provided as that one); otherwise the
+  // requester's manager files the growth row (kind unresolved, the operation
+  // fact with the requested name and need, the requester its reader and its
+  // request on the row), which each manager decides in its own turn over its
+  // own direct children, up a level when none covers it (promiseAdds, D9).
+  // A second request for the name joins the open row. The requester waits on
+  // its request and is answered when the row settles (answerRequests).
+  async requestGrowth(m, worker, hop) {
+    const name=hop.name,want=wanted(hop),r={worker:worker.id,request_id:hop.request_id,topic:hop.topic,want};
+    const held=this.planIndex().has(name)?this.offerFor(worker.id,name):null,like=held?null:this.renameOf(worker.id,name);
+    if(held||like) {
+      const o=held||like;
+      this.event(m,'route_provided',`${want}: ${held?`"${o.owner}" promises it`:`the plan has it as ${o.item.name} from "${o.owner}"`}.`);
+      return {kind:'provided',value:providedText(o.item,o.owner),fn:providedFn(o.item,o.owner)};
+    }
+    const open=this.problems("kind='unresolved' AND status!='closed'").find(p=>p.facts.operation?.name===name&&p.facts.names?.length===1);
+    if(open) {
+      this.db().exec('UPDATE problems SET facts=?,updated=? WHERE id=?',JSON.stringify({...open.facts,requests:[...(open.facts.requests||[]),r]}),Date.now(),open.id);
+      this.event(m,'route_grow',`${want}: its growth is already being decided for another request; "${worker.label}" waits on it too.`);
+      return {wait:true};
+    }
     // The params: the requester's call of it, as D9 reads a reader's (callOf); none when it only returns or passes it (run23's entry).
-    let params=[];
-    for(const f of productionFiles(this.files(worker.id)).filter(f=>LINKABLE.test(f.path))){let t='';try{t=await this.indexedContent(worker.id,f.path)??'';}catch{}const c=callOf(f.path,t,name);if(c){params=c.params;break;}}
-    const [item]=normalizeInterfaces([{name,does:clip(hop.question,200),params}]);
-    if(!item)return null;
-    const fold=x=>String(x).toLowerCase().replace(/[^a-z0-9]/g,''),starts=id=>this.promisedOf(id).some(f=>f.name==='start'),branch=id=>this.children(id).some(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status));
-    const place=async(level,top)=>{
-      const n=this.node(level),mine=nextDirectChild(level,worker.id),asked=id=>this.read(`promise_asked:${id}`,[]).includes(name);
-      const pool=this.children(level).filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)&&c.id!==mine&&!starts(c.id)&&!asked(c.id)&&!this.promisedOf(c.id).some(f=>fold(f.name)===fold(name))&&(branch(c.id)||this.promisedOf(c.id).length<MAX_INTERFACES));
-      if(!pool.length)return null;
-      const question=`${signature(item)}: ${item.does}; "${worker.label}" imports it and calls it`;
-      let a=null;
-      try {a=await this.managerRouteOwner(level,question,pool.map(c=>({id:c.id,label:c.label,task:c.task,known_topics:this.promisedOf(c.id).map(g=>promiseText(g)),files:[],previews:[]})),true,false,true);}
-      catch(e) {this.event(level,'promise_refused',clip(`${name}: Clef failed (${e?.message||e}) over the children${top?'; it goes up a level':''}.`,400));return null;}
-      const best=a?.ranks?.[0],c=a?.id?this.node(a.id):null,why=best?`Clef p=${best.p.toFixed(3)}: its assignment covers it`:'its assignment names it';
-      if(!c) {
-        for(const x of pool)this.asked(x.id,[name]);
-        this.event(level,'promise_refused',clip(`${name}: no direct child's assignment covers it (${pool.map(x=>`"${x.label}"`).join(', ')}${best?`, best p=${best.p.toFixed(3)}`:''})${top?n.parent?'; it goes up a level':`; "${worker.label}" writes it`:`; "${n.label}" has no piece for it`}.`,500));
-        return null;
-      }
-      if(branch(c.id)) {
-        this.event(level,'promise_relayed',clip(`${name} (${why}): "${c.label}" places it on one of its pieces' promise; "${worker.label}" imports it.`,500),c.id);
-        const below=await place(c.id,false);
-        if(!below)this.asked(c.id,[name]);
-        return below;
-      }
-      const task=`${c.task} Keep what your module exports and add ${signature(item)} (${item.does}): ${worker.label} imports it from your module.`;
-      this.promiseAdded(level,{child:c.id,names:[name],items:[item],readers:[],by:worker.label,why,operation:false,api:false});
-      this.retaskChild(level,c.id,task,`${name} for ${worker.label}`,'D9',normalizeInterfaces([...this.promisedOf(c.id),item]));
-      await this.syncOwnership(level);
-      this.event(m,'route_provided',`${want}: no piece promised it; "${c.label}" now promises it (${why}).`);
-      return {kind:'provided',value:providedText(item,c.label),fn:providedFn(item,c.label)};
-    };
-    for(let level=m;level;level=this.node(level)?.parent){const hit=await place(level,true);if(hit)return hit;}
-    return null;
+    let params=[],path='',esm=false;
+    for(const f of productionFiles(this.files(worker.id)).filter(f=>LINKABLE.test(f.path))){let t='';try{t=await this.indexedContent(worker.id,f.path)??'';}catch{}if(!path)path=f.path;if(esmSyntax(t))esm=true;const c=callOf(f.path,t,name);if(c){params=c.params;path=f.path;break;}}
+    const does=clip(hop.question,200),sig=`${name}(${params.join(', ')})`;
+    this.insertProblem({holder:m,kind:'unresolved',stage:'work',source:worker.id,input:`request:${hop.request_id}`,parties:[{path,owner:worker.id,owner_path:path,digest:'',role:'reader'}],
+      detail:`${worker.label} asks for ${want}, which no piece promises and its assignment does not cover.`,
+      facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:{op:name,name,params,line:`${worker.label} imports it: ${sig}`,does,request:true},requests:[r]},flags:{wave:crypto.randomUUID()}});
+    this.event(m,'route_grow',`${want}: no piece promises it and it is outside "${worker.label}"'s assignment; its manager grows a piece's promise with ${sig}, and "${worker.label}" waits.`);
+    this.wake(m);
+    return {wait:true};
   }
   // v7.15.5: the promised functions in id's walk, at the nearest level that
   // has one, that name the operation a request names (createTicketRecord

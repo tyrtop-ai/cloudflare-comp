@@ -1180,6 +1180,29 @@ const LIFECYCLE=new Set('close stop dispose destroy shutdown teardown cleanup re
 // the performers); one bound to an import no piece promises and no file
 // here exports names that import (stray), never the key, and delivers no
 // performer: { createTicket: goalOperation1 } returns no createTicket.
+// v7.15.15 review (#5, #8): the keys of the object start() returns, each
+// with the local names its value is (view: handleViewTicket) or calls in a
+// wrapper (view: (id) => viewTicket(id)), read from start()'s own return
+// (or the local it returns) only, never another object in the file (a menu
+// of { onView: viewTicket }). null when start() or its object is unreadable.
+export function startKeys(content) {
+  let ast;try{ast=parseSource(content).ast;}catch{return null;}
+  const decls=topLevelDeclarations(ast),fn=functionOf(exportedValues(ast,decls).get('start'),decls);
+  if(!fn)return null;
+  const inner=new Map(decls);
+  if(fn.body.type==='BlockStatement')for(const [n,d] of topLevelDeclarations(fn.body))inner.set(n,d);
+  const objects=(fn.body.type==='BlockStatement'?fn.body.body.filter(x=>x.type==='ReturnStatement').map(x=>x.argument):[fn.body]).map(o=>o?.type==='Identifier'?inner.get(o.name):o).filter(o=>o?.type==='ObjectExpression');
+  if(!objects.length)return null;
+  const out=new Map();
+  for(const o of objects)for(const p of o.properties) {
+    const k=p.type==='Property'&&keyName(p.key),v=p.value,names=new Set(out.get(k)||[]);
+    if(!k)continue;
+    if(v?.type==='Identifier')names.add(v.name);
+    else if(FUNCTIONS.has(v?.type))walk(v.body,n=>{if(n.type==='CallExpression'&&n.callee.type==='Identifier')names.add(n.callee.name);});
+    out.set(k,[...names]);
+  }
+  return out;
+}
 export function placeholders(files, names, foreign=[], performers=[]) {
   const out=[],want=new Set(names),other=new Set(foreign.filter(n=>!want.has(n))),perf=new Set(performers.filter(n=>other.has(n))),set=files instanceof Map?files:new Map(Object.entries(files));
   for(const [path,content] of set) {
