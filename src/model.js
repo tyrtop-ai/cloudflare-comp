@@ -4,11 +4,47 @@ import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText,
 import { goalMethods } from './api-coverage.js';
 export { NO_ANSWER };
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
-const HYBRID = '@cf/qwen/qwen3-30b-a3b-fp8';
-// Workers AI's newer chat models take max_completion_tokens with a
-// reasoning_effort, the lowest each supports (DeepSeek V4 can be told none);
-// the others take max_tokens. The Qwen3 hybrid has a soft switch instead.
-const EFFORT = Object.freeze({'@cf/qwen/qwen3.8-27b':'low','@cf/deepseek-ai/deepseek-v4-flash-0731':'none'});
+// Speed v1: every per-model setting in one table, keyed by Workers AI model
+// id. reasoning: how the model is asked to reason or not:
+//   'soft_switch' the Qwen3 hybrid: thinks unless the user turn ends in
+//                 suffix (/no_think), which a call asks for with noThink;
+//   'effort'      Workers AI's newer chat models: max_completion_tokens with
+//                 reasoning_effort, the lowest each supports (DeepSeek V4
+//                 can be told none); it thinks unless the effort is none;
+//   'none'        max_tokens, no reasoning control.
+// sampling: the model card's recommended temperature and top_p, for the
+// mode the call runs in (think, or no_think), or one set for a model with
+// no such modes. context: the model's context window in tokens; a call's
+// output budget is clamped so the prompt and the answer fit in it.
+// source: where the sampling comes from. A model missing from the table
+// keeps the settings every model had before (temperature 0.2, max_tokens).
+// Clef (the yes/no gates) takes no sampling: its requests are unchanged.
+export const MODEL_SETTINGS = Object.freeze({
+  '@cf/qwen/qwen3-30b-a3b-fp8':{reasoning:'soft_switch',suffix:' /no_think',context:32768,
+    sampling:{think:{temperature:0.6,top_p:0.95},no_think:{temperature:0.7,top_p:0.8}},source:'Qwen/Qwen3-30B-A3B model card (verified)'},
+  '@cf/qwen/qwen3.8-27b':{reasoning:'effort',effort:'low',context:32768,
+    sampling:{think:{temperature:1.0,top_p:0.95},no_think:{temperature:0.7,top_p:0.8}},source:'Qwen3.8-27B, as the Unsloth and Friendli pages restate its card (not verified on the official card)'},
+  '@cf/deepseek-ai/deepseek-v4-flash-0731':{reasoning:'effort',effort:'none',context:131072,
+    sampling:{think:{temperature:1.0,top_p:1.0},no_think:{temperature:1.0,top_p:1.0}},source:'DeepSeek V4 card as mirrored for V4-Pro, and Unsloth for V4-Flash-0731 (not verified on the official Flash card)'},
+  '@cf/meta/llama-4-scout-17b-16e-instruct':{reasoning:'none',context:131000,sampling:{temperature:0.6,top_p:0.9},source:'Llama-4-Scout-17B-16E-Instruct generation_config.json'},
+  '@cf/qwen/qwen2.5-coder-32b-instruct':{reasoning:'none',context:32768,sampling:{temperature:0.7,top_p:0.8},source:'Qwen2.5-Coder-32B-Instruct generation_config.json'},
+  '@cf/mistralai/mistral-small-3.1-24b-instruct':{reasoning:'none',context:128000,sampling:{temperature:0.15},source:'Mistral-Small-3.1-24B-Instruct-2503 model card ("a relatively low temperature, such as temperature=0.15")'},
+  '@cf/meta/llama-3.2-1b-instruct':{reasoning:'none',context:60000,sampling:{temperature:0.6,top_p:0.9},source:'Llama-3.2-1B-Instruct generation_config.json'}
+});
+const LEGACY_SETTINGS = Object.freeze({reasoning:'none',context:0,sampling:{temperature:0.2},source:'none: the settings every model had before'});
+// What a call to model sends, besides its messages: {params, suffix, thinking}.
+// params: the token budget (max_tokens, or max_completion_tokens with
+// reasoning_effort), temperature and top_p when the table states it.
+// suffix: what ends the user turn (the soft switch). promptChars: the
+// request's length, for the context clamp (about 3.5 characters a token).
+export function modelRequest(model, maxTokens, {noThink=false, promptChars=0}={}) {
+  const m=MODEL_SETTINGS[model]||LEGACY_SETTINGS;
+  const thinking=m.reasoning==='soft_switch'?!noThink:m.reasoning==='effort'?m.effort!=='none':false;
+  const sampling=m.sampling.think||m.sampling.no_think?(thinking?m.sampling.think:m.sampling.no_think):m.sampling;
+  const budget=m.context?Math.min(maxTokens,Math.max(256,m.context-Math.ceil(promptChars/3.5)-64)):maxTokens;
+  const tokens=m.reasoning==='effort'?{max_completion_tokens:budget,reasoning_effort:m.effort}:{max_tokens:budget};
+  return {params:{...tokens,...sampling},suffix:m.reasoning==='soft_switch'&&noThink?m.suffix:'',thinking};
+}
 
 // Every Workers AI call goes through traced(): env.TRACE, when the room gives
 // one (inferenceEnv), records it as a span with its timing, the token counts
@@ -34,15 +70,14 @@ const clefRun = (env, name, selector, input) => traced(env, {kind:'clef', name, 
 
 export async function run(env, system, user, maxTokens, {noThink=false, call='run', role='', retry=false}={}) {
   const selected=model(env);
-  // Qwen3 hybrid models' documented soft switch. Their reasoning counts
-  // against max_tokens: run7's runner and coverage calls each took time in
-  // proportion to their caps, as if reasoning filled them.
-  const messages=[{ role: 'system', content: system }, { role: 'user', content: noThink&&selected===HYBRID?user+' /no_think':user }];
-  const tokenParam = selected in EFFORT
-    ? {max_completion_tokens:maxTokens,reasoning_effort:EFFORT[selected]}
-    : {max_tokens:maxTokens};
-  return traced(env, {kind:'model', name:call, role, model:selected, retry:!!retry, max_tokens:maxTokens, no_think:!!noThink},
-    () => env.AI.run(selected, {messages,...tokenParam,temperature:0.2}));
+  // The model's settings (MODEL_SETTINGS): the Qwen3 hybrid's documented soft
+  // switch, whose reasoning counts against max_tokens (run7's runner and
+  // coverage calls each took time in proportion to their caps, as if
+  // reasoning filled them), an effort, the card's sampling, the context clamp.
+  const {params,suffix,thinking}=modelRequest(selected,maxTokens,{noThink,promptChars:String(system).length+String(user).length});
+  const messages=[{ role: 'system', content: system }, { role: 'user', content: user+suffix }];
+  return traced(env, {kind:'model', name:call, role, model:selected, retry:!!retry, max_tokens:params.max_tokens??params.max_completion_tokens, no_think:!!noThink, thinking},
+    () => env.AI.run(selected, {messages,...params}));
 }
 
 // A decision model does not generate a decomposition. It only scores the
