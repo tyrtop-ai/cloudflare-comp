@@ -2,9 +2,9 @@
 
 My entry for Cloudflare's "build the next Git platform" competition.
 
-The question was: what does GitHub look like when the developers are hundreds of agents instead of a handful of people? My answer is that you stop trying to make each agent smart, and instead give lots of small, cheap agents a process they can't really get wrong.
+My intuition going in was simple: many agents are strong, and you can work around context windows with architecture instead of bigger models.
 
-The bet behind it: a repeatable process can stand in for intelligence. The model writing most of the code here only uses about 3B parameters per token. It never sees the whole project. It doesn't need to.
+So no agent here ever holds the whole project. Each one gets a small, bounded job and only talks to its parent and its children. The models are small too; most of the code is written by one that uses about 3B parameters per token.
 
 ## The short version
 
