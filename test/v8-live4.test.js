@@ -361,3 +361,43 @@ test('2: the prompts name packages in general terms; the splitter format asks fo
     assert.deepEqual(lintText('message', text, {room: true}), []);
   assert.doesNotMatch(MESSAGES.package_held({held: 'y'}), /\b(?:never|cannot|can't|do not|don't|avoid)\b/i);
 });
+
+// ------------------------------------------------------------ the prompt handler above Root
+const NOTES_GOAL = 'Write project notes.';
+const NOTES_CARD = {card: 1, summary: 'Project notes', languages: ['text'], deliverables: [{name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'the project notes'}],
+  requirements: [{id: 'R1', says: 'The notes have a title', source: 'Write project notes', serves: ['NOTES.md'], check: {kind: 'file', path: 'NOTES.md', has: ['# Notes']}}]};
+const NOTES_CHANGE = 'Add a greeting line to the notes.';
+const NOTES_CARD_2 = {...NOTES_CARD, requirements: [...NOTES_CARD.requirements, {id: 'R2', says: 'The notes greet the reader', source: 'Add a greeting line', serves: ['NOTES.md'], check: {kind: 'file', path: 'NOTES.md', has: ['Hello']}}]};
+
+test('handler: Root\'s parent is a prompt handler that has ended; an amendment gets a handler of its own and never a second Root', async () => {
+  const {room, drain} = liveRoom({card: user => user.change ? NOTES_CARD_2 : NOTES_CARD, clef: clefWith(),
+    leaf: scripted({'Root objective': [blocks([{path: 'NOTES.md', content: '# Notes\n'}]), blocks([{path: 'NOTES.md', content: '# Notes\n\nHello.\n'}])]})});
+  await room.start(NOTES_GOAL, 20, {pipeline: 'v8'});
+  await drain();
+  assert.equal(room.get('status'), 'complete', trace(room));
+  // The row's parent is the handler; the room reads Root as the top of the tree, as before.
+  assert.equal(room.db().exec("SELECT parent FROM agents WHERE id='root'").toArray()[0].parent, 'prompt:1');
+  assert.equal(room.node('root').parent, null);
+  assert.equal(room.node('root').handed_by, 'prompt:1');
+  let handlers = room.snapshot().prompt_handlers;
+  assert.equal(handlers.length, 1);
+  assert.deepEqual([handlers[0].id, handlers[0].kind, handlers[0].prompt, handlers[0].root, handlers[0].created_root], ['prompt:1', 'goal', NOTES_GOAL, 'root', 1]);
+  assert.ok(handlers[0].ended_at >= handlers[0].spawned_at, 'it ended');
+  assert.match(events(room, 'prompt_handed')[0].body, /^prompt:1 created Root's row \(\d+ packages\), handed it the prompt and ended\.$/);
+  assert.ok(room.packagesOf('root').length > 0, 'the handler created Root with the installed set');
+  assert.ok(!room.allNodes().some(n => n.id.startsWith('prompt:')), 'a handler is never an agent');
+  // An amendment: a new handler hands it to the same Root and ends.
+  await room.amend(NOTES_CHANGE);
+  await drain();
+  assert.equal(room.get('status'), 'complete', trace(room));
+  assert.deepEqual(passedOf(room), {R1: true, R2: true});
+  handlers = room.snapshot().prompt_handlers;
+  assert.deepEqual(handlers.map(h => [h.id, h.kind, h.created_root]), [['prompt:1', 'goal', 1], ['prompt:2', 'amendment', 0]]);
+  assert.equal(handlers[1].prompt, NOTES_CHANGE);
+  assert.ok(handlers[1].ended_at >= handlers[1].spawned_at);
+  assert.equal(room.db().exec("SELECT COUNT(*) AS n FROM agents WHERE parent LIKE 'prompt:%' OR parent IS NULL").toArray()[0].n, 1, 'one Root');
+  assert.equal(room.db().exec("SELECT parent FROM agents WHERE id='root'").toArray()[0].parent, 'prompt:1', 'Root keeps the handler that created it');
+  assert.match(events(room, 'prompt_handed')[1].body, /^prompt:2 handed the change to Root and ended\.$/);
+  // The export carries the handlers.
+  assert.equal((await room.exportHead()).prompt_handlers.length, 2);
+});

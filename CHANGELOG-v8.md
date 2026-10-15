@@ -174,6 +174,7 @@ The CLI room completed in about 30 s. The to-do card's R1 looked for `<input typ
 - **The linker** leaves a package alone: a module some row lists, holds in its standard library or knows as a third party's (stands_for, third_party), with no project file of that name, is never sent to the link model and logs no `link_unresolved`. Any other unknown name may be a part under another name, and the linker reads it as before.
 - **The card** writer reads Root's packages (`installed_packages`), and Clef's review asks whether the deliverables, run commands and decisions use only what is installed (`CLEF.installed`). A NO is a substantive note: "use what is installed: http.server, urllib.request, …".
 - Clef's cost (about 0.4 to 0.9 s per batch) is unchanged.
+- **The prompt handler.** A short-lived step above Root (`handPrompt`), not a model call: it takes the person's prompt, creates Root's row as every parent creates a child's (its packages the installed set), sets Root's `parent` to its own id (`prompt:1`), hands the prompt over and ends. A queued prompt or an amendment gets a handler of its own, which hands the change to the existing Root and ends; it never creates a second Root. Handlers live in `prompt_handlers` with `spawned_at` and `ended_at` (the snapshot and the export show them), never among the agents, and hold nothing afterwards. The room reads a handler parent as the top of the tree (`isTop`, and `handed_by` on Root's row), so every place that meant "this is Root" behaves as before.
 
 ## Not done yet
 
