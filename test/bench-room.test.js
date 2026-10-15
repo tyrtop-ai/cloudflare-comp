@@ -118,9 +118,9 @@ test('a provided card in a language this deployment does not run holds at card_b
   const task = taskFromRow(HUMANEVAL[0]);
   const {room, drain} = benchRoom(task);
   room.save('toolchain_inventory', {node: '22', python: null});
-  // start() wipes meta: record the inventory after the wipe, before Root's first turn.
-  const start = room.start.bind(room);
-  room.start = async (...args) => { const r = await start(...args); room.save('toolchain_inventory', {node: '22', python: null}); return r; };
+  // start() wipes meta: record the inventory after the wipe (configure runs right after it), before the card writer runs.
+  const configure = room.configure.bind(room);
+  room.configure = s => { const r = configure(s); room.save('toolchain_inventory', {node: '22', python: null}); return r; };
   await room.start(task.prompt, 10, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card);
   await drain();
   assert.equal(room.snapshot().pause.kind, 'card_blocked');

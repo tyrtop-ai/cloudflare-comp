@@ -43,6 +43,16 @@ export function goalView(goal, changes = [], limit = EFFECTIVE_GOAL_LIMIT) {
   return [head, tail].filter(Boolean).join('\n\n').slice(0, n);
 }
 
+// v8 M2: a row's task as a reader with a limit reads it: whole when it
+// fits, else its head and its end (where a change to the goal sits), cut at
+// a paragraph within the end when one is there, and marked.
+export function clipEnds(text, limit) {
+  const t = String(text ?? ''), n = Math.max(40, Number(limit) || 0);
+  if (t.length <= n) return t;
+  const room = Math.floor(n * 0.6), end = t.slice(t.length - room), at = end.indexOf('\n\n'), tail = at >= 0 && at < room / 2 ? end.slice(at + 2) : end;
+  return `${t.slice(0, Math.max(0, n - tail.length - 3))}…\n\n${tail}`.slice(0, n);
+}
+
 // A prompt's text as the queue and /api/amend take it: trimmed, 8 to
 // PROMPT_LIMIT characters. {text} or {error}.
 export function promptText(raw) {

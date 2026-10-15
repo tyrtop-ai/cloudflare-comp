@@ -252,9 +252,10 @@ test('review: a function with no code language after the retry holds card_failed
   assert.deepEqual(room.snapshot().card_raw.answers, [JSON.stringify(card), JSON.stringify(card)]);
   // With one code toolchain installed, the repair takes it before validation, and room.languages() is never empty.
   const one = v8Room({card: () => card, split: () => ({summary: 'x', pieces: []})});
-  one.room.save('toolchain_inventory', ['node']);
+  // start() wipes meta: the inventory is recorded right after the wipe (configure), before the card writer runs.
+  const configure = one.room.configure.bind(one.room);
+  one.room.configure = s => { const r = configure(s); one.room.save('toolchain_inventory', ['node']); return r; };
   await one.room.start(goal, 1, {pipeline: 'v8'});
-  one.room.save('toolchain_inventory', ['node']);
   await one.drain();
   assert.match(events(one.room, 'card_repaired')[0].body, /languages named no code language; javascript is added for addNumbers/);
   assert.equal(events(one.room, 'card_repaired').length, 1);

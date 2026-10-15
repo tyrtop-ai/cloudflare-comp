@@ -245,7 +245,9 @@ export const MESSAGES = Object.freeze({
   ask_unclear: () => 'Your ask was not understood, so nothing was sent and there is nothing to wait for. Ask in your control block as "ask": a list of {"need": what you need in one line, "name": the name you expect}, with "wait": true, or write your files and set done.',
   no_request: () => 'You have no request open, so there is nothing to wait for: write your files and set done.',
   stuck_problem: ({label, last}) => `${label} stopped after three turns whose answers could not be accepted: ${last}`,
-  no_manager: ({repair}) => `You have no manager, so nothing answers a wait: write your files and set done.${repair ? ` This repair request is still open: ${repair}` : ''}`,
+  // v8 M2: an ask nothing on the asker's line answers went to the person (ask_unanswered); their answer, as the asker reads it.
+  ask_answered: ({change}) => `The person answered your request with a change to the goal: "${change}". It reaches you with your contracts; follow it.`,
+  ask_left: ({want}) => `Nothing in the project delivers ${want}, and the person left it to you: write it in your own files.`,
   runtime_paths: ({paths, many}) => `${paths} ${many ? 'were' : 'was'} not written: the runtime keeps ${many ? 'those paths' : 'that path'} for itself. Choose another path.`,
   not_written: ({why}) => `Not written: ${why}.`,
   left_out: ({count}) => `${count} more contracts you may use were left out here; ask for any you need by its name.`,

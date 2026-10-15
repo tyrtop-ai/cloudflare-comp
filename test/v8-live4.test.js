@@ -383,7 +383,8 @@ test('handler: Root\'s parent is a prompt handler that has ended; an amendment g
   assert.equal(handlers.length, 1);
   assert.deepEqual([handlers[0].id, handlers[0].kind, handlers[0].prompt, handlers[0].root, handlers[0].created_root], ['prompt:1', 'goal', NOTES_GOAL, 'root', 1]);
   assert.ok(handlers[0].ended_at >= handlers[0].spawned_at, 'it ended');
-  assert.match(events(room, 'prompt_handed')[0].body, /^prompt:1 created Root's row \(\d+ packages\), handed it the prompt and ended\.$/);
+  // v8 M2: the handler names the row it created by its label.
+  assert.match(events(room, 'prompt_handed')[0].body, /^prompt:1 created the row of "Root objective" \(\d+ packages\), handed it the prompt and ended\.$/);
   assert.ok(room.packagesOf('root').length > 0, 'the handler created Root with the installed set');
   assert.ok(!room.allNodes().some(n => n.id.startsWith('prompt:')), 'a handler is never an agent');
   // An amendment: a new handler hands it to the same Root and ends.
@@ -397,7 +398,7 @@ test('handler: Root\'s parent is a prompt handler that has ended; an amendment g
   assert.ok(handlers[1].ended_at >= handlers[1].spawned_at);
   assert.equal(room.db().exec("SELECT COUNT(*) AS n FROM agents WHERE parent LIKE 'prompt:%' OR parent IS NULL").toArray()[0].n, 1, 'one Root');
   assert.equal(room.db().exec("SELECT parent FROM agents WHERE id='root'").toArray()[0].parent, 'prompt:1', 'Root keeps the handler that created it');
-  assert.match(events(room, 'prompt_handed')[1].body, /^prompt:2 handed the change to Root and ended\.$/);
+  assert.match(events(room, 'prompt_handed')[1].body, /^prompt:2 handed the change to "Root objective" and ended\.$/);
   // The export carries the handlers.
   assert.equal((await room.exportHead()).prompt_handlers.length, 2);
 });

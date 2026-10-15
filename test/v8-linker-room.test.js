@@ -325,6 +325,7 @@ test('the standard-name refusal is for a writer\'s new file only: a base project
   assert.equal(room.shadowsStandard('root','wordfreq.py'),'');
   base=new Set(['json.py']);
   assert.equal(room.shadowsStandard('root','json.py'),'','the base\'s own file');
+  // v8 M2: the same for every writer: a worker's files sit at their own paths whenever its own files are bundled.
   room.node=()=>({id:'root.1',parent:'root'});
-  assert.equal(room.shadowsStandard('root.1','types.py'),'','a piece\'s file no contract places goes under its package folder');
+  assert.match(room.shadowsStandard('root.1','types.py'),/types\.py would take the name of the standard library's types/);
 });

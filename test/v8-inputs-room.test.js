@@ -590,6 +590,9 @@ test('S8b review M2: a base holding components/ moves the pieces\' folder to rcp
   await drain();
   assert.equal(room.partsRoot(), 'rcp_parts');
   assert.match(events(room, 'base_loaded')[0].body, /go under rcp_parts\//);
+  // v8 M2: the card is blocked, so the handler has created no row yet: the row is made here, as its handler would (with the base).
+  await room.provision('root', 'prompt:1', 'Root objective', 'Add NOTES.md to this project.');
+  room.save('base_digest:root', '');
   const [h] = await room.spawn('root', [{label: 'Helper', task: 'Write notes and a helper', interfaces: [{name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'notes'}]}]);
   room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", h.id);
   await room.putFile(h.id, 'NOTES.md', '# Notes\n');

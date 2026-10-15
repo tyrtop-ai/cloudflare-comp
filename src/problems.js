@@ -888,9 +888,10 @@ export function validateManagerActions(actions, call, ctx) {
     if(unknown.length){refuse(a,`problem(s) ${unknown.join(', ')} are not in this decision`);continue;}
     const open=ids.filter(id=>!covered.has(id));
     if(kind==='escalate') {
-      if(!ctx.parent){refuse(a,'the top manager has no parent to escalate to');continue;}
+      // v8 M2: a manager with no agent above escalates to the room: the problem closes, and the card's checks hold for the person.
+      if(!ctx.parent&&!ctx.v8){refuse(a,'the top manager has no parent to escalate to');continue;}
       if(!open.length){refuse(a,'no undecided problem listed');continue;}
-      for(const id of open)covered.set(id,{rule:'model',action:'escalate',reason:clip(a.reason||'',300)});
+      for(const id of open)covered.set(id,ctx.parent?{rule:'model',action:'escalate',reason:clip(a.reason||'',300)}:{rule:'model',action:'exhausted',reason:clip(`escalated to the room: ${a.reason||'no child can settle it'}`,300)});
       continue;
     }
     const child=String(a.child||''),k=ctx.kindOf(child),status=ctx.statusOf?.(child);

@@ -19,7 +19,7 @@ import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
 import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard, namedInGoal } from './card.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, goalView, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
+import { effectiveGoal, goalView, clipEnds, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { triggerText, RETRY, MESSAGES, BASE_LABEL } from './prompts.js';
@@ -192,8 +192,14 @@ const isHandler = id => typeof id === 'string' && id.startsWith(HANDLER_PREFIX);
 // stays on the row as handed_by. The column itself holds the handler's id.
 const nodeSelect = nodeFields.replace(/(^|,)parent(?=,)/, `$1CASE WHEN parent LIKE '${HANDLER_PREFIX}%' THEN NULL ELSE parent END AS parent,CASE WHEN parent LIKE '${HANDLER_PREFIX}%' THEN parent ELSE '' END AS handed_by`);
 // The top of the agents' tree: a node whose parent is a prompt handler, or
-// none (a room from before handlers).
+// none (a room from before handlers). v8 M2: only v7's own paths branch on
+// it; under v8 a node with no agent above hands up to the room (its parent
+// is a handler that has ended), as every node hands up to its parent.
 export const isTop = n => !!n && !n.parent;
+// v8 M2: the card writer, a short-lived step a goal's handler (or an
+// amendment's) spawns between itself and the top: writeCard, Clef's review
+// and validation. Its holds are the room's while it waits. An id is 'card:<n>'.
+export const CARD_WRITER_PREFIX = 'card:';
 // v7.15 slice B: what a function request asks for, as answers and events say it.
 const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
 const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}` : xs[0]||'';
@@ -438,6 +444,8 @@ export class ControlRoom extends DurableObject {
     if (!cols.includes('packages')) db.exec("ALTER TABLE agents ADD COLUMN packages TEXT NOT NULL DEFAULT '[]'");
     // v8 live 4: the prompt handlers (handPrompt), each spawned and ended at once.
     db.exec("CREATE TABLE IF NOT EXISTS prompt_handlers (id TEXT PRIMARY KEY, kind TEXT NOT NULL, prompt TEXT NOT NULL, prompt_id TEXT NOT NULL DEFAULT '', root TEXT NOT NULL, created_root INTEGER NOT NULL DEFAULT 0, spawned_at INTEGER NOT NULL, ended_at INTEGER)");
+    // v8 M2: the card writer steps (cardWriter), each under the handler that spawned it; outcome: written, held:<kind>, unchanged, folded, error.
+    db.exec("CREATE TABLE IF NOT EXISTS card_writers (id TEXT PRIMARY KEY, handler TEXT NOT NULL, kind TEXT NOT NULL, spawned_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT NOT NULL DEFAULT '')");
     // Speed v1 review: a version per agent row (rev) and one for the alias
     // table, bumped by triggers on every write, so a dashboard delta selects
     // only the agents changed since its cursor and knows when the export list
@@ -618,12 +626,25 @@ export class ControlRoom extends DurableObject {
   // The chunk refs a node holds (polyglot-bench §2a.4): Root every stored
   // chunk; a piece those its parent's split cited for it, never more than
   // its parent holds (assignRefs), as with promises.
+  // v8 M2: every row reads the refs its parent gave it (source_refs: a
+  // split's, or the handler's for the top: the card's citations, else the
+  // first chunks of each source, at most MAX_REFS). A row from before
+  // handlers with no agent above reads them as it did (reading only).
   sourceRefs(id) {
     const n=this.node(id);
     if(!n)return [];
-    // S8b review: Root holds at most MAX_REFS too: the card's citations, else the first chunks of each source.
-    return n.parent?this.read(`source_refs:${id}`,[]):this.read('root_refs',null)||rootRefs(this.read('card',null)?.refs,this.allRefs());
+    const own=this.read(`source_refs:${id}`,null);
+    if(own)return own;
+    return n.parent?[]:this.read('root_refs',null)||rootRefs(this.read('card',null)?.refs,this.allRefs());
   }
+  // v8 M2: whether a row holds the existing project (the handler gives the
+  // top the base and its digest, base_digest), and the digest it reads. A
+  // row from before handlers with no agent above holds the room's (reading only).
+  holdsBase(id) {
+    if(this.get(`base_digest:${id}`,null)!==null)return true;
+    const n=this.node(id);return !!n&&!n.parent&&!!this.read('base',null);
+  }
+  heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
   assignRefs(child, parent, raw) {
     if(raw==null||!this.v8())return;
@@ -650,7 +671,7 @@ export class ControlRoom extends DurableObject {
     const goal=this.userGoal(),started=Date.now();
     // S8b review: the owner's list as written (URL forms, :443, a JSON array); one with no usable entry is said.
     const given=this.env.FETCH_ALLOW,report=given!=null&&String(given).trim()?allowReport(given):null;
-    if(report&&!report.allow.length)this.event('root','fetch_allow_unreadable',clip(`FETCH_ALLOW has no usable host suffix (${report.dropped.join(', ')||String(given)}), so every link is refused; set it to host names such as docs.example.com.`,600));
+    if(report&&!report.allow.length)this.event('room','fetch_allow_unreadable',clip(`FETCH_ALLOW has no usable host suffix (${report.dropped.join(', ')||String(given)}), so every link is refused; set it to host names such as docs.example.com.`,600));
     // Every host this deployment answers on (the request's and SELF_HOSTS) is refused.
     const selfHosts=[...this.read('fetch_self_hosts',[]),...selfHostsOf(this.env)];
     // Each gist and card call counts against the run's budget, as a manager's model call does; a small budget reads fewer chunks.
@@ -663,7 +684,7 @@ export class ControlRoom extends DurableObject {
       r.id,r.url,r.final_url,r.title,r.sha256,r.bytes,r.truncated?1:0,r.error,r.status,r.content_type,r.card?JSON.stringify(r.card):null,Date.now());
     for(const c of chunks)this.db().exec('INSERT INTO source_chunks(ref,source,n,text) VALUES (?,?,?,?) ON CONFLICT(ref) DO NOTHING',c.ref,c.source,c.n,c.text);
     this.set('sources_loaded','1');
-    if(rows.length)this.event('root','sources_read',clip(`The goal's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes${r.truncated?', cut at the cap':''}, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
+    if(rows.length)this.event('room','sources_read',clip(`The goal's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes${r.truncated?', cut at the cap':''}, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
   }
   // v8 S6 review: what one reference is rendered from (useReferences): the
   // rows, the card's languages, whether its code runs in a browser, and for a
@@ -696,38 +717,100 @@ export class ControlRoom extends DurableObject {
   // v8 live 4: the installed set (the rows' curated packages, by the box's
   // inventory), which Root's row is created with; and a node's packages, as
   // its row lists them.
-  // v8 live 4: one prompt handler (see HANDLER_PREFIX): spawned, it creates
-  // Root's row when root is given ({task, interfaces, packages}: its parent
-  // is the handler) or hands the prompt to the Root there is, and ends. Its
-  // row records when it was spawned and ended; the export shows it.
-  async handPrompt({kind='goal', prompt='', prompt_id='', root=null}={}) {
-    const n=Number(query(this.db(),'SELECT COUNT(*) AS n FROM prompt_handlers')[0].n)+1,id=`${HANDLER_PREFIX}${n}`,at=Date.now();
-    const create=!!root&&!this.node('root');
-    this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,?,?,NULL)',id,kind,clip(prompt,EFFECTIVE_GOAL_LIMIT),prompt_id||'','root',create?1:0,at);
-    try { if(create)await this.provision('root',id,'Root objective',root.task,root.interfaces||[],[],root.packages||[]); }
-    finally {
-      this.db().exec('UPDATE prompt_handlers SET ended_at=? WHERE id=?',Date.now(),id);
-      this.event('system','prompt_handed',create?`${id} created Root's row (${(root.packages||[]).length} packages), handed it the prompt and ended.`:`${id} handed the ${kind==='goal'?'prompt':'change'} to Root and ended.`);
-    }
+  // v8 live 4: one prompt handler (see HANDLER_PREFIX), spawned for each
+  // prompt. v8 M2: it makes no model call. A goal's handler spawns the card
+  // writer (cardWriter) and, once the card is written and nothing of it
+  // waits for the person, creates the top's row as every parent creates a
+  // child's: its contracts the card's deliverables, its packages the
+  // installed set, the source chunks and the base digest it holds; then it
+  // ends (provisionTop). While its card writer waits, the handler waits with
+  // it, and the room's next run goes on with it (runHandlers). A change's
+  // handler spawns the card writer's amend path and hands the change to the
+  // top as a change on its row (applyAmendment, handRows). Under v7 a goal's
+  // handler creates the top's row at once, with the promise it is given.
+  async handPrompt({kind='goal', prompt='', prompt_id='', task='', interfaces=[]}={}) {
+    const n=Number(query(this.db(),'SELECT COUNT(*) AS n FROM prompt_handlers')[0].n)+1,id=`${HANDLER_PREFIX}${n}`;
+    this.db().exec("INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,'',0,?,NULL)",id,kind,clip(prompt,EFFECTIVE_GOAL_LIMIT),prompt_id||'',Date.now());
+    if(kind==='goal'&&!this.v8())await this.provisionTop(id,{task,interfaces});
     return id;
+  }
+  // v8 M2: the handler creates the top's row (its parent the handler's id),
+  // with what it holds for it, and ends. The row's inputs: the chunks of the
+  // goal's links it holds (source_refs, as a split gives each piece its own)
+  // and the existing project's digest (base_digest), read as any row's are.
+  async provisionTop(hid, {task='', interfaces=[], packages=[], refs=null, digest=null, checks=null}={}) {
+    const top=await this.provision('root',hid,'Root objective',task,interfaces,[],packages);
+    if(refs)this.save(`source_refs:${top.id}`,refs);
+    if(digest!==null)this.save(`base_digest:${top.id}`,digest);
+    if(checks)this.save(`checks:${top.id}`,checks);
+    this.db().exec('UPDATE prompt_handlers SET root=?,created_root=1 WHERE id=?',top.id,hid);
+    this.endHandler(hid,`${hid} created the row of "${top.label}" (${packages.length} packages), handed it the prompt and ended.`);
+    return top;
+  }
+  endHandler(hid, text) {
+    this.db().exec('UPDATE prompt_handlers SET ended_at=? WHERE id=? AND ended_at IS NULL',Date.now(),hid);
+    this.event(hid,'prompt_handed',clip(text,600));
+  }
+  // v8 M2: the goal's handler still open (its card writer waits, or has not run yet).
+  openGoalHandler() { return query(this.db(),"SELECT id FROM prompt_handlers WHERE kind='goal' AND ended_at IS NULL ORDER BY spawned_at DESC,id DESC LIMIT 1")[0]?.id||null; }
+  // v8 M2: drive's first step: the open goal handler goes on. Its card
+  // writer runs (again); once the card is written and granted, the handler
+  // creates the top's row from it and ends. True when the card writer ran.
+  async runHandlers() {
+    const hid=this.v8()?this.openGoalHandler():null;
+    if(!hid)return false;
+    if(!await this.cardWriter(hid))return true;
+    const card=this.read('card',null),all=this.allRefs();
+    const top=await this.provisionTop(hid,{task:this.goalFor(GOAL_LIMIT)??this.get('goal'),interfaces:cardContracts(card,{goal:this.userGoal()}),packages:this.installedSet(),
+      refs:all.length?rootRefs(card?.refs,all):null,digest:this.read('base',null)?(this.read('base',null).digest||''):null,checks:(card?.requirements||[]).map(r=>r.id)});
+    // A change that came while the card writer ran waits for the new row's split.
+    const d=this.read('amend_deferred',null);
+    if(d&&!d.to)this.save('amend_deferred',{...d,to:top.id});
+    return true;
+  }
+  // v8 M2: the card writer step under a handler: the open one, or a new one.
+  cardWriterStep(hid, kind) {
+    const open=query(this.db(),'SELECT id FROM card_writers WHERE handler=? AND kind=? AND ended_at IS NULL LIMIT 1',hid,kind)[0]?.id;
+    if(open)return open;
+    const id=`${CARD_WRITER_PREFIX}${Number(query(this.db(),'SELECT COUNT(*) AS n FROM card_writers')[0].n)+1}`;
+    this.db().exec("INSERT INTO card_writers(id,handler,kind,spawned_at,ended_at,outcome) VALUES (?,?,?,?,NULL,'')",id,hid,kind,Date.now());
+    this.event(hid,'card_writer_spawned',`${hid} spawned the card writer ${id}${kind==='amend'?' for the change':''}.`);
+    return id;
+  }
+  endCardWriter(id, outcome) { this.db().exec('UPDATE card_writers SET ended_at=?,outcome=? WHERE id=? AND ended_at IS NULL',Date.now(),outcome,id); }
+  cardWriters() { return query(this.db(),'SELECT id,handler,kind,spawned_at,ended_at,outcome FROM card_writers ORDER BY spawned_at,id'); }
+  // v8 M2: the card writer of a goal's handler: it writes the card (cardTurn,
+  // or a provided card), and ends once the card is saved and no file it
+  // changes waits for the person's grant. Held, it waits: the hold is the
+  // room's, and Continue runs it again. True when it ended.
+  async cardWriter(hid) {
+    const sid=this.cardWriterStep(hid,'card'),held=kind=>{this.db().exec('UPDATE card_writers SET outcome=? WHERE id=?',`held:${kind}`,sid);return false;};
+    this.cardWriting=true;
+    try {if(!this.read('card',null)&&!await this.cardTurn(sid))return held(this.read('paused_state',null)?.kind||'card_failed');}
+    finally {this.cardWriting=false;}
+    if(this.read('card',null)?.deliverables?.some(d=>d.needs_confirmation)&&this.read('base_pending',[]).length){this.holdBaseConfirm();return held('base_confirm');}
+    this.endCardWriter(sid,'written');
+    return true;
   }
   promptHandlers() { return query(this.db(),'SELECT id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at FROM prompt_handlers ORDER BY spawned_at,id'); }
   installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
   packagesOf(id) { return this.v8()?normalizePackages(parse(this.node(id)?.packages,[])):[]; }
   // v8 S3: a room held at a stop only Continue (or a later slice) moves on:
   // card_blocked, card_failed; and (S4b) at the card's checks: checks_failed,
-  // checks_blocked, checks_exhausted. Root waits; the run ends
-  // paused with this text.
+  // checks_blocked, checks_exhausted. v8 M2: the hold is the room's, keyed on
+  // the room: extra names what waits on it (agent: the row whose turn it
+  // holds, step: a card writer), which Continue wakes; the run ends paused
+  // with this text.
   holdRoom(kind, text, extra={}) {
     const prior=this.read('paused_state',null);
     // v8 card repair: a pending grant (base_confirm) is never overwritten; a later hold waits behind it, and Continue restores it after the grant.
     if(kind!=='base_confirm'&&prior?.kind==='base_confirm'&&this.read('base_pending',[]).length) {
       this.save('queued_hold',{kind,text:clip(text,1200),ts:Date.now(),...extra});
-      this.event('root','hold_queued',clip(`${kind} waits behind the files waiting for the person's grant: ${text}`,600));
+      this.event('room','hold_queued',clip(`${kind} waits behind the files waiting for the person's grant: ${text}`,600));
       return;
     }
     this.save('paused_state',{kind,text:clip(text,1200),ts:Date.now(),...extra});
-    if(prior?.kind!==kind||prior?.text!==clip(text,1200))this.event('root',kind,clip(text,1200));
+    if(prior?.kind!==kind||prior?.text!==clip(text,1200))this.event('room',kind,clip(text,1200));
   }
   get(key, otherwise = '') { return query(this.db(), 'SELECT value FROM meta WHERE key=?', key)[0]?.value ?? otherwise; }
   set(key, value) { this.db().exec('INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value)); }
@@ -783,7 +866,7 @@ export class ControlRoom extends DurableObject {
   configure(raw) {
     const prior=this.settings(),cfg=normalizeRoomSettings(raw, prior);
     // v8 S3: the pipeline is fixed when the run starts; Continue keeps it.
-    if(this.node('root')&&(prior.pipeline||'v7')!==(cfg.pipeline||'v7')) {
+    if(this.started()&&(prior.pipeline||'v7')!==(cfg.pipeline||'v7')) {
       this.event('system','pipeline_kept',`This room runs the ${prior.pipeline||'v7'} pipeline, chosen when it started; Start a new room to use ${cfg.pipeline}.`);
       cfg.pipeline=prior.pipeline||'v7';
     }
@@ -791,6 +874,35 @@ export class ControlRoom extends DurableObject {
     return cfg;
   }
   allNodes() { return query(this.db(), `SELECT ${nodeSelect} FROM agents ORDER BY LENGTH(id),id`); }
+  // v8 M2: the room's lookup of the top of the agents' tree, for its status,
+  // export and dashboard and for the row a change's handler hands it to: the
+  // row whose parent is a handler, else (a room from before handlers) the
+  // one with no parent. Behaviour never branches on it.
+  topId() { return query(this.db(),`SELECT id FROM agents WHERE parent IS NULL OR parent LIKE '${HANDLER_PREFIX}%' ORDER BY LENGTH(id),id LIMIT 1`)[0]?.id||null; }
+  top() { const id=this.topId(); return id?this.node(id):null; }
+  // v8 M2: a run exists in this room: a goal's handler was spawned (its card writer may still wait), or a row is there.
+  started() { return !!this.topId()||query(this.db(),"SELECT id FROM prompt_handlers WHERE kind='goal' LIMIT 1").length>0; }
+  // v8 M2: the card's checks a row holds, by requirement id (checks:<id>),
+  // as it holds its contracts: a goal's handler gives the top's row every
+  // check of the card, a change's handler the checks the change adds. Any
+  // row that holds checks runs them over its own bundle when its work is
+  // done (compileCard, one path by id), a worker as a manager. A row from
+  // before handlers with no agent above holds the card's (reading only).
+  checksOf(id, card=this.read('card',null)) {
+    if(!card||!id)return [];
+    const own=this.read(`checks:${id}`,null),n=own?null:this.node(id),ids=new Set(own??(n&&!n.parent?card.requirements.map(r=>r.id):[]));
+    return card.requirements.filter(r=>ids.has(r.id));
+  }
+  holdsChecks(n) { return this.v8()&&!!n&&this.checksOf(n.id).length>0; }
+  // The requirement ids some row holds.
+  heldChecks() { return new Set(query(this.db(),"SELECT value FROM meta WHERE key LIKE 'checks:%'").flatMap(r=>parse(r.value,[]))); }
+  // v8 M2: run finished: the top is done and every card check has a recorded
+  // pass (v7: every strand returned complete).
+  runFinished(nodes=this.allNodes()) {
+    const top=this.top();
+    if(!top||!allFinished(nodes)||this.openGoalHandler())return false;
+    return !this.v8()||top.status==='done'&&this.read('compile_passed',null)?.card_rev===this.cardRev();
+  }
   node(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE id=?`, id)[0] ?? null; }
   children(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE parent=? ORDER BY id`, id); }
   siblings(node) { return node.parent === null ? [] : this.children(node.parent).filter(s => s.id !== node.id); }
@@ -891,7 +1003,7 @@ export class ControlRoom extends DurableObject {
     // v7.15.2: an atomic top's runtime glue took 3 of its 8 file slots, and a
     // 7-module Root could not see the view.js its repair named (review). The
     // glue is left out, and the files its open problems name come first.
-    const atomic=worker&&isTop(n)&&this.live(),mine=f=>!atomic||!RUNTIME_GLUE.includes(f.path);
+    const atomic=!this.v8()&&worker&&isTop(n)&&this.live(),mine=f=>!atomic||!RUNTIME_GLUE.includes(f.path);
     const named=new Set(atomic||worker&&this.v8()?this.problems("assignee=? AND status='assigned'",id).flatMap(p=>p.parties.map(x=>x.owner_path||x.path)):[]);
     return {
       your_id: n.id, your_responsibility: worker ? this.withContract(n.task,n) : n.task, your_label: n.label, turn: n.turn,
@@ -912,7 +1024,7 @@ export class ControlRoom extends DurableObject {
       // v8 S8b: the chunks of the goal's links cited for this writer, quoted; the top, whose part is the whole project, reads the existing project's digest.
       ...(worker && this.v8() ? this.sourceInputs(id, 'chunks') : {}),
       // v8 S8b review: base text only quoted, labelled, beside the base clause.
-      ...(worker && this.v8() ? (({digest, files}) => digest || files.length ? {base_note: MESSAGES.base_note(), ...(digest ? {existing_files: {label: BASE_LABEL, digest}} : {}), ...(files.length ? {base_files: files} : {})} : {})({digest: isTop(n) ? this.read('base', null)?.digest : null, files: this.baseFilesFor(id)}) : {}),
+      ...(worker && this.v8() ? (({digest, files}) => digest || files.length ? {base_note: MESSAGES.base_note(), ...(digest ? {existing_files: {label: BASE_LABEL, digest}} : {}), ...(files.length ? {base_files: files} : {})} : {})({digest: this.heldDigest(id), files: this.baseFilesFor(id)}) : {}),
       // Capability boxes S5 (§5.2): the names this writer may ask the broker for, and how its labelled answers read.
       ...(worker && this.v8() ? this.availableView(id, answered) : {}),
       new_messages: inbox
@@ -1029,8 +1141,8 @@ export class ControlRoom extends DurableObject {
       agents: this.versioned?this.agentRows():this.stampAgents(cursor.agents).map(x=>x.row),
       files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
       exports: this.exportList(),
-      // v8 live 4: the prompt handlers above Root, each spawned and ended.
-      prompt_handlers: this.promptHandlers(),
+      // v8 live 4: the prompt handlers above the top, each spawned and ended; v8 M2: and the card writer steps they spawned.
+      prompt_handlers: this.promptHandlers(), card_writers: this.cardWriters(),
       events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
       cursor
     };
@@ -1130,7 +1242,7 @@ export class ControlRoom extends DurableObject {
     };
   }
   compilerSummary() {
-    const top=this.allNodes().find(n=>isTop(n)),compiler=top&&this.compilerOf(top.id);
+    const top=this.top(),compiler=top&&this.compilerOf(top.id);
     if(!compiler)return null;
     const passed=this.read('compile_passed',null);
     return {id:compiler.id,status:compiler.status,input:this.read(`bundle:${top.id}`,null)?.digest||'',entry:this.read('compile_state',null)?.entry||'',passed:!!passed&&this.compilePassed(top.id)};
@@ -1221,7 +1333,7 @@ export class ControlRoom extends DurableObject {
   // files (README aside).
   async appFiles() {
     if(this.v8())return this.cardApp();
-    const root=this.allNodes().find(n=>isTop(n))||null,top=root?.id;
+    const root=this.top(),top=root?.id;
     const builder=root&&this.builderOf(top),compiler=root&&this.compilerOf(top);
     const atomic=!builder&&!!root&&!this.manager(top),files=[];
     if(builder) {
@@ -1256,8 +1368,8 @@ export class ControlRoom extends DurableObject {
   // and .recursive/card.json. The project's README is never written or
   // moved. passed: the last passing check run hashed exactly these files.
   async cardApp() {
-    const root=this.node('root');
-    const {files,link}=root?await this.bundleFiles('root'):{files:new Map(),link:null};
+    const root=this.top();
+    const {files,link}=root?await this.bundleFiles(root.id):{files:new Map(),link:null};
     if(!files.size) {
       const status=this.get('status','idle'),why=!root?'no run has started in this room':'no piece has delivered a file yet';
       return {status:409,error:['complete','failed'].includes(status)?`No application to export: this room ended (${status}) and ${why}. Start a new room to build one.`:
@@ -1317,7 +1429,7 @@ export class ControlRoom extends DurableObject {
   promisedOf(id) {const n=this.node(id);return n?parse(n.interfaces,[]):[];}
   // A room whose Root promises start (live, started under v7.15) answers
   // function requests from promises; MOCK and v7.14 rooms route as v7.14.
-  planned() {return this.promisedOf('root').length>0;}
+  planned() {return this.promisedOf(this.topId()).length>0;}
   // v7.15.7 integration: a room whose plan states what a call returns (the splitter is asked for it on every function since v7.15.7): the await rule reads every promised name there, and a promise the plan grows states its shape too.
   shaped() {return this.allNodes().some(n=>parse(n.interfaces,[]).some(f=>f?.returns));}
   // v7.15.5: the functions of its siblings a node's split says it calls, as
@@ -1419,7 +1531,7 @@ export class ControlRoom extends DurableObject {
   // an entry composed with readTickets; G4: createRecord); goalPerformers
   // only without one carrier.
   plannedOperations() {
-    const top=this.allNodes().find(n=>isTop(n)),seen=new Set(),out=[],kids=top?this.offeredFunctions(top.id):[];
+    const top=this.top(),seen=new Set(),out=[],kids=top?this.offeredFunctions(top.id):[];
     for(const c of kids)for(const f of c.items) {
       const key=String(f.operation||'').toLowerCase().replace(/\s+/g,' ').trim();
       if(key&&!seen.has(key)){seen.add(key);out.push({operation:f.operation,method:f.name,label:c.label});}
@@ -1560,7 +1672,7 @@ export class ControlRoom extends DurableObject {
   // work ONLY when an ancestor's actual source no longer fits the context budget.
   integrationEnabled(id) {
     if(this.env.MOCK_AI!=='true')return this.children(id).some(c=>!isRuntimeNode(c));
-    return id==='root' || this.get(`builder_delegated:${id}`)==='1';
+    return !this.v8()&&isTop(this.node(id)) || this.get(`builder_delegated:${id}`)==='1';
   }
   descendantsWithCode(ownerId) {
     // Control-plane-only traversal; no producer learns private descendants.
@@ -1847,11 +1959,11 @@ export class ControlRoom extends DurableObject {
   // persisted v6.5 rooms whose build failed with 'Invalid build fingerprint'.
   async retryBlockedBuild() {
     if(this.env.MOCK_AI!=='true')return this.retryBlockedCompile();
-    let blocked=this.read('build_blocked:root',null);
-    if(!blocked && this.get('build_infrastructure:root')) {
+    let blocked=this.read('build_blocked:root',null);const top=this.topId();
+    if(!blocked && top && this.get('build_infrastructure:root')) {
       // Migration for runs created by v6.5 before the retry bookmark existed.
-      const builder=this.children('root').find(c=>c.label==='Temporary builder');
-      if(builder)blocked={builder:builder.id,fingerprint:this.assemblyFingerprint('root')};
+      const builder=this.children(top).find(c=>c.label==='Temporary builder');
+      if(builder)blocked={builder:builder.id,fingerprint:this.assemblyFingerprint(top)};
     }
     if(!blocked)return false;
     const builder=this.node(blocked.builder);
@@ -1866,11 +1978,11 @@ export class ControlRoom extends DurableObject {
     try {
       if(await this.markBuilderComplete(builder.id,current)) {
         this.db().exec("UPDATE agents SET status='done' WHERE id=?",builder.id);
-        this.event('root','build_retry_passed','Retried unchanged builder source without model inference.',builder.id);
+        this.event(builder.parent,'build_retry_passed','Retried unchanged builder source without model inference.',builder.id);
         this.wake(builder.parent);
       }
     } catch(error) {
-      this.event('root','build_retry_error',clip(error?.message||error,1000),builder.id);
+      this.event(builder.parent,'build_retry_error',clip(error?.message||error,1000),builder.id);
       // A stale or malformed assembly needs a linker correction, not another
       // blind infrastructure retry.
       this.save('build_blocked:root',null);
@@ -3392,7 +3504,7 @@ export class ControlRoom extends DurableObject {
       const again=prior?.input===input?(prior.problems||[]).map(pid=>this.problems('id=?',pid)[0]).filter(Boolean):[];
       if(again.length) {
         this.event(id,'compile_unchanged','Root\'s files are unchanged since their problems were reported; they go back without another run.');
-        return this.atomicRepair(id,input,prior.stage,again.map(p=>({kind:p.kind,path:p.parties[0]?.path||'',parties:p.parties,detail:p.detail,facts:p.facts,evidence:p.evidence})));
+        return this.ownRepair(id,input,prior.stage,again.map(p=>({kind:p.kind,path:p.parties[0]?.path||'',parties:p.parties,detail:p.detail,facts:p.facts,evidence:p.evidence})));
       }
       // The entry among its own files, wherever it put them (run10: module.js).
       const surfaces=surfacesOf(files),entry=chooseEntry(files,surfaces,{scope:''});
@@ -3400,7 +3512,7 @@ export class ControlRoom extends DurableObject {
       const entryIssue=(path=entryCandidate(files,null,'')||'',detail='No application entry: no module exports start() to compose the application.')=>({kind:'entry',path,detail,facts:{}});
       const outcome=entry?await this.compileRun(id,input,files,surfaces,entry,entryIssue):{stage:'build',items:[entryIssue()]};
       if(outcome.infrastructure)return this.blockCompiler(id,input,outcome.infrastructure);
-      if(outcome.items)return this.atomicRepair(id,input,outcome.stage,outcome.items);
+      if(outcome.items)return this.ownRepair(id,input,outcome.stage,outcome.items);
       if(outcome.runnerFailed) {
         // As the compiler's: once more with three more drafts, then Continue.
         if(this.read('runner_retry',null)?.fingerprint!==input) {
@@ -3422,18 +3534,19 @@ export class ControlRoom extends DurableObject {
     this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
     this.event(id,'done','Completed owned strand without transferring ownership to children.');
   }
-  // The top hears its problems as a worker hears a repair ticket, with
-  // itself as the manager: each report is a round of the progress-aware
-  // budget a manager pays (countRound), so a run that fails as before
-  // ends after MANAGER_MAX_STALLED rounds, and the top fails.
-  atomicRepair(id, input, stage, items) {
+  // A worker whose own checks failed (v8 M2: any worker that holds checks;
+  // v7: the atomic top) hears its problems as a repair ticket, with itself as
+  // the manager: each report is a round of the progress-aware budget a
+  // manager pays (countRound), so a run that fails as before ends after
+  // MANAGER_MAX_STALLED rounds, and it hands up (exhaustRounds).
+  ownRepair(id, input, stage, items) {
     const wave=crypto.randomUUID(),now=Date.now(),unchanged=this.read('compile_reported',null)?.input===input;
     this.closeProblemsFrom(id,'superseded');
     const list=items.slice(0,MAX_PROBLEMS_PER_REPORT),ids=list.map(x=>this.insertProblem({holder:id,kind:x.kind,stage,source:id,input,
       parties:x.parties||this.partiesOf(id,{...x,owner:id}).map(p=>({...p,owner:id,owner_path:p.path})),detail:x.detail,facts:x.facts,evidence:x.evidence,flags:{wave}}));
     this.save('compile_reported',{input,stage,problems:ids,ts:now});
-    this.set('atomic_compile','');
-    this.event(id,'problems_reported',clip(`${ids.length} problem(s) in Root's own code, which it repairs itself: `+list.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; '),1000));
+    this.set(this.v8()?`checks_due:${id}`:'atomic_compile','');
+    this.event(id,'problems_reported',clip(`${ids.length} problem(s) in ${this.v8()?`${this.node(id)?.label||id}'s`:'Root\'s'} own code, which it repairs itself: `+list.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; '),1000));
     const exhausted=this.countRound(id,wave);
     if(exhausted)return this.exhaustRounds(id,exhausted);
     const moved=ids.map(pid=>this.problems('id=?',pid)[0]).filter(p=>{
@@ -3444,7 +3557,7 @@ export class ControlRoom extends DurableObject {
     const facts=clip([...new Set(moved.flatMap(p=>String(p.directive.facts_text||'').split(' | ')).filter(Boolean))].join(' | '),1400);
     this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,id,id,JSON.stringify(moved.map(p=>p.id)),'reader',instructions,facts,now);
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:compile',id,'[build:repair] '+ticket);
-    this.event(id,'problem_assigned',clip(`${moved.length} problem(s) back to Root, which wrote every file${unchanged?' and changed none since they were reported':''}: ${instructions}`,800));
+    this.event(id,'problem_assigned',clip(`${moved.length} problem(s) back to ${this.v8()?`${this.node(id)?.label||id}, which wrote every file of its own`:'Root, which wrote every file'}${unchanged?' and changed none since they were reported':''}: ${instructions}`,800));
     this.wake(id);
   }
 
@@ -3459,9 +3572,9 @@ export class ControlRoom extends DurableObject {
   // the rename-only fixes the room kept from a run's errors (link_fixes).
   // origin: each bundle path's writer and its own path; placed: the placed
   // paths; glue: the runtime-written files; link: linkBundle's report.
-  async bundleFiles(top='root') {
+  async bundleFiles(top) {
     const files=new Map(),origin=new Map(),placed=new Set(),n=this.node(top);
-    if(!n)return {files,origin,placed,glue:new Map(),link:null};
+    if(!n)return {files,origin,placed,glue:new Map(),link:null,top};
     const atomic=!this.manager(top);
     const gone=id=>{for(let x=this.node(id);x&&x.id!==top;x=x.parent?this.node(x.parent):null)if(['retired','failed'].includes(x.status))return true;return false;};
     const leaves=atomic?[n]:this.allNodes().filter(x=>x.id.startsWith(top+'.')&&!isRuntimeNode(x)&&!this.manager(x.id)&&!gone(x.id));
@@ -3487,7 +3600,8 @@ export class ControlRoom extends DurableObject {
     // byte where no piece replaced them; an untouched one is nobody's work
     // (no origin), so the link never edits it and a check's frame there is
     // never routed.
-    if(n.id==='root'&&this.v8()) {
+    // v8 M2: in the bundle of the row that holds the base (the top's, given by its handler).
+    if(this.v8()&&this.holdsBase(top)) {
       const base=query(this.db(),'SELECT path,content FROM base_files'),paths=new Set(base.map(r=>r.path)),twins=[];
       // A piece's file whose path equals a base path apart from case (one file on a case-insensitive file system) is left out.
       for(const at of [...files.keys()])if(!paths.has(at)&&caseTwin(at,paths)){twins.push(`${at} (beside ${caseTwin(at,paths)})`);files.delete(at);origin.delete(at);placed.delete(at);}
@@ -3498,7 +3612,7 @@ export class ControlRoom extends DurableObject {
     const link=linkBundle(new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),{pieces:new Map([...origin].map(([p,o])=>[p,o.owner])),contracts,fixes:this.read('link_fixes',{}),rows:this.installedToolchains(),atomic,parts:this.partsRoot(),
       // S8b: a base file carried untouched (not built) still holds its path: no shim goes there.
       held:new Set(this.v8()?query(this.db(),'SELECT path FROM base_passthrough').map(r=>r.path):[])});
-    return {files:link.files,origin,placed,glue:link.glue,link,contracts};
+    return {files:link.files,origin,placed,glue:link.glue,link,contracts,top};
   }
   // v8 live 4: whether a reference a link or a run left unresolved names a
   // module outside the project (a package: the standard library's, or a
@@ -3507,7 +3621,7 @@ export class ControlRoom extends DurableObject {
     if(!this.v8()||!hit?.module)return false;
     bundle.external??=(()=>{
       const paths=[...bundle.files.keys()].filter(p=>!(bundle.glue||new Map()).has(p));
-      return {stems:[...new Set(paths.flatMap(p=>p.split('/').map(s=>s.replace(/\.[^.]+$/,''))))],contracts:[...this.contractNames()],held:this.packagesOf('root'),rows:this.installedToolchains()};
+      return {stems:[...new Set(paths.flatMap(p=>p.split('/').map(s=>s.replace(/\.[^.]+$/,''))))],contracts:[...this.contractNames()],held:bundle.top?this.packagesOf(bundle.top):this.installedSet(),rows:this.installedToolchains()};
     })();
     return externalModule({module:hit.module},bundle.external);
   }
@@ -3628,12 +3742,12 @@ export class ControlRoom extends DurableObject {
     const gone=list.filter(a=>!card.requirements.some(r=>same(r,a))&&!told.has(anchorKey(a.id,a.says)));
     if(gone.length) {
       this.save('requirements_dropped',[...told,...gone.map(a=>anchorKey(a.id,a.says))]);
-      for(const a of gone)this.event('root','requirement_dropped',clip(`${a.id} (${a.says}) passed before and the current card leaves it out, so it is no longer checked; its id is never given to another requirement.`,400));
+      for(const a of gone)this.event('room','requirement_dropped',clip(`${a.id} (${a.says}) passed before and the current card leaves it out, so it is no longer checked; its id is never given to another requirement.`,400));
     }
     if(!moved.length)return card;
     const kept={...card,requirements:card.requirements.map(r=>{const a=list.find(x=>same(r,x));return a?{...r,check:a.check}:r;})};
     this.save('card',kept);
-    this.event('root','check_anchored',clip(`A check that has passed is never changed; ${moved.map(a=>a.id).join(', ')} keep${moved.length>1?'':'s'} the check that passed.`,400));
+    this.event('room','check_anchored',clip(`A check that has passed is never changed; ${moved.map(a=>a.id).join(', ')} keep${moved.length>1?'':'s'} the check that passed.`,400));
     return kept;
   }
   // The requirement status as the dashboard reads it: a result older than
@@ -3650,8 +3764,9 @@ export class ControlRoom extends DurableObject {
     const pass=reqs.filter(r=>status[r.id]?.passed===true),fail=reqs.filter(r=>status[r.id]?.passed===false),untested=reqs.length-pass.length-fail.length;
     return clip(`${head} ${pass.length} of ${reqs.length} requirement${reqs.length===1?'':'s'} pass${fail.length?`; failing: ${fail.map(r=>`${r.id} (${clip(r.says,80)}): ${clip(status[r.id].detail,160)}`).join('; ')}`:''}${untested?`; ${untested} untested`:''}.`,1050);
   }
-  // Root holds the room at the card's checks: it waits, and the run ends
-  // paused with the requirement table (Continue runs the checks again).
+  // The room holds at the card's checks: the agent that ran them waits on
+  // the hold (v8 M2: the hold names it), and the run ends paused with the
+  // requirement table (Continue runs the checks again).
   holdChecks(id, kind, head, again='Continue runs the checks again.') {
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
     // v8 card repair: when the repair rounds ran out (or no piece could settle a failure), the failing requirements Clef doubted come first; the person decides about them.
@@ -3660,16 +3775,17 @@ export class ControlRoom extends DurableObject {
     const why=r=>/internal detail/.test(r.doubt_reason||'')?`${r.doubt_reason}, p=${Number(r.vet_internal_p??r.vet_p).toFixed(3)}`:`p=${Number(r.vet_p).toFixed(3)}`;
     const internal=doubted.filter(r=>/internal detail/.test(r.doubt_reason||'')),goalOnly=doubted.filter(r=>!internal.includes(r));
     const first=doubted.length?`These requirements keep failing and Clef doubted ${internal.length&&!goalOnly.length?'them':'the goal asks for them'}: ${doubted.map(r=>`${r.id} (${why(r)})`).join(', ')}. Change or drop them with a follow-up prompt, or Continue. `:'';
-    this.holdRoom(kind,`${first}${this.checksSummary(head)} ${again}`);
+    this.holdRoom(kind,`${first}${this.checksSummary(head)} ${again}`,{agent:id});
     return {held:true};
   }
-  // The repair rounds ran out at Root under v8: the room pauses with what
-  // passes and what fails, never fails (Continue: a fresh set of rounds).
+  // The repair rounds ran out under v8 (v8 M2: the run's, or those of an
+  // agent with no agent above it, handed up to the room): the room pauses
+  // with what passes and what fails, never fails (Continue: a fresh set of rounds).
   checksExhausted(m, reason) {
     for(const p of this.problemsHeld(m))this.moveProblem(p,{status:'closed',outcome:'exhausted'});
-    // Once, with one text: a later pass while it holds only keeps Root waiting.
+    // Once, with one text: a later pass while it holds only keeps the agent waiting.
     if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",m);return {held:true};}
-    this.set('atomic_compile','');
+    this.set(`checks_due:${m}`,'');
     this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
     return this.holdChecks(m,'checks_exhausted',`Repair rounds ran out (${clip(reason,300)}).`,'Continue gives the repairs a fresh set of rounds.');
   }
@@ -3685,15 +3801,14 @@ export class ControlRoom extends DurableObject {
   // v8 S5 review: a file that would sit at the bundle root under the name of
   // its language's standard library (or a start-up hook) would hide it from
   // every part of the project, the runtime's adapters included: refused,
-  // naming why. Root: a path the writer's contract places there, or any path
-  // of a Root that writes the project itself. '' when it may.
+  // naming why. v8 M2: any writer's root-level path, placed or not: a
+  // worker's files sit at their own paths whenever its own files are
+  // bundled, wherever it is in the tree. '' when it may.
   shadowsStandard(id, path) {
     if(!this.v8()||String(path).includes('/'))return '';
     const row=toolchainOf(path),stem=String(path).replace(/\.[^.]+$/,'');
     // A base repo's own file at that path is carried as it is (S8b): only a writer's new file is refused.
     if(!row?.stdlib_names||!stdlibNames(row).has(stem)||this.basePaths().has(path))return '';
-    const n=this.node(id),root=!n?.parent&&!this.manager(id);
-    if(!root&&!this.promisedOf(id).some(c=>c.path===path))return '';
     return `${path} would take the name of the standard library's ${stem} at the project root and hide it from the whole project; give the file another name, such as ${stem}_tools${path.slice(stem.length)}`;
   }
   // A hold at checks_blocked retries itself (S4b review): up to
@@ -3706,7 +3821,7 @@ export class ControlRoom extends DurableObject {
     this.set('checks_retries',String(n+1));this.save('checks_retry',{at,n:n+1});
     await this.ctx.storage.setAlarm(at);
     const when=CHECK_RETRY_MS[n]>=60_000?`${Math.round(CHECK_RETRY_MS[n]/60_000)} min`:`${Math.round(CHECK_RETRY_MS[n]/1000)} s`;
-    this.event('root','checks_retry_scheduled',`The checks run again automatically in ${when} (retry ${n+1} of ${CHECK_RETRY_MS.length}).`);
+    this.event('room','checks_retry_scheduled',`The checks run again automatically in ${when} (retry ${n+1} of ${CHECK_RETRY_MS.length}).`);
     return `They run again automatically in ${when} (retry ${n+1} of ${CHECK_RETRY_MS.length}); Continue retries them now.`;
   }
   // The alarm: a due retry of a room still held at checks_blocked is a Continue.
@@ -3765,9 +3880,10 @@ export class ControlRoom extends DurableObject {
       return {infrastructure:String(e?.message||e)};
     }
   }
-  // v8 §4.1: compileCard replaces the compiler's run under v8. Root calls it
-  // when its whole tree finished (managerTurn) or, atomic, when it wrote the
-  // project itself. It bundles the deliverable files (bundleFiles), runs the
+  // v8 §4.1: compileCard replaces the compiler's run under v8. v8 M2: the
+  // agent that holds the card's checks (holdsChecks) calls it when its work
+  // is done, a manager when its whole branch finished (managerTurn), a worker
+  // when it wrote its files: one path, by id. It bundles the deliverable files (bundleFiles), runs the
   // file checks here, has Clef judge the documents (judgeRequirement) while
   // one Container exec runs the rest (mode 'card': syntax, the project's own
   // checks, the runs, command, call, http and browser checks, with
@@ -3775,34 +3891,35 @@ export class ControlRoom extends DurableObject {
   // Container's toolchain inventory, and stores each requirement's status.
   // All pass: compile_passed. A failed requirement is a problem
   // (checkProblems), routed by serves down the split as a repair, the way the
-  // split built it (requirementRoute 's'); an atomic Root repairs its own.
+  // split built it (requirementRoute 's'); a worker repairs its own (ownRepair).
   // A check that could not run (infrastructure) is never routed: the room
   // holds for Continue. Returns {passed} | {reported} | {held}.
   // S5: relinks counts the runs this call already redid after the link
   // fixed a reference (at most two: one before the Container, one after it).
   async compileCard(id, {relinks=0}={}) {
-    const card=this.anchoredCard(),rev=this.cardRev(),atomic=!this.manager(id);
+    // v8 M2: the checks this row holds (checksOf), of the card as anchored.
+    const whole=this.anchoredCard(),card=whole&&{...whole,requirements:this.checksOf(id,whole)},rev=this.cardRev(),atomic=!this.manager(id);
     if(!card)return this.holdChecks(id,'checks_failed','The room has no project card to check.');
     if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     const bundle=await this.bundleFiles(id),{files,origin,placed}=bundle;
     const digest=await snapshotHash(files),input=`${digest}:card${rev}`;
     const finish=()=>{
-      this.set('atomic_compile','');
+      this.set(`checks_due:${id}`,'');
       if(this.read('paused_state',null)?.kind?.startsWith('checks_'))this.save('paused_state',null);
       if(atomic){this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);this.event(id,'done','Completed owned strand without transferring ownership to children.');}
       return {passed:true};
     };
-    if(this.read('compile_passed',null)?.input===input)return finish();
+    if(this.read(`checks_passed:${id}`,null)?.input===input||card.requirements.length===whole.requirements.length&&this.read('compile_passed',null)?.input===input)return finish();
     if(this.read('compile_blocked',null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     const prior=this.read('compile_reported',null);
     if(prior?.input===input) {
-      // Unchanged since its problems were reported: an atomic Root hears them
-      // again (a round, as compileAtomic's); a split's repairs left the files
-      // as they were, so the room holds with the table.
+      // Unchanged since its problems were reported: a worker hears them
+      // again (a round); a split's repairs left the files as they were, so
+      // the room holds with the table.
       const again=(prior.problems||[]).map(pid=>this.problems('id=?',pid)[0]).filter(Boolean);
       if(atomic&&again.length) {
-        this.event(id,'compile_unchanged','Root\'s files are unchanged since their problems were reported; they go back without another run.');
-        this.atomicRepair(id,input,'check',again.map(p=>({kind:p.kind,path:p.parties[0]?.path||'',parties:p.parties,detail:p.detail,facts:p.facts,evidence:p.evidence})));
+        this.event(id,'compile_unchanged',`${this.node(id)?.label||id}'s files are unchanged since their problems were reported; they go back without another run.`);
+        this.ownRepair(id,input,'check',again.map(p=>({kind:p.kind,path:p.parties[0]?.path||'',parties:p.parties,detail:p.detail,facts:p.facts,evidence:p.evidence})));
         return {reported:true};
       }
       const settled=again.filter(p=>p.status==='closed'&&p.outcome==='exhausted').map(p=>`${p.facts?.requirement?.id||p.parties[0]?.path||p.kind}: ${p.trail.at(-1)?.reason||'no piece could fix it'}`);
@@ -3815,7 +3932,7 @@ export class ControlRoom extends DurableObject {
     // v8 live 4: a module outside the project (a package) is no link's to join: the run's report names it (missing_module).
     const linkable=(bundle.link?.unresolved||[]).filter(u=>!this.installedToolchains().some(r=>(r.executables||[]).includes(u.module))&&!this.externalHit(u,bundle));
     if(relinks<2&&linkable.length&&await this.relinkBundle(id,bundle,linkable))return this.compileCard(id,{relinks:relinks+1});
-    this.set('atomic_compile',atomic?input:'');
+    this.set(`checks_due:${id}`,atomic?input:'');
     this.event(id,'checks_started',`Running the project card's ${card.requirements.length} requirement check(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
     const {plan,toolchains,local,container}=checkPlan(card,files,{rows:this.installedToolchains(),placed,paths:bundle.link?.paths});
     const results=new Map(local);
@@ -3852,7 +3969,8 @@ export class ControlRoom extends DurableObject {
     }
     if(run?.infrastructure)for(const c of plan.checks.concat(plan.project))if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});
     // Each requirement's status (§1.3), with the anchor of one that ever passed.
-    const old=this.read('requirement_status',{}),anchors=this.read('check_anchors',{}),status={};
+    // v8 M2: the other rows' requirements keep their status.
+    const old=this.read('requirement_status',{}),anchors=this.read('check_anchors',{}),mine=new Set(card.requirements.map(r=>r.id)),status=Object.fromEntries(Object.entries(old).filter(([k])=>!mine.has(k)&&whole.requirements.some(r=>r.id===k)));
     // v8 live 2: a requirement kept untested (its check refused as written) is shown, never run, and holds nothing.
     for(const r of card.requirements.filter(r=>r.untested))status[r.id]=statusEntry(null,digest,`its check is never run: ${r.check_error||'it could not be read as written'}`,{untested:true});
     for(const r of card.requirements.filter(r=>!r.untested)) {
@@ -3875,7 +3993,9 @@ export class ControlRoom extends DurableObject {
         return this.holdChecks(id,'checks_untested',clip(`Every requirement with a runnable check passed, and ${behaviour.map(r=>`${r.id} (${clip(r.says,80)}: ${clip(r.check_error,120)})`).join('; ')} ${behaviour.length>1?'have':'has'} no check that runs, so the project is not shown to meet ${behaviour.length>1?'them':'it'}.`,700),'Continue accepts the project with them untested; a follow-up prompt can change the card instead.');
       }
       const rows=query(this.db(),'SELECT goal_rev FROM card_revisions WHERE rev=?',rev)[0];
-      this.save('compile_passed',{input,digest,goal_rev:rows?.goal_rev??1,card_rev:rev,ts:Date.now()});
+      this.save(`checks_passed:${id}`,{input,digest,ts:Date.now()});
+      // The room's record: every check of the card has a pass on record.
+      if(whole.requirements.every(r=>r.untested||status[r.id]?.passed===true))this.save('compile_passed',{input,digest,goal_rev:rows?.goal_rev??1,card_rev:rev,ts:Date.now()});
       this.save('compile_reported',null);this.save('compile_blocked',null);this.set('compile_infrastructure','');
       this.closeProblemsFrom(id,'resolved');
       this.event(id,'checks_passed',kept.length?`Every requirement of the project card that has a runnable check passed (${card.requirements.length-kept.length}) against snapshot ${digest.slice(0,14)}; ${kept.map(r=>r.id).join(', ')} stay${kept.length>1?'':'s'} untested.`:`Every requirement of the project card passed (${card.requirements.length}) against snapshot ${digest.slice(0,14)}.`);
@@ -3898,7 +4018,7 @@ export class ControlRoom extends DurableObject {
       this.event(id,'build_infrastructure',clip(why,950));
       return this.holdChecks(id,'checks_blocked',`The checks could not all run: ${clip(why,300)}.`,await this.scheduleCheckRetry());
     }
-    if(atomic){this.atomicRepair(id,input,'check',items);return {reported:true};}
+    if(atomic){this.ownRepair(id,input,'check',items);return {reported:true};}
     this.reportChecks(id,input,items);
     return {reported:true};
   }
@@ -3906,15 +4026,16 @@ export class ControlRoom extends DurableObject {
   // to repair. Their details (test output, a nonce) reach no agent: the
   // status keeps them, the room ends failed with benchmark_failed.
   benchmarkFailed(id, reqs) {
-    this.set('atomic_compile','');
+    this.set(`checks_due:${id}`,'');
     const text=`The benchmark's own tests failed (${reqs.map(r=>r.id).join(', ')}) and no requirement an agent may repair is left failing; their details stay in the requirement status and reach no agent.`;
     this.holdRoom('benchmark_failed',text);
     this.failAgent(id,`benchmark_failed: ${text}`);
     return {failed:true};
   }
-  // A split's failed requirements open in Root's own inbox as one report
-  // wave, replacing the last run's (a decline carries over by failure, as
-  // reportProblems does): Root routes each by the plan, one level at a time.
+  // A split's failed requirements open in its manager's own inbox as one
+  // report wave, replacing the last run's (a decline carries over by
+  // failure, as reportProblems does): it routes each by the plan, one level
+  // at a time.
   reportChecks(m, input, items) {
     const prior=this.problems("source=? AND status!='closed'",m),wave=crypto.randomUUID();
     this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),m);
@@ -3943,9 +4064,9 @@ export class ControlRoom extends DurableObject {
   async solveProblems(m) {
     const n=this.node(m);
     if(!this.live()||!n||['failed','retired'].includes(n.status))return;
-    if(isTop(n)&&this.get('repair_exhausted')) {
-      // v8 S4b: the room pauses with the requirement table instead.
-      if(this.v8())return void this.checksExhausted(m,this.get('repair_exhausted'));
+    // v8 S4b, v8 M2: the run's rounds ran out: the room holds with the requirement table, and every manager's problems wait with it.
+    if(this.v8()&&this.get('repair_exhausted'))return void this.checksExhausted(m,this.get('repair_exhausted'));
+    if(!this.v8()&&isTop(n)&&this.get('repair_exhausted')) {
       this.failAgent(m,`Repair rounds exhausted: ${this.get('repair_exhausted')}; refusing an unbounded repair loop.`);
       this.event(m,'repair_exhausted',`No more repair rounds: ${this.get('repair_exhausted')}.`);
       return;
@@ -4016,7 +4137,7 @@ export class ControlRoom extends DurableObject {
     for(const p of rows)if(p.flags.escalated_from&&p.facts.names?.length)unique.set(p.id,await this.uniqueProvider(m,p));
     // v7.15.6 (R5): a promise grows only at the lowest common manager (or for names its parent relayed down), so the children above are asked once the walk reaches them.
     // v7.15.7 (T3): and, at the top, a run requirement naming a method of start()'s object (app.x is not a function), which may name one no piece promises.
-    const adds=await this.promiseAdds(m,rows.filter(p=>p.directive?.grow&&p.directive.by===n.parent||lowestCommon(placeParties(m,p.parties),kindOf,p.flags).lcm||isTop(n)&&p.kind==='run'&&p.facts?.requirement?.names?.includes('start')),kindOf),routes=await this.routeRequirements(m,rows,kindOf);
+    const adds=await this.promiseAdds(m,rows.filter(p=>p.directive?.grow&&p.directive.by===n.parent||lowestCommon(placeParties(m,p.parties),kindOf,p.flags).lcm||!this.v8()&&isTop(n)&&p.kind==='run'&&p.facts?.requirement?.names?.includes('start')),kindOf),routes=await this.routeRequirements(m,rows,kindOf);
     return {holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,taskOf:id=>children.get(id)?.task,labelOf:id=>children.get(id)?.label||id,
       builder:builder?.id||null,maxHops:MAX_HOPS(depth),
       canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),causedHere:p=>caused.has(p.id),
@@ -4269,7 +4390,8 @@ export class ControlRoom extends DurableObject {
       if(kind==='builder')view.relinks_left=state?.fingerprint===fp?Math.max(0,MAX_RELINKS-state.relinks):MAX_RELINKS;
       children.push(view);
     }
-    const input={your_responsibility:clip(n.task,700),can_escalate:!isTop(n),children,
+    // v8 M2: every manager may escalate; one with no agent above hands it to the room (the checks' hold).
+    const input={your_responsibility:clip(n.task,700),can_escalate:this.v8()||!isTop(n),children,
       // proposed: decided by the rules, in this cluster because its child is a party here; the model may change it.
       // v8 (S6): the trigger says what it means (TRIGGERS), as the v7 system text listed it.
       problems:call.map(({id,p,dec,trigger,placed})=>({id,kind:p.kind,stage:p.stage,trigger:this.v8()?triggerText(trigger||'proposed'):trigger||'proposed',detail:clip(p.detail,700),
@@ -4369,7 +4491,7 @@ export class ControlRoom extends DurableObject {
       // is not a function: the start carrier its reader, the test line its call).
       // Both are operations: the carrier's name is kept, and a data name's
       // goal-operation bar does not apply.
-      const api=!grow&&isTop(n)&&p.kind==='run'&&f.requirement?.names?.includes('start')?f.requirement:null,carrier=api?this.carriersOf('start',m).find(c=>c.id!==m):null;
+      const api=!grow&&!this.v8()&&isTop(n)&&p.kind==='run'&&f.requirement?.names?.includes('start')?f.requirement:null,carrier=api?this.carriersOf('start',m).find(c=>c.id!==m):null;
       const operation=grow?grow.operation||null:api?{line:api.test_line?.text||'',does:`the application's test calls it: ${api.test_line?.text||api.text}`}:f.operation||null;
       const reader=grow?grow.reader:api?(carrier?{owner:carrier.id,owner_path:''}:null):p.parties.find(x=>x.role==='reader');
       if(!grow&&!api&&(!['mismatch','unresolved'].includes(p.kind)||f.split||f.elsewhere?.length||!f.names?.length||!reader?.owner||starts(reader.owner)&&!operation))continue;
@@ -4803,8 +4925,7 @@ export class ControlRoom extends DurableObject {
   // run again. The top fails; a manager below tells its parent it cannot
   // finish its branch (spec 3.10), as when its repair rounds run out.
   unfixable(m) {
-    const n=this.node(m);
-    for(const r of [this.builderOf(m),isTop(n)&&this.compilerOf(m)].filter(Boolean)) {
+    for(const r of [this.builderOf(m),this.compilerOf(m)].filter(Boolean)) {
       const report=this.read(r.label==='Compiler'?'compile_reported':`link_reported:${m}`,null);
       if(r.status!=='waiting'||!report?.problems?.length||report.fingerprint!==this.assemblyFingerprint(m))continue;
       const dead=report.problems.map(id=>this.problems('id=?',id)[0]).find(p=>p?.status==='closed'&&p.outcome==='exhausted');
@@ -4856,17 +4977,20 @@ export class ControlRoom extends DurableObject {
   // Out of rounds: the whole run's, so no manager assigns again and the top
   // fails; or this manager's, so the top fails, or a lower manager tells its
   // parent once that it cannot finish its branch (the parent fails it).
+  // v8 M2: an agent hands it up as every agent does; one with no agent above
+  // (its parent a handler that has ended) hands it to the room, which holds
+  // at checks_exhausted, as it does when the whole run's rounds ran out.
   exhaustRounds(m, reason, head='Repair rounds exhausted') {
     const n=this.node(m),total=/^the run /.test(reason);
     if(total) {
       this.set('repair_exhausted',reason);
       for(const p of this.problemsHeld(m))this.moveProblem(p,{status:'closed',outcome:'exhausted'});
+      if(this.v8())return void this.checksExhausted(m,reason);
       const top=this.allNodes().find(x=>!x.parent);
       if(top&&top.id!==m)this.wake(top.id);
     }
-    if(isTop(n)) {
-      // v8 S4b: Root's rounds ran out: the room pauses with what passes and what fails.
-      if(this.v8())return void this.checksExhausted(m,reason);
+    if(this.v8()&&!n.parent)return void this.checksExhausted(m,reason);
+    if(!this.v8()&&isTop(n)) {
       this.failAgent(m,`${head}: ${reason}; refusing an unbounded repair loop.`);
       this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
       return;
@@ -5049,7 +5173,8 @@ export class ControlRoom extends DurableObject {
     // plain pick, else Clef over those pieces, beside the scope call; a miss
     // or an error deletes it from all, as before.
     // v8 S9 review: with changes, Clef reads the goal's head and its latest changes (goalView), Root's responsibility too.
-    const goal=this.goalFor(SCOPE_GOAL)??(this.topTask()||n.task),parentTask=isTop(n)?this.goalFor(SCOPE_GOAL)??n.task:n.task,env=this.inferenceEnv(),dups=duplicateNames(named,promised,elsewhere),owners=new Map();
+    // v8 M2: the parent's task is its row's (the handler keeps the top's as the goal's view).
+    const goal=this.goalFor(SCOPE_GOAL)??(this.topTask()||n.task),parentTask=this.v8()?clipEnds(n.task,SCOPE_GOAL):isTop(n)?this.goalFor(SCOPE_GOAL)??n.task:n.task,env=this.inferenceEnv(),dups=duplicateNames(named,promised,elsewhere),owners=new Map();
     for(const d of dups)if(d.pick!==null)owners.set(d.name,{index:d.pick,why:d.why});
     const scoped=scopeChildren(env,goal,parentTask,named);scoped.catch(()=>{});
     await Promise.all(dups.filter(d=>d.pick===null).map(async d=>{
@@ -5205,8 +5330,8 @@ export class ControlRoom extends DurableObject {
   confirmBase(grants=null) {
     const hold=this.read('paused_state',null),pending=this.read('base_pending',[]);
     this.save('paused_state',null);
-    // A change folded the card away (applyAmendment): Root writes it again.
-    if(!pending.length){if(!this.read('card',null)&&this.node('root')?.status==='waiting'){this.event('root','card_continue','Continue runs the card writer again.');this.wake('root');}return false;}
+    // A change folded the card away (applyAmendment): the open handler's card writer writes it again (drive runs it).
+    if(!pending.length){if(!this.read('card',null)&&this.openGoalHandler())this.event('room','card_continue','Continue runs the card writer again.');return false;}
     const listed=new Set(Array.isArray(hold?.paths)?hold.paths:pending.map(x=>x.path));
     const chosen=Array.isArray(grants)?new Set(grants.filter(p=>listed.has(p))):listed;
     const granted=pending.filter(x=>chosen.has(x.path)).map(x=>x.path),left=pending.filter(x=>!chosen.has(x.path));
@@ -5218,10 +5343,10 @@ export class ControlRoom extends DurableObject {
       this.save('card',next);
       this.db().exec('UPDATE card_revisions SET card=? WHERE rev=?',JSON.stringify(next),this.cardRev());
     }
-    if(granted.length)this.event('root','base_confirmed',clip(`The person granted changing ${granted.join(', ')}.`,500));
+    if(granted.length)this.event('room','base_confirmed',clip(`The person granted changing ${granted.join(', ')}.`,500));
     if(left.length){this.holdBaseConfirm();return granted.length>0;}
-    // The pieces that waited for a grant go on.
-    for(const n of this.allNodes())if(n.status==='waiting'&&(n.id==='root'||this.read(`base_wait:${n.id}`,null))){this.save(`base_wait:${n.id}`,null);this.wake(n.id);}
+    // The pieces that waited for a grant go on (and the card writer, which drive runs).
+    for(const n of this.allNodes())if(n.status==='waiting'&&this.read(`base_wait:${n.id}`,null)){this.save(`base_wait:${n.id}`,null);this.wake(n.id);}
     const queued=this.read('queued_hold',null);
     if(queued){this.save('queued_hold',null);this.save('paused_state',queued);}
     return granted.length>0;
@@ -5433,11 +5558,11 @@ export class ControlRoom extends DurableObject {
     db.exec('INSERT INTO artifact_files(agent,path,revision,commit_hash,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(agent,path) DO UPDATE SET revision=excluded.revision,commit_hash=excluded.commit_hash,updated_at=excluded.updated_at', id,path,revision,commit,Date.now());
     db.exec('INSERT INTO artifact_contents(agent,path,content) VALUES (?,?,?) ON CONFLICT(agent,path) DO UPDATE SET content=excluded.content',id,path,content);
     this.event(id,existing?'revision':'write',batched?`${n.repo_name}/${path}: revision ${revision}; staged for this turn's single commit`:`${n.repo_name}/${path}: revision ${revision}; commit ${commit.slice(0,12)}`,'',`${id}/${path}`);
-    // An atomic top's accepted build attests its exact files: any later
+    // v7: an atomic top's accepted build attests its exact files: any later
     // source change needs another run through the pipeline, without a model
     // turn; the runtime's own glue is written for that run. (The compiler's
-    // pass is pinned to the bundle digest it ran.)
-    if(isTop(n)&&!this.manager(id)&&!path.startsWith('memory/')&&!runtimeGlue&&this.env.MOCK_AI!=='true'&&this.read('compile_passed',null)) {
+    // pass is pinned to the bundle digest it ran, as every v8 pass is.)
+    if(!this.v8()&&isTop(n)&&!this.manager(id)&&!path.startsWith('memory/')&&!runtimeGlue&&this.env.MOCK_AI!=='true'&&this.read('compile_passed',null)) {
       this.save('compile_passed',null);
       this.set('atomic_compile','due');
       this.event(id,'build_invalidated',`Accepted build invalidated by change to ${path}; new container build required.`);
@@ -5595,7 +5720,7 @@ export class ControlRoom extends DurableObject {
   // runtime: the worker hears the rule instead.
   knownAsync(name, f) {
     if(/\b(?:promise|thenable)\b/i.test(String(f?.returns||'')))return true;
-    const top=this.allNodes().find(n=>isTop(n));
+    const top=this.top();
     for(const c of top?this.carriersOf(name,top.id):[])
       for(const file of productionFiles(this.files(c.id)).filter(x=>LINKABLE.test(x.path))) {
         const content=query(this.db(),'SELECT content FROM artifact_contents WHERE agent=? AND path=?',c.id,file.path)[0]?.content;
@@ -5974,7 +6099,7 @@ export class ControlRoom extends DurableObject {
   // with the same topic reuse the outstanding request rather than calling Qwen.
   askManager(worker,key,question,name='') {
     const n=this.node(worker);
-    if(!n?.parent || this.manager(worker) || n.status==='retired' || n.status==='failed') return false;
+    if(!n || this.manager(worker) || n.status==='retired' || n.status==='failed' || !n.parent&&!this.v8()) return false;
     // v7.15 §5.12b: its own promised function is its own to write, with no
     // hop (run6's create worker imported its own createTicket). The trailing
     // check, or its last answer, wakes it.
@@ -5986,6 +6111,8 @@ export class ControlRoom extends DurableObject {
       this.event(worker,'route_own',`${name} is in its own contract; answered without asking the manager.`);
       return true;
     }
+    // v8 M2: the asker's parent is a handler that has ended: nothing on its line answers, so the room does (askRoom).
+    if(!n.parent)return this.askRoom(worker,key,question,name);
     const existing=query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',worker,key)[0];
     if(existing) {
       this.event(worker,'route_pending',`Waiting for manager to resolve ${key}; no new request created.`);
@@ -5997,6 +6124,38 @@ export class ControlRoom extends DurableObject {
     if(!ok) this.db().exec('DELETE FROM route_workers WHERE request_id=?',request_id);
     else this.event(worker,'route_request',`Requested blocking external interface ${key} from manager; independently authored files are retained.`);
     return ok;
+  }
+  // v8 M2: an ask nothing on the asker's line answers (it has no agent
+  // above: its parent is a handler that has ended). What needs no other
+  // part the broker has answered already (brokerAnswer: a package with what
+  // is installed, recorded in package_requests; a chunk, a file, a name
+  // outside the catalogue). A contract nobody provides goes to the person
+  // as a room hold (ask_unanswered): a follow-up prompt answers it (the
+  // change reaches the asker on its row), Continue leaves it to the asker.
+  // The asker waits on it (room_asks).
+  askRoom(worker,key,question,name='') {
+    const n=this.node(worker),asks=[...this.read('room_asks',[]).filter(a=>!(a.worker===worker&&a.key===key)),{worker,key,name,need:clip(question,300),ts:Date.now()}].slice(-8);
+    this.save('room_asks',asks);
+    const what=asks.filter(a=>a.worker===worker).map(a=>a.name?`${a.name} (${clip(a.need,120)})`:`"${clip(a.need,120)}"`),many=what.length>1;
+    this.event(worker,'ask_unanswered',clip(`${name||clip(question,200)}: nothing in the project delivers it and nothing above "${n.label}" answers it, so it goes to the person.`,500));
+    this.holdRoom('ask_unanswered',`"${n.label}" asks for ${listed(what)}, which nothing in the project delivers. A follow-up prompt can say what to use, or change the card; Continue lets it write ${many?'them':'it'} itself.`,{agent:worker,asks:what});
+    return true;
+  }
+  // The requests a worker waits on: those on its line (route_workers), and those the room holds for the person (v8 M2).
+  openAsks(id) { return [...new Set([...query(this.db(),'SELECT topic FROM route_workers WHERE worker=? ORDER BY topic',id).map(r=>r.topic),...this.read('room_asks',[]).filter(a=>a.worker===id).map(a=>a.key)])]; }
+  // The person's answer to the room's asks: each asker hears it, and goes on.
+  answerRoomAsks(text) {
+    const asks=this.read('room_asks',[]);
+    if(!asks.length)return false;
+    this.save('room_asks',[]);
+    for(const a of asks) {
+      const value=typeof text==='function'?text(a):text;
+      this.recordAnswer(a.worker,{key:a.key,kind:'unowned',text:clip(value,600)});
+      this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:room',a.worker,'[route:unowned] '+JSON.stringify({id:crypto.randomUUID(),key:a.key,value:clip(value,1400)}));
+      this.event('room','ask_answered',clip(`${a.name||a.need}: ${value}`,500),a.worker);
+      this.wake(a.worker);
+    }
+    return true;
   }
   // Capability boxes S5 (§5): the broker, the one path from a v8 writer to
   // anything outside its part. Its catalogue (view's available): its own
@@ -6030,7 +6189,7 @@ export class ControlRoom extends DurableObject {
     if(!this.v8())return {kind:'contract',name:name||''};
     // v8 live 4: an ask for a package (a module or library it names, or a need for one) is answered from the asker's line (answerPackageAsk).
     const contracts=this.contractNames();
-    if(!this.basePaths().has(name||'')&&isPackageAsk({name,need},{contracts,held:this.packagesOf('root'),rows:this.installedToolchains()}))return {kind:'package',name:name||''};
+    if(!this.basePaths().has(name||'')&&isPackageAsk({name,need},{contracts,held:this.installedSet(),rows:this.installedToolchains()}))return {kind:'package',name:name||''};
     return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts});
   }
   // Answers one ask that needs no other part, with no manager hop (§5.3): a
@@ -6152,7 +6311,7 @@ export class ControlRoom extends DurableObject {
         notes.push(clip(this.v8()?MESSAGES.wrote_before_answer({path:f.path,names:names.join(', '),repair:repair.join(' ')}):`${f.path} was not written: it imported ${names.join(', ')} before your manager answered. Write it with the answers, importing exactly the names they give.${repair.length?` It was your fix for this repair request: ${repair.join(' ')}`:''}`,1500));
         return false;
       });
-    } else if(action.wait && !action.done && !query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',id).length) {
+    } else if(action.wait && !action.done && !this.openAsks(id).length) {
       const garbled=!repeated.length&&!all.length&&(Array.isArray(raw.ask)?raw.ask.length>0:raw.ask!=null&&raw.ask!=='');
       action.wait=false;action.unheard=true;
       this.event(id,'ask_unheard',garbled?'Its ask was not understood; nothing was sent, so it does not wait.':'It has no request open, so it does not wait.');
@@ -6563,7 +6722,7 @@ export class ControlRoom extends DurableObject {
     // S4's); the v7 compiler would look for a start() v8 never asks for.
     const v8=this.v8();
     if(this.live()) {
-      if(isTop(n)&&!v8)await this.compileStatic(id);
+      if(!v8&&isTop(n))await this.compileStatic(id);
       await this.solveProblems(id);
       if(this.node(id)?.status==='failed')return;
     }
@@ -6644,7 +6803,7 @@ export class ControlRoom extends DurableObject {
     // completion; the builder may be revised many times before finalization.
     if(this.integrationEnabled(id)&&!v8)await this.scheduleAssembly(id);
     // The top's compiler runs once its builder linked the current source.
-    if(this.live()&&isTop(n)&&!v8)await this.scheduleCompiler(id);
+    if(this.live()&&!v8&&isTop(n))await this.scheduleCompiler(id);
     const children=this.children(id);
     const producers=children.filter(c=>!isRuntimeNode(c));
     const pending=query(this.db(),'SELECT manager FROM manager_routes WHERE manager=? LIMIT 1',id).length>0 ||
@@ -6652,15 +6811,16 @@ export class ControlRoom extends DurableObject {
     const allDone=producers.length>0&&producers.every(c=>c.status==='done'||c.status==='retired');
     // Not done while it holds an open problem, nor (at the top) before the
     // compiler passed on the current bundle.
-    const held=this.live()&&this.problemsHeld(id).length>0,compiled=!isTop(n)||!this.live()||v8||this.compilePassed(id);
+    const held=this.live()&&this.problemsHeld(id).length>0,compiled=v8||!isTop(n)||!this.live()||this.compilePassed(id);
     const needsBuilder=(this.integrationEnabled(id) && !v8 && !await this.assemblyCurrent(id))||held||!compiled;
-    // v8 S4b: the whole tree is done, so the project card's checks run
-    // (compileCard): Root finishes only when every requirement passes; a
-    // failed one comes back to Root as a problem it routes by serves.
-    const checksPending=v8&&isTop(n)&&allDone&&!pending&&!needsBuilder;
-    // v8 S9: Root does not finish while a change is being applied (its rows are about to open).
-    const amending=v8&&isTop(n)&&!!this.get('amend_pending');
-    if(amending&&checksPending)this.set('root_held_amend','1');
+    // v8 S4b, v8 M2: its whole branch is done, so the checks it holds run
+    // (compileCard), as a worker's do when it is done: it finishes only when
+    // every requirement passes; a failed one comes back to it as a problem
+    // it routes by serves.
+    const checksPending=v8&&this.holdsChecks(n)&&allDone&&!pending&&!needsBuilder;
+    // v8 S9: no checks finish while a change is being applied (its rows are about to open).
+    const amending=v8&&!!this.get('amend_pending');
+    if(amending&&checksPending)this.set('amend_held',id);
     const checked=checksPending&&!amending?await this.compileCard(id):null,unchecked=checksPending&&(amending||!checked?.passed);
     if(checked?.failed)return;
     const finished=allDone&&!pending&&!needsBuilder&&!unchecked;
@@ -6699,21 +6859,21 @@ export class ControlRoom extends DurableObject {
     // v8 live 3: a doubt names its reason: the goal (CLEF.requirement), or a check on an internal detail of the code (CLEF.internal).
     for(const r of doubtful)this.event(id,'card_requirement_doubtful',clip(`${(r.reasons||[]).includes('internal detail')&&!(r.reasons||[]).includes('not expected from the goal')?`Clef found that ${r.id}'s check looks at an internal detail of the code (p=${r.p.toFixed(3)})`:`Clef doubted that the goal asks for ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not found in the goal':''}${(r.reasons||[]).includes('internal detail')?'; its check looks at an internal detail of the code':''})`}; it stays on the card, marked doubtful, for the person to keep or change: ${r.says}`,600));
   }
-  // v8 §1.6: Root's first act under v8. The card writer turns the goal into
-  // the project card, Clef vets its requirements, and the card becomes
-  // revision 1 and Root's contracts; the turn then goes on to the split gate.
-  // A blocked card or a language this deployment cannot run after the
-  // writer's retry holds the room at card_blocked; no usable card, a
-  // function with no code language, or a vetting or save that failed holds
-  // it at card_failed. Root waits. Continue runs the card writer again, or,
-  // when the written card is kept (card_draft: vetting or the save failed),
-  // vets and saves that card again without a new writer call. True when
-  // Root goes on.
+  // v8 §1.6, v8 M2: the card writer step's work (id: the step, cardWriter).
+  // The card writer turns the goal into the project card, Clef vets its
+  // requirements, and the card becomes revision 1; the handler gives the top
+  // its contracts from it. A blocked card or a language this deployment
+  // cannot run after the writer's retry holds the room at card_blocked; no
+  // usable card, a function with no code language, or a vetting or save that
+  // failed holds it at card_failed. The step waits. Continue runs the card
+  // writer again, or, when the written card is kept (card_draft: vetting or
+  // the save failed), vets and saves that card again without a new writer
+  // call. True when the card is saved.
   async cardTurn(id) {
     const given=this.read('card_provided',null);
     if(given)return this.providedCardTurn(id,given);
     const goal=this.userGoal(),rows=this.installedToolchains(),started=Date.now();
-    const hold=(kind,text,again='Continue runs the card writer again.')=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,`${text} ${again}`);return false;};
+    const hold=(kind,text,again='Continue runs the card writer again.')=>{this.holdRoom(kind,`${text} ${again}`,{step:id});return false;};
     let card=this.read('card_draft',null),calls='the card written before';
     if(card) this.event(id,'card_draft_reused','The card written before is vetted and saved again; the card writer is not called.');
     else {
@@ -6722,7 +6882,7 @@ export class ControlRoom extends DurableObject {
       // of the previous result the room starts from.
       await this.loadSources();
       const base=this.read('base',null),srcs=this.sourceRows();
-      const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,held:this.packagesOf(id),
+      const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,held:this.installedSet(),
         base_digest:base?.digest||null,base:[...this.basePaths()],prior_card:this.read('prior_card',null),
         sources:cardsFor(srcs,this.allRefs()),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error}))});
       const {errors,unsupported}=written;
@@ -6756,20 +6916,15 @@ export class ControlRoom extends DurableObject {
         const p=new Map(pending.map(x=>[x.path,x]));
         if(p.size)vetted={...vetted,deliverables:vetted.deliverables.map(d=>p.has(d.path)?{...d,needs_confirmation:{p:p.get(d.path).p,named:p.get(d.path).named}}:d)};
       }
-      // S8b review: Root holds the chunks the card cites (or the first of each source), at most 16.
-      if(this.allRefs().length)this.save('root_refs',rootRefs(vetted.refs,this.allRefs()));
       this.save('card',vetted);
       this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,?,?,?,?) ON CONFLICT(rev) DO UPDATE SET goal_rev=excluded.goal_rev,card=excluded.card,reason=excluded.reason,ts=excluded.ts',this.goalRev(),JSON.stringify(vetted),'goal',Date.now());
-      // Root's contracts are the card's deliverables (§2.4), up to 12, as the card holds them.
-      this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(vetted,{goal:this.userGoal()})),id);
       this.save('card_draft',null);this.save('paused_state',null);
       this.event(id,'card_written',clip(`Project card (${calls}, ${Date.now()-started} ms): ${vetted.summary||'(no summary)'}. ${cardLine(vetted)}.${vetted.decisions.length?` Decisions: ${vetted.decisions.join(' ')}`:''}`,1500));
       if(vetted.review_notes?.length)this.event(id,'card_review_notes',clip(`Clef's review notes the card still draws (the writer revised it once): ${vetted.review_notes.join(' ')}`,1500));
-      if(pending.length)return this.holdBaseConfirm(id);
       return true;
     } catch(e) {
       // Nothing half-saved: the next attempt starts from the kept card.
-      this.db().exec('DELETE FROM card_revisions');this.save('card',null);this.db().exec("UPDATE agents SET interfaces='[]' WHERE id=?",id);
+      this.db().exec('DELETE FROM card_revisions');this.save('card',null);
       return hold('card_failed',clip(`Vetting or saving the card failed: ${e?.message||e}.`,900),'Continue vets and saves the written card again.');
     }
   }
@@ -6778,13 +6933,12 @@ export class ControlRoom extends DurableObject {
   // checks are authoritative). A card that does not validate whole holds the
   // room at card_failed; a language this deployment cannot run, card_blocked.
   providedCardTurn(id, given) {
-    const hold=(kind,text)=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,text);return false;};
+    const hold=(kind,text)=>{this.holdRoom(kind,text,{step:id});return false;};
     const {card,errors,unsupported}=providedCard(given,{goal:this.userGoal(),installed:this.installedToolchains(),packages:this.settings().packages});
     if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the provided card names.`);
     if(errors.length||!vettedUsable(card))return hold('card_failed',clip(`The provided card does not validate: ${errors.slice(0,8).join(' ')||'no deliverable or requirement.'}`,1100));
     this.save('card',card);
     this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(card),card.source,Date.now());
-    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(card,{goal:this.userGoal()})),id);
     this.save('paused_state',null);
     this.event(id,'card_provided',clip(`Project card given by the ${card.source} (validated; not written or vetted by a model): ${card.summary||'(no summary)'}. ${cardLine(card)}.`,1500));
     return true;
@@ -6809,7 +6963,7 @@ export class ControlRoom extends DurableObject {
       requirements:(card?.requirements||[]).map(r=>r.id),requirement_status:this.read('requirement_status',{}),
       started_at:e.started??null,last_event_at:e.last??null,
       tokens:{calls:t.calls,prompt:t.prompt,completion:t.completion,total:t.prompt+t.completion},container_ms:c.ms,container_runs:c.runs,
-      failure:status==='failed'?clip(this.failedDescendantReason('root'),300):status==='error'?clip(query(db,"SELECT body FROM events WHERE kind='error' ORDER BY id DESC LIMIT 1")[0]?.body||'',300):''};
+      failure:status==='failed'?clip(this.failedDescendantReason(this.topId()),300):status==='error'?clip(query(db,"SELECT body FROM events WHERE kind='error' ORDER BY id DESC LIMIT 1")[0]?.body||'',300):''};
   }
   // B1: after a benchmark task is scored, its room's Artifacts repositories
   // and its storage are deleted (BenchRun, unless the run keeps the room).
@@ -6823,18 +6977,16 @@ export class ControlRoom extends DurableObject {
       catch {failed++;}
     }
     if(typeof this.ctx.storage.deleteAll==='function'){await this.ctx.storage.deleteAlarm?.();await this.ctx.storage.deleteAll();}
-    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','problems','repair_tickets','card_revisions','goal_revisions','prompts','meta'])this.db().exec(`DELETE FROM ${table}`);
+    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','card_writers','problems','repair_tickets','card_revisions','goal_revisions','prompts','meta'])this.db().exec(`DELETE FROM ${table}`);
     return {repos_deleted:deleted,repos_failed:failed};
   }
   async agentTurn(id) {
     const n = this.node(id);
     if (!n || n.status !== 'ready') return;
-    if (isTop(n) && (this.get('amend_wake')||this.get('root_held_amend'))) {this.set('amend_wake','');this.set('root_held_amend','');}
-    if(this.v8()&&isTop(n)&&n.phase==='decompose'&&!this.read('card',null)&&!query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length&&!await this.cardTurn(id))return;
-    // v8 card repair: Root splits only once the person granted the existing files the card waits on.
-    if(this.v8()&&isTop(n)&&n.phase==='decompose'&&this.read('card',null)?.deliverables?.some(d=>d.needs_confirmation)&&this.read('base_pending',[]).length)return void this.holdBaseConfirm(id);
+    // v8 M2: the row a change was handed to (amend_wake), or that waited while one was applied (amend_held), takes it up on this turn.
+    if ([this.get('amend_wake'),this.get('amend_held')].includes(id)) {this.set('amend_wake','');this.set('amend_held','');}
     // A piece whose contracts name a file waiting for the person's grant waits with it (it never finishes without it).
-    if(this.v8()&&n.parent&&!isRuntimeNode(n)&&this.waitingPaths(id).length) {
+    if(this.v8()&&!isRuntimeNode(n)&&this.waitingPaths(id).length) {
       this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
       if(!this.read(`base_wait:${id}`,null))this.event(id,'base_waiting',clip(`${n.label} waits for the person's grant to change ${this.waitingPaths(id).join(', ')}.`,400));
       this.save(`base_wait:${id}`,this.waitingPaths(id));
@@ -6844,11 +6996,16 @@ export class ControlRoom extends DurableObject {
     const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
     // Builders and the compiler run runtime turns, never a model action.
     if(isRuntimeNode(n) && this.live()) return n.label==='Compiler'?this.compilerTurn(id):this.builderTurn(id);
-    // So does an atomic top whose run is due again (the runner's retry,
+    // v8 M2: so does a worker whose checks are due again (a run that stopped
+    // mid-way, Continue at a checks hold) with nothing to read and no action
+    // to finish; a manager's turn runs them when its work allows (managerTurn).
+    if(this.v8() && !this.manager(id) && this.get(`checks_due:${id}`) && !this.receive(id).length &&
+       !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) return void await this.compileCard(id);
+    // v7: so does an atomic top whose run is due again (the runner's retry,
     // Continue, a source change after a pass) with nothing to read and no
     // action to finish: a done that failed mid-run replays and runs it.
-    if(this.live() && isTop(n) && !this.manager(id) && this.get('atomic_compile') && !this.receive(id).length &&
-       !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) return this.v8()?void await this.compileCard(id):this.compileAtomic(id);
+    if(!this.v8() && this.live() && isTop(n) && !this.manager(id) && this.get('atomic_compile') && !this.receive(id).length &&
+       !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) return this.compileAtomic(id);
     // Managers are deterministic Artifacts-backed routers, never generative turns.
     // Preserve pending action replays from prior versions before entering this path.
     if (this.manager(id) && !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) {
@@ -6940,7 +7097,8 @@ export class ControlRoom extends DurableObject {
         // asked again with the feedback: a branch may implement its promise
         // itself (a splitter that kept naming createComment for addComment).
         const lastTry=(this.read('failures',{})[id]||0)>=2;
-        const namesOnly=before.split_feedback?.kind==='interfaces'&&(isTop(n)||!lastTry);
+        // v8 M2: every splitter keeps Clef's YES on a names-only failure until its last try.
+        const namesOnly=before.split_feedback?.kind==='interfaces'&&(!this.v8()&&isTop(n)||!lastTry);
         // run10: a malformed split answer was the splitter's error, so Clef's
         // YES stands too; asked again, Clef saw "no valid partition" and Root
         // wrote the whole application as one module.
@@ -6948,7 +7106,7 @@ export class ControlRoom extends DurableObject {
         const sized=!namesOnly&&before.split_feedback?.kind==='size'&&this.get(`split_yes:${id}`)==='1';
         const malformed=!namesOnly&&!sized&&this.get(`split_yes:${id}`)==='1';
         // v7.15.13 (run20): the gate hears what the piece calls; five workers whose uses named their siblings' checks were told to split and proposed those checks again.
-        const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:isTop(n)?this.goalFor(2600)??n.task:n.task;
+        const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:this.v8()?clipEnds(n.task,2600):isTop(n)?this.goalFor(2600)??n.task:n.task;
         // v7.15.16 (run25): the carrier of its parent's whole promise writes it with no Clef gate: its parent's split already gave its helpers away ("Subproblem" [extractLinkStatus] under "Extract link status" [extractLinkStatus] split again, into "Interface Status Analyzer" [extractLinkStatus]). So does a carrier promising only start, composed from the plan, never split. A fresh piece is gated, at a bar that rises with depth (splitBar).
         const own=this.planned()&&n.parent?this.promisedOf(id):[],above=parse(this.node(n.parent)?.interfaces,[]).map(f=>f.name).sort(),mine=own.map(f=>f.name).sort();
         const one=own.length&&(own.length===1&&own[0].name==='start'||mine.join()===above.join())?own:null,bar=this.splitBar(id);
@@ -7000,11 +7158,12 @@ export class ControlRoom extends DurableObject {
           this.set(`split_feedback:${id}`,'');
         }
       } else raw=await decide(this.inferenceEnv(!this.manager(id)&&!isRuntimeNode(n)?'worker':'manager'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
-      // At the top, a split answer with no pieces (none, or code in their
+      // v7: at the top, a split answer with no pieces (none, or code in their
       // place) is malformed too: Root's goal is always divisible, and an
       // atomic Root wrote run10's application as one module. Below it, a
       // splitter may decline a small piece, and Clef reconsiders (review).
-      const noPieces=splitting && !raw.parse_error && isTop(n) && this.env.MOCK_AI!=='true' && !normalizeAction(raw,{v8:this.v8()}).spawn.length;
+      // v8 M2: every splitter may decline, the top's too; Clef reconsiders.
+      const noPieces=splitting && !raw.parse_error && !this.v8() && isTop(n) && this.env.MOCK_AI!=='true' && !normalizeAction(raw,{v8:this.v8()}).spawn.length;
       if (raw.parse_error || noPieces) {
         this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${noPieces?`no pieces: ${clip(JSON.stringify(raw),1400)}`:raw.raw}`);
         // A malformed split (decompose returns it as a parse error) is retried
@@ -7032,15 +7191,12 @@ export class ControlRoom extends DurableObject {
       // room a worker's asks are checked against its answers and every new
       // one waits (plannedAsks).
       const writer=!splitting && !this.manager(id) && !isRuntimeNode(n);
-      if(writer && isTop(n)) {
+      // v8 M2: every writer's asks go up its line (plannedAsks, askManager); v7's top had none above it.
+      if(writer && !this.v8() && isTop(n)) {
         action.notes=[];
-        // Capability boxes S5: under v8 the broker still answers the top's
-        // asks that need no other part; the rest have nobody to go to.
-        const direct=this.v8()?action.ask.filter(a=>this.askKind(id,a.name,a.question).kind!=='contract'):[];
         if(action.ask.length) {
-          if(direct.length<action.ask.length)this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
-          action.ask=direct;action.wait=direct.length>0;
-          if(direct.length)action.done=false;
+          this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
+          action.ask=[];action.wait=false;
         } else if(action.wait && !action.done) {
           // v7.15.2: nothing answers the top, so a wait stranded it, past
           // Continue too (an atomic Root that answered its repair with wait;
@@ -7048,9 +7204,9 @@ export class ControlRoom extends DurableObject {
           const repair=inbox.filter(m=>m.repair).map(m=>m.body);
           action.wait=false;action.unheard=true;
           this.event(id,'ask_unheard','The top has no manager and nothing to wait for, so it does not wait.');
-          action.notes.push(clip(this.v8()?MESSAGES.no_manager({repair:repair.join(' ')}):`You have no manager, so nothing answers a wait: write your code and set done.${repair.length?` This repair request is still open: ${repair.join(' ')}`:''}`,1500));
+          action.notes.push(clip(`You have no manager, so nothing answers a wait: write your code and set done.${repair.length?` This repair request is still open: ${repair.join(' ')}`:''}`,1500));
         }
-      } else if(writer && n.parent && this.planned()) {
+      } else if(writer && (n.parent || this.v8()) && this.planned()) {
         if(action.spawn.length) {
           if(action.ask.length)this.event(id,'ask_dropped','A splitting node does not ask; its pieces will.');
           action.ask=[];
@@ -7073,7 +7229,7 @@ export class ControlRoom extends DurableObject {
         // v7.15.2: an atomic top's loader, package and runner's test are the
         // runtime's, written again for each run: an edit was undone and its
         // repair heard that nothing changed (review).
-        const glue=n.parent?[]:action.files.filter(f=>RUNTIME_GLUE.includes(f.path));
+        const glue=n.parent||this.v8()?[]:action.files.filter(f=>RUNTIME_GLUE.includes(f.path));
         if(glue.length) {
           this.event(id,'glue_rejected',`Not written: ${glue.map(f=>f.path).join(', ')}, which the runtime writes for each run.`);
           action.files=action.files.filter(f=>!RUNTIME_GLUE.includes(f.path));
@@ -7133,7 +7289,7 @@ export class ControlRoom extends DurableObject {
         let deferredAssembly=false;
         // v7.11: a child that composes the application is ordinary code (it
         // owns the entry module), so live splits keep it as a worker.
-        if(this.env.MOCK_AI==='true' && id==='root' && action.spawn.some(x=>this.isFinalAssemblySpec(x))) {
+        if(this.env.MOCK_AI==='true' && !this.v8() && isTop(n) && action.spawn.some(x=>this.isFinalAssemblySpec(x))) {
           const rejected=action.spawn.filter(x=>this.isFinalAssemblySpec(x));
           action.spawn=action.spawn.filter(x=>!this.isFinalAssemblySpec(x));
           deferredAssembly=true;
@@ -7230,7 +7386,7 @@ export class ControlRoom extends DurableObject {
       // The implementation action protocol can also propose late children.
       // Apply the SAME scope gate: no Qwen-proposed child is admitted unchecked.
       if (!splitting && !this.manager(id) && action.spawn.length) {
-        if(id==='root' && this.env.MOCK_AI==='true') {
+        if(this.env.MOCK_AI==='true' && !this.v8() && isTop(n)) {
           const assembly=action.spawn.filter(x=>this.isFinalAssemblySpec(x));
           if(assembly.length) {
             action.spawn=action.spawn.filter(x=>!this.isFinalAssemblySpec(x));
@@ -7398,8 +7554,8 @@ export class ControlRoom extends DurableObject {
         if(this.brokerAnswer(id,a))return;
         // v7.15.1: every ask goes to the worker's manager, whatever it names;
         // the manager answers from its children or asks up (MOCK too).
-        if(!this.node(id)?.parent) {
-          // A plan persisted before the guard above: drop it, never throw.
+        if(!this.v8()&&!this.node(id)?.parent) {
+          // v7: a plan persisted before the guard above: drop it, never throw.
           action.wait=false;this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
         } else if(!this.askManager(id,a.key,a.question,a.name||'')) throw new Error('Worker has no available manager');
       }),
@@ -7419,7 +7575,7 @@ export class ControlRoom extends DurableObject {
         const unfinished = this.children(id).some(x => x.status !== 'done' && x.status !== 'retired');
         // Root must not report a delegated software project complete before
         // its temporary builder returns a public assembly artifact.
-        const needsBuilder = id === 'root' && this.manager(id) && !this.v8() && !await this.assemblyCurrent(id);
+        const needsBuilder = !this.v8() && isTop(n) && this.manager(id) && !await this.assemblyCurrent(id);
         const rejectedSplit=action.spawn.length && !this.manager(id);
         // action.wait from the discarded split must not strand the fallback leaf.
         if(rejectedSplit) {
@@ -7428,7 +7584,7 @@ export class ControlRoom extends DurableObject {
         } else if (action.done && !unfinished && !needsBuilder) {
           // v7.15 §5.12b: a worker with an open request does not finish; it
           // counts no failure, and its last answer wakes it to decide again.
-          const open=this.planned()&&!this.manager(id)&&!isRuntimeNode(n)?query(this.db(),'SELECT topic FROM route_workers WHERE worker=? ORDER BY topic',id).map(r=>r.topic):[];
+          const open=this.planned()&&!this.manager(id)&&!isRuntimeNode(n)?this.openAsks(id):[];
           if(open.length) {
             this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
             this.event(id,'done_deferred',`Waiting for answers to ${open.join(', ')} before finishing.`);
@@ -7441,13 +7597,14 @@ export class ControlRoom extends DurableObject {
           // v7.15: the plan is checked on return, before linking. No throw:
           // a thrown op replays without asking the model (F4).
           if(!this.manager(id) && !isRuntimeNode(n) && await this.contractReturned(id))return;
-          // The top can itself be a Clef-classified atomic implementation:
+          // v8 M2: an agent that holds the card's checks runs them when its
+          // work is done, a worker as a manager (compileCard, one path); a
+          // failure in a worker's own files is its own repair.
+          if(this.v8()&&this.holdsChecks(n)){await this.compileCard(id);return;}
+          // v7: the top can itself be a Clef-classified atomic implementation:
           // no builder and no compiler, so it runs the compiler's pipeline
           // on its own files, and finishes only when that passes (run10).
-          // v8 S4b: an atomic Root runs the project card's checks on its own
-          // files; a failure is its own repair, as every file is its own.
-          if(isTop(n)&&!this.manager(id)&&this.v8()){await this.compileCard(id);return;}
-          if(isTop(n)&&!this.manager(id)&&this.env.MOCK_AI!=='true')return this.compileAtomic(id);
+          if(!this.v8()&&isTop(n)&&!this.manager(id)&&this.env.MOCK_AI!=='true')return this.compileAtomic(id);
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Completed owned strand without transferring ownership to children.');
           if(this.node(id)?.label==='Temporary builder') {
@@ -7496,7 +7653,7 @@ export class ControlRoom extends DurableObject {
     // Such a message wasn't in the action's captured inbox; schedule a fresh
     // turn instead of silently leaving it behind a final wait/done state.
     // v7.15 §5.12b: an answer wakes a worker only once none is outstanding.
-    const unread=this.receive(id),asking=()=>this.planned()&&query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',id).length>0;
+    const unread=this.receive(id),asking=()=>this.planned()&&this.openAsks(id).length>0;
     if (this.node(id)?.status !== 'retired' && (unread.some(m=>!/^\[route:/.test(m.body)) || unread.length && !asking() ||
        (seenBuilderWake!==null && this.wakeGeneration(id)!==seenBuilderWake))) this.wake(id);
   }
@@ -7602,7 +7759,8 @@ export class ControlRoom extends DurableObject {
   nudgeQuiescentLeaf() {
     if (this.read('queue',[]).some(id=>this.node(id)?.status==='ready')) return false;
     for (const n of this.allNodes()) {
-      if (n.status !== 'waiting' || isTop(n) || this.children(n.id).some(c=>c.status!=='done' && c.status!=='retired')) continue;
+      // v8 M2: the parent's wait decides below, the same for every row (the top's parent is a handler that has ended).
+      if (n.status !== 'waiting' || this.children(n.id).some(c=>c.status!=='done' && c.status!=='retired')) continue;
       // Builder and compiler turns are driven by their manager's schedule, a
       // problem or Continue, never the generic idle nudge.
       if(isRuntimeNode(n) && this.env.MOCK_AI!=='true')continue;
@@ -7622,9 +7780,9 @@ export class ControlRoom extends DurableObject {
   }
   runSelectedTurn(id, step) { return turnContext.run({agent:id,step},()=>this.runTurnTimed(id,step)); }
   async runTurnTimed(id, step) {
-    // Review (atomic Root): a top that writes the code itself compiles right after a done.
+    // Review (atomic Root): a worker that holds the card's checks (v7: the top) runs them right after a done.
     const top=this.node(id);
-    if(top&&!top.parent&&top.phase==='implement'&&!this.manager(id))this.prewarmContainer();
+    if(top&&top.phase==='implement'&&!this.manager(id)&&(this.v8()?this.holdsChecks(top):!top.parent))this.prewarmContainer();
     this.activeTurns.add(id);
     const observedWake=this.wakeGeneration(id);
     this.turnSteps.set(id,step);
@@ -7644,9 +7802,9 @@ export class ControlRoom extends DurableObject {
       }
       this.event(id,'turn_end',`Completed turn after ${Date.now()-started} ms.`);
       this.activeTurns.delete(id); this.turnSteps.delete(id);
-      // v8 S9 review: a change that waited for Root's split is applied once the split is admitted.
-      if(id==='root'&&this.read('amend_deferred',null)&&this.node('root')?.phase!=='decompose')
-        try {await this.applyDeferred();} catch(e) {this.event('system','amend_failed',clip(`The change that waited for Root's split could not be applied: ${e?.message||e}`,600));}
+      // v8 S9 review, v8 M2: a change that waited for its row's split (amend_deferred.to) is applied once the split is admitted.
+      if(this.read('amend_deferred',null)?.to===id&&this.node(id)?.phase!=='decompose')
+        try {await this.applyDeferred();} catch(e) {this.event('system','amend_failed',clip(`The change that waited for a split could not be applied: ${e?.message||e}`,600));}
     }
   }
   async drive(budget) {
@@ -7666,6 +7824,8 @@ export class ControlRoom extends DurableObject {
       // waiting for slower inferences from the same dispatch wave.
       // A stop request dispatches nothing new; turns already running finish.
       const stopping=()=>this.get('stop_requested')==='1';
+      // v8 M2: a goal's handler still open goes on first: its card writer is the run's first step.
+      if(!stopping())await this.runHandlers();
       while (tally(), active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>this.manager(id)&&this.node(id)?.status==='ready'))) {
         while (!stopping() && active.size<this.settings().parallel) {
           tally();
@@ -7697,13 +7857,13 @@ export class ControlRoom extends DurableObject {
         return;
       }
       const nodes=this.allNodes();
-      const finished=allFinished(nodes) && nodes.some(n=>n.id==='root');
+      const finished=this.runFinished(nodes);
       const failed=nodes.some(n=>n.status==='failed');
       this.set('status',finished?'complete':failed?'failed':'paused');
       // v8 S3: a room held at the card or at the checks says why.
       const held=!finished&&!failed?this.read('paused_state',null):null;
       this.event('system',finished?'complete':failed?'failed':'paused',finished ? 'All strands returned complete.' :
-        failed ? `Run failed: ${this.failedDescendantReason('root')}` : held ? `Paused (${held.kind}): ${held.text}` : 'Inference budget ended or strands are waiting; continue to resume.');
+        failed ? `Run failed: ${this.failedDescendantReason(this.topId())}` : held ? `Paused (${held.kind}): ${held.text}` : 'Inference budget ended or strands are waiting; continue to resume.');
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally {
       this.busy=false;this.budgetSpent=false;
@@ -7747,7 +7907,7 @@ export class ControlRoom extends DurableObject {
     }
     // v8 S9: a Start keeps the queued prompts (they apply once this run completes) and forgets the rest.
     const keep={queue_on_fail:this.get('queue_on_fail','')};
-    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','problems','repair_tickets','card_revisions','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','card_writers','problems','repair_tickets','card_revisions','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
     this.db().exec("DELETE FROM prompts WHERE status!='queued'");
     if(keep.queue_on_fail)this.set('queue_on_fail',keep.queue_on_fail);
     // v8 S9 review: the queue's turn allowance, 4x the Start budget, for every change after this run.
@@ -7786,7 +7946,7 @@ export class ControlRoom extends DurableObject {
     if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}${loaded.meta.not_carried?.length?`; ${loaded.meta.not_carried.length} not carried (the runtime's own paths)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} Only a piece whose contract names a base file, and whose goal asks to change it, may change it.`,900));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
-      try { await this.handPrompt({kind:'goal',prompt:goal,root:{task,interfaces:this.live()&&!v8?rootPromise(whole):[],packages:v8?this.installedSet():[]}}); await this.drive(budget); }
+      try { await this.handPrompt({kind:'goal',prompt:goal,task,interfaces:this.live()&&!v8?rootPromise(whole):[]}); await this.drive(budget); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};
@@ -7806,7 +7966,7 @@ export class ControlRoom extends DurableObject {
     this.set('stop_requested','');
     if (!['paused','complete','error','running','failed'].includes(this.get('status'))) return {error:'Start a session first'};
     if (this.get('status')==='complete') return {error:'All agents are done; start a new experiment'};
-    if (this.get('status')==='failed') return {error:`Run failed: ${this.failedDescendantReason('root')}. Start a new room or inspect the recorded diagnostic.`};
+    if (this.get('status')==='failed') return {error:`Run failed: ${this.failedDescendantReason(this.topId())}. Start a new room or inspect the recorded diagnostic.`};
     // Rooms from v7.13 and earlier keep Root-keyed build state: reset, not migrated.
     if (this.live() && this.get('run_nonce') && this.get('schema')!==ROOM_SCHEMA)
       return {error:'This room was started by a version before v7.14 and is not migrated; start a new experiment, which resets the room.'};
@@ -7826,12 +7986,12 @@ export class ControlRoom extends DurableObject {
     let hold=this.read('paused_state',null);
     // v8 card repair: Continue at base_confirm is the person's grant of the files it lists (or of those selected).
     if(this.v8()&&hold?.kind==='base_confirm'){this.confirmBase(options.grants??null);hold=this.read('paused_state',null);}
+    // v8 M2: Continue at ask_unanswered leaves each ask to its asker, which goes on.
+    if(this.v8()&&hold?.kind==='ask_unanswered'){this.save('paused_state',null);this.answerRoomAsks(a=>MESSAGES.ask_left({want:a.name||`"${clip(a.need,200)}"`}));}
     if(this.v8()&&['card_blocked','card_failed'].includes(hold?.kind)) {
       this.save('paused_state',null);
-      if(this.node('root')?.status==='waiting'&&!this.read('card',null)) {
-        this.event('root','card_continue','Continue runs the card writer again.');
-        this.wake('root');
-      }
+      // v8 M2: the open handler's card writer runs again, as drive's first step.
+      if(this.openGoalHandler()&&!this.read('card',null))this.event('room','card_continue','Continue runs the card writer again.');
     }
     // v8 S4b: Continue on a room held at the card's checks runs them again;
     // after the repair rounds ran out, with a fresh set of rounds.
@@ -7840,7 +8000,7 @@ export class ControlRoom extends DurableObject {
     if(this.v8()&&hold?.kind==='checks_untested') {
       const accept=this.read('untested_pending','');
       this.set('untested_accepted',accept);
-      this.event('root','untested_accepted',clip(`The person accepted the project with ${String(accept).split(':')[1]||'its untested requirements'} untested (card revision ${String(accept).split(':')[0]}).`,400));
+      this.event('room','untested_accepted',clip(`The person accepted the project with ${String(accept).split(':')[1]||'its untested requirements'} untested (card revision ${String(accept).split(':')[0]}).`,400));
     }
     if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted','v8_checks_pending','checks_untested'].includes(hold?.kind)) {
       this.save('paused_state',null);this.save('compile_reported',null);
@@ -7849,11 +8009,12 @@ export class ControlRoom extends DurableObject {
         this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'rounds_exhausted:%'");
         this.set('repair_exhausted','');
       }
-      const top=this.node('root');
-      if(top&&!this.manager('root'))this.set('atomic_compile','continue');
-      if(top&&top.status==='waiting') {
-        this.event('root','checks_continue',`Continue runs the project card's checks again${hold.kind==='checks_exhausted'?', with a fresh set of repair rounds':''}.`);
-        this.wake('root');
+      // v8 M2: the agent the hold names (a hold saved before M2: the top) runs them again; a worker with no model turn (checks_due).
+      const agent=this.node(hold.agent||this.topId());
+      if(agent&&!this.manager(agent.id))this.set(`checks_due:${agent.id}`,'continue');
+      if(agent&&agent.status==='waiting') {
+        this.event('room','checks_continue',`Continue runs the project card's checks again${hold.kind==='checks_exhausted'?', with a fresh set of repair rounds':''}.`,agent.id);
+        this.wake(agent.id);
       }
     }
     // v7.15.15 review 2 (#1): Continue answers a request no row, hop or message holds any more.
@@ -7877,7 +8038,7 @@ export class ControlRoom extends DurableObject {
     if(this.live()) {
       // The compiler runs again on the current bundle: a fresh set of runner
       // attempts, and its problems are reported again.
-      const top=this.allNodes().find(n=>isTop(n)),compiler=top&&this.compilerOf(top.id);
+      const top=this.top(),compiler=top&&this.compilerOf(top.id);
       // Blocked by infrastructure, it is woken by retryBlockedCompile.
       if(compiler&&compiler.status==='waiting') {
         this.save('compile_reported',null);
@@ -7887,14 +8048,14 @@ export class ControlRoom extends DurableObject {
           this.wake(compiler.id);
         }
       }
-      // An atomic top whose run waits (the runner failed twice) runs it again.
-      if(top&&!compiler&&top.status==='waiting'&&!this.manager(top.id)&&this.get('atomic_compile')&&!this.read('compile_blocked',null)) {
+      // v7: an atomic top whose run waits (the runner failed twice) runs it again.
+      if(!this.v8()&&top&&!compiler&&top.status==='waiting'&&!this.manager(top.id)&&this.get('atomic_compile')&&!this.read('compile_blocked',null)) {
         this.save('compile_reported',null);
         this.event(top.id,'compile_continue','Continue runs Root\'s own files through the compiler\'s pipeline again.');
         this.wake(top.id);
       // One waiting with no run due has nothing else to wake it: a wait the
       // top answered before its waits were dropped (v7.15.2 review).
-      } else if(top&&!compiler&&top.status==='waiting'&&top.phase==='implement'&&!this.manager(top.id)&&!this.get('atomic_compile')&&!String(this.read('paused_state',null)?.kind||'').startsWith('checks_')) {
+      } else if(!this.v8()&&top&&!compiler&&top.status==='waiting'&&top.phase==='implement'&&!this.manager(top.id)&&!this.get('atomic_compile')&&!String(this.read('paused_state',null)?.kind||'').startsWith('checks_')) {
         this.event(top.id,'atomic_continue','Continue gives Root, which wrote the code itself, another turn.');
         this.wake(top.id);
       }
@@ -7962,26 +8123,26 @@ export class ControlRoom extends DurableObject {
   // Why this room takes no change now, or ''.
   amendRefusal() {
     if(!this.v8())return 'Amendments and queued prompts need a room started on the v8 pipeline.';
-    if(!this.node('root')||!['complete','failed','paused','running','error'].includes(this.get('status','idle')))return 'Start a run first: a change applies to a run that exists.';
+    if(!this.started()||!['complete','failed','paused','running','error'].includes(this.get('status','idle')))return 'Start a run first: a change applies to a run that exists.';
     if(this.read('card_provided',null))return 'A room started from a provided card (a benchmark task) takes no change.';
     return '';
   }
-  // A change is in flight (its card writer) or waits for Root's split: Start, Clear, Continue and another change wait for it.
+  // A change is in flight (its card writer) or waits for a row's split: Start, Clear, Continue and another change wait for it.
   changeBusy() {
     if(this.get('amend_pending'))return 'A change is being applied to this room; wait until it is, then try again.';
-    if(this.read('amend_deferred',null))return 'A change waits for Root\'s split to be admitted; wait until it is applied, then try again.';
+    if(this.read('amend_deferred',null))return 'A change waits for a split to be admitted; wait until it is applied, then try again.';
     return '';
   }
   // The goal with these changes added, against EFFECTIVE_GOAL_LIMIT.
   goalTooLong(texts) {
-    return !!this.node('root')&&effectiveGoal(this.baseGoal(),[...this.goalChanges(),...texts]).length>EFFECTIVE_GOAL_LIMIT;
+    return this.started()&&effectiveGoal(this.baseGoal(),[...this.goalChanges(),...texts]).length>EFFECTIVE_GOAL_LIMIT;
   }
   // POST /api/prompts: one prompt at the end of the queue. A room that has
   // finished takes it at once (by the alarm), as the queue's next prompt.
   async addPrompt(raw, budget=null) {
     const t=promptText(raw);
     if(t.error)return {error:t.error};
-    if(this.node('root')&&!this.v8())return {error:'Amendments and queued prompts need a room started on the v8 pipeline.'};
+    if(this.started()&&!this.v8())return {error:'Amendments and queued prompts need a room started on the v8 pipeline.'};
     const queued=this.promptRows("status='queued'");
     if(queued.length>=MAX_QUEUED)return {error:`The queue holds at most ${MAX_QUEUED} prompts.`,status:409};
     if(this.goalTooLong([...queued.map(p=>p.text),t.text]))return {error:`The goal with every queued change would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`,status:409};
@@ -7989,7 +8150,7 @@ export class ControlRoom extends DurableObject {
     this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created,version) VALUES (?,?,?,'queued','queued',?,NULL,'{}',?,0)",id,this.promptSeq(true),t.text,budget,Date.now());
     this.event('system','prompt_queued',clip(`Queued: ${t.text}`,600));
     // S9 review: a room that failed or holds for you never reaches the queue on its own: the banner says so.
-    if(this.v8()&&this.node('root')&&!this.busy&&this.get('status')!=='running'&&this.runFailed()&&!this.promptRows("status='running'").length)
+    if(this.v8()&&this.started()&&!this.busy&&this.get('status')!=='running'&&this.runFailed()&&!this.promptRows("status='running'").length)
       this.stopQueue('The room failed, so the queued prompts wait: Continue it, apply a change now, or Go on to apply the next prompt to it.');
     await this.kickQueue();
     return {prompt:this.promptRows('id=?',id)[0],...this.promptsHead()};
@@ -8090,17 +8251,17 @@ export class ControlRoom extends DurableObject {
   async promptsAfterRun() {
     if(!query(this.db(),'SELECT id FROM prompts LIMIT 1').length)return;
     const status=this.get('status','idle');
-    // S9 review: a run that ended because Root waited on a change goes on for it, with the turns it had left; never with a fresh budget.
-    if((this.get('root_held_amend')||this.get('amend_wake'))&&status==='paused'&&this.get('stop_requested')!=='1'&&!this.runFailed()&&!this.changeBusy()) {
+    // S9 review: a run that ended because a row waited on a change goes on for it, with the turns it had left; never with a fresh budget.
+    if((this.get('amend_held')||this.get('amend_wake'))&&status==='paused'&&this.get('stop_requested')!=='1'&&!this.runFailed()&&!this.changeBusy()) {
       const left=Number(this.get('budget_left','0'))||0;
-      this.set('root_held_amend','');this.set('amend_wake','');
+      this.set('amend_held','');this.set('amend_wake','');
       if(left>0)return this.runAgain(left,'The run goes on for the change with the turns it had left');
     }
     if(this.changeBusy())return;
     this.set('amend_wake','');
     const failed=this.runFailed(),hold=this.read('paused_state',null);
     if(status!=='complete'&&!failed)return;
-    for(const p of this.promptRows("status='running'"))this.finishPrompt(p.id,failed?'failed':'done',failed?{error:clip(hold?.text||this.failedDescendantReason('root')||status,400)}:{});
+    for(const p of this.promptRows("status='running'"))this.finishPrompt(p.id,failed?'failed':'done',failed?{error:clip(hold?.text||this.failedDescendantReason(this.topId())||status,400)}:{});
     if(status==='complete')this.set('queue_stopped','');
     if(!this.promptRows("status='queued'").length)return;
     if(failed)return this.afterFailure(`the last prompt failed (${hold?.kind||status})`);
@@ -8145,7 +8306,8 @@ export class ControlRoom extends DurableObject {
     return this.applyPrompt(id,t.text,budget,{explicit:budget!=null});
   }
   async applyPrompt(id, text, budget=null, {explicit=false,deferred=false}={}) {
-    const status=this.get('status','idle'),running=this.busy||status==='running',failedRoom=!running&&this.runFailed();
+    // v8 M2: a room held for the person's answer (ask_unanswered) runs again with it.
+    const status=this.get('status','idle'),running=this.busy||status==='running',failedRoom=!running&&this.runFailed(),answers=!running&&this.read('paused_state',null)?.kind==='ask_unanswered';
     const row=this.promptRows('id=?',id)[0],base=Number(row?.budget??this.get('start_budget','0'))||20;
     // A run for a finished room is bounded by the queue's allowance (and grows by turns the user adds).
     if(!running&&status!=='paused'&&!deferred&&this.turnsLeft()+(explicit?budget:0)<1) {
@@ -8156,19 +8318,25 @@ export class ControlRoom extends DurableObject {
     this.db().exec("UPDATE prompts SET status='running',started=COALESCE(started,?) WHERE id=?",Date.now(),id);
     this.set('amend_pending',id);
     if(!deferred)this.event('system','amend_received',clip(`${running?'Adjustment while running':'Change'}: ${text}`,1300));
+    // v8 live 4, v8 M2: the change's own prompt handler: its card writer writes the card delta, and it hands the change to the top as a change on its row, then ends.
+    const hid=await this.handPrompt({kind:row?.kind==='adjust'?'amendment':'queued',prompt:text,prompt_id:id});
     let applied;
-    try {applied=await this.applyAmendment(text,id);}
+    try {applied=await this.applyAmendment(text,id,hid);}
     catch(e) {applied={error:`Applying the change failed: ${clip(e?.message||e,400)}`};}
     finally {
       this.set('amend_pending','');
-      // Root waited while the change was applied (managerTurn): it decides again.
-      if(this.get('root_held_amend')&&this.node('root')?.status==='waiting')this.wake('root');
+      // The row that waited while the change was applied (managerTurn) decides again.
+      const held=this.get('amend_held');
+      if(held&&this.node(held)?.status==='waiting')this.wake(held);
+      const to=applied?.to?this.node(applied.to)?.label||applied.to:'';
+      this.endHandler(hid,applied?.error?`${hid} could not hand the change on (${clip(applied.error,300)}) and ended.`:applied?.deferred?`${hid} found "${to}" still at its split; the change waits for it, and ${hid} ended.`:
+        applied?.folded?`${hid} added the change to the goal the card writer writes the card from and ended.`:applied?.unchanged?`${hid} found nothing on the card to change for it and ended.`:`${hid} handed the change to "${to}" and ended.`);
     }
     const idle=()=>!this.busy&&this.get('status')!=='running';
     if(applied.stale)return {error:applied.error,status:409};
     if(applied.deferred) {
-      this.save('amend_deferred',{id,text,budget,explicit});
-      this.event('root','amend_waiting',clip(`Root's split is not admitted yet, so the change waits for it, and Root's contracts stay as the split was written against: ${text}`,900));
+      this.save('amend_deferred',{id,text,budget,explicit,to:applied.to||''});
+      this.event('room','amend_waiting',clip(`${applied.to?`"${this.node(applied.to)?.label||applied.to}"`:'The top'}'s split is not admitted yet, so the change waits for it, and its contracts stay as the split was written against: ${text}`,900));
       return {status:this.get('status'),deferred:true};
     }
     if(applied.error) {
@@ -8179,8 +8347,6 @@ export class ControlRoom extends DurableObject {
       return {error:applied.error,status:409};
     }
     this.db().exec('UPDATE prompts SET goal_rev=? WHERE id=?',applied.goal_rev,id);
-    // v8 live 4: the change's own prompt handler hands it to the existing Root and ends.
-    await this.handPrompt({kind:row?.kind==='adjust'?'amendment':'queued',prompt:text,prompt_id:id});
     // Turns the user gave with the change: on top of what the run has left, recorded.
     if(explicit&&budget>0) {
       this.set('budget_added',String(Number(this.get('budget_added','0'))+budget));
@@ -8191,30 +8357,30 @@ export class ControlRoom extends DurableObject {
       if(idle()){this.finishPrompt(id,'done',{note:applied.note});await this.kickQueue();}
       return {status:this.get('status'),goal_rev:applied.goal_rev,unchanged:true};
     }
-    if(this.busy||this.get('status')==='running'){this.set('amend_wake','1');return {status:'running',goal_rev:applied.goal_rev,card_rev:this.cardRev()};}
+    if(this.busy||this.get('status')==='running'){this.set('amend_wake',applied.to||'');return {status:'running',goal_rev:applied.goal_rev,card_rev:this.cardRev()};}
     // Folded: the card writer runs again with the change (Continue's path, which also lifts a card hold).
     if(applied.folded&&(status!=='paused'||failedRoom)) {
       const r=await this.resume(Math.max(1,Math.min(base,this.turnsLeft())));
       return r.error?r:{status:'running',goal_rev:applied.goal_rev};
     }
     // A paused room stays paused: the change is on the card, and its rows wait for Continue.
-    if(status==='paused'&&!failedRoom) {
+    if(status==='paused'&&!failedRoom&&!answers) {
       this.event('system','amend_waiting',clip(`The room is paused, so the change waits on the card for Continue: ${text}`,900));
       return {status:'paused',goal_rev:applied.goal_rev,card_rev:this.cardRev(),waiting:true};
     }
     this.runAgain(Math.max(1,Math.min(base,this.turnsLeft()-(explicit?budget:0))),'The change runs');
     return {status:'running',goal_rev:applied.goal_rev,card_rev:this.cardRev()};
   }
-  // A change Root's split held back, applied once the split is admitted (or Root writes the project itself).
+  // A change a row's split held back (amend_deferred.to), applied once the split is admitted (or the row writes its files itself).
   async applyDeferred() {
     const d=this.read('amend_deferred',null);
     if(!d)return;
     this.save('amend_deferred',null);
     if(!this.promptRows("id=? AND status='running'",d.id).length)return;
-    this.event('root','amend_resumed',clip(`Root's split is admitted; the change that waited for it is applied now: ${d.text}`,900));
+    this.event('room','amend_resumed',clip(`"${this.node(d.to)?.label||d.to}"'s split is admitted; the change that waited for it is applied now: ${d.text}`,900));
     await this.applyPrompt(d.id,d.text,d.budget,{explicit:!!d.explicit,deferred:true});
   }
-  // The room runs again for a change (a finished room, or one whose run ended while Root waited on it).
+  // The room runs again for a change (a finished room, or one whose run ended while a row waited on it).
   runAgain(cap, why='The change runs') {
     this.busy=true;this.set('status','running');this.set('stop_requested','');
     this.event('system','resume',`${why} for up to ${cap} turns.`);
@@ -8223,10 +8389,10 @@ export class ControlRoom extends DurableObject {
       catch(e) {this.set('status','error');this.busy=false;this.event('system','error',clip(e?.message||e,1300));}
     })());
   }
+  // v8 M2: the room's record of the goal; the row the change goes to gets its task from the handler (handRows).
   recordGoal(rev, prompt, text, goal) {
     this.db().exec('INSERT INTO goal_revisions(rev,prompt,text,effective,ts) VALUES (?,?,?,?,?) ON CONFLICT(rev) DO UPDATE SET prompt=excluded.prompt,text=excluded.text,effective=excluded.effective,ts=excluded.ts',rev,prompt||'',text,goal,Date.now());
     this.set('goal',goal);
-    this.db().exec('UPDATE agents SET task=? WHERE id=?',goal,'root');
   }
   // Every requirement id the room has used: the cards' and the anchors' (S9 review: an id is never given again).
   usedRequirementIds() {
@@ -8239,43 +8405,48 @@ export class ControlRoom extends DurableObject {
   // and the change; mergeAmendment keeps what it leaves alone and never
   // weakens a check that has passed; Clef vets the new and changed
   // requirements against the effective goal. The goal and the card each get
-  // a revision, Root's contracts follow the card (and so do the carriers of
-  // a changed deliverable), the repair counters start again, and every new
-  // or changed requirement (and a changed deliverable no such requirement
-  // serves) opens at Root as a problem routed the way a failed check's is:
-  // by serves and contract name, then Clef's ranks. While Root's split is
-  // not admitted the change waits (deferred): a split written against the
-  // old contracts would fail them.
-  // {goal_rev} | {goal_rev, unchanged} | {goal_rev, folded} | {deferred} | {error[, stale]}.
-  async applyAmendment(text, promptId) {
+  // a revision, the top's contracts follow the card (and so do the carriers
+  // of a changed deliverable), the repair counters start again, and every
+  // new or changed requirement (and a changed deliverable no such
+  // requirement serves) reaches the top as a change on its row (handRows),
+  // routed the way a failed check's is: by serves and contract name, then
+  // Clef's ranks. While the top's split is not admitted the change waits
+  // (deferred): a split written against the old contracts would fail them.
+  // v8 M2: hid, the change's handler; the card writer's amend path is a
+  // step of its own under it (card_writers, kind amend). to: the row the
+  // change was handed to (or waits for).
+  // {goal_rev, to} | {goal_rev, unchanged} | {goal_rev, folded} | {deferred, to} | {error[, stale]}.
+  async applyAmendment(text, promptId, hid='') {
     const nonce=this.get('run_nonce'),gone=()=>this.get('run_nonce')!==nonce||!this.promptRows('id=?',promptId).length;
     const stale={error:'The room was started again or cleared while the change was being applied; nothing of it was kept.',stale:true};
     let card=this.read('card',null);
     const goal=effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]),goal_rev=this.goalRev()+1;
     if(goal.length>EFFECTIVE_GOAL_LIMIT)return {error:`The goal with its changes would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`};
-    const root=this.node('root'),rootBusy=this.activeTurns.has('root');
-    // v8 card repair: a change while the card waits for the person at base_confirm (Root has not split) is part of the goal the
-    // card is written again from, so the person can leave a waiting file out with a follow-up prompt.
-    if(card&&!rootBusy&&this.read('paused_state',null)?.kind==='base_confirm'&&root?.phase==='decompose'&&!this.manager('root')) {
-      this.db().exec('DELETE FROM card_revisions');this.save('card',null);this.db().exec("UPDATE agents SET interfaces='[]' WHERE id='root'");this.save('base_pending',[]);
-      card=null;
-    }
-    if(!card&&!rootBusy) {
-      // No card yet: the change folds into the goal the card writer reads, which writes a new card (never a draft written before it).
+    // v8 M2: the goal's handler has not handed the card on yet (its card writer waits, the person's grant included, or runs now).
+    const top=this.top(),open=this.openGoalHandler();
+    if(open&&this.cardWriting)return {deferred:true};
+    if(open) {
+      // v8 card repair: a change while the card waits for the person at base_confirm is part of the goal the card is written
+      // again from, so the person can leave a waiting file out with a follow-up prompt; with no card yet, it folds into the
+      // goal the card writer reads, which writes a new card (never a draft written before it).
+      if(card){this.db().exec('DELETE FROM card_revisions');this.save('card',null);this.save('base_pending',[]);}
       this.recordGoal(goal_rev,promptId,text,goal);
       this.save('card_draft',null);
-      this.event('root','amend_folded',clip(`The card is not written yet, so the change is part of the goal it is written from: ${text}`,900));
+      this.event(open,'amend_folded',clip(`The card is not written yet, so the change is part of the goal it is written from: ${text}`,900));
       return {goal_rev,folded:true};
     }
-    if(root&&!this.manager('root')&&(rootBusy||root.phase==='decompose'))return {deferred:true};
+    if(!top)return {error:'Start a run first: a change applies to a run that exists.'};
+    if(!this.manager(top.id)&&(this.activeTurns.has(top.id)||top.phase==='decompose'))return {deferred:true,to:top.id};
+    // v8 M2: the card writer's amend path, a step of its own under the change's handler.
+    const sid=this.cardWriterStep(hid||open||'',`amend`),ended=(outcome,out)=>{this.endCardWriter(sid,outcome);return out;};
     const rows=this.installedToolchains(),base=[...this.basePaths()],packages=this.settings().packages,started=Date.now(),reserved=this.usedRequirementIds();
-    const written=await writeCard(this.inferenceEnv('compiler'),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,installed:rows,base,packages,held:this.packagesOf('root'),prior_card:card,change:text,base_digest:this.read('base',null)?.digest||null});
-    if(gone())return stale;
-    if(written.card?.blocked)return {error:`The card writer could not apply the change: ${clip(written.card.blocked,400)}`};
-    if(written.unsupported?.length)return {error:`The change needs ${listed(written.unsupported)}, which this deployment cannot run.`};
-    if(!written.card?.deliverables?.length)return {error:clip(`The card writer gave no usable card for the change: ${(written.errors||[]).slice(0,6).join(' ')||'no deliverable.'}`,900)};
+    const written=await writeCard(this.inferenceEnv('compiler'),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,installed:rows,base,packages,held:this.packagesOf(top.id),prior_card:card,change:text,base_digest:this.heldDigest(top.id)||null});
+    if(gone())return ended('error',stale);
+    if(written.card?.blocked)return ended('error',{error:`The card writer could not apply the change: ${clip(written.card.blocked,400)}`});
+    if(written.unsupported?.length)return ended('error',{error:`The change needs ${listed(written.unsupported)}, which this deployment cannot run.`});
+    if(!written.card?.deliverables?.length)return ended('error',{error:clip(`The card writer gave no usable card for the change: ${(written.errors||[]).slice(0,6).join(' ')||'no deliverable.'}`,900)});
     this.save('card_raw',{call:'amendCard',answers:written.raw_answers||[],ts:Date.now()});
-    if(written.notes?.length)this.event('root','card_repaired',clip(`The card writer's answer for the change was repaired before validation (${written.notes.length}): ${written.notes.join(' ')}`,1500));
+    if(written.notes?.length)this.event(sid,'card_repaired',clip(`The card writer's answer for the change was repaired before validation (${written.notes.length}): ${written.notes.join(' ')}`,1500));
     const anchors=this.read('check_anchors',{}),anchored=r=>!!anchors[anchorKey(r.id,r.says)];
     const merged=mergeAmendment(card,written.card,{change:text,anchored,reserved});
     const opts={goal,installed:rows,base,packages,reserved};
@@ -8287,74 +8458,78 @@ export class ControlRoom extends DurableObject {
     if(delta.deliverables.changed.length) {
       let ps=null;
       try {ps=await vetAmendChanges(this.inferenceEnv(),{change:text,deliverables:delta.deliverables.changed.map(n=>card.deliverables.find(d=>d.name===n)).filter(Boolean).map(d=>({name:d.name,kind:contractKind(d),path:d.path||'',does:d.does||''}))});}
-      catch(e) {this.event('root','amend_change_unvetted',clip(`Clef could not judge whether the change touches ${delta.deliverables.changed.join(', ')} (${e?.message||e}); the written changes are applied, unvetted.`,600));}
-      if(gone())return stale;
+      catch(e) {this.event(sid,'amend_change_unvetted',clip(`Clef could not judge whether the change touches ${delta.deliverables.changed.join(', ')} (${e?.message||e}); the written changes are applied, unvetted.`,600));}
+      if(gone())return ended('error',stale);
       for(const x of (ps||[]).filter(x=>x.p<AMEND_CHANGE_BAR)) {
         doubtedChanges.push({name:x.name,p:Math.round(x.p*1000)/1000});
-        this.event('root','amend_change_doubtful',clip(`Clef doubted that the change is about ${x.name} (p=${x.p.toFixed(3)}); the change to it is applied and marked doubtful, for the person to keep or undo with a follow-up prompt: ${text}`,600));
+        this.event(sid,'amend_change_doubtful',clip(`Clef doubted that the change is about ${x.name} (p=${x.p.toFixed(3)}); the change to it is applied and marked doubtful, for the person to keep or undo with a follow-up prompt: ${text}`,600));
       }
       if(doubtedChanges.length){const m=new Map(doubtedChanges.map(x=>[x.name,x.p]));next={...next,deliverables:next.deliverables.map(d=>m.has(d.name)?{...d,change_doubtful:{p:m.get(d.name)}}:d)};}
     }
     // §1.4 (v8 card repair): Clef vets the new and changed requirements and only annotates them (vet_p, doubtful); none is dropped or reverted.
     const fresh=new Set([...delta.requirements.added,...delta.requirements.changed]);
     const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal:goalView(this.baseGoal(),[...this.goalChanges(),text],EFFECTIVE_GOAL_LIMIT),requirements:vettable(next).filter(r=>fresh.has(r.id)&&routable(r)),card:next});
-    if(gone())return stale;
-    if(failed.length)this.event('root','card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
+    if(gone())return ended('error',stale);
+    if(failed.length)this.event(sid,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
     // The source a requirement carries now is the change's; whether the writer's own was in the goal is what the log says.
     const said=x=>String(x??'').trim().replace(/\s+/g,' ').toLowerCase(),untracedSays=new Set((written.card.requirements||[]).filter(r=>r.untraced).map(r=>said(r.says)));
     let doubtful;
     ({card:next,doubtful}=applyVetting({...next,requirements:next.requirements.map(r=>untracedSays.has(said(r.says))?{...r,untraced:true}:r)},ps));
     next={...next,requirements:next.requirements.map(({untraced:_,...r})=>r),...(written.card.review_notes?.length?{review_notes:written.card.review_notes}:{})};
     if(!written.card.review_notes?.length)delete next.review_notes;
-    this.logDoubtful('root',doubtful);
+    this.logDoubtful(sid,doubtful);
     delta={...cardDelta(card,next),...(doubtedChanges.length?{doubtful_changes:doubtedChanges}:{})};
-    for(const n of merged.notes)this.event('root','amend_note',clip(n,500));
+    for(const n of merged.notes)this.event(sid,'amend_note',clip(n,500));
     this.recordGoal(goal_rev,promptId,text,goal);
+    // The handler gives the top's row the goal with its changes as its task (a reader with a limit keeps both ends: clipEnds).
+    this.db().exec('UPDATE agents SET task=? WHERE id=?',goal,top.id);
     if(deltaEmpty(delta)) {
       const note='The card writer found nothing on the project card to add or change for it.';
-      this.event('root','amend_unchanged',clip(`${note} The change is part of the goal (revision ${goal_rev}): ${text}`,900));
-      return {goal_rev,unchanged:true,note};
+      this.event(sid,'amend_unchanged',clip(`${note} The change is part of the goal (revision ${goal_rev}): ${text}`,900));
+      return ended('unchanged',{goal_rev,unchanged:true,note,to:top.id});
     }
-    // The revision: the card, Root's contracts and their carriers.
+    // The revision: the card, the top's contracts and their carriers.
     const rev=this.cardRev()+1,stored={...delta,amendment:clip(text,600),prompt:promptId||''};
     this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts,delta) VALUES (?,?,?,?,?,?)',rev,goal_rev,JSON.stringify(next),clip(text,1000),Date.now(),JSON.stringify(stored));
     this.save('card',next);
-    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(next,{goal:this.userGoal()})),'root');
-    this.syncAmendedContracts(next);
+    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(next,{goal:this.userGoal()})),top.id);
+    this.syncAmendedContracts(next,top.id);
     const status=this.read('requirement_status',{});
     for(const rid of delta.requirements.changed)delete status[rid];
     this.save('requirement_status',status);
     this.resetForAmendment();
-    this.event('root','amend_card',clip(`Card revision ${rev} for goal revision ${goal_rev} (${Date.now()-started} ms): `+[
+    this.event(sid,'amend_card',clip(`Card revision ${rev} for goal revision ${goal_rev} (${Date.now()-started} ms): `+[
       delta.deliverables.added.length&&`adds ${delta.deliverables.added.join(', ')}`,delta.deliverables.changed.length&&`changes ${delta.deliverables.changed.join(', ')}`,
       delta.requirements.added.length&&`new requirements ${delta.requirements.added.join(', ')}`,delta.requirements.changed.length&&`changed requirements ${delta.requirements.changed.join(', ')}`].filter(Boolean).join('; ')+'.',1200));
-    // The rows: each new or changed requirement, at Root, routed as a failed check's is.
+    this.endCardWriter(sid,'written');
+    // The rows: each new or changed requirement, on the top's row, routed as a failed check's is.
     const routed=new Set([...delta.requirements.added,...delta.requirements.changed]),wave=`amend:${goal_rev}`,flags={wave,amendment:promptId||'',goal_rev};
     const routedReqs=next.requirements.filter(r=>routed.has(r.id)&&routable(r)),served=new Set(routedReqs.flatMap(r=>r.serves||[]));
     // Live 2 review: a statement reaches a worker masked with every check's values.
     const scope=cardScope(next,{goal:this.userGoal()});
     const ids=routedReqs.map(r=>{
       const says=maskWith(String(r.says),scope).replace(/[.\s]+$/,'');
-      return this.insertProblem({holder:'root',kind:'run',stage:'amend',source:'root',input:wave,parties:[],
+      return this.insertProblem({holder:top.id,kind:'run',stage:'amend',source:top.id,input:wave,parties:[],
         detail:clip(`${r.id} (${says}): the user's change "${text}"`,900),
         facts:{requirement:{id:r.id,says:clip(says,200),text:clip(`${says} (${r.id}), from the user's change: ${text}`,600),source:r.source||'',names:[...(r.serves||[])],serves:[...(r.serves||[])],amendment:clip(text,600)}},flags});
     });
     // S9 review: a changed deliverable no routed requirement serves reaches its carrier too, as its new contract.
     for(const name of delta.deliverables.changed.filter(n=>!served.has(n))) {
       const d=next.deliverables.find(x=>x.name===name),does=String(d?.does||'').replace(/[.\s]+$/,'');
-      ids.push(this.insertProblem({holder:'root',kind:'run',stage:'amend',source:'root',input:wave,parties:[],
+      ids.push(this.insertProblem({holder:top.id,kind:'run',stage:'amend',source:top.id,input:wave,parties:[],
         detail:clip(`${name} (${does}): the user's change "${text}"`,900),
         facts:{requirement:{id:'',contract:name,says:clip(does,200),text:clip(`${name}: ${does}, from the user's change: ${text}`,600),source:clip(text,160),names:[name],serves:[name],amendment:clip(text,600)}},flags}));
     }
-    if(!this.manager('root'))this.atomicAmend(ids,wave);
-    else this.wake('root');
-    return {goal_rev,card_rev:rev,rows:ids.length};
+    // A room asked for something nothing provided (ask_unanswered): the change is the person's answer.
+    this.answerRoomAsks(MESSAGES.ask_answered({change:clip(text,600)}));
+    this.handRows(hid,top.id,ids,wave);
+    return {goal_rev,card_rev:rev,rows:ids.length,to:top.id};
   }
   // A changed deliverable reaches the parts that carry it: each carried copy
   // takes the card's fields, and its serves the new requirements' ids.
-  syncAmendedContracts(card) {
+  syncAmendedContracts(card, top) {
     const items=new Map(cardContracts(card,{goal:this.userGoal()}).map(c=>[c.name,c]));
-    for(const n of this.allNodes().filter(x=>x.parent&&!isRuntimeNode(x)&&!['retired','failed'].includes(x.status))) {
+    for(const n of this.allNodes().filter(x=>x.id!==top&&!isRuntimeNode(x)&&!['retired','failed'].includes(x.status))) {
       const list=parse(n.interfaces,[]);let moved=false;
       const out=list.map(f=>{
         const c=items.get(f.name);
@@ -8373,27 +8548,35 @@ export class ControlRoom extends DurableObject {
   resetForAmendment() {
     this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'repair_waves:%' OR key LIKE 'rounds_exhausted:%' OR key LIKE 'manager_model_calls:%'");
     this.set('repair_exhausted','');this.save('compile_reported',null);this.save('compile_blocked',null);this.set('compile_infrastructure','');
-    this.set('checks_retries','0');this.save('checks_retry',null);this.save('paused_state',null);this.save('failures',{});this.set('atomic_compile','');
+    this.set('checks_retries','0');this.save('checks_retry',null);this.save('paused_state',null);this.save('failures',{});
+    this.db().exec("DELETE FROM meta WHERE key LIKE 'checks_due:%'");
     for(const n of this.allNodes().filter(x=>x.status==='failed'&&!isRuntimeNode(x))) {
       this.set(`failure_reason:${n.id}`,'');
-      const worker=!this.manager(n.id)&&!isTop(n),files=worker&&deliveredFiles(this.files(n.id)).length>0;
+      const worker=!this.manager(n.id),files=worker&&deliveredFiles(this.files(n.id)).length>0;
       this.db().exec('UPDATE agents SET status=? WHERE id=?',files?'done':'waiting',n.id);
       this.event(n.id,'revived','The change gives this part another chance: it had failed.');
       if(!files)this.wake(n.id);
     }
   }
-  // An atomic Root takes the change itself, as its own repair (atomicRepair's path).
-  atomicAmend(ids, wave) {
-    const now=Date.now(),moved=ids.map(pid=>this.problems('id=?',pid)[0]).filter(p=>p&&this.moveProblem(p,{status:'assigned',assignee:'root',
-      directive:{by:'root',origin:'root',side:'site',instructions:requirementText(p.facts.requirement),facts_text:''},flags:{...p.flags,revs:this.revisionKey('root')},trail:[...p.trail,{at:'root',action:'assign',to:'root',rule:'atomic',ts:now}]}));
+  // v8 M2: the handler hands the change to the top as a parent hands a
+  // change to a child: a manager holds the rows and routes them on its next
+  // turn; a worker gets them as a ticket, its own repair (its round, as a
+  // repair of its own checks is).
+  handRows(hid, to, ids, wave) {
+    // The checks the change adds that no row holds yet are the receiving row's.
+    const held=this.heldChecks(),add=(this.read('card',null)?.requirements||[]).map(r=>r.id).filter(r=>!held.has(r));
+    if(add.length)this.save(`checks:${to}`,[...this.checksOf(to).map(r=>r.id),...add]);
+    if(this.manager(to)){this.event(hid,'amend_handed',clip(`The change reaches "${this.node(to)?.label||to}", whose branch routes it on: ${ids.length} row(s).`,600),to);this.wake(to);return;}
+    const now=Date.now(),moved=ids.map(pid=>this.problems('id=?',pid)[0]).filter(p=>p&&this.moveProblem(p,{status:'assigned',assignee:to,
+      directive:{by:hid||to,origin:hid||to,side:'site',instructions:requirementText(p.facts.requirement),facts_text:''},flags:{...p.flags,revs:this.revisionKey(to)},trail:[...p.trail,{at:hid||to,action:'assign',to,rule:'handed',ts:now}]}));
     if(!moved.length)return;
-    const exhausted=this.countRound('root',wave);
-    if(exhausted)return this.exhaustRounds('root',exhausted);
+    const exhausted=this.countRound(to,wave);
+    if(exhausted)return this.exhaustRounds(to,exhausted);
     const ticket=crypto.randomUUID(),instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
-    this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,'root','root',JSON.stringify(moved.map(p=>p.id)),'reader',instructions,'',now);
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:amend','root','[build:repair] '+ticket);
-    this.event('root','amend_routed',clip(`The change goes to Root, which wrote every file itself: ${moved.map(p=>p.facts.requirement.id||p.facts.requirement.contract).join(', ')}.`,600),'root');
-    this.wake('root');
+    this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,to,to,JSON.stringify(moved.map(p=>p.id)),'reader',instructions,'',now);
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:amend',to,'[build:repair] '+ticket);
+    this.event(hid||to,'amend_routed',clip(`The change reaches "${this.node(to)?.label||to}", which writes its files itself: ${moved.map(p=>p.facts.requirement.id||p.facts.requirement.contract).join(', ')}.`,600),to);
+    this.wake(to);
   }
   // §7.2 A1 (S9 review): a change's row that serves deliverables carried by
   // two or more direct children goes to each of them, one row per carrier in
@@ -8438,7 +8621,7 @@ export class ControlRoom extends DurableObject {
   // late split, admitted as any is); with none left, no part had anything
   // to change for it, and the card's checks decide.
   async amendGrow(m, rows) {
-    const live=this.allNodes().filter(n=>n.parent&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status));
+    const live=this.allNodes().filter(n=>n.id.startsWith(m+'.')&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status));
     const carried=name=>live.some(n=>this.promisedOf(n.id).some(f=>f.name===name));
     const items=this.promisedOf(m).filter(f=>rows.some(p=>(p.facts.requirement.serves||[]).includes(f.name))&&!carried(f.name));
     const close=(list,outcome,kind,body)=>{for(const p of list)if(this.moveProblem(p,{status:'closed',outcome,trail:[...p.trail,{at:m,action:'close',to:'',rule:'A2',ts:Date.now()}]}))this.event(m,kind,clip(`${body}: ${p.detail}`,600));};
@@ -8460,7 +8643,7 @@ export class ControlRoom extends DurableObject {
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
     if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then clear it.',status:409};
-    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','problems','repair_tickets','card_revisions','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','card_writers','problems','repair_tickets','card_revisions','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
     this.queuedAt.clear();
     return this.snapshot();
   }
