@@ -1,6 +1,6 @@
 # Recursive Control Plane: how it works
 
-> The detailed companion to the short [README](../README.md), for v7.15.13. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
+> The detailed companion to the short [README](../README.md), for v7.15.14. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
 
 A multi-agent code-writing control plane that runs entirely on Cloudflare. You give it a goal, and a tree of small agents:
 - splits the work, promising a few named functions for each piece;
@@ -12,7 +12,7 @@ Each failure goes to the lowest manager whose branch holds every module involved
 
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
-> **Status:** this is v7.15.13. Every live run up to run8 used v7.13.x or earlier; run9 to run20 used v7.15. Run16, on v7.15.8, is the first live run in which the composed system produced a correct, verified application: complete in 3.9 minutes, in one round, with the runner's test passing. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
+> **Status:** this is v7.15.14. Every live run up to run8 used v7.13.x or earlier; run9 to run23 used v7.15. Run16, on v7.15.8, is the first live run in which the composed system produced a correct, verified application: complete in 3.9 minutes, in one round, with the runner's test passing. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
 
 ## The idea
 
@@ -352,7 +352,7 @@ The default problem statement is just the product: "Build a small issue tracker 
 | Artifacts | One git repository per agent, written with isomorphic-git (clone, commit, push) using short-lived write tokens. | Real git history per agent, with no shared branch. |
 | Containers | A Node 22 image runs `container/build-runner.mjs` as an unprivileged user under a 240-second timeout. | Generated code runs isolated from the control plane. |
 
-Per-room settings in the dashboard: manager model, worker model, compiler model, Clef model, split threshold, concurrent agents, total agents, recursion depth and turn budget. The four count sliders are logarithmic, from each setting's floor to its ceiling (10,000 concurrent agents, 100,000 agents, a depth of 1,000, 10,000,000 turns), with a number box beside each for the exact value.
+Per-room settings in the dashboard: manager model, worker model, compiler model, Clef model, split threshold, concurrent agents, total agents, recursion depth, pieces per split and turn budget. The four count sliders are logarithmic, from each setting's floor to its ceiling (10,000 concurrent agents, 100,000 agents, a depth of 1,000, 10,000,000 turns), with a number box beside each for the exact value.
 
 ## Quick start
 
@@ -388,7 +388,7 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Version.** This is v7.15.13. The full local suite passes with `npm test`, and `npm run check` passes.
+- **Version.** This is v7.15.14. The full local suite passes with `npm test`, and `npm run check` passes.
   - [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md): predicted interfaces, the promises, function requests, and what the linker and the compiler read from the plan.
   - [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md): the four roles, the problem inbox and the managers' decisions.
   - [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md): v7.13.0, the hotfixes v7.13.1 to v7.13.4, and the export connector.
@@ -416,6 +416,9 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 | run18 | 662fbcf8 | v7.15.11 | the diagnostics goal with DeepSeek V4 Flash workers: the plan never read the stated API, so the entry, given the generic "one method per goal operation" promise, imported a `getGoalOperations` nobody wrote, the processors imported modules named after their assignment's headings, and two worker turns came back empty | v7.15.13 |
 | run19 | 91320cd3 | v7.15.11 | the diagnostics goal on Qwen3-30B-A3B, split into 28 pieces exactly as the goal describes; Clef's vetting stripped the true promises `analyze` and `processCircuits`, so the entry's import had no provider and the analyzer lost the circuits | v7.15.13 |
 | run20 | 91320cd3 | v7.15.12 | the same room started again: 22 pieces and three sub-splits, the entry composed, 24 renames by ownership, loaded first time, the runner's 100-line test calling `app.analyze(snapshot)`. One caller bug (`checkSpeed(iface)` where the promise takes the list) then failed five rounds: the Container's summary kept only Node's warnings, the throw site was lost and every round went to the analyzer, which kept changing its file for nothing; Clef had also rejected three of the five interface checks at p≈0.48 | v7.15.13 |
+| run21 | a302a765 | v7.15.13 | the diagnostics goal: the stated API held (Clef's doubts on `analyze` and three processors overruled by the plan, the entry composed with `analyze`), but Root split into 50 direct children, 25 of them pieces that write tests from the goal's Validation paragraph; the 17 Clef kept imported helpers nobody wrote, took three linker passes and the first repair round | v7.15.14 |
+| run22 | 47278106 | v7.15.13 | the issue tracker: complete in 1.9 minutes, one repair round, routed straight to Create ticket | |
+| run23 | 47278106 | v7.15.13 | the issue tracker with "make sure it has a usable gui": no piece promised view, the entry's request was answered "import it" for a function nobody would write, and five rounds failed; started again in the same room it completed in 2.4 minutes (the browser GUI it wrote is served by nothing and untested) | v7.15.15 |
 
 The changelogs give each run's evidence, and the local replays of its files, which run through the real Container runner script with scripted models.
 
@@ -486,6 +489,7 @@ The design reached this shape over many versions:
 - in v7.15.9, from run16: a reasoning-only model answer is no answer, and the splitter retries one without thinking; four more agent models in the dashboard.
 - in v7.15.10 to v7.15.12: goals up to 4,000 characters, separate manager, worker and compiler models, and logarithmic count sliders;
 - in v7.15.13, from runs 18 to 20: a goal that states what `start()` returns defines the operations the plan, the entry, the coverage gate and the runner read; a promise the plan itself names outranks Clef's doubt; the Container's summary keeps the throw site; an error on a promised function's parameter, when its promise agrees, is a requirement on the caller that built the value; and a piece that changed its file for a failure without progress is routed past for a round.
+- in v7.15.14, from run21: tests the goal asks for are the compiler's runner's, never a piece's (unless the goal itself is about tests), and a split has at most "Pieces per split" children (7 by default), grouping related code into pieces that split again.
 
 [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md), [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md) and [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md) cover what changed since v7.12. [docs/history/CHANGELOG-v7.12.md](history/CHANGELOG-v7.12.md) documents the release before them. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](history/).
 
