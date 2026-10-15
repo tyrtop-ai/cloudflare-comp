@@ -51,8 +51,8 @@ test('current HTML displays concurrent agent count',()=>{
 });
 
 test('HTML uses versioned JS and CSS asset URLs',()=>{
-  assert.match(html, /src="\/app\.js\?v=7\.15\.14\.3"/);
-  assert.match(html, /href="\/styles\.css\?v=7\.15\.14\.3"/);
+  assert.match(html, /src="\/app\.js\?v=7\.15\.14\.4"/);
+  assert.match(html, /href="\/styles\.css\?v=7\.15\.14\.4"/);
 });
 
 test('v7.13: the split threshold control defaults to 70%',()=>{
@@ -458,4 +458,54 @@ test('Save as SVG draws the ownership tree as a standalone image',()=>{
   assert.match(svg,/>Ticket operatio…<\/text>/,'long labels are clipped');
   assert.match(svg,/stroke-dasharray="3 3"/,'the compiler hangs above Root on a dashed line');
   assert.equal(context.treeSvg([]),'');
+});
+
+// v8 S3: the Pipeline toggle and the Card panel (§1.3).
+const CARD={card:1,summary:'A <guide> and a script',languages:['python','text'],
+  deliverables:[{name:'README.md',kind:'doc',path:'README.md',does:'explains how to run it'},{name:'hello',kind:'command',path:'hello.py',does:'prints a greeting'}],
+  requirements:[{id:'R1',says:'The guide explains how to run it',source:'a README',serves:['README.md'],check:{kind:'judge',path:'README.md',question:'?'}},
+    {id:'R2',says:'It prints a greeting',source:'hello-world',serves:['hello'],check:{kind:'command',run:'python3 hello.py',expect:{exit:0}}},
+    {id:'R3',says:'hello exists',source:'',serves:['hello'],check:{kind:'file',path:'hello.py'},implicit:true}],
+  decisions:['The script is hello.py.']};
+test('v8 S3: the Pipeline toggle follows the room and is sent with the settings',()=>{
+  assert.match(html,/<select id="pipeline">\s*<option value="v7">[^<]*\(default\)<\/option>\s*<option value="v8">/);
+  const elements=renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10,pipeline:'v8'}});
+  assert.equal(elements.get('pipeline').value,'v8');
+  assert.match(script,/pipeline:\$\('pipeline'\)\?\.value\|\|'v7'/,'sent on Start and Continue');
+  assert.equal(renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}}).get('pipeline').value,'v7','a room saved before the setting is v7');
+});
+test('v8 S3: the Card panel lists deliverables, requirements with a pass/fail/untested chip, and decisions',()=>{
+  const elements=renderWithPage(true,{settings:{pipeline:'v8'},card:CARD,requirement_status:{R2:{passed:false,detail:'exit 1'}},
+    pause:{kind:'v8_checks_pending',text:'Every piece finished.'}});
+  const panel=elements.get('card').innerHTML;
+  assert.match(panel,/A &lt;guide&gt; and a script/,'escaped');
+  assert.ok(panel.indexOf('DELIVERABLES')<panel.indexOf('REQUIREMENTS')&&panel.indexOf('REQUIREMENTS')<panel.indexOf('DECISIONS'));
+  assert.match(panel,/<span class="event-type">doc<\/span> <b class="mono">README\.md<\/b> · explains how to run it/);
+  assert.match(panel,/<b class="mono">hello<\/b> <span class="faint mono">hello\.py<\/span>/);
+  assert.match(panel,/<span class="req-chip untested">untested<\/span> <b class="mono">R1<\/b>/);
+  assert.match(panel,/<span class="req-chip fail" title="exit 1">fail<\/span> <b class="mono">R2<\/b>/);
+  assert.match(panel,/R3<\/b> hello exists <span class="faint">· file check · hello · implicit/);
+  assert.match(panel,/<li>The script is hello\.py\.<\/li>/);
+  assert.match(panel,/<span class="event-type">v8_checks_pending<\/span> Every piece finished\./);
+  assert.equal(elements.get('card-verdict').textContent,'3 requirements · 0 pass · 1 fail · 2 untested');
+  const v7=renderWithPage(true,{settings:{}});
+  assert.equal(v7.get('card-verdict').textContent,'No card (v7 pipeline)');
+  assert.match(v7.get('card').innerHTML,/class="empty"/);
+});
+test('v8 S3: Root\'s detail shows the card in place of its task; contracts read by kind',()=>{
+  const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m=>m[1]),listeners=new Map();
+  const elements=new Map(ids.map(id=>[id,{id,value:'',textContent:'',className:'',innerHTML:'',title:'',disabled:false,
+    addEventListener(type,fn){listeners.set(`${id}:${type}`,fn);},querySelectorAll(){return [];}}]));
+  const context={document:{getElementById(id){return elements.get(id)||null;},querySelectorAll(){return [];}},
+    crypto:{randomUUID(){return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';}},location:{href:'https://example.com/'},history:{replaceState(){}},URL,setInterval(){}};
+  runInNewContext(script,context,{filename:'public/app.js'});
+  context.render({status:'paused',busy:false,step:1,max_parallel:4,active_agents:[],files:[],events:[],card:CARD,requirement_status:{},agents:[
+    {id:'root',parent:null,label:'Root objective',phase:'manager',status:'waiting',task:'the goal as written',interfaces:[{name:'README.md',kind:'doc',path:'README.md',params:[]},{name:'hello',kind:'command',path:'hello.py',params:[]}]},
+    {id:'root.1',parent:'root',label:'Run guide',phase:'implement',status:'done',task:'Write README.md',interfaces:[{name:'README.md',kind:'doc',path:'README.md',params:[]}]}]});
+  const pick=id=>{listeners.get('hierarchy:click')({target:{closest:()=>({dataset:{node:id}})}});return elements.get('node-detail').innerHTML;};
+  const root=pick('root');
+  assert.match(root,/<div class="onode-card">/);
+  assert.doesNotMatch(root,/the goal as written/);
+  assert.match(root,/promises: doc README\.md, command hello/);
+  assert.match(pick('root.1'),/<p>Write README\.md<\/p>/);
 });

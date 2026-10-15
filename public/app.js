@@ -87,6 +87,28 @@ function treeMarkup(n,index,top=false) {
   const dot=`<button type="button" class="dot role-${role} ${esc(status)}${building?' split':''}${state==='linked'?' linked':''}${n.parent?'':' root'}${selected?' selected':''}" data-node="${esc(n.id)}"${builder?` data-builder="${esc(builder.id)}"`:''} title="${esc(tip)}" aria-label="${esc(tip)}"></button>`;
   return `<div class="obranch ${state}">${top?compilerMarkup(n,index):''}${dot}${children.length?`<div class="ochildren">${children.map(c=>`<div class="ochild">${treeMarkup(c,index)}</div>`).join('')}</div>`:''}</div>`;
 }
+// v8 S3: the project card (§1.3): its deliverables, its requirements, each
+// with a pass, fail or untested chip (requirement_status, which the card's
+// checks fill from S4b on), and its decisions. Root's detail shows it in
+// place of Root's task, which under v8 is the goal as the user wrote it.
+const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.name}(${(i.params||[]).join(', ')})`;
+const requirementState=(r,status)=>{const st=status?.[r.id];return st?st.passed?'pass':'fail':'untested';};
+function cardMarkup(card,status={}) {
+  if(!card)return '<p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p>';
+  const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}</li>`;
+  const requirement=r=>{const state=requirementState(r,status),detail=status?.[r.id]?.detail;
+    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}</span></li>`;};
+  const section=(title,items)=>items.length?`<div class="card-section"><div class="eyebrow">${title}</div><ul class="card-list">${items.join('')}</ul></div>`:'';
+  return `${card.summary?`<p class="card-summary">${esc(card.summary)}</p>`:''}${card.languages?.length?`<p class="faint">languages: ${esc(card.languages.join(', '))}</p>`:''}`+
+    section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`));
+}
+function renderCard(s) {
+  if(!$('card'))return;
+  const reqs=s.card?.requirements||[],count=state=>reqs.filter(r=>requirementState(r,s.requirement_status)===state).length;
+  const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>`:'';
+  $('card').innerHTML=held+cardMarkup(s.card,s.requirement_status);
+  if($('card-verdict'))$('card-verdict').textContent=s.card?`${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
+}
 function nodeDetail(n,index) {
   const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
   const line=x=>`<p class="faint">${esc(x.repo_name)} · ${esc(x.phase||'work')} · turn ${x.turn}${x.summary?` · ${esc(String(x.summary).slice(0,400))}`:''}</p>`;
@@ -98,7 +120,7 @@ function nodeDetail(n,index) {
     const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
     compile=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
   }
-  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(i=>`${i.name}(${(i.params||[]).join(', ')})`).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}</div>${!n.parent&&current?.card?`<div class="onode-card">${cardMarkup(current.card,current.requirement_status)}</div>`:`<p>${esc(n.task)}</p>`}${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
 }
 // The selected node's edges ride on the overlay as data-edges ("from:to ...");
 // drawPath measures the dots after layout and draws them.
@@ -209,6 +231,7 @@ function render(s) {
   const fileRows=[...(s.files||[]),...(s.exports||[]).map(f=>({...f,virtual:true,revision:1}))];
   $('file-count').textContent=fileRows.length;
   showTree(s.agents);
+  renderCard(s);
   // Newest first: the latest traffic is at the top; scroll down for older events.
   // Only when the events changed: a delta with none leaves the list as it is.
   const eventsKey=`${s.events?.length||0}:${s.events?.at(-1)?.id??''}`;
@@ -246,7 +269,7 @@ async function refresh() {
   inflight=true;
   try {
     const delta=cursor&&current&&(++polls%FULL_EVERY!==0);
-    const s=delta?await call('/api/delta?'+new URLSearchParams({since:cursor.events,agents_since:cursor.agents,files_since:cursor.files,exports:cursor.exports,run:cursor.run})):await call('/api/state');
+    const s=delta?await call('/api/delta?'+new URLSearchParams({since:cursor.events,agents_since:cursor.agents,files_since:cursor.files,exports:cursor.exports,run:cursor.run,card_rev:current.card_rev??''})):await call('/api/state');
     cursor=s.cursor||null;
     render(s.full===false?mergeDelta(current,s):s); $('error').textContent='';
   }
@@ -298,7 +321,7 @@ for(const id of ranges) {
 let controlsDirty=false;
 const settings=()=>({parallel:countSetting('parallel-limit'),
   max_agents:countSetting('max-agents'), max_depth:countSetting('max-depth'), max_children:countSetting('max-children'),
-  model:$('model').value, worker_model:$('worker-model').value, compiler_model:$('compiler-model').value, split_model:$('split-model').value,
+  model:$('model').value, worker_model:$('worker-model').value, compiler_model:$('compiler-model').value, split_model:$('split-model').value, pipeline:$('pipeline')?.value||'v7',
   split_threshold:Number($('split-threshold').value)/100});
 const applySnapshotSettings=s=>{
   if(controlsDirty || !s.settings) return;
@@ -309,6 +332,7 @@ const applySnapshotSettings=s=>{
   if($('worker-model')) $('worker-model').value=c.worker_model||c.model||$('worker-model').value;
   if($('compiler-model')) $('compiler-model').value=c.compiler_model||c.model||$('compiler-model').value;
   if(c.split_model) $('split-model').value=c.split_model;
+  if($('pipeline')) $('pipeline').value=c.pipeline||'v7';
   updateModelHint();
 };
 const updateModelHint=()=>{
@@ -320,6 +344,7 @@ $('model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();}
 $('worker-model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('compiler-model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('split-model').addEventListener('change',()=>{controlsDirty=true;});
+$('pipeline')?.addEventListener('change',()=>{controlsDirty=true;});
 $('split-threshold').addEventListener('input',()=>{controlsDirty=true;});
 updateModelHint();
 $('start').addEventListener('click',()=>current?.status==='running'?action('/api/stop'):action('/api/run',{goal:$('goal').value,budget:countSetting('budget'),settings:settings()}));

@@ -58,6 +58,9 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   const revs = room.db().exec('SELECT rev,goal_rev,reason FROM card_revisions').toArray();
   assert.deepEqual(revs.map(r => [r.rev, r.goal_rev, r.reason]), [[1, 1, 'goal']]);
   assert.equal(events(room, 'card_written').length, 1);
+  // Both calls are traced as spans: the card writer and Clef's vetting.
+  assert.ok(room.spans().some(x => x.name === 'writeCard' && x.kind === 'model'), JSON.stringify(room.spans().map(x => x.name)));
+  assert.ok(room.spans().some(x => x.name === 'vetRequirements' && x.kind === 'clef'));
   // Root's promise comes from the card: its deliverables, with serves and the command check's example.
   const promise = room.promisedOf('root');
   assert.deepEqual(promise, cardContracts(s.card));
@@ -85,6 +88,13 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.equal(events(room, 'v8_checks_pending').length, 1);
   assert.match(events(room, 'paused').at(-1).body, /v8_checks_pending/);
   assert.notEqual(room.node('root').status, 'done');
+  // The dashboard: the snapshot carries the card; a delta only when its card revision differs.
+  const c = room.snapshot().cursor, delta = rev => room.stateDelta({since: c.events, agents_since: c.agents, files_since: c.files, exports: c.exports, run: c.run, card_rev: rev});
+  assert.equal(room.snapshot().card_rev, 1);
+  assert.equal(delta(1).full, false);
+  assert.equal('card' in delta(1), false);
+  assert.deepEqual(delta('').card, s.card);
+  assert.equal(delta(1).requirement_status !== undefined && delta(1).pause.kind, 'v8_checks_pending');
 });
 
 test('v8 room: a blocked card pauses the room with card_blocked before any split, and Continue writes the card again', async () => {

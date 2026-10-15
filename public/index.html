@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recursive Control Plane — Persistent Artifact Memory</title>
-  <link rel="stylesheet" href="/styles.css?v=7.15.14.3" />
+  <link rel="stylesheet" href="/styles.css?v=7.15.14.4" />
 </head>
 <body>
   <div class="page">
@@ -68,6 +68,11 @@
             <option value="@cf/cloudflare/clef-flash">Clef-flash · fast 9B (default)</option>
             <option value="@cf/cloudflare/clef">Clef · 27B</option>
           </select>
+          <label for="pipeline">Pipeline (fixed when a room starts)</label>
+          <select id="pipeline">
+            <option value="v7">v7 · runtime start() contract and runner test (default)</option>
+            <option value="v8">v8 · project card first, any deliverable (checks pending)</option>
+          </select>
           <div class="range-control"><label for="split-threshold">Minimum YES probability <output id="split-threshold-value" for="split-threshold">70%</output></label>
             <input id="split-threshold" type="range" min="20" max="80" step="5" value="70" /></div>
           <p class="helper" id="model-hint">Clef decides YES/NO. If YES, the agent model proposes a split. Leaf agents implement. All inference stays on Workers AI.</p>
@@ -99,6 +104,10 @@
           <div class="section-head"><h2>Container build</h2><span class="right-note" id="build-verdict">Not run</span></div>
           <pre id="build-evidence" class="build-evidence">Root assembly has not been verified yet.</pre>
         </section>
+        <section class="panel card-panel" id="card-panel">
+          <div class="section-head"><h2>Project card</h2><span class="right-note" id="card-verdict">No card</span></div>
+          <div id="card" class="card-view"><p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p></div>
+        </section>
         <section class="panel tree-panel">
           <div class="section-head"><span class="counter">03</span><h2>Ownership tree</h2><span class="right-note">Observer sees the tree. Individual models don't.</span><button type="button" class="secondary tree-save" id="save-tree" title="Save the ownership tree as an SVG image">Save as SVG</button></div>
           <div class="otree-legend"><span><i class="dot role-manager done"></i>manager</span><span><i class="dot role-worker done"></i>worker</span><span><i class="dot role-manager split"></i>builder linking</span><span><i class="legend-stack"><i class="dot role-compiler waiting"></i><i></i><i class="dot role-manager done"></i></i>compiler, above Root</span><span><i class="dot role-worker waiting"></i>working</span><span><i class="swatch ready"></i>all workers done</span><span><i class="dot role-manager done linked"></i>linked</span><span><i class="swatch path"></i>what the selected agent talks to</span></div>
@@ -122,6 +131,6 @@
       </section>
     </div>
   </div>
-  <script type="module" src="/app.js?v=7.15.14.3"></script>
+  <script type="module" src="/app.js?v=7.15.14.4"></script>
 </body>
 </html>

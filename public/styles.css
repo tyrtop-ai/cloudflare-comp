@@ -179,3 +179,14 @@ input[type=range]:focus {box-shadow:none;}
 .github-export .secondary { width:auto; flex:0 0 auto; margin-top:0; white-space:nowrap; }
 .export-result:empty { display:none; }
 .export-result a { overflow-wrap:anywhere; }
+/* v8 S3: the project card. Requirement chips: pass green, fail red, untested muted. */
+.card-view p { margin:0 0 10px; font-size:12px; }
+.card-summary { font-weight:600; }
+.card-section { margin-top:16px; }
+.card-list { list-style:none; margin:8px 0 0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:12px; }
+.card-list .event-type { margin-right:4px; }
+.req-chip { display:inline-block; min-width:62px; text-align:center; padding:1px 6px; border-radius:3px; font-size:9px; font-family:ui-monospace,monospace; letter-spacing:.035em; text-transform:uppercase; border:thin solid var(--code-bd); background:var(--code-bg); color:var(--muted); }
+.req-chip.pass { color:var(--ok); border-color:var(--ok); }
+.req-chip.fail { color:var(--bad); border-color:var(--bad); }
+.card-hold { padding:8px 10px; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
+.onode-card { margin:8px 0; }
