@@ -49,6 +49,7 @@ a { color:var(--link); } a:visited { color:var(--visited); }
 .counter { width:24px; height:24px; border:thin solid var(--border); display:grid; place-items:center; font-family:ui-monospace,monospace; font-size:10px; color:var(--muted); }
 h2 { font-size:14px; letter-spacing:-.025em; margin:0; font-weight:650; }
 .right-note { font-size:11px; color:var(--muted); margin-left:auto; }
+.section-head .tree-save { width:auto; margin:0; padding:5px 10px; font-size:11px; font-weight:600; white-space:nowrap; }
 label { display:block; font-size:12px; font-weight:650; margin:24px 0 8px; }
 input,select,textarea { display:block; width:100%; outline:0; border:thin solid var(--code-bd); border-radius:4px; padding:11px 12px; background:var(--code-bg); color:var(--code-fg); font-size:12px; }
 input:focus,select:focus,textarea:focus { border-color:var(--link); box-shadow:0 0 0 2px color-mix(in srgb,var(--link) 20%,transparent); }

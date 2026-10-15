@@ -437,3 +437,25 @@ test('a count control at its ceiling or clamped, and a status cell at a limit, f
   context.render({...base,active_agents:[],events:[{id:9,kind:'limit',body:'Maximum recursion depth reached; split rejected in full.'},{id:10,kind:'paused',body:'Inference budget ended or strands are waiting; continue to resume.'}]});
   assert.ok(flashed('steps'),'the turn budget running out flashes TURNS');
 });
+
+// The ownership tree saves as a standalone SVG: one circle per agent (builders
+// are not drawn), the compiler above Root, filled when done, labels clipped.
+test('Save as SVG draws the ownership tree as a standalone image',()=>{
+  assert.match(html,/<button type="button" class="secondary tree-save" id="save-tree"[^>]*>Save as SVG<\/button>/);
+  const elements=renderWithPage(true),{context}=elements;
+  const agents=[{id:'root',parent:null,label:'Root objective',status:'waiting',phase:'manager'},
+    {id:'root.1',parent:'root',label:'Entry module',status:'done',phase:'implement'},
+    {id:'root.2',parent:'root',label:'Ticket operations and storage',status:'waiting',phase:'manager'},
+    {id:'root.2.1',parent:'root.2',label:'Create ticket',status:'done',phase:'implement'},
+    {id:'root.2.2',parent:'root.2',label:'Temporary builder',status:'done',phase:'implement'},
+    {id:'root.3',parent:'root',label:'Temporary builder',status:'done',phase:'implement'},
+    {id:'root.4',parent:'root',label:'Compiler',status:'waiting',phase:'implement'}];
+  const svg=context.treeSvg(agents);
+  assert.match(svg,/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+  assert.equal((svg.match(/<circle /g)||[]).length,5,'Root, two pieces, one leaf and the compiler; no builders');
+  assert.match(svg,/>Root<\/text>/);
+  assert.match(svg,/>Compiler<\/text>/);
+  assert.match(svg,/>Ticket operatio…<\/text>/,'long labels are clipped');
+  assert.match(svg,/stroke-dasharray="3 3"/,'the compiler hangs above Root on a dashed line');
+  assert.equal(context.treeSvg([]),'');
+});
