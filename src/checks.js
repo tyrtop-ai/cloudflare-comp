@@ -12,7 +12,7 @@ import { TOOLCHAINS, toolchainOf, extractSurface } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
-import { cardScope, commandShape, stepTarget, routeShape, roleOf, maskSecrets, maskWith, commandExpects } from './affordances.js';
+import { cardScope, commandShape, stepTarget, routeShape, roleOf, maskSecrets, maskWith, commandExpects, elementWords } from './affordances.js';
 export { maskSecrets, maskWith };
 
 // The time a card verification may take (container/build-runner.mjs
@@ -205,20 +205,24 @@ export function stepWords(step, scope = null, check = null) {
   if (op === 'goto') return `goto ${routeShape(typeof v === 'string' ? v : '/', scope?.literal)}`;
   if (op === 'press') return `press ${typeof v === 'string' ? v : 'a key'}`;
   if (op === 'expect_count' && v && typeof v === 'object' && v.role) return `expect_count of ${roleOf(v.role)} elements`;
+  // v8 live 4: an element step names the element, as a worker's facts do.
+  if (op === 'expect_element' || op === 'expect_no_element') return `${op} ${clip(elementWords(v, scope), 120)}`;
   // Live 3: wording a step looks for is interface, and is named.
   if ((op === 'expect_text' || op === 'expect_no_text') && scope?.isWording?.(v, check)) return `${op} ${q(clip(scope.secrets ? maskWith(v, scope) : v, 80))}`;
   return op;
 }
 const missWords = (step, scope) => {
   const [op, v] = Object.entries(step || {})[0] || [];
-  return op === 'fill' || op === 'click' ? `no ${String(stepTarget(op, v, scope)).replace(/^the /, '')} on the page` : 'nothing it looks for on the page';
+  return op === 'fill' || op === 'click' ? `no ${String(stepTarget(op, v, scope)).replace(/^the /, '')} on the page` : op === 'expect_element' ? `no ${clip(elementWords(v, scope), 120).replace(/^an? /, '')} on the page` : op === 'expect_no_element' ? `the page still has ${clip(elementWords(v, scope), 120)}` : 'nothing it looks for on the page';
 };
 // What a page offered when a step found nothing: its fields and its buttons and links.
 const offeredWords = (o, m) => {
   if (!o || typeof o !== 'object') return '';
   const fields = (o.fields || []).map(f => [f?.label && `label ${q(m(f.label, 60))}`, f?.placeholder && `placeholder ${q(m(f.placeholder, 60))}`, f?.name && `name ${q(m(f.name, 60))}`].filter(Boolean).join(' ') || 'an unlabelled field');
   const buttons = (o.buttons || []).map(b => q(m(b?.text, 60)));
-  return `; fields found: ${fields.length ? fields.join(', ') : 'none'}; buttons and links found: ${buttons.length ? buttons.join(', ') : 'none'}`;
+  // v8 live 4: an element step's miss names the elements of its tag the page has.
+  const elements = Array.isArray(o.elements) ? `; ${o.elements.length ? `elements of that kind found: ${o.elements.map(e => m(e, 80)).join(', ')}` : 'no element of that kind'}` : '';
+  return `${elements}; fields found: ${fields.length ? fields.join(', ') : 'none'}; buttons and links found: ${buttons.length ? buttons.join(', ') : 'none'}`;
 };
 // A command as a worker reads it: its argv shape (values as their kind).
 export const commandWords = (c, scope = null) => commandShape(c, scope) || firstWord(c) || 'the command';
@@ -282,7 +286,10 @@ export function workerDetail(check, res = {}, ctx = null) {
 // categories, never in a failure's wording (the live CLI looped ten rounds
 // on stderr texts that changed and never matched). A stack trace in the
 // output of a command that ran is a crash.
-export const FAILURE_CATEGORIES = Object.freeze(['did not start', 'timed out', 'wrong exit', 'wrong output', 'missing text', 'crashed']);
+// v8 live 4: missing_module, a run that needed a package the project's
+// installed packages leave out (src/packages.js missingModule): the failure
+// goes up the worker's line as a package ask, and the answer rides with it.
+export const FAILURE_CATEGORIES = Object.freeze(['did not start', 'timed out', 'wrong exit', 'wrong output', 'missing text', 'crashed', 'missing_module']);
 const CRASH = /Traceback \(most recent call last\)|^\s+at .+:\d+(?::\d+)?\)?$|\bpanicked at\b|Segmentation fault|core dumped|Uncaught \w*Error|Unhandled\w* (?:promise )?rejection/im;
 export function failureCategory(check, res = {}) {
   const c = check || {}, o = res?.observed || {}, what = o.what;
@@ -361,7 +368,9 @@ export function namedContracts(text, names) {
 // only, and its statement is masked with the card's scope (live 2 review:
 // a statement never carries a check's value to a worker). goal: the
 // effective goal, whose words count as stated.
-export function checkProblems(card, results, issues = [], {origin = () => null, contractNames = [], goal = ''} = {}) {
+// missing(r, res): the package a failed run needed and the project lacks
+// ('' when none); such a failure's category is missing_module (v8 live 4).
+export function checkProblems(card, results, issues = [], {origin = () => null, contractNames = [], goal = '', missing = () => ''} = {}) {
   const party = (path, role) => { const o = origin(path); return {path, owner: o?.owner || '', owner_path: o?.owner_path || '', digest: '', role}; };
   const items = [], scope = cardScope(card, {goal});
   for (const r of card?.requirements || []) {
@@ -369,13 +378,13 @@ export function checkProblems(card, results, issues = [], {origin = () => null, 
     if (!res || res.passed || res.infrastructure || !routable(r)) continue;
     const said = workerDetail(r.check, res, scope), says = maskWith(String(r.says), scope).replace(/[.\s]+$/, '');
     const frames = (res.frames || []).filter(f => f?.path && origin(f.path)).slice(0, 8);
-    const names = [...new Set([...(r.serves || []), ...namedContracts(maskWith(`${said}\n${res.output || ''}`, scope), contractNames)])];
+    const names = [...new Set([...(r.serves || []), ...namedContracts(maskWith(`${said}\n${res.output || ''}`, scope), contractNames)])], module = missing(r, res) || '';
     items.push({kind: 'run', path: '', sites: [...new Set(frames.map(f => f.path))],
       parties: [...new Set(frames.map(f => f.path))].map(p => party(p, 'site')),
       detail: clip(`${r.id} (${says}): ${said}`, 900),
       facts: {requirement: {id: r.id, says: clip(says, 200), check: checkLabel(r.check, scope), evidence: clip(said, 600),
         text: clip(`${says} (${r.id}): ${said}`, 600), source: r.source || '', names, serves: r.serves || [],
-        frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0})), card: true, check_kind: r.check?.kind || '', category: failureCategory(r.check, res), reach: failureReach(r.check, res)},
+        frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0})), card: true, check_kind: r.check?.kind || '', category: module ? 'missing_module' : failureCategory(r.check, res), reach: failureReach(r.check, res), ...(module ? {module} : {})},
       failure: failureHead(`${r.id} ${said}`)}});
   }
   for (const x of issues || []) {

@@ -41,7 +41,9 @@ export function askName(v) {
 // contracts ({name, owner?}); base is paths; sources is [{ref, title}]. A
 // granted file its own contract names is listed once, as a file, so asking
 // for it quotes its text.
-export function catalogue({own = [], uses = [], base = [], sources = []} = {}) {
+// v8 live 4: packages ({name, provides}), the installed modules its row
+// lists, follow its contracts: what exists for its part.
+export function catalogue({own = [], uses = [], packages = [], base = [], sources = []} = {}) {
   const out = [], seen = new Set(), files = new Set(base);
   const add = (name, kind, is) => {
     if (typeof name !== 'string' || !name || seen.has(name)) return;
@@ -50,6 +52,7 @@ export function catalogue({own = [], uses = [], base = [], sources = []} = {}) {
   };
   for (const c of own) if (!files.has(c?.name)) add(c?.name, 'contract', MESSAGES.available_own());
   for (const c of uses) add(c?.name, 'contract', MESSAGES.available_use({owner: typeof c?.owner === 'string' ? c.owner : ''}));
+  for (const p of packages) add(p?.name, 'package', MESSAGES.available_package({provides: typeof p?.provides === 'string' ? p.provides : ''}));
   for (const p of base) add(p, 'base', MESSAGES.available_base());
   for (const s of sources) {
     const m = SOURCE_REF.exec(String(s?.ref ?? ''));
@@ -112,9 +115,12 @@ export const baseAnswer = ({id, path, content, own = false}) =>
 // listing up to NONE_NAMES catalogue names, those of the kind the name has first.
 export function noneText(name, cat = []) {
   const want = SOURCE_REF.test(String(name)) ? 'source' : 'base', rank = e => e.kind === want ? 0 : 1;
-  const names = [...cat].sort((a, b) => rank(a) - rank(b)).slice(0, NONE_NAMES).map(e => e.name);
+  // v8 live 4: packages are named by a package ask's own answer, never here.
+  const names = [...cat].filter(e => e.kind !== 'package').sort((a, b) => rank(a) - rank(b)).slice(0, NONE_NAMES).map(e => e.name);
   return MESSAGES.broker_none({name: String(name), names: names.join(', ')});
 }
+// v8 live 4: a package ask's answer (src/index.js packageAsk): what the asker's line holds for it.
+export const packageAnswer = ({id, name, text}) => shapeAnswer({id, name, kind: 'package', label: BROKER_LABEL.package, value: text});
 export const noneAnswer = ({id, name, catalogue: cat = []}) =>
   shapeAnswer({id, name, kind: 'none', status: 'none', label: BROKER_LABEL.none, value: noneText(name, cat)});
 // An answer as answered_requests carries it: {name, label, value, next?, facts?}.

@@ -21,9 +21,9 @@ export const PRINCIPLES = `You are one of many agents building one project toget
 
 // §6.3: one paragraph per role, at most six sentences each.
 export const ROLE = Object.freeze({
-  card: 'Your role: turn the goal into the project card before any work starts. You receive the goal, the toolchains this deployment runs, a digest of any existing files, and summaries of linked pages, quoted as reference. Name the smallest set of deliverables that meets the goal, keeping to what it asks, with the languages that produce them and how to run them, and record each choice it leaves open under decisions. Then list the requirements: each a yes/no statement the goal states or implies, quoting the goal phrase it comes from as its source, with one check that runs that behaviour the way its user meets it, since a file that merely exists shows nothing the goal asks. If the goal changes a project that was not given, set blocked and say what is missing.',
+  card: 'Your role: turn the goal into the project card before any work starts. You receive the goal, the toolchains this deployment runs with their installed packages, a digest of any existing files, and summaries of linked pages, quoted as reference. Name the smallest set of deliverables that meets the goal, keeping to what it asks, with the languages that produce them and how to run them, and record each choice it leaves open under decisions. Then list the requirements: each a yes/no statement the goal states or implies, quoting the goal phrase it comes from as its source, with one check that runs that behaviour the way its user meets it, since a file that merely exists shows nothing the goal asks. If the goal changes a project that was not given, set blocked and say what is missing.',
   card_review: 'Your role: decide whether one check on the project card matches the goal. You receive the goal, the card, one requirement whose check has failed against every attempt, and the evidence. If the check asks for something the goal does not state or imply, give a corrected check for the same requirement. If the check is right, keep it. A requirement the goal states stays as strong as the goal states it.',
-  splitter: 'Your role: divide your assignment into pieces that separate writers can produce at the same time without seeing each other. You receive your assignment, the contracts you must deliver, the contracts already available from elsewhere, the project facts, the goal as the limit of scope, and a digest of any existing files and summaries of linked pages. Use the fewest pieces that each fit one writer, at most the number given; a piece that is still large is divided again by its own owner. Give every contract you must deliver, unchanged, to exactly one piece. Where two pieces must work together, write the contract between them now, with examples, so neither has to guess what the other will do, and give shared data or state to one owner that the others use through its contract. If one writer can do the whole assignment, return no pieces.',
+  splitter: 'Your role: divide your assignment into pieces that separate writers can produce at the same time without seeing each other. You receive your assignment, the contracts you must deliver, the contracts already available from elsewhere, your packages, the project facts, the goal as the limit of scope, and a digest of any existing files and summaries of linked pages. Use the fewest pieces that each fit one writer, at most the number given; a piece that is still large is divided again by its own owner. Give every contract you must deliver, unchanged, to exactly one piece. Where two pieces must work together, write the contract between them now, with examples, so neither has to guess what the other will do, and give shared data or state to one owner that the others use through its contract. If one writer can do the whole assignment, return no pieces.',
   worker: 'Your role: write the files that fulfil your contracts. You receive your assignment, your contracts with their examples, the contracts of other parts you may use with the exact reference for each, the project facts, the goal as the limit of scope, your files as they stand, and any failure report. Write each file complete, at the path your contract names, or at a path you choose for anything else. Refer to another part only by its contract name, written as its reference shows; the runtime connects that reference to wherever the part ends up. If you need something that none of the contracts you may use provides, ask for it in your control block, and write meanwhile the files that do not depend on it. The answers to your asks arrive in answered_requests and are final, so use what they name rather than asking again.',
   file: 'Your role: write one file again so that it fixes the problem described. Keep its contract and everything that already works. Return only the complete text of the file.',
   manager: 'Your role: settle the problems that linking or the checks found among your direct children, with as few changes as possible. You receive each problem with its evidence and the runtime\'s default decision, your children\'s contracts, and what each child was already told. Give each problem to the one child whose own contract it breaks, and tell every affected child the same thing when several must agree. Keep every contract on exactly one child. If a child has already failed the same problem twice, give it to the other side, change what that child is asked to do, or pass the problem up.',
@@ -36,16 +36,16 @@ export const ROLE = Object.freeze({
 const CARD_FIELDS = [
   'Return one json object with these fields, and nothing else:',
   '- "card": the number 1.',
-  '- "summary": what the user receives, in at most 200 characters.',
+  '- "summary": what the user receives, at most 200 characters.',
   '- "languages": ids of the given toolchains the deliverables use; "text" covers documents, pages, styles and data.',
   '- "deliverables": 1 to 12 contracts, each {"name", "kind", "does", "inputs", "outputs", "effects", "examples", "path"}. kind is one of "function", "file", "page", "route", "command", "doc", "data". A file, page, doc or data deliverable is named by its path, a command by the one word that runs it (with the path of its file), a route as a request method in capitals, a space and a path, a function as its language names functions. inputs lists {"name", "is"}; examples lists {"given", "expect"}.',
-  '- "run": 0 to 4 ways to run the project, each {"id", "static": true} to serve the files as they are, or {"id", "run": "<a command deliverable or an installed executable, with its arguments>", "port": true, "ready": "<a path that answers once it is up>"}.',
+  '- "run": 0 to 4 ways to run it, each {"id", "static": true} to serve the files as they are, or {"id", "run": "<a command deliverable or an installed executable, with its arguments>", "port": true, "ready": "<a path that answers once it is up>"}.',
   '- "requirements": 1 to 24, each {"id": "R1" and so on, "says": one yes/no statement, "source": the phrase of the goal it comes from, quoted, "serves": the names of the deliverables it is about, "check": one check}. Check a page by browser steps, a command by running it, a function by calling it, a document by a reader\'s question.',
   '- Writers see the statement and the names its check uses, not its values: "says" states behaviour and interface, such as "an invalid unit exits non-zero with an error on stderr".',
-  '- A check is one of: {"kind": "file", "path", "has": [texts the file contains], "json": true when it must parse}; {"kind": "judge", "path", "question": a yes/no question a reader answers from the file alone}; {"kind": "command", "run": as in a run, "stdin", "files": {path: content of an input file}, "expect": {"exit", "stdout", "stdout_has", "stderr_has", "stderr": true}}; {"kind": "call", "steps": [{"call": a function deliverable, "args": [...], "save": a name later arguments read as "$name", "expect", "expect_has", "throws": true}]}; {"kind": "http", "serve": a run id, "steps": [{"method", "path", "body", "save", "expect": {"status", "body_has", "json_has"}}]}; {"kind": "browser", "serve": a run id, "steps": [each one of {"goto"}, {"reload": true}, {"press"}, {"fill": {"label" or "placeholder" or "role" and "name", "text"}}, {"click": {"role" and "name", or "text", or "label"}}, {"expect_text"}, {"expect_no_text"}, {"expect_count": {"role" or "text", "n"}}]}.',
+  '- A check is one of: {"kind": "file", "path", "has": [texts the file contains], "json": true when it must parse}; {"kind": "judge", "path", "question": a yes/no question a reader answers from the file alone}; {"kind": "command", "run": as in a run, "stdin", "files": {path: content of an input file}, "expect": {"exit", "stdout", "stdout_has", "stderr_has", "stderr": true}}; {"kind": "call", "steps": [{"call": a function deliverable, "args": [...], "save": a name later arguments read as "$name", "expect", "expect_has", "throws": true}]}; {"kind": "http", "serve": a run id, "steps": [{"method", "path", "body", "save", "expect": {"status", "body_has", "json_has"}}]}; {"kind": "browser", "serve": a run id, "steps": [each one of {"goto"}, {"reload": true}, {"press"}, {"fill": {"label" or "placeholder" or "role" and "name", "text"}}, {"click": {"role" and "name", or "text", or "label"}}, {"expect_text"}, {"expect_no_text"}, {"expect_count": {"role" or "text", "n"}}, {"expect_element": {"selector", "text"}}]}.',
   '- "project_checks": 0 to 4 commands that run the project\'s own tests, when the goal asks for tests.',
   '- "decisions": every choice the goal leaves open, one sentence each.',
-  '- "refs": up to 16 outline refs of the sources the work needs.',
+  '- "refs": up to 16 outline refs of sources the work needs.',
   '- "blocked": only when the goal cannot be started: what is missing.',
   'Examples of single requirements:',
   '<example>{"id":"R1","says":"Converts Celsius to Fahrenheit and prints the result","source":"convert temperatures between Celsius and Fahrenheit","serves":["convert"],"check":{"kind":"command","run":"convert 100 C","expect":{"exit":0,"stdout_has":["212"]}}}</example>',
@@ -58,12 +58,13 @@ const CONTRACT_FIELDS = '- A contract is {"name", "kind", "does", "inputs", "out
 const SPLITTER_FIELDS = [
   'Return one json object with these fields, and nothing else:',
   '- "reason": why the assignment divides this way, in one or two sentences.',
-  '- "pieces": the pieces, or an empty list when one writer can do the whole assignment. Each piece is {"label", "task", "contracts", "uses", "refs"}.',
-  '- "label": a few words naming what the piece produces.',
-  '- "task": what its writer must produce, in full sentences, so that a writer who sees only this piece can do it.',
+  '- "pieces": the pieces, or an empty list when one writer can do the whole assignment. Each piece is {"label", "task", "contracts", "uses", "refs", "packages"}.',
+  '- "label": a few words naming what it produces.',
+  '- "task": what its writer must produce, in full sentences, so a writer who sees only this piece can do it.',
   '- "contracts": at most 5 contracts the piece delivers to the other pieces or to your own contracts, each your own contract that it carries or a new one between pieces.',
   '- "uses": the names of the contracts the piece relies on, from other pieces or from the contracts already available to you.',
-  '- "refs": the outline refs of the sources the piece must read, if any; it receives only those.',
+  '- "refs": outline refs of the sources the piece must read, if any; it receives only those.',
+  '- "packages": names from your_packages the piece needs.',
   '- Only a piece with a contract whose path is an existing file may change that file.',
   '- Give a piece tests to write only when the goal or a contract asks for them, and keep what only one piece uses inside that piece.',
   CONTRACT_FIELDS
@@ -140,6 +141,8 @@ export const CLEF = Object.freeze({
   exercises: 'Does the check of requirement {i} exercise the behaviour the requirement states, the way its user would meet it? Answer NO if it only shows that a file exists.',
   kind_fits: 'Is the kind of deliverable {i} right for what it does: a page someone opens, a command someone runs, a function code calls, a route a request reaches, a document someone reads, or a data or other file? Answer NO if another kind fits better.',
   // v8 card repair: whether a follow-up is about a deliverable it changes (a doubt is shown, never a refusal).
+  // v8 live 4: whether the card keeps to what is installed (the toolchains and packages in installed).
+  installed: 'Do the card\'s deliverables, run commands and decisions use only the toolchains and packages listed in installed? Answer NO if they rely on a library or tool that installed does not list.',
   amend_change: 'Does the change ask, directly or by clear implication, to alter existing deliverable {i} as described? Answer NO if the change is about other deliverables, or only adds new ones beside it.'
 });
 export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, k) => k in vars ? String(vars[k]) : m);
@@ -211,7 +214,9 @@ export const MESSAGES = Object.freeze({
   // §4 (S4b): one card check that failed, as its owner reads it.
   // v8 live 2: the requirements a writer's contracts serve, from its first turn (their statements; the checks' values stay with the checks).
   requirements_served: ({list}) => `Checks written from the goal test these requirements of your contracts: ${list}.`,
-  check_failed: ({id, says, check, evidence}) => `Requirement ${id} failed: ${says}. The check: ${check}.${evidence ? ` What it observed: ${evidence}` : ''} Fix the cause in your part, or say plainly which other part's contract it lies in.`,
+  check_failed: ({id, says, check, evidence, answer}) => `Requirement ${id} failed: ${says}. The check: ${check}.${evidence ? ` What it observed: ${evidence}` : ''}${answer ? ` ${answer}` : ''} Fix the cause in your part, or say plainly which other part's contract it lies in.`,
+  // v8 live 4: a run that needed a package the project's packages leave out (missing_module), with the answer its line gave.
+  missing_package: ({name, answer}) => `The run needed ${name}, which the project's installed packages leave out. ${answer}`,
   // v8 S9 (§7.2): a follow-up the user gave, as the card writer reads it beside current_card.
   amend_note: () => 'change is a new instruction from the user for the project that current_card describes, and goal now ends with it. Return the whole card for the goal with the change: keep each deliverable and requirement of current_card that the change leaves as it is, with its id and its check, and add or change only what the change asks for. Give each new or changed requirement the phrase of the change it comes from as its source.',
   // The amendment as the part it is routed to reads it (an amendment travels the path a repair does).
@@ -253,7 +258,12 @@ export const MESSAGES = Object.freeze({
   // Capability boxes S5 (src/broker.js): the catalogue a writer asks from
   // (view's available), what each entry is, and the broker's own answers.
   // Each says what is there and how to reach it.
-  available_note: () => 'available lists what you can ask for by name in your control block: your contracts, the contracts you may use, existing files open to you and parts of linked pages. Each answer arrives in answered_requests, labelled with where it comes from.',
+  available_note: () => 'available lists what you can ask for by name in your control block: your contracts, the contracts you may use, your installed packages, existing files open to you and parts of linked pages. Each answer arrives in answered_requests, labelled with where it comes from.',
+  // v8 live 4: a package the writer's row lists, and the answers to a package ask (src/index.js packageAsk), each naming what exists for the need.
+  available_package: ({provides}) => provides ? `an installed package for ${provides}` : 'an installed package',
+  package_yours: ({need, names, many}) => `For ${need}, your packages hold ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
+  package_granted: ({need, names, many}) => `For ${need}, your manager granted ${names}, now in your packages: use ${it(many)}.`,
+  package_held: ({held}) => held ? `For this need, the installed packages are ${held}: build it from these, in your own files.` : 'For this need, build it in your own files.',
   available_own: () => 'your own contract',
   available_use: ({owner}) => owner ? `a contract that "${owner}" delivers` : 'a contract another part delivers',
   available_base: () => 'an existing project file: the answer quotes its text',
@@ -266,7 +276,8 @@ export const MESSAGES = Object.freeze({
 export const BROKER_LABEL = Object.freeze({
   base: BASE_LABEL,
   source: url => `untrusted: fetched from ${url}`,
-  none: 'available names'
+  none: 'available names',
+  package: 'the installed packages'
 });
 
 // Every text above that a model reads, by name, for the lint (§8.3).

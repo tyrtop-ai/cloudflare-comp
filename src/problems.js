@@ -473,7 +473,8 @@ export function requirementText(r, {fn=null, more=[], module='', method='', thro
   // v8 S4b: a failed card check reads the same to whoever takes it: the
   // requirement, the kind of check and what it observed (never its expected
   // values or steps, src/checks.js workerDetail).
-  if(r?.card)return MESSAGES.check_failed({id:r.id,says:String(r.says||'').replace(/[.\s]+$/,''),check:r.check,evidence:r.evidence});
+  // v8 live 4: a run that missed a package carries its line's answer (answer: what exists for the need).
+  if(r?.card)return MESSAGES.check_failed({id:r.id,says:String(r.says||'').replace(/[.\s]+$/,''),check:r.check,evidence:r.evidence,answer:r.answer||''});
   // v8 S9: an amendment's requirement reads as the user's change, never its check.
   if(r?.amendment&&r.contract)return MESSAGES.amendment_contract({change:String(r.amendment).trim().replace(/[.\s]+$/,''),name:r.contract,does:String(r.says||'').replace(/[.\s]+$/,'')});
   if(r?.amendment)return MESSAGES.amendment({change:String(r.amendment).trim().replace(/[.\s]+$/,''),id:r.id,says:String(r.says||'').replace(/[.\s]+$/,'')});

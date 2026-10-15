@@ -151,6 +151,9 @@ export function jsonObjects(text) {
 // any kind (README.md, GET /items, a command); kind is kept when it is one.
 // Capability boxes S5: a name from the broker's catalogue too (a chunk ref
 // such as S2#3, or an existing file's path), which the room classifies.
+// v8 live 4: a piece's package names (src/packages.js packageNames, kept here to keep this file's imports as they are).
+const packageNamesOf = raw => [...new Set((Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;]+/) : [])
+  .map(p => typeof p === 'string' ? p.trim() : typeof p?.name === 'string' ? p.name.trim() : '').filter(n => /^(?:@[\w.-]+\/)?[A-Za-z_][\w.:-]{0,80}$/.test(n)))].slice(0, 64);
 export function normalizeAsk(ask, {v8 = false} = {}) {
   return (Array.isArray(ask) ? ask : ask && typeof ask === 'object' || typeof ask === 'string' ? [ask] : []).map(q => {
     if (typeof q === 'string') q = { need: q, name: q };
@@ -194,7 +197,9 @@ export function normalizeAction(raw,{maxFiles=Infinity,v8=false}={}) {
         const interfaces = Array.isArray(fns) && fns.length ? normalizeInterfaces(fns, {v8}) : [], uses = normalizeUses(s.uses, {v8});
         // v8 S8b: the source chunk refs the piece reads (S1#3); the room keeps only those its parent holds.
         const refs = v8 ? (Array.isArray(s.refs) ? s.refs : typeof s.refs === 'string' ? [s.refs] : []).filter(r => typeof r === 'string' && r.trim()).slice(0, 32).map(r => clip(r.trim(), 40)) : [];
-        return { label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700), ...(interfaces.length ? {interfaces} : {}), ...(uses.length ? {uses} : {}), ...(refs.length ? {refs} : {}) };
+        // v8 live 4: the packages the piece needs, by name, from its parent's (admission checks them, src/packages.js piecePackages).
+        const packages = v8 ? packageNamesOf(s.packages) : [];
+        return { label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700), ...(interfaces.length ? {interfaces} : {}), ...(uses.length ? {uses} : {}), ...(refs.length ? {refs} : {}), ...(packages.length ? {packages} : {}) };
       }),
     messages: (Array.isArray(raw.messages) ? raw.messages : [])
       .filter(m => m && typeof m.to === 'string' && typeof m.body === 'string')

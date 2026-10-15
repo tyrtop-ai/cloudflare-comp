@@ -47,7 +47,8 @@ import { cardScope } from './affordances.js';
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, cardsFor, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
-import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
+import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
+import { normalizePackages, installedPackages, heldByName, heldForNeed, isPackageAsk, missingModule, externalModule, piecePackages, packageLine, needOf, languageOf } from './packages.js';
 import { caseTwin } from '../container/build-path.mjs';
 import { toBase64 } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -176,7 +177,7 @@ async function assumptionTopic(slug, childKey) {
   const hash=Array.from(bytes.slice(0,6),b=>b.toString(16).padStart(2,'0')).join('');
   return `${full.slice(0,87)}_${hash}`; // exactly 100 characters, 48-bit suffix
 }
-const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses';
+const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages';
 // v7.15 slice B: what a function request asks for, as answers and events say it.
 const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
 const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}` : xs[0]||'';
@@ -416,6 +417,9 @@ export class ControlRoom extends DurableObject {
     if (!cols.includes('interfaces')) db.exec("ALTER TABLE agents ADD COLUMN interfaces TEXT NOT NULL DEFAULT '[]'");
     // v7.15.5: the functions of its siblings a node's split says it calls.
     if (!cols.includes('uses')) db.exec("ALTER TABLE agents ADD COLUMN uses TEXT NOT NULL DEFAULT '[]'");
+    // v8 live 4: a node's packages, the installed modules its row lists beside
+    // its contracts (src/packages.js). '[]' under v7, which never reads it.
+    if (!cols.includes('packages')) db.exec("ALTER TABLE agents ADD COLUMN packages TEXT NOT NULL DEFAULT '[]'");
     // Speed v1 review: a version per agent row (rev) and one for the alias
     // table, bumped by triggers on every write, so a dashboard delta selects
     // only the agents changed since its cursor and knows when the export list
@@ -671,6 +675,11 @@ export class ControlRoom extends DurableObject {
   // (meta toolchain_inventory, recorded by the verification step from S4),
   // else every row of the phase-1 image (src/toolchains.js).
   installedToolchains() { const inv=this.read('toolchain_inventory',null); return inv?installedRows(inv):[...TOOLCHAINS]; }
+  // v8 live 4: the installed set (the rows' curated packages, by the box's
+  // inventory), which Root's row is created with; and a node's packages, as
+  // its row lists them.
+  installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
+  packagesOf(id) { return this.v8()?normalizePackages(parse(this.node(id)?.packages,[])):[]; }
   // v8 S3: a room held at a stop only Continue (or a later slice) moves on:
   // card_blocked, card_failed; and (S4b) at the card's checks: checks_failed,
   // checks_blocked, checks_exhausted. Root waits; the run ends
@@ -1048,13 +1057,13 @@ export class ControlRoom extends DurableObject {
   // The dashboard's agent rows; since: only those whose rev is newer.
   agentRows(since=null) {
     const rows=since===null?this.allNodes():query(this.db(),`SELECT ${nodeFields} FROM agents WHERE rev>? ORDER BY LENGTH(id),id`,since);
-    return rows.map(n=>({...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])}));
+    return rows.map(n=>({...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[]),packages:parse(n.packages,[])}));
   }
   stampAgents(at) {
     this.agentStamps??=new Map();
     const out=[],seen=new Set();
     for(const n of this.allNodes()) {
-      const row={...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])},digest=JSON.stringify(row),old=this.agentStamps.get(n.id);
+      const row={...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[]),packages:parse(n.packages,[])},digest=JSON.stringify(row),old=this.agentStamps.get(n.id);
       seen.add(n.id);
       if(old?.digest!==digest)this.agentStamps.set(n.id,{digest,at});
       out.push({row,at:this.agentStamps.get(n.id).at});
@@ -1241,12 +1250,15 @@ export class ControlRoom extends DurableObject {
     const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
     return {...app,files:[...notes,...own,...carried]};
   }
-  async provision(id, parent, label, task, interfaces=[], uses=[]) {
+  // v8 live 4: packages, the installed modules the row lists, given by the
+  // parent as its contracts are (Root's: the installed set).
+  async provision(id, parent, label, task, interfaces=[], uses=[], packages=[]) {
     if (this.node(id)) throw new Error('Agent ID exists');
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
-    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?)',
-      id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8:this.v8()})));
+    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?)',
+      id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8:this.v8()})),
+      JSON.stringify(this.v8()?normalizePackages(packages):[]));
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
@@ -1455,7 +1467,9 @@ export class ControlRoom extends DurableObject {
       const id=`${parentId}.${batch.start_index+i}`;
       let child=this.node(id);
       // v7.15.5: answers a spec carries (composeStart) are there before the child can run.
-      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[]);this.assignRefs(id,parentId,planned[i].refs);}
+      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[]);this.assignRefs(id,parentId,planned[i].refs);
+        // v8 live 4: a package the split named that its parent's row does not list is the piece's ask, as a worker's would be.
+        for(const name of planned[i].package_asks||[])this.answerPackageAsk(id,{name,need:'',key:requestKey({name})});}
       made.push(child);
     }
     return made;
@@ -3450,6 +3464,36 @@ export class ControlRoom extends DurableObject {
       held:new Set(this.v8()?query(this.db(),'SELECT path FROM base_passthrough').map(r=>r.path):[])});
     return {files:link.files,origin,placed,glue:link.glue,link,contracts};
   }
+  // v8 live 4: whether a reference a link or a run left unresolved names a
+  // module outside the project (a package: the standard library's, or a
+  // third party's), which no rename joins (src/packages.js externalModule).
+  externalHit(hit, bundle) {
+    if(!this.v8()||!hit?.module)return false;
+    bundle.external??=(()=>{
+      const paths=[...bundle.files.keys()].filter(p=>!(bundle.glue||new Map()).has(p));
+      return {stems:[...new Set(paths.flatMap(p=>p.split('/').map(s=>s.replace(/\.[^.]+$/,''))))],contracts:[...this.contractNames()],held:this.packagesOf('root'),rows:this.installedToolchains()};
+    })();
+    return externalModule({module:hit.module},bundle.external);
+  }
+  // v8 live 4: each failure that needed a package outside the project goes
+  // up its writer's line as that package's ask (packageAsk); the answer (what
+  // the line holds for the need) rides with the failure as the writer reads
+  // it (requirementText). The writer: the owner of a file the failure's
+  // frames name, else of a file that imports the package, else the node
+  // whose checks ran (an atomic Root).
+  answerMissingModules(id, items, bundle) {
+    for(const it of items) {
+      const req=it.facts?.requirement;
+      if(!req?.module)continue;
+      const esc=req.module.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),reads=new RegExp(`(?:^|\\n)\\s*(?:from\\s+${esc}\\b|import\\s+${esc}\\b)|require\\(\\s*['"](?:node:)?${esc}['"]|from\\s+['"](?:node:)?${esc}['"]`);
+      const importer=[...bundle.files].find(([p,t])=>bundle.origin.get(p)&&reads.test(String(t)))?.[0];
+      const owner=it.parties.find(p=>p.owner&&this.node(p.owner))?.owner||(importer&&bundle.origin.get(importer)?.owner)||id;
+      const a=this.answerPackageAsk(owner,{name:req.module,language:req.module_language||'',key:requestKey({name:req.module}),wake:false});
+      if(!a)continue;
+      req.answer=MESSAGES.missing_package({name:req.module,answer:a.text});
+      this.event(owner,'package_missing',clip(`${req.id}: the run needed ${req.module}, beyond the installed packages; ${a.how==='granted'?`granted ${a.names.join(', ')} for it`:a.how==='yours'?`its packages hold ${a.names.join(', ')} for it`:'answered with what the installed packages hold'}.`,500));
+    }
+  }
   // S5: the link of a bundle in the room's events (once per input), and the
   // runtime-written files in meta glue_files (runtime-owned, §4.7).
   linkNotes(id, input, {link, glue}) {
@@ -3515,11 +3559,12 @@ export class ControlRoom extends DurableObject {
     const out=[],seen=new Set(),pieces=bundle.origin;
     for(const [rid,res] of results) {
       if(!res||res.passed||res.infrastructure)continue;
+      // v8 live 4: a package outside the project is the failure report's (missing_module), never a rename's.
       const secrets=checkSecrets(card?.requirements?.find(r=>r.id===rid)?.check),hidden=v=>!!v&&secrets.some(x=>x===v||x.toLowerCase().split(/[^\p{L}\p{N}_]+/u).includes(v.toLowerCase()));
       const text=`${res.detail||''}\n${res.output||''}`;
       for(const row of this.installedToolchains().filter(r=>r.unresolved?.length)) {
         for(const hit of unresolvedNames(text,row)) {
-          if(hidden(hit.name)||hidden(hit.module))continue;
+          if(hidden(hit.name)||hidden(hit.module)||this.externalHit(hit,bundle))continue;
           const frame=(res.frames||[]).find(f=>pieces.has(f.path)&&toolchainOf(f.path)?.id===row.id)?.path;
           const named=hit.module?[...bundle.files.keys()].filter(p=>pieces.has(p)&&toolchainOf(p)?.id===row.id&&new RegExp(`(?:^|\\n)\\s*(?:from|import)\\s+${hit.module.replace(/\./g,'\\.')}\\b`).test(bundle.files.get(p))):[];
           for(const path of frame?[frame]:named.length===1?named:[]) {
@@ -3731,7 +3776,9 @@ export class ControlRoom extends DurableObject {
     // S5 (§5): what the link renamed and the glue it wrote, told once per input;
     // a reference it left unresolved goes to the linker model before the run.
     this.linkNotes(id,input,bundle);
-    if(relinks<2&&bundle.link?.unresolved.length&&await this.relinkBundle(id,bundle,bundle.link.unresolved.filter(u=>!this.installedToolchains().some(r=>(r.executables||[]).includes(u.module)))))return this.compileCard(id,{relinks:relinks+1});
+    // v8 live 4: a module outside the project (a package) is no link's to join: the run's report names it (missing_module).
+    const linkable=(bundle.link?.unresolved||[]).filter(u=>!this.installedToolchains().some(r=>(r.executables||[]).includes(u.module))&&!this.externalHit(u,bundle));
+    if(relinks<2&&linkable.length&&await this.relinkBundle(id,bundle,linkable))return this.compileCard(id,{relinks:relinks+1});
     this.set('atomic_compile',atomic?input:'');
     this.event(id,'checks_started',`Running the project card's ${card.requirements.length} requirement check(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
     const {plan,toolchains,local,container}=checkPlan(card,files,{rows:this.installedToolchains(),placed,paths:bundle.link?.paths});
@@ -3798,7 +3845,10 @@ export class ControlRoom extends DurableObject {
       this.event(id,'checks_passed',kept.length?`Every requirement of the project card that has a runnable check passed (${card.requirements.length-kept.length}) against snapshot ${digest.slice(0,14)}; ${kept.map(r=>r.id).join(', ')} stay${kept.length>1?'':'s'} untested.`:`Every requirement of the project card passed (${card.requirements.length}) against snapshot ${digest.slice(0,14)}.`);
       return finish();
     }
-    const items=checkProblems(card,results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name)),goal:this.userGoal()});
+    // v8 live 4: a run that needed a package outside the project is missing_module, answered from its writer's line.
+    const missing=(r,res)=>{if(!this.v8())return '';const m=missingModule(`${res?.detail||''}\n${res?.output||''}`,this.installedToolchains());return m&&this.externalHit({module:m.module},bundle)?m.module:'';};
+    const items=checkProblems(card,results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name)),goal:this.userGoal(),missing});
+    this.answerMissingModules(id,items,bundle);
     this.event(id,'checks_reported',clip(`The project card's checks: ${line}.`,900));
     // Bench mode: a hidden requirement (the benchmark's own test) is never
     // routed; when only hidden ones fail, the room ends benchmark_failed.
@@ -5075,7 +5125,22 @@ export class ControlRoom extends DurableObject {
     const using=survivors.filter(c=>c.uses?.length);
     if(using.length)this.event(id,'uses_planned',using.map(c=>`"${clip(c.label,70)}" uses ${c.uses.map(u=>clefP.has(`${c.task}\n${u}`)?`${u} (Clef p=${clefP.get(`${c.task}\n${u}`).toFixed(3)})`:u).join(', ')}`).join('; ')+'.');
     if(interfaceErrors(survivors,promised).some(e=>e.check==='C5'))throw new Error(`Admission lost a function promised to ${id}; this is a runtime bug.`);
-    return {spawn:v8?await this.baseContracts(id,survivors):survivors,c5:[],rejectedScope,rejectedChildren};
+    return {spawn:v8?this.planPackages(id,await this.baseContracts(id,survivors)):survivors,c5:[],rejectedScope,rejectedChildren};
+  }
+  // v8 live 4: each piece's packages, as its contracts are given: the names
+  // the splitter gave it that this node's row lists; the others become the
+  // piece's asks once it exists (spawn); a piece given none gets this node's
+  // packages of its languages (src/packages.js piecePackages).
+  planPackages(id, spawn) {
+    const held=this.packagesOf(id),notes=[];
+    const out=spawn.map(c=>{
+      if(!c||typeof c!=='object')return c;
+      const r=piecePackages(c,held),{packages:_,...rest}=c;
+      if(r.given)notes.push(`"${clip(c.label,70)}" gets ${r.packages.map(p=>p.name).join(', ')||'no package'}${r.asks.length?` and asks for ${r.asks.join(', ')}`:''}`);
+      return {...rest,packages:r.packages,...(r.asks.length?{package_asks:r.asks}:{})};
+    });
+    if(notes.length)this.event(id,'packages_planned',clip(`Packages from "${this.node(id)?.label||id}"'s: ${notes.join('; ')}.`,600));
+    return out;
   }
   // v8 S8b (v8 card repair): a split's contract that names an existing file
   // stays on its piece, and waits for the person's grant (approveBasePaths);
@@ -5911,7 +5976,7 @@ export class ControlRoom extends DurableObject {
     const n=this.node(id);
     if(!n||!this.v8()||this.manager(id)||isRuntimeNode(n))return [];
     const titles=new Map(this.sourceRows().map(r=>[r.id,r.card?.title||r.title||r.final_url||r.url]));
-    return brokerCatalogue({own:this.promisedOf(id),uses:this.plannedUses(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
+    return brokerCatalogue({own:this.promisedOf(id),uses:this.plannedUses(id),packages:this.packagesOf(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
   }
   availableView(id, answered=[]) {
     const cat=this.catalogue(id),labelled=answered.some(a=>a&&typeof a==='object');
@@ -5925,17 +5990,21 @@ export class ControlRoom extends DurableObject {
   // What one ask is (broker.js classify): a contract goes on to today's
   // routing (askManager); a chunk, an existing file, or a name outside the
   // catalogue is answered here.
-  askKind(id, name) {
+  askKind(id, name, need='') {
     if(!this.v8())return {kind:'contract',name:name||''};
-    return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts:this.contractNames()});
+    // v8 live 4: an ask for a package (a module or library it names, or a need for one) is answered from the asker's line (answerPackageAsk).
+    const contracts=this.contractNames();
+    if(!this.basePaths().has(name||'')&&isPackageAsk({name,need},{contracts,held:this.packagesOf('root'),rows:this.installedToolchains()}))return {kind:'package',name:name||''};
+    return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts});
   }
   // Answers one ask that needs no other part, with no manager hop (§5.3): a
   // [route:broker] message wakes the writer, whose next turn reads the answer
   // in answered_requests. false: a contract, for askManager.
   brokerAnswer(id, ask) {
     if(!this.v8())return false;
-    const cat=this.catalogue(id),c=this.askKind(id,ask.name);
+    const cat=this.catalogue(id),c=this.askKind(id,ask.name,ask.question);
     if(c.kind==='contract')return false;
+    if(c.kind==='package'){this.answerPackageAsk(id,{name:ask.name||'',need:ask.question||'',key:ask.key});return true;}
     const req=brokerRequest({from:id,kind:c.kind,name:c.name,need:ask.question});
     let answer=null;
     if(c.kind==='source') {
@@ -5950,6 +6019,60 @@ export class ControlRoom extends DurableObject {
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
     this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters${answer.facts?.clipped?` of ${answer.facts.chars}`:''}, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
     return true;
+  }
+  // v8 live 4: a package ask, answered from the asker's line. Each row on
+  // the line (the asker's own, then its manager's, and up) is read in turn:
+  // the first that holds a package by the asked name, or one whose provides
+  // meets the need, answers. One the asker's own row holds is pointed to; one
+  // a row above holds is granted, added to every row between, so a piece's
+  // packages stay a part of its parent's. The top, holding nothing for the
+  // need, answers with what it holds, and the request is kept for the person
+  // (package_requests): no package is installed by an agent's ask. The same
+  // answer serves a run that missed a package (missing_module). Returns
+  // {how: 'yours'|'granted'|'held', text, names}.
+  packageAsk(id, {name='', need='', language=''}={}) {
+    const rows=this.installedToolchains(),line=[],want={name,need};
+    for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.push(x);
+    if(!line.length)return null;
+    const what=name||clip(need,80);
+    // The language the need is in: the run's, the name's, else the asker's own packages' or the card's code languages, when one.
+    const own=[...new Set(this.packagesOf(id).map(p=>p.language).filter(Boolean))],code=codeLanguages(this.read('card',null));
+    const lang=language||languageOf(name,rows)||(own.length===1?own[0]:code.length===1?code[0]:'');
+    let at=-1,hits=[];
+    for(let i=0;i<line.length;i++) {
+      const held=this.packagesOf(line[i].id).filter(p=>!lang||!p.language||p.language===lang);
+      hits=heldByName(held,name);
+      if(!hits.length)hits=heldForNeed(held,want,rows);
+      if(hits.length){at=i;break;}
+      if(i+1<line.length)this.event(line[i+1].id,'package_relayed',clip(`"${line[i].label}" asked for ${what}, beyond its own packages; asked "${line[i+1].label}".`,400),line[i].id);
+    }
+    const asker=line[0],names=hits.map(packageLine).join(', '),many=hits.length>1,forNeed=needOf(want,hits,rows);
+    if(at===0)return {how:'yours',names:hits.map(p=>p.name),text:MESSAGES.package_yours({need:forNeed,names,many})};
+    if(at>0) {
+      for(let j=at-1;j>=0;j--) {
+        const own=this.packagesOf(line[j].id),add=hits.filter(p=>!own.some(q=>q.name===p.name));
+        if(add.length)this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,...add])),line[j].id);
+      }
+      this.event(line[at].id,'package_granted',clip(`"${line[at].label}" granted ${hits.map(p=>p.name).join(', ')} to "${asker.label}" for ${what}.`,400),asker.id);
+      return {how:'granted',names:hits.map(p=>p.name),text:MESSAGES.package_granted({need:forNeed,names,many})};
+    }
+    const top=line.at(-1),langs=new Set(lang?[lang]:own),all=this.packagesOf(top.id),shown=(langs.size?all.filter(p=>langs.has(p.language)):all).slice(0,16);
+    this.save('package_requests',[...this.read('package_requests',[]).filter(r=>!(r.from===asker.id&&r.name===name&&r.need===need)),{from:asker.id,label:asker.label,name,need:clip(need,200),ts:Date.now()}].slice(-20));
+    this.event(top.id,'package_request',clip(`"${asker.label}" asked for ${what}; the installed packages hold nothing for it, so it was answered with what they hold, and the request waits for the person (packages are allowed in the room's settings).`,500),asker.id);
+    return {how:'held',names:[],text:MESSAGES.package_held({held:shown.map(packageLine).join(', ')})};
+  }
+  // A worker's package ask (its control block's, or a split's name its
+  // parent's row does not list): answered like a broker answer, labelled,
+  // in answered_requests, with a message that wakes it.
+  answerPackageAsk(id, {name='', need='', key='', wake=true, language=''}={}) {
+    const a=this.packageAsk(id,{name,need,language});
+    if(!a)return null;
+    const req=brokerRequest({from:id,kind:'package',name:name||clip(need,80),need});
+    const answer=packageAnswer({id:req.id,name:name||clip(need,80),text:a.text});
+    if(wake)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:key||requestKey({need,name}),kind:'package',status:answer.status}));
+    this.recordAnswer(id,{key:key||requestKey({need,name}),kind:'broker',text:viewAnswer(answer)});
+    this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:'answered with what the installed packages hold'}.`,400));
+    return a;
   }
   // The answers a worker got to its function requests, newest kept, one per
   // topic; later turns read them as answered_requests.
@@ -6563,7 +6686,7 @@ export class ControlRoom extends DurableObject {
       // of the previous result the room starts from.
       await this.loadSources();
       const base=this.read('base',null),srcs=this.sourceRows();
-      const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,
+      const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,held:this.packagesOf(id),
         base_digest:base?.digest||null,base:[...this.basePaths()],prior_card:this.read('prior_card',null),
         sources:cardsFor(srcs,this.allRefs()),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error}))});
       const {errors,unsupported}=written;
@@ -6737,6 +6860,9 @@ export class ControlRoom extends DurableObject {
           if(available.length)before.contracts_available=available;
           if(left_out)before.contracts_left_out=MESSAGES.left_out({count:String(left_out)});
           before.project=project;
+          // v8 live 4: the packages its row lists, which its pieces get a part of.
+          const packages=this.packagesOf(id);
+          if(packages.length)before.your_packages=packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}));
           // v8 S8b: the existing project's digest (its tree) and the source cards of the refs this node holds.
           const digest=this.read('base',null)?.digest;
           if(digest)before.existing_files={label:BASE_LABEL,digest};
@@ -6831,7 +6957,9 @@ export class ControlRoom extends DurableObject {
           delete before.root_scope;
           delete before.split_feedback;
           delete before.your_promised_functions;
-          delete before.contracts_available;delete before.contracts_left_out;
+          delete before.contracts_available;delete before.contracts_left_out;delete before.your_packages;
+          // v8 live 4: implementing directly, it reads its catalogue (its packages among it) as any writer does.
+          if(this.v8())Object.assign(before,this.availableView(id,this.read(`fn_answers:${id}`,[]).map(a=>a.text)));
           raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
           this.set(`split_feedback:${id}`,'');
         }
@@ -6872,7 +7000,7 @@ export class ControlRoom extends DurableObject {
         action.notes=[];
         // Capability boxes S5: under v8 the broker still answers the top's
         // asks that need no other part; the rest have nobody to go to.
-        const direct=this.v8()?action.ask.filter(a=>this.askKind(id,a.name).kind!=='contract'):[];
+        const direct=this.v8()?action.ask.filter(a=>this.askKind(id,a.name,a.question).kind!=='contract'):[];
         if(action.ask.length) {
           if(direct.length<action.ask.length)this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
           action.ask=direct;action.wait=direct.length>0;
@@ -7622,7 +7750,7 @@ export class ControlRoom extends DurableObject {
     if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}${loaded.meta.not_carried?.length?`; ${loaded.meta.not_carried.length} not carried (the runtime's own paths)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} Only a piece whose contract names a base file, and whose goal asks to change it, may change it.`,900));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
-      try { await this.provision('root',null,'Root objective',task,this.live()&&!v8?rootPromise(whole):[]); await this.drive(budget); }
+      try { await this.provision('root',null,'Root objective',task,this.live()&&!v8?rootPromise(whole):[],[],v8?this.installedSet():[]); await this.drive(budget); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};
@@ -8103,7 +8231,7 @@ export class ControlRoom extends DurableObject {
     }
     if(root&&!this.manager('root')&&(rootBusy||root.phase==='decompose'))return {deferred:true};
     const rows=this.installedToolchains(),base=[...this.basePaths()],packages=this.settings().packages,started=Date.now(),reserved=this.usedRequirementIds();
-    const written=await writeCard(this.inferenceEnv('compiler'),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,installed:rows,base,packages,prior_card:card,change:text,base_digest:this.read('base',null)?.digest||null});
+    const written=await writeCard(this.inferenceEnv('compiler'),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,installed:rows,base,packages,held:this.packagesOf('root'),prior_card:card,change:text,base_digest:this.read('base',null)?.digest||null});
     if(gone())return stale;
     if(written.card?.blocked)return {error:`The card writer could not apply the change: ${clip(written.card.blocked,400)}`};
     if(written.unsupported?.length)return {error:`The change needs ${listed(written.unsupported)}, which this deployment cannot run.`};

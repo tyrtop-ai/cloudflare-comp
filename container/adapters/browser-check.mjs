@@ -32,7 +32,7 @@
 // stdout: {"start":id} before each check, a JSON line per check {"id",
 // "passed","ms","detail"?,"failed_step"?,"step"?,"body_text"?,
 // "console_errors"?,"frames"?,"miss"?,"offers"?:{"fields":[{label,placeholder,name}],
-// "buttons":[{role,text}]}}, then {"inventory":{"chromium","playwright"}}.
+// "buttons":[{role,text}],"elements"?:[text]}}, then {"inventory":{"chromium","playwright"}}.
 // Exit 0 unless the browser cannot start (exit 3, {"launch_error"}).
 import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
@@ -62,6 +62,7 @@ const describe = step => {
   if (op === 'click') return `click ${target(arg)}`;
   if (op === 'expect_count') return `expect ${arg?.n} ${arg?.role || 'element'}${arg?.text ? ` with ${quote(arg.text)}` : ''}`;
   if (op === 'reload') return 'reload';
+  if (op === 'expect_element' || op === 'expect_no_element') return `${op === 'expect_element' ? 'expect' : 'expect no'} ${clip(arg?.selector, 80)}${arg?.text ? ` with ${quote(arg.text)}` : ''}`;
   return `${op} ${quote(arg)}`;
 };
 function target(t = {}) {
@@ -172,6 +173,31 @@ async function offersOf(page, ms = 1500) {
   } catch { return null; }
 }
 const offersLine = o => !o ? '' : `; fields found: ${o.fields.length ? o.fields.map(f => [f.label && `label ${quote(f.label)}`, f.placeholder && `placeholder ${quote(f.placeholder)}`, f.name && `name ${quote(f.name)}`].filter(Boolean).join(' ') || 'an unlabelled field').join(', ') : 'none'}; buttons and links found: ${o.buttons.length ? o.buttons.map(b => quote(b.text)).join(', ') : 'none'}`;
+// v8 live 4: the elements of a page that a simple selector matches (the
+// card's SELECTOR: a tag, #id, .class, [attribute], [attribute=value]),
+// each as {text, said}: its visible text (or value, aria-label, alt,
+// title), and how a report names it. A text step matches case-insensitively
+// a text that equals or holds it.
+const ELEMENT_SELECTOR = /^[a-z][a-z0-9-]*(?:#[A-Za-z_][\w-]*|\.[A-Za-z_][\w-]*|\[[A-Za-z_][\w-]*(?:=(?:[\w-]+|"[^"\\]*"))?\])*$/;
+const ELEMENT_INFO = els => els.map(el => {
+  const t = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const text = t(el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('title') || el.textContent);
+  const tag = el.tagName.toLowerCase(), type = el.getAttribute('type'), id = el.id, cls = t(el.getAttribute('class'));
+  return {text, said: `${tag}${type ? `[type=${type}]` : ''}${id ? `#${id}` : ''}${cls ? `.${cls.split(' ').join('.')}` : ''}${text ? ` "${text.slice(0, 40)}"` : ''}`};
+});
+async function elementMatches(page, arg, ms) {
+  const sel = String(arg?.selector || '').trim();
+  if (!ELEMENT_SELECTOR.test(sel)) throw new Error(`the selector ${quote(sel)} is not a simple one (a tag, #id, .class, [attribute])`);
+  const infos = await within(page.locator(sel).evaluateAll(ELEMENT_INFO), ms, 'reading the page');
+  const want = arg?.text ? norm(arg.text) : '';
+  return want ? infos.filter(x => norm(x.text).includes(want)) : infos;
+}
+// What a page has of the element kind a step looked for: up to 8 elements of its tag.
+async function elementsOf(page, arg, ms = 1500) {
+  const tag = (/^[a-z][a-z0-9-]*/i.exec(String(arg?.selector || '')) || [''])[0];
+  if (!tag) return [];
+  try { return (await within(page.locator(tag).evaluateAll(ELEMENT_INFO), ms, 'reading the page')).slice(0, 8).map(x => x.said); } catch { return []; }
+}
 // A promise bounded by ms: it rejects with Timeout(what) when ms pass first.
 function within(promise, ms, what) {
   let timer;
@@ -217,6 +243,19 @@ async function runStep(page, base, step) {
     case 'expect_no_text':
       if (!await poll(async ms => !(await bodyText(page, ms)).includes(String(arg)), stepMs)) throw new Error(`the page still shows ${quote(arg)} after ${stepMs} ms`);
       return;
+    // v8 live 4: the page has at least one element the selector matches (with the text, if given); a miss names what it has.
+    case 'expect_element': {
+      let hits = [];
+      const found = await poll(async ms => { try { hits = await elementMatches(page, arg, ms); } catch (e) { if (!(e instanceof Timeout)) throw e; hits = []; } return hits.length > 0; }, stepMs);
+      if (!found) throw new Miss(`no ${clip(arg?.selector, 80)}${arg?.text ? ` with the text ${quote(arg.text)}` : ''} on the page`);
+      return;
+    }
+    case 'expect_no_element': {
+      let hits = [];
+      const gone = await poll(async ms => { try { hits = await elementMatches(page, arg, ms); } catch (e) { if (!(e instanceof Timeout)) throw e; } return hits.length === 0; }, stepMs);
+      if (!gone) throw new Error(`the page still has ${hits.length} ${clip(arg?.selector, 80)}${arg?.text ? ` with the text ${quote(arg.text)}` : ''} after ${stepMs} ms`);
+      return;
+    }
     case 'expect_count': {
       const n = Number(arg?.n);
       let loc = arg?.role ? page.getByRole(roleOf(arg.role)) : arg?.text ? page.getByText(arg.text) : null;
@@ -297,7 +336,10 @@ async function runCheck(check) {
       Object.assign(state, {index: i, step});
       try { await within(runStep(page, base, step), stepMs + 1000, `step ${i + 1}`); }
       catch (e) {
-        if (e instanceof Miss) return failure(i, step, e.message, {miss: true, ...(e.ambiguous ? {ambiguous: e.ambiguous} : {}), offers: await offersOf(page)});
+        if (e instanceof Miss) {
+          const offers = await offersOf(page), elements = step && 'expect_element' in step ? await elementsOf(page, step.expect_element) : null;
+          return failure(i, step, `${e.message}${elements ? `; ${elements.length ? `elements of that kind found: ${elements.join(', ')}` : 'no element of that kind'}` : ''}`, {miss: true, ...(e.ambiguous ? {ambiguous: e.ambiguous} : {}), offers: elements ? {...(offers || {fields: [], buttons: []}), elements} : offers});
+        }
         const reason = e instanceof Timeout ? `no answer within ${stepMs} ms (the page may be busy)` : String(e?.message || e).split('\n')[0].replace(/^(?:locator|page|keyboard)\.\w+: /, '');
         return failure(i, step, reason);
       }

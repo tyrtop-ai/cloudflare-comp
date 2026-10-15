@@ -145,12 +145,16 @@ test('broker: a writer reads its granted file, a chunk it holds, and the neutral
   const turns = label => calls.leaf.filter(u => u.your_label === label);
 
   // ---- the catalogue: only what exists for each writer
-  const seen = label => turns(label)[0].available.map(e => e.name);
+  // v8 live 4: each writer's packages follow its contracts in the catalogue; the rest is as before.
+  const mine = list => list.filter(e => !e.is.startsWith('an installed package'));
+  const seen = label => mine(turns(label)[0].available).map(e => e.name);
+  assert.ok(turns('Shout keeper')[0].available.some(e => e.name === 'node:fs'), 'a writer of a script reads its packages');
+  assert.ok(!turns('Notes writer')[0].available.some(e => e.is.startsWith('an installed package')), 'a writer of documents only has none');
   assert.deepEqual(seen('Shout keeper'), ['src/shout.js']);
   assert.deepEqual(seen('Notes writer'), ['NOTES.md', 'S2#1', 'S2#2', 'S2#3']);
   assert.deepEqual(seen('Questions writer'), ['FAQ.md', 'S1#1']);
-  assert.deepEqual(turns('Shout keeper')[0].available, [{name: 'src/shout.js', is: MESSAGES.available_base()}]);
-  assert.deepEqual(turns('Notes writer')[0].available[3], {name: 'S2#3', is: 'part 3 of the linked page "Widget guide"'});
+  assert.deepEqual(mine(turns('Shout keeper')[0].available), [{name: 'src/shout.js', is: MESSAGES.available_base()}]);
+  assert.deepEqual(mine(turns('Notes writer')[0].available)[3], {name: 'S2#3', is: 'part 3 of the linked page "Widget guide"'});
   for (const label of ['Shout keeper', 'Notes writer', 'Questions writer']) {
     assert.equal(turns(label)[0].available_note, MESSAGES.available_note());
     assert.equal(turns(label)[0].answers_note, undefined, 'nothing answered yet');
@@ -216,7 +220,7 @@ test('broker: the top, which has no manager, still reads its granted file and he
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
   const [first, second] = calls.leaf;
-  assert.deepEqual(first.available, [{name: 'src/shout.js', is: MESSAGES.available_base()}]);
+  assert.deepEqual(first.available.filter(e => !e.is.startsWith('an installed package')), [{name: 'src/shout.js', is: MESSAGES.available_base()}]);
   assert.deepEqual(second.answered_requests, [
     {name: 'src/shout.js', label: BASE_LABEL, value: BASE_FILES['src/shout.js'], facts: {placed_when: 'now'}},
     {name: 'package.json', label: BROKER_LABEL.none, value: 'Nothing is available under the name package.json. Available: src/shout.js.'}]);

@@ -30,7 +30,7 @@ export const CARD_SCHEMA = Object.freeze({
     command: '{kind:"command", run (kept with its argv), stdin?, files?:{path:content}, expect:{exit?, stdout?, stdout_has?, stderr_has?, stderr?:true}}',
     call: '{kind:"call", steps:[{call, args, save?, expect?, expect_has?, throws?}]}',
     http: '{kind:"http", serve, steps:[{method, path, body?, save?, expect:{status?, body_has?, json_has?}}]}',
-    browser: '{kind:"browser", serve, steps:[{goto}|{reload}|{press}|{fill}|{click}|{expect_text}|{expect_no_text}|{expect_count}]}'
+    browser: '{kind:"browser", serve, steps:[{goto}|{reload}|{press}|{fill}|{click}|{expect_text}|{expect_no_text}|{expect_count}|{expect_element:{selector, text?}}|{expect_no_element:{selector, text?}}]}'
   },
   project_checks: `0..${CARD_LIMITS.project_checks} commands the project itself defines; each becomes the requirement P<n>`,
   decisions: `0..${CARD_LIMITS.decisions} choices the goal left open, one sentence each`,
@@ -278,7 +278,49 @@ function browserStep(s) {
   if (k === 'fill') { if (!plain(v) || typeof v.text !== 'string') return null; const l = locator(v, LOCATOR.filter(x => x !== 'text')); return Object.keys(l).length ? {fill: {...l, text: v.text.slice(0, 1000)}} : null; }
   if (k === 'click') { if (!plain(v)) return null; const l = locator(v, ['role', 'name', 'text', 'label']); return Object.keys(l).length ? {click: l} : null; }
   if (k === 'expect_count') { if (!plain(v) || !Number.isInteger(v.n) || v.n < 0) return null; const l = locator(v, ['role', 'text']); return Object.keys(l).length ? {expect_count: {...l, n: v.n}} : null; }
+  if (k === 'expect_element' || k === 'expect_no_element') {
+    const sel = plain(v) ? v.selector : v;
+    if (typeof sel !== 'string' || sel.length > 200 || !SELECTOR.test(sel.trim())) return null;
+    const text = plain(v) && typeof v.text === 'string' && v.text.trim() ? {text: v.text.trim().slice(0, 200)} : {};
+    return {[k]: {selector: sel.trim(), ...text}};
+  }
   return null;
+}
+
+// v8 live 4: an element a page has, named by a simple selector: a tag, then
+// any of #id, .class, [attribute] and [attribute=value] (a value of word
+// characters, or quoted). Nothing else (no combinators, no pseudo-classes),
+// so the adapter's querySelectorAll reads it as written.
+export const SELECTOR = /^[a-z][a-z0-9-]*(?:#[A-Za-z_][\w-]*|\.[A-Za-z_][\w-]*|\[[A-Za-z_][\w-]*(?:=(?:[\w-]+|"[^"\\]*"))?\])*$/;
+// Markup in a text a page should show: an opening or a closing tag.
+export const MARKUP = /<\/?[A-Za-z][A-Za-z0-9-]*(?=[\s>\/]|$)/;
+const cssIdent = s => /^[A-Za-z_][\w-]*$/.test(s);
+// Elements that hold no text: what follows one is not its text.
+const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
+// v8 live 4 (the to-do card's R1): a page's visible text holds no markup, so
+// an expected text written as markup ("<input type='text'", "<button>Add</
+// button>") names elements. Each opening tag becomes {selector, text?}: its
+// tag, its id and classes, its other attributes, and the text right after it
+// when that text holds no tag. [] when the text has no opening tag.
+export function markupElements(text) {
+  const out = [], src = String(text ?? '');
+  const TAG = /<([A-Za-z][A-Za-z0-9-]*)((?:\s+[^\s=>\/"']+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>"']+))?)*)\s*(\/?)\s*(>|$)/g;
+  for (const m of src.matchAll(TAG)) {
+    let sel = m[1].toLowerCase();
+    for (const a of (m[2] || '').matchAll(/([^\s=>\/"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+)))?/g)) {
+      const name = a[1].toLowerCase(), value = a[2] ?? a[3] ?? a[4];
+      if (!cssIdent(name)) continue;
+      if (name === 'id' && value && cssIdent(value)) sel += `#${value}`;
+      else if (name === 'class' && value) sel += value.split(/\s+/).filter(cssIdent).map(c => `.${c}`).join('');
+      else if (value === undefined) sel += `[${name}]`;
+      else if (/^[\w-]+$/.test(value)) sel += `[${name}=${value}]`;
+      else if (!/["\\]/.test(value)) sel += `[${name}="${value}"]`;
+    }
+    if (!SELECTOR.test(sel) || sel.length > 200) continue;
+    const inner = m[4] === '>' && !m[3] && !VOID.has(m[1].toLowerCase()) ? /^([^<]*)/.exec(src.slice(m.index + m[0].length))[1].replace(/\s+/g, ' ').trim() : '';
+    out.push({selector: sel, ...(inner ? {text: inner.slice(0, 200)} : {})});
+  }
+  return out;
 }
 // What an untested requirement keeps of its check: the writer's text, clipped, under a kind no runner runs.
 export const UNTESTED = 'untested';
@@ -312,6 +354,7 @@ function browserWords(s) {
   if (k === 'click') return `click ${plain(v) && v.role ? `${v.role} ` : ''}${who(v)}`;
   if (k === 'expect_text' || k === 'expect_no_text') return `${k} ${JSON.stringify(v)}`;
   if (k === 'expect_count') return `expect_count ${plain(v) ? v.role || JSON.stringify(v.text) : ''}`;
+  if (k === 'expect_element' || k === 'expect_no_element') return `${k} ${plain(v) ? `${v.selector}${v.text ? ` ${JSON.stringify(v.text)}` : ''}` : ''}`;
   return k;
 }
 
@@ -827,7 +870,16 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
         if (kind === 'browser' && Array.isArray(c.steps)) {
           const steps = c.steps.map(browserStepOf);
           if (steps.some((x, i) => x !== c.steps[i])) notes.push(`${label}: its browser steps are read as goto, fill, click, press and expect_text steps.`);
-          c.steps = steps.map(st => {
+          // v8 live 4: an expected text written as markup names elements: each becomes an element step.
+          c.steps = steps.flatMap(st => {
+            const op = plain(st) ? ['expect_text', 'expect_no_text'].find(k => typeof st[k] === 'string' && MARKUP.test(st[k])) : null;
+            const els = op ? markupElements(st[op]) : [];
+            if (!els.length) return [st];
+            const to = op === 'expect_text' ? 'expect_element' : 'expect_no_element';
+            notes.push(`${label}: a page's visible text holds no tags, so its step for ${JSON.stringify(String(st[op]).slice(0, 120))} checks the element${els.length > 1 ? 's' : ''} ${els.map(e => `${e.selector}${e.text ? ` with the text ${JSON.stringify(e.text)}` : ''}`).join(' and ')} (${to}).`);
+            return els.map(e => ({[to]: e}));
+          });
+          c.steps = c.steps.map(st => {
             const to = plain(st) && typeof st.goto === 'string' ? localPath(st.goto, hosts) : null;
             if (!to) return st;
             notes.push(`${label}: its browser check opens "${st.goto.slice(0, 120)}" as ${to}, the path on the served project.`);

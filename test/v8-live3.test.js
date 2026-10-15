@@ -235,7 +235,8 @@ test('vetting (room): a requirement doubted as an internal detail keeps failing,
 // ------------------------------------------------------------ C: progress
 test('C: a failure\'s category, from what its check observed', () => {
   const cmd = CLI_CARD.requirements[2].check;
-  assert.deepEqual(FAILURE_CATEGORIES, ['did not start', 'timed out', 'wrong exit', 'wrong output', 'missing text', 'crashed']);
+  // v8 live 4 added missing_module (a run that needed a package the project lacks).
+  assert.deepEqual(FAILURE_CATEGORIES, ['did not start', 'timed out', 'wrong exit', 'wrong output', 'missing text', 'crashed', 'missing_module']);
   assert.equal(failureCategory(cmd, {observed: {what: 'start'}}), 'did not start');
   assert.equal(failureCategory(cmd, {observed: {what: 'timeout'}}), 'timed out');
   assert.equal(failureCategory(cmd, {observed: {what: 'exit', exit: 0, stderr: ''}}), 'wrong exit');

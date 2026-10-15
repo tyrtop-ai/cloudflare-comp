@@ -25,6 +25,26 @@ export const TOOLCHAINS = Object.freeze([
     binding_rules:"To change an imported name without touching its local uses, alias it: const { realName: localName } = require(...) or import { realName as localName } from '...'. Once an import's path is right, the runtime itself fixes four binding shapes, so for these fix only the path: one name destructured from a module whose module.exports is a function or class of that name, a module bound whole that the file only calls while it exports an object holding that name, a module bound whole whose only export is one function when the file only calls it, and a module bound whole that the file only passes on as a value while it exports an object holding that name.",
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
     stack:'v8', stdlib:'node-builtins',
+    // v8 live 4: what a project of this row has installed, as an agent's row
+    // lists it (packages, src/packages.js): the built-in modules worth naming,
+    // each with what it provides (since: the first runtime version that has it).
+    // stands_for: a third-party name as the need it stands for, so an ask or a
+    // failure that names one is answered with what the project holds for it.
+    // missing_package: how a run says a package is not there (group module).
+    packages:[{name:'node:http',provides:'HTTP server'},{name:'node:https',provides:'HTTPS server and client'},{name:'node:fs',provides:'files and folders'},{name:'node:path',provides:'file paths'},
+      {name:'node:url',provides:'URL parsing'},{name:'node:querystring',provides:'query strings'},{name:'node:crypto',provides:'hashing and random ids'},{name:'node:test',provides:'tests'},
+      {name:'node:assert',provides:'assertions for tests'},{name:'node:child_process',provides:'running commands'},{name:'node:events',provides:'events'},{name:'node:readline',provides:'reading input line by line'},
+      {name:'node:os',provides:'operating system facts'},{name:'node:util',provides:'utilities and command-line arguments (parseArgs)'},{name:'node:zlib',provides:'compression'},{name:'node:stream',provides:'streams'},
+      {name:'node:timers',provides:'timers'},{name:'node:process',provides:'environment and exit status'},{name:'node:sqlite',provides:'database in a file',since:'22.13'}],
+    stands_for:{express:'HTTP server',koa:'HTTP server',fastify:'HTTP server',hapi:'HTTP server','@hapi/hapi':'HTTP server',restify:'HTTP server',connect:'HTTP server','body-parser':'HTTP server',cors:'HTTP server','serve-static':'HTTP server',
+      axios:'HTTP client','node-fetch':'HTTP client',got:'HTTP client',superagent:'HTTP client',request:'HTTP client',uuid:'hashing and random ids',nanoid:'hashing and random ids',
+      sqlite3:'database in a file','better-sqlite3':'database in a file',mocha:'tests',jest:'tests',vitest:'tests',chai:'assertions for tests',supertest:'tests',
+      commander:'utilities and command-line arguments (parseArgs)',yargs:'utilities and command-line arguments (parseArgs)',minimist:'utilities and command-line arguments (parseArgs)',
+      'fs-extra':'files and folders',rimraf:'files and folders',mkdirp:'files and folders',dotenv:'environment and exit status',lodash:'utilities and command-line arguments (parseArgs)'},
+    // Other third-party names a run or a file may name: a package, never a part of the project.
+    third_party:['react','react-dom','vue','angular','svelte','next','typescript','ts-node','nodemon','ws','socket.io','mongoose','mongodb','pg','mysql','mysql2','redis','sequelize','prisma','knex',
+      'ejs','pug','handlebars','mustache','moment','dayjs','date-fns','chalk','inquirer','jsonwebtoken','bcrypt','bcryptjs','passport','multer','cheerio','puppeteer','playwright','sharp','winston','morgan','helmet','joi','zod','yup'],
+    missing_package:["Cannot find (?:module|package) '(?<module>(?:@[\\w.-]+/)?[\\w.-]+)(?:/[^']*)?'"],
     // v8 S5: a JavaScript reference is a relative path the linker rewrites (autoLink); no glue.
     line_comment:'//', block_comment:['/*','*/'], strings:['"',"'",'`'], glue:null, image:'build' }),
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
@@ -68,6 +88,24 @@ export const TOOLCHAINS = Object.freeze([
     // Modules the image installs beside the standard library (never shimmed, renamed or unresolved).
     site_modules:'pytest _pytest pluggy iniconfig packaging py',
     unresolved:["cannot import name '(?<name>\\w+)' from '(?<module>[\\w.]+)'","No module named '(?<module>[\\w.]+)'","name '(?<name>\\w+)' is not defined"],
+    // v8 live 4: as the JavaScript row's: the standard library's modules worth naming, with what each provides.
+    packages:[{name:'http.server',provides:'HTTP server'},{name:'urllib.request',provides:'HTTP client'},{name:'urllib.parse',provides:'URL parsing'},{name:'json',provides:'JSON'},
+      {name:'sqlite3',provides:'database in a file'},{name:'csv',provides:'CSV files'},{name:'argparse',provides:'command-line arguments'},{name:'datetime',provides:'dates and times'},
+      {name:'re',provides:'regular expressions'},{name:'pathlib',provides:'file paths'},{name:'os',provides:'environment, files and folders'},{name:'shutil',provides:'copying and moving files'},
+      {name:'unittest',provides:'tests'},{name:'html',provides:'escaping text for web pages'},{name:'html.parser',provides:'reading web pages'},{name:'string',provides:'text templates'},
+      {name:'uuid',provides:'unique ids'},{name:'random',provides:'random numbers'},{name:'math',provides:'math'},{name:'statistics',provides:'statistics'},
+      {name:'collections',provides:'counters, queues and ordered maps'},{name:'dataclasses',provides:'data classes'},{name:'logging',provides:'logging'},{name:'hashlib',provides:'hashing'},
+      {name:'secrets',provides:'secure tokens'},{name:'subprocess',provides:'running commands'},{name:'threading',provides:'threads'},{name:'socketserver',provides:'network servers'},
+      {name:'sys',provides:'process arguments and exit status'},{name:'time',provides:'time and sleeping'},{name:'configparser',provides:'config files'},{name:'xml.etree.ElementTree',provides:'XML'},
+      {name:'base64',provides:'base64'},{name:'zipfile',provides:'zip archives'},{name:'tempfile',provides:'temporary files'},{name:'textwrap',provides:'wrapping text'},{name:'pytest',provides:'tests',site:true}],
+    stands_for:{flask:'HTTP server',django:'HTTP server',fastapi:'HTTP server',bottle:'HTTP server',tornado:'HTTP server',aiohttp:'HTTP server',starlette:'HTTP server',cherrypy:'HTTP server',
+      pyramid:'HTTP server',sanic:'HTTP server',falcon:'HTTP server',werkzeug:'HTTP server',uvicorn:'HTTP server',gunicorn:'HTTP server',requests:'HTTP client',httpx:'HTTP client',urllib3:'HTTP client',
+      jinja2:'text templates',mako:'text templates',sqlalchemy:'database in a file',peewee:'database in a file',pymysql:'database in a file',psycopg2:'database in a file',pandas:'CSV files',
+      click:'command-line arguments',typer:'command-line arguments',docopt:'command-line arguments',dateutil:'dates and times',arrow:'dates and times',pendulum:'dates and times',
+      pydantic:'data classes',attrs:'data classes',yaml:'config files',toml:'config files',bs4:'reading web pages',lxml:'XML',numpy:'math'},
+    third_party:['scipy','matplotlib','seaborn','pil','pillow','rich','colorama','tabulate','tqdm','boto3','redis','pymongo','celery','openai','scrapy','selenium','sklearn','scikit-learn',
+      'tensorflow','torch','keras','nltk','spacy','marshmallow','wtforms','flask_sqlalchemy','flask_cors','flask_restful','flask_login','rest_framework','dotenv','termcolor','prettytable','pyfiglet','emoji','markdown','simplejson','ujson','orjson','six'],
+    missing_package:["No module named '(?<module>[\\w.]+)'"],
     call_adapter:['python3','-I','-X','utf8','/opt/adapters/call.py'], stack:'python', stdlib:'/opt/toolchain/python-stdlib.txt', image:'build' }),
   Object.freeze({ id:'text', name:'text', manifests:[], aliases:['html','htm','css','markdown','md','json','yaml','yml','toml','csv','svg','txt','plain','plaintext','doc','docs','documentation'], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:'text',
     syntax:null, executables:[], extractor:null, link:'placed', stack:null,

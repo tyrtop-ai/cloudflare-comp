@@ -33,7 +33,9 @@ const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 const q = s => JSON.stringify(String(s ?? '').slice(0, 80));
 const FACTS = 8, FACT_CHARS = 220;
 // The words interface facts are phrased in (checkFacts, interfaceFacts).
-const FACT_WORDS = ['shows', 'contains', 'containing', 'exactly', 'gone', 'after', 'steps', 'counted', 'page', 'field', 'labelled', 'placeholder', 'named', 'button', 'element', 'elements', 'counted', 'route', 'sends', 'text', 'JSON', 'body', 'answers', 'status', 'runs', 'with', 'input', 'stdin', 'file', 'expects', 'exit', 'output', 'stdout', 'message', 'stderr', 'calls', 'raise', 'error', 'value', 'back', 'reads', 'integer', 'number', 'word', 'path', 'list', 'object', 'boolean'];
+const FACT_WORDS = ['shows', 'contains', 'containing', 'exactly', 'gone', 'after', 'steps', 'counted', 'page', 'field', 'labelled', 'placeholder', 'named', 'button', 'element', 'elements', 'counted', 'route', 'sends', 'text', 'JSON', 'body', 'answers', 'status', 'runs', 'with', 'input', 'stdin', 'file', 'expects', 'exit', 'output', 'stdout', 'message', 'stderr', 'calls', 'raise', 'error', 'value', 'back', 'reads', 'integer', 'number', 'word', 'path', 'list', 'object', 'boolean',
+  // v8 live 4: an element step's words (elementWords).
+  'has', 'item', 'link', 'form', 'heading', 'table', 'image', 'area', 'drop-down', 'class', 'id', 'checkbox', 'is'];
 const low = s => String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 // ARIA roles as writers spell them, as the browser adapter reads them.
 const ROLE_ALIASES = {item: 'listitem', li: 'listitem', input: 'textbox', textfield: 'textbox', field: 'textbox', btn: 'button', hyperlink: 'link', anchor: 'link', header: 'heading', tablerow: 'row', dropdown: 'combobox', select: 'combobox'};
@@ -210,6 +212,8 @@ export function cardScope(card, {goal = ''} = {}) {
       if (op === 'click' && plain(v)) { for (const k of ['name', 'text', 'label']) if (typeof v[k] === 'string') affordances.push(v[k]); if (v.role) keep.add(roleOf(v.role)); }
       if (op === 'expect_text' || op === 'expect_no_text') expect(r, v, !acted);
       if (op === 'expect_count' && plain(v)) { expect(r, v.text, !acted); if (v.role) keep.add(roleOf(v.role)); }
+      // v8 live 4: an element step names the page's interface, as a click does: its text and its selector's words.
+      if ((op === 'expect_element' || op === 'expect_no_element') && plain(v)) { if (typeof v.text === 'string') affordances.push(v.text); for (const w of selectorParts(v.selector).words) keep.add(w); }
       if (op === 'press' && typeof v === 'string') keep.add(v);
       if (op === 'goto' && typeof v === 'string') { const {segments, pairs} = urlParts(v); segments.forEach(seg => pathWords.push(seg)); for (const [k, x] of pairs) { pathWords.push(k); add(x); } }
     }
@@ -291,6 +295,25 @@ export function routeShape(p, literal = new Set()) {
   return pairs.length ? `${path}?${pairs.map(([k, v]) => `${literal.has(k) ? k : valueKind(k)}=${valueKind(v)}`).join('&')}` : path;
 }
 // A browser step's target, as its page names it; a name some check uses as a value is left out.
+// v8 live 4: a simple selector's parts (src/card.js SELECTOR): its tag, id,
+// classes and attributes, and the words a fact may show of it.
+export function selectorParts(selector) {
+  const s = String(selector ?? ''), tag = (/^[a-z][a-z0-9-]*/i.exec(s) || [''])[0].toLowerCase();
+  const id = (/#([A-Za-z_][\w-]*)/.exec(s) || [])[1] || '', classes = [...s.matchAll(/\.([A-Za-z_][\w-]*)/g)].map(m => m[1]);
+  const attrs = [...s.matchAll(/\[([A-Za-z_][\w-]*)(?:=(?:"([^"]*)"|([\w-]+)))?\]/g)].map(m => ({name: m[1].toLowerCase(), value: m[2] ?? m[3]}));
+  return {tag, id, classes, attrs, words: [tag, id, ...classes, ...attrs.flatMap(a => [a.name, a.value])].filter(Boolean)};
+}
+const ELEMENT_NOUNS = {button: 'a button', a: 'a link', ul: 'a list', ol: 'a list', li: 'a list item', form: 'a form', textarea: 'a text area', select: 'a drop-down list', table: 'a table', img: 'an image', label: 'a label', h1: 'a heading', h2: 'a heading', h3: 'a heading', h4: 'a heading', h5: 'a heading', h6: 'a heading'};
+// An element step's element as a worker reads it: "a text input", "a
+// button "Add"", "a list with id "todo-list"". The text is left out when it
+// is one of the card's values (scope.isValue).
+export function elementWords(t = {}, scope = null) {
+  const {tag, id, classes, attrs} = selectorParts(plain(t) ? t.selector : t), type = attrs.find(a => a.name === 'type')?.value?.toLowerCase();
+  const noun = tag === 'input' ? (type === 'checkbox' ? 'a checkbox' : type ? `${/^[aeiou]/.test(type) ? 'an' : 'a'} ${type} input` : 'an input field') : ELEMENT_NOUNS[tag] || `${/^[aeiou]/.test(tag) ? 'an' : 'a'} ${tag} element`;
+  const text = plain(t) && typeof t.text === 'string' && t.text && !(scope && scope.isValue(t.text)) ? ` ${q(t.text)}` : '';
+  const more = [id ? `id ${q(id)}` : '', classes.length ? `class ${q(classes.join(' '))}` : '', ...attrs.filter(a => !(tag === 'input' && a.name === 'type')).map(a => a.value === undefined ? `the ${a.name} attribute` : `${a.name} ${q(a.value)}`)].filter(Boolean);
+  return `${noun}${text}${more.length ? ` with ${more.join(', ')}` : ''}`;
+}
 export function stepTarget(op, t = {}, scope = null) {
   if (!plain(t)) return '';
   const ok = s => typeof s === 'string' && s && !(scope && scope.isValue(s));
@@ -336,6 +359,8 @@ function checkFacts(r, scope, pages, routes, texts = new Map()) {
       else if (op === 'click') has.add(stepTarget('click', v, scope));
       else if (op === 'press' && typeof v === 'string') has.add(`the key ${v}`);
       else if (op === 'expect_count' && plain(v) && v.role) has.add(`${roleOf(v.role)} elements (counted)`);
+      else if (op === 'expect_element' && plain(v)) has.add(elementWords(v, scope));
+      else if (op === 'expect_no_element' && plain(v)) shows.add(`${elementWords(v, scope)} is gone after its steps`);
       if (op === 'expect_text' && w(v)) shows.add(`shows the text ${q(v)}`);
       else if (op === 'expect_no_text' && w(v)) shows.add(`the text ${q(v)} is gone after its steps`);
       else if (op === 'expect_count' && plain(v) && w(v.text)) shows.add(`shows the text ${q(v.text)} (counted)`);
@@ -415,6 +440,7 @@ export function checkShapeForReview(check, scope) {
     if (k === 'fill' || k === 'click') return `${k} ${stepTarget(k, v, scope)}`;
     if (k === 'expect_text' || k === 'expect_no_text') return `${k} ${said(v)}`;
     if (k === 'expect_count') return `expect_count ${plain(v) && v.role ? roleOf(v.role) : said(v?.text)}`;
+    if (k === 'expect_element' || k === 'expect_no_element') return `${k} ${elementWords(v, scope)}`;
     return k;
   }).join(', ')}`;
   return c.kind || '';

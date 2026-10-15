@@ -78,7 +78,9 @@ const DATA_KEYS = new Set(['project', 'toolchains', 'contracts_you_may_use', 'co
   // Capability boxes S5: a broker answer ({name, label, value}) quotes data under answered_requests.
   'answered_requests',
   // v8 live 2: the card writer's retry quotes its own previous card, as the runtime read it, as data.
-  'previous_answer']);
+  'previous_answer',
+  // v8 live 4: the installed packages a card writer and a splitter read ({name, language, provides}), data as a whole.
+  'installed_packages', 'your_packages']);
 // Capability boxes S5: answered_requests holds the room's own answers to
 // contract asks too, as strings composed from MESSAGES; those stay linted.
 // Its labelled objects are the broker's answers, data as a whole.
@@ -87,6 +89,8 @@ export function composedTexts(user, data = []) {
   const out = [], seen = new Set();
   const walk = (v, key) => {
     if (DATA_ENTRIES.has(key) && Array.isArray(v)) { for (const x of v) if (typeof x === 'string') walk(x, ''); return; }
+    // v8 live 4: a catalogue entry's name is data (a contract's name, a path, a chunk ref, a package); what it is, the room's words, is linted.
+    if (key === 'available' && Array.isArray(v)) { for (const x of v) if (x && typeof x === 'object') walk(x.is, ''); return; }
     if (DATA_KEYS.has(key)) return;
     if (typeof v === 'string') {
       // A routed answer is JSON inside a message: its value is read, its data keys are not.
