@@ -361,7 +361,8 @@ test('v7.15.14 room (F3, review #2): a splitter over the bound twice leaves no c
 test('v7.15.14 review (#7): a late split from a worker\'s turn is bounded by max_children: rejected, the worker kept, and its next turn reads why',async()=>{
   const nine=Array.from({length:9},(_,i)=>({label:`Ticket part ${'ABCDEFGHI'[i]} writer`,task:`Write code that writes ticket field ${i} of the record`}));
   let turns=0;const seen=[];
-  const r=liveRoom({clef:clefScript(),leaf:u=>{turns++;seen.push(u);return turns===1?{summary:'Split',spawn:nine}:{summary:'Create',done:true,files:[{path:'tickets.js',content:'module.exports = { createTicket: (t) => ({ id: 1, ...t }) };\n'}]};}});
+  // v7.15.16 review: a late split is gated first; Clef says YES here, so the bound is what turns it back.
+  const r=liveRoom({clef:clefScript({gate:()=>0.85}),leaf:u=>{turns++;seen.push(u);return turns===1?{summary:'Split',spawn:nine}:{summary:'Create',done:true,files:[{path:'tickets.js',content:'module.exports = { createTicket: (t) => ({ id: 1, ...t }) };\n'}]};}});
   await r.room.provision('root',null,'Root objective','Build a small issue tracker that lets someone create, view, update, and delete tickets.');
   await r.room.spawn('root',[{label:'Ticket writer',task:'Write code that creates tickets'},{label:'Ticket reader',task:'Write code that reads tickets'}]);
   r.room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");

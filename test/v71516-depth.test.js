@@ -178,7 +178,7 @@ test('v7.15.16 (D1): in the room the degenerate split is split_rejected and Clef
   await lr.turn(worker);
   assert.deepEqual(mine(lr,worker,'split_rejected').map(e=>e.body),['Late decomposition rejected. No progress: a piece would carry its parent\'s whole promise ("Link status core" carries extractLinkStatus).']);
   assert.equal((await lr.readKnowledge(worker,'private')).late_split_rejected,'Your proposed pieces were not created: "Link status core" would carry your whole promise (extractLinkStatus), which is no split. Write it yourself.');
-  assert.deepEqual(late.asked,[]);
+  assert.deepEqual(late.asked.map(a=>a.kind),['gate'],'the late split is gated (YES here), then admission turns it back');
 });
 
 test('v7.15.16 (D1, review p2): a carrier promising only start is composed from the plan, never gated or split',async()=>{
@@ -191,15 +191,22 @@ test('v7.15.16 (D1, review p2): a carrier promising only start is composed from 
 });
 
 // ------------------------------------------------------------------ D2
-test('v7.15.16 (D2): the bar is threshold + (0.95 - threshold) x (depth - 1) / max_depth; Root and its children keep the threshold; the event shows it',async()=>{
+test('v7.15.16 (D2): the bar is threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10); Root and its children keep the threshold; the event shows it',async()=>{
   const c=clefFor({gate:()=>0.739});
   const {room}=await planted({clef:c.clef,ready:null});
   const at=d=>['root',...Array(d).fill(1)].join('.');
   assert.deepEqual([0,1,2,3,5,9,10].map(d=>room.splitBar(at(d))),[0.45,0.45,0.5,0.55,0.65,0.85,0.9]);
   room.save('settings',{...room.settings(),split_threshold:0.7});
   assert.deepEqual([0,1,2,3,10].map(d=>room.splitBar(at(d))),[0.7,0.7,0.725,0.75,0.925]);
-  room.save('settings',{...room.settings(),max_depth:20});
-  assert.deepEqual([2,10,20].map(d=>room.splitBar(at(d))),[0.712,0.813,0.938]);
+  // Review: raising max_depth (what split_capacity_blocked advises) never flattens the bar; a shallower room reaches 0.95 sooner.
+  const ten=[2,3,6,10,11,20].map(d=>room.splitBar(at(d)));
+  room.save('settings',{...room.settings(),max_depth:50});
+  assert.deepEqual([2,3,6,10,11,20].map(d=>room.splitBar(at(d))),ten);
+  assert.deepEqual(ten,[0.725,0.75,0.825,0.925,0.95,0.95]);
+  room.save('settings',{...room.settings(),max_depth:4});
+  assert.deepEqual([2,5].map(d=>room.splitBar(at(d))),[0.763,0.95]);
+  room.save('settings',{...room.settings(),split_threshold:0.45,max_depth:50});
+  assert.equal(room.splitBar(at(6)),0.7,'run25\'s p=0.66 at depth 6 is a NO at max_depth 50 too');
   room.save('settings',{...room.settings(),split_threshold:0.45,max_depth:10});
   // run25's gate at depth 9 answered 0.739, a YES at 0.45; for a fresh two-function piece there the bar is 0.85.
   const deep=await chain(room,'root.2',[['Handle malformed files',['handleMalformed','recoverData']],['Recover partial data',['recoverData','readFileSync']],['File Handling',['readFileSync','parseTelemetry']],['File I/O and Parsing',['readFileSync','parseTelemetry','listRules']],['Parse telemetry',['parseTelemetry','parseInterfaceHealth']],['Interface health',['parseInterfaceHealth','extractLinkStatus']],['Extract link status',['extractLinkStatus','getLinkState']],['Interface Status Analyzer',['extractLinkStatus','detectFlapping']]]);
@@ -207,6 +214,54 @@ test('v7.15.16 (D2): the bar is threshold + (0.95 - threshold) x (depth - 1) / m
   await room.turn(deep);
   assert.match(mine(room,deep,'split_gate')[0].body,/^Clef decision NO \(p=0\.739; bar 0\.850; \d+ ms\)\.$/);
   assert.equal(room.node(deep).phase,'implement');
+});
+
+// Review 2 (p6, p7): every split below Root is gated at its depth's bar, a worker's late split too.
+const turnAll=async(room,prefix='root.2',max=200)=>{let maxd=0;for(let s=0;s<max;s++){const ids=room.db().exec("SELECT id FROM agents WHERE status='ready' AND id LIKE ?",prefix+'%').toArray().map(x=>x.id);if(!ids.length)return maxd;for(const id of ids){await room.turn(id);maxd=Math.max(maxd,id.split('.').length-1);}}throw new Error('still ready');};
+test('v7.15.16 (review p6): a carrier\'s late split is gated at its depth\'s bar: Clef says NO, the worker writes its promise, the chain stays at depth 3 and no node is left waiting to split',async()=>{
+  const c=clefFor({gate:()=>0.3});
+  let k=0,R=null;
+  const leaf=u=>{if(R.promisedOf(u.your_id).map(f=>f.name).join()!=='handleMalformed'||k>=5)return writes(R)(u);k++;
+    return {summary:'Needs splitting',spawn:[piece('Handle malformed files','Write code that handles malformed or incomplete telemetry files',['handleMalformed'],[`helper${k}`]),
+      {label:`Malformed helper ${k}`,task:`Write code that recovers field group ${k} from a malformed telemetry file`,functions:[fn(`helper${k}`,`recovers field group ${k}`,['data'])]}],done:false};};
+  const {room}=await planted({clef:c.clef,ready:null,leaf:u=>leaf(u),split:()=>({summary:'Split',spawn:[piece('Handle malformed files','Write code that handles malformed or incomplete telemetry files',['handleMalformed'],['helper0']),
+    {label:'Malformed helper 0',task:'Write code that logs a malformed file',functions:[fn('helper0','logs it',['f'])]}]})});
+  R=room;
+  const at=await chain(room,'root.2',[['Handle malformed files',['handleMalformed']]]);
+  room.set(`split_yes:${at}`,'1');
+  await turnAll(room);
+  const nodes=room.allNodes().filter(n=>n.id.startsWith('root.2.'));
+  assert.equal(Math.max(...nodes.map(n=>n.id.split('.').length-1)),3,trace(room));
+  const carrier=room.children(at).find(n=>n.label==='Handle malformed files').id;
+  assert.deepEqual(room.children(carrier),[]);
+  assert.match(mine(room,carrier,'split_rejected')[0].body,/^Late decomposition rejected: Clef decision NO \(p=0\.300; bar 0\.550\)\. The worker writes its assignment\.$/);
+  assert.equal((await room.readKnowledge(carrier,'private')).late_split_rejected,'Your 2 proposed pieces were not created: your assignment is one piece of code at this depth. Write it yourself.');
+  assert.deepEqual(nodes.filter(n=>n.phase==='decompose'),[],'none left waiting to split');
+  assert.equal(events(room,'split_capacity_blocked').length,0);
+  // At the room's depth limit a late split is refused before Clef is asked.
+  const d=clefFor({gate:()=>0.9});
+  const {room:full}=await planted({clef:d.clef,ready:null,leaf:()=>({summary:'Split',spawn:[piece('Core','Write code that does the core',['extractLinkStatus']),piece('Helper','Write code that helps',['getLinkState'])]})});
+  full.save('settings',{...full.settings(),max_depth:3});
+  const w=await chain(full,'root.2',[['Interface health',['parseInterfaceHealth','extractLinkStatus']],['Extract link status',['extractLinkStatus']]]);
+  full.db().exec("UPDATE agents SET phase='implement' WHERE id=?",w);
+  await full.turn(w);
+  assert.deepEqual([mine(full,w,'split_rejected')[0]?.body,d.asked.length,full.node(w).phase],['Late decomposition rejected: no space or depth left. The worker writes its assignment.',0,'implement']);
+});
+
+test('v7.15.16 (review p7): a chain of a carrier and one trivial helper per level is bounded by the bar at threshold 0.45, at max_depth 10 and 50 alike',async()=>{
+  for(const [p,max_depth,deepest] of [[0.74,10,7],[0.74,50,7],[0.785,10,8],[0.785,50,8]]) {
+    let k=0;
+    const c=clefFor({gate:()=>p});
+    const split=u=>{const own=u.your_promised_functions[0];k++;return {summary:'Split',spawn:[{label:`Do ${own.name}`,task:`Write code that ${own.does}`,functions:[own]},
+      {label:`Helper step ${k}`,task:`Write code that normalizes field ${k} of the telemetry record`,functions:[fn(`normalizeField${k}`,`normalizes field ${k}`,['record'])]}]};};
+    const {room}=await planted({clef:c.clef,ready:null,split});
+    room.save('settings',{...room.settings(),max_depth});
+    await chain(room,'root.2',[['Handle malformed files',['handleMalformed']]]);
+    await turnAll(room);
+    const ids=room.allNodes().map(n=>n.id).filter(id=>id.startsWith('root.2.'));
+    assert.equal(Math.max(...ids.map(id=>id.split('.').length-1)),deepest,`p=${p} max_depth=${max_depth}`);
+    assert.equal(room.allNodes().filter(n=>n.phase==='decompose').length,0);
+  }
 });
 
 // ------------------------------------------------------------------ D3
@@ -256,6 +311,14 @@ test('v7.15.16 (D3): in a room the placeholder answer is retried once under Clef
   assert.equal(k.asked.filter(a=>a.kind==='gate').at(-1).state.previous_split_rejection.kind,'labels');
   assert.deepEqual(mine(stuck,node,'atomic').map(e=>e.body),['Clef reviewed the rejected partition and routed this assignment to direct code implementation.']);
   assert.deepEqual([stuck.node(node).phase,mine(stuck,node,'paused').length,stuck.problems("kind='stuck'").length],['implement',0,0]);
+  // Review 2: a Clef that keeps saying YES pauses it, and the manager hears why, not "at the code gate".
+  const y=clefFor({gate:()=>0.9});
+  const {room:yes}=await planted({clef:y.clef,ready:null,split:()=>({summary:'Split',spawn:SUB25})});
+  const node2=await chain(yes,'root.2',[['File I/O and Parsing',['parseTelemetry','parseInterfaceHealth']]]);
+  for(let t=0;t<3&&yes.node(node2).status==='ready';t++)await yes.turn(node2);
+  const [row]=yes.problems("kind='stuck'");
+  assert.match(row.detail,/^File I\/O and Parsing stopped after three turns whose splitter kept naming pieces with placeholder labels: /);
+  assert.match(mine(yes,node2,'stuck')[0].body,/^Stopped after three turns whose splitter kept naming pieces with placeholder labels; the manager decides: /);
 });
 
 // ------------------------------------------------------------------ D4

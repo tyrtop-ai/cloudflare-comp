@@ -337,8 +337,9 @@ export class ControlRoom extends DurableObject {
   // v7.15.14 review: a room saved before max_children reads its default (the snapshot shows 7, the bound it splits by); its missing worker and compiler models still fall back to its own model (inferenceEnv), not the defaults.
   settings() { const s=this.read('settings', DEFAULT_ROOM_SETTINGS); return s.max_children===undefined?{...s,max_children:DEFAULT_ROOM_SETTINGS.max_children}:s; }
   maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
-  // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95, by the room's max_depth: threshold + (0.95 - threshold) x (depth - 1) / max_depth (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
-  splitBar(id) {const {split_threshold:t,max_depth:m}=this.settings(),d=String(id).split('.').length-1;return d<=1?t:Math.min(0.95,Math.round((t+(0.95-t)*(d-1)/Math.max(1,m))*1000)/1000);}
+  // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95: threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10) (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10, 0.95 below). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
+  // v7.15.16 review: over a fixed horizon, min(max_depth, 10) levels, so raising max_depth (what split_capacity_blocked advises) never flattens it.
+  splitBar(id) {const {split_threshold:t,max_depth:m}=this.settings(),d=String(id).split('.').length-1,h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
   // runner's test). A room saved before v7.15.10 has no worker or compiler
@@ -5217,6 +5218,17 @@ export class ControlRoom extends DurableObject {
           this.incrementFailures(id,'split_rejected');
           return;
         }
+        // v7.15.16 review (p6): a late split is gated as a first split is, at its depth's bar, and needs room below it: a carrier, never gated, late-split into a new carrier and one helper, eight times, to max_depth, and stuck there waiting.
+        if(this.env.MOCK_AI!=='true') {
+          const room=this.canSplit(id,Math.max(2,action.spawn.length)),bar=this.splitBar(id),calls=this.planned()?parse(n.uses,[]):[],tail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'';
+          const gate=room?await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},tail?String(n.task).slice(0,2600-tail.length)+tail:n.task,{}):null;
+          if(!gate?.split) {
+            this.event(id,'split_rejected',`Late decomposition rejected: ${gate?`Clef decision NO (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)})`:'no space or depth left'}. The worker writes its assignment.`);
+            await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:`Your ${action.spawn.length} proposed pieces were not created: ${gate?'your assignment is one piece of code at this depth':'the room has no space or depth left for them'}. Write it yourself.`}]);
+            this.incrementFailures(id,'split_rejected');
+            return;
+          }
+        }
         // A worker with a promise must give every promised name to one piece (C5).
         const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2});
         // v7.15.16 (run25): a worker's split that hands its whole promise to one piece is no split: it writes the promise itself.
@@ -5482,10 +5494,12 @@ export class ControlRoom extends DurableObject {
     if(prior.some(p=>p.status==='open'))return true;
     this.closeProblems(prior,'superseded');
     const last=query(this.db(),`SELECT kind,body FROM events WHERE actor=? AND kind IN (${FAILURE_EVENTS.map(()=>'?').join(',')}) ORDER BY id DESC LIMIT 4`,id,...FAILURE_EVENTS).reverse();
-    const detail=clip(`${n.label} stopped after three failed turns at the code gate: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
+    // v7.15.16 review: a splitter that kept answering placeholder labels is said so, not a code gate.
+    const labels=/placeholder labels after a retry/.test(last.at(-1)?.body||''),why=labels?'turns whose splitter kept naming pieces with placeholder labels':'failed turns at the code gate';
+    const detail=clip(`${n.label} stopped after three ${why}: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
     this.insertProblem({holder:n.parent,kind:'stuck',stage:'work',source:id,input:`turn:${n.turn}`,
       parties:[{path:'',owner:id,owner_path:'',digest:'',role:'subject'}],detail,flags:{wave:crypto.randomUUID()}});
-    this.event(id,'stuck',`Stopped after three failed turns at the code gate; the manager decides: ${clip(detail,700)}`,n.parent);
+    this.event(id,'stuck',`Stopped after three ${why}; the manager decides: ${clip(detail,700)}`,n.parent);
     this.wake(n.parent);
     return true;
   }
