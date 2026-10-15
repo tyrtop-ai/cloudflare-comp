@@ -7,7 +7,7 @@
 import { assignedPiece } from './code-work.js';
 // v8 (S2): a promise is a function contract (src/contracts.js); the v7 names
 // below are kept as aliases until S7, and read contracts of any kind.
-import { normalizeContracts, contractErrors, contractLine, exampleText, signatureOf, nameError, kindOf, otherName, IDENTIFIER, EXAMPLE } from './contracts.js';
+import { normalizeContracts, contractErrors, contractLine, signatureOf, nameError, kindOf, otherName, IDENTIFIER, EXAMPLE } from './contracts.js';
 export { normalizeContracts as normalizeInterfaces } from './contracts.js';
 
 // MAX_CONTRACTS (src/contracts.js), as a literal: this module and contracts.js
@@ -44,8 +44,12 @@ export const returnsOf = f => f?.returns ? `${f.does ? ';' : ':'} returns ${f.re
 const asyncIn = (name, surface) => (Array.isArray(surface) ? surface : [...(surface?.named || []), ...(surface?.default?.members || []), ...(surface?.default?.methods || [])]).some(n => n?.async && String(n.name).replace(/^static /, '') === name);
 // v8: one renderer for any kind (contractLine); a function keeps v7's form,
 // with its examples after it when the contract carries any.
+// A function carrying a v8 field (path, inputs that say what they are,
+// effects, examples) reads as contractLine has it; a v7 promise has none of
+// these, so its text is v7's, byte for byte.
+const v8Fields = f => !!(f.path || f.inputs?.length || f.effects || f.examples?.length);
 export const promiseText = (f, surface = null) => kindOf(f) !== 'function' ? contractLine(f) :
-  `${surface && asyncIn(f.name, surface) ? 'async ' : ''}${signature(f)}${f.does ? ': ' + String(f.does).replace(/[.\s]+$/, '') : ''}${returnsOf(f)}${f.examples?.length ? `; e.g. ${f.examples.map(e => exampleText(f, e)).join('; ')}` : ''}`;
+  `${surface && asyncIn(f.name, surface) ? 'async ' : ''}${v8Fields(f) ? contractLine(f).replace(/^function /, '') : `${signature(f)}${f.does ? ': ' + String(f.does).replace(/[.\s]+$/, '') : ''}${returnsOf(f)}`}`;
 const namesOf = c => (c.interfaces || []).map(f => f.name);
 // C0: a piece whose own text says it exports a promised name carries it. A
 // mere mention ("so start() can return it") does not count.
@@ -54,13 +58,17 @@ const saysExports = (c, name) => new RegExp(`\\b[Ee]xport(?:s|ing|ed)?\\s+(?:[Aa
 // a plain word such as start is prose without its parentheses.
 const mentions = (c, name) => new RegExp(`(?:^|[^\\w$])${escape(name)}${/[A-Z0-9_$]/.test(name.slice(1)) ? '(?![\\w$])' : '\\s*\\('}`).test(`${c.label || ''}\n${c.task || ''}`);
 // v8: a piece's contracts arrive under "contracts" (the v8 splitter key),
-// "functions" (v7's) or "interfaces" (the stored name).
-export function normalizeSpawn(spawn, promised = []) {
+// "functions" (v7's) or "interfaces" (the stored name), the first that is
+// not empty; v7 reads functions, else interfaces, as ef7eebf did.
+export const pieceContracts = (s, {v8 = false} = {}) => v8
+  ? [s.contracts, s.functions, s.interfaces].find(x => Array.isArray(x) && x.length) || []
+  : Array.isArray(s.functions) ? s.functions : s.interfaces;
+export function normalizeSpawn(spawn, promised = [], {v8 = false} = {}) {
   if (!Array.isArray(spawn)) return {spawn, inferred: []};
   const out = spawn.map(s => {
     if (!s || typeof s !== 'object') return s;
     const {functions, interfaces, contracts, ...rest} = s;
-    return {...rest, interfaces: normalizeContracts(Array.isArray(contracts) ? contracts : Array.isArray(functions) ? functions : interfaces)};
+    return {...rest, interfaces: normalizeContracts(pieceContracts(s, {v8}), {v8})};
   });
   const inferred = [];
   for (const p of promised) {
@@ -305,7 +313,9 @@ export const ids = text => new Set(String(text ?? '').match(/[A-Za-z_$][\w$]{2,}
 // a request without a name goes to Clef.
 export const requestNames = name => name && !GENERIC_NAMES.has(name) ? [name] : [];
 // One route topic per request; a knowledge key ($ is not allowed in one).
-export const requestKey = ({need, name}) => name ? ('fn ' + name.replace(/\$/g, '_')).slice(0, 100) : 'fn ' + String(need ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90).trim();
+// v8: any character a knowledge key cannot hold becomes _ ($ always did),
+// so a key from a route template or a path is a valid key; v7's are as before.
+export const requestKey = ({need, name}) => name ? ('fn ' + name.replace(/[^a-z0-9 _./:-]/gi, '_')).slice(0, 100) : 'fn ' + String(need ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90).trim();
 // The one offer whose promise holds a name, trying names in order; two
 // offers holding the same name is ambiguous, and no answer.
 export function nameMatch(offers, names) {
@@ -388,19 +398,19 @@ export function storageExample(label, name, record = []) {
 // A piece's uses, the functions its siblings promise that its code calls:
 // names, from an array of names or {name} items, or one string of them.
 // v8: a contract name of any kind (README.md, GET /items, a command).
-const useName = v => validName(v) || otherName(v);
-export const normalizeUses = raw => [...new Set((Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;]+/) : [])
-  .map(u => useName(typeof u === 'string' ? u.replace(/^`+|`+$/g, '').replace(/\(.*$/, '') : u?.name ?? u?.function)).filter(Boolean))].slice(0, 8);
+// v8 (opts.v8) only: a contract name of any kind (README.md, GET /items, a command).
+export const normalizeUses = (raw, {v8 = false} = {}) => [...new Set((Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;]+/) : [])
+  .map(u => typeof u === 'string' ? u.replace(/^`+|`+$/g, '').replace(/\(.*$/, '') : u?.name ?? u?.function).map(v => validName(v) || (v8 ? otherName(v) : '')).filter(Boolean))].slice(0, 8);
 // Only a name another piece of the split promises is kept, never its own.
 // The start carrier's are dropped: what it is told is the entry's own text.
 // Review (nested splits): outer, the names the plan offers this level from
 // above (an uncle's readTickets), are kept too.
-export function planUses(spawn, outer = []) {
+export function planUses(spawn, outer = [], {v8 = false} = {}) {
   const kids = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object'), dropped = [];
   const out = (Array.isArray(spawn) ? spawn : []).map(c => {
     if (!c || typeof c !== 'object') return c;
     const own = namesOf(c), offered = new Set([...outer, ...kids.filter(k => k !== c).flatMap(namesOf)]), {uses: raw, ...rest} = c;
-    const all = normalizeUses(raw), uses = own.includes('start') ? [] : all.filter(name => offered.has(name) && !own.includes(name));
+    const all = normalizeUses(raw, {v8}), uses = own.includes('start') ? [] : all.filter(name => offered.has(name) && !own.includes(name));
     for (const name of all) if (!uses.includes(name)) dropped.push({label: c.label, name});
     return uses.length ? {...rest, uses} : rest;
   });

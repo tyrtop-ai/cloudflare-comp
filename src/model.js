@@ -1,4 +1,4 @@
-import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects, spawnPiece, splitShape, NO_ANSWER, emptyAnswer } from './protocol.js';
+import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects, spawnPiece, splitShape, splitPieces, NO_ANSWER, emptyAnswer } from './protocol.js';
 import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
@@ -386,16 +386,18 @@ export async function decompose(env, context, opts = {}) {
   // splitter's error to retry. Stray items beside two pieces are dropped, as
   // normalizeAction drops them. A parsed answer with no spawn items is the
   // splitter declining, not malformed (review: a child that cannot split).
-  const vet=(output,text=contentOf(output),parsed=parseObject(text,splitShape))=>{
-    const items=Array.isArray(parsed.spawn)?spawnObjects(parsed.spawn):[],pieces=items.filter(spawnPiece);
+  // v8 (S2): opts.v8 reads the pieces key as normalizeAction does (splitPieces), so a v8 splitter's pieces are a split.
+  const v8=!!opts.v8,shape=o=>splitShape(o,{v8});
+  const vet=(output,text=contentOf(output),parsed=parseObject(text,shape))=>{
+    const items=spawnObjects(splitPieces(parsed,{v8})),pieces=items.filter(spawnPiece);
     // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
     if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,output,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
-    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||!['C7','C8'].includes(e.check));
+    const {spawn,inferred}=normalizeSpawn(pieces,promised,{v8}),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||!['C7','C8'].includes(e.check));
     // v7.15.14 (run21): the pieces counted are those the admission spawns, test pieces aside (testPieces); more than max_children is a size failure.
     const tests=testPieces(spawn,{promised,stated:goalMethods(goal),goal}),size=spawn.length-tests.length;
     return {parsed,text,output,spawn,inferred,vague,bad,size,tests,over:size>cap,ok:size>=2&&size<=available,count:vague.length+bad.length};
   };
-  const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
+  const done=v=>{if(!v.spawn)return v.parsed;const {pieces:_,...parsed}=v.parsed;return {...(v8?parsed:v.parsed),spawn:v.spawn,interfaces_inferred:v.inferred};};
   const first=vet(await run(env,system+uses,request,4096,{noThink:Boolean(opts.noThink)}));
   if(first.ok && !first.count)return done(first);
   // run16: an answer with no text is reasoning with no JSON after it (Root's

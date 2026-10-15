@@ -12,6 +12,7 @@ import {EFFECT} from './api-coverage.js';
 import {ENTRY_CONTRACT} from './model.js';
 import {clip} from './protocol.js';
 import {normalizeInterfaces, repairInterfaces, signature, GENERIC_NAMES} from './interfaces.js';
+import {kindOf, textNames} from './contracts.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
@@ -413,14 +414,13 @@ const wordsOf=s=>(String(s||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCas
 // a storage requirement). Integration: a generic name (create, list, get) is
 // never matched by name, as a function request never is (requestNames), the
 // linker never binds one and the contract never reads one as foreign.
-// v8 (S2): any contract a text names, a non-identifier name (README.md,
-// GET /items, convert-units) by its exact text as a whole name, never by
-// its words.
-const IDENT=/^[A-Za-z_$][\w$]*$/,escapeRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+// v8 (S2): a contract of any other kind (a command, route, file, page, doc
+// or data) is named only by its whole name (textNames), never by its words;
+// a function is named as before.
 export function namedFunctions(text, fns) {
-  const s=String(text||''),literal=new Set(s.match(/[A-Za-z_$][\w$]*/g)||[]),have=new Set(wordsOf(s));
-  const byName=f=>(IDENT.test(f.name)?literal.has(f.name):new RegExp(`(?<![\\w./-])${escapeRe(f.name)}(?![\\w/-])`).test(s))&&!GENERIC_NAMES.has(f.name)&&(f.name!=='start'||/\bstart\(|\bapp\.start\b/.test(s));
-  return [...new Map((fns||[]).filter(f=>f?.name&&(byName(f)||IDENT.test(f.name)&&wordsOf(f.name).length>1&&wordsOf(f.name).every(w=>have.has(w)))).map(f=>[f.name,f])).values()];
+  const s=String(text||''),literal=new Set(s.match(/[A-Za-z_$][\w$]*/g)||[]),have=new Set(wordsOf(s)),fn=f=>kindOf(f)==='function';
+  const byName=f=>(fn(f)?literal.has(f.name):textNames(s,f))&&!GENERIC_NAMES.has(f.name)&&(f.name!=='start'||/\bstart\(|\bapp\.start\b/.test(s));
+  return [...new Map((fns||[]).filter(f=>f?.name&&(byName(f)||fn(f)&&wordsOf(f.name).length>1&&wordsOf(f.name).every(w=>have.has(w)))).map(f=>[f.name,f])).values()];
 }
 // R3: a ticket is a requirement on the worker's own promised function. fn:
 // the promise the route named (a: by name, c: the method's performer, d:
@@ -867,7 +867,8 @@ export function validateManagerActions(actions, call, ctx) {
       // manager promised taking its item (the description travels down).
       let interfaces;
       if(a.interfaces!==undefined&&ctx.promise) {
-        const items=normalizeInterfaces(Array.isArray(a.interfaces)?a.interfaces:[a.interfaces]),own=ctx.promise?.items||[];
+        // v8 (S2): ctx.v8 reads contract fields; a model's serves never stays (a carried item keeps its own).
+        const items=normalizeInterfaces(Array.isArray(a.interfaces)?a.interfaces:[a.interfaces],{v8:!!ctx.v8}),own=ctx.promise?.items||[];
         interfaces=repairInterfaces([{label:child,interfaces:items}],own).spawn[0].interfaces.map(f=>own.find(x=>x.name===f.name)||f);
       }
       gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300),...interfaces?{interfaces}:{}});actionOf.set(retask.at(-1),a);

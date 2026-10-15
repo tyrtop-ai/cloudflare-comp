@@ -3812,9 +3812,10 @@ export class ControlRoom extends DurableObject {
   // piece adds, in the same step; a carrier is in scope by construction (run6
   // lost its entry module at p=0.448). Then the walk by name, and the Clef
   // walk for the non-carriers left.
-  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[],place=false}={}) {
+  // v8 (S2): v8 reads the pieces' contracts and uses of any kind (S3 passes it from the room's pipeline setting).
+  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[],place=false,v8=false}={}) {
     const promised=this.promisedOf(id),own=new Set(promised.map(p=>p.name));
-    let {spawn:named,inferred}=normalizeSpawn(spawn,promised);
+    let {spawn:named,inferred}=normalizeSpawn(spawn,promised,{v8});
     // C0 already ran in decompose for a first split; it reports what it read.
     const read=[...(Array.isArray(earlier)?earlier:[]).filter(x=>typeof x?.label==='string'&&own.has(x?.name)),...inferred];
     for(const x of read)this.event(id,'interfaces_inferred',`"${clip(x.label,70)}" says it exports ${x.name}(); it carries ${x.name}.`);
@@ -3840,7 +3841,8 @@ export class ControlRoom extends DurableObject {
     // rejected with C5, but kept on the last attempt before a pause.
     const errors=interfaceErrors(named,promised,{goal:this.userGoal()}),factories=this.planned()?errors.filter(e=>e.check==='C7'):[];
     if(place)for(const e of factories)this.event(id,'interfaces_factory_kept',`Last attempt before a pause: ${e.name}() on "${clip(e.label,70)}" is a factory; admitted as it is.`);
-    const c5=[...errors.filter(e=>e.check==='C5'),...(place?[]:factories)];
+    // v8 (S2): two pieces placing one file (C4 by path) bounce the split as C5 does.
+    const c5=[...errors.filter(e=>e.check==='C5'||e.check==='C4'&&e.path),...(place?[]:factories)];
     if(c5.length)return {spawn:named,c5,rejectedScope:0,rejectedChildren:[]};
     const elsewhere=new Set(named.flatMap(c=>(c?.interfaces||[]).map(f=>f.name)).filter(name=>!own.has(name)&&!GENERIC_NAMES.has(name)&&this.ownerBranch(name,id)));
     // v7.15.1: a name two pieces list goes to one (run9 deleted updateTicket
@@ -3869,8 +3871,8 @@ export class ControlRoom extends DurableObject {
     // offers this level from above (outer); before, root.3's operations lost
     // readTickets and saveTickets, which their uncle promised.
     const planned=this.planned(),isOp=f=>this.isGoalOp(f),outer=planned?[...this.promisedElsewhere(id).keys()]:[],inherited=planned&&n.parent?parse(n.uses,[]):[];
-    if(inherited.length)repaired.forEach((c,i)=>{if(c&&!normalizeUses(c.uses).length&&(c.interfaces||[]).some(f=>own.has(f.name)&&isOp(f)))repaired[i]={...c,uses:inherited};});
-    const offered=planned?planUses(repaired,outer).spawn:[],pairs=planned?usePairs(offered,isOp,this.userGoal()):[];
+    if(inherited.length)repaired.forEach((c,i)=>{if(c&&!normalizeUses(c.uses,{v8}).length&&(c.interfaces||[]).some(f=>own.has(f.name)&&isOp(f)))repaired[i]={...c,uses:inherited};});
+    const offered=planned?planUses(repaired,outer,{v8}).spawn:[],pairs=planned?usePairs(offered,isOp,this.userGoal()):[];
     const usesAsked=pairs.length?scopeUses(env,goal,n.task,repaired,pairs).catch(e=>{this.event(id,'uses_uncertain',`Clef failed on the pieces' uses (${clip(e?.message||e,300)}); none added.`);return [];}):[];
     const [scope,names,asked]=await Promise.all([scoped,scopeInterfaces(env,goal,n.task,repaired,promised),usesAsked]),clefP=new Map();
     for(const x of asked||[])if(x.p>=0.5) {
@@ -3889,7 +3891,7 @@ export class ControlRoom extends DurableObject {
     // a stated one) admits a piece, never one admitted itself by uses (two
     // out-of-scope pieces using each other admitted both); and a name such a
     // user uses is kept too, so the piece admitted for it keeps it.
-    const rejectedChildren=[],admitted=[],stated=new Set(goalMethods(this.userGoal()).map(s=>s.name)),usesOf=c=>c&&typeof c==='object'?normalizeUses(c.uses):[];
+    const rejectedChildren=[],admitted=[],stated=new Set(goalMethods(this.userGoal()).map(s=>s.name)),usesOf=c=>c&&typeof c==='object'?normalizeUses(c.uses,{v8}):[];
     const fnsOf=c=>(c?.interfaces||[]).map(f=>f.name),onOwn=repaired.map((c,i)=>scope[i]>=0.5||carried(c).length>0||fnsOf(c).some(n=>stated.has(n)));
     const usersOf=(i,name)=>repaired.filter((s,j)=>j!==i&&onOwn[j]&&usesOf(s).includes(name));
     repaired.forEach((child,i)=>{
@@ -3946,7 +3948,7 @@ export class ControlRoom extends DurableObject {
     rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
     // Uses only name what a surviving sibling promises (planUses); a room
     // without promises keeps none.
-    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive,outer):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]};
+    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive,outer,{v8}):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]};
     // v8 (S2, §2.3): a contract this split adds serves what the pieces using it serve; carried ones keep the parent's serves.
     const served=inheritServes(final.spawn,promised),survivors=served.spawn;
     if(served.inherited.length)this.event(id,'serves_inherited',clip(`Serves inherited by use: ${served.inherited.map(x=>`${x.name} on "${clip(x.label,70)}" serves ${x.serves.join(', ')}`).join('; ')}.`,600));
@@ -5447,7 +5449,7 @@ export class ControlRoom extends DurableObject {
             // YES and the splitter gets this partition back to correct.
             const texts=admit.c5.map(e=>e.text);
             this.save(`split_feedback:${id}`,{kind:'interfaces',
-              reason:`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and ${[admit.c5.some(e=>e.check==='C5')&&'give each promised function to exactly one of them',admit.c5.some(e=>e.check==='C7')&&'promise plain functions in place of each factory'].filter(Boolean).join(', and ')}.`,
+              reason:`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and ${[admit.c5.some(e=>e.check==='C5')&&'give each promised function to exactly one of them',admit.c5.some(e=>e.check==='C4')&&'place each file in exactly one of them',admit.c5.some(e=>e.check==='C7')&&'promise plain functions in place of each factory'].filter(Boolean).join(', and ')}.`,
               proposed:admit.spawn.map(c=>({label:c.label,task:clip(c.task,300),functions:(c.interfaces||[]).map(f=>f.name)})),accepted:[],rejected:[],
               interfaces:texts,root_goal:this.topTask()||n.task});
             this.event(id,'split_rejected',`The proposed functions fail ${texts.length} check(s): ${texts.join(' ')}`);

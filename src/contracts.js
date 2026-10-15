@@ -77,34 +77,56 @@ function inputsOf(o) {
   return list.map(x => plain(x) ? {name: text(x.name, 40), is: text(x.is ?? x.does ?? x.description, 80)} : {name: text(x, 40), is: ''}).filter(x => x.name);
 }
 
-// One item: an object, or a string such as "createTicket(title, description)",
-// "start(): returns the API" or "getTickets: returns all tickets", in
-// backticks or not; the text after the signature is its does (function kind
-// only). v7.15.7 (run14): returns, what a call gives back, kept beside does
-// (120 characters, without its final stop). Does loses its final stop here,
-// once, so no text reads ".;".
-export function normalizeContract(raw) {
-  const o = typeof raw === 'string' ? {name: raw} : plain(raw) ? raw : null;
-  if (!o || typeof o.name !== 'string') return null;
+// v7's promise item, exactly as ef7eebf read it: an object, or a string such
+// as "createTicket(title, description)", "start(): returns the API" or
+// "getTickets: returns all tickets", in backticks or not; the text after the
+// signature is its does. v7.15.7 (run14): returns, what a call gives back,
+// kept beside does (120 chars, without its final stop). Every other field
+// (kind, path, inputs, outputs, effects, examples, serves) is ignored, so a
+// v7 room reads any model answer as it always did.
+function promiseItem(o) {
+  let name = o.name.trim().replace(/^`+|`+$/g, ''), params = Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [], does = text(o.does, 160);
+  // v7.15.8 review: a leading "returns" is the splitter's echo, and every no-value phrasing is "nothing".
+  let returns = text(o.returns, 120).replace(/[.\s]+$/, '').replace(/^\W*(?:it |this |the (?:function|method|call) )?returns?\s+/i, '');
+  if (returns && noValue(returns)) returns = 'nothing';
+  const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name) || /^([A-Za-z_$][\w$]*)`?\s*(?:\(([^)]*)\)`?)?(?:\s*:|\s+-+|\s+[–—])\s*([\s\S]*)$/.exec(name);
+  if (call) { name = call[1].trim(); if (!params.length) params = (call[2] || '').split(','); if (!does) does = text(call[3], 160); }
+  name = name.slice(0, 64);
+  if (!name) return null;
+  const operation = text(o.operation, 80);
+  return {name, does: does.replace(/[.\s]+$/, ''), params: params.map(p => text(p, 40)).filter(Boolean).slice(0, 6), ...(operation ? {operation} : {}), ...(returns ? {returns} : {})};
+}
+// A path-named kind's name: a path with an extension or a directory, and
+// no prose ("README.md: how to run" is README.md, whose does is the rest).
+const pathLike = s => isPath(s) && (/\.[A-Za-z0-9]+$/.test(s) || s.includes('/'));
+// One v8 contract (§2.1). A function keeps v7's fields (params, returns,
+// operation), so v7 readers see the same promise; inputs stays beside params
+// only when an input says what it is.
+function contractItem(o, keepServes) {
   const kind = typeof o.kind === 'string' && KINDS.has(o.kind.trim().toLowerCase()) ? o.kind.trim().toLowerCase() : 'function';
   let name = o.name.trim().replace(/^`+|`+$/g, ''), inputs = inputsOf(o), does = text(o.does, 160);
-  const output = [o.returns, o.outputs].find(v => text(v, 120)) ?? '';
-  let out = stop(text(output, 120));
+  let out = stop(text([o.returns, o.outputs].find(v => text(v, 120)) ?? '', 120));
+  let path = typeof o.path === 'string' && isPath(o.path.trim()) ? o.path.trim() : '';
   if (kind === 'function') {
-    // v7.15.8 review: a leading "returns" is the splitter's echo, and every no-value phrasing is "nothing".
     out = out.replace(/^\W*(?:it |this |the (?:function|method|call) )?returns?\s+/i, '');
     if (out && noValue(out)) out = 'nothing';
     const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name) || /^([A-Za-z_$][\w$]*)`?\s*(?:\(([^)]*)\)`?)?(?:\s*:|\s+-+|\s+[–—])\s*([\s\S]*)$/.exec(name);
     if (call) { name = call[1].trim(); if (!inputs.length) inputs = inputsOf({params: (call[2] || '').split(',')}); if (!does) does = text(call[3], 160); }
     name = name.slice(0, 64);
-  } else name = name.slice(0, 200);
+  } else {
+    if (PATH_NAMED.has(kind)) {
+      const tail = /^(\S+?):\s+(.+)$/.exec(name);
+      if (tail && pathLike(tail[1])) { name = tail[1]; if (!does) does = text(tail[2], 160); }
+      // Named by its path: a valid path given renames it; a path-like name gives the path.
+      if (path) name = path;
+      else if (pathLike(name)) path = name;
+    }
+    name = name.slice(0, 200);
+  }
   if (!name) return null;
   inputs = inputs.slice(0, MAX_INPUTS);
   const operation = kind === 'function' ? text(o.operation, 80) : '';
-  const effects = stop(text(o.effects, 120)), examples = examplesOf(o.examples), serves = servesOf(o.serves);
-  let path = typeof o.path === 'string' && isPath(o.path.trim()) ? o.path.trim() : '';
-  // A file, page, doc or data contract is named by its path: one given only as a name is at that path.
-  if (!path && PATH_NAMED.has(kind) && isPath(name)) path = name;
+  const effects = stop(text(o.effects, 120)), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [];
   return {
     name, ...(kind === 'function' ? {} : {kind}), does: stop(does), params: inputs.map(x => x.name),
     ...(operation ? {operation} : {}),
@@ -113,21 +135,51 @@ export function normalizeContract(raw) {
     ...(effects ? {effects} : {}), ...(examples.length ? {examples} : {}), ...(path ? {path} : {}), ...(serves.length ? {serves} : {})
   };
 }
+// One item. opts.v8: read the v8 contract fields; without it, v7's promise
+// item exactly. opts.serves: keep serves, only for rows the runtime built
+// (stored rows, the card's deliverables); a model's serves is never kept.
+export function normalizeContract(raw, {v8 = false, serves = false} = {}) {
+  const o = typeof raw === 'string' ? {name: raw} : plain(raw) ? raw : null;
+  if (!o || typeof o.name !== 'string') return null;
+  return v8 ? contractItem(o, serves) : promiseItem(o);
+}
 // Cleaned and merged by name; at most 8 kept so the more-than-five check
 // still fires. normalizeInterfaces (src/interfaces.js) is this, until S7.
-export function normalizeContracts(raw) {
+// Without opts.v8 it is ef7eebf's normalizeInterfaces byte for byte.
+export function normalizeContracts(raw, opts = {}) {
   const out = [];
   for (const r of Array.isArray(raw) ? raw : []) {
-    const x = normalizeContract(r);
+    const x = normalizeContract(r, opts);
     if (!x) continue;
     const prior = out.find(y => y.name === x.name);
     if (!prior) { if (out.length < KEEP) out.push(x); continue; }
     if (!prior.does) prior.does = x.does;
     if (!prior.params.length) { prior.params = x.params; if (x.inputs) prior.inputs = x.inputs; }
-    for (const k of ['operation', 'returns', 'outputs', 'effects', 'examples', 'path']) if (prior[k] === undefined && x[k] !== undefined) prior[k] = x[k];
+    if (!prior.operation && x.operation) prior.operation = x.operation;
+    if (!prior.returns && x.returns) prior.returns = x.returns;
+    if (!opts.v8) continue;
+    for (const k of ['outputs', 'effects', 'examples', 'path']) if (prior[k] === undefined && x[k] !== undefined) prior[k] = x[k];
     if (x.serves) prior.serves = [...new Set([...prior.serves || [], ...x.serves])].slice(0, MAX_SERVES);
   }
   return out;
+}
+// Whether a text names a contract of a kind other than function: by its
+// whole name only, never by a word of it. Paths compare without a leading
+// "./" (./README.md is README.md, docs/README.md is not); a route's :x or
+// {x} segment matches any one segment (GET /items/{id} is named by
+// GET /items/42, GET /items is not).
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const dotSlash = s => String(s ?? '').replace(/(^|[\s'"`(\[=:,])\.\//g, '$1');
+export function textNames(text, c) {
+  const name = dotSlash(String(c?.name ?? '').trim());
+  if (!name) return false;
+  let body = escapeRe(name);
+  if (kindOf(c) === 'route') {
+    const m = /^(\S+) (\/\S*)$/.exec(name);
+    if (!m) return false;
+    body = `${escapeRe(m[1])}\\s+${m[2].split('/').map(seg => /^(?::\w+|\{[^/{}]+\})$/.test(seg) ? '[^/\\s?#]+' : escapeRe(seg)).join('/')}`;
+  }
+  return new RegExp(`(?<![\\w./-])${body}(?![\\w/-])`).test(dotSlash(text));
 }
 export const contractInputs = c => Array.isArray(c?.inputs) && c.inputs.length ? c.inputs : (c?.params || []).map(name => ({name, is: ''}));
 export const contractOutputs = c => kindOf(c) === 'function' ? c?.returns || c?.outputs || '' : c?.outputs || c?.returns || '';
@@ -300,8 +352,10 @@ export function inheritServes(spawn, promised = []) {
       if (own.has(f.name)) continue;
       const users = kids.filter(u => u !== k && usesOf(u).includes(f.name));
       const have = new Set(f.serves || []), more = [...new Set(users.flatMap(servedBy))].filter(s => !have.has(s));
-      if (!more.length) continue;
-      f.serves = [...have, ...more].slice(0, MAX_SERVES);
+      // Capped at MAX_SERVES: a change only when the stored list grew, so the loop ends.
+      const next = [...have, ...more].slice(0, MAX_SERVES);
+      if (next.length === have.size) continue;
+      f.serves = next;
       added.set(f, {label: k.label, name: f.name, serves: f.serves});
       changed = true;
     }

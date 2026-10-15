@@ -1,5 +1,5 @@
 import { validKnowledgeKey } from './knowledge.js';
-import { normalizeInterfaces, normalizeUses, requestKey, validName, MAX_REQUESTS } from './interfaces.js';
+import { normalizeInterfaces, normalizeUses, requestKey, validName, pieceContracts, MAX_REQUESTS } from './interfaces.js';
 import { otherName, CONTRACT_KINDS } from './contracts.js';
 
 // Small coordination messages. Source code never travels inside the control JSON.
@@ -39,13 +39,18 @@ export const spawnObjects = spawn => Array.isArray(spawn) ? spawn.map(s => {
   if (typeof s !== 'string' || !/^\s*\{/.test(s)) return s;
   try { const o = JSON.parse(s); return o && typeof o === 'object' && !Array.isArray(o) ? o : s; } catch { return s; }
 }) : spawn;
-// A split's pieces: "spawn" (v7) or "pieces" (v8, S2).
-export const splitPieces = raw => Array.isArray(raw?.spawn) ? raw.spawn : Array.isArray(raw?.pieces) ? raw.pieces : [];
+// A split's pieces. v7: "spawn", as ever. v8 (S2, opts.v8): "pieces" wins
+// over "spawn", and an empty list never hides one that is not. The splitter
+// (decompose's vet, splitShape, parseObject's repair) and normalizeAction
+// read this one helper, so both agree on what a split is.
+export const splitPieces = (raw, {v8 = false} = {}) => v8
+  ? [raw?.pieces, raw?.spawn].find(x => Array.isArray(x) && x.length) || []
+  : Array.isArray(raw?.spawn) ? raw.spawn : [];
 // A spawn item a child can be made from; normalizeAction keeps only these.
 export const spawnPiece = s => Boolean(s) && typeof s === 'object' && !Array.isArray(s) && typeof s.task === 'string' && s.task.trim().length >= 8;
 // A split's pieces: a spawn list of objects, each with a label and a task.
-export const splitShape = o => Array.isArray(o?.spawn) && o.spawn.length > 0 &&
-  spawnObjects(o.spawn).every(s => s && typeof s === 'object' && !Array.isArray(s) && typeof s.label === 'string' && typeof s.task === 'string');
+export const splitShape = (o, opts = {}) => splitPieces(o, opts).length > 0 &&
+  spawnObjects(splitPieces(o, opts)).every(s => s && typeof s === 'object' && !Array.isArray(s) && typeof s.label === 'string' && typeof s.task === 'string');
 // run10's splitter wrapped every spawn item after the first in stray quotes
 // ([{..},"{..}"},{..}"},..]), so nothing parsed and Clef routed Root to one
 // module. A string-aware scan drops, in an array, a quote opening an object
@@ -141,13 +146,13 @@ export function jsonObjects(text) {
 // requests too: a worker told to wait whose every ask was dropped never ran
 // again (slice B review). Every request, unclipped; an action keeps the first
 // MAX_REQUESTS.
-// v8 (S2): a request {need, name, kind?} may name a contract of any kind
-// (README.md, GET /items, a command); kind is kept when it is one.
-export function normalizeAsk(ask) {
+// v8 (S2, opts.v8): a request {need, name, kind?} may name a contract of
+// any kind (README.md, GET /items, a command); kind is kept when it is one.
+export function normalizeAsk(ask, {v8 = false} = {}) {
   return (Array.isArray(ask) ? ask : ask && typeof ask === 'object' || typeof ask === 'string' ? [ask] : []).map(q => {
     if (typeof q === 'string') q = { need: q, name: q };
     if (!q || typeof q !== 'object') return null;
-    const name = validName(q.name ?? q.function) || otherName(q.name ?? q.function), kind = CONTRACT_KINDS.includes(q.kind) ? q.kind : '';
+    const name = validName(q.name ?? q.function) || (v8 ? otherName(q.name ?? q.function) : ''), kind = v8 && CONTRACT_KINDS.includes(q.kind) ? q.kind : '';
     const request = (need, name) => ({ to: 'parent', key: requestKey({need, name}), question: clip(need, 300), ...(name ? {name} : {}), ...(name && kind ? {kind} : {}) });
     if (typeof q.need === 'string' && q.need.trim()) return request(q.need.trim(), name);
     if ((q.to === undefined || typeof q.to === 'string') && validKnowledgeKey(q.key) && typeof q.question === 'string' && q.question.length > 0)
@@ -156,7 +161,10 @@ export function normalizeAsk(ask) {
     return does ? request(does, name) : null;
   }).filter(Boolean);
 }
-export function normalizeAction(raw,{maxFiles=Infinity}={}) {
+// v8 (S2): opts.v8 reads the v8 keys (pieces, contracts and the contract
+// fields); without it every answer reads as ef7eebf read it. S3 passes it
+// from the room's pipeline setting.
+export function normalizeAction(raw,{maxFiles=Infinity,v8=false}={}) {
   return {
     summary: clip(raw.summary || 'No progress summary.', 1100),
     done: raw.done === true,
@@ -170,17 +178,17 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
     imports: (Array.isArray(raw.imports) ? raw.imports : [])
       .filter(f => f && isId(f.from) && isPath(f.path) && isPath(f.as || f.path))
       .map(f => ({ from: f.from, path: f.path, as: f.as || f.path })),
-    spawn: spawnObjects(splitPieces(raw)).filter(spawnPiece)
+    spawn: spawnObjects(splitPieces(raw, {v8})).filter(spawnPiece)
       // Module paths are not splitter output; function names are (v7.15, key
       // "functions"), with what each returns (v7.15.7, "returns", kept by
       // normalizeInterfaces beside does and params), and so are the siblings'
       // functions a piece calls (v7.15.5, "uses"). Discard other fields so they
       // cannot become requirements. v8 (S2): "pieces" and "contracts" are the
       // splitter's keys too; a contract's serves is the runtime's (§2.3),
-      // never a model's.
+      // never a model's (normalizeInterfaces drops it).
       .map(s => {
-        const fns = [s.contracts, s.functions, s.interfaces].find(Array.isArray) || null;
-        const interfaces = fns?.length ? normalizeInterfaces(fns).map(({serves: _, ...c}) => c) : [], uses = normalizeUses(s.uses);
+        const fns = pieceContracts(s, {v8});
+        const interfaces = Array.isArray(fns) && fns.length ? normalizeInterfaces(fns, {v8}) : [], uses = normalizeUses(s.uses, {v8});
         return { label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700), ...(interfaces.length ? {interfaces} : {}), ...(uses.length ? {uses} : {}) };
       }),
     messages: (Array.isArray(raw.messages) ? raw.messages : [])
@@ -189,7 +197,7 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
     remember: (Array.isArray(raw.remember) ? raw.remember : [])
       .filter(n => n && ['public','private'].includes(n.visibility) && validKnowledgeKey(n.key) && typeof n.value === 'string' && n.value.length > 0)
       .map(n => ({ visibility: n.visibility, key: n.key, value: clip(n.value, 1600) })),
-    ask: normalizeAsk(raw.ask).slice(0, MAX_REQUESTS),
+    ask: normalizeAsk(raw.ask, {v8}).slice(0, MAX_REQUESTS),
     recall: (Array.isArray(raw.recall) ? raw.recall : [])
       .filter(r => r && ['public','private'].includes(r.visibility) && validKnowledgeKey(r.key))
       .map(r => ({ visibility:r.visibility, key:r.key })),
