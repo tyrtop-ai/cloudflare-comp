@@ -732,6 +732,37 @@ export async function vetRequirements(env, {goal='', requirements=[]}) {
   }));
   return {ps:answered.flat(),failed};
 }
+// v8 §4.3 (S4b): Clef judges a document requirement, yes or no, from the
+// file alone: state {requirement, file:{path, text}}, the question CLEF.judge
+// with the check's own question appended. A file longer than JUDGE_CHARS is
+// cut at the last heading before that length and the rest is a second call
+// (at most JUDGE_CHARS of it); the requirement passes if either part does
+// (p >= JUDGE_BAR, decision U11). Returns {passed, p, detail}; a Clef that
+// gives no probability throws (the room reads it as infrastructure, never
+// as the document's failure). MOCK passes.
+export const JUDGE_BAR = 0.6, JUDGE_CHARS = 6000;
+export function judgeParts(text) {
+  const s=String(text??'');
+  if(s.length<=JUDGE_CHARS)return [s];
+  const head=s.slice(0,JUDGE_CHARS),cut=[...head.matchAll(/\n(?=#{1,6}\s|\S[^\n]*\n[=-]{3,}\s*\n)/g)].map(m=>m.index).filter(i=>i>0).at(-1)||JUDGE_CHARS;
+  return [s.slice(0,cut),s.slice(cut).replace(/^\n/,'').slice(0,JUDGE_CHARS)];
+}
+export async function judgeRequirement(env, {says='', question='', path='', content=''}) {
+  if (env.MOCK_AI === 'true') return {passed:true,p:1,detail:''};
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('unsupported Clef decision model');
+  const instructions=`${CLEF.judge}${question?` Specifically: ${String(question).slice(0,300)}`:''}`;
+  let best=-1;
+  for (const text of judgeParts(content)) {
+    const output=await clefRun(env,'judgeRequirement',selector,{model:clef,state:{requirement:String(says).slice(0,200),file:{path:String(path),text}},questions:{judge:{type:'noul',instructions}}});
+    const p=output?.answers?.judge?.noul;
+    if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability judging ${path}`);
+    best=Math.max(best,p);
+    if(best>=JUDGE_BAR)break;
+  }
+  return {passed:best>=JUDGE_BAR,p:best,detail:best>=JUDGE_BAR?'':`Clef judged p=${best.toFixed(2)}: ${String(question||says).slice(0,200)}`};
+}
 // v7.15.6 (run13): no triage. A failed run with no frame in a component is
 // a requirement the manager routes by the plan (readRequirement in
 // src/problems.js), not a module for a model to guess from the source.

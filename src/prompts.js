@@ -46,9 +46,11 @@ export const FORMAT = Object.freeze({
   card: CARD_FIELDS.join('\n')
 });
 
-// Clef questions (§6.4), all typed noul. S3 adds the requirement vetting.
+// Clef questions (§6.4), all typed noul. S3 adds the requirement vetting,
+// S4b the judge of a document requirement (judgeRequirement).
 export const CLEF = Object.freeze({
-  requirement: 'Does the goal state or directly imply this requirement? Answer NO if it adds something the goal does not ask for.'
+  requirement: 'Does the goal state or directly imply this requirement? Answer NO if it adds something the goal does not ask for.',
+  judge: 'Does this file meet the requirement? Answer NO if the file is missing, meets only part of it, or contradicts it.'
 });
 
 // A generative role's whole system prompt.

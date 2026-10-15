@@ -472,7 +472,7 @@ export function requirementText(r, {fn=null, more=[], module='', method='', thro
   // The runner's sentence leads once; before a head that states what the line requires, its need is not repeated (review).
   const lead=typeof r?.invented!=='string'?'':(rd?r.invented.replace(/^Test line (\d+) requires .*?, which nothing in the plan states((?: and [^;]*)?);/,'Nothing in the plan states what test line $1 requires$2;'):r.invented).trim()+' ';
   const head=lead+(fn?`Your ${signature(fn)}${does}${rest}${on} ${back||`${thrown&&r?.error?'threw':verb}: ${need}.`}`:
-    module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`);
+    module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:r?.card?`The project must satisfy: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`);
   const line=r?.test_line?.line&&!back?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
   const at=r?.assertion?.line?` It failed at line ${r.assertion.line}: ${r.assertion.text}.`:'';
   if(caller&&r?.callee?.promise) {

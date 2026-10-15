@@ -8,10 +8,10 @@ import {tmpdir} from 'node:os';
 process.env.BUILD_RUNNER_WORKDIR=tmpdir();
 register('../cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../../src/index.js');
-const {verifyBuild}=await import('../../container/build-runner.mjs');
+const {verifyBuild,verifyCard}=await import('../../container/build-runner.mjs');
 const {snapshotHash}=await import('../../src/build-verification.js');
 const {materializedPath}=await import('../../src/assembly.js');
-export {ControlRoom,verifyBuild,snapshotHash,materializedPath};
+export {ControlRoom,verifyBuild,verifyCard,snapshotHash,materializedPath};
 
 export class Sql {constructor(db){this.db=db||new DatabaseSync(':memory:');}exec(s,...p){if(!p.length&&!/^\s*select/i.test(s)){this.db.exec(s);return{toArray:()=>[]};}const q=this.db.prepare(s);const rows=/^\s*select/i.test(s)?q.all(...p):(q.run(...p),[]);return{toArray:()=>rows};}}
 export class Store {constructor(){this.repos=new Map();}async create(name){this.repos.set(name,new Map());return{name,remote:'https://test/'+name,branch:'main'};}async read(name,path){return this.repos.get(name)?.get(path)??null;}async write({name,path,content}){this.repos.get(name).set(path,content);return{commit:'c'.repeat(40)};}}
@@ -116,7 +116,10 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
   const builds=[];
-  const exec=executor||{build:async({fingerprint,files,options})=>{builds.push(files);return verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
+  // v8 S4b: a card verification (mode 'card') runs the real verifyCard, with
+  // the network kept (isolation []: the tests' sandbox may refuse namespaces).
+  const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits})=>{builds.push(files);
+    return mode==='card'?verifyCard({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
   const pending=[],store=new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
   const env={MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec}};
   const room=new ControlRoom(ctx,env);

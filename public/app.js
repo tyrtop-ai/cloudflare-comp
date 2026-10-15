@@ -92,7 +92,8 @@ function treeMarkup(n,index,top=false) {
 // checks fill from S4b on), and its decisions. Root's detail shows it in
 // place of Root's task, which under v8 is the goal as the user wrote it.
 const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.name}(${(i.params||[]).join(', ')})`;
-const requirementState=(r,status)=>{const st=status?.[r.id];return st?st.passed?'pass':'fail':'untested';};
+// v8 S4b: passed null is a check that could not run (infrastructure): untested.
+const requirementState=(r,status)=>{const st=status?.[r.id];return typeof st?.passed==='boolean'?st.passed?'pass':'fail':'untested';};
 function cardMarkup(card,status={}) {
   if(!card)return '<p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p>';
   const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}</li>`;

@@ -54,7 +54,8 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   const s = room.snapshot();
   assert.deepEqual(s.card.deliverables.map(d => d.name), ['README.md', 'hello']);
   assert.deepEqual(s.card.requirements.map(r => r.id), ['R1', 'R2']);
-  assert.deepEqual(s.requirement_status, {});
+  // v8 S4b: the card's checks ran once the tree finished: the judge (Clef) and the command (the Container).
+  assert.deepEqual(Object.fromEntries(Object.entries(s.requirement_status).map(([id, x]) => [id, x.passed])), {R1: true, R2: true});
   const revs = room.db().exec('SELECT rev,goal_rev,reason FROM card_revisions').toArray();
   assert.deepEqual(revs.map(r => [r.rev, r.goal_rev, r.reason]), [[1, 1, 'goal']]);
   assert.equal(events(room, 'card_written').length, 1);
@@ -81,20 +82,19 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.equal(events(room, 'missing_code').length, 0);
   // The worker heard its contract by kind, not as an exported function.
   assert.match(calls.leaf.find(u => u.your_label === 'Run guide').your_responsibility, /doc README\.md: explains how to run/);
-  // No builder, no compiler: the tree finished and the room holds for the card's checks.
+  // No builder, no compiler: the tree finished, the card's checks passed and the room completed.
   assert.ok(!room.allNodes().some(n => ['Temporary builder', 'Compiler'].includes(n.label)));
-  assert.equal(room.get('status'), 'paused');
-  assert.equal(room.snapshot().pause.kind, 'v8_checks_pending');
-  assert.equal(events(room, 'v8_checks_pending').length, 1);
-  assert.match(events(room, 'paused').at(-1).body, /v8_checks_pending/);
-  assert.notEqual(room.node('root').status, 'done');
+  assert.equal(room.get('status'), 'complete');
+  assert.equal(room.snapshot().pause, null);
+  assert.equal(events(room, 'checks_passed').length, 1);
+  assert.equal(room.node('root').status, 'done');
   // The dashboard: the snapshot carries the card; a delta only when its card revision differs.
   const c = room.snapshot().cursor, delta = rev => room.stateDelta({since: c.events, agents_since: c.agents, files_since: c.files, exports: c.exports, run: c.run, card_rev: rev});
   assert.equal(room.snapshot().card_rev, 1);
   assert.equal(delta(1).full, false);
   assert.equal('card' in delta(1), false);
   assert.deepEqual(delta('').card, s.card);
-  assert.equal(delta(1).requirement_status !== undefined && delta(1).pause.kind, 'v8_checks_pending');
+  assert.equal(delta(1).requirement_status.R2.passed, true);
 });
 
 test('v8 room: a blocked card pauses the room with card_blocked before any split, and Continue writes the card again', async () => {
@@ -115,7 +115,7 @@ test('v8 room: a blocked card pauses the room with card_blocked before any split
   await drain();
   assert.equal(calls.card.length, 2);
   assert.ok(room.snapshot().card);
-  assert.equal(room.snapshot().pause.kind, 'v8_checks_pending');
+  assert.equal(room.get('status'), 'complete');
 });
 
 test('v8 room: a language this deployment does not run pauses with card_blocked', async () => {
@@ -174,7 +174,7 @@ test('review: Clef failing to vet keeps the card, unvetted, with no second write
   assert.equal(events(room, 'card_vetting_failed').length, 1);
   assert.match(events(room, 'card_vetting_failed')[0].body, /Clef could not vet R1, R2: .*kept, marked unvetted/);
   assert.deepEqual(room.snapshot().card.requirements.map(r => [r.id, r.unvetted]), [['R1', true], ['R2', true]]);
-  assert.equal(room.snapshot().pause.kind, 'v8_checks_pending', 'the room went on');
+  assert.equal(room.get('status'), 'complete', 'the room went on');
 });
 
 test('review: a save that fails holds card_failed, and Continue saves the written card without calling the writer again', async () => {
@@ -194,7 +194,7 @@ test('review: a save that fails holds card_failed, and Continue saves the writte
   assert.equal(calls.card.length, 1, 'the kept card is used');
   assert.equal(events(room, 'card_draft_reused').length, 1);
   assert.ok(room.snapshot().card);
-  assert.equal(room.snapshot().pause.kind, 'v8_checks_pending');
+  assert.equal(room.get('status'), 'complete');
 });
 
 test('review: a card with only the runtime\'s implicit requirements is retried, then held card_failed', async () => {
@@ -215,7 +215,7 @@ test('review: language aliases and a placeholder blocked value do not hold the r
   await drain();
   assert.equal(calls.card.length, 1);
   assert.deepEqual(room.snapshot().card.languages, ['python', 'text']);
-  assert.equal(room.snapshot().pause.kind, 'v8_checks_pending');
+  assert.equal(room.get('status'), 'complete');
 });
 
 test('review: a function with no code language after the retry holds card_failed when several are installed', async () => {

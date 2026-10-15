@@ -4,12 +4,13 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, TOOLCHAINS, installed as installedRows } from './toolchains.js';
 import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
+import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
@@ -450,7 +451,8 @@ export class ControlRoom extends DurableObject {
   // else every row of the phase-1 image (src/toolchains.js).
   installedToolchains() { const inv=this.read('toolchain_inventory',null); return inv?installedRows(inv):[...TOOLCHAINS]; }
   // v8 S3: a room held at a stop only Continue (or a later slice) moves on:
-  // card_blocked, card_failed, v8_checks_pending. Root waits; the run ends
+  // card_blocked, card_failed; and (S4b) at the card's checks: checks_failed,
+  // checks_blocked, checks_exhausted. Root waits; the run ends
   // paused with this text.
   holdRoom(kind, text) {
     const prior=this.read('paused_state',null);
@@ -886,7 +888,7 @@ export class ControlRoom extends DurableObject {
     // decisions can be diagnosed.
     const cursors=Object.fromEntries(Object.keys(EXPORT_TABLES).map(t=>[t,query(this.db(),`SELECT COALESCE(MAX(id),0) AS id FROM ${t}`)[0].id]));
     // Every problem row and ticket, and the per-manager linking and compile state.
-    const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
+    const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'compile_%' OR key IN ('check_anchors','toolchain_inventory')").map(r=>[r.key,parse(r.value,r.value)]));
     const {events:_recent,cursor:_cursor,...rest}=snapshot;
     return {...rest,exports,exported_at:new Date().toISOString(),files,
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors,
@@ -904,6 +906,7 @@ export class ControlRoom extends DurableObject {
   // passing Container run recorded (compile_passed) hashed exactly these
   // files (README aside).
   async appFiles() {
+    if(this.v8())return this.cardApp();
     const root=this.allNodes().find(n=>!n.parent)||null,top=root?.id;
     const builder=root&&this.builderOf(top),compiler=root&&this.compilerOf(top);
     const atomic=!builder&&!!root&&!this.manager(top),files=[];
@@ -932,6 +935,29 @@ export class ControlRoom extends DurableObject {
       passed:!!hit,fingerprint:hit?.input??null,digest,note};
     const readme=files.some(f=>f.path==='README.md')?'README.control-plane.md':'README.md';
     return {...app,files:[{path:readme,content:appReadme(app,files)},...files]};
+  }
+  // v8 S4b (§1.3, §4.8): the project under v8 is the bundle the card's
+  // checks run (bundleFiles), at its own paths, beside the runtime's notes:
+  // .recursive/RUN.md (how to run it and the requirement table, runNotes)
+  // and .recursive/card.json. The project's README is never written or
+  // moved. passed: the last passing check run hashed exactly these files.
+  async cardApp() {
+    const root=this.node('root');
+    const {files}=root?await this.bundleFiles('root'):{files:new Map()};
+    if(!files.size) {
+      const status=this.get('status','idle'),why=!root?'no run has started in this room':'no piece has delivered a file yet';
+      return {status:409,error:['complete','failed'].includes(status)?`No application to export: this room ended (${status}) and ${why}. Start a new room to build one.`:
+        `No application yet: ${why}. ${root?'Continue the room until it has one, then export it.':'Start a run first.'}`};
+    }
+    const digest=await snapshotHash(files),card=this.read('card',null),status=this.read('requirement_status',{});
+    const last=this.read('compile_passed',null),hit=last?.digest===digest&&last.card_rev===this.cardRev()?last:null;
+    const note=hit?`Every requirement of the project card passed on exactly these files (snapshot ${digest.slice(0,16)}).`:
+      last?.digest?`These files differ from the last run that passed every check (snapshot ${last.digest.slice(0,16)}), so they have not passed as exported.`:
+      'The project card\'s checks have not all passed on these files yet.';
+    const app={room:this.get('room_id',''),goal:this.userGoal(),room_status:this.get('status','idle'),agents:this.allNodes().length,kind:'card',
+      entry:null,passed:!!hit,fingerprint:hit?.input??null,digest,note,card_rev:this.cardRev()};
+    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,card,status)},{path:'.recursive/card.json',content:JSON.stringify(card,null,2)+'\n'}];
+    return {...app,files:[...notes,...[...files].map(([path,content])=>({path,content}))]};
   }
   async provision(id, parent, label, task, interfaces=[], uses=[]) {
     if (this.node(id)) throw new Error('Agent ID exists');
@@ -3083,6 +3109,196 @@ export class ControlRoom extends DurableObject {
     this.wake(id);
   }
 
+  // ---------- v8: the project card's checks (S4b, §4.1) ----------
+  // The project's files as the card's checks run them (§4.1 step 1): an
+  // atomic Root's own files at their own paths; under a split, every working
+  // leaf's delivered files, a placed file (a path one of its contracts names)
+  // at exactly that path, never remapped, and any other under
+  // components/<its branch directory>/ (S5 writes the glue that joins them).
+  // origin: each bundle path's writer and its own path; placed: the placed paths.
+  async bundleFiles(top='root') {
+    const files=new Map(),origin=new Map(),placed=new Set(),n=this.node(top);
+    if(!n)return {files,origin,placed};
+    const atomic=!this.manager(top);
+    const gone=id=>{for(let x=this.node(id);x&&x.id!==top;x=x.parent?this.node(x.parent):null)if(['retired','failed'].includes(x.status))return true;return false;};
+    const leaves=atomic?[n]:this.allNodes().filter(x=>x.id.startsWith(top+'.')&&!isRuntimeNode(x)&&!this.manager(x.id)&&!gone(x.id));
+    const found=[];
+    for(const leaf of leaves) {
+      const own=new Set(this.promisedOf(leaf.id).map(c=>c.path).filter(Boolean));
+      for(const f of deliveredFiles(this.files(leaf.id))) {
+        if(buildPathError(f.path)||RUNTIME_GLUE.includes(f.path)&&!own.has(f.path))continue;
+        const place=atomic||own.has(f.path),at=place?f.path:materializedPath(leaf.label,f.path,leaf.id);
+        if(files.has(at)){found.push(`${at} (${leaf.label})`);continue;}
+        files.set(at,await this.indexedContent(leaf.id,f.path));
+        origin.set(at,{owner:leaf.id,owner_path:f.path});
+        if(place)placed.add(at);
+      }
+    }
+    if(found.length)this.event(top,'bundle_conflict',clip(`Two pieces place a file at the same path; the first is kept: ${found.join(', ')}.`,600));
+    return {files:new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),origin,placed};
+  }
+  // U10: a check that has passed is never changed. The card's check of a
+  // requirement that ever passed is the one that passed (check_anchors).
+  anchoredCard() {
+    const card=this.read('card',null),anchors=this.read('check_anchors',{});
+    if(!card)return null;
+    const moved=card.requirements.filter(r=>anchors[r.id]&&JSON.stringify(anchors[r.id])!==JSON.stringify(r.check));
+    if(!moved.length)return card;
+    const kept={...card,requirements:card.requirements.map(r=>anchors[r.id]?{...r,check:anchors[r.id]}:r)};
+    this.save('card',kept);
+    this.event('root','check_anchored',clip(`A check that has passed is never changed; ${moved.map(r=>r.id).join(', ')} keep${moved.length>1?'':'s'} the check that passed.`,400));
+    return kept;
+  }
+  // The requirement table in a sentence, for a hold's text (the dashboard's; no worker reads it).
+  checksSummary(head) {
+    const reqs=this.read('card',null)?.requirements||[],status=this.read('requirement_status',{});
+    const pass=reqs.filter(r=>status[r.id]?.passed===true),fail=reqs.filter(r=>status[r.id]?.passed===false),untested=reqs.length-pass.length-fail.length;
+    return clip(`${head} ${pass.length} of ${reqs.length} requirement${reqs.length===1?'':'s'} pass${fail.length?`; failing: ${fail.map(r=>`${r.id} (${clip(r.says,80)}): ${clip(status[r.id].detail,160)}`).join('; ')}`:''}${untested?`; ${untested} untested`:''}.`,1050);
+  }
+  // Root holds the room at the card's checks: it waits, and the run ends
+  // paused with the requirement table (Continue runs the checks again).
+  holdChecks(id, kind, head, again='Continue runs the checks again.') {
+    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+    this.holdRoom(kind,`${this.checksSummary(head)} ${again}`);
+    return {held:true};
+  }
+  // The repair rounds ran out at Root under v8: the room pauses with what
+  // passes and what fails, never fails (Continue: a fresh set of rounds).
+  checksExhausted(m, reason) {
+    for(const p of this.problemsHeld(m))this.moveProblem(p,{status:'closed',outcome:'exhausted'});
+    this.set('atomic_compile','');
+    this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
+    return this.holdChecks(m,'checks_exhausted',`Repair rounds ran out (${clip(reason,300)}).`,'Continue gives the repairs a fresh set of rounds.');
+  }
+  // One Container exec for the card (mode 'card'): {report} or {infrastructure}.
+  async runCard(id, input, files, plan, toolchains) {
+    if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot run the card\'s checks.'};
+    let snapshot;
+    try {snapshot=validateBuildFiles(files);}
+    catch(error) {
+      if(!error?.path)return {infrastructure:String(error?.message||error)};
+      return {report:{mode:'card',passed:false,checks:[],issues:[{path:error.path,stage:'snapshot',detail:`${error.message}: the build cannot carry this file. Write it under a path of letters, digits, '_', '-' and '.', and keep each file small.`}],inventory:null}};
+    }
+    const key=await sha256(`card:${input}`),start=Date.now();
+    try {
+      const report=await this.buildExecutor().build({fingerprint:key,files:Object.fromEntries(snapshot),mode:'card',plan,toolchains,limits:CHECK_LIMITS});
+      this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,...(report?.executor||{})});
+      if(!report||report.mode!=='card'||!Array.isArray(report.checks))return {infrastructure:'The Container answered without a card report: its image predates card verification.'};
+      return {report};
+    } catch(e) {
+      this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,error:clip(e?.message||e,300)});
+      return {infrastructure:String(e?.message||e)};
+    }
+  }
+  // v8 §4.1: compileCard replaces the compiler's run under v8. Root calls it
+  // when its whole tree finished (managerTurn) or, atomic, when it wrote the
+  // project itself. It bundles the deliverable files (bundleFiles), runs the
+  // file checks here, has Clef judge the documents (judgeRequirement) while
+  // one Container exec runs the rest (mode 'card': syntax, the project's own
+  // checks, the runs, command, call, http and browser checks, with
+  // plan.commands mapping each command deliverable to its argv), records the
+  // Container's toolchain inventory, and stores each requirement's status.
+  // All pass: compile_passed. A failed requirement is a problem
+  // (checkProblems), routed by serves down the split as a repair, the way the
+  // split built it (requirementRoute 's'); an atomic Root repairs its own.
+  // A check that could not run (infrastructure) is never routed: the room
+  // holds for Continue. Returns {passed} | {reported} | {held}.
+  async compileCard(id) {
+    const card=this.anchoredCard(),rev=this.cardRev(),atomic=!this.manager(id);
+    if(!card)return this.holdChecks(id,'checks_failed','The room has no project card to check.');
+    if(this.read('paused_state',null)?.kind==='checks_exhausted')return this.holdChecks(id,'checks_exhausted','Repair rounds ran out.','Continue gives the repairs a fresh set of rounds.');
+    const {files,origin,placed}=await this.bundleFiles(id);
+    const digest=await snapshotHash(files),input=`${digest}:card${rev}`;
+    const finish=()=>{
+      this.set('atomic_compile','');
+      if(this.read('paused_state',null)?.kind?.startsWith('checks_'))this.save('paused_state',null);
+      if(atomic){this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);this.event(id,'done','Completed owned strand without transferring ownership to children.');}
+      return {passed:true};
+    };
+    if(this.read('compile_passed',null)?.input===input)return finish();
+    if(this.read('compile_blocked',null)?.input===input)return this.holdChecks(id,'checks_blocked','The Container could not run the checks on these unchanged files.','Continue retries them.');
+    const prior=this.read('compile_reported',null);
+    if(prior?.input===input) {
+      // Unchanged since its problems were reported: an atomic Root hears them
+      // again (a round, as compileAtomic's); a split's repairs left the files
+      // as they were, so the room holds with the table.
+      const again=(prior.problems||[]).map(pid=>this.problems('id=?',pid)[0]).filter(Boolean);
+      if(atomic&&again.length) {
+        this.event(id,'compile_unchanged','Root\'s files are unchanged since their problems were reported; they go back without another run.');
+        this.atomicRepair(id,input,'check',again.map(p=>({kind:p.kind,path:p.parties[0]?.path||'',parties:p.parties,detail:p.detail,facts:p.facts,evidence:p.evidence})));
+        return {reported:true};
+      }
+      const settled=again.filter(p=>p.status==='closed'&&p.outcome==='exhausted').map(p=>`${p.facts?.requirement?.id||p.parties[0]?.path||p.kind}: ${p.trail.at(-1)?.reason||'no piece could fix it'}`);
+      return this.holdChecks(id,'checks_failed',settled.length?clip(`No piece could settle what failed (${settled.join('; ')}).`,500):'The repairs left the project\'s files as they were when the checks last failed.');
+    }
+    if(!files.size)return this.holdChecks(id,'checks_failed','No piece delivered a file to check.');
+    this.set('atomic_compile',atomic?input:'');
+    this.event(id,'checks_started',`Running the project card's ${card.requirements.length} requirement check(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
+    const {plan,toolchains,local,container}=checkPlan(card,files,{rows:this.installedToolchains(),placed});
+    const results=new Map(local);
+    for(const r of card.requirements)if(r.check?.kind==='file')results.set(r.id,{id:r.id,kind:'file',frames:[],...fileResult(r.check,files)});
+    // §4.3: Clef judges each document, in parallel with the Container.
+    const judging=Promise.all(card.requirements.filter(r=>r.check?.kind==='judge').map(async r=>{
+      const content=files.get(r.check.path);
+      if(typeof content!=='string'||!content.trim())return [r.id,{passed:false,detail:`${r.check.path} is ${typeof content==='string'?'empty':'missing'}`}];
+      try {const j=await judgeRequirement(this.inferenceEnv(),{says:r.says,question:r.check.question,path:r.check.path,content});return [r.id,{passed:j.passed,p:j.p,detail:j.detail}];}
+      catch(e) {return [r.id,{passed:false,infrastructure:true,detail:`Clef could not judge ${r.check.path}: ${clip(e?.message||e,200)}`}];}
+    }));
+    const [judged,run]=await Promise.all([judging,container?this.runCard(id,input,files,plan,toolchains):null]);
+    for(const [rid,x] of judged)results.set(rid,{id:rid,kind:'judge',frames:[],...x});
+    const report=run?.report||null;
+    if(report?.inventory)this.save('toolchain_inventory',report.inventory);
+    for(const c of report?.checks||[])results.set(c.id,c);
+    if(run?.infrastructure)for(const c of plan.checks.concat(plan.project))if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});
+    // Each requirement's status (§1.3), with the anchor of one that ever passed.
+    const old=this.read('requirement_status',{}),anchors=this.read('check_anchors',{}),status={};
+    for(const r of card.requirements) {
+      const res=results.get(r.id),passed=!res||res.infrastructure?null:!!res.passed;
+      status[r.id]=statusEntry(passed,digest,res?.detail||'not run',passed||old[r.id]?.anchor?{anchor:true}:{});
+      if(passed&&!anchors[r.id])anchors[r.id]=r.check;
+    }
+    this.save('requirement_status',status);this.save('check_anchors',anchors);
+    const issues=report?.issues||[],failed=card.requirements.filter(r=>status[r.id].passed===false),untested=card.requirements.filter(r=>status[r.id].passed===null);
+    const line=`${card.requirements.length-failed.length-untested.length} of ${card.requirements.length} requirement(s) pass`+(failed.length?`; failing: ${failed.map(r=>r.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(r=>r.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
+    if(!failed.length&&!untested.length&&!issues.length&&!report?.infrastructure_issue&&!run?.infrastructure) {
+      const rows=query(this.db(),'SELECT goal_rev FROM card_revisions WHERE rev=?',rev)[0];
+      this.save('compile_passed',{input,digest,goal_rev:rows?.goal_rev??1,card_rev:rev,ts:Date.now()});
+      this.save('compile_reported',null);this.save('compile_blocked',null);this.set('compile_infrastructure','');
+      this.closeProblemsFrom(id,'resolved');
+      this.event(id,'checks_passed',`Every requirement of the project card passed (${card.requirements.length}) against snapshot ${digest.slice(0,14)}.`);
+      return finish();
+    }
+    const items=checkProblems(card,results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name))});
+    this.event(id,'checks_reported',clip(`The project card's checks: ${line}.`,900));
+    if(!items.length) {
+      // Only checks that could not run: nobody's work, the room waits for Continue.
+      const why=run?.infrastructure||report?.infrastructure_issue||untested.map(r=>`${r.id}: ${status[r.id].detail}`).join('; ');
+      this.set('compile_infrastructure',clip(why,950));
+      this.save('compile_blocked',{node:id,input});
+      this.event(id,'build_infrastructure',clip(why,950));
+      return this.holdChecks(id,'checks_blocked',`The checks could not all run: ${clip(why,300)}.`,'Continue retries them.');
+    }
+    if(atomic){this.atomicRepair(id,input,'check',items);return {reported:true};}
+    this.reportChecks(id,input,items);
+    return {reported:true};
+  }
+  // A split's failed requirements open in Root's own inbox as one report
+  // wave, replacing the last run's (a decline carries over by failure, as
+  // reportProblems does): Root routes each by the plan, one level at a time.
+  reportChecks(m, input, items) {
+    const prior=this.problems("source=? AND status!='closed'",m),wave=crypto.randomUUID();
+    this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),m);
+    const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
+    const ids=list.map(x=>{
+      const row={holder:m,kind:x.kind,stage:'check',source:m,input,parties:x.parties||[],detail:x.detail,facts:x.facts||{},evidence:[]};
+      const declined=prior.find(p=>p.flags.declined?.length&&failureKey(p)===failureKey(row))?.flags.declined;
+      return this.insertProblem({...row,flags:{wave,...declined?{declined}:{}}});
+    });
+    this.save('compile_reported',{input,stage:'check',problems:ids,ts:Date.now()});
+    this.event(m,'problems_reported',clip(`${ids.length} requirement(s) of the project card failed; each goes to the piece that serves it: `+list.map(x=>x.detail).join('; '),1000));
+    this.wake(m);
+  }
+
   // ---------- managers solve problems ----------
   // Every open problem this manager holds is placed among its own direct
   // children and decided by the deterministic rules first (spec 3.4):
@@ -3098,6 +3314,8 @@ export class ControlRoom extends DurableObject {
     const n=this.node(m);
     if(!this.live()||!n||['failed','retired'].includes(n.status))return;
     if(!n.parent&&this.get('repair_exhausted')) {
+      // v8 S4b: the room pauses with the requirement table instead.
+      if(this.v8())return void this.checksExhausted(m,this.get('repair_exhausted'));
       this.failAgent(m,`Repair rounds exhausted: ${this.get('repair_exhausted')}; refusing an unbounded repair loop.`);
       this.event(m,'repair_exhausted',`No more repair rounds: ${this.get('repair_exhausted')}.`);
       return;
@@ -3990,6 +4208,8 @@ export class ControlRoom extends DurableObject {
       if(top&&top.id!==m)this.wake(top.id);
     }
     if(!n.parent) {
+      // v8 S4b: Root's rounds ran out: the room pauses with what passes and what fails.
+      if(this.v8())return void this.checksExhausted(m,reason);
       this.failAgent(m,`${head}: ${reason}; refusing an unbounded repair loop.`);
       this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
       return;
@@ -5579,16 +5799,15 @@ export class ControlRoom extends DurableObject {
     // compiler passed on the current bundle.
     const held=this.live()&&this.problemsHeld(id).length>0,compiled=!!n.parent||!this.live()||v8||this.compilePassed(id);
     const needsBuilder=(this.integrationEnabled(id) && !v8 && !await this.assemblyCurrent(id))||held||!compiled;
-    // v8 S3: the whole tree is done, and the card's checks are not run yet
-    // (S4): the room is held there (v8_checks_pending), never complete unchecked.
+    // v8 S4b: the whole tree is done, so the project card's checks run
+    // (compileCard): Root finishes only when every requirement passes; a
+    // failed one comes back to Root as a problem it routes by serves.
     const checksPending=v8&&!n.parent&&allDone&&!pending&&!needsBuilder;
-    const finished=allDone&&!pending&&!needsBuilder&&!checksPending;
-    if(checksPending) {
-      this.holdRoom('v8_checks_pending',`Every piece of the tree finished. Running the project card's checks (${this.read('card',null)?.requirements?.length||0} requirements) is not implemented yet, so the room stops here unverified; the files are in the workers' repositories.`);
-    }
+    const checked=checksPending?await this.compileCard(id):null,unchecked=checksPending&&!checked?.passed;
+    const finished=allDone&&!pending&&!needsBuilder&&!unchecked;
     const staleTurn=this.wakeGeneration(id)!==seenWake;
     const shard=this.managerStub(id);
-    const disposition=shard ? await shard.decide({children:producers,pending,needsBuilder:needsBuilder||checksPending,hasNewWake:staleTurn}) :
+    const disposition=shard ? await shard.decide({children:producers,pending,needsBuilder:needsBuilder||unchecked,hasNewWake:staleTurn}) :
       {status:children.some(c=>c.status==='failed')?'failed':finished&&!staleTurn?'done':'waiting'};
     this.db().exec('UPDATE agents SET turn=turn+1,summary=? WHERE id=?',
       `Indexed ${candidates.length} direct child Artifacts repositories; ${candidates.filter(c=>c.status==='done').length} completed.`,id);
@@ -5673,7 +5892,7 @@ export class ControlRoom extends DurableObject {
     // Continue, a source change after a pass) with nothing to read and no
     // action to finish: a done that failed mid-run replays and runs it.
     if(this.live() && !n.parent && !this.manager(id) && this.get('atomic_compile') && !this.receive(id).length &&
-       !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) return this.compileAtomic(id);
+       !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) return this.v8()?void await this.compileCard(id):this.compileAtomic(id);
     // Managers are deterministic Artifacts-backed routers, never generative turns.
     // Preserve pending action replays from prior versions before entering this path.
     if (this.manager(id) && !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) {
@@ -6237,12 +6456,9 @@ export class ControlRoom extends DurableObject {
           // The top can itself be a Clef-classified atomic implementation:
           // no builder and no compiler, so it runs the compiler's pipeline
           // on its own files, and finishes only when that passes (run10).
-          // v8 S3: an atomic Root under v8 is held for the card's checks (S4), as a split one is.
-          if(!n.parent&&!this.manager(id)&&this.v8()) {
-            this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-            this.holdRoom('v8_checks_pending',`Root wrote the project itself. Running the project card's checks (${this.read('card',null)?.requirements?.length||0} requirements) is not implemented yet, so the room stops here unverified.`);
-            return;
-          }
+          // v8 S4b: an atomic Root runs the project card's checks on its own
+          // files; a failure is its own repair, as every file is its own.
+          if(!n.parent&&!this.manager(id)&&this.v8()){await this.compileCard(id);return;}
           if(!n.parent&&!this.manager(id)&&this.env.MOCK_AI!=='true')return this.compileAtomic(id);
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Completed owned strand without transferring ownership to children.');
@@ -6565,6 +6781,21 @@ export class ControlRoom extends DurableObject {
         this.wake('root');
       }
     }
+    // v8 S4b: Continue on a room held at the card's checks runs them again;
+    // after the repair rounds ran out, with a fresh set of rounds.
+    if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted'].includes(hold?.kind)) {
+      this.save('paused_state',null);this.save('compile_reported',null);
+      if(hold.kind==='checks_exhausted') {
+        this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'rounds_exhausted:%'");
+        this.set('repair_exhausted','');
+      }
+      const top=this.node('root');
+      if(top&&!this.manager('root'))this.set('atomic_compile','continue');
+      if(top&&top.status==='waiting') {
+        this.event('root','checks_continue',`Continue runs the project card's checks again${hold.kind==='checks_exhausted'?', with a fresh set of repair rounds':''}.`);
+        this.wake('root');
+      }
+    }
     // v7.15.15 review 2 (#1): Continue answers a request no row, hop or message holds any more.
     if(this.planned())await this.settleRequests(true);
     // A planned worker waiting with no request open, nothing unread and no
@@ -6603,7 +6834,7 @@ export class ControlRoom extends DurableObject {
         this.wake(top.id);
       // One waiting with no run due has nothing else to wake it: a wait the
       // top answered before its waits were dropped (v7.15.2 review).
-      } else if(top&&!compiler&&top.status==='waiting'&&top.phase==='implement'&&!this.manager(top.id)&&!this.get('atomic_compile')&&this.read('paused_state',null)?.kind!=='v8_checks_pending') {
+      } else if(top&&!compiler&&top.status==='waiting'&&top.phase==='implement'&&!this.manager(top.id)&&!this.get('atomic_compile')&&!String(this.read('paused_state',null)?.kind||'').startsWith('checks_')) {
         this.event(top.id,'atomic_continue','Continue gives Root, which wrote the code itself, another turn.');
         this.wake(top.id);
       }

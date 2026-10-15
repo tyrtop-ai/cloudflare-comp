@@ -475,8 +475,9 @@ test('v8 S3: the Pipeline toggle follows the room and is sent with the settings'
   assert.equal(renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}}).get('pipeline').value,'v7','a room saved before the setting is v7');
 });
 test('v8 S3: the Card panel lists deliverables, requirements with a pass/fail/untested chip, and decisions',()=>{
-  const elements=renderWithPage(true,{settings:{pipeline:'v8'},card:CARD,requirement_status:{R2:{passed:false,detail:'exit 1'}},
-    pause:{kind:'v8_checks_pending',text:'Every piece finished.'}});
+  // v8 S4b: a check that could not run (passed null) reads as untested.
+  const elements=renderWithPage(true,{settings:{pipeline:'v8'},card:CARD,requirement_status:{R2:{passed:false,detail:'exit 1'},R3:{passed:null,detail:'not run: the browser did not start'}},
+    pause:{kind:'checks_failed',text:'Every piece finished.'}});
   const panel=elements.get('card').innerHTML;
   assert.match(panel,/A &lt;guide&gt; and a script/,'escaped');
   assert.ok(panel.indexOf('DELIVERABLES')<panel.indexOf('REQUIREMENTS')&&panel.indexOf('REQUIREMENTS')<panel.indexOf('DECISIONS'));
@@ -486,7 +487,8 @@ test('v8 S3: the Card panel lists deliverables, requirements with a pass/fail/un
   assert.match(panel,/<span class="req-chip fail" title="exit 1">fail<\/span> <b class="mono">R2<\/b>/);
   assert.match(panel,/R3<\/b> hello exists <span class="faint">· file check · hello · implicit/);
   assert.match(panel,/<li>The script is hello\.py\.<\/li>/);
-  assert.match(panel,/<span class="event-type">v8_checks_pending<\/span> Every piece finished\./);
+  assert.match(panel,/<span class="event-type">checks_failed<\/span> Every piece finished\./);
+  assert.match(panel,/<span class="req-chip untested" title="not run: the browser did not start">untested<\/span> <b class="mono">R3<\/b>/);
   assert.equal(elements.get('card-verdict').textContent,'3 requirements · 0 pass · 1 fail · 2 untested');
   const v7=renderWithPage(true,{settings:{}});
   assert.equal(v7.get('card-verdict').textContent,'No card (v7 pipeline)');
