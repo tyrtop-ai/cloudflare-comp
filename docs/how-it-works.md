@@ -1,6 +1,6 @@
 # Recursive Control Plane: how it works
 
-> The detailed companion to the short [README](../README.md), for v7.15.14. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9.
+> The detailed companion to the short [README](../README.md), for v7.15.14 and the experimental v8 pipeline. The [v7.15 changelog](../CHANGELOG-v7.15.md) gives the details of what changed after each live run since run9. [v8 (experimental)](#v8-experimental) and the [v8 changelog](../CHANGELOG-v8.md) cover v8.
 
 A multi-agent code-writing control plane that runs entirely on Cloudflare. You give it a goal, and a tree of small agents:
 - splits the work, promising a few named functions for each piece;
@@ -13,6 +13,8 @@ Each failure goes to the lowest manager whose branch holds every module involved
 This is an entry for Cloudflare's "build the next GitHub" competition, which asks for a new way for multiple agents to work on code changes concurrently. The project rethinks what GitHub is built around (repositories, branches, pull requests, review, merge conflicts) for a world where the authors are many small agents instead of a few people.
 
 > **Status:** this is v7.15.14. Every live run up to run8 used v7.13.x or earlier; run9 to run23 used v7.15. Run16, on v7.15.8, is the first live run in which the composed system produced a correct, verified application: complete in 3.9 minutes, in one round, with the runner's test passing. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
+>
+> **v8** is a second pipeline, chosen per room: the goal becomes a project card of deliverables and checks, workers write any text file in Node or Python, and the Container runs the checks. It is built and tested offline with scripted models and has not had a live run yet. v7 is still the default. See [v8 (experimental)](#v8-experimental).
 
 ## The idea
 
@@ -321,6 +323,108 @@ Linking is the one place where independent work meets, which makes it the natura
 - Problems a builder finds stay with its manager, so a mismatch inside one branch is settled there, without Root.
 - Running the application is the compiler's job, at the top, once.
 
+## v8 (experimental)
+
+Everything above describes v7, and v7 builds one kind of thing: a JavaScript module graph whose entry exports `start()`, tested by a script a model writes after the code exists. A goal like "add a README to this repo" or "a to-do list web page" had nowhere to go. A piece could only promise a JavaScript function name, only `.js` files could be linked, the runtime appended the `start()` requirement to every goal, and seven gates rejected Markdown or HTML outright.
+
+v8 keeps the tree, the promises, function requests and routing one level at a time. What changes is where the deliverable and its tests come from: the goal itself, before any code is written.
+
+### v7 and v8
+
+v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"` in `POST /api/run`. **v7 is still the default**, and a v7 room sends exactly the requests it sent before v8 existed. A room keeps the pipeline it started with (`pipeline_kept`), and `MOCK_AI` rooms always run v7. Making v8 the default and deleting the v7 paths (slice S7) waits for live runs. v8 has only run offline so far, against scripted models, with the real Container scripts run in Node. [trying-v8.md](trying-v8.md) is the checklist for the first live runs, and [CHANGELOG-v8.md](../CHANGELOG-v8.md) lists the slices and what each review changed.
+
+### How a v8 run goes
+
+The forward path is goal → card → contracts → pieces. The backward path is failed check → requirement → `serves` → contract → owner. Both use the same map.
+
+1. **The card.** Root's first turn turns the goal into a project card, in one call on the room's compiler model. The card holds:
+   - a summary;
+   - the languages, chosen from the toolchains the Container has installed;
+   - up to 12 deliverables;
+   - how to run the project (a static server, or a command started with a port);
+   - up to 24 requirements, each one yes/no statement with one check;
+   - the project's own test commands, if it has any;
+   - the decisions the goal left open, each stated in one sentence.
+
+   The runtime validates the card without a model, and the writer gets one retry with the errors. Clef then vets every requirement against the goal and drops the ones below 0.5. A deliverable that no requirement covers gets an implicit "exists" check. If the goal needs a language that isn't installed, or asks to edit a project when none was given, the room stops at `card_blocked` before any split. The card is fixed for its revision, and the dashboard shows it in the **Project card** panel.
+2. **Contracts.** The deliverables become Root's contracts. A contract has a name and a kind (function, file, page, route, command, doc or data), and can say what it does and give its inputs, outputs, effects, examples and path. It also carries `serves`: the ids of the requirements it helps meet. A v7 promise reads as a function contract with nothing lost.
+3. **Split.** The split works as in v7: Clef's split gate, the splitter's pieces each with their contracts, the name checks (now also one carrier per path), Clef's scope check and the prune walk. A contract a split adds between pieces inherits `serves` from the pieces that use it, so every contract at every level knows which requirements it is for. Splitters see their own contracts and a few lines of project facts. They never see the card's checks.
+4. **Workers write files.** A worker answers in raw file blocks (`=== FILE: path ===` … `=== END FILE ===`, then a short control block), not code escaped inside JSON. Any non-empty text file passes the gate. JavaScript must parse with Acorn, `.json` must parse, and one path rule (shared with the Container) refuses dotfiles, spaces and runtime-owned paths.
+
+   A worker sees its own contracts, the contracts it may use (each with the exact line that references it in the project's language), the project facts, and the goal clipped to 600 characters as a scope limit. A piece is done when its contracts are met, judged per kind: a file at its path, a command's entry point, a function the project's language exports. Function requests still climb one level at a time.
+5. **Bundle and glue.** v8 has no builder per manager and no compiler agent. When the tree finishes, the room assembles one bundle at Root: the base files (if the run started from a repo), then each piece's files. A file a contract places keeps its path, and any other file goes under `components/<piece folder>/`. The runtime writes the glue; a model never does:
+   - JavaScript keeps v7's rename-only path fixes, by ownership.
+   - A page's script and stylesheet references are pointed at the right files.
+   - Python gets shims at the project root, `__init__.py` markers, and a module path only where a file sits in a folder of its own.
+
+   A reference that resolves nowhere is renamed to the one contract name it matches. If none matches, the linker model is asked once per file, and every edit must pass a token-level check: the text outside names and import statements stays byte for byte.
+6. **Checks.** File checks run in the Worker. Doc checks go to Clef, which reads the file and answers yes or no (bar 0.6, in parts of 6,000 characters cut at headings). Everything else runs in one Container exec:
+
+   | Check | What it does |
+   |---|---|
+   | `file` | The file exists, isn't empty, contains given strings, parses as JSON |
+   | `judge` | Clef reads a document and answers the requirement's question |
+   | `command` | Runs a command (argv, no shell) with optional stdin and input files, and compares exit code, stdout and stderr |
+   | `call` | Calls functions through a small adapter (Node or Python), steps in order, saved results passed on |
+   | `http` | Starts the project's server and sends requests |
+   | `browser` | Serves the project and drives Chromium headless: go to, fill, click, press, expect text or a count |
+   | project checks | The project's own test command, such as `pytest` |
+
+   Every check runs, even after one fails, and each reports observed values with its timing.
+7. **Routed repairs.** Each failed requirement becomes a problem routed the v7 way: by stack frame, then by contract name, then by `serves` (the new step), then by Clef's ranking, one level at a time. The worker gets a repair ticket saying what its deliverable did, never what the check expected. An atomic Root repairs its own files. Repair rounds have the same bounds as v7. A requirement that has passed once is anchored, and its check is never changed. The room completes when every requirement passes. Otherwise it holds (`checks_failed`, `checks_blocked`, `checks_exhausted`) with the requirement table, and **Continue** runs the checks again.
+8. **Amendments (in progress).** A follow-up prompt on a finished room will become a change to the card. Its added or changed requirements are routed exactly like failed checks, and the requirements that already passed stay as anchors. The prompt queue builds on this. This is slice S9, which is not built yet.
+
+The export of a v8 room is the project at its own paths, plus `.recursive/RUN.md` (how to run it, and the requirement table) and `.recursive/card.json`. The runtime never writes the project's own `README.md`.
+
+### Starting from a repo, and links in the goal
+
+`POST /api/run` takes `base`: a public GitHub repo with an optional branch, tag or commit, or a room's previous v8 result (**Start from** in the dashboard). The repo is read without a token: up to 400 text files and 2 MB that the room builds, plus up to 200 files and 4 MB carried into the export untouched (hidden directories, binaries, vendored files).
+- **Ownership.** A base file belongs to no piece until a contract names its path, and only that piece may change it. Clef must also agree that the goal asks to change that file.
+- **What models see.** The card writer and splitters get a compact digest of the repo, and a worker gets only the files its contracts name.
+- **Export.** The export is the base plus the changes. `POST /api/export/github` with `onto_base: true` commits just the changes on top of the exact commit the room started from.
+
+Links written in the goal are read once, at Root's first turn, from hosts on the owner's allowlist (`FETCH_ALLOW`). Their text is cut into chunks and summarised into source cards. A split cites the chunks each piece needs, and a piece reads only what its parent cited. A link that can't be read is listed in the **Sources and base** panel, and the run goes on without it.
+
+### Security boundaries
+
+- **Fetched and base text is untrusted data.**
+  - **How models see it.** It reaches a model only quoted and labelled in the user JSON, beside a fixed clause saying it is data, not instructions. It never goes into a system prompt. It is sanitised first: controls, bidi and zero-width characters are stripped, and the runtime's own message markers are escaped.
+  - **No new fetching.** Agents can't fetch anything, and nothing is fetched recursively.
+  - **The fetcher.** It uses `https` on port 443 only, hosts on the allowlist only, and no IP literals or internal names. It never reads the deployment's own hosts (`SELF_HOSTS`). Redirects are followed by hand and each hop is checked again. Size and time are capped, and decompression is bounded by a reader-driven inflater. No request carries a token.
+- **Checks never reach workers.** No check argument, expected value, stdin, input file, step or judge question goes into any splitter, worker or manager prompt. Contract examples come only from what the card writer wrote for a deliverable. Failure details carry observed values, masked against every check value before any clipping. The reason is simple: a module that knows the expected values can return them, and no adapter can stop that.
+- **The Container sandbox is the real boundary.** Generated code, the project's own tests and benchmark tests run there as an unprivileged user.
+  - **Isolation.** There are no secrets in the environment. Each check gets a fresh copy of the bundle and its own temp folder, and runs under `prlimit` (processes, file size, memory). Its whole process tree is killed by tag at the deadline.
+  - **Network.** Where the Container allows user namespaces, checks run in a network namespace with only a loopback. The check report's inventory says whether the network was on or off. This hasn't been confirmed on a live Container yet. Chromium can only reach the served host.
+  - **Defence in depth.** The card's command rules (argv from a strict tokenizer, no shell syntax, no inline-code flags, no package runners) and the call adapters' nonce come on top of the sandbox. They don't replace it.
+
+### Benchmark mode
+
+The **Benchmarks** panel and `POST /api/bench` run a dataset of coding tasks, one v8 room per task:
+- **Datasets.** HumanEval, MBPP, MultiPL-E (its JavaScript and Python sets), or plain `{id, prompt, tests}` JSON lines, either pasted or fetched from `raw.githubusercontent.com` or Hugging Face's datasets server.
+- **The card.** Each room starts from a card the benchmark fixes: one function deliverable (`solution.py` or `solution.js`) and one hidden command check that runs the benchmark's own tests through a harness the runtime writes. There is no card writer and no Clef vetting.
+- **No test feedback.** Agents see the task's prompt (for HumanEval, the signature and the docstring with its examples) and the function contract. The hidden check is never routed, quoted or shown to a model. A room whose only failing requirement is hidden ends `failed` (`benchmark_failed`) with no repair, so this is pass@1 with no test feedback. Most tasks are atomic: Root writes the function itself.
+- **Scheduling.** A `BenchRun` Durable Object drives the rooms on alarms, so a run continues with the page closed. At most **Rooms at once** run together, capped by `BENCH_EXECUTORS`, and the rooms share a pool of executors. Rooms that passed are deleted by default; the others are kept so you can look at them.
+- **Scoring.** pass@1 counts only scored tasks. Platform failures, stops and card holds are errors and are left out. A room that ran out of turns counts as a failure. Each task records its wall time, tokens (from the spans) and Container time, and two runs can be compared on the tasks they share.
+
+Integrity limits:
+- **The harness.** It is a supervisor that never loads the solution. It deletes the tests and the nonce file before anything runs, scans the solution for constructs that tamper with the interpreter, and runs the tests in a separate process that doesn't hold the nonce. It counts every assertion, and checks afterwards that nothing it relies on was replaced. A pass needs the worker process's own completion record, exit 0 and at least one assertion. Offline, every forgery the review tried fails, and the reference solutions pass 164/164 on HumanEval and 427/427 on sanitized MBPP.
+- **What it can't stop.** Code that gets past the static scan and still reaches the worker process's memory (an obfuscated `eval`, say) can defeat the in-process checks, and so can a process of the same user reading the supervisor through `/proc`. The Container sandbox is the boundary, so a pass is strong evidence, not proof.
+- **Comparing numbers.** The models may have seen these datasets in training, and the tree around the model is not the setup published numbers use. Treat the results as a comparison between settings and models on this deployment, not a leaderboard figure.
+- **Scope.** Only Python and JavaScript tasks run. SWE-bench is out of scope: it needs per-repo Docker environments that Containers can't host.
+- **Not run live.** Benchmark mode has only been tested offline so far.
+
+### Speed changes
+
+Speed v1 came from two exported runs. On the small issue tracker run (340 s), compiles took 52% of the wall clock. On an 807-agent run, contract send-backs after the commit cost 19% of turn-seconds. What changed:
+- **Spans.** Every model call (role, model, tokens), Clef gate, git phase, Container run (cold or warm, each check's ms) and dispatch delay is recorded and exported. This is what the next round of speed work will read.
+- **One Container exec per compile**, with all syntax checks in one Node process, on `standard-1` instead of `lite`. In v8 the card's checks were designed as one exec from the start.
+- **Pre-warming.** The Container starts just before the compile it is for: when v7's top builder starts linking, or when an atomic Root starts writing. A pre-warmed Container that gets no compile within 60 s is stopped, and an idle one sleeps after 120 s. A v8 room that splits isn't pre-warmed yet, so its first check run probably pays a cold start.
+- **The contract check runs before the commit.** A missing `await` on a callee known to be async is fixed mechanically, and anything else gets one correction call inside the same turn. Only what is still wrong is sent back after the commit, which used to cost a whole extra turn.
+- **Per-model settings.** One table holds each model's reasoning switch, sampling and context window. Vendor sampling is used only where the vendor's card was checked; the rest keep temperature 0.2.
+- **Dashboard deltas.** The dashboard asks `/api/delta` for what changed every second, instead of pulling the full snapshot every 3 s.
+
+The bigger items from the speed analysis are not done yet: moving git pushes off the room's Durable Object, a pool of pre-created repos, and streaming model output into the tree.
+
 ## The dashboard
 
 The page served from `public/` shows the run as an ownership tree of circles. It is observer-only: no agent reads it.
@@ -347,10 +451,10 @@ The default problem statement is just the product: "Build a small issue tracker 
 | Product | What it does here | Why |
 |---|---|---|
 | Workers and Static Assets | Serves the dashboard from `public/` and the `/api/*` routes, which require the `APP_TOKEN` bearer token. | One deployable unit for the UI and the API. |
-| Durable Objects (SQLite) | `ControlRoom`, one per room: the agent tree and promises, scheduler, message queues, the problem inbox, staged writes and the event log. `ManagerShard`, one per manager per run: route hops, inbox, lifecycle decisions and Clef owner selection. `BuildExecutor`, one per run: drives the Container for the compiler. | Consistent, durable state per room and per manager. An interrupted turn resumes from its saved position instead of calling the model again, and a manager's decision is applied in one synchronous block. |
+| Durable Objects (SQLite) | `ControlRoom`, one per room: the agent tree and promises, scheduler, message queues, the problem inbox, staged writes, the event log and timing spans (and in a v8 room the card, the requirement results, sources and base files). `ManagerShard`, one per manager per run: route hops, inbox, lifecycle decisions and Clef owner selection. `BuildExecutor`, one per run (or one per pool slot for benchmarks): drives the Container. `BenchRun`, one per benchmark run: its tasks, results and the alarms that start rooms. | Consistent, durable state per room and per manager. An interrupted turn resumes from its saved position instead of calling the model again, and a manager's decision is applied in one synchronous block. |
 | Workers AI | Qwen3-30B-A3B (default) proposes splits with their promised functions, and writes code, link edits, managers' decisions, the API coverage mapping and runner tests. Llama 4 Scout, Qwen2.5 Coder 32B, DeepSeek V4 Flash (reasoning off), Mistral Small 3.1, Qwen 3.8 27B and Llama 3.2 1B can be selected instead; none of the first four has run live yet. The workers' model (the code writers) and the compiler's (the API coverage mapping and the runner's test) are chosen separately from the managers' (the splits, decisions and linking). Clef-flash (or Clef) answers typed YES/NO questions as probabilities: split, scope, the names a split adds, owner and prune decisions, function matching for requests, and a retask's scope. | Fast, inexpensive models for each agent: Qwen3-30B-A3B activates about 3B parameters per token. Clef returns a probability rather than prose, so every gate is a threshold and needs no output parsing. |
 | Artifacts | One git repository per agent, written with isomorphic-git (clone, commit, push) using short-lived write tokens. | Real git history per agent, with no shared branch. |
-| Containers | A Node 22 image runs `container/build-runner.mjs` as an unprivileged user under a 240-second timeout. | Generated code runs isolated from the control plane. |
+| Containers | One image on `standard-1` instances: Node (the LTS channel), Python 3 with pytest and Playwright's Chromium headless shell. It runs `container/build-runner.mjs` and the v8 check adapters as an unprivileged user, under a 240-second timeout, each check in its own copy of the bundle. | Generated code, and the checks that judge it, run isolated from the control plane. |
 
 Per-room settings in the dashboard: manager model, worker model, compiler model, Clef model, split threshold, concurrent agents, total agents, recursion depth, pieces per split and turn budget. The four count sliders are logarithmic, from each setting's floor to its ceiling (10,000 concurrent agents, 100,000 agents, a depth of 1,000, 10,000,000 turns), with a number box beside each for the exact value.
 
@@ -388,7 +492,8 @@ The tests use a fake Workers AI, an in-memory Artifacts store and Node's built-i
 
 ## Status
 
-- **Version.** This is v7.15.14. The full local suite passes with `npm test`, and `npm run check` passes.
+- **Version.** This is v7.15.14, plus the experimental v8 pipeline. The full local suite passes with `npm test`, and `npm run check` passes.
+  - [CHANGELOG-v8.md](../CHANGELOG-v8.md): v8 slice by slice, speed v1 and benchmark mode. None of it has run live; [trying-v8.md](trying-v8.md) is the checklist for the first runs.
   - [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md): predicted interfaces, the promises, function requests, and what the linker and the compiler read from the plan.
   - [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md): the four roles, the problem inbox and the managers' decisions.
   - [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md): v7.13.0, the hotfixes v7.13.1 to v7.13.4, and the export connector.
@@ -432,7 +537,7 @@ The changelogs give each run's evidence, and the local replays of its files, whi
 - **Function requests.** Clef can match a request to a function that does something else, and the gap then shows only when the application runs. A worker that needs anything outside its contract takes at least two model turns. A function that a split below a branch's top adds is internal to that branch: a worker elsewhere that imports it by name has it put on the promise of the lowest common manager's child whose assignment covers it, and only when none does, up to Root, is it told to change its reads.
 - **A Root that does not split.** A Root that Clef does not split writes the application itself, with no builder and no compiler. Its code goes through the Container's build check, but the runner writes no test for it.
 - **Context.** Linker input at one level is not split when it exceeds the model's context; the builder logs a `link_oversize` event instead. A builder's request grows with its direct children and their boundaries, not with the whole tree.
-- **Plain JavaScript only.** Workers write `.js`, `.mjs` or `.cjs` using Node built-ins: no npm packages, TypeScript or JSX.
+- **Plain JavaScript only (v7).** In a v7 room, workers write `.js`, `.mjs` or `.cjs` using Node built-ins: no npm packages, TypeScript or JSX. Other text files are kept in the export but never linked or run.
 - **Duplicated work.** Scope is checked when work is split, not afterwards:
   - the splitter is asked for non-overlapping pieces, and a new function name two pieces list is placed on one of them (by task, label or Clef), or dropped when none fits;
   - Clef checks each child against the goal and its parent's assignment;
@@ -441,6 +546,11 @@ The changelogs give each run's evidence, and the local replays of its files, whi
 
   Nothing compares the code that siblings write. In the larger v7.11 run, two sibling workers each wrote an almost identical `TicketRepository` class. Two sibling splits that run at the same time can each promise the same new name. A manager's model can retire a duplicate only when nothing else imports it.
 - **Linking other languages (pipeline v8).** For a language other than JavaScript the linker only points references at what they mean, and the runtime writes the glue: a shim at the project root per referenced contract (never under a root file's or a standard module's name), a package marker in each `components/` folder, and a module path (with `glue/run.sh`) only for a file placed in a folder of its own. A piece's own files refer to each other relatively. Every change is checked token by token: the text outside names and import statements stays byte for byte, and an import may only come to read the project. There are no member, `await` or argument-order checks for that code: such a failure surfaces as a failed card check and is routed by requirement. A file at the root under a standard module's name is refused at the gate.
+- **v8 has not run live.** Everything in [v8 (experimental)](#v8-experimental) is tested offline with scripted models. The card writer is the hardest single model call, and whether a small model writes usable cards is still open.
+- **v8 languages.** Only Node and Python are installed, and packages are not (`packages: "none"`): code uses each language's standard library. A goal that needs another language stops at `card_blocked`.
+- **v8 checks are only as good as the card.** Nothing checks that the card's requirements capture what you meant beyond Clef's vetting against the goal. A doc check is a Clef yes/no, not a test. A module that guesses a check's expected values can still pass it; the rule that no check value ever reaches a model is what prevents it from knowing them.
+- **v8 network isolation** depends on user namespaces in the Container. It has not been confirmed on a live Container; the check report's inventory says whether checks ran with the network off.
+- **No amendments yet.** A follow-up prompt on a finished room (slice S9) is not built. Start a new room, with the previous result as its base.
 - **`MOCK_AI=true`** still uses the older builder path, without promises. It exists for the regression tests and is not a demo mode.
 - **Repositories are never deleted.** Each run creates one Artifacts repository per agent (see [cleanup](../INSTALL-CLOUDFLARE.md#costs-and-cleanup)).
 
@@ -459,14 +569,20 @@ The changelogs give each run's evidence, and the local replays of its files, whi
 | `src/build-executor.js`, `src/build-verification.js` | `BuildExecutor` Container driver; snapshot hashing, attestation and repair addressing |
 | `src/code-work.js`, `src/assembly.js`, `src/assembly-gate.js` | Worker output rules and a worker's contract text, `components/...` bundle paths and metadata files, source and builder-file gates |
 | `src/glue.js` | Pipeline v8's bundle link: JavaScript paths from placed files, a page's script and stylesheet paths, and for a toolchain row with glue the runtime's root shims, package markers and module path, with fixes of a reference by its canonical name or its piece's relative path (`renameOnlyTextError` in `src/linker.js` checks them: byte identity outside names and imports, imports reading only the project) |
+| `src/card.js`, `src/contracts.js` | v8: the project card (schema, validation, the contracts a card gives Root, benchmark cards) and language-neutral contracts (kinds, name rules, the one renderer, `serves` inheritance) |
+| `src/toolchains.js`, `src/prompts.js`, `src/worker-output.js` | v8: what the runtime knows about each language, as data rows; every v8 prompt and room-written text, as data; reading a worker's raw file blocks |
+| `src/checks.js` | v8: the room's side of the card's checks: the Container plan, file checks, which failures are problems and what a worker may hear of them |
+| `src/fetcher.js`, `src/inflate.js`, `src/base.js`, `src/room-inputs.js` | v8: reading the goal's links and a public GitHub repo, with no bindings or secrets in reach: the guarded fetcher and sanitiser, a reader-driven inflater, the repo reader and digest, and the source cards |
+| `src/bench.js`, `src/bench-run.js`, `src/bench-harness.js` | Benchmark mode: dataset loaders and scoring, the `BenchRun` Durable Object and `/api/bench`, and the harnesses the hidden checks run |
 | `src/baseline-linker.js` | Diagnostic linker from the v7.7–v7.10 builder; builders since v7.11 do not use it |
 | `src/knowledge.js`, `src/protocol.js` | Public and private knowledge files, action and request parsing, reading model output, contact rules |
 | `src/zip.js`, `src/github-export.js` | Getting the code out: a store-only ZIP writer, and the push of the linked application to a new GitHub branch and pull request |
 | `src/vendor/acorn.mjs` | Vendored Acorn parser (MIT, see `src/vendor/ACORN-LICENSE`) |
-| `container/` | Container image (`Dockerfile`) and `build-runner.mjs` |
+| `container/` | Container image (`Dockerfile`), `build-runner.mjs` (v7 builds and v8 card checks), the shared path rule `build-path.mjs`, stack readers `stack-frames.mjs`, and `adapters/` (function calls in Node and Python, HTTP, the static server and the browser check) |
 | `public/` | Dashboard |
 | `test/` | `node --test` suite with fake Workers AI and Artifacts; `test/helpers/room.js` holds the room fixtures that run the real Container runner script |
 | `scripts/check.mjs` | Syntax check behind `npm run check` |
+| `CHANGELOG-v8.md` | The v8 slices, speed v1 and benchmark mode, with what each review changed |
 | `CHANGELOG-v7.15.md`, `CHANGELOG-v7.14.md`, `CHANGELOG-v7.13.md` | What changed in this release and the two it builds on, with the live-run evidence and replays behind each change |
 | `docs/history/` | Changelogs for each earlier version, plus the earlier README and install guide |
 | `wrangler.jsonc` | Worker name, bindings (AI, Artifacts, Durable Objects, Container, static assets) and the `MOCK_AI` switch. Rooms do not read its `MODEL_NAME` variable: the model is chosen per room, in the dashboard or with `settings.model` in the API |
@@ -492,8 +608,10 @@ The design reached this shape over many versions:
 - in v7.15.10 to v7.15.12: goals up to 4,000 characters, separate manager, worker and compiler models, and logarithmic count sliders;
 - in v7.15.13, from runs 18 to 20: a goal that states what `start()` returns defines the operations the plan, the entry, the coverage gate and the runner read; a promise the plan itself names outranks Clef's doubt; the Container's summary keeps the throw site; an error on a promised function's parameter, when its promise agrees, is a requirement on the caller that built the value; and a piece that changed its file for a failure without progress is routed past for a round.
 - in v7.15.14, from run21: tests the goal asks for are the compiler's runner's, never a piece's (unless the goal itself is about tests), and a split has at most "Pieces per split" children (7 by default), grouping related code into pieces that split again.
+- speed v1: timing spans, one Container exec per compile on a bigger instance, the contract check before the commit, per-model settings and dashboard deltas.
+- v8 (experimental, a room setting): the goal becomes a project card of deliverables and checks, contracts of any kind, workers that write any text file, checks run in the Container and routed back by the requirements each piece serves, starting from a repo or the goal's links, and benchmark mode.
 
-[CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md), [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md) and [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md) cover what changed since v7.12. [docs/history/CHANGELOG-v7.12.md](history/CHANGELOG-v7.12.md) documents the release before them. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](history/).
+[CHANGELOG-v8.md](../CHANGELOG-v8.md), [CHANGELOG-v7.15.md](../CHANGELOG-v7.15.md), [CHANGELOG-v7.14.md](../CHANGELOG-v7.14.md) and [CHANGELOG-v7.13.md](../CHANGELOG-v7.13.md) cover what changed since v7.12. [docs/history/CHANGELOG-v7.12.md](history/CHANGELOG-v7.12.md) documents the release before them. Earlier changelogs, and the version notes that used to make up this README, are in [docs/history/](history/).
 
 ## License
 

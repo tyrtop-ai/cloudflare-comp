@@ -86,16 +86,32 @@ The yes/no questions go to Clef, a classifier that answers with a probability, s
 - Everything runs on Cloudflare: Workers, Durable Objects (one per room and one per manager), Workers AI, Artifacts and Containers.
 - You can pick separate models for managers, workers and the compiler, and set how many pieces a split can have.
 
+## v8 (experimental)
+
+v7 can only build one kind of thing: a JavaScript app whose entry exports `start()`. v8 is a second pipeline you pick per room, meant to build whatever the goal asks for.
+
+- First the goal becomes a project card: the deliverables, plus a check for each requirement, all written before any code.
+- Workers can write any text file, in any language the Container has installed. Today that's Node and Python.
+- The checks run in the Container: files, commands, function calls, HTTP requests and a headless browser. Docs get a reader instead: Clef reads the file and answers yes or no.
+- When a check fails, it goes back as a repair to the piece that serves that requirement, the same way v7 routes a failed test.
+- Links written in the goal are read once at the start. A run can also start from a public GitHub repo or the room's previous result.
+- Queuing follow-up prompts on a finished room is in progress.
+- A benchmark mode runs HumanEval, MBPP or MultiPL-E tasks, one room per task, with the tests hidden from every agent.
+
 ## Where it's at
 
-The issue tracker works end to end. A bigger goal, a network diagnostics engine with 20 rules, splits, links and runs, but doesn't pass its test yet; that's what I'm working on next.
+The issue tracker works end to end on v7. A bigger goal, a network diagnostics engine with 20 rules, splits, links and runs, but doesn't pass its test yet.
 
-Every release so far came from watching a live run, reading its export and fixing whatever broke. The full history of runs and fixes is in [docs/how-it-works.md](docs/how-it-works.md#status).
+v8 is built and tested offline, with scripted models standing in for Workers AI and the real Container scripts running in Node. It hasn't had a live run yet. [docs/trying-v8.md](docs/trying-v8.md) is the checklist for the first ones.
+
+The history of live runs and fixes is in [docs/how-it-works.md](docs/how-it-works.md#status).
 
 ## More
 
-- [docs/how-it-works.md](docs/how-it-works.md): the full mechanism, the Cloudflare products, every live run, known limitations and the repository layout.
+- [docs/how-it-works.md](docs/how-it-works.md): the full mechanism (v7 and v8), the Cloudflare products, every live run, known limitations and the repository layout.
 - [INSTALL-CLOUDFLARE.md](INSTALL-CLOUDFLARE.md): deploying, the API and exports.
+- [CHANGELOG-v8.md](CHANGELOG-v8.md): the v8 slices and what each review changed.
+- [docs/trying-v8.md](docs/trying-v8.md): a checklist for the first live v8 runs.
 - [CHANGELOG-v7.15.md](CHANGELOG-v7.15.md), [v7.14](CHANGELOG-v7.14.md), [v7.13](CHANGELOG-v7.13.md): what changed, with the evidence behind each change.
 - [docs/history/](docs/history/): earlier changelogs and READMEs.
 - [docs/diagrams/](docs/diagrams/): Excalidraw scenes (open at excalidraw.com); after an edit, export light and dark SVGs with fonts embedded.

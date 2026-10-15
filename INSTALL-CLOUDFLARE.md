@@ -61,9 +61,9 @@ npm run deploy     # runs wrangler deploy
 This one command:
 
 - uploads the Worker `qwen-control-plane-v4` (`src/index.js`) and the dashboard in `public/` as static assets;
-- creates the three SQLite-backed Durable Object classes `ControlRoom`, `ManagerShard` and `BuildExecutor`;
+- creates the four SQLite-backed Durable Object classes `ControlRoom`, `ManagerShard`, `BuildExecutor` and `BenchRun` (benchmark runs);
 - binds Workers AI (`AI`) and Artifacts (`ARTIFACTS`);
-- builds the Container image from `container/Dockerfile` (the Node LTS channel, Python 3 with pytest, Playwright's Chromium headless shell, `build-runner.mjs` and its check adapters; about 0.9 GB unpacked, 0.35 GB compressed) and deploys it on `standard-1` instances, up to 4.
+- builds the Container image from `container/Dockerfile` and deploys it on `standard-1` instances, up to 4. The image holds Node (the LTS channel, not a pinned version), Python 3 with pytest, Playwright's Chromium headless shell, `build-runner.mjs` and the v8 check adapters. It is about 0.9 GB unpacked and 0.35 GB compressed. No versions are pinned: each v8 check run records the versions it used.
 
 Wrangler prints the Worker URL, `https://qwen-control-plane-v4.<your-subdomain>.workers.dev`. Cloudflare provisions the Container separately, so it can take a few minutes after a successful deploy before it is ready:
 
@@ -73,7 +73,7 @@ npx wrangler containers list
 
 Always deploy with `wrangler deploy` (`npm run deploy`). `wrangler versions upload` does not deploy Container changes.
 
-**Container size and cost.** `wrangler.jsonc` runs the build Container as `instance_type: "standard-1"` (1/2 vCPU, 4 GiB, 8 GB disk) instead of the default `lite` (1/16 vCPU, 256 MiB, 2 GB). This makes each compile's checks several times faster. Memory and disk are billed on the provisioned size for as long as an instance runs, which comes to about $0.038 per running hour against about $0.0024 for `lite`. CPU is billed only on active use. The 25 GiB-hours a month included in the plan cover about 6 instance-hours of `standard-1`, against about 100 of `lite`. With all 4 instances running, the cost is about $0.15 an hour. An instance sleeps after 120 s idle, and a pre-warmed one that gets no compile within 60 s is stopped. To go back to the default, delete the `instance_type` line, or set `"basic"` (1/4 vCPU, 1 GiB) as a middle option, then run `npm run deploy`.
+**Container size and cost.** `wrangler.jsonc` runs the build Container as `instance_type: "standard-1"` (1/2 vCPU, 4 GiB, 8 GB disk) instead of the default `lite` (1/16 vCPU, 256 MiB, 2 GB). This makes each compile's checks several times faster. Memory and disk are billed on the provisioned size for as long as an instance runs, which comes to about $0.038 per running hour against about $0.003 for `lite`. CPU is billed only on active use. The 25 GiB-hours a month included in the plan cover about 6 instance-hours of `standard-1`, against about 100 of `lite`. With all 4 instances running, the cost is about $0.15 an hour. An instance sleeps after 120 s idle, and a pre-warmed one that gets no compile within 60 s is stopped. To go back to the default, delete the `instance_type` line, or set `"basic"` (1/4 vCPU, 1 GiB) as a middle option, then run `npm run deploy`.
 
 ### Optional: your own domain
 
@@ -107,11 +107,35 @@ Use a [fine-grained personal access token](https://github.com/settings/personal-
 
 ### Optional: which sites a goal's links may be read from (v8 pipeline)
 
-A v8 run reads the `https://` links written in its goal once, at the start, and a run can start from a public GitHub repo or a room's previous result (**Start from** in the dashboard, or `base` in `POST /api/run`). Links are read only from hosts on an allowlist of host suffixes. Without a setting, the list is the suggested default in `src/fetcher.js` (`DEFAULT_ALLOW`); to set your own, add a `FETCH_ALLOW` var, for example `"FETCH_ALLOW": "github.com,raw.githubusercontent.com,docs.python.org"` under `vars` in `wrangler.jsonc` (host names, comma-separated; a URL, `:443` or a JSON array of hosts is read too). A value with no usable host refuses every link, and a run says so (`fetch_allow_unreadable`).
+A v8 run reads the `https://` links written in its goal once, at the start. It can also start from a public GitHub repo or a room's previous result (**Start from** in the dashboard, or `base` in `POST /api/run`). Two settings control this. Both go under `vars` in `wrangler.jsonc` and take effect on the next `npm run deploy`.
 
-The Worker never reads its own hosts, whatever the list says: the host a run was started on, and every host in a comma-separated `SELF_HOSTS` var. When you deploy with your own domain (see [Optional: your own domain](#optional-your-own-domain)), the `workers.dev` address keeps working beside it, so name both, for example `"SELF_HOSTS": "ai.example.com,qwen-control-plane-v4.example.workers.dev"`; a run started on one then never reads the other.
+**`FETCH_ALLOW`**: the hosts links may be read from, as comma-separated host suffixes. Without it, the list is the default in `src/fetcher.js` (`DEFAULT_ALLOW`: GitHub, Hugging Face, a few documentation sites). For example:
 
-A repo is read from `api.github.com` and `codeload.github.com` without a token (`GITHUB_TOKEN` is never used to read), up to 400 text files and 2 MB that the room builds and checks. The rest of the repo (hidden directories such as `.github/`, binaries, large or vendored files: up to 200 files and 4 MB) is carried into the export untouched and never built, and `.recursive/RUN.md` lists it and what was not carried. GitHub limits requests without a token; when the lookup of the default branch is refused, give a branch, tag or commit to start from. A room's previous result can be a base when that room ran the v8 pipeline and is not running; one that had not passed its checks is marked `unverified`. A link that cannot be read is listed in the dashboard's **Sources and base** panel and the run goes on without it; a base that cannot be read refuses the Start. One `APP_TOKEN` reads every room, so any room's result can be a base.
+```jsonc
+"FETCH_ALLOW": "github.com,raw.githubusercontent.com,docs.python.org"
+```
+
+A URL, a `:443` port or a JSON array of hosts is read too. A value with no usable host refuses every link, and a run says so (`fetch_allow_unreadable`). Benchmark datasets are read only from `huggingface.co` and `raw.githubusercontent.com`, and only when this list allows them too.
+
+**`SELF_HOSTS`**: the Worker's own host names, comma-separated. The Worker never reads its own hosts, whatever `FETCH_ALLOW` says. It always knows the host a run was started on, but not the others. When you deploy with your own domain (see [Optional: your own domain](#optional-your-own-domain)), the `workers.dev` address keeps working beside it, so name both. The author's own deployment serves `ai.tyrtop.com` (`npm run deploy:tyrtop`), so it sets:
+
+```jsonc
+"SELF_HOSTS": "ai.tyrtop.com,qwen-control-plane-v4.<your-subdomain>.workers.dev"
+```
+
+A run started on one of them then never reads the other.
+
+A repo is read from `api.github.com` and `codeload.github.com` without a token (`GITHUB_TOKEN` is never used to read). The room builds and checks up to 400 text files and 2 MB. The rest of the repo (hidden directories such as `.github/`, binaries, large or vendored files: up to 200 files and 4 MB) is carried into the export untouched and never built. `.recursive/RUN.md` lists those files and anything that was not carried. GitHub limits requests without a token; when the default-branch lookup is refused, give a branch, tag or commit to start from. A room's previous result can be a base when that room ran the v8 pipeline and is not running; one that had not passed its checks is marked `unverified`. A link that cannot be read is listed in the dashboard's **Sources and base** panel and the run goes on without it. A base that cannot be read refuses the Start. One `APP_TOKEN` reads every room, so any room's result can be a base.
+
+### Optional: Container slots for benchmarks
+
+A benchmark run starts one room per task, a few at a time, and its rooms share a pool of build executors. `BENCH_EXECUTORS` in `vars` says how many Container slots the pool has, and the run's **Rooms at once** is capped by it. Keep it equal to `max_instances` under `containers` (4 by default):
+
+```jsonc
+"BENCH_EXECUTORS": "4"
+```
+
+To run more benchmark rooms at once, raise both, then deploy. Each running instance is billed (see **Container size and cost** above).
 
 ## 6. Verify the deployment
 
@@ -138,22 +162,26 @@ npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave runni
    | Generative agent model | Qwen3 A3B | Qwen3 A3B, Llama 3.2 1B, Qwen 3.8 27B | Writes splits and their promised functions, code, link edits, managers' decisions, the API coverage mapping, triage and runner tests. |
    | Split decision model | Clef-flash | Clef-flash, Clef | Answers the YES/NO questions as probabilities: the split gate, each child's scope, each function name a split adds, routing, the prune walk, which function answers a worker's request, and a retask's new task. |
    | Minimum YES probability | 70% | 20–80% | Clef split threshold. |
+   | Pipeline | v7 | v7, v8 | Which pipeline the room runs. Fixed when the room starts: Continue keeps it (event `pipeline_kept`). |
 
    The generative model is chosen here, per room, or with `settings.model` in the API. Rooms do not read the `MODEL_NAME` variable in `wrangler.jsonc`, so editing it does not change the model.
 
-5. Press **Start**. This clears the room's state and creates Root. The runtime appends one requirement to your problem statement, so you do not need to write it:
+   **The v8 pipeline (experimental).** v7 is the default and is unchanged. With **v8**, Root first turns the goal into a project card (deliverables, plus a check for each requirement), workers may write any text file in Node or Python, and the Container runs the card's checks. It has not had a live run yet. [docs/trying-v8.md](docs/trying-v8.md) is a checklist for the first ones, and [docs/how-it-works.md](docs/how-it-works.md#v8-experimental) explains it. **Start from** works only in v8 rooms.
+
+5. Press **Start**. This clears the room's state and creates Root. In a v7 room, the runtime appends one requirement to your problem statement, so you do not need to write it:
    > The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.
 
    The splitters assign that requirement like any other, and Root promises `start`: its split must give `start` to exactly one child. While the run is going, **Start** becomes **Stop**. Stop starts no new turns; the running ones finish, and then the room pauses (**Stopping** until then). **Continue** resumes it.
 
-The dashboard refreshes every 3 seconds. It shows:
+The dashboard loads one full snapshot, then asks for what changed every second (`/api/delta`). It shows:
 - **The ownership tree**, as circles coloured by role: managers, workers and the compiler. A manager's circle splits in half while its builder works on the branch. Green lines mark a branch whose agents are all done, and a green ring marks one its builder has linked. Click a circle to see, below the tree, its task and a `promises:` line with the functions it promised.
 - **Agent traffic:** the latest 300 events, newest first.
 - **The files** the room has recorded, committed or staged for the current turn's commit. Click one to read its content from the room's index of Artifacts writes.
 - **The Container build panel**, with the latest Container report.
+- In a v8 room, the **Project card** panel (deliverables, requirements with a pass, fail or untested chip, decisions, and why the room is held) and the **Sources and base** panel.
 
 A run ends in one of three states:
-- **complete**, when the compiler's runner test passes on the current source and every agent is done;
+- **complete**, when the compiler's runner test passes on the current source and every agent is done (in a v8 room: when every requirement on the card passes);
 - **failed**, when an agent fails for good, for example when Root runs out of repair rounds;
 - **paused**, when the budget is spent or every remaining agent is waiting.
 
@@ -176,7 +204,10 @@ A run ends in one of three states:
 - every file the room has recorded, with its content;
 - every problem with its decisions, and every repair ticket;
 - each manager's linking state and the compiler's state;
-- up to 20,000 events. The agents' Artifacts remote URLs include your account ID, so review an export before you share it.
+- every event, and every timing span (model calls, Clef gates, git phases, Container runs, dispatch delays);
+- in a v8 room, the card and its revisions, the requirement results, the sources read and the base.
+
+**The agents' Artifacts remote URLs in the export include your Cloudflare account ID.** Don't commit an export to a repository or post it publicly.
 
 ### Getting the code out
 
@@ -195,6 +226,8 @@ node -e "require('./glue/index.js').start().then(app=>console.log(Object.keys(ap
 node glue/smoke.js
 ```
 
+In a v8 room there is no `glue/index.js` or runner test. The export is the project at its own paths (on top of the base, when the room started from one), plus `.recursive/RUN.md` (how to run it, and the requirement table with the digest of the files it was checked on) and `.recursive/card.json`. The runtime never writes the project's own `README.md`.
+
 Before there is an application (Root's builder has not linked one, the compiler has not written its loader, or an atomic Root has not written code) these routes return `409` with `No application yet`. A complete or failed room that never had one returns `409` with `No application to export`; start a new room.
 
 ### Using the API directly
@@ -204,15 +237,29 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 | Route | Purpose |
 |---|---|
 | `GET /api/state?room=` | Dashboard snapshot |
+| `GET /api/delta?room=&since=&agents_since=&files_since=&exports=&run=&card_rev=` | What changed since the cursor a snapshot or delta returned: new events (up to 300), changed agents and files, the export list when it changed, the card when `card_rev` differs, and the small state whole. A cursor from another run gets the full snapshot. The dashboard polls this every second |
 | `GET /api/export?room=` | Full export |
 | `GET /api/file?room=&agent=&path=` | One file an agent wrote, from the room's index of its Artifacts writes |
-| `POST /api/run` | `{room, goal, budget, settings, base?}`: start a new run. The goal must be 8–1800 characters. `base` (v8 pipeline only) is `{repo: "owner/name", ref?}` for a public GitHub repo or `{room: "<room id>"}` for a room's previous result. |
+| `POST /api/run` | `{room, goal, budget, settings, base?}`: start a new run. The goal must be 8–4000 characters. `base` needs `settings.pipeline: "v8"`: `{repo: "owner/name", ref?}` for a public GitHub repo (`ref` is a branch, tag or commit; the default branch when left out), or `{room: "<room id>"}` for another room's previous v8 result. The base is read before the room is cleared, so a base that cannot be read refuses the Start and leaves the room as it was |
 | `POST /api/continue` | `{room, budget, settings}`: resume a run |
 | `POST /api/stop` | `{room}`: stop a run. No new turns start; the running ones finish, then the room pauses (`status: paused`, event `stopped`) and the snapshot's `stopping` is `true` until then. Returns `{status: "stopping"}`, or `{error: "Nothing is running"}`; `/api/continue` resumes it |
 | `POST /api/reset` | `{room}`: clear the room's state |
 | `GET /api/app?room=` | The application as JSON: `files` (`[{path, content}]`, README first), `passed`, `fingerprint`, `digest` and `note`, plus `room`, `goal`, `room_status`, `agents`, `entry` and `kind` (`linked` by the builders and run by the compiler, or `atomic` when Root wrote it); `fingerprint` names what the passing run compiled |
 | `GET /api/app.zip?room=` | The same files as a ZIP download; the `x-app-passed` header is `true` or `false` |
 | `POST /api/export/github` | `{room, repo, branch?, dir?, pr?, base?}`: push the application to a new branch of `repo` (`owner/name`) and open a pull request unless `pr` is `false`. `branch` defaults to `control-plane/<room8>`, `dir` to `apps/<room8>/` (`.` is the repository root; `..` and absolute paths are refused), `base` to the repository's default branch. Returns `{branch, commit, pr_url, branch_url, files, passed, replaced}`; `replaced` is `true` when `dir` already held files on the base branch. With `onto_base: true` (a room that started from a GitHub repo), the commit's parent is the exact commit the room started from and only the files the room changed or added are written at the repository root, so the pull request shows just the changes; `base` defaults to the branch the room started from, and the export is refused when that branch has moved since. `repo` must hold that commit at that branch: the repository itself, or a fork whose branch is still there. Needs the `GITHUB_TOKEN` secret |
+
+Benchmark runs have their own routes, behind the same token. They take no `room`:
+
+| Route | Purpose |
+|---|---|
+| `POST /api/bench` | `{dataset, limit?, format?, settings?, concurrency?, budget?, label?, task_timeout_minutes?, keep_rooms?}`: start a benchmark run. `dataset` is a URL (a JSON lines file on `raw.githubusercontent.com`, or a `datasets-server.huggingface.co` rows URL) or the JSON lines themselves. `format` is `humaneval`, `mbpp`, `multipl-e` or `generic` (`{id, prompt, tests}`), detected when left out. `limit` defaults to 20 (at most 500), `concurrency` to 2 (at most 16, and never more than `BENCH_EXECUTORS`), `budget` to 60 turns per task, the task timeout to 30 minutes. `keep_rooms` is `failed` (default: keep the rooms that did not pass), `all` or `none`. Every task room runs the v8 pipeline whatever `settings` says. Returns the run's `id` |
+| `GET /api/bench` | The runs, and the deployment's executor slots |
+| `GET /api/bench?id=` | One run: progress, pass@1, cost and time, and one row per task (outcome, room id, wall time, tokens, Container time). It holds no remote URLs or account IDs |
+| `GET /api/bench/compare?a=&b=` | Two runs on the tasks they share |
+| `POST /api/bench/stop`, `POST /api/bench/resume` | `{id}`: stop or resume a run |
+| `DELETE /api/bench/<id>` | Delete the run and the rooms it still keeps |
+
+pass@1 counts only scored tasks. A task that could not be scored for platform reasons (the Container could not run, a stop, a card hold) is an error and is left out. A task whose room ran out of turns counts as a failure.
 
 ```bash
 URL=https://qwen-control-plane-v4.<your-subdomain>.workers.dev
@@ -225,7 +272,7 @@ curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" 
   -d '{"room":"demo-room-0001","repo":"your-name/your-repo"}'
 ```
 
-`settings` accepts `parallel`, `max_agents`, `max_depth`, `model`, `split_model` and `split_threshold` (0.2–0.8, default 0.7), with the same limits as the dashboard. When `budget` is left out, it defaults to 20.
+`settings` accepts `parallel`, `max_agents`, `max_depth`, `max_children`, `model`, `worker_model`, `compiler_model`, `split_model`, `split_threshold` (0.2–0.8, default 0.7) and `pipeline` (`"v7"`, the default, or `"v8"`), with the same limits as the dashboard. When `budget` is left out, it defaults to 20.
 
 ## Troubleshooting
 
@@ -248,11 +295,12 @@ curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" 
 - **`Experiment already running`**: a run is in progress in this room. Wait for it to pause, or use another room.
 - **Status stays paused with a builder or the compiler `waiting`**: its problems are with its manager (`problems_reported`, then `problem_assigned` or `problem_escalated`) and nothing has changed yet, or the runner could not write a valid test (`runner_failed`). **Continue** relinks waiting builders with a fresh relink budget, runs the compiler again, and has every manager decide the problems it still holds.
 - **`repair_exhausted` and a failed run**: a manager ran out of repair rounds (6 per manager, and 8 plus 2 per manager for the run, at most 40), or a problem was closed without a fix while its reporter waited on it, for example after a worker answered it twice without changing a file. The `problem_exhausted` and `problem_escalated` events before it say which. Start a new experiment.
+- **A v8 room held at `card_blocked`, `card_failed`, `checks_failed`, `checks_blocked` or `checks_exhausted`**: the **Project card** panel says why. `card_blocked` means the goal needs something this deployment cannot do (a language that is not installed, or an edit with no repo given); start again with a different goal or a base. `checks_blocked` means the checks could not run (the Container, Chromium or Clef failed); it retries itself after 30 s, 2 minutes and 10 minutes, then waits for **Continue**. For the others, **Continue** runs the card writer or the checks again, with fresh repair rounds after `checks_exhausted`.
 - **`This room was started by a version before v7.14 and is not migrated`**: **Continue** refuses rooms from earlier versions. **Start** resets the room.
 
 ## Costs and cleanup
 
-Every run creates one Artifacts repository per agent, builders and the compiler included, named `rc-<random>-<agent id>`. Neither the app nor **Clear room state** ever deletes them. A run also makes many Workers AI calls and starts a Container for the compiler: Qwen for splits, code, links, managers' decisions, the coverage mapping and tests, and Clef for each gate, each level of the prune walk, and each function request a manager cannot answer by name. All of this is billed to your account. To find and delete old repositories:
+Every run creates one Artifacts repository per agent, builders and the compiler included, named `rc-<random>-<agent id>`. Neither the app nor **Clear room state** ever deletes them. A run also makes many Workers AI calls and starts a Container for the compiler: Qwen for splits, code, links, managers' decisions, the coverage mapping and tests, and Clef for each gate, each level of the prune walk, and each function request a manager cannot answer by name. All of this is billed to your account. A benchmark run deletes the repositories of the task rooms it does not keep (by default, the ones that passed), and `DELETE /api/bench/<id>` deletes the rest. To find and delete old repositories:
 
 ```bash
 npx wrangler artifacts repos list --namespace default
@@ -272,6 +320,8 @@ git pull
 npm ci
 npm run deploy
 ```
+
+The v8 release adds the `BenchRun` Durable Object class and the `BENCH_EXECUTORS` var, and a larger Container image, so its first deploy takes longer. Existing rooms keep the v7 pipeline; v8 is chosen when a room starts.
 
 Start a new experiment after upgrading. A room started before v7.14 cannot be continued: **Continue** refuses it, and **Start** resets it. A room started on v7.14 can be continued, and keeps v7.14's behavior: it has no promises, so its workers do not ask for functions and its builders and compiler do not read a plan.
 
