@@ -63,7 +63,7 @@ This one command:
 - uploads the Worker `qwen-control-plane-v4` (`src/index.js`) and the dashboard in `public/` as static assets;
 - creates the three SQLite-backed Durable Object classes `ControlRoom`, `ManagerShard` and `BuildExecutor`;
 - binds Workers AI (`AI`) and Artifacts (`ARTIFACTS`);
-- builds the Container image from `container/Dockerfile` (Node 22, Python 3 with pytest, Playwright's Chromium headless shell, `build-runner.mjs` and its check adapters; about 0.9 GB unpacked, 0.35 GB compressed) and deploys it on `standard-1` instances, up to 4.
+- builds the Container image from `container/Dockerfile` (the Node LTS channel, Python 3 with pytest, Playwright's Chromium headless shell, `build-runner.mjs` and its check adapters; about 0.9 GB unpacked, 0.35 GB compressed) and deploys it on `standard-1` instances, up to 4.
 
 Wrangler prints the Worker URL, `https://qwen-control-plane-v4.<your-subdomain>.workers.dev`. Cloudflare provisions the Container separately, so it can take a few minutes after a successful deploy before it is ready:
 

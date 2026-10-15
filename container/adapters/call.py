@@ -1,42 +1,96 @@
 # Python call adapter (v8 §4.6): calls named functions of one bundle module
 # in ONE process, step after step, keeping saved results, and reports each
 # step as a JSON line. The runner (build-runner.mjs verifyCard) owns the
-# comparison: steps arrive without their expectations, so a module can only
-# pass by returning the right values.
+# comparison: steps arrive without their expectations.
 #
-# argv[1]: a file holding this run's nonce. It is read and deleted before the
-# module loads, and every line this adapter prints carries it, so a module
-# that prints its own lines or calls os._exit(0) cannot fake a step or the end.
-# stdin (JSON lines): {"module":"<bundle path>","steps":[{call,args,save?}]}.
+# Two processes. The SUPERVISOR (this file run as `call.py <nonce-file>`)
+# never imports bundle code: it reads this run's nonce from the file, deletes
+# it, starts the WORKER (`call.py --worker`, a fresh interpreter that never
+# held the nonce), forwards the request, and re-emits each worker record with
+# the nonce attached. It reports the end ({"done":true}) only when the worker
+# answered every step and then exited 0 by itself; a module that calls
+# os._exit() or sys.exit() at import or in a step never produces a done.
+# stdin: {"module":"<bundle path>","steps":[{call,args,save?}]} (JSON lines).
 # stdout: {"nonce","step","ok":true,"value"} | {"nonce","step","ok":false,
 # "error","stack"} per step, {"nonce","load":false,"error","stack"} when the
-# module does not load, then {"nonce","done":true}.
-import enum
-import importlib
-import importlib.util
+# module does not load, {"nonce","worker_exit":N} when the worker died, then
+# {"nonce","done":true}.
+#
+# KNOWN LIMIT. The worker runs bundle code, so that code controls what the
+# worker reports: a module that already knows a step's expected value can
+# hard-code it, or patch the worker's reporting to claim it. No adapter can
+# stop that; the defence is that a requirement's check (its args, expected
+# values and steps) is never shown to the agents that write the code, only
+# the contract's own examples (S4b). What the split does guarantee: the
+# module cannot read the nonce (it is never in the worker's memory, and the
+# file is gone before the worker starts), so it cannot write records past
+# the supervisor or claim the end, and an early exit is always a failure.
 import json
 import os
 import re
+import subprocess
 import sys
-import traceback
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def main():
-    # The adapter's own folder is no import root: a bundle module named
-    # call (or anything beside this file) must resolve inside the bundle.
-    here = os.path.dirname(os.path.abspath(__file__))
-    sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != here]
+def supervise():
     nonce_file = sys.argv[1]
     with open(nonce_file, encoding="utf-8") as f:
         nonce = f.read().strip()
     os.unlink(nonce_file)
+    out = sys.stdout
+
+    def emit(record):
+        out.write(json.dumps({"nonce": nonce, **record}, ensure_ascii=False) + "\n")
+        out.flush()
+
+    request = sys.stdin.read()
+    worker = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--worker"],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None)
+    worker.stdin.write(request.encode("utf-8"))
+    worker.stdin.close()
+    done = False
+    for raw in worker.stdout:
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("done") is True:
+            done = True
+            continue
+        if done:
+            continue  # nothing counts after the worker's end
+        if isinstance(record.get("step"), int) and not isinstance(record.get("step"), bool):
+            clean = {"step": record["step"], "ok": record.get("ok") is True}
+            for key in ("value", "error", "stack", "missing"):
+                if key in record:
+                    clean[key] = record[key]
+            emit(clean)
+        elif record.get("load") is False:
+            emit({"load": False, "error": str(record.get("error", ""))[:2000], "stack": str(record.get("stack", ""))[-4000:]})
+    code = worker.wait()
+    if code != 0:
+        emit({"worker_exit": code})
+    elif done:
+        emit({"done": True})
+
+
+def work():
+    # The adapter's own folder is no import root: a bundle module named
+    # call (or anything beside this file) must resolve inside the bundle.
+    sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != HERE]
+    import traceback
     # The module's own prints go to stderr: stdout is the protocol's.
     out = os.fdopen(os.dup(1), "w", encoding="utf-8")
     os.dup2(2, 1)
     sys.stdout = sys.stderr
+    dumps = json.dumps
 
     def emit(record):
-        out.write(json.dumps({"nonce": nonce, **record}, default=to_json, ensure_ascii=False) + "\n")
+        out.write(dumps(record, default=to_json, ensure_ascii=False) + "\n")
         out.flush()
 
     lines = [l for l in sys.stdin.read().split("\n") if l.strip()]
@@ -79,6 +133,8 @@ def main():
 
 
 def load(module_path):
+    import importlib
+    import importlib.util
     root = os.getcwd()
     absolute = os.path.join(root, module_path)
     directory = os.path.dirname(absolute)
@@ -134,6 +190,7 @@ def to_json(o):
     if hasattr(o, "__dataclass_fields__") and not isinstance(o, type):
         import dataclasses
         return dataclasses.asdict(o)
+    import enum
     if isinstance(o, enum.Enum):
         return o.value
     if isinstance(o, (set, frozenset)):
@@ -158,4 +215,7 @@ def error_text(e):
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["--worker"]:
+        work()
+    else:
+        supervise()

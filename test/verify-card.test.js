@@ -7,8 +7,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {tmpdir} from 'node:os';
-import {existsSync} from 'node:fs';
+import {existsSync,readFileSync,rmSync} from 'node:fs';
 import {createServer} from 'node:net';
+import {createServer as createHttpServer} from 'node:http';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {register} from 'node:module';
@@ -345,7 +346,7 @@ test('browser checks: a static todo page served from the bundle, driven by label
   const c=byId(report);
   assert.equal(c.R1.passed,true,c.R1.detail+'\n'+c.R1.output);
   assert.equal(c.R2.passed,true,'a fresh context: R1\'s localStorage is gone');
-  assert.match(c.R3.detail,/^step 2 \(expect_text "ready"\): the page never showed "ready" within 1500 ms; blocked non-local request https:\/\/cdn\.example\.com\/lib\.js$/);
+  assert.match(c.R3.detail,/^step 2 \(expect_text "ready"\): the page never showed "ready" within 1500 ms; blocked non-served request https:\/\/cdn\.example\.com\/lib\.js$/);
   assert.match(c.R3.output,/blocked: https:\/\/cdn\.example\.com\/lib\.js/);
   assert.match(c.R4.detail,/^step 3 \(expect_text "done"\): the page never showed "done" within 1500 ms; page error: TypeError: Cannot read properties of null.* \(at oops\.js:3\)$/);
   assert.deepEqual(c.R4.frames[0],{path:'oops.js',line:3,fn:'explode'});
@@ -353,6 +354,29 @@ test('browser checks: a static todo page served from the bundle, driven by label
   assert.match(c.R5.detail,/^step 1 \(goto "\/missing\.html"\): \/missing\.html answered HTTP 404$/);
   assert.ok(report.inventory.chromium,'the Chromium version is recorded');
   for(const x of report.checks.filter(x=>!x.passed))short(x);
+});
+
+test('browser checks: a WebSocket or fetch to a host that is not served never connects; a page that never yields fails alone, naming its step',{skip:browserReady||false},async()=>{
+  let upgrades=0,hits=0;
+  const other=createHttpServer((q,r)=>{hits++;r.writeHead(200,{'access-control-allow-origin':'*'});r.end('FETCHED');});
+  other.on('upgrade',(q,s)=>{upgrades++;s.destroy();});
+  other.listen(0,'127.0.0.2');
+  await new Promise(r=>other.once('listening',r));
+  try {
+    const port=other.address().port;
+    const files={'index.html':`<!doctype html><p id=w>ws pending</p><p id=f>fetch pending</p><script>const ws=new WebSocket('ws://127.0.0.2:${port}/x');ws.onopen=()=>{w.textContent='WS OPEN'};ws.onerror=ws.onclose=()=>{if(w.textContent!=='WS OPEN')w.textContent='WS FAILED'};fetch('http://127.0.0.2:${port}/x').then(r=>r.text()).then(t=>{f.textContent=t}).catch(()=>{f.textContent='FETCH BLOCKED'});</script>`,
+      'hang.html':'<!doctype html><body>hi<script>while(true){}</script></body>','ok.html':'<!doctype html><body>fine</body>'};
+    const report=await card(files,{runs:[{id:'web',static:true}],checks:[
+      {id:'W1',kind:'browser',serve:'web',steps:[{goto:'/'},{expect_text:'WS FAILED'},{expect_text:'FETCH BLOCKED'}]},
+      {id:'G1',kind:'browser',serve:'web',steps:[{goto:'/hang.html'},{expect_text:'never'}]},
+      {id:'G2',kind:'browser',serve:'web',steps:[{goto:'/ok.html'},{expect_text:'fine'}]}]},{limits:{total_ms:120_000,check_ms:8000,step_ms:2000},isolation:[]});
+    const c=byId(report);
+    assert.equal(c.W1.passed,true,c.W1.detail);
+    assert.deepEqual([upgrades,hits],[0,0],'nothing reached the host that is not served');
+    assert.match(c.G1.detail,/^step 1 \(goto "\/hang\.html"\): /);
+    assert.ok(!c.G1.infrastructure);
+    assert.equal(c.G2.passed,true,c.G2.detail);
+  } finally {other.close();}
 });
 
 test('browser checks fail as an infrastructure issue, not the deliverable\'s, when the browser cannot start',async()=>{
@@ -374,18 +398,80 @@ test('network: command and call checks run without a network where a namespace i
   try {
     const {port}=server.address();
     const files={'probe.mjs':`import {connect} from 'node:net';\nconst s = connect(${port}, '127.0.0.1');\ns.on('connect', () => { console.log('reached'); process.exit(0); });\ns.on('error', e => { console.error(e.code); process.exit(1); });\n`};
-    const report=await card(files,{checks:[{id:'R1',kind:'command',run:'node probe.mjs',expect:{exit:0}}]});
+    // A run server tells what it can reach; a static page is driven in the same namespace.
+    files['api.mjs']=`import {createServer} from 'node:http';\nimport {connect} from 'node:net';\nlet seen = 'pending';\nconst s = connect(${port}, '127.0.0.1');\ns.on('connect', () => { seen = 'reached'; s.destroy(); });\ns.on('error', e => { seen = 'blocked ' + e.code; });\ncreateServer((q, r) => r.end(seen)).listen(Number(process.env.PORT), '127.0.0.1');\n`;
+    files['index.html']='<!doctype html><p>served page</p>';
+    const plan={runs:[{id:'api',run:'api.mjs',port:true,ready:'/'},{id:'web',static:true}],checks:[{id:'R1',kind:'command',run:'node probe.mjs',expect:{exit:0}},
+      {id:'R2',kind:'http',serve:'api',steps:[{method:'GET',path:'/',expect:{body_has:['blocked']}}]},
+      ...(browserReady?[]:[{id:'R3',kind:'browser',serve:'web',steps:[{goto:'/'},{expect_text:'served page'}]}])]};
+    const report=await card(files,plan);
     assert.equal(report.inventory.network,prefix.length?'off':'on');
     if(!prefix.length){t.diagnostic('no network namespace on this platform: checks keep the network');assert.equal(byId(report).R1.passed,true);return;}
     assert.equal(byId(report).R1.passed,false,'the check could reach a socket outside its namespace');
     assert.match(byId(report).R1.detail,/exit 1/);
+    assert.equal(report.inventory.runs_network,'off');
+    assert.equal(byId(report).R2.passed,true,`the run reached a socket outside the runs' namespace: ${byId(report).R2.detail}`);
+    if(!browserReady)assert.equal(byId(report).R3.passed,true,`the browser in the runs' namespace: ${byId(report).R3.detail}`);
   } finally {server.close();}
 });
 
-test('the per-check copy: what one check writes never reaches the next, and the bundle is never changed',async()=>{
-  const files={'w.mjs':"import {writeFileSync, existsSync} from 'node:fs';\nif (existsSync('mark.txt')) { console.log('seen'); process.exit(1); }\nwriteFileSync('mark.txt', 'x');\nwriteFileSync('w.mjs', 'process.exit(3)');\n"};
-  const report=await card(files,{checks:[{id:'R1',kind:'command',run:'node w.mjs'},{id:'R2',kind:'command',run:'node w.mjs'}]},{isolation:[]});
-  assert.deepEqual(report.checks.map(c=>c.passed),[true,true]);
+test('isolation: each check gets a fresh copy written from memory and its own TMPDIR, whatever an earlier check wrote',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  // A rewrites every sibling folder it can find two levels up, its own copy and a temp file; B must see none of it.
+  const files={'a.py':`import glob, os, tempfile\nopen(os.path.join(tempfile.gettempdir(), 'mark'), 'w').write('from A')\nfor d in glob.glob(os.path.join(os.getcwd(), '..', '..', '*')) + glob.glob(os.path.join(os.getcwd(), '..', '..', '*', '*')):\n    p = os.path.join(d, 'b.py')\n    if os.path.isdir(d) and os.access(d, os.W_OK):\n        open(p, 'w').write('print("B rewritten by A")')\nopen('b.py', 'w').write('print("B rewritten by A")')\nprint('ok')\n`,
+    'b.py':`import os, tempfile\nprint('original b', os.path.exists(os.path.join(tempfile.gettempdir(), 'mark')))\n`};
+  const report=await card(files,{checks:[{id:'A',kind:'command',run:'a.py',expect:{exit:0}},{id:'B',kind:'command',run:'b.py',expect:{stdout:'original b False'}}]},{isolation:[]});
+  assert.deepEqual(report.checks.map(c=>[c.id,c.passed,c.detail]),[['A',true,''],['B',true,'']]);
+});
+
+test('process trees: a setsid() daemon holding stdout neither stalls the check nor outlives it; a timeout reports the real time',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const pidFile=`${tmpdir()}/v8-s4a-daemon-${process.pid}.pid`;
+  const files={'d.py':`import os, sys, time\nif os.fork() == 0:\n    os.setsid()\n    open(${JSON.stringify(pidFile)}, 'w').write(str(os.getpid()))\n    time.sleep(30)\n    os._exit(0)\ntime.sleep(0.2)\nprint('parent done')\n`,
+    'slow.py':'import time\ntime.sleep(30)\n'};
+  const t=Date.now();
+  const report=await card(files,{checks:[{id:'R1',kind:'command',run:'d.py',expect:{stdout:'parent done'}},{id:'R2',kind:'command',run:'slow.py'}]},{limits:{total_ms:60_000,check_ms:1500,step_ms:1000},isolation:[]});
+  assert.ok(Date.now()-t<8000,`took ${Date.now()-t} ms`);
+  assert.equal(byId(report).R1.passed,true,byId(report).R1.detail);
+  assert.ok(byId(report).R1.ms<1500,`R1 waited ${byId(report).R1.ms} ms on the daemon's pipe`);
+  assert.equal(byId(report).R2.detail,'slow.py: timed out after 1.5 s');
+  const pid=Number(readFileSync(pidFile,'utf8'));rmSync(pidFile,{force:true});
+  await new Promise(r=>setTimeout(r,200));
+  let state='';try{state=readFileSync(`/proc/${pid}/status`,'utf8').match(/^State:\s+(\S)/m)[1];}catch{}
+  assert.ok(state===''||state==='Z',`the daemon ${pid} is still running (${state})`);
+});
+
+test('forgery: a module that patches the adapter\'s globals or walks its frames, or exits before the steps, never passes',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const files={
+    'patch.js':"const orig = JSON.stringify;\nJSON.stringify = function (v, ...r) { if (v && typeof v === 'object' && v.ok === false) v = {...v, ok: true, value: 5}; return orig.call(this, v, ...r); };\nexport function add() { throw new Error('not implemented'); }\n",
+    'walk.py':"import sys, json, os\nf = sys._getframe()\nwhile f and 'nonce' not in f.f_locals:\n    f = f.f_back\nn = f.f_locals['nonce']\nprint(json.dumps({'nonce': n, 'step': 0, 'ok': True, 'value': 5}))\nos._exit(0)\n",
+    'early.mjs':"process.exit(0);\nexport const add = (a, b) => a + b;\n"};
+  const steps=[{call:'add',args:[2,3],expect:5}];
+  const report=await card(files,{checks:[{id:'R1',kind:'call',module:'patch.js',steps},{id:'R2',kind:'call',module:'walk.py',steps},{id:'R3',kind:'call',module:'early.mjs',steps}]},{isolation:[]});
+  const c=byId(report);
+  assert.equal(c.R1.detail,'add(2, 3) in patch.js raised Error: not implemented (at patch.js:3)');
+  assert.match(c.R2.detail,/^walk\.py does not load: AttributeError: 'NoneType' object has no attribute 'f_locals'/);
+  assert.match(c.R3.detail,/^the process ended before add\(2, 3\) in early\.mjs returned \(exit 0\)/);
+});
+
+test('error cases and redaction: stderr_has without exit wants a failure exit; details and outputs carry no runner path or adapter frame',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const files={'cli.py':'import sys\nprint("usage: cli.py N", file=sys.stderr)\nsys.exit(0)\n','cwd.py':'import os, sys, tempfile\nprint(os.getcwd(), tempfile.gettempdir(), file=sys.stderr)\nraise SystemExit(3)\n',
+    'm.py':'def f(x):\n    return 1 / x\n','bad.py':'import nosuchmod\n'};
+  const report=await card(files,{checks:[{id:'R1',kind:'command',run:'cli.py x',expect:{stderr_has:['usage']}},{id:'R2',kind:'command',run:'cwd.py'},
+    {id:'R3',kind:'call',module:'m.py',steps:[{call:'f',args:[0],expect:1}]},{id:'R4',kind:'call',module:'bad.py',steps:[{call:'f',args:[]}]}]},{isolation:[]});
+  const c=byId(report);
+  assert.equal(c.R1.detail,'cli.py x: exit 0, expected a failure exit (non-zero)');
+  assert.equal(c.R2.detail,'cwd.py: exit 3, expected 0; stderr: . tmp');
+  for(const x of report.checks) {
+    assert.ok(!(x.detail+x.output).includes(tmpdir()+'/card-'),`${x.id} names the runner's folder: ${x.detail} ${x.output}`);
+    assert.ok(!/adapters\/call\.|importlib/.test(x.output),`${x.id} shows runner frames: ${x.output}`);
+  }
+  assert.match(c.R3.output,/File "m\.py", line 2, in f/);
+});
+
+test('resource limits: where prlimit runs, a check cannot write a file past 64 MB, and the report records the limits',{skip:!hasPython&&'python3 is not installed'},async t=>{
+  const report=await card({'big.py':'with open("big.bin", "wb") as f:\n    f.write(b"x" * (70 * 1024 * 1024))\n'},{checks:[{id:'R1',kind:'command',run:'big.py'}]},{isolation:[]});
+  if(!report.inventory.limits){t.diagnostic('prlimit is unavailable: no limits');return;}
+  assert.deepEqual(report.inventory.limits,{nproc:64,fsize:64*1024*1024,data:1024*1024*1024});
+  assert.equal(byId(report).R1.passed,false);
 });
 
 test('project checks run first as commands that must exit 0; the time budget marks unrun checks as not run',{skip:!hasPython&&'python3 is not installed'},async()=>{
