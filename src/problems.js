@@ -12,6 +12,7 @@ import {EFFECT} from './api-coverage.js';
 import {ENTRY_CONTRACT} from './model.js';
 import {clip} from './protocol.js';
 import {normalizeInterfaces, repairInterfaces, signature, GENERIC_NAMES} from './interfaces.js';
+import {kindOf, textNames} from './contracts.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
@@ -408,10 +409,13 @@ const wordsOf=s=>(String(s||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCas
 // a storage requirement). Integration: a generic name (create, list, get) is
 // never matched by name, as a function request never is (requestNames), the
 // linker never binds one and the contract never reads one as foreign.
+// v8 (S2): a contract of any other kind (a command, route, file, page, doc
+// or data) is named only by its whole name (textNames), never by its words;
+// a function is named as before.
 export function namedFunctions(text, fns) {
-  const s=String(text||''),literal=new Set(s.match(/[A-Za-z_$][\w$]*/g)||[]),have=new Set(wordsOf(s));
-  const byName=f=>literal.has(f.name)&&!GENERIC_NAMES.has(f.name)&&(f.name!=='start'||/\bstart\(|\bapp\.start\b/.test(s));
-  return [...new Map((fns||[]).filter(f=>f?.name&&(byName(f)||wordsOf(f.name).length>1&&wordsOf(f.name).every(w=>have.has(w)))).map(f=>[f.name,f])).values()];
+  const s=String(text||''),literal=new Set(s.match(/[A-Za-z_$][\w$]*/g)||[]),have=new Set(wordsOf(s)),fn=f=>kindOf(f)==='function';
+  const byName=f=>(fn(f)?literal.has(f.name):textNames(s,f))&&!GENERIC_NAMES.has(f.name)&&(f.name!=='start'||/\bstart\(|\bapp\.start\b/.test(s));
+  return [...new Map((fns||[]).filter(f=>f?.name&&(byName(f)||fn(f)&&wordsOf(f.name).length>1&&wordsOf(f.name).every(w=>have.has(w)))).map(f=>[f.name,f])).values()];
 }
 // R3: a ticket is a requirement on the worker's own promised function. fn:
 // the promise the route named (a: by name, c: the method's performer, d:
@@ -489,7 +493,11 @@ export function requirementText(r, {fn=null, more=[], module='', method='', thro
 // (c) the method's performer per the start plan; (d) Clef's ranks over the
 // children's promises. view: {promises: [{child, fns}], frameOwner(path) →
 // the direct child, performer(method) → {child, fn}, ranks: Clef's children
-// best first, or null when not asked}. Returns the candidates in order,
+// best first, or null when not asked}. v8 (S2): (s) after the named
+// contracts and before Clef's ranks, the direct children whose contracts
+// serve the requirement (r.id in their serves, §2.3), each with its first
+// serving contract; r.serves, the deliverables the requirement is about,
+// are named contracts too. Returns the candidates in order,
 // declined children left out (R4), and ask: the children Clef should rank
 // (an empty list: all of them), or null when its answer is not wanted.
 // Review: a candidate's providers are the other parties whether or not
@@ -507,7 +515,7 @@ export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer
   const calls=f=>!!r.caller&&f.path===r.caller.path&&f.fn===r.caller.fn,order=r.caller?[...frames.filter(calls),...frames.filter(f=>!calls(f))]:frames;
   order.forEach(f=>{const fn=f.fn?fnOf(f.child,f.fn):null,c=calls(f);add(f.child,c?'b':fn?'a':'b',{fn,module:f.path,thrown:f===frames[0],providers:[...new Set(frames.filter(x=>x.child!==f.child).map(x=>x.child))],...c?{caller:true,callee:r.callee.promise}:{}});});
   // v7.15.8 (run15): a read's text is the reader's own and names its producer exactly (names); its words ("reads …Ticket") name no other promise (readTickets was read as a party).
-  const named=[...new Set([...(r.names||[]),...(r.read?[]:namedFunctions(r.text,promises.flatMap(x=>x.fns)).map(f=>f.name))])].filter(n=>promiser(n));
+  const named=[...new Set([...(r.names||[]),...(Array.isArray(r.serves)?r.serves:[]),...(r.read?[]:namedFunctions(r.text,promises.flatMap(x=>x.fns)).map(f=>f.name))])].filter(n=>promiser(n));
   // The method under test names its promise, or its performer per the start plan (run11's app.view is viewTicket).
   const perf=r.method&&!promiser(r.method)?performer(r.method):null,site=named.includes('start')?'start':r.method&&promiser(r.method)?r.method:perf?.fn?.name&&promiser(perf.fn.name)?perf.fn.name:null,others=named.filter(n=>n!==site);
   let ask=null;
@@ -517,6 +525,9 @@ export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer
   else if(otherChildren.length>1&&!ranks)ask=otherChildren;
   for(const c of otherChildren)add(c,'a',{fn:fnOf(c,others.find(n=>promiser(n)===c)),relied:siteFn,providers:[promiser(site),...party.filter(x=>x!==c)].filter(Boolean)});
   if(perf?.child&&!site)add(perf.child,'c',{fn:perf.fn,method:r.method,performer:true});
+  // v8 (S2): the forward map read backward: a child whose contract serves the requirement.
+  const serving=r.id?promises.map(x=>({child:x.child,fns:x.fns.filter(f=>Array.isArray(f?.serves)&&f.serves.includes(r.id))})).filter(x=>x.fns.length):[];
+  for(const x of serving)add(x.child,'s',{fn:x.fns[0],more:x.fns.slice(1).map(f=>f.name),providers:serving.filter(y=>y.child!==x.child).map(y=>y.child)});
   // Clef's ranks: the ticket names the child's promise (R3), its first function with the others.
   if(ranks)for(const c of ranks){const [fn,...rest]=fnsOf(c);add(c,'d',{fn:fn||null,more:rest.map(f=>f.name)});}
   else if(!out.length)ask=ask||[];
@@ -848,7 +859,8 @@ export function validateManagerActions(actions, call, ctx) {
       // manager promised taking its item (the description travels down).
       let interfaces;
       if(a.interfaces!==undefined&&ctx.promise) {
-        const items=normalizeInterfaces(Array.isArray(a.interfaces)?a.interfaces:[a.interfaces]),own=ctx.promise?.items||[];
+        // v8 (S2): ctx.v8 reads contract fields; a model's serves never stays (a carried item keeps its own).
+        const items=normalizeInterfaces(Array.isArray(a.interfaces)?a.interfaces:[a.interfaces],{v8:!!ctx.v8}),own=ctx.promise?.items||[];
         interfaces=repairInterfaces([{label:child,interfaces:items}],own).spawn[0].interfaces.map(f=>own.find(x=>x.name===f.name)||f);
       }
       gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300),...interfaces?{interfaces}:{}});actionOf.set(retask.at(-1),a);
