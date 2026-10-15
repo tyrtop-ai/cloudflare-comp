@@ -14,6 +14,7 @@
 // Pure: no room, no model.
 import { PROTECTED_NAMES, noValue } from './linker.js';
 import { isPath } from './protocol.js';
+import { caseTwin } from '../container/build-path.mjs';
 import { toolchainOf, extractSurface, renderImport } from './toolchains.js';
 
 export const CONTRACT_KINDS = Object.freeze(['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
@@ -294,7 +295,12 @@ export function nameError(c, facts = null) {
   if (kind === 'route') return ROUTE_NAME.test(name) ? '' : `"${name}" is not a route; name it as a method and a path, such as "GET /path"`;
   if (kind === 'command' && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits and hyphens, starting with a letter`;
   if (!c.path) return `${kind} "${name}" needs the path of ${kind === 'command' ? 'the file that implements it' : 'its file'}`;
-  if (!placeablePath(c.path)) return `${kind} "${name}" cannot be placed at ${c.path}; choose a project path outside ${RUNTIME_PREFIXES.join(', ')}`;
+  // v8 S8b: an existing project file is named exactly (a repo's own components/ too); a
+  // path equal to one apart from case, or under the pieces' parts root, is refused.
+  const base = facts?.base, twin = caseTwin(c.path, base);
+  if (twin && twin !== c.path) return `${kind} "${name}" differs only in letter case from the existing file ${twin}; name ${twin} exactly`;
+  if (!twin && facts?.parts && c.path.toLowerCase().startsWith(String(facts.parts).toLowerCase() + '/')) return `${kind} "${name}" cannot be placed at ${c.path}; the runtime keeps ${facts.parts}/ for the pieces' files`;
+  if (!twin && !placeablePath(c.path)) return `${kind} "${name}" cannot be placed at ${c.path}; choose a project path outside ${RUNTIME_PREFIXES.join(', ')}`;
   if (PATH_NAMED.has(kind) && name !== c.path) return `${kind} "${name}" must be named by its path ${c.path}`;
   return '';
 }

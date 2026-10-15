@@ -7,15 +7,15 @@ export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, BASE_CHANGE_BAR } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
-import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard } from './card.js';
+import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard, dropDeliverables } from './card.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
-import { triggerText, RETRY, MESSAGES } from './prompts.js';
+import { triggerText, RETRY, MESSAGES, BASE_LABEL } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
@@ -30,14 +30,17 @@ import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyn
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, useReferences, USES_SHOWN, PLACED_KINDS, functionRows } from './contracts.js';
-import { branchDirectory, packageDirectory, packagePath } from './assembly.js';
+import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 // v8 S5: the polyglot linker (bundle links, runtime glue, rename-only repair).
 import { linkBundle, renameFromRun, knownNames as linkKnownNames, textHash } from './glue.js';
 import { applyTextEdits } from './linker.js';
 import { unresolvedNames } from './toolchains.js';
 import { checkSecrets } from './checks.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, cardsFor, chunksFor, SOURCE_CLAUSE } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, cardsFor, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE } from './room-inputs.js';
+import { allowReport } from './fetcher.js';
+import { caseTwin } from '../container/build-path.mjs';
+import { toBase64 } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
@@ -377,6 +380,8 @@ export class ControlRoom extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.busy = false;
+    // v8 S8b review: an owner's FETCH_ALLOW with no usable entry refuses every link; say so at start-up.
+    if (env?.FETCH_ALLOW != null && String(env.FETCH_ALLOW).trim() && !allowReport(env.FETCH_ALLOW).allow.length) console.warn(`FETCH_ALLOW has no usable host suffix (${String(env.FETCH_ALLOW).slice(0, 120)}); every link in a goal is refused.`);
     this.activeTurns = new Set();
     // v7.11: agents whose turn is running. Their file writes are staged in
     // SQLite and pushed to Artifacts as ONE commit when the turn ends.
@@ -475,7 +480,8 @@ export class ControlRoom extends DurableObject {
   // How a stored contract row is read: under v8 with its kind, path and serves.
   contractOpts() { return this.v8()?{v8:true,serves:true}:{}; }
   // The facts contract name rules read under v8 (§2.2): the toolchain rows and the card's languages.
-  contractFacts() { return {rows:this.installedToolchains(),languages:this.read('card',null)?.languages||[]}; }
+  // v8 S8b: with a base, its paths (an existing file is named exactly) and the pieces' parts root.
+  contractFacts() { const base=this.v8()?this.basePaths():null; return {rows:this.installedToolchains(),languages:this.read('card',null)?.languages||[],...(base?.size?{base,parts:this.partsRoot()}:{})}; }
   // The languages a code piece delivers in: v7 links and runs JavaScript;
   // under v8 the card's (its non-text languages; a card of documents only has none).
   // v8 S3 review: never none while code is required: a card with no code
@@ -502,8 +508,30 @@ export class ControlRoom extends DurableObject {
   basePaths() { return new Set(query(this.db(),'SELECT path FROM base_files').map(r=>r.path)); }
   // What the file gate knows of a writer under v8 (§3.3, §7.1): the base
   // paths, and the paths its contracts name (only those base files are its
-  // to change, and a manifest only at such a path).
-  gateFacts(id) { return this.v8()?{base:this.basePaths(),owned:new Set(this.promisedOf(id).map(c=>c.path).filter(Boolean))}:{}; }
+  // to change, and a manifest only at such a path). S8b review: a base path
+  // counts only when Clef found that the goal asks to change it (the card's,
+  // or a split's, base_approved), so no text quoted from the base can hand a
+  // file to a writer.
+  gateFacts(id) {
+    if(!this.v8())return {};
+    const base=this.basePaths(),approved=new Set(this.read('base_approved',[]));
+    return {base,owned:new Set(this.promisedOf(id).map(c=>c.path).filter(p=>p&&(!base.has(p)||approved.has(p))))};
+  }
+  // v8 S8b: the folder of the pieces' unplaced files (partsRoot): components,
+  // unless the base holds a components/ of its own. Fixed when the run starts.
+  partsRoot() { return this.get('parts_root','')||PARTS_ROOT; }
+  // Clef's base_change question over existing files a contract names (the
+  // card's deliverables, a split's new contracts): {yes, no}, the approved
+  // paths kept in base_approved. A Clef failure throws.
+  async approveBasePaths(id, paths, goal=this.userGoal()) {
+    const approved=new Set(this.read('base_approved',[])),ask=[...new Set(paths)].filter(p=>!approved.has(p));
+    if(!ask.length)return {yes:[...new Set(paths)],no:[]};
+    const ps=await vetBaseChanges(this.inferenceEnv(),{goal,paths:ask}),no=ps.filter(x=>x.p<BASE_CHANGE_BAR);
+    for(const x of ps)if(x.p>=BASE_CHANGE_BAR)approved.add(x.path);
+    this.save('base_approved',[...approved]);
+    for(const x of no)this.event(id,'base_change_refused',clip(`Clef judged that the goal does not ask to change ${x.path} (p=${x.p.toFixed(3)}); no contract may change it.`,400));
+    return {yes:[...new Set(paths)].filter(p=>approved.has(p)),no:no.map(x=>x.path)};
+  }
   sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,card,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,card:parse(r.card,null)})); }
   // The chunk refs a node holds (polyglot-bench §2a.4): Root every stored
   // chunk; a piece those its parent's split cited for it, never more than
@@ -511,8 +539,10 @@ export class ControlRoom extends DurableObject {
   sourceRefs(id) {
     const n=this.node(id);
     if(!n)return [];
-    return n.parent?this.read(`source_refs:${id}`,[]):query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref);
+    // S8b review: Root holds at most MAX_REFS too: the card's citations, else the first chunks of each source.
+    return n.parent?this.read(`source_refs:${id}`,[]):this.read('root_refs',null)||rootRefs(this.read('card',null)?.refs,this.allRefs());
   }
+  allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
   assignRefs(child, parent, raw) {
     if(raw==null||!this.v8())return;
     const {kept,dropped}=narrowRefs(raw,new Set(this.sourceRefs(parent)));
@@ -536,7 +566,17 @@ export class ControlRoom extends DurableObject {
   async loadSources() {
     if(this.get('sources_loaded'))return;
     const goal=this.userGoal(),started=Date.now();
-    const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:this.env.FETCH_ALLOW,selfHosts:this.read('fetch_self_hosts',[]),callModel:sourceModel(this.inferenceEnv('compiler'))});
+    // S8b review: the owner's list as written (URL forms, :443, a JSON array); one with no usable entry is said.
+    const given=this.env.FETCH_ALLOW,report=given!=null&&String(given).trim()?allowReport(given):null;
+    if(report&&!report.allow.length)this.event('root','fetch_allow_unreadable',clip(`FETCH_ALLOW has no usable host suffix (${report.dropped.join(', ')||String(given)}), so every link is refused; set it to host names such as docs.example.com.`,600));
+    // Every host this deployment answers on (the request's and SELF_HOSTS) is refused.
+    const selfHosts=[...this.read('fetch_self_hosts',[]),...selfHostsOf(this.env)];
+    // Each gist and card call counts against the run's budget, as a manager's model call does; a small budget reads fewer chunks.
+    const budget=Number(this.get('budget','0'))||20;let calls=0;
+    const model=sourceModel(this.inferenceEnv('compiler')),callModel=args=>{calls++;return model(args);};
+    const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,callModel,maxChunks:Math.min(MAX_SOURCE_CHUNKS,Math.max(2,Math.floor(budget/2)))});
+    this.spentExtra=(this.spentExtra||0)+calls;
+    if(report&&!report.allow.length)for(const r of rows)if(r.error&&/allowlist/.test(r.error))r.error=clip(`${r.error} (FETCH_ALLOW has no usable entry)`,300);
     for(const r of rows)this.db().exec('INSERT INTO sources(id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,card,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
       r.id,r.url,r.final_url,r.title,r.sha256,r.bytes,r.truncated?1:0,r.error,r.status,r.content_type,r.card?JSON.stringify(r.card):null,Date.now());
     for(const c of chunks)this.db().exec('INSERT INTO source_chunks(ref,source,n,text) VALUES (?,?,?,?) ON CONFLICT(ref) DO NOTHING',c.ref,c.source,c.n,c.text);
@@ -688,20 +728,23 @@ export class ControlRoom extends DurableObject {
     return this.indexedContent(owner,path);
   }
   files(id) { return query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files WHERE agent=? ORDER BY path', id); }
-  // v8 S8b (§7.1): a base file a writer's contract names is its own to
-  // change; until it writes it, the writer sees it as it stands (revision 0).
   async ownFiles(id) {
     const n = this.node(id);
     if (!n) throw new Error('Unknown agent');
-    const own = await Promise.all(this.files(id).map(async f => {
+    return Promise.all(this.files(id).map(async f => {
       const content = await this.indexedContent(id, f.path);
       if (content === null) throw new Error(`Missing Artifacts file ${n.repo_name}/${f.path}`);
       return { path: f.path, revision: f.revision, content };
     }));
-    if (!this.v8() || this.manager(id) || isRuntimeNode(n)) return own;
-    const named = [...new Set(this.promisedOf(id).map(c => c.path).filter(p => p && !own.some(f => f.path === p)))];
-    const base = named.flatMap(p => query(this.db(), 'SELECT path,content FROM base_files WHERE path=?', p)).map(r => ({ path: r.path, revision: 0, content: r.content }));
-    return [...own, ...base];
+  }
+  // v8 S8b (§7.1, review): the existing files a writer's contracts name (and
+  // the card or a split was allowed to give it), which it has not written
+  // yet, as it reads them: quoted and labelled, apart from its own files.
+  baseFilesFor(id) {
+    const n=this.node(id);
+    if(!n||!this.v8()||this.manager(id)||isRuntimeNode(n))return [];
+    const owned=this.gateFacts(id).owned||new Set(),written=new Set(this.files(id).map(f=>f.path));
+    return [...owned].filter(p=>!written.has(p)).flatMap(p=>query(this.db(),'SELECT path,content FROM base_files WHERE path=?',p)).map(r=>({path:r.path,label:BASE_LABEL,content:r.content}));
   }
   async fileContent(id, path) {
     if (!isId(id) || !isPath(path)) throw new Error('Invalid agent or file path');
@@ -759,7 +802,8 @@ export class ControlRoom extends DurableObject {
       ...(worker && this.v8() ? (({uses, left_out, project, goal}) => ({...(uses.length ? {contracts_you_may_use: uses} : {}), ...(left_out ? {contracts_left_out: MESSAGES.left_out({count: String(left_out)})} : {}), project, goal}))(this.v8Inputs(id)) : {}),
       // v8 S8b: the chunks of the goal's links cited for this writer, quoted; the top, whose part is the whole project, reads the existing project's digest.
       ...(worker && this.v8() ? this.sourceInputs(id, 'chunks') : {}),
-      ...(worker && this.v8() && !n.parent && this.read('base', null)?.digest ? {existing_files: this.read('base', null).digest} : {}),
+      // v8 S8b review: base text only quoted, labelled, beside the base clause.
+      ...(worker && this.v8() ? (({digest, files}) => digest || files.length ? {base_note: MESSAGES.base_note(), ...(digest ? {existing_files: {label: BASE_LABEL, digest}} : {}), ...(files.length ? {base_files: files} : {})} : {})({digest: !n.parent ? this.read('base', null)?.digest : null, files: this.baseFilesFor(id)}) : {}),
       new_messages: inbox
     };
   }
@@ -899,7 +943,8 @@ export class ControlRoom extends DurableObject {
     const base=this.read('base',null),sources=this.sourceRows();
     return {
       sources: sources.map(({card,fetched_at:_,...r})=>({...r,summary:card?.summary?clip(card.summary,400):'',parts:card?.outline?.length||0})),
-      base: base?{kind:base.kind,source:base.source,ref:base.ref,resolved_sha:base.resolved_sha,room:base.room||null,files:base.files,bytes:base.bytes,skipped_count:base.skipped_count,truncated:!!base.truncated}:null
+      base: base?{kind:base.kind,source:base.source,ref:base.ref,resolved_sha:base.resolved_sha,room:base.room||null,files:base.files,bytes:base.bytes,skipped_count:base.skipped_count,truncated:!!base.truncated,
+        passthrough:base.passthrough||0,not_carried:(base.not_carried||[]).length,...(base.kind==='room'?{passed:!!base.passed,unverified:!!base.unverified}:{})}:null
     };
   }
   cardRev() { return query(this.db(),'SELECT COALESCE(MAX(rev),0) AS rev FROM card_revisions')[0].rev; }
@@ -1102,8 +1147,21 @@ export class ControlRoom extends DurableObject {
       'The project card\'s checks have not all passed on these files yet.';
     const app={room:this.get('room_id',''),goal:this.userGoal(),room_status:this.get('status','idle'),agents:this.allNodes().length,kind:'card',
       entry:null,passed:!!hit,fingerprint:hit?.input??null,digest,note,card_rev:this.cardRev(),...(link&&Object.keys(link.paths).length?{paths:link.paths}:{})};
-    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,card,status)},{path:'.recursive/card.json',content:JSON.stringify(card,null,2)+'\n'}];
-    return {...app,files:[...notes,...[...files].map(([path,content])=>({path,content}))]};
+    // v8 S8b review: the export is the base plus the changes. A base file keeps
+    // its mode, and says whether the room changed it (from_base); the files the
+    // room carried untouched follow the hashed ones, as bytes, and RUN.md lists
+    // them and what was not carried.
+    const meta=this.read('base',null),baseRows=new Map(query(this.db(),'SELECT path,sha256,mode FROM base_files').map(r=>[r.path,r]));
+    const pass=query(this.db(),'SELECT path,bytes,mode,reason FROM base_passthrough ORDER BY path').filter(r=>!files.has(r.path)&&!caseTwin(r.path,new Set(files.keys())));
+    if(meta)app.base={kind:meta.kind,source:meta.source,ref:meta.ref,resolved_sha:meta.resolved_sha,room:meta.room||null,unverified:!!meta.unverified,passthrough:pass.length};
+    const own=[];
+    for(const [path,content] of files) {
+      const b=baseRows.get(path);
+      own.push({path,content,...(b?{from_base:b.sha256===await sha256(content)?'unchanged':'changed',...(gitMode(b.mode)==='100755'?{mode:'100755'}:{})}:{})});
+    }
+    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,card,status)+baseNotes(meta,pass)},{path:'.recursive/card.json',content:JSON.stringify(card,null,2)+'\n'}];
+    const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
+    return {...app,files:[...notes,...own,...carried]};
   }
   async provision(id, parent, label, task, interfaces=[], uses=[]) {
     if (this.node(id)) throw new Error('Agent ID exists');
@@ -3281,7 +3339,7 @@ export class ControlRoom extends DurableObject {
         // v8 S4b review: a copy of a path another piece's contract places is
         // never shipped (the gate refuses new ones; this is a file written before).
         if(!atomic&&!own.has(f.path)&&placedBy.has(f.path)&&placedBy.get(f.path).id!==leaf.id){stray.push(`${f.path} (written by ${leaf.label}, placed by ${placedBy.get(f.path).label})`);continue;}
-        const place=atomic||own.has(f.path),at=place?f.path:packagePath(leaf.label,f.path,leaf.id);
+        const place=atomic||own.has(f.path),at=place?f.path:packagePath(leaf.label,f.path,leaf.id,this.partsRoot());
         if(files.has(at)){found.push(`${at} (${leaf.label})`);continue;}
         files.set(at,await this.indexedContent(leaf.id,f.path));
         origin.set(at,{owner:leaf.id,owner_path:f.path});
@@ -3294,9 +3352,15 @@ export class ControlRoom extends DurableObject {
     // byte where no piece replaced them; an untouched one is nobody's work
     // (no origin), so the link never edits it and a check's frame there is
     // never routed.
-    if(n.id==='root'&&this.v8())for(const {path,content} of query(this.db(),'SELECT path,content FROM base_files'))if(!files.has(path))files.set(path,content);
+    if(n.id==='root'&&this.v8()) {
+      const base=query(this.db(),'SELECT path,content FROM base_files'),paths=new Set(base.map(r=>r.path)),twins=[];
+      // A piece's file whose path equals a base path apart from case (one file on a case-insensitive file system) is left out.
+      for(const at of [...files.keys()])if(!paths.has(at)&&caseTwin(at,paths)){twins.push(`${at} (beside ${caseTwin(at,paths)})`);files.delete(at);origin.delete(at);placed.delete(at);}
+      if(twins.length)this.event(top,'bundle_conflict',clip(`Left out: a file whose path equals an existing file's apart from letter case: ${twins.join(', ')}.`,600));
+      for(const {path,content} of base)if(!files.has(path))files.set(path,content);
+    }
     const contracts=leaves.flatMap(l=>this.promisedOf(l.id).filter(c=>contractKind(c)==='function').map(c=>({name:c.name,kind:'function',owner:l.id})));
-    const link=linkBundle(new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),{pieces:new Map([...origin].map(([p,o])=>[p,o.owner])),contracts,fixes:this.read('link_fixes',{}),rows:this.installedToolchains(),atomic});
+    const link=linkBundle(new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),{pieces:new Map([...origin].map(([p,o])=>[p,o.owner])),contracts,fixes:this.read('link_fixes',{}),rows:this.installedToolchains(),atomic,parts:this.partsRoot()});
     return {files:link.files,origin,placed,glue:link.glue,link,contracts};
   }
   // S5: the link of a bundle in the room's events (once per input), and the
@@ -3330,7 +3394,7 @@ export class ControlRoom extends DurableObject {
       this.event(id,'link_renamed',clip(`${path}: ${renames.map(r=>`${r.from} → ${r.to}${r.reason?` (${r.reason})`:''}`).join('; ')} (${how}; the piece's own file is unchanged).`,700));
     };
     for(const [path,list] of byPath) {
-      const det=renameFromRun(files,path,list.filter(h=>h.module||h.name),{contracts,pieces});
+      const det=renameFromRun(files,path,list.filter(h=>h.module||h.name),{contracts,pieces,parts:this.partsRoot()});
       if(det){keep(path,det.text,det.renames,'renamed by the runtime');continue;}
       const key=`${path}:${textHash(files.get(path))}:${textHash(JSON.stringify(list.map(h=>[h.module,h.name,h.specifier])))}`;
       if(tried.has(key))continue;
@@ -4841,7 +4905,22 @@ export class ControlRoom extends DurableObject {
     const using=survivors.filter(c=>c.uses?.length);
     if(using.length)this.event(id,'uses_planned',using.map(c=>`"${clip(c.label,70)}" uses ${c.uses.map(u=>clefP.has(`${c.task}\n${u}`)?`${u} (Clef p=${clefP.get(`${c.task}\n${u}`).toFixed(3)})`:u).join(', ')}`).join('; ')+'.');
     if(interfaceErrors(survivors,promised).some(e=>e.check==='C5'))throw new Error(`Admission lost a function promised to ${id}; this is a runtime bug.`);
-    return {spawn:survivors,c5:[],rejectedScope,rejectedChildren};
+    return {spawn:v8?await this.baseContracts(id,survivors):survivors,c5:[],rejectedScope,rejectedChildren};
+  }
+  // v8 S8b review: a split's contract that names an existing file stays only
+  // when Clef finds the goal asks to change that file; else the contract is
+  // taken off its piece, with an event. A Clef failure keeps no such contract.
+  async baseContracts(id, spawn) {
+    const base=this.basePaths();
+    if(!base.size)return spawn;
+    const paths=spawn.flatMap(c=>(c?.interfaces||[]).map(f=>f.path).filter(p=>p&&base.has(p)));
+    if(!paths.length)return spawn;
+    let no;
+    try {({no}=await this.approveBasePaths(id,paths));}
+    catch(e){no=paths.filter(p=>!new Set(this.read('base_approved',[])).has(p));this.event(id,'base_change_unvetted',clip(`Clef could not judge whether the goal asks to change ${no.join(', ')} (${e?.message||e}); no piece may change ${no.length>1?'them':'it'}.`,500));}
+    if(!no.length)return spawn;
+    const gone=new Set(no);
+    return spawn.map(c=>c&&Array.isArray(c.interfaces)&&c.interfaces.some(f=>gone.has(f.path))?{...c,interfaces:c.interfaces.filter(f=>!gone.has(f.path))}:c);
   }
   // Prune on discovery: before a manager with a parent spawns an admitted
   // child, walk up from its parent. At each level Clef picks the direct child
@@ -5246,7 +5325,7 @@ export class ControlRoom extends DurableObject {
       let content;
       try {
         content=await generateFile(this.inferenceEnv('worker'),{node:current,path,intent:`Correct ${path} so that your files meet your contract`,task:this.withContract(current.task,current),
-          answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
+          answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,files:await this.ownFiles(id),base_files:this.baseFilesFor(id),inbox:inbox.map(({from,body})=>({from,body})),
           children:this.children(id),assemblyInputs:[],correction:clip(body,1800),...this.v8()?{v8:true,...this.v8Inputs(id)}:{}});
       } catch(e) {this.event(id,'contract_precheck_failed',clip(`The correction of ${path} failed (${e?.message||e}); the check after the commit decides.`,600));return;}
       if(fileGateError(path,content,{packages:this.settings().packages,...this.gateFacts(id)})) {
@@ -6215,7 +6294,7 @@ export class ControlRoom extends DurableObject {
       const base=this.read('base',null),srcs=this.sourceRows();
       const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,
         base_digest:base?.digest||null,base:[...this.basePaths()],prior_card:this.read('prior_card',null),
-        sources:cardsFor(srcs,this.sourceRefs(id)),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error}))});
+        sources:cardsFor(srcs,this.allRefs()),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error}))});
       const {errors,unsupported}=written;
       card=written.card;calls=`${written.attempts} call${written.attempts===1?'':'s'}`;
       if(card?.blocked)return hold('card_blocked',`The goal cannot be started as given: ${card.blocked}`);
@@ -6228,10 +6307,24 @@ export class ControlRoom extends DurableObject {
     }
     try {
       // §1.4: Clef vets the writer's requirements; p < 0.5 drops one, and a batch Clef fails keeps its own, unvetted.
-      const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card).filter(routable)}),{card:vetted,dropped}=applyVetting(card,ps);
+      const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card).filter(routable)});
+      let {card:vetted,dropped}=applyVetting(card,ps);
       if(failed.length)this.event(id,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
       for(const r of dropped)this.event(id,'card_requirement_dropped',clip(`Clef judged that the goal does not state or imply ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not in the goal':''}): ${r.says}`,600));
       if(!vettedUsable(vetted)){this.save('card_draft',null);return hold('card_failed','Clef dropped every requirement of the card, and no deliverable has an implicit one.');}
+      // S8b review: a deliverable at an existing file stays only when Clef finds the goal asks to change that file (a Clef failure throws: the room holds, Continue asks again).
+      const basePaths=this.basePaths(),touched=vetted.deliverables.map(d=>d.path).filter(p=>p&&basePaths.has(p));
+      if(touched.length) {
+        const {no}=await this.approveBasePaths(id,touched,goal);
+        if(no.length) {
+          const cut=dropDeliverables(vetted,no);
+          this.event(id,'card_base_dropped',clip(`The card's deliverable(s) ${cut.dropped.join(', ')} would change existing file(s) ${no.join(', ')} that the goal does not ask to change; left out.`,600));
+          vetted=cut.card;
+          if(!vettedUsable(vetted)){this.save('card_draft',null);return hold('card_failed','Every deliverable of the card changes an existing file the goal does not ask to change.');}
+        }
+      }
+      // S8b review: Root holds the chunks the card cites (or the first of each source), at most 16.
+      if(this.allRefs().length)this.save('root_refs',rootRefs(vetted.refs,this.allRefs()));
       this.save('card',vetted);
       this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(vetted),'goal',Date.now());
       // Root's contracts are the card's deliverables (§2.4), up to 12, as the card holds them.
@@ -6359,7 +6452,7 @@ export class ControlRoom extends DurableObject {
           before.project=project;
           // v8 S8b: the existing project's digest (its tree) and the source cards of the refs this node holds.
           const digest=this.read('base',null)?.digest;
-          if(digest)before.existing_files=digest;
+          if(digest)before.existing_files={label:BASE_LABEL,digest};
           Object.assign(before,this.sourceInputs(id,'cards'));
         } else {
           const uses=usesText(this.plannedUses(id));
@@ -6440,7 +6533,7 @@ export class ControlRoom extends DurableObject {
           // contract, and no parent, sibling or neighbour memory (decision 2; a
           // sibling's prune note named getTickets to the create worker).
           // v8 S8b: a writer reads its cited chunks (the view), never the splitter's cards or digest.
-          delete before.sources;delete before.sources_note;delete before.existing_files;
+          delete before.sources;delete before.sources_note;delete before.existing_files;delete before.base_note;
           Object.assign(before,this.view(id,before.new_messages,ownFiles),{turn:before.turn,adjacent_public_memory:[]});
           const reclassified=Boolean(before.split_feedback);
           this.event(id,'atomic',one?`It carries its parent's whole promise (${listed(one.map(f=>f.name))}): implemented directly, with no Clef gate.`:reclassified
@@ -6538,6 +6631,8 @@ export class ControlRoom extends DurableObject {
         // package.json turned its CommonJS into ES modules). Memory is
         // skipped below, as before.
         // v8 S4b review: a path another piece's contract places is that piece's: a copy is refused here, naming its owner.
+        // v8 S8b review: a file at an existing file's path apart from case is that file, when the writer owns it exactly.
+        if(this.v8()){const {base,owned}=this.gateFacts(id);for(const f of action.files){const twin=caseTwin(f.path,base);if(twin&&twin!==f.path&&owned.has(twin)&&!action.files.some(g=>g.path===twin)){this.event(id,'path_case',`${f.path} is written to ${twin}, the existing file it names apart from letter case.`);f.path=twin;}}}
         const refused=action.files.map(f=>({f,why:f.path.startsWith('memory/')?null:writerPathError(f.path,this.gateFacts(id))||this.placedElsewhere(id,f.path)})).filter(x=>x.why);
         if(refused.length) {
           this.event(id,'file_refused',`Not written: ${refused.map(x=>x.why).join('; ')}`);
@@ -6810,7 +6905,7 @@ export class ControlRoom extends DurableObject {
             const content=f.content!==undefined && attempt===0 ? f.content :
               await generateFile(this.inferenceEnv(isRuntimeNode(current)?'manager':'worker'),{
                 node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,
-                files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
+                files:await this.ownFiles(id),base_files:this.baseFilesFor(id),inbox:inbox.map(({from,body})=>({from,body})),
                 children:this.children(id),assemblyInputs:[],
                 correction:diagnostic,...this.v8()&&!isRuntimeNode(current)?{v8:true,...this.v8Inputs(id)}:{}
               });
@@ -7184,7 +7279,9 @@ export class ControlRoom extends DurableObject {
     if (executor) this.set('executor_key',executor);
     this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h).slice(0,8));
     if(loaded) {
-      for(const [path,content] of loaded.files)this.db().exec('INSERT INTO base_files(path,content,sha256) VALUES (?,?,?)',path,content,await sha256(content));
+      for(const [path,content] of loaded.files)this.db().exec('INSERT INTO base_files(path,content,sha256,mode) VALUES (?,?,?,?)',path,content,await sha256(content),loaded.modes?.get(path)??0o644);
+      for(const p of loaded.passthrough||[])this.db().exec('INSERT INTO base_passthrough(path,bytes,mode,sha256,reason) VALUES (?,?,?,?,?)',p.path,p.bytes,p.mode??0o644,await sha256Bytes(p.bytes),p.reason||'');
+      this.set('parts_root',partsRoot([...loaded.files.keys(),...(loaded.passthrough||[]).map(p=>p.path)]));
       this.save('base',loaded.meta);
       if(loaded.prior_card)this.save('prior_card',loaded.prior_card);
     }
@@ -7202,7 +7299,7 @@ export class ControlRoom extends DurableObject {
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
-    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}. Only a piece whose contract names a base file may change it.`,900));
+    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}${loaded.meta.not_carried?.length?`; ${loaded.meta.not_carried.length} not carried (the runtime's own paths)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} Only a piece whose contract names a base file, and whose goal asks to change it, may change it.`,900));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
       try { await this.provision('root',null,'Root objective',task,this.live()&&!v8?rootPromise(whole):[]); await this.drive(budget); }
@@ -7349,6 +7446,10 @@ export class ControlRoom extends DurableObject {
 // events and spans a page (EXPORT_PAGE rows, one RPC) at a time up to the
 // last id when the export began. The head is fetched first, so its errors
 // are an ordinary JSON error response.
+// v8 S8b review: every host this deployment answers on, from SELF_HOSTS (a
+// comma list, e.g. the custom domain beside the workers.dev host), so a
+// goal's link can never reach this deployment through another of its names.
+export const selfHostsOf = env => String(env?.SELF_HOSTS ?? '').split(/[,\s]+/).map(h => h.trim().replace(/^[a-z]+:\/\//i, '').replace(/[/?#].*$/, '')).filter(Boolean).slice(0, 16);
 export async function exportResponse(stub) {
   const head=await stub.exportHead(),{cursors={},...rest}=head||{};
   const encoder=new TextEncoder(),text=JSON.stringify(rest);
@@ -7403,7 +7504,7 @@ export default {
         const goal=String(payload.goal||'').trim();
         if (goal.length<8 || goal.length>GOAL_LIMIT) return json({error:`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
-        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,null,{base:payload.base??null,selfHosts:[url.host]});
+        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,null,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)]});
         return json(started,started.error?400:200);
       }
       if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));

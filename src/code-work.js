@@ -4,7 +4,7 @@
 import { sourceParseError } from './linker.js';
 import { toolchainOf, toolchainById, manifestOf } from './toolchains.js';
 import { isAssemblyMetadata } from './assembly.js';
-import { pathError } from '../container/build-path.mjs';
+import { pathError, caseTwin } from '../container/build-path.mjs';
 
 // v7.15: a worker's contract, appended to its task where a model reads it:
 // its OWN promised functions only (author decision 2), each with the one-line
@@ -52,7 +52,11 @@ export function writerPathError(path, facts={}) {
   if (isAssemblyMetadata(path) || /(?:^|\/)memory\//i.test(path)) return `${path}: the runtime keeps this path for itself and never builds or exports it; choose another name`;
   const manifest=!facts.runtime&&!placed&&manifestOf(path);
   if (manifest) return `${path}: the runtime owns the project manifest and package configuration (${manifest.name}); write your own source and documents, and say in your summary what the project needs`;
-  if (has(facts.base,path) && !placed) return `${path}: an existing project file that none of your contracts names; leave it as it is`;
+  // v8 S8b: base files compared apart from letter case (a case-insensitive
+  // file system reads readme.md and README.md as one file).
+  const twin=caseTwin(path,facts.base);
+  if (twin && twin!==path) return `${path}: the existing project file ${twin} differs from it only in letter case; ${has(facts.owned,twin)?`write ${twin} itself`:'leave it as it is'}`;
+  if (twin && !placed) return `${path}: an existing project file that none of your contracts names; leave it as it is`;
   return null;
 }
 

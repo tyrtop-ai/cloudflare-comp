@@ -46,7 +46,8 @@ const stemOf = p => baseOf(p).replace(/\.[^.]+$/, '');
 const fill = (template, values) => Object.entries(values).reduce((t, [k, v]) => t.replaceAll(`{${k}}`, String(v)), String(template));
 const sorted = map => new Map([...map].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
 const unique = list => list.length === 1 ? list[0] : null;
-const RUNTIME_DIR = /^(?:components|glue|\.recursive)(?:\/|$)/;
+// The runtime's folders: the pieces' parts root (partsRoot, S8b), glue/ and .recursive/.
+const runtimeDir = (parts = 'components') => new RegExp(`^(?:${parts.replace(/[^A-Za-z0-9_]/g, '')}|glue|\\.recursive)(?:\\/|$)`);
 
 // A bundle path as the row's glue names a module (module_of 'dotted': the
 // path without its extension, '/' read as '.'), or null when a part is not
@@ -65,7 +66,8 @@ export function moduleOf(row, path) {
 // contract's), a piece's own module by its bare name when only one file
 // has it. ctx.contracts: [{name, owner}] function contracts; ctx.pieces:
 // bundle path -> owner id.
-function rowContext(files, row, {contracts = [], pieces = new Map()} = {}) {
+function rowContext(files, row, {contracts = [], pieces = new Map(), parts = 'components'} = {}) {
+  const RUNTIME_DIR = runtimeDir(parts);
   const dir = row.glue?.dir || '';
   const own = [...files.keys()].filter(p => toolchainOf(p)?.id === row.id && !(dir && p.startsWith(dir + '/')));
   const surfaces = new Map(own.map(p => [p, new Set(extractSurface(p, files.get(p)).names)]));
@@ -80,7 +82,7 @@ function rowContext(files, row, {contracts = [], pieces = new Map()} = {}) {
     if (pick) definer.set(n, pick);
   }
   const stems = new Map();
-  for (const p of own.filter(p => p.startsWith('components/'))) stems.set(stemOf(p), [...(stems.get(stemOf(p)) || []), p]);
+  for (const p of own.filter(p => p.startsWith(parts + '/'))) stems.set(stemOf(p), [...(stems.get(stemOf(p)) || []), p]);
   const root = new Set([...files.keys()].flatMap(p => p.includes('/') ? [p.split('/')[0] + '/'] : [p]));
   // How a top-level module name resolves for a reader: {kind, path?, name?} or null.
   const resolve = (m, reader = '') => {
@@ -102,7 +104,7 @@ function rowContext(files, row, {contracts = [], pieces = new Map()} = {}) {
   const match = (name, pool) => { const k = canonicalName(name); return k ? unique([...new Set(pool)].filter(n => canonicalName(n) === k)) : null; };
   const modules = [...new Set([...definer.keys(), ...[...stems].filter(([, l]) => l.length === 1).map(([s]) => s)])];
   const known = new Set([...names, ...modules, ...[...surfaces.values()].flatMap(s => [...s]), ...[...root].filter(p => p.endsWith(ext)).map(stemOf)]);
-  return {row, own, surfaces, definer, resolve, offers, match, names: [...definer.keys()], modules, known};
+  return {row, own, surfaces, definer, resolve, offers, match, names: [...definer.keys()], modules, known, runtimeDir: RUNTIME_DIR};
 }
 
 // One rename of a reader's text, kept only when it is rename-only.
@@ -190,7 +192,7 @@ export function writeGlue(files, ctx, readers) {
       const parts = dirOf(r.path).split('/').filter(Boolean);
       for (let i = 1; i <= parts.length; i++) {
         const d = parts.slice(0, i).join('/');
-        if (RUNTIME_DIR.test(d) && d !== g.dir && !files.has(`${d}/${g.package_marker}`)) glue.set(`${d}/${g.package_marker}`, '');
+        if (ctx.runtimeDir.test(d) && d !== g.dir && !files.has(`${d}/${g.package_marker}`)) glue.set(`${d}/${g.package_marker}`, '');
       }
     }
   }
@@ -237,7 +239,7 @@ export function linkPage(path, text, files, row) {
 // from a run's errors. Returns {files (linked, glue included, sorted), glue:
 // Map, paths: {VAR: [folders]}, staged: Map path -> text before kept fixes,
 // edits: [{path, renames}], unresolved: [{path, row, ...}], rejected}.
-export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {}, rows = TOOLCHAINS, atomic = false} = {}) {
+export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {}, rows = TOOLCHAINS, atomic = false, parts = 'components'} = {}) {
   const linked = new Map(files), edits = [], rejected = [], unresolved = [];
   const fns = contracts.filter(c => (c.kind || 'function') === 'function' && typeof c.name === 'string');
   const within = p => pieces.has(p);
@@ -277,7 +279,7 @@ export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {
   // Rows with glue: rename what resolves nowhere, keep the room's fixes, write the glue.
   const contexts = [];
   for (const row of rows.filter(r => r.glue)) {
-    const ctx = rowContext(linked, row, {contracts: fns, pieces});
+    const ctx = rowContext(linked, row, {contracts: fns, pieces, parts});
     const readers = ctx.own.filter(within);
     for (const p of readers) {
       const r = renameReferences(linked.get(p), ctx);
@@ -292,7 +294,7 @@ export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {
   }
   const glue = new Map(), paths = {};
   for (const {row, readers} of contexts) {
-    const ctx = rowContext(linked, row, {contracts: fns, pieces});
+    const ctx = rowContext(linked, row, {contracts: fns, pieces, parts});
     const g = writeGlue(linked, ctx, readers);
     for (const [p, t] of g.glue) if (!linked.has(p)) glue.set(p, t);
     Object.assign(paths, g.paths);
@@ -305,10 +307,10 @@ export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {
 // §5.2 (b) from a run's errors: the deterministic rename of one reader for
 // what the run reported unresolved (hits: [{module?, name?}], read with the
 // row's unresolved patterns). {text, renames} or null when nothing applies.
-export function renameFromRun(files, path, hits, {contracts = [], pieces = new Map()} = {}) {
+export function renameFromRun(files, path, hits, {contracts = [], pieces = new Map(), parts = 'components'} = {}) {
   const row = toolchainOf(path);
   if (!row?.glue || !files.has(path)) return null;
-  const ctx = rowContext(files, row, {contracts: contracts.filter(c => (c.kind || 'function') === 'function'), pieces});
+  const ctx = rowContext(files, row, {contracts: contracts.filter(c => (c.kind || 'function') === 'function'), pieces, parts});
   const r = renameReferences(files.get(path), ctx, {force: hits});
   return r.text === files.get(path) ? null : r;
 }

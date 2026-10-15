@@ -151,7 +151,7 @@ const config :Workerd.Config = (
     assert.equal(tar.body.error, null);
     assert.equal(tar.body.truncated, true, 'the 64 MB archive cap stops the read');
     assert.deepEqual(tar.body.files, []);
-    assert.ok(tar.body.skipped.some(s => s.path === 'zeros.txt' && s.reason === 'too large'));
+    assert.ok(tar.body.skipped.some(s => s.path === 'zeros.txt' && s.reason === 'too large; over the limit of files carried untouched'), 'too large to carry untouched (S8b review): skipped, never read');
     if (tar.growth != null) assert.ok(tar.growth < LIMIT, `/tar: workerd peak RSS grew ${(tar.growth / MB).toFixed(1)} MB`);
     for (const c of ['a', 'p', 'br', 'ws', 'uniq']) {
       const {ms} = await measure(`/html?case=${c}`);

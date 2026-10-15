@@ -7,6 +7,7 @@
 import { TOOLCHAINS, toolchainOf, toolchainById, toolchainNamed, manifestOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, CONTRACT_KINDS, RUNTIME_PREFIXES } from './contracts.js';
 import { writerPathError } from './code-work.js';
+import { caseTwin } from '../container/build-path.mjs';
 import { isPath } from './protocol.js';
 
 // The limits of §1.1, and the card's shape as documentation (the dashboard
@@ -126,9 +127,14 @@ export function urlPathError(p) {
 }
 // A deliverable's path: the path rule every worker's file meets, as a
 // placed file; no package-manager configuration or directory.
-function deliverablePathError(path) {
-  const bad = writerPathError(path, {owned: [path]});
+function deliverablePathError(path, base = new Set()) {
+  // v8 S8b: an existing project file may be a deliverable, named exactly (a
+  // repo's own components/ too); one equal to it apart from case may not.
+  const twin = caseTwin(path, base);
+  if (twin && twin !== path) return `${path}: differs only in letter case from the existing file ${twin}; name ${twin} exactly`;
+  const bad = writerPathError(path, {owned: [path], base});
   if (bad) return bad;
+  if (twin) return '';
   // A case-insensitive checkout reads Components/ as the builders' components/.
   if (RUNTIME_PREFIXES.some(x => path.toLowerCase().startsWith(x))) return `${path}: the runtime keeps ${RUNTIME_PREFIXES.join(', ')} for itself, in any case`;
   const m = manifestOf(path);
@@ -369,9 +375,9 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     const kind = kindOf(d), row = d.path ? toolchainOf(d.path) : null;
     // A deliverable in a language that has a row, but no installed one, is unsupported (decision U9).
     if (row && !ids.has(row.id)) { if (!unsupported.includes(row.id)) unsupported.push(row.id); errors.push(`deliverable "${d.name}" is written in ${row.id}, which this deployment does not run.`); continue; }
-    const bad = nameError(d, {rows, languages: card.languages});
+    const bad = nameError(d, {rows, languages: card.languages, base: baseSet});
     if (bad) { errors.push(`deliverable ${bad}.`); continue; }
-    const pathBad = d.path ? deliverablePathError(d.path) : '';
+    const pathBad = d.path ? deliverablePathError(d.path, baseSet) : '';
     if (pathBad) { errors.push(`deliverable "${d.name}": ${pathBad}.`); continue; }
     if (kind === 'command' && reserved.has(d.name)) { errors.push(`deliverable command "${d.name}" has the name of a system or toolchain program; name it after what it does.`); continue; }
     if (names.has(d.name)) { errors.push(`deliverable "${d.name}" is listed twice; list each once.`); continue; }
@@ -440,6 +446,9 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     card.requirements.push({id: `P${++p}`, says: `${c.run} succeeds`, source: '', serves: covers.length ? covers : card.deliverables.map(d => d.name), covers, check: {kind: 'command', run: c.run, argv: c.argv, expect: {exit: 0}}, project: true});
   }
   card.decisions = strings(o.decisions, CARD_LIMITS.decisions, CARD_LIMITS.decision);
+  // v8 S8b review: the source chunks the work needs to read (Root holds these, at most 16).
+  const refs = [...new Set(strings(o.refs, 16, 40).filter(r => /^S[1-9]\d{0,2}(?:#[1-9]\d{0,3})?$/.test(r)))];
+  if (refs.length) card.refs = refs;
   // Rule 6: coverage.
   const out = card.deliverables.length ? withImplicit(card) : card;
   return {card: out, errors, unsupported};
@@ -461,6 +470,17 @@ export function applyVetting(card, ps, bar = 0.5) {
   const dropped = card.requirements.filter(r => low.has(r.id)).map(r => ({...r, p: low.get(r.id)}));
   const kept = {...card, requirements: card.requirements.filter(r => !low.has(r.id)).map(({untraced, ...r}) => unvetted.has(r.id) ? {...r, unvetted: true} : r)};
   return {card: withImplicit(kept), dropped};
+}
+
+// v8 S8b review: the card without the deliverables at these paths (an
+// existing file the goal does not ask to change), and without the
+// requirements left serving nothing. {card, dropped: [deliverable names]}.
+export function dropDeliverables(card, paths) {
+  const gone = new Set(paths), names = new Set(card.deliverables.filter(d => gone.has(d.path)).map(d => d.name));
+  if (!names.size) return {card, dropped: []};
+  const deliverables = card.deliverables.filter(d => !names.has(d.name));
+  const requirements = card.requirements.map(r => ({...r, serves: (r.serves || []).filter(s => !names.has(s))})).filter(r => r.serves.length);
+  return {card: withImplicit({...card, deliverables, requirements}), dropped: [...names]};
 }
 
 // ------------------------------------------------------------ provided cards (B1)

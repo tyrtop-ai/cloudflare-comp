@@ -3,7 +3,7 @@ import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
 import { workerAction, singleFileText } from './worker-output.js';
-import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE } from './prompts.js';
+import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE, MESSAGES, BASE_LABEL } from './prompts.js';
 import { contractLine } from './contracts.js';
 import { validateCard, settleCodeLanguage, checkSummary } from './card.js';
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
@@ -466,6 +466,7 @@ export async function decompose(env, context, opts = {}) {
     project:context.project||undefined,
     goal_scope_boundary:context.root_scope || undefined,
     // v8 S8b: the existing project's digest, and the source cards of the refs this splitter holds (quoted, beside SOURCE_CLAUSE).
+    base_note:context.existing_files ? MESSAGES.base_note() : undefined,
     existing_files:context.existing_files || undefined,
     sources_note:context.sources?.length ? SOURCE_CLAUSE : undefined,
     sources:context.sources?.length ? context.sources : undefined,
@@ -673,7 +674,7 @@ async function decideV8(env, context, {placed = null} = {}) {
 // it may use and the project facts are the user JSON.
 // The other files ride within a budget, whole first; one that does not fit is marked clipped (index.js sentFiles' rule).
 const otherFiles = (files, budget = 20000) => { let left = budget; return files.map(f => { const t = String(f.content ?? ''); if (t.length <= left) { left -= t.length; return {path: f.path, content: t}; } const n = Math.max(0, Math.min(3000, left)); left -= n; return {path: f.path, content: t.slice(0, n), clipped: true, length: t.length}; }); };
-async function generateFileV8(env, {path, intent, task, files, inbox, correction = '', answers = [], project = null, uses = null, goal = ''}) {
+async function generateFileV8(env, {path, intent, task, files, inbox, correction = '', answers = [], project = null, uses = null, goal = '', base_files = null}) {
   const output = await run(env, systemPrompt('file'), JSON.stringify({
     assignment: task, file: path, what_to_fix: intent, previous_rejection: correction || undefined,
     goal: goal ? String(goal).slice(0, 600) : undefined,
@@ -681,7 +682,9 @@ async function generateFileV8(env, {path, intent, task, files, inbox, correction
     your_other_files: otherFiles(files.filter(f => f.path !== path && !f.path.startsWith('memory/')).slice(0, 12)),
     contracts_you_may_use: Array.isArray(uses) && uses.length ? uses : undefined,
     answered_requests: answers?.length ? answers : undefined, new_messages: inbox?.length ? inbox : undefined,
-    project: project || undefined
+    project: project || undefined,
+    // v8 S8b review: the existing files the writer's contracts name, quoted and labelled.
+    ...(base_files?.length ? {base_note: MESSAGES.base_note(), base_files} : {})
   }), WORKER_TOKENS, {call: 'generateFile', role: 'worker', retry: !!correction});
   // v8 S6 review: read through the block parser, fences and prose around them dropped (singleFileText).
   const content = singleFileText(output, path);
@@ -689,9 +692,9 @@ async function generateFileV8(env, {path, intent, task, files, inbox, correction
   return content;
 }
 
-export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false, project=null, uses=null, goal='', v8=false }) {
+export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false, project=null, uses=null, goal='', v8=false, base_files=null }) {
   if (env.MOCK_AI === 'true') return mockFile(node.id, path);
-  if (pipelineV8(env, {v8}) && node.label !== 'Temporary builder') return generateFileV8(env, {path, intent, task, files, inbox, correction, answers, project, uses, goal});
+  if (pipelineV8(env, {v8}) && node.label !== 'Temporary builder') return generateFileV8(env, {path, intent, task, files, inbox, correction, answers, project, uses, goal, base_files});
   const builder=node.label==='Temporary builder';
   const output = await run(env,
     builder ? (path==='glue/smoke.js' ? `You are the Root linker's behavioral test writer, correcting glue/smoke.js ONLY. Return complete, executable CommonJS source, no Markdown. Require('./index.js') to call start(), then use node:assert/strict to verify actual requested application behavior THROUGH THE RETURNED API (not component modules). For a ticket CRUD application create, list/read, update, verify, delete, and verify absence, all using the same state. Any failure must cause a nonzero process exit; never swallow or log-and-ignore assertions. No other local imports. Previous rejection: ${correction}. Return code only.` : `You are the linker correcting glue/wiring.js ONLY. The runtime owns glue/index.js and package.json and imports all component files. Write ONLY ${path} as valid CommonJS, module.exports = function wire(components) { ... }. No imports, requires, file paths or packages. Accept the loaded component namespaces, indexed by their REAL materialized paths, and connect only real exports as collaborators. Choose ONE common storage instance/state and inject it into every operation, do not use multiple independent stores. CommonJS dynamic-import namespaces often hold exports in .default. Previous rejection: ${correction}. Return code only.`) :
@@ -782,7 +785,8 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
   if (env.MOCK_AI === 'true') return settle(check(MOCK_CARD),{raw_head:'',attempts:0});
   const fields={goal:String(goal).slice(0,GOAL_LIMIT),
     toolchains:rows.map(t=>({id:t.id,files:t.extensions,...(t.run_file?{run_file:t.run_file}:{}),...(t.test?{test:t.test}:{}),executables:t.executables||[]})),
-    ...(base_digest?{existing_files:base_digest}:{}),...(prior_card?{current_card:prior_card}:{}),
+    // v8 S8b review: the existing project's digest is quoted, labelled, beside the base clause.
+    ...(base_digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest:base_digest}}:{}),...(prior_card?{current_card:prior_card}:{}),
     ...(sources?.length||sources_unavailable?.length?{sources_note:SOURCE_CLAUSE}:{}),...(sources?.length?{sources}:{}),...(sources_unavailable?.length?{sources_unavailable}:{})};
   const system=systemPrompt('card');
   const read=output=>{
@@ -797,6 +801,25 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
   const second=read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call:'writeCard',role:'card',retry:true,noThink:true}));
   const best=second.parsed.parse_error&&!first.parsed.parse_error?first:second;
   return settle(best,{raw_head:best.head,attempts:2});
+}
+// v8 S8b review: Clef asks whether the goal asks to change each existing
+// file a deliverable or a contract names (CLEF.base_change), one batched
+// call: state {goal, files: [{slot, path}]}. [{path, p}]; a Clef failure
+// throws (the caller holds the room rather than give a file away unvetted).
+export const BASE_CHANGE_BAR = 0.5;
+export async function vetBaseChanges(env, {goal='', paths=[]}) {
+  if (!paths.length) return [];
+  if (env.MOCK_AI === 'true') return paths.map(path=>({path,p:1}));
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('unsupported Clef decision model');
+  const list=paths.slice(0,24);
+  const output=await clefRun(env,'vetBaseChanges',selector,{model:clef,state:{goal:String(goal).slice(0,GOAL_LIMIT),files:list.map((path,i)=>({slot:i,path}))},
+    questions:Object.fromEntries(list.map((_,i)=>[`base_change_${i}`,{type:'noul',instructions:clefText('base_change',{i})}]))});
+  return list.map((path,i)=>{
+    const p=output?.answers?.[`base_change_${i}`]?.noul;
+    if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${path}`);
+    return {path,p};
+  });
 }
 // v8 S8b: the model call src/fetcher.js sourceCards makes for each chunk's
 // gist and each source's card, on the card writer's model with role 'card'

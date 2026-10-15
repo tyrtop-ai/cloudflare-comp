@@ -14,7 +14,12 @@ export const REPO_LIMITS = Object.freeze({
   maxFileBytes: 256 * 1024,     // one kept file
   archiveBytes: 64 * 1024 * 1024, // decompressed tar read before stopping
   timeoutMs: 30_000,
-  maxSkipped: 200               // skipped entries listed; the rest are counted
+  maxSkipped: 200,              // skipped entries listed; the rest are counted
+  // v8 S8b review: files the room does not build (a hidden directory such as
+  // .github/, a binary, a file over maxFileBytes, a vendored directory) are
+  // carried through untouched as bytes, within these caps.
+  passMaxFiles: 200,
+  passMaxBytes: 4 * 1024 * 1024
 });
 // Only these two hosts are ever contacted, whatever FETCH_ALLOW says.
 const GITHUB_POLICY = {allow: ['api.github.com', 'codeload.github.com'], archive: true};
@@ -108,7 +113,7 @@ function paxRecords(bytes) {
   return out;
 }
 
-// Calls onEntry({path, type, size, read, skip}) for every member; the
+// Calls onEntry({path, type, size, mode, read, skip}) for every member; the
 // callback calls read() (bytes) or skip(). Global pax `comment` is the
 // commit sha that git archive records. Pax and GNU long-name headers apply
 // to the next real entry only. A bad header checksum, or input that ends
@@ -145,7 +150,8 @@ async function readTar(src, onEntry, meta = {sha: null}) {
     const path = pax.path || longName || (prefix ? `${prefix}/${field(h, 0, 100)}` : field(h, 0, 100));
     pax = {}; longName = null;
     let used = false;
-    await onEntry({path, type, size,
+    const mode = (parseInt(field(h, 100, 8).trim() || '644', 8) || 0o644) & 0o7777;
+    await onEntry({path, type, size, mode,
       read: async () => { used = true; const d = await src.take(padded); if (!d) throw ended(); return d.subarray(0, size); },
       skip: async () => { used = true; if (!await src.skip(padded)) throw ended(); }});
     if (!used && !await src.skip(padded)) throw ended();
@@ -163,8 +169,8 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
   const L = {...REPO_LIMITS, ...limits};
   const id = parseRepoUrl(repo);
   const out = {source: id ? `https://github.com/${id.owner}/${id.name}` : clip(repo, 200), owner: id?.owner ?? null,
-    name: id?.name ?? null, ref: ref || null, resolved_sha: null, dir: dir || null, files: Object.create(null), count: 0, bytes: 0,
-    skipped: [], skipped_count: 0, truncated: false, error: null};
+    name: id?.name ?? null, ref: ref || null, resolved_sha: null, dir: dir || null, files: Object.create(null), modes: Object.create(null), count: 0, bytes: 0,
+    skipped: [], skipped_count: 0, truncated: false, error: null, passthrough: []};
   if (!id) return {...out, error: 'repo must be https://github.com/<owner>/<name>'};
   if (ref != null && ref !== '' && !validRef(ref)) return {...out, error: 'invalid ref'};
   if (dir != null && dir !== '' && !validDir(String(dir).replace(/\/+$/, ''))) return {...out, error: 'invalid dir'};
@@ -188,7 +194,12 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
   try {
     if (!out.ref) {
       const {response} = await get(`https://api.github.com/repos/${id.owner}/${id.name}`, 'application/vnd.github+json');
-      if (response.status !== 200) { response.body?.cancel?.().catch?.(() => {}); throw new FetchRefused(`repo lookup answered ${response.status}`); }
+      if (response.status !== 200) {
+        response.body?.cancel?.().catch?.(() => {});
+        // v8 S8b review: GitHub's limit for requests without a token is shared by every Worker on these addresses.
+        if (response.status === 403 || response.status === 429) throw new FetchRefused(`repo lookup answered ${response.status}: GitHub's API is rate limited for requests without a token; give a branch, tag or commit (ref) to start from, which needs no lookup, or try later`);
+        throw new FetchRefused(`repo lookup answered ${response.status}`);
+      }
       const {bytes} = await readCapped(await plainBody(response.body, {race, inputCap: inputCapFor(256 * 1024)}), 256 * 1024, race);
       const branch = JSON.parse(new TextDecoder().decode(bytes))?.default_branch;
       if (!validRef(branch)) throw new FetchRefused('the repo has no usable default branch');
@@ -197,14 +208,29 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
     if (/^[0-9a-f]{40}$/.test(out.ref)) out.resolved_sha = out.ref;
     const refPath = out.ref.split('/').map(encodeURIComponent).join('/');
     const {response} = await get(`https://codeload.github.com/${id.owner}/${id.name}/tar.gz/${refPath}`, 'application/x-gzip, application/gzip');
-    if (response.status !== 200) { response.body?.cancel?.().catch?.(() => {}); throw new FetchRefused(`archive download answered ${response.status}`); }
+    if (response.status !== 200) {
+      response.body?.cancel?.().catch?.(() => {});
+      if (response.status === 403 || response.status === 429) throw new FetchRefused(`archive download answered ${response.status}: rate limited; try later`);
+      throw new FetchRefused(`archive download answered ${response.status}`);
+    }
     const type = String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
     if (!/^application\/(?:x-gzip|gzip|x-tar|x-gtar|octet-stream)$/.test(type)) {
       response.body?.cancel?.().catch?.(() => {});
       throw new FetchRefused(`archive content type ${type || '(none)'} is not read`);
     }
     src = byteSource(await plainChunks(response.body, {race, inputCap: inputCapFor(L.archiveBytes)}), L.archiveBytes);
-    const decoder = new TextDecoder('utf-8', {fatal: true});
+    // ignoreBOM: a byte order mark is part of the file and survives (S8b review).
+    const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
+    let passBytes = 0;
+    // A regular file the room does not build, carried as bytes when the caps allow.
+    const carry = async (entry, path, reason, data = null) => {
+      if (entry.type !== '0' && entry.type !== '\0' && entry.type !== '7') return skip(path, reason);
+      if (out.passthrough.length >= L.passMaxFiles || passBytes + entry.size > L.passMaxBytes) return skip(path, `${reason}; over the limit of files carried untouched`);
+      const bytes = data || await entry.read();
+      if (!bytes) return;
+      passBytes += bytes.length;
+      out.passthrough.push({path, bytes: bytes.slice(), mode: entry.mode, reason});
+    };
     await readTar(src, async entry => {
       // Every entry must sit under the archive's single root directory
       // (<name>-<sha>/), which the first entry names.
@@ -222,19 +248,20 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       const gitAt = segs.indexOf('.git');
       if (gitAt >= 0) { const d = segs.slice(0, gitAt + 1).join('/') + '/'; if (!recorded.has(d)) { recorded.add(d); skip(d, '.git dropped'); } return; }
       const vend = segs.slice(0, -1).findIndex(s => VENDORED.has(s));
-      if (vend >= 0) { const d = segs.slice(0, vend + 1).join('/') + '/'; if (!recorded.has(d)) { recorded.add(d); skip(d, 'vendored or generated directory'); } return; }
       if (entry.type === '1' || entry.type === '2') return skip(path, 'link');
       if (entry.type !== '0' && entry.type !== '\0' && entry.type !== '7') return skip(path, 'not a regular file');
-      if (BINARY_EXT.test(path)) return skip(path, 'binary');
-      if (entry.size > L.maxFileBytes) return skip(path, 'too large');
+      if (vend >= 0) return carry(entry, path, 'vendored or generated directory');
+      if (BINARY_EXT.test(path)) return carry(entry, path, 'binary');
+      if (entry.size > L.maxFileBytes) return carry(entry, path, 'too large');
       const prior = sizes.get(path) ?? null;
-      if (prior === null && out.count >= L.maxFiles) return skip(path, 'file cap');
-      if (out.bytes - (prior ?? 0) + entry.size > L.maxBytes) return skip(path, 'total cap');
+      if (prior === null && out.count >= L.maxFiles) return carry(entry, path, 'file cap');
+      if (out.bytes - (prior ?? 0) + entry.size > L.maxBytes) return carry(entry, path, 'total cap');
       const data = await entry.read();
       if (!data) return;
-      if (data.subarray(0, 8192).includes(0)) return skip(path, 'binary');
+      if (data.subarray(0, 8192).includes(0)) return carry(entry, path, 'binary', data);
       let text;
-      try { text = decoder.decode(data); } catch { return skip(path, 'not UTF-8 text'); }
+      try { text = decoder.decode(data); } catch { return carry(entry, path, 'not UTF-8 text', data); }
+      out.modes[path] = entry.mode;
       if (prior !== null) { out.count--; out.bytes -= prior; } // a later duplicate replaces the earlier one
       out.files[path] = text;
       sizes.set(path, data.length);
