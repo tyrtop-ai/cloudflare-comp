@@ -78,7 +78,14 @@ The review showed the first version of that check was too loose: it ignored whit
 
 The review found base text reaching the card writer and splitters with no untrusted label. Case twins (`readme.md` next to `README.md`) slipped past ownership, and the export wasn't the base plus the changes. Base text is now quoted and labelled like fetched text, and Clef must agree the goal asks to change an existing file before a contract may own it. Case twins are refused, and the export carries the untouched parts of the repo byte for byte, so a GitHub export can commit just the changes onto the original commit. `SELF_HOSTS` and clearer `FETCH_ALLOW` errors also came from this review.
 
+## S9: follow-up prompts, the queue and adjustments
+
+A finished room used to take no more work: a follow-up meant a new room, from scratch. A v8 room now keeps a queue of follow-ups in a **Prompts** panel beside the goal. When the room completes, the Durable Object's alarm applies the next one, so the queue runs with the page closed. **Adjust now** applies a prompt at once, also to a running room. Queued prompts can be edited, dragged into another order, skipped or removed, and each shows its state: queued, running, done, failed or skipped.
+
+A follow-up is not a fresh start. The card writer gets the current card and the follow-up and returns the card with the change. The runtime keeps what the change leaves alone, never removes anything, and never changes a check that has passed. The new and changed requirements are routed the way a failed check is: to the pieces they serve, through Clef's ranks when no contract names them, and a piece that changes nothing passes them on. If no piece at Root takes one, Root splits off one new piece. Pieces the change doesn't reach keep their files, and the room completes only when the checks pass for the new revision. The Card panel lists each revision with the follow-up that caused it.
+
+By default the queue stops when a prompt fails, and **Go on** resumes it; the room can be set to go on with the next prompt instead. Split v8 rooms now also pre-warm the Container just before the card's checks, and the Pipeline select describes v8 as it is now.
+
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.
-- **S9**: amendments and the prompt queue, where a follow-up on a finished room becomes a card change routed like a failed check. This is in progress.

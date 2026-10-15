@@ -95,7 +95,7 @@ v7 can only build one kind of thing: a JavaScript app whose entry exports `start
 - The checks run in the Container: files, commands, function calls, HTTP requests and a headless browser. Docs get a reader instead: Clef reads the file and answers yes or no.
 - When a check fails, it goes back as a repair to the piece that serves that requirement, the same way v7 routes a failed test.
 - Links written in the goal are read once at the start. A run can also start from a public GitHub repo or the room's previous result.
-- Queuing follow-up prompts on a finished room is in progress.
+- Follow-up prompts queue up in a Prompts panel: each one, when the room completes, becomes a change to the card that is routed like a failed check, and **Adjust now** applies one to a running room.
 - A benchmark mode runs HumanEval, MBPP or MultiPL-E tasks, one room per task, with the tests hidden from every agent.
 
 ## Where it's at
