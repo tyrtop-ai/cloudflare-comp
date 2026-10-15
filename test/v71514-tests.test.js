@@ -271,10 +271,14 @@ test('v7.15.14 (F3): a 33-piece answer is retried in the same call, told to grou
   const slots=await M.decompose(x.env,ctx(7,2),{planned:true,goal:DIAG});
   assert.equal(x.calls.length,2);assert.ok(!x.calls[1].system.includes('Your previous answer had'));
   assert.equal(slots.parse_error,undefined);assert.equal(slots.spawn.length,6);assert.equal(slots.oversize,undefined);
-  // A first answer within the bound is kept over a retry beyond it.
-  const v=script([{summary:'Split',spawn:[...SEVEN.slice(0,6),{...SEVEN[6],label:'Subproblem'}]},{summary:'Split',spawn:[...PLAN21]}]);
+  // A first answer within the bound is kept over a retry beyond it (its copied function name is admission's to reject).
+  const v=script([{summary:'Split',spawn:[...SEVEN.slice(0,6),{...SEVEN[6],functions:[{name:'functionName'}]}]},{summary:'Split',spawn:[...PLAN21]}]);
   const kept=await M.decompose(v.env,ctx(),{planned:true,goal:DIAG});
-  assert.equal(v.calls.length,2);assert.equal(kept.parse_error,undefined);assert.deepEqual(kept.spawn.map(c=>c.label),[...SEVEN.slice(0,6).map(c=>c.label),'Subproblem']);
+  assert.equal(v.calls.length,2);assert.equal(kept.parse_error,undefined);assert.deepEqual(kept.spawn.map(c=>c.label),SEVEN.map(c=>c.label));
+  // v7.15.16 (run25): one whose label is a placeholder ("Subproblem") never is: still one after the retry, the split is a parse error carrying the labels.
+  const vague=script([{summary:'Split',spawn:[...SEVEN.slice(0,6),{...SEVEN[6],label:'Subproblem'}]},{summary:'Split',spawn:[...PLAN21]}]);
+  assert.deepEqual(await M.decompose(vague.env,ctx(),{planned:true,goal:DIAG}),{parse_error:true,raw:'placeholder labels after a retry: "Subproblem"; never admitted.',vague:['Subproblem']});
+  assert.equal(vague.calls.length,2);
 });
 
 // ------------------------------------------------------------------ F1: the setting

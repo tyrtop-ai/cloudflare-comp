@@ -265,12 +265,15 @@ const deferredView="const { loadTickets } = require('./ticketStorage');\nfunctio
 const answeredView="const { getTickets } = require('./ticketStorage');\nfunction viewTickets(filter) { return getTickets().filter(t => !filter || t.status === filter.status); }\nmodule.exports = { viewTickets };\n";
 
 test('v7.15: run6 replay (B): the retrieval worker asks for "load all tickets" and imports getTickets from "ticket storage"',async()=>{
+  // v7.15.16: "view ticket" promises a second function, carried by one piece more, so it splits (a piece promising one function writes it).
+  const count=fn('countTickets','counts the tickets that match a filter',['filter']);
   const ai=fakeAI({gate:n=>n===1?0.77:0.1,
     split:()=>[
       {label:'Storage module for ticket data',task:'Write code that loads the stored tickets',functions:[{name:'getTickets',does:'returns all tickets'}]},
       {label:'Filter application logic',task:'Write code that applies status filters to a ticket list',functions:[{name:'applyFilters',does:'filters tickets',params:['tickets','filter']}]},
-      {label:'Ticket retrieval function',task:'Write code that returns the tickets matching a filter',functions:[{name:'viewTickets'}]}],
-    within:label=>({'Storage module for ticket data':0.863,'Filter application logic':0.682,'Ticket retrieval function':0.836})[label],
+      {label:'Ticket retrieval function',task:'Write code that returns the tickets matching a filter',functions:[{name:'viewTickets'}]},
+      {label:'Ticket count',task:'Write code that counts the tickets matching a filter',functions:[{name:'countTickets'}]}],
+    within:label=>({'Storage module for ticket data':0.863,'Filter application logic':0.682,'Ticket retrieval function':0.836,'Ticket count':0.8})[label],
     owner:()=>'view ticket',
     // At "view ticket" applyFilters is no match; at Root getTickets is.
     fnP:f=>f.signature==='applyFilters(tickets, filter)'?0.05:f.signature==='getTickets()'?0.93:0.2,
@@ -278,11 +281,11 @@ test('v7.15: run6 replay (B): the retrieval worker asks for "load all tickets" a
       :{summary:'Retrieval',files:[{path:'viewTickets.js',content:answeredView}],done:true}});
   const {room}=setup(ai);
   await room.provision('root',null,'Root objective',run6Goal,ROOT_PROMISE);room.set('goal',run6Goal);
-  await room.spawn('root',run6Root.map(c=>({label:c.label,task:c.task,interfaces:c.functions})));
+  await room.spawn('root',run6Root.map(c=>({label:c.label,task:c.task,interfaces:c.label==='view ticket'?[...c.functions,count]:c.functions})));
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   for(const c of room.children('root'))room.db().exec('UPDATE agents SET phase=?,status=? WHERE id=?',c.label==='view ticket'?'decompose':'implement',c.label==='view ticket'?'ready':'waiting',c.id);
   await room.turn('root.4');
-  assert.deepEqual(room.children('root.4').map(c=>c.label),['Filter application logic','Ticket retrieval function'],'"Storage module" is pruned by name (test 18)');
+  assert.deepEqual(room.children('root.4').map(c=>c.label),['Filter application logic','Ticket retrieval function','Ticket count'],'"Storage module" is pruned by name (test 18)');
   const worker='root.4.2',turns=()=>['root','root.4'].map(id=>room.node(id).turn),before=turns(),clef=()=>ai.calls.filter(c=>c.kind==='fn').length;
   await room.turn(worker);
   assert.equal(room.files(worker).length,0,'the file importing what it asked for is not written');

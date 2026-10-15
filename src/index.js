@@ -3,14 +3,14 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites, testPieces, testPiecesText } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites, testPieces, testPiecesText, NODE_FUNCTIONS } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
@@ -100,6 +100,8 @@ const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,br
 // v7.15 slice B: what a function request asks for, as answers and events say it.
 const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
 const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}` : xs[0]||'';
+// v7.15.16 (run25): why a split that hands one piece the whole promise is none.
+const noProgress = d => `No progress: a piece would carry its parent's whole promise ("${clip(d.label,70)}" carries ${listed(d.names)}).`;
 // How many times, in words (split_oversize_admitted).
 const times = n => ['once','twice','three times'][n-1] || `${n} times`;
 // One import line per function, named after it (run8): the builder links
@@ -335,6 +337,8 @@ export class ControlRoom extends DurableObject {
   // v7.15.14 review: a room saved before max_children reads its default (the snapshot shows 7, the bound it splits by); its missing worker and compiler models still fall back to its own model (inferenceEnv), not the defaults.
   settings() { const s=this.read('settings', DEFAULT_ROOM_SETTINGS); return s.max_children===undefined?{...s,max_children:DEFAULT_ROOM_SETTINGS.max_children}:s; }
   maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
+  // v7.15.16 (run25): the split gate's bar rises 0.05 a level below Root's children (depth 1), to at most 0.95; Root's own gate keeps the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
+  splitBar(id) {const t=this.settings().split_threshold,d=String(id).split('.').length-1;return d<=1?t:Math.min(0.95,Math.round((t+0.05*(d-1))*100)/100);}
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
   // runner's test). A room saved before v7.15.10 has no worker or compiler
@@ -731,10 +735,18 @@ export class ControlRoom extends DurableObject {
   // Walk up from id: the nearest level where exactly one other direct child
   // promises name. Two there is ambiguous; a name in a promise on the path
   // is never matched, as that branch is the one excluded.
+  // v7.15.16 (run25): with no direct child promising it, a branch whose
+  // subtree does: "File I/O and Parsing" (root.2.4.3.2.1, five levels into
+  // root.2) promised parseTelemetry, and a split under root.3 promised it
+  // again 68 s later, as the walk read only each level's direct children.
   ownerBranch(name, id) {
+    let deep=null;
     for(let b=this.node(id);b?.parent;b=this.node(b.parent)) {
       const holders=this.offeredFunctions(b.parent,b.id).filter(o=>o.items.some(f=>f.name===name));
       if(holders.length)return holders.length===1?{id:holders[0].id,label:holders[0].label,level:b.parent}:null;
+      deep??=query(this.db(),"SELECT id,label,interfaces FROM agents WHERE status NOT IN ('retired','failed') AND interfaces LIKE ?",`%"${name}"%`).filter(n=>!RUNTIME_LABELS.includes(n.label)&&parse(n.interfaces,[]).some(f=>f.name===name)).map(n=>n.id);
+      const under=query(this.db(),"SELECT id,label FROM agents WHERE parent=? AND id<>? AND status NOT IN ('retired','failed')",b.parent,b.id).filter(c=>!RUNTIME_LABELS.includes(c.label)&&deep.some(x=>x.startsWith(c.id+'.')));
+      if(under.length)return under.length===1?{id:under[0].id,label:under[0].label,level:b.parent}:null;
     }
     return null;
   }
@@ -3556,6 +3568,23 @@ export class ControlRoom extends DurableObject {
       const placed=placePromised(named,promised);named=placed.spawn;
       for(const x of placed.placed)this.event(id,'interfaces_placed',`Last attempt before a pause: ${x.from.length?`${x.name} stays on "${clip(x.label,70)}" and is deleted from ${x.from.map(l=>`"${clip(l,70)}"`).join(', ')}`:`"${clip(x.label,70)}" carries ${x.name}`}, as its own text shows.`);
     }
+    // v7.15.16 (run25): a function Node writes is no piece's (NODE_FUNCTIONS): deleted, and a piece left with none it writes is not spawned ("File Handling" [readFileSync] under "Recover partial data" grew six levels).
+    if(this.planned())named=named.filter(c=>{
+      const node=(c?.interfaces||[]).filter(f=>!own.has(f.name)&&NODE_FUNCTIONS.has(f.name)),label=clip(c?.label,70);
+      if(!node.length)return true;
+      const left=c.interfaces.filter(f=>!node.includes(f));
+      this.event(id,'interfaces_builtin',`Deleted ${listed(node.map(f=>f.name))} from "${label}": Node's own modules export ${node.length>1?'them':'it'}, so no piece writes ${node.length>1?'them':'it'}; import ${node.length>1?'them':'it'} from Node.${left.length?'':` "${label}" promises nothing else and is not spawned.`}`);
+      if(left.length)Object.assign(c,{interfaces:left});
+      return left.length>0;
+    });
+    // v7.15.16 (run25): a split makes progress or it is not one. A piece
+    // carrying its parent's whole promise is the parent again ("Extract link
+    // status" [extractLinkStatus] split into "Subproblem" [extractLinkStatus],
+    // which split into "Interface Status Analyzer" [extractLinkStatus]):
+    // rejected before any Clef call, and Clef reconsiders. Root's split is
+    // the top's own, always carried.
+    const whole=promised.map(p=>p.name),again=n.parent&&whole.length?named.find(c=>c&&typeof c==='object'&&whole.every(x=>(c.interfaces||[]).some(f=>f.name===x))):null;
+    if(again)return {spawn:named,c5:[],degenerate:{label:again.label,names:whole},rejectedScope:0,rejectedChildren:[]};
     // v7.15.5: in a room with promises a factory (C7, run12's createData) is
     // rejected with C5, but kept on the last attempt before a pause.
     const errors=interfaceErrors(named,promised,{goal:this.userGoal()}),factories=this.planned()?errors.filter(e=>e.check==='C7'):[];
@@ -4932,8 +4961,12 @@ export class ControlRoom extends DurableObject {
         const malformed=!namesOnly&&!sized&&this.get(`split_yes:${id}`)==='1';
         // v7.15.13 (run20): the gate hears what the piece calls; five workers whose uses named their siblings' checks were told to split and proposed those checks again.
         const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:n.task;
-        const gate=namesOnly||malformed||sized?{split:true}:await shouldSplit(this.inferenceEnv(),gateTask,before);
-        this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
+        // v7.15.16 (run25): a piece promising one function, the start carrier's aside, writes it: no Clef gate (run25's one-function pieces split eight levels deep, each a piece carrying the same name). The bar rises with depth (splitBar).
+        const own=this.planned()&&n.parent?this.promisedOf(id):[],one=own.length===1&&own[0].name!=='start'?own[0]:null,bar=this.splitBar(id);
+        const gate=one?{split:false}:namesOnly||malformed||sized?{split:true}:await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},gateTask,before);
+        // v7.15.16 (run25): an answer whose labels were still placeholders ("Subproblem") after the splitter's retry is answered again as a malformed one is.
+        const labels=before.split_feedback?.kind==='labels'?before.split_feedback.proposed||[]:[];
+        if(!one)this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed&&labels.length?`Clef's YES stands: the last split answer still had placeholder labels (${labels.map(l=>JSON.stringify(l)).join(', ')}), so the splitter answers again.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(2)}; ${Date.now()-started} ms).`);
         if (gate.split && !this.canSplit(id,2)) {
           // Clef chose to split but the room has no agent slots or depth left.
           // Do not force a weak leaf to implement work Clef would divide.
@@ -4960,7 +4993,7 @@ export class ControlRoom extends DurableObject {
           // sibling's prune note named getTickets to the create worker).
           Object.assign(before,this.view(id,before.new_messages,ownFiles),{turn:before.turn,adjacent_public_memory:[]});
           const reclassified=Boolean(before.split_feedback);
-          this.event(id,'atomic',reclassified
+          this.event(id,'atomic',one?`One promised function: implemented directly (${one.name}).`:reclassified
             ? 'Clef reviewed the rejected partition and routed this assignment to direct code implementation.'
             : 'Clef classified this as an indivisible behavior; implementing directly.');
           // An implementation leaf needs only its own code assignment. Root's
@@ -4988,6 +5021,8 @@ export class ControlRoom extends DurableObject {
         if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,(this.read('failures',{})[id]||0)<2?'1':'');
         // v7.15.14 review: a split over max_children is feedback for the next turn's splitter (its count, the bound and its labels), never for Clef.
         if(splitting && raw.oversize)this.save(`split_feedback:${id}`,{kind:'size',reason:tooMany(raw.oversize.count,raw.oversize.bound),count:raw.oversize.count,bound:raw.oversize.bound,proposed:raw.oversize.labels});
+        // v7.15.16 (run25): so is one whose labels stayed placeholders, with those labels.
+        if(splitting && raw.vague)this.save(`split_feedback:${id}`,{kind:'labels',reason:vagueText(raw.vague),proposed:raw.vague});
         this.incrementFailures(id,'Bad action response');
         return;
       }
@@ -5086,6 +5121,14 @@ export class ControlRoom extends DurableObject {
         // anchor so an ambiguous parent cannot drift over generations.
         if(action.spawn.length) {
           const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2});
+          // v7.15.16 (run25): no progress is a partition's failure, so Clef reconsiders with it (it may implement the assignment directly).
+          if(admit.degenerate) {
+            const reason=noProgress(admit.degenerate);
+            this.save(`split_feedback:${id}`,{reason,accepted:[],rejected:[{label:admit.degenerate.label,task:clip(admit.spawn.find(c=>c?.label===admit.degenerate.label)?.task||'',500)}],root_goal:this.topTask()||n.task});
+            this.event(id,'split_rejected',`${reason} Clef will reconsider routing with this feedback; it may implement the assignment directly.`);
+            this.incrementFailures(id,'split_rejected');
+            return;
+          }
           if(admit.c5.length) {
             // The partition was not what failed: the next turn keeps Clef's
             // YES and the splitter gets this partition back to correct.
@@ -5178,6 +5221,13 @@ export class ControlRoom extends DurableObject {
         }
         // A worker with a promise must give every promised name to one piece (C5).
         const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2});
+        // v7.15.16 (run25): a worker's split that hands its whole promise to one piece is no split: it writes the promise itself.
+        if(admit.degenerate) {
+          this.event(id,'split_rejected',`Late decomposition rejected. ${noProgress(admit.degenerate)}`);
+          await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:clip(`Your proposed pieces were not created: "${admit.degenerate.label}" would carry your whole promise (${listed(admit.degenerate.names)}), which is no split. Write ${admit.degenerate.names.length>1?'them':'it'} yourself.`,950)}]);
+          this.incrementFailures(id,'split_rejected');
+          return;
+        }
         action.spawn=admit.c5.length?[]:admit.spawn;rejectedScope+=admit.rejectedScope;rejectedChildren.push(...admit.rejectedChildren);
         // v7.15.14 review: a late split is bounded by max_children too (run21's fan-out, from a worker's turn).
         const oversize=action.spawn.length>this.maxChildren();

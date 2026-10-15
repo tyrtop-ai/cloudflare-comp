@@ -74,11 +74,17 @@ const run11View=[
   {label:'readTicketFile',task:'Write code that reads the raw tickets file at the given path',functions:[fn('readTicketFile','returns the raw contents of the tickets file','filePath')]},
   {label:'parseTicketData',task:'Write code that parses the raw tickets file contents into a list of ticket objects',functions:[fn('parseTicketData','returns the tickets in raw file contents','raw')]},
   {label:'findTicketById',task:'Write code that finds the ticket with a given id in a list of tickets',functions:[fn('findTicketById','returns the ticket with that id, or null','tickets','id')]}];
-const run11Within={viewTicketFunction:0.656,readTicketFile:0.799,parseTicketData:0.739,findTicketById:0.539};
-async function run11(ai) {
+// v7.15.16 (run25): a piece promising one function writes it, with no Clef gate, and a split
+// handing one piece its parent's whole promise is none. viewTicket promises a second
+// function here, carried by one piece more, so the split and the walk it pins still run;
+// extra=null leaves viewTicket with no promise.
+const printTicket=fn('printTicket','returns a ticket as printable text','ticket');
+const run11Print={label:'printTicketFunction',task:'Write code that exports printTicket(ticket), which returns a ticket as printable text',functions:[{name:'printTicket'}]};
+const run11Within={viewTicketFunction:0.656,readTicketFile:0.799,parseTicketData:0.739,findTicketById:0.539,printTicketFunction:0.7};
+async function run11(ai,extra=[printTicket]) {
   const room=new ControlRoom({storage:{sql:new Sql()},waitUntil:()=>{}},{AI:ai,TEST_ARTIFACT_STORE:new Store()});
   await room.provision('root',null,'Root objective',goal,ROOT_PROMISE);room.set('goal',goal);
-  await room.spawn('root',run11Root);
+  await room.spawn('root',run11Root.map(c=>c.label!=='viewTicket'?c:{...c,interfaces:extra?[...c.interfaces,...extra]:[]}));
   await room.spawn('root.1',run11Data);
   for(const id of ['root','root.1'])room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",id);
   for(const id of ['root.2','root.4','root.5','root.6','root.1.1','root.1.2'])room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",id);
@@ -88,14 +94,15 @@ async function run11(ai) {
 const kept=label=>`No other strand up to Root owns proposed child "${label}"; kept in this strand, where the scope check placed it.`;
 
 test('v7.15.3: run11 replay: root.3\'s four pieces, accepted by the scope check and placed by the walk in no other branch, are all spawned',async()=>{
-  const ai=fakeAI({split:()=>run11View,within:label=>run11Within[label]});
+  const ai=fakeAI({split:()=>[...run11View,run11Print],within:label=>run11Within[label]});
   const room=await run11(ai);
   await room.turn('root.3');
   assert.deepEqual(events(room,'scope_allowed').map(e=>e.body),[
     'Clef accepted proposed child "viewTicketFunction" (p=0.656); within Root and parent scope.',
     'Clef accepted proposed child "readTicketFile" (p=0.799); within Root and parent scope.',
     'Clef accepted proposed child "parseTicketData" (p=0.739); within Root and parent scope.',
-    'Clef accepted proposed child "findTicketById" (p=0.539); within Root and parent scope.'],'run11\'s own scope answers');
+    'Clef accepted proposed child "findTicketById" (p=0.539); within Root and parent scope.',
+    'Clef accepted proposed child "printTicketFunction" (p=0.700); within Root and parent scope.'],'run11\'s own scope answers');
   const walks=ai.calls.filter(c=>c.kind==='owner');
   assert.equal(walks.length,3,'the carrier of viewTicket is not walked; the other three are asked once, at Root\'s level');
   for(const w of walks)assert.deepEqual(w.labels,run11Root.map(c=>c.label));
@@ -105,9 +112,9 @@ test('v7.15.3: run11 replay: root.3\'s four pieces, accepted by the scope check 
   assert.equal(events(room,'split_rejected').length,0);
   assert.equal(events(room,'atomic').length,0,'viewTicket does not go atomic');
   assert.equal(ai.calls.filter(c=>c.kind==='gate').length,1);
-  assert.deepEqual(room.children('root.3').map(c=>c.label),run11View.map(c=>c.label));
+  assert.deepEqual(room.children('root.3').map(c=>c.label),[...run11View,run11Print].map(c=>c.label));
   assert.equal(room.node('root.3').phase,'manager');
-  assert.deepEqual(room.promisedOf('root.3.1'),room.promisedOf('root.3'),'the carrier keeps viewTicket\'s item');
+  assert.deepEqual(room.promisedOf('root.3.1'),room.promisedOf('root.3').slice(0,1),'the carrier keeps viewTicket\'s item');
   assert.deepEqual(['root.3.2','root.3.3','root.3.4'].map(id=>room.promisedOf(id).map(f=>f.name)),[['readTicketFile'],['parseTicketData'],['findTicketById']]);
   assert.equal((await room.readKnowledge('root.3')).owned_elsewhere,undefined,'nothing was pruned, so no owner note');
 });
@@ -115,10 +122,10 @@ test('v7.15.3: run11 replay: root.3\'s four pieces, accepted by the scope check 
 test('v7.15.3: in run11\'s tree a piece another branch owns, by name or by Clef, is still pruned with the import note; the rest are spawned',async()=>{
   const load={label:'Load ticket data',task:'Write code that loads the stored ticket data',functions:[fn('readData','reads ticket data from storage','filePath')]};
   const save={label:'Save tickets file',task:'Write code that writes the ticket list back to the tickets file',functions:[fn('saveTicketsFile','writes the ticket list to the file','filePath','tickets')]};
-  const ai=fakeAI({split:()=>[...run11View,load,save],within:label=>run11Within[label]??0.8,owner:q=>about(q,save.label)?'dataStore':null});
+  const ai=fakeAI({split:()=>[...run11View,run11Print,load,save],within:label=>run11Within[label]??0.8,owner:q=>about(q,save.label)?'dataStore':null});
   const room=await run11(ai);
   await room.turn('root.3');
-  assert.deepEqual(room.children('root.3').map(c=>c.label),run11View.map(c=>c.label));
+  assert.deepEqual(room.children('root.3').map(c=>c.label),[...run11View,run11Print].map(c=>c.label));
   assert.deepEqual(events(room,'scope_pruned').map(e=>e.body),[
     'Proposed child "Load ticket data" exports readData, which "dataStore" already provides; not spawned. Import them by those names.',
     'Proposed child "Save tickets file" is owned by "dataStore" (root.1); not spawned. Import it from that strand instead of rebuilding it.']);
@@ -129,9 +136,10 @@ test('v7.15.3: in run11\'s tree a piece another branch owns, by name or by Clef,
     'Load ticket data is owned outside this branch; import readData by exactly those names and write here only what it lacks. Save tickets file is owned outside this branch; import it by name and write here only what it lacks.',
     'the public note the new children read names no branch (v7.15.1)');
   // A split the prunes leave below two still goes back with the owner named
-  // to the splitter, whose parent decided.
+  // to the splitter, whose parent decided. v7.15.16: a promised piece's
+  // carriers always stay, so only a piece with no promise gets there.
   const thin=fakeAI({split:()=>[run11View[0],load,save],within:()=>0.8,owner:q=>about(q,save.label)?'dataStore':null});
-  const failed=await run11(thin);
+  const failed=await run11(thin,null);
   await failed.turn('root.3');
   assert.equal(failed.children('root.3').length,0);
   assert.deepEqual(failed.read('split_feedback:root.3',null).rejected.map(({label,owner})=>({label,owner})),
@@ -145,12 +153,12 @@ test('v7.15.3: below the bar, a piece Clef ranks first to another branch at 0.35
   const format={label:'formatTicket',task:'Write code that formats a ticket as display text',functions:[fn('formatTicket','returns a ticket as display text','ticket')]};
   // readTicketFile rebuilds dataStore's readData(filePath) (run11's root.1.1 is fs.readFileSync(filePath)).
   const ranks={readTicketFile:{dataStore:0.55,viewTicket:0.3},parseTicketData:{viewTicket:0.5,dataStore:0.45},findTicketById:{createTicket:0.45,viewTicket:0.45},formatTicket:{updateTicket:0.3}};
-  const ai=fakeAI({split:()=>[...run11View,format],within:label=>run11Within[label]??0.8,owner:q=>ranks[Object.keys(ranks).find(l=>about(q,l))]});
+  const ai=fakeAI({split:()=>[...run11View,run11Print,format],within:label=>run11Within[label]??0.8,owner:q=>ranks[Object.keys(ranks).find(l=>about(q,l))]});
   const room=await run11(ai);
   await room.turn('root.3');
   assert.deepEqual(events(room,'scope_pruned').map(e=>e.body),[near('readTicketFile',{label:'dataStore',id:'root.1'},'0.550')]);
   assert.deepEqual(events(room,'scope_kept').map(e=>e.body),['parseTicketData','findTicketById','formatTicket'].map(kept));
-  assert.deepEqual(room.children('root.3').map(c=>c.label),['viewTicketFunction','parseTicketData','findTicketById','formatTicket']);
+  assert.deepEqual(room.children('root.3').map(c=>c.label),['viewTicketFunction','parseTicketData','findTicketById','printTicketFunction','formatTicket']);
   assert.equal(ai.calls.filter(c=>c.kind==='owner').length,4,'one Clef call a piece, the same one the walk always made');
   assert.equal((await room.readKnowledge('root.3')).owned_elsewhere,'readTicketFile is owned outside this branch; import it by name and write here only what it lacks.');
 });
@@ -169,16 +177,19 @@ const run5Root=[
 ].map(([label,task,interfaces])=>({label,task:task+deliver,interfaces}));
 const run5Create=[
   ['Input validation','Write code that validates ticket data structure and content requirements for creation/update operations.',[fn('validateTicket','validates ticket data','data')]],
-  ['Ticket creation logic','Write code that handles ticket creation workflow including validation and data store integration.',[fn('createTicket','creates a ticket','data')]]
+  ['Ticket creation logic','Write code that handles ticket creation workflow including validation and data store integration.',[fn('createTicket','creates a ticket','data'),fn('announceTicket','announces a created ticket','ticket')]]
 ].map(([label,task,interfaces])=>({label,task:task+deliver,interfaces}));
 const run5Split=[
   {label:'Ticket validation logic',task:'Write code that checks a new ticket has a title and a valid priority',functions:[fn('checkNewTicket','checks a new ticket','data')]},
   {label:'In-memory data store',task:'Write code that keeps tickets in an in-memory array and exports functions to add and list them',functions:[fn('addToStore','adds a ticket to the in-memory array','ticket'),fn('listStore','returns the in-memory tickets')]},
   {label:'Ticket creation workflow',task:'Write code that exports createTicket(data), validating and storing the new ticket',functions:[{name:'createTicket'}]},
-  {label:'Entry module export',task:'Write code that exports a wrapper object with a create() method implementing the ticket workflow',functions:[]}];
-const run5Within={'Ticket validation logic':0.876,'In-memory data store':0.917,'Ticket creation workflow':0.836,'Entry module export':0.752};
+  {label:'Entry module export',task:'Write code that exports a wrapper object with a create() method implementing the ticket workflow',functions:[]},
+  {label:'Ticket announcement',task:'Write code that exports announceTicket(ticket), announcing a created ticket',functions:[{name:'announceTicket'}]}];
+const run5Within={'Ticket validation logic':0.876,'In-memory data store':0.917,'Ticket creation workflow':0.836,'Entry module export':0.752,'Ticket announcement':0.8};
+// v7.15.16: "Ticket creation logic" promises a second function, carried by "Ticket announcement",
+// so it splits; at depth 2 the gate's bar is 0.75, so Clef answers 0.8 (run5 answered 0.746 against 0.7).
 async function run5(store) {
-  const ai=fakeAI({split:()=>run5Split,within:label=>run5Within[label],owner:(q,labels)=>{
+  const ai=fakeAI({gate:()=>0.8,split:()=>run5Split,within:label=>run5Within[label],owner:(q,labels)=>{
     const top=labels.includes('Input validation');
     if(about(q,'Ticket validation logic'))return top?'Input validation':null;
     if(about(q,'Entry module export'))return top?'Ticket creation logic':null;
@@ -200,14 +211,14 @@ test('v7.15.3: run5 replay: a store Clef ranks first to the Data storage handler
   assert.deepEqual(events(room,'scope_pruned').map(e=>e.body),[
     'Proposed child "Ticket validation logic" is owned by "Input validation" (root.2.1); not spawned. Import it from that strand instead of rebuilding it.',
     'Proposed child "In-memory data store" is owned by "Data storage handler" (root.1), Clef\'s best answer (p=0.500, below 0.6); not spawned. Decided at root: this strand is told only that it is owned outside this branch, and imports it by name.']);
-  assert.deepEqual(room.children('root.2.2').map(c=>c.label),['Ticket creation workflow','Entry module export']);
+  assert.deepEqual(room.children('root.2.2').map(c=>c.label),['Ticket creation workflow','Entry module export','Ticket announcement']);
   assert.equal(ai.calls.filter(c=>c.kind==='owner'&&about(c.question,'In-memory data store')).length,2,'asked at root.2, then at Root');
   assert.equal((await room.readKnowledge('root.2.2')).owned_elsewhere,
     'Ticket validation logic is owned outside this branch; import it by name and write here only what it lacks. In-memory data store is owned outside this branch; import it by name and write here only what it lacks.');
   // The trade-off: when Clef leans to no branch at all, the store is kept.
   const {room:missed}=await run5(null);
   assert.deepEqual(events(missed,'scope_kept').map(e=>e.body).filter(b=>b.includes('In-memory')),[kept('In-memory data store')]);
-  assert.deepEqual(missed.children('root.2.2').map(c=>c.label),['In-memory data store','Ticket creation workflow','Entry module export']);
+  assert.deepEqual(missed.children('root.2.2').map(c=>c.label),['In-memory data store','Ticket creation workflow','Entry module export','Ticket announcement']);
 });
 
 test('v7.15.3: the manager DO hands the walk Clef\'s answers below the bar; routing callers still get an id',async()=>{

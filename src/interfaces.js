@@ -11,6 +11,12 @@ export const MAX_INTERFACES = 5;
 // Names that say what a function does but not what it acts on. Binding like
 // any other, but never used to prune or to answer a request by name.
 export const GENERIC_NAMES = new Set('init run main handle process validate create get set update remove delete list load save'.split(' '));
+// v7.15.16 (run25): functions Node's own modules export (fs, child_process,
+// readline, http), which no piece's task writes: "File Handling" promised
+// readFileSync, "Read file" under it wrapped fs.readFileSync, and the deepest
+// chain grew below it. Never promised by a piece (an inherited name aside).
+export const NODE_FUNCTIONS = new Set(('accessSync appendFile appendFileSync copyFile copyFileSync createReadStream createWriteStream existsSync lstatSync mkdirSync mkdtempSync opendirSync ' +
+  'readFile readFileSync readdir readdirSync readlinkSync realpathSync renameSync rmSync rmdirSync statSync unlinkSync writeFile writeFileSync execSync execFileSync spawnSync createInterface createServer').split(' '));
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
 const RESERVED = new Set('await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield'.split(' '));
 // The prompts' and LEAF_DEPENDENCY_RULE's example names, and stock fillers.

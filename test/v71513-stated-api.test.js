@@ -318,18 +318,20 @@ test('v7.15.13 room 3 (run20\'s sub-split): "Check errors" is not pruned by "Che
   const sub=[
     {label:'Process interfaces',task:'Write code that processes the interfaces dataset and generates interface diagnostics',functions:[PLAN20[2].functions[0]],uses:['checkAdminDown','checkFlaps','checkErrors','checkSpeed','checkUtilization']},
     {label:'Check admin status',task:'Write code that checks whether an interface is administratively up but operationally down',functions:[fn('checkAdminDown','Checks an interface for admin up and oper down',['interface'],'a finding or null')]},
-    {label:'Check errors',task:'Write code that checks for interfaces with at least 100 errors within ten minutes',functions:[fn('checkErrors','Checks an interface for at least 100 errors in ten minutes',['interface'],'a finding or null')]}];
+    {label:'Check errors',task:'Write code that checks for interfaces with at least 100 errors within ten minutes',functions:[fn('checkErrors','Checks an interface for at least 100 errors in ten minutes',['interface'],'a finding or null')]},
+    // v7.15.16: "Process interfaces" promises a second function, carried here, so it splits (a piece promising one function writes it).
+    {label:'Summarize interfaces',task:'Write code that summarizes the interface findings',functions:[fn('summarizeInterfaces','Summarizes the interface findings',['findings'],'the summary')]}];
   const clef=clefScript({gate:task=>/^Write code that processes the interfaces/.test(task)?0.72:0.1,owner:(question,label)=>/^Which branch's assigned code already covers this proposed piece\? Check errors: /.test(question)?(label==='Check error rate'?0.405:0.1):0.05});
   const {room,calls}=liveRoom({clef,split:()=>({summary:'Split the interface checks.',spawn:sub})});
   await room.provision('root',null,'Root objective',DIAG+' '+M.goalStartRequirement(DIAG),M.rootPromise(DIAG));room.set('goal',DIAG+' '+M.goalStartRequirement(DIAG));
-  const top=PLAN20.filter(p=>p.label!=='Check errors').map(p=>({label:p.label,task:p.task+deliver,interfaces:p.functions.map(f=>f.name==='start'?M.rootPromise(DIAG)[0]:f),...(p.uses?{uses:p.uses.filter(u=>u!=='checkErrors')}:{})}));
+  const top=PLAN20.filter(p=>p.label!=='Check errors').map(p=>({label:p.label,task:p.task+deliver,interfaces:[...p.functions.map(f=>f.name==='start'?M.rootPromise(DIAG)[0]:f),...p.label==='Process interfaces'?sub[3].functions:[]],...(p.uses?{uses:p.uses.filter(u=>u!=='checkErrors')}:{})}));
   await room.spawn('root',top);
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
   const pi=room.children('root').find(c=>c.label==='Process interfaces');
   room.db().exec("UPDATE agents SET phase='decompose',status='ready' WHERE id=?",pi.id);
   await room.turn(pi.id);
-  assert.deepEqual(room.children(pi.id).map(c=>c.label),['Process interfaces','Check errors'],trace(room));
+  assert.deepEqual(room.children(pi.id).map(c=>c.label),['Process interfaces','Check errors','Summarize interfaces'],trace(room));
   assert.deepEqual(dbEvents(room,'scope_pruned').map(e=>e.body),['Proposed child "Check admin status" exports checkAdminDown, which "Check admin down" already provides; not spawned. Import them by those names.']);
   assert.deepEqual(dbEvents(room,'scope_kept').map(e=>e.body),['No other strand up to Root owns proposed child "Check errors"; kept in this strand, where the scope check placed it.']);
   const walked=calls.clef.filter(c=>Object.keys(c.questions)[0].startsWith('owner_'));
