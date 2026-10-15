@@ -5,7 +5,9 @@ export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
-import { contractText, assignedPiece, fileGateError, deliveredFiles, productionFiles, runtimeOwned } from './code-work.js';
+import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
+import { buildPathError } from '../container/build-path.mjs';
+import { toolchainById } from './toolchains.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
@@ -675,7 +677,8 @@ export class ControlRoom extends DurableObject {
       // Mid-link, the files it last published; the digest says whether they passed.
       for(const [path,content] of await this.linkedBundle(builder.id,true))files.push({path,content});
       for(const f of compiler?this.files(compiler.id).filter(f=>!isAssemblyMetadata(f.path)):[])files.push({path:f.path,content:await this.indexedContent(compiler.id,f.path)});
-    } else if(atomic)for(const f of this.files(top).filter(f=>!isAssemblyMetadata(f.path)))files.push({path:f.path,content:await this.indexedContent(top,f.path)});
+    // v8 S1 review: never a path the build refuses (.github/, .gitmodules), even one written before the gate refused it.
+    } else if(atomic)for(const f of this.files(top).filter(f=>!isAssemblyMetadata(f.path)&&!buildPathError(f.path)))files.push({path:f.path,content:await this.indexedContent(top,f.path)});
     if(builder?!files.some(f=>f.path==='glue/index.js'):!files.length) {
       const status=this.get('status','idle'),why=!root?'no run has started in this room':builder?(this.read(`bundle:${top}`,null)?'the compiler has not chosen an entry and written its loader (there is no glue/index.js)':'Root\'s builder has not linked one (there is no glue/index.js)'):
         atomic?'Root has not written any code':'Root split the goal and its builder has not started linking';
@@ -1691,11 +1694,18 @@ export class ControlRoom extends DurableObject {
   }
   async containerRun(nodeId, label, files) {
     if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot build or run the application.'};
-    const snapshot=validateBuildFiles(new Map([...files].filter(([path])=>!isAssemblyMetadata(path))));
-    const digest=await snapshotHash(snapshot);
     const key=await sha256(label);
-    let report;
+    let report,snapshot,digest;
     try {
+      // v8 S1 review: a path the build cannot carry (a dotfile, a space) or
+      // an oversized snapshot is a source problem at that file, for its
+      // owner: never a compiler throw, a pause or an infrastructure block.
+      try {snapshot=validateBuildFiles(new Map([...files].filter(([path])=>!isAssemblyMetadata(path))));}
+      catch(error) {
+        if(!error?.path)throw error;
+        return {report:{passed:false,infrastructure_issue:'',issues:[{path:error.path,kind:'source',detail:`${error.message}: the build cannot carry this file. Write it under a path of letters, digits, '_', '-' and '.', with no name that starts with '.', and keep each file small.`}],log:'',artifacts:[],preview:'',checks:[],api_surface:''},digest:''};
+      }
+      digest=await snapshotHash(snapshot);
       const room=this.get('room_id','test-room');
       const stub=this.env.BUILD_EXECUTORS.getByName(`${room}:${this.get('run_nonce','legacy')}:build`);
       report=normalizeBuildResult(await stub.build({fingerprint:key,files:Object.fromEntries(snapshot)}),key,digest);
@@ -4107,9 +4117,16 @@ export class ControlRoom extends DurableObject {
        !(runtimeGlue?RUNTIME_GLUE.includes(path):materialized?path===COMPILE_MANIFEST:path==='glue/smoke.js'))
       throw new Error('The compiler writes only glue/index.js, package.json, glue/smoke.js and '+COMPILE_MANIFEST+': '+path);
     // runtimeGlue: an atomic top's package.json, which its compile writes.
-    // v8 S1: a worker writes any text file, except the paths the runtime owns.
-    if(this.env.MOCK_AI!=='true' && !materialized && !runtimeGlue && n.phase==='implement' && !isRuntimeNode(n) && runtimeOwned(path))
-       throw new Error('Workers cannot write a runtime-owned path: '+path);
+    // v8 S1: a worker writes any text file, at a path the one path rule the
+    // build shares allows, never the runtime's own paths or the manifests;
+    // the runtime's own writes (memory aside) keep to the build's rule too.
+    if(this.env.MOCK_AI!=='true' && !path.startsWith('memory/')) {
+      const worker=!materialized && !runtimeGlue && n.phase==='implement' && !isRuntimeNode(n);
+      // A materialized copy carries a worker's file as it is: one that the
+      // build cannot carry reaches the compile as its owner's problem.
+      const bad=worker?writerPathError(path):materialized?null:buildPathError(path);
+      if(bad)throw new Error((worker?'Workers cannot write this path: ':'Unsafe runtime path: ')+bad);
+    }
     if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
       if(!materialized && !runtimeGlue && ![PUBLIC_KNOWLEDGE,PRIVATE_KNOWLEDGE].includes(path) && !['glue/wiring.js','glue/smoke.js'].includes(path))
         throw new Error('Only glue/wiring.js and glue/smoke.js may be authored by a builder; glue/index.js and package.json belong to runtime');
@@ -4334,6 +4351,21 @@ export class ControlRoom extends DurableObject {
     if(!found.length) {
       if(returns)this.set(key,'');
       return false;
+    }
+    // v8 S1 review: a promised name written in a file the project does not
+    // link (createTicket in createTicket.ts) is said as such, never as "Not
+    // exported" (D8's help without its pin: the language from the rows).
+    if(found.some(x=>x.rule==='missing')) {
+      const other=[];
+      for(const f of deliveredFiles(this.files(id)).filter(f=>!LINKABLE.test(f.path)))other.push({path:f.path,content:await this.indexedContent(id,f.path)??''});
+      const hits=found.filter(x=>x.rule==='missing').map(x=>({name:x.name,hit:strayDeclaration(other,x.name,V7_LANGUAGES)})).filter(m=>m.hit);
+      const first=found.find(x=>x.rule==='missing'&&x.text);
+      if(hits.length&&first) {
+        const paths=[...new Set(hits.map(m=>m.hit.path))];
+        first.text=`${hits.map(m=>`${m.name} is in ${m.hit.path}`).join('; ')}, which this project does not link. ${languageNote(paths,V7_LANGUAGES)} Export ${hits.length>1?'each':'it'} there by exactly its name.`+
+          (hits.length<found.filter(x=>x.rule==='missing').length?` ${first.text}`:'');
+        first.how=`${hits.map(m=>m.name).join(', ')} written in ${listed(paths)}, outside the project's language.`;
+      }
     }
     if(returns>=3) {
       const still={missing:x=>`${x.name} still not exported`,empty:x=>`${x.name} still an empty placeholder`,foreign:x=>`${x.name} still written ${x.dropped?`in ${base(x.path)}`:'here'} though "${x.hit.owner}" promises it`,unwired:x=>`start() still returns no method for ${list(x.missing)}`,
@@ -5385,6 +5417,7 @@ export class ControlRoom extends DurableObject {
         // cut is written again alone (the code_retry path below).
         if(raw.format_fallback)this.event(id,'format_fallback',`The answer was read as ${raw.format_fallback==='json'?'a JSON action':'one fenced file'}, not file blocks.`);
         if(raw.truncated?.length)this.event(id,'code_retry',`Cut off before its end, written again alone: ${raw.truncated.join(', ')}`);
+        if(raw.control_error)this.event(id,'format_fallback','The control block did not parse, after a retry: its complete files are written, and it is not done.');
         // v7.15.2: an atomic top's loader, package and runner's test are the
         // runtime's, written again for each run: an edit was undone and its
         // repair heard that nothing changed (review).
@@ -5395,16 +5428,39 @@ export class ControlRoom extends DurableObject {
           (action.notes||=[]).push(`${glue.map(f=>f.path).join(', ')} ${glue.length>1?'were':'was'} not written: glue/index.js (the loader), package.json and glue/smoke.js (the runner's test, fixed for the whole run) are the runtime's and are written again for each run. Change your own modules so that the application passes.`);
         }
         // v8 S1: any text file is kept (under v7 a non-JS file is carried to
-        // the export, never linked or run); only the runtime's own paths are not.
-        const owned=action.files.filter(f=>runtimeOwned(f.path));
-        if(owned.length) {
-          this.event(id,'glue_rejected',`Not written: ${owned.map(f=>f.path).join(', ')}, which the runtime owns.`);
-          action.files=action.files.filter(f=>!runtimeOwned(f.path));
+        // the export, never linked or run), at a path the build can carry:
+        // never the runtime's own paths, a hidden file or a project manifest
+        // (the review: a .gitignore paused the compile, a branch's
+        // package.json turned its CommonJS into ES modules). Memory is
+        // skipped below, as before.
+        const refused=action.files.map(f=>({f,why:f.path.startsWith('memory/')?null:writerPathError(f.path)})).filter(x=>x.why);
+        if(refused.length) {
+          this.event(id,'file_refused',`Not written: ${refused.map(x=>x.why).join('; ')}`);
+          action.files=action.files.filter(f=>!refused.some(x=>x.f===f));
+          (action.notes||=[]).push(clip(`Not written: ${refused.map(x=>x.why).join('; ')}.`,1500));
         }
-        if(action.done && !action.spawn.length && !deliveredFiles([...this.files(id),...action.files]).length) {
-          this.event(id,'missing_deliverable','Leaf attempted to finish its assignment without delivering any file.');
-          this.incrementFailures(id,'missing_deliverable');
-          return;
+        if(action.done && !action.spawn.length) {
+          // A piece finishes on what it delivers: some file, and code in the
+          // project's language unless its every contract is a document or
+          // file kind (v8 S1 review: a code piece with no promise finished
+          // on NOTES.md alone). v7 links and runs JavaScript only.
+          const all=[...this.files(id),...action.files.map(f=>({...f,content:f.content??''}))];
+          // The writer hears why, once per reason, on its next turn.
+          const tell=body=>{if(!query(this.db(),'SELECT id FROM messages WHERE recipient=? AND sender=? AND body=? AND delivered=0',id,'runtime:gate',body).length)
+            this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:gate',id,body);};
+          if(!deliveredFiles(all).length) {
+            this.event(id,'missing_deliverable','Leaf attempted to finish its assignment without delivering any file.');
+            tell('[gate] You set done without delivering any file: write the files your assignment asks for.');
+            this.incrementFailures(id,'missing_deliverable');
+            return;
+          }
+          if(codeRequired(this.promisedOf(id)) && !codeFiles(all,V7_LANGUAGES).length) {
+            const paths=deliveredFiles(all).map(f=>f.path),why=`${listed(paths)} only. ${languageNote(paths,V7_LANGUAGES)}`;
+            this.event(id,'missing_code',`Leaf attempted to finish its code-writing assignment with ${why}`);
+            tell(clip(`[gate] Your assignment needs code, and you delivered ${why}`,1500));
+            this.incrementFailures(id,'missing_code');
+            return;
+          }
         }
       }
       // Knowledge can only be written using remember, never generated as a
@@ -5721,8 +5777,8 @@ export class ControlRoom extends DurableObject {
             return;
           }
           if(this.env.MOCK_AI!=='true' && !this.manager(id) && n.label!=='Temporary builder' &&
-              !deliveredFiles(this.files(id)).length) {
-            throw new Error('Leaf cannot finish without delivering any file for its assignment');
+              (!deliveredFiles(this.files(id)).length||codeRequired(this.promisedOf(id))&&!codeFiles(this.files(id),V7_LANGUAGES).length)) {
+            throw new Error(`Leaf cannot finish without delivering ${deliveredFiles(this.files(id)).length?'code in this project\'s language':'any file'} for its assignment`);
           }
           // v7.15: the plan is checked on return, before linking. No throw:
           // a thrown op replays without asking the model (F4).
@@ -6034,7 +6090,7 @@ export class ControlRoom extends DurableObject {
     // A planned worker waiting with no request open, nothing unread and no
     // source has nothing that would wake it; Continue does (slice B review).
     if(this.planned())for(const n of this.allNodes().filter(x=>x.status==='waiting'&&x.parent&&x.phase==='implement'&&!isRuntimeNode(x)&&!this.manager(x.id)))
-      if(!productionFiles(this.files(n.id)).length&&!this.receive(n.id).length&&!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',n.id).length)this.wake(n.id);
+      if(!codeFiles(this.files(n.id),V7_LANGUAGES).length&&!this.receive(n.id).length&&!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',n.id).length)this.wake(n.id);
     // Continue is an explicit request to retry a quiescent builder when all
     // code producers are done. The ordinary idle nudge intentionally excludes
     // builders, to avoid uncontrolled model inference on every source revision.

@@ -5,7 +5,7 @@ import { normalizeInterfaces, normalizeUses, requestKey, validName, MAX_REQUESTS
 export const clip = (v, n = 1200) => String(v ?? '').slice(0, n);
 export const isPath = v => typeof v === 'string' && v.length > 0 && v.length <= 512 &&
   !v.startsWith('/') && !v.includes('\\') &&
-  !v.split('/').some(p => !p || p.length > 255 || p === '.' || p === '..' || p === '.git');
+  !v.split('/').some(p => !p || p.length > 255 || p === '.' || p === '..' || p.toLowerCase() === '.git');
 export const isId = v => typeof v === 'string' && /^root(?:\.\d+)*$/.test(v);
 
 export function contentOf(output) {

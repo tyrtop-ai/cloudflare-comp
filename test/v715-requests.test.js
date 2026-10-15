@@ -564,6 +564,8 @@ test('v7.15: a worker waiting for nothing runs again with a note, and a third ti
   // and no source; one with source is the idle nudge's.
   const {room:paused,drain}=await plannedTree(fakeAI({leaf:()=>({summary:'Storage',files:[{path:'store.js',content:'function getTickets() { return []; }\nmodule.exports = { getTickets };\n'}],done:true})}),tree);
   await paused.putFile('root.2','viewTickets.js','function viewTickets(filter) { return []; }\nmodule.exports = { viewTickets };\n');
+  // v8 S1 review: notes are no source; root.1 is still woken.
+  await paused.putFile('root.1','NOTES.md','# Plan\n\nRead the tickets later.\n');
   paused.set('status','paused');
   const before=['root.1','root.2'].map(id=>paused.wakeGeneration(id));
   await paused.resume(1);

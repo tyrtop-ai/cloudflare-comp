@@ -1,7 +1,7 @@
 // Immutable source snapshots, diagnostic attribution, and repair envelopes.
 // This code never asks a model to decide whether a build passed.
 import {sha256} from './assembly.js';
-import {isPath} from './protocol.js';
+import {buildPathError} from '../container/build-path.mjs';
 export async function snapshotHash(files) {
   const entries=[...(files instanceof Map?files:new Map(Object.entries(files))).entries()].sort(([a],[b])=>a.localeCompare(b));
   return sha256(JSON.stringify(entries));
@@ -11,11 +11,16 @@ export function validateBuildFiles(files) {
   if(!entries.length || entries.length>1600)throw new Error('Build snapshot must contain 1–1600 files');
   let bytes=0;
   for(const [path,content] of entries) {
-    if(!isPath(path)||path.startsWith('memory/')||path.split('/').some(x=>x==='..'||x.startsWith('.')))
-      throw new Error(`Unsafe build path ${path}`);
+    // The one path rule the Container's runner and the Worker's gate share (v8 S1 review).
+    if(buildPathError(path)||/^memory(?:\/|$)/i.test(path))
+      throw Object.assign(new Error(`Unsafe build path ${path}`),{path});
     if(typeof content!=='string')throw new Error(`Non-text build file ${path}`);
     bytes+=new TextEncoder().encode(content).length;
-    if(bytes>4*1024*1024)throw new Error('Build snapshot exceeds 4 MiB');
+    if(bytes>4*1024*1024) {
+      // The site is the largest file, so its owner hears it (v8 S1 review).
+      const size=([,c])=>typeof c==='string'?c.length:0,[largest]=[...entries].sort((a,b)=>size(b)-size(a))[0];
+      throw Object.assign(new Error(`Build snapshot exceeds 4 MiB; the largest file is ${largest}`),{path:largest});
+    }
   }
   return new Map(entries);
 }

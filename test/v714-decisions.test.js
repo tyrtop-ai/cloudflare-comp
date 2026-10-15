@@ -541,15 +541,21 @@ async function formTree(room,task='Write a React component with form fields for 
   await workers(room,'root.1',[['Form service','formService.js',formService]]);
   room.db().exec("UPDATE agents SET status='waiting' WHERE id='root.1'");
 }
-test('v8 S1 (was v7.14 5a): a worker whose turn publishes only .tsx is not stuck at the gate: the file is kept, never linked or run, and the room completes',async()=>{
+// v8 S1 (was v7.14 5a, D8's fixed retask): a worker whose turn publishes
+// only .tsx is told the project's language by the gate, from the toolchain
+// rows, with no manager and no model; it writes the .js beside its .tsx,
+// which is kept in the export, never linked or run.
+test('v8 S1 (was v7.14 5a): a worker whose turn publishes only .tsx hears the project is JavaScript, writes the .js beside it, and the room completes',async()=>{
+  const tsx={path:'TicketForm.tsx',content:'export const TicketForm = () => <form />;\n'};
   const {room,calls}=liveRoom({runner:()=>formRunner,
-    leaf:()=>({summary:'React form',done:true,files:[{path:'TicketForm.tsx',content:'export const TicketForm = () => <form />;\n'}]})});
+    leaf:user=>(user.new_messages||[]).some(m=>/^\[gate\]/.test(m.body))?{summary:'Plain JS form',done:true,files:[tsx,{path:'TicketForm.js',content:plainForm}]}:{summary:'React form',done:true,files:[tsx]}});
   await formTree(room);
   await settle(room,40);
   assert.equal(room.get('status'),'complete',trace(room));
-  assert.equal(calls.leaf.length,1,'one turn: nothing rejected it');
+  assert.equal(calls.leaf.length,2,'the refused turn, then the one that heard why');
+  assert.match(calls.leaf[1].new_messages.find(m=>/^\[gate\]/.test(m.body)).body,/This project is JavaScript \(\.js, \.mjs, \.cjs\): only those files are linked and run, so write TicketForm\.tsx as TicketForm\.js\./);
   assert.equal(room.problems("kind='stuck'").length,0);
-  assert.equal(calls.manager.length,0);
+  assert.equal(calls.manager.length,0,'no model decides it');
   assert.ok(room.files('root.1.1').some(f=>f.path==='TicketForm.tsx'));
   // Carried into the export beside the linked code, under its branch's directory, and never linked.
   const app=await room.appFiles();

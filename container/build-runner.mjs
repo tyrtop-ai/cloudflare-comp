@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {builtinModules} from 'node:module';
 import {spawn} from 'node:child_process';
+import {buildPathError} from './build-path.mjs';
 
 // Each build subprocess is launched in its own process group so its stage
 // timeout can kill npm and all of its normal descendants. If the enclosing
@@ -214,7 +215,8 @@ function validate(raw) {
   if(!entries.length||entries.length>1600)throw Error('Invalid number of files');
   let size=0;
   for(const [name,content] of entries) {
-    if(typeof content!=='string'||name.startsWith('/')||name.split('/').some(p=>!p||p==='.'||p==='..'||p.startsWith('.'))||!name.match(/^[a-zA-Z0-9_./-]+$/))throw Error('Unsafe file path '+name);
+    // The one path rule the Worker's gate and validateBuildFiles share (build-path.mjs).
+    if(typeof content!=='string'||buildPathError(name))throw Error('Unsafe file path '+name);
     size+=Buffer.byteLength(content);
   }
   if(size>4*1024*1024)throw Error('Build request too large');

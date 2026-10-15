@@ -79,23 +79,41 @@ test('a leaf can publish complete code in one Qwen inference rather than separat
   assert.notEqual(room.node('root').status,'done');
 });
 
-// v8 S1 inverts v7's "a leaf cannot finish a code-writing assignment by
-// publishing a README": a piece whose work is a document finishes with it.
-async function docWorker(run,task='Write the README that explains how to install and run the tool') {
+// v8 S1: a piece writes any text file beside its code. Until contracts carry
+// kinds (S2), every piece's contract is none or a function, so it finishes
+// only with code in the project's language: a README alone is still refused
+// (missing_code), and the writer is told why (v8 S1 review).
+async function docWorker(run,task='Write the word counter and the README that explains how to install and run it') {
   const {room,artifacts}=await roomWithAI(run,'Build a small command-line tool');
   await room.spawn('root',[{label:'Docs',task}]);
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   room.db().exec("UPDATE agents SET phase='implement',status='ready' WHERE id='root.1'");
   return {room,artifacts};
 }
-test('v8 S1: a leaf finishes its assignment by publishing a README, committed as written',async()=>{
+const counter="function countWords(text) { return text.split(/\\s+/).filter(Boolean).length; }\nmodule.exports = { countWords };\n";
+test('v8 S1: a leaf publishes a README beside its code, each committed as written',async()=>{
   const readme='# Word counter\n\n## Install\n\nNothing to install.\n\n## Run\n\n    node index.js notes.txt\n';
-  const {room,artifacts}=await docWorker(async()=>response({summary:'Wrote the README',done:true,files:[{path:'README.md',content:readme}]}));
+  const {room,artifacts}=await docWorker(async()=>response({summary:'Wrote the counter and its README',done:true,files:[{path:'README.md',content:readme},{path:'countWords.js',content:counter}]}));
   await room.turn('root.1');
   assert.equal(await artifacts.read(room.node('root.1').repo_name,'README.md'),readme);
+  assert.equal(await artifacts.read(room.node('root.1').repo_name,'countWords.js'),counter);
   assert.equal(room.node('root.1').status,'done');
-  assert.equal(room.node('root.1').task,'Write the README that explains how to install and run the tool','the task passes through unwrapped');
-  for(const kind of ['non_code_rejected','missing_deliverable','missing_code','code_retry'])assert.ok(!room.snapshot().events.some(e=>e.kind===kind),kind);
+  assert.equal(room.node('root.1').task,'Write the word counter and the README that explains how to install and run it','the task passes through unwrapped');
+  for(const kind of ['non_code_rejected','missing_deliverable','missing_code','code_retry','file_refused'])assert.ok(!room.snapshot().events.some(e=>e.kind===kind),kind);
+});
+test('v8 S1 review: a piece whose contract is none or a function cannot finish on a README alone; it hears the project\'s language',async()=>{
+  const {room,artifacts}=await docWorker(async()=>response({summary:'Wrote the README',done:true,files:[{path:'README.md',content:'# Plan\n\nI will write the code later.'}]}));
+  await room.turn('root.1');
+  assert.notEqual(room.node('root.1').status,'done');
+  assert.equal(await artifacts.read(room.node('root.1').repo_name,'README.md'),null,'nothing committed from the refused turn');
+  assert.ok(room.snapshot().events.some(e=>e.kind==='missing_code'&&/README\.md only/.test(e.body)));
+  assert.equal(room.read('failures',{})['root.1'],1);
+  const [told]=room.receive('root.1');
+  assert.match(told.body,/^\[gate\] Your assignment needs code, and you delivered README\.md only\. Notes and documents alone do not finish it: write the code in JavaScript \(\.js, \.mjs, \.cjs\)\./);
+  // TypeScript for it is told the same way, by name (D8's help without its pin).
+  const ts=await docWorker(async()=>response({summary:'TS',done:true,files:[{path:'countWords.ts',content:'export function countWords(t: string): number { return t.length; }'}]}));
+  await ts.room.turn('root.1');
+  assert.match(ts.room.receive('root.1')[0].body,/This project is JavaScript \(\.js, \.mjs, \.cjs\): only those files are linked and run, so write countWords\.ts as countWords\.js\./);
 });
 test('v8 S1: a leaf that delivers no file still cannot finish (missing_deliverable)',async()=>{
   const {room}=await docWorker(async()=>response({summary:'Planned the README',done:true,files:[]}));
@@ -104,22 +122,25 @@ test('v8 S1: a leaf that delivers no file still cannot finish (missing_deliverab
   assert.ok(room.snapshot().events.some(e=>e.kind==='missing_deliverable'));
   assert.equal(room.read('failures',{})['root.1'],1);
 });
-test('v8 S1: an empty file and a runtime-owned path are refused; the rest of the answer is written',async()=>{
+test('v8 S1: an empty file is corrected; a runtime-owned path, a hidden file and a manifest are refused and said; the rest is written',async()=>{
   let calls=0;
   const {room,artifacts}=await docWorker(async(_model,params)=>{
     calls++;
     if(params.messages[0].content.includes('Return ONLY the complete text'))return {response:'# Notes\n\nFilled in.'};
-    return response({summary:'Docs',done:true,files:[{path:'NOTES.md',content:'   \n'},{path:'glue/index.js',content:'module.exports = {};'},{path:'docs/usage.md',content:'Usage: wc FILE'}]});
+    return response({summary:'Docs',done:true,files:[{path:'NOTES.md',content:'   \n'},{path:'glue/index.js',content:'module.exports = {};'},{path:'.gitignore',content:'node_modules\n'},
+      {path:'package.json',content:'{"type":"module"}'},{path:'docs/My Notes.md',content:'x'},{path:'docs/usage.md',content:'Usage: wc FILE'},{path:'countWords.js',content:counter}]});
   });
   await room.turn('root.1');
   const repo=room.node('root.1').repo_name;
-  assert.equal(await artifacts.read(repo,'glue/index.js'),null);
-  assert.ok(room.snapshot().events.some(e=>e.kind==='glue_rejected'&&/glue\/index\.js/.test(e.body)));
+  for(const path of ['glue/index.js','.gitignore','package.json','docs/My Notes.md'])assert.equal(await artifacts.read(repo,path),null,path);
+  const refused=room.snapshot().events.find(e=>e.kind==='file_refused');
+  assert.match(refused.body,/glue\/index\.js: the runtime writes this path[^]*\.gitignore: a name that starts with '\.'[^]*package\.json: the runtime owns the project manifest[^]*docs\/My Notes\.md: use only letters/);
   assert.ok(room.snapshot().events.some(e=>e.kind==='code_retry'&&/NOTES\.md: the file is empty/.test(e.body)));
   assert.equal(await artifacts.read(repo,'NOTES.md'),'# Notes\n\nFilled in.');
   assert.equal(await artifacts.read(repo,'docs/usage.md'),'Usage: wc FILE');
+  assert.equal(room.node('root.1').status,'done');
   assert.equal(calls,2);
-  await assert.rejects(room.putFile('root.1','glue/x.js','module.exports = {};'),/runtime-owned path/);
+  for(const path of ['glue/x.js','.npmrc','web/package.json','a b.md'])await assert.rejects(room.putFile('root.1',path,'module.exports = {};'),/Workers cannot write this path/,path);
 });
 
 test('a leaf chooses its own filenames; no assigned module is required of it',async()=>{
@@ -216,4 +237,21 @@ test('manager interface publications are not silently truncated to eight entries
   const result=normalizeAction({summary:'Expose all implementation modules',exports:publications});
   assert.equal(result.exports.length,19);
   assert.equal(result.exports.at(-1).as,'public/module-18.js');
+});
+
+// v8 S1 review (MEDIUM 5): a promised function written in a file the project
+// does not link is said as such, with the language from the toolchain rows,
+// never as "Not exported".
+test('v8 S1 review: a promised function written in a .ts file is returned with the project\'s language, not "Not exported"',async()=>{
+  const {room}=await roomWithAI(async()=>response({summary:'Create ticket',done:true,files:[
+    {path:'ids.js',content:'let next = 1;\nmodule.exports = { nextId: () => next++ };\n'},
+    {path:'createTicket.ts',content:'export function createTicket(title: string) { return { id: 1, title }; }\n'}]}),'Build a small issue tracker');
+  await room.spawn('root',[{label:'Create ticket',task:'Write code that creates a ticket',interfaces:[{name:'createTicket',does:'creates a ticket and returns it',params:['title']}]}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  room.db().exec("UPDATE agents SET phase='implement',status='ready' WHERE id='root.1'");
+  await room.turn('root.1');
+  const [back]=room.receive('root.1').filter(m=>m.from==='runtime:contract');
+  assert.ok(back,JSON.stringify(room.snapshot().events.slice(-6).map(e=>e.kind+': '+e.body)));
+  assert.match(back.body,/createTicket is in createTicket\.ts, which this project does not link\. This project is JavaScript \(\.js, \.mjs, \.cjs\): only those files are linked and run, so write createTicket\.ts as createTicket\.js\./);
+  assert.doesNotMatch(back.body,/Not exported/);
 });

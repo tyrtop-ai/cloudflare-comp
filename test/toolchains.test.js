@@ -1,7 +1,7 @@
 // v8 §4.5: the toolchain table is data, and its helpers are pure.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TOOLCHAINS,STACKS,toolchainOf,toolchainById,installed,renderImport,projectFacts,extractSurface,stackFrames,unresolvedNames,validIdentifier} from '../src/toolchains.js';
+import {TOOLCHAINS,STACKS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,renderImport,projectFacts,extractSurface,stackFrames,unresolvedNames,validIdentifier,manifestOf} from '../src/toolchains.js';
 
 test('the phase-1 rows: javascript, python and text, frozen, each extension in one row',()=>{
   assert.deepEqual(TOOLCHAINS.map(t=>t.id),['javascript','python','text']);
@@ -84,4 +84,14 @@ test('unresolvedNames reads the row\'s unresolved patterns, each finding once',(
   const out="ImportError: cannot import name 'count_word' from 'count_words' (/work/count_words.py)\nModuleNotFoundError: No module named 'wordz'\nNameError: name 'top_n' is not defined\nNameError: name 'top_n' is not defined";
   assert.deepEqual(unresolvedNames(out,py),[{name:'count_word',module:'count_words'},{module:'wordz'},{name:'top_n'}]);
   assert.deepEqual(unresolvedNames(out,toolchainById('javascript')),[]);
+});
+
+test('manifestOf: every row\'s manifests and the other toolchains\', at any depth, without case; a directory entry covers what lies under it',()=>{
+  for(const t of TOOLCHAINS)assert.ok(Array.isArray(t.manifests)&&typeof t.name==='string',t.id);
+  assert.deepEqual(manifestOf('web/Package.JSON'),{name:'package.json',row:'javascript'});
+  assert.deepEqual(manifestOf('node_modules/left-pad/index.js'),{name:'node_modules/',row:'javascript'});
+  assert.deepEqual(manifestOf('tools/requirements.txt'),{name:'requirements.txt',row:'python'});
+  assert.deepEqual(manifestOf('Cargo.toml'),{name:'Cargo.toml',row:null});
+  assert.ok(OTHER_MANIFESTS.includes('go.mod'));
+  for(const p of ['src/package.js','docs/node_modules.md','README.md','pyproject.md'])assert.equal(manifestOf(p),null,p);
 });

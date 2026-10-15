@@ -7,7 +7,9 @@
 import {exportSurface, providedNames} from './linker.js';
 
 export const TOOLCHAINS = Object.freeze([
-  Object.freeze({ id:'javascript', extensions:['.js','.mjs','.cjs'], manifests:['package.json'], native:'acorn',
+  Object.freeze({ id:'javascript', name:'JavaScript', extensions:['.js','.mjs','.cjs'], native:'acorn',
+    // The project manifest, lock files and package-manager config: the runtime's (v8 S1 review).
+    manifests:['package.json','package-lock.json','npm-shrinkwrap.json','yarn.lock','pnpm-lock.yaml','pnpm-workspace.yaml','.npmrc','.yarnrc','.yarnrc.yml','bun.lockb','node_modules/'],
     syntax:null /* Acorn in the Worker */, executables:['node','npm','npx'],
     run_file:['node','{path}'], test:['npm','test'], project_test_markers:['package.json#scripts.test'],
     identifier:'^[A-Za-z_$][A-Za-z0-9_$]{0,63}$', reserved:'await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield',
@@ -15,7 +17,8 @@ export const TOOLCHAINS = Object.freeze([
     import_line:"const { {name} } = require('./{name}');", import_line_esm:"import { {name} } from './{name}';",
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
     stack:'v8', stdlib:'node-builtins', glue:[], image:'build' }),
-  Object.freeze({ id:'python', extensions:['.py'], manifests:['pyproject.toml','requirements.txt','setup.cfg'], native:null,
+  Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
+    manifests:['pyproject.toml','requirements.txt','setup.cfg','setup.py','Pipfile','Pipfile.lock','poetry.lock','tox.ini','pip.conf','.python-version','__pycache__/','.venv/','venv/'],
     syntax:['python3','-m','py_compile','{files}'], executables:['python3','pytest'],
     run_file:['python3','{path}'], test:['python3','-m','pytest','-q'], project_test_markers:['test_*.py','*_test.py','tests/'],
     identifier:'^[A-Za-z_][A-Za-z0-9_]{0,63}$', reserved:'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield',
@@ -27,9 +30,12 @@ export const TOOLCHAINS = Object.freeze([
     package_marker:'__init__.py', module_of:'dotted', dir_case:'snake',
     unresolved:["cannot import name '(?<name>\\w+)' from '(?<module>[\\w.]+)'","No module named '(?<module>[\\w.]+)'","name '(?<name>\\w+)' is not defined"],
     call_adapter:['python3','/opt/adapters/call.py'], stack:'python', stdlib:'/opt/toolchain/python-stdlib.txt', image:'build' }),
-  Object.freeze({ id:'text', extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:'text',
+  Object.freeze({ id:'text', name:'text', manifests:[], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:'text',
     syntax:null, executables:[], extractor:null, link:'placed', stack:null, image:'build' })
 ]);
+// The manifests of toolchains this deployment has no row for: a worker never
+// writes one either, since nothing here would read it as intended.
+export const OTHER_MANIFESTS = Object.freeze(['go.mod','go.sum','Cargo.toml','Cargo.lock','Gemfile','Gemfile.lock','composer.json','composer.lock','pom.xml','build.gradle','build.gradle.kts','settings.gradle','Package.swift','mix.exs','deno.json','deno.jsonc']);
 // Stack-frame readers by a row's stack field: named groups path, line and fn.
 export const STACKS = Object.freeze({
   v8:     '^\\s+at (?:(?<fn>.+?) \\()?(?:file://)?(?<path>/[^():]+):(?<line>\\d+):\\d+\\)?$',
@@ -46,6 +52,20 @@ export function toolchainOf(path) {
   return ext && TOOLCHAINS.find(t => t.extensions.includes(ext)) || null;
 }
 export const toolchainById = id => TOOLCHAINS.find(t => t.id === id) || null;
+
+// The manifest a path is, or lies under, from every row's manifests (a name
+// ending in '/' is a directory at any depth) and OTHER_MANIFESTS, compared
+// without case: {name, row} or null. The project manifest is the runtime's
+// unless a contract places that exact path.
+export function manifestOf(path) {
+  const parts = String(path || '').toLowerCase().split('/'), base = parts.at(-1);
+  for (const row of [...TOOLCHAINS, {id: null, manifests: OTHER_MANIFESTS}])
+    for (const m of row.manifests || []) {
+      const name = m.toLowerCase();
+      if (name.endsWith('/') ? parts.slice(0, -1).includes(name.slice(0, -1)) : base === name) return {name: m, row: row.id};
+    }
+  return null;
+}
 
 // The rows this deployment can run: those whose executables the Container's
 // inventory reports. inventory is a list of executable names, or the report's

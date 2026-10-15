@@ -2,7 +2,7 @@ import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects
 import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
-import { hasWorkerBlocks, workerAction } from './worker-output.js';
+import { workerAction } from './worker-output.js';
 export { NO_ANSWER };
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 const HYBRID = '@cf/qwen/qwen3-30b-a3b-fp8';
@@ -514,13 +514,19 @@ export async function decide(env, context, {planned = false} = {}) {
   const system = shared + '\n' + (context.your_label === 'Temporary builder' ? builder : context.phase === 'manager' || context.phase === 'compose' ? manager : implementer);
   const decisionTokens = Math.min(8192, Math.max(1500, Number(env.DECISION_MAX_TOKENS) || (context.your_label === 'Temporary builder' ? 7600 : context.phase === 'implement' ? 6500 : 3072)));
   let output = await run(env, system, JSON.stringify(context), decisionTokens);
-  let parsed = parseObject(output);
-  // v8 §3.2: a worker's answer in the raw file-block format (its files as text, then a control block).
-  if (system.endsWith(implementer) && hasWorkerBlocks(stripReasoning(contentOf(output)))) return workerAction(output);
-  if (!parsed.parse_error) return parsed;
+  // v8 §3.2: a worker's answer, first and retry alike, is read by
+  // workerAction: the raw file-block format, or the JSON action this prompt
+  // asks for. A control block that does not parse is asked again, as a
+  // malformed answer is; if the retry is no better, the first answer's
+  // complete files stand and it is not done.
+  const read = system.endsWith(implementer) ? out => workerAction(out, {expect: 'json'}) : out => parseObject(out);
+  let parsed = read(output);
+  if (!parsed.parse_error && !parsed.control_error) return parsed;
+  const first = parsed;
   output = await run(env, system + '\nRETRY: Strictly valid short JSON. No markdown.',
     JSON.stringify(context).slice(0, 15000) + '\nMalformed previous output: ' + contentOf(output).slice(0, 200), Math.min(8192,decisionTokens+1024));
-  parsed = parseObject(output);
+  parsed = read(output);
+  if (first.control_error && (parsed.parse_error || parsed.control_error)) return first;
   // v7.15.13 (run18): an empty answer says what its envelope held ("Bad action response: " said nothing).
   return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
 }
