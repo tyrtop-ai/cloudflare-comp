@@ -359,10 +359,11 @@ test('browser checks: a static todo page served from the bundle, driven by label
 // v8 live 2: the to-do page had <input id="task-input" placeholder="Add a new
 // task"> and no label, the tracker <input id="title" placeholder="Title">;
 // both checks began with fill (no goto) and timed out on `fill {label}`.
-// Locators are semantic now: label, placeholder (contains, any case),
-// aria-label, the name or id by its words, then the only text field; a
-// click's name is matched in any case; a check opens "/" first. A miss lists
-// what the page offers, as its interface (labels, placeholders, names, texts).
+// Locators are semantic and strict (live 2 review): an exact label or
+// aria-label, an exact placeholder, a name or id whose words are the label's,
+// then a unique whole-word part; a click only among its role's elements; a
+// check opens "/" first. A miss lists what the page offers, as its interface
+// (labels, placeholders, names, texts); several partial matches are named.
 const LIVE_TODO=`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8" /><title>To-Do List</title><link rel="stylesheet" href="styles.css" /></head>
 <body><div class="todo-container"><h1>To-Do List</h1>
@@ -383,23 +384,49 @@ const SHAPES=`<!DOCTYPE html><html><body>
 </body></html>`;
 const ONE=`<!DOCTYPE html><html><body><input id="q"><button onclick="document.body.append('got ' + q.value)">Go</button></body></html>`;
 const TWO=`<!DOCTYPE html><html><body><label for="a">Name</label><input id="a"><input id="b" placeholder="Phone"><button>Send</button><a href="/x">Help</a></body></html>`;
+// The review's probes (live 2 review, real Chromium): each passes only for the right reason.
+const PROBES={
+  'name.html':`<!doctype html><html><body><label for=n>Name</label><input id=n><button onclick="document.body.append('Thanks, '+n.value)">Sign up</button></body></html>`,
+  'del.html':`<!doctype html><html><body><ul id=l><li>milk</li><li>eggs</li></ul><button onclick="l.innerHTML=''">Delete all</button><button onclick="l.lastElementChild&&l.lastElementChild.remove()">Delete</button></body></html>`,
+  'delall.html':`<!doctype html><html><body><ul id=l><li>milk</li></ul><button onclick="l.innerHTML=''">Delete all</button></body></html>`,
+  'user.html':`<!doctype html><html><body><label for=u>Username</label><input id=u><label for=n>Name</label><input id=n><button onclick="document.body.append('Hi '+n.value)">Go</button></body></html>`,
+  'names.html':`<!doctype html><html><body><label for=f>First name</label><input id=f><label for=l>Last name</label><input id=l></body></html>`,
+  'nobutton.html':`<!doctype html><html><body><p>Saved items: 0</p><p id=s>Status: Saved</p></body></html>`,
+  'price.html':`<!doctype html><html><body><input aria-label="Price excluding tax" id=a><button onclick="document.body.append('Total '+a.value)">Calc</button></body></html>`,
+  'attr.html':`<!doctype html><html><body><input id="last-name"><input id="first-name"><button onclick="document.body.append('Hello '+document.getElementById('last-name').value)">Go</button></body></html>`};
 
-test('browser checks (live 2): fields by label, placeholder, aria-label, name or id, or the only field; buttons by name in any case; a miss lists the page\'s fields and buttons',{skip:browserReady||false},async()=>{
-  const files={'index.html':LIVE_TODO,'styles.css':'body{margin:0}\n','tracker.html':LIVE_TRACKER,'shapes.html':SHAPES,'one.html':ONE,'two.html':TWO};
+test('browser checks (live 2): fields by exact label or aria-label, placeholder, name or id words, or a unique whole-word part; buttons by their role; a miss or several partial matches list the page\'s fields and buttons',{skip:browserReady||false},async()=>{
+  const files={'index.html':LIVE_TODO,'styles.css':'body{margin:0}\n','tracker.html':LIVE_TRACKER,'shapes.html':SHAPES,'one.html':ONE,'two.html':TWO,...PROBES};
   const report=await card(files,{runs:[{id:'serve',static:true}],checks:[
     {id:'T1',kind:'browser',serve:'serve',steps:[{fill:{label:'Task',text:'Sample task'}},{click:{role:'button',name:'Add'}},{expect_text:'Sample task'}]},
     {id:'T2',kind:'browser',serve:'serve',steps:[{goto:'/tracker.html'},{fill:{label:'Title',text:'Test Ticket'}},{fill:{label:'Description',text:'Test description'}},{click:{role:'button',name:'create'}},{expect_text:'Test Ticket: Test description'}]},
-    {id:'T3',kind:'browser',serve:'serve',steps:[{goto:'/shapes.html'},{fill:{label:'Task title',text:'Walk'}},{fill:{label:'due date',text:'Friday'}},{click:{role:'button',name:'Save'}},{expect_text:'saved Walk by Friday'}]},
-    {id:'T4',kind:'browser',serve:'serve',steps:[{goto:'/one.html'},{fill:{label:'Search',text:'kiwi'}},{click:{text:'go'}},{expect_text:'got kiwi'}]},
+    {id:'T3',kind:'browser',serve:'serve',steps:[{goto:'/shapes.html'},{fill:{label:'Task title',text:'Walk'}},{fill:{label:'due date',text:'Friday'}},{click:{text:'Save'}},{expect_text:'saved Walk by Friday'}]},
     {id:'T5',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{fill:{label:'Email',text:'a@b.example'}}]},
-    {id:'T6',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{click:{role:'button',name:'Submit'}}]}]},{limits:{total_ms:120_000,check_ms:15_000,step_ms:1500},isolation:[]});
+    {id:'T6',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{click:{role:'button',name:'Submit'}}]},
+    // No fallback to the only field, to text that is no button, or to a name or id that merely holds the label's word.
+    {id:'ONLY_FIELD',kind:'browser',serve:'serve',steps:[{goto:'/name.html'},{fill:{label:'Email',text:'ada@example.com'}}]},
+    {id:'ONE_UNLABELLED',kind:'browser',serve:'serve',steps:[{goto:'/one.html'},{fill:{label:'Search',text:'kiwi'}}]},
+    {id:'NO_BUTTON',kind:'browser',serve:'serve',steps:[{goto:'/nobutton.html'},{click:{role:'button',name:'Save'}}]},
+    {id:'ATTR_WORDS',kind:'browser',serve:'serve',steps:[{goto:'/attr.html'},{fill:{label:'Name',text:'Ada'}}]},
+    // Exact first: "Delete" over "Delete all", "Name" over "Username"; a unique whole-word part when no exact one exists.
+    {id:'DELETE_ONE',kind:'browser',serve:'serve',steps:[{goto:'/del.html'},{click:{role:'button',name:'Delete'}},{expect_no_text:'eggs'},{expect_text:'milk'}]},
+    {id:'DELETE_ALL_ONLY',kind:'browser',serve:'serve',steps:[{goto:'/delall.html'},{click:{role:'button',name:'delete'}},{expect_no_text:'milk'}]},
+    {id:'NAME_EXACT',kind:'browser',serve:'serve',steps:[{goto:'/user.html'},{fill:{label:'Name',text:'Ada'}},{click:{role:'button',name:'Go'}},{expect_text:'Hi Ada'}]},
+    {id:'ARIA_PART',kind:'browser',serve:'serve',steps:[{goto:'/price.html'},{fill:{label:'Price',text:'10'}},{click:{text:'Calc'}},{expect_text:'Total 10'}]},
+    // Several fields hold the label only in part: the step fails, naming them.
+    {id:'AMBIGUOUS',kind:'browser',serve:'serve',steps:[{goto:'/names.html'},{fill:{label:'Name',text:'Ada'}}]}]},{limits:{total_ms:120_000,check_ms:15_000,step_ms:1500},isolation:[]});
   const c=byId(report);
-  for(const id of ['T1','T2','T3','T4'])assert.equal(c[id].passed,true,`${id}: ${c[id].detail}\n${c[id].output}`);
+  for(const id of ['T1','T2','T3','DELETE_ONE','DELETE_ALL_ONLY','NAME_EXACT','ARIA_PART'])assert.equal(c[id].passed,true,`${id}: ${c[id].detail}\n${c[id].output}`);
+  for(const id of ['T5','T6','ONLY_FIELD','ONE_UNLABELLED','NO_BUTTON','ATTR_WORDS','AMBIGUOUS'])assert.equal(c[id].passed,false,id);
   // A miss names the field it looked for and what the page offers, which a worker may read.
   assert.match(c.T5.detail,/^step 2 \(fill the field labelled "Email" with "a@b\.example"\): no field labelled "Email" on the page; fields found: label "Name" name "a", placeholder "Phone" name "b"; buttons and links found: "Send", "Help"$/);
   assert.equal(c.T5.observed.miss,true);
   assert.deepEqual(c.T5.observed.offers,{fields:[{label:'Name',placeholder:'',name:'a'},{label:'',placeholder:'Phone',name:'b'}],buttons:[{role:'button',text:'Send'},{role:'link',text:'Help'}]});
   assert.match(c.T6.detail,/^step 2 \(click the button "Submit"\): no button "Submit" on the page; fields found: /);
+  assert.match(c.NO_BUTTON.detail,/no button "Save" on the page/);
+  assert.match(c.ATTR_WORDS.detail,/no field labelled "Name" on the page; fields found: name "last-name", name "first-name"/);
+  assert.match(c.AMBIGUOUS.detail,/^step 2 \(fill the field labelled "Name" with "Ada"\): 2 fields match "Name" only in part: label "First name" name "f", label "Last name" name "l"/);
+  assert.deepEqual(c.AMBIGUOUS.observed.ambiguous,['label "First name" name "f"','label "Last name" name "l"']);
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
 

@@ -15,12 +15,15 @@
 // restarted for the next check.
 //
 // v8 live 2: locators are semantic and tolerant. A check names a field by its
-// label as the person reads it ("Task"), and pages name it many ways: a fill
-// tries, in order, the label, the placeholder (contains, any case), the
-// aria-label, the name or id attribute (word match), then the only visible
-// text field. A click's name matches its role's accessible name (contains,
-// any case), then the same name as a link or button, then the text. A check
-// that does not start with goto opens the served "/" first. When nothing
+// label as the person reads it ("Task"), and pages name it many ways (live 2
+// review: strictly). A fill matches a label or aria-label exactly (any case,
+// trimmed), then a placeholder exactly, then a name or id whose words are the
+// label's words, then a label or placeholder holding the label as whole
+// words, only when one field does. A click matches only elements of its role
+// (a button is button, input[type=submit|button|reset] or role=button), or
+// clickable elements for a text: an exact name first, then a unique
+// whole-word part. Several partial matches fail, naming them. A check that
+// does not start with goto opens the served "/" first. When nothing
 // matches, the failure says so (miss) and lists what the page offers: up to 8
 // fields and 8 buttons and links, by their labels, placeholders, names and
 // texts; those are the page's interface, never a check's value.
@@ -76,67 +79,78 @@ class Miss extends Error {}
 // ARIA roles as writers spell them: "list item", "Button", "text-box".
 const ROLE_ALIASES = {listitem: 'listitem', item: 'listitem', li: 'listitem', textbox: 'textbox', input: 'textbox', textfield: 'textbox', field: 'textbox', btn: 'button', checkbox: 'checkbox', hyperlink: 'link', anchor: 'link', header: 'heading', tablerow: 'row', dropdown: 'combobox', select: 'combobox'};
 const roleOf = r => { const k = String(r || '').toLowerCase().replace(/[\s_-]+/g, ''); return ROLE_ALIASES[k] || k; };
-const cssString = s => `"${String(s).replace(/["\\]/g, '\\$&').replace(/\n/g, ' ')}"`;
 // The words of a label or an attribute: "taskInput", "task-input" and "Task input" are task, input.
 const wordsOf = s => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-const TEXT_FIELDS = 'input:not([type]), input[type=text], input[type=search], input[type=email], input[type=url], input[type=tel], input[type=number], input[type=password], input[type=date], textarea';
-// The fields whose name or id holds every word of the label, marked for a locator (the mark is the check's own attribute).
-async function byAttribute(page, label, ms) {
-  const want = wordsOf(label);
-  if (!want.length) return null;
-  try {
-    const n = await within(page.evaluate(({want, mark}) => {
-      const words = s => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-      let n = 0;
-      for (const el of document.querySelectorAll('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) {
-        el.removeAttribute(mark);
-        const have = new Set([...words(el.getAttribute('name')), ...words(el.id)]);
-        if (want.every(w => have.has(w))) { el.setAttribute(mark, ''); n++; }
-      }
-      return n;
-    }, {want, mark: 'data-check-field'}), ms, 'reading the page');
-    return n ? page.locator('[data-check-field]') : null;
-  } catch { return null; }
+// The elements a step may mean, by kind: the fields a fill may fill; the
+// elements of a click's role (a button is a button, input[type=submit] or
+// role=button, never a paragraph); for a click by text, clickable elements only.
+const FIELDS = 'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]):not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable=""], [contenteditable="true"]';
+const ROLE_CSS = {button: 'button, input[type=submit], input[type=button], input[type=reset], [role=button]', link: 'a[href], [role=link]'};
+const CLICKABLE = `${ROLE_CSS.button}, ${ROLE_CSS.link}, [role=menuitem], [role=tab], [role=option], [role=checkbox], [role=radio], [onclick], summary, input[type=checkbox], input[type=radio]`;
+function candidateLocator(page, t, kind) {
+  if (kind === 'field') return t.role && !['textbox', 'searchbox', 'combobox', 'spinbutton'].includes(roleOf(t.role)) ? page.getByRole(roleOf(t.role)) : page.locator(FIELDS);
+  const role = t.role ? roleOf(t.role) : '';
+  if (role) return ROLE_CSS[role] ? page.locator(ROLE_CSS[role]) : page.getByRole(role);
+  return page.locator(t.label ? `${CLICKABLE}, [aria-label], input, select, textarea` : CLICKABLE);
 }
-// The locators a step's target may mean, most specific first.
-async function candidates(page, t = {}, kind, ms) {
-  const out = [];
+// What each candidate is called, read in the page: whether it shows, its
+// labels (a <label>, aria-label, aria-labelledby), placeholder, name, id and text.
+const INFO = els => els.map(el => {
+  const r = el.getBoundingClientRect(), st = getComputedStyle(el), t = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const aria = t(el.getAttribute('aria-label')), by = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean).map(id => t(document.getElementById(id)?.innerText)).filter(Boolean).join(' ');
+  return {shown: r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none',
+    labels: [...[...(el.labels || [])].map(l => t(l.innerText)), aria, by].filter(Boolean), placeholder: t(el.getAttribute('placeholder')),
+    name: t(el.getAttribute('name')), id: t(el.id), text: t(el.innerText || el.value || el.getAttribute('alt') || el.getAttribute('title'))};
+});
+const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const wholeWord = q => { const re = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRe(norm(q))}(?:$|[^\\p{L}\\p{N}])`, 'u'); return s => !!s && re.test(norm(s)); };
+// The tiers a target is matched by, in order: an exact name (any case,
+// trimmed) first; then, for a field, its placeholder exactly and its name or
+// id whose words are the label's words; then a name holding the target as
+// whole words, only when one element does. Several elements with the exact
+// name are one list of the same thing (a Delete button per row): the first.
+function tiersFor(t, kind) {
   if (kind === 'field') {
-    const name = t.label || t.placeholder || t.name || '';
-    if (t.role && t.name) out.push(page.getByRole(roleOf(t.role), {name: t.name}));
-    if (name) {
-      out.push(page.getByLabel(name), page.getByPlaceholder(name), page.locator(`[aria-label*=${cssString(name)} i]`));
-      const attr = await byAttribute(page, name, ms);
-      if (attr) out.push(attr);
-    }
-    out.push({only: page.locator(TEXT_FIELDS)});
-    return out;
+    const q = t.label || t.name || t.placeholder || '', words = wordsOf(q).join(' '), has = wholeWord(q);
+    const exactLabel = {test: x => x.labels.some(l => norm(l) === norm(q))}, exactHolder = {test: x => norm(x.placeholder) === norm(q)};
+    return [...(t.placeholder && !t.label ? [exactHolder, exactLabel] : [exactLabel, exactHolder]),
+      {test: x => [x.id, x.name].some(a => a && wordsOf(a).join(' ') === words), unique: true},
+      {test: x => [...x.labels, x.placeholder].some(has), unique: true}];
   }
-  const role = t.role ? roleOf(t.role) : '', name = t.name || t.text || t.label || '';
-  if (role) out.push(page.getByRole(role, name ? {name} : {}));
-  if (t.label) out.push(page.getByLabel(t.label), page.locator(`[aria-label*=${cssString(t.label)} i]`));
-  if (name) {
-    for (const r of ['button', 'link']) if (r !== role) out.push(page.getByRole(r, {name}));
-    out.push(page.getByText(name));
-  }
-  return out;
+  const q = t.name || t.text || t.label || '', has = wholeWord(q);
+  const names = x => t.label && !t.name && !t.text ? x.labels : [...x.labels, x.text];
+  if (!q) return [{test: () => true}];
+  return [{test: x => names(x).some(n => norm(n) === norm(q))}, {test: x => names(x).some(has), unique: true}];
 }
-// The first visible element a step's target finds, trying each meaning until
-// the step's time runs out; null when none appears.
+function choose(infos, tiers) {
+  for (const tier of tiers) {
+    const hits = infos.map((x, i) => [x, i]).filter(([x]) => x.shown && tier.test(x));
+    if (!hits.length) continue;
+    return tier.unique && hits.length > 1 ? {ambiguous: hits.map(([x]) => x)} : {index: hits[0][1]};
+  }
+  return {};
+}
+const described = x => [x.labels[0] && `label ${quote(x.labels[0])}`, x.placeholder && `placeholder ${quote(x.placeholder)}`, (x.name || x.id) && `name ${quote(x.name || x.id)}`, !x.labels.length && x.text && quote(x.text)].filter(Boolean).join(' ') || 'an unnamed element';
+// The element a step's target means, trying until the step's time runs out;
+// null when none matches; a Miss naming the candidates when several match it
+// only as a part of their names.
 async function resolve(page, t, kind) {
   const end = Date.now() + stepMs;
+  let ambiguous = null;
   for (;;) {
     const left = () => Math.max(50, end - Date.now());
-    for (const c of await candidates(page, t, kind, Math.min(1000, left()))) {
-      try {
-        if (c.only) { const v = visible(c.only); if (await within(v.count(), left(), 'counting') === 1) return v.first(); continue; }
-        const v = visible(c);
-        if (await within(v.count(), left(), 'counting') > 0) return v.first();
-      } catch (e) { if (e instanceof Timeout) break; }
-    }
-    if (Date.now() >= end) return null;
+    try {
+      const loc = candidateLocator(page, t, kind), infos = await within(loc.evaluateAll(INFO), left(), 'reading the page');
+      const r = choose(infos, tiersFor(t, kind));
+      if (r.index !== undefined) return loc.nth(r.index);
+      ambiguous = r.ambiguous || null;
+    } catch (e) { if (e instanceof Timeout) break; }
+    if (Date.now() >= end) break;
     await new Promise(r => setTimeout(r, 150));
   }
+  if (ambiguous) throw Object.assign(new Miss(`${ambiguous.length} ${kind === 'field' ? 'fields' : 'elements'} match ${quote(t.label || t.name || t.text || t.placeholder)} only in part: ${ambiguous.slice(0, 8).map(described).join(', ')}`), {ambiguous: ambiguous.slice(0, 8).map(described)});
+  return null;
 }
 const missText = (kind, t = {}) => kind === 'field'
   ? `no field ${t.label ? `labelled ${quote(t.label)}` : t.placeholder ? `with placeholder ${quote(t.placeholder)}` : `named ${quote(t.name || '')}`} on the page`
@@ -283,7 +297,7 @@ async function runCheck(check) {
       Object.assign(state, {index: i, step});
       try { await within(runStep(page, base, step), stepMs + 1000, `step ${i + 1}`); }
       catch (e) {
-        if (e instanceof Miss) return failure(i, step, e.message, {miss: true, offers: await offersOf(page)});
+        if (e instanceof Miss) return failure(i, step, e.message, {miss: true, ...(e.ambiguous ? {ambiguous: e.ambiguous} : {}), offers: await offersOf(page)});
         const reason = e instanceof Timeout ? `no answer within ${stepMs} ms (the page may be busy)` : String(e?.message || e).split('\n')[0].replace(/^(?:locator|page|keyboard)\.\w+: /, '');
         return failure(i, step, reason);
       }
