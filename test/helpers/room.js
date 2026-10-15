@@ -114,7 +114,7 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
   const builds=[];
-  const exec=executor||{build:async({fingerprint,files})=>{builds.push(files);return verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files});}};
+  const exec=executor||{build:async({fingerprint,files,options})=>{builds.push(files);return verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
   const pending=[],store=new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
   const env={MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec}};
   const room=new ControlRoom(ctx,env);

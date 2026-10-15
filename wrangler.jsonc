@@ -60,6 +60,7 @@
     {
       "class_name": "BuildExecutor",
       "image": "./container/Dockerfile",
+      "instance_type": "standard-1",
       "max_instances": 4
     }
   ]

@@ -1736,21 +1736,22 @@ const TEST_PATH=/(?:^|\/)(?:tests?|__tests__)\/|\.(?:test|spec)\.[cm]?js$/i,PROM
 const relativeRequire=n=>isRequire(n)&&n.arguments[0].value.startsWith('.');
 // The bound form's name: what the call reads (readTickets: tickets), else result.
 const boundName=name=>{const w=String(name).replace(/^[a-z]+(?=[A-Z])/,'');return w&&w!==name?w[0].toLowerCase()+w.slice(1):'result';};
-export function unawaitedCalls(files, names) {
-  const want=new Set(names),out=[];
-  if(!want.size)return out;
-  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
-    if(!LINKABLE.test(path)||TEST_PATH.test(path))continue;
-    let parsed;try{parsed=parseSource(content);}catch{continue;}
+// One file's calls to promised names whose result is used without await
+// ({found, text, parents}), or null when the file is not read (a test, a
+// file that does not parse, dynamic scope). unawaitedCalls words them;
+// awaitFixes rewrites the unambiguous ones.
+function unawaitedHits(path, content, want) {
+    if(!LINKABLE.test(path)||TEST_PATH.test(path))return null;
+    let parsed;try{parsed=parseSource(content);}catch{return null;}
     const {ast,sourceType}=parsed,{bindingOf,dynamic}=scopeOf(ast,sourceType);
-    if(dynamic)continue;
+    if(dynamic)return null;
     // Each binding of a relative import, by scope and name: the promised name it holds, or '*' for a module bound whole.
     const held=new Map(),hold=(name,scope,v)=>{if(!scope)return;if(!held.has(scope))held.set(scope,new Map());held.get(scope).set(name,v);};
     walk(ast,n=>{
       if(n.type==='VariableDeclarator'&&relativeRequire(n.init)){if(n.id.type==='Identifier')hold(n.id.name,bindingOf.get(n.id),'*');else if(n.id.type==='ObjectPattern')for(const p of n.id.properties)if(p.type==='Property'&&!p.computed&&p.value?.type==='Identifier'&&want.has(nameOf(p.key)))hold(p.value.name,bindingOf.get(p.value),nameOf(p.key));}
       else if(n.type==='ImportDeclaration'&&String(n.source?.value).startsWith('.'))for(const sp of n.specifiers){if(sp.type!=='ImportSpecifier')hold(sp.local.name,ast,'*');else if(want.has(nameOf(sp.imported)))hold(sp.local.name,ast,nameOf(sp.imported));}
     });
-    if(!held.size&&!/require\s*\(/.test(content))continue;
+    if(!held.size&&!/require\s*\(/.test(content))return null;
     const of=id=>id?.type==='Identifier'?held.get(bindingOf.get(id))?.get(id.name):undefined;
     const promised=c=>c.type==='Identifier'?(v=>v&&v!=='*'?v:null)(of(c)):
       c.type==='MemberExpression'&&!c.computed&&want.has(nameOf(c.property))&&(of(c.object)==='*'||relativeRequire(c.object))?nameOf(c.property):null;
@@ -1786,6 +1787,15 @@ export function unawaitedCalls(files, names) {
       const form=boundForm(node,name);
       found.push({node,name,form,wrap:!form&&(p.type==='MemberExpression'&&p.object===node||p.type==='CallExpression'&&p.callee===node)});
     });
+    return {found,text,parents,ast,refs,bindingOf};
+}
+export function unawaitedCalls(files, names) {
+  const want=new Set(names),out=[];
+  if(!want.size)return out;
+  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+    const read=unawaitedHits(path,content,want);
+    if(!read)continue;
+    const {found,text}=read;
     const lines=new Map();
     for(const h of found)lines.set(h.node.loc.start.line,[...(lines.get(h.node.loc.start.line)||[]),h]);
     const seen=new Set();let hits=0;
@@ -1809,6 +1819,55 @@ export function unawaitedCalls(files, names) {
       out.push({path,name:hs[0].name,line:ln,text:line,...(move?{move:true}:{})});
     }
   }
+  return out;
+}
+// Speed v1 (review M1): the await rule's mechanical fix, only where it
+// cannot change what any caller sees. await goes in front of a call to a
+// name the caller knows is async (asyncNames: its promise says it returns a
+// promise, or the module that exports it declares it async), whose result is
+// used without await, inside a function that is async already. No function
+// is ever made async: its callers, in this file or another, could read a
+// promise where they read a value (the review's listOpen, Store.list and
+// h.pick). Never: a call whose result is passed to another call (run14b's
+// JSON.parse(await readTickets()) was wrong; the worker hears the bound
+// form), a default parameter's or a yield's call, an optional call, or a
+// call outside an async function. The file must still parse and the rule
+// must no longer find the call. Everything else goes back to the worker.
+// {path: {content, fixed:[{name,line}]}} for the files it changed.
+export function awaitFixes(files, asyncNames) {
+  const want=new Set(asyncNames),out={};
+  if(!want.size)return out;
+  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+    const hits=unawaitedHits(path,content,want);
+    if(!hits||!hits.found.length)continue;
+    const {found,text,parents}=hits,edits=[],fixed=[];
+    const enclosing=n=>{for(let p=parents.get(n);p;p=parents.get(p))if(FUNCTIONS.has(p.type))return p;return null;};
+    for(const h of found) {
+      if(h.move||h.form||text.slice(h.node.start,h.node.end).includes('?.'))continue;
+      const fn=enclosing(h.node);
+      if(!fn?.async||fn.generator)continue;
+      edits.push({at:h.node.start,text:h.wrap?'(await ':'await '});
+      if(h.wrap)edits.push({at:h.node.end,text:')'});
+      fixed.push({name:h.name,line:h.node.loc.start.line});
+    }
+    if(!fixed.length)continue;
+    let next=text;
+    for(const e of edits.sort((a,b)=>b.at-a.at||(a.text===')'?-1:1)))next=next.slice(0,e.at)+e.text+next.slice(e.at);
+    try{parseSource(next);}catch{continue;}
+    const left=unawaitedHits(path,next,want)?.found||[];
+    if(left.some(h=>fixed.some(f=>f.name===h.name&&f.line===h.node.loc.start.line)))continue;
+    out[path]={content:next,fixed};
+  }
+  return out;
+}
+// The names a module exports as async functions (a named export, a default
+// function, a member of the exported object, a class's method), by its surface.
+export function asyncExports(path, content) {
+  let s;try{s=exportSurface(path,content);}catch{return new Set();}
+  const out=new Set(),add=x=>{if(x?.async&&x.name)out.add(String(x.name).replace(/^(?:static |get |set )/,''));};
+  for(const n of s?.named||[]){add(n);for(const m of n.methods||[])add(m);}
+  if(s?.default?.type==='function')add(s.default);
+  for(const m of [...(s?.default?.members||[]),...(s?.default?.methods||[])])add(m);
   return out;
 }
 // v7.15.8 (run15): a promised function whose promise states what it returns

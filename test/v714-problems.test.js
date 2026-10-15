@@ -212,7 +212,7 @@ test('v7.14 (3): a compiler failure is routed down one level at a time, with a d
   assert.deepEqual(relinked,['root.1.1','root.1','root']);
   assert.equal(calls.runner.length,1,'the repaired source ran the same, static test (run4)');
   assert.ok(room.snapshot().events.some(e=>e.kind==='runner_reused'),'the second run reused the first test');
-  assert.equal(builds.length,4,'two load/describe builds and two run builds');
+  assert.equal(builds.length,3,'the first compile: a load/describe build and a run build; the second (speed v1): one build that loads, describes and runs the fixed test');
   assert.deepEqual(room.problems('1=1').map(p=>[p.status,p.outcome]),[['closed','resolved']]);
   assert.ok(repoPath);
 });
