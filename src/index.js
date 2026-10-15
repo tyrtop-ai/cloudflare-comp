@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
@@ -20,7 +21,7 @@ import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgre
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
 import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
-import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
+import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine } from './contracts.js';
@@ -29,6 +30,25 @@ import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
+// The agent whose turn is running, for the span record: every model and Clef
+// call, git phase and Container run inside a turn is charged to its agent.
+const turnContext = new AsyncLocalStorage();
+// What an export streams in pages, beside the snapshot (the rows past the
+// first page were dropped at 20,000 events before).
+export const EXPORT_PAGE = 2000;
+const EXPORT_TABLES = Object.freeze({
+  events: 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events WHERE id>? AND id<=? ORDER BY id LIMIT ?',
+  spans: 'SELECT id,ts,agent,step,kind,name,start_ms,end_ms,attrs FROM spans WHERE id>? AND id<=? ORDER BY id LIMIT ?'
+});
+const spanRow = r => ({...r, ms:r.end_ms-r.start_ms, attrs:parse(r.attrs,{})});
+// A git span's error, without its text: the phase the store names
+// ("Artifacts push failed for <repo>/..."), the error's class and an HTTP
+// status when one appears. Repository names, remotes and URLs stay out.
+export const gitError = e => {
+  const text=String(e?.message||e||''),phase=/^Artifacts (\w+) failed\b/.exec(text)?.[1]||'unknown',status=/\b(?:HTTP(?: Error)?:? ?|status:? ?)([45]\d\d)\b/i.exec(text)?.[1];
+  const name=e?.cause?.code||e?.cause?.name||e?.code||e?.name||'Error';
+  return {error:'git '+phase+' failed',error_phase:phase,error_class:String(name).replace(/[^\w.-]/g,'').slice(0,60),...(status?{http_status:Number(status)}:{})};
+};
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
 const parse = (value, otherwise) => { try { return JSON.parse(value); } catch { return otherwise; } };
 const isAssumption = key => /^assum(?:ed|ption)[_ /:-]/i.test(key);
@@ -293,6 +313,27 @@ function appReadme(app,files) {
     atomic?'- The other files: Root\'s own modules.':'- `components/`: the workers\' modules, each in the directory of the branch that wrote it.',''].join('\n');
 }
 
+// Speed v1: a compile's one exec ran the load and start() checks and then
+// the runner's test (glue/smoke.js). loaded: the report as the static check
+// alone would have given it (every check before the test); smoke: the whole
+// report, the test's verdict, when the test ran. A failure before the test
+// is the static check's own, with no smoke. loaded is null when the runner
+// did not describe start() although nothing failed before the test (a
+// runner that predates describe_api): the caller runs the static check
+// again alone, and the test's verdict, from these same files, still stands.
+export function splitCombinedRun(report) {
+  const checks=Array.isArray(report?.checks)?report.checks:[],at=checks.findIndex(c=>c?.name==='smoke');
+  const before=at<0?checks:checks.slice(0,at),failed=before.some(c=>c&&(c.exit_code!==0||c.timed_out));
+  // Review: a test verdict whose check row an older runner's list cut off still shows in its issue ("smoke failed ...").
+  const smokeIssue=at<0&&!failed&&!report.passed&&(report.issues||[]).some(x=>/^smoke failed\b/.test(String(x?.detail||'')));
+  if(smokeIssue)return before.some(c=>c?.name==='api-surface')?{loaded:{...report,passed:true,infrastructure_issue:'',issues:[],checks:before,log:''},smoke:report}:{loaded:null,smoke:report};
+  if(failed||!report.passed&&at<0)return {loaded:report,smoke:null};
+  const smoke=at<0?null:report;
+  if(!before.some(c=>c?.name==='api-surface'))return {loaded:null,smoke};
+  const log=before.map(x=>`${x.name}: exit ${x.exit_code}\n${x.log||''}`).join('\n').slice(-5000);
+  return {loaded:{...report,passed:true,infrastructure_issue:'',issues:[],checks:before,log},smoke};
+}
+
 export class ControlRoom extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -303,6 +344,8 @@ export class ControlRoom extends DurableObject {
     this.batching = new Set();
     this.pendingWakes = new Map();
     this.turnSteps = new Map();
+    // When each queued agent entered the queue (ready), until it is dispatched.
+    this.queuedAt = new Map();
     const db = ctx.storage.sql;
     db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     // Durable per-agent epochs prevent a concurrent manager turn from erasing a wake.
@@ -317,6 +360,13 @@ export class ControlRoom extends DurableObject {
     if (!cols.includes('interfaces')) db.exec("ALTER TABLE agents ADD COLUMN interfaces TEXT NOT NULL DEFAULT '[]'");
     // v7.15.5: the functions of its siblings a node's split says it calls.
     if (!cols.includes('uses')) db.exec("ALTER TABLE agents ADD COLUMN uses TEXT NOT NULL DEFAULT '[]'");
+    // Speed v1 review: a version per agent row (rev) and one for the alias
+    // table, bumped by triggers on every write, so a dashboard delta selects
+    // only the agents changed since its cursor and knows when the export list
+    // changed. A room whose SQLite refuses the triggers falls back to digests.
+    if (!cols.includes('rev')) db.exec('ALTER TABLE agents ADD COLUMN rev INTEGER NOT NULL DEFAULT 0');
+    db.exec('CREATE TABLE IF NOT EXISTS state_versions (name TEXT PRIMARY KEY, n INTEGER NOT NULL)');
+    db.exec("INSERT OR IGNORE INTO state_versions(name,n) VALUES ('agents',0),('exports',0)");
     db.exec('CREATE TABLE IF NOT EXISTS artifact_files (agent TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL, commit_hash TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(agent,path))');
     // Export index is populated on successful Artifacts writes, not at download time.
     db.exec('CREATE TABLE IF NOT EXISTS artifact_contents (agent TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(agent,path))');
@@ -324,6 +374,16 @@ export class ControlRoom extends DurableObject {
     // Pure routing index. The durable, private export notebook is stored in the
     // manager's Artifacts repo; external agents see only aliased public paths.
     db.exec('CREATE TABLE IF NOT EXISTS exposed_files (owner TEXT NOT NULL, path TEXT NOT NULL, source TEXT NOT NULL, source_path TEXT NOT NULL, PRIMARY KEY(owner,path))');
+    try {
+      const bump="UPDATE state_versions SET n=n+1 WHERE name='agents'; UPDATE agents SET rev=(SELECT n FROM state_versions WHERE name='agents') WHERE id=NEW.id;";
+      db.exec(`CREATE TRIGGER IF NOT EXISTS agents_rev_insert AFTER INSERT ON agents BEGIN ${bump} END`);
+      // Only a write that changes what the dashboard shows (the inner rev write never refires it).
+      const changed=nodeFields.split(',').map(c=>`NEW.${c} IS NOT OLD.${c}`).join(' OR ');
+      db.exec(`CREATE TRIGGER IF NOT EXISTS agents_rev_update2 AFTER UPDATE ON agents WHEN NEW.rev IS OLD.rev AND (${changed}) BEGIN ${bump} END`);
+      db.exec('DROP TRIGGER IF EXISTS agents_rev_update');
+      for(const op of ['INSERT','UPDATE','DELETE'])db.exec(`CREATE TRIGGER IF NOT EXISTS exposed_files_${op.toLowerCase()} AFTER ${op} ON exposed_files BEGIN UPDATE state_versions SET n=n+1 WHERE name='exports'; END`);
+      this.versioned=true;
+    } catch { this.versioned=false; }
     db.exec('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL, recipient TEXT NOT NULL, body TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)');
     db.exec('CREATE TABLE IF NOT EXISTS pending_turns (agent TEXT PRIMARY KEY, payload TEXT NOT NULL, cursor INTEGER NOT NULL DEFAULT 0)');
     // v7.11: the state of each file before this turn staged a new version, so
@@ -339,6 +399,10 @@ export class ControlRoom extends DurableObject {
     // One persisted batch per turn also lets interrupted spawns resume without duplicates.
     db.exec('CREATE TABLE IF NOT EXISTS spawn_batches (batch_key TEXT PRIMARY KEY, parent TEXT NOT NULL, start_index INTEGER NOT NULL, specs TEXT NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, step INTEGER NOT NULL, actor TEXT NOT NULL, kind TEXT NOT NULL, recipient TEXT NOT NULL, body TEXT NOT NULL, path TEXT NOT NULL)');
+    // Timing record: one row per model call, Clef gate, git phase, Container
+    // run and dispatch (kind: model, clef, git, container, dispatch), charged
+    // to the agent whose turn made it. attrs: JSON (role, model, tokens, ...).
+    db.exec("CREATE TABLE IF NOT EXISTS spans (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, agent TEXT NOT NULL, step INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, attrs TEXT NOT NULL DEFAULT '{}')");
     // v7.14: each manager's problem inbox. A row moves one level at a time
     // (holder); a reporter opens and supersedes its rows, a manager moves or
     // closes them by its decisions. Rows are never deleted during a run.
@@ -389,7 +453,34 @@ export class ControlRoom extends DurableObject {
   get(key, otherwise = '') { return query(this.db(), 'SELECT value FROM meta WHERE key=?', key)[0]?.value ?? otherwise; }
   set(key, value) { this.db().exec('INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value)); }
   read(key, otherwise) { return parse(this.get(key), otherwise); }
-  save(key, value) { this.set(key, JSON.stringify(value)); }
+  save(key, value) {
+    // Every path that queues an agent saves the queue: its first sighting is when it became ready.
+    if(key==='queue'&&Array.isArray(value)){const t=Date.now();for(const id of value)if(!this.queuedAt.has(id))this.queuedAt.set(id,t);}
+    this.set(key, JSON.stringify(value));
+  }
+  // The agent a span is charged to: the running turn's (turnContext), else the system.
+  spanAgent() { return turnContext.getStore()?.agent || 'system'; }
+  // One timing record. Never throws: a span must not fail a turn. attrs is
+  // timing metadata only: no repository names, remotes, tokens or prompts.
+  span(kind, name, start, end, attrs = {}, agent = this.spanAgent()) {
+    try {
+      const clean=Object.fromEntries(Object.entries(attrs||{}).filter(([,v])=>v!==undefined));
+      this.db().exec('INSERT INTO spans(ts,agent,step,kind,name,start_ms,end_ms,attrs) VALUES (?,?,?,?,?,?,?,?)',
+        Date.now(), String(agent), this.turnSteps.get(agent) ?? Number(this.get('step','0')), String(kind), String(name).slice(0,80), Math.round(start), Math.round(end), JSON.stringify(clean).slice(0,4000));
+    } catch {}
+  }
+  // Time fn and record it; the span records an error too, then rethrows.
+  async timed(kind, name, fn, attrs = {}) {
+    const start=Date.now();
+    try {const out=await fn();this.span(kind,name,start,Date.now(),typeof attrs==='function'?attrs(out):attrs);return out;}
+    catch(e) {this.span(kind,name,start,Date.now(),{...(typeof attrs==='function'?{}:attrs),...(kind==='git'?gitError(e):{error:clip(e?.message||e,300)})});throw e;}
+  }
+  // A model or Clef call's record (src/model.js traced), as a span.
+  traceCall(r, envRole) {
+    const {kind,name,start_ms,end_ms,...attrs}=r||{};
+    this.span(kind||'model',name||'call',start_ms||Date.now(),end_ms||Date.now(),{...attrs,model_role:envRole});
+  }
+  spans(after=0, limit=1000) { return query(this.db(),'SELECT id,ts,agent,step,kind,name,start_ms,end_ms,attrs FROM spans WHERE id>? ORDER BY id LIMIT ?',after,limit).map(spanRow); }
   event(actor, kind, body = '', recipient = '', path = '') {
     this.db().exec('INSERT INTO events(ts,step,actor,kind,recipient,body,path) VALUES (?,?,?,?,?,?,?)',
       Date.now(), this.turnSteps.get(actor) ?? Number(this.get('step','0')), actor, kind, recipient, clip(body, 2400), path);
@@ -407,7 +498,7 @@ export class ControlRoom extends DurableObject {
   // model and keeps its one model for all three.
   inferenceEnv(role='manager') {
     const cfg=this.settings(),model=role==='worker'?cfg.worker_model:role==='compiler'?cfg.compiler_model:cfg.model;
-    return {...this.env, MODEL_NAME:model||cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold};
+    return {...this.env, MODEL_NAME:model||cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold, TRACE:r=>this.traceCall(r,role)};
   }
   configure(raw) {
     const prior=this.settings(),cfg=normalizeRoomSettings(raw, prior);
@@ -633,23 +724,92 @@ export class ControlRoom extends DurableObject {
   // Only the human-facing observer can inspect the full tree. No model context
   // is constructed from snapshot(), avoiding accidental descendant leakage.
   snapshot() {
+    const cursor=this.stateCursor();
+    return {
+      ...this.stateHead(), card: this.read('card',null),
+      agents: this.versioned?this.agentRows():this.stampAgents(cursor.agents).map(x=>x.row),
+      files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
+      exports: this.exportList(),
+      events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
+      cursor
+    };
+  }
+  // The small part of the dashboard's state, sent whole by snapshot and delta alike.
+  stateHead() {
     return {
       goal: this.get('goal'), status: this.get('status','idle'), busy: this.busy, stopping: this.get('stop_requested')==='1', step: Number(this.get('step','0')),
       build: this.read('last_build_report',null), build_infrastructure: this.get('compile_infrastructure',''),
       active_agents: [...this.activeTurns], max_parallel: this.settings().parallel, settings: this.settings(),
       budget: Number(this.get('budget','0')), queue: this.read('queue', []),
-      agents: this.allNodes().map(n=>({...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])})),
-      files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
-      // Export manifests contain only aliases, never hidden child routing IDs.
-      exports: this.allNodes().flatMap(n=>this.manager(n.id) ?
-        this.visibleManifest(n.id).filter(f=>query(this.db(),'SELECT path FROM exposed_files WHERE owner=? AND path=?',n.id,f.path).length)
-          .map(f=>({agent:n.id,path:f.path})) : []),
-      events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
       problems: this.problems("status!='closed'").slice(0,80).map(p=>({id:p.id,holder:p.holder,kind:p.kind,status:p.status,assignee:p.assignee,
         path:String(p.parties[0]?.path||'').split('/').pop(),detail:clip(p.detail,300),trail:p.trail.map(t=>t.at)})),
       compiler: this.compilerSummary(),
-      // v8 §1.3: the project card and each requirement's last result (S4b fills it), and why a v8 room is held.
-      card: this.read('card',null), requirement_status: this.read('requirement_status',{}), pause: this.read('paused_state',null)
+      // v8 §1.3: the project card's revision (the card itself rides on the snapshot, and on a delta
+      // whose card_rev differs), each requirement's last result (S4b fills it), and why a v8 room is held.
+      card_rev: this.cardRev(), requirement_status: this.read('requirement_status',{}), pause: this.read('paused_state',null)
+    };
+  }
+  cardRev() { return query(this.db(),'SELECT COALESCE(MAX(rev),0) AS rev FROM card_revisions')[0].rev; }
+  // The card for a dashboard whose copy is of revision rev: whole when it changed, else nothing.
+  cardFor(rev) { return String(rev??'')===String(this.cardRev())?{}:{card:this.read('card',null)};
+  }
+  // Export manifests contain only aliases, never hidden child routing IDs.
+  exportList() {
+    return this.allNodes().flatMap(n=>this.manager(n.id) ?
+      this.visibleManifest(n.id).filter(f=>query(this.db(),'SELECT path FROM exposed_files WHERE owner=? AND path=?',n.id,f.path).length)
+        .map(f=>({agent:n.id,path:f.path})) : []);
+  }
+  // Speed v1: where a dashboard's next delta starts. events: the last event
+  // id; agents and files: a clock (ms, monotonic) of this answer; exports: a
+  // signature of the alias table; run: the run it belongs to (a new run, or a
+  // reset, answers whole).
+  stateCursor() {
+    this.stateClock=Math.max(Date.now(),(this.stateClock||0)+1);
+    const version=name=>query(this.db(),'SELECT n FROM state_versions WHERE name=?',name)[0]?.n??0;
+    // exports: the alias table's version (review: count and rowid sum collided when the newest alias was replaced).
+    return {events:query(this.db(),'SELECT COALESCE(MAX(id),0) AS id FROM events')[0].id,agents:this.versioned?version('agents'):this.stateClock,files:Date.now(),
+      exports:this.versioned?`v${version('exports')}`:(x=>`${x.n}:${x.s}`)(query(this.db(),'SELECT COUNT(*) AS n,COALESCE(SUM(rowid),0) AS s FROM exposed_files')[0]),run:this.get('run_nonce','')};
+  }
+  // Each agent's dashboard row, stamped with the clock of the answer that
+  // first saw it as it is now. A Durable Object restart stamps every agent
+  // anew, so every dashboard hears all of them once.
+  // The dashboard's agent rows; since: only those whose rev is newer.
+  agentRows(since=null) {
+    const rows=since===null?this.allNodes():query(this.db(),`SELECT ${nodeFields} FROM agents WHERE rev>? ORDER BY LENGTH(id),id`,since);
+    return rows.map(n=>({...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])}));
+  }
+  stampAgents(at) {
+    this.agentStamps??=new Map();
+    const out=[],seen=new Set();
+    for(const n of this.allNodes()) {
+      const row={...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])},digest=JSON.stringify(row),old=this.agentStamps.get(n.id);
+      seen.add(n.id);
+      if(old?.digest!==digest)this.agentStamps.set(n.id,{digest,at});
+      out.push({row,at:this.agentStamps.get(n.id).at});
+    }
+    for(const id of this.agentStamps.keys())if(!seen.has(id))this.agentStamps.delete(id);
+    return out;
+  }
+  // Speed v1: what changed since a dashboard's cursor (stateCursor): the
+  // events after it, the agents and files changed after it, the export list
+  // only when the alias table changed, and the small state whole. A cursor
+  // from another run, or past the last event, gets the whole snapshot.
+  // run7's dashboard pulled 1.1 MB every 3 s, rebuilt on this isolate.
+  stateDelta({since=0, agents_since=0, files_since=0, exports='', run='', card_rev=''}={}) {
+    const cursor=this.stateCursor(),given=x=>x!==null&&x!==undefined&&String(x)!=='';
+    const whole=String(run)!==cursor.run||!given(since)||!given(agents_since)||!given(files_since)||Number(since)>cursor.events||this.versioned&&Number(agents_since)>cursor.agents;
+    since=Number(since)||0;agents_since=Number(agents_since)||0;files_since=Number(files_since)||0;
+    // Review: every file changed since the cursor, or the whole snapshot when there are too many to send as a delta.
+    const files=whole?[]:query(this.db(),'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files WHERE updated_at>=? ORDER BY agent,path LIMIT 1001',files_since);
+    if(whole||files.length>1000)return {...this.snapshot(),full:true};
+    const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events WHERE id>? ORDER BY id DESC LIMIT 300',since).reverse();
+    return {
+      ...this.stateHead(),...this.cardFor(card_rev),full:false,
+      agents:this.versioned?this.agentRows(agents_since):this.stampAgents(cursor.agents).filter(x=>x.at>agents_since).map(x=>x.row),
+      files,
+      ...(String(exports)!==cursor.exports?{exports:this.exportList()}:{}),
+      events,events_truncated:events.length>=300&&events[0].id>since+1,
+      cursor
     };
   }
   compilerSummary() {
@@ -680,7 +840,29 @@ export class ControlRoom extends DurableObject {
     this.db().exec('INSERT INTO artifact_contents(agent,path,content) VALUES (?,?,?) ON CONFLICT(agent,path) DO UPDATE SET content=excluded.content',owner,path,content);
     return content;
   }
+  // The whole export, every event and span included (no cap). The Worker's
+  // /api/export streams the same document page by page (exportHead and
+  // exportRows), so no single RPC carries a large run's rows.
   async exportSnapshot() {
+    const head=await this.exportHead(),rows={};
+    for(const table of Object.keys(EXPORT_TABLES)) {
+      rows[table]=[];
+      for(let after=0;;) {const page=this.exportRows(table,after,head.cursors[table],EXPORT_PAGE);rows[table].push(...page);if(page.length<EXPORT_PAGE)break;after=page.at(-1).id;}
+    }
+    const {cursors,...rest}=head;
+    return {...rest,...rows};
+  }
+  // One page of an export table's rows, by id, after `after` and up to `upto`
+  // (the last id when the export began: rows a running room adds later are
+  // the next export's).
+  exportRows(table, after=0, upto=0, limit=EXPORT_PAGE) {
+    const sql=EXPORT_TABLES[table];
+    if(!sql)throw new Error('Unknown export table');
+    const rows=query(this.db(),sql,Number(after)||0,Number(upto)||0,Math.max(1,Math.min(EXPORT_PAGE,Number(limit)||EXPORT_PAGE)));
+    return table==='spans'?rows.map(spanRow):rows;
+  }
+  // Everything an export holds but the paged tables, with the last id of each.
+  async exportHead() {
     const snapshot=this.snapshot();
     // Unlike the dashboard's abbreviated /api/state manifest, exports contain
     // every registered file and alias, not just the first 240 source entries.
@@ -692,13 +874,15 @@ export class ControlRoom extends DurableObject {
       try {files.push({...f,content:await this.indexedContent(f.agent,f.path)});}
       catch(e) {files.push({...f,read_error:String(e?.message||e)});}
     }
-    // The dashboard shows the last 300 events; an export keeps the full run
-    // (bounded) so early split and capacity decisions can be diagnosed.
-    const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 20000').reverse();
+    // The dashboard shows the last 300 events; an export keeps the full run,
+    // every event and span, paged (exportRows), so early split and capacity
+    // decisions can be diagnosed.
+    const cursors=Object.fromEntries(Object.keys(EXPORT_TABLES).map(t=>[t,query(this.db(),`SELECT COALESCE(MAX(id),0) AS id FROM ${t}`)[0].id]));
     // Every problem row and ticket, and the per-manager linking and compile state.
     const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
-    return {...snapshot,events,exports,exported_at:new Date().toISOString(),files,
-      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,
+    const {events:_recent,cursor:_cursor,...rest}=snapshot;
+    return {...rest,exports,exported_at:new Date().toISOString(),files,
+      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors,
       card_revisions:query(this.db(),'SELECT rev,goal_rev,card,reason,ts FROM card_revisions ORDER BY rev').map(r=>({...r,card:parse(r.card,null)}))};
   }
   // The goal as the user wrote it, without the requirement the runtime appends.
@@ -745,7 +929,7 @@ export class ControlRoom extends DurableObject {
   async provision(id, parent, label, task, interfaces=[], uses=[]) {
     if (this.node(id)) throw new Error('Agent ID exists');
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
-    const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
+    const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?)',
       id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8:this.v8()})));
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
@@ -983,6 +1167,7 @@ export class ControlRoom extends DurableObject {
     if (!n || n.status === 'retired' || n.status === 'failed') return;
     this.db().exec('INSERT INTO wake_epochs(agent,generation) VALUES (?,1) ON CONFLICT(agent) DO UPDATE SET generation=generation+1',id);
     this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+    this.queuedAt.set(id,Date.now());
     this.save('queue',addFirst(this.read('queue',[]),id));
     if(this.manager(id)) {
       const shard=this.managerStub(id);
@@ -1210,6 +1395,8 @@ export class ControlRoom extends DurableObject {
   async scheduleAssembly(id) {
     if(this.env.MOCK_AI==='true')return this.legacyScheduleAssembly(id);
     if(!this.children(id).some(c=>!isRuntimeNode(c)) || !this.subtreeQuiescent(id))return null;
+    // The top's builder links next and the compiler runs right after it.
+    if(!this.node(id)?.parent)this.prewarmContainer();
     const fingerprint=this.assemblyFingerprint(id);
     let builder=this.builderOf(id);
     if(!builder) {
@@ -1744,7 +1931,28 @@ export class ControlRoom extends DurableObject {
     for(const s of sources)files.set(s.destination,this.files(builderId).some(f=>f.path===s.destination)?await this.indexedContent(builderId,s.destination):s.content);
     return files;
   }
-  async containerRun(nodeId, label, files) {
+  // The run's build executor (one Container per run).
+  buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
+  // Speed v1: start the run's Container just before a compile the room has
+  // asked for next (the top builder links, or an atomic Root writes its code),
+  // so the compile does not pay its cold start. The executor stops it again
+  // if no build follows within its grace (review M3). Not while the run stops,
+  // and at most once a minute. Fire and forget; an executor without warm (an
+  // older one, a test's) is left alone.
+  prewarmContainer() {
+    if(!this.live()||!this.env.BUILD_EXECUTORS||this.get('stop_requested')==='1')return;
+    const now=Date.now();
+    if(this.prewarmedAt&&now-this.prewarmedAt<60_000)return;
+    let stub;try{stub=this.buildExecutor();}catch{return;}
+    if(typeof stub?.warm!=='function')return;
+    this.prewarmedAt=now;
+    const warming=this.timed('container','warm',()=>stub.warm(),r=>({cold:!!r?.cold})).catch(()=>{this.prewarmedAt=0;});
+    if(this.ctx.waitUntil)this.ctx.waitUntil(warming);
+  }
+  // options (speed v1, container/build-runner.mjs buildOptions): describe_api
+  // describes start() beside a runner test in the same exec; prechecked skips
+  // the checks a run of the same files passed moments ago.
+  async containerRun(nodeId, label, files, options = {}) {
     if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot build or run the application.'};
     const key=await sha256(label);
     let report,snapshot,digest;
@@ -1758,9 +1966,12 @@ export class ControlRoom extends DurableObject {
         return {report:{passed:false,infrastructure_issue:'',issues:[{path:error.path,kind:'source',detail:`${error.message}: the build cannot carry this file. Write it under a path of letters, digits, '_', '-' and '.', with no name that starts with '.', and keep each file small.`}],log:'',artifacts:[],preview:'',checks:[],api_surface:''},digest:''};
       }
       digest=await snapshotHash(snapshot);
-      const room=this.get('room_id','test-room');
-      const stub=this.env.BUILD_EXECUTORS.getByName(`${room}:${this.get('run_nonce','legacy')}:build`);
-      report=normalizeBuildResult(await stub.build({fingerprint:key,files:Object.fromEntries(snapshot)}),key,digest);
+      const stub=this.buildExecutor();
+      const start=Date.now(),kind=String(label).split(':')[0];
+      try {report=normalizeBuildResult(await stub.build({fingerprint:key,files:Object.fromEntries(snapshot),...(Object.keys(options).length?{options}:{})}),key,digest);}
+      catch(e) {this.span('container',kind,start,Date.now(),{node:nodeId,files:snapshot.size,error:clip(e?.message||e,300)});throw e;}
+      this.span('container',kind,start,Date.now(),{node:nodeId,files:snapshot.size,passed:report.passed,...options,...(report.executor||{}),
+        checks:report.checks.map(c=>({name:c.name,exit_code:c.exit_code,...(Number.isFinite(c.ms)?{ms:c.ms}:{})}))});
     } catch(error) {return {infrastructure:String(error?.message||error),digest};}
     this.save('last_build_report',report);
     if(report.infrastructure_issue)return {infrastructure:report.infrastructure_issue,digest,report};
@@ -1815,7 +2026,11 @@ export class ControlRoom extends DurableObject {
   // starts; operations: the coverage gate's mapping the test must exercise;
   // reach: the modules the entry reaches (null: any may run); methods:
   // start()'s method names (startMethods).
-  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, reach=null, methods=null}) {
+  // ran (speed v1): the runner's test this compile's one Container exec
+  // already ran beside the load and start() checks ({test, report, digest});
+  // when the test chosen here is that test, its result is used and no second
+  // exec runs.
+  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, reach=null, methods=null, ran=null}) {
     // The runner's test is static: the first test that runs in the Container is
     // the specification for the rest of the run and is never rewritten. A new
     // test every repair round moved the target the worker was fixing (run4).
@@ -1855,7 +2070,8 @@ export class ControlRoom extends DurableObject {
       this.event(nodeId,'runner_rejected',clip(correction,800)+(typeof out?.head==='string'?` The runner returned: ${JSON.stringify(out.head)}`:''));
     }
     if(!test)return {passed:false,runnerFailed:true,detail:correction};
-    const run=await this.containerRun(nodeId,`run:${input}`,new Map([...files,['glue/smoke.js',test]]));
+    // A new test runs in a second exec, which checks only what is new (prechecked: the test's syntax, then the test).
+    const run=ran?.test===test?{report:ran.report,digest:ran.digest}:await this.containerRun(nodeId,`run:${input}`,new Map([...files,['glue/smoke.js',test]]),{prechecked:true});
     if(run.infrastructure)return {infrastructure:run.infrastructure};
     if(!fixed)this.save('runner_test',{api,test,operations,methods});
     if(!fixed&&methods)this.save('runner_tests',{...this.read('runner_tests',{}),[methods.join()]:{api,test,operations,methods}});
@@ -2598,8 +2814,26 @@ export class ControlRoom extends DurableObject {
           facts:{...own,...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure}};
       });
     };
-    const check=await this.containerRun(id,`compile:${input}`,app);
+    // Speed v1: one Container exec per compile. With a runner's test already
+    // written (every compile after the first), the exec loads the bundle,
+    // describes start() and runs that test, in that order; the load and
+    // start() result is read as the static check was, and the test's result
+    // is used when the gates below keep that test (runApplication's ran).
+    // Only a new test (the first compile, or start()'s methods changed) needs
+    // a second exec. A runner that ignores describe_api (an image older than
+    // the Worker) answers without the API, so the static check runs alone.
+    const saved=this.read('runner_test',null)?.test||null;
+    let check=await this.containerRun(id,`compile:${input}`,saved?new Map([...app,['glue/smoke.js',saved]]):app,{describe_api:true}),ran=null;
     if(check.infrastructure)return {infrastructure:check.infrastructure};
+    if(saved) {
+      const split=splitCombinedRun(check.report);
+      if(split.smoke)ran={test:saved,report:split.smoke,digest:check.digest};
+      if(split.loaded)check={...check,report:split.loaded};
+      else {
+        check=await this.containerRun(id,`compile:${input}`,app,{describe_api:true});
+        if(check.infrastructure)return {infrastructure:check.infrastructure};
+      }
+    }
     if(!check.report.passed) {
       const detail=check.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||check.report.log.slice(-900);
       this.event(id,'build_failed',`The ${linked?'linked bundle':'application'} failed to load or start: ${clip(detail,1000)}`);
@@ -2708,7 +2942,7 @@ export class ControlRoom extends DurableObject {
       } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
         (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
-    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,reach,methods:methodSet});
+    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,reach,methods:methodSet,ran});
     return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues,outcome.test,m=>Array.isArray(described?.members?.[m]?.params)?described.members[m].params:null)};
   }
 
@@ -3871,8 +4105,13 @@ export class ControlRoom extends DurableObject {
   async managerRouteOwner(id, question, candidates, strict=false, keywords=true, ranked=false) {
     const shard=this.managerStub(id);
     if(!shard)return routeOwner(this.inferenceEnv(),question,candidates,{strict,keywords,ranked});
-    const cfg=this.settings();
-    return shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold});
+    const cfg=this.settings(),start=Date.now();
+    const got=await shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold,traced:true});
+    // A shard that predates traced answers the owner itself.
+    if(!got||typeof got!=='object'||!('spans' in got)||!('owner' in got))return got;
+    for(const r of Array.isArray(got.spans)?got.spans:[])this.traceCall({...r,via:'shard'},'manager');
+    this.span('shard','selectOwner',start,Date.now(),{manager:id,candidates:candidates.length,clef_calls:(got.spans||[]).length});
+    return got.owner;
   }
   // v7.15: one admission for every split, first or late, before any child
   // exists. Names first and deterministic: C0 reads what a task says it
@@ -4217,7 +4456,8 @@ export class ControlRoom extends DurableObject {
     let commit='pending';
     if(!batched) {
       // Outside a turn the Artifacts push must succeed before the coordinator claims a file.
-      commit=(await this.store().write({ name:n.repo_name, remote:n.remote, actor:id, path, content })).commit;
+      const pushed=await this.timed('git','commit',()=>this.store().write({ name:n.repo_name, remote:n.remote, actor:id, path, content }),r=>({files:1,bytes:String(content).length,batched:false,...(r?.timings?{phases:r.timings}:{})}));
+      commit=pushed.commit;
     }
     if(batched && !query(db,'SELECT path FROM staged_writes WHERE agent=? AND path=?',id,path).length) {
       const prior=existing?query(db,'SELECT f.revision AS revision,f.commit_hash AS commit_hash,f.updated_at AS updated_at,c.content AS content FROM artifact_files f LEFT JOIN artifact_contents c ON c.agent=f.agent AND c.path=f.path WHERE f.agent=? AND f.path=?',id,path)[0]:null;
@@ -4259,13 +4499,15 @@ export class ControlRoom extends DurableObject {
       if(pending.length) {
         // The store asks Artifacts whether main has history: a repair turn may
         // rewrite every file, so no SQLite row proves the repo is non-empty.
-        const store=this.store();
-        let commit;
-        if(typeof store.writeMany==='function')
-          commit=(await store.writeMany({name:n.repo_name,remote:n.remote,files:pending,actor:id})).commit;
-        else for(const f of pending)
-          commit=(await store.write({name:n.repo_name,remote:n.remote,actor:id,path:f.path,content:f.content})).commit;
-        db.exec("UPDATE artifact_files SET commit_hash=? WHERE agent=? AND commit_hash='pending'",commit,id);
+        const store=this.store(),start=Date.now(),bytes=pending.reduce((t,f)=>t+String(f.content).length,0);
+        let commit,timings=null;
+        try {
+          if(typeof store.writeMany==='function'){const r=await store.writeMany({name:n.repo_name,remote:n.remote,files:pending,actor:id});commit=r.commit;timings=r.timings||null;}
+          else for(const f of pending)
+            commit=(await store.write({name:n.repo_name,remote:n.remote,actor:id,path:f.path,content:f.content})).commit;
+        } catch(e) {this.span('git','commit',start,Date.now(),{agent:id,files:pending.length,bytes,...gitError(e)});throw e;}
+        this.span('git','commit',start,Date.now(),{agent:id,files:pending.length,bytes,...(timings?{phases:timings}:{})});
+        db.exec("UPDATE artifact_files SET commit_hash=?,updated_at=? WHERE agent=? AND commit_hash='pending'",commit,Date.now(),id);
         db.exec('DELETE FROM staged_writes WHERE agent=?',id);
         this.event(id,'commit',`Pushed ${pending.length} file(s) in one commit ${String(commit).slice(0,12)}: ${clip(pending.map(f=>f.path).join(', '),600)}`);
       }
@@ -4278,7 +4520,7 @@ export class ControlRoom extends DurableObject {
     const db=this.db();
     for(const row of query(db,'SELECT path,existed,prior_revision,prior_commit,prior_updated,prior_content FROM staged_writes WHERE agent=?',id)) {
       if(row.existed) {
-        db.exec('UPDATE artifact_files SET revision=?,commit_hash=?,updated_at=? WHERE agent=? AND path=?',row.prior_revision,row.prior_commit,row.prior_updated,id,row.path);
+        db.exec('UPDATE artifact_files SET revision=?,commit_hash=?,updated_at=? WHERE agent=? AND path=?',row.prior_revision,row.prior_commit,Date.now(),id,row.path);
         if(row.prior_content!==null)db.exec('UPDATE artifact_contents SET content=? WHERE agent=? AND path=?',row.prior_content,id,row.path);
       } else {
         db.exec('DELETE FROM artifact_files WHERE agent=? AND path=?',id,row.path);
@@ -4370,6 +4612,75 @@ export class ControlRoom extends DurableObject {
     this.event(owner, 'retire', `Stopped ${child.label} (${childId}); repository retained.`, childId);
     return true;
   }
+  // Speed v1: the contract check before the commit. A worker's done used to
+  // be committed, refused by contractReturned and sent back as a whole new
+  // turn (19% of run C's turn-seconds; 87 returns for the await rule alone).
+  // Here, on the staged files and before any push: first the await rule's
+  // mechanical fix (awaitFixes: an await inside an async function, before a
+  // call known to be async (knownAsync); never a function made async; each
+  // fix is an event), then, if anything is still found, one targeted correction of
+  // each file the findings name, in this turn, with the send-back text the
+  // worker would have read. Whatever is still found then is committed and
+  // returned by contractReturned after the commit, as before; its bound of 3
+  // returns is untouched. A finding the plan's walk words (an empty start()
+  // operation), or one no single file answers, is left to that path.
+  // Review M1: a promised function the await fix may await: its promise says
+  // it returns a promise, or a module of a piece that promises it declares it
+  // async. A function whose calls may be synchronous is never awaited by the
+  // runtime: the worker hears the rule instead.
+  knownAsync(name, f) {
+    if(/\b(?:promise|thenable)\b/i.test(String(f?.returns||'')))return true;
+    const top=this.allNodes().find(n=>!n.parent);
+    for(const c of top?this.carriersOf(name,top.id):[])
+      for(const file of productionFiles(this.files(c.id)).filter(x=>LINKABLE.test(x.path))) {
+        const content=query(this.db(),'SELECT content FROM artifact_contents WHERE agent=? AND path=?',c.id,file.path)[0]?.content;
+        if(content!=null&&asyncExports(file.path,content).has(name))return true;
+      }
+    return false;
+  }
+  async precommitContract(id, inbox=[]) {
+    const n=this.node(id);
+    if(!this.live()||!n||this.manager(id)||isRuntimeNode(n))return;
+    if(this.planned()&&query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',id).length)return;
+    // The await rule's unambiguous findings, fixed in place; the check again after.
+    const autofix=async checked=>{
+      const awaited=[...new Set(checked.found.filter(x=>x.rule==='await').map(x=>x.name))].filter(name=>this.knownAsync(name,checked.fns.get(name)));
+      if(!awaited.length)return checked;
+      const fixes=awaitFixes(new Map([...checked.files].filter(([p])=>checked.found.some(x=>x.rule==='await'&&x.path===p))),awaited),made=[];
+      for(const [path,r] of Object.entries(fixes)) {
+        if(fileGateError(path,r.content,{packages:this.settings().packages}))continue;
+        await this.putFile(id,path,r.content);
+        made.push(`${path.split('/').pop()}: await ${r.fixed.map(f=>`${f.name}() (line ${f.line})`).join(', ')}`);
+      }
+      if(!made.length)return checked;
+      this.event(id,'contract_autofix',clip(`Inserted await before the commit, mechanically: ${made.join('; ')}.`,900));
+      return await this.contractFindings(id);
+    };
+    let checked=await this.contractFindings(id);
+    if(!checked?.found.length)return;
+    checked=await autofix(checked);
+    if(!checked?.found.length)return;
+    if((Number(this.get(`contract_returns:${id}`,'0'))||0)>=3||checked.found.some(x=>x.text===null))return;
+    const modules=[...checked.files.keys()],target=x=>x.path||(modules.length===1?modules[0]:'');
+    if(checked.found.some(x=>!target(x)||!checked.files.has(target(x))))return;
+    const paths=[...new Set(checked.found.map(target))],rules=[...new Set(checked.found.map(x=>x.rule))],body=contractBody(checked.promised,checked.found);
+    this.event(id,'contract_precheck',clip(`Done checked before the commit: rules [${rules.join(', ')}]; ${paths.map(p=>p.split('/').pop()).join(', ')} corrected in this turn, before any push. ${checked.found.map(x=>x.how).filter(Boolean).join(' ')}`.trim(),900));
+    const current=this.node(id);
+    for(const path of paths) {
+      let content;
+      try {
+        content=await generateFile(this.inferenceEnv('worker'),{node:current,path,intent:`Correct ${path} so that your files meet your contract`,task:this.withContract(current.task,current),
+          answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
+          children:this.children(id),assemblyInputs:[],correction:clip(body,1800)});
+      } catch(e) {this.event(id,'contract_precheck_failed',clip(`The correction of ${path} failed (${e?.message||e}); the check after the commit decides.`,600));return;}
+      if(fileGateError(path,content,{packages:this.settings().packages})) {
+        this.event(id,'contract_precheck_failed',clip(`The correction of ${path} was not source that parses; the check after the commit decides.`,600));return;
+      }
+      await this.putFile(id,path,content);
+    }
+    const after=await this.contractFindings(id),left=(after?.found.length?(await autofix(after))?.found:after?.found)||[];
+    this.event(id,'contract_prechecked',left.length?clip(`Still found after the correction: rules [${[...new Set(left.map(x=>x.rule))].join(', ')}]; committed, and the check after the commit returns it.`,600):'The correction meets the contract; committed once.');
+  }
   // v7.15: a worker that reports done without exporting what its parent's
   // split promised for it is sent back, at most 3 times by its own counter
   // (failures resets after every turn). run6's create worker exported
@@ -4378,13 +4689,16 @@ export class ControlRoom extends DurableObject {
   // runs since found), one send-back text, one bound, one event; after the
   // bound, one contract_unmet, and the contract problem for what is still
   // missing or written here.
-  async contractReturned(id) {
+  // The contract check as a worker's files stand now (staged ones too): what
+  // contractReturned decides on, with no effect of its own; null when the
+  // room checks no contract for this worker.
+  async contractFindings(id) {
     // The top reads start without ASK_CLAUSE, as in its task (withContract):
     // an atomic Root has no manager to ask (v7.15.2 review).
-    const top=!this.node(id)?.parent,promised=this.promisedOf(id).map(f=>top?{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')}:f),key=`contract_returns:${id}`,returns=Number(this.get(key,'0'))||0;
+    const top=!this.node(id)?.parent,promised=this.promisedOf(id).map(f=>top?{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')}:f);
     // v7.15.4: in a room with promises every worker is read for functions
     // other pieces promise, its own promise or none (run11).
-    if(!promised.length&&!this.planned())return false;
+    if(!promised.length&&!this.planned())return null;
     const files=new Map();
     for(const f of productionFiles(this.files(id)))if(LINKABLE.test(f.path))files.set(f.path,await this.indexedContent(id,f.path));
     // The plan as this worker reads it: the functions other pieces promise
@@ -4408,6 +4722,13 @@ export class ControlRoom extends DurableObject {
     // v7.15.7 review: the await rule is gated on the room (shaped): where any promise of the plan states what it returns, every promised name a worker calls is read for await, one R5 grows or the splitter left without returns too; a room where none states it (v7.15.5's and v7.15.6's replays) is read as before.
     const found=[...byKind,...contractCheck(files,{promise:checked,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,shaped:this.shaped(),
       performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null})];
+    // The functions of other pieces this worker's rules read, by name (what each promise states).
+    return {promised,files,found,esm,fns:new Map([...elsewhere,...uses.map(f=>[f.name,f])])};
+  }
+  async contractReturned(id) {
+    const key=`contract_returns:${id}`,returns=Number(this.get(key,'0'))||0,checked=await this.contractFindings(id);
+    if(!checked)return false;
+    const {promised,files,found,esm}=checked;
     // Review (p1): a foreign function in a stub the builder leaves out of the bundle (dropped) is no gap of the application: no contract problem for it.
     const gap=found.filter(x=>x.rule==='missing'||x.rule==='foreign'&&!x.dropped),dropped=[...new Set(found.filter(x=>x.dropped).map(x=>x.path))],base=p=>String(p||'').split('/').pop(),list=listed;
     // A contract problem is about a missing export or a function written here: closed once neither remains, whatever else.
@@ -5915,7 +6236,9 @@ export class ControlRoom extends DurableObject {
       }
     ];
     const firstWrite=before.length;
-    const operations=[...before,...writes,async () => {
+    // Speed v1: a worker's done is checked against its contract before the commit (precommitContract).
+    const precheck=action.done&&!action.spawn.length&&!this.manager(id)&&!isRuntimeNode(n)&&this.live()?[async () => {await this.precommitContract(id,inbox);}]:[];
+    const operations=[...before,...writes,...precheck,async () => {
       try {await this.flushWrites(id);}
       catch(e) {
         this.rollbackStaged(id);
@@ -6019,6 +6342,9 @@ export class ControlRoom extends DurableObject {
       else if (!picked.includes(id) && !remaining.includes(id)) remaining.push(id);
     }
     this.save('queue',remaining);
+    // Ready (queued) until dispatched: the wait for a free slot, per agent.
+    const now=Date.now(),active=this.activeTurns.size;
+    for(const id of picked){const at=this.queuedAt.get(id)??now;this.queuedAt.delete(id);this.span('dispatch','ready_to_dispatch',at,now,{active,parallel:this.settings().parallel},id);}
     return picked;
   }
   // An agent can finish its files and mistakenly wait for a message nobody
@@ -6064,7 +6390,11 @@ export class ControlRoom extends DurableObject {
     }
     return false;
   }
-  async runSelectedTurn(id, step) {
+  runSelectedTurn(id, step) { return turnContext.run({agent:id,step},()=>this.runTurnTimed(id,step)); }
+  async runTurnTimed(id, step) {
+    // Review (atomic Root): a top that writes the code itself compiles right after a done.
+    const top=this.node(id);
+    if(top&&!top.parent&&top.phase==='implement'&&!this.manager(id))this.prewarmContainer();
     this.activeTurns.add(id);
     const observedWake=this.wakeGeneration(id);
     this.turnSteps.set(id,step);
@@ -6146,7 +6476,8 @@ export class ControlRoom extends DurableObject {
     // Refuse bad settings before the room is wiped: a refused Start must leave
     // the previous run intact (verification probe: parallel 999 erased it).
     try { normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS); } catch(e) { return {error:clip(e?.message||e,300)}; }
-    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','card_revisions','meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','problems','repair_tickets','card_revisions','meta']) this.db().exec(`DELETE FROM ${table}`);
+    this.queuedAt.clear();
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
     this.set('schema',ROOM_SCHEMA);
@@ -6282,9 +6613,43 @@ export class ControlRoom extends DurableObject {
   }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
-    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','card_revisions','meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','problems','repair_tickets','card_revisions','meta']) this.db().exec(`DELETE FROM ${name}`);
+    this.queuedAt.clear();
     return this.snapshot();
   }
+}
+
+// /api/export as one JSON document, streamed: the snapshot head, then the
+// events and spans a page (EXPORT_PAGE rows, one RPC) at a time up to the
+// last id when the export began. The head is fetched first, so its errors
+// are an ordinary JSON error response.
+export async function exportResponse(stub) {
+  const head=await stub.exportHead(),{cursors={},...rest}=head||{};
+  const encoder=new TextEncoder(),text=JSON.stringify(rest);
+  const tables=Object.keys(EXPORT_TABLES);
+  async function* parts() {
+    yield text.slice(0,-1)+(text.length>2?',':'');
+    for(const [i,table] of tables.entries()) {
+      yield `${i?',':''}${JSON.stringify(table)}:[`;
+      for(let after=0,first=true;;) {
+        const page=await stub.exportRows(table,after,cursors[table]||0,EXPORT_PAGE);
+        if(page.length){yield (first?'':',')+page.map(r=>JSON.stringify(r)).join(',');first=false;}
+        if(page.length<EXPORT_PAGE)break;
+        after=page.at(-1).id;
+      }
+      yield ']';
+    }
+    yield '}';
+  }
+  // pull: one page is read only when the client has taken the last one.
+  const source=parts();
+  const stream=new ReadableStream({
+    async pull(controller) {
+      try {const {value,done}=await source.next();if(done)controller.close();else controller.enqueue(encoder.encode(value));}
+      catch(e) {controller.error(e);}
+    }
+  });
+  return new Response(stream,{headers:{'content-type':'application/json','cache-control':'no-store'}});
 }
 
 export default {
@@ -6299,7 +6664,12 @@ export default {
     const stub=env.ROOMS.getByName(room);
     try {
       if (url.pathname==='/api/state' && request.method==='GET') return json(await stub.snapshot());
-      if (url.pathname==='/api/export' && request.method==='GET') return json(await stub.exportSnapshot());
+      // Speed v1: what changed since the dashboard's cursor; the full snapshot stays /api/state (and /api/export).
+      if (url.pathname==='/api/delta' && request.method==='GET') {
+        const q=url.searchParams;
+        return json(await stub.stateDelta({since:q.get('since'),agents_since:q.get('agents_since'),files_since:q.get('files_since'),exports:q.get('exports')||'',run:q.get('run')||'',card_rev:q.get('card_rev')??''}));
+      }
+      if (url.pathname==='/api/export' && request.method==='GET') return exportResponse(stub);
       if (url.pathname==='/api/file' && request.method==='GET') return json(await stub.fileContent(url.searchParams.get('agent'),url.searchParams.get('path')));
       if (url.pathname==='/api/run' && request.method==='POST') {
         const goal=String(payload.goal||'').trim();

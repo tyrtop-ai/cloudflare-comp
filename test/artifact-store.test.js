@@ -23,7 +23,11 @@ test('empty Artifacts repo: the store inits and never clones',async()=>{
   for(const refs of [[],[{ref:'refs/heads/main-old',oid:'b'.repeat(40)}]]) {
     const git=fakeGit(refs);
     const store=new CloudflareArtifactStore(binding(),{git,http:{}});
-    assert.deepEqual(await store.writeMany({name:'repo',remote:REMOTE,files,actor:'root.3'}),{commit:'c'.repeat(40),remote:REMOTE});
+    const {timings,...written}=await store.writeMany({name:'repo',remote:REMOTE,files,actor:'root.3'});
+    assert.deepEqual(written,{commit:'c'.repeat(40),remote:REMOTE});
+    // Each phase's duration rides along for the room's span record.
+    assert.deepEqual(Object.keys(timings).sort(),['commit','init','push','refs','token']);
+    assert.ok(Object.values(timings).every(ms=>Number.isInteger(ms)&&ms>=0));
     assert.deepEqual(git.names(),['getRemoteInfo2','init','add','add','commit','push']);
     const ask=git.arg('getRemoteInfo2');
     assert.equal(ask.url,REMOTE);assert.equal(ask.forPush,true);assert.equal(ask.protocolVersion,1);

@@ -73,6 +73,8 @@ npx wrangler containers list
 
 Always deploy with `wrangler deploy` (`npm run deploy`). `wrangler versions upload` does not deploy Container changes.
 
+**Container size and cost.** `wrangler.jsonc` runs the build Container as `instance_type: "standard-1"` (1/2 vCPU, 4 GiB, 8 GB disk) instead of the default `lite` (1/16 vCPU, 256 MiB, 2 GB). This makes each compile's checks several times faster. Memory and disk are billed on the provisioned size for as long as an instance runs, which comes to about $0.038 per running hour against about $0.0024 for `lite`. CPU is billed only on active use. The 25 GiB-hours a month included in the plan cover about 6 instance-hours of `standard-1`, against about 100 of `lite`. With all 4 instances running, the cost is about $0.15 an hour. An instance sleeps after 120 s idle, and a pre-warmed one that gets no compile within 60 s is stopped. To go back to the default, delete the `instance_type` line, or set `"basic"` (1/4 vCPU, 1 GiB) as a middle option, then run `npm run deploy`.
+
 ### Optional: your own domain
 
 To serve the Worker on a hostname of a domain whose DNS is on Cloudflare in the same account, deploy with `--domain`. Wrangler creates the DNS record and certificate (remove any existing A or CNAME record for that hostname first):

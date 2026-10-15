@@ -334,7 +334,7 @@ test('v7.15.2 review: an atomic top\'s write to the runner\'s test is refused an
   assert.equal(await room.indexedContent('root','glue/smoke.js'),room.read('runner_test',null).test,'the runner\'s test is the runner\'s');
   assert.equal(room.files('root').find(f=>f.path==='glue/smoke.js').revision,1,'never rewritten');
   // Its files did not change, so the problem went back with no run, saying so, beside the reason.
-  assert.equal(builds.length,4,'two runs of two Container builds each; the unchanged report ran nothing');
+  assert.equal(builds.length,3,'two runs: the first of two Container builds (the test is written between them), the second of one (speed v1: the fixed test runs in the same exec); the unchanged report ran nothing');
   assert.equal(events(room,'compile_unchanged').length,1);
   const third=calls.leaf[2];
   assert.match(third.last_turn_notes.join(' '),/^glue\/smoke\.js, package\.json were not written: glue\/index\.js \(the loader\), package\.json and glue\/smoke\.js \(the runner's test, fixed for the whole run\) are the runtime's/);
