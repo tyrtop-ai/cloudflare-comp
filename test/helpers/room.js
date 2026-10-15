@@ -78,6 +78,8 @@ const { start } = require('./index.js');
 `;
 
 // ------------------------------------------------------------------ rooms
+// v8 S4b: a card verification (mode 'card') runs the real verifyCard.
+export const {verifyCard}=await import('../../container/build-runner.mjs');
 // A live room with a scripted linker, runner and coverage check. Any other
 // model request fails the request (and so the turn, or, for a manager's
 // model, the decision: its defaults apply). leaf(user, n) answers a
@@ -130,7 +132,10 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
   const builds=[];
-  const exec=executor||{build:async({fingerprint,files,options})=>{builds.push(files);return verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
+  // v8 S4b: a card verification (mode 'card') runs the real verifyCard, with
+  // the network kept (isolation []: the tests' sandbox may refuse namespaces).
+  const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits})=>{builds.push(files);
+    return mode==='card'?verifyCard({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
   const pending=[],store=new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
   const env={MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec}};
   const room=new ControlRoom(ctx,env);

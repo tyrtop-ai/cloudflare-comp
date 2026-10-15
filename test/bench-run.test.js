@@ -11,10 +11,11 @@ const ROW = i => ({id: `t${i}`, prompt: `Write a function f${i}(n) that returns 
 const DATA = n => Array.from({length: n}, (_, i) => JSON.stringify(ROW(i))).join('\n');
 const ID = 'abcdef012345';
 
-// A fake task room: start/stop/benchSummary, its state set by the test.
+// A fake task room: start/stop/benchSummary/purge, its state set by the test.
+// gate: a promise start() waits on (a slow start, for the Stop race).
 function fakeRooms() {
-  const rooms = new Map(), log = [];
-  let live = 0, peak = 0;
+  const rooms = new Map(), log = [], executors = new Map();
+  let live = 0, peak = 0, gate = null;
   const room = name => {
     if (!rooms.has(name)) rooms.set(name, {name, state: null, started: null, stopped: 0});
     return rooms.get(name);
@@ -23,28 +24,34 @@ function fakeRooms() {
     getByName: name => {
       const r = room(name);
       return {
-        start: async (goal, budget, settings, roomId, card) => {
+        start: async (goal, budget, settings, roomId, card, opts) => {
+          if (gate) await gate;
           if (r.refuse) return {error: r.refuse};
-          r.started = {goal, budget, settings, roomId, card};
+          r.started = {goal, budget, settings, roomId, card, opts};
+          executors.set(name, opts?.executor);
           r.state = {status: 'running', busy: true, requirements: card.requirements.map(x => x.id), requirement_status: {}, started_at: 1000, last_event_at: 1000, tokens: {calls: 0, prompt: 0, completion: 0, total: 0}, container_ms: 0};
           live++; peak = Math.max(peak, live); log.push(['start', name]);
           return {status: 'running'};
         },
         stop: async () => { r.stopped++; log.push(['stop', name]); if (r.state?.status === 'running') { r.state = {...r.state, status: 'paused', busy: false}; live--; } return {status: 'stopping'}; },
-        benchSummary: async () => { if (r.broken) throw new Error('room unreachable'); return r.state; }
+        benchSummary: async () => { if (r.broken) throw new Error('room unreachable'); return r.state; },
+        purge: async () => { if (r.state?.busy || r.purgeBusy) return {error: 'busy'}; r.purged = (r.purged || 0) + 1; log.push(['purge', name]); return {repos_deleted: 1, repos_failed: 0}; }
       };
     }
   };
   // End a running room the way S4b's completion leaves it.
   const end = (name, patch) => { const r = room(name); if (r.state?.status === 'running') live--; r.state = {...r.state, busy: false, ...patch}; };
-  return {ns, rooms, log, end, peak: () => peak, live: () => live};
+  // The executors of the rooms running now.
+  const inUse = () => [...rooms.values()].filter(r => r.state?.status === 'running').map(r => executors.get(r.name));
+  return {ns, rooms, log, end, executors, inUse, peak: () => peak, live: () => live, gate: g => { gate = g; }};
 }
-function benchEnv() {
+function benchEnv(extra = {}) {
   const rooms = fakeRooms(), instances = new Map();
-  const env = {ROOMS: rooms.ns};
+  const env = {ROOMS: rooms.ns, ...extra};
   env.BENCHES = {getByName: name => {
     if (!instances.has(name)) {
-      const storage = {sql: new Sql(), alarm: null, setAlarm(t) { this.alarm = t; }, deleteAlarm() { this.alarm = null; }, getAlarm() { return this.alarm; }};
+      const storage = {sql: new Sql(), alarm: null, setAlarm(t) { this.alarm = t; }, deleteAlarm() { this.alarm = null; }, getAlarm() { return this.alarm; },
+        deleteAll() { for (const t of ['meta', 'tasks', 'rooms', 'runs']) this.sql.exec(`DELETE FROM ${t}`); this.deleted = true; }};
       const b = new BenchRun({storage}, env);
       b.fetcher = async () => { throw new Error('no fetch in this test'); };
       instances.set(name, b);
@@ -78,10 +85,11 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   assert.equal(started.card.requirements[0].check.files['bench_tests.txt'], 'assert f0(1) == 1\n');
   // Nothing ended: no new room.
   await b.alarm();
-  assert.equal(rooms.log.length, 2);
+  const starts = () => rooms.log.filter(l => l[0] === 'start');
+  assert.equal(starts().length, 2);
   rooms.end(taskRoom(ID, 0, 0), pass);
   await b.alarm();
-  assert.deepEqual(rooms.log.map(l => l[1]).slice(2), [taskRoom(ID, 2, 0)]);
+  assert.deepEqual(starts().map(l => l[1]).slice(2), [taskRoom(ID, 2, 0)]);
   rooms.end(taskRoom(ID, 1, 0), fail);
   rooms.end(taskRoom(ID, 2, 0), {...pass, tokens: {calls: 3, prompt: 300, completion: 100, total: 400}, container_ms: 2500, last_event_at: 4000});
   await b.alarm();
@@ -91,6 +99,9 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   assert.equal(rooms.peak(), 2, 'never more than two rooms at once');
   assert.equal(done.status, 'done');
   assert.equal(b.ctx.storage.alarm, null, 'no alarm once every task ended');
+  // keep_rooms 'failed' (the default): the passed rooms are deleted, the others kept for inspection.
+  assert.deepEqual(rooms.log.filter(l => l[0] === 'purge').map(l => l[1]).sort(), [taskRoom(ID, 0, 0), taskRoom(ID, 2, 0), taskRoom(ID, 4, 0)].sort());
+  assert.deepEqual(done.tasks.map(t => t.room_deleted), [true, false, true, false, true]);
   assert.deepEqual(done.tasks.map(t => t.outcome), ['pass', 'fail', 'pass', 'unverified', 'pass']);
   assert.deepEqual(done.tasks[1].requirements, [{id: 'R1', passed: false, detail: 'exit 1'}]);
   assert.deepEqual([done.tasks[2].tokens, done.tasks[2].prompt_tokens, done.tasks[2].completion_tokens, done.tasks[2].model_calls, done.tasks[2].container_ms, done.tasks[2].wall_ms], [400, 300, 100, 3, 2500, 3000]);
@@ -101,7 +112,7 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   assert.ok(done.finished_at > 0);
   // A tick after the end changes nothing.
   await b.alarm();
-  assert.equal(rooms.log.length, 5);
+  assert.equal(starts().length, 5);
 });
 
 test('stop stops the running rooms and starts nothing; resume runs their tasks again in fresh rooms', async () => {
@@ -271,4 +282,108 @@ test('/api/run never takes a card from the request body: only the runtime provid
   assert.equal(seen.length, 1);
   assert.equal(seen[0].length, 4, 'start(goal, budget, settings, room): no card argument');
   assert.ok(!JSON.stringify(seen[0]).includes('solution.py'));
+});
+
+// ------------------------------------------------------------------ review fixes
+test('Stop wins over a tick in flight: a room started after Stop is stopped at once, its task requeued, and the alarm is not set again', async () => {
+  const {rooms, run} = benchEnv(), b = run();
+  await begin(b, {concurrency: 1});
+  await b.alarm();
+  rooms.end(taskRoom(ID, 0, 0), pass);
+  let release;
+  rooms.gate(new Promise(r => { release = r; }));
+  const tick = b.alarm();                       // records task 0, then waits in task 1's start()
+  await new Promise(r => setTimeout(r, 5));
+  const stopped = await b.stop();               // the observer presses Stop meanwhile
+  assert.equal(stopped.status, 'stopped');
+  release(); rooms.gate(null);
+  await tick;
+  const s = b.status();
+  assert.equal(s.status, 'stopped');
+  assert.equal(b.ctx.storage.alarm, null, 'the tick did not re-arm the alarm');
+  assert.deepEqual(s.tasks.map(t => [t.status, t.outcome, t.attempt]), [['done', 'pass', 0], ['queued', null, 1], ['queued', null, 0], ['queued', null, 0], ['queued', null, 0]]);
+  assert.equal(rooms.rooms.get(taskRoom(ID, 1, 0)).stopped >= 1, true, 'the room started in the race was stopped');
+  assert.equal(rooms.live(), 0, 'no room is left running');
+  // Resume runs task 1 again in a fresh room; the abandoned one is deleted.
+  await b.resume();
+  await b.alarm();
+  assert.equal(b.status().tasks[1].room, taskRoom(ID, 1, 1));
+  assert.ok(rooms.log.some(l => l[0] === 'purge' && l[1] === taskRoom(ID, 1, 0)));
+});
+
+test('rooms share a pool of executors no larger than the Container slots, and concurrency is clamped to it', async () => {
+  const {rooms, run} = benchEnv({BENCH_EXECUTORS: '2'}), b = run();
+  const s = await begin(b, {concurrency: 3});
+  assert.deepEqual([s.concurrency, s.concurrency_asked, s.executors], [2, 3, 2]);
+  await b.alarm();
+  assert.deepEqual(rooms.inUse().sort(), ['bench-pool-0', 'bench-pool-1']);
+  rooms.end(taskRoom(ID, 0, 0), pass);
+  await b.alarm();
+  assert.deepEqual(rooms.inUse().sort(), ['bench-pool-0', 'bench-pool-1'], 'the freed slot is reused, never a third executor');
+  for (let i = 0; i < 6; i++) { for (const r of rooms.rooms.values()) if (r.state?.status === 'running') rooms.end(r.name, pass); await b.alarm(); assert.ok(rooms.inUse().length <= 2); }
+  assert.equal(b.status().status, 'done');
+  assert.ok([...rooms.executors.values()].every(e => /^bench-pool-[01]$/.test(e)));
+});
+
+test('keep_rooms: "none" deletes every scored room, "all" none; a busy room is deleted on a later tick', async () => {
+  for (const [keep, expected] of [['none', [0, 1]], ['all', []]]) {
+    const {rooms, run} = benchEnv(), b = run();
+    await b.begin({id: ID, dataset: {text: DATA(2)}, settings: SETTINGS, concurrency: 2, selfHosts: ['cp.test'], keep_rooms: keep});
+    await b.alarm();
+    rooms.end(taskRoom(ID, 0, 0), pass); rooms.end(taskRoom(ID, 1, 0), fail);
+    rooms.rooms.get(taskRoom(ID, 1, 0)).purgeBusy = true;
+    await b.alarm();
+    assert.equal(b.status().status, 'done');
+    if (keep === 'none') {
+      assert.ok(b.ctx.storage.alarm !== null, 'a room still to delete keeps the alarm');
+      rooms.rooms.get(taskRoom(ID, 1, 0)).purgeBusy = false;
+      await b.alarm();
+      assert.equal(b.ctx.storage.alarm, null);
+    }
+    assert.deepEqual(rooms.log.filter(l => l[0] === 'purge').map(l => l[1]).sort(), expected.map(i => taskRoom(ID, i, 0)), keep);
+  }
+});
+
+test('a stopped attempt\'s tokens and Container time stay in the run\'s cost', async () => {
+  const {rooms, run} = benchEnv(), b = run();
+  await begin(b, {concurrency: 1});
+  await b.alarm();
+  rooms.rooms.get(taskRoom(ID, 0, 0)).state.tokens = {calls: 2, prompt: 100, completion: 50, total: 150};
+  rooms.rooms.get(taskRoom(ID, 0, 0)).state.container_ms = 700;
+  await b.stop();
+  assert.deepEqual([b.status().tasks[0].tokens, b.status().tasks[0].container_ms], [150, 700]);
+  await b.resume(); await b.alarm();
+  rooms.end(taskRoom(ID, 0, 1), {...pass, tokens: {calls: 1, prompt: 30, completion: 20, total: 50}, container_ms: 300});
+  await b.alarm();
+  const t = b.status().tasks[0];
+  assert.deepEqual([t.outcome, t.tokens, t.prompt_tokens, t.completion_tokens, t.model_calls, t.container_ms], ['pass', 200, 130, 70, 3, 1000]);
+  assert.equal(b.status().aggregate.tokens, 200);
+});
+
+test('DELETE /api/bench/<id> stops the running rooms, deletes every room of the run, leaves the index and clears the run', async () => {
+  const {env, rooms, run, index} = benchEnv({APP_TOKEN, ASSETS: {fetch: () => new Response('asset')}});
+  const b = run();
+  await begin(b, {concurrency: 2});
+  await b.alarm();
+  rooms.end(taskRoom(ID, 0, 0), fail);
+  await b.alarm();                               // 0 kept (failed), 2 started
+  assert.equal(index().list().runs.length, 1);
+  assert.equal((await call(env, `/api/bench/${ID}`, {method: 'DELETE', token: null})).status, 401);
+  assert.equal((await call(env, '/api/bench/not-an-id', {method: 'DELETE'})).status, 400);
+  const res = await call(env, `/api/bench/${ID}`, {method: 'DELETE'});
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {status: 'deleted', rooms_not_deleted: 0});
+  assert.deepEqual(rooms.log.filter(l => l[0] === 'stop').map(l => l[1]).sort(), [taskRoom(ID, 1, 0), taskRoom(ID, 2, 0)]);
+  assert.deepEqual(rooms.log.filter(l => l[0] === 'purge').map(l => l[1]).sort(), [taskRoom(ID, 0, 0), taskRoom(ID, 1, 0), taskRoom(ID, 2, 0)]);
+  assert.equal(index().list().runs.length, 0);
+  assert.equal(b.ctx.storage.deleted, true);
+  assert.equal((await call(env, `/api/bench?id=${ID}`)).status, 404);
+});
+
+test('wrangler.jsonc: BENCHES is bound to BenchRun (a sqlite export) and BENCH_EXECUTORS equals the Container max_instances', async () => {
+  const {readFileSync} = await import('node:fs');
+  const config = JSON.parse(readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, ''));
+  assert.ok(config.durable_objects.bindings.some(b => b.name === 'BENCHES' && b.class_name === 'BenchRun'));
+  assert.deepEqual(config.exports.BenchRun, {type: 'durable-object', storage: 'sqlite'});
+  assert.equal(Number(config.vars.BENCH_EXECUTORS), config.containers[0].max_instances);
 });

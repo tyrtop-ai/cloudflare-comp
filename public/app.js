@@ -92,7 +92,9 @@ function treeMarkup(n,index,top=false) {
 // checks fill from S4b on), and its decisions. Root's detail shows it in
 // place of Root's task, which under v8 is the goal as the user wrote it.
 const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.name}(${(i.params||[]).join(', ')})`;
-const requirementState=(r,status)=>{const st=status?.[r.id];return st?st.passed?'pass':'fail':'untested';};
+// v8 S4b: passed null is a check that could not run (infrastructure): untested.
+// S4b review: a result from before the delivered files last changed is stale (the snapshot marks it).
+const requirementState=(r,status)=>{const st=status?.[r.id];return typeof st?.passed!=='boolean'?'untested':st.stale?'stale':st.passed?'pass':'fail';};
 function cardMarkup(card,status={}) {
   if(!card)return '<p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p>';
   const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}</li>`;
@@ -107,7 +109,7 @@ function renderCard(s) {
   const reqs=s.card?.requirements||[],count=state=>reqs.filter(r=>requirementState(r,s.requirement_status)===state).length;
   const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>`:'';
   $('card').innerHTML=held+cardMarkup(s.card,s.requirement_status);
-  if($('card-verdict'))$('card-verdict').textContent=s.card?`${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
+  if($('card-verdict'))$('card-verdict').textContent=s.card?`${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
 }
 function nodeDetail(n,index) {
   const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
@@ -406,31 +408,36 @@ const pct=v=>v==null?'–':`${(v*100).toFixed(1)}%`;
 const secs=ms=>ms==null?'–':ms<1000?`${ms} ms`:`${(ms/1000).toFixed(ms<10000?1:0)} s`;
 const count=n=>n==null?'–':Number(n).toLocaleString('en-US');
 const shortModel=m=>String(m||'').split('/').pop();
-let benchRun='',benchData=null,benchList=[],benchCompare=null,benchFileName='';
+let benchRun='',benchData=null,benchList=[],benchCompare=null,benchFileName='',benchSlots=0;
 const benchOutcome=t=>t.outcome||(t.status==='running'?'running':'queued');
+// pass@1 is over the scored tasks only: pass ÷ (pass + fail + timeout).
+// Errors (the platform's or the card's) and unverified rooms are left out.
+const SCORED_NOTE='pass@1 = pass ÷ scored tasks (pass + fail + timeout); errors (platform or card) and unverified rooms are not scored';
+const benchRate=a=>a&&a.unverified>a.scored?'–':pct(a?.pass_at_1);
 function benchRunsMarkup(runs,picked='') {
   if(!runs?.length)return '<p class="empty">No benchmark runs yet.</p>';
   const row=r=>{const a=r.aggregate||{};
-    return `<tr class="${r.id===picked?'picked':''}"><td><b>${esc(r.label||r.id)}</b><br/><span class="faint mono">${esc(r.id)}</span></td><td>${esc(r.status)}</td><td class="num">${count(a.finished)} / ${count(a.tasks)}</td><td class="num">${pct(a.pass_at_1)}</td><td class="num">${secs(a.mean_ms)}</td><td class="num">${count(a.tokens)}</td><td class="num">${a.container_s==null?'–':a.container_s+' s'}</td>`+
-      `<td class="faint">${esc(shortModel(r.settings?.worker_model))}</td><td><button type="button" class="secondary" data-bench-view="${esc(r.id)}">View</button>${r.status==='running'?`<button type="button" class="secondary" data-bench-stop="${esc(r.id)}">Stop</button>`:r.status==='stopped'?`<button type="button" class="secondary" data-bench-resume="${esc(r.id)}">Resume</button>`:''}</td></tr>`;};
-  return `<table class="bench-table"><thead><tr><th>RUN</th><th>STATE</th><th class="num">DONE</th><th class="num">PASS@1</th><th class="num">MEAN TIME</th><th class="num">TOKENS</th><th class="num">CONTAINER</th><th>WORKERS</th><th></th></tr></thead><tbody>${runs.map(row).join('')}</tbody></table>`;
+    return `<tr class="${r.id===picked?'picked':''}"><td><b>${esc(r.label||r.id)}</b><br/><span class="faint mono">${esc(r.id)}</span></td><td>${esc(r.status)}</td><td class="num">${count(a.finished)} / ${count(a.tasks)}</td><td class="num">${benchRate(a)}</td><td class="num">${secs(a.mean_ms)}</td><td class="num">${count(a.tokens)}</td><td class="num">${a.container_s==null?'–':a.container_s+' s'}</td>`+
+      `<td class="faint">${esc(shortModel(r.settings?.worker_model))}</td><td><button type="button" class="secondary" data-bench-view="${esc(r.id)}">View</button>${r.status==='running'?`<button type="button" class="secondary" data-bench-stop="${esc(r.id)}">Stop</button>`:r.status==='stopped'?`<button type="button" class="secondary" data-bench-resume="${esc(r.id)}">Resume</button>`:''}<button type="button" class="secondary" data-bench-delete="${esc(r.id)}" title="Delete the run and the rooms it still has">Delete</button></td></tr>`;};
+  return `<table class="bench-table"><thead><tr><th>RUN</th><th>STATE</th><th class="num">DONE</th><th class="num" title="${esc(SCORED_NOTE)}">PASS@1*</th><th class="num">MEAN TIME</th><th class="num">TOKENS</th><th class="num">CONTAINER</th><th>WORKERS</th><th></th></tr></thead><tbody>${runs.map(row).join('')}</tbody></table>`;
 }
 // A task's room opens in the existing tree view (a new tab: paste the token there).
-const roomLink=room=>room?`<a href="/?room=${encodeURIComponent(room)}" target="_blank" rel="noopener" class="mono">open room</a>`:'<span class="faint">no room yet</span>';
+const roomLink=(room,deleted=false)=>deleted?'<span class="faint">room deleted</span>':room?`<a href="/?room=${encodeURIComponent(room)}" target="_blank" rel="noopener" class="mono">open room</a>`:'<span class="faint">no room yet</span>';
 function benchResultsMarkup(run) {
   if(!run)return '';
   const a=run.aggregate||{},s=run.settings||{},d=run.dataset||{};
-  const summary=`<div class="bench-summary"><span>pass@1 <b>${pct(a.pass_at_1)}</b> <span class="faint">(${count(a.pass)} of ${count(a.scored)} scored)</span></span><span>mean time <b>${secs(a.mean_ms)}</b></span><span>tokens <b>${count(a.tokens)}</b></span><span>Container <b>${a.container_s??0} s</b></span>`+
-    `${a.unverified?`<span>unverified <b>${a.unverified}</b></span>`:''}${a.error?`<span>errors <b>${a.error}</b></span>`:''}${a.timeout?`<span>timeouts <b>${a.timeout}</b></span>`:''}</div>`+
-    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once · budget ${count(run.budget)} turns · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}</p>`;
-  const row=t=>{const o=benchOutcome(t);return `<tr><td class="mono">${esc(t.task_id)}</td><td><span class="req-chip ${esc(o)}"${t.detail?` title="${esc(t.detail)}"`:''}>${esc(o)}</span></td><td class="num">${secs(t.wall_ms)}</td><td class="num">${count(t.tokens)}</td><td class="num">${t.container_ms?secs(t.container_ms):'–'}</td><td>${roomLink(t.room)}</td></tr>`;};
+  const warn=a.unverified>a.scored?`<p class="card-hold">${count(a.unverified)} unverified tasks outnumber the ${count(a.scored)} scored ones: pass@1 is not shown.</p>`:'';
+  const summary=`<div class="bench-summary"><span title="${esc(SCORED_NOTE)}">pass@1 <b>${benchRate(a)}</b> <span class="faint">(${count(a.pass)} passed of ${count(a.scored)} scored: pass + fail + timeout; ${count(a.error)} errors and ${count(a.unverified)} unverified not scored)</span></span><span>mean time <b>${secs(a.mean_ms)}</b></span><span>tokens <b>${count(a.tokens)}</b></span><span>Container <b>${a.container_s??0} s</b></span>`+
+    `${a.timeout?`<span>timeouts <b>${a.timeout}</b></span>`:''}</div>`+warn+
+    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once${run.concurrency_asked?` (asked ${count(run.concurrency_asked)}; ${count(run.executors)} Container slots)`:''} · keeps ${esc(run.keep_rooms||'failed')} rooms · budget ${count(run.budget)} turns · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}${d.partial?` · partial: ${esc(d.partial)}`:''}</p>`;
+  const row=t=>{const o=benchOutcome(t);return `<tr><td class="mono">${esc(t.task_id)}</td><td><span class="req-chip ${esc(o)}"${t.detail?` title="${esc(t.detail)}"`:''}>${esc(o)}</span></td><td class="num">${secs(t.wall_ms)}</td><td class="num">${count(t.tokens)}</td><td class="num">${t.container_ms?secs(t.container_ms):'–'}</td><td>${roomLink(t.room,t.room_deleted)}</td></tr>`;};
   return summary+`<table class="bench-table"><thead><tr><th>TASK</th><th>RESULT</th><th class="num">TIME</th><th class="num">TOKENS</th><th class="num">CONTAINER</th><th>ROOM</th></tr></thead><tbody>${(run.tasks||[]).map(row).join('')}</tbody></table>`;
 }
 function benchCompareMarkup(c) {
   if(!c)return '';
   const name=x=>esc(x.label||x.id),diff=c.difference;
   const head=`<div class="bench-summary"><span>${name(c.a)} <b>${pct(c.pass_at_1_a)}</b></span><span>${name(c.b)} <b>${pct(c.pass_at_1_b)}</b></span>`+
-    `<span>difference <b class="bench-diff ${diff>0?'up':diff<0?'down':''}">${diff==null?'–':`${diff>0?'+':''}${(diff*100).toFixed(1)} pts`}</b></span><span class="faint">${count(c.compared)} of ${count(c.shared)} shared tasks scored on both${c.same_dataset?'':' · the datasets differ'}</span></div>`+
+    `<span>difference <b class="bench-diff ${diff>0?'up':diff<0?'down':''}">${diff==null?'–':`${diff>0?'+':''}${(diff*100).toFixed(1)} pts`}</b></span><span class="faint">${count(c.compared)} of ${count(c.shared)} shared tasks scored on both${c.same_dataset?'':c.differing?.length?` · ${count(c.differing.length)} shared tasks differ in prompt or tests`:' · the datasets differ'}</span></div>`+
     `<p class="helper">Only ${name(c.a)} passed: ${esc(c.only_a.join(', ')||'none')} · only ${name(c.b)} passed: ${esc(c.only_b.join(', ')||'none')}</p>`;
   const cell=x=>`<td><span class="req-chip ${esc(x.outcome||'queued')}">${esc(x.outcome||'–')}</span></td><td class="num">${secs(x.wall_ms)}</td><td class="num">${count(x.tokens)}</td><td>${roomLink(x.room)}</td>`;
   return head+`<table class="bench-table"><thead><tr><th>TASK</th><th colspan="4">${name(c.a)} · ${esc(shortModel(c.a.settings?.worker_model))}</th><th colspan="4">${name(c.b)} · ${esc(shortModel(c.b.settings?.worker_model))}</th></tr></thead><tbody>${c.tasks.map(t=>`<tr><td class="mono">${esc(t.task_id)}</td>${cell(t.a)}${cell(t.b)}</tr>`).join('')}</tbody></table>`;
@@ -439,13 +446,14 @@ function renderBench() {
   if(!$('bench-runs'))return;
   $('bench-runs').innerHTML=benchRunsMarkup(benchList,benchRun);
   if($('bench-results'))$('bench-results').innerHTML=benchCompare?benchCompareMarkup(benchCompare):benchResultsMarkup(benchData);
+  if($('bench-slots')&&benchSlots)$('bench-slots').textContent=`Rooms at once is capped at ${benchSlots}, the deployment's Container slots: each room builds on one executor of the run's pool.`;
   const options=benchList.map(r=>`<option value="${esc(r.id)}">${esc(r.label||r.id)} · ${esc(r.id)}</option>`).join('');
   for(const id of ['bench-a','bench-b']){const el=$(id);if(el){const keep=el.value;el.innerHTML=options;if(keep)el.value=keep;}}
 }
 async function refreshBench() {
   if(!token()||!$('bench-runs'))return;
   try {
-    benchList=(await call('/api/bench')).runs||[];
+    const listed=await call('/api/bench');benchList=listed.runs||[];benchSlots=listed.executors||0;
     if(benchRun&&!benchCompare)benchData=await call('/api/bench?id='+encodeURIComponent(benchRun));
     renderBench();
   } catch(err){showError(err);}
@@ -454,11 +462,21 @@ async function benchPost(path,data) {
   try {$('error').textContent='';const r=await call(path,'POST',data);await refreshBench();return r;}
   catch(err){showError(err);return null;}
 }
+async function benchDelete(id) {
+  try {
+    $('error').textContent='';
+    const response=await fetch(`/api/bench/${encodeURIComponent(id)}`,{method:'DELETE',headers:{Authorization:`Bearer ${token()}`},cache:'no-store'});
+    const body=await response.json().catch(()=>({error:`HTTP ${response.status}`}));
+    if(!response.ok||body.error)throw Error(body.error||`HTTP ${response.status}`);
+    if(benchRun===id){benchRun='';benchData=null;}
+    await refreshBench();
+  } catch(err){showError(err);}
+}
 // What Run benchmark sends: the URL, else the pasted or uploaded text.
 function benchRequest() {
   const url=$('bench-url')?.value.trim()||'',text=$('bench-text')?.value||'';
   return {dataset:url?{url}:{text,...(benchFileName?{name:benchFileName}:{})},limit:Number($('bench-limit')?.value)||20,concurrency:Number($('bench-concurrency')?.value)||2,
-    label:$('bench-label')?.value.trim()||'',budget:countSetting('budget'),settings:settings()};
+    label:$('bench-label')?.value.trim()||'',budget:countSetting('budget'),keep_rooms:$('bench-keep')?.value||'failed',settings:settings()};
 }
 $('bench-start')?.addEventListener('click',async()=>{
   const body=benchRequest();
@@ -478,6 +496,7 @@ $('bench-runs')?.addEventListener('click',e=>{
   if(d.benchView){benchRun=d.benchView;benchCompare=null;benchData=null;refreshBench();}
   else if(d.benchStop)benchPost('/api/bench/stop',{id:d.benchStop});
   else if(d.benchResume)benchPost('/api/bench/resume',{id:d.benchResume});
+  else if(d.benchDelete&&confirm('Delete this benchmark run and the task rooms it still has?'))benchDelete(d.benchDelete);
 });
 $('bench-compare')?.addEventListener('click',async()=>{
   const a=$('bench-a')?.value,b=$('bench-b')?.value;

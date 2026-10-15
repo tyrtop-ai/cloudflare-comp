@@ -60,11 +60,24 @@ test('the runs list, one run\'s results with a link to each task\'s room, and a 
   assert.match(runs, /llama-4-scout-17b-16e-instruct/);
   assert.match(runs, /data-bench-view="abcdef012345">View<\/button><button type="button" class="secondary" data-bench-stop="abcdef012345">Stop/);
   assert.match(runs, /data-bench-resume="fedcba543210">Resume/);
+  assert.match(runs, /data-bench-delete="abcdef012345"[^>]*>Delete<\/button>/);
+  assert.match(runs, /<th class="num" title="pass@1 = pass ÷ scored tasks[^"]*">PASS@1\*<\/th>/);
+  // Unverified tasks outnumbering the scored ones: no pass@1 figure, and a warning.
+  const unverified = {...RUN, aggregate: {...RUN.aggregate, unverified: 5, scored: 1, pass_at_1: 0}};
+  assert.match(context.benchRunsMarkup([unverified]), /<td class="num">–<\/td><td class="num">62 s/);
+  assert.match(context.benchResultsMarkup(unverified), /pass@1 <b>–<\/b>[\s\S]*5 unverified tasks outnumber the 1 scored ones: pass@1 is not shown/);
+  // A deleted room, a clamped concurrency and a partial dataset are said so.
+  const later = context.benchResultsMarkup({...RUN, concurrency_asked: 8, executors: 4, keep_rooms: 'none', dataset: {...RUN.dataset, partial: 'rows from offset 100 could not be read'},
+    tasks: [{...RUN.tasks[0], room_deleted: true}]});
+  assert.match(later, /2 at once \(asked 8; 4 Container slots\) · keeps none rooms/);
+  assert.match(later, /partial: rows from offset 100 could not be read/);
+  assert.match(later, /<td><span class="faint">room deleted<\/span><\/td>/);
   assert.match(runs, /<td class="num">– \/ –<\/td><td class="num">–<\/td>/);
   assert.equal(context.benchRunsMarkup([]), '<p class="empty">No benchmark runs yet.</p>');
   const results = context.benchResultsMarkup(RUN);
-  assert.match(results, /pass@1 <b>50\.0%<\/b> <span class="faint">\(1 of 2 scored\)/);
-  assert.match(results, /workers llama-4-scout-17b-16e-instruct · 2 at once · budget 60 turns · dataset https:\/\/raw\.githubusercontent\.com\/toy\/bench\/main\/he\.jsonl · 0123456789ab · 1 rows skipped/);
+  assert.match(results, /pass@1 <b>50\.0%<\/b> <span class="faint">\(1 passed of 2 scored: pass \+ fail \+ timeout; 0 errors and 0 unverified not scored\)/);
+  assert.match(results, /title="pass@1 = pass ÷ scored tasks \(pass \+ fail \+ timeout\); errors \(platform or card\) and unverified rooms are not scored"/);
+  assert.match(results, /workers llama-4-scout-17b-16e-instruct · 2 at once · keeps failed rooms · budget 60 turns · dataset https:\/\/raw\.githubusercontent\.com\/toy\/bench\/main\/he\.jsonl · 0123456789ab · 1 rows skipped/);
   assert.match(results, /<td class="mono">HumanEval\/0<\/td><td><span class="req-chip pass">pass<\/span><\/td><td class="num">60 s<\/td><td class="num">10,000<\/td><td class="num">3\.0 s<\/td><td><a href="\/\?room=bench-abcdef012345-0-0" target="_blank" rel="noopener" class="mono">open room<\/a><\/td>/);
   assert.match(results, /<span class="req-chip fail" title="R1 failed">fail<\/span>/);
   assert.match(results, /<span class="req-chip queued">queued<\/span><\/td><td class="num">–<\/td><td class="num">–<\/td><td class="num">–<\/td><td><span class="faint">no room yet<\/span>/);
@@ -74,6 +87,8 @@ test('the runs list, one run\'s results with a link to each task\'s room, and a 
       {task_id: 'HumanEval/1', a: {outcome: 'fail', wall_ms: 1000, tokens: 5, room: 'bench-a1-1-0'}, b: {outcome: 'pass', wall_ms: 2000, tokens: 6, room: 'bench-b1-1-0'}}]});
   assert.match(cmp, /Qwen <b>50\.0%<\/b><\/span><span>Scout <b>100\.0%<\/b><\/span><span>difference <b class="bench-diff up">\+50\.0 pts<\/b>/);
   assert.match(cmp, /2 of 2 shared tasks scored on both · the datasets differ/);
+  assert.match(context.benchCompareMarkup({a: {id: 'a'}, b: {id: 'b'}, shared: 3, compared: 3, pass_at_1_a: 1, pass_at_1_b: 1, difference: 0, only_a: [], only_b: [], same_dataset: false, differing: ['t2'], tasks: []}),
+    /3 of 3 shared tasks scored on both · 1 shared tasks differ in prompt or tests/);
   assert.match(cmp, /Only Qwen passed: none · only Scout passed: HumanEval\/1/);
   assert.match(cmp, /<th colspan="4">Qwen · qwen3-30b-a3b-fp8<\/th><th colspan="4">Scout · llama-4-scout-17b-16e-instruct<\/th>/);
   assert.match(cmp, /<td class="mono">HumanEval\/1<\/td><td><span class="req-chip fail">fail<\/span>.*href="\/\?room=bench-a1-1-0".*<span class="req-chip pass">pass<\/span>/);
@@ -92,6 +107,7 @@ test('Run benchmark posts the dataset, the limits and the sidebar\'s room settin
   p.elements.get('bench-label').value = ' Scout workers ';
   p.elements.get('worker-model').value = '@cf/meta/llama-4-scout-17b-16e-instruct';
   p.elements.get('pipeline').value = 'v7';
+  p.elements.get('bench-keep').value = 'failed';
   await p.fire('bench-start');
   const post = p.requests[0];
   assert.equal(post.url, '/api/bench');
@@ -99,7 +115,7 @@ test('Run benchmark posts the dataset, the limits and the sidebar\'s room settin
   assert.equal(post.init.headers.Authorization, 'Bearer app-token');
   const body = JSON.parse(post.init.body);
   assert.deepEqual(body.dataset, {url: 'https://raw.githubusercontent.com/toy/bench/main/he.jsonl'});
-  assert.deepEqual([body.limit, body.concurrency, body.label, body.budget], [5, 3, 'Scout workers', 100]);
+  assert.deepEqual([body.limit, body.concurrency, body.label, body.budget, body.keep_rooms], [5, 3, 'Scout workers', 100, 'failed']);
   assert.equal(body.settings.worker_model, '@cf/meta/llama-4-scout-17b-16e-instruct');
   assert.equal(body.settings.model, '@cf/qwen/qwen3-30b-a3b-fp8');
   assert.equal(body.settings.max_depth, 10);
@@ -152,4 +168,21 @@ test('pasted or uploaded JSON lines are sent as text; the runs list views, stops
   await p.fire('bench-compare');
   assert.equal(p.requests[0].url, '/api/bench/compare?room=room-abcdefgh&a=abcdef012345&b=fedcba543210');
   assert.match(p.elements.get('bench-results').innerHTML, /difference <b class="bench-diff up">\+100\.0 pts/);
+});
+
+test('the panel names the Container slots it is capped at, keeps the label off huggingface.co file URLs, and Delete removes a run', async () => {
+  assert.match(html, /<select id="bench-keep">[\s\S]*<option value="failed">Keep the rooms that did not pass, delete the passed ones \(default\)<\/option>[\s\S]*<option value="none">/);
+  assert.match(html, /Dataset URL <span class="faint">\(a JSON lines file on raw\.githubusercontent\.com, or a datasets-server\.huggingface\.co rows URL\)/);
+  const requests = [];
+  const p = page(async (url, init) => {
+    requests.push({url: String(url), method: init?.method || 'GET'});
+    if (String(url).startsWith('/api/bench?')) return new Response(JSON.stringify({runs: [RUN], executors: 4}));
+    return new Response(JSON.stringify({status: 'deleted', rooms_not_deleted: 0}));
+  });
+  p.elements.get('token').value = 'app-token';
+  p.context.confirm = () => true;
+  await p.fire('bench-runs', 'click', {target: {closest: () => ({dataset: {benchDelete: 'abcdef012345'}})}});
+  await new Promise(r => setTimeout(r, 0));
+  assert.deepEqual(p.requests.find(r => r.init?.method === 'DELETE') && [p.requests.find(r => r.init?.method === 'DELETE').url, p.requests.find(r => r.init?.method === 'DELETE').init.headers.Authorization], ['/api/bench/abcdef012345', 'Bearer app-token']);
+  assert.match(p.elements.get('bench-slots').textContent, /capped at 4, the deployment's Container slots/);
 });

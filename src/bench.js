@@ -19,6 +19,7 @@
 import { fetchPolicy, guardedFetch, plainBody, readCapped, inputCapFor, allowedType, redactText, FetchRefused } from './fetcher.js';
 import { CARD_LIMITS } from './card.js';
 import { GOAL_LIMIT } from './model.js';
+import { pythonHarness as pyHarness, javascriptHarness as jsHarness } from './bench-harness.js';
 
 export const BENCH_LIMITS = Object.freeze({
   maxTasks: 500,              // tasks one run may hold
@@ -89,22 +90,55 @@ export function detectFormat(row) {
 
 // --- names and signatures ----------------------------------------------------
 
-const PY_DEF = /^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)[ \t]*\(([^)]*)\)/gm;
-const JS_FN = /(?:^|[\s;(])(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/g;
-// Parameter names of a signature's text: types, defaults and stars dropped.
-export function paramNames(list) {
+const PY_DEF = /^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)[ \t]*\(/gm;
+const JS_FN = /(?:^|[\s;(])(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g;
+// The parameter list after an opening bracket, to its balanced close.
+function paramList(text, from) {
+  let depth = 1, quote = '';
+  for (let i = from; i < text.length; i++) {
+    const c = text[i];
+    if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; continue; }
+    if (c === '"' || c === "'" || c === '`') quote = c;
+    else if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c) && --depth === 0) return text.slice(from, i);
+  }
+  return text.slice(from);
+}
+// The top-level items of a parameter list.
+function paramItems(list) {
   const out = [];
-  let depth = 0, cur = '';
+  let depth = 0, cur = '', quote = '';
   for (const ch of String(list ?? '')) {
+    if (quote) { cur += ch; if (ch === quote) quote = ''; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') quote = ch;
     if ('([{'.includes(ch)) depth++;
     if (')]}'.includes(ch)) depth--;
     if (ch === ',' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
   }
   out.push(cur);
-  return out.map(p => p.trim().replace(/^\*{1,2}/, '').replace(/^\.\.\./, '').split(/[:=]/)[0].trim())
+  return out.map(p => p.replace(/#[^\n]*/g, '').trim()).filter(Boolean);
+}
+// The signature as the goal states it: each parameter's name with its * or
+// ** (or ...) marker, "=…" for one with a default (never the default itself,
+// never a type), and the bare * and / markers; no cap.
+export function signatureText(list) {
+  return paramItems(list).map(p => {
+    if (p === '*' || p === '/') return p;
+    const m = /^(\*{1,2}|\.\.\.)?\s*([A-Za-z_$][\w$]*)/.exec(p);
+    if (!m) return null;
+    const rest = p.slice(m[0].length).replace(/^\s*:[^=]*/, '');
+    return `${m[1] || ''}${m[2]}${/^\s*=/.test(rest) ? '=…' : ''}`;
+  }).filter(x => x && x !== 'self').join(', ');
+}
+// Parameter names of a signature's text: types, defaults and stars dropped.
+export function paramNames(list) {
+  return paramItems(list).map(p => p.replace(/^\*{1,2}/, '').replace(/^\.\.\./, '').split(/[:=]/)[0].trim())
     .filter(p => /^[A-Za-z_$][\w$]*$/.test(p) && p !== 'self').slice(0, 6);
 }
-const defsOf = (text, re) => [...String(text ?? '').matchAll(re)].map(m => ({name: m[1], params: paramNames(m[2])}));
+const defsOf = (text, re) => [...String(text ?? '').matchAll(re)].map(m => {
+  const list = paramList(String(text), m.index + m[0].length);
+  return {name: m[1], params: paramNames(list), signature: signatureText(list)};
+});
 // The function a prompt asks for: the last one it defines (the one left open).
 export function promptEntry(prompt, language) {
   const defs = defsOf(prompt, language === 'javascript' ? JS_FN : PY_DEF);
@@ -120,109 +154,12 @@ function firstSentence(prompt, entry) {
 }
 
 // --- harnesses ------------------------------------------------------------------
-
-// The Python harness: reads its inputs and deletes them before the solution
-// loads, finds the module that defines the entry (the deliverable's path
-// first, then any .py file that defines it), runs the prompt (HumanEval's
-// helpers and imports), the solution's names and the tests in one namespace
-// as the official harness does, calls check(candidate) when the tests define
-// it, and prints the pass mark with the nonce last. A solution that exits at
-// import, or prints a pass mark it cannot know, does not pass.
-export function pythonHarness({entry, path, callCheck = true}) {
-  return `# Benchmark harness, written by the runtime.
-import os, sys, re, importlib, importlib.util
-def _main():
-    def take(p):
-        if not os.path.exists(p): return ''
-        with open(p, encoding='utf-8') as f: t = f.read()
-        os.remove(p)
-        return t
-    nonce = take(${JSON.stringify(FIXTURE.nonce)}).strip()
-    tests = take(${JSON.stringify(FIXTURE.tests)})
-    prompt = take(${JSON.stringify(FIXTURE.prompt)})
-    entry, path = ${JSON.stringify(entry)}, ${JSON.stringify(path)}
-    pat = re.compile(r'^\\s*(?:async\\s+)?def\\s+' + re.escape(entry) + r'\\s*\\(|^' + re.escape(entry) + r'\\s*=', re.M)
-    found = [path] if os.path.isfile(path) else []
-    for root, dirs, files in os.walk('.'):
-        dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d not in ('__pycache__', 'node_modules'))
-        for f in sorted(files):
-            p = os.path.normpath(os.path.join(root, f))
-            if f.endswith('.py') and p not in found:
-                try:
-                    with open(p, encoding='utf-8') as h:
-                        if pat.search(h.read()): found.append(p)
-                except Exception: pass
-    mod, errors = None, []
-    for p in found:
-        d, stem = os.path.dirname(os.path.abspath(p)), os.path.splitext(os.path.basename(p))[0]
-        for x in (d, os.getcwd()):
-            if x not in sys.path: sys.path.insert(0, x)
-        try:
-            m = importlib.import_module(stem)
-            if not hasattr(m, entry):
-                spec = importlib.util.spec_from_file_location('bench_solution', p)
-                m = importlib.util.module_from_spec(spec); sys.modules['bench_solution'] = m; spec.loader.exec_module(m)
-            if hasattr(m, entry): mod = m; break
-        except Exception as e:
-            errors.append('%s: %s: %s' % (p, type(e).__name__, e))
-    if mod is None:
-        sys.stderr.write('no module defines %s%s\\n' % (entry, ('; ' + '; '.join(errors)) if errors else ''))
-        sys.exit(3)
-    ns = {}
-    if prompt:
-        try: exec(compile(prompt, 'prompt', 'exec'), ns)
-        except Exception: ns = {}
-    ns.update({k: v for k, v in vars(mod).items() if not k.startswith('__')})
-    candidate = getattr(mod, entry)
-    ns['candidate'] = candidate
-    exec(compile(tests, 'tests', 'exec'), ns)
-    if ${callCheck ? 'True' : 'False'} and callable(ns.get('check')): ns['check'](candidate)
-    sys.stdout.write('\\n${PASS_MARK} ' + nonce + '\\n'); sys.stdout.flush()
-_main()
-`;
-}
-// The JavaScript harness (CommonJS, run as a file by node): the same steps,
-// with node's assert module frozen before the solution loads. The tests run
-// with the entry bound by its own name and as candidate, the way MultiPL-E's
-// test programs read it. Known limit (as in the official harnesses): a value
-// whose equality always holds (Python __eq__) is not caught in-process.
-export function javascriptHarness({entry, path}) {
-  return `// Benchmark harness, written by the runtime.
-'use strict';
-(async () => {
-  const fs = require('fs'), p = require('path'), {pathToFileURL} = require('url');
-  const take = f => { if (!fs.existsSync(f)) return ''; const t = fs.readFileSync(f, 'utf8'); fs.unlinkSync(f); return t; };
-  const nonce = take(${JSON.stringify(FIXTURE.nonce)}).trim(), tests = take(${JSON.stringify(FIXTURE.tests)});
-  // The tests' assert module is frozen before the solution loads: patching it fails.
-  for (const m of ['assert', 'assert/strict']) { try { Object.freeze(require(m)); } catch (e) {} }
-  const entry = ${JSON.stringify(entry)}, first = ${JSON.stringify(path)};
-  const word = new RegExp('(^|[^\\\\w$])' + entry.replace(/\\$/g, '\\\\$') + '(?![\\\\w$])');
-  const found = fs.existsSync(first) ? [first] : [];
-  const walk = d => { for (const e of fs.readdirSync(d, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)) {
-    const f = p.join(d, e.name);
-    if (e.isDirectory()) { if (!e.name.startsWith('.') && e.name !== 'node_modules') walk(f); }
-    else if (/\\.(?:js|mjs|cjs)$/.test(e.name) && !found.includes(f) && word.test(fs.readFileSync(f, 'utf8'))) found.push(f);
-  } };
-  walk('.');
-  let fn = null; const errors = [];
-  for (const f of found) {
-    try {
-      const ns = await import(pathToFileURL(p.resolve(f)).href), d = ns.default;
-      fn = [ns[entry], d && d[entry], typeof d === 'function' && d.name === entry ? d : null].find(x => typeof x === 'function') || null;
-      if (!fn && !/\\.mjs$/.test(f)) {
-        const m = {exports: {}};
-        try { fn = new Function('require', 'module', 'exports', fs.readFileSync(f, 'utf8') + '\\n;return typeof ' + entry + ' === "function" ? ' + entry + ' : undefined;')(require, m, m.exports) || null; } catch (e) {}
-      }
-      if (fn) break;
-    } catch (e) { errors.push(f + ': ' + (e && e.message)); }
-  }
-  if (!fn) { console.error('no module defines ' + entry + (errors.length ? '; ' + errors.join('; ') : '')); process.exitCode = 3; return; }
-  const run = new Function('require', 'module', 'exports', 'candidate', ...(entry === 'candidate' ? [] : [entry]), tests);
-  await run(require, {exports: {}}, {}, fn, fn);
-  process.stdout.write('\\n${PASS_MARK} ' + nonce + '\\n');
-})().catch(e => { console.error(e && e.stack || String(e)); process.exitCode = 1; });
-`;
-}
+// The supervisors the check runs (src/bench-harness.js): static refusal, a
+// worker process without the nonce, pristine references, counted assertions
+// and a token-signed report.
+export { HARNESS_EXIT } from './bench-harness.js';
+export const pythonHarness = ({entry, path, callCheck = true}) => pyHarness({entry, path, callCheck, files: FIXTURE, passMark: PASS_MARK});
+export const javascriptHarness = ({entry, path}) => jsHarness({entry, path, files: FIXTURE, passMark: PASS_MARK});
 
 // --- tasks ------------------------------------------------------------------------
 
@@ -236,9 +173,9 @@ const taskId = (format, row, index) => clip(str(row.task_id) || str(row.name) ||
   .replace(/^(\d+)$/, format === 'mbpp' ? 'MBPP/$1' : '$1');
 
 // The room's goal: the task's own words, then the one thing to deliver.
-function goalOf({prompt, language, entry, params, format}) {
+function goalOf({prompt, language, entry, params, signature, format}) {
   // A generic row that names its entry without a signature gets the name alone.
-  const L = LANGS[language], sig = params.length || format !== 'generic' ? `${entry}(${params.join(', ')})` : entry;
+  const L = LANGS[language], sig = signature != null ? `${entry}(${signature})` : params.length || format !== 'generic' ? `${entry}(${params.join(', ')})` : entry;
   const deliver = `Deliver the ${L.name} function ${sig} in ${L.path}, using only the standard library.`;
   if (format === 'mbpp') return `${prompt.trim()}\n\n${deliver}`;
   if (format === 'generic' && !/(?:^|\n)\s*(?:def |function |async )/.test(prompt)) return `${prompt.trim()}\n\n${deliver}`;
@@ -274,7 +211,7 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
   if (f === 'humaneval') {
     language = 'python'; prompt = str(row.prompt); tests = str(row.test); promptFixture = prompt;
     const def = defsOf(prompt, PY_DEF).find(d => d.name === str(row.entry_point).trim());
-    entry = {name: str(row.entry_point).trim(), params: def?.params || []};
+    entry = {name: str(row.entry_point).trim(), params: def?.params || [], signature: def?.signature};
   } else if (f === 'mbpp') {
     language = 'python'; prompt = str(row.text) || str(row.prompt); callCheck = false;
     const list = row.test_list.filter(t => typeof t === 'string');
@@ -296,7 +233,7 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
     prompt = str(row.prompt); tests = Array.isArray(row.tests) ? row.tests.filter(t => typeof t === 'string').join('\n') : str(row.tests);
     const named = str(row.entry_point) || str(row.entry);
     const fromPrompt = promptEntry(prompt, language);
-    entry = named ? {name: named.trim(), params: fromPrompt?.name === named.trim() ? fromPrompt.params : []} : fromPrompt;
+    entry = named ? (fromPrompt?.name === named.trim() ? fromPrompt : {name: named.trim(), params: []}) : fromPrompt;
     if (language === 'python') promptFixture = /(?:^|\n)\s*(?:async\s+)?def\s/.test(prompt) ? prompt : '';
   }
   if (!entry?.name || !/^[A-Za-z_$][\w$]{0,63}$/.test(entry.name)) return {id, skip: 'no entry function could be read from the row'};
@@ -305,7 +242,7 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
   for (const [what, text] of [['tests', tests], ['prompt', promptFixture]])
     if (String(text).length > BENCH_LIMITS.fixture) return {id, skip: `its ${what} (${String(text).length} characters) exceed the check's ${BENCH_LIMITS.fixture}-character input file`};
   const params = entry.params || [];
-  const goal = goalOf({prompt, language, entry: entry.name, params, format: f});
+  const goal = goalOf({prompt, language, entry: entry.name, params, signature: entry.signature, format: f});
   if (goal.length > BENCH_LIMITS.goal) return {id, skip: `its prompt makes a goal of ${goal.length} characters (at most ${BENCH_LIMITS.goal})`};
   const card = benchCard({id, language, entry: entry.name, params, does: firstSentence(prompt, entry.name), tests, prompt: promptFixture, callCheck, nonce: nonce || newNonce()});
   return {id, format: f, language, entry: entry.name, prompt: goal, card};
@@ -334,6 +271,12 @@ async function sha256(text) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
+// The digest of the tasks a run holds (ids, goals and tests, in order): two
+// runs over the same tasks compare equal whatever page size or text fetched
+// them, and differ when a task's prompt or tests differ.
+// One task's digest (its goal and its tests), so runs compare task by task.
+export const taskDigest = async t => (await sha256(JSON.stringify([t.prompt, t.card?.requirements?.[0]?.check?.files?.[FIXTURE.tests] ?? '']))).slice(0, 16);
+export const tasksDigest = tasks => sha256(JSON.stringify(tasks.map(t => [t.id, t.prompt, t.card?.requirements?.[0]?.check?.files?.[FIXTURE.tests] ?? ''])));
 // The policy for dataset fetches: the owner's allowlist (FETCH_ALLOW, or the
 // fetcher's default) narrowed to BENCH_HOSTS, the deployment's own hosts
 // refused, archives (a .jsonl.gz served as octet-stream) allowed.
@@ -348,7 +291,12 @@ const rowsApi = u => u.hostname === 'datasets-server.huggingface.co' && u.pathna
 // throws: {text, final_url, bytes, error}. A datasets-server rows URL is
 // paged (offset/length, 100 a page) until `want` rows or the table's end,
 // and its pages are joined as JSON lines.
-export async function fetchDataset(url, {fetch, policy, want = BENCH_LIMITS.defaultLimit, redact = t => t} = {}) {
+// A rows page that fails (an HTTP error, a body without a rows array) is
+// asked again after each of PAGE_RETRY_MS; after that the pages already read
+// are kept and the result is marked partial (an error only when none was read).
+export const PAGE_RETRY_MS = Object.freeze([500, 1500]);
+const pause = ms => new Promise(done => setTimeout(done, ms));
+export async function fetchDataset(url, {fetch, policy, want = BENCH_LIMITS.defaultLimit, redact = t => t, sleep = pause} = {}) {
   let u;
   try { u = new URL(String(url)); } catch { return {text: '', error: 'source_refused: not a URL'}; }
   const deadline = Date.now() + policy.timeoutMs;
@@ -377,16 +325,35 @@ export async function fetchDataset(url, {fetch, policy, want = BENCH_LIMITS.defa
     if (!rowsApi(u)) return {text: await getText(u.href), final_url, bytes, error: null};
     const lines = [], start = Math.max(0, Number(u.searchParams.get('offset')) || 0);
     const total = Math.max(1, Math.min(BENCH_LIMITS.maxTasks, Number(want) || BENCH_LIMITS.defaultLimit));
+    let partial = null;
     for (let offset = start; lines.length < total;) {
       const page = new URL(u.href);
       page.searchParams.set('offset', String(offset));
       page.searchParams.set('length', String(Math.min(BENCH_LIMITS.pageRows, total - lines.length)));
-      const {rows, total: all} = parseRows(await getText(page.href));
-      lines.push(...rows.map(r => JSON.stringify(r)));
-      offset += rows.length;
-      if (!rows.length || (all !== undefined && offset >= all)) break;
+      let got = null;
+      for (let k = 0; ; k++) {
+        try {
+          let v;
+          try { v = JSON.parse(await getText(page.href)); } catch (e) { if (e instanceof FetchRefused) throw e; throw new FetchRefused('a rows page that is not JSON'); }
+          if (!plain(v) || !Array.isArray(v.rows)) throw new FetchRefused(`a rows page without rows${plain(v) && typeof v.error === 'string' ? ` (${clip(v.error, 120)})` : ''}`);
+          got = {rows: v.rows.map(r => plain(r?.row) ? r.row : r).filter(plain), all: Number.isInteger(v.num_rows_total) ? v.num_rows_total : undefined};
+          break;
+        } catch (e) {
+          // The deployment's own refusals (host, size, type) are never retried.
+          if (!(e instanceof FetchRefused) || /allowlist|refused|larger than|content type|binary|timeout/.test(e.message) || k >= PAGE_RETRY_MS.length) {
+            if (!lines.length) throw e;
+            partial = `rows from offset ${offset} could not be read (${clip(e.message, 160)}); the ${lines.length} rows before them are used`;
+            break;
+          }
+          await sleep(PAGE_RETRY_MS[k]);
+        }
+      }
+      if (!got) break;
+      lines.push(...got.rows.map(r => JSON.stringify(r)));
+      offset += got.rows.length;
+      if (!got.rows.length || (got.all !== undefined && offset >= got.all)) break;
     }
-    return {text: lines.join('\n'), final_url, bytes, error: null};
+    return {text: lines.join('\n'), final_url, bytes, error: null, ...(partial ? {partial} : {})};
   } catch (e) {
     const message = e instanceof FetchRefused ? `source_refused: ${e.message}` : `fetch failed: ${e?.message || e}`;
     return {text: '', final_url, bytes, error: clip(redact(redactText(message)))};
@@ -396,14 +363,14 @@ export async function fetchDataset(url, {fetch, policy, want = BENCH_LIMITS.defa
 // A dataset from {url} or {text} (pasted or uploaded): tasks, skipped rows,
 // the source's digest and counts. Over-large inline text, a refused URL and
 // an empty result come back as {error}.
-export async function loadDataset(dataset, {fetch, policy, limit = BENCH_LIMITS.defaultLimit, format = null, nonce = null, redact} = {}) {
+export async function loadDataset(dataset, {fetch, policy, limit = BENCH_LIMITS.defaultLimit, format = null, nonce = null, redact, sleep} = {}) {
   const d = typeof dataset === 'string' ? (/^https?:\/\/\S+$/i.test(dataset.trim()) ? {url: dataset.trim()} : {text: dataset}) : plain(dataset) ? dataset : {};
-  let text, source;
+  let text, source, partial = null;
   if (typeof d.url === 'string' && d.url.trim()) {
     if (!policy) return {error: 'source_refused: no fetch policy (the deployment\'s own host is not known)', source: clip(d.url, 300)};
-    const got = await fetchDataset(d.url.trim(), {fetch, policy, want: limit, redact});
+    const got = await fetchDataset(d.url.trim(), {fetch, policy, want: limit, redact, ...(sleep ? {sleep} : {})});
     if (got.error) return {error: got.error, source: clip(d.url, 300)};
-    text = got.text; source = clip(got.final_url || d.url, 300);
+    text = got.text; source = clip(got.final_url || d.url, 300); partial = got.partial || null;
   } else if (typeof d.text === 'string' && d.text.trim()) {
     if (new TextEncoder().encode(d.text).length > BENCH_LIMITS.inlineBytes) return {error: `the pasted dataset is larger than ${BENCH_LIMITS.inlineBytes} bytes`, source: 'inline'};
     text = d.text; source = clip(d.name ? `inline: ${d.name}` : 'inline', 120);
@@ -411,33 +378,49 @@ export async function loadDataset(dataset, {fetch, policy, limit = BENCH_LIMITS.
   const {rows, bad} = parseRows(text);
   const out = loadTasks(rows, {limit, format, nonce});
   if (!out.tasks.length) return {error: `no task could be read (${rows.length} rows, ${bad} unreadable lines${out.skipped[0] ? `; first skipped: ${out.skipped[0].reason}` : ''})`, source, skipped: out.skipped};
-  return {...out, source, rows: rows.length, bad, digest: await sha256(text)};
+  return {...out, source, rows: rows.length, bad, digest: await tasksDigest(out.tasks), ...(partial ? {partial} : {})};
 }
 
 // --- results ------------------------------------------------------------------------
 
-// One task room's outcome from its summary (ControlRoom.benchSummary): pass
-// when every card requirement passed, fail when one failed; without results,
-// by the room's status (S4b's completion records requirement_status first).
-// Returns null while the room is still going.
+// Errors that are the platform's, not the task's: Workers AI capacity and
+// rate limits, upstream and network failures, Artifacts and Container
+// outages. ControlRoom.benchSummary counts the room's error events that match.
+export const INFRA_ERROR = /AiError|InferenceUpstream|\b(?:3040|3043|429|500|502|503|504)\b|capacity|rate.?limit|overloaded|unavailable|temporarily|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|fetch failed|network|socket hang up|Artifacts \w+ failed|BUILD_EXECUTORS|Container|executor/i;
+const HOLD_ERROR = new Set(['card_failed', 'card_blocked', 'checks_blocked']);
+const HOLD_FAIL = new Set(['checks_failed', 'checks_exhausted', 'benchmark_failed']);
+// One task room's outcome from its summary (ControlRoom.benchSummary), or
+// null while it is still going:
+//  - pass: every card requirement passed; fail: one failed (S4b records
+//    requirement_status, and ends a room whose hidden tests failed as
+//    failed / benchmark_failed);
+//  - error, never scored: checks that could not run (passed null,
+//    checks_blocked), a card that does not validate, the room's own error,
+//    an observer's stop, agents stalled by platform failures, and a turn
+//    budget spent mostly on them;
+//  - fail: an agent failed, or the room's own work used up the turn budget;
+//  - unverified: complete without requirement results.
 export function taskOutcome(s) {
   if (!s) return {outcome: 'error', detail: 'the room gave no summary'};
   const terminal = ['complete', 'failed', 'error'].includes(s.status) || (s.status === 'paused' && !s.busy);
   if (!terminal) return null;
   const ids = s.requirements || [], st = s.requirement_status || {};
-  const tested = ids.filter(id => st[id] && typeof st[id].passed === 'boolean');
   const requirements = ids.map(id => ({id, passed: st[id] && typeof st[id].passed === 'boolean' ? st[id].passed : null, detail: clip(st[id]?.detail, 300)}));
-  if (ids.length && tested.length === ids.length) {
-    const failed = requirements.filter(r => !r.passed);
-    return {outcome: failed.length ? 'fail' : 'pass', requirements, detail: failed.length ? `${failed.map(r => r.id).join(', ')} failed` : ''};
-  }
-  if (tested.some(id => !st[id].passed)) return {outcome: 'fail', requirements, detail: 'a requirement failed'};
-  if (s.status === 'error') return {outcome: 'error', requirements, detail: clip(s.failure || 'the room stopped with an error', 300)};
-  if (s.status === 'failed') return {outcome: 'fail', requirements, detail: clip(s.failure || 'the room failed', 300)};
+  const failed = requirements.filter(r => r.passed === false), recorded = requirements.filter(r => st[r.id]);
+  const out = (outcome, detail) => ({outcome, requirements, detail: clip(detail, 300)});
+  if (ids.length && requirements.every(r => r.passed === true)) return out('pass', '');
+  if (failed.length) return out('fail', `${failed.map(r => r.id).join(', ')} failed`);
+  if (recorded.some(r => r.passed === null)) return out('error', `the checks could not run: ${recorded.find(r => r.passed === null).detail || 'infrastructure'}`);
   const kind = s.pause?.kind;
-  if (kind === 'card_failed' || kind === 'card_blocked') return {outcome: 'error', requirements, detail: clip(`${kind}: ${s.pause.text || ''}`, 300)};
-  if (s.status === 'complete' || kind === 'v8_checks_pending') return {outcome: 'unverified', requirements, detail: kind === 'v8_checks_pending' ? 'the card\'s checks did not run' : 'complete without requirement results'};
-  return {outcome: 'fail', requirements, detail: clip(s.pause?.text || 'the turn budget ended before the task was solved', 300)};
+  if (s.status === 'error') return out('error', s.failure || 'the room stopped with an error');
+  if (HOLD_ERROR.has(kind)) return out('error', `${kind}: ${s.pause.text || ''}`);
+  if (s.stopped) return out('error', 'the room was stopped by an observer');
+  if (s.stalled_infra) return out('error', `agents stopped after repeated platform failures (${s.infra_errors} error events)`);
+  if (s.status === 'failed') return out('fail', s.failure || 'the room failed');
+  if (HOLD_FAIL.has(kind)) return out('fail', `${kind}: ${s.pause.text || ''}`);
+  if (s.status === 'complete' || kind === 'v8_checks_pending') return out('unverified', kind === 'v8_checks_pending' ? 'the card\'s checks did not run' : 'complete without requirement results');
+  if (s.infra_errors >= 3 && s.infra_errors * 4 >= (s.turns || 0)) return out('error', `the turn budget went mostly on platform failures (${s.infra_errors} of ${s.turns} turns)`);
+  return out('fail', s.pause?.text || 'the turn budget ended before the task was solved');
 }
 
 const SCORED = new Set(['pass', 'fail', 'timeout']);
@@ -473,6 +456,8 @@ export function compareRuns(a, b) {
     shared: shared.length, compared: both.length, pass_at_1_a: pa, pass_at_1_b: pb, difference: pa === null || pb === null ? null : pb - pa,
     only_a: both.filter(t => t.a.outcome === 'pass' && t.b.outcome !== 'pass').map(t => t.task_id),
     only_b: both.filter(t => t.b.outcome === 'pass' && t.a.outcome !== 'pass').map(t => t.task_id),
-    same_dataset: !!a?.dataset?.digest && a?.dataset?.digest === b?.dataset?.digest, tasks
+    // The same tasks: each shared task's digest (its goal and tests) is equal in both runs.
+    same_dataset: shared.length > 0 && shared.every(id => rowsA.get(id).digest && rowsA.get(id).digest === rowsB.get(id).digest),
+    differing: shared.filter(id => rowsA.get(id).digest !== rowsB.get(id).digest), tasks
   };
 }

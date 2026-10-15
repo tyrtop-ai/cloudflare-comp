@@ -1,22 +1,30 @@
 // B1: a v8 room started with a provided card (a benchmark task's). The
 // card writer is never called and Clef vets nothing: the card is validated
-// and taken as revision 1. The benchmark's tests, harness and nonce reach no
-// model request. benchSummary reports the room to the BenchRun DO; S4b's
-// completion (requirement_status, status) is stubbed here.
+// and taken as revision 1. S4b's compileCard runs the hidden check through
+// the real Container verification (verifyCard): a correct solution
+// completes the room, a wrong one ends it failed (benchmark_failed) with no
+// repair sent. The benchmark's tests, harness, nonce and check output reach
+// no model request. benchSummary reports the room to the BenchRun DO.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { liveRoom, events, fileBlocks } from './helpers/room.js';
 import { taskFromRow, taskOutcome, FIXTURE } from '../src/bench.js';
 import { HUMANEVAL, MULTIPLE_JS } from './helpers/bench-fixtures.js';
 
+const hasPython = spawnSync('python3', ['--version']).status === 0;
 // Clef: Root is atomic (no split); any other question passes.
 const clef = (split = 0.1) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? split : 0.9}]))});
-const SOLUTIONS = {total: {path: 'solution.py', content: 'def total(xs):\n    return sum(xs)\n'}, add_two: {path: 'solution.js', content: 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n'}};
-function benchRoom(task, {split} = {}) {
+const SOLUTIONS = {
+  total: {right: 'def total(xs):\n    return sum(xs)\n', wrong: 'def total(xs):\n    return len(xs)\n', path: 'solution.py'},
+  add_two: {right: 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n', wrong: 'function add_two(a, b) { return a * b; }\nmodule.exports = { add_two };\n', path: 'solution.js'}
+};
+function benchRoom(task, {split, wrong = false} = {}) {
+  const sol = SOLUTIONS[task.entry];
   const r = liveRoom({
     card: () => { throw new Error('the card writer must not be called for a provided card'); },
     clef: clef(split),
-    leaf: () => fileBlocks([SOLUTIONS[task.entry]], {summary: `wrote ${SOLUTIONS[task.entry].path}`, done: true})
+    leaf: () => fileBlocks([{path: sol.path, content: wrong ? sol.wrong : sol.right}], {summary: `wrote ${sol.path}`, done: true})
   });
   // Workers AI usage on every model answer, for the token counts.
   const run = r.env.AI.run;
@@ -26,59 +34,61 @@ function benchRoom(task, {split} = {}) {
 // Every piece of hidden text a task's card carries: each test line, the harness, the nonce.
 function hiddenTexts(task) {
   const files = task.card.requirements[0].check.files;
-  return [files[FIXTURE.nonce], FIXTURE.harness, FIXTURE.tests, FIXTURE.nonce, 'BENCH-PASS', 'Benchmark harness',
+  return [files[FIXTURE.nonce], FIXTURE.harness, FIXTURE.tests, FIXTURE.nonce, 'BENCH-PASS', 'Benchmark harness', 'disallowed_construct', 'AssertionError',
     ...files[FIXTURE.tests].split('\n').map(l => l.trim()).filter(l => l.length >= 10 && !task.prompt.includes(l))];
 }
 
 for (const [label, row] of [['HumanEval (Python)', HUMANEVAL[0]], ['MultiPL-E (JavaScript)', MULTIPLE_JS[0]]]) {
-  test(`provided card, ${label}: validated, no card writer, no vetting, and no model request carries the benchmark's tests`, async () => {
+  test(`provided card, ${label}: validated, no writer or vetting; the hidden check runs through compileCard and verifyCard, and passes`, {skip: label.includes('Python') && !hasPython && 'python3 is not installed'}, async () => {
     const task = taskFromRow(row);
     const {room, calls, drain, sql} = benchRoom(task);
-    assert.equal((await room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card)).status, 'running');
+    assert.equal((await room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card, {executor: 'bench-pool-0'})).status, 'running');
     await drain();
     assert.equal(calls.card.length, 0, 'no card writer call');
     assert.ok(!calls.clef.some(c => Object.keys(c.questions).some(k => k.startsWith('requirement_'))), 'Clef vets no requirement');
     assert.ok(!room.spans().some(s => s.name === 'writeCard' || s.name === 'vetRequirements'));
     const card = room.snapshot().card;
     assert.equal(card.source, 'benchmark');
-    assert.deepEqual(card.deliverables.map(d => [d.name, d.path]), [[task.entry, task.language === 'python' ? 'solution.py' : 'solution.js']]);
+    assert.deepEqual(card.deliverables.map(d => [d.name, d.path]), [[task.entry, SOLUTIONS[task.entry].path]]);
     assert.deepEqual(card.requirements.map(r => [r.id, r.hidden, r.check.kind]), [['R1', true, 'command']]);
-    assert.equal(card.requirements[0].untraced, undefined);
     assert.deepEqual(sql.exec('SELECT rev,reason FROM card_revisions').toArray().map(r => [r.rev, r.reason]), [[1, 'benchmark']]);
     assert.equal(events(room, 'card_provided').length, 1);
-    assert.equal(events(room, 'card_written').length, 0);
-    // Root's promise is the function, with no example taken from the hidden check.
     const [promise] = room.promisedOf('root');
     assert.equal(promise.name, task.entry);
-    assert.deepEqual(promise.serves, ['R1']);
-    assert.equal(promise.examples, undefined);
-    // Root wrote the function itself and the room waits for the card's checks (S4b runs them).
-    assert.ok(calls.leaf.length >= 1, 'Root, atomic, wrote the code');
-    assert.equal(room.get('status'), 'paused');
-    assert.equal(room.snapshot().pause.kind, 'v8_checks_pending');
-    // The tests are hidden from every model request: the system prompts and the user JSON alike.
+    assert.equal(promise.examples, undefined, 'no example from the hidden check');
+    // The real path: S4b's compileCard ran the harness in the (Node-run) Container verification.
+    assert.equal(room.get('executor_key'), 'bench-pool-0');
+    assert.equal(room.get('status'), 'complete', JSON.stringify(room.snapshot().pause));
+    assert.equal(room.read('requirement_status', {}).R1.passed, true, JSON.stringify(room.read('requirement_status', {})));
+    assert.equal(events(room, 'checks_passed').length, 1);
+    const s = room.benchSummary();
+    assert.deepEqual([s.status, s.busy, s.card_source, s.requirements, s.compile_passed, s.stopped, s.stalled_infra], ['complete', false, 'benchmark', ['R1'], true, false, false]);
+    assert.equal(s.tokens.calls, calls.raw.length);
+    assert.equal(s.tokens.total, 150 * calls.raw.length);
+    assert.ok(s.container_runs >= 1 && s.container_ms >= 0);
+    assert.equal(taskOutcome(s).outcome, 'pass');
     const sent = calls.raw.map(r => r.system + '\n' + r.text).join('\n');
     assert.ok(sent.includes(task.entry), 'the requests do talk about the task');
     for (const h of hiddenTexts(task)) assert.ok(!sent.includes(h), `a model request carries hidden text: ${h}`);
-    assert.ok(!JSON.stringify(calls.clef).includes(hiddenTexts(task)[0]), 'nor any Clef question');
-    // benchSummary for the BenchRun DO.
+    assert.ok(!JSON.stringify(s).includes(hiddenTexts(task)[0]), 'the summary carries no nonce');
+  });
+
+  test(`provided card, ${label}: a wrong solution fails the hidden check; the room ends failed (benchmark_failed) and no repair is sent`, {skip: label.includes('Python') && !hasPython && 'python3 is not installed'}, async () => {
+    const task = taskFromRow(row);
+    const {room, calls, drain} = benchRoom(task, {wrong: true});
+    await room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card);
+    await drain();
+    assert.equal(room.get('status'), 'failed');
+    assert.equal(room.snapshot().pause.kind, 'benchmark_failed');
+    assert.equal(room.read('requirement_status', {}).R1.passed, false);
+    assert.equal(calls.leaf.length, 1, 'Root wrote once and was never asked to repair');
+    assert.equal(room.problems('1=1').length, 0, 'no problem was built from the hidden test');
     const s = room.benchSummary();
-    assert.deepEqual([s.status, s.busy, s.pause.kind, s.card_source, s.requirements], ['paused', false, 'v8_checks_pending', 'benchmark', ['R1']]);
-    assert.equal(s.tokens.calls, calls.raw.length);
-    assert.deepEqual([s.tokens.prompt, s.tokens.completion, s.tokens.total], [120 * calls.raw.length, 30 * calls.raw.length, 150 * calls.raw.length]);
-    assert.equal(s.container_ms, 0);
-    assert.ok(s.started_at > 0 && s.last_event_at >= s.started_at);
-    assert.ok(!JSON.stringify(s).includes(hiddenTexts(task)[0]), 'the summary carries no check text');
-    assert.equal(taskOutcome(s).outcome, 'unverified', 'without S4b the checks never ran');
-    // S4b's completion, stubbed: the requirement passed and the room completed.
-    room.save('requirement_status', {R1: {passed: true, digest: 'd', ts: Date.now(), detail: ''}});
-    room.set('status', 'complete');
-    room.span('container', 'card', 1000, 1800, {});
-    const done = room.benchSummary();
-    assert.equal(done.container_ms, 800);
-    assert.equal(taskOutcome(done).outcome, 'pass');
-    room.save('requirement_status', {R1: {passed: false, detail: 'exit 1'}});
-    assert.equal(taskOutcome(room.benchSummary()).outcome, 'fail');
+    assert.equal(taskOutcome(s).outcome, 'fail');
+    const detail = room.read('requirement_status', {}).R1.detail;
+    assert.ok(detail, 'the dashboard keeps the failure detail');
+    const sent = calls.raw.map(r => r.system + '\n' + r.text).join('\n');
+    for (const h of [...hiddenTexts(task), detail.slice(0, 40)]) assert.ok(!sent.includes(h), `a model request carries hidden text: ${h}`);
   });
 }
 
@@ -149,4 +159,62 @@ test('provided card, a split Root: the splitter and both workers hear the contra
   assert.ok(r.calls.leaf.length >= 2, 'both workers wrote');
   const sent = r.calls.raw.map(x => x.system + '\n' + x.text).join('\n');
   for (const h of hiddenTexts(task)) assert.ok(!sent.includes(h), `a model request carries hidden text: ${h}`);
+});
+
+test('benchSummary names why a room paused: Workers AI failures and an observer\'s stop score error, its own spent budget fail', async () => {
+  const task = taskFromRow(HUMANEVAL[0]);
+  // Workers AI down: every model call fails with a capacity error; the worker stalls after three.
+  const down = benchRoom(task);
+  down.env.AI.run = async (model, input) => { if (input.messages) throw new Error('AiError: 3040: Capacity temporarily exceeded, please try again.'); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.1 : 0.9}]))}; };
+  await down.room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card);
+  await down.drain();
+  let s = down.room.benchSummary();
+  assert.equal(s.status, 'paused');
+  assert.equal(s.stalled_infra, true, JSON.stringify(s));
+  assert.ok(s.infra_errors >= 3);
+  assert.equal(taskOutcome(s).outcome, 'error');
+  // A model that answers nonsense: the room's own failure, scored fail.
+  const bad = benchRoom(task);
+  bad.env.AI.run = async (model, input) => input.messages ? {response: 'not a file block at all'} : {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.1 : 0.9}]))};
+  await bad.room.start(task.prompt, 4, {pipeline: 'v8'}, 'bench-abcdef012345-0-1', task.card);
+  await bad.drain();
+  s = bad.room.benchSummary();
+  assert.equal(s.status, 'paused');
+  assert.deepEqual([s.stalled_infra, s.stopped], [false, false]);
+  assert.equal(taskOutcome(s).outcome, 'fail');
+  // An observer's stop.
+  const stopped = benchRoom(task);
+  let release;
+  const gate = new Promise(r => { release = r; }), run = stopped.env.AI.run;
+  stopped.env.AI.run = async (model, input) => { await gate; return run(model, input); };
+  await stopped.room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-2', task.card);
+  await new Promise(r => setTimeout(r, 5));
+  await stopped.room.stop();
+  release();
+  await stopped.drain();
+  s = stopped.room.benchSummary();
+  // The turn in flight finishes after Stop: a solution it already checked keeps its result;
+  // without one, the stop is the platform's side and scores error.
+  assert.equal(s.stopped, true);
+  assert.equal(taskOutcome(s).outcome, s.requirement_status.R1 ? 'pass' : 'error');
+  assert.equal(taskOutcome({...s, requirement_status: {}}).outcome, 'error');
+});
+
+test('purge deletes a scored room\'s repositories and storage, answers counts only, and refuses while the room runs', {skip: !hasPython && 'python3 is not installed'}, async () => {
+  const task = taskFromRow(HUMANEVAL[0]);
+  const {room, drain, store} = benchRoom(task);
+  const deleted = [];
+  store.delete = async name => { deleted.push(name); store.repos.delete(name); };
+  await room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card);
+  room.busy = true;
+  assert.deepEqual(await room.purge(), {error: 'busy'});
+  room.busy = false;
+  await drain();
+  assert.equal(room.get('status'), 'complete');
+  const repos = room.allNodes().map(n => n.repo_name);
+  const out = await room.purge();
+  assert.deepEqual(out, {repos_deleted: repos.length, repos_failed: 0});
+  assert.deepEqual(deleted.sort(), [...new Set(repos)].sort());
+  assert.equal(room.allNodes().length, 0);
+  assert.equal(room.get('status', 'idle'), 'idle');
 });

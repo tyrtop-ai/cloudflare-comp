@@ -131,7 +131,7 @@
         <section class="panel bench-panel" id="bench-panel">
           <div class="section-head"><span class="counter">06</span><h2>Benchmarks</h2><span class="right-note">One v8 room per task · room settings from the pickers on the left</span></div>
           <div class="bench-form">
-            <label for="bench-url">Dataset URL <span class="faint">(huggingface.co or raw.githubusercontent.com: JSON lines, or a datasets-server rows URL)</span></label>
+            <label for="bench-url">Dataset URL <span class="faint">(a JSON lines file on raw.githubusercontent.com, or a datasets-server.huggingface.co rows URL)</span></label>
             <input id="bench-url" class="mono" spellcheck="false" autocomplete="off" placeholder="https://datasets-server.huggingface.co/rows?dataset=openai%2Fopenai_humaneval&amp;config=openai_humaneval&amp;split=test" />
             <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E, or {"id", "prompt", "tests"})</span></label>
             <textarea id="bench-text" class="mono bench-text" rows="3" spellcheck="false" placeholder='{"id": "t1", "language": "python", "prompt": "Write a function triple(n)…", "entry": "triple", "tests": "assert triple(2) == 6"}'></textarea>
@@ -141,6 +141,13 @@
               <div><label for="bench-concurrency">Rooms at once</label><input id="bench-concurrency" class="mono" type="number" inputmode="numeric" min="1" max="16" step="1" value="2" /></div>
               <div class="bench-label"><label for="bench-label">Label</label><input id="bench-label" placeholder="e.g. Scout workers" autocomplete="off" /></div>
             </div>
+            <label for="bench-keep">Keep task rooms</label>
+            <select id="bench-keep">
+              <option value="failed">Keep the rooms that did not pass, delete the passed ones (default)</option>
+              <option value="all">Keep every room</option>
+              <option value="none">Delete every room once it is scored</option>
+            </select>
+            <p class="helper" id="bench-slots">Rooms at once is capped by the deployment's Container slots: each room builds on one executor of the run's pool.</p>
             <button class="primary" id="bench-start" title="Run the benchmark">Run benchmark <span>↗</span></button>
             <p class="helper">Each task gets its own room, with a project card fixed by the benchmark: the function, and the benchmark's tests as a hidden check no agent sees. The run goes on with this page closed. The turn budget is the one above.</p>
           </div>

@@ -823,6 +823,48 @@ export async function vetRequirements(env, {goal='', requirements=[]}) {
   }));
   return {ps:answered.flat(),failed};
 }
+// v8 §4.3 (S4b): Clef judges a document requirement, yes or no, from the
+// file alone: state {requirement, file:{path, text}}, the question CLEF.judge
+// with the check's own question appended. The whole document is read, in
+// parts of at most JUDGE_CHARS cut at a heading (judgeParts), up to
+// JUDGE_PARTS calls; the requirement passes if any part does (p >=
+// JUDGE_BAR, decision U11), and the reading stops at the first that does.
+// A document longer than the parts hold says so in the result (over_cap).
+// Returns {passed, p, detail, parts, over_cap}; a Clef that gives no
+// probability throws (the room retries it, then reads it as
+// infrastructure, never as the document's failure). MOCK passes.
+export const JUDGE_BAR = 0.6, JUDGE_CHARS = 6000, JUDGE_PARTS = 4;
+const HEADING=/\n(?=#{1,6}\s|\S[^\n]*\n[=-]{3,}\s*\n)/g;
+export function judgeParts(text, {size=JUDGE_CHARS, cap=JUDGE_PARTS}={}) {
+  let rest=String(text??'');
+  const parts=[];
+  while(rest.length&&parts.length<cap) {
+    if(rest.length<=size){parts.push(rest);rest='';break;}
+    const head=rest.slice(0,size),cut=[...head.matchAll(HEADING)].map(m=>m.index).filter(i=>i>0).at(-1)||size;
+    parts.push(rest.slice(0,cut));
+    rest=rest.slice(cut).replace(/^\n/,'');
+  }
+  if(!parts.length)parts.push('');
+  return Object.assign(parts,{left:rest.length});
+}
+export async function judgeRequirement(env, {says='', question='', path='', content=''}) {
+  if (env.MOCK_AI === 'true') return {passed:true,p:1,detail:'',parts:1,over_cap:false};
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('unsupported Clef decision model');
+  const instructions=`${CLEF.judge}${question?` Specifically: ${String(question).slice(0,300)}`:''}`;
+  const parts=judgeParts(content),over_cap=parts.left>0;
+  let best=-1,read=0;
+  for (const text of parts) {
+    const output=await clefRun(env,'judgeRequirement',selector,{model:clef,state:{requirement:String(says).slice(0,200),file:{path:String(path),text}},questions:{judge:{type:'noul',instructions}}});
+    const p=output?.answers?.judge?.noul;
+    if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability judging ${path}`);
+    best=Math.max(best,p);read++;
+    if(best>=JUDGE_BAR)break;
+  }
+  const cap=over_cap?`; only its first ${JUDGE_PARTS*JUDGE_CHARS} characters (${JUDGE_PARTS} parts) were read, ${parts.left} more were not`:'';
+  return {passed:best>=JUDGE_BAR,p:best,parts:read,over_cap,detail:best>=JUDGE_BAR?'':`Clef judged p=${best.toFixed(2)}: ${String(question||says).slice(0,200)}${cap}`};
+}
 // v7.15.6 (run13): no triage. A failed run with no frame in a component is
 // a requirement the manager routes by the plan (readRequirement in
 // src/problems.js), not a module for a model to guess from the source.

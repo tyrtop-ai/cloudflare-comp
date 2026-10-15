@@ -188,6 +188,7 @@ input[type=range]:focus {box-shadow:none;}
 .req-chip { display:inline-block; min-width:62px; text-align:center; padding:1px 6px; border-radius:3px; font-size:9px; font-family:ui-monospace,monospace; letter-spacing:.035em; text-transform:uppercase; border:thin solid var(--code-bd); background:var(--code-bg); color:var(--muted); }
 .req-chip.pass { color:var(--ok); border-color:var(--ok); }
 .req-chip.fail { color:var(--bad); border-color:var(--bad); }
+.req-chip.stale { opacity:.6; border-style:dashed; }
 .card-hold { padding:8px 10px; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
 .onode-card { margin:8px 0; }
 

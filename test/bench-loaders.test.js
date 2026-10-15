@@ -314,6 +314,7 @@ test('aggregate and compareRuns: pass@1 over scored tasks, mean time, tokens, Co
   const runA = {id: 'aaaaaaaaaaaa', label: 'scout', dataset: {digest: 'd1'}, tasks: [{task_id: 'x', outcome: 'pass'}, {task_id: 'y', outcome: 'fail'}, {task_id: 'z', outcome: 'pass'}, {task_id: 'only-a', outcome: 'pass'}]};
   const runB = {id: 'bbbbbbbbbbbb', label: 'coder', dataset: {digest: 'd1'}, tasks: [{task_id: 'x', outcome: 'pass'}, {task_id: 'y', outcome: 'pass'}, {task_id: 'z', outcome: 'fail'}, {task_id: 'w', outcome: 'pass'}]};
   runA.tasks.push({task_id: 'w', outcome: 'unverified'});
+  for (const t of [...runA.tasks, ...runB.tasks]) t.digest = 'd-' + t.task_id;
   const c = compareRuns(runA, runB);
   assert.equal(c.shared, 4);
   assert.equal(c.compared, 3, 'an unverified side is left out of the paired rates');
@@ -322,5 +323,103 @@ test('aggregate and compareRuns: pass@1 over scored tasks, mean time, tokens, Co
   assert.equal(c.difference, 0);
   assert.deepEqual([c.only_a, c.only_b], [['z'], ['y']]);
   assert.equal(c.same_dataset, true);
+  assert.deepEqual(c.differing, []);
+  runB.tasks[0].digest = 'changed';
+  assert.deepEqual([compareRuns(runA, runB).same_dataset, compareRuns(runA, runB).differing], [false, ['x']], 'a task whose goal or tests differ');
   assert.deepEqual(c.tasks.map(t => t.task_id), ['x', 'y', 'z', 'w']);
+});
+
+// ------------------------------------------------------------------ review fixes
+test('signatures keep * and ** markers and mark defaults, with no parameter cap and never a default\'s value or the body', () => {
+  const {signatureText} = bench;
+  assert.equal(signatureText('a, b, c, d, e, f, g'), 'a, b, c, d, e, f, g');
+  assert.equal(signatureText('*nums'), '*nums');
+  assert.equal(signatureText('a, **opts'), 'a, **opts');
+  assert.equal(signatureText("s, width=10, fill='*'"), 's, width=…, fill=…');
+  assert.equal(signatureText('xs: List[int], key: Callable[[int], int] = abs, *, strict: bool = (1, 2)'), 'xs, key=…, *, strict=…');
+  assert.equal(signatureText('self, a, /, b'), 'a, /, b');
+  assert.equal(signatureText('a = 1, ...rest'), 'a=…, ...rest');
+  const row = {task_id: 627, text: 'Write a python function to find the smallest missing number from a sorted array.',
+    code: 'def find_First_Missing(array,start=0,end=None):\n    if end is None:  # secret-marker\n        end = len(array) - 1\n    return start', test_list: ['assert find_First_Missing([0,1,2,3]) == 4']};
+  const t = taskFromRow(row, 0, {nonce: 'n0nce'});
+  assert.match(t.prompt, /Deliver the Python function find_First_Missing\(array, start=…, end=…\) in solution\.py/);
+  assert.ok(!t.prompt.includes('secret-marker') && !t.prompt.includes('None'));
+  const many = taskFromRow({task_id: 1, text: 'Sum seven numbers.', code: 'def many(a, b, c, d, e, f, g):\n    return a', test_list: ['assert many(1,2,3,4,5,6,7) == 28']});
+  assert.match(many.prompt, /many\(a, b, c, d, e, f, g\)/);
+  const nested = taskFromRow({task_id: 2, text: 'Pick.', code: 'def pick(xs, key=dict(a=1)):\n    return xs', test_list: ['assert pick([1]) == [1]']});
+  assert.match(nested.prompt, /pick\(xs, key=…\)/);
+});
+
+test('a failed rows page is asked again twice; after that the pages already read are kept and the dataset is marked partial', async () => {
+  const base = 'https://datasets-server.huggingface.co/rows?dataset=toy%2Fbench&config=js&split=test';
+  const rows = Array.from({length: 150}, (_, i) => ({...MULTIPLE_JS[0], name: `Toy_${i}_add_two`}));
+  let calls = 0, page2 = [];
+  const fetch = async url => {
+    calls++;
+    const u = new URL(url), o = +u.searchParams.get('offset'), n = +u.searchParams.get('length');
+    if (o === 100) {
+      const next = page2.shift();
+      if (next) return next();
+    }
+    return new Response(JSON.stringify({rows: rows.slice(o, o + n).map(row => ({row})), num_rows_total: rows.length}), {headers: {'content-type': 'application/json'}});
+  };
+  const slept = [], sleep = async ms => { slept.push(ms); };
+  const err500 = () => new Response('oops', {status: 500, headers: {'content-type': 'text/plain'}});
+  const errBody = () => new Response(JSON.stringify({error: 'The dataset is being processed'}), {headers: {'content-type': 'application/json'}});
+  // Two failures, then the page: the whole table.
+  page2 = [err500, errBody];
+  let r = await fetchDataset(base, {fetch, policy: policy(), want: 150, sleep});
+  assert.equal(r.error, null);
+  assert.equal(parseRows(r.text).rows.length, 150);
+  assert.equal(r.partial, undefined);
+  assert.deepEqual(slept, [500, 1500]);
+  // Three failures: the first page is kept, marked partial.
+  page2 = [err500, err500, errBody]; slept.length = 0; calls = 0;
+  r = await fetchDataset(base, {fetch, policy: policy(), want: 150, sleep});
+  assert.equal(parseRows(r.text).rows.length, 100);
+  assert.match(r.partial, /rows from offset 100 could not be read \(a rows page without rows \(The dataset is being processed\)\); the 100 rows before them are used/);
+  assert.equal(calls, 4, 'one good page and three tries, never a page per offset');
+  page2 = [err500, err500, err500];
+  const loaded = await loadDataset({url: base}, {fetch, policy: policy(), limit: 150, sleep});
+  assert.equal(loaded.tasks.length, 100);
+  assert.match(loaded.partial, /could not be read/);
+  // The first page failing is an error, and a refusal is never retried.
+  const down = await fetchDataset(base, {fetch: async () => err500(), policy: policy(), want: 10, sleep});
+  assert.match(down.error, /http 500/);
+  slept.length = 0;
+  assert.match((await fetchDataset('https://datasets-server.example.org/rows?x=1', {fetch, policy: policy(), want: 10, sleep})).error, /not on the allowlist/);
+  assert.deepEqual(slept, []);
+});
+
+test('the dataset digest covers the tasks used, not the text fetched: the same tasks through other pages give the same digest', async () => {
+  const base = 'https://datasets-server.huggingface.co/rows?dataset=toy%2Fbench&config=py&split=test';
+  const rows = Array.from({length: 30}, (_, i) => ({...HUMANEVAL[2], task_id: `Toy/${i}`}));
+  const fetch = async url => { const u = new URL(url), o = +u.searchParams.get('offset'), n = +u.searchParams.get('length');
+    return new Response(JSON.stringify({rows: rows.slice(o, o + n).map(row => ({row})), num_rows_total: 30, extra: n}), {headers: {'content-type': 'application/json'}}); };
+  const a = await loadDataset({url: base}, {fetch, policy: policy(), limit: 10, nonce: 'n'});
+  const b = await loadDataset({text: rows.slice(0, 10).map(r => JSON.stringify(r)).join('\n') + '\n\n'}, {policy: policy(), limit: 10, nonce: 'n'});
+  assert.equal(a.digest, b.digest);
+  const c = await loadDataset({url: base}, {fetch, policy: policy(), limit: 20, nonce: 'n'});
+  assert.notEqual(a.digest, c.digest, 'twenty tasks are not ten');
+  assert.equal(await bench.taskDigest(a.tasks[3]), await bench.taskDigest(c.tasks[3]), 'but each shared task digests the same');
+});
+
+test('infrastructure outcomes score error, never fail: blocked checks, an observer stop, Workers AI stalls, a budget spent on platform failures', () => {
+  const base = {busy: false, requirements: ['R1'], requirement_status: {}, turns: 20, infra_errors: 0};
+  const o = s => taskOutcome({...base, ...s});
+  assert.equal(o({status: 'paused', requirement_status: {R1: {passed: null, detail: 'not run: BUILD_EXECUTORS binding unavailable'}}, pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
+  assert.equal(o({status: 'paused', pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
+  assert.equal(o({status: 'paused', stopped: true}).outcome, 'error');
+  assert.equal(o({status: 'paused', stalled_infra: true, infra_errors: 3}).outcome, 'error');
+  assert.equal(o({status: 'paused', infra_errors: 6, turns: 20}).outcome, 'error');
+  // The room's own work: a budget spent on its turns, a model that kept answering badly, a failed agent.
+  assert.equal(o({status: 'paused', infra_errors: 1}).outcome, 'fail');
+  assert.equal(o({status: 'paused', stalled_infra: false}).outcome, 'fail');
+  assert.equal(o({status: 'failed', failure: 'root failed'}).outcome, 'fail');
+  assert.equal(o({status: 'failed', pause: {kind: 'benchmark_failed', text: 't'}, requirement_status: {R1: {passed: false, detail: 'exit 1'}}}).outcome, 'fail');
+  assert.equal(o({status: 'complete', compile_passed: true, requirement_status: {R1: {passed: true}}}).outcome, 'pass');
+  assert.ok(bench.INFRA_ERROR.test('AiError: 3040: Capacity temporarily exceeded'));
+  assert.ok(!bench.INFRA_ERROR.test('Bad action response: no pieces'));
+  const a = aggregate([{outcome: 'error', status: 'done'}, {outcome: 'pass', status: 'done'}, {outcome: 'fail', status: 'done'}]);
+  assert.deepEqual([a.scored, a.pass_at_1, a.error], [2, 0.5, 1]);
 });
