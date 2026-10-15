@@ -122,3 +122,23 @@ test('late Qwen spawn requests receive the same scope gate as initial decomposit
   assert.equal(store.created,3);
   assert.equal(room.node('root').phase,'manager');
 });
+
+// v8 (S6): the scope and contract questions are CLEF.scope and CLEF.contract
+// (§6.4): a piece is in scope when it produces part of a deliverable, of any
+// kind; a page is no longer out of scope for not being source code.
+test('v8: one Clef request asks CLEF.scope of every piece, and CLEF.contract of each contract a piece adds',async()=>{
+  const {clefText}=await import('../src/prompts.js');
+  const {scopeInterfaces}=await import('../src/model.js');
+  const asked=[];
+  const env={PIPELINE:'v8',AI:{run:async(_model,args)=>{asked.push(args);return {answers:Object.fromEntries(Object.keys(args.questions).map(k=>[k,{noul:0.9}]))};}}};
+  const pieces=[{label:'Page',task:'Write index.html',interfaces:[{name:'index.html',kind:'page',path:'index.html',does:'the page'}]},
+    {label:'Guide',task:'Write GUIDE.md',interfaces:[{name:'GUIDE.md',kind:'doc',path:'GUIDE.md',does:'how to use the page'}]}];
+  assert.deepEqual(await scopeChildren(env,'A page and a guide','A page and a guide',pieces),[0.9,0.9]);
+  assert.deepEqual(Object.values(asked[0].questions).map(q=>q.instructions),[clefText('scope',{i:0}),clefText('scope',{i:1})]);
+  assert.doesNotMatch(JSON.stringify(asked[0].questions),/SOURCE CODE|start\(\)/);
+  const names=await scopeInterfaces(env,'A page and a guide','A page and a guide',pieces,[{name:'index.html',kind:'page',path:'index.html'}]);
+  assert.deepEqual(names,[null,[{name:'GUIDE.md',p:0.9}]]);
+  assert.deepEqual(asked[1].questions,{names_1_0:{type:'noul',instructions:clefText('contract',{i:1,contract:'doc GUIDE.md: how to use the page'})}});
+  assert.deepEqual(asked[1].state.parent_contracts,['index.html']);
+  assert.deepEqual(asked[1].state.proposed_children.map(c=>c.contracts),[['page index.html: the page'],['doc GUIDE.md: how to use the page']]);
+});

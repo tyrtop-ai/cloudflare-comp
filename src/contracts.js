@@ -14,7 +14,7 @@
 // Pure: no room, no model.
 import { PROTECTED_NAMES, noValue } from './linker.js';
 import { isPath } from './protocol.js';
-import { toolchainOf, extractSurface } from './toolchains.js';
+import { toolchainOf, extractSurface, renderImport } from './toolchains.js';
 
 export const CONTRACT_KINDS = Object.freeze(['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
 const KINDS = new Set(CONTRACT_KINDS);
@@ -219,6 +219,22 @@ export function contractLine(c) {
   if (c.examples?.length) parts.push(`e.g. ${c.examples.map(e => exampleText(c, e)).join('; ')}`);
   const body = parts.filter(Boolean).join('; ');
   return `${kind === 'function' ? 'function ' : ''}${contractHead(c)}${body ? ': ' + body : ''}`;
+}
+
+// v8 (S6, ROLE.worker): the contracts of other parts a piece may use, as
+// data, each with the exact reference its writer writes: a function by the
+// import_line of the toolchain row it is written in (its path's row, else the
+// project's code languages; one line per row when several could be meant);
+// a route by its method and path; a file, page, doc, data file or command by
+// its project path. Nothing here names a language: the rows do. At most 8,
+// as usesText. facts: {rows, languages}, as contractErrors reads them.
+export function useReferences(items, facts = null) {
+  return (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').slice(0, 8).map(f => {
+    const kind = kindOf(f);
+    const reference = kind === 'function' ? functionRows(f, facts).map(r => renderImport(r, f.name)).filter(Boolean).join(' or ') || f.name
+      : kind === 'route' ? f.name : f.path || f.name;
+    return {contract: contractLine(f), ...(typeof f.owner === 'string' && f.owner ? {from: f.owner} : {}), reference};
+  });
 }
 
 // ------------------------------------------------------------ name rules (§2.2)

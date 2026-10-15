@@ -8,9 +8,10 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, TOOLCHAINS, installed as installedRows } from './toolchains.js';
+import { toolchainById, TOOLCHAINS, installed as installedRows, projectFacts } from './toolchains.js';
 import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
 import { getArtifactStore } from './artifact-store.js';
+import { triggerText, RETRY } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
@@ -24,7 +25,7 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
-import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine } from './contracts.js';
+import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, useReferences, PLACED_KINDS, functionRows } from './contracts.js';
 import { branchDirectory } from './assembly.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -445,6 +446,27 @@ export class ControlRoom extends DurableObject {
     const own=codeLanguages(this.read('card',null));
     return own.length?own:this.installedToolchains().filter(r=>r.id!=='text'&&(r.executables||[]).length).map(r=>r.id);
   }
+  // v8 (S6): what a v8 prompt reads beside an agent's own contracts, as data
+  // (§6.2, ROLE.worker, ROLE.splitter): the contracts of other parts it may
+  // use, each with the exact reference to write (useReferences), and the
+  // project facts, whose example reference names one of its own function
+  // uses, or NAME (projectFacts).
+  v8Inputs(id) {
+    const uses=this.plannedUses(id);
+    return {uses:useReferences(uses,this.contractFacts()),project:projectFacts(this.read('card',null),{uses:uses.filter(f=>contractKind(f)==='function')})};
+  }
+  // v8 (S6): a provided answer names the contract by its line and the
+  // reference its toolchain row renders (useReferences), never a JavaScript
+  // import line; v7 keeps providedText.
+  providedFor(f, owner) {
+    if(!this.v8())return providedText(f,owner);
+    const [u]=useReferences([{...f,owner}],this.contractFacts());
+    return clip(`${u.contract}. It is delivered by "${owner}". Refer to it exactly as: ${u.reference}. Use it rather than writing your own.`,600);
+  }
+  // How a worker refers to a name: v7's import line, or under v8 its row's (a contract it names, else a function of the card's languages).
+  referenceLine(name, c=null) { return this.v8()?useReferences([c||{name}],this.contractFacts())[0]?.reference||name:`const { ${name} } = require('./${name}');`; }
+  // The path of an agent's one placed contract, for the single-fence fallback (§3.2), or null.
+  placedPath(id) {const p=this.promisedOf(id).filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
   // The toolchain rows this deployment runs: the Container's last inventory
   // (meta toolchain_inventory, recorded by the verification step from S4),
   // else every row of the phase-1 image (src/toolchains.js).
@@ -505,7 +527,8 @@ export class ControlRoom extends DurableObject {
   // model and keeps its one model for all three.
   inferenceEnv(role='manager') {
     const cfg=this.settings(),model=role==='worker'?cfg.worker_model:role==='compiler'?cfg.compiler_model:cfg.model;
-    return {...this.env, MODEL_NAME:model||cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold, TRACE:r=>this.traceCall(r,role)};
+    // v8 (S6): PIPELINE tells src/model.js to use the v8 prompts (pipelineV8).
+    return {...this.env, MODEL_NAME:model||cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold, PIPELINE:this.v8()?'v8':'v7', TRACE:r=>this.traceCall(r,role)};
   }
   configure(raw) {
     const prior=this.settings(),cfg=normalizeRoomSettings(raw, prior);
@@ -623,6 +646,8 @@ export class ControlRoom extends DurableObject {
       your_own_files: ownFiles.filter(f => !f.path.startsWith('memory/') && mine(f) && (!builderMode || this.env.MOCK_AI==='true' || isBuilderGluePath(f.path))).sort((a,b)=>named.has(b.path)-named.has(a.path)).slice(0, 8).map(f => ({ path: f.path, revision: f.revision, content: f.content.slice(0, 3000) })),
       ...(answered.length ? {answered_requests: answered} : {}),
       ...(notes.length ? {last_turn_notes: notes} : {}),
+      // v8 (S6, ROLE.worker): the contracts of other parts it may use, each with its exact reference, and the project facts.
+      ...(worker && this.v8() ? (({uses, project}) => ({...(uses.length ? {contracts_you_may_use: uses} : {}), project}))(this.v8Inputs(id)) : {}),
       new_messages: inbox
     };
   }
@@ -1094,10 +1119,9 @@ export class ControlRoom extends DurableObject {
   // splitter and the checks read it; v7 keeps its function wording.
   withContract(task, n) {
     if(this.v8()) {
-      const items=this.promisedOf(n.id),uses=usesText(this.plannedUses(n.id));
-      const own=items.length?`Your contracts, delivered under exactly these names and paths: ${items.map(contractLine).join('; ')}.`:'';
-      const text=[own,uses].filter(Boolean).join(' ');
-      return text?`${task}\n\n${text}`:task;
+      // v8 (S6): the uses travel apart, with their references (view's contracts_you_may_use).
+      const items=this.promisedOf(n.id);
+      return items.length?`${task}\n\nYour contracts, delivered under exactly these names and paths: ${items.map(contractLine).join('; ')}.`:task;
     }
     const own=[contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')})),usesText(this.plannedUses(n.id))].filter(Boolean).join(' ');return own?`${task}\n\n${own}`:task;}
   canSplit(parentId, count=2) {
@@ -3177,6 +3201,8 @@ export class ControlRoom extends DurableObject {
         .filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
       production:[...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>c.id),
       leaks:(text,to)=>this.leaksHiddenAgentIds(text,[to]),busy:id=>[...this.activeTurns].some(a=>a===id||a.startsWith(id+'.')),
+      // v8: a retask's contracts read as contracts (validateManagerActions).
+      v8:this.v8(),
       // v7.15 §10.1: what this manager promised, and what each child carries;
       // none in a room without promises, whose retasks take no interfaces.
       promise:this.planned()?{own:this.promisedOf(m).map(f=>f.name),items:this.promisedOf(m),
@@ -3390,7 +3416,8 @@ export class ControlRoom extends DurableObject {
       const kind=ctx.kindOf(c.id),view={id:c.id,label:c.label,kind,status:c.status,task:clip(c.task,400)},under=id=>id===c.id||String(id||'').startsWith(c.id+'.');
       // Its promise: what this manager answers requests from (decision 2).
       const functions=parse(c.interfaces,[]).map(f=>f.name);
-      if(functions.length&&['worker','manager'].includes(kind))view.functions=functions;
+      // v8 (S6): a child's contracts, of any kind, under "contracts".
+      if(functions.length&&['worker','manager'].includes(kind))view[this.v8()?'contracts':'functions']=functions;
       if(kind==='worker'||kind==='manager') {
         const rows=mine.filter(p=>given(p).some(t=>under(t.to))),last=rows.at(-1);
         Object.assign(view,await this.boundaryView(c.id),{history:{assigned:rows.flatMap(given).filter(t=>under(t.to)).length,
@@ -3402,7 +3429,8 @@ export class ControlRoom extends DurableObject {
     }
     const input={your_responsibility:clip(n.task,700),can_escalate:!!n.parent,children,
       // proposed: decided by the rules, in this cluster because its child is a party here; the model may change it.
-      problems:call.map(({id,p,dec,trigger,placed})=>({id,kind:p.kind,stage:p.stage,trigger:trigger||'proposed',detail:clip(p.detail,700),
+      // v8 (S6): the trigger says what it means (TRIGGERS), as the v7 system text listed it.
+      problems:call.map(({id,p,dec,trigger,placed})=>({id,kind:p.kind,stage:p.stage,trigger:this.v8()?triggerText(trigger||'proposed'):trigger||'proposed',detail:clip(p.detail,700),
         parties:placed.map(x=>({child:x.child||(x.place==='outside'?'(outside this branch)':'(unknown)'),file:base(x.owner_path||x.path),role:x.role})),
         evidence:(p.evidence||[]).map(e=>clip(e,300)),default:{action:dec.action==='exhausted'?'close':dec.action,...dec.child?{child:dec.child}:{}},
         // v7.15.13 (run20, R3): a fresh wave's row carries who declined or changed a file for its failure without progress; the model hears it.
@@ -3670,8 +3698,8 @@ export class ControlRoom extends DurableObject {
     for(const r of requests) {
       const w=this.node(r.worker),up=w?.parent,name=r.name;
       if(!up||!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id).length)continue;
-      const own=answered.items?.find(f=>f.name===name),offer=answered.provided||this.planIndex().has(name)?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=`const { ${name} } = require('./${name}');`;
-      const [kind,value,fn]=offer?['provided',providedText(offer.item,offer.owner),providedFn(offer.item,offer.owner)]:
+      const own=answered.items?.find(f=>f.name===name),offer=answered.provided||this.planIndex().has(name)?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=this.referenceLine(name);
+      const [kind,value,fn]=offer?['provided',this.providedFor(offer.item,offer.owner),providedFn(offer.item,offer.owner)]:
         answered.exported?['unowned',`No piece of the application promises ${r.want}, but "${answered.exported}"'s module exports it: import it on its own line, with the name as the path: ${line} The builder links it to that module. Do not write it yourself.`,null]:
         ['unowned',`No piece of the application promises ${r.want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`,null];
       this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id);
@@ -4113,7 +4141,7 @@ export class ControlRoom extends DurableObject {
     const shard=this.managerStub(id);
     if(!shard)return routeOwner(this.inferenceEnv(),question,candidates,{strict,keywords,ranked});
     const cfg=this.settings(),start=Date.now();
-    const got=await shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold,traced:true});
+    const got=await shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold,traced:true,...this.v8()?{pipeline:'v8'}:{}});
     // A shard that predates traced answers the owner itself.
     if(!got||typeof got!=='object'||!('spans' in got)||!('owner' in got))return got;
     for(const r of Array.isArray(got.spans)?got.spans:[])this.traceCall({...r,via:'shard'},'manager');
@@ -4678,7 +4706,7 @@ export class ControlRoom extends DurableObject {
       try {
         content=await generateFile(this.inferenceEnv('worker'),{node:current,path,intent:`Correct ${path} so that your files meet your contract`,task:this.withContract(current.task,current),
           answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
-          children:this.children(id),assemblyInputs:[],correction:clip(body,1800)});
+          children:this.children(id),assemblyInputs:[],correction:clip(body,1800),...this.v8()?{v8:true,...this.v8Inputs(id)}:{}});
       } catch(e) {this.event(id,'contract_precheck_failed',clip(`The correction of ${path} failed (${e?.message||e}); the check after the commit decides.`,600));return;}
       if(fileGateError(path,content,{packages:this.settings().packages})) {
         this.event(id,'contract_precheck_failed',clip(`The correction of ${path} was not source that parses; the check after the commit decides.`,600));return;
@@ -4723,7 +4751,9 @@ export class ControlRoom extends DurableObject {
     } else checked.push(...promised);
     const names=checked.map(f=>f.name),elsewhere=this.planned()?this.promisedElsewhere(id):new Map(),foreign=new Map([...elsewhere].filter(([n,f])=>!GENERIC_NAMES.has(n)&&(!this.v8()||contractKind(f)==='function')));
     // Integration: with the names its manager answered as provided (run12's deleteTicket keeps its import of getTickets, which R5 put on the data piece's promise, and is not sent back for the planned readTickets).
-    const uses=this.plannedUses(id,this.read(`fn_answers:${id}`,[]).filter(a=>a.kind==='provided'&&validName(a.fn?.name)).map(a=>a.fn.name)),store=uses.filter(f=>f.storage);
+    // v8 (S6): JavaScript's rules read only the uses that are JavaScript functions; a page's link to a stylesheet or a Python import is not an unused call.
+    const jsUse=f=>contractKind(f)==='function'&&functionRows(f,this.contractFacts()).some(r=>r.id==='javascript');
+    const uses=this.plannedUses(id,this.read(`fn_answers:${id}`,[]).filter(a=>a.kind==='provided'&&validName(a.fn?.name)).map(a=>a.fn.name)).filter(f=>!this.v8()||jsUse(f)),store=uses.filter(f=>f.storage);
     const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&(({isOp})=>promised.some(f=>storageFunction(f,isOp)))(this.levelOps(this.node(id).parent));
     const esm=[...files.values()].some(c=>esmSyntax(c));
     // v7.15.7 review: the await rule is gated on the room (shaped): where any promise of the plan states what it returns, every promised name a worker calls is read for await, one R5 grows or the splitter left without returns too; a room where none states it (v7.15.5's and v7.15.6's replays) is read as before.
@@ -5295,7 +5325,7 @@ export class ControlRoom extends DurableObject {
     }
     if(hit) {
       this.event(m,'route_provided',how);
-      await this.routeReply(m,hop.request_id,'provided',providedText(hit.item,hit.child.label),providedFn(hit.item,hit.child.label));
+      await this.routeReply(m,hop.request_id,'provided',this.providedFor(hit.item,hit.child.label),providedFn(hit.item,hit.child.label));
       return;
     }
     // Sent, then targeted: a crash between the two leaves a hop with no
@@ -5333,7 +5363,7 @@ export class ControlRoom extends DurableObject {
     const like=this.requestPerformers(worker.id,hop);
     if(like.length) {
       this.event(m,'route_plan',`${want}: no piece promises it; ${listed(like.map(f=>`${f.name} from "${f.owner}"`))} performs it by its words.`);
-      return `No piece of the application promises ${want}, but ${listed(like.map(f=>`${signature(f)}${f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:''} from "${f.owner}"`))} ${like.length>1?'perform':'performs'} it: import ${like.length>1?'the one you need':'it'} on its own line, by exactly its name, with the name as the path (const { ${like[0].name} } = require('./${like[0].name}');), and use it. No piece exports ${hop.name}: do not import it.`;
+      return `No piece of the application promises ${want}, but ${listed(like.map(f=>`${signature(f)}${f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:''} from "${f.owner}"`))} ${like.length>1?'perform':'performs'} it: import ${like.length>1?'the one you need':'it'} on its own line, by exactly its name, with the name as the path (${this.referenceLine(like[0].name,like[0])}), and use it. No piece exports ${hop.name}: do not import it.`;
     }
     let inside=true;
     try {
@@ -5346,7 +5376,7 @@ export class ControlRoom extends DurableObject {
     const grown=growable(hop.name)?await this.requestGrowth(m,worker,hop):null;
     if(grown)return grown;
     return growable(hop.name)?`No piece of the application promises ${want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`:
-      `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: const { ${hop.name} } = require('./${hop.name}');`:'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
+      `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: ${this.referenceLine(hop.name)}`:this.v8()?'refer to it by a descriptive name the project facts allow,':'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
   }
   // v7.15.15 (G1, run23; review #1-#4, #11): a function no piece promises,
   // outside its requester's assignment, grows the plan as an operation no
@@ -5367,7 +5397,7 @@ export class ControlRoom extends DurableObject {
     if(held||like) {
       const o=held||like;
       this.event(m,'route_provided',`${want}: ${held?`"${o.owner}" promises it`:`the plan has it as ${o.item.name} from "${o.owner}"`}.`);
-      return {kind:'provided',value:providedText(o.item,o.owner),fn:providedFn(o.item,o.owner)};
+      return {kind:'provided',value:this.providedFor(o.item,o.owner),fn:providedFn(o.item,o.owner)};
     }
     // Review 3 (#4): only into a request row: a G2/G3 row goes to its reader when nobody covers it, and its requester would write the function twice.
     const open=this.openRequestRow(name);
@@ -5715,8 +5745,15 @@ export class ControlRoom extends DurableObject {
         const promised=this.promisedOf(id);
         if(promised.length)before.your_promised_functions=promised;
         // Review (nested splits): a manager's splitter hears its uses too, so its pieces can name them.
-        const uses=usesText(this.plannedUses(id));
-        if(uses)before.your_responsibility=`${before.your_responsibility}\n\n${uses}`;
+        // v8 (S6): as data: the contracts available to it, each with its reference, and the project facts.
+        if(this.v8()) {
+          const {uses:available,project}=this.v8Inputs(id);
+          if(available.length)before.contracts_available=available;
+          before.project=project;
+        } else {
+          const uses=usesText(this.plannedUses(id));
+          if(uses)before.your_responsibility=`${before.your_responsibility}\n\n${uses}`;
+        }
       }
       const observedAssembly=n.label==='Temporary builder'?this.assemblyFingerprint(n.parent):null;
       if(n.label==='Temporary builder') {
@@ -5801,10 +5838,11 @@ export class ControlRoom extends DurableObject {
           delete before.root_scope;
           delete before.split_feedback;
           delete before.your_promised_functions;
-          raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned()});
+          delete before.contracts_available;
+          raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
           this.set(`split_feedback:${id}`,'');
         }
-      } else raw=await decide(this.inferenceEnv(!this.manager(id)&&!isRuntimeNode(n)?'worker':'manager'),before,{planned:this.planned()});
+      } else raw=await decide(this.inferenceEnv(!this.manager(id)&&!isRuntimeNode(n)?'worker':'manager'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
       // At the top, a split answer with no pieces (none, or code in their
       // place) is malformed too: Root's goal is always divisible, and an
       // atomic Root wrote run10's application as one module. Below it, a
@@ -5821,9 +5859,9 @@ export class ControlRoom extends DurableObject {
         // v7.15.16 review: placeholder labels keep the YES one turn only, so the last turn before a pause asks Clef again with them, and Clef may route the piece to an implementation.
         if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,(this.read('failures',{})[id]||0)<(raw.vague?1:2)?'1':'');
         // v7.15.14 review: a split over max_children is feedback for the next turn's splitter (its count, the bound and its labels), never for Clef.
-        if(splitting && raw.oversize)this.save(`split_feedback:${id}`,{kind:'size',reason:tooMany(raw.oversize.count,raw.oversize.bound),count:raw.oversize.count,bound:raw.oversize.bound,proposed:raw.oversize.labels});
+        if(splitting && raw.oversize)this.save(`split_feedback:${id}`,{kind:'size',reason:(this.v8()?RETRY.too_many:tooMany)(raw.oversize.count,raw.oversize.bound),count:raw.oversize.count,bound:raw.oversize.bound,proposed:raw.oversize.labels});
         // v7.15.16 (run25): so is one whose labels stayed placeholders, with those labels.
-        if(splitting && raw.vague)this.save(`split_feedback:${id}`,{kind:'labels',reason:vagueText(raw.vague),proposed:raw.vague});
+        if(splitting && raw.vague)this.save(`split_feedback:${id}`,{kind:'labels',reason:(this.v8()?RETRY.vague:vagueText)(raw.vague),proposed:raw.vague});
         this.incrementFailures(id,'Bad action response');
         return;
       }
@@ -6158,7 +6196,7 @@ export class ControlRoom extends DurableObject {
                 node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,
                 files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
                 children:this.children(id),assemblyInputs:[],
-                correction:diagnostic
+                correction:diagnostic,...this.v8()&&!isRuntimeNode(current)?{v8:true,...this.v8Inputs(id)}:{}
               });
             if(this.env.MOCK_AI!=='true') {
               // The worker's own file must parse before it is committed. A

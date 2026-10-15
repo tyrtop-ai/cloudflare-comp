@@ -19,6 +19,8 @@ export const TOOLCHAINS = Object.freeze([
     aliases:['js','node','nodejs','javascript','ecmascript','mjs','cjs'],
     package_runners:[['npx'],['npm','exec'],['npm','x'],['npm','install'],['npm','i'],['npm','ci'],['npm','add']],
     import_line:"const { {name} } = require('./{name}');", import_line_esm:"import { {name} } from './{name}';",
+    // v8 S6: what a linker may rely on for this row's files, sent as data (the v7 linker prompt's paragraph).
+    binding_rules:"To change an imported name without touching its local uses, alias it: const { realName: localName } = require(...) or import { realName as localName } from '...'. Once an import's path is right, the runtime itself fixes four binding shapes, so for these fix only the path: one name destructured from a module whose module.exports is a function or class of that name, a module bound whole that the file only calls while it exports an object holding that name, a module bound whole whose only export is one function when the file only calls it, and a module bound whole that the file only passes on as a value while it exports an object holding that name.",
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
     stack:'v8', stdlib:'node-builtins', glue:[], image:'build' }),
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,

@@ -858,9 +858,11 @@ export function validateManagerActions(actions, call, ctx) {
       // it, cleaned and repaired as a split's (R1-R4), a function this
       // manager promised taking its item (the description travels down).
       let interfaces;
-      if(a.interfaces!==undefined&&ctx.promise) {
+      // v8 (S6): FORMAT.manager names a retask's new contracts "contracts".
+      const given=a.interfaces!==undefined?a.interfaces:ctx.v8?a.contracts:undefined;
+      if(given!==undefined&&ctx.promise) {
         // v8 (S2): ctx.v8 reads contract fields; a model's serves never stays (a carried item keeps its own).
-        const items=normalizeInterfaces(Array.isArray(a.interfaces)?a.interfaces:[a.interfaces],{v8:!!ctx.v8}),own=ctx.promise?.items||[];
+        const items=normalizeInterfaces(Array.isArray(given)?given:[given],{v8:!!ctx.v8}),own=ctx.promise?.items||[];
         interfaces=repairInterfaces([{label:child,interfaces:items}],own).spawn[0].interfaces.map(f=>own.find(x=>x.name===f.name)||f);
       }
       gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300),...interfaces?{interfaces}:{}});actionOf.set(retask.at(-1),a);

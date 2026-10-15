@@ -120,3 +120,64 @@ test('v7.15.9: the model picker and the settings agree, and each model is called
     assert.equal(c.args.messages[1].content,'u','no soft switch on another model');
   }
 });
+
+// ------------------------------------------------------------------ v8 (S6)
+// Under v8 (the room's env says PIPELINE 'v8') every Clef question is a
+// CLEF text from src/prompts.js (§6.4), with state keys about work, not code.
+test('v8: the split gate asks CLEF.split, and CLEF.split_retry after a rejected division',async()=>{
+  const {CLEF}=await import('../src/prompts.js');
+  const asked=[];
+  const env={PIPELINE:'v8',AI:{run:async(_name,input)=>{asked.push(input);return {answers:{should_split:{noul:0.8}}};}}};
+  assert.equal((await shouldSplit(env,'A page and its styles',{})).split,true);
+  assert.equal(asked[0].questions.should_split.instructions,CLEF.split);
+  assert.equal(asked[0].questions.should_split.type,'noul');
+  await shouldSplit(env,'A page and its styles',{split_feedback:{reason:'both pieces wrote the page'}});
+  assert.equal(asked[1].questions.should_split.instructions,CLEF.split_retry);
+  assert.deepEqual(asked[1].state.previous_split_rejection,{reason:'both pieces wrote the page'});
+  // A v7 room keeps its question, byte for byte.
+  await shouldSplit({AI:env.AI},'x',{});
+  assert.match(asked[2].questions.should_split.instructions,/^Can this requested CODE be written/);
+});
+
+test('v8: routing, matching, picking and the assignment check ask the CLEF questions over contracts of any kind',async()=>{
+  const {CLEF,clefText}=await import('../src/prompts.js');
+  const {routeOwner,matchFunction,pickPiece,ownsNeed}=await import('../src/model.js');
+  const asked=[];
+  const env={PIPELINE:'v8',AI:{run:async(_name,input)=>{asked.push(input);return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.9}]))};}}};
+  const kids=[{id:'root.1',label:'Page',task:'Write index.html',known_topics:[],files:['index.html']},{id:'root.2',label:'Styles',task:'Write styles.css',known_topics:[],files:['styles.css']}];
+  await routeOwner(env,'Who links the stylesheet?',kids,{keywords:false});
+  assert.deepEqual(Object.values(asked[0].questions).map(q=>q.instructions),[clefText('owner',{i:0}),clefText('owner',{i:1})]);
+  const items=[{name:'styles.css',kind:'file',path:'styles.css',does:'the page styles',owner:'Styles'},{name:'GET /items',kind:'route',does:'lists the items',owner:'Server'}];
+  await matchFunction(env,{need:'the page styles',name:'styles.css'},items);
+  assert.equal(asked[1].questions.fn_0.instructions,clefText('match',{j:0}));
+  assert.deepEqual(asked[1].state.contracts.map(c=>c.contract),['file styles.css: the page styles','route GET /items: lists the items']);
+  assert.equal(asked[1].state.functions,undefined);
+  await pickPiece(env,items[0],[{label:'Page',task:'Write index.html'},{label:'Styles',task:'Write styles.css'}]);
+  assert.equal(asked[2].questions.piece_1.instructions,clefText('pick',{j:1,contract:'file styles.css: the page styles'}));
+  assert.equal(asked[2].state.contract,'file styles.css: the page styles');
+  await ownsNeed(env,{assigned_code:'Write the page',need:'a stylesheet',name:'styles.css'});
+  assert.equal(asked[3].questions.inside.instructions,CLEF.owns_need);
+  assert.deepEqual(asked[3].state,{assigned_work:'Write the page',needed:{need:'a stylesheet',expected_name:'styles.css'}});
+});
+
+test('v8: the splitter is PRINCIPLES + ROLE.splitter + FORMAT.splitter, never with SPLIT_USES, and its data is the user JSON',async()=>{
+  const {systemPrompt}=await import('../src/prompts.js');
+  const {SPLIT_USES}=await import('../src/model.js');
+  let called;
+  const env={PIPELINE:'v8',MODEL_NAME:'@cf/qwen/qwen3-30b-a3b-fp8',AI:{run:async(_name,args)=>{called=args;return {response:JSON.stringify({reason:'Page and styles apart',pieces:[
+    {label:'Page',task:'Write index.html',contracts:[{name:'index.html',kind:'page',path:'index.html',does:'the page'}],uses:['styles.css']},
+    {label:'Styles',task:'Write styles.css',contracts:[{name:'styles.css',kind:'file',path:'styles.css',does:'the styles'}]}]})};}}};
+  const promised=[{name:'index.html',kind:'page',path:'index.html',does:'the page',serves:['R1']}];
+  const project={languages:['text'],conventions:[{language:'text',files:'.html .css'}],run:[],decisions:[]};
+  const split=await decompose(env,{your_id:'root',your_responsibility:'A one-page site',root_scope:'A one-page site',max_child_writers:8,max_children:4,
+    your_promised_functions:promised,contracts_available:[{contract:'file logo.svg',reference:'logo.svg'}],project},{planned:true,facts:{rows:[],languages:['text']}});
+  assert.equal(called.messages[0].content,systemPrompt('splitter'));
+  assert.ok(!called.messages[0].content.includes(SPLIT_USES.trim().slice(0,40)));
+  const user=JSON.parse(called.messages[1].content);
+  assert.deepEqual(Object.keys(user),['assignment','contracts_you_deliver','contracts_available','project','goal_scope_boundary','max_pieces']);
+  assert.deepEqual(user.contracts_you_deliver,[{name:'index.html',kind:'page',path:'index.html',does:'the page'}]);
+  assert.equal(user.max_pieces,4);
+  assert.deepEqual(user.project,project);
+  assert.deepEqual(split.spawn.map(c=>[c.label,c.interfaces.map(f=>f.name),c.uses||[]]),[['Page',['index.html'],['styles.css']],['Styles',['styles.css'],[]]]);
+  assert.equal(split.summary,'Page and styles apart');
+});
