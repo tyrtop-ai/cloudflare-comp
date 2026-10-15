@@ -3,6 +3,9 @@ import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
 import { workerAction } from './worker-output.js';
+import { systemPrompt, CLEF } from './prompts.js';
+import { validateCard } from './card.js';
+import { TOOLCHAINS } from './toolchains.js';
 export { NO_ANSWER };
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 const HYBRID = '@cf/qwen/qwen3-30b-a3b-fp8';
@@ -393,9 +396,11 @@ export async function decompose(env, context, opts = {}) {
     const items=spawnObjects(splitPieces(parsed,{v8})),pieces=items.filter(spawnPiece);
     // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
     if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,output,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
-    const {spawn,inferred}=normalizeSpawn(pieces,promised,{v8}),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||!['C7','C8'].includes(e.check));
+    // v8 (S3): C7 and C8 are v7's (deleted in v8, §2.2), and names follow the toolchain rows (opts.facts).
+    const {spawn,inferred}=normalizeSpawn(pieces,promised,{v8}),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal,facts:v8?opts.facts||null:null}).filter(e=>planned&&!v8||!['C7','C8'].includes(e.check));
     // v7.15.14 (run21): the pieces counted are those the admission spawns, test pieces aside (testPieces); more than max_children is a size failure.
-    const tests=testPieces(spawn,{promised,stated:goalMethods(goal),goal}),size=spawn.length-tests.length;
+    // v8: a test piece is a deliverable like any other (the card lists one when the goal asks for tests).
+    const tests=v8?[]:testPieces(spawn,{promised,stated:goalMethods(goal),goal}),size=spawn.length-tests.length;
     return {parsed,text,output,spawn,inferred,vague,bad,size,tests,over:size>cap,ok:size>=2&&size<=available,count:vague.length+bad.length};
   };
   const done=v=>{if(!v.spawn)return v.parsed;const {pieces:_,...parsed}=v.parsed;return {...(v8?parsed:v.parsed),spawn:v.spawn,interfaces_inferred:v.inferred};};
@@ -588,6 +593,60 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
   return {edits,issues};
 }
 
+// v8 §1.5: the card writer, Root's first call under v8. It runs on the
+// room's compiler model (the card is the compiler's specification), with
+// the system prompt PRINCIPLES + ROLE.card + FORMAT.card and the run's data
+// in the user JSON. One retry, in the same call, hears the validation
+// errors (decompose's pattern); a retry that does not parse never replaces
+// a first answer that did. Under MOCK_AI a fixed, neutral card.
+export const MOCK_CARD = Object.freeze({card:1,summary:'Notes on the goal',languages:['text'],
+  deliverables:[{name:'NOTES.md',kind:'doc',path:'NOTES.md',does:'notes on the goal'}],
+  requirements:[{id:'R1',says:'The notes exist',source:'notes',serves:['NOTES.md'],check:{kind:'file',path:'NOTES.md'}}],decisions:[]});
+export const CARD_MAX_TOKENS = 3000;
+export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[]}={}) {
+  const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
+  const check=raw=>validateCard(raw,{goal,installed:rows,base});
+  if (env.MOCK_AI === 'true') return {...check(MOCK_CARD),raw_head:'',attempts:0};
+  const user=JSON.stringify({goal:String(goal).slice(0,GOAL_LIMIT),
+    toolchains:rows.map(t=>({id:t.id,files:t.extensions,...(t.run_file?{run_file:t.run_file}:{}),...(t.test?{test:t.test}:{}),executables:t.executables||[]})),
+    ...(base_digest?{existing_files:base_digest}:{}),...(prior_card?{current_card:prior_card}:{})});
+  const system=systemPrompt('card');
+  const read=output=>{
+    const text=withoutThinking(output).trim(),parsed=parseObject(text);
+    if(parsed.parse_error)return {head:text.slice(0,200),parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[]};
+    return {head:text.slice(0,200),parsed,...check(parsed)};
+  };
+  const first=read(await run(env,system,user,CARD_MAX_TOKENS));
+  // A blocked card, or one naming a language this deployment lacks, stops the room as it is: no retry.
+  if(!first.errors.length||first.card?.blocked||first.unsupported.length)return {card:first.card,errors:first.errors,unsupported:first.unsupported,raw_head:first.head,attempts:1};
+  const second=read(await run(env,`${system}\n\nYour previous card had these problems; answer again with the whole corrected card as one json object:\n- ${first.errors.slice(0,20).join('\n- ')}`,user,CARD_MAX_TOKENS));
+  const best=second.parsed.parse_error&&!first.parsed.parse_error?first:second;
+  return {card:best.card,errors:best.errors,unsupported:best.unsupported,raw_head:best.head,attempts:2};
+}
+// v8 §1.4: Clef vets the card writer's requirements against the goal, one
+// batched call per 12 (scopeChildren's grouping), the traced ones too: an
+// invented requirement costs a repair round later. [{id, p}]; MOCK keeps all.
+export async function vetRequirements(env, {goal='', requirements=[]}) {
+  if (!requirements.length) return [];
+  if (env.MOCK_AI === 'true') return requirements.map(r=>({id:r.id,p:1}));
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef requirement decision model');
+  const groups=[];
+  for(let start=0;start<requirements.length;start+=12)groups.push({start,group:requirements.slice(start,start+12)});
+  const answered=await Promise.all(groups.map(async ({start,group})=>{
+    const questions=Object.fromEntries(group.map((_,i)=>[`requirement_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement}`}]));
+    const output=await env.AI.run(selector,{model:clef,
+      state:{goal:String(goal).slice(0,GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),source:String(r.source).slice(0,160)}))},questions});
+    return group.map((r,i)=>{
+      const probability=output?.answers?.[`requirement_${start+i}`]?.noul;
+      if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
+        throw new Error(`Clef returned no valid probability for requirement ${r.id}`);
+      return {id:r.id,p:probability};
+    });
+  }));
+  return answered.flat();
+}
 // v7.15.6 (run13): no triage. A failed run with no frame in a component is
 // a requirement the manager routes by the plan (readRequirement in
 // src/problems.js), not a module for a model to guess from the source.

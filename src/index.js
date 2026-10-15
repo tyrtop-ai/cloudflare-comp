@@ -3,11 +3,12 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById } from './toolchains.js';
+import { toolchainById, TOOLCHAINS, installed as installedRows } from './toolchains.js';
+import { cardContracts, cardUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
@@ -22,7 +23,7 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
-import { inheritServes } from './contracts.js';
+import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine } from './contracts.js';
 import { branchDirectory } from './assembly.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -158,7 +159,9 @@ const operationName = (o, noun='') => {const w=(String(o||'').replace(/([a-z0-9]
 const VERB_CLASS={get:'view',read:'view',fetch:'view',load:'view',show:'view',find:'view',retrieve:'view',display:'view',add:'create',make:'create',insert:'create',remove:'delete',del:'delete',erase:'delete',destroy:'delete',edit:'update',modify:'update',change:'update',store:'save',write:'save',persist:'save'};
 const functionKey = n => {const w=String(n||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);return w.length>1?[VERB_CLASS[w[0]]||w[0],...w.slice(1)].join(' '):'';};
 // A function a manager's reply carries, cleaned as a promise item is.
-const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&!Array.isArray(fn)?[fn]:[]); return f&&validName(f.name)?{...f,owner:clip(fn.owner,70)}:null; };
+// v8 (S3): under v8 a stored contract keeps its kind, path and serves, and
+// may name a contract of any kind (opts: the room's contractOpts()).
+const replyFn = (fn, opts={}) => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&!Array.isArray(fn)?[fn]:[],opts); return f&&(validName(f.name)||opts.v8&&otherName(f.name))?{...f,owner:clip(fn.owner,70)}:null; };
 // Hard safety ceilings. Actual per-room limits are chosen in the dashboard,
 // whose count sliders run logarithmically from each floor to its ceiling
 // (v7.15.12: lifted from 256 agents, 16 deep, 64 concurrent and 500 turns at
@@ -172,7 +175,7 @@ export const ROOM_LIMITS = Object.freeze({
   max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000], max_children: [2, 64]
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
-  packages: 'none',
+  packages: 'none', pipeline: 'v7',
   max_agents: 64, max_depth: 10, parallel: 16, max_children: 7,
   model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
 });
@@ -220,6 +223,13 @@ export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
   if (raw.packages !== undefined) {
     if (!['none','allowed'].includes(raw.packages)) throw new Error("Invalid packages: expected 'none' or 'allowed'");
     result.packages=raw.packages;
+  }
+  // v8 S3: the pipeline, the switch during the migration (deleted in S7).
+  // 'v8': Root writes a project card first, its deliverables become Root's
+  // contracts and no start() requirement is appended; 'v7' is unchanged.
+  if (raw.pipeline !== undefined) {
+    if (!['v7','v8'].includes(raw.pipeline)) throw new Error("Invalid pipeline: expected 'v7' or 'v8'");
+    result.pipeline=raw.pipeline;
   }
   return result;
 }
@@ -335,6 +345,8 @@ export class ControlRoom extends DurableObject {
     db.exec("CREATE TABLE IF NOT EXISTS problems (id TEXT PRIMARY KEY, holder TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, stage TEXT NOT NULL, source TEXT NOT NULL, source_input TEXT NOT NULL, signature TEXT NOT NULL, parties TEXT NOT NULL, detail TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '{}', evidence TEXT NOT NULL DEFAULT '[]', directive TEXT NOT NULL DEFAULT '', flags TEXT NOT NULL DEFAULT '{}', assignee TEXT NOT NULL DEFAULT '', trail TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL)");
     db.exec('CREATE INDEX IF NOT EXISTS problems_holder ON problems(holder,status)');
     db.exec('CREATE TABLE IF NOT EXISTS repair_tickets (id TEXT PRIMARY KEY, manager TEXT NOT NULL, worker TEXT NOT NULL, problems TEXT NOT NULL, role TEXT NOT NULL, instructions TEXT NOT NULL, facts TEXT NOT NULL, created INTEGER NOT NULL)');
+    // v8 §1.3: every revision of the project card (meta card holds the current one).
+    db.exec('CREATE TABLE IF NOT EXISTS card_revisions (rev INTEGER PRIMARY KEY, goal_rev INTEGER, card TEXT, reason TEXT, ts INTEGER)');
     // In-memory busy is gone on DO eviction. Repair persisted 'running' state and
     // requeue interrupted turns instead of leaving the dashboard locked forever.
     if (this.get('status') === 'running') {
@@ -352,6 +364,28 @@ export class ControlRoom extends DurableObject {
   }
   db() { return this.ctx.storage.sql; }
   live() { return this.env.MOCK_AI!=='true'; }
+  // v8 S3: a live room started with pipeline 'v8' (a room saved before the
+  // setting is v7). MOCK rooms keep the legacy fixtures' v7 flow.
+  v8() { return this.live() && this.settings().pipeline==='v8'; }
+  // How a stored contract row is read: under v8 with its kind, path and serves.
+  contractOpts() { return this.v8()?{v8:true,serves:true}:{}; }
+  // The facts contract name rules read under v8 (§2.2): the toolchain rows and the card's languages.
+  contractFacts() { return {rows:this.installedToolchains(),languages:this.read('card',null)?.languages||[]}; }
+  // The languages a code piece delivers in: v7 links and runs JavaScript;
+  // under v8 the card's (its non-text languages; a card of documents only has none).
+  languages() { return this.v8()?codeLanguages(this.read('card',null)):V7_LANGUAGES; }
+  // The toolchain rows this deployment runs: the Container's last inventory
+  // (meta toolchain_inventory, recorded by the verification step from S4),
+  // else every row of the phase-1 image (src/toolchains.js).
+  installedToolchains() { const inv=this.read('toolchain_inventory',null); return inv?installedRows(inv):[...TOOLCHAINS]; }
+  // v8 S3: a room held at a stop only Continue (or a later slice) moves on:
+  // card_blocked, card_failed, v8_checks_pending. Root waits; the run ends
+  // paused with this text.
+  holdRoom(kind, text) {
+    const prior=this.read('paused_state',null);
+    this.save('paused_state',{kind,text:clip(text,1200),ts:Date.now()});
+    if(prior?.kind!==kind||prior?.text!==clip(text,1200))this.event('root',kind,clip(text,1200));
+  }
   get(key, otherwise = '') { return query(this.db(), 'SELECT value FROM meta WHERE key=?', key)[0]?.value ?? otherwise; }
   set(key, value) { this.db().exec('INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value)); }
   read(key, otherwise) { return parse(this.get(key), otherwise); }
@@ -376,7 +410,12 @@ export class ControlRoom extends DurableObject {
     return {...this.env, MODEL_NAME:model||cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold};
   }
   configure(raw) {
-    const cfg=normalizeRoomSettings(raw, this.settings());
+    const prior=this.settings(),cfg=normalizeRoomSettings(raw, prior);
+    // v8 S3: the pipeline is fixed when the run starts; Continue keeps it.
+    if(this.node('root')&&(prior.pipeline||'v7')!==(cfg.pipeline||'v7')) {
+      this.event('system','pipeline_kept',`This room runs the ${prior.pipeline||'v7'} pipeline, chosen when it started; Start a new room to use ${cfg.pipeline}.`);
+      cfg.pipeline=prior.pipeline||'v7';
+    }
     this.save('settings',cfg);
     return cfg;
   }
@@ -608,7 +647,9 @@ export class ControlRoom extends DurableObject {
       events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
       problems: this.problems("status!='closed'").slice(0,80).map(p=>({id:p.id,holder:p.holder,kind:p.kind,status:p.status,assignee:p.assignee,
         path:String(p.parties[0]?.path||'').split('/').pop(),detail:clip(p.detail,300),trail:p.trail.map(t=>t.at)})),
-      compiler: this.compilerSummary()
+      compiler: this.compilerSummary(),
+      // v8 §1.3: the project card and each requirement's last result (S4b fills it), and why a v8 room is held.
+      card: this.read('card',null), requirement_status: this.read('requirement_status',{}), pause: this.read('paused_state',null)
     };
   }
   compilerSummary() {
@@ -657,7 +698,8 @@ export class ControlRoom extends DurableObject {
     // Every problem row and ticket, and the per-manager linking and compile state.
     const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
     return {...snapshot,events,exports,exported_at:new Date().toISOString(),files,
-      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state};
+      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,
+      card_revisions:query(this.db(),'SELECT rev,goal_rev,card,reason,ts FROM card_revisions ORDER BY rev').map(r=>({...r,card:parse(r.card,null)}))};
   }
   // The goal as the user wrote it, without the requirement the runtime appends.
   userGoal() { return stripStartRequirement(this.topTask()); }
@@ -705,7 +747,7 @@ export class ControlRoom extends DurableObject {
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?)',
-      id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)), JSON.stringify(normalizeUses(uses)));
+      id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8:this.v8()})));
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
@@ -857,7 +899,16 @@ export class ControlRoom extends DurableObject {
   // The top has no manager to ask: an atomic Root that followed the clause
   // asked anyway and wedged on 'Worker has no available manager'.
   // v7.15.5: then its uses, answered up front (none for the start carrier).
-  withContract(task, n) {const own=[contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')})),usesText(this.plannedUses(n.id))].filter(Boolean).join(' ');return own?`${task}\n\n${own}`:task;}
+  // v8 (S3): each contract on one line by its kind (contractLine), as the
+  // splitter and the checks read it; v7 keeps its function wording.
+  withContract(task, n) {
+    if(this.v8()) {
+      const items=this.promisedOf(n.id),uses=usesText(this.plannedUses(n.id));
+      const own=items.length?`Your contracts, delivered under exactly these names and paths: ${items.map(contractLine).join('; ')}.`:'';
+      const text=[own,uses].filter(Boolean).join(' ');
+      return text?`${task}\n\n${text}`:task;
+    }
+    const own=[contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')})),usesText(this.plannedUses(n.id))].filter(Boolean).join(' ');return own?`${task}\n\n${own}`:task;}
   canSplit(parentId, count=2) {
     return parentId.split('.').length <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + count <= this.settings().max_agents;
@@ -3313,7 +3364,7 @@ export class ControlRoom extends DurableObject {
       // and its line says what it does with it (review: "imports it" said nothing).
       // v7.15.7 integration: in a shaped room the grown promise states what it returns as far as the reader's line shows it (resultOf); a placeholder's line (start() returns it) is no call of it.
       const items=names.map(name=>{const [r,{calls}]=[...x.readers].find(([,v])=>v.calls.has(name)),call=calls.get(name),returns=shaped&&(!x.operation||x.api)?resultOf(call.line,name):'';return {name,does:clip(call.does||`${label(r)} calls it: ${call.line}`,200),params:call.params,...(returns?{returns}:{})};});
-      const add={child,names,path:(await exportsOf(child)).path,items:normalizeInterfaces(items),interfaces:normalizeInterfaces([...own,...items]),readers:[...x.readers].map(([id,r])=>({id,names:r.names,esm:!!r.esm})),by:readers,why:x.why,operation:!!x.operation&&!x.request,api:!!x.api,gap:!!x.gap,request:!!x.request,
+      const add={child,names,path:(await exportsOf(child)).path,items:normalizeInterfaces(items,this.contractOpts()),interfaces:normalizeInterfaces([...own,...items],this.contractOpts()),readers:[...x.readers].map(([id,r])=>({id,names:r.names,esm:!!r.esm})),by:readers,why:x.why,operation:!!x.operation&&!x.request,api:!!x.api,gap:!!x.gap,request:!!x.request,
         // v7.15.15 review (#1): the requests the growth answers, the branches it was relayed through (each promises it too), and the key a gap's carrier returns it under.
         requests:x.rows.flatMap(p=>(p.facts.requests||[]).map(r=>({...r,name:p.facts.names[0]}))),relays:[...new Set(x.rows.flatMap(p=>(p.trail||[]).filter(t=>t.action==='relay').map(t=>t.to)))],ops:Object.fromEntries(x.rows.filter(p=>p.facts.operation?.op).map(p=>[p.facts.names[0],p.facts.operation.op])),
         task:x.operation?`${c.task} Keep what your module exports and add ${items.map(f=>`${signature(f)} (${f.does})`).join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.`:
@@ -3362,7 +3413,7 @@ export class ControlRoom extends DurableObject {
     for(const b of add.relays||[]) {
       const own=this.promisedOf(b),items=add.items.filter(f=>!own.some(g=>g.name===f.name));
       if(!items.length||!this.node(b))continue;
-      this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces([...own,...items])),b);
+      this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces([...own,...items],this.contractOpts())),b);
       this.event(b,'promise_mirrored',clip(`"${this.node(b).label}" promises ${items.map(signature).join(', ')} too: "${n.label}", one of its pieces, now writes ${items.length>1?'them':'it'}.`,400));
       for(const id of [b,this.node(b).parent].filter(Boolean))this.syncOwnership(id).catch(()=>{});
     }
@@ -3601,7 +3652,7 @@ export class ControlRoom extends DurableObject {
   retaskChild(m, c, task, reason='', rule='model', interfaces=null) {
     const db=this.db(),node=this.node(c),below=this.subtree(c).slice(1);
     if(!node||['retired','failed'].includes(node.status))return;
-    if(interfaces)db.exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces(interfaces)),c);
+    if(interfaces)db.exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())),c);
     if(below.length) {
       this.retireNodes(m,below,'retasked');
       // What it held was about the branch that is gone; it starts with nothing.
@@ -3839,7 +3890,7 @@ export class ControlRoom extends DurableObject {
     const read=[...(Array.isArray(earlier)?earlier:[]).filter(x=>typeof x?.label==='string'&&own.has(x?.name)),...inferred];
     for(const x of read)this.event(id,'interfaces_inferred',`"${clip(x.label,70)}" says it exports ${x.name}(); it carries ${x.name}.`);
     // v7.15.14 (run21): the goal's tests are the compiler's (its runner writes the one test against start()), so a test piece nothing uses is not spawned, before any Clef call: Root's split proposed 25, Clef vetted them and kept 17 nobody imports, each a repository to create.
-    const tests=testPieces(named,{promised,stated:goalMethods(this.userGoal()),goal:this.userGoal()});
+    const tests=v8?[]:testPieces(named,{promised,stated:goalMethods(this.userGoal()),goal:this.userGoal()});
     if(tests.length){named=named.filter(c=>!tests.includes(c));this.event(id,'test_pieces_dropped',testPiecesText(tests));}
     // v7.15.16 (run25): a split makes progress or it is not one. A piece
     // carrying its parent's whole promise beside pieces that add no name is
@@ -3858,7 +3909,8 @@ export class ControlRoom extends DurableObject {
     }
     // v7.15.5: in a room with promises a factory (C7, run12's createData) is
     // rejected with C5, but kept on the last attempt before a pause.
-    const errors=interfaceErrors(named,promised,{goal:this.userGoal()}),factories=this.planned()?errors.filter(e=>e.check==='C7'):[];
+    // v8 (S3): C7 and C8 are v7's (deleted in v8, §2.2), names follow the toolchain rows, and the goal-operation heuristics (test pieces, use pairs, stated methods) stay v7's.
+    const errors=interfaceErrors(named,promised,{goal:this.userGoal(),facts:v8?this.contractFacts():null}).filter(e=>!v8||!['C7','C8'].includes(e.check)),factories=this.planned()&&!v8?errors.filter(e=>e.check==='C7'):[];
     if(place)for(const e of factories)this.event(id,'interfaces_factory_kept',`Last attempt before a pause: ${e.name}() on "${clip(e.label,70)}" is a factory; admitted as it is.`);
     // v8 (S2): two pieces placing one file (C4 by path) bounce the split as C5 does.
     const c5=[...errors.filter(e=>e.check==='C5'||e.check==='C4'&&e.path),...(place?[]:factories)];
@@ -3891,7 +3943,7 @@ export class ControlRoom extends DurableObject {
     // readTickets and saveTickets, which their uncle promised.
     const planned=this.planned(),isOp=f=>this.isGoalOp(f),outer=planned?[...this.promisedElsewhere(id).keys()]:[],inherited=planned&&n.parent?parse(n.uses,[]):[];
     if(inherited.length)repaired.forEach((c,i)=>{if(c&&!normalizeUses(c.uses,{v8}).length&&(c.interfaces||[]).some(f=>own.has(f.name)&&isOp(f)))repaired[i]={...c,uses:inherited};});
-    const offered=planned?planUses(repaired,outer,{v8}).spawn:[],pairs=planned?usePairs(offered,isOp,this.userGoal()):[];
+    const offered=planned?planUses(repaired,outer,{v8}).spawn:[],pairs=planned&&!v8?usePairs(offered,isOp,this.userGoal()):[];
     const usesAsked=pairs.length?scopeUses(env,goal,n.task,repaired,pairs).catch(e=>{this.event(id,'uses_uncertain',`Clef failed on the pieces' uses (${clip(e?.message||e,300)}); none added.`);return [];}):[];
     const [scope,names,asked]=await Promise.all([scoped,scopeInterfaces(env,goal,n.task,repaired,promised),usesAsked]),clefP=new Map();
     for(const x of asked||[])if(x.p>=0.5) {
@@ -3910,7 +3962,7 @@ export class ControlRoom extends DurableObject {
     // a stated one) admits a piece, never one admitted itself by uses (two
     // out-of-scope pieces using each other admitted both); and a name such a
     // user uses is kept too, so the piece admitted for it keeps it.
-    const rejectedChildren=[],admitted=[],stated=new Set(goalMethods(this.userGoal()).map(s=>s.name)),usesOf=c=>c&&typeof c==='object'?normalizeUses(c.uses,{v8}):[];
+    const rejectedChildren=[],admitted=[],stated=new Set(v8?[]:goalMethods(this.userGoal()).map(s=>s.name)),usesOf=c=>c&&typeof c==='object'?normalizeUses(c.uses,{v8}):[];
     const fnsOf=c=>(c?.interfaces||[]).map(f=>f.name),onOwn=repaired.map((c,i)=>scope[i]>=0.5||carried(c).length>0||fnsOf(c).some(n=>stated.has(n)));
     const usersOf=(i,name)=>repaired.filter((s,j)=>j!==i&&onOwn[j]&&usesOf(s).includes(name));
     repaired.forEach((child,i)=>{
@@ -4339,14 +4391,23 @@ export class ControlRoom extends DurableObject {
     // (a generic name, create or get, is never read here), the performers
     // start() returns (v7.15.5), its uses, and whether it is itself the
     // store (review: a piece promising a storage function keeps the data).
-    const names=promised.map(f=>f.name),elsewhere=this.planned()?this.promisedElsewhere(id):new Map(),foreign=new Map([...elsewhere].filter(([n])=>!GENERIC_NAMES.has(n)));
+    // v8 (S3, §3.4): the done rule per contract kind. A placed file, a
+    // command, a route or another row's function is read by kindCheck; a
+    // JavaScript function keeps contractCheck's full rules below.
+    const byKind=[],checked=[];
+    if(this.v8()) {
+      const delivered=new Map();
+      for(const f of deliveredFiles(this.files(id)))delivered.set(f.path,await this.indexedContent(id,f.path)??'');
+      for(const c of promised){const why=kindCheck(c,delivered);if(why===null)checked.push(c);else if(why)byKind.push({rule:'missing',name:c.name,path:c.path||'',text:`${why}.`,how:`${why}.`});}
+    } else checked.push(...promised);
+    const names=checked.map(f=>f.name),elsewhere=this.planned()?this.promisedElsewhere(id):new Map(),foreign=new Map([...elsewhere].filter(([n,f])=>!GENERIC_NAMES.has(n)&&(!this.v8()||contractKind(f)==='function')));
     // Integration: with the names its manager answered as provided (run12's deleteTicket keeps its import of getTickets, which R5 put on the data piece's promise, and is not sent back for the planned readTickets).
     const uses=this.plannedUses(id,this.read(`fn_answers:${id}`,[]).filter(a=>a.kind==='provided'&&validName(a.fn?.name)).map(a=>a.fn.name)),store=uses.filter(f=>f.storage);
     const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&(({isOp})=>promised.some(f=>storageFunction(f,isOp)))(this.levelOps(this.node(id).parent));
     const esm=[...files.values()].some(c=>esmSyntax(c));
     // v7.15.7 review: the await rule is gated on the room (shaped): where any promise of the plan states what it returns, every promised name a worker calls is read for await, one R5 grows or the splitter left without returns too; a room where none states it (v7.15.5's and v7.15.6's replays) is read as before.
-    const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,shaped:this.shaped(),
-      performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null});
+    const found=[...byKind,...contractCheck(files,{promise:checked,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,shaped:this.shaped(),
+      performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null})];
     // Review (p1): a foreign function in a stub the builder leaves out of the bundle (dropped) is no gap of the application: no contract problem for it.
     const gap=found.filter(x=>x.rule==='missing'||x.rule==='foreign'&&!x.dropped),dropped=[...new Set(found.filter(x=>x.dropped).map(x=>x.path))],base=p=>String(p||'').split('/').pop(),list=listed;
     // A contract problem is about a missing export or a function written here: closed once neither remains, whatever else.
@@ -4364,11 +4425,11 @@ export class ControlRoom extends DurableObject {
     if(found.some(x=>x.rule==='missing')) {
       const other=[];
       for(const f of deliveredFiles(this.files(id)).filter(f=>!LINKABLE.test(f.path)))other.push({path:f.path,content:await this.indexedContent(id,f.path)??''});
-      const hits=found.filter(x=>x.rule==='missing').map(x=>({name:x.name,hit:strayDeclaration(other,x.name,V7_LANGUAGES)})).filter(m=>m.hit);
+      const hits=found.filter(x=>x.rule==='missing').map(x=>({name:x.name,hit:strayDeclaration(other,x.name,this.languages())})).filter(m=>m.hit);
       const first=found.find(x=>x.rule==='missing'&&x.text);
       if(hits.length&&first) {
         const paths=[...new Set(hits.map(m=>m.hit.path))];
-        first.text=`${hits.map(m=>`${m.name} is in ${m.hit.path}`).join('; ')}, which this project does not link. ${languageNote(paths,V7_LANGUAGES)} Export ${hits.length>1?'each':'it'} there by exactly its name.`+
+        first.text=`${hits.map(m=>`${m.name} is in ${m.hit.path}`).join('; ')}, which this project does not link. ${languageNote(paths,this.languages())} Export ${hits.length>1?'each':'it'} there by exactly its name.`+
           (hits.length<found.filter(x=>x.rule==='missing').length?` ${first.text}`:'');
         first.how=`${hits.map(m=>m.name).join(', ')} written in ${listed(paths)}, outside the project's language.`;
       }
@@ -5095,8 +5156,11 @@ export class ControlRoom extends DurableObject {
     const seenWake=this.wakeGeneration(id);
     // v7.14: every manager decides the problems in its inbox, one level at a
     // time; at the top, after the compiler's static entry check.
+    // v8 S3: no builder and no compiler yet under v8 (the card's checks are
+    // S4's); the v7 compiler would look for a start() v8 never asks for.
+    const v8=this.v8();
     if(this.live()) {
-      if(!n.parent)await this.compileStatic(id);
+      if(!n.parent&&!v8)await this.compileStatic(id);
       await this.solveProblems(id);
       if(this.node(id)?.status==='failed')return;
     }
@@ -5119,7 +5183,7 @@ export class ControlRoom extends DurableObject {
           await this.routeRequest(id,message.from,route.id,clip(route.key,110),clip(route.question,900),validName(route.name));
         } else if(['answer','owned','out_of_scope','provided','unowned'].includes(route.kind)) {
           const hop=await this.managerHop(id,route.id);
-          if(hop?.target===message.from)await this.routeReply(id,route.id,route.kind,route.value,replyFn(route.fn));
+          if(hop?.target===message.from)await this.routeReply(id,route.id,route.kind,route.value,replyFn(route.fn,this.contractOpts()));
         }
         await this.acknowledgeManager(id,[message]);
         continue;
@@ -5175,9 +5239,9 @@ export class ControlRoom extends DurableObject {
     // Offer the current revision to the subtree builder as soon as a direct
     // child publishes a useful artifact. This is independent of sibling
     // completion; the builder may be revised many times before finalization.
-    if(this.integrationEnabled(id))await this.scheduleAssembly(id);
+    if(this.integrationEnabled(id)&&!v8)await this.scheduleAssembly(id);
     // The top's compiler runs once its builder linked the current source.
-    if(this.live()&&!n.parent)await this.scheduleCompiler(id);
+    if(this.live()&&!n.parent&&!v8)await this.scheduleCompiler(id);
     const children=this.children(id);
     const producers=children.filter(c=>!isRuntimeNode(c));
     const pending=query(this.db(),'SELECT manager FROM manager_routes WHERE manager=? LIMIT 1',id).length>0 ||
@@ -5185,12 +5249,18 @@ export class ControlRoom extends DurableObject {
     const allDone=producers.length>0&&producers.every(c=>c.status==='done'||c.status==='retired');
     // Not done while it holds an open problem, nor (at the top) before the
     // compiler passed on the current bundle.
-    const held=this.live()&&this.problemsHeld(id).length>0,compiled=!!n.parent||!this.live()||this.compilePassed(id);
-    const needsBuilder=(this.integrationEnabled(id) && !await this.assemblyCurrent(id))||held||!compiled;
-    const finished=allDone&&!pending&&!needsBuilder;
+    const held=this.live()&&this.problemsHeld(id).length>0,compiled=!!n.parent||!this.live()||v8||this.compilePassed(id);
+    const needsBuilder=(this.integrationEnabled(id) && !v8 && !await this.assemblyCurrent(id))||held||!compiled;
+    // v8 S3: the whole tree is done, and the card's checks are not run yet
+    // (S4): the room is held there (v8_checks_pending), never complete unchecked.
+    const checksPending=v8&&!n.parent&&allDone&&!pending&&!needsBuilder;
+    const finished=allDone&&!pending&&!needsBuilder&&!checksPending;
+    if(checksPending) {
+      this.holdRoom('v8_checks_pending',`Every piece of the tree finished. Running the project card's checks (${this.read('card',null)?.requirements?.length||0} requirements) is not implemented yet, so the room stops here unverified; the files are in the workers' repositories.`);
+    }
     const staleTurn=this.wakeGeneration(id)!==seenWake;
     const shard=this.managerStub(id);
-    const disposition=shard ? await shard.decide({children:producers,pending,needsBuilder,hasNewWake:staleTurn}) :
+    const disposition=shard ? await shard.decide({children:producers,pending,needsBuilder:needsBuilder||checksPending,hasNewWake:staleTurn}) :
       {status:children.some(c=>c.status==='failed')?'failed':finished&&!staleTurn?'done':'waiting'};
     this.db().exec('UPDATE agents SET turn=turn+1,summary=? WHERE id=?',
       `Indexed ${candidates.length} direct child Artifacts repositories; ${candidates.filter(c=>c.status==='done').length} completed.`,id);
@@ -5218,9 +5288,37 @@ export class ControlRoom extends DurableObject {
     // Review 3 (#6): a sweep that throws never masks the turn's own error, nor counts against this node.
     finally {if(this.planned())await this.settleRequests().catch(e=>this.event('system','settle_failed',clip(`Settling the requests growth rows hold failed: ${e?.message||e}`,300)));}
   }
+  // v8 §1.6: Root's first act under v8. The card writer turns the goal into
+  // the project card, Clef vets its requirements, and the card becomes
+  // revision 1 and Root's contracts; the turn then goes on to the split gate.
+  // A blocked card, a language this deployment cannot run, or no usable card
+  // after the writer's retry holds the room (card_blocked, card_failed): Root
+  // waits, and Continue runs the card writer again. True when Root goes on.
+  async cardTurn(id) {
+    const goal=this.userGoal(),rows=this.installedToolchains(),started=Date.now();
+    const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows});
+    const {card,errors,unsupported}=written,calls=`${written.attempts} call${written.attempts===1?'':'s'}`;
+    const hold=(kind,text)=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,`${text} Continue runs the card writer again.`);return false;};
+    if(card?.blocked)return hold('card_blocked',`The goal cannot be started as given: ${card.blocked}`);
+    if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the goal needs (installed: ${rows.map(t=>t.id).join(', ')}).`);
+    if(!cardUsable(card))return hold('card_failed',clip(`The card writer gave no usable card after ${calls}: ${errors.slice(0,8).join(' ')||'no deliverable or requirement.'}`,1100));
+    if(errors.length)this.event(id,'card_errors',clip(`The card's ${errors.length} remaining problem(s) after the writer's retry; the valid part is kept: ${errors.join(' ')}`,1500));
+    // §1.4: Clef vets the writer's requirements; p < 0.5 drops one.
+    const ps=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card)}),{card:vetted,dropped}=applyVetting(card,ps);
+    for(const r of dropped)this.event(id,'card_requirement_dropped',clip(`Clef judged that the goal does not state or imply ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not in the goal':''}): ${r.says}`,600));
+    if(!cardUsable(vetted))return hold('card_failed','Clef dropped every requirement of the card, and no deliverable has an implicit one.');
+    this.save('card',vetted);
+    this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(vetted),'goal',Date.now());
+    // Root's contracts are the card's deliverables (§2.4), up to 12, as the card holds them.
+    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(vetted)),id);
+    this.save('paused_state',null);
+    this.event(id,'card_written',clip(`Project card (${calls}, ${Date.now()-started} ms): ${vetted.summary||'(no summary)'}. ${cardLine(vetted)}.${vetted.decisions.length?` Decisions: ${vetted.decisions.join(' ')}`:''}`,1500));
+    return true;
+  }
   async agentTurn(id) {
     const n = this.node(id);
     if (!n || n.status !== 'ready') return;
+    if(this.v8()&&!n.parent&&n.phase==='decompose'&&!this.read('card',null)&&!query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length&&!await this.cardTurn(id))return;
     const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
     // Builders and the compiler run runtime turns, never a model action.
     if(isRuntimeNode(n) && this.live()) return n.label==='Compiler'?this.compilerTurn(id):this.builderTurn(id);
@@ -5333,7 +5431,7 @@ export class ControlRoom extends DurableObject {
           // run16: after a malformed turn the splitter answers without
           // thinking, as its own retry does; a thinking answer costs minutes.
           // v7.15.14: the pieces of one split are at most max_children; the slots left are a separate bound (review: an answer over them goes to admission's split_rejected, as before).
-          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry});
+          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry,v8:this.v8(),facts:this.v8()?this.contractFacts():null});
         } else {
           // A genuine leaf can implement in the SAME turn; no extra Qwen
           // decomposition request or artificial scheduler wave. It keeps the
@@ -5364,7 +5462,7 @@ export class ControlRoom extends DurableObject {
       // place) is malformed too: Root's goal is always divisible, and an
       // atomic Root wrote run10's application as one module. Below it, a
       // splitter may decline a small piece, and Clef reconsiders (review).
-      const noPieces=splitting && !raw.parse_error && !n.parent && this.env.MOCK_AI!=='true' && !normalizeAction(raw).spawn.length;
+      const noPieces=splitting && !raw.parse_error && !n.parent && this.env.MOCK_AI!=='true' && !normalizeAction(raw,{v8:this.v8()}).spawn.length;
       if (raw.parse_error || noPieces) {
         this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${noPieces?`no pieces: ${clip(JSON.stringify(raw),1400)}`:raw.raw}`);
         // A malformed split (decompose returns it as a parse error) is retried
@@ -5385,7 +5483,7 @@ export class ControlRoom extends DurableObject {
       if(splitting && this.get(`split_yes:${id}`))this.set(`split_yes:${id}`,'');
       // v7.15.14 review: the last attempt before a pause admits a split over max_children as answered (within the slots left): a room never pauses for size alone.
       if(splitting && raw.oversize)this.event(id,'split_oversize_admitted',`The splitter answered ${raw.oversize.count} pieces ${times((this.read('failures',{})[id]||0)+1)} against a bound of ${raw.oversize.bound} ("Pieces per split"); admitted as answered.`);
-      const action = normalizeAction(raw);
+      const action = normalizeAction(raw,{v8:this.v8()});
       // v7.15 §5.12a, before the code gates: the top has no manager to ask
       // (an atomic Root that asked with wait failed every replay of the ask
       // op); a node that splits leaves asking to its pieces; in a planned
@@ -5460,8 +5558,8 @@ export class ControlRoom extends DurableObject {
             this.incrementFailures(id,'missing_deliverable');
             return;
           }
-          if(codeRequired(this.promisedOf(id)) && !codeFiles(all,V7_LANGUAGES).length) {
-            const paths=deliveredFiles(all).map(f=>f.path),why=`${listed(paths)} only. ${languageNote(paths,V7_LANGUAGES)}`;
+          if(codeRequired(this.promisedOf(id)) && !codeFiles(all,this.languages()).length) {
+            const paths=deliveredFiles(all).map(f=>f.path),why=`${listed(paths)} only. ${languageNote(paths,this.languages())}`;
             this.event(id,'missing_code',`Leaf attempted to finish its code-writing assignment with ${why}`);
             tell(clip(`[gate] Your assignment needs code, and you delivered ${why}`,1500));
             this.incrementFailures(id,'missing_code');
@@ -5494,7 +5592,7 @@ export class ControlRoom extends DurableObject {
         // child repository is created. Keep Root's goal as an immutable scope
         // anchor so an ambiguous parent cannot drift over generations.
         if(action.spawn.length) {
-          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2});
+          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2,v8:this.v8()});
           // v7.15.16 (run25): no progress is a partition's failure, so Clef reconsiders with it (it may implement the assignment directly).
           if(admit.degenerate) {
             const reason=noProgress(admit.degenerate);
@@ -5605,7 +5703,7 @@ export class ControlRoom extends DurableObject {
           }
         }
         // A worker with a promise must give every promised name to one piece (C5).
-        const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2});
+        const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2,v8:this.v8()});
         // v7.15.16 (run25): a worker's split that hands its whole promise to one piece is no split: it writes the promise itself.
         if(admit.degenerate) {
           this.event(id,'split_rejected',`Late decomposition rejected. ${noProgress(admit.degenerate)}`);
@@ -5767,7 +5865,7 @@ export class ControlRoom extends DurableObject {
         const unfinished = this.children(id).some(x => x.status !== 'done' && x.status !== 'retired');
         // Root must not report a delegated software project complete before
         // its temporary builder returns a public assembly artifact.
-        const needsBuilder = id === 'root' && this.manager(id) && !await this.assemblyCurrent(id);
+        const needsBuilder = id === 'root' && this.manager(id) && !this.v8() && !await this.assemblyCurrent(id);
         const rejectedSplit=action.spawn.length && !this.manager(id);
         // action.wait from the discarded split must not strand the fallback leaf.
         if(rejectedSplit) {
@@ -5783,7 +5881,7 @@ export class ControlRoom extends DurableObject {
             return;
           }
           if(this.env.MOCK_AI!=='true' && !this.manager(id) && n.label!=='Temporary builder' &&
-              (!deliveredFiles(this.files(id)).length||codeRequired(this.promisedOf(id))&&!codeFiles(this.files(id),V7_LANGUAGES).length)) {
+              (!deliveredFiles(this.files(id)).length||codeRequired(this.promisedOf(id))&&!codeFiles(this.files(id),this.languages()).length)) {
             throw new Error(`Leaf cannot finish without delivering ${deliveredFiles(this.files(id)).length?'code in this project\'s language':'any file'} for its assignment`);
           }
           // v7.15: the plan is checked on return, before linking. No throw:
@@ -5792,6 +5890,12 @@ export class ControlRoom extends DurableObject {
           // The top can itself be a Clef-classified atomic implementation:
           // no builder and no compiler, so it runs the compiler's pipeline
           // on its own files, and finishes only when that passes (run10).
+          // v8 S3: an atomic Root under v8 is held for the card's checks (S4), as a split one is.
+          if(!n.parent&&!this.manager(id)&&this.v8()) {
+            this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+            this.holdRoom('v8_checks_pending',`Root wrote the project itself. Running the project card's checks (${this.read('card',null)?.requirements?.length||0} requirements) is not implemented yet, so the room stops here unverified.`);
+            return;
+          }
           if(!n.parent&&!this.manager(id)&&this.env.MOCK_AI!=='true')return this.compileAtomic(id);
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Completed owned strand without transferring ownership to children.');
@@ -6030,8 +6134,10 @@ export class ControlRoom extends DurableObject {
       const finished=allFinished(nodes) && nodes.some(n=>n.id==='root');
       const failed=nodes.some(n=>n.status==='failed');
       this.set('status',finished?'complete':failed?'failed':'paused');
+      // v8 S3: a room held at the card or at the checks says why.
+      const held=!finished&&!failed?this.read('paused_state',null):null;
       this.event('system',finished?'complete':failed?'failed':'paused',finished ? 'All strands returned complete.' :
-        failed ? `Run failed: ${this.failedDescendantReason('root')}` : 'Inference budget ended or strands are waiting; continue to resume.');
+        failed ? `Run failed: ${this.failedDescendantReason('root')}` : held ? `Paused (${held.kind}): ${held.text}` : 'Inference budget ended or strands are waiting; continue to resume.');
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally { this.busy=false;this.budgetSpent=false; }
   }
@@ -6040,7 +6146,7 @@ export class ControlRoom extends DurableObject {
     // Refuse bad settings before the room is wiped: a refused Start must leave
     // the previous run intact (verification probe: parallel 999 erased it).
     try { normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS); } catch(e) { return {error:clip(e?.message||e,300)}; }
-    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','card_revisions','meta']) this.db().exec(`DELETE FROM ${table}`);
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
     this.set('schema',ROOM_SCHEMA);
@@ -6050,14 +6156,16 @@ export class ControlRoom extends DurableObject {
     // the splitters assign it like any other requirement. (The MOCK_AI
     // legacy fixtures run without it.)
     // v7.15.13 (run18): the requirement and Root's promise name the methods the goal states start() returns.
-    const whole=clip(goal,GOAL_LIMIT),task=this.live()?`${whole} ${goalStartRequirement(whole)}`:goal;
+    // v8 S3: under v8 the goal is stored as the user wrote it: the card's
+    // deliverables give the shape and Root's promise (cardTurn), not start().
+    const v8=this.v8(),whole=clip(goal,GOAL_LIMIT),task=this.live()&&!v8?`${whole} ${goalStartRequirement(whole)}`:v8?whole:goal;
     this.set('goal',this.live()?task:clip(goal,GOAL_LIMIT));
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
-      try { await this.provision('root',null,'Root objective',task,this.live()?rootPromise(whole):[]); await this.drive(budget); }
+      try { await this.provision('root',null,'Root objective',task,this.live()&&!v8?rootPromise(whole):[]); await this.drive(budget); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};
@@ -6091,12 +6199,21 @@ export class ControlRoom extends DurableObject {
     }
     this.save('failures',failures);
     for(const id of continued)this.clearFailures(id);
+    // v8 S3: Continue on a room held at the card runs the card writer again.
+    const hold=this.read('paused_state',null);
+    if(this.v8()&&['card_blocked','card_failed'].includes(hold?.kind)) {
+      this.save('paused_state',null);
+      if(this.node('root')?.status==='waiting'&&!this.read('card',null)) {
+        this.event('root','card_continue','Continue runs the card writer again.');
+        this.wake('root');
+      }
+    }
     // v7.15.15 review 2 (#1): Continue answers a request no row, hop or message holds any more.
     if(this.planned())await this.settleRequests(true);
     // A planned worker waiting with no request open, nothing unread and no
     // source has nothing that would wake it; Continue does (slice B review).
     if(this.planned())for(const n of this.allNodes().filter(x=>x.status==='waiting'&&x.parent&&x.phase==='implement'&&!isRuntimeNode(x)&&!this.manager(x.id)))
-      if(!codeFiles(this.files(n.id),V7_LANGUAGES).length&&!this.receive(n.id).length&&!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',n.id).length)this.wake(n.id);
+      if(!codeFiles(this.files(n.id),this.languages()).length&&!this.receive(n.id).length&&!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',n.id).length)this.wake(n.id);
     // Continue is an explicit request to retry a quiescent builder when all
     // code producers are done. The ordinary idle nudge intentionally excludes
     // builders, to avoid uncontrolled model inference on every source revision.
@@ -6129,7 +6246,7 @@ export class ControlRoom extends DurableObject {
         this.wake(top.id);
       // One waiting with no run due has nothing else to wake it: a wait the
       // top answered before its waits were dropped (v7.15.2 review).
-      } else if(top&&!compiler&&top.status==='waiting'&&top.phase==='implement'&&!this.manager(top.id)&&!this.get('atomic_compile')) {
+      } else if(top&&!compiler&&top.status==='waiting'&&top.phase==='implement'&&!this.manager(top.id)&&!this.get('atomic_compile')&&this.read('paused_state',null)?.kind!=='v8_checks_pending') {
         this.event(top.id,'atomic_continue','Continue gives Root, which wrote the code itself, another turn.');
         this.wake(top.id);
       }
@@ -6165,7 +6282,7 @@ export class ControlRoom extends DurableObject {
   }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
-    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','card_revisions','meta']) this.db().exec(`DELETE FROM ${name}`);
     return this.snapshot();
   }
 }

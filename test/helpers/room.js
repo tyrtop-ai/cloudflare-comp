@@ -90,8 +90,8 @@ const { start } = require('./index.js');
 // fails open, as these rooms predate it (v7.13.3). raw holds every
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,executor,room_id='v714-test'}={}) {
-  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],raw:[]};
+export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,card=null,executor,room_id='v714-test'}={}) {
+  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],card:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
@@ -107,6 +107,8 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
       const answer=await manager(user,calls.manager.length);
       return {response:typeof answer==='string'?answer:JSON.stringify(answer)};
     }
+    // v8 S3: the card writer (src/prompts.js ROLE.card), by its role paragraph.
+    if(card&&system.includes('Your role: turn the goal into the project card')){calls.card.push(user);const a=await card(user,calls.card.length,system);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(split&&system.startsWith('You are a CODE SPLITTER')){calls.split.push(user);return {response:JSON.stringify(split(user,calls.split.length))};}
     if(file&&system.includes('building ONE file')){calls.file.push(user);return {response:file(user,calls.file.length)};}
     if(leaf&&system.includes('LEAF CODE WRITER')){calls.leaf.push(user);return {response:JSON.stringify(leaf(user,calls.leaf.length))};}

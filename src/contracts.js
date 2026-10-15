@@ -14,6 +14,7 @@
 // Pure: no room, no model.
 import { PROTECTED_NAMES, noValue } from './linker.js';
 import { isPath } from './protocol.js';
+import { toolchainOf, extractSurface } from './toolchains.js';
 
 export const CONTRACT_KINDS = Object.freeze(['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
 const KINDS = new Set(CONTRACT_KINDS);
@@ -361,4 +362,40 @@ export function inheritServes(spawn, promised = []) {
     }
   }
   return {spawn: out, inherited: [...added.values()]};
+}
+
+// ------------------------------------------------------------ done rule (§3.4)
+// Whether a worker's delivered files keep one contract, by its kind: '' when
+// they do, the reason when they do not, and null for a function contract the
+// JavaScript row's contractCheck reads (its full rules stay there). files: a
+// Map of the worker's delivered path -> content.
+// A line a line-extracted row (Python) runs at load: top-level code that is
+// not a definition, an import, a decorator or a comment.
+const ENTRY_LINE = /^(?![\s#@]|def\s|async\s+def\s|class\s|import\s|from\s|"""|''')\S/m;
+export function kindCheck(c, files) {
+  const kind = kindOf(c), text = p => files.has(p) ? String(files.get(p) ?? '') : null;
+  if (PATH_NAMED.has(kind)) {
+    const t = text(c.path);
+    if (t === null) return `${c.path} is not written: your contract places ${kind === 'doc' ? 'this document' : 'this file'} at exactly that path`;
+    if (!t.trim()) return `${c.path} is empty`;
+    if (kind === 'data' && /\.json$/i.test(c.path)) { try { JSON.parse(t); } catch (e) { return `${c.path} is not valid json (${String(e.message).slice(0, 120)})`; } }
+    return '';
+  }
+  if (kind === 'command') {
+    const t = text(c.path);
+    if (t === null) return `${c.path} is not written: the command ${c.name} is implemented in exactly that file`;
+    if (!t.trim()) return `${c.path} is empty`;
+    if (toolchainOf(c.path)?.extractor === 'line' && !ENTRY_LINE.test(t)) return `${c.path} defines ${c.name} but runs nothing when it is run: add the code that runs it`;
+    return '';
+  }
+  if (kind === 'route') {
+    const path = String(c.name).split(' ')[1] || '';
+    return [...files.values()].some(t => String(t ?? '').includes(path)) ? '' : `no file serves ${c.name}`;
+  }
+  // A function: the JavaScript row's rules stay in contractCheck; another
+  // row's extractor finds the name defined in a delivered file.
+  const other = [...files].filter(([p]) => toolchainOf(p)?.extractor && toolchainOf(p).id !== 'javascript');
+  if (other.some(([p, t]) => extractSurface(p, t).names.includes(c.name))) return '';
+  const js = [...files.keys()].some(p => toolchainOf(p)?.id === 'javascript');
+  return js || !other.length ? null : `${c.name} is not defined in ${other.map(([p]) => p).join(', ')}`;
 }
