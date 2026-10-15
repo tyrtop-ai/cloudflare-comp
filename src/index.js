@@ -3,6 +3,11 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
+// Capability boxes (S0/S1): the single-use Box, and the owner's S0 probe.
+export { Box } from './box.js';
+export { BoxProbe, BoxProbePeer } from './box-probe.js';
+import { boxProbeRoute } from './box-probe.js';
+import { freshBox, compileBoxSpec } from './box.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
@@ -2225,9 +2230,10 @@ export class ControlRoom extends DurableObject {
     for(const s of sources)files.set(s.destination,this.files(builderId).some(f=>f.path===s.destination)?await this.indexedContent(builderId,s.destination):s.content);
     return files;
   }
-  // The run's build executor (one Container per run).
-  // B1: a benchmark room uses its run's pooled executor (executor_key), so N rooms never ask for more Containers than exist.
-  buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(this.get('executor_key')||`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
+  // The run's build executor (one Container per run): v7 only. A v8
+  // compile runs in a fresh box (runCard); bench rooms are v8, so no room
+  // shares an executor with another any more (capability boxes S1).
+  buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
   // Speed v1: start the run's Container just before a compile the room has
   // asked for next (the top builder links, or an atomic Root writes its code),
   // so the compile does not pay its cold start. The executor stops it again
@@ -2235,7 +2241,8 @@ export class ControlRoom extends DurableObject {
   // and at most once a minute. Fire and forget; an executor without warm (an
   // older one, a test's) is left alone.
   prewarmContainer() {
-    if(!this.live()||!this.env.BUILD_EXECUTORS||this.get('stop_requested')==='1')return;
+    // v8 compiles open a fresh box each (S1): there is no shared Container to warm.
+    if(!this.live()||this.v8()||!this.env.BUILD_EXECUTORS||this.get('stop_requested')==='1')return;
     const now=Date.now();
     if(this.prewarmedAt&&now-this.prewarmedAt<60_000)return;
     let stub;try{stub=this.buildExecutor();}catch{return;}
@@ -2248,6 +2255,8 @@ export class ControlRoom extends DurableObject {
   // describes start() beside a runner test in the same exec; prechecked skips
   // the checks a run of the same files passed moments ago.
   async containerRun(nodeId, label, files, options = {}) {
+    // Capability boxes S1: v8 code runs only in a fresh box (runCard), never in the shared, internet-on v7 executor.
+    if(this.v8())return {infrastructure:'A v8 room runs code only in a fresh box with the internet off (runCard).'};
     if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot build or run the application.'};
     const key=await sha256(label);
     let report,snapshot,digest;
@@ -3619,23 +3628,38 @@ export class ControlRoom extends DurableObject {
     try {const cap=Number(this.get('budget','0'));await this.resume(cap>=ROOM_LIMITS.budget[0]&&cap<=ROOM_LIMITS.budget[1]?cap:20);}
     finally {this.autoResume=false;}
   }
-  // One Container exec for the card (mode 'card'): {report} or {infrastructure}.
+  // Capability boxes S1 (Level A): one fresh, single-use box per compile,
+  // with the internet off, runs today's build runner on the card (mode
+  // 'card', the request BuildExecutor took): {report} or {infrastructure}.
+  // The runner's own isolation still runs inside; the box adds the VM
+  // boundary. A box that cannot be opened, or that does not confirm it is
+  // fresh with the internet off, is infrastructure (checks_blocked and its
+  // retries): there is no fallback to a shared or internet-on Container.
   async runCard(id, input, files, plan, toolchains) {
-    if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot run the card\'s checks.'};
+    if(!this.env.BOXES)return {infrastructure:'BOXES binding unavailable: the card\'s checks run only in a fresh box with the internet off.'};
     let snapshot;
     try {snapshot=validateBuildFiles(files);}
     catch(error) {
       if(!error?.path)return {infrastructure:String(error?.message||error)};
       return {report:{mode:'card',passed:false,checks:[],issues:[{path:error.path,stage:'snapshot',detail:`${error.message}: the build cannot carry this file. Write it under a path of letters, digits, '_', '-' and '.', and keep each file small.`}],inventory:null}};
     }
-    const key=await sha256(`card:${input}`),start=Date.now();
+    const key=await sha256(`card:${input}`),start=Date.now(),spec=compileBoxSpec(plan);
+    let box=null;
     try {
-      const report=await this.buildExecutor().build({fingerprint:key,files:Object.fromEntries(snapshot),mode:'card',plan,toolchains,limits:CHECK_LIMITS});
-      this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,...(report?.executor||{})});
-      if(!report||report.mode!=='card'||!Array.isArray(report.checks))return {infrastructure:'The Container answered without a card report: its image predates card verification.'};
+      box=freshBox(this.env.BOXES);
+      const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'card',plan,toolchains,limits:CHECK_LIMITS})||{};
+      if(opened?.fresh!==true||opened?.internet!==false) {
+        this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,error:'box not confirmed fresh with the internet off'});
+        return {infrastructure:'The box did not confirm a fresh start with the internet off; the checks were not run in it.'};
+      }
+      this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,
+        box:{fresh:true,internet:false,start_ms:opened.start_ms,ready_ms:opened.ready_ms,image:opened.image,instance:opened.instance},exec_ms:opened.exec_ms});
+      if(report.mode!=='card'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a card report: its image predates card verification.'};
       return {report};
     } catch(e) {
-      this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,error:clip(e?.message||e,300)});
+      // The box closes itself (compile's finally, and its alarm); this is the backstop for an RPC that broke first.
+      if(box&&typeof box.close==='function'){const closing=Promise.resolve().then(()=>box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
+      this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,box:{fresh:true,internet:false},error:clip(e?.message||e,300)});
       return {infrastructure:String(e?.message||e)};
     }
   }
@@ -6437,8 +6461,6 @@ export class ControlRoom extends DurableObject {
     // (compileCard): Root finishes only when every requirement passes; a
     // failed one comes back to Root as a problem it routes by serves.
     const checksPending=v8&&!n.parent&&allDone&&!pending&&!needsBuilder;
-    // A split v8 room's checks start warm: the Container is pre-warmed (at most once a minute; the executor stops it after 60 s with no build).
-    if(checksPending)this.prewarmContainer();
     // v8 S9: Root does not finish while a change is being applied (its rows are about to open).
     const amending=v8&&!n.parent&&!!this.get('amend_pending');
     if(amending&&checksPending)this.set('root_held_amend','1');
@@ -7480,15 +7502,16 @@ export class ControlRoom extends DurableObject {
     try { await this.promptsAfterRun(); } catch(e) { this.event('system','error',clip(`The prompt queue could not go on: ${e?.message||e}`,900)); }
   }
   // provided: a card the runtime gives the room (a benchmark task's, B1),
-  // never one from a request body; /api/run passes none. executor: the
-  // pooled executor a benchmark room builds on (BenchRun), never a request's.
+  // never one from a request body; /api/run passes none. A benchmark room
+  // has no executor of its own any more: each compile opens a fresh box
+  // (capability boxes S1), so no task shares a VM with another.
   // v8 S8b: base is what the run starts from (§7.1): {repo, ref?, dir?} or
   // {room} (a room's previous result, this room's own included); selfHosts
   // names this deployment's host(s), which the goal's links may never
   // reach. The base is read before the room is wiped, so a base that cannot
   // be read refuses the Start and leaves the previous run as it was; the
   // goal's links are read at Root's first turn (loadSources).
-  async start(goal,budget,settings = {},roomId='',provided=null,{executor='',base=null,selfHosts=[]}={}) {
+  async start(goal,budget,settings = {},roomId='',provided=null,{base=null,selfHosts=[]}={}) {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
     // v8 S9 review: a change in flight would write the old project into the new run.
     if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then Start.',status:409};
@@ -7497,7 +7520,6 @@ export class ControlRoom extends DurableObject {
     let wanted;
     try { wanted=normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS); } catch(e) { return {error:clip(e?.message||e,300)}; }
     if (provided && (!this.live() || wanted.pipeline!=='v8')) return {error:'A provided card needs a live room on the v8 pipeline'};
-    if (executor && !/^bench-pool-\d{1,3}$/.test(executor)) return {error:'Invalid executor'};
     const given=normalizeBase(base);
     if(given.error)return {error:given.error};
     if(given.base&&(wanted.pipeline!=='v8'||!this.live()))return {error:'Start from (a repo or a previous result) needs the v8 pipeline.'};
@@ -7520,7 +7542,6 @@ export class ControlRoom extends DurableObject {
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
     if (provided) this.save('card_provided',provided);
-    if (executor) this.set('executor_key',executor);
     this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h).slice(0,8));
     if(loaded) {
       for(const [path,content] of loaded.files)this.db().exec('INSERT INTO base_files(path,content,sha256,mode) VALUES (?,?,?,?)',path,content,await sha256(content),loaded.modes?.get(path)??0o644);
@@ -8265,6 +8286,8 @@ export default {
     const payload=request.method==='GET'?{}:await request.json().catch(()=>({}));
     // B1: benchmark runs (src/bench-run.js), behind the same token.
     if (url.pathname==='/api/bench' || url.pathname.startsWith('/api/bench/')) return benchRoute(request,env,url,payload,{normalizeRoomSettings,normalizeTurnBudget});
+    // Capability boxes S0: the owner's probe, off unless BOX_PROBE=1 (src/box-probe.js).
+    if (url.pathname==='/api/dev/box-probe') return boxProbeRoute(request,env,payload);
     const room=request.method==='GET'?url.searchParams.get('room'):payload.room;
     if (!/^[a-zA-Z0-9-]{8,64}$/.test(room || '')) return json({error:'Invalid room'},400);
     const stub=env.ROOMS.getByName(room);

@@ -62,7 +62,42 @@ Press **Run benchmark**. It keeps going with the page closed. Most HumanEval tas
 
 ## 5. What to send back
 
-- **For each room:** **Export observation JSON**. It contains the card and its revisions, the requirement results, the problems and tickets, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each Container run (cold or warm, and each check's ms), and dispatch delays. One thing to watch for: in a v8 room that splits, nothing pre-warms the Container yet, so the first check run probably pays a cold start (`cold: true` on its container span).
+- **For each room:** **Export observation JSON**. It contains the card and its revisions, the requirement results, the problems and tickets, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each Container run (cold or warm, and each check's ms), and dispatch delays. Every v8 compile now opens its own fresh box (section 6), so its container span carries `box: {fresh: true, internet: false, start_ms, ready_ms, image}` instead of `cold`; `start_ms` is that compile's start cost.
 - **For the benchmark:** the JSON from `GET /api/bench?id=<run id>` (task outcomes, times, tokens, room ids), plus the room exports of one or two failed tasks.
 
 **The room export contains your Cloudflare account id**, inside the Artifacts remote URLs. Don't commit it to this repo or post it anywhere public; send it privately. The benchmark status JSON contains no remote URLs or account ids.
+
+## 6. Capability boxes: every v8 compile in its own box
+
+A v8 room no longer shares one Container across its compiles, and benchmark rooms no longer share the `bench-pool-<i>` executors. Each compile opens a **fresh, single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet off, which runs the same build runner on the same request and is destroyed afterwards. The runner's own isolation still runs inside the box. If a box can't be opened (for example, if the platform refuses `enableInternet: false`, or the image isn't deployed), the compile holds at `checks_blocked` with its usual automatic retries. It never falls back to the shared Container. v7 rooms keep `BuildExecutor` unchanged.
+
+The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
+
+### 6.1 The S0 probe: run it once after deploying
+
+The probe measures what the box design depends on and the docs don't settle: start time, exec latency, what an internet-off box can reach, the process capabilities, user namespaces, snapshots, Chromium and WebSockets through interception, relaying between boxes, starting 30 boxes at once, and private ranges with the internet on. It is off by default and owner-only (`APP_TOKEN`).
+
+```bash
+npx wrangler deploy --var BOX_PROBE:1          # or set "BOX_PROBE": "1" in wrangler.jsonc and deploy
+curl -sS -X POST "https://<your worker host>/api/dev/box-probe" \
+  -H "authorization: Bearer $APP_TOKEN" -H 'content-type: application/json' \
+  -d '{"samples": 5}' > box-probe.json
+npx wrangler deploy                            # turn it off again (BOX_PROBE back to 0)
+```
+
+The full probe opens about 70 boxes and takes a few minutes; keep `curl` waiting. To run part of it, pass `"only"` with any of `start`, `exec`, `network`, `caps`, `unshare`, `env`, `snapshot`, `browser`, `relay`, `fanout` and `private`, for example `{"only": ["network", "browser"]}`. `samples` (1 to 10) is the number of boxes opened per image for the start timings. An item that fails reports its error and the probe goes on.
+
+**What to send back:** `box-probe.json` as it is. It contains timings, true/false results, error codes and the *names* of environment variables (never their values). The probe removes image references, ids and anything else shaped like an account id before it answers, so the file holds no secret, account id or repository name. Glance over it before sending anyway. The questions it answers, and what each answer decides:
+
+| Item | What it measures | Decides |
+|---|---|---|
+| `start` | start→ready p50/p95 per image and instance | whether a warm pool is needed (p95 above 1.5 s) |
+| `exec` | exec round trip from a Durable Object, and inside the box | per-check box cost (S2) |
+| `network` | with the internet off: TCP 1.1.1.1:53 and :443, DNS, HTTP 80/443, ICMP; plus a control box with the internet on | that `enableInternet: false` really holds |
+| `caps`, `unshare` | `CapEff` of an exec (default user, uid 10001, uid 0), and which namespaces `unshare` may create | which in-runner measures still work inside a box |
+| `env` | environment variable names of an exec and of PID 1 | that nothing secret reaches a box |
+| `snapshot` | `snapshotContainer` time and size, and the restore start | the install box hand-over (S9) |
+| `browser` | Chromium loading `http://app.internal/` through interception, and a WebSocket back | the server box and client box split (S2) |
+| `relay` | a line relayed box A → Durable Object → box B | the bench split's call protocol (S4) |
+| `fanout` | 30 boxes from one Durable Object at once | per-check fan-out |
+| `private` | 169.254.169.254, RFC 1918, 100.64/10 and IPv6 ULA/link-local with the internet on | whether the fetch box (S6) needs deny interception |

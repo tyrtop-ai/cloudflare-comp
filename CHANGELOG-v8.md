@@ -96,6 +96,12 @@ The card writer's answer now goes through three layers. The first reads it lenie
 
 Clef reviews; it never deletes. Vetting marks each requirement with its p and flags the ones below 0.5 as doubtful, in the Card panel and the feed. When the checks keep failing on a doubtful requirement, the hold names it first and the person decides. A base file the goal does not name and Clef doubts stays on the plan and waits at `base_confirm` for the person. In a v8 split, a piece, contract or owner Clef doubts is admitted and shown; an amendment that rewrites a deliverable Clef doubts it is about is applied, marked doubtful in the revision. The writer's raw answers are kept for diagnosis: in the export, and in the hold panel while a room is held at `card_failed`.
 
+## Capability boxes S0 and S1: every compile in its own box
+
+Code that agents or the card wrote used to run in one Container per run, with the internet on, and benchmark rooms shared four pooled Containers, so a process left behind by one compile could reach the next. Now each v8 compile opens a fresh, single-use `Box`: a new Durable Object with its own VM, from a second Container application under the `durable_object` scheduling policy (images `check`, `browser` and `fetch`). The box starts with `enableInternet: false`, runs today's build runner on the same request, and is destroyed afterwards. An alarm destroys it if its caller is gone. Benchmark rooms get their own box per compile and no longer take a pooled executor. The runner's own isolation still runs inside the box. A box that can't be opened, or doesn't confirm a fresh start with the internet off, holds the room at `checks_blocked` with its retries, and there is no fallback to the shared Container. Start and exec options come from two pure helpers that take no `env`, and the `Box` class never reads `env`. v7 keeps `BuildExecutor`.
+
+`POST /api/dev/box-probe` (off unless `BOX_PROBE=1`, behind `APP_TOKEN`) measures, on a live deployment, what the next slices depend on. [docs/trying-v8.md](docs/trying-v8.md#6-capability-boxes-every-v8-compile-in-its-own-box) says how to run it and what to send back.
+
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.

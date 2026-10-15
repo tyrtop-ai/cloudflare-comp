@@ -127,15 +127,15 @@ A run started on one of them then never reads the other.
 
 A repo is read from `api.github.com` and `codeload.github.com` without a token (`GITHUB_TOKEN` is never used to read). The room builds and checks up to 400 text files and 2 MB. The rest of the repo (hidden directories such as `.github/`, binaries, large or vendored files: up to 200 files and 4 MB) is carried into the export untouched and never built. `.recursive/RUN.md` lists those files and anything that was not carried. GitHub limits requests without a token; when the default-branch lookup is refused, give a branch, tag or commit to start from. A room's previous result can be a base when that room ran the v8 pipeline and is not running; one that had not passed its checks is marked `unverified`. A link that cannot be read is listed in the dashboard's **Sources and base** panel and the run goes on without it. A base that cannot be read refuses the Start. One `APP_TOKEN` reads every room, so any room's result can be a base.
 
-### Optional: Container slots for benchmarks
+### Optional: how many benchmark rooms run at once
 
-A benchmark run starts one room per task, a few at a time, and its rooms share a pool of build executors. `BENCH_EXECUTORS` in `vars` says how many Container slots the pool has, and the run's **Rooms at once** is capped by it. Keep it equal to `max_instances` under `containers` (4 by default):
+A benchmark run starts one room per task, a few at a time. Each compile of a task room runs in its own fresh box (the `Box` Container application, which has no `max_instances`), so tasks share no Container. `BENCH_EXECUTORS` in `vars` caps the run's **Rooms at once** (4 by default):
 
 ```jsonc
 "BENCH_EXECUTORS": "4"
 ```
 
-To run more benchmark rooms at once, raise both, then deploy. Each running instance is billed (see **Container size and cost** above).
+To run more benchmark rooms at once, raise it, then deploy. Each running box is billed while it runs; boxes count toward your account's Container limits.
 
 ## 6. Verify the deployment
 

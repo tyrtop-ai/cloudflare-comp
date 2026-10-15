@@ -41,8 +41,8 @@ function hiddenTexts(task) {
 for (const [label, row] of [['HumanEval (Python)', HUMANEVAL[0]], ['MultiPL-E (JavaScript)', MULTIPLE_JS[0]]]) {
   test(`provided card, ${label}: validated, no writer or vetting; the hidden check runs through compileCard and verifyCard, and passes`, {skip: label.includes('Python') && !hasPython && 'python3 is not installed'}, async () => {
     const task = taskFromRow(row);
-    const {room, calls, drain, sql} = benchRoom(task);
-    assert.equal((await room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card, {executor: 'bench-pool-0'})).status, 'running');
+    const {room, calls, drain, sql, boxes} = benchRoom(task);
+    assert.equal((await room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card)).status, 'running');
     await drain();
     assert.equal(calls.card.length, 0, 'no card writer call');
     assert.ok(!calls.clef.some(c => Object.keys(c.questions).some(k => k.startsWith('requirement_'))), 'Clef vets no requirement');
@@ -57,7 +57,9 @@ for (const [label, row] of [['HumanEval (Python)', HUMANEVAL[0]], ['MultiPL-E (J
     assert.equal(promise.name, task.entry);
     assert.equal(promise.examples, undefined, 'no example from the hidden check');
     // The real path: S4b's compileCard ran the harness in the (Node-run) Container verification.
-    assert.equal(room.get('executor_key'), 'bench-pool-0');
+    // Capability boxes S1: the compile ran in a fresh box of its own, with the internet off.
+    assert.ok(!room.get('executor_key'));
+    assert.ok(boxes.boxes.length >= 1 && boxes.boxes.every(b => b.container.starts === 1 && b.container.options.enableInternet === false && !b.container.running));
     assert.equal(room.get('status'), 'complete', JSON.stringify(room.snapshot().pause));
     assert.equal(room.read('requirement_status', {}).R1.passed, true, JSON.stringify(room.read('requirement_status', {})));
     assert.equal(events(room, 'checks_passed').length, 1);

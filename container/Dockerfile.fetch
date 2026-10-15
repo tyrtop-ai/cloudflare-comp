@@ -1,0 +1,11 @@
+# Capability boxes (S0): the `fetch` image of the Box Container application.
+# Node only, for the fetch box (§3.7, S6). In S0 it answers the probe's
+# private-range question with the internet on; nothing else uses it yet.
+FROM node:lts-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iputils-ping \
+ && rm -rf /var/lib/apt/lists/* && useradd --create-home --uid 10001 fetcher
+COPY box/probe.mjs /opt/box/probe.mjs
+RUN chmod 0444 /opt/box/probe.mjs && chmod a+rx /opt/box
+USER fetcher
+WORKDIR /home/fetcher
+CMD ["sleep", "infinity"]

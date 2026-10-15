@@ -313,18 +313,20 @@ test('Stop wins over a tick in flight: a room started after Stop is stopped at o
   assert.ok(rooms.log.some(l => l[0] === 'purge' && l[1] === taskRoom(ID, 1, 0)));
 });
 
-test('rooms share a pool of executors no larger than the Container slots, and concurrency is clamped to it', async () => {
+test('at most BENCH_EXECUTORS rooms run at once, concurrency is clamped to it, and no room is given a shared executor (each compile opens its own box)', async () => {
   const {rooms, run} = benchEnv({BENCH_EXECUTORS: '2'}), b = run();
   const s = await begin(b, {concurrency: 3});
   assert.deepEqual([s.concurrency, s.concurrency_asked, s.executors], [2, 3, 2]);
   await b.alarm();
-  assert.deepEqual(rooms.inUse().sort(), ['bench-pool-0', 'bench-pool-1']);
+  assert.equal(rooms.live(), 2);
   rooms.end(taskRoom(ID, 0, 0), pass);
   await b.alarm();
-  assert.deepEqual(rooms.inUse().sort(), ['bench-pool-0', 'bench-pool-1'], 'the freed slot is reused, never a third executor');
-  for (let i = 0; i < 6; i++) { for (const r of rooms.rooms.values()) if (r.state?.status === 'running') rooms.end(r.name, pass); await b.alarm(); assert.ok(rooms.inUse().length <= 2); }
+  assert.equal(rooms.live(), 2, 'the freed slot is reused, never a third room');
+  for (let i = 0; i < 6; i++) { for (const r of rooms.rooms.values()) if (r.state?.status === 'running') rooms.end(r.name, pass); await b.alarm(); assert.ok(rooms.live() <= 2); }
   assert.equal(b.status().status, 'done');
-  assert.ok([...rooms.executors.values()].every(e => /^bench-pool-[01]$/.test(e)));
+  assert.ok(rooms.peak() <= 2);
+  assert.ok([...rooms.rooms.values()].filter(r => r.started).every(r => r.started.opts === undefined), 'start() is called with no executor option');
+  assert.ok([...rooms.executors.values()].every(e => e === undefined));
 });
 
 test('keep_rooms: "none" deletes every scored room, "all" none; a busy room is deleted on a later tick', async () => {
