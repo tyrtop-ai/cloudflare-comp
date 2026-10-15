@@ -5,6 +5,11 @@
 //  M4  the markup repair converts one well-formed element only, keeps
 //      attribute names' case, and input[type=text] matches HTML's default.
 //  M5  an element step reads shown elements and their text as expect_text does.
+//  H2  an ask is a package's by its name, never by its need's words.
+//  M1  the language's standard library is the language's: never listed, asked for or granted.
+//  M2  only a module-level not-found for an installed module is external.
+//  M3  under packages 'allowed', nothing redirects a third party's name.
+//  L1, L3-L10 as the review lists them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
@@ -14,6 +19,12 @@ import {fileURLToPath} from 'node:url';
 import {cardScope, maskWith, interfaceFacts, elementWords} from '../src/affordances.js';
 import {stepWords, workerDetail} from '../src/checks.js';
 import {markupElement, repairCard, MARKUP_CHARS} from '../src/card.js';
+import {liveRoom, events} from './helpers/room.js';
+import {lintText} from './helpers/prompt-lint.js';
+import {normalizePackages, needWords, readsModule, piecePackages, PACKAGES_MAX, installedPackages, stdlibHints} from '../src/packages.js';
+import {reviewCard} from '../src/model.js';
+import {MESSAGES, CLEF} from '../src/prompts.js';
+import {TOOLCHAINS} from '../src/toolchains.js';
 
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH && existsSync('/opt/pw-browsers')) process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
 if (!process.env.NODE_PATH && existsSync('/opt/node-tools/node_modules/playwright')) process.env.NODE_PATH = '/opt/node-tools/node_modules';
@@ -136,4 +147,151 @@ test('M4 + M5: in Chromium, input[type=text] matches an input with no type; hidd
   assert.equal(r.shownItem.passed, true);
   assert.equal(r.case.passed, false, 'the same case rule as expect_text');
   assert.equal(r.svg.passed, true, JSON.stringify(r.svg));
+});
+
+// ------------------------------------------------------------ packages
+const PYTEST = {name: 'pytest', language: 'python', provides: 'tests'};
+async function line(rootPackages = [PYTEST], {packages = 'none'} = {}) {
+  const {room} = liveRoom({});
+  room.save('settings', {...room.settings(), pipeline: 'v8', packages});
+  await room.provision('root', null, 'Root objective', 'a tracker', [], [], rootPackages);
+  await room.provision('root.1', 'root', 'Backend', 'the backend', [{name: 'addTodo', kind: 'function', path: 'todo.py', does: 'adds a to-do'}], [], [PYTEST]);
+  await room.provision('root.1.1', 'root.1', 'Server', 'the server', [{name: 'app.py', kind: 'file', path: 'app.py', does: 'the server'}], [], []);
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1.1'");
+  return room;
+}
+
+test('H2: an ask is a package\'s by its name alone; the review\'s probe asks, worded like packages, stay contract asks', async () => {
+  const room = await line();
+  for (const a of [{name: 'formatDate', need: 'a helper from the shared utilities package that formats dates for display'}, {name: 'saveTodos', need: 'the storage dependency that persists the list'},
+    {name: '', need: 'which framework should the page use for routing'}, {name: 'Store', need: 'the class another piece will install into the app'}, {name: 'addTodo', need: 'the to-do library'}])
+    assert.equal(room.askKind('root.1.1', a.name, a.need).kind, 'contract', JSON.stringify(a));
+  // brokerAnswer leaves a contract ask to askManager, and no package answer is recorded for it.
+  assert.equal(room.brokerAnswer('root.1.1', {key: 'fn saveTodos', name: 'saveTodos', question: 'the storage dependency that persists the list'}), false);
+  assert.equal(events(room, 'package_answer').length, 0);
+  // A name the rows know as a package's is one, whatever its need says.
+  assert.equal(room.askKind('root.1.1', 'pytest', 'the class another piece writes').kind, 'package');
+  assert.equal(room.askKind('root.1.1', 'flask', '').kind, 'package');
+  // A contract of that name is the contract's.
+  await room.provision('root.2', 'root', 'Json', 'the json piece', [{name: 'json', kind: 'function', path: 'json_tools.py', does: 'reads json'}], [], []);
+  assert.equal(room.askKind('root.1.1', 'json', 'parse').kind, 'contract');
+});
+
+test('M1: a module of the language\'s standard library is part of the language: answered as such, never granted, listed or logged for the person', async () => {
+  const room = await line();
+  for (const name of ['socket', 'asyncio', 'typing', 'wsgiref', 'http.client', 'itertools']) {
+    assert.equal(room.askKind('root.1.1', name, 'raw TCP').kind, 'package', name);
+    assert.equal(room.brokerAnswer('root.1.1', {key: `fn ${name}`, name, question: 'raw TCP'}), true);
+    assert.deepEqual(room.read('fn_answers:root.1.1', []).at(-1).text.value, MESSAGES.package_stdlib({name}));
+  }
+  assert.deepEqual(room.packagesOf('root.1.1'), [], 'never granted');
+  assert.ok(!room.catalogue('root.1.1').some(e => e.kind === 'package'));
+  assert.equal(room.read('package_requests', null), null, 'nothing waits for the person');
+  assert.ok(!('package_requests' in room.snapshot()));
+  // The installed set and the rows' packages hold no standard library module; its modules are row data (stdlib_provides).
+  assert.deepEqual(installedPackages().map(p => p.name), ['pytest']);
+  assert.ok(stdlibHints().some(p => p.name === 'http.server') && stdlibHints().some(p => p.name === 'node:http'));
+  assert.ok(TOOLCHAINS.every(r => !(r.packages || []).some(p => /^node:|^http\.server$/.test(p.name))));
+});
+
+test('M2: "cannot import name X from Y" is never external; a module-level not-found is, only for an installed module', async () => {
+  const room = await line();
+  const bundle = {files: new Map([['job_queue.py', 'class JobQueue: pass\n'], ['app.py', 'from queue import JobQueue\n']]), glue: new Map()};
+  for (const module of ['queue', 'types', 'email', 'calendar', 'token', 'code', 'select'])
+    assert.equal(room.externalHit({module, name: 'JobQueue'}, bundle), false, module);
+  assert.equal(room.externalHit({module: 'json'}, bundle), true);
+  assert.equal(room.externalHit({module: 'pytest'}, bundle), true);
+  assert.equal(room.externalHit({module: 'flask'}, bundle), false, 'nothing installs it: the linker may read it as a part');
+  assert.equal(room.externalHit({module: 'job_queue'}, bundle), false);
+  // A run that could not find a module the rows know as a package's is missing_module; a project-like name is not.
+  assert.equal(room.missingPackage('flask', bundle), true);
+  assert.equal(room.missingPackage('todo_store', bundle), false);
+});
+
+test('M3: under packages \'allowed\' the third parties\' names are the person\'s: no redirect to the standard library, and no installed question', async () => {
+  const room = await line([PYTEST], {packages: 'allowed'});
+  assert.equal(room.resolvePackage('root.1.1', {name: 'flask'}), null);
+  assert.equal(room.askKind('root.1.1', 'flask', 'the web framework').kind, 'contract', 'as before live 4');
+  assert.equal(room.packageAsk('root.1.1', {name: 'flask', failure: true}), null, 'a run that could not find flask hears no redirect');
+  assert.equal(room.packageAsk('root.1.1', {name: 'socket'}).how, 'language');
+  assert.equal(room.packageAsk('root.1.1', {name: 'pytest'}).how, 'granted');
+  const card = {deliverables: [{name: 'app.py', kind: 'file', path: 'app.py', does: 'a server'}], requirements: [{id: 'R1', says: 'serves', serves: ['app.py'], check: {kind: 'file', path: 'app.py', has: ['def']}}], decisions: ['Use Flask']};
+  const asked = [];
+  const env = {SPLIT_MODEL: '@cf/cloudflare/clef-flash', AI: {run: async (_m, input) => { asked.push(...Object.keys(input.questions)); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.9}]))}; }}};
+  await reviewCard(env, {goal: 'a server', card, installed: TOOLCHAINS, held: [PYTEST], packages: 'allowed'});
+  assert.ok(!asked.includes('installed'), asked.join());
+  asked.length = 0;
+  await reviewCard(env, {goal: 'a server', card, installed: TOOLCHAINS, held: [PYTEST], packages: 'none'});
+  assert.ok(asked.includes('installed'));
+  assert.match(CLEF.installed, /standard library/);
+});
+
+test('L1: a prompt handler whose Root could not be created says so, and records no Root', async () => {
+  const {room} = liveRoom({});
+  room.save('settings', {...room.settings(), pipeline: 'v8'});
+  room.provision = async () => { throw new Error('repo create failed'); };
+  await assert.rejects(room.handPrompt({kind: 'goal', prompt: 'a goal', root: {task: 'a goal', packages: []}}), /repo create failed/);
+  const [h] = room.promptHandlers();
+  assert.equal(h.created_root, 0);
+  assert.ok(h.ended_at >= h.spawned_at);
+  assert.deepEqual(events(room, 'prompt_handed').map(e => e.body), ['prompt:1 ended without creating Root\'s row.']);
+});
+
+test('L3 + L4: the top\'s packages are the installed set as the box reports it now, with what was added to its row', async () => {
+  const room = await line([]);
+  assert.deepEqual(room.packagesOf('root'), [PYTEST], 'a row from before packages ([]) holds the installed set');
+  room.save('toolchain_inventory', {node: '24.22.0'});
+  assert.deepEqual(room.packagesOf('root'), [], 'no Python in the box: no pytest');
+  room.save('toolchain_inventory', {node: '24.22.0', python: '3.11.2'});
+  room.db().exec("UPDATE agents SET packages=? WHERE id='root'", JSON.stringify([{name: 'requests', language: 'python', provides: 'HTTP client'}]));
+  assert.deepEqual(room.packagesOf('root').map(p => p.name), ['pytest', 'requests']);
+  // The standard library's since gate reads the box's version when it is known.
+  assert.ok(stdlibHints(TOOLCHAINS, {node: '24.22.0'}).some(p => p.name === 'node:sqlite'));
+  assert.ok(!stdlibHints(TOOLCHAINS, {node: '22.1.0'}).some(p => p.name === 'node:sqlite'));
+});
+
+test('L5: the per-row cap is per language, so no language\'s packages are lost to another\'s', () => {
+  const many = [...Array.from({length: 70}, (_, i) => ({name: `js${i}`, language: 'javascript'})), {name: 'pytest', language: 'python'}, {name: 'requests', language: 'python'}];
+  const out = normalizePackages(many);
+  assert.equal(out.filter(p => p.language === 'javascript').length, PACKAGES_MAX);
+  assert.deepEqual(out.filter(p => p.language === 'python').map(p => p.name), ['pytest', 'requests']);
+});
+
+test('L6: a prompt shows a node\'s packages of the card\'s code languages', async () => {
+  const room = await line([PYTEST, {name: 'express', language: 'javascript', provides: 'HTTP server'}]);
+  assert.deepEqual(room.packageView('root').map(p => p.name), ['pytest', 'express'], 'no card yet: all');
+  room.save('card', {languages: ['python', 'text'], deliverables: [], requirements: []});
+  assert.deepEqual(room.packageView('root').map(p => p.name), ['pytest']);
+});
+
+test('L7: the toolchain words, the module prefix and how a file reads a module are row data', () => {
+  const go = {id: 'go', extensions: ['.go'], tool_words: ['go', 'golang'], module_reference: ['import\\s+"{module}"'], packages: [], stdlib_provides: [{name: 'net/http', provides: 'HTTP server'}]};
+  assert.deepEqual(needWords('a golang http server', [...TOOLCHAINS, go]), ['http', 'server']);
+  assert.deepEqual(needWords('a node http server'), ['http', 'server']);
+  assert.equal(readsModule('server.py', 'import json\nfrom flask import Flask\n', 'flask'), true);
+  assert.equal(readsModule('server.py', 'import flask_cors\n', 'flask'), false);
+  assert.equal(readsModule('server.js', "const express = require('express');\n", 'express'), true);
+  assert.equal(readsModule('server.js', "import fs from 'node:fs';\n", 'fs'), true);
+  for (const row of TOOLCHAINS.filter(r => r.id !== 'text')) assert.ok(Array.isArray(row.tool_words) && row.module_reference?.length && Array.isArray(row.stdlib_provides), row.id);
+});
+
+test('L8: a missing module\'s failure names what exists', () => {
+  const text = MESSAGES.missing_package({name: 'flask', answer: MESSAGES.package_language({need: 'HTTP server', names: 'http.server', many: false})});
+  assert.equal(text, 'The run looked for flask. For HTTP server, the language\'s standard library provides http.server: use it as it is.');
+  assert.deepEqual(lintText('message', MESSAGES.missing_package({name: 'x', answer: MESSAGES.package_language({need: 'a server', names: 'y', many: false})}), {room: true}), []);
+});
+
+test('L9: a retask moves a piece\'s packages to its new contracts\' languages', async () => {
+  const room = await line([PYTEST, {name: 'express', language: 'javascript', provides: 'HTTP server'}]);
+  await room.provision('root.2', 'root', 'Web', 'the web part', [{name: 'app.py', kind: 'file', path: 'web.py', does: 'serves'}], [], [PYTEST]);
+  room.retaskChild('root', 'root.2', 'Write server.js, the server.', '', 'model', [{name: 'server.js', kind: 'file', path: 'server.js', does: 'serves'}]);
+  assert.deepEqual(room.packagesOf('root.2').map(p => p.name), ['express']);
+});
+
+test('L10: a splitter\'s named packages are read in the piece\'s language and added to its default set', () => {
+  const parent = [PYTEST, {name: 'requests', language: 'python', provides: 'HTTP client'}, {name: 'express', language: 'javascript', provides: 'HTTP server'}];
+  const piece = {interfaces: [{name: 'app.py', kind: 'file', path: 'app.py'}]};
+  assert.deepEqual(piecePackages({...piece, packages: ['express']}, parent).asks, ['express'], 'another language\'s package is not the piece\'s');
+  assert.deepEqual(piecePackages({...piece, packages: ['pytest']}, parent).packages.map(p => p.name), ['pytest', 'requests'], 'named, and the default set too');
+  assert.deepEqual(piecePackages({...piece, packages: ['json', 'http.server']}, parent).asks, [], 'a standard library module needs no ask');
 });

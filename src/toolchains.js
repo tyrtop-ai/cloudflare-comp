@@ -25,13 +25,21 @@ export const TOOLCHAINS = Object.freeze([
     binding_rules:"To change an imported name without touching its local uses, alias it: const { realName: localName } = require(...) or import { realName as localName } from '...'. Once an import's path is right, the runtime itself fixes four binding shapes, so for these fix only the path: one name destructured from a module whose module.exports is a function or class of that name, a module bound whole that the file only calls while it exports an object holding that name, a module bound whole whose only export is one function when the file only calls it, and a module bound whole that the file only passes on as a value while it exports an object holding that name.",
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
     stack:'v8', stdlib:'node-builtins',
-    // v8 live 4: what a project of this row has installed, as an agent's row
-    // lists it (packages, src/packages.js): the built-in modules worth naming,
-    // each with what it provides (since: the first runtime version that has it).
-    // stands_for: a third-party name as the need it stands for, so an ask or a
-    // failure that names one is answered with what the project holds for it.
+    // v8 live 4 (review): packages, what the image installs beyond the
+    // language's standard library, as agents' rows list them (src/packages.js);
+    // none here. The standard library is part of the language: always there,
+    // never listed or granted. stdlib_provides names a few of its modules by
+    // what each provides (since: the first runtime version that has it), to
+    // answer a run that looked for a module the project lacks, or an ask for
+    // a name no row holds ("For an HTTP server, JavaScript provides node:http").
+    // stands_for: a third-party name as the need it stands for.
     // missing_package: how a run says a package is not there (group module).
-    packages:[{name:'node:http',provides:'HTTP server'},{name:'node:https',provides:'HTTPS server and client'},{name:'node:fs',provides:'files and folders'},{name:'node:path',provides:'file paths'},
+    // module_prefix: the prefix the runtime's own modules may carry (node:fs is
+    // fs); tool_words: the words that name the toolchain itself in a need;
+    // module_reference: how a file of this row reads a module ({module}).
+    packages:[], module_prefix:'node:', tool_words:['node','nodejs','js','javascript','npm','npx'],
+    module_reference:["require\\(\\s*['\"](?:node:)?{module}['\"]","from\\s+['\"](?:node:)?{module}['\"]","import\\s+['\"](?:node:)?{module}['\"]"],
+    stdlib_provides:[{name:'node:http',provides:'HTTP server'},{name:'node:https',provides:'HTTPS server and client'},{name:'node:fs',provides:'files and folders'},{name:'node:path',provides:'file paths'},
       {name:'node:url',provides:'URL parsing'},{name:'node:querystring',provides:'query strings'},{name:'node:crypto',provides:'hashing and random ids'},{name:'node:test',provides:'tests'},
       {name:'node:assert',provides:'assertions for tests'},{name:'node:child_process',provides:'running commands'},{name:'node:events',provides:'events'},{name:'node:readline',provides:'reading input line by line'},
       {name:'node:os',provides:'operating system facts'},{name:'node:util',provides:'utilities and command-line arguments (parseArgs)'},{name:'node:zlib',provides:'compression'},{name:'node:stream',provides:'streams'},
@@ -88,8 +96,11 @@ export const TOOLCHAINS = Object.freeze([
     // Modules the image installs beside the standard library (never shimmed, renamed or unresolved).
     site_modules:'pytest _pytest pluggy iniconfig packaging py',
     unresolved:["cannot import name '(?<name>\\w+)' from '(?<module>[\\w.]+)'","No module named '(?<module>[\\w.]+)'","name '(?<name>\\w+)' is not defined"],
-    // v8 live 4: as the JavaScript row's: the standard library's modules worth naming, with what each provides.
-    packages:[{name:'http.server',provides:'HTTP server'},{name:'urllib.request',provides:'HTTP client'},{name:'urllib.parse',provides:'URL parsing'},{name:'json',provides:'JSON'},
+    // v8 live 4 (review): as the JavaScript row's. packages: what the image
+    // installs beyond the standard library (site_modules), with what each provides.
+    packages:[{name:'pytest',provides:'tests'}], tool_words:['python','python3','py','cpython','pip','pip3','pipx'],
+    module_reference:["(?:^|\\n)\\s*(?:from\\s+{module}(?![\\w.])|import\\s+{module}(?![\\w.]))"],
+    stdlib_provides:[{name:'http.server',provides:'HTTP server'},{name:'urllib.request',provides:'HTTP client'},{name:'urllib.parse',provides:'URL parsing'},{name:'json',provides:'JSON'},
       {name:'sqlite3',provides:'database in a file'},{name:'csv',provides:'CSV files'},{name:'argparse',provides:'command-line arguments'},{name:'datetime',provides:'dates and times'},
       {name:'re',provides:'regular expressions'},{name:'pathlib',provides:'file paths'},{name:'os',provides:'environment, files and folders'},{name:'shutil',provides:'copying and moving files'},
       {name:'unittest',provides:'tests'},{name:'html',provides:'escaping text for web pages'},{name:'html.parser',provides:'reading web pages'},{name:'string',provides:'text templates'},
@@ -97,7 +108,7 @@ export const TOOLCHAINS = Object.freeze([
       {name:'collections',provides:'counters, queues and ordered maps'},{name:'dataclasses',provides:'data classes'},{name:'logging',provides:'logging'},{name:'hashlib',provides:'hashing'},
       {name:'secrets',provides:'secure tokens'},{name:'subprocess',provides:'running commands'},{name:'threading',provides:'threads'},{name:'socketserver',provides:'network servers'},
       {name:'sys',provides:'process arguments and exit status'},{name:'time',provides:'time and sleeping'},{name:'configparser',provides:'config files'},{name:'xml.etree.ElementTree',provides:'XML'},
-      {name:'base64',provides:'base64'},{name:'zipfile',provides:'zip archives'},{name:'tempfile',provides:'temporary files'},{name:'textwrap',provides:'wrapping text'},{name:'pytest',provides:'tests',site:true}],
+      {name:'base64',provides:'base64'},{name:'zipfile',provides:'zip archives'},{name:'tempfile',provides:'temporary files'},{name:'textwrap',provides:'wrapping text'}],
     stands_for:{flask:'HTTP server',django:'HTTP server',fastapi:'HTTP server',bottle:'HTTP server',tornado:'HTTP server',aiohttp:'HTTP server',starlette:'HTTP server',cherrypy:'HTTP server',
       pyramid:'HTTP server',sanic:'HTTP server',falcon:'HTTP server',werkzeug:'HTTP server',uvicorn:'HTTP server',gunicorn:'HTTP server',requests:'HTTP client',httpx:'HTTP client',urllib3:'HTTP client',
       jinja2:'text templates',mako:'text templates',sqlalchemy:'database in a file',peewee:'database in a file',pymysql:'database in a file',psycopg2:'database in a file',pandas:'CSV files',

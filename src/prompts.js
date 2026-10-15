@@ -142,7 +142,7 @@ export const CLEF = Object.freeze({
   kind_fits: 'Is the kind of deliverable {i} right for what it does: a page someone opens, a command someone runs, a function code calls, a route a request reaches, a document someone reads, or a data or other file? Answer NO if another kind fits better.',
   // v8 card repair: whether a follow-up is about a deliverable it changes (a doubt is shown, never a refusal).
   // v8 live 4: whether the card keeps to what is installed (the toolchains and packages in installed).
-  installed: 'Do the card\'s deliverables, run commands and decisions use only the toolchains and packages listed in installed? Answer NO if they rely on a library or tool that installed does not list.',
+  installed: 'Do the card\'s deliverables, run commands and decisions use only the toolchains listed in installed, each with its language\'s standard library, and the packages it lists? Answer NO if they rely on a library or tool beyond these.',
   amend_change: 'Does the change ask, directly or by clear implication, to alter existing deliverable {i} as described? Answer NO if the change is about other deliverables, or only adds new ones beside it.'
 });
 export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, k) => k in vars ? String(vars[k]) : m);
@@ -215,8 +215,8 @@ export const MESSAGES = Object.freeze({
   // v8 live 2: the requirements a writer's contracts serve, from its first turn (their statements; the checks' values stay with the checks).
   requirements_served: ({list}) => `Checks written from the goal test these requirements of your contracts: ${list}.`,
   check_failed: ({id, says, check, evidence, answer}) => `Requirement ${id} failed: ${says}. The check: ${check}.${evidence ? ` What it observed: ${evidence}` : ''}${answer ? ` ${answer}` : ''} Fix the cause in your part, or say plainly which other part's contract it lies in.`,
-  // v8 live 4: a run that needed a package the project's packages leave out (missing_module), with the answer its line gave.
-  missing_package: ({name, answer}) => `The run needed ${name}, which the project's installed packages leave out. ${answer}`,
+  // v8 live 4: a run that looked for a module the project has no file or package for (missing_module), with the answer its line or its language gave (v8 live 4 review: it names what exists).
+  missing_package: ({name, answer}) => `The run looked for ${name}. ${answer}`,
   // v8 S9 (§7.2): a follow-up the user gave, as the card writer reads it beside current_card.
   amend_note: () => 'change is a new instruction from the user for the project that current_card describes, and goal now ends with it. Return the whole card for the goal with the change: keep each deliverable and requirement of current_card that the change leaves as it is, with its id and its check, and add or change only what the change asks for. Give each new or changed requirement the phrase of the change it comes from as its source.',
   // The amendment as the part it is routed to reads it (an amendment travels the path a repair does).
@@ -263,7 +263,9 @@ export const MESSAGES = Object.freeze({
   available_package: ({provides}) => provides ? `an installed package for ${provides}` : 'an installed package',
   package_yours: ({need, names, many}) => `For ${need}, your packages hold ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
   package_granted: ({need, names, many}) => `For ${need}, your manager granted ${names}, now in your packages: use ${it(many)}.`,
-  package_held: ({held}) => held ? `For this need, the installed packages are ${held}: build it from these, in your own files.` : 'For this need, build it in your own files.',
+  // v8 live 4 review: the language's own answer, for a name no row holds: its standard library is part of it.
+  package_stdlib: ({name}) => `${name} is part of the language's standard library: import it and use it as it is.`,
+  package_language: ({need, names, many}) => `For ${need}, the language's standard library provides ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
   available_own: () => 'your own contract',
   available_use: ({owner}) => owner ? `a contract that "${owner}" delivers` : 'a contract another part delivers',
   available_base: () => 'an existing project file: the answer quotes its text',

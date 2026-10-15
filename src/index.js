@@ -48,7 +48,7 @@ import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, cardsFor, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
-import { normalizePackages, installedPackages, heldByName, heldForNeed, isPackageAsk, missingModule, externalModule, piecePackages, packageLine, needOf, languageOf } from './packages.js';
+import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, missingModule, externalModule, readsModule, piecePackages, packageLine, needOf } from './packages.js';
 import { caseTwin } from '../container/build-path.mjs';
 import { toBase64 } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -703,17 +703,33 @@ export class ControlRoom extends DurableObject {
   async handPrompt({kind='goal', prompt='', prompt_id='', root=null}={}) {
     const n=Number(query(this.db(),'SELECT COUNT(*) AS n FROM prompt_handlers')[0].n)+1,id=`${HANDLER_PREFIX}${n}`,at=Date.now();
     const create=!!root&&!this.node('root');
-    this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,?,?,NULL)',id,kind,clip(prompt,EFFECTIVE_GOAL_LIMIT),prompt_id||'','root',create?1:0,at);
-    try { if(create)await this.provision('root',id,'Root objective',root.task,root.interfaces||[],[],root.packages||[]); }
+    this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,0,?,NULL)',id,kind,clip(prompt,EFFECTIVE_GOAL_LIMIT),prompt_id||'','root',at);
+    // v8 live 4 review (L1): created_root and the event say what happened: Root's row exists only once provision returned.
+    let made=false;
+    try {
+      if(create){await this.provision('root',id,'Root objective',root.task,root.interfaces||[],[],root.packages||[]);made=true;this.db().exec('UPDATE prompt_handlers SET created_root=1 WHERE id=?',id);}
+    }
     finally {
       this.db().exec('UPDATE prompt_handlers SET ended_at=? WHERE id=?',Date.now(),id);
-      this.event('system','prompt_handed',create?`${id} created Root's row (${(root.packages||[]).length} packages), handed it the prompt and ended.`:`${id} handed the ${kind==='goal'?'prompt':'change'} to Root and ended.`);
+      this.event('system','prompt_handed',made?`${id} created Root's row (${(root.packages||[]).length} packages), handed it the prompt and ended.`:create?`${id} ended without creating Root's row.`:`${id} handed the ${kind==='goal'?'prompt':'change'} to Root and ended.`);
     }
     return id;
   }
   promptHandlers() { return query(this.db(),'SELECT id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at FROM prompt_handlers ORDER BY spawned_at,id'); }
   installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
-  packagesOf(id) { return this.v8()?normalizePackages(parse(this.node(id)?.packages,[])):[]; }
+  // v8 live 4 review (L3, L4): the top's row holds the installed set as the
+  // box reports it now (a room from before packages, or one whose box
+  // inventory came after Start), with what was added to it since.
+  packagesOf(id) {
+    if(!this.v8())return [];
+    const n=this.node(id),own=normalizePackages(parse(n?.packages,[]));
+    return n&&isTop(n)?normalizePackages([...this.installedSet(),...own]):own;
+  }
+  // v8 live 4 review (L6): a node's packages as a prompt shows them: those of the card's code languages, once the card names them.
+  packageView(id) {
+    const langs=codeLanguages(this.read('card',null)),all=this.packagesOf(id);
+    return langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all;
+  }
   // v8 S3: a room held at a stop only Continue (or a later slice) moves on:
   // card_blocked, card_failed; and (S4b) at the card's checks: checks_failed,
   // checks_blocked, checks_exhausted. Root waits; the run ends
@@ -3503,13 +3519,27 @@ export class ControlRoom extends DurableObject {
   // v8 live 4: whether a reference a link or a run left unresolved names a
   // module outside the project (a package: the standard library's, or a
   // third party's), which no rename joins (src/packages.js externalModule).
+  // v8 live 4 review (M2): only a module-level not-found ({module}, no
+  // name) for an installed module is one; "cannot import name X from Y"
+  // never is, so a misnamed project import goes to the relink.
   externalHit(hit, bundle) {
-    if(!this.v8()||!hit?.module)return false;
-    bundle.external??=(()=>{
+    if(!this.v8()||!hit?.module||hit.name)return false;
+    return externalModule({module:hit.module},this.projectNames(bundle));
+  }
+  // The project's names a module may be taken for (its files' stems and folders, its contracts), and what is installed.
+  projectNames(bundle) {
+    return bundle.external??=(()=>{
       const paths=[...bundle.files.keys()].filter(p=>!(bundle.glue||new Map()).has(p));
       return {stems:[...new Set(paths.flatMap(p=>p.split('/').map(s=>s.replace(/\.[^.]+$/,''))))],contracts:[...this.contractNames()],held:this.packagesOf('root'),rows:this.installedToolchains()};
     })();
-    return externalModule({module:hit.module},bundle.external);
+  }
+  // Whether a module a run could not find is a package rather than a part
+  // of the project (missing_module): the rows know its name as a package's,
+  // and no file, folder or contract of the project is named like it.
+  missingPackage(module, bundle) {
+    if(!packageLanguage(module,this.installedToolchains()))return false;
+    const {stems,contracts}=this.projectNames(bundle),t=String(module).toLowerCase().replace(/[^a-z0-9]/g,'');
+    return ![...stems,...contracts].some(x=>String(x).toLowerCase().replace(/[^a-z0-9]/g,'')===t);
   }
   // v8 live 4: each failure that needed a package outside the project goes
   // up its writer's line as that package's ask (packageAsk); the answer (what
@@ -3521,13 +3551,13 @@ export class ControlRoom extends DurableObject {
     for(const it of items) {
       const req=it.facts?.requirement;
       if(!req?.module)continue;
-      const esc=req.module.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),reads=new RegExp(`(?:^|\\n)\\s*(?:from\\s+${esc}\\b|import\\s+${esc}\\b)|require\\(\\s*['"](?:node:)?${esc}['"]|from\\s+['"](?:node:)?${esc}['"]`);
-      const importer=[...bundle.files].find(([p,t])=>bundle.origin.get(p)&&reads.test(String(t)))?.[0];
+      // v8 live 4 review (L7): the importer is read by its row's module_reference.
+      const importer=[...bundle.files].find(([p,t])=>bundle.origin.get(p)&&readsModule(p,t,req.module,this.installedToolchains()))?.[0];
       const owner=it.parties.find(p=>p.owner&&this.node(p.owner))?.owner||(importer&&bundle.origin.get(importer)?.owner)||id;
-      const a=this.answerPackageAsk(owner,{name:req.module,language:req.module_language||'',key:requestKey({name:req.module}),wake:false});
+      const a=this.answerPackageAsk(owner,{name:req.module,key:requestKey({name:req.module}),wake:false,failure:true});
       if(!a)continue;
       req.answer=MESSAGES.missing_package({name:req.module,answer:a.text});
-      this.event(owner,'package_missing',clip(`${req.id}: the run needed ${req.module}, beyond the installed packages; ${a.how==='granted'?`granted ${a.names.join(', ')} for it`:a.how==='yours'?`its packages hold ${a.names.join(', ')} for it`:'answered with what the installed packages hold'}.`,500));
+      this.event(owner,'package_missing',clip(`${req.id}: the run looked for ${req.module}; ${a.how==='granted'?`granted ${a.names.join(', ')} for it`:a.how==='yours'?`its packages hold ${a.names.join(', ')} for it`:`its language provides ${a.names.join(', ')} for it`}.`,500));
     }
   }
   // S5: the link of a bundle in the room's events (once per input), and the
@@ -3882,7 +3912,7 @@ export class ControlRoom extends DurableObject {
       return finish();
     }
     // v8 live 4: a run that needed a package outside the project is missing_module, answered from its writer's line.
-    const missing=(r,res)=>{if(!this.v8())return '';const m=missingModule(`${res?.detail||''}\n${res?.output||''}`,this.installedToolchains());return m&&this.externalHit({module:m.module},bundle)?m.module:'';};
+    const missing=(r,res)=>{if(!this.v8())return '';const m=missingModule(`${res?.detail||''}\n${res?.output||''}`,this.installedToolchains());return m&&(this.externalHit({module:m.module},bundle)||this.missingPackage(m.module,bundle))?m.module:'';};
     const items=checkProblems(card,results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name)),goal:this.userGoal(),missing});
     this.answerMissingModules(id,items,bundle);
     this.event(id,'checks_reported',clip(`The project card's checks: ${line}.`,900));
@@ -4766,6 +4796,8 @@ export class ControlRoom extends DurableObject {
     const db=this.db(),node=this.node(c),below=this.subtree(c).slice(1);
     if(!node||['retired','failed'].includes(node.status))return;
     if(interfaces)db.exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())),c);
+    // v8 live 4 review (L9): its packages follow its new contracts' languages, as a piece's do at a split.
+    if(interfaces&&this.v8())db.exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(piecePackages({interfaces},this.packagesOf(m),this.installedToolchains()).packages),c);
     if(below.length) {
       this.retireNodes(m,below,'retasked');
       // What it held was about the branch that is gone; it starts with nothing.
@@ -5171,7 +5203,7 @@ export class ControlRoom extends DurableObject {
     const held=this.packagesOf(id),notes=[];
     const out=spawn.map(c=>{
       if(!c||typeof c!=='object')return c;
-      const r=piecePackages(c,held),{packages:_,...rest}=c;
+      const r=piecePackages(c,held,this.installedToolchains()),{packages:_,...rest}=c;
       if(r.given)notes.push(`"${clip(c.label,70)}" gets ${r.packages.map(p=>p.name).join(', ')||'no package'}${r.asks.length?` and asks for ${r.asks.join(', ')}`:''}`);
       return {...rest,packages:r.packages,...(r.asks.length?{package_asks:r.asks}:{})};
     });
@@ -6012,7 +6044,7 @@ export class ControlRoom extends DurableObject {
     const n=this.node(id);
     if(!n||!this.v8()||this.manager(id)||isRuntimeNode(n))return [];
     const titles=new Map(this.sourceRows().map(r=>[r.id,r.card?.title||r.title||r.final_url||r.url]));
-    return brokerCatalogue({own:this.promisedOf(id),uses:this.plannedUses(id),packages:this.packagesOf(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
+    return brokerCatalogue({own:this.promisedOf(id),uses:this.plannedUses(id),packages:this.packageView(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
   }
   availableView(id, answered=[]) {
     const cat=this.catalogue(id),labelled=answered.some(a=>a&&typeof a==='object');
@@ -6025,12 +6057,13 @@ export class ControlRoom extends DurableObject {
   }
   // What one ask is (broker.js classify): a contract goes on to today's
   // routing (askManager); a chunk, an existing file, or a name outside the
-  // catalogue is answered here.
+  // catalogue is answered here. v8 live 4 review (H2): an ask is a package's
+  // by its name alone, when its line or its language answers that name
+  // (resolvePackage); its need's words never divert it.
   askKind(id, name, need='') {
     if(!this.v8())return {kind:'contract',name:name||''};
-    // v8 live 4: an ask for a package (a module or library it names, or a need for one) is answered from the asker's line (answerPackageAsk).
     const contracts=this.contractNames();
-    if(!this.basePaths().has(name||'')&&isPackageAsk({name,need},{contracts,held:this.packagesOf('root'),rows:this.installedToolchains()}))return {kind:'package',name:name||''};
+    if(name&&!contracts.has(name)&&!this.basePaths().has(name)&&this.resolvePackage(id,{name,need}))return {kind:'package',name};
     return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts});
   }
   // Answers one ask that needs no other part, with no manager hop (§5.3): a
@@ -6040,7 +6073,7 @@ export class ControlRoom extends DurableObject {
     if(!this.v8())return false;
     const cat=this.catalogue(id),c=this.askKind(id,ask.name,ask.question);
     if(c.kind==='contract')return false;
-    if(c.kind==='package'){this.answerPackageAsk(id,{name:ask.name||'',need:ask.question||'',key:ask.key});return true;}
+    if(c.kind==='package')return !!this.answerPackageAsk(id,{name:ask.name||'',need:ask.question||'',key:ask.key});
     const req=brokerRequest({from:id,kind:c.kind,name:c.name,need:ask.question});
     let answer=null;
     if(c.kind==='source') {
@@ -6056,58 +6089,71 @@ export class ControlRoom extends DurableObject {
     this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters${answer.facts?.clipped?` of ${answer.facts.chars}`:''}, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
     return true;
   }
-  // v8 live 4: a package ask, answered from the asker's line. Each row on
-  // the line (the asker's own, then its manager's, and up) is read in turn:
-  // the first that holds a package by the asked name, or one whose provides
-  // meets the need, answers. One the asker's own row holds is pointed to; one
-  // a row above holds is granted, added to every row between, so a piece's
-  // packages stay a part of its parent's. The top, holding nothing for the
-  // need, answers with what it holds, and the request is kept for the person
-  // (package_requests): no package is installed by an agent's ask. The same
-  // answer serves a run that missed a package (missing_module). Returns
-  // {how: 'yours'|'granted'|'held', text, names}.
-  packageAsk(id, {name='', need='', language=''}={}) {
+  // v8 live 4 (review): a package ask by name, resolved against what
+  // exists, with no side effect (applied by answerPackageAsk). The ask goes
+  // up the asker's line (its own row, its manager's, and up): the first row
+  // holding a package by the name, or one whose provides fits what the name
+  // stands for and the need (the rows know the name as a package's), answers.
+  // A row above the asker grants it. A name no row holds is answered by the
+  // language itself: a module of its standard library is named as part of
+  // it, and a third party's name by the standard library modules that
+  // provide what it stands for (stdlib_provides). Under packages 'allowed',
+  // a third party's name is the person's to allow and is not redirected,
+  // as before live 4. null: no row and no language answers it, so a
+  // control-block ask goes on to the contract path. failure: a run that
+  // could not find the module (missing_module), so a row holding it by name
+  // does not answer. {how: 'yours'|'granted'|'language', at, line, hits,
+  // names, need}.
+  resolvePackage(id, {name='', need='', failure=false}={}) {
     const rows=this.installedToolchains(),line=[],want={name,need};
     for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.push(x);
-    if(!line.length)return null;
-    const what=name||clip(need,80);
-    // The language the need is in: the run's, the name's, else the asker's own packages' or the card's code languages, when one.
+    if(!line.length||!name)return null;
+    // The language the name is in: the rows', else the asker's own packages' or the card's code languages, when one.
     const own=[...new Set(this.packagesOf(id).map(p=>p.language).filter(Boolean))],code=codeLanguages(this.read('card',null));
-    const lang=language||languageOf(name,rows)||(own.length===1?own[0]:code.length===1?code[0]:'');
-    let at=-1,hits=[];
+    const known=packageLanguage(name,rows),lang=known||(own.length===1?own[0]:code.length===1?code[0]:'');
     for(let i=0;i<line.length;i++) {
       const held=this.packagesOf(line[i].id).filter(p=>!lang||!p.language||p.language===lang);
-      hits=heldByName(held,name);
-      if(!hits.length)hits=heldForNeed(held,want,rows);
-      if(hits.length){at=i;break;}
-      if(i+1<line.length)this.event(line[i+1].id,'package_relayed',clip(`"${line[i].label}" asked for ${what}, beyond its own packages; asked "${line[i+1].label}".`,400),line[i].id);
+      let hits=failure?[]:heldByName(held,name,rows);
+      if(!hits.length&&known)hits=heldForNeed(held.filter(p=>!failure||!heldByName([p],name,rows).length),want,rows);
+      if(hits.length)return {how:i===0?'yours':'granted',at:i,line,hits,names:hits.map(p=>p.name),need:needOf(want,hits,rows)};
     }
-    const asker=line[0],names=hits.map(packageLine).join(', '),many=hits.length>1,forNeed=needOf(want,hits,rows);
-    if(at===0)return {how:'yours',names:hits.map(p=>p.name),text:MESSAGES.package_yours({need:forNeed,names,many})};
-    if(at>0) {
+    if(!known)return null;
+    const allowed=this.settings().packages==='allowed';
+    const said=languageAnswer(want,{rows,inventory:this.read('toolchain_inventory',null),language:lang});
+    if(!said||allowed&&!said.stdlib)return null;
+    return {how:'language',at:-1,line,hits:[],names:said.names,need:said.need,stdlib:said.stdlib,language:said.language};
+  }
+  // A package ask resolved (resolvePackage) and applied: a grant is added to
+  // every row between the holder and the asker, so a piece's packages stay a
+  // part of its parent's; each hop logs package_relayed. The answer names
+  // what exists for it. Returns {how, text, names} or null.
+  packageAsk(id, {name='', need='', failure=false}={}) {
+    const r=this.resolvePackage(id,{name,need,failure});
+    if(!r)return null;
+    const {line,at,hits}=r,asker=line[0],many=r.names.length>1;
+    for(let i=0;i+1<line.length&&(at<0||i<at);i++)this.event(line[i+1].id,'package_relayed',clip(`"${line[i].label}" asked for ${name}, beyond its own packages; asked "${line[i+1].label}".`,400),line[i].id);
+    if(r.how==='yours')return {how:'yours',names:r.names,text:MESSAGES.package_yours({need:r.need,names:hits.map(packageLine).join(', '),many})};
+    if(r.how==='granted') {
       for(let j=at-1;j>=0;j--) {
-        const own=this.packagesOf(line[j].id),add=hits.filter(p=>!own.some(q=>q.name===p.name));
+        const own=normalizePackages(parse(this.node(line[j].id)?.packages,[])),add=hits.filter(p=>!own.some(q=>q.name===p.name));
         if(add.length)this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,...add])),line[j].id);
       }
-      this.event(line[at].id,'package_granted',clip(`"${line[at].label}" granted ${hits.map(p=>p.name).join(', ')} to "${asker.label}" for ${what}.`,400),asker.id);
-      return {how:'granted',names:hits.map(p=>p.name),text:MESSAGES.package_granted({need:forNeed,names,many})};
+      this.event(line[at].id,'package_granted',clip(`"${line[at].label}" granted ${r.names.join(', ')} to "${asker.label}" for ${name}.`,400),asker.id);
+      return {how:'granted',names:r.names,text:MESSAGES.package_granted({need:r.need,names:hits.map(packageLine).join(', '),many})};
     }
-    const top=line.at(-1),langs=new Set(lang?[lang]:own),all=this.packagesOf(top.id),shown=(langs.size?all.filter(p=>langs.has(p.language)):all).slice(0,16);
-    this.save('package_requests',[...this.read('package_requests',[]).filter(r=>!(r.from===asker.id&&r.name===name&&r.need===need)),{from:asker.id,label:asker.label,name,need:clip(need,200),ts:Date.now()}].slice(-20));
-    this.event(top.id,'package_request',clip(`"${asker.label}" asked for ${what}; the installed packages hold nothing for it, so it was answered with what they hold, and the request waits for the person (packages are allowed in the room's settings).`,500),asker.id);
-    return {how:'held',names:[],text:MESSAGES.package_held({held:shown.map(packageLine).join(', ')})};
+    return {how:'language',names:r.names,text:r.stdlib?MESSAGES.package_stdlib({name}):MESSAGES.package_language({need:r.need,names:r.names.join(', '),many})};
   }
-  // A worker's package ask (its control block's, or a split's name its
-  // parent's row does not list): answered like a broker answer, labelled,
-  // in answered_requests, with a message that wakes it.
-  answerPackageAsk(id, {name='', need='', key='', wake=true, language=''}={}) {
-    const a=this.packageAsk(id,{name,need,language});
+  // A worker's package ask (its control block's, a split's name its
+  // parent's row does not list, or a run's missing module): answered like a
+  // broker answer, labelled, in answered_requests, with a message that wakes it.
+  answerPackageAsk(id, {name='', need='', key='', wake=true, failure=false}={}) {
+    const a=this.packageAsk(id,{name,need,failure});
     if(!a)return null;
-    const req=brokerRequest({from:id,kind:'package',name:name||clip(need,80),need});
-    const answer=packageAnswer({id:req.id,name:name||clip(need,80),text:a.text});
+    const req=brokerRequest({from:id,kind:'package',name,need});
+    const answer=packageAnswer({id:req.id,name,text:a.text});
     if(wake)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:key||requestKey({need,name}),kind:'package',status:answer.status}));
     this.recordAnswer(id,{key:key||requestKey({need,name}),kind:'broker',text:viewAnswer(answer)});
-    this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:'answered with what the installed packages hold'}.`,400));
+    this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:`its language provides ${a.names.join(', ')}`}.`,400));
     return a;
   }
   // The answers a worker got to its function requests, newest kept, one per
@@ -6722,7 +6768,7 @@ export class ControlRoom extends DurableObject {
       // of the previous result the room starts from.
       await this.loadSources();
       const base=this.read('base',null),srcs=this.sourceRows();
-      const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,held:this.packagesOf(id),
+      const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,held:this.packageView(id),
         base_digest:base?.digest||null,base:[...this.basePaths()],prior_card:this.read('prior_card',null),
         sources:cardsFor(srcs,this.allRefs()),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error}))});
       const {errors,unsupported}=written;
@@ -6897,7 +6943,7 @@ export class ControlRoom extends DurableObject {
           if(left_out)before.contracts_left_out=MESSAGES.left_out({count:String(left_out)});
           before.project=project;
           // v8 live 4: the packages its row lists, which its pieces get a part of.
-          const packages=this.packagesOf(id);
+          const packages=this.packageView(id);
           if(packages.length)before.your_packages=packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}));
           // v8 S8b: the existing project's digest (its tree) and the source cards of the refs this node holds.
           const digest=this.read('base',null)?.digest;
@@ -8269,7 +8315,7 @@ export class ControlRoom extends DurableObject {
     }
     if(root&&!this.manager('root')&&(rootBusy||root.phase==='decompose'))return {deferred:true};
     const rows=this.installedToolchains(),base=[...this.basePaths()],packages=this.settings().packages,started=Date.now(),reserved=this.usedRequirementIds();
-    const written=await writeCard(this.inferenceEnv('compiler'),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,installed:rows,base,packages,held:this.packagesOf('root'),prior_card:card,change:text,base_digest:this.read('base',null)?.digest||null});
+    const written=await writeCard(this.inferenceEnv('compiler'),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,installed:rows,base,packages,held:this.packageView('root'),prior_card:card,change:text,base_digest:this.read('base',null)?.digest||null});
     if(gone())return stale;
     if(written.card?.blocked)return {error:`The card writer could not apply the change: ${clip(written.card.blocked,400)}`};
     if(written.unsupported?.length)return {error:`The change needs ${listed(written.unsupported)}, which this deployment cannot run.`};
