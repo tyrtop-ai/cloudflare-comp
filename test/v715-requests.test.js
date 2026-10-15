@@ -228,9 +228,10 @@ test('v7.15: a request no child of the worker\'s manager promises climbs one lev
   for(const m of room.db().exec('SELECT body FROM messages WHERE recipient=?',worker).toArray())assert.doesNotMatch(m.body,NO_ID,'no node id reaches the worker');
 });
 
+// v7.15.15 (G1): outside the assignment, the plan grows from the worker's manager up; nobody covering it at any level, the worker writes it (never "import formatDate", which nobody would write).
 test('v7.15: a request nobody up to Root promises gets unowned, and the worker\'s manager judges the assignment',async()=>{
   for(const [p,text] of [[0.8,'No piece of the application promises formatDate (formats a date for display). It is part of your assignment: write it in your own module.'],
-    [0.2,'No piece of the application promises formatDate (formats a date for display), and it is not part of your assignment. Do not write it: import formatDate on its own line, with the name as the path: const { formatDate } = require(\'./formatDate\'); and finish your code. The missing function reaches Root as a problem when the application is linked.']]) {
+    [0.2,'No piece of the application promises formatDate (formats a date for display), and no other piece\'s assignment covers it (your manager asked each level): write it in your own module.']]) {
     const ai=fakeAI({inside:()=>p}),{room}=await plannedTree(ai,viewTree);
     const worker='root.2.1',seen=room.wakeGeneration(worker);
     ask(room,worker,'formats a date for display','formatDate');
@@ -239,11 +240,20 @@ test('v7.15: a request nobody up to Root promises gets unowned, and the worker\'
     assert.equal(events(room,'route_unowned')[0].actor,'root');
     assert.equal(room.wakeGeneration(worker),seen,'not woken before its own manager answers');
     await managerTurn(room,'root.2');
+    // v7.15.15 (G1, review #3): outside, the worker's manager files the growth row; each manager decides it in its own turn (root.2, then up to root), and the worker waits.
+    if(p<0.5) {
+      assert.deepEqual([replies(room,worker).length,room.wakeGeneration(worker)],[0,seen],'waits on its request');
+      assert.deepEqual(rows(room,'problems').map(r=>[r.holder,r.kind,r.source]),[['root.2','unresolved',worker]]);
+      for(const id of ['root.2','root'])await managerTurn(room,id);
+    }
     const [reply]=replies(room,worker);
     assert.deepEqual([reply.kind,reply.value],['unowned',text]);
     assert.deepEqual(ai.calls.filter(c=>c.kind==='inside').map(c=>c.state.assigned_code),[room.node(worker).task],'the worker\'s own assignment');
     assert.equal(events(room,'route_scope')[0].body,`formatDate (formats a date for display): Clef p=${p.toFixed(3)}, ${p>=0.5?'inside':'outside'} "Ticket retrieval function"'s assignment.`);
-    assert.equal(rows(room,'problems').length,0,'no problem is filed');
+    assert.deepEqual(rows(room,'problems').map(r=>[r.status,r.outcome]),p>=0.5?[]:[['closed','exhausted']],'inside, no problem is filed');
+    // v7.15.15 (G1): one ranked placement per level, each in its manager's own turn, the worker's branch and the start carrier left out.
+    assert.deepEqual(events(room,'promise_refused').map(e=>[e.actor,e.body]),p>=0.5?[]:[['root.2','formatDate: no direct child\'s assignment covers it ("Filter application logic", best p=0.050); it goes up a level.'],['root','formatDate: no direct child\'s assignment covers it ("ticket storage", best p=0.050); Ticket retrieval function writes it.']]);
+    assert.equal(events(room,'promise_added').length,0);
     assert.notEqual(room.node(worker).status,'failed','contrast out_of_scope');
     assert.equal(events(room,'scope_rejected').length,0);
     assert.equal(room.wakeGeneration(worker),seen+1,'woken once');

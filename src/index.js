@@ -3,7 +3,7 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
@@ -16,7 +16,7 @@ import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materiali
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
-import { callOf, esmSyntax, placeholders } from './linker.js';
+import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
@@ -100,6 +100,8 @@ const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,br
 // v7.15 slice B: what a function request asks for, as answers and events say it.
 const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
 const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}` : xs[0]||'';
+// v7.15.16 (run25): why a split that hands one piece the whole promise is none.
+const noProgress = d => `No progress: a piece would carry its parent's whole promise ("${clip(d.label,70)}" carries ${listed(d.names)}).`;
 // How many times, in words (split_oversize_admitted).
 const times = n => ['once','twice','three times'][n-1] || `${n} times`;
 // One import line per function, named after it (run8): the builder links
@@ -135,6 +137,21 @@ const providedText = (f, owner) => {
 const providedFn = (f, owner) => ({name:f.name,params:f.params||[],does:f.does||'',...(f.operation?{operation:f.operation}:{}),...(f.returns?{returns:f.returns}:{}),owner});
 // Review: a name that stands for an operation rather than naming one (run12's goalOperation1).
 const OPERATION_PLACEHOLDER=/^(?:goal)?(?:op|operation|action|method|handler|function|func|fn)s?_?\d*$/i;
+// v7.15.15 (G1): a requested name the plan can grow onto a promise: a valid, specific identifier.
+const growable = name => !!validName(name)&&!GENERIC_NAMES.has(name)&&!RESERVED_WORD.test(name);
+// v7.15.15 (G2, G3): the operation fact a start() key is grown with, as growOperation files it.
+const operationFact = (label, op, name, params=[]) => ({op,name,params,line:`start() returns it as ${op}: ${name}(${params.join(', ')})`,does:`performs the goal's ${String(op).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase()} operation; ${label} returns it from start() as ${op}`});
+// v7.15.15 (G2, run23): the function a gap's operation names: its verb and
+// head noun ("view a ticket", "view the ticket's details", "view a ticket by
+// id": viewTicket), else the goal's noun (a stated remove: removeTicket); a
+// list keeps its plural (review #6, #9).
+const NOT_NOUN=/^(?:a|an|the|all|any|some|each|every|existing|one|their|its|your|my|our|new|single|specific|given)$/,LISTS=/^(?:list|search|browse|filter|count)$/;
+const operationName = (o, noun='') => {const w=(String(o||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().replace(/'s\b/g,'').match(/[a-z]+/g)||[]).filter(x=>!NOT_NOUN.test(x)),n=w[1]||noun;if(!w.length||!n)return '';const head=LISTS.test(w[0])?n.replace(/([^s])$/,'$1s'):n.replace(/ies$/,'y').replace(/([^s])s$/,'$1');return w[0]+head[0].toUpperCase()+head.slice(1);};
+// v7.15.15 review (#4): two names of one function: one verb by its synonyms
+// and the very same object (getTickets and readTickets; never viewTicket and
+// readTickets, one ticket against all of them).
+const VERB_CLASS={get:'view',read:'view',fetch:'view',load:'view',show:'view',find:'view',retrieve:'view',display:'view',add:'create',make:'create',insert:'create',remove:'delete',del:'delete',erase:'delete',destroy:'delete',edit:'update',modify:'update',change:'update',store:'save',write:'save',persist:'save'};
+const functionKey = n => {const w=String(n||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);return w.length>1?[VERB_CLASS[w[0]]||w[0],...w.slice(1)].join(' '):'';};
 // A function a manager's reply carries, cleaned as a promise item is.
 const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&!Array.isArray(fn)?[fn]:[]); return f&&validName(f.name)?{...f,owner:clip(fn.owner,70)}:null; };
 // Hard safety ceilings. Actual per-room limits are chosen in the dashboard,
@@ -335,6 +352,9 @@ export class ControlRoom extends DurableObject {
   // v7.15.14 review: a room saved before max_children reads its default (the snapshot shows 7, the bound it splits by); its missing worker and compiler models still fall back to its own model (inferenceEnv), not the defaults.
   settings() { const s=this.read('settings', DEFAULT_ROOM_SETTINGS); return s.max_children===undefined?{...s,max_children:DEFAULT_ROOM_SETTINGS.max_children}:s; }
   maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
+  // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95: threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10) (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10, 0.95 below). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
+  // v7.15.16 review: over a fixed horizon, min(max_depth, 10) levels, so raising max_depth (what split_capacity_blocked advises) never flattens it.
+  splitBar(id) {const {split_threshold:t,max_depth:m}=this.settings(),d=String(id).split('.').length-1,h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
   // runner's test). A room saved before v7.15.10 has no worker or compiler
@@ -737,6 +757,15 @@ export class ControlRoom extends DurableObject {
       if(holders.length)return holders.length===1?{id:holders[0].id,label:holders[0].label,level:b.parent}:null;
     }
     return null;
+  }
+  // v7.15.16 (run25): the live pieces off id's path that promise name deeper
+  // in another branch, which the name walk never reads (a name may mean
+  // another function there: run25's checkThresholds in eight branches); the
+  // Clef walk hears them (parseTelemetry, promised in root.2 five levels
+  // down, was promised again under root.3 68 s later).
+  promisedDeep(name, id) {
+    return query(this.db(),"SELECT id,label,interfaces FROM agents WHERE status NOT IN ('retired','failed') AND interfaces LIKE ?",`%"${name}"%`)
+      .filter(n=>!RUNTIME_LABELS.includes(n.label)&&n.id!==id&&!id.startsWith(n.id+'.')&&!n.id.startsWith(id+'.')).map(n=>({label:n.label,f:parse(n.interfaces,[]).find(f=>f.name===name)})).filter(x=>x.f);
   }
   // v7.15 slice C: the deepest live nodes at or under `under` whose promise
   // holds name. Runtime only (linker, branch check, entry): no prompt shows it.
@@ -1296,7 +1325,7 @@ export class ControlRoom extends DurableObject {
     const dirs=new Map(this.allNodes().map(n=>[branchDirectory(n.label,n.id),n])),piece=d=>{const n=dirs.get(d);return !n?null:n.id===row.worker?'':n.label;};
     // v7.15.6 (R3): run requirements routed by the plan read as the requirement on the worker's own promise, nothing more.
     return repairText({role:row.role,piece,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),own:row.manager===row.worker,
-      requirement:row.manager!==row.worker&&problems.every(p=>p.kind==='run'&&p.facts.requirement),operation:problems.every(p=>p.kind==='unresolved'&&!!p.facts.operation),problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
+      requirement:row.manager!==row.worker&&problems.every(p=>p.kind==='run'&&p.facts.requirement),operation:problems.every(p=>p.kind==='unresolved'&&!!p.facts.operation)&&{...problems[0].facts.operation,path:problems[0].source===row.worker?'placeholder':problems[0].facts.operation.gap?'gap':'import'},problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
     const builder=this.node(builderId);
@@ -2006,6 +2035,29 @@ export class ControlRoom extends DurableObject {
       return {...x,detail:detail+(/[.!?]$/.test(detail)?' ':'. ')+clip(notes.map(n=>n[1]).join(' '),Math.min(500,room))};
     });
   }
+  // v7.15.15 (G3, run23): the operation facts of an import line the start
+  // carrier makes of functions no piece promises, each one that performs a
+  // goal operation (goalOps) or a method the goal states, by its own name or
+  // by the key start() returns it under (review #5: run23b's view:
+  // handleViewTicket; view: getTicket), with that key (review #8: read from
+  // start()'s own object, view: (id) => viewTicket(id) is view) and the
+  // params of its call there; one per name of a line naming two. run23's
+  // entry imported viewTicket, the linker could only refuse to bind it to the
+  // store's readTickets, and D4 told the entry to "write what you need
+  // yourself" five rounds running.
+  importedOperations(builderId, path, content, names) {
+    const owner=this.planned()?this.buildSourceOrigin(builderId,path)?.owner:'',carrier=owner&&this.promisedOf(owner).some(f=>f.name==='start')?this.node(owner):null;
+    if(!carrier)return [];
+    const stated=goalMethods(this.userGoal()),plan=this.planIndex(),keys=startKeys(content)||new Map(),refs=importRefs(path,content),out=[],seen=new Set();
+    for(const name of names.filter(n=>growable(n)&&!plan.has(n))) {
+      const local=refs.map(r=>r.aliases.get(name)).find(Boolean)||name,key=[...keys].find(([,v])=>v.includes(local))?.[0]||'';
+      const s=stated.find(x=>x.name===name||x.name===key),by=[name,key].find(n=>n&&(s?.name===n||this.performsGoal({name:n})));
+      if(!by||this.performedOp(by,s)||seen.has(s?.name||goalOps(this.userGoal(),{name:by})[0]))continue;
+      seen.add(s?.name||goalOps(this.userGoal(),{name:by})[0]);
+      out.push({name,operation:operationFact(carrier.label,key||name,name,callOf(path,content,name)?.params||(s?[...(s.params||[])]:[]))});
+    }
+    return out;
+  }
   // What a link leaves that renaming cannot fix inside this branch, with the
   // facts the manager decides on, read from the whole linked bundle. An
   // import that resolves nowhere is a problem only at the top; below, it is
@@ -2047,8 +2099,12 @@ export class ControlRoom extends DurableObject {
       }
       if(names.length&&names.every(x=>owed.includes(x)))continue;
       const {named,offered}=importOffers(files,surfaces,u.path,u.specifier,names);
-      items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`,
-        facts:{specifier:u.specifier,names,named,provider_text:clip([...new Set([...lead,...offered])].map(exportsText).join(' | '),700)}});
+      // v7.15.15 (G3, run23): the start carrier's import of an operation no piece promises is the plan's gap, grown as G2's (the operation fact, one row per such name), never the reader's to write.
+      const ops=this.importedOperations(builderId,u.path,files.get(u.path),names),rest=names.filter(n=>!ops.some(o=>o.name===n)),provider_text=clip([...new Set([...lead,...offered])].map(exportsText).join(' | '),700);
+      for(const {name,operation} of ops)items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}. No piece promises ${name}, which performs a goal operation; the plan grows a piece's promise with it.`,
+        facts:{specifier:u.specifier,names:[name],named,provider_text,unpromised:true,esm:esmSyntax(files.get(u.path)||''),operation}});
+      if(rest.length||!ops.length)items.push({kind:'unresolved',path:u.path,detail:`Import '${u.specifier}' does not match any published module: ${u.detail}`,
+        facts:{specifier:u.specifier,names:ops.length?rest:names,named,provider_text}});
     }
     // run8: the entry called .start() on every module, and providers added
     // start() exports to satisfy it, so start() returned {create:{start},
@@ -2188,7 +2244,8 @@ export class ControlRoom extends DurableObject {
       // Renaming cannot add a function, split an import line or reorder a
       // call's arguments: a contract, split-import or argument-order problem
       // never relinks, and the linker's model never reads the last (run11).
-      if(inside.some(x=>x.kind!=='contract'&&x.kind!=='argorder'&&!x.facts.split)&&state.relinks<MAX_RELINKS) {
+      // v7.15.15 (G3, run23): nor an import of an operation no piece promises, which nothing exports (three link-model calls bound viewTicket to readTickets and were refused).
+      if(inside.some(x=>x.kind!=='contract'&&x.kind!=='argorder'&&!x.facts.split&&!x.facts.operation)&&state.relinks<MAX_RELINKS) {
         state.relinks++;state.diagnostic=clip('After your renames these problems remain: '+inside.filter(x=>x.kind!=='argorder').map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')+rejectedNote,2400);
         this.save(`link_state:${manager}`,state);
         this.event(id,'link_retry',clip(state.diagnostic,900));
@@ -2537,8 +2594,10 @@ export class ControlRoom extends DurableObject {
       const gaps=found.filter(o=>!o.method).map(o=>{const p=plan.find(x=>x.operation===o.operation);return {operation:o.operation,...(p?{fn:p.method,from:p.label}:{})};});
       if(gaps.length) {
         this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${stated.length} method(s) the goal states: ${gaps.map(o=>o.operation).join(', ')}.`,900));
+        // v7.15.15 (G2): a stated method nothing performs grows the plan; the rest stay the entry's.
+        const {grown,rest}=this.gapOperations(id,entry,files,surfaces,gaps,linked);
         // A performer the carrier itself writes is no import (own), as an atomic top's.
-        return {stage:'run',items:[entryIssue(entry,gapProblem(described,gaps,'',946,plan,{own:!linked||gaps.every(g=>g.from&&g.from===carrier)}))]};
+        return {stage:'run',items:[...rest.length?[entryIssue(entry,gapProblem(described,rest,'',946,plan,{own:!linked||rest.every(g=>g.from&&g.from===carrier)}))]:[],...grown]};
       }
       operations=found;
       this.event(id,'api_covered',clip(`Each method the goal states start() returns is there: ${found.map(o=>o.method).join(', ')}`,900));
@@ -2555,10 +2614,12 @@ export class ControlRoom extends DurableObject {
       const {gaps,total,extra}=mapped?mappedGaps(described,mapped,plan,this.planned()?goalOperations(this.userGoal()):[]):{gaps:plannedGaps(described,plan),total:plan.length,extra:[]};
       if(gaps.length) {
         this.event(id,'api_incomplete',clip(`start() returns no method for ${gaps.length} of the ${total} operation(s) the goal names: ${gapList(gaps)}.`,900));
+        // v7.15.15 (G2, run23): an operation no piece performs grows the plan (view a ticket, five rounds at the entry); the rest stay the entry's.
+        const {grown,rest}=this.gapOperations(id,entry,files,surfaces,gaps,linked);
         // The contract leads the entry ticket (applyDecisions); here it would
         // repeat it and clip the builder's renames.
         // The plan's operation functions close the text, cut first (spec 7.3).
-        return {stage:'run',items:[entryIssue(entry,gapProblem(described,gaps,'',946,plan,{own:!linked}))]};
+        return {stage:'run',items:[...rest.length?[entryIssue(entry,gapProblem(described,rest,'',946,plan,{own:!linked}))]:[],...grown]};
       }
       // With no usable mapping the plan files a gap only when start()
       // returned fewer methods than it has operations (plannedGaps); else
@@ -2578,6 +2639,51 @@ export class ControlRoom extends DurableObject {
     }
     const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,reach,methods:methodSet});
     return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues,outcome.test,m=>Array.isArray(described?.members?.[m]?.params)?described.members[m].params:null)};
+  }
+
+  // v7.15.15 (G2, G3): whether the plan has a performer of the operation a
+  // name performs (plannedOperations: the start carrier's plan, as its
+  // contract and the compiler read it), or for a method the goal states, of
+  // that method. Such a gap is the entry's, and such an import a link to make
+  // (createTickets for createTicket), never growth.
+  performedOp(name, s=null) {
+    const goal=this.userGoal(),ops=goalOps(goal,{name});
+    return this.plannedOperations().some(p=>s?p.method===s.name||p.operation===signature(s):goalOps(goal,{name:p.method,operation:p.operation}).some(v=>ops.includes(v)));
+  }
+  // v7.15.15 (G2, run23): a gap whose operation no piece performs is the
+  // split's, not the entry's: the problem filed is the operation's, the row
+  // growOperation files (facts.operation, the start carrier its reader), so
+  // its manager grows a piece's promise with it (promiseAdds, D9) and the
+  // carrier hears only the line to import and return it (gap). run23's
+  // "view a ticket" went to the entry five times, which had nothing to
+  // import. A gap with a performer in the plan (the entry left it out), a
+  // name some module exports or some piece promises (a link to make), an
+  // atomic top and a room without promises stay the entry's.
+  gapOperations(id, entry, files, surfaces, gaps, linked=true) {
+    const owner=linked&&this.planned()?this.entryOwner(id,entry):'',carrier=owner&&this.promisedOf(owner).some(f=>f.name==='start')?this.node(owner):null;
+    if(!carrier)return {grown:[],rest:gaps};
+    const goal=this.userGoal(),stated=goalMethods(goal),esm=esmSyntax(files.get(entry)||''),grown=[],rest=[],seen=new Set(),noun=this.goalNoun();
+    for(const g of gaps) {
+      // Review (#6; review 2 #5): a stated method with a generic or one-word name (remove(id), view(id), close(id), search(query)) grows under the operation and the goal's noun (removeTicket, closeTicket, searchTickets; never a lifecycle name such as close), and start() returns it under the stated key.
+      const s=stated.find(s=>signature(s)===g.operation),generic=s&&(GENERIC_NAMES.has(s.name)||functionKey(s.name)===''),name=s&&!generic?s.name:operationName(s?s.name:g.operation,noun);
+      // Review (#9): one name per operation per batch (view a ticket and view a ticket by id are one).
+      const op=s?s.name:goalOps(goal,{name})[0]||name;
+      if(g.fn||g.same_as||!growable(name)||seen.has(op)||!s&&!this.performsGoal({name})||this.performedOp(name,s)||this.linkableName(files,surfaces,name,entry)){rest.push(g);continue;}
+      seen.add(op);
+      grown.push({kind:'unresolved',path:entry,detail:`start() returns no method for ${g.operation}, and no piece promises a function that performs it.`,
+        facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:{...operationFact(carrier.label,s?s.name:name,name,s?[...(s.params||[])]:[]),gap:g.operation},provider_text:''}});
+    }
+    return {grown,rest};
+  }
+  // v7.15.15 review (#6): the thing the goal's operations act on (tickets),
+  // by the goal's operation list, else the goal word the plan's functions
+  // act on most, else "a ticket tracker"'s noun.
+  goalNoun() {
+    const goal=this.userGoal(),said=goalOperations(goal)[0]?.object;
+    if(said)return said;
+    const g=new Set(String(goal).toLowerCase().match(/[a-z]+/g)||[]),count=new Map();
+    for(const name of this.planIndex().keys())for(const w of name.replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().split(' ').slice(1)){const one=w.replace(/s$/,'');if(g.has(one)||g.has(one+'s'))count.set(one,(count.get(one)||0)+1);}
+    return [...count].sort((a,b)=>b[1]-a[1])[0]?.[0]||/\ban?\s+(?:small\s+|simple\s+)?([a-z]+)\s+(?:tracker|manager|app|application|system|service|tool|board|store)\b/i.exec(goal)?.[1]?.toLowerCase()||'';
   }
 
   // ---------- an atomic top ----------
@@ -2796,7 +2902,8 @@ export class ControlRoom extends DurableObject {
     for(const e of entries) {
       const {p,dec}=e;
       if(dec.action==='close'&&skip.has(dec.child))continue;
-      if(dec.action==='retask'||dec.action==='assign'&&['worker','builder'].includes(kindOf(dec.child))) {
+      // v7.15.15 (G1): a function request's growth is construction, not a repair: no round.
+      if((dec.action==='retask'||dec.action==='assign'&&['worker','builder'].includes(kindOf(dec.child)))&&!p.facts?.operation?.request) {
         if(st.exhausted)continue;
         // v7.15.6 review: the child a failure goes to is its progress key's blamed file (progressKey), on the row before the round is counted.
         if(dec.action==='assign'&&kindOf(dec.child)==='worker'&&p.facts?.failure&&p.flags.routed_to!==dec.child)this.moveProblem(p,{flags:{...p.flags,routed_to:dec.child}});
@@ -2814,7 +2921,13 @@ export class ControlRoom extends DurableObject {
       [...new Set([dec.facts_text,dec.side==='provider'?'':own].filter(Boolean))].join(' | ')||own||'';
     for(const [p,dec,trigger] of decided) {
       const kind=dec.child?kindOf(dec.child):null;
-      if(dec.action==='exhausted') {
+      if(dec.answered) {
+        // v7.15.15 (G1): the requests the row holds are answered, and it closes.
+        if(this.moveProblem(p,{status:'closed',outcome:dec.answered.write?'exhausted':'resolved',trail:[...p.trail,{at:m,action:'close',to:'',rule:dec.rule,reason:dec.reason,ts:now}]})) {
+          this.event(m,'problem_closed',clip(`${p.kind} problem closed (${dec.reason}): ${p.detail}`,600));
+          this.answerRequests((p.facts.requests||[]).map(r=>({...r,name:p.facts.names[0]})),dec.answered);
+        }
+      } else if(dec.action==='exhausted') {
         const why=dec.reason||'no direct child holds it';
         if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:[...p.trail,{at:m,action:'close',to:'',rule:dec.rule,reason:why,ts:now}]})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${why}): ${p.detail}`,600));
@@ -2845,6 +2958,8 @@ export class ControlRoom extends DurableObject {
         const own=(dec.resubject||p.kind==='stuck'&&!p.flags.rounds_exhausted)&&!p.parties.some(x=>x.owner===m&&x.role==='subject')?{parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:clip(`${n.label} cannot finish its branch: ${p.detail}`,950)}:{};
         // v7.15.6 (R4): a branch with nobody left to take it declines it as a whole: the parent routes past it, and decides it anew (no directive travels up).
         const declined=dec.declined?{declined:[...new Set([...(p.flags.declined||[]),m])]}:{};
+        // v7.15.15 review 2 (#3): a branch that could not place a grown name refused the row: it is never ranked for it again.
+        if(dec.rule==='D9'&&p.directive?.grow)declined.refused=[...new Set([...(p.flags.refused||[]),m])];
         if(this.moveProblem(p,{holder:n.parent,directive:null,...own,flags:{...p.flags,escalated_from:m,...declined},trail:trail(p,'escalate',n.parent,dec.rule)})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_escalated',clip(`${p.kind} problem (${dec.rule}) goes to the parent${dec.reason?` (${dec.reason})`:''}: ${p.detail}`,600),n.parent);
           this.wake(n.parent);
@@ -2852,6 +2967,9 @@ export class ControlRoom extends DurableObject {
       } else if(dec.action==='fail') {
         if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:trail(p,'fail',dec.child,dec.rule)}))
           this.failAgent(dec.child,`Repair rounds exhausted: ${p.detail}`);
+      } else if(dec.action==='defer'&&dec.wait) {
+        // v7.15.15 review (#10): the child it goes to is still splitting: it waits, decided again when this manager next runs (a child's progress wakes it), with no second ranking.
+        if(this.moveProblem(p,{flags:{...p.flags,grow_wait:dec.wait}}))this.deferProblems(m,[{p}],dec.reason||'its child is still splitting');
       } else if(dec.action==='defer') {
         // v7.15.6 review: a Clef error while routing is no answer; the next turn decides (once per row: routeRequirements).
         if(this.moveProblem(p,{flags:{...p.flags,route_deferred:(p.flags.route_deferred||0)+1}})){this.deferProblems(m,[{p}],dec.reason||'decided on the next turn');this.wake(m);}
@@ -3085,9 +3203,13 @@ export class ControlRoom extends DurableObject {
         continue;
       }
       if(!grow&&p.kind==='mismatch'&&!f.unpromised)continue;
+      // v7.15.15 review (#1, #2): a function request (G1) is decided again against the whole plan: a name some piece promises now (another requester's growth, a split since) is answered from its holder.
+      const request=grow?!!grow.request:!!f.operation?.request;
+      if(request&&names.every(x=>plan.has(x))){out.set(p.id,{answered:{provided:true},reason:`${names.join(', ')} is promised now`});continue;}
       if(names.some(x=>!validName(x)||plan.has(x)||goalOp(x)&&!operation))continue;
       // A name some module here exports is a link to make, never a second carrier's.
-      if((await Promise.all(live.map(c=>exportsOf(c.id)))).some(e=>names.some(x=>e.names.has(x))))continue;
+      const exporter=(await Promise.all(live.map(async c=>({c,e:await exportsOf(c.id)})))).find(({e})=>names.some(x=>e.names.has(x)));
+      if(exporter){if(request)out.set(p.id,{answered:{exported:exporter.c.label},reason:`"${exporter.c.label}"'s module exports ${names.join(', ')}`});continue;}
       // An operation's call is the line that returns or tests it, with the parameters the carrier declared or the test passes.
       const argsOf=(line,x)=>(new RegExp(`\\b${x}\\(([^()]*)\\)`).exec(String(line||''))?.[1]||'').split(',').map(s=>s.trim()).filter(Boolean).map((s,i)=>validName(s)||`arg${i+1}`);
       let calls=grow?.calls||(operation?names.map(x=>({line:operation.line,params:operation.params||argsOf(operation.line,x),does:operation.does})):null);
@@ -3098,13 +3220,32 @@ export class ControlRoom extends DurableObject {
       }
       // The import's provider: a direct child, or the branch holding it (v7.15.5: the one data piece for an import by convention).
       const named=grow||operation?null:p.parties.find(x=>x.role==='provider')?.owner||(p.kind==='unresolved'?(f.named?this.buildSourceOrigin(f.via,f.named)?.owner:datas.length===1?datas[0].id:null):null);
-      found.push({p,provider:named?nextDirectChild(m,named):null,reader:reader.owner,path:reader.owner_path,names,calls,operation:!!operation,api:!!api||!!grow?.api,esm});
+      found.push({p,provider:named?nextDirectChild(m,named):null,reader:reader.owner,path:reader.owner_path,names,calls,operation:!!operation,api:!!api||!!grow?.api,gap:!!grow?.gap||!!f.operation?.gap,request,esm});
+    }
+    // v7.15.15 review 2 (#1): two growth rows for one name at this manager are one: the later's requests join the first, which alone is ranked (review 3 #4: request rows only).
+    for(const x of [...found]) {
+      const first=found.find(y=>y!==x&&y.names.length===1&&x.names.length===1&&y.names[0]===x.names[0]&&found.indexOf(y)<found.indexOf(x));
+      if(!first||!x.p.facts.operation?.request||!first.p.facts.operation?.request)continue;
+      // Review 3 (#5): both rows as they are now (a request may have joined either during this decision's awaits).
+      const [a,b]=[first.p,x.p].map(r=>this.problems('id=?',r.id)[0]);
+      if(!a||!b||a.status!=='open'||b.status!=='open')continue;
+      const requests=[...(a.facts.requests||[]),...(b.facts.requests||[])];
+      if(this.moveProblem(a,{facts:{...a.facts,requests}})&&this.moveProblem(b,{status:'closed',outcome:'merged',facts:{...b.facts,requests:[]}})){first.p.facts=a.facts;found.splice(found.indexOf(x),1);this.event(m,'problem_merged',clip(`${x.names[0]}: two growth rows are one; its requests join the first.`,300));}
     }
     const chosen=[];
+    // v7.15.15 review (#10): a child whose split is still in flight (run23's Ticket management at 40.8 s) is no place yet: the row waits until it is a manager with children or a worker, then goes on it or its branch, with no second ranking.
+    const unsettled=id=>this.node(id)?.phase==='decompose'&&!this.children(id).some(k=>!isRuntimeNode(k)&&!['retired','failed'].includes(k.status));
     for(const x of found) {
+      const waited=x.p.flags?.grow_wait,held=waited&&live.find(c=>c.id===waited.child);
+      if(held) {
+        if(unsettled(held.id)){out.set(x.p.id,{wait:waited,reason:`"${held.label}" is still splitting`});continue;}
+        if(branch(held.id)){this.asked(held.id,x.names);out.set(x.p.id,this.relayAdd(x,held.id,waited.why,label));continue;}
+        chosen.push({...x,child:held.id,why:waited.why});continue;
+      }
       // v7.15.7 review (T3(ii), probe H): a row that came up from the reader's own manager was looked at there (mine); an api row at the top was not: the carrier's branch is a candidate (it relays down to the carrier's siblings), never the carrier itself.
       const mine=x.reader===m||x.api?null:nextDirectChild(m,x.reader),pool=[];
-      for(const c of live.filter(c=>c.id!==mine&&c.id!==x.reader&&(!starts(c.id)||x.api&&branch(c.id))&&(worker(c.id)||branch(c.id))&&!x.names.every(nm=>askedOf(c.id).has(nm)))) {
+      // v7.15.15 review 2 (#3): a branch that refused this row (flags.refused) is never a candidate for it again, on the way down or up.
+      for(const c of live.filter(c=>c.id!==mine&&c.id!==x.reader&&!(x.p.flags?.refused||[]).includes(c.id)&&(!starts(c.id)||x.api&&branch(c.id))&&(worker(c.id)||branch(c.id))&&!x.names.every(nm=>askedOf(c.id).has(nm)))) {
         // v7.15.5 merge: never an operation piece while a data piece is here (a data name; an operation's pieces are its candidates, T3); nor one that has the name in another case (createdata).
         if(!x.operation&&worker(c.id)&&datas.length&&!datas.some(d=>d.id===c.id)&&this.opPieces(m).has(c.id))continue;
         const own=new Set([...this.promisedOf(c.id).map(g=>g.name),...(await exportsOf(c.id)).names].map(fold));
@@ -3126,21 +3267,21 @@ export class ControlRoom extends DurableObject {
         const a=await this.managerRouteOwner(m,question,rest.map(c=>({id:c.id,label:c.label,task:c.task,known_topics:this.promisedOf(c.id).map(g=>promiseText(g)),files:[],previews:[]})),true,false,true);
         const best=a?.ranks?.[0],id=a?.id||null;
         if(id){child=id;why=best?`Clef p=${best.p.toFixed(3)}: its assignment covers them`:'its assignment names them';}
-        else {for(const c of rest)this.asked(c.id,x.names);this.event(m,'promise_refused',clip(`${x.names.join(', ')}: no direct child's assignment covers ${them} (${rest.map(c=>`"${c.label}"`).join(', ')}${best?`, best p=${best.p.toFixed(3)}`:''})${n.parent?'; it goes up a level':'; the reader changes'}.`,500));}
-      } catch(e) {this.event(m,'promise_refused',clip(`${x.names.join(', ')}: Clef failed (${e?.message||e}) over the children${n.parent?'; it goes up a level':'; the reader changes'}.`,400));}
-      if(!child){if(n.parent)out.set(x.p.id,{up:true,names:x.names,reason:`no piece under ${n.label} covers ${x.names.join(', ')}`});continue;}
+        else {for(const c of rest)this.asked(c.id,x.names);this.event(m,'promise_refused',clip(`${x.names.join(', ')}: no direct child's assignment covers ${them} (${rest.map(c=>`"${c.label}"`).join(', ')}${best?`, best p=${best.p.toFixed(3)}`:''})${n.parent?'; it goes up a level':x.request?`; ${label(x.reader)} writes it`:'; the reader changes'}.`,500));}
+      } catch(e) {this.event(m,'promise_refused',clip(`${x.names.join(', ')}: Clef failed (${e?.message||e}) over the children${n.parent?'; it goes up a level':x.request?`; ${label(x.reader)} writes it`:'; the reader changes'}.`,400));}
+      // v7.15.15 (G1): a request nobody up to Root covers is the requester's to write (its manager answers it so).
+      if(!child){if(n.parent)out.set(x.p.id,{up:true,names:x.names,reason:`no piece under ${n.label} covers ${x.names.join(', ')}`});else if(x.request)out.set(x.p.id,{answered:{write:true},reason:`no piece's assignment covers ${x.names.join(', ')}`});continue;}
+      if(unsettled(child)){out.set(x.p.id,{wait:{child,why},reason:`"${label(child)}" is still splitting`});continue;}
       if(branch(child)) {
         this.asked(child,x.names);
-        out.set(x.p.id,{relay:true,child,names:x.names,grow:{names:x.names,reader:{owner:x.reader,owner_path:x.path},calls:x.calls.map(c=>({line:c.line,params:c.params,...c.does?{does:c.does}:{}})),...x.operation?{operation:true}:{},...x.api?{api:true}:{}},
-          instructions:`${x.names.join(', ')}, which ${label(x.reader)} imports, ${x.names.length>1?'are':'is'} this branch's to write (${why}): a piece of it promises and exports ${them}.`});
-        this.event(m,'promise_relayed',clip(`${x.names.join(', ')} (${why}): "${label(child)}" places ${them} on one of its pieces' promise; ${label(x.reader)} ${x.operation?`imports ${them}`:'keeps its import'}.`,500),child);
+        out.set(x.p.id,this.relayAdd(x,child,why,label));
         continue;
       }
       chosen.push({...x,child,why});
     }
     const gainers=nm=>new Set(chosen.filter(x=>x.names.includes(nm)).map(x=>x.child)).size,shaped=this.shaped();
     for(const x of chosen.filter(x=>x.names.every(nm=>gainers(nm)===1))) {
-      const g=by.get(x.child)||{names:new Set(),rows:[],readers:new Map(),why:x.why,operation:x.operation,api:x.api},r=g.readers.get(x.reader)||{names:[],calls:new Map(),esm:x.esm};
+      const g=by.get(x.child)||{names:new Set(),rows:[],readers:new Map(),why:x.why,operation:x.operation,api:x.api,gap:x.gap,request:x.request},r=g.readers.get(x.reader)||{names:[],calls:new Map(),esm:x.esm};
       x.names.forEach((nm,i)=>{g.names.add(nm);if(!r.names.includes(nm))r.names.push(nm);if(!r.calls.has(nm))r.calls.set(nm,x.calls[i]);});
       g.rows.push(x.p);g.readers.set(x.reader,r);by.set(x.child,g);
     }
@@ -3152,12 +3293,21 @@ export class ControlRoom extends DurableObject {
       // and its line says what it does with it (review: "imports it" said nothing).
       // v7.15.7 integration: in a shaped room the grown promise states what it returns as far as the reader's line shows it (resultOf); a placeholder's line (start() returns it) is no call of it.
       const items=names.map(name=>{const [r,{calls}]=[...x.readers].find(([,v])=>v.calls.has(name)),call=calls.get(name),returns=shaped&&(!x.operation||x.api)?resultOf(call.line,name):'';return {name,does:clip(call.does||`${label(r)} calls it: ${call.line}`,200),params:call.params,...(returns?{returns}:{})};});
-      const add={child,names,path:(await exportsOf(child)).path,items:normalizeInterfaces(items),interfaces:normalizeInterfaces([...own,...items]),readers:[...x.readers].map(([id,r])=>({id,names:r.names,esm:!!r.esm})),by:readers,why:x.why,operation:!!x.operation,api:!!x.api,
+      const add={child,names,path:(await exportsOf(child)).path,items:normalizeInterfaces(items),interfaces:normalizeInterfaces([...own,...items]),readers:[...x.readers].map(([id,r])=>({id,names:r.names,esm:!!r.esm})),by:readers,why:x.why,operation:!!x.operation&&!x.request,api:!!x.api,gap:!!x.gap,request:!!x.request,
+        // v7.15.15 review (#1): the requests the growth answers, the branches it was relayed through (each promises it too), and the key a gap's carrier returns it under.
+        requests:x.rows.flatMap(p=>(p.facts.requests||[]).map(r=>({...r,name:p.facts.names[0]}))),relays:[...new Set(x.rows.flatMap(p=>(p.trail||[]).filter(t=>t.action==='relay').map(t=>t.to)))],ops:Object.fromEntries(x.rows.filter(p=>p.facts.operation?.op).map(p=>[p.facts.names[0],p.facts.operation.op])),
         task:x.operation?`${c.task} Keep what your module exports and add ${items.map(f=>`${signature(f)} (${f.does})`).join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.`:
           `${c.task} Keep what your module exports and add ${names.join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.${dataPiece(c.label,own)?' Keep the data at module level, shared by all your functions.':''}`};
       for(const p of x.rows)out.set(p.id,add);
     }
     return out;
+  }
+  // The relay of a grown name to a branch (R5): the names, the reader, the calls and what kind of growth it is, for the branch to place on one of its pieces.
+  relayAdd(x, child, why, label) {
+    const them=x.names.length>1?'them':'it';
+    this.event(x.p.holder,'promise_relayed',clip(`${x.names.join(', ')} (${why}): "${label(child)}" places ${them} on one of its pieces' promise; ${label(x.reader)} ${x.operation?`imports ${them}`:'keeps its import'}.`,500),child);
+    return {relay:true,child,names:x.names,grow:{names:x.names,reader:{owner:x.reader,owner_path:x.path},calls:x.calls.map(c=>({line:c.line,params:c.params,...c.does?{does:c.does}:{}})),...x.operation?{operation:true}:{},...x.api?{api:true}:{},...x.gap?{gap:true}:{},...x.request?{request:true}:{}},
+      instructions:`${x.names.join(', ')}, which ${label(x.reader)} imports, ${x.names.length>1?'are':'is'} this branch's to write (${why}): a piece of it promises and exports ${them}.`};
   }
   // v7.15.5 review: a name performs a goal operation when its verb is one of
   // the goal's operation verbs (a goal word a promised function starts with:
@@ -3177,14 +3327,133 @@ export class ControlRoom extends DurableObject {
     this.asked(add.child,add.names);
     // v7.15.7 review (T3): a grown operation's name is the plan's for the linker, generic or not (run9's update rested on the only-exporter fallback).
     if(add.operation)this.save('grown_operations',[...new Set([...this.read('grown_operations',[]),...add.names])]);
-    for(const r of add.readers)for(const f of add.items.filter(f=>r.names.includes(f.name))) {
+    // v7.15.15 (G1): a requester hears its answer through its request (answerRequests), never a second one here.
+    for(const r of add.request?[]:add.readers)for(const f of add.items.filter(f=>r.names.includes(f.name))) {
       // v7.15.7 (T3): a start carrier hears where the operation now lives and the import line to return it by (it had none to keep).
-      const text=`${signature(f)} is now promised by "${n.label}", which writes it. ${add.operation?`Import it on its own line, ${importLine(f.name,r.esm).replace(/;$/,'')}, and return it from start()`:`Keep your import of ${f.name} as it is`}; the builder links it to the module that exports it. Do not write it yourself.`;
+      const text=`${signature(f)} is now promised by "${n.label}", which writes it. ${add.operation?`Import it on its own line, ${importLine(f.name,r.esm).replace(/;$/,'')}, and return it from start()${add.gap&&add.ops?.[f.name]&&add.ops[f.name]!==f.name?` as ${add.ops[f.name]}`:''}`:`Keep your import of ${f.name} as it is`}; the builder links it to the module that exports it. Do not write it yourself.`;
       this.recordAnswer(r.id,{key:requestKey({name:f.name}),kind:'provided',fn:{name:f.name,params:f.params,does:f.does,...(f.returns?{returns:f.returns}:{}),owner:n.label},text});
       // v7.15.7 review (T3(ii)): a method the fixed test calls is the carrier's to return now: it hears the line as a message and runs in this decision, as the gainer does, so the next bundle returns it (one Container run, no ticket to the carrier). A carrier whose contract was refused for the empty operation reruns by itself.
-      if(add.api&&this.node(r.id)?.parent===m)this.send(m,r.id,`${text} Publish the FULL updated file.`);
+      // v7.15.15 (G2, run23): so does a carrier whose start() lacked an operation the plan grew (gap), from its own manager wherever the gainer lies: its ticket is only the line to import and return it.
+      const up=this.node(r.id)?.parent;
+      if(add.api&&up===m||add.gap&&up)this.send(up,r.id,`${text} Publish the FULL updated file.`);
     }
     this.event(m,'promise_added',clip(`"${n.label}" now promises ${add.items.map(signature).join(', ')} (${add.why}): ${add.by} ${add.operation?`return${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from start()`:`import${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from its module`} and no piece promised ${add.names.length>1?'them':'it'}. It is retasked to write ${add.names.length>1?'them':'it'}; the reader ${add.operation?`imports ${add.names.length>1?'them':'it'}`:'keeps its import'}.`,700),add.child);
+    // v7.15.15 review (#1): each branch the growth was relayed through promises it too, so a later request finds it by name on the way up (routeFunction) and a start carrier's walk names it.
+    for(const b of add.relays||[]) {
+      const own=this.promisedOf(b),items=add.items.filter(f=>!own.some(g=>g.name===f.name));
+      if(!items.length||!this.node(b))continue;
+      this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces([...own,...items])),b);
+      this.event(b,'promise_mirrored',clip(`"${this.node(b).label}" promises ${items.map(signature).join(', ')} too: "${n.label}", one of its pieces, now writes ${items.length>1?'them':'it'}.`,400));
+      for(const id of [b,this.node(b).parent].filter(Boolean))this.syncOwnership(id).catch(()=>{});
+    }
+    // The gainer's promise is written by the retask that follows (retaskChild): its item is the answer until then.
+    if(add.requests?.length)this.answerRequests(add.requests,{provided:true,items:add.items,owner:n.label});
+  }
+  // v7.15.15 (G1): the requests a growth row settles, each answered by the
+  // requester's own manager as its request would have been (routeReply): a
+  // provided answer from the holder its walk shows (the gainer, or the
+  // branch above it), the module that exports it, or, nobody covering it,
+  // its own to write. A requester no longer waiting (retasked) hears nothing.
+  answerRequests(requests, answered) {
+    for(const r of requests) {
+      const w=this.node(r.worker),up=w?.parent,name=r.name;
+      if(!up||!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id).length)continue;
+      const own=answered.items?.find(f=>f.name===name),offer=answered.provided||this.planIndex().has(name)?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=`const { ${name} } = require('./${name}');`;
+      const [kind,value,fn]=offer?['provided',providedText(offer.item,offer.owner),providedFn(offer.item,offer.owner)]:
+        answered.exported?['unowned',`No piece of the application promises ${r.want}, but "${answered.exported}"'s module exports it: import it on its own line, with the name as the path: ${line} The builder links it to that module. Do not write it yourself.`,null]:
+        ['unowned',`No piece of the application promises ${r.want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`,null];
+      this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id);
+      this.recordAnswer(r.worker,{key:r.topic,kind,text:clip(value,600),...(fn?{fn}:{})});
+      const remaining=query(this.db(),'SELECT COUNT(*) AS n FROM route_workers WHERE worker=?',r.worker)[0].n;
+      this.send(up,r.worker,'[route:'+kind+'] '+JSON.stringify({id:r.request_id,key:r.topic,value:clip(value,1400),...(fn?{fn}:{})}),{wake:!remaining});
+      this.event(up,kind==='provided'?'route_provided':'route_unowned',clip(kind==='provided'?`${r.want}: no piece promised it; "${offer.owner}" promises it now.`:value,500),r.worker);
+    }
+  }
+  // v7.15.15 review 3 (#1, #4): the open request row for name, the one a request joins.
+  openRequestRow(name) {return this.problems("kind='unresolved' AND status='open'").find(p=>p.facts.operation?.request&&p.facts.operation.name===name&&p.facts.names?.length===1)||null;}
+  // v7.15.15 review 2 (#4): a split landed on id (its pieces spawned, or Clef
+  // found it atomic): a growth row its parent holds waiting on it
+  // (grow_wait) is decided now, not when id's branch completes.
+  wakeGrowWaiter(id) {
+    const up=this.node(id)?.parent;
+    if(up&&this.problems("holder=? AND status='open'",up).some(p=>p.flags.grow_wait?.child===id))this.wake(up);
+  }
+  // v7.15.15 review 2 (#1): the one invariant of a request a growth row
+  // holds (facts.requests): it is answered on every transition that takes the
+  // row out of the open state without a promise_added (closed for any
+  // reason, superseded by a new report, handed to its reader by any rule,
+  // the hop or round bound, the owed path, the retask of the branch holding
+  // it): provided when the name is promised now, an import when some module
+  // exports it, else the requester's to write. A promise_added answers its
+  // requests itself, and an answered request leaves route_workers, so each is
+  // answered once. orphans (Continue, the idle nudge): also a request with no
+  // row, no hop and no message in flight. True when one was answered.
+  async settleRequests(orphans=false) {
+    const open=new Set(),left=[],waiting=id=>query(this.db(),'SELECT request_id FROM route_workers WHERE request_id=?',id).length>0;
+    for(const p of this.problems("facts LIKE '%\"requests\":[{%'")) {
+      const rs=(p.facts.requests||[]).map(r=>({...r,name:r.name||p.facts.names?.[0]}));
+      if(p.status==='open')rs.forEach(r=>open.add(r.request_id));else left.push(...rs);
+    }
+    if(orphans)for(const w of query(this.db(),'SELECT worker,topic,request_id FROM route_workers')) {
+      const name=String(w.topic).replace(/^fn /,'');
+      if(open.has(w.request_id)||left.some(r=>r.request_id===w.request_id)||!validName(name)||await this.requestInFlight(w.worker,w.request_id))continue;
+      left.push({worker:w.worker,request_id:w.request_id,topic:w.topic,want:name,name});
+    }
+    let answered=false;
+    for(const r of left.filter(r=>!open.has(r.request_id)&&waiting(r.request_id))) {
+      // Review 3 (#1): a relink that superseded a row may have filed the name's growth again: the request joins that open row instead of being answered.
+      const row=this.openRequestRow(r.name);
+      if(row){this.db().exec('UPDATE problems SET facts=?,updated=? WHERE id=?',JSON.stringify({...row.facts,requests:[...(row.facts.requests||[]),r]}),Date.now(),row.id);open.add(r.request_id);continue;}
+      const plan=this.planIndex().has(r.name),exporter=plan?'':await this.exporterOf(r.name,r.worker);
+      this.answerRequests([r],plan?{provided:true}:exporter?{exported:exporter}:{write:true});
+      answered=true;
+    }
+    return answered;
+  }
+  // v7.15.15 review 3 (#3): a request still on its way: a hop for it, or a
+  // message naming it, at any manager up the requester's chain, read where
+  // they live (a manager's shard when MANAGERS is bound, the room otherwise).
+  async requestInFlight(worker, request_id) {
+    if(query(this.db(),'SELECT request_id FROM route_hops WHERE request_id=?',request_id).length||query(this.db(),'SELECT id FROM messages WHERE delivered=0 AND body LIKE ?',`%${request_id}%`).length)return true;
+    for(let a=this.node(worker)?.parent;a;a=this.node(a)?.parent) {
+      if(await this.managerHop(a,request_id))return true;
+      const shard=this.managerStub(a);
+      if(shard&&(await shard.inbox()).some(m=>String(m.body||'').includes(request_id)))return true;
+    }
+    return false;
+  }
+  // The live piece whose module exports name (none: '').
+  async exporterOf(name, except='') {
+    for(const n of this.allNodes().filter(n=>n.id!==except&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status)&&!this.manager(n.id)))
+      for(const f of productionFiles(this.files(n.id)).filter(f=>LINKABLE.test(f.path))){let t='';try{t=await this.indexedContent(n.id,f.path)??'';}catch{}if(providedNames(exportSurface(f.path,t)).has(name))return n.label;}
+    return '';
+  }
+  // v7.15.15 review (#1): a promised name as worker id finds it: on its walk
+  // (the nearest level that offers it, as routeFunction answers), else from
+  // its deepest holder anywhere in the plan.
+  offerFor(id, name) {
+    for(const items of this.planWalk(id)){const f=items.find(f=>f.name===name);if(f)return {item:f,owner:f.owner};}
+    const c=[...(this.planIndex().get(name)||[])].find(c=>c!==id),n=c&&this.node(c);
+    return n?{item:this.promisedOf(c).find(f=>f.name===name),owner:n.label}:null;
+  }
+  // v7.15.15 review 2 (#2): the promise anywhere that is the function a
+  // request names under another name: the same verb by its synonyms and
+  // exactly the same object words, nothing more on either side (getTickets
+  // is readTickets; deleteAllTickets, deleteTickets, createTicketForm,
+  // viewTicketHistory, removeTicketFromList and updateTicketStatus are none
+  // of deleteTicket, createTicket, viewTicket and updateTicket). Clef's
+  // no-match on the walk stands for anything looser. Two candidates: the one
+  // that provides its object rather than takes it (readTickets, not a GUI's
+  // showTickets(tickets)), else none.
+  renameOf(id, name) {
+    const key=functionKey(name);
+    if(!key)return null;
+    const obj=key.split(' ').slice(1),takes=f=>(f.params||[]).some(x=>obj.includes(String(x).toLowerCase())),hits=[];
+    for(const [n,ids] of this.planIndex())if(n!==name&&functionKey(n)===key)for(const c of ids){const f=this.promisedOf(c).find(g=>g.name===n);if(f&&c!==id)hits.push(f);}
+    // Review 3 (#2): the tie-break reads a data verb only (getTickets is readTickets beside showTickets(tickets)); a render verb with two candidates (displayTickets) is none.
+    const data=/^(?:get|read|fetch|load|find|retrieve)$/.test(String(name).replace(/([a-z0-9])([A-Z]).*$/,'$1').toLowerCase());
+    const names=[...new Set(hits.map(f=>f.name))],pick=names.length===1?names[0]:data?(([one,...more])=>more.length?null:one)([...new Set(hits.filter(f=>!takes(f)).map(f=>f.name))]):null;
+    return pick?this.offerFor(id,pick):null;
   }
   // What the named children export, read from this manager's linked bundle
   // (a sub-manager by the modules its branch offers): the facts a decision
@@ -3551,6 +3820,16 @@ export class ControlRoom extends DurableObject {
     // v7.15.14 (run21): the goal's tests are the compiler's (its runner writes the one test against start()), so a test piece nothing uses is not spawned, before any Clef call: Root's split proposed 25, Clef vetted them and kept 17 nobody imports, each a repository to create.
     const tests=testPieces(named,{promised,stated:goalMethods(this.userGoal()),goal:this.userGoal()});
     if(tests.length){named=named.filter(c=>!tests.includes(c));this.event(id,'test_pieces_dropped',testPiecesText(tests));}
+    // v7.15.16 (run25): a split makes progress or it is not one. A piece
+    // carrying its parent's whole promise beside pieces that add no name is
+    // the parent again: rejected before any Clef call, and Clef reconsiders.
+    // An orchestrator beside helpers that add names is a split (run25's
+    // "Interface Analysis", run20b's "Process interfaces"); its carrier then
+    // writes its promise with no gate (inherited). Root's split is the top's
+    // own. Review: checked before R6 places names, never after it.
+    const whole=promised.map(p=>p.name),fnsIn=c=>(c?.interfaces||[]).map(f=>f.name);
+    const again=n.parent&&whole.length?named.find(c=>c&&typeof c==='object'&&whole.every(x=>fnsIn(c).includes(x))):null;
+    if(again&&!named.some(c=>c!==again&&fnsIn(c).some(x=>!whole.includes(x))))return {spawn:named,c5:[],degenerate:{label:again.label,names:whole},rejectedScope:0,rejectedChildren:[]};
     // The last attempt before a pause places what the pieces' own text shows (R6).
     if(place&&interfaceErrors(named,promised).some(e=>e.check==='C5')) {
       const placed=placePromised(named,promised);named=placed.spawn;
@@ -3695,7 +3974,9 @@ export class ControlRoom extends DurableObject {
     const levels=new Map();
     const index=level=>{if(!levels.has(level))levels.set(level,this.childIndex(level));return levels.get(level);};
     const walked=await Promise.all(children.map(async child=>{
-      const question=`Which branch's assigned code already covers this proposed piece? ${child.label}: ${child.task}`;
+      // v7.15.16 (run25): a name another branch promises deeper down is a candidate the walk weighs by what it does, never a prune by the name alone.
+      const deep=(child.interfaces||[]).flatMap(f=>GENERIC_NAMES.has(f.name)?[]:this.promisedDeep(f.name,id).slice(0,2)),also=deep.length?clip(` Elsewhere, ${deep.map(x=>`"${x.label}" promises ${promiseText(x.f)}`).join('; ')}.`,600):'';
+      const question=`Which branch's assigned code already covers this proposed piece? ${child.label}: ${child.task}${also}`;
       let branch=this.node(id),error='',best=null;
       while(branch?.parent) {
         const level=this.node(branch.parent);
@@ -4152,10 +4433,10 @@ export class ControlRoom extends DurableObject {
     if(rows.some(p=>p.status==='assigned'&&p.assignee===id))return {text:`${x.op} is an empty placeholder: no piece promises ${name} and no piece's assignment covers it (your manager asked each): write ${sig} here, in your own module, and return it from start()${as}.`,how:`${x.op}: nobody covers ${name}; the carrier writes it.`};
     if(!rows.length&&!grown.includes(x.op)) {
       this.save(key,[...grown,x.op]);
-      const path=x.path||productionFiles(this.files(id)).map(f=>f.path).find(p=>LINKABLE.test(p))||'',words=String(x.op).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase();
+      const path=x.path||productionFiles(this.files(id)).map(f=>f.path).find(p=>LINKABLE.test(p))||'';
       this.insertProblem({holder:m,kind:'unresolved',stage:'work',source:id,input:`turn:${n.turn}`,parties:[{path,owner:id,owner_path:path,digest:'',role:'reader'}],
         detail:`${n.label} returns ${x.op} from start() as an empty placeholder, and no piece promises a function that performs it.`,
-        facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:{op:x.op,name,params,line:`start() returns it${as}: ${sig}`,does:`performs the goal's ${words} operation; ${n.label} returns it from start()${as}`}},flags:{wave:wave||crypto.randomUUID()}});
+        facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:operationFact(n.label,x.op,name,params)},flags:{wave:wave||crypto.randomUUID()}});
       this.event(id,'problems_reported',`1 problem goes to the manager: ${n.label} returns ${x.op} from start() as an empty placeholder that no piece promises; the manager grows a piece's promise with ${sig}.`,m);
       this.wake(m);
     }
@@ -4467,7 +4748,9 @@ export class ControlRoom extends DurableObject {
     }
     // v7.15 §5.12e: nobody up to Root promises it; the worker's own manager
     // asks Clef whether it is the worker's to write, before the row goes.
-    if(planned&&kind==='unowned')value=await this.needScope(manager,upstream,hop);
+    // v7.15.15 (G1, run23): or, outside its assignment, grown onto the piece whose assignment covers it, and provided from there.
+    // v7.15.15 review (#3): a growth row the managers decide holds the request: the requester keeps waiting on it (route_workers), and this hop is done.
+    if(planned&&kind==='unowned'){const s=await this.needScope(manager,upstream,{...hop,request_id});if(s?.wait){await this.removeManagerHop(manager,request_id);return;}if(typeof s==='string')value=s;else ({kind,value,fn}=s);}
     const body=v=>'[route:'+kind+'] '+JSON.stringify({id:request_id,key:hop.topic,value:clip(v,1400),...(fn?{fn}:{})});
     if(worker) {
       this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',upstream.id,request_id);
@@ -4622,8 +4905,51 @@ export class ControlRoom extends DurableObject {
       inside=p>=0.5;
       this.event(m,'route_scope',`${want}: Clef p=${p.toFixed(3)}, ${inside?'inside':'outside'} "${worker.label}"'s assignment.`);
     } catch(e) {this.event(m,'route_scope',`${want}: Clef failed (${clip(e?.message||e,300)}); counted inside "${worker.label}"'s assignment.`);}
-    return inside?`No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`:
+    if(inside)return `No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`;
+    // v7.15.15 (G1, run23): outside it, the plan grows, as an operation no piece promises does (growOperation, R5): run23's entry heard "import viewTicket" for a function nobody would write, and five rounds followed.
+    const grown=growable(hop.name)?await this.requestGrowth(m,worker,hop):null;
+    if(grown)return grown;
+    return growable(hop.name)?`No piece of the application promises ${want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`:
       `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: const { ${hop.name} } = require('./${hop.name}');`:'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
+  }
+  // v7.15.15 (G1, run23; review #1-#4, #11): a function no piece promises,
+  // outside its requester's assignment, grows the plan as an operation no
+  // piece promises does (growOperation, G2, G3): first the whole plan is read
+  // again, every level (a name some piece promises now, another requester's
+  // growth or a split since, is provided from its holder; one the plan has
+  // under another name, readTickets for getTickets, or a goal operation a
+  // performer already performs, is provided as that one); otherwise the
+  // requester's manager files the growth row (kind unresolved, the operation
+  // fact with the requested name and need, the requester its reader and its
+  // request on the row), which each manager decides in its own turn over its
+  // own direct children, up a level when none covers it (promiseAdds, D9).
+  // A second request for the name joins the open row. The requester waits on
+  // its request and is answered when the row settles (answerRequests).
+  async requestGrowth(m, worker, hop) {
+    const name=hop.name,want=wanted(hop),r={worker:worker.id,request_id:hop.request_id,topic:hop.topic,want};
+    const held=this.planIndex().has(name)?this.offerFor(worker.id,name):null,like=held?null:this.renameOf(worker.id,name);
+    if(held||like) {
+      const o=held||like;
+      this.event(m,'route_provided',`${want}: ${held?`"${o.owner}" promises it`:`the plan has it as ${o.item.name} from "${o.owner}"`}.`);
+      return {kind:'provided',value:providedText(o.item,o.owner),fn:providedFn(o.item,o.owner)};
+    }
+    // Review 3 (#4): only into a request row: a G2/G3 row goes to its reader when nobody covers it, and its requester would write the function twice.
+    const open=this.openRequestRow(name);
+    if(open) {
+      this.db().exec('UPDATE problems SET facts=?,updated=? WHERE id=?',JSON.stringify({...open.facts,requests:[...(open.facts.requests||[]),r]}),Date.now(),open.id);
+      this.event(m,'route_grow',`${want}: its growth is already being decided for another request; "${worker.label}" waits on it too.`);
+      return {wait:true};
+    }
+    // The params: the requester's call of it, as D9 reads a reader's (callOf); none when it only returns or passes it (run23's entry).
+    let params=[],path='',esm=false;
+    for(const f of productionFiles(this.files(worker.id)).filter(f=>LINKABLE.test(f.path))){let t='';try{t=await this.indexedContent(worker.id,f.path)??'';}catch{}if(!path)path=f.path;if(esmSyntax(t))esm=true;const c=callOf(f.path,t,name);if(c){params=c.params;path=f.path;break;}}
+    const does=clip(hop.question,200),sig=`${name}(${params.join(', ')})`;
+    this.insertProblem({holder:m,kind:'unresolved',stage:'work',source:worker.id,input:`request:${hop.request_id}`,parties:[{path,owner:worker.id,owner_path:path,digest:'',role:'reader'}],
+      detail:`${worker.label} asks for ${want}, which no piece promises and its assignment does not cover.`,
+      facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:{op:name,name,params,line:`${worker.label} imports it: ${sig}`,does,request:true},requests:[r]},flags:{wave:crypto.randomUUID()}});
+    this.event(m,'route_grow',`${want}: no piece promises it and it is outside "${worker.label}"'s assignment; its manager grows a piece's promise with ${sig}, and "${worker.label}" waits.`);
+    this.wake(m);
+    return {wait:true};
   }
   // v7.15.5: the promised functions in id's walk, at the nearest level that
   // has one, that name the operation a request names (createTicketRecord
@@ -4836,7 +5162,16 @@ export class ControlRoom extends DurableObject {
     // Never let this turn's final status overwrite a newer completion/message.
     if(this.receive(id).length || staleTurn || this.wakeGeneration(id)!==seenWake) this.wake(id);
   }
+  // v7.15.15 review 2 (#1): every turn ends by settling the requests growth
+  // rows hold (settleRequests): whatever moved a row (a rule, a supersede, a
+  // retask, the hop or round bounds), its requesters are answered once it
+  // has left the open state without a promise_added.
   async turn(id) {
+    try {return await this.agentTurn(id);}
+    // Review 3 (#6): a sweep that throws never masks the turn's own error, nor counts against this node.
+    finally {if(this.planned())await this.settleRequests().catch(e=>this.event('system','settle_failed',clip(`Settling the requests growth rows hold failed: ${e?.message||e}`,300)));}
+  }
+  async agentTurn(id) {
     const n = this.node(id);
     if (!n || n.status !== 'ready') return;
     const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
@@ -4932,8 +5267,13 @@ export class ControlRoom extends DurableObject {
         const malformed=!namesOnly&&!sized&&this.get(`split_yes:${id}`)==='1';
         // v7.15.13 (run20): the gate hears what the piece calls; five workers whose uses named their siblings' checks were told to split and proposed those checks again.
         const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:n.task;
-        const gate=namesOnly||malformed||sized?{split:true}:await shouldSplit(this.inferenceEnv(),gateTask,before);
-        this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
+        // v7.15.16 (run25): the carrier of its parent's whole promise writes it with no Clef gate: its parent's split already gave its helpers away ("Subproblem" [extractLinkStatus] under "Extract link status" [extractLinkStatus] split again, into "Interface Status Analyzer" [extractLinkStatus]). So does a carrier promising only start, composed from the plan, never split. A fresh piece is gated, at a bar that rises with depth (splitBar).
+        const own=this.planned()&&n.parent?this.promisedOf(id):[],above=parse(this.node(n.parent)?.interfaces,[]).map(f=>f.name).sort(),mine=own.map(f=>f.name).sort();
+        const one=own.length&&(own.length===1&&own[0].name==='start'||mine.join()===above.join())?own:null,bar=this.splitBar(id);
+        const gate=one?{split:false}:namesOnly||malformed||sized?{split:true}:await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},gateTask,before);
+        // v7.15.16 (run25): an answer whose labels were still placeholders ("Subproblem") after the splitter's retry is answered again as a malformed one is.
+        const labels=before.split_feedback?.kind==='labels'?before.split_feedback.proposed||[]:[];
+        if(!one)this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed&&labels.length?`Clef's YES stands: the last split answer still had placeholder labels (${labels.map(l=>JSON.stringify(l)).join(', ')}), so the splitter answers again.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)}; ${Date.now()-started} ms).`);
         if (gate.split && !this.canSplit(id,2)) {
           // Clef chose to split but the room has no agent slots or depth left.
           // Do not force a weak leaf to implement work Clef would divide.
@@ -4955,12 +5295,13 @@ export class ControlRoom extends DurableObject {
           if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
           this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
           n.phase='implement';splitting=false;
+          this.wakeGrowWaiter(id);
           // From here it is an isolated worker, as on its later turns: its own
           // contract, and no parent, sibling or neighbour memory (decision 2; a
           // sibling's prune note named getTickets to the create worker).
           Object.assign(before,this.view(id,before.new_messages,ownFiles),{turn:before.turn,adjacent_public_memory:[]});
           const reclassified=Boolean(before.split_feedback);
-          this.event(id,'atomic',reclassified
+          this.event(id,'atomic',one?`It carries its parent's whole promise (${listed(one.map(f=>f.name))}): implemented directly, with no Clef gate.`:reclassified
             ? 'Clef reviewed the rejected partition and routed this assignment to direct code implementation.'
             : 'Clef classified this as an indivisible behavior; implementing directly.');
           // An implementation leaf needs only its own code assignment. Root's
@@ -4985,9 +5326,12 @@ export class ControlRoom extends DurableObject {
         // The YES lasts until the pause: then Continue, or the manager deciding
         // the stuck problem, asks Clef afresh, so no node is pinned to the
         // splitter (review).
-        if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,(this.read('failures',{})[id]||0)<2?'1':'');
+        // v7.15.16 review: placeholder labels keep the YES one turn only, so the last turn before a pause asks Clef again with them, and Clef may route the piece to an implementation.
+        if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,(this.read('failures',{})[id]||0)<(raw.vague?1:2)?'1':'');
         // v7.15.14 review: a split over max_children is feedback for the next turn's splitter (its count, the bound and its labels), never for Clef.
         if(splitting && raw.oversize)this.save(`split_feedback:${id}`,{kind:'size',reason:tooMany(raw.oversize.count,raw.oversize.bound),count:raw.oversize.count,bound:raw.oversize.bound,proposed:raw.oversize.labels});
+        // v7.15.16 (run25): so is one whose labels stayed placeholders, with those labels.
+        if(splitting && raw.vague)this.save(`split_feedback:${id}`,{kind:'labels',reason:vagueText(raw.vague),proposed:raw.vague});
         this.incrementFailures(id,'Bad action response');
         return;
       }
@@ -5086,6 +5430,14 @@ export class ControlRoom extends DurableObject {
         // anchor so an ambiguous parent cannot drift over generations.
         if(action.spawn.length) {
           const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2});
+          // v7.15.16 (run25): no progress is a partition's failure, so Clef reconsiders with it (it may implement the assignment directly).
+          if(admit.degenerate) {
+            const reason=noProgress(admit.degenerate);
+            this.save(`split_feedback:${id}`,{reason,accepted:[],rejected:[{label:admit.degenerate.label,task:clip(admit.spawn.find(c=>c?.label===admit.degenerate.label)?.task||'',500)}],root_goal:this.topTask()||n.task});
+            this.event(id,'split_rejected',`${reason} Clef will reconsider routing with this feedback; it may implement the assignment directly.`);
+            this.incrementFailures(id,'split_rejected');
+            return;
+          }
           if(admit.c5.length) {
             // The partition was not what failed: the next turn keeps Clef's
             // YES and the splitter gets this partition back to correct.
@@ -5176,8 +5528,26 @@ export class ControlRoom extends DurableObject {
           this.incrementFailures(id,'split_rejected');
           return;
         }
+        // v7.15.16 review (p6): a late split is gated as a first split is, at its depth's bar, and needs room below it: a carrier, never gated, late-split into a new carrier and one helper, eight times, to max_depth, and stuck there waiting.
+        if(this.env.MOCK_AI!=='true') {
+          const room=this.canSplit(id,Math.max(2,action.spawn.length)),bar=this.splitBar(id),calls=this.planned()?parse(n.uses,[]):[],tail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'';
+          const gate=room?await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},tail?String(n.task).slice(0,2600-tail.length)+tail:n.task,{}):null;
+          if(!gate?.split) {
+            this.event(id,'split_rejected',`Late decomposition rejected: ${gate?`Clef decision NO (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)})`:'no space or depth left'}. The worker writes its assignment.`);
+            await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:`Your ${action.spawn.length} proposed pieces were not created: ${gate?'your assignment is one piece of code at this depth':'the room has no space or depth left for them'}. Write it yourself.`}]);
+            this.incrementFailures(id,'split_rejected');
+            return;
+          }
+        }
         // A worker with a promise must give every promised name to one piece (C5).
         const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2});
+        // v7.15.16 (run25): a worker's split that hands its whole promise to one piece is no split: it writes the promise itself.
+        if(admit.degenerate) {
+          this.event(id,'split_rejected',`Late decomposition rejected. ${noProgress(admit.degenerate)}`);
+          await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:clip(`Your proposed pieces were not created: "${admit.degenerate.label}" would carry your whole promise (${listed(admit.degenerate.names)}), which is no split. Write ${admit.degenerate.names.length>1?'them':'it'} yourself.`,950)}]);
+          this.incrementFailures(id,'split_rejected');
+          return;
+        }
         action.spawn=admit.c5.length?[]:admit.spawn;rejectedScope+=admit.rejectedScope;rejectedChildren.push(...admit.rejectedChildren);
         // v7.15.14 review: a late split is bounded by max_children too (run21's fan-out, from a worker's turn).
         const oversize=action.spawn.length>this.maxChildren();
@@ -5238,9 +5608,12 @@ export class ControlRoom extends DurableObject {
         if(children.length === action.spawn.length) {
           this.db().exec("UPDATE agents SET phase='manager' WHERE id=?",id);
           this.event(id,'decompose',`Delegated all ${children.length} behaviors; now permanently a manager.`);
+          this.wakeGrowWaiter(id);
         } else if (!this.manager(id)) {
           this.db().exec("UPDATE agents SET phase='decompose',status='waiting' WHERE id=?",id);
           this.event(id,'split_capacity_blocked','Unable to allocate all code-writing children; keep the delegated code assignment awaiting additional capacity.');
+          // Review 3 (#7): some pieces spawned: settled as a branch, so a row waiting on it is decided now.
+          if(children.length)this.wakeGrowWaiter(id);
           this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
         } else {
           this.event(id,'blocked','No new children could be allocated. Existing manager cannot write code; responsibility remains unresolved.');
@@ -5434,10 +5807,12 @@ export class ControlRoom extends DurableObject {
     if(prior.some(p=>p.status==='open'))return true;
     this.closeProblems(prior,'superseded');
     const last=query(this.db(),`SELECT kind,body FROM events WHERE actor=? AND kind IN (${FAILURE_EVENTS.map(()=>'?').join(',')}) ORDER BY id DESC LIMIT 4`,id,...FAILURE_EVENTS).reverse();
-    const detail=clip(`${n.label} stopped after three failed turns at the code gate: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
+    // v7.15.16 review: a splitter that kept answering placeholder labels is said so, not a code gate.
+    const labels=/placeholder labels after a retry/.test(last.at(-1)?.body||''),why=labels?'turns whose splitter kept naming pieces with placeholder labels':'failed turns at the code gate';
+    const detail=clip(`${n.label} stopped after three ${why}: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
     this.insertProblem({holder:n.parent,kind:'stuck',stage:'work',source:id,input:`turn:${n.turn}`,
       parties:[{path:'',owner:id,owner_path:'',digest:'',role:'subject'}],detail,flags:{wave:crypto.randomUUID()}});
-    this.event(id,'stuck',`Stopped after three failed turns at the code gate; the manager decides: ${clip(detail,700)}`,n.parent);
+    this.event(id,'stuck',`Stopped after three ${why}; the manager decides: ${clip(detail,700)}`,n.parent);
     this.wake(n.parent);
     return true;
   }
@@ -5561,6 +5936,8 @@ export class ControlRoom extends DurableObject {
           tally();
           let [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && active.size===0 && this.nudgeQuiescentManager()) [id]=this.takeReadyBatch(1,spent>=cap);
+          // v7.15.15 review 2 (#1): a worker waiting on a request nobody holds any more is answered (and so woken) before the idle nudge, which skips it.
+          if (!id && active.size===0 && this.planned() && await this.settleRequests(true)) [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && spent<cap && active.size===0 && this.nudgeQuiescentLeaf()) [id]=this.takeReadyBatch(1);
           if (!id) break;
           const step=Number(this.get('step','0'))+1;
@@ -5649,6 +6026,8 @@ export class ControlRoom extends DurableObject {
     }
     this.save('failures',failures);
     for(const id of continued)this.clearFailures(id);
+    // v7.15.15 review 2 (#1): Continue answers a request no row, hop or message holds any more.
+    if(this.planned())await this.settleRequests(true);
     // A planned worker waiting with no request open, nothing unread and no
     // source has nothing that would wake it; Continue does (slice B review).
     if(this.planned())for(const n of this.allNodes().filter(x=>x.status==='waiting'&&x.parent&&x.phase==='implement'&&!isRuntimeNode(x)&&!this.manager(x.id)))

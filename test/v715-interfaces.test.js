@@ -575,8 +575,14 @@ test('v7.15: a child (carrier or not) with some names owned elsewhere is kept wi
   assert.ok(ai.calls.some(c=>c.kind==='owner'&&/Ticket validation: /.test(c.question)));
   // A split that then fails viability does not list a kept piece as rejected:
   // the splitter is told not to repeat rejected proposals, and Clef reads them.
+  // v7.15.16 (run25): under "create ticket" [createTicket] that split is no
+  // progress (the carrier beside a piece adding no name), rejected before
+  // any Clef call; a piece with no promise still gets there.
   const thin=fakeAI({split:()=>[spawn[0],{label:'Ticket printer',task:'Write code that prints tickets on paper'}],within:label=>label==='Ticket printer'?0.1:0.9});
-  const {room:failed}=await tree(thin,run6Root,{phases:{'create ticket':'decompose'}});
+  const {room:same}=await tree(thin,run6Root,{phases:{'create ticket':'decompose'}});
+  await same.turn('root.3');
+  assert.match(events(same,'split_rejected')[0].body,/^No progress: a piece would carry its parent's whole promise \("Create handler" carries createTicket\)\./);
+  const {room:failed}=await tree(thin,run6Root.map(c=>c.label==='create ticket'?{...c,functions:[]}:c),{phases:{'create ticket':'decompose'}});
   await failed.turn('root.3');
   const feedback=failed.read('split_feedback:root.3',null);
   assert.deepEqual([feedback.accepted.map(c=>c.label),feedback.rejected.map(c=>c.label)],[['Create handler'],['Ticket printer']]);

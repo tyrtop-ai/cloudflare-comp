@@ -351,6 +351,8 @@ export const ENTRY_CONTRACT = 'You write the application entry module: it import
 export const SPLIT_USES = ' Give each piece "uses": the names of the functions its own code calls that other pieces of this split promise, or that your assignment says you call, and only those; a piece that creates, reads, changes or deletes stored records calls the functions of the piece that keeps them, for example {"label":"Create ticket","task":"Write code that creates a ticket and saves it","functions":[{"name":"createTicket","does":"creates a ticket and returns it","params":["data"],"returns":"the created ticket"}],"uses":["readTickets","saveTickets"]}, and a piece that only reads them calls only the function that reads them: {"label":"View ticket","task":"Write code that finds one ticket by id","functions":[{"name":"viewTicket","does":"returns the ticket with this id","params":["id"],"returns":"the ticket, or undefined"}],"uses":["readTickets"]}. Shared data lives in one piece, which promises the plain functions the others call to read and change it (readTickets(), saveTickets(tickets)), never a factory that returns an instance or an object of methods; no other piece keeps its own copy.';
 // v7.15.14 (run21): what a split over max_children is told, in the retry and as the next turn's feedback.
 export const tooMany = (count, bound) => `Your previous answer had ${count} pieces; use at most ${bound}: group related pieces into one piece whose task covers them, and it will be split further.`;
+// v7.15.16 (run25): what placeholder labels are told, in the retry and as the next turn's feedback.
+export const vagueText = labels => `Your previous answer used placeholder labels or tasks copied from the example (${labels.map(l=>JSON.stringify(l)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`;
 // When Clef says YES, a lightweight generative agent guesses the next layer.
 // No optimizing, no capacity prediction, no files, no agent registry.
 // Review: rooms without promises (v7.14) get exactly the v7.15.4 prompt and
@@ -388,7 +390,7 @@ export async function decompose(env, context, opts = {}) {
     const items=Array.isArray(parsed.spawn)?spawnObjects(parsed.spawn):[],pieces=items.filter(spawnPiece);
     // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
     if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,output,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
-    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||e.check!=='C7');
+    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||!['C7','C8'].includes(e.check));
     // v7.15.14 (run21): the pieces counted are those the admission spawns, test pieces aside (testPieces); more than max_children is a size failure.
     const tests=testPieces(spawn,{promised,stated:goalMethods(goal),goal}),size=spawn.length-tests.length;
     return {parsed,text,output,spawn,inferred,vague,bad,size,tests,over:size>cap,ok:size>=2&&size<=available,count:vague.length+bad.length};
@@ -404,7 +406,7 @@ export async function decompose(env, context, opts = {}) {
   const malformed=empty?' Your previous answer held no JSON object: it was reasoning only, or the output budget cut it. Answer with the JSON object only, with no reasoning before it.':first.malformed?' Your previous answer was not a JSON object whose spawn items are objects, each with a "label" and a "task"; every spawn item is a JSON object, never a quoted string.':'';
   // Labels copied from the example ("Piece A", run4) give Clef and the prune
   // walk nothing to place, so they are turned back before anyone sees them.
-  const specific=first.vague?.length?` Your previous answer used placeholder labels or tasks copied from the example (${first.vague.map(c=>JSON.stringify(c.label)).join(', ')}); be more specific: name each piece after what it does and say in its task what code it writes.`:'';
+  const specific=first.vague?.length?' '+vagueText(first.vague.map(c=>c.label)):'';
   const names=first.bad?.length?` Your previous answer's functions failed these checks: ${first.bad.map(e=>e.text).join(' ')} Correct them.`+
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
   // v7.15.14 (run21): Root's split had 50 direct children; a split over the bound is told to group, never truncated.
@@ -417,6 +419,11 @@ export async function decompose(env, context, opts = {}) {
   // kept: never a partition Clef reconsiders (run10's Root became atomic).
   // v7.15.13 (run18): an empty answer says what its envelope held (emptyAnswer).
   // v7.15.14: still over max_children after the retry, the split is a parse error carrying the oversize (the room saves it as size feedback and keeps Clef's YES); on the room's last attempt before a pause (lastTry) it is admitted as answered within the slots left, and over them goes to admission's capacity rejection as before: a room never pauses for size alone, and nothing is truncated.
+  // v7.15.16 (run25): still placeholder labels after the retry ("Subproblem", 44 pieces of run25's plan), the split is a parse error carrying the labels, retried next turn under Clef's YES as a malformed answer is; never admitted, on the last attempt too. A room without promises (v7.14) keeps the v7.15.4 retry, as above.
+  if(planned&&!best.malformed&&best.vague?.length) {
+    const labels=best.vague.map(c=>clip(String(c?.label||''),70));
+    return {parse_error:true,raw:`placeholder labels after a retry: ${labels.map(l=>JSON.stringify(l)).join(', ')}; never admitted.`,vague:labels};
+  }
   if(!best.malformed&&best.over) {
     const oversize={count:best.size,bound:cap,labels:best.spawn.filter(c=>!best.tests.includes(c)).map(c=>clip(c.label,70))};
     if(opts.lastTry)return best.size<=slots?{...done(best),oversize}:done(best);
@@ -631,12 +638,14 @@ export async function decideProblems(env, input, {onCall=()=>{}, retry=true}={})
   const request=JSON.stringify(input);
   try {
     onCall();
-    let parsed=parseObject(withoutThinking(await run(env,MANAGER_SYSTEM,request,2048)));
+    let output=await run(env,MANAGER_SYSTEM,request,2048),parsed=parseObject(withoutThinking(output));
     if(parsed.parse_error&&retry) {
       onCall();
-      parsed=parseObject(withoutThinking(await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048)));
+      output=await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048);
+      parsed=parseObject(withoutThinking(output));
     }
-    if(parsed.parse_error)return {actions:[],error:'the decision did not parse: '+String(parsed.raw||'').slice(0,300)};
+    // v7.15.15 (G4, run23): an empty answer says what its envelope held (emptyAnswer), as decompose's and decide's do: run23's M4 logged "the decision did not parse: " with nothing after it.
+    if(parsed.parse_error)return {actions:[],error:'the decision did not parse: '+(String(parsed.raw||'').trim().slice(0,300)||emptyAnswer(output))};
     return {actions:Array.isArray(parsed.actions)?parsed.actions.slice(0,24):[]};
   } catch(e) {return {actions:[],error:String(e?.message||e).slice(0,600)};}
 }

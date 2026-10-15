@@ -213,15 +213,17 @@ test('v7.15.2: below the top, a splitter that declines goes back to Clef with th
   for(let i=0;i<2;i++){await room.resume(2);await drain();}
   const kids=room.children('root');
   assert.deepEqual(kids.map(c=>c.label),['Entry module','Ticket store']);
+  // v7.15.16: the start carrier, composed from the plan, is never gated or split; "Ticket store" declines as before.
   for(const kid of kids) {
-    const mine=room.snapshot().events.filter(e=>e.actor===kid.id);
+    const mine=room.snapshot().events.filter(e=>e.actor===kid.id),entry=kid.label==='Entry module';
     assert.equal(mine.filter(e=>e.kind==='error').length,0,kid.label);
-    assert.match(mine.find(e=>e.kind==='split_rejected').body,/^Qwen proposed no valid partition into distinct code-writing children/);
-    assert.match(mine.find(e=>e.kind==='atomic').body,/^Clef reviewed the rejected partition/);
+    if(entry)assert.equal(mine.filter(e=>['split_gate','split_rejected'].includes(e.kind)).length,0);
+    else assert.match(mine.find(e=>e.kind==='split_rejected').body,/^Qwen proposed no valid partition into distinct code-writing children/);
+    assert.match(mine.find(e=>e.kind==='atomic').body,entry?/^It carries its parent's whole promise \(start\): implemented directly, with no Clef gate\.$/:/^Clef reviewed the rejected partition/);
     assert.equal(room.get(`split_yes:${kid.id}`,''),'');
     assert.equal(room.node(kid.id).phase,'implement');
   }
-  assert.equal(ai.calls.filter(c=>c.kind==='gate'&&c.state.previous_split_rejection).length,2,'each child\'s decline reached Clef');
+  assert.equal(ai.calls.filter(c=>c.kind==='gate'&&c.state.previous_split_rejection).length,1,'the store\'s decline reached Clef');
   assert.ok(ai.calls.filter(c=>c.kind==='leaf').length>=2);
 });
 

@@ -271,10 +271,14 @@ test('v7.15.14 (F3): a 33-piece answer is retried in the same call, told to grou
   const slots=await M.decompose(x.env,ctx(7,2),{planned:true,goal:DIAG});
   assert.equal(x.calls.length,2);assert.ok(!x.calls[1].system.includes('Your previous answer had'));
   assert.equal(slots.parse_error,undefined);assert.equal(slots.spawn.length,6);assert.equal(slots.oversize,undefined);
-  // A first answer within the bound is kept over a retry beyond it.
-  const v=script([{summary:'Split',spawn:[...SEVEN.slice(0,6),{...SEVEN[6],label:'Subproblem'}]},{summary:'Split',spawn:[...PLAN21]}]);
+  // A first answer within the bound is kept over a retry beyond it (its copied function name is admission's to reject).
+  const v=script([{summary:'Split',spawn:[...SEVEN.slice(0,6),{...SEVEN[6],functions:[{name:'functionName'}]}]},{summary:'Split',spawn:[...PLAN21]}]);
   const kept=await M.decompose(v.env,ctx(),{planned:true,goal:DIAG});
-  assert.equal(v.calls.length,2);assert.equal(kept.parse_error,undefined);assert.deepEqual(kept.spawn.map(c=>c.label),[...SEVEN.slice(0,6).map(c=>c.label),'Subproblem']);
+  assert.equal(v.calls.length,2);assert.equal(kept.parse_error,undefined);assert.deepEqual(kept.spawn.map(c=>c.label),SEVEN.map(c=>c.label));
+  // v7.15.16 (run25): one whose label is a placeholder ("Subproblem") never is: still one after the retry, the split is a parse error carrying the labels.
+  const vague=script([{summary:'Split',spawn:[...SEVEN.slice(0,6),{...SEVEN[6],label:'Subproblem'}]},{summary:'Split',spawn:[...PLAN21]}]);
+  assert.deepEqual(await M.decompose(vague.env,ctx(),{planned:true,goal:DIAG}),{parse_error:true,raw:'placeholder labels after a retry: "Subproblem"; never admitted.',vague:['Subproblem']});
+  assert.equal(vague.calls.length,2);
 });
 
 // ------------------------------------------------------------------ F1: the setting
@@ -357,7 +361,8 @@ test('v7.15.14 room (F3, review #2): a splitter over the bound twice leaves no c
 test('v7.15.14 review (#7): a late split from a worker\'s turn is bounded by max_children: rejected, the worker kept, and its next turn reads why',async()=>{
   const nine=Array.from({length:9},(_,i)=>({label:`Ticket part ${'ABCDEFGHI'[i]} writer`,task:`Write code that writes ticket field ${i} of the record`}));
   let turns=0;const seen=[];
-  const r=liveRoom({clef:clefScript(),leaf:u=>{turns++;seen.push(u);return turns===1?{summary:'Split',spawn:nine}:{summary:'Create',done:true,files:[{path:'tickets.js',content:'module.exports = { createTicket: (t) => ({ id: 1, ...t }) };\n'}]};}});
+  // v7.15.16 review: a late split is gated first; Clef says YES here, so the bound is what turns it back.
+  const r=liveRoom({clef:clefScript({gate:()=>0.85}),leaf:u=>{turns++;seen.push(u);return turns===1?{summary:'Split',spawn:nine}:{summary:'Create',done:true,files:[{path:'tickets.js',content:'module.exports = { createTicket: (t) => ({ id: 1, ...t }) };\n'}]};}});
   await r.room.provision('root',null,'Root objective','Build a small issue tracker that lets someone create, view, update, and delete tickets.');
   await r.room.spawn('root',[{label:'Ticket writer',task:'Write code that creates tickets'},{label:'Ticket reader',task:'Write code that reads tickets'}]);
   r.room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
