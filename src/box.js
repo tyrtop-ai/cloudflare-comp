@@ -31,6 +31,10 @@ export const BOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
 // Backstop: an opened box is destroyed by its alarm this long after it
 // started, whatever happened to the caller (a compile's exec is bounded at 255 s).
 export const BOX_LIFETIME_MS = 6 * 60_000;
+// v8 live 2: a box that took longer than this to become ready waited for its
+// image to be pulled (the first use after a deploy took 9.7 to 14.7 s, a warm
+// one about 1.2 s); it is recorded cold.
+export const BOX_COLD_MS = 5000;
 // The peers a box may be given through interception, by name: each is a
 // WorkerEntrypoint that serves one fixed thing. Today only the S0 probe's
 // page and WebSocket echo (src/box-probe.js BoxProbePeer).
@@ -142,8 +146,9 @@ export class Box extends DurableObject {
     const ready = await execAfterStartup(c, ['true'], boxExecOptions({quiet: true}), {onRetry: () => { retries++; }});
     const code = await waitForBuildOutput(ready, ready.exitCode, {timeoutMs: 60_000});
     if (code !== 0) throw new BoxError('not_ready', `The box's readiness command exited ${code}.`);
+    const ready_ms = Date.now() - began;
     const opened = {fresh: true, internet: options.enableInternet, image: spec.snapshot ? 'snapshot' : spec.image, instance: spec.instance,
-      start_ms: started - began, ready_ms: Date.now() - began, startup_retries: retries};
+      start_ms: started - began, ready_ms, cold: ready_ms > BOX_COLD_MS, startup_retries: retries};
     this.opened.result = opened;
     return opened;
   }

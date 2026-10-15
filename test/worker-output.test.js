@@ -181,6 +181,33 @@ test('fallback: the pre-v8 JSON action with files[].content is accepted',()=>{
   assert.equal(workerAction(block('a.md','x')).format_fallback,undefined);
 });
 
+// v8 live 2: the tracker's index.html, style.css and server.js began with a
+// line "===", the file-block marker leaking into the file. The shapes a
+// small model writes a header in, each read as the header alone.
+test('live 2: a header split across lines, missing its closing ===, or followed by a bare === or --- line leaves no marker in the file',()=>{
+  const html='<!DOCTYPE html>\n<html lang="en">\n<body></body>\n</html>',css='body {\n  margin: 0;\n}';
+  const shapes={
+    split:`=== FILE: index.html\n===\n${html}\n=== END FILE ===\n=== FILE: style.css\n===\n${css}\n=== END FILE ===`,
+    unclosed:`=== FILE: index.html\n${html}\n=== END FILE\n=== FILE: style.css\n${css}\n=== END FILE`,
+    bare_after:`=== FILE: index.html ===\n===\n${html}\n=== END FILE ===\n=== FILE: style.css ===\n---\n${css}\n=== END FILE ===`,
+    mirrored:`=== FILE: index.html ===\n===\n${html}\n===\n=== END FILE ===\n=== FILE: style.css ===\n${css}\n===\n=== END FILE ===`,
+    no_end:`=== FILE: index.html\n===\n${html}\n=== FILE: style.css\n===\n${css}\n=== CONTROL\n{"summary":"wrote","done":true}`};
+  for(const [name,text] of Object.entries(shapes)) {
+    const r=parseWorkerAnswer(text+(name==='no_end'?'':'\n=== CONTROL ===\n{"done":true}'));
+    assert.deepEqual(r.files,[{path:'index.html',content:html},{path:'style.css',content:css}],name);
+    assert.deepEqual([r.truncated,r.control_error,r.action.done],[[],false,true],name);
+  }
+  // A document keeps a --- that opens its front matter; a setext heading's === stays (it follows a text line).
+  const md='---\ntitle: Guide\n---\n# Guide\n\nIntro\n===\n\nmore';
+  assert.deepEqual(parseWorkerAnswer(`=== FILE: docs/guide.md ===\n${md}\n=== END FILE ===`).files,[{path:'docs/guide.md',content:md}]);
+  // The single-file call reads the same shapes.
+  assert.equal(singleFileText({response:`=== FILE: server.js\n===\nconst http = require('http');\n=== END FILE ===`},'server.js'),"const http = require('http');");
+  assert.equal(singleFileText({response:`=== FILE: server.js ===\n===\nconst a = 1;\nconst b = 2;`},'server.js'),'const a = 1;\nconst b = 2;');
+  // Prose that only starts like a marker stays content: a CONTROL line with words after it, a FILE line with words.
+  const prose='=== Control panel\n=== control panel ===x\n=== FILE: two words here\nend';
+  assert.deepEqual(parseWorkerAnswer(`=== FILE: notes.txt ===\n${prose}\n=== END FILE ===`).files,[{path:'notes.txt',content:prose}]);
+});
+
 test('hasWorkerBlocks: only a line-anchored marker counts',()=>{
   assert.equal(hasWorkerBlocks(block('a','b')),true);
   assert.equal(hasWorkerBlocks('=== CONTROL ===\n{}'),true);

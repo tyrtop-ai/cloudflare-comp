@@ -24,13 +24,27 @@ import { stripReasoning, parseObject, normalizeAction, contentOf } from './proto
 
 // One marker line: kind (FILE, END FILE, CONTROL) and what follows it.
 const MARKER = /^[ \t]*(?:\*\*|__|`+)?[ \t]*===[ \t]*(end[ \t]+file|file|control)\b[ \t]*:?[ \t]*(.*?)[ \t]*===[ \t]*(?:\*\*|__|`+)?[ \t]*\r?$/i;
+// v8 live 2: a marker whose closing === is missing or on the next line
+// ("=== FILE: index.html" alone): a FILE line with one path-like word, a
+// CONTROL or END FILE line with nothing after it but an END FILE's path.
+const OPEN_MARKER = /^[ \t]*(?:\*\*|__|`+)?[ \t]*===[ \t]*(end[ \t]+file|file|control)\b[ \t]*:?[ \t]*([^\s=]*)[ \t]*(?:\*\*|__|`+)?[ \t]*\r?$/i;
 const FENCE = /^[ \t]*```/;
+// A line of only === or ---: what is left of a header split across lines.
+const BARE_RULE = /^[ \t]*(?:={3,}|-{3,})[ \t]*\r?$/;
 export function markerOf(line) {
-  const m = MARKER.exec(String(line));
-  if (!m) return null;
-  const kind = m[1].toLowerCase().replace(/\s+/, ' ');
-  return {kind, path: cleanPath(m[2])};
+  const s = String(line), m = MARKER.exec(s);
+  if (m && !/===/.test(m[2])) return {kind: m[1].toLowerCase().replace(/\s+/, ' '), path: cleanPath(m[2])};
+  const o = OPEN_MARKER.exec(s);
+  if (!o) return null;
+  const kind = o[1].toLowerCase().replace(/\s+/, ' '), path = cleanPath(o[2]);
+  if (kind === 'control' ? path : kind === 'file' ? !path : false) return null;
+  return {kind, path};
 }
+// A bare === or --- line right after a FILE header is the header's leftover,
+// never the file's first line; --- stays in a document or yaml file, where
+// it opens front matter. A bare === closing a file is the same leftover.
+const leftover = (line, path) => BARE_RULE.test(line) && (/^[ \t]*=/.test(line) || !/\.(?:md|markdown|mdx|txt|rst|adoc|ya?ml)$/i.test(path));
+const trimLeftover = lines => lines.length && /^[ \t]*={3,}[ \t]*\r?$/.test(lines.at(-1)) ? lines.slice(0, -1) : lines;
 // A path as a model may wrap it: `x`, <x>, "x", **x**, ./x.
 export function cleanPath(p) {
   let s = String(p ?? '').trim();
@@ -107,7 +121,7 @@ export function parseWorkerAnswer(output, {placed = null} = {}) {
   const files = new Map(), truncated = [], implicit = [], lines = text.split('\n');
   let open = null, controlText = null, inControl = false, sawBlocks = false;
   const close = () => {
-    files.set(open.path, unfence(open.lines.join('\n').replace(/\r$/, ''), open.path));
+    files.set(open.path, unfence(trimLeftover(open.lines).join('\n').replace(/\r$/, ''), open.path));
     const t = truncated.indexOf(open.path);
     if (t >= 0) truncated.splice(t, 1);
     open = null;
@@ -118,6 +132,9 @@ export function parseWorkerAnswer(output, {placed = null} = {}) {
       if (m?.kind === 'end file' && (!m.path || m.path === open.path)) { close(); continue; }
       if (m && m.kind !== 'end file' && !open.fence && (m.kind === 'control' || m.path)) { implicit.push(open.path); close(); }
       else {
+        const first = !open.lines.length && !open.started;
+        open.started = true;
+        if (first && leftover(line, open.path)) continue;
         open.lines.push(line);
         if (FENCE.test(line)) open.fence = !open.fence;
         continue;
@@ -179,8 +196,9 @@ export function singleFileText(output, path) {
   const r = parseWorkerAnswer(text);
   if (!r.parse_error && r.files.length) return (r.files.find(f => f.path === path) || r.files[0]).content;
   if (!r.parse_error && r.truncated.length) {
-    const at = text.split('\n').findIndex(l => markerOf(l)?.kind === 'file');
-    return text.split('\n').slice(at + 1).join('\n');
+    const lines = text.split('\n'), at = lines.findIndex(l => markerOf(l)?.kind === 'file');
+    const rest = lines.slice(at + 1);
+    return (rest.length && leftover(rest[0], path) ? rest.slice(1) : rest).join('\n');
   }
   const lines = text.split('\n');
   if (DOCUMENT.test(path)) {

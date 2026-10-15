@@ -7,7 +7,7 @@ export { BuildExecutor } from './build-executor.js';
 export { Box } from './box.js';
 export { BoxProbe, BoxProbePeer } from './box-probe.js';
 import { boxProbeRoute } from './box-probe.js';
-import { freshBox, compileBoxSpec } from './box.js';
+import { freshBox, compileBoxSpec, BOX_COLD_MS } from './box.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
@@ -3667,7 +3667,7 @@ export class ControlRoom extends DurableObject {
         return {infrastructure:'The box did not confirm a fresh start with the internet off; the checks were not run in it.'};
       }
       this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,
-        box:{fresh:true,internet:false,start_ms:opened.start_ms,ready_ms:opened.ready_ms,image:opened.image,instance:opened.instance},exec_ms:opened.exec_ms});
+        box:{fresh:true,internet:false,start_ms:opened.start_ms,ready_ms:opened.ready_ms,cold:opened.cold===true||opened.ready_ms>BOX_COLD_MS,image:opened.image,instance:opened.instance},exec_ms:opened.exec_ms});
       if(report.mode!=='card'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a card report: its image predates card verification.'};
       return {report};
     } catch(e) {

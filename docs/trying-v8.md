@@ -73,6 +73,8 @@ A v8 room no longer shares one Container across its compiles, and benchmark room
 
 The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
 
+The first compile after a deploy is slow: each image is pulled on first use, so that box takes 10 to 15 s to become ready instead of about 1 s. The span records it with `cold: true` (any box whose `ready_ms` is over 5 s). Later compiles start warm.
+
 ### 6.1 The S0 probe: run it once after deploying
 
 The probe measures what the box design depends on and the docs don't settle: start time, exec latency, what an internet-off box can reach, the process capabilities, user namespaces, snapshots, Chromium and WebSockets through interception, relaying between boxes, starting 30 boxes at once, and private ranges with the internet on. It is off by default and owner-only (`APP_TOKEN`).

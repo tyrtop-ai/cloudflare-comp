@@ -10,7 +10,7 @@ import {fakeBoxes, FakeContainer, FAKE_IMAGES, POISON_ENV} from './helpers/boxes
 import {taskFromRow, taskOutcome} from '../src/bench.js';
 import {MULTIPLE_JS} from './helpers/bench-fixtures.js';
 // After the helpers registered the cloudflare:workers loader.
-const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, compileBoxSpec, BOX_PATH, BOX_LIFETIME_MS, BOX_BUILD_COMMAND} = await import('../src/box.js');
+const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, compileBoxSpec, BOX_PATH, BOX_LIFETIME_MS, BOX_BUILD_COMMAND, BOX_COLD_MS} = await import('../src/box.js');
 
 const TEMP_GOAL = 'A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
 const JS_CARD = {card: 1, summary: 'A converter command and its usage guide', languages: ['javascript', 'text'],
@@ -81,6 +81,7 @@ test('a Box is single-use: open starts it once with the internet off; a second o
   const opened = await box.open({image: 'check'});
   assert.deepEqual([opened.fresh, opened.internet, opened.image, opened.instance], [true, false, 'check', 'standard-1']);
   assert.ok(Number.isFinite(opened.start_ms) && Number.isFinite(opened.ready_ms));
+  assert.equal(opened.cold, false, 'a box ready at once is warm');
   assert.deepEqual(container.options, {image: FAKE_IMAGES.check, instance: 'standard-1', enableInternet: false});
   assert.ok(storage.alarm >= Date.now() + BOX_LIFETIME_MS - 5000, 'the backstop alarm is set');
   await assert.rejects(box.open({image: 'check'}), e => e.code === 'used');
@@ -93,6 +94,19 @@ test('a Box is single-use: open starts it once with the internet off; a second o
   await assert.rejects(again.open({image: 'check'}), e => e.code === 'used');
   const running = new FakeContainer(); running.running = true;
   await assert.rejects(new Box({container: running, storage: {async get() {}, async put() {}}, exports: {}}, POISON_ENV).open({image: 'check'}), e => e.code === 'not_fresh');
+});
+
+// v8 live 2: the first box after a deploy waited 9.7 to 14.7 s for its image; one over 5 s is recorded cold.
+test('a box whose ready_ms is over 5 s is recorded cold', async () => {
+  assert.equal(BOX_COLD_MS, 5000);
+  const ns = fakeBoxes({run: async () => ({})}), box = freshBox(ns), now = Date.now;
+  let t = now();
+  Date.now = () => (t += 2600);
+  try {
+    const opened = await box.open({image: 'check'});
+    assert.ok(opened.ready_ms > BOX_COLD_MS, String(opened.ready_ms));
+    assert.equal(opened.cold, true);
+  } finally { Date.now = now; await box.close(); }
 });
 
 test('Box.compile runs the build runner once in its own box and destroys it, also when the runner fails; the alarm is the backstop', async () => {
@@ -146,6 +160,7 @@ test('v8 runCard: every compile opens its own fresh box (a new unique id), inter
     assert.equal(s.attrs.box.fresh, true);
     assert.equal(s.attrs.box.internet, false);
     assert.ok(Number.isFinite(s.attrs.box.start_ms));
+    assert.equal(s.attrs.box.cold, false);
   }
   // A v8 room never runs the v7 executor path either.
   assert.match((await room.containerRun('root', 'compile:x', new Map([['a.js', '1;\n']]))).infrastructure, /fresh box with the internet off/);
