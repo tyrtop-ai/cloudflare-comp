@@ -13,6 +13,7 @@ import {ENTRY_CONTRACT} from './model.js';
 import {clip} from './protocol.js';
 import {normalizeInterfaces, repairInterfaces, signature, GENERIC_NAMES} from './interfaces.js';
 import {kindOf, textNames} from './contracts.js';
+import {MESSAGES} from './prompts.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
@@ -988,10 +989,14 @@ export const ownPaths=(text,piece=null)=>{
 export const OWN_ENTRY_CONTRACT='You wrote the whole application: your entry module exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each performing it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
 // What the deciding manager tells the side that changes, by kind. own: an
 // atomic top's own repair.
-export function instructionsFor(p, side, own=false) {
+// v8 (S6 review): opts.v8 words each kind from MESSAGES (src/prompts.js),
+// with opts.reference(name) the toolchain row's reference for a name; a v8
+// room files only contract, stuck and request rows before S4b's checks.
+export function instructionsFor(p, side, own=false, opts={}) {
   const f=p.facts||{},provider=(p.parties||[]).find(x=>x.role==='provider');
   // v7.15.6 (R4): the words a problem was decided with hold for that side only; the next party, after a decline, hears its own.
   if(p.directive?.instructions&&(!p.directive.side||p.directive.side===side))return p.directive.instructions;
+  if(opts.v8)return v8Instructions(p,side,opts);
   // run11: the caller reorders its call; the function it calls stays.
   if(f.argorder&&side!=='provider')return `Change your call ${f.argorder.call} to pass its arguments in the order ${f.argorder.name} takes them, (${(f.argorder.params||[]).join(', ')}); ${f.argorder.name} itself stays as it is.`;
   // v7.15.6 (R3): a run failure is the requirement it states, whoever takes it (a route names the promise).
@@ -1022,6 +1027,20 @@ export function instructionsFor(p, side, own=false) {
   }
 }
 
+// v8: a problem's instructions in contract terms (MESSAGES), never naming a
+// build step, a linker or a language's export form.
+function v8Instructions(p, side, {reference=n=>n}={}) {
+  const f=p.facts||{},many=xs=>(xs||[]).length>1;
+  if(p.kind==='stuck')return MESSAGES.stuck();
+  if(p.kind==='contract') {
+    const by=(f.requested_by||[]).filter(Boolean).slice(0,8);
+    const written=f.written?.length?MESSAGES.written_elsewhere({names:list(f.written),references:f.written.slice(0,8).map(reference).join('; '),many:many(f.written)}):'';
+    if(!f.names?.length&&written)return written;
+    return MESSAGES.owed({names:list(f.names),by:by.length?by.join(', '):'other parts',many:many(f.names)})+(written?' '+written:'');
+  }
+  return side==='provider'?MESSAGES.fix_provider():MESSAGES.fix_reader();
+}
+
 // What a branch hears when another child of its manager exports what it lacks (M6 settled).
 export function importInstructions(p, u) {
   return `${base(u.path)}, outside your branch, exports ${list(p.facts?.names)}: import each on its own line with its name as the path, and the builder above links it: ${oneLines(p.facts?.names,{},4,p.facts?.esm)} Nothing in your branch provides them.`;
@@ -1050,7 +1069,17 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // most; review: the tail is kept, the facts give way first, down to 160).
 // v7.15.7 review: text cut to n at the last ' | ' or '; ' boundary before n, else the last word boundary; whole when it fits.
 const cutAt=(s,n)=>{s=String(s||'');if(s.length<=n)return s;const h=s.slice(0,Math.max(n,0)),at=Math.max(h.lastIndexOf(' | '),h.lastIndexOf('; '));return (at>0?h.slice(0,at):h.replace(/\s+\S*$/,'')).trimEnd();};
-export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false,operation=false}) {
+export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false,operation=false,v8=false}) {
+  // v8 (S6 review): no head claiming a build ran (a v8 room runs none before its checks); the decision, the other side's facts and the problems.
+  if(v8) {
+    if(requirement) {
+      const body=clip(ownPaths(instructions,piece),facts?700:860),cut=facts?cutAt(ownPaths(facts,piece),860-body.length):'';
+      return MESSAGES.requirement_repair({body,facts:cut});
+    }
+    const decided=instructions?ownPaths(instructions,piece).slice(0,900):'',shown=problems.map(x=>`${ownPaths(x.path,piece)||'(project)'}: ${ownPaths(x.detail,piece)}`).join('; ');
+    const room=Math.max(0,2400-decided.length-Math.min(shown.length,1100)-200);
+    return MESSAGES.repair({own,decided,facts:facts&&room>40?ownPaths(facts,piece).slice(0,Math.min(700,room)):'',problems:shown}).slice(0,2400);
+  }
   if(requirement) {
     // v7.15.7 review (run14): the facts get the room the body leaves (at least 160, as before), cut at a ' | ' or '; ' boundary and never mid-word: a flat 300 cut the plan's returns first and mid-word once a worker had a third use, while most of the 900 went unused.
     const tail=' Publish the FULL updated file.',room=900-tail.length,lead=' What the other side provides: ';

@@ -16,7 +16,7 @@ export const PRINCIPLES = `You are one of many agents building one project toget
 4. Follow the project facts: its languages, conventions and existing files. Where neither goal nor facts settle a choice, make the simplest one that works and say so in your summary, so later agents are not surprised.
 5. Deliver complete files that work as they are. A plan, outline or placeholder is no deliverable, because the checks run what you wrote, not what you meant.
 6. Checks written from the goal before work began, by someone who has not seen your work, judge the project. Aim at the goal, not a guessed check: work fitted to a guess fails the real one.
-7. When a report says something failed, fix the cause in your part. If it lies in another part's contract, say so plainly rather than work around it: problems go to their owners, and a workaround hides them.
+7. When a report says something failed, fix the cause in your part. If it lies in another part's contract, say so plainly rather than work around it: each problem reaches its owner, and a workaround hides it.
 8. Answer only in your role's format: a program reads it, and anything outside the format is lost.`;
 
 // §6.3: one paragraph per role, at most six sentences each.
@@ -24,7 +24,7 @@ export const ROLE = Object.freeze({
   card: 'Your role: turn the goal into the project card before any work starts. You receive the goal, the toolchains this deployment can run, and, when the project starts from existing files, a digest of them. Name each deliverable a person would receive or use, the languages that produce them, and how to run them. Then list the requirements: each a single yes/no statement that the goal states or directly implies, with the phrase of the goal it comes from and one check that would show it holds, observed from outside the way its user would meet it. Choose the smallest set of deliverables that meets the goal, add nothing the goal does not ask for, and record every choice the goal leaves open under decisions. If the goal changes a project that was not given, set blocked and say what is missing.',
   card_review: 'Your role: decide whether one check on the project card matches the goal. You receive the goal, the card, one requirement whose check has failed against every attempt, and the evidence. If the check asks for something the goal does not state or imply, give a corrected check for the same requirement. If the check is right, keep it. A requirement the goal states stays as strong as the goal states it.',
   splitter: 'Your role: divide your assignment into pieces that separate writers can produce at the same time without seeing each other. You receive your assignment, the contracts you must deliver, the contracts already available from elsewhere, the project facts, and the goal as the limit of scope. Use the fewest pieces that each fit one writer, at most the number given; a piece that is still large is divided again by its own owner. Give every contract you must deliver, unchanged, to exactly one piece. Where two pieces must work together, write the contract between them now, with examples, so neither has to guess what the other will do, and give shared data or state to one owner that the others use through its contract. If one writer can do the whole assignment, return no pieces.',
-  worker: 'Your role: write the files that fulfil your contracts. You receive your assignment, your contracts with their examples, the contracts of other parts you may use with the exact reference for each, the project facts, any existing file you are changing, and any failure report. Write each file complete, at the path your contract names, or at a path you choose for anything else. Refer to another part only by its contract name, written as its reference shows; the runtime connects that reference to wherever the part ends up. If you need something none of your contracts provides, ask for it in your control block, and write meanwhile the files that do not depend on it. The answers to your asks arrive in answered_requests and are final, so use what they name rather than asking again.',
+  worker: 'Your role: write the files that fulfil your contracts. You receive your assignment, your contracts with their examples, the contracts of other parts you may use with the exact reference for each, the project facts, the goal as the limit of scope, your files as they stand, and any failure report. Write each file complete, at the path your contract names, or at a path you choose for anything else. Refer to another part only by its contract name, written as its reference shows; the runtime connects that reference to wherever the part ends up. If you need something that none of the contracts you may use provides, ask for it in your control block, and write meanwhile the files that do not depend on it. The answers to your asks arrive in answered_requests and are final, so use what they name rather than asking again.',
   file: 'Your role: write one file again so that it fixes the problem described. Keep its contract and everything that already works. Return only the complete text of the file.',
   manager: 'Your role: settle the problems that linking or the checks found among your direct children, with as few changes as possible. You receive each problem with its evidence and the runtime\'s default decision, your children\'s contracts, and what each child was already told. Give each problem to the one child whose own contract it breaks, and tell every affected child the same thing when several must agree. Keep every contract on exactly one child. If a child has already failed the same problem twice, give it to the other side, change what that child is asked to do, or pass the problem up.',
   linker: 'Your role: make files that were written separately refer to each other correctly, by changing only names and reference paths. You receive the files that must change, the contracts, and the unresolved references the build reported. Change a reference only to a contract that does what the reference expects. Anything a rename cannot fix, report as an issue against the file that must change.'
@@ -61,28 +61,39 @@ const SPLITTER_FIELDS = [
   '- "task": what its writer must produce, in full sentences, so that a writer who sees only this piece can do it.',
   '- "contracts": at most 5 contracts the piece delivers to the other pieces or to your own contracts, each your own contract that it carries or a new one between pieces.',
   '- "uses": the names of the contracts the piece relies on, from other pieces or from the contracts already available to you.',
+  '- Give a piece tests to write only when the goal or a contract asks for them, and keep what only one piece uses inside that piece.',
   CONTRACT_FIELDS
 ];
 // §3.2, and the one rule a file block imposes on the text inside it.
+// A contract's schema in brief, for the worker's pieces and the manager's retask.
+const CONTRACT_BRIEF = 'A contract is {"name", "kind", "does", "inputs", "outputs", "effects", "examples", "path"}: kind is one of "function", "file", "page", "route", "command", "doc", "data"; a file, page, doc or data contract is named by its path; inputs is a list of {"name", "is"} and examples a list of {"given", "expect"}.';
+// §3.2, with the control fields described in prose (v8 S6 review: a small
+// model copies a template's true|false or [...] as written).
 const WORKER_FORMAT = [
   'Write each file as a block:',
   '=== FILE: <path> ===',
   '<the complete text of the file>',
   '=== END FILE ===',
-  'Then end with:',
+  'Close each file with its end line before the next file begins. Then end with this line and one json object holding only the fields you need:',
   '=== CONTROL ===',
-  '{"summary": "<one line>", "done": true|false, "wait": true|false, "ask": [{"need": "<one line>", "name": "<the name you expect>"}], "pieces": [...]}',
-  'Leave out any control field you do not need. The first end line after a file\'s block line closes that file, so a file cannot hold that line itself. Set done once your files fulfil every contract you were given, and wait while an ask is unanswered. Give pieces only when your assignment is too large for one writer, each {"label", "task", "contracts", "uses"} as a splitter gives them.'
+  '- "summary": what you did, in one line.',
+  '- "done": true once your files fulfil every contract you were given.',
+  '- "wait": true while an ask is unanswered.',
+  '- "ask": a list of {"need": what you need in one line, "name": the name you expect}.',
+  '- "pieces": only when your assignment is too large for one writer, a list of {"label", "task", "contracts", "uses"} as a splitter gives them.',
+  CONTRACT_BRIEF,
+  'Put files that only your piece uses under a folder named after your piece\'s label, so they meet no other piece\'s files. Write tests only when a contract asks for them, at the paths it names. A file you do not write again stays as it is. A file sent to you marked "clipped" is only its start: leave it as it is, or put your change in a new file, because a file written again from its start loses the rest.'
 ];
-// MANAGER_SYSTEM's action list (src/model.js), with a retask's new
+// MANAGER_SYSTEM's action list (src/model.js) in prose, with a retask's new
 // contracts under "contracts"; the trigger catalogue travels with each
 // problem (TRIGGERS) instead of here.
 const MANAGER_FORMAT = [
-  'Return one json object {"actions": [...]}, and nothing else. Each action is one of:',
-  '{"action":"assign","problems":[ids],"child":"<direct child id>","instructions":"the exact names and shapes to use","facts_from":["<direct child id>",...]}',
-  '{"action":"escalate","problems":[ids],"reason":"..."}   (only if can_escalate)',
-  '{"action":"retask","child":"<id>","task":"the new assignment","problems":[ids],"reason":"...","contracts":[...]}   (the child cannot succeed or has the wrong job; it keeps its contracts unless you give new ones, which replace them)',
-  '{"action":"retire","child":"<id>","reason":"..."}   (duplicated or out-of-scope work that nothing else uses)',
+  'Return one json object {"actions": a list of actions}, and nothing else. Each action is one of:',
+  '- {"action": "assign", "problems": the problem ids, "child": a direct child id, "instructions": the exact names and shapes to use, "facts_from": direct child ids whose facts it needs}.',
+  '- {"action": "escalate", "problems": the problem ids, "reason": why}, only if can_escalate.',
+  '- {"action": "retask", "child": a direct child id, "task": the new assignment, "problems": the problem ids, "reason": why, "contracts": its new contracts}, when the child cannot succeed or has the wrong job; it keeps its contracts unless you give new ones, which replace them.',
+  '- {"action": "retire", "child": a direct child id, "reason": why}, for duplicated or out-of-scope work that nothing else uses.',
+  CONTRACT_BRIEF,
   'A problem you leave out gets its default. Each problem\'s trigger says why you are asked. fixed_decisions are final, because other children already rely on them.'
 ];
 export const FORMAT = Object.freeze({
@@ -145,6 +156,67 @@ export const LINK_SCOPE = Object.freeze({
   application: 'These are all the project\'s files: a reference you leave unresolved goes to the manager as a problem.'
 });
 
+// v8 S6 review: every text the room itself composes for a v8 agent, as
+// data: repair and failure reports, request answers, split rejections,
+// contract send-backs, growth tasks and notes on a worker's own answer. Each
+// is a function of one object whose fields are strings the room fills in
+// (contract lines, labels, references from the toolchain rows; many: true
+// for a plural); none names a language, a build step the v8 room does not
+// run, or a model. v7 rooms keep their own texts in src/index.js and
+// src/problems.js until S7. test/prompt-lint.test.js lints each one.
+const it = many => many ? 'them' : 'it';
+const s = many => many ? '' : 's';
+export const MESSAGES = Object.freeze({
+  // ---------------------------------------------------- repairs and problems
+  // A repair ticket as its worker reads it: no head that claims a step ran.
+  repair: ({own, decided, facts, problems}) => `${own ? 'A problem was found in your work.' : 'A problem was found between your part and another part, and your manager decided what changes.'}${decided ? ` ${own ? 'Required' : 'Decided'}: ${decided}` : ''}${facts ? ` What the other side provides: ${facts}` : ''} Problems: ${problems}`,
+  // A run requirement routed by the plan: the requirement and the other side's facts only.
+  requirement_repair: ({body, facts}) => `${body}${facts ? ` What the other side provides: ${facts}` : ''} Write each file you change again, complete.`,
+  repair_withdrawn: () => 'An earlier repair request was withdrawn: its problems were resolved or replaced, so it needs no change.',
+  fix_reader: () => 'Fix the cause in your part, keep the names your contracts state, and add nothing the problem does not need.',
+  fix_provider: () => 'Fix your part so that the use described below works, and keep the names your contracts state.',
+  stuck: () => 'Finish your assignment: deliver every contract you were given.',
+  // A contract a direct child owes (D9 owed, and the contract problem's default).
+  owed: ({names, by, many}) => `Your contracts include ${names}, needed by ${by}, and your files do not deliver ${it(many)} yet. Deliver each under exactly its contract name, and keep what you already deliver.`,
+  written_elsewhere: ({names, references, many}) => `${names} ${many ? 'are' : 'is'} delivered by other parts: refer to ${it(many)} as ${references} rather than writing your own copy.`,
+  // The problem rows a v8 room files, as the manager and the repair read them.
+  contract_problem: ({label, missing, written, owners}) => [missing ? `${label} was given ${missing} and its files do not deliver all of it.` : '', written ? `${label} writes ${written} itself, which ${owners} deliver${owners && owners.includes(',') ? '' : 's'}; it should use theirs.` : ''].filter(Boolean).join(' '),
+  request_problem: ({label, want}) => `${label} asks for ${want}, which no part delivers and its assignment does not cover.`,
+  // §4 (S4b): one card check that failed, as its owner reads it.
+  check_failed: ({id, says, check, evidence}) => `Requirement ${id} failed: ${says}. The check: ${check}.${evidence ? ` What it observed: ${evidence}` : ''} Fix the cause in your part, or say plainly which other part's contract it lies in.`,
+  // The done rule's send-back (§3.4): the contracts and what is missing.
+  contract_returned: ({contracts, findings}) => `Your contracts: ${contracts}. ${findings} Write each file you change again, complete.`,
+  // ------------------------------------------------------------ request answers
+  provided: ({contract, owner, reference}) => `${contract}. It is delivered by "${owner}". Refer to it exactly as: ${reference}. Use it rather than writing your own.`,
+  now_delivered: ({contract, owner, reference}) => `${contract} is now delivered by "${owner}". Refer to it exactly as: ${reference}, and use it rather than writing your own.`,
+  unowned: ({want}) => `No part of the project delivers ${want}.`,
+  in_assignment: ({want}) => `No other part delivers ${want}. It is part of your assignment: write it in your own files.`,
+  write_yourself: ({want}) => `No part delivers ${want}, and no other part's assignment covers it (your manager asked each level): write it in your own files.`,
+  not_yours: ({want, reference}) => `No part delivers ${want}, and it is not part of your assignment. ${reference ? `Refer to it as ${reference}` : 'Refer to it by a descriptive name the project facts allow'}, and finish your files; the missing contract reaches the top as a problem.`,
+  performed_by: ({want, name, offers, reference, many}) => `No part delivers ${want} under that name, but ${offers} cover${s(many)} it: refer to ${many ? 'the one you need' : 'it'} as ${reference} and use it. Nothing delivers ${name}, so leave that name out.`,
+  exported_elsewhere: ({want, owner, reference}) => `No contract names ${want}, but "${owner}"'s files already define it: refer to it as ${reference} rather than writing your own.`,
+  // ------------------------------------------------------------ growth
+  grow_task: ({task, adds, readers, many, data}) => `${task} Keep what you already deliver and add ${adds}: ${readers} use${many ? '' : 's'} ${it(many)} from you.${data ? ' Keep the shared data in one place that all your contracts use.' : ''}`,
+  relay: ({names, reader, why, many}) => `${names}, which ${reader} uses, ${many ? 'are' : 'is'} this branch's to deliver (${why}): one of its pieces takes ${it(many)} as a contract.`,
+  owned_elsewhere: ({label, owner, names}) => `${label} is delivered ${owner ? `by ${owner}` : 'outside this branch'}; ${names ? `use ${names} from there by exactly those names` : 'use it from there'} and write here only what it lacks.`,
+  // ------------------------------------------------- notes on a worker's answer
+  ask_limit: ({count, rest}) => `Only your first ${count} requests were sent. Ask for these once they are answered: ${rest}.`,
+  asked_again: ({names}) => `You asked again for ${names}, which your manager already answered (answered_requests). An answer is final: use it.`,
+  wrote_before_answer: ({path, names, repair}) => `${path} was not written: it refers to ${names} before your manager answered. Write it with the answers, by exactly the names they give.${repair ? ` It was your fix for this repair request: ${repair}` : ''}`,
+  ask_unclear: () => 'Your ask was not understood, so nothing was sent and there is nothing to wait for. Ask in your control block as "ask": a list of {"need": what you need in one line, "name": the name you expect}, with "wait": true, or write your files and set done.',
+  no_request: () => 'You have no request open, so there is nothing to wait for: write your files and set done.',
+  stuck_problem: ({label, last}) => `${label} stopped after three turns whose answers could not be accepted: ${last}`,
+  no_manager: ({repair}) => `You have no manager, so nothing answers a wait: write your files and set done.${repair ? ` This repair request is still open: ${repair}` : ''}`,
+  runtime_paths: ({paths, many}) => `${paths} ${many ? 'were' : 'was'} not written: the runtime keeps ${many ? 'those paths' : 'that path'} for itself. Choose another path.`,
+  not_written: ({why}) => `Not written: ${why}.`,
+  left_out: ({count}) => `${count} more contracts you may use were left out here; ask for any you need by its name.`,
+  // ------------------------------------------------------------ split rejections
+  split_contracts: ({checks, c5, c4}) => `The pieces may stay, but their contracts failed these checks: ${checks} Keep the pieces${c5 ? ', give each contract you must deliver to exactly one piece' : ''}${c4 ? ', place each file in exactly one piece' : ''}.`,
+  split_no_progress: ({label, names}) => `No progress: one piece would carry the whole assignment ("${label}" carries ${names}).`,
+  split_out_of_scope: ({count, rejected}) => `Only ${count} piece(s) stayed in scope after ${rejected} were judged outside the goal or the parent's assignment, which is no division.`,
+  split_no_division: ({bound}) => `No division into at least two distinct pieces within ${bound} pieces was given.`
+});
+
 // Every text above that a model reads, by name, for the lint (§8.3).
 export function promptTexts() {
   const out = {PRINCIPLES};
@@ -153,6 +225,9 @@ export function promptTexts() {
   for (const [k, v] of Object.entries(CLEF)) out[`CLEF.${k}`] = v;
   for (const [k, v] of Object.entries(TRIGGERS)) out[`TRIGGERS.${k}`] = v;
   for (const [k, v] of Object.entries(LINK_SCOPE)) out[`LINK_SCOPE.${k}`] = v;
+  // Each message with every field filled by a sample (a plural where it has one).
+  const filled = new Proxy({}, {get: (_, k) => k === 'many' ? true : `sample ${String(k)}`});
+  for (const [k, f] of Object.entries(MESSAGES)) out[`MESSAGES.${k}`] = f(filled);
   const sample = {too_many: f => f(7, 5), count: f => f(1, 5), vague: f => f(['a label']), names: f => f(['"a label": a reason.']), worker: f => f('a reason')};
   for (const [k, v] of Object.entries(RETRY)) out[`RETRY.${k}`] = typeof v === 'function' ? sample[k](v) : v;
   return out;

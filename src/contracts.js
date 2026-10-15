@@ -228,11 +228,28 @@ export function contractLine(c) {
 // a route by its method and path; a file, page, doc, data file or command by
 // its project path. Nothing here names a language: the rows do. At most 8,
 // as usesText. facts: {rows, languages}, as contractErrors reads them.
+// v8 S6 review: one reference per contract, from that contract's own row:
+// its path's row, else the reader's language (facts.reader, the ids of the
+// rows its own contracts and files are written in) when the project could
+// mean several, else the project's first. In a browser project (facts.browser)
+// a function is an ES module import of its file, and a script file a page
+// loads (facts.page_reader) is a module script tag.
+export const USES_SHOWN = 8;
 export function useReferences(items, facts = null) {
-  return (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').slice(0, 8).map(f => {
+  const browser = !!facts?.browser, reader = Array.isArray(facts?.reader) ? facts.reader : [];
+  return (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').slice(0, USES_SHOWN).map(f => {
     const kind = kindOf(f);
-    const reference = kind === 'function' ? functionRows(f, facts).map(r => renderImport(r, f.name)).filter(Boolean).join(' or ') || f.name
-      : kind === 'route' ? f.name : f.path || f.name;
+    let reference;
+    if (kind === 'function') {
+      const order = Array.isArray(facts?.languages) ? facts.languages : [], at = r => order.includes(r.id) ? order.indexOf(r.id) : order.length;
+      const rows = [...functionRows(f, facts)].sort((a, b) => at(a) - at(b)), row = rows.length > 1 && rows.find(r => reader.includes(r.id)) || rows[0];
+      reference = renderImport(row, f.name, false, {browser, path: f.path}) || f.name;
+    } else if (kind === 'route') reference = f.name;
+    else {
+      const row = f.path ? rowOfPath(f.path, facts) : null;
+      reference = browser && facts?.page_reader && row?.browser_script ? row.browser_script.replaceAll('{path}', f.path)
+        : browser && row?.browser_reference && !facts?.page_reader ? `import './${f.path}';` : f.path || f.name;
+    }
     return {contract: contractLine(f), ...(typeof f.owner === 'string' && f.owner ? {from: f.owner} : {}), reference};
   });
 }

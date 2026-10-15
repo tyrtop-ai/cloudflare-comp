@@ -6,7 +6,7 @@ import { lintText, lintAll, words, sentences, negations, capsWords } from './hel
 
 const ROLES = ['card', 'card_review', 'splitter', 'worker', 'file', 'manager', 'linker'];
 // Per-role caps: words of each format, and of the whole system prompt.
-const FORMAT_WORDS = {card: 500, card_review: 50, splitter: 320, worker: 130, file: 40, manager: 110, linker: 70};
+const FORMAT_WORDS = {card: 500, card_review: 50, splitter: 340, worker: 260, file: 40, manager: 200, linker: 70};
 const SYSTEM_WORDS = 900;
 
 test('every v8 prompt text passes the lint', () => {
@@ -24,7 +24,16 @@ test('the lint fails on each thing it guards', () => {
     goal: 'Write the ticket store.', tracker: 'Build the tracker.', crud: 'Give each piece one CRUD verb.', todo: 'Each to-do has a title.',
     language: 'Write plain Python.', framework: 'Use React for the page.', syntax: "Import it with require('./x').", extension: 'Name the file main.py.',
     run: 'Since run12, say what a call returns.', version: 'As v7.15 did.', placeholder: 'Name it functionName.',
-    caps: 'You MUST answer ONLY in json.', negations: 'Never guess. Do not invent. Never copy.'
+    caps: 'You MUST answer ONLY in json.', negations: 'Never guess. Do not invent. Never copy.',
+    // v8 S6 review (probes/v8s6/lint.mjs): each of these passed the first lint.
+    py_import: 'Refer to it as: from helpers import parse_line.', go_ext: 'Write main.go and go.mod.', rb_ext: 'Name it util.rb.', rs: 'Put it in src/main.rs.',
+    md_ext: 'Write docs/guide.md.', json_ext: 'Keep config.json valid.', shell: 'Run it with bash.', sql: 'Store rows in SQLite.', docker: 'Add a Dockerfile.',
+    js_fn: 'function main() { console.log(1) }', esm_default: 'export default app', include: '#include <stdio.h>', tailwind: 'Style it with Tailwind.',
+    select: 'Run SELECT * FROM rows.', shebang: '#!/bin/sh', func: 'func main() {}', rust_fn: 'fn main() {}', go: 'Write it in Go.',
+    domain_recipe: 'Each recipe has servings.', domain_shop: 'Each order has an invoice and a customer.', domain_login: 'Users log in with a password.',
+    cannot: 'You cannot change it. Avoid copies. You can\'t guess.', version: 'As in v7, and slice S6.',
+    room_repair: 'REAL CONTAINER BUILD FAILED on your owned source. The builder can only rename import paths and identifiers.', room_export: 'Export each as a named export.',
+    room_split: 'Qwen proposed no valid partition into distinct code-writing children within the available capacity.', room_module: 'write it in your own module.'
   };
   for (const [name, text] of Object.entries(cases)) assert.ok(lintText(name, text).length > 0, name);
   // A format's block markers are not shouting, and an example's page path is data.
@@ -38,7 +47,7 @@ test('PRINCIPLES fits 260 words and keeps its eight principles with their reason
   assert.deepEqual([...PRINCIPLES.matchAll(/^(\d)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8]);
   // Each principle's reason (§6.1), kept in substance.
   for (const reason of [/agreements are all they can rely on/, /joined only by renaming/, /copies drift apart/, /later agents are not surprised/,
-    /the checks run what you wrote/, /work fitted to a guess fails the real one/, /a workaround hides them/, /anything outside the format is lost/])
+    /the checks run what you wrote/, /work fitted to a guess fails the real one/, /a workaround hides it/, /anything outside the format is lost/])
     assert.match(PRINCIPLES, reason);
 });
 

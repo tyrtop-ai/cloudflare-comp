@@ -8,10 +8,10 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, TOOLCHAINS, installed as installedRows, projectFacts } from './toolchains.js';
+import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
 import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
 import { getArtifactStore } from './artifact-store.js';
-import { triggerText, RETRY } from './prompts.js';
+import { triggerText, RETRY, MESSAGES } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
@@ -25,7 +25,7 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
-import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, useReferences, PLACED_KINDS, functionRows } from './contracts.js';
+import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, useReferences, USES_SHOWN, PLACED_KINDS, functionRows } from './contracts.js';
 import { branchDirectory } from './assembly.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -68,12 +68,32 @@ const ownerNotes = (rejected,outside=false) => clip([...new Set(rejected.filter(
 // higher up reaches the splitter, and every verdict reaches the splitter's
 // children, only as owned outside this branch: managers talk to children.
 const OUTSIDE = 'outside this branch';
-function ownerNote(label, piece, owner='', names=[], kept=false) {
+// v8 (S6 review): v8 words it as MESSAGES.owned_elsewhere, in contract terms.
+function ownerNote(label, piece, owner='', names=[], kept=false, v8=false) {
+  if(v8) {
+    const short=MESSAGES.owned_elsewhere({label:kept?`${label}: ${names.join(', ')}`:label,owner,names:names.join(', ')});
+    return {note:short,short,outside:owner?ownerNote(label,piece,'',names,kept,true).short:short};
+  }
   const head=`${kept?`${label}: ${names.join(', ')}`:label} is owned ${owner?`by ${owner}`:OUTSIDE}`;
   const how=names.length?`import ${names.join(', ')} ${owner?'from that strand ':''}by exactly those names`:`import it ${owner?'from that strand':'by name'}`;
   const short=`${head}; ${how} and write here only what it lacks.`;
   return {note:`${head}; ${how} instead of rebuilding it. Any part of "${piece}" that ${owner||'its owner'} does not provide is still written in this strand.`,
     short,outside:owner?ownerNote(label,piece,'',names,kept).short:short};
+}
+// v8 (S6 review): a worker's own files, sent whole while the total stays within
+// FILES_BUDGET characters; the next one that does not fit is sent clipped
+// (its start, marked clipped with its full length), and the rest by path
+// only, so no file is ever mistaken for whole. The goal reaches a worker
+// clipped to GOAL_FOR_WORKERS, as the limit of scope.
+const FILES_BUDGET = 24000, GOAL_FOR_WORKERS = 600;
+function sentFiles(files, {revision=false, budget=FILES_BUDGET}={}) {
+  let left=budget;
+  return files.map(f=>{
+    const text=String(f.content??''),head={path:f.path,...(revision&&f.revision!==undefined?{revision:f.revision}:{})};
+    if(text.length<=left){left-=text.length;return {...head,content:text};}
+    const part=Math.max(0,Math.min(3000,left));left-=part;
+    return {...head,content:text.slice(0,part),clipped:true,length:text.length};
+  });
 }
 // Builders and the compiler are runtime nodes: one builder per manager links
 // its direct children, one compiler under the top manager runs the bundle.
@@ -453,18 +473,30 @@ export class ControlRoom extends DurableObject {
   // uses, or NAME (projectFacts).
   v8Inputs(id) {
     const uses=this.plannedUses(id);
-    return {uses:useReferences(uses,this.contractFacts()),project:projectFacts(this.read('card',null),{uses:uses.filter(f=>contractKind(f)==='function')})};
+    return {uses:useReferences(uses,this.referenceFacts(id)),left_out:Math.max(0,uses.length-USES_SHOWN),project:projectFacts(this.read('card',null),{uses:uses.filter(f=>contractKind(f)==='function')}),goal:clip(this.userGoal(),GOAL_FOR_WORKERS)};
+  }
+  // v8 S6 review: what one reference is rendered from (useReferences): the
+  // rows, the card's languages, whether its code runs in a browser, and for a
+  // reader its own languages (its contracts' paths and its files) and whether
+  // it delivers a page.
+  referenceFacts(id=null) {
+    const facts={...this.contractFacts(),browser:browserProject(this.read('card',null))},own=id?this.promisedOf(id):[];
+    if(!id)return facts;
+    const paths=[...own.map(c=>c.path).filter(Boolean),...deliveredFiles(this.files(id)).map(f=>f.path)];
+    return {...facts,reader:[...new Set(paths.map(p=>toolchainOf(p)?.id).filter(Boolean))],page_reader:own.some(c=>contractKind(c)==='page')};
   }
   // v8 (S6): a provided answer names the contract by its line and the
   // reference its toolchain row renders (useReferences), never a JavaScript
   // import line; v7 keeps providedText.
-  providedFor(f, owner) {
+  providedFor(f, owner, reader=null) {
     if(!this.v8())return providedText(f,owner);
-    const [u]=useReferences([{...f,owner}],this.contractFacts());
+    const [u]=useReferences([{...f,owner}],this.referenceFacts(reader));
     return clip(`${u.contract}. It is delivered by "${owner}". Refer to it exactly as: ${u.reference}. Use it rather than writing your own.`,600);
   }
   // How a worker refers to a name: v7's import line, or under v8 its row's (a contract it names, else a function of the card's languages).
-  referenceLine(name, c=null) { return this.v8()?useReferences([c||{name}],this.contractFacts())[0]?.reference||name:`const { ${name} } = require('./${name}');`; }
+  referenceLine(name, c=null, reader=null) { return this.v8()?useReferences([c||{name}],this.referenceFacts(reader))[0]?.reference||name:`const { ${name} } = require('./${name}');`; }
+  // v8 (S6 review): what instructionsFor needs to word a problem in contract terms (MESSAGES), or nothing under v7.
+  msgOpts() { return this.v8()?{v8:true,reference:n=>this.referenceLine(n)}:{}; }
   // The path of an agent's one placed contract, for the single-fence fallback (§3.2), or null.
   placedPath(id) {const p=this.promisedOf(id).filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
   // The toolchain rows this deployment runs: the Container's last inventory
@@ -633,7 +665,7 @@ export class ControlRoom extends DurableObject {
     // 7-module Root could not see the view.js its repair named (review). The
     // glue is left out, and the files its open problems name come first.
     const atomic=worker&&!n.parent&&this.live(),mine=f=>!atomic||!RUNTIME_GLUE.includes(f.path);
-    const named=new Set(atomic?this.problems("assignee=? AND status='assigned'",id).flatMap(p=>p.parties.map(x=>x.owner_path||x.path)):[]);
+    const named=new Set(atomic||worker&&this.v8()?this.problems("assignee=? AND status='assigned'",id).flatMap(p=>p.parties.map(x=>x.owner_path||x.path)):[]);
     return {
       your_id: n.id, your_responsibility: worker ? this.withContract(n.task,n) : n.task, your_label: n.label, turn: n.turn,
       phase: this.manager(id) ? 'manager' : n.phase,
@@ -643,11 +675,13 @@ export class ControlRoom extends DurableObject {
       your_private_children: this.children(id).map(c => ({ ...describe(c), progress: clip(c.summary, 500) })),
       your_progress: n.summary,
       your_exposed_files: builderMode ? this.files(id).filter(f=>isBuilderGluePath(f.path)).slice(0,18) : this.visibleManifest(id).filter(mine),
-      your_own_files: ownFiles.filter(f => !f.path.startsWith('memory/') && mine(f) && (!builderMode || this.env.MOCK_AI==='true' || isBuilderGluePath(f.path))).sort((a,b)=>named.has(b.path)-named.has(a.path)).slice(0, 8).map(f => ({ path: f.path, revision: f.revision, content: f.content.slice(0, 3000) })),
+      // v8 (S6 review): a worker's files whole within a budget (sentFiles), the ones its open problems name first; one clipped says so.
+      your_own_files: worker&&this.v8()?sentFiles(ownFiles.filter(f => !f.path.startsWith('memory/') && mine(f)).sort((a,b)=>named.has(b.path)-named.has(a.path)),{revision:true}):
+        ownFiles.filter(f => !f.path.startsWith('memory/') && mine(f) && (!builderMode || this.env.MOCK_AI==='true' || isBuilderGluePath(f.path))).sort((a,b)=>named.has(b.path)-named.has(a.path)).slice(0, 8).map(f => ({ path: f.path, revision: f.revision, content: f.content.slice(0, 3000) })),
       ...(answered.length ? {answered_requests: answered} : {}),
       ...(notes.length ? {last_turn_notes: notes} : {}),
       // v8 (S6, ROLE.worker): the contracts of other parts it may use, each with its exact reference, and the project facts.
-      ...(worker && this.v8() ? (({uses, project}) => ({...(uses.length ? {contracts_you_may_use: uses} : {}), project}))(this.v8Inputs(id)) : {}),
+      ...(worker && this.v8() ? (({uses, left_out, project, goal}) => ({...(uses.length ? {contracts_you_may_use: uses} : {}), ...(left_out ? {contracts_left_out: MESSAGES.left_out({count: String(left_out)})} : {}), project, goal}))(this.v8Inputs(id)) : {}),
       new_messages: inbox
     };
   }
@@ -1606,7 +1640,7 @@ export class ControlRoom extends DurableObject {
     // v7.15.5 review: another piece's linked file is named with its label (run12's Entry Module and Update Ticket Operation each wrote module.js).
     const dirs=new Map(this.allNodes().map(n=>[branchDirectory(n.label,n.id),n])),piece=d=>{const n=dirs.get(d);return !n?null:n.id===row.worker?'':n.label;};
     // v7.15.6 (R3): run requirements routed by the plan read as the requirement on the worker's own promise, nothing more.
-    return repairText({role:row.role,piece,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),own:row.manager===row.worker,
+    return repairText({v8:this.v8(),role:row.role,piece,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),own:row.manager===row.worker,
       requirement:row.manager!==row.worker&&problems.every(p=>p.kind==='run'&&p.facts.requirement),operation:problems.every(p=>p.kind==='unresolved'&&!!p.facts.operation)&&{...problems[0].facts.operation,path:problems[0].source===row.worker?'placeholder':problems[0].facts.operation.gap?'gap':'import'},problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
@@ -3096,7 +3130,7 @@ export class ControlRoom extends DurableObject {
     const exhausted=this.countRound(id,wave);
     if(exhausted)return this.exhaustRounds(id,exhausted);
     const moved=ids.map(pid=>this.problems('id=?',pid)[0]).filter(p=>{
-      const side=DEFAULT_ROLE[p.kind],directive={by:id,origin:id,side,instructions:instructionsFor(p,side,true),facts_text:p.facts.provider_text??''};
+      const side=DEFAULT_ROLE[p.kind],directive={by:id,origin:id,side,instructions:instructionsFor(p,side,true,this.msgOpts()),facts_text:p.facts.provider_text??''};
       return this.moveProblem(p,{status:'assigned',assignee:id,directive,flags:{...p.flags,revs:this.revisionKey(id)},trail:[...p.trail,{at:id,action:'assign',to:id,rule:'atomic',ts:now}]});
     });
     const ticket=crypto.randomUUID(),instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
@@ -3316,7 +3350,7 @@ export class ControlRoom extends DurableObject {
       } else if(kind==='manager') {
         // relay: the decision travels as a side, never a node below the child.
         // v7.15.6 (R5): a promise grown by relay carries the names (grow) for the branch to place.
-        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:dec.instructions||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.facts.provider_text??''),...dec.grow?{grow:dec.grow}:{}};
+        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:dec.instructions||instructionsFor(p,dec.side,false,this.msgOpts()),facts_text:factsOf(p,dec,p.facts.provider_text??''),...dec.grow?{grow:dec.grow}:{}};
         if(this.moveProblem(p,{holder:dec.child,directive,flags:{...p.flags,...placed(dec,trigger)},trail:trail(p,directive?'relay':'delegate',dec.child,dec.rule)})) {
           this.event(m,directive?'problem_relayed':'problem_delegated',clip(`${p.kind} problem (${dec.rule}) to ${label(dec.child)}${directive?`, ${directive.side} changes: ${directive.instructions}`:', whose branch holds every party'}`,700),dec.child);
           this.wake(dec.child);
@@ -3337,7 +3371,7 @@ export class ControlRoom extends DurableObject {
         // A relayed decision stays the parent's, so a reopened problem is relayed again (D1).
         // v7.15.6 (R3): a requirement the model or a party rule placed still reads as the requirement, after the decision's words.
         const said=dec.instructions&&p.facts.requirement&&!dec.route?`${dec.instructions} ${requirementText(p.facts.requirement)}`:dec.instructions;
-        const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:said||instructionsFor(p,dec.side),facts_text:factsOf(p,dec,p.directive?.facts_text??p.facts.provider_text??'')};
+        const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:said||instructionsFor(p,dec.side,false,this.msgOpts()),facts_text:factsOf(p,dec,p.directive?.facts_text??p.facts.provider_text??'')};
         // D9 owed: the facts the decision read again (no stale unpromised, review).
         if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,...dec.facts?{facts:dec.facts}:{},flags:{...p.flags,revs,...placed(dec,trigger)},trail:trail(p,'assign',worker,dec.rule)}))moved.push(p);
       }
@@ -3435,7 +3469,7 @@ export class ControlRoom extends DurableObject {
         evidence:(p.evidence||[]).map(e=>clip(e,300)),default:{action:dec.action==='exhausted'?'close':dec.action,...dec.child?{child:dec.child}:{}},
         // v7.15.13 (run20, R3): a fresh wave's row carries who declined or changed a file for its failure without progress; the model hears it.
         ...given(p).length||p.flags.declined?.length||p.flags.exhausted?.length?{history:{assigned_before:given(p).map(t=>t.to),...p.flags.declined?.length?{declined_by:p.flags.declined}:{},...p.flags.exhausted?.length?{changed_without_progress:p.flags.exhausted}:{}}}:{}})),
-      fixed_decisions:fixed.map(e=>({child:e.dec.child,instructions:clip(e.dec.instructions||instructionsFor(e.p,e.dec.side),300)})),
+      fixed_decisions:fixed.map(e=>({child:e.dec.child,instructions:clip(e.dec.instructions||instructionsFor(e.p,e.dec.side,false,this.msgOpts()),300)})),
       // Rounds without progress left for these problems, within the run's (v7.15.1).
       rounds_left:Math.max(0,Math.min(this.stalledLeft(m,call.map(e=>e.p)),this.roundCap()-Number(this.get('repair_rounds_total','0'))))};
     for(const cut of [c=>{if(c.exports)c.exports=clip(c.exports,200);},c=>{delete c.needs;c.task=clip(c.task,120);}])
@@ -3539,7 +3573,7 @@ export class ControlRoom extends DurableObject {
       const owed=grow?null:live.find(c=>!starts(c.id)&&names.every(x=>this.promisedOf(c.id).some(g=>g.name===x)&&askedOf(c.id).has(x)));
       if(owed) {
         const {unpromised,promised,...facts}=f;
-        out.set(p.id,{owed:true,child:owed.id,names,facts,instructions:`Your assignment promises ${names.join(', ')}, which ${label(reader.owner)} imports from your module, and your modules do not export ${them}. Export each as a named export with exactly that name; keep your other exports.`});
+        out.set(p.id,{owed:true,child:owed.id,names,facts,instructions:this.v8()?MESSAGES.owed({names:names.join(', '),by:label(reader.owner),many:names.length>1}):`Your assignment promises ${names.join(', ')}, which ${label(reader.owner)} imports from your module, and your modules do not export ${them}. Export each as a named export with exactly that name; keep your other exports.`});
         continue;
       }
       if(!grow&&p.kind==='mismatch'&&!f.unpromised)continue;
@@ -3636,7 +3670,7 @@ export class ControlRoom extends DurableObject {
       const add={child,names,path:(await exportsOf(child)).path,items:normalizeInterfaces(items,this.contractOpts()),interfaces:normalizeInterfaces([...own,...items],this.contractOpts()),readers:[...x.readers].map(([id,r])=>({id,names:r.names,esm:!!r.esm})),by:readers,why:x.why,operation:!!x.operation&&!x.request,api:!!x.api,gap:!!x.gap,request:!!x.request,
         // v7.15.15 review (#1): the requests the growth answers, the branches it was relayed through (each promises it too), and the key a gap's carrier returns it under.
         requests:x.rows.flatMap(p=>(p.facts.requests||[]).map(r=>({...r,name:p.facts.names[0]}))),relays:[...new Set(x.rows.flatMap(p=>(p.trail||[]).filter(t=>t.action==='relay').map(t=>t.to)))],ops:Object.fromEntries(x.rows.filter(p=>p.facts.operation?.op).map(p=>[p.facts.names[0],p.facts.operation.op])),
-        task:x.operation?`${c.task} Keep what your module exports and add ${items.map(f=>`${signature(f)} (${f.does})`).join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.`:
+        task:this.v8()?MESSAGES.grow_task({task:c.task,adds:items.map(f=>`${signature(f)} (${f.does})`).join(', '),readers,many:x.readers.size>1,data:dataPiece(c.label,own)}):x.operation?`${c.task} Keep what your module exports and add ${items.map(f=>`${signature(f)} (${f.does})`).join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.`:
           `${c.task} Keep what your module exports and add ${names.join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.${dataPiece(c.label,own)?' Keep the data at module level, shared by all your functions.':''}`};
       for(const p of x.rows)out.set(p.id,add);
     }
@@ -3647,7 +3681,7 @@ export class ControlRoom extends DurableObject {
     const them=x.names.length>1?'them':'it';
     this.event(x.p.holder,'promise_relayed',clip(`${x.names.join(', ')} (${why}): "${label(child)}" places ${them} on one of its pieces' promise; ${label(x.reader)} ${x.operation?`imports ${them}`:'keeps its import'}.`,500),child);
     return {relay:true,child,names:x.names,grow:{names:x.names,reader:{owner:x.reader,owner_path:x.path},calls:x.calls.map(c=>({line:c.line,params:c.params,...c.does?{does:c.does}:{}})),...x.operation?{operation:true}:{},...x.api?{api:true}:{},...x.gap?{gap:true}:{},...x.request?{request:true}:{}},
-      instructions:`${x.names.join(', ')}, which ${label(x.reader)} imports, ${x.names.length>1?'are':'is'} this branch's to write (${why}): a piece of it promises and exports ${them}.`};
+      instructions:this.v8()?MESSAGES.relay({names:x.names.join(', '),reader:label(x.reader),why,many:x.names.length>1}):`${x.names.join(', ')}, which ${label(x.reader)} imports, ${x.names.length>1?'are':'is'} this branch's to write (${why}): a piece of it promises and exports ${them}.`};
   }
   // v7.15.5 review: a name performs a goal operation when its verb is one of
   // the goal's operation verbs (a goal word a promised function starts with:
@@ -3670,12 +3704,12 @@ export class ControlRoom extends DurableObject {
     // v7.15.15 (G1): a requester hears its answer through its request (answerRequests), never a second one here.
     for(const r of add.request?[]:add.readers)for(const f of add.items.filter(f=>r.names.includes(f.name))) {
       // v7.15.7 (T3): a start carrier hears where the operation now lives and the import line to return it by (it had none to keep).
-      const text=`${signature(f)} is now promised by "${n.label}", which writes it. ${add.operation?`Import it on its own line, ${importLine(f.name,r.esm).replace(/;$/,'')}, and return it from start()${add.gap&&add.ops?.[f.name]&&add.ops[f.name]!==f.name?` as ${add.ops[f.name]}`:''}`:`Keep your import of ${f.name} as it is`}; the builder links it to the module that exports it. Do not write it yourself.`;
+      const text=this.v8()?MESSAGES.now_delivered({contract:contractLine(f),owner:n.label,reference:this.referenceLine(f.name,f,r.id)}):`${signature(f)} is now promised by "${n.label}", which writes it. ${add.operation?`Import it on its own line, ${importLine(f.name,r.esm).replace(/;$/,'')}, and return it from start()${add.gap&&add.ops?.[f.name]&&add.ops[f.name]!==f.name?` as ${add.ops[f.name]}`:''}`:`Keep your import of ${f.name} as it is`}; the builder links it to the module that exports it. Do not write it yourself.`;
       this.recordAnswer(r.id,{key:requestKey({name:f.name}),kind:'provided',fn:{name:f.name,params:f.params,does:f.does,...(f.returns?{returns:f.returns}:{}),owner:n.label},text});
       // v7.15.7 review (T3(ii)): a method the fixed test calls is the carrier's to return now: it hears the line as a message and runs in this decision, as the gainer does, so the next bundle returns it (one Container run, no ticket to the carrier). A carrier whose contract was refused for the empty operation reruns by itself.
       // v7.15.15 (G2, run23): so does a carrier whose start() lacked an operation the plan grew (gap), from its own manager wherever the gainer lies: its ticket is only the line to import and return it.
       const up=this.node(r.id)?.parent;
-      if(add.api&&up===m||add.gap&&up)this.send(up,r.id,`${text} Publish the FULL updated file.`);
+      if(add.api&&up===m||add.gap&&up)this.send(up,r.id,this.v8()?text:`${text} Publish the FULL updated file.`);
     }
     this.event(m,'promise_added',clip(`"${n.label}" now promises ${add.items.map(signature).join(', ')} (${add.why}): ${add.by} ${add.operation?`return${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from start()`:`import${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from its module`} and no piece promised ${add.names.length>1?'them':'it'}. It is retasked to write ${add.names.length>1?'them':'it'}; the reader ${add.operation?`imports ${add.names.length>1?'them':'it'}`:'keeps its import'}.`,700),add.child);
     // v7.15.15 review (#1): each branch the growth was relayed through promises it too, so a later request finds it by name on the way up (routeFunction) and a start carrier's walk names it.
@@ -3698,8 +3732,10 @@ export class ControlRoom extends DurableObject {
     for(const r of requests) {
       const w=this.node(r.worker),up=w?.parent,name=r.name;
       if(!up||!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id).length)continue;
-      const own=answered.items?.find(f=>f.name===name),offer=answered.provided||this.planIndex().has(name)?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=this.referenceLine(name);
-      const [kind,value,fn]=offer?['provided',this.providedFor(offer.item,offer.owner),providedFn(offer.item,offer.owner)]:
+      const own=answered.items?.find(f=>f.name===name),offer=answered.provided||this.planIndex().has(name)?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=this.referenceLine(name,null,r.worker);
+      const [kind,value,fn]=offer?['provided',this.providedFor(offer.item,offer.owner,r.worker),providedFn(offer.item,offer.owner)]:
+        answered.exported&&this.v8()?['unowned',MESSAGES.exported_elsewhere({want:r.want,owner:answered.exported,reference:line}),null]:
+        !answered.exported&&this.v8()?['unowned',MESSAGES.write_yourself({want:r.want}),null]:
         answered.exported?['unowned',`No piece of the application promises ${r.want}, but "${answered.exported}"'s module exports it: import it on its own line, with the name as the path: ${line} The builder links it to that module. Do not write it yourself.`,null]:
         ['unowned',`No piece of the application promises ${r.want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`,null];
       this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id);
@@ -4272,14 +4308,14 @@ export class ControlRoom extends DurableObject {
         const owner=owned[0].owner,list=owned.map(x=>x.name),name=owner.level===this.node(id)?.parent?owner.label:'';
         this.event(id,'scope_pruned',`Proposed child "${label}" exports ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; not spawned. Import them by those names.`);
         rejectedScope++;
-        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,names:list,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,list)});
+        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,names:list,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,list,false,this.v8())});
         continue;
       }
       const byOwner=new Map();
       for(const x of owned){if(!byOwner.has(x.owner.id))byOwner.set(x.owner.id,{owner:x.owner,names:[]});byOwner.get(x.owner.id).names.push(x.name);}
       for(const {owner,names:list} of byOwner.values()) {
         this.event(id,'interfaces_owned_elsewhere',`"${label}" lists ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; kept without ${list.length>1?'them':'it'}.`);
-        const name=owner.level===this.node(id)?.parent?owner.label:'',{short,outside}=ownerNote(child.label,'',name,list,true);
+        const name=owner.level===this.node(id)?.parent?owner.label:'',{short,outside}=ownerNote(child.label,'',name,list,true,this.v8());
         rejectedChildren.push({label:child.label,owner:name||OUTSIDE,names:list,kept:true,short,outside});
       }
       const c=owned.length?{...child,interfaces:child.interfaces.filter(f=>!owned.some(x=>x.name===f.name))}:child;
@@ -4354,7 +4390,7 @@ export class ControlRoom extends DurableObject {
         // Decided above this strand's manager: the splitter is not told by whom.
         const near=level.id===this.node(id)?.parent,name=near?owner.label:'',why=p===undefined?'':`, Clef's best answer (p=${p.toFixed(3)}, below ${OWNER_BAR})`;
         this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id})${why}; not spawned. ${near?'Import it from that strand instead of rebuilding it.':`Decided at ${level.id}: this strand is told only that it is owned ${OUTSIDE}, and imports it by name.`}`);
-        rejected.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,...ownerNote(child.label,clip(assignedPiece(child.task),160),name)});
+        rejected.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,[],false,this.v8())});
         return;
       }
       // run11: a piece no other strand up to Root owns, at the bar or as Clef's best, stays where the scope check placed it.
@@ -4805,7 +4841,8 @@ export class ControlRoom extends DurableObject {
     // v7.15.7 review (T3): the operations of one return share a wave, as a report's problems do (fileContract): one round, not one per operation (probe E).
     const wave=crypto.randomUUID();
     for(const x of found)if(x.text===null)Object.assign(x,await this.placeholderAnswer(id,x,esm,wave));
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(contractBody(promised,found),1800));
+    // v8 (S6 review): the contracts by their lines and what is missing, in MESSAGES' words.
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(this.v8()?'[contract] '+MESSAGES.contract_returned({contracts:promised.map(contractLine).join('; '),findings:found.map(x=>x.text).filter(Boolean).map(t=>/[.!?]$/.test(t)?t:t+'.').join(' ')}):contractBody(promised,found),1800));
     this.event(id,'contract_returned',`Done refused (${returns+1}/3): rules: [${[...new Set(found.map(x=>x.rule))].join(', ')}]; back to the worker. ${found.map(x=>x.how).filter(Boolean).join(' ')}`.trim());
     return true;
   }
@@ -4926,7 +4963,7 @@ export class ControlRoom extends DurableObject {
     const path=productionFiles(this.files(id)).map(f=>f.path).find(p=>LINKABLE.test(p))||'',them=fns.length>1?'them':'it';
     const wrote=[...new Map(written.map(f=>[f.name,f])).values()],names=wrote.map(f=>f.name).join(', '),owners=[...new Set(wrote.map(f=>`"${f.owner}"`))];
     this.insertProblem({holder:n.parent,kind:'contract',stage:'work',source:id,input:`turn:${n.turn}`,
-      parties:[{path,owner:id,owner_path:path,digest:'',role:'subject'}],detail:[fns.length?`${n.label} was promised ${fns.map(signature).join(', ')} and its published modules do not export ${them}.`:'',
+      parties:[{path,owner:id,owner_path:path,digest:'',role:'subject'}],detail:this.v8()?MESSAGES.contract_problem({label:n.label,missing:fns.map(contractLine).join('; '),written:names,owners:owners.join(', ')}):[fns.length?`${n.label} was promised ${fns.map(signature).join(', ')} and its published modules do not export ${them}.`:'',
         wrote.length?`${n.label} writes ${names} itself, which ${owners.join(', ')} promise${owners.length>1?'':'s'}; its modules must import ${wrote.length>1?'them':'it'} by name instead.`:''].filter(Boolean).join(' '),
       facts:{names:fns.map(f=>f.name),declared_by:n.label,...(wrote.length?{written:wrote.map(f=>f.name)}:{})},flags:{wave:crypto.randomUUID()}});
     this.event(id,'problems_reported',`1 problem goes to the manager: ${n.label} ${[fns.length?`does not export ${fns.map(f=>f.name).join(', ')}, which its assignment promises`:'',wrote.length?`writes ${names}, which other pieces promise`:''].filter(Boolean).join(', and ')}.`,n.parent);
@@ -5089,13 +5126,13 @@ export class ControlRoom extends DurableObject {
     const rest=all.slice(MAX_REQUESTS).filter(fresh).map(a=>a.name||a.question);
     if(rest.length) {
       this.event(id,'ask_clipped',clip(`Only ${MAX_REQUESTS} requests travel at once; not sent: ${rest.join('; ')}.`,600));
-      notes.push(clip(`Only your first ${MAX_REQUESTS} requests were sent. Ask for these once they are answered: ${rest.join('; ')}.`,600));
+      notes.push(clip(this.v8()?MESSAGES.ask_limit({count:String(MAX_REQUESTS),rest:rest.join('; ')}):`Only your first ${MAX_REQUESTS} requests were sent. Ask for these once they are answered: ${rest.join('; ')}.`,600));
     }
     const repeated=action.ask.filter(a=>!fresh(a)).map(a=>a.key.replace(/^fn /,''));
     if(repeated.length) {
       action.ask=action.ask.filter(fresh);
       this.event(id,'ask_repeated',clip(`${repeated.join(', ')} already answered; not asked again.`,600));
-      notes.push(clip(`You asked again for ${repeated.join(', ')}, which your manager already answered (answered_requests). An answer is final: use it and do not ask again.`,600));
+      notes.push(clip(this.v8()?MESSAGES.asked_again({names:repeated.join(', ')}):`You asked again for ${repeated.join(', ')}, which your manager already answered (answered_requests). An answer is final: use it and do not ask again.`,600));
     }
     if(action.ask.length) {
       action.wait=true;action.done=false;
@@ -5106,14 +5143,14 @@ export class ControlRoom extends DurableObject {
         const names=f.content===undefined?[]:[...new Set(importRefs(f.path,f.content).flatMap(r=>[...r.names,...r.members]).filter(x=>asked.has(x)))];
         if(!names.length)return true;
         this.event(id,'import_deferred',`${f.path} imports ${names.join(', ')} before the manager answered; write it after the answer.`);
-        notes.push(clip(`${f.path} was not written: it imported ${names.join(', ')} before your manager answered. Write it with the answers, importing exactly the names they give.${repair.length?` It was your fix for this repair request: ${repair.join(' ')}`:''}`,1500));
+        notes.push(clip(this.v8()?MESSAGES.wrote_before_answer({path:f.path,names:names.join(', '),repair:repair.join(' ')}):`${f.path} was not written: it imported ${names.join(', ')} before your manager answered. Write it with the answers, importing exactly the names they give.${repair.length?` It was your fix for this repair request: ${repair.join(' ')}`:''}`,1500));
         return false;
       });
     } else if(action.wait && !action.done && !query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',id).length) {
       const garbled=!repeated.length&&!all.length&&(Array.isArray(raw.ask)?raw.ask.length>0:raw.ask!=null&&raw.ask!=='');
       action.wait=false;action.unheard=true;
       this.event(id,'ask_unheard',garbled?'Its ask was not understood; nothing was sent, so it does not wait.':'It has no request open, so it does not wait.');
-      notes.push(garbled?'Your ask was not understood, so nothing was sent and there is nothing to wait for. Ask in exactly this form: "ask":[{"need":"what the function does, in one line","name":"the name you expect"}] with "wait":true, or write your code and set done.':
+      notes.push(this.v8()?(garbled?MESSAGES.ask_unclear():MESSAGES.no_request()):garbled?'Your ask was not understood, so nothing was sent and there is nothing to wait for. Ask in exactly this form: "ask":[{"need":"what the function does, in one line","name":"the name you expect"}] with "wait":true, or write your code and set done.':
         'You have no request open, so there is nothing to wait for: write your code and set done.');
     }
     return notes;
@@ -5307,7 +5344,7 @@ export class ControlRoom extends DurableObject {
     if(hit)how=`${hit.item.name} is in "${hit.child.label}"'s promise; matched by name.`;
     else if(placeholder) {
       this.event(m,'route_unowned',`No piece of the application promises ${want}; a placeholder from the start carrier, answered from the plan.`);
-      await this.routeReply(m,hop.request_id,'unowned',`No piece of the application promises ${want}.`);
+      await this.routeReply(m,hop.request_id,'unowned',this.v8()?MESSAGES.unowned({want}):`No piece of the application promises ${want}.`);
       return;
     }
     else if(offers.length) {
@@ -5325,7 +5362,7 @@ export class ControlRoom extends DurableObject {
     }
     if(hit) {
       this.event(m,'route_provided',how);
-      await this.routeReply(m,hop.request_id,'provided',this.providedFor(hit.item,hit.child.label),providedFn(hit.item,hit.child.label));
+      await this.routeReply(m,hop.request_id,'provided',this.providedFor(hit.item,hit.child.label,hop.requester),providedFn(hit.item,hit.child.label));
       return;
     }
     // Sent, then targeted: a crash between the two leaves a hop with no
@@ -5337,7 +5374,7 @@ export class ControlRoom extends DurableObject {
       return;
     }
     this.event(m,'route_unowned',`No piece of the application promises ${want}.`);
-    await this.routeReply(m,hop.request_id,'unowned',`No piece of the application promises ${want}.`);
+    await this.routeReply(m,hop.request_id,'unowned',this.v8()?MESSAGES.unowned({want}):`No piece of the application promises ${want}.`);
   }
   // §5.12f: the worker writes a need inside its assignment; one outside it
   // is imported by the name it expects and reaches Root at link time as an
@@ -5363,6 +5400,7 @@ export class ControlRoom extends DurableObject {
     const like=this.requestPerformers(worker.id,hop);
     if(like.length) {
       this.event(m,'route_plan',`${want}: no piece promises it; ${listed(like.map(f=>`${f.name} from "${f.owner}"`))} performs it by its words.`);
+      if(this.v8())return MESSAGES.performed_by({want,name:hop.name||want,offers:listed(like.map(f=>`${contractLine(f)} from "${f.owner}"`)),reference:like.map(f=>this.referenceLine(f.name,f,worker.id)).join('; '),many:like.length>1});
       return `No piece of the application promises ${want}, but ${listed(like.map(f=>`${signature(f)}${f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:''} from "${f.owner}"`))} ${like.length>1?'perform':'performs'} it: import ${like.length>1?'the one you need':'it'} on its own line, by exactly its name, with the name as the path (${this.referenceLine(like[0].name,like[0])}), and use it. No piece exports ${hop.name}: do not import it.`;
     }
     let inside=true;
@@ -5371,10 +5409,11 @@ export class ControlRoom extends DurableObject {
       inside=p>=0.5;
       this.event(m,'route_scope',`${want}: Clef p=${p.toFixed(3)}, ${inside?'inside':'outside'} "${worker.label}"'s assignment.`);
     } catch(e) {this.event(m,'route_scope',`${want}: Clef failed (${clip(e?.message||e,300)}); counted inside "${worker.label}"'s assignment.`);}
-    if(inside)return `No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`;
+    if(inside)return this.v8()?MESSAGES.in_assignment({want}):`No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`;
     // v7.15.15 (G1, run23): outside it, the plan grows, as an operation no piece promises does (growOperation, R5): run23's entry heard "import viewTicket" for a function nobody would write, and five rounds followed.
     const grown=growable(hop.name)?await this.requestGrowth(m,worker,hop):null;
     if(grown)return grown;
+    if(this.v8())return growable(hop.name)?MESSAGES.write_yourself({want}):MESSAGES.not_yours({want,reference:hop.name?this.referenceLine(hop.name,null,worker.id):''});
     return growable(hop.name)?`No piece of the application promises ${want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`:
       `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: ${this.referenceLine(hop.name)}`:this.v8()?'refer to it by a descriptive name the project facts allow,':'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
   }
@@ -5397,7 +5436,7 @@ export class ControlRoom extends DurableObject {
     if(held||like) {
       const o=held||like;
       this.event(m,'route_provided',`${want}: ${held?`"${o.owner}" promises it`:`the plan has it as ${o.item.name} from "${o.owner}"`}.`);
-      return {kind:'provided',value:this.providedFor(o.item,o.owner),fn:providedFn(o.item,o.owner)};
+      return {kind:'provided',value:this.providedFor(o.item,o.owner,worker.id),fn:providedFn(o.item,o.owner)};
     }
     // Review 3 (#4): only into a request row: a G2/G3 row goes to its reader when nobody covers it, and its requester would write the function twice.
     const open=this.openRequestRow(name);
@@ -5411,7 +5450,7 @@ export class ControlRoom extends DurableObject {
     for(const f of productionFiles(this.files(worker.id)).filter(f=>LINKABLE.test(f.path))){let t='';try{t=await this.indexedContent(worker.id,f.path)??'';}catch{}if(!path)path=f.path;if(esmSyntax(t))esm=true;const c=callOf(f.path,t,name);if(c){params=c.params;path=f.path;break;}}
     const does=clip(hop.question,200),sig=`${name}(${params.join(', ')})`;
     this.insertProblem({holder:m,kind:'unresolved',stage:'work',source:worker.id,input:`request:${hop.request_id}`,parties:[{path,owner:worker.id,owner_path:path,digest:'',role:'reader'}],
-      detail:`${worker.label} asks for ${want}, which no piece promises and its assignment does not cover.`,
+      detail:this.v8()?MESSAGES.request_problem({label:worker.label,want}):`${worker.label} asks for ${want}, which no piece promises and its assignment does not cover.`,
       facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:{op:name,name,params,line:`${worker.label} imports it: ${sig}`,does,request:true},requests:[r]},flags:{wave:crypto.randomUUID()}});
     this.event(m,'route_grow',`${want}: no piece promises it and it is outside "${worker.label}"'s assignment; its manager grows a piece's promise with ${sig}, and "${worker.label}" waits.`);
     this.wake(m);
@@ -5721,7 +5760,7 @@ export class ControlRoom extends DurableObject {
       // the worker's own paths; one whose problems all closed since says so.
       const inbox = this.receive(id).map(message=>{
         const match=/^\[build:repair\] ([a-f0-9-]{36})$/.exec(message.body);
-        return match?{...message,body:this.buildRepairMessage(match[1])||'An earlier repair request was withdrawn: its problems were resolved or replaced. It needs no change.',repair:true}:message;
+        return match?{...message,body:this.buildRepairMessage(match[1])||(this.v8()?MESSAGES.repair_withdrawn():'An earlier repair request was withdrawn: its problems were resolved or replaced. It needs no change.'),repair:true}:message;
       });
       const ownFiles = await this.ownFiles(id);
       // A capacity ceiling is not proof the assigned code became atomic.
@@ -5747,8 +5786,9 @@ export class ControlRoom extends DurableObject {
         // Review (nested splits): a manager's splitter hears its uses too, so its pieces can name them.
         // v8 (S6): as data: the contracts available to it, each with its reference, and the project facts.
         if(this.v8()) {
-          const {uses:available,project}=this.v8Inputs(id);
+          const {uses:available,left_out,project}=this.v8Inputs(id);
           if(available.length)before.contracts_available=available;
+          if(left_out)before.contracts_left_out=MESSAGES.left_out({count:String(left_out)});
           before.project=project;
         } else {
           const uses=usesText(this.plannedUses(id));
@@ -5838,7 +5878,7 @@ export class ControlRoom extends DurableObject {
           delete before.root_scope;
           delete before.split_feedback;
           delete before.your_promised_functions;
-          delete before.contracts_available;
+          delete before.contracts_available;delete before.contracts_left_out;
           raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
           this.set(`split_feedback:${id}`,'');
         }
@@ -5887,7 +5927,7 @@ export class ControlRoom extends DurableObject {
           const repair=inbox.filter(m=>m.repair).map(m=>m.body);
           action.wait=false;action.unheard=true;
           this.event(id,'ask_unheard','The top has no manager and nothing to wait for, so it does not wait.');
-          action.notes.push(clip(`You have no manager, so nothing answers a wait: write your code and set done.${repair.length?` This repair request is still open: ${repair.join(' ')}`:''}`,1500));
+          action.notes.push(clip(this.v8()?MESSAGES.no_manager({repair:repair.join(' ')}):`You have no manager, so nothing answers a wait: write your code and set done.${repair.length?` This repair request is still open: ${repair.join(' ')}`:''}`,1500));
         }
       } else if(writer && n.parent && this.planned()) {
         if(action.spawn.length) {
@@ -5906,6 +5946,8 @@ export class ControlRoom extends DurableObject {
         // cut is written again alone (the code_retry path below).
         if(raw.format_fallback)this.event(id,'format_fallback',`The answer was read as ${raw.format_fallback==='json'?'a JSON action':'one fenced file'}, not file blocks.`);
         if(raw.truncated?.length)this.event(id,'code_retry',`Cut off before its end, written again alone: ${raw.truncated.join(', ')}`);
+        // v8 S6 review: a block closed by the next marker line, not its END line, is committed as written; said so.
+        if(raw.implicit_end?.length)this.event(id,'format_fallback',`No END line after ${raw.implicit_end.join(', ')}: closed by the next marker line and written as it stands.`);
         if(raw.control_error)this.event(id,'format_fallback','The control block did not parse, after a retry: its complete files are written, and it is not done.');
         // v7.15.2: an atomic top's loader, package and runner's test are the
         // runtime's, written again for each run: an edit was undone and its
@@ -5914,7 +5956,7 @@ export class ControlRoom extends DurableObject {
         if(glue.length) {
           this.event(id,'glue_rejected',`Not written: ${glue.map(f=>f.path).join(', ')}, which the runtime writes for each run.`);
           action.files=action.files.filter(f=>!RUNTIME_GLUE.includes(f.path));
-          (action.notes||=[]).push(`${glue.map(f=>f.path).join(', ')} ${glue.length>1?'were':'was'} not written: glue/index.js (the loader), package.json and glue/smoke.js (the runner's test, fixed for the whole run) are the runtime's and are written again for each run. Change your own modules so that the application passes.`);
+          (action.notes||=[]).push(this.v8()?MESSAGES.runtime_paths({paths:glue.map(f=>f.path).join(', '),many:glue.length>1}):`${glue.map(f=>f.path).join(', ')} ${glue.length>1?'were':'was'} not written: glue/index.js (the loader), package.json and glue/smoke.js (the runner's test, fixed for the whole run) are the runtime's and are written again for each run. Change your own modules so that the application passes.`);
         }
         // v8 S1: any text file is kept (under v7 a non-JS file is carried to
         // the export, never linked or run), at a path the build can carry:
@@ -5926,7 +5968,7 @@ export class ControlRoom extends DurableObject {
         if(refused.length) {
           this.event(id,'file_refused',`Not written: ${refused.map(x=>x.why).join('; ')}`);
           action.files=action.files.filter(f=>!refused.some(x=>x.f===f));
-          (action.notes||=[]).push(clip(`Not written: ${refused.map(x=>x.why).join('; ')}.`,1500));
+          (action.notes||=[]).push(clip(this.v8()?MESSAGES.not_written({why:refused.map(x=>x.why).join('; ')}):`Not written: ${refused.map(x=>x.why).join('; ')}.`,1500));
         }
         if(action.done && !action.spawn.length) {
           // A piece finishes on what it delivers: some file, and code in the
@@ -5980,7 +6022,7 @@ export class ControlRoom extends DurableObject {
           const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2,v8:this.v8()});
           // v7.15.16 (run25): no progress is a partition's failure, so Clef reconsiders with it (it may implement the assignment directly).
           if(admit.degenerate) {
-            const reason=noProgress(admit.degenerate);
+            const reason=this.v8()?MESSAGES.split_no_progress({label:clip(admit.degenerate.label,70),names:listed(admit.degenerate.names)}):noProgress(admit.degenerate);
             this.save(`split_feedback:${id}`,{reason,accepted:[],rejected:[{label:admit.degenerate.label,task:clip(admit.spawn.find(c=>c?.label===admit.degenerate.label)?.task||'',500)}],root_goal:this.topTask()||n.task});
             this.event(id,'split_rejected',`${reason} Clef will reconsider routing with this feedback; it may implement the assignment directly.`);
             this.incrementFailures(id,'split_rejected');
@@ -5991,8 +6033,8 @@ export class ControlRoom extends DurableObject {
             // YES and the splitter gets this partition back to correct.
             const texts=admit.c5.map(e=>e.text);
             this.save(`split_feedback:${id}`,{kind:'interfaces',
-              reason:`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and ${[admit.c5.some(e=>e.check==='C5')&&'give each promised function to exactly one of them',admit.c5.some(e=>e.check==='C4')&&'place each file in exactly one of them',admit.c5.some(e=>e.check==='C7')&&'promise plain functions in place of each factory'].filter(Boolean).join(', and ')}.`,
-              proposed:admit.spawn.map(c=>({label:c.label,task:clip(c.task,300),functions:(c.interfaces||[]).map(f=>f.name)})),accepted:[],rejected:[],
+              reason:this.v8()?MESSAGES.split_contracts({checks:texts.join(' '),c5:admit.c5.some(e=>e.check==='C5'),c4:admit.c5.some(e=>e.check==='C4')}):`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and ${[admit.c5.some(e=>e.check==='C5')&&'give each promised function to exactly one of them',admit.c5.some(e=>e.check==='C4')&&'place each file in exactly one of them',admit.c5.some(e=>e.check==='C7')&&'promise plain functions in place of each factory'].filter(Boolean).join(', and ')}.`,
+              proposed:admit.spawn.map(c=>({label:c.label,task:clip(c.task,300),[this.v8()?'contracts':'functions']:(c.interfaces||[]).map(f=>f.name)})),accepted:[],rejected:[],
               interfaces:texts,root_goal:this.topTask()||n.task});
             this.event(id,'split_rejected',`The proposed functions fail ${texts.length} check(s): ${texts.join(' ')}`);
             this.incrementFailures(id,'split_rejected');
@@ -6015,7 +6057,7 @@ export class ControlRoom extends DurableObject {
           // Semantic only: a parsed partition out of scope, too small (below
           // the top, none: the splitter declined), duplicated or over capacity
           // goes back to Clef with this feedback.
-          const reason=rejectedScope
+          const reason=this.v8()?(rejectedScope?MESSAGES.split_out_of_scope({count:String(action.spawn.length),rejected:String(rejectedScope)}):MESSAGES.split_no_division({bound:String(Math.min(this.maxChildren(),this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()))})):rejectedScope
             ? `Only ${action.spawn.length} in-scope child(ren) remained after Clef rejected ${rejectedScope}; not a viable code split.`
             : 'Qwen proposed no valid partition into distinct code-writing children within the available capacity.';
           // A piece kept with names moved elsewhere (kept:true) is accepted:
@@ -6365,7 +6407,7 @@ export class ControlRoom extends DurableObject {
     const last=query(this.db(),`SELECT kind,body FROM events WHERE actor=? AND kind IN (${FAILURE_EVENTS.map(()=>'?').join(',')}) ORDER BY id DESC LIMIT 4`,id,...FAILURE_EVENTS).reverse();
     // v7.15.16 review: a splitter that kept answering placeholder labels is said so, not a code gate.
     const labels=/placeholder labels after a retry/.test(last.at(-1)?.body||''),why=labels?'turns whose splitter kept naming pieces with placeholder labels':'failed turns at the code gate';
-    const detail=clip(`${n.label} stopped after three ${why}: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
+    const detail=this.v8()&&!labels?clip(MESSAGES.stuck_problem({label:n.label,last:last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | ')}),950):clip(`${n.label} stopped after three ${why}: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
     this.insertProblem({holder:n.parent,kind:'stuck',stage:'work',source:id,input:`turn:${n.turn}`,
       parties:[{path:'',owner:id,owner_path:'',digest:'',role:'subject'}],detail,flags:{wave:crypto.randomUUID()}});
     this.event(id,'stuck',`Stopped after three ${why}; the manager decides: ${clip(detail,700)}`,n.parent);

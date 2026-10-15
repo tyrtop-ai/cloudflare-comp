@@ -2,7 +2,7 @@ import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects
 import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
-import { workerAction } from './worker-output.js';
+import { workerAction, singleFileText } from './worker-output.js';
 import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE } from './prompts.js';
 import { contractLine } from './contracts.js';
 import { validateCard, settleCodeLanguage, checkSummary } from './card.js';
@@ -666,25 +666,27 @@ async function decideV8(env, context, {placed = null} = {}) {
 // alone, or a correction (the contract check's, the code gate's). The
 // problem, the file as it stands, the worker's other files, the contracts
 // it may use and the project facts are the user JSON.
-async function generateFileV8(env, {path, intent, task, files, inbox, correction = '', answers = [], project = null, uses = null}) {
+// The other files ride within a budget, whole first; one that does not fit is marked clipped (index.js sentFiles' rule).
+const otherFiles = (files, budget = 20000) => { let left = budget; return files.map(f => { const t = String(f.content ?? ''); if (t.length <= left) { left -= t.length; return {path: f.path, content: t}; } const n = Math.max(0, Math.min(3000, left)); left -= n; return {path: f.path, content: t.slice(0, n), clipped: true, length: t.length}; }); };
+async function generateFileV8(env, {path, intent, task, files, inbox, correction = '', answers = [], project = null, uses = null, goal = ''}) {
   const output = await run(env, systemPrompt('file'), JSON.stringify({
     assignment: task, file: path, what_to_fix: intent, previous_rejection: correction || undefined,
+    goal: goal ? String(goal).slice(0, 600) : undefined,
     existing_file: files.find(f => f.path === path)?.content ?? null,
-    your_other_files: files.filter(f => f.path !== path && !f.path.startsWith('memory/')).slice(0, 12).map(f => ({path: f.path, content: f.content.slice(0, 3000)})),
+    your_other_files: otherFiles(files.filter(f => f.path !== path && !f.path.startsWith('memory/')).slice(0, 12)),
     contracts_you_may_use: Array.isArray(uses) && uses.length ? uses : undefined,
     answered_requests: answers?.length ? answers : undefined, new_messages: inbox?.length ? inbox : undefined,
     project: project || undefined
   }), WORKER_TOKENS, {call: 'generateFile', role: 'worker', retry: !!correction});
-  let content = stripReasoning(contentOf(output)).trim();
-  const fence = content.match(/^```[^\n]*\n([\s\S]*?)\n```\s*$/);
-  if (fence) content = fence[1];
-  if (!content || content.length < 2) throw new Error(`Empty generated text for ${path}`);
+  // v8 S6 review: read through the block parser, fences and prose around them dropped (singleFileText).
+  const content = singleFileText(output, path);
+  if (!content || content.trim().length < 2) throw new Error(`Empty generated text for ${path}`);
   return content;
 }
 
-export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false, project=null, uses=null, v8=false }) {
+export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false, project=null, uses=null, goal='', v8=false }) {
   if (env.MOCK_AI === 'true') return mockFile(node.id, path);
-  if (pipelineV8(env, {v8}) && node.label !== 'Temporary builder') return generateFileV8(env, {path, intent, task, files, inbox, correction, answers, project, uses});
+  if (pipelineV8(env, {v8}) && node.label !== 'Temporary builder') return generateFileV8(env, {path, intent, task, files, inbox, correction, answers, project, uses, goal});
   const builder=node.label==='Temporary builder';
   const output = await run(env,
     builder ? (path==='glue/smoke.js' ? `You are the Root linker's behavioral test writer, correcting glue/smoke.js ONLY. Return complete, executable CommonJS source, no Markdown. Require('./index.js') to call start(), then use node:assert/strict to verify actual requested application behavior THROUGH THE RETURNED API (not component modules). For a ticket CRUD application create, list/read, update, verify, delete, and verify absence, all using the same state. Any failure must cause a nonzero process exit; never swallow or log-and-ignore assertions. No other local imports. Previous rejection: ${correction}. Return code only.` : `You are the linker correcting glue/wiring.js ONLY. The runtime owns glue/index.js and package.json and imports all component files. Write ONLY ${path} as valid CommonJS, module.exports = function wire(components) { ... }. No imports, requires, file paths or packages. Accept the loaded component namespaces, indexed by their REAL materialized paths, and connect only real exports as collaborators. Choose ONE common storage instance/state and inject it into every operation, do not use multiple independent stores. CommonJS dynamic-import namespaces often hold exports in .default. Previous rejection: ${correction}. Return code only.`) :

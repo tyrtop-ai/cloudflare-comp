@@ -19,6 +19,8 @@ export const TOOLCHAINS = Object.freeze([
     aliases:['js','node','nodejs','javascript','ecmascript','mjs','cjs'],
     package_runners:[['npx'],['npm','exec'],['npm','x'],['npm','install'],['npm','i'],['npm','ci'],['npm','add']],
     import_line:"const { {name} } = require('./{name}');", import_line_esm:"import { {name} } from './{name}';",
+    // v8 S6 review: code that runs in a browser (a page project, browserProject) refers to another part as an ES module by its file, and a page loads a script as a module.
+    browser_reference:"import { {name} } from './{path}';", browser_script:'<script type="module" src="{path}"></script>',
     // v8 S6: what a linker may rely on for this row's files, sent as data (the v7 linker prompt's paragraph).
     binding_rules:"To change an imported name without touching its local uses, alias it: const { realName: localName } = require(...) or import { realName as localName } from '...'. Once an import's path is right, the runtime itself fixes four binding shapes, so for these fix only the path: one name destructured from a module whose module.exports is a function or class of that name, a module bound whole that the file only calls while it exports an object holding that name, a module bound whole whose only export is one function when the file only calls it, and a module bound whole that the file only passes on as a value while it exports an object holding that name.",
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
@@ -96,9 +98,24 @@ export function installed(inventory) {
 }
 
 // How one part references another part's function, rendered for a name.
-export function renderImport(row, name, esm = false) {
+// opts.browser: the project's code runs in a browser (browserProject), so a
+// row with a browser_reference uses it, with the function's file (path, else
+// {name} and the row's first extension).
+export function renderImport(row, name, esm = false, {browser = false, path = ''} = {}) {
+  if (browser && row?.browser_reference) {
+    const file = String(path || `${name}${row.extensions?.[0] || ''}`).replace(/^\.\//, '');
+    return row.browser_reference.replaceAll('{name}', String(name)).replaceAll('{path}', file);
+  }
   const line = esm && row?.import_line_esm || row?.import_line;
   return line ? line.replaceAll('{name}', String(name)) : null;
+}
+// v8 S6 review: whether the card's code runs in a browser: it delivers a page
+// (or serves its files as they are) and no command or route, which would
+// run on a server or the command line.
+export function browserProject(card) {
+  const ds = Array.isArray(card?.deliverables) ? card.deliverables : [];
+  const served = ds.some(d => d?.kind === 'page') || (Array.isArray(card?.run) ? card.run : []).some(r => r?.static === true);
+  return served && !ds.some(d => d?.kind === 'command' || d?.kind === 'route');
 }
 
 // The project facts block a prompt receives as data (§6.2): the card's
@@ -108,12 +125,15 @@ export function renderImport(row, name, esm = false) {
 export function projectFacts(card, {uses = []} = {}) {
   const languages = (Array.isArray(card?.languages) ? card.languages : []).filter(id => toolchainById(id));
   const example = uses.map(u => typeof u === 'string' ? u : u?.name).find(n => typeof n === 'string' && n) || 'NAME';
+  const browser = browserProject(card);
   return {
     languages,
+    ...(browser ? {runs_in: 'a browser'} : {}),
     conventions: languages.map(toolchainById).map(t => ({
       language: t.id,
       ...(t.names_look_like ? {names_look_like: t.names_look_like} : {}),
-      ...(t.import_line ? {reference_another_part: renderImport(t, example)} : {}),
+      ...(t.import_line ? {reference_another_part: renderImport(t, example, false, {browser})} : {}),
+      ...(browser && t.browser_script ? {page_loads_a_script: t.browser_script.replaceAll('{path}', `NAME${t.extensions[0]}`)} : {}),
       files: t.extensions.join(' ')
     })),
     run: Array.isArray(card?.run) ? card.run : [],
