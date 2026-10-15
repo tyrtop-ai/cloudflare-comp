@@ -303,9 +303,10 @@ test('room: a container load error or a failed run goes to Root, whose builder r
   const factoryApp=serviceApp.replace("const ticketService = require('./ticketService');","const makeService = require('./ticketService');")
     .replace('  return {','  const svc = makeService();\n  return {').replace(/ticketService\./g,'svc.');
   // start() fails in the container (load error), or start() works and the runner's test fails.
+  // Builds: a load error is one build, then a compile of two; a failed run is two, then one (speed v1: the fixed test runs in the compile's one exec).
   for(const [app,error,diagnostic,count] of [
     [factoryApp.replace('(id) => svc.view(id)','svc.view.bind(svc)'),/reading 'bind'/,/^The container failed/,3],
-    [factoryApp,/svc\.view is not a function/,/^Running the application failed/,4]]) {
+    [factoryApp,/svc\.view is not a function/,/^Running the application failed/,3]]) {
     let paths;
     const {room,store,calls,builds}=liveRoom({link:(user,n)=>{
       const own=user.your_files.find(f=>f.path===paths.appPath);

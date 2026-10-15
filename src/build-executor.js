@@ -6,6 +6,12 @@ const BUILD_COMMAND=['timeout','--signal=TERM','--kill-after=5s','240s','node','
 const STARTUP_RETRY_DELAYS_MS=[250,500,750,1000,1500];
 const OUTPUT_DEADLINE_MS=255_000; // longer than the Container's 240s + 5s process-group timeout
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+// Speed v1: idle this long before the Container sleeps. A repair round's gap
+// between compiles was about 65 s (run A) and the runner's model call sits
+// between a compile's two execs; 120 s let some of them go cold.
+export const INACTIVITY_TIMEOUT_MS=300_000;
+// The two options the build runner reads (container/build-runner.mjs buildOptions); anything else is dropped.
+export const buildRequestOptions=o=>o&&typeof o==='object'?{...(o.describe_api===true?{describe_api:true}:{}),...(o.prechecked===true?{prechecked:true}:{})}:{};
 
 function isTransientStartupFailure(error) {
   return /starting|startup|not running|not ready|not started|stopped|unavailable|not available|connecting|connection refused|try again|temporarily/i.test(String(error?.message||error));
@@ -56,7 +62,25 @@ export async function waitForBuildOutput(process,work,{timeoutMs=OUTPUT_DEADLINE
 // Dedicated Durable Object controlling an isolated Cloudflare Container.
 // It receives an immutable text snapshot, never a mutable Git branch URL.
 export class BuildExecutor extends DurableObject {
-  async build({fingerprint,files}) {
+  // Start the Container ahead of the first build (the room calls it when its
+  // top builder starts linking), so the compile does not pay the cold start.
+  async warm() {
+    const container=this.ctx.container;
+    if(!container)return {cold:false,running:false};
+    const cold=!container.running;
+    if(cold)await container.start();
+    await this.keepWarm(container);
+    return {cold,running:true};
+  }
+  async keepWarm(container) {
+    // This method is documented on the Durable Object Container API. It is a
+    // performance optimization, not a precondition for executing a build.
+    if(typeof container.setInactivityTimeout==='function') {
+      try {await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);}
+      catch(error) {console.warn('Unable to configure Container inactivity timeout:',String(error?.message||error));}
+    }
+  }
+  async build({fingerprint,files,options}) {
     if(typeof fingerprint!=='string'||fingerprint.length>240)throw new Error('Invalid build fingerprint');
     const entries=validateBuildFiles(files);
     const snapshot_hash=await snapshotHash(entries);
@@ -69,13 +93,8 @@ export class BuildExecutor extends DurableObject {
     const began=Date.now(),cold=!container.running;
     if(cold)await container.start();
     const started=Date.now();
-    // This method is documented on the Durable Object Container API. It is a
-    // performance optimization, not a precondition for executing a build.
-    if(typeof container.setInactivityTimeout==='function') {
-      try {await container.setInactivityTimeout(120_000);}
-      catch(error) {console.warn('Unable to configure Container inactivity timeout:',String(error?.message||error));}
-    }
-    const input=JSON.stringify({fingerprint,snapshot_hash,files:Object.fromEntries(entries)});
+    await this.keepWarm(container);
+    const input=JSON.stringify({fingerprint,snapshot_hash,files:Object.fromEntries(entries),options:buildRequestOptions(options)});
     let retries=0;
     const process=await execAfterStartup(container,BUILD_COMMAND,{stdin:'pipe',stdout:'pipe',stderr:'pipe'},{onRetry:()=>{retries++;}});
     const output=await waitForBuildOutput(process,(async()=>{

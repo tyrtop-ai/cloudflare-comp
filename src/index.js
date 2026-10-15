@@ -283,6 +283,24 @@ function appReadme(app,files) {
     atomic?'- The other files: Root\'s own modules.':'- `components/`: the workers\' modules, each in the directory of the branch that wrote it.',''].join('\n');
 }
 
+// Speed v1: a compile's one exec ran the load and start() checks and then
+// the runner's test (glue/smoke.js). loaded: the report as the static check
+// alone would have given it (every check before the test); smoke: the whole
+// report, the test's verdict, when the test ran. A failure before the test
+// is the static check's own, with no smoke. loaded is null when the runner
+// did not describe start() although nothing failed before the test (a
+// runner that predates describe_api): the caller runs the static check
+// again alone, and the test's verdict, from these same files, still stands.
+export function splitCombinedRun(report) {
+  const checks=Array.isArray(report?.checks)?report.checks:[],at=checks.findIndex(c=>c?.name==='smoke');
+  const before=at<0?checks:checks.slice(0,at),failed=before.some(c=>c&&(c.exit_code!==0||c.timed_out));
+  if(failed||!report.passed&&at<0)return {loaded:report,smoke:null};
+  const smoke=at<0?null:report;
+  if(!before.some(c=>c?.name==='api-surface'))return {loaded:null,smoke};
+  const log=before.map(x=>`${x.name}: exit ${x.exit_code}\n${x.log||''}`).join('\n').slice(-5000);
+  return {loaded:{...report,passed:true,infrastructure_issue:'',issues:[],checks:before,log},smoke};
+}
+
 export class ControlRoom extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -1216,6 +1234,8 @@ export class ControlRoom extends DurableObject {
   async scheduleAssembly(id) {
     if(this.env.MOCK_AI==='true')return this.legacyScheduleAssembly(id);
     if(!this.children(id).some(c=>!isRuntimeNode(c)) || !this.subtreeQuiescent(id))return null;
+    // The top's builder links next and the compiler runs right after it.
+    if(!this.node(id)?.parent)this.prewarmContainer();
     const fingerprint=this.assemblyFingerprint(id);
     let builder=this.builderOf(id);
     if(!builder) {
@@ -1750,19 +1770,34 @@ export class ControlRoom extends DurableObject {
     for(const s of sources)files.set(s.destination,this.files(builderId).some(f=>f.path===s.destination)?await this.indexedContent(builderId,s.destination):s.content);
     return files;
   }
-  async containerRun(nodeId, label, files) {
+  // The run's build executor (one Container per run).
+  buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
+  // Speed v1: start the run's Container while the top builder links, so the
+  // compile that follows does not pay its cold start. Fire and forget; an
+  // executor without warm (an older one, a test's) is left alone.
+  prewarmContainer() {
+    if(!this.live()||!this.env.BUILD_EXECUTORS||this.prewarmed===this.get('run_nonce','legacy'))return;
+    let stub;try{stub=this.buildExecutor();}catch{return;}
+    if(typeof stub?.warm!=='function')return;
+    this.prewarmed=this.get('run_nonce','legacy');
+    const warming=this.timed('container','warm',()=>stub.warm(),r=>({cold:!!r?.cold})).catch(()=>{this.prewarmed=null;});
+    if(this.ctx.waitUntil)this.ctx.waitUntil(warming);
+  }
+  // options (speed v1, container/build-runner.mjs buildOptions): describe_api
+  // describes start() beside a runner test in the same exec; prechecked skips
+  // the checks a run of the same files passed moments ago.
+  async containerRun(nodeId, label, files, options = {}) {
     if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot build or run the application.'};
     const snapshot=validateBuildFiles(new Map([...files].filter(([path])=>!isAssemblyMetadata(path))));
     const digest=await snapshotHash(snapshot);
     const key=await sha256(label);
     let report;
     try {
-      const room=this.get('room_id','test-room');
-      const stub=this.env.BUILD_EXECUTORS.getByName(`${room}:${this.get('run_nonce','legacy')}:build`);
+      const stub=this.buildExecutor();
       const start=Date.now(),kind=String(label).split(':')[0];
-      try {report=normalizeBuildResult(await stub.build({fingerprint:key,files:Object.fromEntries(snapshot)}),key,digest);}
+      try {report=normalizeBuildResult(await stub.build({fingerprint:key,files:Object.fromEntries(snapshot),...(Object.keys(options).length?{options}:{})}),key,digest);}
       catch(e) {this.span('container',kind,start,Date.now(),{node:nodeId,files:snapshot.size,error:clip(e?.message||e,300)});throw e;}
-      this.span('container',kind,start,Date.now(),{node:nodeId,files:snapshot.size,passed:report.passed,...(report.executor||{}),
+      this.span('container',kind,start,Date.now(),{node:nodeId,files:snapshot.size,passed:report.passed,...options,...(report.executor||{}),
         checks:report.checks.map(c=>({name:c.name,exit_code:c.exit_code,...(Number.isFinite(c.ms)?{ms:c.ms}:{})}))});
     } catch(error) {return {infrastructure:String(error?.message||error),digest};}
     this.save('last_build_report',report);
@@ -1818,7 +1853,11 @@ export class ControlRoom extends DurableObject {
   // starts; operations: the coverage gate's mapping the test must exercise;
   // reach: the modules the entry reaches (null: any may run); methods:
   // start()'s method names (startMethods).
-  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, reach=null, methods=null}) {
+  // ran (speed v1): the runner's test this compile's one Container exec
+  // already ran beside the load and start() checks ({test, report, digest});
+  // when the test chosen here is that test, its result is used and no second
+  // exec runs.
+  async runApplication(nodeId, input, files, api, goal, {linked, entry, operations=null, reach=null, methods=null, ran=null}) {
     // The runner's test is static: the first test that runs in the Container is
     // the specification for the rest of the run and is never rewritten. A new
     // test every repair round moved the target the worker was fixing (run4).
@@ -1858,7 +1897,8 @@ export class ControlRoom extends DurableObject {
       this.event(nodeId,'runner_rejected',clip(correction,800)+(typeof out?.head==='string'?` The runner returned: ${JSON.stringify(out.head)}`:''));
     }
     if(!test)return {passed:false,runnerFailed:true,detail:correction};
-    const run=await this.containerRun(nodeId,`run:${input}`,new Map([...files,['glue/smoke.js',test]]));
+    // A new test runs in a second exec, which checks only what is new (prechecked: the test's syntax, then the test).
+    const run=ran?.test===test?{report:ran.report,digest:ran.digest}:await this.containerRun(nodeId,`run:${input}`,new Map([...files,['glue/smoke.js',test]]),{prechecked:true});
     if(run.infrastructure)return {infrastructure:run.infrastructure};
     if(!fixed)this.save('runner_test',{api,test,operations,methods});
     if(!fixed&&methods)this.save('runner_tests',{...this.read('runner_tests',{}),[methods.join()]:{api,test,operations,methods}});
@@ -2601,8 +2641,26 @@ export class ControlRoom extends DurableObject {
           facts:{...own,...target?{provider_text:clip(exportsLine(target,surfaces),700)}:{},failure}};
       });
     };
-    const check=await this.containerRun(id,`compile:${input}`,app);
+    // Speed v1: one Container exec per compile. With a runner's test already
+    // written (every compile after the first), the exec loads the bundle,
+    // describes start() and runs that test, in that order; the load and
+    // start() result is read as the static check was, and the test's result
+    // is used when the gates below keep that test (runApplication's ran).
+    // Only a new test (the first compile, or start()'s methods changed) needs
+    // a second exec. A runner that ignores describe_api (an image older than
+    // the Worker) answers without the API, so the static check runs alone.
+    const saved=this.read('runner_test',null)?.test||null;
+    let check=await this.containerRun(id,`compile:${input}`,saved?new Map([...app,['glue/smoke.js',saved]]):app,{describe_api:true}),ran=null;
     if(check.infrastructure)return {infrastructure:check.infrastructure};
+    if(saved) {
+      const split=splitCombinedRun(check.report);
+      if(split.smoke)ran={test:saved,report:split.smoke,digest:check.digest};
+      if(split.loaded)check={...check,report:split.loaded};
+      else {
+        check=await this.containerRun(id,`compile:${input}`,app,{describe_api:true});
+        if(check.infrastructure)return {infrastructure:check.infrastructure};
+      }
+    }
     if(!check.report.passed) {
       const detail=check.report.issues.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; ')||check.report.log.slice(-900);
       this.event(id,'build_failed',`The ${linked?'linked bundle':'application'} failed to load or start: ${clip(detail,1000)}`);
@@ -2711,7 +2769,7 @@ export class ControlRoom extends DurableObject {
       } else if(this.live())this.event(id,'coverage_unchecked',clip(`Not checked that start() has a method for every operation the goal names: ${checkable?'the model gave no usable mapping':'the API description was cut short or did not parse'}. The runner is not told which methods to test.`,900)+
         (typeof coverage?.head==='string'?` The model returned: ${JSON.stringify(coverage.head)}`:''));
     }
-    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,reach,methods:methodSet});
+    const outcome=await this.runApplication(id,input,app,api,goal,{linked:files,entry,operations,reach,methods:methodSet,ran});
     return outcome.infrastructure||outcome.runnerFailed||outcome.passed?outcome:{stage:'run',items:failed('run',outcome.issues,outcome.test,m=>Array.isArray(described?.members?.[m]?.params)?described.members[m].params:null)};
   }
 

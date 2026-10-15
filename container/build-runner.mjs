@@ -188,6 +188,42 @@ function describe(v,depth,max){
 const timer=setTimeout(()=>{console.log('API_SURFACE '+JSON.stringify({error:'start() did not settle within 8 seconds'}));process.exit(3);},8000);
 Promise.resolve().then(()=>require('./glue/index.js').start()).then(app=>{clearTimeout(timer);let text='';for(const max of [2,1,0]){text=JSON.stringify(describe(app,0,max));if(text.length<=5500)break;}console.log('API_SURFACE '+(text.length<=5500?text:JSON.stringify({type:typeof app,members_truncated:true,keys:Object.keys(app||{}).slice(0,60)})));process.exit(0);},error=>{clearTimeout(timer);console.error(error&&error.stack||error);process.exit(1);});
 `;
+// Speed v1: every JavaScript file's syntax in ONE Node process (a process
+// per file was most of a static check: 20-26 s warm on the smallest
+// instance). Each file is compiled the way `node --check` reads it, without
+// running it: .cjs, and .js under "type": "commonjs", as CommonJS; .mjs, and
+// .js under "type": "module", as an ES module; any other .js as CommonJS,
+// then as an ES module when CommonJS refuses ES module syntax (Node's module
+// detection). stdin: the JSON list of paths. Exit 0: all parse; exit 2: each
+// file that did not is printed on a SYNTAX_FLAG line, and the runner confirms
+// it with `node --check` (its exact message, as before).
+export const SYNTAX_SCRIPT=`
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const root=process.cwd(),names=JSON.parse(fs.readFileSync(0,'utf8'));
+const scopeType=file=>{
+  for(let dir=path.dirname(path.resolve(root,file));;dir=path.dirname(dir)){
+    const p=path.join(dir,'package.json');
+    if(fs.existsSync(p)){try{const t=JSON.parse(fs.readFileSync(p,'utf8')).type;return t==='module'||t==='commonjs'?t:'';}catch{return '';}}
+    if(dir===root||!dir.startsWith(root+path.sep))return '';
+  }
+};
+const ESM_SYNTAX=/Cannot use import statement outside a module|Unexpected token 'export'|Cannot use 'import\\.meta' outside a module|await is only valid in async functions and the top level bodies of modules/;
+const cjs=(src,filename)=>vm.compileFunction(src.replace(/^#!.*/,''),['exports','require','module','__filename','__dirname'],{filename});
+const esm=(src,filename)=>new vm.SourceTextModule(src,{identifier:filename});
+let flagged=0;
+for(const name of names){
+  const filename=path.resolve(root,name),src=fs.readFileSync(filename,'utf8'),type=name.endsWith('.mjs')?'module':name.endsWith('.cjs')?'commonjs':scopeType(name);
+  try{
+    if(type==='module')esm(src,filename);
+    else if(type==='commonjs')cjs(src,filename);
+    else try{cjs(src,filename);}catch(e){if(!ESM_SYNTAX.test(String(e&&e.message)))throw e;esm(src,filename);}
+  }catch(e){flagged++;console.log('SYNTAX_FLAG '+JSON.stringify(name));}
+}
+process.exit(flagged?2:0);
+`;
+export function syntaxFlagged(log) {
+  return String(log||'').split('\n').filter(x=>x.startsWith('SYNTAX_FLAG ')).map(x=>{try{return JSON.parse(x.slice(12));}catch{return null;}}).filter(x=>typeof x==='string');
+}
 export function apiSurfaceFrom(log) {
   const line=String(log||'').split('\n').find(x=>x.startsWith('API_SURFACE '));
   return line?line.slice(12).slice(0,6000):'';
@@ -208,6 +244,15 @@ export async function run(cmd,args,cwd,ms=20_000,stdin='') {
     child.stdin.end(stdin);
   });
 }
+// Speed v1 options, each off unless the room asks: describe_api runs the
+// api-surface check even beside a runner test (glue/smoke.js), after the
+// load and before the test, so one exec answers both; prechecked skips what
+// a run moments ago checked on the same files: only glue/smoke.js is
+// syntax-checked and the module-import check is not repeated.
+export function buildOptions(raw) {
+  const o=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw:{};
+  return {describe_api:o.describe_api===true,prechecked:o.prechecked===true};
+}
 function validate(raw) {
   if(!raw||typeof raw.fingerprint!=='string'||typeof raw.snapshot_hash!=='string'||!raw.files||typeof raw.files!=='object')throw Error('Malformed build request');
   const entries=Object.entries(raw.files).sort(([a],[b])=>a.localeCompare(b));
@@ -223,7 +268,7 @@ function validate(raw) {
   return entries;
 }
 export async function verifyBuild(request,{runStage=run}={}) {
-  const files=Object.fromEntries(validate(request));
+  const files=Object.fromEntries(validate(request)),options=buildOptions(request.options);
   const base=process.env.BUILD_RUNNER_WORKDIR||'/work';
   const folder=await mkdtemp(path.join(base,'build-'));
   const checks=[],issues=[];
@@ -256,9 +301,15 @@ export async function verifyBuild(request,{runStage=run}={}) {
       // Plain Node apps: catch broken source even if tests do not import it.
       // Bundled frontend apps: let their actual compiler parse JSX/TS and
       // transform syntax that raw `node --check` would incorrectly reject.
-      for(const name of Object.keys(files).filter(n=>/\.(js|cjs|mjs)$/.test(n))){
-        await check('syntax:'+name,'node',['--check',name],8000);
-        if(!passed)break;
+      // One process for every file; a file it flags (or every file, if the
+      // checker itself fails) is confirmed with node --check, in order, and
+      // the first that fails stops the build, as the per-file loop did.
+      const names=Object.keys(files).filter(n=>/\.(js|cjs|mjs)$/.test(n)&&(!options.prechecked||n==='glue/smoke.js'));
+      if(names.length) {
+        const began=Date.now(),r=await runStage('node',['--experimental-vm-modules','--no-warnings','-e',SYNTAX_SCRIPT],folder,Math.min(60_000,10_000+names.length*100),JSON.stringify(names));
+        const flagged=r.code===2&&!r.timedOut?syntaxFlagged(r.log).filter(n=>names.includes(n)):r.code===0&&!r.timedOut?[]:names;
+        for(const name of flagged){await check('syntax:'+name,'node',['--check',name],8000);if(!passed)break;}
+        if(passed)checks.push({name:'syntax',exit_code:0,timed_out:false,ms:Date.now()-began,log:`${names.length} file(s) parsed in one process${flagged.length?`; ${flagged.length} confirmed with node --check`:''}`});
       }
     }
     const installDecision=dependencyInstallDecision(files,pkg);
@@ -272,13 +323,13 @@ export async function verifyBuild(request,{runStage=run}={}) {
     // E.g. a missing named export in a leaf must be attributed to that leaf.
     // Load the linked entry module graph through the runtime loader. Exit
     // explicitly: an entry that opens a server or prompt must not hang here.
-    if(passed&&!scripts.build&&files['glue/index.js'])
+    if(passed&&!scripts.build&&files['glue/index.js']&&!options.prechecked)
       await check('module-import','node',['--input-type=module','-e',"const g=await import('./glue/index.js'); const load=g.load||g.default?.load; if(typeof load==='function') await load(); process.exit(0);"],15_000);
     let api_surface='';
     // Only the v7.11 runtime loader (generated from the linker's entry choice)
     // promises start(); older or hand-written glue keeps the previous checks.
     const runtimeLoader=/Generated from the linker's entry choice/.test(files['glue/index.js']||'');
-    if(passed&&!scripts.build&&runtimeLoader&&!files['glue/smoke.js']) {
+    if(passed&&!scripts.build&&runtimeLoader&&(!files['glue/smoke.js']||options.describe_api)) {
       const r=await check('api-surface','node',['-e',API_SURFACE_SCRIPT],12_000);
       api_surface=apiSurfaceFrom(r?.log);
     }
