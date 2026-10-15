@@ -37,6 +37,14 @@ const EXPORT_TABLES = Object.freeze({
   spans: 'SELECT id,ts,agent,step,kind,name,start_ms,end_ms,attrs FROM spans WHERE id>? AND id<=? ORDER BY id LIMIT ?'
 });
 const spanRow = r => ({...r, ms:r.end_ms-r.start_ms, attrs:parse(r.attrs,{})});
+// A git span's error, without its text: the phase the store names
+// ("Artifacts push failed for <repo>/..."), the error's class and an HTTP
+// status when one appears. Repository names, remotes and URLs stay out.
+export const gitError = e => {
+  const text=String(e?.message||e||''),phase=/^Artifacts (\w+) failed\b/.exec(text)?.[1]||'unknown',status=/\b(?:HTTP(?: Error)?:? ?|status:? ?)([45]\d\d)\b/i.exec(text)?.[1];
+  const name=e?.cause?.code||e?.cause?.name||e?.code||e?.name||'Error';
+  return {error:'git '+phase+' failed',error_phase:phase,error_class:String(name).replace(/[^\w.-]/g,'').slice(0,60),...(status?{http_status:Number(status)}:{})};
+};
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
 const parse = (value, otherwise) => { try { return JSON.parse(value); } catch { return otherwise; } };
 const isAssumption = key => /^assum(?:ed|ption)[_ /:-]/i.test(key);
@@ -294,6 +302,9 @@ function appReadme(app,files) {
 export function splitCombinedRun(report) {
   const checks=Array.isArray(report?.checks)?report.checks:[],at=checks.findIndex(c=>c?.name==='smoke');
   const before=at<0?checks:checks.slice(0,at),failed=before.some(c=>c&&(c.exit_code!==0||c.timed_out));
+  // Review: a test verdict whose check row an older runner's list cut off still shows in its issue ("smoke failed ...").
+  const smokeIssue=at<0&&!failed&&!report.passed&&(report.issues||[]).some(x=>/^smoke failed\b/.test(String(x?.detail||'')));
+  if(smokeIssue)return before.some(c=>c?.name==='api-surface')?{loaded:{...report,passed:true,infrastructure_issue:'',issues:[],checks:before,log:''},smoke:report}:{loaded:null,smoke:report};
   if(failed||!report.passed&&at<0)return {loaded:report,smoke:null};
   const smoke=at<0?null:report;
   if(!before.some(c=>c?.name==='api-surface'))return {loaded:null,smoke};
@@ -327,6 +338,13 @@ export class ControlRoom extends DurableObject {
     if (!cols.includes('interfaces')) db.exec("ALTER TABLE agents ADD COLUMN interfaces TEXT NOT NULL DEFAULT '[]'");
     // v7.15.5: the functions of its siblings a node's split says it calls.
     if (!cols.includes('uses')) db.exec("ALTER TABLE agents ADD COLUMN uses TEXT NOT NULL DEFAULT '[]'");
+    // Speed v1 review: a version per agent row (rev) and one for the alias
+    // table, bumped by triggers on every write, so a dashboard delta selects
+    // only the agents changed since its cursor and knows when the export list
+    // changed. A room whose SQLite refuses the triggers falls back to digests.
+    if (!cols.includes('rev')) db.exec('ALTER TABLE agents ADD COLUMN rev INTEGER NOT NULL DEFAULT 0');
+    db.exec('CREATE TABLE IF NOT EXISTS state_versions (name TEXT PRIMARY KEY, n INTEGER NOT NULL)');
+    db.exec("INSERT OR IGNORE INTO state_versions(name,n) VALUES ('agents',0),('exports',0)");
     db.exec('CREATE TABLE IF NOT EXISTS artifact_files (agent TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL, commit_hash TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(agent,path))');
     // Export index is populated on successful Artifacts writes, not at download time.
     db.exec('CREATE TABLE IF NOT EXISTS artifact_contents (agent TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(agent,path))');
@@ -334,6 +352,16 @@ export class ControlRoom extends DurableObject {
     // Pure routing index. The durable, private export notebook is stored in the
     // manager's Artifacts repo; external agents see only aliased public paths.
     db.exec('CREATE TABLE IF NOT EXISTS exposed_files (owner TEXT NOT NULL, path TEXT NOT NULL, source TEXT NOT NULL, source_path TEXT NOT NULL, PRIMARY KEY(owner,path))');
+    try {
+      const bump="UPDATE state_versions SET n=n+1 WHERE name='agents'; UPDATE agents SET rev=(SELECT n FROM state_versions WHERE name='agents') WHERE id=NEW.id;";
+      db.exec(`CREATE TRIGGER IF NOT EXISTS agents_rev_insert AFTER INSERT ON agents BEGIN ${bump} END`);
+      // Only a write that changes what the dashboard shows (the inner rev write never refires it).
+      const changed=nodeFields.split(',').map(c=>`NEW.${c} IS NOT OLD.${c}`).join(' OR ');
+      db.exec(`CREATE TRIGGER IF NOT EXISTS agents_rev_update2 AFTER UPDATE ON agents WHEN NEW.rev IS OLD.rev AND (${changed}) BEGIN ${bump} END`);
+      db.exec('DROP TRIGGER IF EXISTS agents_rev_update');
+      for(const op of ['INSERT','UPDATE','DELETE'])db.exec(`CREATE TRIGGER IF NOT EXISTS exposed_files_${op.toLowerCase()} AFTER ${op} ON exposed_files BEGIN UPDATE state_versions SET n=n+1 WHERE name='exports'; END`);
+      this.versioned=true;
+    } catch { this.versioned=false; }
     db.exec('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL, recipient TEXT NOT NULL, body TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)');
     db.exec('CREATE TABLE IF NOT EXISTS pending_turns (agent TEXT PRIMARY KEY, payload TEXT NOT NULL, cursor INTEGER NOT NULL DEFAULT 0)');
     // v7.11: the state of each file before this turn staged a new version, so
@@ -399,7 +427,7 @@ export class ControlRoom extends DurableObject {
   async timed(kind, name, fn, attrs = {}) {
     const start=Date.now();
     try {const out=await fn();this.span(kind,name,start,Date.now(),typeof attrs==='function'?attrs(out):attrs);return out;}
-    catch(e) {this.span(kind,name,start,Date.now(),{...(typeof attrs==='function'?{}:attrs),error:clip(e?.message||e,300)});throw e;}
+    catch(e) {this.span(kind,name,start,Date.now(),{...(typeof attrs==='function'?{}:attrs),...(kind==='git'?gitError(e):{error:clip(e?.message||e,300)})});throw e;}
   }
   // A model or Clef call's record (src/model.js traced), as a span.
   traceCall(r, envRole) {
@@ -648,7 +676,7 @@ export class ControlRoom extends DurableObject {
     const cursor=this.stateCursor();
     return {
       ...this.stateHead(),
-      agents: this.stampAgents(cursor.agents).map(x=>x.row),
+      agents: this.versioned?this.agentRows():this.stampAgents(cursor.agents).map(x=>x.row),
       files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
       exports: this.exportList(),
       events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
@@ -679,12 +707,19 @@ export class ControlRoom extends DurableObject {
   // reset, answers whole).
   stateCursor() {
     this.stateClock=Math.max(Date.now(),(this.stateClock||0)+1);
-    const x=query(this.db(),'SELECT COUNT(*) AS n,COALESCE(SUM(rowid),0) AS s FROM exposed_files')[0];
-    return {events:query(this.db(),'SELECT COALESCE(MAX(id),0) AS id FROM events')[0].id,agents:this.stateClock,files:Date.now(),exports:`${x.n}:${x.s}`,run:this.get('run_nonce','')};
+    const version=name=>query(this.db(),'SELECT n FROM state_versions WHERE name=?',name)[0]?.n??0;
+    // exports: the alias table's version (review: count and rowid sum collided when the newest alias was replaced).
+    return {events:query(this.db(),'SELECT COALESCE(MAX(id),0) AS id FROM events')[0].id,agents:this.versioned?version('agents'):this.stateClock,files:Date.now(),
+      exports:this.versioned?`v${version('exports')}`:(x=>`${x.n}:${x.s}`)(query(this.db(),'SELECT COUNT(*) AS n,COALESCE(SUM(rowid),0) AS s FROM exposed_files')[0]),run:this.get('run_nonce','')};
   }
   // Each agent's dashboard row, stamped with the clock of the answer that
   // first saw it as it is now. A Durable Object restart stamps every agent
   // anew, so every dashboard hears all of them once.
+  // The dashboard's agent rows; since: only those whose rev is newer.
+  agentRows(since=null) {
+    const rows=since===null?this.allNodes():query(this.db(),`SELECT ${nodeFields} FROM agents WHERE rev>? ORDER BY LENGTH(id),id`,since);
+    return rows.map(n=>({...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])}));
+  }
   stampAgents(at) {
     this.agentStamps??=new Map();
     const out=[],seen=new Set();
@@ -703,14 +738,17 @@ export class ControlRoom extends DurableObject {
   // from another run, or past the last event, gets the whole snapshot.
   // run7's dashboard pulled 1.1 MB every 3 s, rebuilt on this isolate.
   stateDelta({since=0, agents_since=0, files_since=0, exports='', run=''}={}) {
-    const cursor=this.stateCursor();
+    const cursor=this.stateCursor(),given=x=>x!==null&&x!==undefined&&String(x)!=='';
+    const whole=String(run)!==cursor.run||!given(since)||!given(agents_since)||!given(files_since)||Number(since)>cursor.events||this.versioned&&Number(agents_since)>cursor.agents;
     since=Number(since)||0;agents_since=Number(agents_since)||0;files_since=Number(files_since)||0;
-    if(String(run)!==cursor.run||since>cursor.events||!agents_since||!files_since)return {...this.snapshot(),full:true};
+    // Review: every file changed since the cursor, or the whole snapshot when there are too many to send as a delta.
+    const files=whole?[]:query(this.db(),'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files WHERE updated_at>=? ORDER BY agent,path LIMIT 1001',files_since);
+    if(whole||files.length>1000)return {...this.snapshot(),full:true};
     const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events WHERE id>? ORDER BY id DESC LIMIT 300',since).reverse();
     return {
       ...this.stateHead(),full:false,
-      agents:this.stampAgents(cursor.agents).filter(x=>x.at>agents_since).map(x=>x.row),
-      files:query(this.db(),'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files WHERE updated_at>=? ORDER BY agent,path LIMIT 240',files_since),
+      agents:this.versioned?this.agentRows(agents_since):this.stampAgents(cursor.agents).filter(x=>x.at>agents_since).map(x=>x.row),
+      files,
       ...(String(exports)!==cursor.exports?{exports:this.exportList()}:{}),
       events,events_truncated:events.length>=300&&events[0].id>since+1,
       cursor
@@ -4378,9 +4416,9 @@ export class ControlRoom extends DurableObject {
           if(typeof store.writeMany==='function'){const r=await store.writeMany({name:n.repo_name,remote:n.remote,files:pending,actor:id});commit=r.commit;timings=r.timings||null;}
           else for(const f of pending)
             commit=(await store.write({name:n.repo_name,remote:n.remote,actor:id,path:f.path,content:f.content})).commit;
-        } catch(e) {this.span('git','commit',start,Date.now(),{agent:id,files:pending.length,bytes,error:clip(e?.message||e,300)});throw e;}
+        } catch(e) {this.span('git','commit',start,Date.now(),{agent:id,files:pending.length,bytes,...gitError(e)});throw e;}
         this.span('git','commit',start,Date.now(),{agent:id,files:pending.length,bytes,...(timings?{phases:timings}:{})});
-        db.exec("UPDATE artifact_files SET commit_hash=? WHERE agent=? AND commit_hash='pending'",commit,id);
+        db.exec("UPDATE artifact_files SET commit_hash=?,updated_at=? WHERE agent=? AND commit_hash='pending'",commit,Date.now(),id);
         db.exec('DELETE FROM staged_writes WHERE agent=?',id);
         this.event(id,'commit',`Pushed ${pending.length} file(s) in one commit ${String(commit).slice(0,12)}: ${clip(pending.map(f=>f.path).join(', '),600)}`);
       }
@@ -4393,7 +4431,7 @@ export class ControlRoom extends DurableObject {
     const db=this.db();
     for(const row of query(db,'SELECT path,existed,prior_revision,prior_commit,prior_updated,prior_content FROM staged_writes WHERE agent=?',id)) {
       if(row.existed) {
-        db.exec('UPDATE artifact_files SET revision=?,commit_hash=?,updated_at=? WHERE agent=? AND path=?',row.prior_revision,row.prior_commit,row.prior_updated,id,row.path);
+        db.exec('UPDATE artifact_files SET revision=?,commit_hash=?,updated_at=? WHERE agent=? AND path=?',row.prior_revision,row.prior_commit,Date.now(),id,row.path);
         if(row.prior_content!==null)db.exec('UPDATE artifact_contents SET content=? WHERE agent=? AND path=?',row.prior_content,id,row.path);
       } else {
         db.exec('DELETE FROM artifact_files WHERE agent=? AND path=?',id,row.path);

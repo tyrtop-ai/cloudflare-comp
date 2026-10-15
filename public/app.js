@@ -238,7 +238,8 @@ function mergeDelta(base,d) {
   const events=d.events_truncated?d.events||[]:[...(base?.events||[]),...(d.events||[])].slice(-300);
   const {full,events_truncated,agents:_a,files:_f,events:_e,...head}=d;
   return {...base,...head,agents:[...agents.values()],events,
-    files:[...files.values()].sort((a,b)=>fileKey(a)<fileKey(b)?-1:fileKey(a)>fileKey(b)?1:0).slice(0,240)};
+    // As the snapshot's ORDER BY agent,path sorts (agent first: root.1 before root.1.2), so both keep the same 240.
+    files:[...files.values()].sort((a,b)=>a.agent<b.agent?-1:a.agent>b.agent?1:a.path<b.path?-1:a.path>b.path?1:0).slice(0,240)};
 }
 async function refresh() {
   if (!token() || inflight) return;

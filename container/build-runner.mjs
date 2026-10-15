@@ -203,17 +203,19 @@ const root=process.cwd(),names=JSON.parse(fs.readFileSync(0,'utf8'));
 const scopeType=file=>{
   for(let dir=path.dirname(path.resolve(root,file));;dir=path.dirname(dir)){
     const p=path.join(dir,'package.json');
-    if(fs.existsSync(p)){try{const t=JSON.parse(fs.readFileSync(p,'utf8')).type;return t==='module'||t==='commonjs'?t:'';}catch{return '';}}
+    if(fs.existsSync(p)){try{const t=JSON.parse(fs.readFileSync(p,'utf8')).type;return t==='module'||t==='commonjs'?t:'';}catch{return 'invalid';}}
     if(dir===root||!dir.startsWith(root+path.sep))return '';
   }
 };
-const ESM_SYNTAX=/Cannot use import statement outside a module|Unexpected token 'export'|Cannot use 'import\\.meta' outside a module|await is only valid in async functions and the top level bodies of modules/;
+const ESM_SYNTAX=/Cannot use import statement outside a module|Unexpected token 'export'|Cannot use 'import\\.meta' outside a module|await is only valid in async functions and the top level bodies of modules|Identifier '(?:require|module|exports|__filename|__dirname)' has already been declared/;
 const cjs=(src,filename)=>vm.compileFunction(src.replace(/^#!.*/,''),['exports','require','module','__filename','__dirname'],{filename});
 const esm=(src,filename)=>new vm.SourceTextModule(src,{identifier:filename});
 let flagged=0;
 for(const name of names){
-  const filename=path.resolve(root,name),src=fs.readFileSync(filename,'utf8'),type=name.endsWith('.mjs')?'module':name.endsWith('.cjs')?'commonjs':scopeType(name);
+  // A package.json in the file's scope that does not parse fails Node's own check too (review): flagged, so that check says so.
+  const filename=path.resolve(root,name),src=fs.readFileSync(filename,'utf8'),scope=scopeType(name),type=name.endsWith('.mjs')?'module':name.endsWith('.cjs')?'commonjs':scope;
   try{
+    if(scope==='invalid')throw new Error('Invalid package config');
     if(type==='module')esm(src,filename);
     else if(type==='commonjs')cjs(src,filename);
     else try{cjs(src,filename);}catch(e){if(!ESM_SYNTAX.test(String(e&&e.message)))throw e;esm(src,filename);}

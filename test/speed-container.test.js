@@ -98,6 +98,25 @@ test('splitCombinedRun: what the static check would have said, and the test\'s v
   assert.deepEqual(splitCombinedRun(old),{loaded:null,smoke:old});
 });
 
+// Review LOWs: the runner's verdict is never cut from the checks; a nested package.json that does not parse is flagged.
+test('a report keeps every verdict: past 24 checks only passing per-file syntax rows give way, and a test verdict an older list cut off is read from its issue',async()=>{
+  const {normalizeBuildResult,keepChecks}=await import('../src/build-verification.js');
+  const checks=[...Array.from({length:30},(_,i)=>({name:'syntax:components/m'+i+'.js',exit_code:0,timed_out:false,log:''})),{name:'install-skipped',exit_code:0},{name:'module-import',exit_code:0},{name:'smoke',exit_code:1,timed_out:false,log:'AssertionError'}];
+  const norm=normalizeBuildResult({fingerprint:'f',snapshot_hash:'h',passed:false,issues:[{path:'glue/smoke.js',detail:'smoke failed (exit 1): AssertionError'}],checks},'f','h');
+  assert.equal(norm.checks.length,24);assert.deepEqual(norm.checks.slice(-3).map(c=>c.name),['install-skipped','module-import','smoke']);
+  assert.equal(keepChecks(checks.slice(0,10)).length,10);
+  const split=splitCombinedRun({passed:false,issues:[{path:'glue/smoke.js',detail:'smoke failed (exit 1): AssertionError'}],checks:checks.slice(0,14),log:''});
+  assert.deepEqual([split.loaded,!!split.smoke],[null,true],'the static check runs again; the test verdict stands');
+});
+
+test('runner: a file under a package.json that does not parse is flagged and confirmed by node --check',async()=>{
+  const files={'package.json':JSON.stringify({name:'a',scripts:{test:'node t.cjs'}}),'t.cjs':'process.exit(0);\n','sub/package.json':'{"type": modul','sub/a.js':'module.exports = 1;\n'};
+  const {calls,runStage}=counting();
+  const report=await verify(files,null,runStage);
+  assert.equal(report.passed,false);
+  assert.deepEqual(calls.filter(c=>c.includes('--check')),['node --check sub/a.js']);
+});
+
 const GOAL_FULL=GOAL+' '+GOAL_START_REQUIREMENT;
 async function compiledRoom(executor) {
   const linker=paths=>user=>{const app=user.your_files.find(f=>f.path.endsWith('/app.js'));

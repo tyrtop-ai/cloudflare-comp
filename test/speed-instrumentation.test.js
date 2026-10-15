@@ -162,3 +162,20 @@ test('a live room\'s turn records its spans end to end (model, git, dispatch)',a
   for(const k of ['git:repo_create','dispatch:ready_to_dispatch','model:decide','git:commit'])assert.ok(kinds.has(k),`${k} in ${[...kinds]}`);
   assert.ok(r.spans().filter(s=>s.kind!=='git'||s.name!=='repo_create').every(s=>s.agent==='root'));
 });
+
+// Review LOW: a failing git span carries the phase and the error's class, never a repository name or URL.
+test('a failing git span records no repository name or URL',async()=>{
+  const store=new Store();
+  store.writeMany=async({name})=>{const e=new Error(`Artifacts push failed for ${name}/2 files: HTTP Error: 403 Forbidden at https://acct.artifacts.example.net/git/${name}.git`,{cause:Object.assign(new Error('x'),{code:'HttpError'})});throw e;};
+  store.create=async name=>{throw new Error(`Artifacts create failed for ${name}: 500 at https://acct.example.net/${name}`);};
+  const r=room({TEST_ARTIFACT_STORE:store});
+  await assert.rejects(r.provision('root',null,'Root','Build a ticket tracker'));
+  r.db().exec("INSERT INTO agents(id,parent,label,task,status,repo_name,remote,branch,phase) VALUES ('root',NULL,'Root','t','ready','rc-0123456789abcdef0123-root','https://acct.example.net/rc','main','implement')");
+  r.batching.add('root');await r.putFile('root','a.js','module.exports = 1;\n');r.batching.delete('root');
+  await assert.rejects(r.flushWrites('root'));
+  const git=r.spans().filter(s=>s.kind==='git');
+  assert.deepEqual(git.map(s=>[s.name,s.attrs.error_phase]),[['repo_create','create'],['commit','push']]);
+  assert.equal(git[1].attrs.error_class,'HttpError');assert.equal(git[1].attrs.http_status,403);
+  const text=JSON.stringify(git);
+  assert.ok(!/rc-|https?:|example\.net/.test(text),text);
+});

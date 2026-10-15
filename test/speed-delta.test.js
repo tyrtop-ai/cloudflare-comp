@@ -48,11 +48,62 @@ test('the export list comes back only when the alias table changed; another run 
   const other=r.stateDelta(cursorOf(full));
   assert.equal(other.full,true);assert.ok(Array.isArray(other.agents)&&other.agents.length===1);
   assert.equal(r.stateDelta({}).full,true);
-  // A Durable Object restart forgets the stamps: every agent comes once more.
+  // The versions live in SQLite: a Durable Object restart (a new instance on the same storage) sends nothing again.
   r.set('run_nonce','run-1');
-  const c=cursorOf(r.snapshot());r.agentStamps=new Map();
-  assert.deepEqual(r.stateDelta(c).agents.map(a=>a.id),['root']);
+  const c=cursorOf(r.snapshot()),again=new ControlRoom(r.ctx,r.env);
+  assert.deepEqual(again.stateDelta(c).agents,[]);
 });
+
+// Review LOWs (probes/speed1/exports-sig.mjs and the delta findings).
+test('the alias version changes on every write: the newest alias replaced by another is a change',async()=>{
+  const r=room();
+  await r.provision('root',null,'Root','Build a ticket tracker');
+  const ins=(o,p)=>r.db().exec("INSERT INTO exposed_files(owner,path,source,source_path) VALUES (?,?,'root.1','a.js') ON CONFLICT(owner,path) DO UPDATE SET source=excluded.source,source_path=excluded.source_path",o,p);
+  ins('root','tickets.js');ins('root','users.js');
+  const c=cursorOf(r.snapshot());
+  r.db().exec("DELETE FROM exposed_files WHERE owner='root' AND path='users.js'");ins('root','accounts.js');
+  const d=r.stateDelta(c);
+  assert.ok('exports' in d,'count and rowid sum were the same; the version is not');
+  assert.notEqual(d.cursor.exports,c.exports);
+});
+
+test('a delta reads only the agents whose version moved, and only a real change moves it',async()=>{
+  const r=room();
+  await r.provision('root',null,'Root','Build a ticket tracker');
+  await r.spawn('root',[{label:'A',task:'Write a'},{label:'B',task:'Write b'}]);
+  const c=cursorOf(r.snapshot()),rows=[];
+  const all=r.allNodes.bind(r);r.allNodes=()=>{rows.push('all');return all();};
+  r.db().exec("UPDATE agents SET status=status WHERE id='root.1'");
+  assert.deepEqual(r.stateDelta(c).agents,[],'a write that changes nothing is no change');
+  r.db().exec("UPDATE agents SET summary='x' WHERE id='root.2'");
+  const d=r.stateDelta(c);
+  assert.deepEqual(d.agents.map(a=>a.id),['root.2']);
+  assert.ok(!('rev' in d.agents[0]));
+  assert.ok(r.versioned);
+});
+
+test('a commit hash reaches the delta; full and merged file lists sort alike (agent, then path)',async()=>{
+  const r=room();
+  await r.provision('root',null,'Root','Build a ticket tracker');
+  await r.spawn('root',[{label:'A',task:'Write a'}]);
+  r.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1'");
+  r.batching.add('root.1');await r.putFile('root.1','a.js','module.exports = 1;\n');r.batching.delete('root.1');
+  const c=cursorOf(r.snapshot());
+  await new Promise(res=>setTimeout(res,3));
+  await r.flushWrites('root.1');
+  const d=r.stateDelta(c);
+  assert.equal(d.files.find(f=>f.path==='a.js').commit_hash,'c'.repeat(40));
+  // The dashboard's merge sorts as SQLite's ORDER BY agent,path does: root.1 before root.1.2 although '.' < '/'.
+  const html=readFileSync(new URL('../public/index.html',import.meta.url),'utf8'),script=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+  const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m=>m[1]),els=new Map(ids.map(id=>[id,{id,value:'',textContent:'',innerHTML:'',addEventListener(){},querySelectorAll(){return [];}}]));
+  const ctx={document:{getElementById:id=>els.get(id)||null,querySelectorAll:()=>[]},crypto:{randomUUID:()=>'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'},location:{href:'https://example.com/'},history:{replaceState(){}},URL,URLSearchParams,setInterval(){},Event:class{}};
+  runInNewContext(script,ctx,{filename:'public/app.js'});
+  const merged=ctx.mergeDelta({files:[{agent:'root.1.2',path:'a.js'}]},{full:false,files:[{agent:'root.1',path:'z.js'}]});
+  assert.deepEqual(Array.from(merged.files,f=>f.agent),['root.1','root.1.2']);
+  const sql=r.db().exec("SELECT a FROM (SELECT 'root.1.2' AS a,'a.js' AS p UNION ALL SELECT 'root.1','z.js') ORDER BY a,p").toArray().map(x=>x.a);
+  assert.deepEqual(sql,['root.1','root.1.2']);
+});
+
 
 test('the Worker routes /api/delta with the cursor; /api/state stays the full snapshot',async()=>{
   const got=[];
