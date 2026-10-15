@@ -356,6 +356,53 @@ test('browser checks: a static todo page served from the bundle, driven by label
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
 
+// v8 live 2: the to-do page had <input id="task-input" placeholder="Add a new
+// task"> and no label, the tracker <input id="title" placeholder="Title">;
+// both checks began with fill (no goto) and timed out on `fill {label}`.
+// Locators are semantic now: label, placeholder (contains, any case),
+// aria-label, the name or id by its words, then the only text field; a
+// click's name is matched in any case; a check opens "/" first. A miss lists
+// what the page offers, as its interface (labels, placeholders, names, texts).
+const LIVE_TODO=`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8" /><title>To-Do List</title><link rel="stylesheet" href="styles.css" /></head>
+<body><div class="todo-container"><h1>To-Do List</h1>
+<form id="task-form"><input type="text" id="task-input" placeholder="Add a new task" required /><button type="submit">Add</button></form>
+<ul id="task-list"></ul></div>
+<script>document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('task-form'), input = document.getElementById('task-input'), list = document.getElementById('task-list');
+  form.addEventListener('submit', e => { e.preventDefault(); const li = document.createElement('li'); li.textContent = input.value; list.appendChild(li); input.value = ''; });
+});</script></body></html>`;
+const LIVE_TRACKER=`<!DOCTYPE html><html><body><h1>Issue Tracker</h1>
+<form id="ticketForm"><input type="text" id="title" placeholder="Title" required><textarea id="description" placeholder="Description"></textarea><button type="submit">Create Ticket</button></form>
+<ul id="tickets"></ul>
+<script>document.getElementById('ticketForm').addEventListener('submit', e => { e.preventDefault(); const li = document.createElement('li'); li.textContent = document.getElementById('title').value + ': ' + document.getElementById('description').value; document.getElementById('tickets').appendChild(li); });</script>
+</body></html>`;
+const SHAPES=`<!DOCTYPE html><html><body>
+<input name="taskTitle"><input aria-label="Due date for the task"><span id="out"></span>
+<a href="#" onclick="document.getElementById('out').textContent='saved ' + document.getElementsByName('taskTitle')[0].value + ' by ' + document.querySelector('[aria-label]').value; return false;">Save changes</a>
+</body></html>`;
+const ONE=`<!DOCTYPE html><html><body><input id="q"><button onclick="document.body.append('got ' + q.value)">Go</button></body></html>`;
+const TWO=`<!DOCTYPE html><html><body><label for="a">Name</label><input id="a"><input id="b" placeholder="Phone"><button>Send</button><a href="/x">Help</a></body></html>`;
+
+test('browser checks (live 2): fields by label, placeholder, aria-label, name or id, or the only field; buttons by name in any case; a miss lists the page\'s fields and buttons',{skip:browserReady||false},async()=>{
+  const files={'index.html':LIVE_TODO,'styles.css':'body{margin:0}\n','tracker.html':LIVE_TRACKER,'shapes.html':SHAPES,'one.html':ONE,'two.html':TWO};
+  const report=await card(files,{runs:[{id:'serve',static:true}],checks:[
+    {id:'T1',kind:'browser',serve:'serve',steps:[{fill:{label:'Task',text:'Sample task'}},{click:{role:'button',name:'Add'}},{expect_text:'Sample task'}]},
+    {id:'T2',kind:'browser',serve:'serve',steps:[{goto:'/tracker.html'},{fill:{label:'Title',text:'Test Ticket'}},{fill:{label:'Description',text:'Test description'}},{click:{role:'button',name:'create'}},{expect_text:'Test Ticket: Test description'}]},
+    {id:'T3',kind:'browser',serve:'serve',steps:[{goto:'/shapes.html'},{fill:{label:'Task title',text:'Walk'}},{fill:{label:'due date',text:'Friday'}},{click:{role:'button',name:'Save'}},{expect_text:'saved Walk by Friday'}]},
+    {id:'T4',kind:'browser',serve:'serve',steps:[{goto:'/one.html'},{fill:{label:'Search',text:'kiwi'}},{click:{text:'go'}},{expect_text:'got kiwi'}]},
+    {id:'T5',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{fill:{label:'Email',text:'a@b.example'}}]},
+    {id:'T6',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{click:{role:'button',name:'Submit'}}]}]},{limits:{total_ms:120_000,check_ms:15_000,step_ms:1500},isolation:[]});
+  const c=byId(report);
+  for(const id of ['T1','T2','T3','T4'])assert.equal(c[id].passed,true,`${id}: ${c[id].detail}\n${c[id].output}`);
+  // A miss names the field it looked for and what the page offers, which a worker may read.
+  assert.match(c.T5.detail,/^step 2 \(fill the field labelled "Email" with "a@b\.example"\): no field labelled "Email" on the page; fields found: label "Name" name "a", placeholder "Phone" name "b"; buttons and links found: "Send", "Help"$/);
+  assert.equal(c.T5.observed.miss,true);
+  assert.deepEqual(c.T5.observed.offers,{fields:[{label:'Name',placeholder:'',name:'a'},{label:'',placeholder:'Phone',name:'b'}],buttons:[{role:'button',text:'Send'},{role:'link',text:'Help'}]});
+  assert.match(c.T6.detail,/^step 2 \(click the button "Submit"\): no button "Submit" on the page; fields found: /);
+  for(const x of report.checks.filter(x=>!x.passed))short(x);
+});
+
 test('browser checks: a WebSocket or fetch to a host that is not served never connects; a page that never yields fails alone, naming its step',{skip:browserReady||false},async()=>{
   let upgrades=0,hits=0;
   const other=createHttpServer((q,r)=>{hits++;r.writeHead(200,{'access-control-allow-origin':'*'});r.end('FETCHED');});
