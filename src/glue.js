@@ -2,7 +2,7 @@
 // converge on their contracts, so joining their files needs only renaming:
 // this module never writes logic. Under v8 the bundle (bundleFiles) holds
 // each piece's files, a placed file at its contract path and any other under
-// components/<packageDirectory>/; linkBundle joins them:
+// <parts root>/<packageDirectory>/ (components/ unless the base holds one); linkBundle joins them:
 //
 // - JavaScript keeps its path: autoLink rewrites a reference's relative path
 //   to the module the plan gives the name to, from wherever the reader sits
@@ -55,8 +55,10 @@ const fill = (template, values) => Object.entries(values).reduce((t, [k, v]) => 
 const sorted = map => new Map([...map].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
 const unique = list => list.length === 1 ? list[0] : null;
 const join = (...parts) => parts.filter(Boolean).join('/');
-// A piece's folder: components/<package directory> of a path under it.
-const pieceDirOf = p => /^components\/[^/]+\//.test(p) ? p.split('/').slice(0, 2).join('/') : null;
+// A piece's folder: <parts root>/<package directory> of a path under it
+// (parts: 'components', or the room's partsRoot when the base holds one, S8b).
+const cleanParts = parts => String(parts || 'components').replace(/[^A-Za-z0-9_]/g, '') || 'components';
+const pieceDirOf = (p, parts = 'components') => String(p).startsWith(cleanParts(parts) + '/') && String(p).split('/').length > 2 ? p.split('/').slice(0, 2).join('/') : null;
 export const stdlibNames = row => new Set(`${row?.stdlib_names || ''} ${row?.site_modules || ''}`.split(/\s+/).filter(Boolean));
 
 // A bundle path as the row's glue names a module (module_of 'dotted': the
@@ -76,7 +78,13 @@ export function moduleOf(row, path) {
 // image's own modules), and a function contract some file of the row
 // defines (a root shim; the file itself when it is named like the
 // contract). ctx.contracts: [{name, owner}]; ctx.pieces: path -> owner.
-export function rowContext(files, row, {contracts = [], pieces = new Map()} = {}) {
+export function rowContext(files, row, {contracts = [], pieces = new Map(), parts = 'components', held = new Set()} = {}) {
+  parts = cleanParts(parts);
+  // A path the project holds outside the bundle's text (S8b: a base file carried untouched) counts as there.
+  const has = p => files.has(p) || held.has(p);
+  const lower = new Set([...files.keys(), ...held].map(p => p.toLowerCase()));
+  const takenAnyCase = p => lower.has(p.toLowerCase());
+  const pieceDir = p => pieceDirOf(p, parts);
   const ext = row.extensions?.[0] || '';
   const own = [...files.keys()].filter(p => toolchainOf(p)?.id === row.id && !p.startsWith('glue/'));
   const surfaces = new Map(own.map(p => [p, new Set(extractSurface(p, files.get(p)).names)]));
@@ -90,8 +98,8 @@ export function rowContext(files, row, {contracts = [], pieces = new Map()} = {}
   }
   // Each owner's folder under components/.
   const homes = new Map();
-  for (const [p, o] of pieces) { const d = pieceDirOf(p); if (d && !homes.has(o)) homes.set(o, d); }
-  const homeOf = reader => pieceDirOf(reader) || homes.get(pieces.get(reader)) || null;
+  for (const [p, o] of pieces) { const d = pieceDir(p); if (d && !homes.has(o)) homes.set(o, d); }
+  const homeOf = reader => pieceDir(reader) || homes.get(pieces.get(reader)) || null;
   const isDir = d => [...files.keys()].some(p => p.startsWith(d + '/'));
   const resolve = (m, reader = '') => {
     if (!m || !validIdentifier(row, m)) return null;
@@ -100,10 +108,10 @@ export function rowContext(files, row, {contracts = [], pieces = new Map()} = {}
       if (files.has(`${home}/${m}${ext}`) && `${home}/${m}${ext}` !== reader) return {kind: 'own', path: `${home}/${m}${ext}`, home};
       if (isDir(`${home}/${m}`) && files.has(`${home}/${m}/${row.glue?.package_marker || '__init__.py'}`)) return {kind: 'own', path: `${home}/${m}`, home, package: true};
     }
-    if (files.has(m + ext)) return {kind: 'real', path: m + ext};
+    if (has(m + ext)) return {kind: 'real', path: m + ext};
     if (isDir(m)) return {kind: 'package'};
     const beside = dirOf(reader);
-    if (beside && !pieceDirOf(reader) && files.has(`${beside}/${m}${ext}`)) return {kind: 'real', path: `${beside}/${m}${ext}`};
+    if (beside && !pieceDir(reader) && files.has(`${beside}/${m}${ext}`)) return {kind: 'real', path: `${beside}/${m}${ext}`};
     if (stdlib.has(m)) return {kind: 'stdlib'};
     const d = definer.get(m);
     if (d) return stemOf(d) === m ? {kind: 'module', path: d} : {kind: 'shim', name: m, path: d};
@@ -150,7 +158,7 @@ export function rowContext(files, row, {contracts = [], pieces = new Map()} = {}
     if (top && stdlib.has(top) && stemOf(t.path) !== top) return `${bindingText(o)} reads the standard library, which no rename changes`;
     return '';
   };
-  return {row, own, surfaces, definer, resolve, offers, match, names, known, homeOf, fileOf, allowTarget, stdlib};
+  return {row, own, surfaces, definer, resolve, offers, match, names, known, homeOf, fileOf, allowTarget, stdlib, parts, pieceDir, takenAnyCase};
 }
 
 // The new binding for one that does not resolve as written, or null.
@@ -161,7 +169,7 @@ function fixBinding(b, ctx, reader, {forcedModule, forcedName}) {
   if (r?.kind === 'own') {
     if (dotted) return null;
     // A piece's own file: relative from inside the piece, by its package path from a placed file.
-    if (pieceDirOf(reader)) {
+    if (ctx.pieceDir(reader)) {
       const level = reader.split('/').length - r.home.split('/').length;
       return b.name === null ? {level, module: '', name: top, local: b.local} : {level, module: top, name: b.name, local: b.local};
     }
@@ -246,17 +254,19 @@ export function writeGlue(files, ctx, readers) {
   }
   for (const [m, r] of [...shims].sort(([a], [b]) => a < b ? -1 : 1)) {
     const module = moduleOf(ctx.row, r.path), template = r.kind === 'shim' ? g.shim : g.module_shim, at = join(g.dir, fill(template?.path || '', {name: m}));
-    if (!module || !template || files.has(at)) { problems.push({path: r.path, detail: `${r.path} cannot be named as a module`}); continue; }
+    // Never over a file the project holds, in any letter case (a base file, one carried untouched).
+    if (!module || !template || ctx.takenAnyCase(at)) { problems.push({path: r.path, detail: `${r.path} cannot be named as a module at ${at}`}); continue; }
     glue.set(at, fill(template.text, {name: m, module, path: r.path}));
   }
-  if (g.package_marker) for (const p of ctx.own.filter(p => p.startsWith('components/'))) {
+  if (g.package_marker) for (const p of ctx.own.filter(p => p.startsWith(ctx.parts + '/'))) {
     const parts = dirOf(p).split('/');
     for (let i = 1; i <= parts.length; i++) {
       const at = `${parts.slice(0, i).join('/')}/${g.package_marker}`;
       if (!files.has(at)) glue.set(at, '');
     }
   }
-  const outside = ctx.own.some(p => p.includes('/') && !p.startsWith('components/'));
+  // A piece's file placed in a folder (a base file's own imports never read the glue).
+  const outside = readers.some(p => p.includes('/') && !p.startsWith(ctx.parts + '/'));
   const setup = g.path_setup;
   if (outside && setup?.script && !files.has(setup.script.path)) glue.set(setup.script.path, setup.script.text);
   return {glue, paths: outside && setup?.env ? {[setup.env]: [...setup.dirs]} : {}, problems};
@@ -273,14 +283,14 @@ function normalize(path) {
   return out.join('/');
 }
 const refTarget = (page, value) => { const bare = value.split(/[?#]/)[0]; return bare.startsWith('/') ? normalize(bare) : normalize(`${dirOf(page)}/${bare}`); };
-export function linkPage(path, text, files, row, {pieces = new Map()} = {}) {
+export function linkPage(path, text, files, row, {pieces = new Map(), parts = 'components'} = {}) {
   const renames = [], rejected = [], owner = pieces.get(path);
   // A candidate: a file of the page's own piece or a placed file, or another
   // piece's file a page loads (a stylesheet, a picture, a script that is no
   // server: never one that listens or reads the process).
   const SERVER = /\brequire\s*\(\s*['"](?:node:)?(?:http|https|net|fs|child_process)['"]|\.listen\s*\(|\bprocess\./;
   const loads = p => toolchainOf(p)?.id === 'text' ? !(row.reference_files || []).some(e => p.toLowerCase().endsWith(e)) : LINKABLE.test(p) && !SERVER.test(files.get(p));
-  const mine = p => p !== path && !p.startsWith('glue/') && (pieces.get(p) === owner || !p.startsWith('components/') || loads(p));
+  const mine = p => p !== path && !p.startsWith('glue/') && (pieces.get(p) === owner || !p.startsWith(cleanParts(parts) + '/') || loads(p));
   const lines = String(text).split('\n'), res = (row?.imports || []).map(x => new RegExp(x, 'gd'));
   for (let i = 0; i < lines.length; i++) for (const re of res) {
     re.lastIndex = 0;
@@ -327,7 +337,7 @@ export function browserCommonJs(page, text, files) {
 // Map, paths: {VAR: [folders]}, staged: Map path -> text before kept fixes,
 // edits: [{path, renames}], unresolved: [{path, row, ...}], issues:
 // [{path, stage, detail}] (for the file's owner), rejected}.
-export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {}, rows = TOOLCHAINS, atomic = false} = {}) {
+export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {}, rows = TOOLCHAINS, atomic = false, parts = 'components', held = new Set()} = {}) {
   const linked = new Map(files), edits = [], rejected = [], unresolved = [], issues = [];
   const fns = contracts.filter(c => (c.kind || 'function') === 'function' && typeof c.name === 'string');
   const within = p => pieces.has(p);
@@ -359,7 +369,7 @@ export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {
   }
   // Pages: a reference to another file by its path from the page.
   for (const row of rows.filter(r => !r.identifier && r.imports?.length)) for (const p of [...linked.keys()].filter(p => within(p) && toolchainOf(p)?.id === row.id && (row.reference_files || []).some(e => p.toLowerCase().endsWith(e)))) {
-    const r = linkPage(p, linked.get(p), linked, row, {pieces});
+    const r = linkPage(p, linked.get(p), linked, row, {pieces, parts});
     if (r.text !== linked.get(p)) { linked.set(p, r.text); note(p, r.renames); }
     rejected.push(...r.rejected.map(x => ({path: p, reason: x.reason})));
     for (const x of browserCommonJs(p, linked.get(p), linked)) if (!issues.some(i => i.path === x.path))
@@ -368,7 +378,7 @@ export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {
   // Rows with glue: point what does not resolve at what it means, keep the room's fixes, write the glue.
   const contexts = [];
   for (const row of rows.filter(r => r.glue)) {
-    const ctx = rowContext(linked, row, {contracts: fns, pieces});
+    const ctx = rowContext(linked, row, {contracts: fns, pieces, parts, held});
     const readers = ctx.own.filter(within);
     for (const p of readers) {
       const r = renameReferences(linked.get(p), ctx, p);
@@ -383,7 +393,7 @@ export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {
   }
   const glue = new Map(), paths = {};
   for (const {row, readers} of contexts) {
-    const ctx = rowContext(linked, row, {contracts: fns, pieces});
+    const ctx = rowContext(linked, row, {contracts: fns, pieces, parts, held});
     const g = writeGlue(linked, ctx, readers);
     for (const [p, t] of g.glue) if (!linked.has(p)) glue.set(p, t);
     Object.assign(paths, g.paths);
@@ -396,10 +406,10 @@ export function linkBundle(files, {pieces = new Map(), contracts = [], fixes = {
 // §5.2 (b) from a run's errors: the deterministic fix of one reader for
 // what the run reported unresolved (hits: [{module?, name?}], read with the
 // row's unresolved patterns). {text, renames} or null when nothing applies.
-export function renameFromRun(files, path, hits, {contracts = [], pieces = new Map()} = {}) {
+export function renameFromRun(files, path, hits, {contracts = [], pieces = new Map(), parts = 'components'} = {}) {
   const row = toolchainOf(path);
   if (!row?.glue || !files.has(path)) return null;
-  const ctx = rowContext(files, row, {contracts: contracts.filter(c => (c.kind || 'function') === 'function'), pieces});
+  const ctx = rowContext(files, row, {contracts: contracts.filter(c => (c.kind || 'function') === 'function'), pieces, parts});
   const r = renameReferences(files.get(path), ctx, path, {force: hits});
   return r.text === files.get(path) ? null : r;
 }
@@ -407,11 +417,11 @@ export function renameFromRun(files, path, hits, {contracts = [], pieces = new M
 // name may be (the reader's own row only: never another language's
 // identifiers), what an import may come to read, and the names the run
 // reported unresolved (free).
-export function editChecks(files, path, {contracts = [], pieces = new Map(), free = []} = {}) {
+export function editChecks(files, path, {contracts = [], pieces = new Map(), free = [], parts = 'components'} = {}) {
   const row = toolchainOf(path);
   if (!row) return {knownNames: new Set()};
   if (row.id === 'javascript' || LINKABLE.test(path)) return {knownNames: knownNames(files, contracts, row)};
-  const ctx = rowContext(files, row, {contracts: contracts.filter(c => (c.kind || 'function') === 'function'), pieces});
+  const ctx = rowContext(files, row, {contracts: contracts.filter(c => (c.kind || 'function') === 'function'), pieces, parts});
   return {knownNames: new Set([...ctx.known, ...importLocals(files.get(path), row)]), allowTarget: ctx.allowTarget(path), free: new Set(free.filter(Boolean))};
 }
 // The names a new name of a rename may be, for a file of this row: every

@@ -191,6 +191,8 @@ input[type=range]:focus {box-shadow:none;}
 .req-chip.stale { opacity:.6; border-style:dashed; }
 .card-hold { padding:8px 10px; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
 .onode-card { margin:8px 0; }
+.start-from-repo[hidden] { display:none; }
+.start-from-repo input { margin-top:6px; }
 
 /* B1: the Benchmarks panel */
 .bench-text { min-height:72px; }

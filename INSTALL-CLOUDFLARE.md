@@ -105,6 +105,14 @@ npx wrangler secret put GITHUB_TOKEN
 
 Use a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) limited to the repositories you export to, with **Contents: Read and write** and **Pull requests: Read and write** (GitHub adds **Metadata: Read** itself). The token stays in the Worker: the export reads it from the secret only, never from a request, never returns or logs it, and removes it from every error message. The Worker talks only to `https://github.com` and `https://api.github.com` for exports. Without the secret, `POST /api/export/github` returns `503` with `Set GITHUB_TOKEN with wrangler secret put GITHUB_TOKEN`; downloading the app as a ZIP needs no token.
 
+### Optional: which sites a goal's links may be read from (v8 pipeline)
+
+A v8 run reads the `https://` links written in its goal once, at the start, and a run can start from a public GitHub repo or a room's previous result (**Start from** in the dashboard, or `base` in `POST /api/run`). Links are read only from hosts on an allowlist of host suffixes. Without a setting, the list is the suggested default in `src/fetcher.js` (`DEFAULT_ALLOW`); to set your own, add a `FETCH_ALLOW` var, for example `"FETCH_ALLOW": "github.com,raw.githubusercontent.com,docs.python.org"` under `vars` in `wrangler.jsonc` (host names, comma-separated; a URL, `:443` or a JSON array of hosts is read too). A value with no usable host refuses every link, and a run says so (`fetch_allow_unreadable`).
+
+The Worker never reads its own hosts, whatever the list says: the host a run was started on, and every host in a comma-separated `SELF_HOSTS` var. When you deploy with your own domain (see [Optional: your own domain](#optional-your-own-domain)), the `workers.dev` address keeps working beside it, so name both, for example `"SELF_HOSTS": "ai.example.com,qwen-control-plane-v4.example.workers.dev"`; a run started on one then never reads the other.
+
+A repo is read from `api.github.com` and `codeload.github.com` without a token (`GITHUB_TOKEN` is never used to read), up to 400 text files and 2 MB that the room builds and checks. The rest of the repo (hidden directories such as `.github/`, binaries, large or vendored files: up to 200 files and 4 MB) is carried into the export untouched and never built, and `.recursive/RUN.md` lists it and what was not carried. GitHub limits requests without a token; when the lookup of the default branch is refused, give a branch, tag or commit to start from. A room's previous result can be a base when that room ran the v8 pipeline and is not running; one that had not passed its checks is marked `unverified`. A link that cannot be read is listed in the dashboard's **Sources and base** panel and the run goes on without it; a base that cannot be read refuses the Start. One `APP_TOKEN` reads every room, so any room's result can be a base.
+
 ## 6. Verify the deployment
 
 ```bash
@@ -198,13 +206,13 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 | `GET /api/state?room=` | Dashboard snapshot |
 | `GET /api/export?room=` | Full export |
 | `GET /api/file?room=&agent=&path=` | One file an agent wrote, from the room's index of its Artifacts writes |
-| `POST /api/run` | `{room, goal, budget, settings}`: start a new run. The goal must be 8–1800 characters. |
+| `POST /api/run` | `{room, goal, budget, settings, base?}`: start a new run. The goal must be 8–1800 characters. `base` (v8 pipeline only) is `{repo: "owner/name", ref?}` for a public GitHub repo or `{room: "<room id>"}` for a room's previous result. |
 | `POST /api/continue` | `{room, budget, settings}`: resume a run |
 | `POST /api/stop` | `{room}`: stop a run. No new turns start; the running ones finish, then the room pauses (`status: paused`, event `stopped`) and the snapshot's `stopping` is `true` until then. Returns `{status: "stopping"}`, or `{error: "Nothing is running"}`; `/api/continue` resumes it |
 | `POST /api/reset` | `{room}`: clear the room's state |
 | `GET /api/app?room=` | The application as JSON: `files` (`[{path, content}]`, README first), `passed`, `fingerprint`, `digest` and `note`, plus `room`, `goal`, `room_status`, `agents`, `entry` and `kind` (`linked` by the builders and run by the compiler, or `atomic` when Root wrote it); `fingerprint` names what the passing run compiled |
 | `GET /api/app.zip?room=` | The same files as a ZIP download; the `x-app-passed` header is `true` or `false` |
-| `POST /api/export/github` | `{room, repo, branch?, dir?, pr?, base?}`: push the application to a new branch of `repo` (`owner/name`) and open a pull request unless `pr` is `false`. `branch` defaults to `control-plane/<room8>`, `dir` to `apps/<room8>/` (`.` is the repository root; `..` and absolute paths are refused), `base` to the repository's default branch. Returns `{branch, commit, pr_url, branch_url, files, passed, replaced}`; `replaced` is `true` when `dir` already held files on the base branch. Needs the `GITHUB_TOKEN` secret |
+| `POST /api/export/github` | `{room, repo, branch?, dir?, pr?, base?}`: push the application to a new branch of `repo` (`owner/name`) and open a pull request unless `pr` is `false`. `branch` defaults to `control-plane/<room8>`, `dir` to `apps/<room8>/` (`.` is the repository root; `..` and absolute paths are refused), `base` to the repository's default branch. Returns `{branch, commit, pr_url, branch_url, files, passed, replaced}`; `replaced` is `true` when `dir` already held files on the base branch. With `onto_base: true` (a room that started from a GitHub repo), the commit's parent is the exact commit the room started from and only the files the room changed or added are written at the repository root, so the pull request shows just the changes; `base` defaults to the branch the room started from, and the export is refused when that branch has moved since. `repo` must hold that commit at that branch: the repository itself, or a fork whose branch is still there. Needs the `GITHUB_TOKEN` secret |
 
 ```bash
 URL=https://qwen-control-plane-v4.<your-subdomain>.workers.dev

@@ -91,11 +91,15 @@ test('public repo: default branch without a token, then the tarball; binaries, v
   assert.deepEqual(Object.keys(r.files).sort(), ['README.md', longPath, 'package.json', 'src/app.py', 'src/index.js'].sort());
   assert.equal(r.files[longPath], 'long path kept');
   const reasons = Object.fromEntries(r.skipped.map(s => [s.path, s.reason]));
-  assert.deepEqual(reasons, {
-    'node_modules/': 'vendored or generated directory', 'vendor/': 'vendored or generated directory', '.git/': '.git dropped',
-    'assets/logo.png': 'binary', 'data/blob.txt': 'binary', 'data/latin1.txt': 'not UTF-8 text', 'big.txt': 'too large',
-    'link-to-readme': 'link'
-  });
+  assert.deepEqual(reasons, {'.git/': '.git dropped', 'link-to-readme': 'link'});
+  // v8 S8b review: what the room does not build is carried through as bytes, with its mode.
+  assert.deepEqual(r.passthrough.map(p => [p.path, p.reason]).sort(), [
+    ['assets/logo.png', 'binary'], ['big.txt', 'too large'], ['data/blob.txt', 'binary'], ['data/latin1.txt', 'not UTF-8 text'],
+    ['node_modules/left-pad/index.js', 'vendored or generated directory'], ['node_modules/left-pad/package.json', 'vendored or generated directory'],
+    ['vendor/lib.go', 'vendored or generated directory']]);
+  assert.deepEqual([...r.passthrough.find(p => p.path === 'data/latin1.txt').bytes], [0x63, 0x61, 0x66, 0xe9]);
+  assert.ok(r.passthrough.every(p => p.mode === 0o644));
+  assert.equal(r.modes['README.md'], 0o644);
   assert.equal(r.truncated, false);
   assert.equal(r.count, 5);
   assert.equal(r.bytes, Object.values(r.files).reduce((a, t) => a + byteLength(t), 0));
@@ -114,9 +118,11 @@ test('caps: at most 400 files and 2 MB of text; the rest is recorded as skipped'
   assert.equal(r.error, null);
   assert.equal(r.count, 400);
   assert.equal(Object.keys(r.files).length, 400);
-  assert.equal(r.skipped_count, 50);
-  assert.ok(r.skipped.every(s => s.reason === 'file cap'));
-  assert.equal(r.truncated, true);
+  // v8 S8b review: the files over the cap are carried through untouched.
+  assert.equal(r.skipped_count, 0);
+  assert.equal(r.passthrough.length, 50);
+  assert.ok(r.passthrough.every(s => s.reason === 'file cap'));
+  assert.equal(r.truncated, false);
   assert.equal(fetch.calls.length, 1, 'a given ref needs no API lookup');
 
   const heavy = Array.from({length: 10}, (_, i) => ({path: `chunk${i}.md`, data: 'z'.repeat(250 * 1024)}));
@@ -124,7 +130,11 @@ test('caps: at most 400 files and 2 MB of text; the rest is recorded as skipped'
   const r2 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: f2});
   assert.equal(r2.count, 8);
   assert.ok(r2.bytes <= 2 * 1024 * 1024);
-  assert.deepEqual(r2.skipped.map(s => s.reason), ['total cap', 'total cap']);
+  assert.deepEqual(r2.passthrough.map(s => s.reason), ['total cap', 'total cap']);
+  // Over the carry limit, a file is skipped and listed.
+  const f4 = fakeFetch({[TAR('main')]: gz(tarGz(heavy))});
+  const r4 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: f4, passMaxBytes: 300 * 1024});
+  assert.deepEqual([r4.passthrough.length, r4.skipped.map(s => s.reason)], [1, ['total cap; over the limit of files carried untouched']]);
 
   const f3 = fakeFetch({[TAR('main')]: gz(tarGz(heavy))});
   const r3 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: f3, archiveBytes: 600 * 1024});

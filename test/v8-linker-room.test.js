@@ -314,3 +314,17 @@ test('a Python file that would sit at the project root under a standard name (js
   assert.deepEqual(room.files('root').map(f=>f.path),['greet.py']);
   linted(room,calls);
 });
+
+test('the standard-name refusal is for a writer\'s new file only: a base project\'s own json.py at the root is carried as it is (S8b)',()=>{
+  const {room}=liveRoom();
+  room.v8=()=>true;room.node=()=>({id:'root',parent:null});room.manager=()=>null;room.promisedOf=()=>[];
+  let base=new Set();room.basePaths=()=>base;
+  assert.match(room.shadowsStandard('root','json.py'),/json\.py would take the name of the standard library's json/);
+  assert.match(room.shadowsStandard('root','sitecustomize.py'),/standard library's sitecustomize/);
+  assert.equal(room.shadowsStandard('root','lib/json.py'),'','only the project root');
+  assert.equal(room.shadowsStandard('root','wordfreq.py'),'');
+  base=new Set(['json.py']);
+  assert.equal(room.shadowsStandard('root','json.py'),'','the base\'s own file');
+  room.node=()=>({id:'root.1',parent:'root'});
+  assert.equal(room.shadowsStandard('root.1','types.py'),'','a piece\'s file no contract places goes under its package folder');
+});

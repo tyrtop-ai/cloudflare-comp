@@ -34,7 +34,18 @@ export function packageDirectory(label, identity=label) {
   const name=String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,16).replace(/_+$/,'') || 'piece';
   return `p_${name}_${branchDirectory('', identity).split('-').pop()}`;
 }
-export const packagePath=(label, childPath, identity=label)=>`components/${packageDirectory(label,identity)}/${childPath}`;
+// v8 S8b: the folder every piece's unplaced files go under, one name for
+// the bundle, the glue and the link: 'components', unless the project the
+// room starts from has its own components/ (in any case), when a name that
+// is a valid module name in every row's language and that the base does not
+// hold is used instead (rcp_parts, rcp_parts_2, ...).
+export const PARTS_ROOT='components';
+export function partsRoot(basePaths=[]) {
+  const held=new Set([...basePaths].map(p=>String(p).split('/')[0].toLowerCase()));
+  if(!held.has(PARTS_ROOT))return PARTS_ROOT;
+  for(let i=1;;i++){const name=i===1?'rcp_parts':`rcp_parts_${i}`;if(!held.has(name))return name;}
+}
+export const packagePath=(label, childPath, identity=label, root=PARTS_ROOT)=>`${root}/${packageDirectory(label,identity)}/${childPath}`;
 
 export function materializedPath(label, childPath, identity=label) {
   const result=`components/${branchDirectory(label,identity)}/${childPath}`;

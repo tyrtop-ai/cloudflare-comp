@@ -280,7 +280,9 @@ test('/api/run never takes a card from the request body: only the runtime provid
   const res = await call(env, '/api/run', {method: 'POST', body: {room: 'room-0000000001', goal: 'Write a function f that returns one.', budget: 5, settings: {pipeline: 'v8'}, card}});
   assert.equal(res.status, 200);
   assert.equal(seen.length, 1);
-  assert.equal(seen[0].length, 4, 'start(goal, budget, settings, room): no card argument');
+  // v8 S8b: the fifth argument (a provided card) is always null from a request; the sixth carries base and the host.
+  assert.equal(seen[0][4], null, 'start(goal, budget, settings, room, null, inputs): no card argument');
+  assert.deepEqual(Object.keys(seen[0][5]), ['base', 'selfHosts']);
   assert.ok(!JSON.stringify(seen[0]).includes('solution.py'));
 });
 

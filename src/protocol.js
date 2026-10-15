@@ -189,7 +189,9 @@ export function normalizeAction(raw,{maxFiles=Infinity,v8=false}={}) {
       .map(s => {
         const fns = pieceContracts(s, {v8});
         const interfaces = Array.isArray(fns) && fns.length ? normalizeInterfaces(fns, {v8}) : [], uses = normalizeUses(s.uses, {v8});
-        return { label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700), ...(interfaces.length ? {interfaces} : {}), ...(uses.length ? {uses} : {}) };
+        // v8 S8b: the source chunk refs the piece reads (S1#3); the room keeps only those its parent holds.
+        const refs = v8 ? (Array.isArray(s.refs) ? s.refs : typeof s.refs === 'string' ? [s.refs] : []).filter(r => typeof r === 'string' && r.trim()).slice(0, 32).map(r => clip(r.trim(), 40)) : [];
+        return { label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700), ...(interfaces.length ? {interfaces} : {}), ...(uses.length ? {uses} : {}), ...(refs.length ? {refs} : {}) };
       }),
     messages: (Array.isArray(raw.messages) ? raw.messages : [])
       .filter(m => m && typeof m.to === 'string' && typeof m.body === 'string')

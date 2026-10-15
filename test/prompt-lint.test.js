@@ -6,7 +6,8 @@ import { lintText, lintAll, words, sentences, negations, capsWords } from './hel
 
 const ROLES = ['card', 'card_review', 'splitter', 'worker', 'file', 'manager', 'linker'];
 // Per-role caps: words of each format, and of the whole system prompt.
-const FORMAT_WORDS = {card: 500, card_review: 50, splitter: 340, worker: 260, file: 40, manager: 200, linker: 70};
+// v8 S8b: the splitter's format gained refs and the existing-file rule.
+const FORMAT_WORDS = {card: 500, card_review: 50, splitter: 370, worker: 260, file: 40, manager: 200, linker: 70};
 const SYSTEM_WORDS = 900;
 
 test('every v8 prompt text passes the lint', () => {

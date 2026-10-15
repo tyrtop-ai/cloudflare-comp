@@ -396,3 +396,23 @@ test('checkPlan: a call loads the file that defines the function, never a shim; 
   assert.match(runNotes({goal: 'g', paths: out.paths}, card, {}), /- `wordfreq`: `python3 wordfreq\.py`: prints the most frequent words/);
   assert.equal(py.call_adapter.slice(0, 2).join(' '), 'python3 -I', 'the adapter\'s supervisor starts isolated');
 });
+
+// ------------------------------------------------------------ with a base project (S8b)
+test('a base with its own components/: pieces under the parts root, markers and relative reads there, base files never edited, and no shim over a base or carried file', {skip: !hasPython && 'python3 is not installed'}, () => {
+  const P = p => packagePath('Counter', p, 'root.1', 'rcp_parts');
+  const files = new Map([[P('counter.py'), SOURCES[COUNTER]], [P('textutil.py'), SOURCES[TEXTUTIL]],
+    ['components/widget.py', 'from textutil import nothing_here\n'], ['main.py', 'from count_words import count_words\nprint(count_words("a b a")["a"])\n']]);
+  const pieces = new Map([[P('counter.py'), 'root.1'], [P('textutil.py'), 'root.1'], ['main.py', 'root.2']]);
+  const out = linkBundle(files, {pieces, contracts: CONTRACTS.slice(0, 1), parts: 'rcp_parts'});
+  assert.equal(out.files.get(P('counter.py')), LINKED_COUNTER);
+  assert.equal(out.files.get('components/widget.py'), 'from textutil import nothing_here\n', 'a base file is never edited');
+  assert.deepEqual([...out.glue.keys()].sort(), ['count_words.py', `rcp_parts/${packageDirectory('Counter', 'root.1')}/__init__.py`, 'rcp_parts/__init__.py'].sort());
+  assert.match(out.glue.get('count_words.py'), /from rcp_parts\.p_counter_[0-9a-f]{8}\.counter import count_words/);
+  assert.equal(runBundle(out.files, ['python3', 'main.py']).stdout, '2\n');
+  // A file the base carries untouched, or one at the same path apart from case, keeps its path: no shim goes there.
+  const held = linkBundle(files, {pieces, contracts: CONTRACTS.slice(0, 1), parts: 'rcp_parts', held: new Set(['count_words.py'])});
+  assert.ok(!held.glue.has('count_words.py'));
+  const twin = linkBundle(new Map([...files, ['Count_Words.py', '# the base\'s own\n']]), {pieces, contracts: CONTRACTS.slice(0, 1), parts: 'rcp_parts'});
+  assert.ok(!twin.glue.has('count_words.py'));
+  assert.equal(twin.files.get('Count_Words.py'), '# the base\'s own\n');
+});

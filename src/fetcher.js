@@ -70,8 +70,27 @@ const allowEntry = s => {
 // internal names) are dropped.
 export function parseAllow(value) {
   if (value == null || (typeof value === 'string' && value.trim() === '')) return [...DEFAULT_ALLOW];
-  const list = Array.isArray(value) ? value : String(value).split(/[,\s]+/);
-  return [...new Set(list.map(allowEntry).filter(Boolean))];
+  return allowReport(value).allow;
+}
+// v8 S8b review: the forms an owner writes: a host, a URL (its scheme, path
+// and :443 dropped), a JSON array string. {allow, dropped}: the entries kept
+// and those that are not a usable host suffix (as written, clipped).
+const allowForm = s => String(s ?? '').trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '').replace(/^[^@]*@/, '').replace(/:443$/, '');
+export function allowReport(value) {
+  let list = [];
+  if (Array.isArray(value)) list = value;
+  else if (typeof value === 'string') {
+    const t = value.trim();
+    if (t.startsWith('[')) { try { const j = JSON.parse(t); list = Array.isArray(j) ? j : []; } catch { list = t.replace(/[[\]"']/g, ' ').split(/[,\s]+/); } }
+    else list = t.split(/[,\s]+/);
+  }
+  const allow = [], dropped = [];
+  for (const e of list) {
+    const h = allowEntry(allowForm(e));
+    if (h) { if (!allow.includes(h)) allow.push(h); }
+    else if (String(e ?? '').trim()) dropped.push(clip(e, 100));
+  }
+  return {allow, dropped};
 }
 // A room's list keeps only valid entries already covered by the owner's list.
 export const narrowAllow = (owner, room) => room == null ? [...owner] :
@@ -681,7 +700,7 @@ export async function sourceCards(sources, {callModel, maxChunks = 40, chunkChar
     let title = sanitizeText(src.title).slice(0, 120), summary = '';
     try {
       const reply = replyText(await callModel({role: 'source_card', system: CARD_SYSTEM,
-        user: JSON.stringify({sources: [{...quoteSource({...src, text: ''}, {maxChars: 0}), outline}]})}));
+        user: JSON.stringify({sources: [{...quoteSource({...src, text: ''}, {maxChars: 0}), outline: outline.filter(o => !o.gist.startsWith('(not summarised'))}]})}));
       const json = JSON.parse(jsonObject(reply));
       if (json && typeof json === 'object') { title = lines(json.title || title, 1, 120) || title; summary = lines(json.summary, 8, 1200); }
       else summary = lines(reply, 8, 1200);

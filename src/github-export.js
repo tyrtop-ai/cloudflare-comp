@@ -4,6 +4,7 @@
 // every error. Only https://github.com and https://api.github.com are contacted.
 import { MemoryFS } from './memory-fs.js';
 import { clip, isPath } from './protocol.js';
+import { fileBytes, executable } from './zip.js';
 
 const API = 'https://api.github.com', WEB = 'https://github.com';
 export const GITHUB_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -39,7 +40,13 @@ export function githubExportOptions(body, room) {
   const base = body.base == null || body.base === '' ? null : body.base;
   if (base !== null && !refName(base)) throw new ExportError(400, 'Invalid base branch name');
   if (body.pr != null && typeof body.pr !== 'boolean') throw new ExportError(400, 'pr must be true or false');
-  return { repo, branch, base, dir: exportDir(body.dir, room8), pr: body.pr !== false };
+  // v8 S8b review: onto_base commits the room's changes on top of the repo
+  // commit the room started from (its resolved sha), at the repository root,
+  // writing only the paths that changed or are new; untouched files stay as
+  // git has them.
+  if (body.onto_base != null && typeof body.onto_base !== 'boolean') throw new ExportError(400, 'onto_base must be true or false');
+  if (body.onto_base === true && body.dir != null && body.dir !== '' && body.dir !== '.') throw new ExportError(400, 'onto_base writes at the repository root; leave dir out');
+  return { repo, branch, base, dir: body.onto_base === true ? '' : exportDir(body.dir, room8), pr: body.pr !== false, ...(body.onto_base === true ? { onto: true } : {}) };
 }
 
 const allowed = url => { const u = new URL(url); return u.protocol === 'https:' && ['github.com', 'api.github.com'].includes(u.host) && !u.username && !u.password; };
@@ -73,14 +80,15 @@ const enc = new TextEncoder(), LOCAL = new Set(['write the files', 'commit']);
 // The commit's tree, built from the base's trees without a checkout: dir is
 // replaced by exactly the app's files (whatever was there is dropped). At the
 // repository root ('') the app is laid over the base instead, and a base file
-// it would change is a conflict.
-async function exportTree({ git, fs, dir, cache, baseTree, at, files }) {
+// it would change is a conflict, unless replace (onto_base: the app's changes
+// to that very commit) lets it change it, keeping its mode.
+async function exportTree({ git, fs, dir, cache, baseTree, at, files, replace = false }) {
   const top = new Map(), conflicts = [];
   for (const f of files) {
     const parts = (at + f.path).split('/'); let m = top;
     for (const p of parts.slice(0, -1)) { if (!m.has(p)) m.set(p, new Map()); m = m.get(p); if (!(m instanceof Map)) throw new ExportError(400, `Conflicting file paths at ${clip(at + f.path, 120)}`); }
     if (m.has(parts.at(-1))) throw new ExportError(400, `Conflicting file paths at ${clip(at + f.path, 120)}`);
-    m.set(parts.at(-1), f.content);
+    m.set(parts.at(-1), f);
   }
   const target = at ? at.split('/').filter(Boolean).reduce((m, p) => m.get(p), top) : null;
   let replaced = false;
@@ -93,9 +101,10 @@ async function exportTree({ git, fs, dir, cache, baseTree, at, files }) {
         if (old && old.type !== 'tree') { conflicts.push(path); continue; }
         out.set(name, { mode: '040000', path: name, type: 'tree', oid: await write(v, old?.oid, path + '/') });
       } else {
-        const oid = await git.writeBlob({ fs, dir, blob: enc.encode(v) });
+        const oid = await git.writeBlob({ fs, dir, blob: fileBytes(v) }), mode = executable(v) ? '100755' : '100644';
+        if (old && replace && ['100644', '100755'].includes(old.mode)) { out.set(name, { ...old, mode: executable(v) ? '100755' : old.mode, oid }); continue; }
         if (old) { if (old.oid !== oid || !['100644', '100755'].includes(old.mode)) conflicts.push(path); continue; }
-        out.set(name, { mode: '100644', path: name, type: 'blob', oid });
+        out.set(name, { mode, path: name, type: 'blob', oid });
       }
     }
     return git.writeTree({ fs, dir, tree: [...out.values()] });
@@ -130,7 +139,11 @@ export async function exportToGitHub({ token, options, app, room }, deps = {}) {
     const remote = await git.getRemoteInfo2({ http, url, forPush: true, protocolVersion: 1, onAuth });
     if (!Array.isArray(remote?.refs)) throw new ExportError(502, `GitHub did not advertise the branches of ${repo}`);
     const heads = new Set(remote.refs.map(r => r.ref).filter(r => r.startsWith('refs/heads/')).map(r => r.slice(11)));
-    const empty = !heads.size, base = options.base || info.data?.default_branch || 'main';
+    // onto_base: the branch the room's base came from, unless the request names one.
+    const from = options.onto ? app.base : null;
+    if (options.onto && !(from?.kind === 'repo' && /^[0-9a-f]{40}$/.test(from.resolved_sha || ''))) throw new ExportError(409, 'onto_base needs a room that started from a GitHub repo at a known commit');
+    const empty = !heads.size, base = options.base || (from && !/^[0-9a-f]{40}$/.test(from.ref || '') ? from.ref : null) || info.data?.default_branch || 'main';
+    if (options.onto && empty) throw new ExportError(409, `${repo} is empty, so it does not hold the commit the room started from`);
     if (!empty && !heads.has(base)) throw new ExportError(400, `Base branch ${base} does not exist in ${repo}`);
     // Always a new branch: an existing name gets -2, -3, ...
     let branch = options.branch;
@@ -148,12 +161,16 @@ export async function exportToGitHub({ token, options, app, room }, deps = {}) {
       await git.clone({ fs, cache, http, dir, url, ref: base, singleBranch: true, depth: 1, noTags: true, noCheckout: true, onAuth });
       const tip = await git.resolveRef({ fs, dir, ref: `refs/remotes/origin/${base}` });
       parent = [tip]; baseTree = (await git.readCommit({ fs, dir, cache, oid: tip })).commit.tree;
+      if (options.onto && tip !== from.resolved_sha) throw new ExportError(409, `${base} of ${repo} is at ${tip.slice(0, 12)}, not ${from.resolved_sha.slice(0, 12)}, the commit the room started from: the branch has moved, or ${repo} is not that repository. Name the branch that is still at that commit (base), or export into a directory.`);
       // With origin/HEAD naming the base, push sends only the objects the base lacks.
       await git.writeRef({ fs, dir, ref: 'refs/remotes/origin/HEAD', value: `refs/remotes/origin/${base}`, symbolic: true, force: true });
     }
     phase = 'write the files';
     for (const f of app.files) if (!isPath(options.dir + f.path)) throw new ExportError(400, `Unsafe file path ${clip(options.dir + f.path, 120)}`);
-    const { tree, replaced, conflicts } = await exportTree({ git, fs, dir, cache, baseTree, at: options.dir, files: app.files });
+    // onto_base: only what the room changed or added; the runtime's notes and the files carried untouched stay out.
+    const files = options.onto ? app.files.filter(f => !f.passthrough && f.from_base !== 'unchanged' && !f.path.startsWith('.recursive/')) : app.files;
+    if (options.onto && !files.length) throw new ExportError(409, `The room changed none of the files of ${repo}; there is nothing to push.`);
+    const { tree, replaced, conflicts } = await exportTree({ git, fs, dir, cache, baseTree, at: options.dir, files, replace: options.onto });
     if (conflicts.length) throw new ExportError(409, `${base} of ${repo} already has ${clip(conflicts.slice(0, 6).join(', '), 300)}` +
       `${conflicts.length > 6 ? ` and ${conflicts.length - 6} more` : ''} with other content; export into a directory (dir) where the app does not overwrite the repository's files.`);
     if (tree === baseTree) throw new ExportError(409, `${where} on ${base} of ${repo} already holds exactly these files; there is nothing to push.`);
@@ -166,7 +183,7 @@ export async function exportToGitHub({ token, options, app, room }, deps = {}) {
     if (result?.ok === false || result?.errors?.length) throw new ExportError(502, `GitHub rejected the push of ${branch}: ${say(JSON.stringify(result.errors || result), token, 300)}`);
     pushed = branch;
     const out = { repo, branch, base: empty ? null : base, commit, pr_url: null, branch_url: `${WEB}/${repo}/tree/${branch}`,
-      dir: options.dir || '.', files: app.files.length, passed: app.passed, replaced };
+      dir: options.dir || '.', files: files.length, passed: app.passed, replaced, ...(options.onto ? { onto_base: from.resolved_sha } : {}) };
     if (!options.pr) return out;
     if (empty) return { ...out, note: `${repo} was empty, so ${branch} is its first branch and there is no base to open a pull request against.` };
     phase = 'open a pull request';
@@ -174,7 +191,8 @@ export async function exportToGitHub({ token, options, app, room }, deps = {}) {
       `**Run status:** ${app.passed ? 'passed' : '**UNVERIFIED**'}. ${app.note}`, '',
       `**Agents:** ${app.agents} · **Room:** \`${room}\` · **Files:** ${app.files.length} in \`${where}\``, '',
       ...(replaced ? [`This replaces everything that was in \`${where}\` on \`${base}\`, so the directory holds exactly the exported files.`, ''] : []),
-      `\`${where}${app.files[0]?.path || 'README.md'}\` says how to run it.`, ''].join('\n');
+      ...(options.onto ? [`The room's changes on top of \`${from.resolved_sha.slice(0, 12)}\`, the commit it started from: ${files.length} file(s) changed or added; every other file is as it was.`, '']
+        : [`\`${where}${app.files[0]?.path || 'README.md'}\` says how to run it.`, ''])].join('\n');
     const pr = await api('POST', `/repos/${repo}/pulls`, { title: run.title, head: branch, base, body });
     if (pr.status !== 201) throw failure(pr.status, repo, phase, pr.data, token);
     return { ...out, pr_url: pr.data?.html_url || null };
