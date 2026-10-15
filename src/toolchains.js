@@ -24,7 +24,9 @@ export const TOOLCHAINS = Object.freeze([
     // v8 S6: what a linker may rely on for this row's files, sent as data (the v7 linker prompt's paragraph).
     binding_rules:"To change an imported name without touching its local uses, alias it: const { realName: localName } = require(...) or import { realName as localName } from '...'. Once an import's path is right, the runtime itself fixes four binding shapes, so for these fix only the path: one name destructured from a module whose module.exports is a function or class of that name, a module bound whole that the file only calls while it exports an object holding that name, a module bound whole whose only export is one function when the file only calls it, and a module bound whole that the file only passes on as a value while it exports an object holding that name.",
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
-    stack:'v8', stdlib:'node-builtins', glue:[], image:'build' }),
+    stack:'v8', stdlib:'node-builtins',
+    // v8 S5: a JavaScript reference is a relative path the linker rewrites (autoLink); no glue.
+    line_comment:'//', block_comment:['/*','*/'], strings:['"',"'",'`'], glue:null, image:'build' }),
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
     manifests:['pyproject.toml','requirements.txt','setup.cfg','setup.py','Pipfile','Pipfile.lock','poetry.lock','tox.ini','pip.conf','.python-version','__pycache__/','.venv/','venv/'],
     syntax:['python3','-m','py_compile','{files}'], executables:['python3','pytest'],
@@ -36,12 +38,31 @@ export const TOOLCHAINS = Object.freeze([
     import_line:'from {name} import {name}',
     extractor:'line', defs:['^(?:async\\s+)?def\\s+([A-Za-z_]\\w*)\\s*\\(','^class\\s+([A-Za-z_]\\w*)','^([A-Za-z_]\\w*)\\s*='],
     imports:['^from\\s+([\\w.]+)\\s+import\\s+(.+)$','^import\\s+([\\w., ]+)$'], private_prefix:'_',
-    link:'shim', shim:{path:'{name}.py', text:'from {module} import {name}  # runtime-owned shim\n'},
-    package_marker:'__init__.py', module_of:'dotted', dir_case:'snake',
+    line_comment:'#', strings:['"""',"'''",'"',"'"],
+    // v8 S5 (§5.2): the glue the runtime writes so a reference written as
+    // import_line resolves wherever the defining file sits in the bundle.
+    // Everything lives under dir (runtime-owned): a shim per referenced name
+    // that re-exports a function contract from the file defining it (shim),
+    // or stands for a piece's own module by its bare name (module_shim); a
+    // package marker in each runtime-owned folder a shim reads from; and the
+    // module path (path_setup: the variable, and the folders put on it, glue
+    // first) every process of this row runs with. {module}: a bundle path in
+    // module_of form; {path}: the bundle path; {name}: the referenced name.
+    glue:{ dir:'glue/python', module_of:'dotted', package_marker:'__init__.py',
+      shim:{path:'{name}.py', text:'# Runtime-owned: {name} is defined in {path}.\nfrom {module} import {name}  # noqa: F401\n'},
+      module_shim:{path:'{name}.py', text:'# Runtime-owned: the module {name} is {path}.\nimport importlib\nimport sys\nsys.modules[__name__] = importlib.import_module("{module}")\n'},
+      path_setup:{env:'PYTHONPATH', dirs:['glue/python','.'], separator:':'} },
+    // Names a rename never touches (the language's built-in functions and errors).
+    builtin_names:'ArithmeticError AssertionError AttributeError BaseException BaseExceptionGroup BlockingIOError BrokenPipeError BufferError BytesWarning ChildProcessError ConnectionAbortedError ConnectionError ConnectionRefusedError ConnectionResetError DeprecationWarning EOFError Ellipsis EncodingWarning EnvironmentError Exception ExceptionGroup FileExistsError FileNotFoundError FloatingPointError FutureWarning GeneratorExit IOError ImportError ImportWarning IndentationError IndexError InterruptedError IsADirectoryError KeyError KeyboardInterrupt LookupError MemoryError ModuleNotFoundError NameError NotADirectoryError NotImplemented NotImplementedError OSError OverflowError PendingDeprecationWarning PermissionError ProcessLookupError PythonFinalizationError RecursionError ReferenceError ResourceWarning RuntimeError RuntimeWarning StopAsyncIteration StopIteration SyntaxError SyntaxWarning SystemError SystemExit TabError TimeoutError TypeError UnboundLocalError UnicodeDecodeError UnicodeEncodeError UnicodeError UnicodeTranslateError UnicodeWarning UserWarning ValueError Warning ZeroDivisionError abs aiter all anext any ascii bin bool breakpoint bytearray bytes callable chr classmethod compile complex copyright credits delattr dict dir divmod enumerate eval exec exit filter float format frozenset getattr globals hasattr hash help hex id input int isinstance issubclass iter len license list locals map max memoryview min next object oct open ord pow print property quit range repr reversed round set setattr slice sorted staticmethod str sum super tuple type vars zip',
+    // Modules a shim never shadows (the standard library's top-level names).
+    stdlib_names:'abc aifc antigravity argparse array ast asynchat asyncio asyncore atexit audioop base64 bdb binascii bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall concurrent configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal difflib dis distutils doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib imghdr imp importlib inspect io ipaddress itertools json keyword lib2to3 linecache locale logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt multiprocessing netrc nis nntplib nt ntpath nturl2path numbers opcode operator optparse os ossaudiodev pathlib pdb pickle pickletools pipes pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select selectors shelve shlex shutil signal site smtpd smtplib sndhdr socket socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat statistics string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny tarfile telnetlib tempfile termios test textwrap this threading time timeit tkinter token tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata unittest urllib uu uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport zlib zoneinfo',
     unresolved:["cannot import name '(?<name>\\w+)' from '(?<module>[\\w.]+)'","No module named '(?<module>[\\w.]+)'","name '(?<name>\\w+)' is not defined"],
     call_adapter:['python3','/opt/adapters/call.py'], stack:'python', stdlib:'/opt/toolchain/python-stdlib.txt', image:'build' }),
   Object.freeze({ id:'text', name:'text', manifests:[], aliases:['html','htm','css','markdown','md','json','yaml','yml','toml','csv','svg','txt','plain','plaintext','doc','docs','documentation'], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:'text',
-    syntax:null, executables:[], extractor:null, link:'placed', stack:null, image:'build' })
+    syntax:null, executables:[], extractor:null, link:'placed', stack:null,
+    // v8 S5: how a page (a file with one of reference_files' extensions) refers to
+    // another file of the project (the attribute value is group 1).
+    reference_files:['.html','.htm'], imports:['<script\\b[^>]*?\\bsrc\\s*=\\s*["\']([^"\'>]+)["\']','<link\\b[^>]*?\\bhref\\s*=\\s*["\']([^"\'>]+)["\']'], image:'build' })
 ]);
 // The manifests of toolchains this deployment has no row for: a worker never
 // writes one either, since nothing here would read it as intended.

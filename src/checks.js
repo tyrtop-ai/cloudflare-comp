@@ -52,7 +52,9 @@ export function callModule(check, files, placed = new Set()) {
 // (§4.1 step 4), and the results the Worker already knows (local: a
 // command deliverable whose file is missing, a call no file defines).
 // rows: the installed toolchain rows. placed: the bundle's placed paths.
-export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set()} = {}) {
+// paths (S5): the module path the bundle's glue needs ({VAR: [bundle
+// folders]}, linkBundle's), which every check process runs with.
+export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), paths: glue = {}} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], reqs = card?.requirements || [];
   const commandsOf = new Map((card?.deliverables || []).filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
   const used = new Set(card?.languages || []);
@@ -88,7 +90,7 @@ export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set()} =
   }
   const runs = (card?.run || []).map(x => x.static ? {id: x.id, static: true} : {id: x.id, ...(x.argv ? {argv: x.argv} : {}), run: x.run, port: true, ready: x.ready || '/'});
   // A run whose command deliverable is missing fails the checks it serves, in the Container, as a run that did not start.
-  return {plan: {syntax, project, runs, commands, checks}, toolchains, local,
+  return {plan: {syntax, project, runs, commands, checks, ...(glue && Object.keys(glue).length ? {paths: glue} : {})}, toolchains, local,
     container: syntax.length > 0 || project.length > 0 || checks.length > 0};
 }
 
@@ -247,12 +249,15 @@ export function runNotes(app, card, status = {}) {
   if (card?.summary) lines.push('## What it is', '', card.summary, '');
   const run = [];
   for (const r of card?.run || []) run.push(r.static ? `- \`${r.id}\`: serve this folder with any static file server and open \`/\` in a browser.` : `- \`${r.id}\`: \`${r.run}\` (it reads the port from \`PORT\`; ready at \`${r.ready || '/'}\`).`);
+  // S5: a row whose glue sets a module path runs with it (app.paths, the bundle's).
+  const setup = row => { const s = row?.glue?.path_setup, dirs = s && app?.paths?.[s.env]; return dirs?.length ? `${s.env}=${dirs.join(s.separator || ':')} ` : ''; };
   for (const d of (card?.deliverables || []).filter(d => kindOf(d) === 'command' && d.path)) {
     const row = toolchainOf(d.path);
-    if (row?.run_file) run.push(`- \`${d.name}\`: \`${row.run_file.map(x => x === '{path}' ? d.path : x).join(' ')}\`${d.does ? `: ${d.does}` : ''}`);
+    if (row?.run_file) run.push(`- \`${d.name}\`: \`${setup(row)}${row.run_file.map(x => x === '{path}' ? d.path : x).join(' ')}\`${d.does ? `: ${d.does}` : ''}`);
   }
   for (const d of (card?.deliverables || []).filter(d => ['doc', 'page', 'file', 'data'].includes(kindOf(d)) && d.path)) run.push(`- \`${d.path}\` (${kindOf(d)})${d.does ? `: ${d.does}` : ''}`);
-  for (const p of card?.project_checks || []) run.push(`- the project's own check: \`${p}\``);
+  for (const p of card?.project_checks || []) run.push(`- the project's own check: \`${setup(TOOLCHAINS.find(r => (r.executables || []).includes(String(p).trim().split(/\s+/)[0])))}${p}\``);
+  if (app?.paths && Object.keys(app.paths).length) run.push(`- \`glue/\` holds files the runtime wrote so the parts find each other where they sit; the commands above set the module path to it.`);
   lines.push('## How to run', '', ...(run.length ? run : ['- See the files.']), '');
   // A result from another snapshot than these files is stale, never shown as current.
   const reqs = card?.requirements || [], state = r => { const s = status?.[r.id]; return !s || typeof s.passed !== 'boolean' ? 'untested' : s.digest && app?.digest && s.digest !== app.digest ? 'stale' : s.passed ? 'pass' : 'fail'; };

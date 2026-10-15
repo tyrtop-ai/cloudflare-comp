@@ -27,7 +27,12 @@ import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyn
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, useReferences, USES_SHOWN, PLACED_KINDS, functionRows } from './contracts.js';
-import { branchDirectory } from './assembly.js';
+import { branchDirectory, packageDirectory, packagePath } from './assembly.js';
+// v8 S5: the polyglot linker (bundle links, runtime glue, rename-only repair).
+import { linkBundle, renameFromRun, knownNames as linkKnownNames, textHash } from './glue.js';
+import { applyTextEdits } from './linker.js';
+import { unresolvedNames } from './toolchains.js';
+import { checkSecrets } from './checks.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -1010,7 +1015,7 @@ export class ControlRoom extends DurableObject {
   // moved. passed: the last passing check run hashed exactly these files.
   async cardApp() {
     const root=this.node('root');
-    const {files}=root?await this.bundleFiles('root'):{files:new Map()};
+    const {files,link}=root?await this.bundleFiles('root'):{files:new Map(),link:null};
     if(!files.size) {
       const status=this.get('status','idle'),why=!root?'no run has started in this room':'no piece has delivered a file yet';
       return {status:409,error:['complete','failed'].includes(status)?`No application to export: this room ended (${status}) and ${why}. Start a new room to build one.`:
@@ -1022,7 +1027,7 @@ export class ControlRoom extends DurableObject {
       last?.digest?`These files differ from the last run that passed every check (snapshot ${last.digest.slice(0,16)}), so they have not passed as exported.`:
       'The project card\'s checks have not all passed on these files yet.';
     const app={room:this.get('room_id',''),goal:this.userGoal(),room_status:this.get('status','idle'),agents:this.allNodes().length,kind:'card',
-      entry:null,passed:!!hit,fingerprint:hit?.input??null,digest,note,card_rev:this.cardRev()};
+      entry:null,passed:!!hit,fingerprint:hit?.input??null,digest,note,card_rev:this.cardRev(),...(link&&Object.keys(link.paths).length?{paths:link.paths}:{})};
     const notes=[{path:'.recursive/RUN.md',content:runNotes(app,card,status)},{path:'.recursive/card.json',content:JSON.stringify(card,null,2)+'\n'}];
     return {...app,files:[...notes,...[...files].map(([path,content])=>({path,content}))]};
   }
@@ -1672,7 +1677,7 @@ export class ControlRoom extends DurableObject {
     const problems=parse(row.problems,[]).map(id=>this.problems('id=?',id)[0]).filter(p=>p&&p.status!=='closed');
     if(!problems.length)return '';
     // v7.15.5 review: another piece's linked file is named with its label (run12's Entry Module and Update Ticket Operation each wrote module.js).
-    const dirs=new Map(this.allNodes().map(n=>[branchDirectory(n.label,n.id),n])),piece=d=>{const n=dirs.get(d);return !n?null:n.id===row.worker?'':n.label;};
+    const dirs=new Map(this.allNodes().flatMap(n=>[[branchDirectory(n.label,n.id),n],[packageDirectory(n.label,n.id),n]])),piece=d=>{const n=dirs.get(d);return !n?null:n.id===row.worker?'':n.label;};
     // v7.15.6 (R3): run requirements routed by the plan read as the requirement on the worker's own promise, nothing more.
     return repairText({v8:this.v8(),role:row.role,piece,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),own:row.manager===row.worker,
       requirement:row.manager!==row.worker&&problems.every(p=>p.kind==='run'&&p.facts.requirement),operation:problems.every(p=>p.kind==='unresolved'&&!!p.facts.operation)&&{...problems[0].facts.operation,path:problems[0].source===row.worker?'placeholder':problems[0].facts.operation.gap?'gap':'import'},problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
@@ -3180,11 +3185,15 @@ export class ControlRoom extends DurableObject {
   // atomic Root's own files at their own paths; under a split, every working
   // leaf's delivered files, a placed file (a path one of its contracts names)
   // at exactly that path, never remapped, and any other under
-  // components/<its branch directory>/ (S5 writes the glue that joins them).
-  // origin: each bundle path's writer and its own path; placed: the placed paths.
+  // components/<its package directory>/ (packageDirectory, S5), then linked
+  // (linkBundle, S5 §5): the JavaScript links, a page's references, and for a
+  // row with glue the runtime's shims, package markers and module path, with
+  // the rename-only fixes the room kept from a run's errors (link_fixes).
+  // origin: each bundle path's writer and its own path; placed: the placed
+  // paths; glue: the runtime-written files; link: linkBundle's report.
   async bundleFiles(top='root') {
     const files=new Map(),origin=new Map(),placed=new Set(),n=this.node(top);
-    if(!n)return {files,origin,placed};
+    if(!n)return {files,origin,placed,glue:new Map(),link:null};
     const atomic=!this.manager(top);
     const gone=id=>{for(let x=this.node(id);x&&x.id!==top;x=x.parent?this.node(x.parent):null)if(['retired','failed'].includes(x.status))return true;return false;};
     const leaves=atomic?[n]:this.allNodes().filter(x=>x.id.startsWith(top+'.')&&!isRuntimeNode(x)&&!this.manager(x.id)&&!gone(x.id));
@@ -3197,7 +3206,7 @@ export class ControlRoom extends DurableObject {
         // v8 S4b review: a copy of a path another piece's contract places is
         // never shipped (the gate refuses new ones; this is a file written before).
         if(!atomic&&!own.has(f.path)&&placedBy.has(f.path)&&placedBy.get(f.path).id!==leaf.id){stray.push(`${f.path} (written by ${leaf.label}, placed by ${placedBy.get(f.path).label})`);continue;}
-        const place=atomic||own.has(f.path),at=place?f.path:materializedPath(leaf.label,f.path,leaf.id);
+        const place=atomic||own.has(f.path),at=place?f.path:packagePath(leaf.label,f.path,leaf.id);
         if(files.has(at)){found.push(`${at} (${leaf.label})`);continue;}
         files.set(at,await this.indexedContent(leaf.id,f.path));
         origin.set(at,{owner:leaf.id,owner_path:f.path});
@@ -3206,7 +3215,90 @@ export class ControlRoom extends DurableObject {
     }
     if(found.length)this.event(top,'bundle_conflict',clip(`Two pieces place a file at the same path; the first is kept: ${found.join(', ')}.`,600));
     if(stray.length)this.event(top,'bundle_stray',clip(`Left out of the project: a copy of a path another piece's contract places: ${stray.join(', ')}.`,600));
-    return {files:new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),origin,placed};
+    const contracts=leaves.flatMap(l=>this.promisedOf(l.id).filter(c=>contractKind(c)==='function').map(c=>({name:c.name,kind:'function',owner:l.id})));
+    const link=linkBundle(files,{pieces:new Map([...origin].map(([p,o])=>[p,o.owner])),contracts,fixes:this.read('link_fixes',{}),rows:this.installedToolchains(),atomic});
+    return {files:link.files,origin,placed,glue:link.glue,link,contracts};
+  }
+  // S5: the link of a bundle in the room's events (once per input), and the
+  // runtime-written files in meta glue_files (runtime-owned, §4.7).
+  linkNotes(id, input, {link, glue}) {
+    if(!link||this.get('link_noted','')===input)return;
+    this.set('link_noted',input);
+    this.save('glue_files',[...(glue||new Map()).keys()]);
+    if(link.edits.length)this.event(id,'link_auto',clip(`Linked ${link.edits.length} file(s) by renaming only: `+link.edits.map(e=>`${e.path}: ${e.renames.map(r=>r.from?`${clip(r.from,80)} → ${clip(r.to,80)}`:r.to).join(', ')}`).join('; '),900));
+    if(glue?.size)this.event(id,'link_glue',clip(`The runtime wrote ${glue.size} glue file(s) so references resolve where the defining files sit: ${[...glue.keys()].join(', ')}.`,900));
+    for(const r of link.rejected.slice(0,6))this.event(id,'link_edit_rejected',clip(`${r.path}: ${r.reason}`,500));
+  }
+  // v8 S5 (§5.2 b): what a card run reported unresolved, as rename-only
+  // fixes of the readers' linked copies. hits: [{path, row, module?, name?,
+  // specifier?}] (a run's errors read with the rows' unresolved patterns, or
+  // a reference the bundle's link left unresolved). Deterministic first
+  // (renameFromRun: the one project name a missing name canonically
+  // matches), else one linker model call per reader and text, whose edits
+  // must pass the row's rename-only check. A fix is kept in link_fixes for
+  // the exact text it was made for (the staged text), so the next bundle
+  // applies it; a worker's own file is never edited. Returns the number of
+  // readers fixed.
+  async relinkBundle(id, bundle, hits) {
+    const {files,link,contracts=[]}=bundle,fixes={...this.read('link_fixes',{})},tried=new Set(this.read('link_tried',[]));
+    const pieces=new Map([...bundle.origin].map(([p,o])=>[p,o.owner])),byPath=new Map();
+    for(const h of hits)if(files.has(h.path)&&pieces.has(h.path))byPath.set(h.path,[...(byPath.get(h.path)||[]),h]);
+    let fixed=0;
+    const keep=(path,text,renames,how)=>{
+      const base=textHash(link.staged.get(path)??files.get(path));
+      fixes[path]={base,text,renames:renames.slice(0,12)};fixed++;
+      this.event(id,'link_renamed',clip(`${path}: ${renames.map(r=>`${r.from} → ${r.to}${r.reason?` (${r.reason})`:''}`).join('; ')} (${how}; the piece's own file is unchanged).`,700));
+    };
+    for(const [path,list] of byPath) {
+      const det=renameFromRun(files,path,list.filter(h=>h.module||h.name),{contracts,pieces});
+      if(det){keep(path,det.text,det.renames,'renamed by the runtime');continue;}
+      const key=`${path}:${textHash(files.get(path))}:${textHash(JSON.stringify(list.map(h=>[h.module,h.name,h.specifier])))}`;
+      if(tried.has(key))continue;
+      tried.add(key);
+      const row=toolchainOf(path),known=linkKnownNames(files,contracts);
+      const facts=this.referenceFacts(),fns=this.allNodes().flatMap(x=>this.promisedOf(x.id)).filter(c=>contractKind(c)==='function');
+      const what=list.map(h=>h.specifier?`the reference '${h.specifier}' names no file of the project`:h.name&&h.module?`${h.module} offers no ${h.name}`:h.module?`nothing in the project is named ${h.module}`:`${h.name} is bound nowhere in the file`);
+      let out;
+      try {
+        out=await linkComponents(this.inferenceEnv(),{v8:true,goal:this.userGoal(),files:[{path,content:files.get(path)}],
+          interfaces:useReferences(fns,facts).map(u=>`${u.contract}; refer to it as: ${u.reference}`),allPaths:[...files.keys()].filter(p=>toolchainOf(p)?.id===row?.id),
+          diagnostic:clip(`The project's run found, in ${path}: ${[...new Set(what)].join('; ')}.`,600),scope:'application'});
+      } catch(e) {out={edits:[]};this.event(id,'link_model_error',clip(`The linker could not be asked about ${path}: ${e?.message||e}`,400));}
+      const edits=out.edits.filter(e=>e.file===path);
+      if(!edits.length){this.event(id,'link_unresolved',clip(`${path}: ${[...new Set(what)].join('; ')}; no rename joins it, so it goes to its piece.`,600));continue;}
+      const result=row?.id==='javascript'?applyEdits(files.get(path),edits,{knownNames:known}):applyTextEdits(files.get(path),edits,row,{knownNames:known});
+      for(const r of result.rejected.slice(0,6))this.event(id,'link_edit_rejected',clip(`${path}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
+      if(result.content!==files.get(path))keep(path,result.content,result.applied.map(e=>({from:e.find,to:e.replace,reason:'the linker'})),'renamed by the linker');
+    }
+    this.save('link_tried',[...tried].slice(-200));
+    if(fixed)this.save('link_fixes',fixes);
+    return fixed;
+  }
+  // The unresolved names a card run's failures report, per reader: each
+  // failed result's text read with every row's unresolved patterns; the
+  // reader is the innermost frame of that row in a piece's file, else the
+  // one piece file whose references name the module. A name or module that
+  // is one of the failed check's own values is left out: no check value
+  // reaches the linker model (S4a).
+  runUnresolved(results, bundle, card=null) {
+    const out=[],seen=new Set(),pieces=bundle.origin;
+    for(const [rid,res] of results) {
+      if(!res||res.passed||res.infrastructure)continue;
+      const secrets=checkSecrets(card?.requirements?.find(r=>r.id===rid)?.check),hidden=v=>!!v&&secrets.some(x=>x===v||x.toLowerCase().split(/[^\p{L}\p{N}_]+/u).includes(v.toLowerCase()));
+      const text=`${res.detail||''}\n${res.output||''}`;
+      for(const row of this.installedToolchains().filter(r=>r.unresolved?.length)) {
+        for(const hit of unresolvedNames(text,row)) {
+          if(hidden(hit.name)||hidden(hit.module))continue;
+          const frame=(res.frames||[]).find(f=>pieces.has(f.path)&&toolchainOf(f.path)?.id===row.id)?.path;
+          const named=hit.module?[...bundle.files.keys()].filter(p=>pieces.has(p)&&toolchainOf(p)?.id===row.id&&new RegExp(`(?:^|\\n)\\s*(?:from|import)\\s+${hit.module.replace(/\./g,'\\.')}\\b`).test(bundle.files.get(p))):[];
+          for(const path of frame?[frame]:named.length===1?named:[]) {
+            const k=JSON.stringify([path,hit.module,hit.name]);
+            if(!seen.has(k)){seen.add(k);out.push({path,row:row.id,...hit});}
+          }
+        }
+      }
+    }
+    return out;
   }
   // U10: a check that has passed is never changed. An anchor is the
   // requirement as it passed (id, says, serves, check), keyed by its id and
@@ -3333,11 +3425,13 @@ export class ControlRoom extends DurableObject {
   // split built it (requirementRoute 's'); an atomic Root repairs its own.
   // A check that could not run (infrastructure) is never routed: the room
   // holds for Continue. Returns {passed} | {reported} | {held}.
-  async compileCard(id) {
+  // S5: relinks counts the runs this call already redid after the link
+  // fixed a reference (at most two: one before the Container, one after it).
+  async compileCard(id, {relinks=0}={}) {
     const card=this.anchoredCard(),rev=this.cardRev(),atomic=!this.manager(id);
     if(!card)return this.holdChecks(id,'checks_failed','The room has no project card to check.');
     if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
-    const {files,origin,placed}=await this.bundleFiles(id);
+    const bundle=await this.bundleFiles(id),{files,origin,placed}=bundle;
     const digest=await snapshotHash(files),input=`${digest}:card${rev}`;
     const finish=()=>{
       this.set('atomic_compile','');
@@ -3362,9 +3456,13 @@ export class ControlRoom extends DurableObject {
       return this.holdChecks(id,'checks_failed',settled.length?clip(`No piece could settle what failed (${settled.join('; ')}).`,500):'The repairs left the project\'s files as they were when the checks last failed.');
     }
     if(!files.size)return this.holdChecks(id,'checks_failed','No piece delivered a file to check.');
+    // S5 (§5): what the link renamed and the glue it wrote, told once per input;
+    // a reference it left unresolved goes to the linker model before the run.
+    this.linkNotes(id,input,bundle);
+    if(relinks<2&&bundle.link?.unresolved.length&&await this.relinkBundle(id,bundle,bundle.link.unresolved.filter(u=>!this.installedToolchains().some(r=>(r.executables||[]).includes(u.module)))))return this.compileCard(id,{relinks:relinks+1});
     this.set('atomic_compile',atomic?input:'');
     this.event(id,'checks_started',`Running the project card's ${card.requirements.length} requirement check(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
-    const {plan,toolchains,local,container}=checkPlan(card,files,{rows:this.installedToolchains(),placed});
+    const {plan,toolchains,local,container}=checkPlan(card,files,{rows:this.installedToolchains(),placed,paths:bundle.link?.paths});
     const results=new Map(local);
     for(const r of card.requirements)if(r.check?.kind==='file')results.set(r.id,{id:r.id,kind:'file',frames:[],...fileResult(r.check,files)});
     // §4.3: Clef judges each document, in parallel with the Container.
@@ -3388,6 +3486,15 @@ export class ControlRoom extends DurableObject {
     const report=run?.report||null;
     if(report?.inventory)this.save('toolchain_inventory',report.inventory);
     for(const c of report?.checks||[])results.set(c.id,c);
+    // S5 (§5.2 b): a name or module the run could not resolve is renamed in
+    // its reader's linked copy when a rename joins it, and the checks run again.
+    if(relinks<2&&report) {
+      const hits=this.runUnresolved(results,bundle,card);
+      if(hits.length&&await this.relinkBundle(id,bundle,hits)) {
+        this.event(id,'checks_relinked',`The run reported ${hits.length} unresolved reference(s) that a rename joins; the checks run again on the linked files.`);
+        return this.compileCard(id,{relinks:relinks+1});
+      }
+    }
     if(run?.infrastructure)for(const c of plan.checks.concat(plan.project))if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});
     // Each requirement's status (§1.3), with the anchor of one that ever passed.
     const old=this.read('requirement_status',{}),anchors=this.read('check_anchors',{}),status={};

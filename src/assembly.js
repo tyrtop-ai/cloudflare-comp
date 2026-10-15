@@ -25,6 +25,17 @@ export function branchDirectory(label, identity=label) {
   return `${name}-${hash.toString(16).padStart(8,'0')}`;
 }
 
+// v8 S5 (§5.2): a piece's folder under components/ when its files are not
+// placed: p_<snake label>_<hash8>, a valid package and module name in every
+// row's language (letters, digits and '_', starting with a letter), so a
+// runtime shim can name a file in it by module path. Used only under v8; v7
+// keeps branchDirectory.
+export function packageDirectory(label, identity=label) {
+  const name=String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,16).replace(/_+$/,'') || 'piece';
+  return `p_${name}_${branchDirectory('', identity).split('-').pop()}`;
+}
+export const packagePath=(label, childPath, identity=label)=>`components/${packageDirectory(label,identity)}/${childPath}`;
+
 export function materializedPath(label, childPath, identity=label) {
   const result=`components/${branchDirectory(label,identity)}/${childPath}`;
   if (!isPath(result)) throw new Error(`Source path cannot be preserved within builder bundle: ${childPath}`);
