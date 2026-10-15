@@ -15,7 +15,7 @@ import {judgeRequirement, judgeParts, JUDGE_BAR} from '../src/model.js';
 import {CLEF, MESSAGES} from '../src/prompts.js';
 import {requirementText} from '../src/problems.js';
 import {TOOLCHAINS} from '../src/toolchains.js';
-import {branchDirectory} from '../src/assembly.js';
+import {packageDirectory} from '../src/assembly.js';
 
 if(!process.env.PLAYWRIGHT_BROWSERS_PATH&&existsSync('/opt/pw-browsers'))process.env.PLAYWRIGHT_BROWSERS_PATH='/opt/pw-browsers';
 if(!process.env.NODE_PATH&&existsSync('/opt/node-tools/node_modules/playwright'))process.env.NODE_PATH='/opt/node-tools/node_modules';
@@ -162,7 +162,7 @@ test('Python temperature CLI: a wrong output fails its command check, goes to th
   assert.equal(requests.length,2);
   const [first]=requests;
   assert.equal(first.mode,'card');
-  const notes=`components/${branchDirectory('Usage guide',guide.id)}/notes.txt`;
+  const notes=`components/${packageDirectory('Usage guide',guide.id)}/notes.txt`;
   assert.deepEqual(Object.keys(first.files).sort(),['USAGE.md',notes,'temp.py'].sort());
   assert.deepEqual(first.plan.commands,{temp:['python3','temp.py']});
   assert.deepEqual(first.plan.syntax,[{toolchain:'python',files:['temp.py']}]);
@@ -189,7 +189,7 @@ test('Python temperature CLI: a wrong output fails its command check, goes to th
   assert.ok(room.installedToolchains().some(r=>r.id==='python'));
   // A span per Container card run.
   assert.equal(room.spans().filter(s=>s.kind==='container'&&s.name==='card').length,2);
-  // The bundle keeps placed files at their own paths; a file no contract places goes under components/.
+  // The bundle keeps placed files at their own paths; a file no contract places goes under components/<package directory>/ (S5).
   const app=await room.appFiles();
   assert.deepEqual(app.files.map(f=>f.path),['.recursive/RUN.md','.recursive/card.json','USAGE.md',notes,'temp.py']);
   assert.match(app.files[0].content,/- `temp`: `python3 temp\.py`: prints the Fahrenheit value/);

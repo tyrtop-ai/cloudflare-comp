@@ -440,6 +440,7 @@ The changelogs give each run's evidence, and the local replays of its files, whi
   - below Root, the prune walk drops a child whose names another branch already promises, then asks each level above whether another strand already owns it.
 
   Nothing compares the code that siblings write. In the larger v7.11 run, two sibling workers each wrote an almost identical `TicketRepository` class. Two sibling splits that run at the same time can each promise the same new name. A manager's model can retire a duplicate only when nothing else imports it.
+- **Linking other languages (pipeline v8).** For a language other than JavaScript the linker only renames and the runtime writes the glue: a shim under `glue/<language>/` per referenced contract name or piece module, package markers under `components/`, and the module path every check runs with (`.recursive/RUN.md` shows it). There are no member, `await` or argument-order checks for that code: such a failure surfaces as a failed card check and is routed by requirement. Two pieces that each write a module of the same name share no shim for it, so a bare reference to it reaches neither; the run's error routes it to its reader.
 - **`MOCK_AI=true`** still uses the older builder path, without promises. It exists for the regression tests and is not a demo mode.
 - **Repositories are never deleted.** Each run creates one Artifacts repository per agent (see [cleanup](../INSTALL-CLOUDFLARE.md#costs-and-cleanup)).
 
@@ -457,6 +458,7 @@ The changelogs give each run's evidence, and the local replays of its files, whi
 | `src/artifact-store.js`, `src/memory-fs.js` | Artifacts adapter: isomorphic-git over an in-memory filesystem, one commit per call |
 | `src/build-executor.js`, `src/build-verification.js` | `BuildExecutor` Container driver; snapshot hashing, attestation and repair addressing |
 | `src/code-work.js`, `src/assembly.js`, `src/assembly-gate.js` | Worker output rules and a worker's contract text, `components/...` bundle paths and metadata files, source and builder-file gates |
+| `src/glue.js` | Pipeline v8's bundle link: JavaScript paths from placed files, a page's script and stylesheet paths, and for a toolchain row with glue the runtime's shims, package markers and module path, with rename-only fixes of a reference by its canonical name (`renameOnlyTextError` in `src/linker.js` checks each token by token) |
 | `src/baseline-linker.js` | Diagnostic linker from the v7.7–v7.10 builder; builders since v7.11 do not use it |
 | `src/knowledge.js`, `src/protocol.js` | Public and private knowledge files, action and request parsing, reading model output, contact rules |
 | `src/zip.js`, `src/github-export.js` | Getting the code out: a store-only ZIP writer, and the push of the linked application to a new GitHub branch and pull request |

@@ -333,11 +333,16 @@ export function componentImports(path, content, fileSet) {
   }
   return out;
 }
-export function unresolvedImports(files) {
+// v8 S5: which files a link reads as readers. v7 links the modules under
+// components/; v8 also links placed files (app.js beside index.html), so its
+// callers pass within (a path predicate: the pieces' own files).
+const IN_COMPONENTS=p=>p.startsWith('components/');
+const linkable=(p,within)=>LINKABLE.test(p)&&(within||IN_COMPONENTS)(p);
+export function unresolvedImports(files, {within=null}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const problems=[];
   for(const [path,content] of set) {
-    if(!LINKABLE.test(path)||!path.startsWith('components/'))continue;
+    if(!linkable(path,within))continue;
     for(const ref of componentImports(path,content,set))if(ref.error)problems.push({path,specifier:ref.specifier,detail:ref.error});
   }
   return problems;
@@ -1417,11 +1422,11 @@ export function ownData(files, uses=[]) {
 }
 // Every name a module reads from an import that resolves, in source order,
 // with ok=false where the target does not export it.
-export function importReads(files, surfaces) {
+export function importReads(files, surfaces, {within=null}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const out=[];
   for(const [path,content] of set) {
-    if(!LINKABLE.test(path)||!path.startsWith('components/'))continue;
+    if(!linkable(path,within))continue;
     let ast;try {ast=parseSource(content).ast;} catch {continue;}
     const target=spec=>{if(typeof spec!=='string'||!spec.startsWith('.'))return null;const r=resolveLocal(path,spec,set);return r.path&&surfaces.get(r.path)?r.path:null;};
     const listOf=names=>[...names].slice(0,14).join(', ')||'nothing by name';
@@ -1472,9 +1477,9 @@ export function importReads(files, surfaces) {
   }
   return out;
 }
-export function importMismatches(files, surfaces) {
+export function importMismatches(files, surfaces, opts={}) {
   const seen=new Set();
-  return importReads(files,surfaces).filter(x=>{const k=x.path+'|'+x.target+'|'+x.name;if(x.ok||seen.has(k))return false;seen.add(k);return true;}).map(({ok,...x})=>x);
+  return importReads(files,surfaces,opts).filter(x=>{const k=x.path+'|'+x.target+'|'+x.name;if(x.ok||seen.has(k))return false;seen.add(k);return true;}).map(({ok,...x})=>x);
 }
 
 // ---------- argument order (v7.15.3) ----------
@@ -2110,9 +2115,10 @@ export function errorTarget(files, path, detail) {
 // link target. An import of promised names binds to their owner's module,
 // wherever its path points now; "only module exporting the name" stays
 // for unpromised names.
-export function autoLink(files, surfaces, {scope='application',provider=null,ownership=null}={}) {
+export function autoLink(files, surfaces, {scope='application',provider=null,ownership=null,within=null}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
-  const js=[...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/'));
+  // v8 S5: within names the readers; a target may be any JavaScript file of the bundle.
+  const js=[...set.keys()].filter(p=>linkable(p,within)),targets=within?[...set.keys()].filter(p=>LINKABLE.test(p)):js;
   const owner=ownership?.owner||(()=>null),shadow=ownership?.shadow||(()=>false);
   const exported=t=>{const {names}=exportNames(surfaces.get(t));return ownership?new Set([...names].filter(n=>!shadow(t,n))):names;};
   const edits=[];
@@ -2126,7 +2132,7 @@ export function autoLink(files, surfaces, {scope='application',provider=null,own
       const homes=[...wanted].map(owner),home=homes.length&&homes.every(h=>h&&h===homes[0])?homes[0]:null;
       if(home&&home!==path){if(at.path===home)continue;pick=home;why=`owner of ${[...wanted].join(', ')} by the plan`;}
       else if(!at.error)continue;
-      const others=js.filter(t=>t!==path&&surfaces.get(t));
+      const others=targets.filter(t=>t!==path&&surfaces.get(t));
       const key=normName(ref.specifier.split('/').pop());
       const exactName=t=>{const cls=normName(surfaces.get(t)?.default?.name);return normName(t.split('/').pop())===key||!!cls&&cls===key;};
       const nameMatch=t=>{
@@ -2147,7 +2153,7 @@ export function autoLink(files, surfaces, {scope='application',provider=null,own
       const shares=t=>{const names=exported(t),d=surfaces.get(t)?.default,lone=new Set(d?.type==='function'||d?.type==='class'?[d.name,...(d.methods||[]).map(methodName)]:[]);return [...wanted].some(n=>names.has(n)||ref.names.has(n)&&lone.has(n));};
       // Without the static check naming what differs, the file would leave
       // the linker's view still wrong.
-      const flagged=t=>t&&importMismatches(new Map([[path,content.slice(0,ref.start+1)+relativeSpecifier(path,t)+content.slice(ref.end-1)],[t,set.get(t)]]),surfaces).some(m=>m.target===t)?t:null;
+      const flagged=t=>t&&importMismatches(new Map([[path,content.slice(0,ref.start+1)+relativeSpecifier(path,t)+content.slice(ref.end-1)],[t,set.get(t)]]),surfaces,{within}).some(m=>m.target===t)?t:null;
       if(!pick&&wanted.size) {
         const pool=others.filter(provides),planned=provider?pool.filter(t=>provider(t,[...wanted])):[];
         const plannedWhy=`planned provider of ${[...wanted].join(', ')}`;
@@ -2526,10 +2532,10 @@ function shapeFixesIn(path, content, files, surfaces) {
   return out;
 }
 // The shape fix of every resolved import that is bound the wrong way round.
-export function shapeFixes(files, surfaces) {
+export function shapeFixes(files, surfaces, {within=null}={}) {
   const set=files instanceof Map?files:new Map(Object.entries(files));
   const edits=[];
-  for(const path of [...set.keys()].filter(p=>LINKABLE.test(p)&&p.startsWith('components/')))
+  for(const path of [...set.keys()].filter(p=>linkable(p,within)))
     for(const {file,find,replace,reason,target} of shapeFixesIn(path,set.get(path),set,surfaces))edits.push({file,find,replace,reason,target});
   return edits;
 }
@@ -2603,4 +2609,149 @@ export function shapeEditError(before, after, {path, files, surfaces, knownNames
   if(same)return null;
   const runtime=changed.map(i=>fixes.get(m[i]?.start)?.text.trim()).filter(Boolean);
   return `edit changes how ${changed.map(i=>JSON.stringify(after.slice(b[i].start,b[i].end))).join(', ')} is bound, `+(runtime.length?`but the runtime binds it as ${runtime.map(t=>JSON.stringify(t)).join(', ')}`:`which the target module's exports do not call for`);
+}
+
+// ---------- v8 S5 (§5.2): rename-only for a row read without a parser ----------
+// A file of a toolchain row with no native parser (Python; a page) is read as
+// text tokens, by the row's own data: identifiers by its identifier pattern,
+// string literals by its quote marks (the longest first, so a triple quote is
+// one), comments by its comment marks, numbers, single punctuation marks.
+// Whitespace is not a token. Every token keeps its line.
+const identifierSource=row=>String(row?.identifier||'^[A-Za-z_$][A-Za-z0-9_$]*$').replace(/^\^/,'').replace(/\$$/,'').replace(/\{\d+,\d+\}/g,'*');
+export function textTokens(text, row) {
+  const s=String(text??''),out=[],word=new RegExp(identifierSource(row),'y'),num=/\d[\w.]*/y;
+  const quotes=[...(Array.isArray(row?.strings)?row.strings:[])].sort((a,b)=>b.length-a.length);
+  const line=row?.line_comment||null,[open,close]=Array.isArray(row?.block_comment)?row.block_comment:[null,null];
+  let i=0,ln=1;
+  const push=(type,from,to)=>{const value=s.slice(from,to);out.push({type,value,start:from,end:to,line:ln});ln+=(value.match(/\n/g)||[]).length;i=to;};
+  while(i<s.length) {
+    const c=s[i];
+    if(c==='\n'){ln++;i++;continue;}
+    if(/\s/.test(c)){i++;continue;}
+    if(line&&s.startsWith(line,i)){const e=s.indexOf('\n',i);push('comment',i,e<0?s.length:e);continue;}
+    if(open&&s.startsWith(open,i)){const e=s.indexOf(close,i+open.length);push('comment',i,e<0?s.length:e+close.length);continue;}
+    const q=quotes.find(x=>s.startsWith(x,i));
+    if(q) {
+      let j=i+q.length;
+      while(j<s.length&&!s.startsWith(q,j)){if(s[j]==='\\')j++;else if(q.length===1&&s[j]==='\n'&&q!=='`')break;j++;}
+      push('string',i,Math.min(s.length,j+q.length));continue;
+    }
+    word.lastIndex=i;const w=word.exec(s);
+    if(w&&w[0]){push('name',i,i+w[0].length);continue;}
+    num.lastIndex=i;const n=num.exec(s);
+    if(n){push('number',i,i+n[0].length);continue;}
+    push('punct',i,i+1);
+  }
+  return out;
+}
+// The lines of a text (1-based) that its row's reference patterns match (an
+// import line), each read with its indentation taken off.
+export function referenceLines(text, row) {
+  const res=(row?.imports||[]).map(x=>new RegExp(x)),lines=new Set();
+  String(text??'').split('\n').forEach((l,i)=>{if(res.some(re=>re.test(l.trim())))lines.add(i+1);});
+  return lines;
+}
+// Whether after is before with only names and reference paths changed, as
+// §5.2 (b) allows for a row read as text: '' when it is, the reason when not.
+// A row with an identifier pattern (code): the same tokens in the same
+// order; a string literal may change only on a reference line; a name may
+// change on a reference line (the path it reads, or the name it binds),
+// and anywhere else only one to one, consistently across the file: each
+// old name becomes one new name at every place, two old names never become
+// one, and a new name that is already in the file is taken only when the
+// old one is bound nowhere in it (by the row's defs or a reference line), so
+// two names never merge into one. A reserved word never changes. knownNames:
+// the names a new name may be (contract names, the names defined in the
+// bundle, its module names). A row without one (a page): only reference
+// lines change, and only in the paths they read.
+export function renameOnlyTextError(before, after, row, {knownNames=null}={}) {
+  const A=String(before??''),B=String(after??'');
+  if(A===B)return '';
+  if(!row?.identifier) {
+    const a=A.split('\n'),b=B.split('\n'),res=(row?.imports||[]).map(x=>new RegExp(x,'gd'));
+    if(a.length!==b.length)return `edit adds or removes lines (${a.length} before, ${b.length} after)`;
+    // A line with the path each reference reads (group 1) taken out.
+    const blank=l=>{let t=l;for(const re of res){re.lastIndex=0;const cuts=[...t.matchAll(re)].map(m=>m.indices?.[1]).filter(Boolean).reverse();for(const [f,e] of cuts)t=t.slice(0,f)+'\u0000'+t.slice(e);}return t;};
+    for(let i=0;i<a.length;i++)if(a[i]!==b[i]&&(!res.some(re=>{re.lastIndex=0;return re.test(a[i]);})||blank(a[i])!==blank(b[i])))return `edit changes line ${i+1}, which is not a reference to another file, or changes more than the path it reads`;
+    return '';
+  }
+  const x=textTokens(A,row),y=textTokens(B,row),refs=referenceLines(A,row);
+  if(x.length!==y.length)return `edit adds or removes code (${x.length} tokens before, ${y.length} after)`;
+  const reserved=new Set(`${row.reserved||''} ${row.builtin_names||''}`.split(/\s+/).filter(Boolean)),show=t=>JSON.stringify(t.value.slice(0,40));
+  const map=new Map(),back=new Map(),changedNew=new Set();
+  for(let i=0;i<x.length;i++) {
+    const a=x[i],b=y[i],where=`line ${a.line} (${show(a)} → ${show(b)})`;
+    if(a.type!==b.type)return `edit changes code, not a name, at ${where}`;
+    if(a.value===b.value)continue;
+    if(a.type==='string'){if(refs.has(a.line))continue;return `edit changes a string that is not a reference path at ${where}`;}
+    if(a.type!=='name')return `edit changes code, not a name, at ${where}`;
+    if(reserved.has(a.value)||reserved.has(b.value))return `edit changes a reserved or built-in name at ${where}`;
+    if(knownNames&&!knownNames.has(b.value))return `edit renames ${show(a)} to ${show(b)}, which nothing in the project defines, at ${where}`;
+    if(refs.has(a.line))continue;
+    if(map.has(a.value)&&map.get(a.value)!==b.value)return `edit renames ${show(a)} two different ways`;
+    if(back.has(b.value)&&back.get(b.value)!==a.value)return `edit renames two names to ${show(b)}`;
+    map.set(a.value,b.value);back.set(b.value,a.value);changedNew.add(b.value);
+  }
+  // Consistency: every place an old name stands (off reference lines) changed the same way.
+  const bound=boundTextNames(A,row);
+  for(let i=0;i<x.length;i++) {
+    const a=x[i],b=y[i];
+    if(a.type!=='name'||refs.has(a.line))continue;
+    if(map.has(a.value)&&b.value!==map.get(a.value))return `edit renames ${JSON.stringify(a.value)} at some places and not at line ${a.line}`;
+    // A new name already in the file merges two names unless the old one was bound nowhere.
+    if(changedNew.has(a.value)&&a.value===b.value&&bound.has(back.get(a.value)))return `edit renames ${JSON.stringify(back.get(a.value))} to ${JSON.stringify(a.value)}, a name the file already uses for something else`;
+  }
+  return '';
+}
+// The names a text binds: those the row's defs patterns define, and those
+// its reference lines bring in (each imported name, or the alias it takes).
+export function boundTextNames(text, row) {
+  const out=new Set(),t=String(text??'');
+  for(const d of row?.defs||[])for(const m of t.matchAll(new RegExp(d,'gm')))if(m[1])out.add(m[1]);
+  for(const ref of referenceItems(t,row))for(const n of ref.names)out.add(n.alias||n.name);
+  return out;
+}
+// The references of a text, read with the row's import patterns: each
+// {line, module, names: [{name, alias}], from: whether it names what it
+// imports}. A parenthesised list may span lines. A relative module ('.x')
+// is kept with its dots.
+export function referenceItems(text, row) {
+  const lines=String(text??'').split('\n'),out=[],res=(row?.imports||[]).map(x=>new RegExp(x));
+  for(let i=0;i<lines.length;i++) {
+    let l=lines[i].replace(/\s+#.*$/,'').trim();
+    const re=res.findIndex(r=>r.test(l));
+    if(re<0)continue;
+    if(/\($/.test(l)||/\([^)]*$/.test(l)){let j=i;while(j+1<lines.length&&!lines[j].includes(')')){j++;l+=' '+lines[j].replace(/#.*$/,'').trim();}}
+    const m=res[re].exec(l);
+    if(!m)continue;
+    const items=s=>String(s).replace(/[()]/g,' ').split(',').map(x=>x.trim()).filter(Boolean).map(x=>{const [name,alias]=x.split(/\s+as\s+/);return {name:name.trim(),alias:alias?.trim()||null};});
+    if(m[2]!==undefined)out.push({line:i+1,module:m[1],names:items(m[2]).filter(n=>n.name!=='*'),from:true,star:/\*/.test(m[2])});
+    else for(const it of items(m[1]))out.push({line:i+1,module:it.name,names:[],alias:it.alias,from:false});
+  }
+  return out;
+}
+// One name renamed as a token: every name token equal to from becomes to
+// (only on the given lines, when lines is a set), strings and comments untouched.
+export function renameTextName(text, row, from, to, {lines=null}={}) {
+  const t=String(text??'');let out='',last=0;
+  for(const tok of textTokens(t,row))if(tok.type==='name'&&tok.value===from&&(!lines||lines.has(tok.line))){out+=t.slice(last,tok.start)+to;last=tok.end;}
+  return out+t.slice(last);
+}
+// A model's find/replace edits to a file of a row read as text: each must
+// find text in the file (every occurrence is replaced) and leave the file
+// rename-only against the text before the edit and the worker's original.
+export function applyTextEdits(content, edits, row, {knownNames=null,original=null}={}) {
+  let current=String(content);
+  const applied=[],rejected=[];
+  for(const edit of edits) {
+    const find=String(edit?.find??''),replace=String(edit?.replace??'');
+    if(!find){rejected.push({edit,reason:'empty find text'});continue;}
+    if(find===replace)continue;
+    if(!current.includes(find)){rejected.push({edit,reason:'find text is not in the file'});continue;}
+    const next=current.split(find).join(replace);
+    const why=renameOnlyTextError(current,next,row,{knownNames})||(original!=null&&renameOnlyTextError(original,next,row,{knownNames}));
+    if(why){rejected.push({edit,reason:why});continue;}
+    current=next;applied.push(edit);
+  }
+  return {content:current,applied,rejected};
 }
