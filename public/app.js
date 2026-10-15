@@ -398,4 +398,93 @@ $('node-detail')?.addEventListener('click',e=>{const id=e.target.closest?.('[dat
 globalThis.addEventListener?.('resize',drawPath);
 if(typeof ResizeObserver==='function')new ResizeObserver(()=>drawPath()).observe($('hierarchy'));
 $('token').addEventListener('change',refresh);$('room').addEventListener('change',()=>{const id=$('room').value.trim();if(/^[a-z0-9-]{8,64}$/i.test(id)){const u=new URL(location.href);u.searchParams.set('room',id);location.assign(u.href);}});
+// B1: the Benchmarks panel. A form (a dataset URL, pasted or uploaded JSON
+// lines, the task limit, rooms at once, a label; the room settings and the
+// turn budget from the pickers above), the runs, one run's results with a
+// link to each task's room, and two runs compared on their shared tasks.
+const pct=v=>v==null?'–':`${(v*100).toFixed(1)}%`;
+const secs=ms=>ms==null?'–':ms<1000?`${ms} ms`:`${(ms/1000).toFixed(ms<10000?1:0)} s`;
+const count=n=>n==null?'–':Number(n).toLocaleString('en-US');
+const shortModel=m=>String(m||'').split('/').pop();
+let benchRun='',benchData=null,benchList=[],benchCompare=null,benchFileName='';
+const benchOutcome=t=>t.outcome||(t.status==='running'?'running':'queued');
+function benchRunsMarkup(runs,picked='') {
+  if(!runs?.length)return '<p class="empty">No benchmark runs yet.</p>';
+  const row=r=>{const a=r.aggregate||{};
+    return `<tr class="${r.id===picked?'picked':''}"><td><b>${esc(r.label||r.id)}</b><br/><span class="faint mono">${esc(r.id)}</span></td><td>${esc(r.status)}</td><td class="num">${count(a.finished)} / ${count(a.tasks)}</td><td class="num">${pct(a.pass_at_1)}</td><td class="num">${secs(a.mean_ms)}</td><td class="num">${count(a.tokens)}</td><td class="num">${a.container_s==null?'–':a.container_s+' s'}</td>`+
+      `<td class="faint">${esc(shortModel(r.settings?.worker_model))}</td><td><button type="button" class="secondary" data-bench-view="${esc(r.id)}">View</button>${r.status==='running'?`<button type="button" class="secondary" data-bench-stop="${esc(r.id)}">Stop</button>`:r.status==='stopped'?`<button type="button" class="secondary" data-bench-resume="${esc(r.id)}">Resume</button>`:''}</td></tr>`;};
+  return `<table class="bench-table"><thead><tr><th>RUN</th><th>STATE</th><th class="num">DONE</th><th class="num">PASS@1</th><th class="num">MEAN TIME</th><th class="num">TOKENS</th><th class="num">CONTAINER</th><th>WORKERS</th><th></th></tr></thead><tbody>${runs.map(row).join('')}</tbody></table>`;
+}
+// A task's room opens in the existing tree view (a new tab: paste the token there).
+const roomLink=room=>room?`<a href="/?room=${encodeURIComponent(room)}" target="_blank" rel="noopener" class="mono">open room</a>`:'<span class="faint">no room yet</span>';
+function benchResultsMarkup(run) {
+  if(!run)return '';
+  const a=run.aggregate||{},s=run.settings||{},d=run.dataset||{};
+  const summary=`<div class="bench-summary"><span>pass@1 <b>${pct(a.pass_at_1)}</b> <span class="faint">(${count(a.pass)} of ${count(a.scored)} scored)</span></span><span>mean time <b>${secs(a.mean_ms)}</b></span><span>tokens <b>${count(a.tokens)}</b></span><span>Container <b>${a.container_s??0} s</b></span>`+
+    `${a.unverified?`<span>unverified <b>${a.unverified}</b></span>`:''}${a.error?`<span>errors <b>${a.error}</b></span>`:''}${a.timeout?`<span>timeouts <b>${a.timeout}</b></span>`:''}</div>`+
+    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once · budget ${count(run.budget)} turns · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}</p>`;
+  const row=t=>{const o=benchOutcome(t);return `<tr><td class="mono">${esc(t.task_id)}</td><td><span class="req-chip ${esc(o)}"${t.detail?` title="${esc(t.detail)}"`:''}>${esc(o)}</span></td><td class="num">${secs(t.wall_ms)}</td><td class="num">${count(t.tokens)}</td><td class="num">${t.container_ms?secs(t.container_ms):'–'}</td><td>${roomLink(t.room)}</td></tr>`;};
+  return summary+`<table class="bench-table"><thead><tr><th>TASK</th><th>RESULT</th><th class="num">TIME</th><th class="num">TOKENS</th><th class="num">CONTAINER</th><th>ROOM</th></tr></thead><tbody>${(run.tasks||[]).map(row).join('')}</tbody></table>`;
+}
+function benchCompareMarkup(c) {
+  if(!c)return '';
+  const name=x=>esc(x.label||x.id),diff=c.difference;
+  const head=`<div class="bench-summary"><span>${name(c.a)} <b>${pct(c.pass_at_1_a)}</b></span><span>${name(c.b)} <b>${pct(c.pass_at_1_b)}</b></span>`+
+    `<span>difference <b class="bench-diff ${diff>0?'up':diff<0?'down':''}">${diff==null?'–':`${diff>0?'+':''}${(diff*100).toFixed(1)} pts`}</b></span><span class="faint">${count(c.compared)} of ${count(c.shared)} shared tasks scored on both${c.same_dataset?'':' · the datasets differ'}</span></div>`+
+    `<p class="helper">Only ${name(c.a)} passed: ${esc(c.only_a.join(', ')||'none')} · only ${name(c.b)} passed: ${esc(c.only_b.join(', ')||'none')}</p>`;
+  const cell=x=>`<td><span class="req-chip ${esc(x.outcome||'queued')}">${esc(x.outcome||'–')}</span></td><td class="num">${secs(x.wall_ms)}</td><td class="num">${count(x.tokens)}</td><td>${roomLink(x.room)}</td>`;
+  return head+`<table class="bench-table"><thead><tr><th>TASK</th><th colspan="4">${name(c.a)} · ${esc(shortModel(c.a.settings?.worker_model))}</th><th colspan="4">${name(c.b)} · ${esc(shortModel(c.b.settings?.worker_model))}</th></tr></thead><tbody>${c.tasks.map(t=>`<tr><td class="mono">${esc(t.task_id)}</td>${cell(t.a)}${cell(t.b)}</tr>`).join('')}</tbody></table>`;
+}
+function renderBench() {
+  if(!$('bench-runs'))return;
+  $('bench-runs').innerHTML=benchRunsMarkup(benchList,benchRun);
+  if($('bench-results'))$('bench-results').innerHTML=benchCompare?benchCompareMarkup(benchCompare):benchResultsMarkup(benchData);
+  const options=benchList.map(r=>`<option value="${esc(r.id)}">${esc(r.label||r.id)} · ${esc(r.id)}</option>`).join('');
+  for(const id of ['bench-a','bench-b']){const el=$(id);if(el){const keep=el.value;el.innerHTML=options;if(keep)el.value=keep;}}
+}
+async function refreshBench() {
+  if(!token()||!$('bench-runs'))return;
+  try {
+    benchList=(await call('/api/bench')).runs||[];
+    if(benchRun&&!benchCompare)benchData=await call('/api/bench?id='+encodeURIComponent(benchRun));
+    renderBench();
+  } catch(err){showError(err);}
+}
+async function benchPost(path,data) {
+  try {$('error').textContent='';const r=await call(path,'POST',data);await refreshBench();return r;}
+  catch(err){showError(err);return null;}
+}
+// What Run benchmark sends: the URL, else the pasted or uploaded text.
+function benchRequest() {
+  const url=$('bench-url')?.value.trim()||'',text=$('bench-text')?.value||'';
+  return {dataset:url?{url}:{text,...(benchFileName?{name:benchFileName}:{})},limit:Number($('bench-limit')?.value)||20,concurrency:Number($('bench-concurrency')?.value)||2,
+    label:$('bench-label')?.value.trim()||'',budget:countSetting('budget'),settings:settings()};
+}
+$('bench-start')?.addEventListener('click',async()=>{
+  const body=benchRequest();
+  if(!body.dataset.url&&!String(body.dataset.text||'').trim()){showError('Give a dataset URL, or paste or upload JSON lines.');return;}
+  const r=await benchPost('/api/bench',body);
+  if(r?.id){benchRun=r.id;benchData=r;benchCompare=null;renderBench();}
+});
+$('bench-file')?.addEventListener('change',async()=>{
+  const f=$('bench-file').files?.[0];
+  if(!f)return;
+  try{$('bench-text').value=await f.text();benchFileName=f.name||'';}catch(err){showError(err);}
+});
+$('bench-text')?.addEventListener('input',()=>{benchFileName='';});
+$('bench-runs')?.addEventListener('click',e=>{
+  const d=e.target.closest?.('button')?.dataset;
+  if(!d)return;
+  if(d.benchView){benchRun=d.benchView;benchCompare=null;benchData=null;refreshBench();}
+  else if(d.benchStop)benchPost('/api/bench/stop',{id:d.benchStop});
+  else if(d.benchResume)benchPost('/api/bench/resume',{id:d.benchResume});
+});
+$('bench-compare')?.addEventListener('click',async()=>{
+  const a=$('bench-a')?.value,b=$('bench-b')?.value;
+  if(!a||!b||a===b){showError('Pick two different runs to compare.');return;}
+  try{$('error').textContent='';benchCompare=await call(`/api/bench/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);renderBench();}
+  catch(err){showError(err);}
+});
+$('token').addEventListener('change',refreshBench);
+setInterval(refreshBench,5000);refreshBench();
 setInterval(refresh,1000);refresh();
