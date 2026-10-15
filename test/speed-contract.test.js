@@ -11,21 +11,24 @@ const {ROOT_PROMISE}=await import('../src/model.js');
 const fix=(content,names=['readTickets'],path='a.js')=>L.awaitFixes(new Map([[path,content]]),names)[path]||null;
 const head="const { readTickets } = require('./readTickets');\n";
 
-test('awaitFixes: await goes in where the function is async already, or can become async because nothing else calls it',()=>{
-  // Already async: only the await.
+test('awaitFixes: await goes in only inside a function that is async already',()=>{
   let r=fix(head+"async function createTicket(data) {\n  const tickets = readTickets();\n  tickets.push(data);\n  return data;\n}\nmodule.exports = { createTicket };\n");
   assert.equal(r.content,head+"async function createTicket(data) {\n  const tickets = await readTickets();\n  tickets.push(data);\n  return data;\n}\nmodule.exports = { createTicket };\n");
-  assert.deepEqual([r.fixed,r.made_async],[[{name:'readTickets',line:3}],[]]);
-  // An exported function nothing in the file calls becomes async; a member read gets parentheses.
-  r=fix(head+"function viewTicket(id) {\n  return readTickets().find(t => t.id === id);\n}\nmodule.exports = { viewTicket };\n");
-  assert.equal(r.content,head+"async function viewTicket(id) {\n  return (await readTickets()).find(t => t.id === id);\n}\nmodule.exports = { viewTicket };\n");
-  assert.deepEqual(r.made_async,['viewTicket']);
-  // exports.x = function, an ES module's export, an object's arrow and method, a class method.
-  assert.match(fix(head+"exports.count = function() { return readTickets().length; };\n").content,/^exports\.count = async function\(\) \{ return \(await readTickets\(\)\)\.length; \};$/m);
-  assert.match(fix("import { readTickets } from './readTickets';\nexport function all() { const t = readTickets(); return t.length; }\n").content,/^export async function all\(\) \{ const t = await readTickets\(\); return t\.length; \}$/m);
-  assert.match(fix("import { readTickets } from './readTickets';\nexport function start() {\n  return { list: () => { const t = readTickets(); return t.slice(); }, first() { return readTickets()[0]; } };\n}\n").content,
-    /return \{ list: async \(\) => \{ const t = await readTickets\(\); return t\.slice\(\); \}, async first\(\) \{ return \(await readTickets\(\)\)\[0\]; \} \};/);
-  assert.match(fix(head+"class Store { static all() { const t = readTickets(); return t.length; } }\nmodule.exports = { Store };\n").content,/static async all\(\) \{ const t = await readTickets\(\); return t\.length; \}/);
+  assert.deepEqual(r.fixed,[{name:'readTickets',line:3}]);
+  // A member read gets parentheses; an async arrow, method and class method too.
+  assert.match(fix(head+"exports.count = async function() { return readTickets().length; };\n").content,/^exports\.count = async function\(\) \{ return \(await readTickets\(\)\)\.length; \};$/m);
+  assert.match(fix("import { readTickets } from './readTickets';\nexport function start() {\n  return { list: async () => { const t = readTickets(); return t.slice(); } };\n}\n").content,/list: async \(\) => \{ const t = await readTickets\(\); return t\.slice\(\); \}/);
+  assert.match(fix(head+"class Store { async all() { const t = readTickets(); return t.length; } }\nmodule.exports = { Store };\n").content,/async all\(\) \{ const t = await readTickets\(\); return t\.length; \}/);
+});
+
+// The review's breaking cases (probes/speed1/await-probe.mjs): making the
+// enclosing function async changed what its callers read. Never again.
+test('awaitFixes: a function is never made async (review M1: listOpen, Store.list, h.pick)',()=>{
+  const listOpen="const { readTickets } = require('./readTickets');\nfunction listOpen() { const all = readTickets(); return all.filter(t => t.open); }\nmodule.exports = { listOpen };";
+  const countOpen="const { listOpen } = require('./listOpen');\nfunction countOpen() { return listOpen().length; }\nmodule.exports = { countOpen };";
+  assert.deepEqual(L.awaitFixes(new Map([['components/x/listOpen.js',listOpen],['components/x/countOpen.js',countOpen]]),['readTickets']),{},'countOpen would read listOpen().length of a promise');
+  assert.equal(fix(head+"class Store { list(){ const t = readTickets(); return t.slice(); } }\nmodule.exports = { Store };"),null,'callers elsewhere use .list().slice()');
+  assert.equal(fix(head+"const h = { pick(id){ const t = readTickets(); return t.find(x=>x.id===id); } };\nfunction findAll(ids){ return ids.map(h.pick); }\nmodule.exports = { findAll };"),null,'findAll would return promises');
 });
 
 test('awaitFixes: nothing where the fix is ambiguous',()=>{
@@ -85,15 +88,37 @@ test('a done that fails its contract is corrected in the same turn and committed
   assert.equal(w.calls.file[0].requested_file,'createTicket.js');
 });
 
-test('only the await rule failing: fixed mechanically, no model call, one commit, and the event says what changed',async()=>{
+// The storage piece's module, as committed: readTickets async (or not).
+const STORE=async=>`${async?'async ':''}function readTickets() { return []; }\n${async?'async ':''}function saveTickets(tickets) {}\nmodule.exports = { readTickets, saveTickets };\n`;
+async function withStore(w,async) {
+  const store=w.room.children('root').find(c=>c.label==='Ticket storage').id;
+  w.room.db().exec("UPDATE agents SET phase='implement' WHERE id=?",store);
+  await w.room.putFile(store,'ticketStore.js',STORE(async));
+}
+test('only the await rule failing, inside an async function, on a callee its module declares async: fixed mechanically, no model call, one commit',async()=>{
   const sync=FIXED.replace('const tickets = await readTickets();','const tickets = readTickets();');
   const w=await createWorker({leaf:()=>({summary:'Wrote it',files:[{path:'createTicket.js',content:sync}],done:true})});
+  await withStore(w,true);w.pushed.length=0;
   await w.turn();
   assert.equal(w.room.node(w.id).status,'done',trace(w.room));
   assert.equal(events(w.room,'contract_autofix')[0].body,'Inserted await before the commit, mechanically: createTicket.js: await readTickets() (line 5).');
   assert.deepEqual(w.pushed,[['createTicket.js',FIXED]]);
   assert.equal(w.calls.file.length,0);
   assert.deepEqual(events(w.room,'contract_precheck'),[]);
+});
+
+test('a callee that may be synchronous is never awaited by the runtime: the worker hears the rule (its correction, then the return)',async()=>{
+  const sync=FIXED.replace('const tickets = await readTickets();','const tickets = readTickets();');
+  const w=await createWorker({leaf:()=>({summary:'Wrote it',files:[{path:'createTicket.js',content:sync}],done:true}),file:()=>FIXED});
+  await withStore(w,false);w.pushed.length=0;
+  await w.turn();
+  assert.deepEqual(events(w.room,'contract_autofix'),[]);
+  assert.match(events(w.room,'contract_precheck')[0].body,/rules \[await\]/);
+  assert.equal(w.calls.file.length,1);
+  assert.equal(w.room.node(w.id).status,'done',trace(w.room));
+  // A promise that states it returns a promise is known async without any module.
+  assert.equal(w.room.knownAsync('readTickets',{returns:'a promise of the array of tickets'}),true);
+  assert.equal(w.room.knownAsync('readTickets',{returns:'the array of ticket objects'}),false);
 });
 
 test('a correction that still fails is committed and returned after the commit, as before; past three returns nothing is retried in the turn',async()=>{

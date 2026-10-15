@@ -204,14 +204,7 @@ const RETURNS14='createTicket(data) is promised to return the created ticket, bu
 const SENT14R=`[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. ${RETURNS14}${TAIL}`,SENT14_RETURNS=`[contract] Your promise: createTicket(data). ${RETURNS14}${TAIL}`;
 const TICKET14=`Your createTicket(data) ("creates a new ticket and saves it") threw: SyntaxError: Unexpected end of JSON input. Test line 9: const createResult = await app.createTicket({ title: 'Test Ticket', description: 'This is a test' }). What the other side provides: ${STORAGE_FACTS}${TAIL}`;
 
-// Speed v1: the synchronous view and update, and revision 1's read, are
-// awaited mechanically before their commit (contract_autofix), so View and
-// Update ticket finish on their first turn; what is left (revision 1's
-// return, revision 3's JSON.parse(readTickets()), which has no unambiguous
-// fix, and revision 5's return) is returned after the commit as before. These
-// scripted workers answer no single-file correction, so each in-turn
-// correction fails and the check after the commit decides.
-test('v7.15.7 integration (v7.15.8, speed v1): run14 replayed from the split to completion: the split states the shape; the synchronous view and update and revision 1\'s read are awaited mechanically before their commit; revisions 1 and 5 are turned back by the returns rule and revision 3 by the await and returns rules, all before any linking; the fix is the first to reach the Container and passes: no repair round, no relink, no link-model call',async()=>{
+test('v7.15.7 integration (v7.15.8): run14 replayed from the split to completion: the split states the shape; revisions 1 and 3 are turned back by the await and returns rules and the synchronous view and update by the await rule; revision 5, awaited but returning nothing against a promise of the created ticket, by the returns rule (R2), all before any linking; the fix is the first to reach the Container and passes: no repair round, no relink, no link-model call',async()=>{
   const {room,calls,turns,inputs}=await replayFromSplit({answers:ANSWERS14,split:()=>({summary:'Split the issue tracker into its pieces.',spawn:PLAN14}),clef:clefSplit(/^Build/),runner:SMOKE14});
   assert.equal(room.get('status'),'complete',trace(room));
   // The split, as live: six pieces, the uses planned, the entry composed; the promises carry what each call returns.
@@ -226,27 +219,24 @@ test('v7.15.7 integration (v7.15.8, speed v1): run14 replayed from the split to 
   assert.ok(inputs.find(u=>u.your_label==='Ticket storage').your_responsibility.endsWith('readTickets(): reads all tickets from storage; returns the array of ticket objects; saveTickets(tickets): saves tickets to storage; returns nothing.'));
   // The contract send-backs, verbatim: revision 1, view and update as published, then revision 3 (JSON.parse(readTickets()): the bound form, never the wrapped line), each stating the shape.
   const sent=room.db().exec("SELECT recipient,body FROM messages WHERE sender='runtime:contract' ORDER BY id").toArray().map(m=>[m.recipient,m.body]);
-  assert.deepEqual(sent,[['root.2',SENT14_RETURNS],['root.2',SENT14R],['root.2',SENT14_RETURNS]]);
-  assert.deepEqual(dbEvents(room,'contract_returned').map(e=>[e.actor,e.body]),[['root.2','Done refused (1/3): rules: [returns]; back to the worker. createTicket: returns nothing (createTicket.js:4).'],['root.2','Done refused (2/3): rules: [await, returns]; back to the worker. readTickets: not awaited (createTicket.js:4). createTicket: returns nothing (createTicket.js:3).'],['root.2','Done refused (3/3): rules: [returns]; back to the worker. createTicket: returns nothing (createTicket.js:4).']]);
-  assert.deepEqual(dbEvents(room,'contract_autofix').map(e=>[e.actor,e.body]),[['root.2','Inserted await before the commit, mechanically: createTicket.js: await readTickets() (line 5); made createTicket async.'],
-    ['root.3','Inserted await before the commit, mechanically: viewTicket.js: await readTickets() (line 4); made viewTicket async.'],['root.4','Inserted await before the commit, mechanically: updateTicket.js: await readTickets() (line 5); made updateTicket async.']]);
-  assert.deepEqual(dbEvents(room,'contract_precheck').map(e=>e.actor),['root.2','root.2','root.2'],'each return was first tried in its turn');
+  assert.deepEqual(sent,[['root.2',SENT14R],['root.3',SENT14('viewTicket(id)')],['root.4',SENT14('updateTicket(id, data)')],['root.2',SENT14R],['root.2',SENT14_RETURNS]]);
+  assert.deepEqual(dbEvents(room,'contract_returned').map(e=>[e.actor,e.body]),[['root.2','Done refused (1/3): rules: [await, returns]; back to the worker. readTickets: not awaited (createTicket.js:5). createTicket: returns nothing (createTicket.js:4).'],['root.3','Done refused (1/3): rules: [await]; back to the worker. readTickets: not awaited (viewTicket.js:4).'],['root.4','Done refused (1/3): rules: [await]; back to the worker. readTickets: not awaited (updateTicket.js:5).'],['root.2','Done refused (2/3): rules: [await, returns]; back to the worker. readTickets: not awaited (createTicket.js:4). createTicket: returns nothing (createTicket.js:3).'],['root.2','Done refused (3/3): rules: [returns]; back to the worker. createTicket: returns nothing (createTicket.js:4).']]);
   // No revision reaches the Container before it awaits and returns: every refusal precedes the first link; v7.15.8 (run15): revision 5, which the Container refused in v7.15.7 (the array parsed as JSON), is refused at its done for returning nothing, so the one Container cycle is the fix's and passes.
   const firstLink=dbEvents(room,'assembly_final_requested')[0].id;
   assert.ok(dbEvents(room,'contract_returned').every(e=>e.id<firstLink),trace(room));
   assert.deepEqual([dbEvents(room,'compile_requested').length,dbEvents(room,'build_checked').length,dbEvents(room,'run_failed').length,dbEvents(room,'run_passed').length,dbEvents(room,'link_retry').length,dbEvents(room,'contract_unmet').length],[1,1,0,1,0,0],'one Container cycle, a pass; no relink; the fourth done accepted on its merits');
   assert.deepEqual(room.problems("kind='run'"),[],'no run failure to route');
-  assert.deepEqual(bodies(calls,'Create ticket'),['',SENT14_RETURNS,SENT14R,SENT14_RETURNS],'the three send-backs, verbatim');
-  assert.deepEqual(bodies(calls,'View ticket'),['']);
-  assert.deepEqual(bodies(calls,'Update ticket'),['']);
+  assert.deepEqual(bodies(calls,'Create ticket'),['',SENT14R,SENT14R,SENT14_RETURNS],'the three send-backs, verbatim');
+  assert.deepEqual(bodies(calls,'View ticket'),['',SENT14('viewTicket(id)')]);
+  assert.deepEqual(bodies(calls,'Update ticket'),['',SENT14('updateTicket(id, data)')]);
   assert.ok(SENT14('x').includes('readTickets() may be async and returns the array of ticket objects')&&TICKET14.includes(' What the other side provides: async readTickets(): reads all tickets from storage; returns the array of ticket objects | async saveTickets(tickets): saves tickets to storage; returns nothing | '),'one shape in both texts (seam c)');
   assert.ok(TICKET14.length<=900);
   assert.equal(dbEvents(room,'problem_assigned').filter(e=>e.recipient==='root.6').length,0,'the start carrier is never ticketed');
   for(const text of calls.leaf.flatMap(u=>u.new_messages.map(m=>m.body)))assert.doesNotMatch(text,/REAL CONTAINER BUILD FAILED|NOTHING CHANGED|Your manager decided|Builder renames|Fix the error below|by the plan|components\//);
-  // The counts: no repair round (the live run spent five, two of them link rounds with a link-model call each; v7.15.7's replay one); six first turns and three refusals answered: nine model calls to workers (eleven before speed v1); one splitter, one runner draft, one coverage call, no linker, no manager, eight Clef calls (the gate at Root and five pieces, the scope check and the names check; v7.15.16: the entry, carrying Root's whole promise, is never gated).
+  // The counts: no repair round (the live run spent five, two of them link rounds with a link-model call each; v7.15.7's replay one); six first turns and five refusals answered: eleven model calls to workers; one splitter, one runner draft, one coverage call, no linker, no manager, eight Clef calls (the gate at Root and five pieces, the scope check and the names check; v7.15.16: the entry, carrying Root's whole promise, is never gated).
   assert.deepEqual(rounds(room),[]);
-  assert.deepEqual(turns,{'Ticket storage':1,'Create ticket':4,'View ticket':1,'Update ticket':1,'Delete ticket':1,'Entry module':1});
-  assert.deepEqual({split:calls.split.length,link:calls.link.length,runner:calls.runner.length,coverage:calls.coverage.length,manager:calls.manager.length,clef:calls.clef.length,leaf:calls.leaf.length},{split:1,link:0,runner:1,coverage:1,manager:0,clef:8,leaf:9});
+  assert.deepEqual(turns,{'Ticket storage':1,'Create ticket':4,'View ticket':2,'Update ticket':2,'Delete ticket':1,'Entry module':1});
+  assert.deepEqual({split:calls.split.length,link:calls.link.length,runner:calls.runner.length,coverage:calls.coverage.length,manager:calls.manager.length,clef:calls.clef.length,leaf:calls.leaf.length},{split:1,link:0,runner:1,coverage:1,manager:0,clef:8,leaf:11});
   assert.deepEqual([calls.clef.filter(c=>c.questions?.should_split).length,dbEvents(room,'route_ranked').length,dbEvents(room,'runner_rejected').length,dbEvents(room,'runner_invented').length],[6,0,0,0],'the live fixed test asserts only what the plan states');
   assert.match(dbEvents(room,'link_auto')[0].body,/^Applied 11 rename\(s\) without the model/);
   assert.equal(dbEvents(room,'api_covered').length,1,'coverage is checked once; the fixed test is reused');

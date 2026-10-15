@@ -189,12 +189,8 @@ async function room14(opts={},plan=PLAN14) {
   return {...env,by:label=>room.children('root').find(c=>c.label===label)};
 }
 // One worker's turns, answered with these files in order (the last repeats).
-// Speed v1: a done that fails the contract is corrected in its turn before
-// the commit (precommitContract); this worker's correction call answers the
-// file it just wrote, so it insists, and the check after the commit returns it.
 async function workerOn(plan,label,...sources) {
-  let last='';
-  const {room,calls,by}=await room14({leaf:(_u,n)=>{const [path,content]=sources[Math.min(n,sources.length)-1];last=content;return {summary:'Wrote it',files:[{path,content}],done:true};},file:()=>last},plan);
+  const {room,calls,by}=await room14({leaf:(_u,n)=>({summary:'Wrote it',files:[{path:sources[Math.min(n,sources.length)-1][0],content:sources[Math.min(n,sources.length)-1][1]}],done:true})},plan);
   const id=by(label).id,again=async()=>{room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);await room.turn(id);};
   await again();
   return {room,calls,id,again};
@@ -202,33 +198,19 @@ async function workerOn(plan,label,...sources) {
 const worker14=(label,...sources)=>workerOn(PLAN14,label,...sources);
 const only=calls=>Object.entries(calls).filter(([k,v])=>!['raw','leaf'].includes(k)&&v.length).map(([k])=>k);
 
-// Speed v1: before the commit, revision 1's read is awaited mechanically and
-// the worker is asked once, in its turn, for the rest; it insists, so the
-// return is refused after the commit, as before, for what is left.
-test('v7.15.7 (speed v1): run14 replay: Create ticket\'s first done (revision 1) has its await inserted before the commit and is corrected once in its turn; what is still missing is refused before any linking with no Clef call; its revision that returns is accepted; Update ticket as published is awaited and done; a worker that insists on what no fix settles is accepted after three returns, and the unmet text names the call',async()=>{
+test('v7.15.7: run14 replay: Create ticket\'s first done (revision 1) is refused before any linking, with the line to write and no model call; its awaited revision is accepted; a worker that insists is accepted after three returns, and the unmet text names the call',async()=>{
   const {room,calls,id,again}=await worker14('Create ticket',['createTicket.js',SRC.create1],['createTicket.js',SRC.create5Returns]);
   assert.equal(room.node(id).status,'ready',trace(room));
-  assert.deepEqual(events(room,'contract_autofix').map(e=>e.body),Array(2).fill('Inserted await before the commit, mechanically: createTicket.js: await readTickets() (line 5); made createTicket async.'),'before the correction, and again on what it answered');
-  assert.equal(events(room,'contract_precheck')[0].body,'Done checked before the commit: rules [returns]; createTicket.js corrected in this turn, before any push. createTicket: returns nothing (createTicket.js:4).');
-  assert.equal(calls.file.length,1,'one correction, in the turn');
-  assert.match(calls.file[0].previous_code_rejection,/^\[contract\] Your promise: createTicket\(data\)\. createTicket\(data\) is promised to return the created ticket/);
   const [message]=room.receive(id);
   assert.equal(message.from,'runtime:contract');
-  assert.equal(message.body,`[contract] Your promise: createTicket(data). ${RETURNS} Publish the FULL updated file.`);
-  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [returns]; back to the worker. createTicket: returns nothing (createTicket.js:4).');
-  assert.deepEqual(only(calls),['file'],'no Clef call');
-  assert.match(await room.indexedContent(id,'createTicket.js'),/exports\.createTicket = async function\(data\) \{\n  const tickets = await readTickets\(\);/,'what was committed is awaited');
+  assert.equal(message.body,`[contract] Your promise: createTicket(data). readTickets() may be async and returns the array of ticket objects: write const tickets = await readTickets(); inside an async function. ${RETURNS} Publish the FULL updated file.`);
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [await, returns]; back to the worker. readTickets: not awaited (createTicket.js:5). createTicket: returns nothing (createTicket.js:4).');
+  assert.deepEqual(only(calls),[],'no Clef or other model call');
   assert.equal(room.get('contract_returns:'+id),'1');
   await again();
   assert.equal(room.node(id).status,'done',trace(room));
   assert.equal(room.get('contract_returns:'+id),'');
-  const awaited=await worker14('Update ticket',['updateTicket.js',SRC.update]);
-  assert.equal(awaited.room.node(awaited.id).status,'done',trace(awaited.room));
-  assert.deepEqual(events(awaited.room,'contract_returned'),[]);
-  assert.match(await awaited.room.indexedContent(awaited.id,'updateTicket.js'),/async function updateTicket\(id, data\) \{\n  const tickets = await readTickets\(\);/);
-  // A result passed to another call has no unambiguous fix (run14b): the worker hears the bound form, and may insist.
-  const parsed=SRC.update.replace('const tickets = readTickets();','const tickets = JSON.parse(readTickets());');
-  const insists=await worker14('Update ticket',['updateTicket.js',parsed]);
+  const insists=await worker14('Update ticket',['updateTicket.js',SRC.update]);
   for(let i=0;i<2;i++)await insists.again();
   assert.deepEqual(events(insists.room,'contract_returned').map(e=>e.body.slice(0,18)),['Done refused (1/3)','Done refused (2/3)','Done refused (3/3)']);
   await insists.again();
@@ -332,15 +314,12 @@ test('v7.15.7 review: the rule is gated on the room: where any promise states wh
   const plan=PLAN14.map(p=>p.label==='Ticket storage'?{...p,functions:noReturns(p.functions)}:p);
   const {room,id,again}=await workerOn(plan,'Create ticket',['createTicket.js',SRC.create1],['createTicket.js',SRC.create5Returns]);
   assert.equal(room.node(id).status,'ready',trace(room));
-  // Speed v1: the shaped room reads the call, so it is awaited before the commit; the return is what is sent back.
-  assert.equal(events(room,'contract_autofix')[0].body,'Inserted await before the commit, mechanically: createTicket.js: await readTickets() (line 5); made createTicket async.');
-  assert.equal(room.receive(id)[0].body,`[contract] Your promise: createTicket(data). ${RETURNS} Publish the FULL updated file.`);
+  assert.equal(room.receive(id)[0].body,`[contract] Your promise: createTicket(data). readTickets() may be async: write const tickets = await readTickets(); inside an async function. ${RETURNS} Publish the FULL updated file.`);
   await again();
   assert.equal(room.node(id).status,'done',trace(room));
   const old=await workerOn(PLAN14.map(p=>({...p,functions:noReturns(p.functions)})),'Create ticket',['createTicket.js',SRC.create1]);
   assert.equal(old.room.node(old.id).status,'done',trace(old.room));
   assert.deepEqual(events(old.room,'contract_returned'),[]);
-  assert.deepEqual(events(old.room,'contract_autofix'),[],'a room where no promise states a shape reads no await, and fixes none');
 });
 
 test('v7.15.7 review: the runner hears what each method returns: methodDescriptions and the runner\'s method_descriptions carry returns (clipped as does is), the result rule reads it (run14\'s first draft, assert.ok(createResult), is no invention against a promise that returns the created ticket, and still one against a promise that returns nothing), and RUNNER_SYSTEM says so',async()=>{

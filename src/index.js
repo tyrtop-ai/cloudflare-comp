@@ -18,7 +18,7 @@ import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgre
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
 import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
-import { contractCheck, contractBody, stubExports, exportNames, awaitFixes } from './linker.js';
+import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { branchDirectory } from './assembly.js';
@@ -4484,26 +4484,41 @@ export class ControlRoom extends DurableObject {
   // be committed, refused by contractReturned and sent back as a whole new
   // turn (19% of run C's turn-seconds; 87 returns for the await rule alone).
   // Here, on the staged files and before any push: first the await rule's
-  // mechanical fix (awaitFixes: only where it is unambiguous; each fix is an
-  // event), then, if anything is still found, one targeted correction of
+  // mechanical fix (awaitFixes: an await inside an async function, before a
+  // call known to be async (knownAsync); never a function made async; each
+  // fix is an event), then, if anything is still found, one targeted correction of
   // each file the findings name, in this turn, with the send-back text the
   // worker would have read. Whatever is still found then is committed and
   // returned by contractReturned after the commit, as before; its bound of 3
   // returns is untouched. A finding the plan's walk words (an empty start()
   // operation), or one no single file answers, is left to that path.
+  // Review M1: a promised function the await fix may await: its promise says
+  // it returns a promise, or a module of a piece that promises it declares it
+  // async. A function whose calls may be synchronous is never awaited by the
+  // runtime: the worker hears the rule instead.
+  knownAsync(name, f) {
+    if(/\b(?:promise|thenable)\b/i.test(String(f?.returns||'')))return true;
+    const top=this.allNodes().find(n=>!n.parent);
+    for(const c of top?this.carriersOf(name,top.id):[])
+      for(const file of productionFiles(this.files(c.id)).filter(x=>LINKABLE.test(x.path))) {
+        const content=query(this.db(),'SELECT content FROM artifact_contents WHERE agent=? AND path=?',c.id,file.path)[0]?.content;
+        if(content!=null&&asyncExports(file.path,content).has(name))return true;
+      }
+    return false;
+  }
   async precommitContract(id, inbox=[]) {
     const n=this.node(id);
     if(!this.live()||!n||this.manager(id)||isRuntimeNode(n))return;
     if(this.planned()&&query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',id).length)return;
     // The await rule's unambiguous findings, fixed in place; the check again after.
     const autofix=async checked=>{
-      const awaited=[...new Set(checked.found.filter(x=>x.rule==='await').map(x=>x.name))];
+      const awaited=[...new Set(checked.found.filter(x=>x.rule==='await').map(x=>x.name))].filter(name=>this.knownAsync(name,checked.fns.get(name)));
       if(!awaited.length)return checked;
       const fixes=awaitFixes(new Map([...checked.files].filter(([p])=>checked.found.some(x=>x.rule==='await'&&x.path===p))),awaited),made=[];
       for(const [path,r] of Object.entries(fixes)) {
         if(sourceCodeError(path,r.content)||sourceParseError(path,r.content)||sourceDependencyError(path,r.content))continue;
         await this.putFile(id,path,r.content);
-        made.push(`${path.split('/').pop()}: await ${r.fixed.map(f=>`${f.name}() (line ${f.line})`).join(', ')}${r.made_async.length?`; made ${r.made_async.join(', ')} async`:''}`);
+        made.push(`${path.split('/').pop()}: await ${r.fixed.map(f=>`${f.name}() (line ${f.line})`).join(', ')}`);
       }
       if(!made.length)return checked;
       this.event(id,'contract_autofix',clip(`Inserted await before the commit, mechanically: ${made.join('; ')}.`,900));
@@ -4566,7 +4581,8 @@ export class ControlRoom extends DurableObject {
     // v7.15.7 review: the await rule is gated on the room (shaped): where any promise of the plan states what it returns, every promised name a worker calls is read for await, one R5 grows or the splitter left without returns too; a room where none states it (v7.15.5's and v7.15.6's replays) is read as before.
     const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,shaped:this.shaped(),
       performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null});
-    return {promised,files,found,esm};
+    // The functions of other pieces this worker's rules read, by name (what each promise states).
+    return {promised,files,found,esm,fns:new Map([...elsewhere,...uses.map(f=>[f.name,f])])};
   }
   async contractReturned(id) {
     const key=`contract_returns:${id}`,returns=Number(this.get(key,'0'))||0,checked=await this.contractFindings(id);
