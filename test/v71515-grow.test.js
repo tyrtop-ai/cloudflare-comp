@@ -199,23 +199,64 @@ test('v7.15.15 (G1, review #4): a request for a function the plan has under anot
 const settledTm=async opts=>{const r=await construction({leaf:leaf23,...opts},'implement');await r.room.putFile('root.2','ticketManagement.js',tm(false));r.room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");return r;};
 const WRITE_IT='No piece of the application promises viewTicket (returns one ticket by id), and no other piece\'s assignment covers it (your manager asked each level): write it in your own module.';
 
-test('v7.15.15 review 2 (#1): a request joined to a G3 row is answered whatever ends that row: superseded by a new report, handed to its reader (the entry, nobody covering it), or gone (Continue and the idle nudge answer a request no row, hop or message holds)',async()=>{
-  for(const mode of ['superseded','reader','orphan']) {
+// A G3 row for viewTicket at Root, as the linker files it, the entry its reader.
+const g3Row=room=>room.insertProblem({holder:'root',kind:'unresolved',stage:'link',source:'root.9',input:'fp1',parties:[{path:'entry.js',owner:'root.1',owner_path:'entry.js',digest:'',role:'reader'}],detail:"Import './viewTicket' does not match any published module.",
+  facts:{specifier:'./viewTicket',names:['viewTicket'],unpromised:true,esm:false,operation:{op:'viewTicket',name:'viewTicket',params:[],line:'start() returns it as viewTicket: viewTicket()',does:'performs the goal\'s view ticket operation'},provider_text:''},flags:{wave:'w1'}});
+// GUI's request reaching Root's needScope (its routing walk already ran): its row, or the row it joined.
+async function guiAsks(room) {
+  room.askManager('root.3','fn viewTicket','returns one ticket by id','viewTicket');
+  room.db().exec('UPDATE messages SET delivered=1');
+  const w=room.db().exec("SELECT request_id,topic FROM route_workers WHERE worker='root.3'").toArray()[0];
+  assert.deepEqual(await room.requestGrowth('root',room.node('root.3'),{name:'viewTicket',question:'returns one ticket by id',request_id:w.request_id,topic:w.topic}),{wait:true});
+  return w;
+}
+const growthRows=room=>room.problems("kind='unresolved'").map(p=>[p.status,p.outcome,!!p.facts.operation.request,(p.facts.requests||[]).map(r=>r.worker)]);
+
+test('v7.15.15 review 2 (#1), review 3 (#1, #4): a request joins only a request row (never a G2/G3 row, which its reader may write); a request whose row closes is answered, unless an open request row for the name was filed meanwhile, which it joins; Continue and the idle nudge answer a request nothing holds',async()=>{
+  // Review 3 (#4): beside an open G3 row for the name, the request files its own row.
+  {
     const {room}=await settledTm({clef:clef23(()=>false)});
-    room.insertProblem({holder:'root',kind:'unresolved',stage:'link',source:'root.9',input:'fp1',parties:[{path:'entry.js',owner:'root.1',owner_path:'entry.js',digest:'',role:'reader'}],detail:"Import './viewTicket' does not match any published module.",
-      facts:{specifier:'./viewTicket',names:['viewTicket'],unpromised:true,esm:false,operation:{op:'viewTicket',name:'viewTicket',params:[],line:'start() returns it as viewTicket: viewTicket()',does:'performs the goal\'s view ticket operation'},provider_text:''},flags:{wave:'w1'}});
-    // The request reaches Root's needScope while the G3 row is still open (its routing walk already ran).
-    room.askManager('root.3','fn viewTicket','returns one ticket by id','viewTicket');
-    room.db().exec('UPDATE messages SET delivered=1');
-    const [w]=room.db().exec('SELECT request_id,topic FROM route_workers').toArray();
-    assert.deepEqual(await room.requestGrowth('root',room.node('root.3'),{name:'viewTicket',question:'returns one ticket by id',request_id:w.request_id,topic:w.topic}),{wait:true});
-    assert.deepEqual([dbEvents(room,'route_grow').map(e=>e.body),room.problems("kind='unresolved'").map(p=>p.facts.requests?.map(r=>r.worker))],[['viewTicket (returns one ticket by id): its growth is already being decided for another request; "GUI module" waits on it too.'],[['root.3']]],mode);
-    assert.equal(replies(room,'root.3').length,0,mode);
-    if(mode==='superseded'){room.closeProblemsFrom('root.9','superseded');room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");await room.turn('root');}
-    if(mode==='reader'){room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");await room.turn('root');assert.deepEqual(room.problems("kind='unresolved'").map(p=>[p.status,p.assignee]),[['assigned','root.1']],'the entry\'s to write');}
+    g3Row(room);await guiAsks(room);
+    assert.deepEqual(growthRows(room),[['open','',false,[]],['open','',true,['root.3']]]);
+    assert.match(dbEvents(room,'route_grow').at(-1).body,/^viewTicket \(returns one ticket by id\): no piece promises it and it is outside "GUI module"'s assignment/);
+  }
+  for(const mode of ['closed','refiled','orphan']) {
+    const {room}=await settledTm({clef:clef23(()=>false)});
+    await guiAsks(room);
+    const [own]=room.problems("kind='unresolved'");
+    // The row closes outside the decisions (as a retask of the branch holding it closes its rows, by SQL), or is gone.
+    if(mode!=='orphan')room.db().exec("UPDATE problems SET status='closed',outcome='retasked' WHERE id=?",own.id);
+    // Review 3 (#1): meanwhile another request filed the name's growth again: the closed row's requester joins it.
+    if(mode==='refiled'){room.askManager('root.1','fn viewTicket','Function to retrieve ticket data by id','viewTicket');room.db().exec('UPDATE messages SET delivered=1');const w=room.db().exec("SELECT request_id,topic FROM route_workers WHERE worker='root.1'").toArray()[0];await room.requestGrowth('root',room.node('root.1'),{name:'viewTicket',question:'Function to retrieve ticket data by id',request_id:w.request_id,topic:w.topic});}
     if(mode==='orphan'){room.db().exec('DELETE FROM problems');assert.equal(await room.settleRequests(),false,'no row: only Continue and the nudge look');assert.equal(await room.settleRequests(true),true);}
-    assert.deepEqual(replies(room,'root.3'),[['root','unowned',mode==='orphan'?WRITE_IT.replace(' (returns one ticket by id)',''):WRITE_IT]],mode+(mode==='orphan'?' (the request alone: its need is gone with its row)':''));
+    else assert.equal(await room.settleRequests(),mode==='closed');
+    if(mode==='refiled') {
+      assert.deepEqual([replies(room,'root.3').length,growthRows(room)],[0,[['closed','retasked',true,['root.3']],['open','',true,['root.1','root.3']]]]);
+      // The open row is decided once, and both requesters hear its one answer (nobody covers it here: each writes it, as one would have alone).
+      room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");
+      await room.turn('root');
+      assert.deepEqual([replies(room,'root.1').map(r=>r[1]),replies(room,'root.3')],[['unowned'],[['root','unowned',WRITE_IT]]]);
+      assert.equal(dbEvents(room,'promise_refused').length,1,'one ranking for both');
+      continue;
+    }
+    assert.deepEqual(replies(room,'root.3'),[['root','unowned',mode==='orphan'?WRITE_IT.replace(' (returns one ticket by id)',''):WRITE_IT]],mode);
     assert.equal(room.db().exec('SELECT COUNT(*) AS n FROM route_workers').toArray()[0].n,0,mode);
+  }
+});
+
+test('v7.15.15 review 3 (#3): with MANAGERS bound, the orphan sweep reads the managers\' shards: a request whose hop, or whose message, a shard holds is still on its way, not answered',async()=>{
+  for(const held of ['hop','inbox','nothing']) {
+    const {room,env}=await settledTm({clef:clef23(()=>false)});
+    room.askManager('root.3','fn viewTicket','returns one ticket by id','viewTicket');
+    const w=room.db().exec("SELECT request_id FROM route_workers WHERE worker='root.3'").toArray()[0];
+    // The room acknowledged its copy; the request now lives in Root's shard (managerInbox, addManagerHop).
+    room.db().exec('UPDATE messages SET delivered=1');
+    const asked=[];
+    env.MANAGERS={getByName:name=>({hop:async id=>{asked.push(['hop',name.split(':').at(-1)]);return held==='hop'&&id===w.request_id?{request_id:id,requester:'root.3',topic:'fn viewTicket',target:''}:null;},
+      inbox:async()=>{asked.push(['inbox',name.split(':').at(-1)]);return held==='inbox'?[{id:'1',sender:'root.3',body:`[route:request] {"id":"${w.request_id}","key":"fn viewTicket"}`}]:[];}})};
+    assert.equal(await room.settleRequests(true),held==='nothing',held);
+    assert.deepEqual(asked.map(a=>a[1]),held==='hop'?['root']:['root','root'],'the requester\'s manager chain');
+    assert.equal(replies(room,'root.3').length,held==='nothing'?1:0,held);
   }
 });
 
@@ -226,7 +267,8 @@ test('v7.15.15 review 2 (#2): a rename is the same verb by its synonyms and exac
   const as=n=>room.renameOf('root.1',n)?.item.name||null;
   assert.deepEqual(Object.fromEntries(['getTickets','fetchTickets','loadTickets','getTicket','findTicket','removeTicket','eraseTicket','editTicket','addTicket'].map(n=>[n,as(n)])),
     {getTickets:'readTickets',fetchTickets:'readTickets',loadTickets:'readTickets',getTicket:'viewTicket',findTicket:'viewTicket',removeTicket:'deleteTicket',eraseTicket:'deleteTicket',editTicket:'updateTicket',addTicket:'createTicket'});
-  assert.deepEqual(['deleteAllTickets','deleteTickets','createTicketForm','viewTicketHistory','removeTicketFromList','updateTicketStatus','createTickets','loadTicketsFromFile','storeTickets','addComment','formatDate'].map(as).filter(Boolean),[],'more or other object words on either side are another function');
+  // Review 3 (#2): a render verb with two candidates (readTickets, the GUI's showTickets) is none; the tie-break is a data verb's.
+  assert.deepEqual(['displayTickets','deleteAllTickets','deleteTickets','createTicketForm','viewTicketHistory','removeTicketFromList','updateTicketStatus','createTickets','loadTicketsFromFile','storeTickets','addComment','formatDate'].map(as).filter(Boolean),[],'more or other object words on either side are another function');
 });
 
 test('v7.15.15 review 2 (#3): a branch that refused a relayed row is never ranked for it again: the row goes back up and closes at Root with the requester answered, with no delegation back down',async()=>{
@@ -386,4 +428,15 @@ test('v7.15.15 review 2 (#1): two growth rows for one name at one manager merge 
   await room.turn('root');
   assert.deepEqual([dbEvents(room,'problem_merged').map(e=>e.body),dbEvents(room,'promise_added').length,calls.clef.filter(c=>c.state?.children).length],[['viewTicket: two growth rows are one; its requests join the first.'],1,1],trace(room));
   assert.deepEqual(['root.1','root.3'].map(id=>replies(room,id).map(r=>r[1])),[['provided'],['provided']]);
+});
+
+test('v7.15.15 review 3 (#6): a sweep that throws never masks the turn\'s own error, nor fails a turn that succeeded: it is an event',async()=>{
+  const {room}=await settledTm({clef:clef23(()=>false)});
+  room.settleRequests=async()=>{throw new Error('sweep broke');};
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");
+  await room.turn('root');
+  assert.deepEqual(dbEvents(room,'settle_failed').map(e=>e.body),['Settling the requests growth rows hold failed: sweep broke']);
+  room.agentTurn=async()=>{throw new Error('the turn broke');};
+  await assert.rejects(room.turn('root'),/the turn broke/);
+  assert.equal(dbEvents(room,'settle_failed').length,2);
 });
