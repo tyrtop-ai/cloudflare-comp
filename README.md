@@ -2,9 +2,11 @@
 
 My entry for Cloudflare's "build the next Git platform" competition.
 
-My intuition going in was simple: many agents are strong, and you can work around context windows with architecture instead of bigger models.
+The idea behind it is that many small agents beat one big orchestrator agent with limited context. Context windows are a hard limit, so instead of fighting them with bigger models, the architecture keeps every agent's context small: no agent here ever holds the whole project.
 
-So no agent here ever holds the whole project. Each one gets a small, bounded job and only talks to its parent and its children. The models are small too; most of the code is written by one that uses about 3B parameters per token.
+The second intuition is that many small agents working on the same distributed problem will independently come up with solutions that are similar enough to need only minimal tape-up. So the pieces are joined by a builder that is only allowed to rename things, never to write code.
+
+And the architecture should be symmetrical: problems and solutions are mirrors of each other. The same tree and the same plan that build the code are what route a failure back to the agent that has to fix it.
 
 ## The short version
 
