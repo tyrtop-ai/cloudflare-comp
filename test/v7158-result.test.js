@@ -196,8 +196,10 @@ test('v7.15.8 (R2): contractCheck, returns: run15\'s createTicket.js against a p
 
 // ------------------------------------------------------------------ R2 at a worker's done
 // One worker's turns under run15's plan, answered with these files in order (the last repeats), for the contract check at its done.
+// Speed v1: the worker's in-turn correction (precommitContract) answers the file it just wrote: it insists.
 async function workerOn(plan,label,...sources) {
-  const env=liveRoom({leaf:(_u,n)=>({summary:'Wrote it',files:[{path:sources[Math.min(n,sources.length)-1][0],content:sources[Math.min(n,sources.length)-1][1]}],done:true})}),{room,calls}=env;
+  let last='';
+  const env=liveRoom({leaf:(_u,n)=>{const [path,content]=sources[Math.min(n,sources.length)-1];last=content;return {summary:'Wrote it',files:[{path,content}],done:true};},file:()=>last}),{room,calls}=env;
   await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
   await room.spawn('root',plan);
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
@@ -206,14 +208,16 @@ async function workerOn(plan,label,...sources) {
   await again();
   return {room,calls,id,again};
 }
-test('v7.15.8 (R2): with v7.15.7\'s returns on the promise, run15\'s createTicket.js is sent back at its done, before any link, for returning nothing (and, the room shaped, for reading readTickets() without await); the createTicket that returns the ticket is accepted; a worker that insists is accepted after three returns with the unmet text',async()=>{
+test('v7.15.8 (R2, speed v1): with v7.15.7\'s returns on the promise, run15\'s createTicket.js is sent back at its done, before any link, for returning nothing (the room shaped, its read of readTickets() is awaited mechanically before the commit); the createTicket that returns the ticket is accepted; a worker that insists is accepted after three returns with the unmet text',async()=>{
   const shaped=PLAN15.map(p=>p.label==='Create Ticket'?{...p,interfaces:[{...PROMISES.create,returns:'the created ticket'}]}:p);
   const {room,calls,id,again}=await workerOn(shaped,'Create Ticket',['createTicket.js',SRC.create],['createTicket.js',SRC.createFix]);
   assert.equal(room.node(id).status,'ready',trace(room));
   const [message]=room.receive(id);
   assert.equal(message.from,'runtime:contract');
-  assert.equal(message.body,`[contract] Your promise: createTicket(data). readTickets() may be async: write const tickets = await readTickets(); inside an async function. ${RETURNS15}${TAIL}`);
-  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [await, returns]; back to the worker. readTickets: not awaited (createTicket.js:5). createTicket: returns nothing (createTicket.js:4).');
+  assert.equal(message.body,`[contract] Your promise: createTicket(data). ${RETURNS15}${TAIL}`);
+  assert.equal(events(room,'contract_returned')[0].body,'Done refused (1/3): rules: [returns]; back to the worker. createTicket: returns nothing (createTicket.js:4).');
+  assert.equal(events(room,'contract_autofix')[0].body,'Inserted await before the commit, mechanically: createTicket.js: await readTickets() (line 5); made createTicket async.');
+  assert.match(await room.indexedContent(id,'createTicket.js'),/export async function createTicket\(data\) \{\n  const tickets = await readTickets\(\);/);
   assert.deepEqual([calls.clef.length,calls.manager.length,calls.link.length,events(room,'assembly_final_requested').length],[0,0,0,0],'no model call, no link');
   await again();
   assert.equal(room.node(id).status,'done',trace(room));

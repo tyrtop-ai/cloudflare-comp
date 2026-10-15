@@ -1736,21 +1736,22 @@ const TEST_PATH=/(?:^|\/)(?:tests?|__tests__)\/|\.(?:test|spec)\.[cm]?js$/i,PROM
 const relativeRequire=n=>isRequire(n)&&n.arguments[0].value.startsWith('.');
 // The bound form's name: what the call reads (readTickets: tickets), else result.
 const boundName=name=>{const w=String(name).replace(/^[a-z]+(?=[A-Z])/,'');return w&&w!==name?w[0].toLowerCase()+w.slice(1):'result';};
-export function unawaitedCalls(files, names) {
-  const want=new Set(names),out=[];
-  if(!want.size)return out;
-  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
-    if(!LINKABLE.test(path)||TEST_PATH.test(path))continue;
-    let parsed;try{parsed=parseSource(content);}catch{continue;}
+// One file's calls to promised names whose result is used without await
+// ({found, text, parents}), or null when the file is not read (a test, a
+// file that does not parse, dynamic scope). unawaitedCalls words them;
+// awaitFixes rewrites the unambiguous ones.
+function unawaitedHits(path, content, want) {
+    if(!LINKABLE.test(path)||TEST_PATH.test(path))return null;
+    let parsed;try{parsed=parseSource(content);}catch{return null;}
     const {ast,sourceType}=parsed,{bindingOf,dynamic}=scopeOf(ast,sourceType);
-    if(dynamic)continue;
+    if(dynamic)return null;
     // Each binding of a relative import, by scope and name: the promised name it holds, or '*' for a module bound whole.
     const held=new Map(),hold=(name,scope,v)=>{if(!scope)return;if(!held.has(scope))held.set(scope,new Map());held.get(scope).set(name,v);};
     walk(ast,n=>{
       if(n.type==='VariableDeclarator'&&relativeRequire(n.init)){if(n.id.type==='Identifier')hold(n.id.name,bindingOf.get(n.id),'*');else if(n.id.type==='ObjectPattern')for(const p of n.id.properties)if(p.type==='Property'&&!p.computed&&p.value?.type==='Identifier'&&want.has(nameOf(p.key)))hold(p.value.name,bindingOf.get(p.value),nameOf(p.key));}
       else if(n.type==='ImportDeclaration'&&String(n.source?.value).startsWith('.'))for(const sp of n.specifiers){if(sp.type!=='ImportSpecifier')hold(sp.local.name,ast,'*');else if(want.has(nameOf(sp.imported)))hold(sp.local.name,ast,nameOf(sp.imported));}
     });
-    if(!held.size&&!/require\s*\(/.test(content))continue;
+    if(!held.size&&!/require\s*\(/.test(content))return null;
     const of=id=>id?.type==='Identifier'?held.get(bindingOf.get(id))?.get(id.name):undefined;
     const promised=c=>c.type==='Identifier'?(v=>v&&v!=='*'?v:null)(of(c)):
       c.type==='MemberExpression'&&!c.computed&&want.has(nameOf(c.property))&&(of(c.object)==='*'||relativeRequire(c.object))?nameOf(c.property):null;
@@ -1786,6 +1787,15 @@ export function unawaitedCalls(files, names) {
       const form=boundForm(node,name);
       found.push({node,name,form,wrap:!form&&(p.type==='MemberExpression'&&p.object===node||p.type==='CallExpression'&&p.callee===node)});
     });
+    return {found,text,parents,ast,refs,bindingOf};
+}
+export function unawaitedCalls(files, names) {
+  const want=new Set(names),out=[];
+  if(!want.size)return out;
+  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+    const read=unawaitedHits(path,content,want);
+    if(!read)continue;
+    const {found,text}=read;
     const lines=new Map();
     for(const h of found)lines.set(h.node.loc.start.line,[...(lines.get(h.node.loc.start.line)||[]),h]);
     const seen=new Set();let hits=0;
@@ -1808,6 +1818,89 @@ export function unawaitedCalls(files, names) {
       seen.add(key);hits++;
       out.push({path,name:hs[0].name,line:ln,text:line,...(move?{move:true}:{})});
     }
+  }
+  return out;
+}
+// Speed v1: the await rule's mechanical fix, where it is unambiguous. A call
+// to a promised name whose result is used without await gets await (in
+// parentheses when the result is read or called), inside a function that is
+// async already, or that can become async because nothing in the file calls
+// it or reads it except to export it (a top-level function, a const bound to
+// one, an object's method or a class's method). Never: a call whose result
+// is passed to another call (run14b's JSON.parse(await readTickets()) was
+// wrong; the worker hears the bound form), a default parameter's or a yield's
+// call, an optional call, a call at module level, a callback (an argument to
+// another call), a generator, getter, setter or constructor. The file must
+// still parse and the rule must no longer find the call. {path: {content,
+// fixed:[{name,line}], made_async:[name]}} for the files it changed.
+export function awaitFixes(files, names) {
+  const want=new Set(names),out={};
+  if(!want.size)return out;
+  for(const [path,content] of files instanceof Map?files:new Map(Object.entries(files))) {
+    const hits=unawaitedHits(path,content,want);
+    if(!hits||!hits.found.length)continue;
+    const {found,text,parents,ast}=hits,edits=[],asyncAt=new Map(),fixed=[];
+    const enclosing=n=>{for(let p=parents.get(n);p;p=parents.get(p))if(FUNCTIONS.has(p.type))return p;return null;};
+    // The name a function is bound to, and where async goes, when it is one of the shapes above.
+    const exported=fnNode=>{
+      const p=parents.get(fnNode);
+      if(fnNode.type==='FunctionDeclaration'&&fnNode.id&&(p?.type==='Program'||p?.type==='ExportNamedDeclaration'||p?.type==='ExportDefaultDeclaration'))return {name:fnNode.id.name,at:fnNode.start};
+      if(p?.type==='VariableDeclarator'&&p.init===fnNode&&p.id.type==='Identifier'&&parents.get(parents.get(p))?.type&&['Program','ExportNamedDeclaration'].includes(parents.get(parents.get(p)).type))return {name:p.id.name,at:fnNode.start};
+      if(p?.type==='Property'&&p.value===fnNode&&!p.computed&&p.kind==='init'&&parents.get(p)?.type==='ObjectExpression')return {name:nameOf(p.key),at:p.method?p.key.start:fnNode.start,member:true};
+      if(p?.type==='MethodDefinition'&&p.value===fnNode&&p.kind==='method'&&!p.computed)return {name:nameOf(p.key),at:p.key.start,member:true};
+      if(p?.type==='ExportDefaultDeclaration')return {name:'default',at:fnNode.start};
+      if(p?.type==='AssignmentExpression'&&p.right===fnNode&&p.left.type==='MemberExpression'&&/^(?:module\.exports|exports)(?:\.|$)/.test(text.slice(p.left.start,p.left.end)))return {name:nameOf(p.left.property)||'default',at:fnNode.start,member:true};
+      return null;
+    };
+    // Nothing in the file calls the function or reads it, except to export it.
+    const exportsTarget=l=>/^(?:module\.exports|exports)(?:\.[\w$]+)?$/.test(text.slice(l.start,l.end));
+    const exportUse=(n,parent)=>{
+      if(parent?.type==='ExportSpecifier'||parent?.type==='ExportDefaultDeclaration')return true;
+      if(parent?.type==='AssignmentExpression'&&parent.right===n)return exportsTarget(parent.left);
+      if(parent?.type==='Property'&&parent.value===n) {
+        const obj=parents.get(parent),holder=obj&&parents.get(obj);
+        return obj?.type==='ObjectExpression'&&(holder?.type==='AssignmentExpression'&&holder.right===obj&&exportsTarget(holder.left)||holder?.type==='ExportDefaultDeclaration');
+      }
+      return false;
+    };
+    const unused=(fnNode,{name,member})=>{
+      let clash=false;
+      walk(ast,(n,parent)=>{
+        if(clash)return;
+        if(n.type==='CallExpression'||n.type==='NewExpression') {
+          const c=n.callee.type==='ChainExpression'?n.callee.expression:n.callee;
+          if(c.type==='Identifier'&&c.name===name||c.type==='MemberExpression'&&!c.computed&&nameOf(c.property)===name)clash=true;
+        }
+        if(member||n.type!=='Identifier'||n.name!==name||n===fnNode.id)return;
+        // A property name or a member read by name is no reference to the binding; the declaration itself is none either.
+        if(parent?.type==='MemberExpression'&&parent.property===n&&!parent.computed)return;
+        if(['Property','MethodDefinition','PropertyDefinition'].includes(parent?.type)&&parent.key===n&&parent.value!==n&&!parent.computed)return;
+        if(parent?.type==='VariableDeclarator'&&parent.id===n&&parent.init===fnNode)return;
+        if(!exportUse(n,parent))clash=true;
+      });
+      return !clash;
+    };
+    for(const h of found) {
+      if(h.move||h.form||text.slice(h.node.start,h.node.end).includes('?.'))continue;
+      const fnNode=enclosing(h.node);
+      if(!fnNode||fnNode.generator)continue;
+      if(!fnNode.async&&!asyncAt.has(fnNode)) {
+        const how=exported(fnNode);
+        if(!how||!how.name||!unused(fnNode,how))continue;
+        asyncAt.set(fnNode,how);
+      }
+      edits.push({at:h.node.start,text:h.wrap?'(await ':'await '});
+      if(h.wrap)edits.push({at:h.node.end,text:')'});
+      fixed.push({name:h.name,line:h.node.loc.start.line});
+    }
+    if(!fixed.length)continue;
+    for(const how of asyncAt.values())edits.push({at:how.at,text:'async '});
+    let next=text;
+    for(const e of edits.sort((a,b)=>b.at-a.at||(a.text===')'?-1:1)))next=next.slice(0,e.at)+e.text+next.slice(e.at);
+    try{parseSource(next);}catch{continue;}
+    const left=unawaitedHits(path,next,want)?.found||[];
+    if(left.some(h=>fixed.some(f=>f.name===h.name&&f.line===h.node.loc.start.line)))continue;
+    out[path]={content:next,fixed,made_async:[...asyncAt.values()].map(h=>h.name)};
   }
   return out;
 }

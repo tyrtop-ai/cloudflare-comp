@@ -18,7 +18,7 @@ import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgre
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
 import { reachableModules, opaqueSurface } from './linker.js';
 import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
-import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
+import { contractCheck, contractBody, stubExports, exportNames, awaitFixes } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { branchDirectory } from './assembly.js';
@@ -4426,6 +4426,60 @@ export class ControlRoom extends DurableObject {
     this.event(owner, 'retire', `Stopped ${child.label} (${childId}); repository retained.`, childId);
     return true;
   }
+  // Speed v1: the contract check before the commit. A worker's done used to
+  // be committed, refused by contractReturned and sent back as a whole new
+  // turn (19% of run C's turn-seconds; 87 returns for the await rule alone).
+  // Here, on the staged files and before any push: first the await rule's
+  // mechanical fix (awaitFixes: only where it is unambiguous; each fix is an
+  // event), then, if anything is still found, one targeted correction of
+  // each file the findings name, in this turn, with the send-back text the
+  // worker would have read. Whatever is still found then is committed and
+  // returned by contractReturned after the commit, as before; its bound of 3
+  // returns is untouched. A finding the plan's walk words (an empty start()
+  // operation), or one no single file answers, is left to that path.
+  async precommitContract(id, inbox=[]) {
+    const n=this.node(id);
+    if(!this.live()||!n||this.manager(id)||isRuntimeNode(n))return;
+    if(this.planned()&&query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',id).length)return;
+    // The await rule's unambiguous findings, fixed in place; the check again after.
+    const autofix=async checked=>{
+      const awaited=[...new Set(checked.found.filter(x=>x.rule==='await').map(x=>x.name))];
+      if(!awaited.length)return checked;
+      const fixes=awaitFixes(new Map([...checked.files].filter(([p])=>checked.found.some(x=>x.rule==='await'&&x.path===p))),awaited),made=[];
+      for(const [path,r] of Object.entries(fixes)) {
+        if(sourceCodeError(path,r.content)||sourceParseError(path,r.content)||sourceDependencyError(path,r.content))continue;
+        await this.putFile(id,path,r.content);
+        made.push(`${path.split('/').pop()}: await ${r.fixed.map(f=>`${f.name}() (line ${f.line})`).join(', ')}${r.made_async.length?`; made ${r.made_async.join(', ')} async`:''}`);
+      }
+      if(!made.length)return checked;
+      this.event(id,'contract_autofix',clip(`Inserted await before the commit, mechanically: ${made.join('; ')}.`,900));
+      return await this.contractFindings(id);
+    };
+    let checked=await this.contractFindings(id);
+    if(!checked?.found.length)return;
+    checked=await autofix(checked);
+    if(!checked?.found.length)return;
+    if((Number(this.get(`contract_returns:${id}`,'0'))||0)>=3||checked.found.some(x=>x.text===null))return;
+    const modules=[...checked.files.keys()],target=x=>x.path||(modules.length===1?modules[0]:'');
+    if(checked.found.some(x=>!target(x)||!checked.files.has(target(x))))return;
+    const paths=[...new Set(checked.found.map(target))],rules=[...new Set(checked.found.map(x=>x.rule))],body=contractBody(checked.promised,checked.found);
+    this.event(id,'contract_precheck',clip(`Done checked before the commit: rules [${rules.join(', ')}]; ${paths.map(p=>p.split('/').pop()).join(', ')} corrected in this turn, before any push. ${checked.found.map(x=>x.how).filter(Boolean).join(' ')}`.trim(),900));
+    const current=this.node(id);
+    for(const path of paths) {
+      let content;
+      try {
+        content=await generateFile(this.inferenceEnv('worker'),{node:current,path,intent:`Correct ${path} so that your files meet your contract`,task:this.withContract(current.task,current),
+          answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,files:await this.ownFiles(id),inbox:inbox.map(({from,body})=>({from,body})),
+          children:this.children(id),assemblyInputs:[],correction:clip(body,1800)});
+      } catch(e) {this.event(id,'contract_precheck_failed',clip(`The correction of ${path} failed (${e?.message||e}); the check after the commit decides.`,600));return;}
+      if(sourceCodeError(path,content)||sourceParseError(path,content)||sourceDependencyError(path,content)) {
+        this.event(id,'contract_precheck_failed',clip(`The correction of ${path} was not source that parses; the check after the commit decides.`,600));return;
+      }
+      await this.putFile(id,path,content);
+    }
+    const after=await this.contractFindings(id),left=(after?.found.length?(await autofix(after))?.found:after?.found)||[];
+    this.event(id,'contract_prechecked',left.length?clip(`Still found after the correction: rules [${[...new Set(left.map(x=>x.rule))].join(', ')}]; committed, and the check after the commit returns it.`,600):'The correction meets the contract; committed once.');
+  }
   // v7.15: a worker that reports done without exporting what its parent's
   // split promised for it is sent back, at most 3 times by its own counter
   // (failures resets after every turn). run6's create worker exported
@@ -4434,13 +4488,16 @@ export class ControlRoom extends DurableObject {
   // runs since found), one send-back text, one bound, one event; after the
   // bound, one contract_unmet, and the contract problem for what is still
   // missing or written here.
-  async contractReturned(id) {
+  // The contract check as a worker's files stand now (staged ones too): what
+  // contractReturned decides on, with no effect of its own; null when the
+  // room checks no contract for this worker.
+  async contractFindings(id) {
     // The top reads start without ASK_CLAUSE, as in its task (withContract):
     // an atomic Root has no manager to ask (v7.15.2 review).
-    const top=!this.node(id)?.parent,promised=this.promisedOf(id).map(f=>top?{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')}:f),key=`contract_returns:${id}`,returns=Number(this.get(key,'0'))||0;
+    const top=!this.node(id)?.parent,promised=this.promisedOf(id).map(f=>top?{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')}:f);
     // v7.15.4: in a room with promises every worker is read for functions
     // other pieces promise, its own promise or none (run11).
-    if(!promised.length&&!this.planned())return false;
+    if(!promised.length&&!this.planned())return null;
     const files=new Map();
     for(const f of productionFiles(this.files(id)))if(LINKABLE.test(f.path))files.set(f.path,await this.indexedContent(id,f.path));
     // The plan as this worker reads it: the functions other pieces promise
@@ -4455,6 +4512,12 @@ export class ControlRoom extends DurableObject {
     // v7.15.7 review: the await rule is gated on the room (shaped): where any promise of the plan states what it returns, every promised name a worker calls is read for await, one R5 grows or the splitter left without returns too; a room where none states it (v7.15.5's and v7.15.6's replays) is read as before.
     const found=contractCheck(files,{promise:promised,uses,foreign,performers:names.includes('start')?this.startPerformers(id):[],esm,goal:this.userGoal(),keeper,shaped:this.shaped(),
       performer:x=>this.performerOf(id,x),promisedParams:(t,name)=>(elsewhere.get(name)||promised.find(f=>f.name===name))?.params||null});
+    return {promised,files,found,esm};
+  }
+  async contractReturned(id) {
+    const key=`contract_returns:${id}`,returns=Number(this.get(key,'0'))||0,checked=await this.contractFindings(id);
+    if(!checked)return false;
+    const {promised,files,found,esm}=checked;
     // Review (p1): a foreign function in a stub the builder leaves out of the bundle (dropped) is no gap of the application: no contract problem for it.
     const gap=found.filter(x=>x.rule==='missing'||x.rule==='foreign'&&!x.dropped),dropped=[...new Set(found.filter(x=>x.dropped).map(x=>x.path))],base=p=>String(p||'').split('/').pop(),list=listed;
     // A contract problem is about a missing export or a function written here: closed once neither remains, whatever else.
@@ -5886,7 +5949,9 @@ export class ControlRoom extends DurableObject {
       }
     ];
     const firstWrite=before.length;
-    const operations=[...before,...writes,async () => {
+    // Speed v1: a worker's done is checked against its contract before the commit (precommitContract).
+    const precheck=action.done&&!action.spawn.length&&!this.manager(id)&&!isRuntimeNode(n)&&this.live()?[async () => {await this.precommitContract(id,inbox);}]:[];
+    const operations=[...before,...writes,...precheck,async () => {
       try {await this.flushWrites(id);}
       catch(e) {
         this.rollbackStaged(id);
