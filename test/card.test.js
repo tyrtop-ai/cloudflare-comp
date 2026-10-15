@@ -364,6 +364,36 @@ test('writeCard: a retry that does not parse never replaces a first answer that 
   assert.deepEqual(none.raw_answers, ['nothing', 'still nothing']);
 });
 
+// v8 live 2: the CLI's R4 expected exit 1 and "Invalid unit" on stderr, and
+// nothing the worker saw said so. Clef now asks whether each requirement is
+// implementable from its statement and its deliverables' contracts with their
+// interface facts; a NO is a substantive note, and the writer states in says
+// what the check needs.
+test('writeCard: a requirement Clef finds unimplementable from its statement and contract goes back to the writer, who states what its check needs', async () => {
+  const draft = good();
+  draft.requirements.push({id: 'R4', says: 'The CLI handles invalid unit inputs', source: 'converts temperatures', serves: ['convert'], check: {kind: 'command', run: 'convert 100 X', expect: {exit: 1, stderr_has: ['Invalid unit']}}});
+  const revised = JSON.parse(JSON.stringify(draft));
+  revised.requirements[3].says = 'An invalid unit exits with status 1 and prints "Invalid unit" to stderr';
+  // Clef: R4 (slot 3) is not implementable as first stated, and is once its statement says what the check needs.
+  const {env, calls, clefCalls} = modelEnv([draft, revised], (k, input) => k === 'implementable_3' && !/status 1/.test(input.state.requirements[3].says) ? 0.1 : 0.9);
+  const out = await writeCard(env, {goal: GOAL});
+  const asked = clefCalls.find(c => c.questions.implementable_3);
+  assert.equal(asked.questions.implementable_3.instructions, CLEF.implementable.replace('{i}', '3'));
+  // Clef reads the statement, the check in a few words (its exit status and texts), and each deliverable's interface facts.
+  assert.equal(asked.state.requirements[3].check, 'command convert 100 X exits 1, writes "Invalid unit" to stderr');
+  assert.deepEqual(asked.state.requirements[3].serves, ['convert']);
+  assert.ok(asked.state.deliverables.find(d => d.name === 'convert').interface.includes('R4 runs `convert <integer> <word>` and expects exit status 1 and a message on stderr'));
+  // Judge checks are a reader's question, and a check that only finds a file has nothing to implement: neither is asked.
+  assert.ok(!clefCalls.some(c => c.questions.implementable_2));
+  assert.equal(calls.length, 2, 'the note is substantive: the writer revises');
+  const retry = JSON.parse(calls[1].messages[1].content.replace(/ \/no_think$/, ''));
+  assert.deepEqual(retry.review_notes, ['R4\'s check may need what its statement and contract leave unsaid (Clef p=0.10; command convert 100 X exits 1, writes "Invalid unit" to stderr): state in says what the check needs besides the right values, such as the exit status, the stream a message goes to, or an exact text it must show.']);
+  assert.equal(out.card.requirements.find(r => r.id === 'R4').says, 'An invalid unit exits with status 1 and prints "Invalid unit" to stderr');
+  assert.deepEqual(out.review_notes, []);
+  // FORMAT.card asks for it, in general words.
+  assert.match(FORMAT.card, /"says" states anything else the check needs, such as an exit status, an output stream or an exact text/);
+});
+
 test('writeCard (review fix): a kind note only annotates; a revision keeps what the draft had, and a worse revision is discarded', async () => {
   const goal = 'A Python CLI that converts temperatures between Celsius and Fahrenheit.';
   const first = {card: 1, summary: 'converter', languages: ['python'], deliverables: [{name: 'convert', kind: 'command', path: 'convert.py'}],

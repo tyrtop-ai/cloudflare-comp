@@ -5,7 +5,8 @@ import { goalMethods } from './api-coverage.js';
 import { workerAction, singleFileText } from './worker-output.js';
 import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE, MESSAGES, BASE_LABEL } from './prompts.js';
 import { contractLine } from './contracts.js';
-import { validateCard, repairCard, settleCard, settleCodeLanguage, checkSummary, goalSentences } from './card.js';
+import { validateCard, repairCard, settleCard, settleCodeLanguage, checkSummary, goalSentences, existenceOnly } from './card.js';
+import { interfaceFacts } from './affordances.js';
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { EFFECTIVE_GOAL_LIMIT } from './amend.js';
 import { SOURCE_CLAUSE } from './fetcher.js';
@@ -797,7 +798,7 @@ export const CARD_MAX_TOKENS = 8192;
 // notes: what the chosen answer's repair did; raw_answers: the writer's
 // answers as written (each clipped to CARD_RAW_CHARS), for diagnosis.
 export const CARD_RAW_CHARS = 6000;
-const SUBSTANTIVE = /^(?:The goal phrase |\S+'s check may not exercise|Deliverable "[^"]*" \(a \w+\) has no check|\S+'s http check expects nothing)/;
+const SUBSTANTIVE = /^(?:The goal phrase |\S+'s check may not exercise|\S+'s check may need what|Deliverable "[^"]*" \(a \w+\) has no check|\S+'s http check expects nothing)/;
 const said = s => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 // The draft's deliverables and requirements a revision left out, added back to it (layer 1's output, before ranking).
 function keepDraft(revised, draft) {
@@ -895,17 +896,23 @@ export async function rankReferences(env, card, unresolved=[]) {
 // each requirement's check exercise what it states, and is each
 // deliverable's kind right for what it does. A NO (p < REVIEW_BAR) is a
 // note, never an edit; only the first two lead to a revision. {notes, failed}.
+// v8 live 2: and is each requirement implementable (CLEF.implementable):
+// could someone who knows only its statement and its deliverables' contracts,
+// with the interface their checks use (interfaceFacts), pass its check apart
+// from computing the right values? A NO is substantive: the writer states in
+// says what the check needs (the exit status, the stream, an exact text).
 export const REVIEW_BAR = 0.5;
 export async function reviewCard(env, {goal='', change='', card}) {
   if (env.MOCK_AI === 'true' || !card?.deliverables?.length) return {notes:[],failed:[]};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) return {notes:[],failed:['unsupported Clef decision model']};
-  const phrases=goalSentences(change||goal).slice(0,12),reqs=(card.requirements||[]).filter(r=>!r.implicit&&!r.project).slice(0,24),dels=card.deliverables.slice(0,12);
+  const phrases=goalSentences(change||goal).slice(0,12),reqs=(card.requirements||[]).filter(r=>!r.implicit&&!r.project).slice(0,24),dels=card.deliverables.slice(0,12),facts=interfaceFacts(card);
   const state={goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),phrases:phrases.map((text,slot)=>({slot,text:text.slice(0,300)})),
-    requirements:reqs.map((r,slot)=>({slot,id:r.id,says:String(r.says).slice(0,200),check:summaryOf(r.check)})),
-    deliverables:dels.map((d,slot)=>({slot,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160)}))};
+    requirements:reqs.map((r,slot)=>({slot,id:r.id,says:String(r.says).slice(0,200),check:summaryOf(r.check),serves:(r.serves||[]).slice(0,6)})),
+    deliverables:dels.map((d,slot)=>({slot,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160),...(facts.get(d.name)?.length?{interface:facts.get(d.name)}:{})}))};
   const asks=[...phrases.map((_,i)=>({key:`covered_${i}`,text:clefText('covered',{i}),note:p=>`The goal phrase "${clip(phrases[i],160)}" may be covered by no requirement (Clef p=${p.toFixed(2)}): add a requirement whose check fails when the project ignores it.`})),
     ...reqs.map((r,i)=>({key:`exercises_${i}`,text:clefText('exercises',{i}),note:p=>`${r.id}'s check may not exercise what it states (Clef p=${p.toFixed(2)}; ${clip(summaryOf(r.check),120)}): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader's question about a document.`})),
+    ...reqs.map((r,i)=>({r,i})).filter(({r})=>!r.untested&&r.check?.kind!=='judge'&&!existenceOnly(r)).map(({r,i})=>({key:`implementable_${i}`,text:clefText('implementable',{i}),note:p=>`${r.id}'s check may need what its statement and contract leave unsaid (Clef p=${p.toFixed(2)}; ${clip(summaryOf(r.check),160)}): state in says what the check needs besides the right values, such as the exit status, the stream a message goes to, or an exact text it must show.`})),
     ...dels.map((d,i)=>({key:`kind_${i}`,text:clefText('kind_fits',{i}),note:p=>`Kind: deliverable "${clip(d.name,80)}" may fit another kind than ${d.kind||'function'} (Clef p=${p.toFixed(2)}).`}))];
   const groups=[];
   for(let i=0;i<asks.length;i+=12)groups.push(asks.slice(i,i+12));

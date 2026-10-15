@@ -1403,7 +1403,10 @@ export class ControlRoom extends DurableObject {
     if(this.v8()) {
       // v8 (S6): the uses travel apart, with their references (view's contracts_you_may_use).
       const items=this.promisedOf(n.id);
-      return items.length?`${task}\n\nYour contracts, delivered under exactly these names and paths: ${items.map(contractLine).join('; ')}.`:task;
+      // v8 live 2: from the first turn, the statements of the requirements these contracts serve (never their checks' values).
+      const ids=new Set(items.flatMap(c=>c.serves||[])),reqs=(this.read('card',null)?.requirements||[]).filter(r=>ids.has(r.id)&&routable(r)).slice(0,16);
+      const said=reqs.length?` ${MESSAGES.requirements_served({list:reqs.map(r=>`${r.id}: ${String(r.says).replace(/[.\s]+$/,'')}`).join('; ')})}`:'';
+      return items.length?`${task}\n\nYour contracts, delivered under exactly these names and paths: ${items.map(contractLine).join('; ')}.${said}`:task;
     }
     const own=[contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')})),usesText(this.plannedUses(n.id))].filter(Boolean).join(' ');return own?`${task}\n\n${own}`:task;}
   canSplit(parentId, count=2) {

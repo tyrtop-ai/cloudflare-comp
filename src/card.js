@@ -9,6 +9,7 @@ import { normalizeContract, kindOf, nameError, CONTRACT_KINDS, RUNTIME_PREFIXES,
 import { writerPathError } from './code-work.js';
 import { caseTwin } from '../container/build-path.mjs';
 import { isPath } from './protocol.js';
+import { interfaceFacts } from './affordances.js';
 
 // The limits of §1.1, and the card's shape as documentation (the dashboard
 // and the tests read it; validateCard enforces it).
@@ -1226,11 +1227,14 @@ export function providedCard(raw, opts = {}) {
 // part that knows a check's values can hard-code them (S4a). The examples a
 // writer states are the contract itself; an implicit check is built from
 // them (withImplicit), never the other way round. Up to 12, as the card holds them.
+// v8 live 2: each contract carries the interface its requirements' checks
+// exercise (interfaceFacts: labels, buttons, pages, routes, argv shapes, exit
+// status and streams; never a value or an input), as part of the contract.
 export function cardContracts(card) {
-  const reqs = card?.requirements || [];
+  const reqs = card?.requirements || [], facts = interfaceFacts(card);
   return (card?.deliverables || []).map(d => {
     const mine = reqs.filter(r => r.serves.includes(d.name));
-    return normalizeContract({...d, kind: kindOf(d), examples: [...(d.examples || [])].slice(0, 4), serves: mine.map(r => r.id)}, {v8: true, serves: true});
+    return normalizeContract({...d, kind: kindOf(d), examples: [...(d.examples || [])].slice(0, 4), serves: mine.map(r => r.id), interface: facts.get(d.name) || []}, {v8: true, serves: true});
   }).filter(Boolean);
 }
 // The card's non-text languages: those whose files a code piece delivers.

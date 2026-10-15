@@ -78,6 +78,10 @@ function examplesOf(raw) {
   return out;
 }
 const servesOf = raw => [...new Set((Array.isArray(raw) ? raw : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim().slice(0, 40)))].slice(0, MAX_SERVES);
+// v8 live 2: the interface the card's checks exercise (src/affordances.js
+// interfaceFacts): kept, like serves, only on rows the runtime built.
+const MAX_INTERFACE = 8;
+const interfaceOf = raw => [...new Set((Array.isArray(raw) ? raw : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim().slice(0, 240)))].slice(0, MAX_INTERFACE);
 // Inputs: [{name, is}] or names; params, the v7 spelling, an array or "a, b".
 function inputsOf(o) {
   const list = Array.isArray(o.inputs) && o.inputs.length ? o.inputs : Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [];
@@ -133,13 +137,13 @@ function contractItem(o, keepServes) {
   if (!name) return null;
   inputs = inputs.slice(0, MAX_INPUTS);
   const operation = kind === 'function' ? text(o.operation, 80) : '';
-  const effects = stop(text(o.effects, 120)), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [];
+  const effects = stop(text(o.effects, 120)), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [], facts = keepServes ? interfaceOf(o.interface) : [];
   return {
     name, ...(kind === 'function' ? {} : {kind}), does: stop(does), params: inputs.map(x => x.name),
     ...(operation ? {operation} : {}),
     ...(out ? kind === 'function' ? {returns: out} : {outputs: out} : {}),
     ...(inputs.some(x => x.is) ? {inputs} : {}),
-    ...(effects ? {effects} : {}), ...(examples.length ? {examples} : {}), ...(path ? {path} : {}), ...(serves.length ? {serves} : {})
+    ...(effects ? {effects} : {}), ...(examples.length ? {examples} : {}), ...(path ? {path} : {}), ...(serves.length ? {serves} : {}), ...(facts.length ? {interface: facts} : {})
   };
 }
 // One item. opts.v8: read the v8 contract fields; without it, v7's promise
@@ -167,6 +171,7 @@ export function normalizeContracts(raw, opts = {}) {
     if (!opts.v8) continue;
     for (const k of ['outputs', 'effects', 'examples', 'path']) if (prior[k] === undefined && x[k] !== undefined) prior[k] = x[k];
     if (x.serves) prior.serves = [...new Set([...prior.serves || [], ...x.serves])].slice(0, MAX_SERVES);
+    if (x.interface) prior.interface = [...new Set([...prior.interface || [], ...x.interface])].slice(0, MAX_INTERFACE);
   }
   return out;
 }
@@ -216,6 +221,8 @@ const OUTPUT_VERB = {function: 'returns', command: 'prints', route: 'responds wi
 //   doc README.md: how to install and run
 //   route GET /items: lists the items; responds with a JSON array
 //   command convert (value, unit) in convert.py: prints the converted value
+// v8 live 2: a contract the card's checks exercise ends with that interface:
+//   page index.html: the to-do list; its checks use: page / has the field labelled "Task", the button "Add"
 export function contractLine(c) {
   if (!c || typeof c.name !== 'string') return '';
   const kind = kindOf(c), inputs = contractInputs(c), out = contractOutputs(c);
@@ -223,6 +230,7 @@ export function contractLine(c) {
   if (inputs.some(x => x.is) || kind === 'route' && inputs.length) parts.push(`takes ${inputs.map(x => x.is ? `${x.name} (${x.is})` : x.name).join(', ')}`);
   if (c.effects && !/^none$/i.test(c.effects)) parts.push(`changes ${c.effects}`);
   if (c.examples?.length) parts.push(`e.g. ${c.examples.map(e => exampleText(c, e)).join('; ')}`);
+  if (Array.isArray(c.interface) && c.interface.length) parts.push(`its checks use: ${c.interface.join('; ')}`);
   const body = parts.filter(Boolean).join('; ');
   return `${kind === 'function' ? 'function ' : ''}${contractHead(c)}${body ? ': ' + body : ''}`;
 }

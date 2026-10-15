@@ -104,6 +104,19 @@ Code that agents or the card wrote used to run in one Container per run, with th
 
 `POST /api/dev/box-probe` (off unless `BOX_PROBE=1`, behind `APP_TOKEN`) measures, on a live deployment, what the next slices depend on. [docs/trying-v8.md](docs/trying-v8.md#6-capability-boxes-every-v8-compile-in-its-own-box) says how to run it and what to send back.
 
+## Second live runs: checks a worker can implement
+
+The second live runs got all three rooms to their checks, with working apps in fresh, internet-off boxes (about 1.2 s warm, 10 to 15 s on an image's first use). Then each failed on how its checks were written, matched or reported. The to-do page's `fill {label: "Task"}` timed out on a field that had only a placeholder; the tracker's `fill {label: "Title"}` did the same on `<input id="title" placeholder="Title">`; both checks began with `fill` on a blank page, and the repair said only "step 1 (fill) failed". The CLI's R4 wanted exit 1 and "Invalid unit" on stderr, and nothing its worker saw said so. A file check wanted `<link … href="styles.css">` and the page had `<link … href="styles.css" />`. The to-do card's R1 opened `http://localhost:8000/index.html`, layer 2 refused it, and it was dropped. The tracker's files began with a leaked `===` line.
+
+The rule now: a check's expected values and inputs stay hidden; the interface it exercises is part of the contract, like a function's name.
+
+- **Interface facts.** Each served deliverable's contract states what its requirements' checks use: the fields they fill and the buttons and links they click, by label; the pages and routes; a command's argv shape with each value as its kind; the exit status it expects and the stream each message goes to. Workers also read the statements of the requirements their contracts serve from the first turn. A failure report names the field, button, route or command line, and when a page has no such field it lists what the page offers. Values, inputs, stdin, fixtures and expected texts are still masked.
+- **Tolerant locators.** A fill tries the label, the placeholder, the aria-label, the name or id by its words, then the only text field; a click matches its name in any case, then as a link, button or text; a check opens `/` first.
+- **Implementable.** Clef's card review asks of each requirement whether its statement and contract are enough to pass the check, values aside. A NO goes back to the writer, who states in `says` what the check needs.
+- **No requirement lost.** A URL on the run's own host is read as its path. A check layer 2 still refuses keeps its requirement, marked untested with the refusal as a review note, shown in the Card panel and never run.
+- **Tolerant `has`** for markup (whitespace, quote style, a self-closing `/`), and a **parser** that reads a file header split across lines or missing its closing `===`.
+- A box over 5 s to ready is recorded **cold**.
+
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.

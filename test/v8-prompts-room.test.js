@@ -40,7 +40,7 @@ function promptsAreV8(calls, goal, room = null, extra = []) {
       : key.startsWith('requirement_') ? [`About requirement ${n}: ${CLEF.requirement}`] : key.startsWith('fn_') ? [clefText('match', {j: n})]
       : key.startsWith('owner_') ? [clefText('owner', {i: n})] : key === 'inside' ? [CLEF.owns_need] : key.startsWith('names_') || key.startsWith('piece_') ? [null]
       // v8 card repair: the card's review (layer 3).
-      : key.startsWith('covered_') ? [clefText('covered', {i: n})] : key.startsWith('exercises_') ? [clefText('exercises', {i: n})] : key.startsWith('kind_') ? [clefText('kind_fits', {i: n})] : key.startsWith('reference_') ? [clefText('reference', {i: n, j: Number(key.split('_')[2])})] : [];
+      : key.startsWith('covered_') ? [clefText('covered', {i: n})] : key.startsWith('exercises_') ? [clefText('exercises', {i: n})] : key.startsWith('implementable_') ? [clefText('implementable', {i: n})] : key.startsWith('kind_') ? [clefText('kind_fits', {i: n})] : key.startsWith('reference_') ? [clefText('reference', {i: n, j: Number(key.split('_')[2])})] : [];
     // v8 S4b: a document requirement is judged with CLEF.judge and the check's own question.
     if (key === 'judge') { assert.ok(q.instructions.startsWith(CLEF.judge), q.instructions); continue; }
     if (expected[0] === null) assert.ok(q.instructions.startsWith(key.startsWith('piece_') ? `Does piece ${n}'s own task produce ` : `Piece ${n} lists the contract `), q.instructions);
@@ -102,7 +102,11 @@ test('v8 prompts: a command-line tool, split into pieces with contracts, written
   const cli = calls.leaf.find(u => u.your_label === 'Command line');
   assert.match(cli.your_responsibility, /Your contracts, delivered under exactly these names and paths: command convert \(value, unit\) in convert\.py: prints/);
   assert.deepEqual(cli.contracts_you_may_use.map(u => [u.reference, u.from]), [['from to_fahrenheit import to_fahrenheit', 'Temperature formulas'], ['from to_celsius import to_celsius', 'Temperature formulas']]);
-  assert.match(cli.contracts_you_may_use[0].contract, /^function to_fahrenheit\(celsius\): converts degrees Celsius to Fahrenheit; takes celsius \(a number\); e\.g\. to_fahrenheit\(100\) → 212$/);
+  // v8 live 2: a contract ends with the interface its checks use: here a call's shape, never its arguments or result.
+  assert.match(cli.contracts_you_may_use[0].contract, /^function to_fahrenheit\(celsius\): converts degrees Celsius to Fahrenheit; takes celsius \(a number\); e\.g\. to_fahrenheit\(100\) → 212; its checks use: R2 calls to_fahrenheit\(<integer>\) and expects a value back$/);
+  // The command's own contract states how R1 runs it and what it expects besides the values; its writer reads R1's statement too.
+  assert.match(cli.your_responsibility, /its checks use: R1 runs `convert <integer> <word>` and expects exit status 0 and its output on stdout\./);
+  assert.match(cli.your_responsibility, /Checks written from the goal test these requirements of your contracts: R1: Converting 100 C prints 212\./);
   assert.equal(cli.project.conventions.find(c => c.language === 'python').reference_another_part, 'from to_fahrenheit import to_fahrenheit');
   assert.ok(!/require\(/.test(cli.your_responsibility), 'no JavaScript reference line for a Python project');
   // The files sit at their project paths, every worker is done, and no answer fell back.
@@ -117,7 +121,7 @@ test('v8 prompts: a command-line tool, split into pieces with contracts, written
   assert.ok(calls.raw.every(r => !LANGUAGE_WORDS.test(r.system.replace(/<example>[\s\S]*?<\/example>/g, ''))));
   // An answer to a worker's request names the contract and its row's reference, never a JavaScript import line.
   const answer = room.providedFor(room.promisedOf('root.1').find(c => c.name === 'to_celsius'), 'Temperature formulas');
-  assert.equal(answer, 'function to_celsius(fahrenheit): converts degrees Fahrenheit to Celsius; takes fahrenheit (a number); e.g. to_celsius(32) → 0. It is delivered by "Temperature formulas". Refer to it exactly as: from to_celsius import to_celsius. Use it rather than writing your own.');
+  assert.equal(answer, 'function to_celsius(fahrenheit): converts degrees Fahrenheit to Celsius; takes fahrenheit (a number); e.g. to_celsius(32) → 0; its checks use: R3 calls to_celsius(<integer>) and expects a value back. It is delivered by "Temperature formulas". Refer to it exactly as: from to_celsius import to_celsius. Use it rather than writing your own.');
   assert.equal(room.referenceLine('to_kelvin'), 'from to_kelvin import to_kelvin');
 });
 
@@ -163,7 +167,7 @@ test('v8 prompts: a static page of .html, .css and .js files, split by contract 
   // The page's writer hears the files it links by their project paths.
   const page = calls.leaf.find(u => u.your_label === 'List page');
   // A page loads its script as a module (the javascript row's browser_script), and links a stylesheet by its path.
-  assert.deepEqual(page.contracts_you_may_use.map(u => [u.contract, u.reference]), [['file styles.css: the page\'s styles', 'styles.css'], ['file app.js: adds the typed item to the list when Add is pressed', '<script type="module" src="app.js"></script>']]);
+  assert.deepEqual(page.contracts_you_may_use.map(u => [u.contract, u.reference]), [['file styles.css: the page\'s styles', 'styles.css'], ['file app.js: adds the typed item to the list when Add is pressed; its checks use: page / has the field with placeholder "New item", the button "Add"', '<script type="module" src="app.js"></script>']]);
   // A browser project's references are ES modules by their files, never a server-side require.
   const js = page.project.conventions.find(c => c.language === 'javascript');
   assert.deepEqual([page.project.runs_in, js.reference_another_part, js.page_loads_a_script], ['a browser', "import { NAME } from './NAME.js';", '<script type="module" src="NAME.js"></script>']);

@@ -78,7 +78,8 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.ok(calls.raw.some(r => r.system === systemPrompt('splitter')) && calls.raw.some(r => r.system === systemPrompt('worker')));
   assert.equal(events(room, 'format_fallback').length, 0);
   // v8 S6 review: every request's room-written text passes the prompt lint, the injected data taken out.
-  const data = [GOAL, ...PIECES.pieces.flatMap(p => [p.task, p.label]), ...CARD.deliverables.flatMap(d => [contractLine(d), d.name, d.path, d.does]), ...room.promisedOf('root').map(contractLine)];
+  // v8 live 2: a worker reads the statements of the requirements its contracts serve, as data.
+  const data = [GOAL, ...PIECES.pieces.flatMap(p => [p.task, p.label]), ...CARD.deliverables.flatMap(d => [contractLine(d), d.name, d.path, d.does]), ...room.promisedOf('root').map(contractLine), ...CARD.requirements.flatMap(r => [r.says, r.says.replace(/[.\s]+$/, '')])];
   for (const r of calls.raw) for (const t of composedTexts(JSON.parse(r.text.replace(/ \/no_think$/, '')), data)) assert.deepEqual(lintText('composed', t, {room: true}), [], t);
   const kids = room.children('root').map(c => ({...c, interfaces: JSON.parse(c.interfaces)}));
   assert.deepEqual(kids.map(c => c.label), ['Run guide', 'Hello script']);
