@@ -183,6 +183,7 @@ function flashLimits(s) {
     if(last!=null&&last!==lastLimitEvent){const e=events.at(-1);flashLimit($(/depth/i.test(e.body||'')?'depth':/agent cap|no space|capacity/i.test(e.body||'')?'agent-count':e.kind==='paused'?'steps':'status'));}}
   limitState=now;lastLimitEvent=last;
 }
+let renderedEvents=null;
 function render(s) {
   current=s;
   applySnapshotSettings(s);
@@ -209,7 +210,9 @@ function render(s) {
   $('file-count').textContent=fileRows.length;
   showTree(s.agents);
   // Newest first: the latest traffic is at the top; scroll down for older events.
-  $('events').innerHTML=s.events?.length?[...s.events].reverse().map(eventMarkup).join(''):'<p class="empty">No events yet.</p>';
+  // Only when the events changed: a delta with none leaves the list as it is.
+  const eventsKey=`${s.events?.length||0}:${s.events?.at(-1)?.id??''}`;
+  if(eventsKey!==renderedEvents){renderedEvents=eventsKey;$('events').innerHTML=s.events?.length?[...s.events].reverse().map(eventMarkup).join(''):'<p class="empty">No events yet.</p>';}
   $('event-count').textContent=`${s.events?.length||0} events`;
   $('files').innerHTML=fileRows.length?fileRows.map(f=>`<button type="button" class="file-row ${activeFile===f.agent+'/'+f.path?'active':''}" data-agent="${esc(f.agent)}" data-path="${esc(f.path)}"><span class="mono">${esc(f.agent)}/${esc(f.path)}</span><small>${f.virtual?'alias':'r'+f.revision}</small></button>`).join(''):'<p class="empty">No files committed yet.</p>';
   $('files').querySelectorAll('button[data-agent]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.agent,btn.dataset.path)));
@@ -220,10 +223,34 @@ function render(s) {
   $('start').className=running?'primary stop':'primary';
   $('start').disabled=Boolean(s.stopping); $('continue').disabled=Boolean(s.busy) || (s.status==='complete' || s.status==='failed') || !s.agents?.length;
 }
+// Speed v1: after the first full snapshot the dashboard asks only for what
+// changed since its cursor (/api/delta: new events, changed agents and
+// files, the small state whole), every second instead of a full snapshot
+// every 3 s; every FULL_EVERY-th poll is a full snapshot, which heals what a
+// delta cannot say (a staged file rolled back). The server answers a delta
+// in full itself when the run changed.
+const FULL_EVERY=30;
+let cursor=null,polls=0,inflight=false;
+function mergeDelta(base,d) {
+  const agents=new Map((base?.agents||[]).map(a=>[a.id,a])),fileKey=f=>f.agent+'/'+f.path,files=new Map((base?.files||[]).map(f=>[fileKey(f),f]));
+  for(const a of d.agents||[])agents.set(a.id,a);
+  for(const f of d.files||[])files.set(fileKey(f),f);
+  const events=d.events_truncated?d.events||[]:[...(base?.events||[]),...(d.events||[])].slice(-300);
+  const {full,events_truncated,agents:_a,files:_f,events:_e,...head}=d;
+  return {...base,...head,agents:[...agents.values()],events,
+    files:[...files.values()].sort((a,b)=>fileKey(a)<fileKey(b)?-1:fileKey(a)>fileKey(b)?1:0).slice(0,240)};
+}
 async function refresh() {
-  if (!token()) return;
-  try { render(await call('/api/state')); $('error').textContent=''; }
-  catch(err) { $('connection').textContent='Disconnected';$('connection').className='connection'; showError(err); }
+  if (!token() || inflight) return;
+  inflight=true;
+  try {
+    const delta=cursor&&current&&(++polls%FULL_EVERY!==0);
+    const s=delta?await call('/api/delta?'+new URLSearchParams({since:cursor.events,agents_since:cursor.agents,files_since:cursor.files,exports:cursor.exports,run:cursor.run})):await call('/api/state');
+    cursor=s.cursor||null;
+    render(s.full===false?mergeDelta(current,s):s); $('error').textContent='';
+  }
+  catch(err) { cursor=null; $('connection').textContent='Disconnected';$('connection').className='connection'; showError(err); }
+  finally { inflight=false; }
 }
 async function openFile(agent,path) {
   activeFile=agent+'/'+path;
@@ -345,4 +372,4 @@ $('node-detail')?.addEventListener('click',e=>{const id=e.target.closest?.('[dat
 globalThis.addEventListener?.('resize',drawPath);
 if(typeof ResizeObserver==='function')new ResizeObserver(()=>drawPath()).observe($('hierarchy'));
 $('token').addEventListener('change',refresh);$('room').addEventListener('change',()=>{const id=$('room').value.trim();if(/^[a-z0-9-]{8,64}$/i.test(id)){const u=new URL(location.href);u.searchParams.set('room',id);location.assign(u.href);}});
-setInterval(refresh,3000);refresh();
+setInterval(refresh,1000);refresh();

@@ -645,21 +645,75 @@ export class ControlRoom extends DurableObject {
   // Only the human-facing observer can inspect the full tree. No model context
   // is constructed from snapshot(), avoiding accidental descendant leakage.
   snapshot() {
+    const cursor=this.stateCursor();
+    return {
+      ...this.stateHead(),
+      agents: this.stampAgents(cursor.agents).map(x=>x.row),
+      files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
+      exports: this.exportList(),
+      events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
+      cursor
+    };
+  }
+  // The small part of the dashboard's state, sent whole by snapshot and delta alike.
+  stateHead() {
     return {
       goal: this.get('goal'), status: this.get('status','idle'), busy: this.busy, stopping: this.get('stop_requested')==='1', step: Number(this.get('step','0')),
       build: this.read('last_build_report',null), build_infrastructure: this.get('compile_infrastructure',''),
       active_agents: [...this.activeTurns], max_parallel: this.settings().parallel, settings: this.settings(),
       budget: Number(this.get('budget','0')), queue: this.read('queue', []),
-      agents: this.allNodes().map(n=>({...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])})),
-      files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
-      // Export manifests contain only aliases, never hidden child routing IDs.
-      exports: this.allNodes().flatMap(n=>this.manager(n.id) ?
-        this.visibleManifest(n.id).filter(f=>query(this.db(),'SELECT path FROM exposed_files WHERE owner=? AND path=?',n.id,f.path).length)
-          .map(f=>({agent:n.id,path:f.path})) : []),
-      events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
       problems: this.problems("status!='closed'").slice(0,80).map(p=>({id:p.id,holder:p.holder,kind:p.kind,status:p.status,assignee:p.assignee,
         path:String(p.parties[0]?.path||'').split('/').pop(),detail:clip(p.detail,300),trail:p.trail.map(t=>t.at)})),
       compiler: this.compilerSummary()
+    };
+  }
+  // Export manifests contain only aliases, never hidden child routing IDs.
+  exportList() {
+    return this.allNodes().flatMap(n=>this.manager(n.id) ?
+      this.visibleManifest(n.id).filter(f=>query(this.db(),'SELECT path FROM exposed_files WHERE owner=? AND path=?',n.id,f.path).length)
+        .map(f=>({agent:n.id,path:f.path})) : []);
+  }
+  // Speed v1: where a dashboard's next delta starts. events: the last event
+  // id; agents and files: a clock (ms, monotonic) of this answer; exports: a
+  // signature of the alias table; run: the run it belongs to (a new run, or a
+  // reset, answers whole).
+  stateCursor() {
+    this.stateClock=Math.max(Date.now(),(this.stateClock||0)+1);
+    const x=query(this.db(),'SELECT COUNT(*) AS n,COALESCE(SUM(rowid),0) AS s FROM exposed_files')[0];
+    return {events:query(this.db(),'SELECT COALESCE(MAX(id),0) AS id FROM events')[0].id,agents:this.stateClock,files:Date.now(),exports:`${x.n}:${x.s}`,run:this.get('run_nonce','')};
+  }
+  // Each agent's dashboard row, stamped with the clock of the answer that
+  // first saw it as it is now. A Durable Object restart stamps every agent
+  // anew, so every dashboard hears all of them once.
+  stampAgents(at) {
+    this.agentStamps??=new Map();
+    const out=[],seen=new Set();
+    for(const n of this.allNodes()) {
+      const row={...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[])},digest=JSON.stringify(row),old=this.agentStamps.get(n.id);
+      seen.add(n.id);
+      if(old?.digest!==digest)this.agentStamps.set(n.id,{digest,at});
+      out.push({row,at:this.agentStamps.get(n.id).at});
+    }
+    for(const id of this.agentStamps.keys())if(!seen.has(id))this.agentStamps.delete(id);
+    return out;
+  }
+  // Speed v1: what changed since a dashboard's cursor (stateCursor): the
+  // events after it, the agents and files changed after it, the export list
+  // only when the alias table changed, and the small state whole. A cursor
+  // from another run, or past the last event, gets the whole snapshot.
+  // run7's dashboard pulled 1.1 MB every 3 s, rebuilt on this isolate.
+  stateDelta({since=0, agents_since=0, files_since=0, exports='', run=''}={}) {
+    const cursor=this.stateCursor();
+    since=Number(since)||0;agents_since=Number(agents_since)||0;files_since=Number(files_since)||0;
+    if(String(run)!==cursor.run||since>cursor.events||!agents_since||!files_since)return {...this.snapshot(),full:true};
+    const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events WHERE id>? ORDER BY id DESC LIMIT 300',since).reverse();
+    return {
+      ...this.stateHead(),full:false,
+      agents:this.stampAgents(cursor.agents).filter(x=>x.at>agents_since).map(x=>x.row),
+      files:query(this.db(),'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files WHERE updated_at>=? ORDER BY agent,path LIMIT 240',files_since),
+      ...(String(exports)!==cursor.exports?{exports:this.exportList()}:{}),
+      events,events_truncated:events.length>=300&&events[0].id>since+1,
+      cursor
     };
   }
   compilerSummary() {
@@ -730,7 +784,7 @@ export class ControlRoom extends DurableObject {
     const cursors=Object.fromEntries(Object.keys(EXPORT_TABLES).map(t=>[t,query(this.db(),`SELECT COALESCE(MAX(id),0) AS id FROM ${t}`)[0].id]));
     // Every problem row and ticket, and the per-manager linking and compile state.
     const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
-    const {events:_recent,...rest}=snapshot;
+    const {events:_recent,cursor:_cursor,...rest}=snapshot;
     return {...rest,exports,exported_at:new Date().toISOString(),files,
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors};
   }
@@ -6361,6 +6415,11 @@ export default {
     const stub=env.ROOMS.getByName(room);
     try {
       if (url.pathname==='/api/state' && request.method==='GET') return json(await stub.snapshot());
+      // Speed v1: what changed since the dashboard's cursor; the full snapshot stays /api/state (and /api/export).
+      if (url.pathname==='/api/delta' && request.method==='GET') {
+        const q=url.searchParams;
+        return json(await stub.stateDelta({since:q.get('since'),agents_since:q.get('agents_since'),files_since:q.get('files_since'),exports:q.get('exports')||'',run:q.get('run')||''}));
+      }
       if (url.pathname==='/api/export' && request.method==='GET') return exportResponse(stub);
       if (url.pathname==='/api/file' && request.method==='GET') return json(await stub.fileContent(url.searchParams.get('agent'),url.searchParams.get('path')));
       if (url.pathname==='/api/run' && request.method==='POST') {
