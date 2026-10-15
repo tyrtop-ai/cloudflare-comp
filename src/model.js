@@ -615,12 +615,14 @@ export async function decideProblems(env, input, {onCall=()=>{}, retry=true}={})
   const request=JSON.stringify(input);
   try {
     onCall();
-    let parsed=parseObject(withoutThinking(await run(env,MANAGER_SYSTEM,request,2048)));
+    let output=await run(env,MANAGER_SYSTEM,request,2048),parsed=parseObject(withoutThinking(output));
     if(parsed.parse_error&&retry) {
       onCall();
-      parsed=parseObject(withoutThinking(await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048)));
+      output=await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048);
+      parsed=parseObject(withoutThinking(output));
     }
-    if(parsed.parse_error)return {actions:[],error:'the decision did not parse: '+String(parsed.raw||'').slice(0,300)};
+    // v7.15.15 (G4, run23): an empty answer says what its envelope held (emptyAnswer), as decompose's and decide's do: run23's M4 logged "the decision did not parse: " with nothing after it.
+    if(parsed.parse_error)return {actions:[],error:'the decision did not parse: '+(String(parsed.raw||'').trim().slice(0,300)||emptyAnswer(output))};
     return {actions:Array.isArray(parsed.actions)?parsed.actions.slice(0,24):[]};
   } catch(e) {return {actions:[],error:String(e?.message||e).slice(0,600)};}
 }
