@@ -8,11 +8,11 @@ import {existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {liveRoom, events, twoWorkers, linkAndCompile, verifyCard, snapshotHash, fileBlocks} from './helpers/room.js';
-import {lintText, composedTexts} from './helpers/prompt-lint.js';
+import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences, normalizeContract} from '../src/contracts.js';
 import {cardContracts} from '../src/card.js';
-import {checkPlan, fileResult, workerDetail, checkSecrets, maskSecrets, checkProblems, runNotes, callModule, routable} from '../src/checks.js';
-import {checkAffordances, interfaceFacts} from '../src/affordances.js';
+import {checkPlan, fileResult, workerDetail, checkSecrets, checkAffordances, maskSecrets, checkProblems, runNotes, callModule, routable} from '../src/checks.js';
+import {interfaceFacts, cardScope} from '../src/affordances.js';
 import {judgeRequirement, judgeParts, JUDGE_BAR} from '../src/model.js';
 import {CLEF, MESSAGES} from '../src/prompts.js';
 import {requirementText} from '../src/problems.js';
@@ -56,7 +56,7 @@ const heard=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).flatMap(u=
 // the goal, the card's statements and what a failed check observed) aside.
 function roomData(room) {
   const card=room.snapshot().card,nodes=room.allNodes(),items=[...(card?.deliverables||[]),...nodes.flatMap(n=>JSON.parse(n.interfaces||'[]'))];
-  const out=[room.userGoal(),card?.summary,...(card?.decisions||[]),...(card?.requirements||[]).flatMap(r=>[r.says,r.says.replace(/[.\s]+$/,''),r.source])];
+  const out=[room.userGoal(),card?.summary,...(card?.decisions||[]),...saysData(card,room.userGoal())];
   for(const n of nodes)out.push(n.label,n.task,...room.files(n.id).map(f=>f.path));
   for(const c of items)out.push(contractLine(c),c.name,c.path,c.does,...(c.params||[]));
   for(const n of nodes)for(const c of items)out.push(...useReferences([c],room.referenceFacts(n.id)).map(u=>u.reference));
@@ -181,7 +181,7 @@ test('Python temperature CLI: a wrong output fails its command check, goes to th
   assert.match(rows[0].trail.find(t=>t.action==='assign')?.rule,/^R2[as]$/);
   const told=heard(calls,'Converter');
   assert.equal(told.length,1);
-  assert.equal(told[0],MESSAGES.requirement_repair({body:MESSAGES.check_failed({id:'R1',says:'Converting 100 degrees Celsius prints the Fahrenheit value',check:'a command check that runs `temp <integer>`',evidence:'`temp <integer>`: exit 0; its output lacks a text the requirement looks for; printed "….0"'})}),'the argument the check gave (100) is masked where the output echoes it, and the command is named by its argv shape');
+  assert.equal(told[0],MESSAGES.requirement_repair({body:MESSAGES.check_failed({id:'R1',says:'Converting … degrees Celsius prints the Fahrenheit value',check:'a command check that runs `temp <integer>`',evidence:'`temp <integer>`: exit 0; its output lacks a text the requirement looks for; printed "….0"'})}),'the argument the check gave (100) is masked where the output echoes it, and the command is named by its argv shape');
   linted(room,calls);
   assert.equal(heard(calls,'Usage guide').length,0,'the guide piece is never told');
   assert.equal(calls.leaf.filter(u=>u.your_label==='Usage guide').length,1);
@@ -301,33 +301,63 @@ test('a Container that cannot run the checks routes nothing: the room holds chec
   assert.equal(calls.leaf.length,1,'Root did not write again');
 });
 
-// v8 live 2: a requirement whose check layer 2 refuses is kept, marked
-// untested, shown, never run, and holds nothing: the room completes on the
-// rest. A file check's markup matches whatever the self-closing slash, quote
-// style and whitespace (the to-do page's <link ... />).
-test('live 2: a refused check keeps its requirement, untested and never run; a link written self-closing meets the file check',async()=>{
+// v8 live 2: a requirement whose check layer 2 refuses (after the writer's
+// one revision) is kept, marked untested, shown, never run. About a document,
+// it holds nothing: the room completes on the rest.
+test('live 2: a refused check keeps its requirement, untested and never run; about a document the room completes',async()=>{
   const card={...README_CARD,run:[{id:'site',static:true}],requirements:[README_CARD.requirements[0],
-    {id:'R2',says:'The README shows the project page',source:'a README that explains how to install',serves:['README.md'],check:{kind:'browser',serve:'site',steps:[{goto:'https://project.example.com/'}]}},
-    {id:'R3',says:'The README links its stylesheet',source:'a README that explains how to install',serves:['README.md'],check:{kind:'file',path:'README.md',has:['<link rel="stylesheet" href="styles.css">']}}]};
-  const text=`# Project\n\n## Install\n\nnpm install\n\n<link rel='stylesheet'  href='styles.css' />\n`;
-  const {room,calls,builds,drain}=v8Room({card,answers:{'Root objective':[wrote('README.md',text)]}});
+    {id:'R2',says:'The README shows the project page',source:'a README that explains how to install',serves:['README.md'],check:{kind:'browser',serve:'site',steps:[{goto:'https://project.example.com/'}]}}]};
+  const {room,calls,builds,drain}=v8Room({card,answers:{'Root objective':[wrote('README.md','# Project\n\n## Install\n\nnpm install\n')]}});
   await room.start(README_GOAL,20,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'complete',JSON.stringify(events(room).slice(-8).map(e=>`${e.kind}: ${e.body.slice(0,200)}`),null,1));
+  assert.equal(calls.card.length,2,'the refusal asked the writer for one revision first');
   const kept=room.snapshot().card.requirements.find(r=>r.id==='R2');
   assert.deepEqual([kept.untested,kept.check.kind],[true,'untested']);
   assert.match(kept.check_error,/must start with a single "\/"/);
   assert.match(events(room,'card_errors')[0].body,/every requirement is kept, and R2 is marked untested: its check is never run/);
-  assert.doesNotMatch(events(room,'card_errors')[0].body,/valid part is kept/);
   const st=room.snapshot().requirement_status;
-  assert.deepEqual([st.R1.passed,st.R2.passed,st.R3.passed],[true,null,true]);
+  assert.deepEqual([st.R1.passed,st.R2.passed],[true,null]);
   assert.equal(st.R2.untested,true);
   assert.match(st.R2.detail,/^its check is never run: its browser check requests/);
   assert.equal(builds.length,0,'the untested browser check is never run');
   assert.match(events(room,'checks_passed')[0].body,/R2 stays untested/);
   const notes=(await room.appFiles()).files.find(f=>f.path==='.recursive/RUN.md').content;
   assert.match(notes,/\| R2 \| untested: its check is never run: its browser check requests/);
-  assert.ok(room.snapshot().card.review_notes.some(n=>/^R2 is kept untested/.test(n)));
+  assert.ok(room.snapshot().card.review_notes.some(n=>/^R2's check needs a form the runtime runs/.test(n)));
+  linted(room,calls);
+});
+
+// Live 2 review (the review's room probe): a page whose behaviour
+// requirements are untested never completes on a trivial check alone. The
+// room holds at checks_untested, naming them; Continue accepts the project
+// as it is, logged. A link written self-closing in an HTML file meets the
+// file check (tolerant markup).
+const PAGE_GOAL='A static web page with a to-do list.';
+const PAGE_CARD={card:1,summary:'A to-do page',languages:['text'],run:[{id:'site',static:true}],
+  deliverables:[{name:'index.html',kind:'page',path:'index.html',does:'the to-do list page'}],
+  requirements:[
+    {id:'R1',says:'The page links its stylesheet',source:'A static web page',serves:['index.html'],check:{kind:'file',path:'index.html',has:['<link rel="stylesheet" href="styles.css">']}},
+    {id:'R2',says:'A task can be added',source:'a to-do list',serves:['index.html'],check:{kind:'browser',serve:'site',steps:[{goto:'https://lists.example.com/'},{fill:{label:'Task',text:'Walk'}}]}},
+    {id:'R3',says:'A task can be deleted',source:'a to-do list',serves:['index.html'],check:{kind:'browser',serve:'site',steps:[{goto:'https://lists.example.com/'},{click:{role:'button',name:'Delete'}}]}}],decisions:[]};
+test('live 2 review: untested requirements about a page hold the room at checks_untested; Continue accepts the project as it is, logged',async()=>{
+  const {room,calls,builds,drain}=v8Room({card:PAGE_CARD,answers:{'Root objective':[wrote('index.html',"<!doctype html><link rel='stylesheet'  href='styles.css' /><ul></ul>\n")]}});
+  await room.start(PAGE_GOAL,20,{pipeline:'v8'});
+  await drain();
+  assert.notEqual(room.get('status'),'complete');
+  const hold=room.snapshot().pause;
+  assert.equal(hold.kind,'checks_untested');
+  assert.match(hold.text,/R2 \(A task can be added: its browser check requests "https:\/\/lists\.example\.com\/": it must start with a single "\/"\); R3 \(A task can be deleted: .*\) have no check that runs/);
+  assert.match(hold.text,/Continue accepts the project with them untested; a follow-up prompt can change the card instead\./);
+  const st=room.snapshot().requirement_status;
+  assert.deepEqual([st.R1.passed,st.R2.passed,st.R3.passed],[true,null,null],'the self-closing link meets the file check');
+  assert.equal(builds.length,0);
+  assert.equal(events(room,'checks_passed').length,0);
+  await room.resume(10);
+  await drain();
+  assert.equal(room.get('status'),'complete',JSON.stringify(events(room).slice(-6).map(e=>`${e.kind}: ${e.body.slice(0,200)}`),null,1));
+  assert.match(events(room,'untested_accepted')[0].body,/^The person accepted the project with R2,R3 untested \(card revision 1\)\./);
+  assert.match(events(room,'checks_passed')[0].body,/R2, R3 stay untested/);
   linted(room,calls);
 });
 
@@ -388,7 +418,7 @@ const ALL_CARD={card:1,summary:'Four parts',languages:['javascript','text'],
     {name:'label',kind:'function',path:'label.js',does:'formats a label for a code',params:['code']},
     {name:'greet',kind:'command',path:'greet.js',does:'prints a greeting'},
     {name:'index.html',kind:'page',path:'index.html',does:'the opening hours page'},
-    {name:'srv',kind:'command',path:'srv.js',does:'serves the routes'}],
+    {name:'srv',kind:'command',path:'srv.js',does:'serves the notes-route route'}],
   run:[{id:'site',static:true},{id:'api',run:'srv',port:true,ready:'/'}],
   requirements:[
     {id:'R1',says:'A code gets its label',source:'a small library',serves:['label'],check:{kind:'call',steps:[{call:'label',args:['QX-ARG-7731 ALPHA-WORD'],expect:'TOKEN-EXPECT-ALPHA'}]}},
@@ -426,7 +456,7 @@ test('no leaks (review): no call, stdin, input file, output, route, page text or
   assert.match(heard(calls,'Service')[0],/What it observed: step 1 \(POST \/notes-route\): status 404, which is not what the requirement expects \(it expects 200\); the body was "no \/notes-route for …"/,'the route is named; the body it sent is masked');
   // v8 live 2: the interface IS visible from the first turn: the route, the fields its body sends and gets back, the status; the values are not.
   const first=label=>calls.leaf.find(u=>u.your_label===label).your_responsibility;
-  assert.match(first('Service'),/its checks use: route POST \/notes-route: sends JSON with the fields text; answers status 200; answers JSON with the fields saved/);
+  assert.match(first('Service'),/its checks use: route POST \/notes-route: sends a JSON body; answers status 200; answers JSON/);
   assert.match(first('Service'),/Checks written from the goal test these requirements of your contracts: R3: The service answers its route\./);
   assert.match(first('Greeter'),/its checks use: R2 runs `greet` with input on stdin and an input file and expects its output on stdout/);
   assert.doesNotMatch(first('Greeter'),/The benchmark test of the command passes/,'a hidden requirement\'s statement is never told');
@@ -510,15 +540,34 @@ test('checkPlan: command deliverables run by their own path, project checks apar
 });
 
 // v8 live 2: the to-do page's R3 wanted <link rel="stylesheet" href="styles.css"> and the file had <link rel="stylesheet" href="styles.css" />.
-test('fileResult: markup matches whatever its whitespace, quote style and self-closing slash; plain text exactly, apart from whitespace',()=>{
-  const files=new Map([['index.html','<head>\n  <link rel="stylesheet" href="styles.css" />\n  <meta  charset="utf-8">\n</head>'],['NOTES.md','Run the\n   tool, then "stop" it.']]);
+test('fileResult: markup in a markup file matches whatever the whitespace between tags and attributes, the quote style and a void element\'s "/"; values and text stay exact; code exactly apart from trailing whitespace',()=>{
+  const files=new Map([['index.html','<head>\n  <link rel="stylesheet" href="styles.css" />\n  <meta  charset="utf-8">\n</head>\n<ul>\n  <li>a</li>\n</ul>'],['NOTES.md','Run the   tool, then "stop" it.\nNext line'],
+    ['app.py','if x:   \n    y()\nz()\n'],['page.vue','<template><div class="x"/></template>']]);
   const has=(path,...texts)=>fileResult({path,has:texts},files).passed;
   assert.equal(has('index.html','<link rel="stylesheet" href="styles.css">'),true);
   assert.equal(has('index.html',"<link rel='stylesheet' href='styles.css'/>"),true);
   assert.equal(has('index.html','<link  rel="stylesheet"\nhref="styles.css" >','<meta charset="utf-8"/>'),true);
+  assert.equal(has('index.html','<ul><li>a</li></ul>'),true,'whitespace between tags');
   assert.equal(has('index.html','<link rel="stylesheet" href="style.css">'),false,'another file name is another text');
   assert.equal(has('index.html','<LINK rel="stylesheet" href="styles.css">'),false,'letter case still counts');
-  assert.equal(has('NOTES.md','Run the tool, then "stop" it.'),true,'whitespace runs');
+  // The review's probes: what differs in meaning never matches.
+  const probe=(file,wanted)=>fileResult({path:'p.html',has:[wanted]},new Map([['p.html',file]])).passed;
+  assert.equal(probe('<input value="a = b">','<input value="a=b">'),false,'an attribute value is exact');
+  assert.equal(probe(`<p>He said "no"</p>`,`<p>He said 'no'</p>`),false,'quotes in text are exact');
+  assert.equal(probe(`<p>don't</p>`,`<p>don"t</p>`),false);
+  assert.equal(probe(`<button onclick="f('x')">`,`<button onclick='f("x")'>`),false);
+  assert.equal(probe('<p>x == y</p>','<p>x==y</p>'),false);
+  assert.equal(probe('<a href=/>','<a href=>'),false,'an unquoted "/" is the value');
+  assert.equal(probe('<div class="x"/><p>in</p>','<div class="x"><p>in</p>'),false,'only a void element\'s "/" is dropped');
+  assert.equal(probe('<pre>a    b</pre>','<pre>a b</pre>'),false);
+  assert.equal(probe('<script>s.replace(/a/ >0)</script>','<script>s.replace(/a>0)</script>'),false);
+  // Code: exactly apart from trailing whitespace; newlines and indentation count.
+  assert.equal(has('app.py','if x:\n    y()'),true);
+  assert.equal(has('app.py','if x: y() z()'),false);
+  assert.equal(has('app.py','if x:\ny()'),false);
+  // Other text: spaces and tabs within a line; newlines count.
+  assert.equal(has('NOTES.md','Run the tool, then "stop" it.'),true,'spaces within a line');
+  assert.equal(has('NOTES.md','it. Next line'),false,'a newline is no space');
   assert.equal(has('NOTES.md',"then 'stop' it"),false,'plain text keeps its quotes');
   assert.equal(has('NOTES.md','run the tool'),false,'plain text keeps its case');
 });
@@ -534,14 +583,23 @@ test('workerDetail: built from what the check observed; expected values, inputs 
   assert.equal(workerDetail(cmd,{observed:{what:'timeout'}}),'`temp <integer>`: did not finish in time');
   // The live CLI: exit 1 and stderr were unknowable; now they are told, and the expected wording is not.
   const unit={kind:'command',run:'python3 convert.py 100 X',argv:['python3','convert.py','100','X'],expect:{exit:1,stderr_has:['Invalid unit']}};
-  assert.equal(workerDetail(unit,{observed:{what:'exit',exit:0,stdout:'Unit must be C or F.\n',stderr:''}}),'`python3 convert.py <integer> <word>`: exit 0; the requirement expects exit status 1 and a message on stderr; printed "… must be C or F."');
+  const unitCard={requirements:[{id:'R4',serves:['convert'],check:unit}],deliverables:[{name:'convert',kind:'command',path:'convert.py',does:'converts a temperature'}]};
+  assert.equal(workerDetail(unit,{observed:{what:'exit',exit:0,stdout:'Unit must be C or F.\n',stderr:''}},unitCard),'`python3 convert.py <integer> <word>`: exit 0; the requirement expects exit status 1 and a message on stderr; printed "… must be C or F."');
   const call={kind:'call',steps:[{call:'shout',args:['paren) CHARLIE-ARG; x | y'],expect:'DELTA-EXP'},{call:'label',args:[{a:'(KILO-NEST (x))'}],expect:'y'}]};
   assert.equal(workerDetail(call,{observed:{what:'returned',step:1,op:'shout',module:'lib.js',value:'"nope CHARLIE-ARG"'}}),'step 1: shout(…) in lib.js returned "nope …", which is not what the requirement expects');
   assert.equal(workerDetail(call,{observed:{what:'raised',step:2,op:'label',module:'lib.js',error:'Error: bad (KILO-NEST (x)) here',at:'lib.js:3'}}),'step 2: label(…) in lib.js raised Error: bad … here (at lib.js:3)','a value with unbalanced brackets is masked whole');
   // A page's path is its interface; the text a step looks for is a value.
   const browser={kind:'browser',serve:'web',steps:[{goto:'/hours-page'},{expect_text:'Open (Mon-Fri): HOTEL-HOURS 9-5'}]};
   assert.equal(workerDetail(browser,{detail:'step 2 (expect_text "Open (Mon-Fri): HOTEL-HOURS 9-5"): …',observed:{what:'step',step:2,op:'expect_text',page:'Closed HOTEL-HOURS soon',console:[]}}),'step 2 (expect_text) failed; the page showed "Closed … soon"');
-  assert.equal(workerDetail(browser,{observed:{what:'step',step:1,op:'goto',status:404,page:'Not found: /hours-page'}}),'step 1 (goto /hours-page) failed: the page answered HTTP 404; the page showed "Not found: /hours-page"');
+  // Live 2 review: a page path no contract or goal states is an input: its shape, and masked where the page echoes it.
+  assert.equal(workerDetail(browser,{observed:{what:'step',step:1,op:'goto',status:404,page:'Not found: /hours-page'}}),'step 1 (goto /<word>) failed: the page answered HTTP 404; the page showed "Not found: /…"');
+  const search={kind:'browser',serve:'s',steps:[{goto:'/search?q=zebra-secret-term'},{expect_text:'zebra-secret-term found'}]};
+  assert.equal(workerDetail(search,{observed:{what:'step',step:1,op:'goto',status:404,page:'Not found: /search?q=zebra-secret-term'}}),'step 1 (goto /<word>?<word>=<word>) failed: the page answered HTTP 404; the page showed "Not …: /…?q=…"','a word of an expected text is masked wherever it appears');
+  const stated={requirements:[{id:'R1',serves:['index.html'],check:search}],deliverables:[{name:'index.html',kind:'page',path:'index.html',does:'a search page'}]};
+  assert.equal(workerDetail(search,{observed:{what:'step',step:1,op:'goto',status:404,page:'Not found: /search?q=zebra-secret-term'}},stated),'step 1 (goto /search?<word>=<word>) failed: the page answered HTTP 404; the page showed "Not …: /search?q=…"','a path word the contract states stays; the query value is masked');
+  const user={kind:'http',serve:'api',steps:[{method:'GET',path:'/users/zanzibar/greeting',expect:{status:200,body_has:['Hello zanzibar']}}]};
+  assert.equal(workerDetail(user,{observed:{step:1,op:'GET',status:404,what:'status',body:'no user zanzibar'}},{requirements:[{id:'R1',serves:['api'],check:user}],deliverables:[{name:'api',kind:'command',path:'api.js',does:'serves the users and their greeting'}]}),
+    'step 1 (GET /users/<word>/greeting): status 404, which is not what the requirement expects (it expects 200); the body was "no user …"');
   // A field or button a step looks for is named, with what the page offers; the text it types is masked.
   const todo={kind:'browser',serve:'site',steps:[{fill:{label:'Task',text:'Sample task'}},{click:{role:'button',name:'Add'}},{expect_text:'Sample task'}]};
   assert.equal(workerDetail(todo,{observed:{what:'step',step:1,op:'fill',miss:true,offers:{fields:[{label:'',placeholder:'Add a new task',name:'task-input'}],buttons:[{role:'button',text:'Add'}]},page:'To-Do List Add Sample task'}}),
@@ -550,7 +608,9 @@ test('workerDetail: built from what the check observed; expected values, inputs 
     'step 2 (click the button "Add") failed: no button "Add" on the page; fields found: none; buttons and links found: "…"','a button named by a typed text is masked as the value it is');
   // A route is named; the body it sends and the json it expects are masked.
   const http={kind:'http',serve:'api',steps:[{method:'POST',path:'/notes',body:{text:'remember the milk'},expect:{status:201,json_has:{text:'remember the milk'}}}]};
-  assert.equal(workerDetail(http,{observed:{what:'status',step:1,op:'POST',status:500,body:'no /notes for remember the milk'}}),'step 1 (POST /notes): status 500, which is not what the requirement expects (it expects 201); the body was "no /notes for …"');
+  const notesCard={requirements:[{id:'R1',serves:['srv'],check:http}],deliverables:[{name:'srv',kind:'command',path:'srv.js',does:'keeps notes'}]};
+  assert.equal(workerDetail(http,{observed:{what:'status',step:1,op:'POST',status:500,body:'no /notes for remember the milk'}},notesCard),'step 1 (POST /notes): status 500, which is not what the requirement expects (it expects 201); the body was "no /notes for …"');
+  assert.equal(workerDetail(http,{observed:{what:'status',step:1,op:'POST',status:500,body:'no /notes for remember the milk'}}),'step 1 (POST /<word>): status 500, which is not what the requirement expects (it expects 201); the body was "no /… for …"','a route no contract states is masked');
   const judge={kind:'judge',path:'README.md',question:'Does it mention the purple elephant?'};
   assert.equal(workerDetail(judge,{detail:'Clef judged p=0.31: Does it mention the purple elephant?',observed:{what:'judge',p:0.31}}),'a reader judged that README.md does not meet the requirement (p=0.31)');
   const file={kind:'file',path:'README.md',has:['--strict-mode-flag']};
@@ -563,9 +623,9 @@ test('workerDetail: built from what the check observed; expected values, inputs 
   assert.deepEqual(checkSecrets(judge),['Does it mention the purple elephant?']);
   // What is secret and what is interface, kind by kind.
   assert.deepEqual(checkSecrets(todo),['Sample task']);
-  assert.deepEqual(checkAffordances(todo),['Task','Add','button']);
-  assert.deepEqual(checkSecrets(unit),['{"stderr_has":["Invalid unit"]}','["Invalid unit"]','Invalid unit','100'],'the exit status is no secret, the argument and the wording are');
-  assert.deepEqual(checkAffordances(unit),['python3','convert.py']);
+  assert.deepEqual(checkAffordances(todo).sort(),['Add','Task','button']);
+  assert.deepEqual(checkSecrets(unit,unitCard),['["Invalid unit"]','Invalid unit','100'],'the exit status is no secret, the argument and the wording are');
+  assert.deepEqual([...new Set(checkAffordances(unit,unitCard))].sort(),['convert','convert.py','python3']);
   assert.ok(!checkSecrets(http).includes('/notes'),'a route is no secret');
   assert.ok(checkSecrets(http).includes('remember the milk'));
   // A token of a value that is also a word of an affordance stays: the label "Task" is never masked away by the value "Sample task".
@@ -579,21 +639,22 @@ test('interfaceFacts: the live cards\' interface goes into the contracts; their 
   const card={card:1,languages:['python','javascript','text'],
     deliverables:[{name:'index.html',kind:'page',path:'index.html'},{name:'script.js',kind:'file',path:'script.js'},
       {name:'convert',kind:'command',path:'convert.py',does:'converts a temperature',inputs:[{name:'value',is:'a number'},{name:'unit',is:'C or F'}]},
-      {name:'server.js',kind:'file',path:'server.js'},{name:'notes',kind:'command',path:'notes.py',does:'keeps notes: add a note, or list them'}],
+      {name:'server.js',kind:'file',path:'server.js',does:'serves the tickets'},{name:'notes',kind:'command',path:'notes.py',does:'keeps notes: add a note, or list them'}],
     run:[{id:'serve',static:true},{id:'api',run:'node server.js',argv:['node','server.js'],port:true,ready:'/'}],
     requirements:[
-      {id:'R1',says:'Tasks can be added and displayed',source:'a to-do list',serves:['index.html','script.js'],check:{kind:'browser',serve:'serve',steps:[{fill:{label:'Task',text:'VALUE-SAMPLE-TASK'}},{click:{role:'button',name:'Add'}},{expect_text:'VALUE-SAMPLE-TASK'},{click:{role:'checkbox',name:'VALUE-SAMPLE-TASK'}},{expect_count:{role:'list item',text:'VALUE-COUNTED',n:1}}]}},
-      {id:'R2',says:'The CLI handles invalid unit inputs',source:'converts temperatures',serves:['convert'],check:{kind:'command',run:'python3 convert.py 100 X',argv:['python3','convert.py','100','X'],stdin:'VALUE-STDIN',expect:{exit:1,stderr_has:['VALUE-INVALID-UNIT']}}},
-      {id:'R3',says:'Creating a ticket lists it',source:'create tickets',serves:['server.js'],check:{kind:'http',serve:'api',steps:[{method:'POST',path:'/tickets',body:{title:'VALUE-TITLE'},save:'t',expect:{status:201,json_has:{id:7}}},{method:'GET',path:'/tickets/$t',expect:{status:200,body_has:['VALUE-BODY']}}]}},
+      {id:'R1',says:'Tasks can be added and displayed',source:'a to-do list',serves:['index.html','script.js'],check:{kind:'browser',serve:'serve',steps:[{fill:{label:'Task',text:'VALUE-SAMPLE-TASK'}},{click:{role:'button',name:'Add'}},{expect_text:'VALUE-SAMPLE-TASK'},{click:{role:'checkbox',name:'VALUE-SAMPLE-TASK'}},{expect_count:{role:'list item',text:'VALUE-TALLY',n:1}}]}},
+      {id:'R2',says:'The CLI handles invalid unit inputs',source:'converts temperatures',serves:['convert'],check:{kind:'command',run:'python3 convert.py 100 X',argv:['python3','convert.py','100','X'],stdin:'VALUE-XYZZY-LINE',expect:{exit:1,stderr_has:['VALUE-INVALID-UNIT']}}},
+      {id:'R3',says:'Creating a ticket lists it',source:'create tickets',serves:['server.js'],check:{kind:'http',serve:'api',steps:[{method:'POST',path:'/tickets',body:{title:'VALUE-TITLE'},save:'t',expect:{status:201,json_has:{id:7}}},{method:'GET',path:'/tickets/$t',expect:{status:200,body_has:['VALUE-QWZX']}}]}},
       {id:'R4',says:'A note is added',source:'notes',serves:['notes'],check:{kind:'command',run:'notes add "VALUE NOTE"',argv:['notes','add','VALUE NOTE'],files:{'in.txt':'VALUE-FIXTURE'},expect:{exit:0,stdout_has:['VALUE-ADDED']}}},
       {id:'R5',says:'Notes are listed',source:'notes',serves:['notes'],check:{kind:'command',run:'notes list',argv:['notes','list'],expect:{stdout:'VALUE-LIST'}}},
       {id:'R6',says:'Hidden',source:'x',serves:['notes'],hidden:true,check:{kind:'command',run:'notes secret-sub',argv:['notes','secret-sub'],expect:{exit:3}}},
       {id:'R7',says:'Kept untested',source:'x',serves:['index.html'],untested:true,check_error:'it must start with a single "/"',check:{kind:'untested',written:'{"goto":"https://VALUE.example/"}'}}]};
   const facts=interfaceFacts(card);
-  assert.deepEqual(facts.get('index.html'),['page / has the field labelled "Task", the button "Add", a checkbox named by a text a step types, listitem elements (counted)']);
+  assert.deepEqual(facts.get('index.html'),['page / has the field labelled "Task", the button "Add", the checkbox, listitem elements (counted)'],'a checkbox named by a typed text is shown without its name');
   assert.deepEqual(facts.get('script.js'),facts.get('index.html'),'every deliverable a check serves hears its interface');
   assert.deepEqual(facts.get('convert'),['R2 runs `python3 convert.py <integer> <word>` with input on stdin and expects exit status 1 and a message on stderr']);
-  assert.deepEqual(facts.get('server.js'),['route POST /tickets: sends JSON with the fields title; answers status 201; answers JSON with the fields id','route GET /tickets/{t}: answers status 200']);
+  // A route word its contract states stays; a body's and an answer's keys are not shown (a map-shaped answer's keys are values).
+  assert.deepEqual(facts.get('server.js'),['route POST /tickets: sends a JSON body; answers status 201; answers JSON','route GET /tickets/{t}: answers status 200']);
   // A subcommand its contract states is literal; the note's text is its kind.
   assert.deepEqual(facts.get('notes'),['R4 runs `notes add <text>` with an input file and expects exit status 0 and its output on stdout','R5 runs `notes list` and expects its output on stdout']);
   const all=JSON.stringify([...facts]);
@@ -622,9 +683,11 @@ test('checkProblems: a failed requirement is a run problem routed by serves and 
   assert.equal(items.length,2);
   const [run,load]=items;
   assert.equal(run.kind,'run');
-  assert.equal(run.detail,'R1 (Converting 100 prints 212): temp: exit 0; its output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
+  // Live 2 review: every value of the card is masked, in the statement too (100 is the check's input, 212 its expected output).
+  assert.equal(run.detail,'R1 (Converting … prints …): temp: exit 0; its output lacks a text the requirement looks for; printed "….0" (at components/c-1/conv.py:3)');
   assert.equal(run.facts.requirement.check,'a command check that runs temp');
-  assert.equal(run.facts.requirement.evidence,'temp: exit 0; its output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
+  assert.equal(run.facts.requirement.evidence,'temp: exit 0; its output lacks a text the requirement looks for; printed "….0" (at components/c-1/conv.py:3)');
+  assert.equal(run.facts.requirement.says,'Converting … prints …');
   assert.deepEqual(run.parties,[{path:'components/c-1/conv.py',owner:'root.1.2',owner_path:'conv.py',digest:'',role:'site'}]);
   assert.deepEqual(run.facts.requirement.names,['temp','to_fahrenheit']);
   assert.deepEqual(run.facts.requirement.frames,[{path:'components/c-1/conv.py',fn:'to_f',line:3}]);
@@ -635,7 +698,7 @@ test('checkProblems: a failed requirement is a run problem routed by serves and 
   assert.equal(load.kind,'load');assert.equal(load.path,'temp.py');
   // The ticket text reads the requirement on the piece's own contract.
   // The ticket reads MESSAGES.check_failed, whoever takes it.
-  const said=MESSAGES.check_failed({id:'R1',says:'Converting 100 prints 212',check:'a command check that runs temp',evidence:run.facts.requirement.evidence});
+  const said=MESSAGES.check_failed({id:'R1',says:'Converting … prints …',check:'a command check that runs temp',evidence:run.facts.requirement.evidence});
   assert.equal(requirementText(run.facts.requirement,{fn:{name:'temp',kind:'command',path:'temp.py',does:'converts'}}),said);
   assert.equal(requirementText(run.facts.requirement),said);
 });

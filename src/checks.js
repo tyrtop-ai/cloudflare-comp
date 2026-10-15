@@ -12,7 +12,8 @@ import { TOOLCHAINS, toolchainOf, extractSurface } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
-import { checkAffordances, argvShape, literalWords, stepTarget, routePath, roleOf } from './affordances.js';
+import { cardScope, commandShape, stepTarget, routeShape, roleOf, maskSecrets, maskWith } from './affordances.js';
+export { maskSecrets, maskWith };
 
 // The time a card verification may take (container/build-runner.mjs
 // CARD_LIMITS, which also clamps what it is sent): all checks, one check, one step.
@@ -102,98 +103,111 @@ export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), p
 // text, parses as json. detail: the dashboard's (the runner's wording);
 // observed: what a worker may hear (never the texts it looks for).
 // v8 live 2: has ['<link rel="stylesheet" href="styles.css">'] failed on
-// <link rel="stylesheet" href="styles.css" />. A text with markup in it
-// matches after whitespace runs, quote style (' or ") and a self-closing "/"
-// before ">" are normalised, in the text and the file alike; plain text
-// matches exactly, apart from whitespace runs.
-const MARKUP = /<[A-Za-z!/?]/;
-const spaced = t => String(t).replace(/\s+/g, ' ');
-const markup = t => spaced(t).replace(/'/g, '"').replace(/\s*\/?\s*>/g, '>').replace(/\s*=\s*/g, '=').replace(/<\s+/g, '<');
-export function hasText(text, wanted) {
-  const w = String(wanted);
-  if (text.includes(w)) return true;
-  return MARKUP.test(w) ? markup(text).includes(markup(w).trim()) : spaced(text).includes(spaced(w).trim());
+// <link rel="stylesheet" href="styles.css" />. A has text matches exactly,
+// or, by the file's kind (review: never across what differs in meaning):
+//  - markup (.html, .htm, .xml, .svg, .vue), a text with a tag in it: each
+//    tag read as its name and attributes, so the whitespace between tags and
+//    attributes, the quotes around an attribute value and a void element's
+//    self-closing "/" do not count; attribute values and text stay exact;
+//  - code: exactly, apart from trailing whitespace on each line;
+//  - any other text: apart from runs of spaces and tabs within a line and
+//    trailing whitespace; newlines and leading indentation count.
+const MARKUP_FILE = /\.(?:html?|xml|svg|vue)$/i;
+const CODE_FILE = /\.(?:[cm]?js|jsx|tsx?|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|cs|php|sh|bash|css|scss|less|sql|json|ya?ml|toml|lua|pl|r)$/i;
+const TAG_START = /<[A-Za-z!/?]/;
+const VOID = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '));
+// One tag at s[at] ('<'), canonical, or null when it does not close.
+function readTag(s, at) {
+  if (s[at + 1] === '!' || s[at + 1] === '?') { const end = s.indexOf('>', at); return end < 0 ? null : {text: s.slice(at, end + 1), end: end + 1}; }
+  const close = /^<\/[ \t\r\n]*([A-Za-z][\w:.-]*)[ \t\r\n]*>/.exec(s.slice(at, at + 200));
+  if (close) return {text: `</${close[1]}>`, end: at + close[0].length};
+  const head = /^<([A-Za-z][\w:.-]*)/.exec(s.slice(at, at + 200));
+  if (!head) return null;
+  let i = at + head[0].length, self = false;
+  const attrs = [];
+  for (;;) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (i >= s.length) return null;
+    if (s[i] === '>') { i++; break; }
+    if (s[i] === '/') { let j = i + 1; while (j < s.length && /\s/.test(s[j])) j++; if (s[j] === '>') { self = true; i = j + 1; break; } i++; continue; }
+    const name = /^[^\s=/>]+/.exec(s.slice(i, i + 200))?.[0];
+    if (!name) return null;
+    i += name.length;
+    let j = i;
+    while (j < s.length && /\s/.test(s[j])) j++;
+    if (s[j] !== '=') { attrs.push(` ${name}`); continue; }
+    j++;
+    while (j < s.length && /\s/.test(s[j])) j++;
+    let value;
+    if (s[j] === '"' || s[j] === "'") { const end = s.indexOf(s[j], j + 1); if (end < 0) return null; value = s.slice(j + 1, end); i = end + 1; }
+    else { const v = /^[^\s>]*/.exec(s.slice(j))[0]; value = v; i = j + v.length; }
+    attrs.push(` ${name}="${value}"`);
+  }
+  return {text: `<${head[1]}${attrs.join('')}${self && !VOID.has(head[1].toLowerCase()) ? '/' : ''}>`, end: i};
+}
+// A markup text with each tag canonical and the whitespace between tags dropped; text exact.
+function canonicalMarkup(t) {
+  const s = String(t);
+  let out = '', i = 0;
+  while (i < s.length) {
+    const lt = s.indexOf('<', i), text = s.slice(i, lt < 0 ? s.length : lt);
+    out += /^\s*$/.test(text) ? '' : text;
+    if (lt < 0) break;
+    const tag = readTag(s, lt);
+    if (!tag) { out += '<'; i = lt + 1; continue; }
+    out += tag.text;
+    i = tag.end;
+  }
+  return out;
+}
+const trailing = t => String(t).split('\n').map(l => l.replace(/[ \t\r]+$/, '')).join('\n');
+const inLine = t => String(t).split('\n').map(l => { const ind = /^[ \t]*/.exec(l)[0]; return ind + l.slice(ind.length).replace(/[ \t]+/g, ' ').replace(/[ \t\r]+$/, ''); }).join('\n');
+export function hasText(text, wanted, path = '') {
+  const w = String(wanted), t = String(text);
+  if (t.includes(w)) return true;
+  if (MARKUP_FILE.test(path) && TAG_START.test(w)) return canonicalMarkup(t).includes(canonicalMarkup(w.trim()));
+  if (CODE_FILE.test(path) || MARKUP_FILE.test(path)) return trailing(t).includes(trailing(w));
+  return inLine(t).includes(inLine(w).trim());
 }
 export function fileResult(check, files) {
   const p = String(check?.path || ''), text = files.get(p);
   if (typeof text !== 'string') return {passed: false, detail: `${p} is missing`, observed: {what: 'missing'}};
   if (!text.trim()) return {passed: false, detail: `${p} is empty`, observed: {what: 'empty'}};
-  for (const s of check.has || []) if (!hasText(text, s)) return {passed: false, detail: `${p} does not contain ${show(String(s))}`, observed: {what: 'lacks'}};
+  for (const s of check.has || []) if (!hasText(text, s, p)) return {passed: false, detail: `${p} does not contain ${show(String(s))}`, observed: {what: 'lacks'}};
   if (check.json === true) { try { JSON.parse(text); } catch (e) { return {passed: false, detail: `${p} is not valid JSON: ${clip(e.message, 120)}`, observed: {what: 'json', error: clip(e.message, 120)}}; } }
   return {passed: true, detail: ''};
 }
 
-// Everything of a check a worker must never read: the expected values and
-// the inputs a check feeds (stdin, input files, call arguments, request
-// bodies, the texts a browser step types and looks for). v8 live 2: the
-// interface a check exercises is no secret (src/affordances.js): the labels,
-// placeholders and names of the fields it fills, the buttons and links it
-// clicks, the pages and routes it opens, a command's program, flags, code
-// files and literal words, the exit status and streams it expects. Strings
-// of 3 characters or more. card (optional): a command's literal words.
-export function checkSecrets(check, card = null) {
-  const out = new Set(), add = v => {
-    if (v === undefined || v === null) return;
-    if (typeof v === 'string') { if (v.trim().length >= 3) out.add(v); return; }
-    if (typeof v === 'object') { const s = show(v); if (s.length >= 3) out.add(s); for (const x of Object.values(v)) add(x); return; }
-    const s = String(v); if (s.length >= 3) out.add(s);
-  };
-  const c = check || {}, keep = new Set(checkAffordances(c, card));
-  if (c.kind === 'file') (c.has || []).forEach(add);
-  if (c.kind === 'judge') add(c.question);
-  if (c.kind === 'command') {
-    add(c.stdin); for (const [p, t] of Object.entries(c.files || {})) { add(p); add(t); }
-    (Array.isArray(c.argv) ? c.argv.slice(1) : []).filter(a => !keep.has(a)).forEach(add);
-    const {exit: _exit, ...values} = c.expect || {};
-    add(values);
-  }
-  if (c.kind === 'call') for (const s of c.steps || []) { add(s.args); if ('expect' in s) add(s.expect); add(s.expect_has); }
-  if (c.kind === 'http') for (const s of c.steps || []) { add(s.body); const {status: _status, ...values} = s.expect || {}; add(values); for (const seg of String(s.path || '').split(/[/?&=]/)) if (!keep.has(seg) && !/^\$\w+$/.test(seg) && /\d/.test(seg) && seg.length >= 3) add(seg); }
-  if (c.kind === 'browser') for (const s of c.steps || []) {
-    const [k, v] = Object.entries(s || {})[0] || [];
-    if (k === 'fill' && v && typeof v === 'object') add(v.text);
-    if (k === 'expect_text' || k === 'expect_no_text') add(v);
-    if (k === 'expect_count' && v && typeof v === 'object') add(v.text);
-    if (k === 'click' && v && typeof v === 'object') for (const x of [v.name, v.text, v.label]) if (typeof x === 'string' && !keep.has(x)) add(x);
-  }
-  return [...out].filter(x => !keep.has(x)).sort((a, b) => b.length - a.length);
+// What a worker must never read (live 2 review): every expected value and
+// every input of every check of the card, collected once (cardScope in
+// src/affordances.js). A check's interface is no secret: the labels and
+// button names no check uses as a value, the pages and routes and argv
+// words a contract or the goal states, the exit status and streams.
+// scopeOf: a card's scope ({secrets, whole, keep, literal}), from a scope,
+// a card, or, alone, the one check.
+export const scopeOf = (check, ctx = null, goal = '') => ctx?.secrets ? ctx : cardScope(ctx?.requirements ? ctx : {requirements: [{id: 'R', check}]}, {goal});
+// The texts a check's values hold (with the card: every check's), longest first.
+export function checkSecrets(check, card = null, goal = '') {
+  const s = scopeOf(check, card, goal);
+  return [...new Set([...s.secrets, ...s.whole])].sort((a, b) => b.length - a.length);
 }
+// The interface names a report may show (their words are never masked as a part of a value).
+export const checkAffordances = (check, card = null, goal = '') => scopeOf(check, card, goal).keep;
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// The tokens of 4 or more characters a secret holds: its words (letters,
-// digits, '_' and '-') and the parts of a word between its '-' and '_'.
-const tokensOf = s => [...new Set(String(s).match(/[\p{L}\p{N}_-]{4,}/gu) || [])].flatMap(w => [w, ...w.split(/[-_]+/).filter(x => x.length >= 4)]);
-// v8 S4b review: an observed text masked against a check's values, before
-// any clipping: each whole value and its json form, each line of 3 or more
-// characters of a value of several lines, then each token of 4 or more
-// characters a value holds (case-insensitive), all become "…". keep: the
-// check's affordances (checkAffordances); a token that is a word of one
-// stays, so a label or a route a failure names is never masked away.
-export function maskSecrets(text, secrets, keep = []) {
-  let t = String(text ?? '');
-  if (!t) return t;
-  const whole = [...new Set(secrets.flatMap(s => [s, show(s)]).filter(x => x.length >= 3))].sort((a, b) => b.length - a.length);
-  for (const s of whole) t = t.split(s).join('…');
-  const lines = [...new Set(secrets.flatMap(s => s.includes('\n') ? s.split('\n').map(l => l.trim()).filter(l => l.length >= 3) : []))].sort((a, b) => b.length - a.length);
-  for (const l of lines) t = t.split(l).join('…');
-  const kept = new Set(keep.flatMap(tokensOf).map(w => w.toLowerCase()));
-  const tokens = [...new Set(secrets.flatMap(tokensOf))].filter(w => !kept.has(w.toLowerCase())).sort((a, b) => b.length - a.length);
-  if (tokens.length) t = t.replace(new RegExp(`(?<![\\p{L}\\p{N}])(?:${tokens.map(escapeRe).join('|')})(?![\\p{L}\\p{N}])`, 'giu'), '…');
-  return t;
-}
 const q = s => `"${s}"`;
 // A browser step as a worker reads it: its kind, and for a fill or a click
-// the affordance it looks for, never a text it types or looks for.
-export function stepWords(step) {
+// the affordance it looks for, never a text it types or looks for; a page by its shape.
+export function stepWords(step, scope = null) {
   const [op, v] = Object.entries(step || {})[0] || ['step', ''];
-  if (op === 'fill' || op === 'click') return `${op} ${stepTarget(op, v) || 'an element'}`;
-  if (op === 'goto') return `goto ${typeof v === 'string' ? v : '/'}`;
+  if (op === 'fill' || op === 'click') return `${op} ${stepTarget(op, v, scope) || 'an element'}`;
+  if (op === 'goto') return `goto ${routeShape(typeof v === 'string' ? v : '/', scope?.literal)}`;
   if (op === 'press') return `press ${typeof v === 'string' ? v : 'a key'}`;
   if (op === 'expect_count' && v && typeof v === 'object' && v.role) return `expect_count of ${roleOf(v.role)} elements`;
   return op;
 }
-const missWords = step => {
+const missWords = (step, scope) => {
   const [op, v] = Object.entries(step || {})[0] || [];
-  return op === 'fill' ? `no ${String(stepTarget('fill', v)).replace(/^the /, '')} on the page` : op === 'click' ? `no ${String(stepTarget('click', v)).replace(/^the /, '')} on the page` : 'nothing it looks for on the page';
+  return op === 'fill' || op === 'click' ? `no ${String(stepTarget(op, v, scope)).replace(/^the /, '')} on the page` : 'nothing it looks for on the page';
 };
 // What a page offered when a step found nothing: its fields and its buttons and links.
 const offeredWords = (o, m) => {
@@ -202,39 +216,40 @@ const offeredWords = (o, m) => {
   const buttons = (o.buttons || []).map(b => q(m(b?.text, 60)));
   return `; fields found: ${fields.length ? fields.join(', ') : 'none'}; buttons and links found: ${buttons.length ? buttons.join(', ') : 'none'}`;
 };
-// A command as a worker reads it: its argv with each value as its kind.
-export const commandWords = (c, card = null) => Array.isArray(c?.argv) && c.argv.length ? `\`${argvShape(c.argv, {files: c.files || {}, literal: card ? literalWords(card, c.argv[0]) : new Set(), paths: new Set((card?.deliverables || []).map(d => d?.path).filter(Boolean))}).join(' ')}\`` : firstWord(c) || 'the command';
+// A command as a worker reads it: its argv shape (values as their kind).
+export const commandWords = (c, scope = null) => commandShape(c, scope) || firstWord(c) || 'the command';
 // The exit status a command check expects, and the streams it reads, as its contract states them.
 const commandExpectation = c => {
   const e = c?.expect || {}, out = [`exit status ${e.exit}`];
   if (e.stdout !== undefined || e.stdout_has) out.push('its output on stdout');
-  if (e.stderr_has) out.push('a message on stderr');
+  if (e.stderr_has || e.stderr === true) out.push('a message on stderr');
   return `the requirement expects ${out.join(' and ')}`;
 };
 // A failure as a worker may hear it (S4a handoff, S4b review): built only
 // from what the check observed (res.observed: the runner's, the Worker's
 // file and judge checks'), the check's kind and its interface, never from
 // the runner's sentence, which names what it expected. Every observed text
-// is masked against the check's values first (maskSecrets), then clipped.
-// v8 live 2: the interface is named (a command by its argv shape and the
-// exit status and streams it expects, a request by its route, a browser
-// step by the field or button it looks for and, when nothing matched, what
-// the page offers); values stay masked. card (optional): a command's literal words.
-export function workerDetail(check, res = {}, card = null) {
-  const c = check || {}, o = res?.observed || {}, secrets = checkSecrets(c, card), keep = checkAffordances(c, card);
-  const m = (v, n = 300) => clip(maskSecrets(v, secrets, keep).replace(/\s+/g, ' ').trim(), n);
+// is masked with the card's scope first, then clipped (live 2 review: every
+// check's values, not this check's alone). The interface is named: a
+// command by its argv shape and, when its exit differs, the exit status and
+// streams it expects; a request by its route's shape; a browser step by the
+// field or button it looks for and, when nothing matched, what the page
+// offers. ctx: the card's scope, or the card (else this check alone).
+export function workerDetail(check, res = {}, ctx = null) {
+  const c = check || {}, o = res?.observed || {}, scope = scopeOf(c, ctx);
+  const m = (v, n = 300) => clip(maskWith(v, scope).replace(/\s+/g, ' ').trim(), n);
   const at = o.at ? ` (at ${m(o.at, 120)})` : '';
   const out = [];
   if (o.what === 'setup' || o.what === 'run' || o.what === 'local') out.push(m(o.note, 300));
   else if (c.kind === 'file') out.push(o.what === 'missing' ? `${c.path} is missing` : o.what === 'empty' ? `${c.path} is empty` : o.what === 'json' ? `${c.path} is not valid JSON: ${m(o.error, 120)}` : `${c.path} lacks a text the requirement looks for`);
   else if (c.kind === 'judge') out.push(`a reader judged that ${c.path} does not meet the requirement (p=${Number(o.p ?? 0).toFixed(2)})${o.note ? `; ${m(o.note, 160)}` : ''}`);
   else if (c.kind === 'command') {
-    const name = commandWords(c, card);
+    const name = commandWords(c, scope);
     if (o.what === 'start') out.push(`${name}: could not start${o.stderr ? `: ${m(o.stderr, 160)}` : ''}`);
     else if (o.what === 'timeout') out.push(`${name}: did not finish in time`);
     else {
       // v8 live 2: an exit status the requirement did not expect is told with the one it expects, and the streams it reads (interface, never a value).
-      const why = {exit: Number.isInteger(c.expect?.exit) ? commandExpectation(c) : 'its exit status is not what the requirement expects', stdout: 'its output is not what the requirement expects', stdout_has: 'its output lacks a text the requirement looks for', stderr_has: 'its error output (stderr) lacks a text the requirement looks for'}[o.what] || 'the check failed';
+      const why = {exit: Number.isInteger(c.expect?.exit) ? commandExpectation(c) : 'its exit status is not what the requirement expects', stdout: 'its output is not what the requirement expects', stdout_has: 'its output lacks a text the requirement looks for', stderr_has: 'its error output (stderr) lacks a text the requirement looks for', stderr: 'it wrote nothing to stderr, where the requirement expects a message'}[o.what] || 'the check failed';
       out.push(`${name}: exit ${o.exit}; ${why}${o.stdout ? `; printed ${q(m(o.stdout, 200))}` : ''}${o.stderr ? `; stderr: ${q(m(o.stderr, 200))}` : ''}`);
     }
   } else if (c.kind === 'call') {
@@ -247,24 +262,25 @@ export function workerDetail(check, res = {}, card = null) {
     else if (o.what === 'returned') out.push(`${step}${where} returned ${m(o.value, 200)}, which is not what the requirement expects`);
     else out.push('the check failed');
   } else if (c.kind === 'http') {
-    const st = (c.steps || [])[(o.step || 1) - 1], route = st ? `${String(st.method || 'GET').toUpperCase()} ${routePath(st.path)}` : o.op || 'request';
+    const st = (c.steps || [])[(o.step || 1) - 1], route = st ? `${String(st.method || 'GET').toUpperCase()} ${routeShape(st.path, scope.literal)}` : o.op || 'request';
     out.push(`step ${o.step || '?'} (${route}): ${Number.isInteger(o.status) ? `status ${o.status}` : 'no answer'}${o.what === 'status' ? `, which is not what the requirement expects${Number.isInteger(st?.expect?.status) ? ` (it expects ${st.expect.status})` : ''}` : o.what === 'body' || o.what === 'json' ? '; the response is not what the requirement expects' : ''}${o.body ? `; the body was ${q(m(o.body, 160))}` : ''}${o.server_exited ? ' (the server exited)' : ''}`);
   } else if (c.kind === 'browser') {
     const st = (c.steps || [])[(o.step || 1) - 1];
-    out.push(`step ${o.step || '?'} (${st ? stepWords(st) : o.op || 'step'}) failed${o.miss && st ? `: ${missWords(st)}${offeredWords(o.offers, m)}` : ''}${Number.isInteger(o.status) ? `: the page answered HTTP ${o.status}` : ''}${o.page ? `; the page showed ${q(m(o.page, 200))}` : ''}${o.console?.length ? `; console errors: ${m(o.console.join(' | '), 200)}` : ''}`);
+    const several = Array.isArray(o.ambiguous) && o.ambiguous.length ? `: several elements hold it only in part: ${o.ambiguous.map(x => m(x, 80)).join(', ')}` : '';
+    out.push(`step ${o.step || '?'} (${st ? stepWords(st, scope) : o.op || 'step'}) failed${o.miss && st ? `${several || `: ${missWords(st, scope)}`}${offeredWords(o.offers, m)}` : ''}${Number.isInteger(o.status) ? `: the page answered HTTP ${o.status}` : ''}${o.page ? `; the page showed ${q(m(o.page, 200))}` : ''}${o.console?.length ? `; console errors: ${m(o.console.join(' | '), 200)}` : ''}`);
   } else out.push('the check failed');
   return `${out.join('')}${at}`.replace(/\s+/g, ' ').trim();
 }
 
 // What kind of check a requirement has, as its owner may read it: the kind
 // and the interface it exercises, never its inputs or expected values.
-export function checkLabel(check, card = null) {
-  const c = check || {};
+export function checkLabel(check, ctx = null) {
+  const c = check || {}, scope = scopeOf(c, ctx);
   if (c.kind === 'file') return `a file check of ${c.path}`;
   if (c.kind === 'judge') return `a reader's judgement of ${c.path}`;
-  if (c.kind === 'command') return `a command check that runs ${commandWords(c, card)}`;
+  if (c.kind === 'command') return `a command check that runs ${commandWords(c, scope)}`;
   if (c.kind === 'call') return `a call check of ${[...new Set((c.steps || []).map(s => s.call))].join(', ')}`;
-  if (c.kind === 'http') return `a request check of ${[...new Set((c.steps || []).map(s => `${String(s.method || 'GET').toUpperCase()} ${routePath(s.path)}`))].join(', ')} on the served project (${c.serve})`;
+  if (c.kind === 'http') return `a request check of ${[...new Set((c.steps || []).map(s => `${String(s.method || 'GET').toUpperCase()} ${routeShape(s.path, scope.literal)}`))].join(', ')} on the served project (${c.serve})`;
   if (c.kind === 'browser') return `a browser check against the served project (${c.serve})`;
   return 'a check';
 }
@@ -281,21 +297,23 @@ export function namedContracts(text, names) {
 // contractNames: every contract name in the tree. A failed requirement is a
 // 'run' problem whose facts carry the requirement (routed by serves, its
 // frames and the contracts it names); its detail and text are workerDetail
-// only. A file that does not compile is a 'load' problem at that file.
-export function checkProblems(card, results, issues = [], {origin = () => null, contractNames = []} = {}) {
+// only, and its statement is masked with the card's scope (live 2 review:
+// a statement never carries a check's value to a worker). goal: the
+// effective goal, whose words count as stated.
+export function checkProblems(card, results, issues = [], {origin = () => null, contractNames = [], goal = ''} = {}) {
   const party = (path, role) => { const o = origin(path); return {path, owner: o?.owner || '', owner_path: o?.owner_path || '', digest: '', role}; };
-  const items = [];
+  const items = [], scope = cardScope(card, {goal});
   for (const r of card?.requirements || []) {
     const res = results.get(r.id);
     if (!res || res.passed || res.infrastructure || !routable(r)) continue;
-    const said = workerDetail(r.check, res, card);
+    const said = workerDetail(r.check, res, scope), says = maskWith(String(r.says), scope).replace(/[.\s]+$/, '');
     const frames = (res.frames || []).filter(f => f?.path && origin(f.path)).slice(0, 8);
-    const names = [...new Set([...(r.serves || []), ...namedContracts(maskSecrets(`${said}\n${res.output || ''}`, checkSecrets(r.check, card), checkAffordances(r.check, card)), contractNames)])];
+    const names = [...new Set([...(r.serves || []), ...namedContracts(maskWith(`${said}\n${res.output || ''}`, scope), contractNames)])];
     items.push({kind: 'run', path: '', sites: [...new Set(frames.map(f => f.path))],
       parties: [...new Set(frames.map(f => f.path))].map(p => party(p, 'site')),
-      detail: clip(`${r.id} (${r.says.replace(/[.\s]+$/, '')}): ${said}`, 900),
-      facts: {requirement: {id: r.id, says: clip(r.says, 200), check: checkLabel(r.check, card), evidence: clip(said, 600),
-        text: clip(`${r.says.replace(/[.\s]+$/, '')} (${r.id}): ${said}`, 600), source: r.source || '', names, serves: r.serves || [],
+      detail: clip(`${r.id} (${says}): ${said}`, 900),
+      facts: {requirement: {id: r.id, says: clip(says, 200), check: checkLabel(r.check, scope), evidence: clip(said, 600),
+        text: clip(`${says} (${r.id}): ${said}`, 600), source: r.source || '', names, serves: r.serves || [],
         frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0})), card: true, check_kind: r.check?.kind || ''},
       failure: failureHead(`${r.id} ${said}`)}});
   }

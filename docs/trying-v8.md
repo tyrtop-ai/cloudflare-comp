@@ -28,6 +28,7 @@ Root's first turn writes the project card. The **Project card** panel then shows
 | `checks_failed` | A requirement failed and no piece could fix it | Continue runs the checks again |
 | `checks_blocked` | The checks couldn't run (Container, Chromium, Clef) | Retries itself after 30 s, 2 min and 10 min, then waits for Continue |
 | `checks_exhausted` | The repair rounds ran out | Continue gives a fresh set of rounds |
+| `checks_untested` | Everything that runs passed, but a requirement about a page, command, function or route has no check that runs (the card writer's check was refused twice) | Continue accepts the project as it is (logged as `untested_accepted`), or send a follow-up prompt to change the card |
 
 ## 3. Try these goals
 

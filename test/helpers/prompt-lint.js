@@ -1,3 +1,4 @@
+import { cardScope, maskWith } from '../../src/affordances.js';
 // v8 §8.3: the rules every v8 prompt text keeps, as one function the lint
 // test and the scripted v8 rooms share. A prompt states general principles
 // with their reasons: it names no product domain, no language, framework or
@@ -100,4 +101,17 @@ export function composedTexts(user, data = []) {
   walk(user, '');
   const pieces = [...new Set(data.filter(d => typeof d === 'string' && d.length >= 3))].sort((a, b) => b.length - a.length);
   return out.map(t => pieces.reduce((s, d) => s.split(d).join('«data»'), t)).filter(t => /[a-z]{3}/i.test(t.replace(/«data»/g, '')));
+}
+
+// v8 live 2 review: a requirement's statement reaches a worker masked with
+// every check's values (src/affordances.js cardScope): the statement, its
+// source and their masked forms are data, with and without the final stop.
+export function saysData(card, goal = '') {
+  const scope = card ? cardScope(card, {goal}) : null, out = [];
+  for (const r of card?.requirements || []) {
+    if (typeof r?.says !== 'string') continue;
+    const masked = maskWith(r.says, scope);
+    out.push(r.says, r.says.replace(/[.\s]+$/, ''), masked, masked.replace(/[.\s]+$/, ''), r.source);
+  }
+  return out.filter(x => typeof x === 'string' && x);
 }

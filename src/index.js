@@ -42,7 +42,8 @@ import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT }
 import { linkBundle, renameFromRun, editChecks, textHash, stdlibNames } from './glue.js';
 import { applyTextEdits } from './linker.js';
 import { unresolvedNames } from './toolchains.js';
-import { checkSecrets } from './checks.js';
+import { checkSecrets, maskWith } from './checks.js';
+import { cardScope } from './affordances.js';
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, cardsFor, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
@@ -1403,9 +1404,9 @@ export class ControlRoom extends DurableObject {
     if(this.v8()) {
       // v8 (S6): the uses travel apart, with their references (view's contracts_you_may_use).
       const items=this.promisedOf(n.id);
-      // v8 live 2: from the first turn, the statements of the requirements these contracts serve (never their checks' values).
-      const ids=new Set(items.flatMap(c=>c.serves||[])),reqs=(this.read('card',null)?.requirements||[]).filter(r=>ids.has(r.id)&&routable(r)).slice(0,16);
-      const said=reqs.length?` ${MESSAGES.requirements_served({list:reqs.map(r=>`${r.id}: ${String(r.says).replace(/[.\s]+$/,'')}`).join('; ')})}`:'';
+      // v8 live 2: from the first turn, the statements of the requirements these contracts serve, masked with every check's values (live 2 review).
+      const card=this.read('card',null),ids=new Set(items.flatMap(c=>c.serves||[])),reqs=(card?.requirements||[]).filter(r=>ids.has(r.id)&&routable(r)).slice(0,16),scope=reqs.length?cardScope(card,{goal:this.userGoal()}):null;
+      const said=reqs.length?` ${MESSAGES.requirements_served({list:reqs.map(r=>`${r.id}: ${maskWith(String(r.says),scope).replace(/[.\s]+$/,'')}`).join('; ')})}`:'';
       return items.length?`${task}\n\nYour contracts, delivered under exactly these names and paths: ${items.map(contractLine).join('; ')}.${said}`:task;
     }
     const own=[contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')})),usesText(this.plannedUses(n.id))].filter(Boolean).join(' ');return own?`${task}\n\n${own}`:task;}
@@ -3780,6 +3781,13 @@ export class ControlRoom extends DurableObject {
     const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure;
     if(!blocked||failed.length||issues.length)this.set('checks_retries','0');
     if(!failed.length&&!untested.length&&!issues.length&&!report?.infrastructure_issue&&!run?.infrastructure) {
+      // Live 2 review: a requirement kept untested that serves a page, command, function or route was never shown met; the room holds at
+      // checks_untested for the person (Continue accepts the project as it is, logged; a follow-up prompt changes the card).
+      const behaviour=kept.filter(r=>(r.serves||[]).some(n=>['page','command','function','route'].includes(contractKind(card.deliverables.find(d=>d.name===n)||{kind:'doc'})))),accept=`${rev}:${behaviour.map(r=>r.id).join(',')}`;
+      if(behaviour.length&&this.get('untested_accepted')!==accept) {
+        this.save('untested_pending',accept);
+        return this.holdChecks(id,'checks_untested',clip(`Every requirement with a runnable check passed, and ${behaviour.map(r=>`${r.id} (${clip(r.says,80)}: ${clip(r.check_error,120)})`).join('; ')} ${behaviour.length>1?'have':'has'} no check that runs, so the project is not shown to meet ${behaviour.length>1?'them':'it'}.`,700),'Continue accepts the project with them untested; a follow-up prompt can change the card instead.');
+      }
       const rows=query(this.db(),'SELECT goal_rev FROM card_revisions WHERE rev=?',rev)[0];
       this.save('compile_passed',{input,digest,goal_rev:rows?.goal_rev??1,card_rev:rev,ts:Date.now()});
       this.save('compile_reported',null);this.save('compile_blocked',null);this.set('compile_infrastructure','');
@@ -3787,7 +3795,7 @@ export class ControlRoom extends DurableObject {
       this.event(id,'checks_passed',kept.length?`Every requirement of the project card that has a runnable check passed (${card.requirements.length-kept.length}) against snapshot ${digest.slice(0,14)}; ${kept.map(r=>r.id).join(', ')} stay${kept.length>1?'':'s'} untested.`:`Every requirement of the project card passed (${card.requirements.length}) against snapshot ${digest.slice(0,14)}.`);
       return finish();
     }
-    const items=checkProblems(card,results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name))});
+    const items=checkProblems(card,results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name)),goal:this.userGoal()});
     this.event(id,'checks_reported',clip(`The project card's checks: ${line}.`,900));
     // Bench mode: a hidden requirement (the benchmark's own test) is never
     // routed; when only hidden ones fail, the room ends benchmark_failed.
@@ -6589,7 +6597,7 @@ export class ControlRoom extends DurableObject {
       this.save('card',vetted);
       this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,?,?,?,?) ON CONFLICT(rev) DO UPDATE SET goal_rev=excluded.goal_rev,card=excluded.card,reason=excluded.reason,ts=excluded.ts',this.goalRev(),JSON.stringify(vetted),'goal',Date.now());
       // Root's contracts are the card's deliverables (§2.4), up to 12, as the card holds them.
-      this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(vetted)),id);
+      this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(vetted,{goal:this.userGoal()})),id);
       this.save('card_draft',null);this.save('paused_state',null);
       this.event(id,'card_written',clip(`Project card (${calls}, ${Date.now()-started} ms): ${vetted.summary||'(no summary)'}. ${cardLine(vetted)}.${vetted.decisions.length?` Decisions: ${vetted.decisions.join(' ')}`:''}`,1500));
       if(vetted.review_notes?.length)this.event(id,'card_review_notes',clip(`Clef's review notes the card still draws (the writer revised it once): ${vetted.review_notes.join(' ')}`,1500));
@@ -6612,7 +6620,7 @@ export class ControlRoom extends DurableObject {
     if(errors.length||!vettedUsable(card))return hold('card_failed',clip(`The provided card does not validate: ${errors.slice(0,8).join(' ')||'no deliverable or requirement.'}`,1100));
     this.save('card',card);
     this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(card),card.source,Date.now());
-    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(card)),id);
+    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(card,{goal:this.userGoal()})),id);
     this.save('paused_state',null);
     this.event(id,'card_provided',clip(`Project card given by the ${card.source} (validated; not written or vetted by a model): ${card.summary||'(no summary)'}. ${cardLine(card)}.`,1500));
     return true;
@@ -7659,7 +7667,13 @@ export class ControlRoom extends DurableObject {
     // v8 S4b: Continue on a room held at the card's checks runs them again;
     // after the repair rounds ran out, with a fresh set of rounds.
     // A room saved under S3's v8_checks_pending hold runs the checks the same way.
-    if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted','v8_checks_pending'].includes(hold?.kind)) {
+    // Live 2 review: Continue at checks_untested is the person accepting the project with those requirements untested (logged); the checks run again and complete.
+    if(this.v8()&&hold?.kind==='checks_untested') {
+      const accept=this.read('untested_pending','');
+      this.set('untested_accepted',accept);
+      this.event('root','untested_accepted',clip(`The person accepted the project with ${String(accept).split(':')[1]||'its untested requirements'} untested (card revision ${String(accept).split(':')[0]}).`,400));
+    }
+    if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted','v8_checks_pending','checks_untested'].includes(hold?.kind)) {
       this.save('paused_state',null);this.save('compile_reported',null);
       if(!this.autoResume){this.set('checks_retries','0');this.save('checks_retry',null);}
       if(hold.kind==='checks_exhausted') {
@@ -8134,7 +8148,7 @@ export class ControlRoom extends DurableObject {
     const rev=this.cardRev()+1,stored={...delta,amendment:clip(text,600),prompt:promptId||''};
     this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts,delta) VALUES (?,?,?,?,?,?)',rev,goal_rev,JSON.stringify(next),clip(text,1000),Date.now(),JSON.stringify(stored));
     this.save('card',next);
-    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(next)),'root');
+    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(next,{goal:this.userGoal()})),'root');
     this.syncAmendedContracts(next);
     const status=this.read('requirement_status',{});
     for(const rid of delta.requirements.changed)delete status[rid];
@@ -8146,11 +8160,13 @@ export class ControlRoom extends DurableObject {
     // The rows: each new or changed requirement, at Root, routed as a failed check's is.
     const routed=new Set([...delta.requirements.added,...delta.requirements.changed]),wave=`amend:${goal_rev}`,flags={wave,amendment:promptId||'',goal_rev};
     const routedReqs=next.requirements.filter(r=>routed.has(r.id)&&routable(r)),served=new Set(routedReqs.flatMap(r=>r.serves||[]));
+    // Live 2 review: a statement reaches a worker masked with every check's values.
+    const scope=cardScope(next,{goal:this.userGoal()});
     const ids=routedReqs.map(r=>{
-      const says=String(r.says).replace(/[.\s]+$/,'');
+      const says=maskWith(String(r.says),scope).replace(/[.\s]+$/,'');
       return this.insertProblem({holder:'root',kind:'run',stage:'amend',source:'root',input:wave,parties:[],
         detail:clip(`${r.id} (${says}): the user's change "${text}"`,900),
-        facts:{requirement:{id:r.id,says:clip(r.says,200),text:clip(`${says} (${r.id}), from the user's change: ${text}`,600),source:r.source||'',names:[...(r.serves||[])],serves:[...(r.serves||[])],amendment:clip(text,600)}},flags});
+        facts:{requirement:{id:r.id,says:clip(says,200),text:clip(`${says} (${r.id}), from the user's change: ${text}`,600),source:r.source||'',names:[...(r.serves||[])],serves:[...(r.serves||[])],amendment:clip(text,600)}},flags});
     });
     // S9 review: a changed deliverable no routed requirement serves reaches its carrier too, as its new contract.
     for(const name of delta.deliverables.changed.filter(n=>!served.has(n))) {
@@ -8166,7 +8182,7 @@ export class ControlRoom extends DurableObject {
   // A changed deliverable reaches the parts that carry it: each carried copy
   // takes the card's fields, and its serves the new requirements' ids.
   syncAmendedContracts(card) {
-    const items=new Map(cardContracts(card).map(c=>[c.name,c]));
+    const items=new Map(cardContracts(card,{goal:this.userGoal()}).map(c=>[c.name,c]));
     for(const n of this.allNodes().filter(x=>x.parent&&!isRuntimeNode(x)&&!['retired','failed'].includes(x.status))) {
       const list=parse(n.interfaces,[]);let moved=false;
       const out=list.map(f=>{

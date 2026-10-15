@@ -7,7 +7,7 @@ import {existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {liveRoom, events, fileBlocks} from './helpers/room.js';
-import {lintText, composedTexts} from './helpers/prompt-lint.js';
+import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {packageDirectory} from '../src/assembly.js';
 import {textTokens} from '../src/linker.js';
@@ -42,7 +42,7 @@ const turnsOf=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).length;
 // (as the S4b/S6 rooms check), the files a linker request carries among the data.
 function linted(room,calls,extra=[]) {
   const card=room.snapshot().card,nodes=room.allNodes(),items=[...(card?.deliverables||[]),...nodes.flatMap(n=>JSON.parse(n.interfaces||'[]'))];
-  const data=[room.userGoal(),card?.summary,...(card?.requirements||[]).flatMap(r=>[r.says,r.says.replace(/[.\s]+$/,''),r.source]),...extra];
+  const data=[room.userGoal(),card?.summary,...saysData(card,room.userGoal()),...extra];
   for(const n of nodes)data.push(n.label,n.task,...room.files(n.id).map(f=>f.path));
   for(const c of items)data.push(contractLine(c),c.name,c.path,c.does,...(c.params||[]));
   for(const n of nodes)for(const c of items)data.push(...useReferences([c],room.referenceFacts(n.id)).map(u=>u.reference));

@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { liveRoom, events, fileBlocks } from './helpers/room.js';
 import { systemPrompt } from '../src/prompts.js';
-import { lintText, composedTexts } from './helpers/prompt-lint.js';
+import { lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import { contractLine } from '../src/contracts.js';
 import { cardContracts } from '../src/card.js';
 import { GOAL_START_REQUIREMENT } from '../src/model.js';
@@ -79,7 +79,7 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.equal(events(room, 'format_fallback').length, 0);
   // v8 S6 review: every request's room-written text passes the prompt lint, the injected data taken out.
   // v8 live 2: a worker reads the statements of the requirements its contracts serve, as data.
-  const data = [GOAL, ...PIECES.pieces.flatMap(p => [p.task, p.label]), ...CARD.deliverables.flatMap(d => [contractLine(d), d.name, d.path, d.does]), ...room.promisedOf('root').map(contractLine), ...CARD.requirements.flatMap(r => [r.says, r.says.replace(/[.\s]+$/, '')])];
+  const data = [GOAL, ...PIECES.pieces.flatMap(p => [p.task, p.label]), ...CARD.deliverables.flatMap(d => [contractLine(d), d.name, d.path, d.does]), ...room.promisedOf('root').map(contractLine), ...saysData(room.snapshot().card, GOAL)];
   for (const r of calls.raw) for (const t of composedTexts(JSON.parse(r.text.replace(/ \/no_think$/, '')), data)) assert.deepEqual(lintText('composed', t, {room: true}), [], t);
   const kids = room.children('root').map(c => ({...c, interfaces: JSON.parse(c.interfaces)}));
   assert.deepEqual(kids.map(c => c.label), ['Run guide', 'Hello script']);

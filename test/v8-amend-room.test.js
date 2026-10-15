@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {liveRoom, events, fileBlocks} from './helpers/room.js';
-import {lintText, composedTexts} from './helpers/prompt-lint.js';
+import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {MESSAGES} from '../src/prompts.js';
 import {mergeAmendment, cardDelta, effectiveGoal, goalView, reorderError, promptText, deltaEmpty} from '../src/amend.js';
@@ -65,7 +65,7 @@ function linted(room,calls) {
   const cards=room.db().exec('SELECT card FROM card_revisions').toArray().map(r=>JSON.parse(r.card));
   const card=room.snapshot().card,nodes=room.allNodes(),items=[...cards.flatMap(c=>c.deliverables),...nodes.flatMap(n=>JSON.parse(n.interfaces||'[]'))];
   const changes=room.goalChanges(),data=[room.userGoal(),room.baseGoal(),...changes,...changes.map(c=>c.replace(/[.\s]+$/,'')),card?.summary,...(card?.decisions||[]),
-    ...cards.flatMap(c=>c.requirements).flatMap(r=>[r.says,r.says.replace(/[.\s]+$/,''),r.source])];
+    ...cards.flatMap(c=>saysData(c,room.userGoal()))];
   for(const n of nodes)data.push(n.label,n.task,...room.files(n.id).map(f=>f.path));
   for(const c of items)data.push(contractLine(c),c.name,c.path,c.does,...(c.params||[]));
   for(const n of nodes)for(const c of items)data.push(...useReferences([c],room.referenceFacts(n.id)).map(u=>u.reference));

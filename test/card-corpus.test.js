@@ -87,7 +87,7 @@ const CORPUS = [
       const r1 = out.card.requirements.find(r => r.id === 'R1');
       assert.deepEqual([r1.untested, r1.check.kind, r1.says], [true, 'untested', 'The page links to the shared list']);
       assert.match(r1.check_error, /must start with a single/);
-      assert.ok(out.card.review_notes.some(n => /^R1 is kept untested, and its check is never run: /.test(n)), 'the refusal is a review note the card shows');
+      assert.ok(out.card.review_notes.some(n => /^R1's check needs a form the runtime runs \(.*must start with a single/.test(n)), 'the refusal is a review note the card shows, and it asked for one revision');
     }},
 
   // ---------------------------------------------------------------- the issue tracker, three ways

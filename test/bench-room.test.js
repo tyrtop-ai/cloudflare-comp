@@ -34,7 +34,8 @@ function benchRoom(task, {split, wrong = false} = {}) {
 // Every piece of hidden text a task's card carries: each test line, the harness, the nonce.
 function hiddenTexts(task) {
   const files = task.card.requirements[0].check.files;
-  return [files[FIXTURE.nonce], FIXTURE.harness, FIXTURE.tests, FIXTURE.nonce, 'BENCH-PASS', 'Benchmark harness', 'disallowed_construct', 'AssertionError',
+  // Live 2 review: no interface fact or requirement statement of a hidden requirement reaches a model either.
+  return [files[FIXTURE.nonce], FIXTURE.harness, FIXTURE.tests, FIXTURE.nonce, 'BENCH-PASS', 'Benchmark harness', 'disallowed_construct', 'AssertionError', 'its checks use', 'test these requirements of your contracts',
     ...files[FIXTURE.tests].split('\n').map(l => l.trim()).filter(l => l.length >= 10 && !task.prompt.includes(l))];
 }
 

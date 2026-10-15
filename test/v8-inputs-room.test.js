@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
 import {liveRoom, events, fileBlocks} from './helpers/room.js';
-import {lintText, composedTexts} from './helpers/prompt-lint.js';
+import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
@@ -102,7 +102,7 @@ function inputsRoom({card, split = null, splitWhen = () => false, judge, base, a
 // files and their digest.
 function roomData(room) {
   const card = room.snapshot().card, nodes = room.allNodes(), items = [...(card?.deliverables || []), ...nodes.flatMap(n => JSON.parse(n.interfaces || '[]'))];
-  const out = [room.userGoal(), card?.summary, ...(card?.decisions || []), ...(card?.requirements || []).flatMap(r => [r.says, r.says.replace(/[.\s]+$/, ''), r.source])];
+  const out = [room.userGoal(), card?.summary, ...(card?.decisions || []), ...saysData(card, room.userGoal())];
   for (const n of nodes) out.push(n.label, n.task, ...room.files(n.id).map(f => f.path));
   for (const c of items) out.push(contractLine(c), c.name, c.path, c.does, ...(c.params || []));
   for (const n of nodes) for (const c of items) out.push(...useReferences([c], room.referenceFacts(n.id)).map(u => u.reference));

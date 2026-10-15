@@ -780,13 +780,15 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
         const norm=s=>String(s).replace(/\r\n/g,'\n').trimEnd();
         // No exit named: 0, or any non-zero exit when the check reads
         // stderr (an error case); the card names exit:0 when it means it.
-        const errorCase=Array.isArray(e.stderr_has)&&e.stderr_has.length>0;
+        const errorCase=Array.isArray(e.stderr_has)&&e.stderr_has.length>0||e.stderr===true;
         if(Number.isInteger(e.exit)){if(r.code!==e.exit)return fail(`exit ${r.code}, expected ${e.exit}${lastLines(stderr)?`; stderr: ${clip(lastLines(stderr),160)}`:''}`,'exit');}
         else if(errorCase){if(r.code===0)return fail('exit 0, expected a failure exit (non-zero)','exit');}
         else if(r.code!==0)return fail(`exit ${r.code}, expected 0${lastLines(stderr)?`; stderr: ${clip(lastLines(stderr),160)}`:''}`,'exit');
         if(typeof e.stdout==='string'&&norm(stdout)!==norm(e.stdout))return fail(`printed ${show(norm(stdout),80)}, expected ${show(norm(e.stdout),80)}`,'stdout');
         for(const s of Array.isArray(e.stdout_has)?e.stdout_has:[])if(!stdout.includes(String(s)))return fail(`output lacks ${show(String(s))}; printed ${show(norm(stdout),80)}`,'stdout_has');
         for(const s of Array.isArray(e.stderr_has)?e.stderr_has:[])if(!stderr.includes(String(s)))return fail(`stderr lacks ${show(String(s))}; stderr was ${show(norm(stderr),80)}`,'stderr_has');
+        // Live 2 review: stderr:true asks for a message on stderr, whatever its wording.
+        if(e.stderr===true&&!stderr.trim())return fail('wrote nothing to stderr, expected a message there','stderr');
         return result(c,true,r.ms);
       } finally {await box.dispose();}
     };

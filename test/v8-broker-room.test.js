@@ -12,7 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
 import {liveRoom, events, fileBlocks} from './helpers/room.js';
-import {lintText, composedTexts} from './helpers/prompt-lint.js';
+import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, BROKER_LABEL, MESSAGES, systemPrompt} from '../src/prompts.js';
@@ -86,7 +86,7 @@ const REFUSAL = /\b(?:refus\w*|not allowed|forbidden|denied|permission|may not|c
 // The data a room injects into its requests (as test/v8-inputs-room.test.js reads it), which the lint does not read.
 function roomData(room) {
   const card = room.snapshot().card, nodes = room.allNodes(), items = [...(card?.deliverables || []), ...nodes.flatMap(n => JSON.parse(n.interfaces || '[]'))];
-  const out = [room.userGoal(), card?.summary, ...(card?.decisions || []), ...(card?.requirements || []).flatMap(r => [r.says, r.says.replace(/[.\s]+$/, ''), r.source])];
+  const out = [room.userGoal(), card?.summary, ...(card?.decisions || []), ...saysData(card, room.userGoal())];
   for (const n of nodes) out.push(n.label, n.task, ...room.files(n.id).map(f => f.path));
   for (const c of items) out.push(contractLine(c), c.name, c.path, c.does);
   for (const n of nodes) for (const c of items) out.push(...useReferences([c], room.referenceFacts(n.id)).map(u => u.reference));

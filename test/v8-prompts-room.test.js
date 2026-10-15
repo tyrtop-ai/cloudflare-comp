@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { liveRoom, events, fileBlocks } from './helpers/room.js';
-import { lintText, LANGUAGE_WORDS, composedTexts } from './helpers/prompt-lint.js';
+import { lintText, LANGUAGE_WORDS, composedTexts, saysData } from './helpers/prompt-lint.js';
 import { contractLine, useReferences } from '../src/contracts.js';
 import { cardContracts } from '../src/card.js';
 import { systemPrompt, CLEF, clefText, MESSAGES } from '../src/prompts.js';
@@ -105,8 +105,10 @@ test('v8 prompts: a command-line tool, split into pieces with contracts, written
   // v8 live 2: a contract ends with the interface its checks use: here a call's shape, never its arguments or result.
   assert.match(cli.contracts_you_may_use[0].contract, /^function to_fahrenheit\(celsius\): converts degrees Celsius to Fahrenheit; takes celsius \(a number\); e\.g\. to_fahrenheit\(100\) → 212; its checks use: R2 calls to_fahrenheit\(<integer>\) and expects a value back$/);
   // The command's own contract states how R1 runs it and what it expects besides the values; its writer reads R1's statement too.
-  assert.match(cli.your_responsibility, /its checks use: R1 runs `convert <integer> <word>` and expects exit status 0 and its output on stdout\./);
-  assert.match(cli.your_responsibility, /Checks written from the goal test these requirements of your contracts: R1: Converting 100 C prints 212\./);
+  // Live 2 review: "C" stays as written because its contract states it ("C or F"); the value and the expected output are masked, in the statement too.
+  assert.match(cli.your_responsibility, /its checks use: R1 runs `convert <integer> C` and expects exit status 0 and its output on stdout\./);
+  assert.match(cli.your_responsibility, /Checks written from the goal test these requirements of your contracts: R1: Converting … C prints …\./);
+  assert.doesNotMatch(cli.your_responsibility, /\b(?:100|212)\b/);
   assert.equal(cli.project.conventions.find(c => c.language === 'python').reference_another_part, 'from to_fahrenheit import to_fahrenheit');
   assert.ok(!/require\(/.test(cli.your_responsibility), 'no JavaScript reference line for a Python project');
   // The files sit at their project paths, every worker is done, and no answer fell back.
@@ -244,7 +246,7 @@ const askClef = input => ({answers: Object.fromEntries(Object.keys(input.questio
 // The data a room injects into a request (contract lines, references, names, paths, labels, the fixtures' tasks and asks), which the lint does not read.
 function roomData(room, extra = []) {
   const card = room.snapshot().card, nodes = room.allNodes(), items = [...(card?.deliverables || []), ...nodes.flatMap(n => JSON.parse(n.interfaces || '[]'))];
-  const out = [room.userGoal(), card?.summary, ...(card?.decisions || []), ...(card?.requirements || []).flatMap(r => [r.says, r.says.replace(/[.\s]+$/, ''), r.source]), ...extra];
+  const out = [room.userGoal(), card?.summary, ...(card?.decisions || []), ...saysData(card, room.userGoal()), ...extra];
   // v8 S4b: what a failed check observed (the deliverable's own output) and the check's kind are data too.
   for (const p of room.problems("stage='check'")) out.push(p.facts?.requirement?.evidence, p.facts?.requirement?.check, p.kind === 'load' ? p.detail : null);
   for (const n of nodes) out.push(n.label, ...room.files(n.id).map(f => f.path));

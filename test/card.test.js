@@ -310,6 +310,8 @@ test('writeCard: the system prompt is PRINCIPLES + ROLE.card + FORMAT.card, and 
 });
 
 // Clef in the writer's tests: references placed by name (reference_<i> says yes for to_fahrenheit), the review as given.
+// Live 2 review: a statement holding a check's value draws an annotation (never a revision); the tests below look at the other notes.
+const others = notes => (notes || []).filter(n => !n.startsWith('Statement: '));
 const placing = (review = () => 0.9) => (k, input) => k.startsWith('reference_') ? (input.state.deliverables[Number(k.split('_')[2])].name === 'to_fahrenheit' ? 0.9 : 0.1) : review(k, input);
 test('writeCard: layer 3 places a reference; the one retry hears the errors left and Clef\'s review notes, beside the repaired draft', async () => {
   const bad = good();
@@ -331,7 +333,8 @@ test('writeCard: layer 3 places a reference; the one retry hears the errors left
   assert.ok(calls[1].messages[1].content.endsWith(' /no_think'));
   assert.ok(retry.previous_errors.some(e => /R1: its command check: it runs "cargo"/.test(e)));
   assert.ok(!retry.previous_errors.some(e => /temperature function/.test(e)), 'a reference Clef placed is no error');
-  assert.deepEqual(retry.review_notes, ['Deliverable "convert" (a command) has no check that exercises it: add a requirement serving it with a command check that runs it with arguments the goal implies and expects its output.', 'R2\'s check may not exercise what it states (Clef p=0.20; call to_fahrenheit(100)): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader\'s question about a document.']);
+  // Live 2 review: R1's refused check is a substantive note too, so the one revision is asked to fix it.
+  assert.deepEqual(retry.review_notes, ['Deliverable "convert" (a command) has no check that exercises it: add a requirement serving it with a command check that runs it with arguments the goal implies and expects its output.', 'R1\'s check needs a form the runtime runs (its command check: it runs "cargo", which is neither a command deliverable nor an installed executable (node, npm, npx, python3, pytest)): give the requirement a check that runs on the served project or the delivered files.', 'R2\'s check may not exercise what it states (Clef p=0.20; call to_fahrenheit(100)): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader\'s question about a document.']);
   assert.deepEqual(JSON.parse(retry.previous_answer).requirements[1].serves, ['to_fahrenheit'], 'the retry sees the draft as layer 3 placed it');
   assert.equal(retry.goal, GOAL);
   assert.ok(calls[0].max_tokens >= 8000, 'room for reasoning and a whole card');
@@ -342,8 +345,9 @@ test('writeCard: layer 3 places a reference; the one retry hears the errors left
   // v8 live 2: R3's refused check keeps R3, untested, with the refusal as its review note.
   assert.deepEqual(out.card.requirements.filter(r => !r.implicit).map(r => r.id), ['R1', 'R2', 'R3']);
   assert.equal(out.card.requirements[2].untested, true);
-  assert.deepEqual(out.review_notes, ['R3 is kept untested, and its check is never run: its judge check asks no question'], 'the revision drew no note of Clef\'s');
+  assert.deepEqual(others(out.review_notes), ['R3\'s check needs a form the runtime runs (its judge check asks no question): give the requirement a check that runs on the served project or the delivered files.'], 'the revision drew no note of Clef\'s');
   assert.deepEqual(out.card.review_notes, out.review_notes);
+  assert.deepEqual(out.review_notes.filter(n => n.startsWith('Statement: ')), ['Statement: R1\'s says holds a value of the card\'s checks, which workers read masked: state the behaviour and interface it checks instead.', 'Statement: R2\'s says holds a value of the card\'s checks, which workers read masked: state the behaviour and interface it checks instead.']);
 });
 
 test('writeCard: a retry that does not parse never replaces a first answer that did; reasoning is stripped; remaining notes stay on the card', async () => {
@@ -356,7 +360,7 @@ test('writeCard: a retry that does not parse never replaces a first answer that 
   assert.ok(out.errors.some(e => /R2: its check kind "smoke"/.test(e)));
   assert.ok(out.notes.some(n => /R1 named no deliverable; it serves convert, which its check names/.test(n)), 'the repair\'s notes come with it');
   assert.equal(out.raw_answers[0], JSON.stringify(bad), 'the raw answer without its reasoning');
-  assert.deepEqual(out.card.review_notes, ['R2 is kept untested, and its check is never run: its check kind "smoke" is not one of file, judge, command, call, http, browser', 'Kind: deliverable "GUIDE.md" may fit another kind than doc (Clef p=0.30).'], 'a kind note only annotates');
+  assert.deepEqual(others(out.card.review_notes), ['R2\'s check needs a form the runtime runs (its check kind "smoke" is not one of file, judge, command, call, http, browser): give the requirement a check that runs on the served project or the delivered files.', 'Kind: deliverable "GUIDE.md" may fit another kind than doc (Clef p=0.30).'], 'a kind note only annotates');
   const {env: env2} = modelEnv(['nothing', 'still nothing']);
   const none = await writeCard(env2, {goal: GOAL});
   assert.equal(none.card, null);
@@ -369,29 +373,38 @@ test('writeCard: a retry that does not parse never replaces a first answer that 
 // implementable from its statement and its deliverables' contracts with their
 // interface facts; a NO is a substantive note, and the writer states in says
 // what the check needs.
-test('writeCard: a requirement Clef finds unimplementable from its statement and contract goes back to the writer, who states what its check needs', async () => {
+test('writeCard: a requirement Clef finds unimplementable, or a check that looks for wording the goal does not state, goes back to the writer, who states behaviour and interface', async () => {
   const draft = good();
   draft.requirements.push({id: 'R4', says: 'The CLI handles invalid unit inputs', source: 'converts temperatures', serves: ['convert'], check: {kind: 'command', run: 'convert 100 X', expect: {exit: 1, stderr_has: ['Invalid unit']}}});
   const revised = JSON.parse(JSON.stringify(draft));
-  revised.requirements[3].says = 'An invalid unit exits with status 1 and prints "Invalid unit" to stderr';
+  revised.requirements[3].says = 'An invalid unit exits non-zero with an error on stderr';
+  revised.requirements[3].check = {kind: 'command', run: 'convert 100 X', expect: {exit: 1, stderr: true}};
   // Clef: R4 (slot 3) is not implementable as first stated, and is once its statement says what the check needs.
-  const {env, calls, clefCalls} = modelEnv([draft, revised], (k, input) => k === 'implementable_3' && !/status 1/.test(input.state.requirements[3].says) ? 0.1 : 0.9);
+  const {env, calls, clefCalls} = modelEnv([draft, revised], (k, input) => k === 'implementable_3' && !/stderr/.test(input.state.requirements[3].says) ? 0.1 : 0.9);
   const out = await writeCard(env, {goal: GOAL});
   const asked = clefCalls.find(c => c.questions.implementable_3);
   assert.equal(asked.questions.implementable_3.instructions, CLEF.implementable.replace('{i}', '3'));
-  // Clef reads the statement, the check in a few words (its exit status and texts), and each deliverable's interface facts.
-  assert.equal(asked.state.requirements[3].check, 'command convert 100 X exits 1, writes "Invalid unit" to stderr');
+  assert.match(CLEF.implementable, /apart from computing values and exact wording\?/);
+  // Clef reads the check with its expected values as their kinds, the statement, and each deliverable's interface facts.
+  assert.equal(asked.state.requirements[3].check, 'command convert <integer> <word> exits 1, writes <text> to stderr');
+  assert.ok(!JSON.stringify(asked.state).includes('Invalid unit'), 'no expected value reaches the implementable question');
   assert.deepEqual(asked.state.requirements[3].serves, ['convert']);
   assert.ok(asked.state.deliverables.find(d => d.name === 'convert').interface.includes('R4 runs `convert <integer> <word>` and expects exit status 1 and a message on stderr'));
   // Judge checks are a reader's question, and a check that only finds a file has nothing to implement: neither is asked.
   assert.ok(!clefCalls.some(c => c.questions.implementable_2));
-  assert.equal(calls.length, 2, 'the note is substantive: the writer revises');
+  assert.equal(calls.length, 2, 'the notes are substantive: the writer revises');
   const retry = JSON.parse(calls[1].messages[1].content.replace(/ \/no_think$/, ''));
-  assert.deepEqual(retry.review_notes, ['R4\'s check may need what its statement and contract leave unsaid (Clef p=0.10; command convert 100 X exits 1, writes "Invalid unit" to stderr): state in says what the check needs besides the right values, such as the exit status, the stream a message goes to, or an exact text it must show.']);
-  assert.equal(out.card.requirements.find(r => r.id === 'R4').says, 'An invalid unit exits with status 1 and prints "Invalid unit" to stderr');
-  assert.deepEqual(out.review_notes, []);
-  // FORMAT.card asks for it, in general words.
-  assert.match(FORMAT.card, /"says" states anything else the check needs, such as an exit status, an output stream or an exact text/);
+  assert.deepEqual(retry.review_notes, [
+    'R4\'s check may need what its statement and contract leave unsaid (Clef p=0.10; command convert <integer> <word> exits 1, writes <text> to stderr): state in says the behaviour and interface the check needs, such as the exit status or the stream a message goes to, and keep its values in the check.',
+    'R4\'s check looks for wording the goal does not state, in an expected text: check what the goal asks instead, such as that a message appears on the stream it goes to ("stderr": true for an error message) and the exit status.']);
+  const r4 = out.card.requirements.find(r => r.id === 'R4');
+  assert.equal(r4.says, 'An invalid unit exits non-zero with an error on stderr');
+  assert.deepEqual(r4.check.expect, {exit: 1, stderr: true});
+  assert.deepEqual(others(out.review_notes), []);
+  // The card writer's guidance: says states behaviour and interface, and the examples carry no value in says.
+  assert.match(FORMAT.card, /"says" states behaviour and interface, such as "an invalid unit exits non-zero with an error on stderr"/);
+  assert.match(FORMAT.card, /"says":"Converts Celsius to Fahrenheit and prints the result"/);
+  assert.match(FORMAT.card, /"stderr": true/);
 });
 
 test('writeCard (review fix): a kind note only annotates; a revision keeps what the draft had, and a worse revision is discarded', async () => {

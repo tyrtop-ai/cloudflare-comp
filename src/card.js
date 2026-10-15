@@ -27,7 +27,7 @@ export const CARD_SCHEMA = Object.freeze({
   check: {
     file: '{kind:"file", path, has?:[text], json?:true}',
     judge: '{kind:"judge", path, question}',
-    command: '{kind:"command", run (kept with its argv), stdin?, files?:{path:content}, expect:{exit?, stdout?, stdout_has?, stderr_has?}}',
+    command: '{kind:"command", run (kept with its argv), stdin?, files?:{path:content}, expect:{exit?, stdout?, stdout_has?, stderr_has?, stderr?:true}}',
     call: '{kind:"call", steps:[{call, args, save?, expect?, expect_has?, throws?}]}',
     http: '{kind:"http", serve, steps:[{method, path, body?, save?, expect:{status?, body_has?, json_has?}}]}',
     browser: '{kind:"browser", serve, steps:[{goto}|{reload}|{press}|{fill}|{click}|{expect_text}|{expect_no_text}|{expect_count}]}'
@@ -212,6 +212,8 @@ function checkOf(raw, ctx) {
     const e = plain(raw.expect) ? raw.expect : {}, expect = {};
     if (Number.isInteger(e.exit) && e.exit >= 0 && e.exit <= 255) expect.exit = e.exit;
     if (typeof e.stdout === 'string') expect.stdout = e.stdout.slice(0, CARD_LIMITS.stdin);
+    // Live 2 review: a message on stderr, whatever its wording.
+    if (e.stderr === true) expect.stderr = true;
     for (const k of ['stdout_has', 'stderr_has']) { const list = (Array.isArray(e[k]) ? e[k] : typeof e[k] === 'string' ? [e[k]] : []).filter(x => typeof x === 'string' && x).map(x => x.slice(0, 300)).slice(0, CARD_LIMITS.has); if (list.length) expect[k] = list; }
     if (!Object.keys(expect).length) expect.exit = 0;
     const stdin = typeof raw.stdin === 'string' ? raw.stdin.slice(0, CARD_LIMITS.stdin) : '';
@@ -294,7 +296,7 @@ export function checkSummary(check) {
   if (check.kind === 'command') {
     // v8 live 2: Clef's implementable question reads what the check expects: its exit status, streams and texts.
     const e = check.expect || {}, said = [Number.isInteger(e.exit) ? `exits ${e.exit}` : '', e.stdout !== undefined ? `prints exactly ${JSON.stringify(e.stdout)}` : '',
-      e.stdout_has ? `prints ${e.stdout_has.map(x => JSON.stringify(x)).join(', ')}` : '', e.stderr_has ? `writes ${e.stderr_has.map(x => JSON.stringify(x)).join(', ')} to stderr` : ''].filter(Boolean);
+      e.stdout_has ? `prints ${e.stdout_has.map(x => JSON.stringify(x)).join(', ')}` : '', e.stderr_has ? `writes ${e.stderr_has.map(x => JSON.stringify(x)).join(', ')} to stderr` : '', e.stderr === true ? 'writes to stderr' : ''].filter(Boolean);
     return `command ${check.run}${check.stdin ? ' with stdin' : ''}${said.length ? ` ${said.join(', ')}` : ''}`.slice(0, 300);
   }
   if (check.kind === 'call') return `call ${check.steps.map(s => `${s.call}(${JSON.stringify(s.args).slice(1, -1)})`).join(', ')}`.slice(0, 300);
@@ -789,6 +791,8 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
           move('exit_code', 'exit'); move('code', 'exit'); move('status', 'exit'); move('returncode', 'exit'); move('return_code', 'exit');
           for (const k of ['stdout_contains', 'contains', 'output_has', 'output', 'stdout_contains_text', 'stdout_includes']) move(k, 'stdout_has', true);
           move('stderr_contains', 'stderr_has', true);
+          // A stderr text is a text stderr holds; stderr:true is a message there, whatever its wording.
+          if (typeof e.stderr === 'string') { if (e.stderr_has === undefined) e.stderr_has = [e.stderr]; delete e.stderr; }
           if (typeof e.exit === 'string' && /^\d+$/.test(e.exit)) e.exit = Number(e.exit);
           c.expect = e;
         }
@@ -965,7 +969,8 @@ export function settleCard(repaired, {notes = [], unresolved = [], runnability =
   return {...out, notes: [...notes, ...applied.notes], runnability: [...runnability, ...unexercised(out.card), ...untestedNotes(out.card)], draft: publicDraft(applied.card)};
 }
 // The requirements kept untested, each with why its check cannot run (a review note the card shows).
-export const untestedNotes = card => (card?.requirements || []).filter(r => r.untested).map(r => `${r.id} is kept untested, and its check is never run: ${r.check_error}`);
+// Live 2 review: a positive, substantive note, so the writer's one revision fixes that check; only a check still refused after it stays untested.
+export const untestedNotes = card => (card?.requirements || []).filter(r => r.untested).map(r => `${r.id}'s check needs a form the runtime runs (${r.check_error}): give the requirement a check that runs on the served project or the delivered files.`);
 // The pages, commands and functions no runnable check exercises (a command
 // a run starts is exercised by the http and browser checks on that run), as
 // notes for the writer: what to add.
@@ -1145,7 +1150,17 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
 // A card the room can start from: not blocked, with a deliverable and a
 // requirement of the writer's own (never only the runtime's implicit or
 // project ones, v8 S3 review).
-export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && (card.requirements || []).some(r => !r.implicit && !r.project && testable(r));
+// Live 2 review: a card with a page, command, function or route needs a
+// requirement of the writer's own about one of them whose check runs and does
+// more than find a file; one only untested or existence-only there holds at
+// card_failed.
+const BEHAVIOUR = new Set(['page', 'command', 'function', 'route']);
+export const cardUsable = card => {
+  if (!card || card.blocked || !(card.deliverables?.length > 0)) return false;
+  const own = (card.requirements || []).filter(r => !r.implicit && !r.project && testable(r));
+  const behaviour = new Set(card.deliverables.filter(d => BEHAVIOUR.has(kindOf(d))).map(d => d.name));
+  return own.length > 0 && (!behaviour.size || own.some(r => !existenceOnly(r) && (r.serves || []).some(n => behaviour.has(n))));
+};
 // After Clef vetting (§1.4) a deliverable may fall back to its implicit requirement.
 export const vettedUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && card.requirements?.length > 0;
 // Clef vetting (v8 card repair): Clef reviews, it never deletes. The first
@@ -1230,8 +1245,9 @@ export function providedCard(raw, opts = {}) {
 // v8 live 2: each contract carries the interface its requirements' checks
 // exercise (interfaceFacts: labels, buttons, pages, routes, argv shapes, exit
 // status and streams; never a value or an input), as part of the contract.
-export function cardContracts(card) {
-  const reqs = card?.requirements || [], facts = interfaceFacts(card);
+// goal: the effective goal, whose words count as stated (src/affordances.js cardScope).
+export function cardContracts(card, {goal = ''} = {}) {
+  const reqs = card?.requirements || [], facts = interfaceFacts(card, {goal});
   return (card?.deliverables || []).map(d => {
     const mine = reqs.filter(r => r.serves.includes(d.name));
     return normalizeContract({...d, kind: kindOf(d), examples: [...(d.examples || [])].slice(0, 4), serves: mine.map(r => r.id), interface: facts.get(d.name) || []}, {v8: true, serves: true});
