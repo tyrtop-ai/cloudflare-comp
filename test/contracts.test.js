@@ -100,7 +100,7 @@ test('S2: name rules per kind: a function by its toolchain row (a Python reserve
   const cmd=(name,path)=>nameError(N1({name,kind:'command',...(path?{path}:{})}));
   assert.equal(cmd('convert','convert.py'),'');
   assert.equal(cmd('convert-units','bin/convert.py'),'');
-  assert.equal(cmd('Convert','convert.py'),'"Convert" is not a command name: lowercase letters, digits and hyphens, starting with a letter');
+  assert.equal(cmd('Convert','convert.py'),'"Convert" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter');
   assert.equal(cmd('convert'),'command "convert" needs the path of the file that implements it');
   assert.equal(nameError({name:'readme',kind:'doc',path:'README.md',params:[]}),'doc "readme" must be named by its path README.md','a row normalize did not rename');
   assert.equal(nameError(N1({name:'glue/x.md',kind:'doc'})),'doc "glue/x.md" cannot be placed at glue/x.md; choose a project path outside components/, memory/, .recursive/, glue/');

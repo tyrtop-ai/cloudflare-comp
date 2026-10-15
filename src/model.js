@@ -5,7 +5,7 @@ import { goalMethods } from './api-coverage.js';
 import { workerAction, singleFileText } from './worker-output.js';
 import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE, MESSAGES, BASE_LABEL } from './prompts.js';
 import { contractLine } from './contracts.js';
-import { validateCard, settleCodeLanguage, checkSummary } from './card.js';
+import { validateCard, prepareCard, settleCodeLanguage, checkSummary } from './card.js';
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { EFFECTIVE_GOAL_LIMIT } from './amend.js';
 import { SOURCE_CLAUSE } from './fetcher.js';
@@ -783,30 +783,38 @@ export const CARD_MAX_TOKENS = 8192;
 // prior_card (an amendment): the writer returns the whole card updated for
 // it, the goal is the effective goal (the user's goal and each change), and
 // the call is amendCard's.
+// v8 card repair: each answer is repaired before it is validated
+// (prepareCard: repairCard, validateCard, behaviourGaps), so a retry hears
+// only what no repair could fix, beside the repaired draft (previous_answer).
+// notes: what the chosen answer's repair did; raw_answers: the writer's
+// answers as written (each clipped to CARD_RAW_CHARS), for diagnosis.
+export const CARD_RAW_CHARS = 6000;
 export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[], change=''}={}) {
   const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
-  const check=raw=>validateCard(raw,{goal,installed:rows,base,packages});
-  const settle=(r,extra)=>{const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};return {card:s.card,errors:r.errors,unsupported:r.unsupported,...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};};
-  if (env.MOCK_AI === 'true') return settle(check(MOCK_CARD),{raw_head:'',attempts:0});
   const amend=!!(change&&prior_card),call=amend?'amendCard':'writeCard';
+  const facts={goal,installed:rows,base,packages,...(amend?{change,prior:prior_card}:{})};
+  const settle=(r,extra)=>{const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};return {card:s.card,errors:r.errors,unsupported:r.unsupported,notes:r.notes||[],...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};};
+  // The fixed mock card is the runtime's own, so it is validated as written.
+  if (env.MOCK_AI === 'true') return settle(validateCard(MOCK_CARD,facts),{raw_head:'',attempts:0,raw_answers:[]});
   const fields={goal:String(goal).slice(0,amend?EFFECTIVE_GOAL_LIMIT:GOAL_LIMIT),...(amend?{change:String(change).slice(0,GOAL_LIMIT),change_note:MESSAGES.amend_note()}:{}),
     toolchains:rows.map(t=>({id:t.id,files:t.extensions,...(t.run_file?{run_file:t.run_file}:{}),...(t.test?{test:t.test}:{}),executables:t.executables||[]})),
     // v8 S8b review: the existing project's digest is quoted, labelled, beside the base clause.
     ...(base_digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest:base_digest}}:{}),...(prior_card?{current_card:prior_card}:{}),
     ...(sources?.length||sources_unavailable?.length?{sources_note:SOURCE_CLAUSE}:{}),...(sources?.length?{sources}:{}),...(sources_unavailable?.length?{sources_unavailable}:{})};
-  const system=systemPrompt('card');
+  const system=systemPrompt('card'),raw_answers=[];
   const read=output=>{
     const text=withoutThinking(output).trim(),parsed=parseObject(text);
-    if(parsed.parse_error)return {head:text.slice(0,200),text,parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[]};
-    return {head:text.slice(0,200),text,parsed,...check(parsed)};
+    raw_answers.push(clip(text||contentOf(output)||"",CARD_RAW_CHARS));
+    if(parsed.parse_error)return {head:text.slice(0,200),text,parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[],notes:[]};
+    return {head:text.slice(0,200),text,parsed,...prepareCard(parsed,facts)};
   };
   const first=read(await run(env,system,JSON.stringify(fields),CARD_MAX_TOKENS,{call,role:'card'}));
-  if(!first.errors.length||first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1});
-  const retry={...fields,previous_errors:first.errors.slice(0,24),...(first.parsed.parse_error?{}:{previous_answer:clip(first.text,6000)}),
-    instruction:'Your previous card had the problems listed in previous_errors. Answer again with the whole corrected card as one json object.'};
+  if(!first.errors.length||first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1,raw_answers});
+  const retry={...fields,previous_errors:first.errors.slice(0,24),...(first.parsed.parse_error?{}:{previous_answer:clip(JSON.stringify(first.draft),6000)}),
+    instruction:'Your previous card, as the runtime repaired it, is previous_answer; it still had the problems listed in previous_errors. Answer again with the whole corrected card as one json object.'};
   const second=read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call,role:'card',retry:true,noThink:true}));
   const best=second.parsed.parse_error&&!first.parsed.parse_error?first:second;
-  return settle(best,{raw_head:best.head,attempts:2});
+  return settle(best,{raw_head:best.head,attempts:2,raw_answers});
 }
 // v8 S8b review: Clef asks whether the goal asks to change each existing
 // file a deliverable or a contract names (CLEF.base_change), one batched
@@ -825,6 +833,28 @@ export async function vetBaseChanges(env, {goal='', paths=[]}) {
     const p=output?.answers?.[`base_change_${i}`]?.noul;
     if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${path}`);
     return {path,p};
+  });
+}
+// v8 card repair (§5): an amendment may change an existing deliverable only
+// when the change touches it. Clef asks, per changed deliverable
+// (CLEF.amend_change), one batched call as vetBaseChanges does: state
+// {change, deliverables: [{slot, name, kind, path, does}]} (its description
+// before the change). [{name, p}]; a Clef failure throws (the caller keeps
+// the written card, unvetted, and says so).
+export const AMEND_CHANGE_BAR = 0.5;
+export async function vetAmendChanges(env, {change='', deliverables=[]}) {
+  if (!deliverables.length) return [];
+  if (env.MOCK_AI === 'true') return deliverables.map(d=>({name:d.name,p:1}));
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('unsupported Clef decision model');
+  const list=deliverables.slice(0,12);
+  const output=await clefRun(env,'vetAmendChanges',selector,{model:clef,state:{change:String(change).slice(0,GOAL_LIMIT),
+    deliverables:list.map((d,i)=>({slot:i,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,200)}))},
+    questions:Object.fromEntries(list.map((_,i)=>[`amend_change_${i}`,{type:'noul',instructions:clefText('amend_change',{i})}]))});
+  return list.map((d,i)=>{
+    const p=output?.answers?.[`amend_change_${i}`]?.noul;
+    if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${d.name}`);
+    return {name:d.name,p};
   });
 }
 // v8 S8b: the model call src/fetcher.js sourceCards makes for each chunk's

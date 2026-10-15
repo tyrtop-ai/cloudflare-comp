@@ -5,7 +5,7 @@
 // source) and never weakens a check that has passed (U10). The room
 // (src/index.js applyAmendment) vets, stores and routes the delta's
 // requirements the way a failed check's are routed. No room, no model here.
-import { validateCard, withImplicit, CARD_LIMITS } from './card.js';
+import { validateCard, withImplicit, existenceOnly, CARD_LIMITS } from './card.js';
 import { kindOf } from './contracts.js';
 
 // The text the goal may grow to with its changes, and the queue's bounds.
@@ -63,10 +63,14 @@ export function reorderError(queued, order) {
 const said = s => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const explicit = card => (card?.requirements || []).filter(r => !r.implicit && !r.project);
 const nextId = taken => { for (let n = 1; n <= CARD_LIMITS.requirements[1]; n++) if (!taken.has(`R${n}`)) return `R${n}`; return null; };
+// A deliverable's fields a written card may leave out without removing them.
+const OMITTABLE = ['does', 'params', 'inputs', 'outputs', 'returns', 'effects', 'examples', 'operation'];
+const blank = v => v === undefined || v === null || v === '' || Array.isArray(v) && !v.length;
 // What a requirement is, for comparing two revisions of it.
 const reqKey = r => JSON.stringify({says: said(r.says), serves: [...(r.serves || [])].sort(), check: r.check});
 // What a deliverable promises, for comparing two revisions of it (its source aside).
-const delKey = d => { const {source: _s, ...rest} = d || {}; return JSON.stringify(rest); };
+// Its fields in a fixed order, so a restated deliverable compares by content (v8 card repair).
+const delKey = d => { const {source: _s, ...rest} = d || {}; return JSON.stringify(Object.fromEntries(Object.entries(rest).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))); };
 
 // The card after a change. old: the current card; written: the card writer's
 // answer for the change, validated; change: the user's text; anchored(r):
@@ -97,8 +101,12 @@ export function mergeAmendment(old, written, {change = '', anchored = () => fals
     }
     const o = card.deliverables[i];
     if (kindOf(o) !== kindOf(d) || (o.path || '') !== (d.path || '')) { notes.push(`${d.name} keeps its kind and path (${kindOf(o)}${o.path ? ` at ${o.path}` : ''}): the part that delivers it places it there.`); continue; }
-    if (delKey(o) === delKey(d)) continue;
-    card.deliverables[i] = {...d, source};
+    // v8 card repair: a field the written card leaves out is kept, not removed
+    // (a writer that restates a deliverable often drops its examples).
+    const filled = {...d};
+    for (const k of OMITTABLE) if (blank(d[k]) && !blank(o[k])) filled[k] = o[k];
+    if (delKey(o) === delKey(filled)) continue;
+    card.deliverables[i] = {...filled, source};
     delta.deliverables.changed.push(d.name);
   }
   for (const l of written?.languages || []) if (!card.languages.includes(l) && card.languages.length < CARD_LIMITS.languages) card.languages.push(l);
@@ -112,13 +120,18 @@ export function mergeAmendment(old, written, {change = '', anchored = () => fals
     const o = card.requirements.find(r => !used.has(r.id) && said(r.says) === said(w.says));
     if (o) { matched.set(w, o); used.add(o.id); }
   }
-  for (const w of fresh.filter(w => !matched.has(w))) {
+  // A question the runtime wrote has an id of no meaning, so it matches by statement only.
+  for (const w of fresh.filter(w => !matched.has(w) && !w.inferred)) {
     const o = card.requirements.find(r => !used.has(r.id) && r.id === w.id && !anchored(r));
     if (o) { matched.set(w, o); used.add(o.id); }
   }
   const taken = new Set([...reserved, ...(old.requirements || []).map(r => r.id), ...card.requirements.map(r => r.id)]);
+  // v8 card repair: a new check that only finds a deliverable the card already
+  // had adds nothing (the runtime checks that already), so it is no new requirement.
+  const had = new Set((old.deliverables || []).map(d => d.path).filter(Boolean));
   for (const w of fresh) {
     const o = matched.get(w);
+    if (!o && existenceOnly(w) && had.has(w.check.path)) continue;
     if (o) {
       if (reqKey(o) === reqKey(w)) continue;
       if (anchored(o)) { notes.push(`${o.id} keeps the check that passed: a check that has passed is never changed.`); continue; }
@@ -179,4 +192,14 @@ export function revalidate(card, {goal = '', installed, base = [], packages = 'n
     return {...r, id};
   });
   return {...out, card: {...out.card, requirements, deliverables: out.card.deliverables.map(d => src.has(d.name) ? {...d, source: src.get(d.name)} : d)}};
+}
+
+// v8 card repair (§5): the card with these deliverables as the old card had
+// them (an amendment's change to them was refused), and its requirements
+// validated again. names: the deliverables to keep as they were.
+export function keepDeliverables(card, old, names, opts = {}) {
+  const keep = new Set(names), was = new Map((old?.deliverables || []).map(d => [d.name, d]));
+  if (!keep.size) return card;
+  const deliverables = card.deliverables.map(d => keep.has(d.name) && was.has(d.name) ? was.get(d.name) : d);
+  return revalidate({...card, deliverables}, opts).card;
 }

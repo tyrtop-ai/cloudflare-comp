@@ -2,7 +2,7 @@
 // the card writer's retry, Clef vetting, and the prompt texts' own rules.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateCard, cardContracts, cardUsable, traceable, applyVetting, vettable, withImplicit, CARD_SCHEMA, CARD_LIMITS } from '../src/card.js';
+import { validateCard, cardContracts, cardUsable, traceable, applyVetting, vettable, withImplicit, CARD_SCHEMA, CARD_LIMITS, VET_DROP_BAR } from '../src/card.js';
 import { writeCard, vetRequirements, MOCK_CARD } from '../src/model.js';
 import { PRINCIPLES, ROLE, FORMAT, CLEF, systemPrompt } from '../src/prompts.js';
 import { TOOLCHAINS, toolchainById } from '../src/toolchains.js';
@@ -225,13 +225,24 @@ test('a stdin command check never reads as an example', () => {
 });
 
 // ------------------------------------------------------------ vetting
-test('applyVetting drops p < 0.5 and gives the deliverable left with none its implicit requirement', () => {
-  const card = v(good()).card;
-  const {card: out, dropped} = applyVetting(card, [{id: 'R1', p: 0.9}, {id: 'R2', p: 0.49}, {id: 'R3', p: 0.5}]);
-  assert.deepEqual(dropped.map(r => [r.id, r.p]), [['R2', 0.49]]);
-  assert.deepEqual(out.requirements.map(r => [r.id, r.implicit || false]), [['R1', false], ['R3', false], ['R2', true]]);
-  assert.equal(out.requirements[2].check.kind, 'call', 'the function\'s own example');
+test('applyVetting (v8 card repair): drops only p < 0.15 with a source not in the goal, never the last check of a deliverable', () => {
+  const raw = good();
+  raw.requirements[2].source = 'a dark mode for the window';
+  raw.requirements.push({id: 'R4', says: 'to_fahrenheit(-40) is -40', source: 'a dark mode for the window', serves: ['to_fahrenheit'], check: {kind: 'call', steps: [{call: 'to_fahrenheit', args: [-40], expect: -40}]}});
+  const card = v(raw).card;
+  assert.equal(VET_DROP_BAR, 0.15);
+  const {card: out, dropped, doubtful} = applyVetting(card, [{id: 'R1', p: 0.01}, {id: 'R2', p: 0.49}, {id: 'R3', p: 0.05}, {id: 'R4', p: 0.1}]);
+  // R1 is nearly refused, but its source is in the goal; R3's is not, but it is GUIDE.md's only check; R4 goes, R2 still checks to_fahrenheit.
+  assert.deepEqual(dropped.map(r => [r.id, r.p]), [['R4', 0.1]]);
+  assert.deepEqual(doubtful.map(r => [r.id, r.last, r.untraced]), [['R1', false, false], ['R2', false, false], ['R3', true, true]]);
+  assert.deepEqual(out.requirements.map(r => r.id), ['R1', 'R2', 'R3']);
+  assert.ok(out.requirements.every(r => r.untraced === undefined), 'untraced is the writer\'s mark, gone after vetting');
   assert.deepEqual(withImplicit(out), out, 'idempotent');
+  // Of two untraced checks of one deliverable, the lower p goes and the other stays.
+  const twice = applyVetting(card, [{id: 'R2', p: 0.9}, {id: 'R4', p: 0.01}, {id: 'R3', p: 0.9}]);
+  assert.deepEqual(twice.dropped.map(r => r.id), ['R4']);
+  const bar = applyVetting(card, [{id: 'R4', p: 0.3}], {bar: 0.5});
+  assert.deepEqual(bar.dropped.map(r => r.id), ['R4'], 'the bar is a parameter');
 });
 
 test('vetRequirements: one batched Clef call per 12, keyed requirement_<i>, with the goal in its state', async () => {
@@ -261,8 +272,9 @@ test('vetRequirements: one batched Clef call per 12, keyed requirement_<i>, with
   assert.deepEqual(half.ps.slice(12), [{id: 'R13', p: 0.2}, {id: 'R14', p: 0.2}]);
   const thrown = await vetRequirements({...env, AI: {run: async () => { throw new Error('clef 503'); }}}, {goal: GOAL, requirements: reqs.slice(0, 1)});
   assert.deepEqual(thrown, {ps: [{id: 'R1', unvetted: true}], failed: ['R1: clef 503']});
-  const {card: kept, dropped} = applyVetting(v(good()).card, [{id: 'R1', unvetted: true}, {id: 'R2', p: 0.9}, {id: 'R3', p: 0.1}]);
-  assert.deepEqual(dropped.map(r => r.id), ['R3']);
+  const {card: kept, dropped, doubtful} = applyVetting(v(good()).card, [{id: 'R1', unvetted: true}, {id: 'R2', p: 0.9}, {id: 'R3', p: 0.1}]);
+  assert.deepEqual(dropped.map(r => r.id), [], 'R3\'s source is in the goal');
+  assert.deepEqual(doubtful.map(r => r.id), ['R3']);
   assert.equal(kept.requirements.find(r => r.id === 'R1').unvetted, true);
 });
 
@@ -289,39 +301,50 @@ test('writeCard: the system prompt is PRINCIPLES + ROLE.card + FORMAT.card, and 
   assert.ok(cardUsable(out.card));
 });
 
-test('writeCard: one retry hears the errors; a retry that still errs keeps its valid part', async () => {
+test('writeCard: one retry hears the errors left after repair, beside the repaired draft; a retry that still errs keeps its valid part', async () => {
   const bad = good();
   bad.requirements[1].serves = ['ghost'];
+  bad.requirements[0].check = {kind: 'command', run: 'cargo run', expect: {exit: 0}};
   const stillBad = good();
   stillBad.requirements[2].check = {kind: 'judge', path: 'GUIDE.md'};
   const {env, calls} = modelEnv([bad, stillBad]);
   const out = await writeCard(env, {goal: GOAL});
   assert.equal(calls.length, 2);
-  // The system prompt stays fixed; the errors and the previous answer go in the user JSON, and the retry does not think.
+  // The system prompt stays fixed; the errors and the repaired answer go in the user JSON, and the retry does not think.
   assert.equal(calls[1].messages[0].content, systemPrompt('card'));
   const retry = JSON.parse(calls[1].messages[1].content.replace(/ \/no_think$/, ''));
   assert.ok(calls[1].messages[1].content.endsWith(' /no_think'));
-  assert.ok(retry.previous_errors.some(e => /R2 serves "ghost"/.test(e)));
-  assert.match(retry.previous_answer, /"ghost"/);
+  assert.ok(retry.previous_errors.some(e => /R1: its command check: it runs "cargo"/.test(e)));
+  assert.ok(!retry.previous_errors.some(e => /ghost/.test(e)), 'a serves the repair fixed is no error');
+  assert.deepEqual(JSON.parse(retry.previous_answer).requirements[1].serves, ['to_fahrenheit'], 'the retry sees the repaired draft');
   assert.equal(retry.goal, GOAL);
   assert.ok(calls[0].max_tokens >= 8000, 'room for reasoning and a whole card');
   assert.equal(out.attempts, 2);
+  assert.deepEqual(out.raw_answers, [JSON.stringify(bad), JSON.stringify(stillBad)]);
   assert.ok(out.errors.some(e => /R3: its judge check asks no question/.test(e)));
   assert.ok(cardUsable(out.card));
-  assert.deepEqual(out.card.requirements.filter(r => !r.implicit).map(r => r.id), ['R1', 'R2']);
+  // GUIDE.md lost its only check, so the runtime asks a reader whether it does what the goal asks.
+  const own = out.card.requirements.filter(r => !r.implicit);
+  assert.deepEqual(own.map(r => [r.id, r.check.kind, !!r.inferred]), [['R1', 'command', false], ['R2', 'call', false], ['R3', 'judge', true]]);
+  assert.match(own[2].check.question, /^Does GUIDE\.md do what the goal asks: .*short guide/);
+  assert.ok(out.notes.some(n => /GUIDE\.md had no check of what it says/.test(n)));
 });
 
 test('writeCard: a retry that does not parse never replaces a first answer that did; reasoning is stripped', async () => {
   const bad = good();
   bad.requirements[0].serves = [];
+  bad.requirements[1].check = {kind: 'smoke'};
   const {env} = modelEnv([`<think>planning {"card":0}</think>${JSON.stringify(bad)}`, 'no json here']);
   const out = await writeCard(env, {goal: GOAL});
   assert.ok(out.card, 'the first card stands');
-  assert.ok(out.errors.some(e => /R1 serves no deliverable/.test(e)));
+  assert.ok(out.errors.some(e => /R2: its check kind "smoke"/.test(e)));
+  assert.ok(out.notes.some(n => /R1 served no deliverable; it serves convert, which its check names/.test(n)), 'the repair\'s notes come with it');
+  assert.equal(out.raw_answers[0], JSON.stringify(bad), 'the raw answer without its reasoning');
   const {env: env2} = modelEnv(['nothing', 'still nothing']);
   const none = await writeCard(env2, {goal: GOAL});
   assert.equal(none.card, null);
   assert.match(none.errors[0], /not one json object/);
+  assert.deepEqual(none.raw_answers, ['nothing', 'still nothing']);
 });
 
 test('writeCard: a blocked card is returned at once; an unsupported language gets the one retry, then stays unsupported', async () => {

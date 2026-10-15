@@ -495,6 +495,21 @@ test('v8 S3: the Card panel lists deliverables, requirements with a pass/fail/un
   assert.equal(v7.get('card-verdict').textContent,'No card (v7 pipeline)');
   assert.match(v7.get('card').innerHTML,/class="empty"/);
 });
+test('v8 card repair: held at card_failed, the hold panel shows what the card writer said; the runtime\'s marks read on requirements',()=>{
+  const raw={call:'writeCard',answers:['{"card":1,"deliverables":[{"name":"<x>"}]}','not json'],ts:1};
+  const held=renderWithPage(true,{settings:{pipeline:'v8'},status:'paused',pause:{kind:'card_failed',text:'The card writer gave no usable card after 2 calls.'},card_raw:raw});
+  const panel=held.get('card').innerHTML;
+  assert.match(panel,/<details class="card-raw"><summary>what the card writer said<\/summary>/);
+  assert.match(panel,/FIRST ANSWER<\/div><pre class="card-raw-text">\{&quot;card&quot;:1,&quot;deliverables&quot;:\[\{&quot;name&quot;:&quot;&lt;x&gt;&quot;\}\]\}<\/pre>/,'escaped');
+  assert.match(panel,/RETRY<\/div><pre class="card-raw-text">not json<\/pre>/);
+  const other=renderWithPage(true,{settings:{pipeline:'v8'},status:'paused',pause:{kind:'checks_failed',text:'x'},card_raw:raw});
+  assert.doesNotMatch(other.get('card').innerHTML,/card-raw/,'only at card_failed');
+  const marked={...CARD,requirements:[...CARD.requirements,{id:'R4',says:'README.md does what the goal asks',source:'a README',serves:['README.md'],check:{kind:'judge',path:'README.md',question:'?'},inferred:true,source_inferred:true},
+    {id:'R5',says:'It greets',source:'hello-world',serves:['hello'],check:{kind:'command',run:'hello',expect:{exit:0}},source_inferred:true}]};
+  const card=renderWithPage(true,{settings:{pipeline:'v8'},card:marked,requirement_status:{}}).get('card').innerHTML;
+  assert.match(card,/R4<\/b> README\.md does what the goal asks <span class="faint">· judge check · README\.md · the runtime's question<\/span>/);
+  assert.match(card,/R5<\/b> It greets <span class="faint">· command check · hello · source inferred<\/span>/);
+});
 test('v8 S3: Root\'s detail shows the card in place of its task; contracts read by kind',()=>{
   const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m=>m[1]),listeners=new Map();
   const elements=new Map(ids.map(id=>[id,{id,value:'',textContent:'',className:'',innerHTML:'',title:'',disabled:false,

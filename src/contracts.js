@@ -29,7 +29,8 @@ const KEEP = 8, MAX_INPUTS = 6, MAX_EXAMPLES = 4, MAX_SERVES = 32;
 // Paths the runtime owns or keeps for itself; no contract places a file there.
 export const RUNTIME_PREFIXES = Object.freeze(['components/', 'memory/', '.recursive/', 'glue/']);
 export const ROUTE_NAME = /^(?:GET|POST|PUT|PATCH|DELETE) \/\S*$/;
-export const COMMAND_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+// v8 card repair: underscores too (a script's stem, such as convert_temp, is a fine command name).
+export const COMMAND_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 // The JavaScript row's identifier rule (C1 under v7). Under v8 the caller
 // passes the toolchain rows (facts.rows); without them a function name is
 // read as JavaScript, as v7 always did.
@@ -293,7 +294,7 @@ export function nameError(c, facts = null) {
     return '';
   }
   if (kind === 'route') return ROUTE_NAME.test(name) ? '' : `"${name}" is not a route; name it as a method and a path, such as "GET /path"`;
-  if (kind === 'command' && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits and hyphens, starting with a letter`;
+  if (kind === 'command' && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter`;
   if (!c.path) return `${kind} "${name}" needs the path of ${kind === 'command' ? 'the file that implements it' : 'its file'}`;
   // v8 S8b: an existing project file is named exactly (a repo's own components/ too); a
   // path equal to one apart from case, or under the pieces' parts root, is refused.

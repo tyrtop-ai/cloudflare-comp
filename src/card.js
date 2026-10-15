@@ -5,7 +5,7 @@
 // (cardContracts). Everything here is deterministic and pure: no room, no
 // model. The card writer's call and the Clef vetting are in src/model.js.
 import { TOOLCHAINS, toolchainOf, toolchainById, toolchainNamed, manifestOf } from './toolchains.js';
-import { normalizeContract, kindOf, nameError, CONTRACT_KINDS, RUNTIME_PREFIXES } from './contracts.js';
+import { normalizeContract, kindOf, nameError, CONTRACT_KINDS, RUNTIME_PREFIXES, COMMAND_NAME } from './contracts.js';
 import { writerPathError } from './code-work.js';
 import { caseTwin } from '../container/build-path.mjs';
 import { isPath } from './protocol.js';
@@ -161,15 +161,17 @@ const stem = w => w.length > 4 ? w.replace(/(?:ing|ed|es|s)$/, '') : w;
 const contentWords = s => (fold(s).match(/[\p{L}\p{N}]+/gu) || []).filter(w => w.length > 1 && !STOP.has(w));
 // Whether a requirement's source comes from the goal: a substring of it of
 // at least 12 characters (case-folded, whitespace normalised), or at least
-// three content words of which 60% are found in it (by stem too).
+// three content words of which 60% are found in it (by stem too), or two
+// that both are.
 export function traceable(source, goal) {
   const s = fold(source), g = fold(goal);
   if (!s || !g) return false;
   if (s.length >= 12 && g.includes(s)) return true;
   const words = contentWords(s);
-  if (words.length < 3) return false;
+  if (words.length < 2) return false;
   const have = new Set(contentWords(g).flatMap(w => [w, stem(w)]));
-  return words.filter(w => have.has(w) || have.has(stem(w))).length / words.length >= 0.6;
+  // v8 card repair: two content words count when the goal has both ("create tickets").
+  return words.filter(w => have.has(w) || have.has(stem(w))).length / words.length >= (words.length < 3 ? 1 : 0.6);
 }
 
 // ------------------------------------------------------------ checks (§1.2 rule 4)
@@ -331,6 +333,498 @@ export function settleCodeLanguage(card, installed = TOOLCHAINS) {
   return {card, error: `${gap.join(', ')} must be written in a code language, and the card names none of ${rows.map(r => r.id).join(', ') || 'the installed toolchains'}.`};
 }
 
+// ------------------------------------------------------------ repairCard (v8 card repair)
+// The first live runs failed at the card on slips a reader fixes at a
+// glance: a script listed as a function, a command name with an
+// underscore, a requirement serving a deliverable by its path, no source.
+// The validator refused each, and one refused deliverable took every
+// requirement serving it along. repairCard fixes, before validateCard runs,
+// what has one sensible reading, and says what it did (notes: one
+// card_repaired event). The validator still judges the result, so a repair
+// never admits a check the validator would refuse: the argv rules, the
+// denylist, the path and URL rules and base gating all still apply.
+// Pure. facts: {goal, installed, base, change}.
+// The flags only the runtime sets: a writer's copy of one is dropped.
+const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'inferred'];
+const CHECK_KINDS = ['file', 'judge', 'command', 'call', 'http', 'browser'];
+// Kinds a writer names in other words ('' leaves the kind to the name).
+const KIND_ALIASES = Object.freeze({cli: 'command', script: 'command', program: 'command', executable: 'command', tool: 'command', binary: 'command',
+  document: 'doc', documentation: 'doc', docs: 'doc', readme: 'doc', markdown: 'doc', guide: 'doc', manual: 'doc', text: 'doc',
+  html: 'page', webpage: 'page', 'web page': 'page', website: 'page', site: 'page', 'html page': 'page',
+  endpoint: 'route', 'api endpoint': 'route', 'http route': 'route', handler: 'route',
+  config: 'data', configuration: 'data', 'config file': 'data', dataset: 'data', 'data file': 'data', json: 'data',
+  method: 'function', func: 'function', fn: 'function', procedure: 'function',
+  module: '', library: '', source: '', 'source file': 'file', stylesheet: 'file', style: 'file', asset: 'file', static: 'file'});
+const CHECK_ALIASES = Object.freeze({cli: 'command', run: 'command', shell: 'command', exec: 'command', process: 'command',
+  exists: 'file', file_exists: 'file', content: 'file', contains: 'file', read: 'judge', review: 'judge', question: 'judge', llm: 'judge', reader: 'judge',
+  function: 'call', unit: 'call', calls: 'call', api: 'http', request: 'http', rest: 'http', ui: 'browser', page: 'browser', e2e: 'browser', web: 'browser'});
+// Extensions a name may end in to read as a file (every row's, and common others').
+const FILE_EXTENSIONS = new Set([...TOOLCHAINS.flatMap(t => t.extensions || []), '.ts', '.tsx', '.jsx', '.go', '.rs', '.rb', '.java', '.kt', '.php', '.c', '.h', '.cpp', '.cc', '.cs', '.sh', '.swift',
+  '.rst', '.markdown', '.tsv', '.xml', '.ini', '.cfg', '.conf', '.env', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp']);
+// A placed kind by extension (pages, documents, data); a script's is decided by how it is run.
+const KIND_BY_EXTENSION = [[/\.html?$/i, 'page'], [/\.(?:md|markdown|txt|rst)$/i, 'doc'], [/\.(?:json|csv|tsv|ya?ml|toml)$/i, 'data']];
+const MAIN_EXTENSION = {page: '.html', doc: '.md', data: '.json'};
+const fileExtension = p => { const b = String(p ?? '').split('/').pop(), i = b.lastIndexOf('.'); return i > 0 ? b.slice(i).toLowerCase() : ''; };
+const stemOf = p => { const b = String(p ?? '').split('/').pop(), i = b.lastIndexOf('.'); return i > 0 ? b.slice(0, i) : b; };
+const fileName = s => isPath(s) && !/\s/.test(s) && FILE_EXTENSIONS.has(fileExtension(s));
+const cleanPath = p => String(p ?? '').trim().replace(/^[`'"]+|[`'"]+$/g, '').replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
+const codeRowsOf = rows => rows.filter(r => r.id !== 'text' && (r.executables || []).length);
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const quoteWord = w => { const s = String(w); return /^[\w./:=@%+,{}-]+$/.test(s) ? s : !s.includes("'") ? `'${s}'` : `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; };
+const joinArgv = list => list.map(quoteWord).join(' ');
+// The words a text is about, with camelCase and snake_case taken apart.
+const aboutWords = s => contentWords(String(s ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_./-]+/g, ' '));
+// The goal's sentences, the changes' marks taken off ("Change 2: ...").
+export const goalSentences = text => String(text ?? '').split(/\n+|(?<=[.!?])\s+/).map(s => s.replace(/^\s*Change \d+:\s*/, '').trim()).filter(s => contentWords(s).length);
+// The goal phrase a text comes from: the sentence sharing the most words
+// with it (the change's first, when there is one), clipped to a source's
+// length so it stays a part of the goal. {phrase, score}; score 0 when no
+// sentence shares a word with it.
+export function bestPhrase(text, {goal = '', change = ''} = {}) {
+  const want = [...new Set(aboutWords(text))], list = [...(change ? goalSentences(change) : []), ...goalSentences(goal)];
+  let best = {phrase: '', score: -1};
+  for (const s of list) {
+    const have = new Set(aboutWords(s).flatMap(w => [w, stem(w)]));
+    const score = want.filter(w => have.has(w) || have.has(stem(w))).length;
+    if (score > best.score) best = {phrase: s.slice(0, CARD_LIMITS.source).trim(), score};
+  }
+  return best.score < 0 ? {phrase: '', score: 0} : best;
+}
+// A list a writer gave as an object keyed by name or id, or as one item.
+function listOf(v, key, label, notes) {
+  if (Array.isArray(v)) return v;
+  if (v === undefined || v === null || v === '') return [];
+  const single = key === 'name' ? ['name', 'kind', 'path'] : label === 'run' ? ['run', 'static', 'port'] : ['says', 'check', 'serves'];
+  if (plain(v) && !single.some(k => k in v)) {
+    notes.push(`${label} was an object keyed by ${key}; read as a list.`);
+    return Object.entries(v).map(([k, x]) => plain(x) ? {[key]: k, ...x} : typeof x === 'string' && label === 'requirements' ? {id: k, says: x} : x);
+  }
+  notes.push(`${label} was one item; read as a list of one.`);
+  return [v];
+}
+// The argv a loosely written check runs, or null.
+function looseArgv(check) {
+  const c = typeof check === 'string' ? {run: check} : Array.isArray(check) ? check.find(plain) : check;
+  if (!plain(c)) return null;
+  const run = c.run ?? c.command ?? c.cmd;
+  return commandArgv(Array.isArray(run) ? joinArgv(run) : run).argv || null;
+}
+
+export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], change = ''} = {}) {
+  const notes = [];
+  if (!plain(raw)) return {card: raw, notes};
+  let o = raw;
+  // A card wrapped in one more object ({"card": {...}}, {"project_card": {...}}).
+  if (!('deliverables' in o)) {
+    const inner = Object.entries(o).find(([, x]) => plain(x) && 'deliverables' in x);
+    if (inner) { o = inner[1]; notes.push(`The card was wrapped in "${inner[0]}"; read from inside it.`); }
+  }
+  o = JSON.parse(JSON.stringify(o));
+  const rows = (Array.isArray(installed) ? installed : TOOLCHAINS).filter(r => r && typeof r.id === 'string'), codeRows = codeRowsOf(rows);
+  const baseSet = new Set(Array.isArray(base) ? base : base instanceof Set ? [...base] : Object.keys(base || {}));
+  const reserved = reservedCommands(TOOLCHAINS), scriptExtensions = new Set(codeRowsOf(TOOLCHAINS).flatMap(r => r.extensions || []));
+
+  if (!str(o.summary, CARD_LIMITS.summary) && !str(o.blocked, CARD_LIMITS.blocked)) {
+    const first = goalSentences(change || goal)[0];
+    if (first) { o.summary = first.slice(0, CARD_LIMITS.summary); notes.push('summary was missing; the goal\'s first sentence stands in.'); }
+  }
+  if (typeof o.languages === 'string') { o.languages = o.languages.split(/[,;]+|\s+/).filter(Boolean); notes.push('languages was a text; read as a list.'); }
+  if (!Array.isArray(o.languages)) o.languages = [];
+  for (const k of ['decisions', 'project_checks']) if (typeof o[k] === 'string' && o[k].trim()) o[k] = [o[k]];
+
+  const rawReqs = listOf(o.requirements, 'id', 'requirements', notes);
+  // Whether a requirement runs this file, or one of these names, as a command.
+  const runAsCommand = (path, names) => rawReqs.some(r => {
+    const argv = plain(r) ? looseArgv(r.check ?? r) : null;
+    if (!argv) return false;
+    const lower = names.filter(Boolean).map(n => String(n).toLowerCase());
+    return lower.includes(argv[0].toLowerCase()) || !!path && argv.slice(1).some(a => cleanPath(a) === path);
+  });
+  // The code language the card's commands and functions are written in: the
+  // languages it names, its deliverables' extensions, the goal's words, or
+  // the only one installed.
+  let code;
+  const codeRow = () => {
+    if (code !== undefined) return code;
+    const isCode = r => r && codeRows.some(c => c.id === r.id);
+    const named = o.languages.map(n => toolchainNamed(n)).find(isCode);
+    const byPath = (Array.isArray(o.deliverables) ? o.deliverables : []).map(d => plain(d) ? toolchainOf(cleanPath(d.path || d.name)) : null).find(isCode);
+    const said = codeRows.map(r => ({r, at: Math.min(...(r.aliases || [r.id]).map(a => new RegExp(`(?<![\\w.-])${escapeRe(a)}(?![\\w-])`, 'i').exec(`${goal}\n${change}`)?.index ?? Infinity))}))
+      .filter(x => x.at < Infinity).sort((a, b) => a.at - b.at)[0]?.r;
+    code = named || byPath || said || (codeRows.length === 1 ? codeRows[0] : null);
+    return code;
+  };
+  const mainExtension = kind => MAIN_EXTENSION[kind] || codeRow()?.extensions?.[0] || (kind === 'file' ? '.txt' : '');
+  const functionOk = (name, path) => !nameError({name, path: path || undefined}, {rows, languages: [codeRow()?.id].filter(Boolean)});
+  const identifierFor = words => {
+    const parts = String(words).split(/[^A-Za-z0-9]+/).filter(Boolean);
+    if (!parts.length || /^[0-9]/.test(parts[0])) return '';
+    return codeRow()?.names_look_like === 'snake_case' ? parts.map(p => p.toLowerCase()).join('_') : parts.map((p, i) => i ? p[0].toUpperCase() + p.slice(1) : p[0].toLowerCase() + p.slice(1)).join('');
+  };
+  const commandFrom = s => {
+    const name = String(s ?? '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z]+/, '').replace(/[-_]+$/, '').slice(0, 32);
+    return COMMAND_NAME.test(name) && !reserved.has(name) ? name : '';
+  };
+
+  // Deliverables.
+  const finals = [], deliverables = [];
+  for (const item of listOf(o.deliverables, 'name', 'deliverables', notes)) {
+    const d = typeof item === 'string' ? {name: item} : plain(item) ? {...item} : null;
+    if (!d) { deliverables.push(item); continue; }
+    if (!(typeof d.name === 'string' && d.name.trim())) {
+      const alt = [d.path, d.file, d.title, d.id].find(x => typeof x === 'string' && x.trim());
+      if (!alt) { deliverables.push(d); continue; }
+      d.name = alt.trim();
+      notes.push(`a deliverable had no name; it is named "${d.name}".`);
+    }
+    const original = d.name.trim().replace(/^`+|`+$/g, ''), givenPath = typeof d.path === 'string' ? d.path : typeof d.file === 'string' ? d.file : '';
+    let name = original, path = givenPath ? cleanPath(givenPath) : '', kind = typeof d.kind === 'string' ? d.kind.trim().toLowerCase() : '';
+    if (givenPath && path !== givenPath.trim()) notes.push(`${original}: path "${givenPath.slice(0, 80)}" is read as ${path || 'no path'}.`);
+    if (kind && !CONTRACT_KINDS.includes(kind)) {
+      const alias = KIND_ALIASES[kind.replace(/[\s_-]+/g, ' ')];
+      if (alias !== undefined) { notes.push(`${original}: kind "${d.kind}" is read as ${alias || 'unset, so its name decides'}.`); kind = alias; }
+    }
+    if (!kind || kind === 'function') {
+      const head = name.split('(')[0].trim(), tail = name.slice(head.length);
+      const split = /^(.+\.[A-Za-z][A-Za-z0-9]*)\s*(?:::|:|#)\s*([A-Za-z_$][\w$]*)$/.exec(head);
+      const dotted = /^([A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$]*)*)\.([A-Za-z_$][\w$]*)$/.exec(head);
+      if (split && fileName(cleanPath(split[1]))) {
+        // module.py:fn, module.py::fn, module.js#fn.
+        path ||= cleanPath(split[1]); name = split[2] + tail; kind = 'function';
+        notes.push(`"${original}" is the function ${split[2]} in ${path}.`);
+      } else if (fileName(cleanPath(head))) {
+        // A file named as a function, or with no kind: its extension, and how a requirement runs it, decide.
+        path ||= cleanPath(head);
+        const byExt = KIND_BY_EXTENSION.find(([re]) => re.test(path))?.[1];
+        const asCommand = !byExt && scriptExtensions.has(fileExtension(path)) && runAsCommand(path, [head, stemOf(path), path]);
+        kind = byExt || (asCommand ? 'command' : 'file');
+        name = kind === 'command' ? commandFrom(stemOf(path)) || stemOf(path) : path;
+        notes.push(`"${original}"${d.kind ? ` (kind ${d.kind})` : ''} is the ${kind} ${kind === 'command' ? `${name} at ${path}, which a requirement runs` : path}.`);
+      } else if (dotted && !FILE_EXTENSIONS.has(`.${dotted[2].toLowerCase()}`)) {
+        // module.fn: the function fn, in the module's file.
+        const ext = path ? '' : codeRow()?.extensions?.[0] || '';
+        if (!path && ext) path = dotted[1].replace(/\./g, '/') + ext;
+        name = dotted[2] + tail; kind = 'function';
+        notes.push(`"${original}" is the function ${dotted[2]}${path ? ` in ${path}` : ''}.`);
+      } else if (!kind && path && KIND_BY_EXTENSION.some(([re]) => re.test(path))) {
+        kind = KIND_BY_EXTENSION.find(([re]) => re.test(path))[1];
+        name = path;
+        notes.push(`${original}: its kind was missing; ${path} makes it a ${kind}.`);
+      } else if (!functionOk(head, path)) {
+        // A function name its language does not allow: a command a requirement runs, the same words as an identifier, or the file it names.
+        const script = !path || scriptExtensions.has(fileExtension(path));
+        const asCommand = script && runAsCommand(path, [head, path && stemOf(path)]) && (commandFrom(head) || path && commandFrom(stemOf(path)));
+        const id = identifierFor(head);
+        if (asCommand) { kind = 'command'; name = asCommand; notes.push(`"${original}" is run as a command by a requirement: the command ${name}.`); }
+        else if (id && id !== head && (kind === 'function' || !/\s/.test(head)) && functionOk(id, path)) { name = id + tail; kind = 'function'; notes.push(`function "${original}" is named ${id}, as its language names functions.`); }
+        else if (!kind && path && fileName(path)) { kind = 'file'; name = path; notes.push(`"${original}" is no function name; it is the file ${path}.`); }
+      }
+    }
+    if (kind === 'command') {
+      if (fileName(cleanPath(name))) { path ||= cleanPath(name); name = stemOf(cleanPath(name)); notes.push(`command "${original}" is named ${name}, at ${path}.`); }
+      if (!COMMAND_NAME.test(name) || reserved.has(name)) {
+        const to = commandFrom(name) || (path ? commandFrom(stemOf(path)) : '');
+        if (to) { notes.push(`command "${original}" is named ${to}${to === commandFrom(name) ? '' : `, after ${path}`}.`); name = to; }
+      }
+      if (!path && COMMAND_NAME.test(name) && mainExtension('command')) { path = name + mainExtension('command'); notes.push(`command ${name} had no path; it is ${path}.`); }
+    }
+    if (['page', 'doc', 'data', 'file'].includes(kind) && !path) {
+      const tail = /^(\S+?):\s+(.+)$/.exec(name);
+      if (fileName(cleanPath(name))) path = cleanPath(name);
+      else if (tail && fileName(cleanPath(tail[1]))) path = cleanPath(tail[1]);
+      else {
+        const slug = name.trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9_./-]+/g, '').replace(/^[./-]+/, '');
+        if (slug) { path = slug + (FILE_EXTENSIONS.has(fileExtension(slug)) ? '' : mainExtension(kind)); notes.push(`${kind} "${original}" had no path; it is ${path}.`); }
+      }
+    }
+    if (kind === 'route') {
+      const m = /^(get|post|put|patch|delete)\s+(\/\S*)$/i.exec(name.trim());
+      if (m && `${m[1].toUpperCase()} ${m[2]}` !== name) { name = `${m[1].toUpperCase()} ${m[2]}`; notes.push(`route "${original}" is named ${name}.`); }
+    }
+    if (['page', 'doc', 'data', 'file'].includes(kind) && path) name = path;
+    const out = {...d, name};
+    if (kind) out.kind = kind; else delete out.kind;
+    delete out.file;
+    if (path) out.path = path; else delete out.path;
+    deliverables.push(out);
+    finals.push({name, kind: kind || 'function', path, aliases: [original, cleanPath(original), givenPath && cleanPath(givenPath)].filter(Boolean)});
+  }
+  // Functions sharing a file: a path names one deliverable's file (the
+  // validator keeps paths unique), so it stays with the first function, or
+  // with the placed deliverable at it, and the others' are left to the split.
+  for (const path of new Set(finals.filter(f => f.kind === 'function' && f.path).map(f => f.path))) {
+    const at = finals.filter(f => f.path === path), owner = at.find(f => f.kind !== 'function') || at[0], rest = at.filter(f => f !== owner);
+    if (!rest.length) continue;
+    for (const f of rest) { f.path = ''; const d = deliverables.find(x => plain(x) && x.name === f.name && x.path === path); if (d) delete d.path; }
+    notes.push(`${rest.map(f => f.name).join(', ')} named ${path}, the file of ${owner.name}; a path names one deliverable's file, so where ${rest.length > 1 ? 'they live is' : 'it lives is'} left to the split.`);
+  }
+  o.deliverables = deliverables;
+  // The code language joins the card's languages when its functions or commands need one the card does not name.
+  const isCodeId = id => codeRows.some(c => c.id === id);
+  const needsCode = finals.some(f => f.kind === 'function' || f.kind === 'route' || f.kind === 'command' && !isCodeId(toolchainOf(f.path)?.id));
+  const namesCode = o.languages.some(n => isCodeId(toolchainNamed(n)?.id)) || finals.some(f => f.path && isCodeId(toolchainOf(f.path)?.id));
+  if (needsCode && !namesCode && codeRow()) { o.languages = [...o.languages, codeRow().id]; notes.push(`languages named no code language; ${codeRow().id} is added for ${finals.filter(f => f.kind !== 'doc').map(f => f.name).slice(0, 3).join(', ')}.`); }
+
+  // One deliverable's name for a name, a path, a stem or a case variant a writer used for it, or ''.
+  const resolve = (value, want = null) => {
+    const s = cleanPath(value).replace(/\(.*$/, '').trim();
+    if (!s) return '';
+    const pool = want ? finals.filter(f => want.includes(f.kind)) : finals, lower = s.toLowerCase();
+    const one = test => { const hits = pool.filter(test); return hits.length === 1 ? hits[0].name : ''; };
+    const all = f => [f.name, f.path, ...f.aliases].filter(Boolean), fn = /[.:#]([A-Za-z_$][\w$]*)$/.exec(s)?.[1];
+    return pool.find(f => f.name === s)?.name || one(f => f.aliases.includes(s) || f.path === s)
+      || one(f => all(f).some(a => a.toLowerCase() === lower))
+      || one(f => all(f).some(a => stemOf(a).toLowerCase() === stemOf(s).toLowerCase()))
+      || (fn ? one(f => f.kind === 'function' && f.name === fn) : '');
+  };
+
+  // Runs.
+  const runIds = new Map(), runs = [];
+  for (const item of listOf(o.run ?? o.runs, 'id', 'run', notes)) {
+    const r = typeof item === 'string' ? (/^static$/i.test(item.trim()) ? {static: true} : {run: item}) : plain(item) ? {...item} : null;
+    if (!r) { runs.push(item); continue; }
+    if (r.run === undefined && (typeof r.command === 'string' || Array.isArray(r.command))) r.run = r.command;
+    if (Array.isArray(r.run)) r.run = joinArgv(r.run);
+    if (r.static === 'true' || r.static === 'yes') r.static = true;
+    if (r.static !== true && !(typeof r.run === 'string' && r.run.trim())) { r.static = true; notes.push(`run ${JSON.stringify(r.id ?? '')} named no command; it serves the delivered files as they are.`); }
+    const given = typeof r.id === 'string' ? r.id.trim() : '';
+    let id = RUN_ID.test(given) ? given : given.replace(/[^\w-]+/g, '-').replace(/^[^A-Za-z]+/, '').slice(0, 32);
+    if (!RUN_ID.test(id) || runs.some(x => x?.id === id)) { const head = r.static === true ? 'site' : 'app'; id = head; for (let n = 2; runs.some(x => x?.id === id); n++) id = `${head}${n}`; }
+    if (id !== given) notes.push(`run ${given ? `"${given}"` : 'without an id'} is "${id}".`);
+    if (given) runIds.set(given, id);
+    runs.push({...r, id});
+  }
+  o.run = runs;
+  delete o.runs;
+  const runOf = id => runs.find(r => plain(r) && r.id === id);
+
+  // Requirements.
+  const functionNames = finals.filter(f => f.kind === 'function').map(f => f.name);
+  const requirements = [];
+  rawReqs.forEach((item, i) => {
+    if (!plain(item)) { requirements.push(item); return; }
+    const r = {...item};
+    for (const f of RUNTIME_FLAGS) delete r[f];
+    const given = typeof r.id === 'string' || typeof r.id === 'number' ? String(r.id).trim() : '';
+    const idMatch = /^(?:r|req|requirement)?[\s_#-]*0*([1-9]\d?)$/i.exec(given);
+    if (idMatch && Number(idMatch[1]) <= CARD_LIMITS.requirements[1] && `R${idMatch[1]}` !== r.id) { r.id = `R${idMatch[1]}`; notes.push(`requirement id "${given}" is ${r.id}.`); }
+    const label = typeof r.id === 'string' ? r.id : `requirement ${i + 1}`;
+    if (!str(r.says, CARD_LIMITS.says)) {
+      const alt = [r.statement, r.description, r.text, r.requirement, r.title, r.name].find(x => typeof x === 'string' && x.trim());
+      if (alt) { r.says = alt.trim(); notes.push(`${label}: its statement is read from another field.`); }
+    }
+    // The check, in the validator's own words.
+    let c = r.check;
+    if (c === undefined && (r.kind || r.run || r.steps || r.question || r.command)) {
+      c = Object.fromEntries(['kind', 'run', 'command', 'steps', 'question', 'path', 'has', 'expect', 'serve', 'stdin', 'files'].filter(k => r[k] !== undefined).map(k => [k, r[k]]));
+      notes.push(`${label}: its check is read from its own fields.`);
+    }
+    if (Array.isArray(c)) { c = c.find(plain); notes.push(`${label}: its check was a list; the first check is kept.`); }
+    if (typeof c === 'string' && c.trim()) { c = {kind: 'command', run: c}; notes.push(`${label}: its check was a command line; it runs it.`); }
+    if (plain(c)) {
+      c = {...c};
+      let kind = String(c.kind ?? c.type ?? '').trim().toLowerCase();
+      if (!CHECK_KINDS.includes(kind)) {
+        const steps = Array.isArray(c.steps) ? c.steps.filter(plain) : null;
+        const inferred = CHECK_ALIASES[kind] || (c.run || c.command || c.cmd ? 'command' : c.question ? 'judge' : steps?.some(s => 'call' in s || 'function' in s) ? 'call'
+          : steps?.some(s => 'method' in s) ? 'http' : steps?.length ? 'browser' : c.path || c.file ? 'file' : '');
+        if (inferred) { notes.push(`${label}: check kind ${kind ? `"${kind}"` : '(missing)'} is read as ${inferred}.`); kind = inferred; }
+      }
+      if (kind) { c.kind = kind; delete c.type; }
+      if (kind === 'command') {
+        if (c.run === undefined) c.run = c.command ?? c.cmd ?? c.argv;
+        delete c.command; delete c.cmd; delete c.argv;
+        if (Array.isArray(c.run)) c.run = joinArgv(c.run);
+        if (Array.isArray(c.args) && typeof c.run === 'string') c.run = `${c.run} ${joinArgv(c.args)}`;
+        delete c.args;
+        const argv = typeof c.run === 'string' ? commandArgv(c.run).argv : null;
+        if (argv && !reserved.has(argv[0]) && !finals.some(f => f.kind === 'command' && f.name === argv[0])) {
+          const to = resolve(argv[0], ['command']), at = c.run.indexOf(argv[0]);
+          if (to && at >= 0) { c.run = `${c.run.slice(0, at)}${to}${c.run.slice(at + argv[0].length)}`.trim(); notes.push(`${label}: its command runs ${to} (written "${argv[0]}").`); }
+        }
+        if (plain(c.expect)) {
+          const e = {...c.expect};
+          const move = (from, to, list) => { if (e[from] !== undefined && e[to] === undefined) e[to] = list && typeof e[from] === 'string' ? [e[from]] : e[from]; if (from !== to) delete e[from]; };
+          move('exit_code', 'exit'); move('code', 'exit'); move('status', 'exit');
+          for (const k of ['stdout_contains', 'contains', 'output_has', 'output']) move(k, 'stdout_has', true);
+          move('stderr_contains', 'stderr_has', true);
+          if (typeof e.exit === 'string' && /^\d+$/.test(e.exit)) e.exit = Number(e.exit);
+          c.expect = e;
+        }
+      } else if (kind === 'call') {
+        if (!Array.isArray(c.steps) && (c.call || c.function)) { c.steps = [{call: c.call ?? c.function, args: c.args, ...('expect' in c ? {expect: c.expect} : 'expected' in c ? {expect: c.expected} : {})}]; for (const k of ['call', 'function', 'args', 'expect', 'expected']) delete c[k]; }
+        if (Array.isArray(c.steps)) c.steps = c.steps.map(s => {
+          if (!plain(s)) return s;
+          const step = {...s}, call = step.call ?? step.function ?? step.fn;
+          delete step.function; delete step.fn;
+          if (typeof call === 'string') {
+            const to = functionNames.includes(call.trim()) ? call.trim() : resolve(call, ['function']);
+            step.call = to || call;
+            if (to && to !== call) notes.push(`${label}: its call to "${call}" calls ${to}.`);
+          }
+          if (!('expect' in step) && 'expected' in step) step.expect = step.expected;
+          delete step.expected;
+          return step;
+        });
+      } else if (kind === 'file' || kind === 'judge') {
+        const p = cleanPath(c.path ?? c.file ?? '');
+        delete c.file;
+        if (p && !finals.some(f => f.path === p) && !baseSet.has(p)) {
+          const to = finals.find(f => f.name === resolve(p))?.path;
+          if (to) notes.push(`${label}: its ${kind} check reads ${to} (written "${p}").`);
+          c.path = to || p;
+        } else if (p) c.path = p;
+        if (kind === 'judge' && !c.question && typeof (c.ask ?? c.prompt) === 'string') c.question = c.ask ?? c.prompt;
+        if (kind === 'file') { if (c.has === undefined && c.contains !== undefined) c.has = c.contains; if (typeof c.has === 'string') c.has = [c.has]; delete c.contains; }
+      } else if (kind === 'http' || kind === 'browser') {
+        if (!Array.isArray(c.steps) && Array.isArray(c.actions)) c.steps = c.actions;
+        delete c.actions;
+        if (kind === 'http' && Array.isArray(c.steps)) c.steps = c.steps.map(s => plain(s) && s.path === undefined && typeof s.url === 'string' ? {...s, path: s.url} : s);
+      }
+    }
+    r.check = c;
+    // serves: names, paths, stems or case variants of a deliverable's name;
+    // what matches nothing is left out, and a requirement left serving
+    // nothing is attached to what its check names, or the only deliverable,
+    // or the one its statement is most about.
+    const listed = (Array.isArray(r.serves) ? r.serves : typeof r.serves === 'string' ? r.serves.split(/\s*,\s*/) : r.serves === undefined ? [].concat(r.deliverables ?? r.deliverable ?? []) : [])
+      .filter(s => typeof s === 'string' && s.trim());
+    delete r.deliverables; delete r.deliverable;
+    const serves = [];
+    for (const s of listed) {
+      const to = resolve(s);
+      if (!to) { notes.push(`${label} served "${String(s).slice(0, 80)}", which no deliverable is named; left out.`); continue; }
+      if (to !== s.trim()) notes.push(`${label} serves ${to} (written "${String(s).slice(0, 80)}").`);
+      if (!serves.includes(to)) serves.push(to);
+    }
+    if (!serves.length && finals.length) {
+      const named = checkNames(c, finals, runOf, resolve), [why, pick] = named.length ? ['which its check names', named] : finals.length === 1 ? ['the only deliverable', [finals[0].name]] : ['the one its statement is most about', [mostAbout(r.says, finals, c)]];
+      serves.push(...pick);
+      notes.push(`${label} served no deliverable; it serves ${pick.join(', ')}, ${why}.`);
+    }
+    r.serves = serves;
+    // A missing source: the goal sentence sharing the most words with it, marked source_inferred.
+    if (Array.isArray(r.source)) r.source = r.source.filter(x => typeof x === 'string').join(' ');
+    if (!str(r.source, CARD_LIMITS.source) && str(r.says, CARD_LIMITS.says)) {
+      const {phrase, score} = bestPhrase(`${r.says} ${serves.join(' ')}`, {goal, change});
+      r.source = phrase || str(r.says, CARD_LIMITS.source);
+      r.source_inferred = true;
+      if (!score) r.source_unmatched = true;
+      notes.push(`${label} had no source; ${score ? `it comes from "${r.source}"` : 'no goal sentence shares its words, so it stays untraced'}.`);
+    }
+    requirements.push(r);
+  });
+  // A browser or http check serving a run the card does not have: the run it
+  // was renamed to, its only run, or, for a browser check of a card with
+  // pages and no run, the delivered files served as they are.
+  const pages = finals.filter(f => f.kind === 'page' || f.path && /\.html?$/i.test(f.path));
+  for (const r of requirements) {
+    const c = plain(r) && plain(r.check) ? r.check : null;
+    if (!c || !['http', 'browser'].includes(c.kind)) continue;
+    const s = typeof c.serve === 'string' ? c.serve.trim() : '';
+    if (runOf(s)) continue;
+    const label = typeof r.id === 'string' ? r.id : 'a requirement';
+    const to = runIds.get(s) || runs.find(x => plain(x) && x.id.toLowerCase() === s.toLowerCase())?.id || (runs.length === 1 && plain(runs[0]) ? runs[0].id : '');
+    if (to) { c.serve = to; notes.push(`${label}: its ${c.kind} check serves "${to}"${s ? ` (written "${s}")` : ''}.`); continue; }
+    if (!runs.length && c.kind === 'browser' && pages.length) {
+      const id = RUN_ID.test(s) ? s : 'site';
+      runs.push({id, static: true});
+      c.serve = id;
+      notes.push(`${label}: its browser check needs a run, and the card had none; "${id}" serves the delivered files as they are.`);
+    }
+  }
+  o.requirements = requirements;
+  return {card: o, notes};
+}
+// The deliverables a check names: a file or judge check's path, a command's
+// program or file, a call's functions, an http check's routes or its run's
+// program, a browser check's pages.
+function checkNames(c, finals, runOf, resolve) {
+  if (!plain(c)) return [];
+  const at = p => finals.filter(f => f.path && f.path === cleanPath(p)).map(f => f.name);
+  const argvNames = run => { const argv = commandArgv(run).argv || []; return [...new Set([...(finals.some(f => f.kind === 'command' && f.name === argv[0]) ? [argv[0]] : []), ...argv.slice(1).flatMap(at)])]; };
+  const steps = Array.isArray(c.steps) ? c.steps.filter(plain) : [];
+  if (c.kind === 'file' || c.kind === 'judge') return at(c.path);
+  if (c.kind === 'command') return typeof c.run === 'string' ? argvNames(c.run) : [];
+  if (c.kind === 'call') return [...new Set(steps.map(s => typeof s.call === 'string' ? resolve(s.call, ['function']) : '').filter(Boolean))];
+  const run = runOf(c.serve), served = run && typeof run.run === 'string' ? argvNames(run.run) : [];
+  if (c.kind === 'http') {
+    const routes = finals.filter(f => f.kind === 'route' && steps.some(s => f.name === `${String(s.method || 'GET').toUpperCase()} ${s.path}`)).map(f => f.name);
+    return routes.length ? routes : served;
+  }
+  if (c.kind !== 'browser') return [];
+  const pages = finals.filter(f => f.kind === 'page'), visited = steps.map(s => typeof s.goto === 'string' ? cleanPath(s.goto.split(/[?#]/)[0]) || 'index.html' : '').filter(Boolean);
+  const seen = pages.filter(p => visited.includes(p.path)).map(p => p.name);
+  return seen.length ? seen : pages.length === 1 ? [pages[0].name] : served;
+}
+// The deliverable a statement is most about: the most shared words with its
+// name, path and description, else the first whose kind the check fits.
+function mostAbout(says, finals, c) {
+  const want = new Set(aboutWords(says).flatMap(w => [w, stem(w)]));
+  const score = f => new Set(aboutWords(`${f.name} ${f.path || ''} ${f.aliases.join(' ')}`).filter(w => want.has(w) || want.has(stem(w)))).size;
+  const best = finals.map(f => ({f, n: score(f)})).sort((a, b) => b.n - a.n)[0];
+  if (best?.n > 0) return best.f.name;
+  const fits = {command: ['command'], call: ['function'], browser: ['page'], http: ['route', 'command', 'file'], judge: ['doc'], file: ['doc', 'data', 'file']}[c?.kind] || [];
+  return (finals.find(f => fits.includes(f.kind)) || finals[0]).name;
+}
+
+// ------------------------------------------------------------ behaviour (v8 card repair)
+// A check that only finds a file is no requirement: each page, command,
+// function and document needs one check that exercises what the goal asks
+// of it. A document's is written here (a reader's yes/no question about the
+// goal phrase it comes from); a page, command or function without one is an
+// error the writer's retry hears.
+export const existenceOnly = r => r?.check?.kind === 'file' && !r.check.has && !r.check.json;
+const EXERCISES = {page: ['browser', 'http'], command: ['command', 'http', 'browser'], function: ['call', 'command', 'http', 'browser'], doc: ['judge']};
+const exercises = (kind, check) => !!check && (EXERCISES[kind].includes(check.kind) || kind === 'doc' && check.kind === 'file' && !!(check.has || check.json));
+// prior (an amendment): the card before the change, whose deliverables keep
+// the requirements they had, so the rule holds for the change's new ones.
+export function behaviourGaps(card, {goal = '', change = '', prior = null} = {}) {
+  const add = [], errors = [], notes = [];
+  if (!card || card.blocked) return {add, errors, notes};
+  const before = new Set((prior?.deliverables || []).map(d => d.name)), runs = new Map((card.run || []).filter(r => r.argv).map(r => [r.id, r.argv]));
+  // A command a run starts is exercised by every http or browser check on that run.
+  const started = (d, check) => ['http', 'browser'].includes(check?.kind) && !!runs.get(check.serve) && (runs.get(check.serve)[0] === d.name || !!d.path && runs.get(check.serve).slice(1).includes(d.path));
+  let room = CARD_LIMITS.requirements[1] - (card.requirements || []).filter(r => !r.implicit && !r.project).length;
+  for (const d of card.deliverables || []) {
+    const kind = kindOf(d);
+    if (!EXERCISES[kind] || before.has(d.name) || (card.requirements || []).some(r => covered(r).includes(d.name) && exercises(kind, r.check) || kind === 'command' && started(d, r.check))) continue;
+    if (kind === 'doc') {
+      if (!d.path || room <= 0) continue;
+      const {phrase, score} = bestPhrase(`${d.name} ${d.does || ''}`, {goal, change}), what = score ? phrase.replace(/[.\s]+$/, '') : '';
+      add.push({says: `${d.path} does what the goal asks${what ? `: ${what}` : ''}`.slice(0, CARD_LIMITS.says), source: phrase || d.path, serves: [d.name],
+        check: {kind: 'judge', path: d.path, question: `Does ${d.path} do what the goal asks${what ? `: ${what}` : ' of it'}?`.slice(0, CARD_LIMITS.question)},
+        inferred: true, source_inferred: true, ...(score ? {} : {source_unmatched: true})});
+      room--;
+      notes.push(`${d.path} had no check of what it says; a reader's question checks what the goal asks of it.`);
+    } else if (kind === 'page') errors.push(`deliverable "${d.name}" is a page and no check uses it: add a requirement serving "${d.name}" whose check is a browser check (a run such as {"id": "site", "static": true}, then steps that do what the goal asks on the page and expect what its user would see); that the file exists is no requirement.`);
+    else if (kind === 'command') errors.push(`deliverable "${d.name}" is a command and no check runs it: add a requirement serving "${d.name}" whose check is a command check that runs "${d.name}" with arguments the goal implies and expects its output (stdout_has); that the file exists is no requirement.`);
+    else errors.push(`deliverable "${d.name}" is a function and no check calls it: add a requirement serving "${d.name}" whose check is a call check with arguments and the result it expects, or give "${d.name}" examples [{"given": [arguments], "expect": result}].`);
+  }
+  return {add, errors, notes};
+}
+// The card writer's answer repaired (repairCard), validated (validateCard)
+// and held to the behaviour rule (behaviourGaps); the runtime's document
+// questions are validated with the rest. {card, errors, unsupported, notes,
+// draft}: draft is the repaired answer a retry is shown.
+export function prepareCard(raw, opts = {}) {
+  const {card: repaired, notes} = repairCard(raw, opts);
+  let out = validateCard(repaired, opts), draft = repaired;
+  if (out.card?.deliverables?.length && !out.card.blocked) {
+    const gaps = behaviourGaps(out.card, opts);
+    if (gaps.add.length) {
+      draft = {...repaired, requirements: [...(Array.isArray(repaired.requirements) ? repaired.requirements : []), ...gaps.add]};
+      out = validateCard(draft, opts);
+      notes.push(...gaps.notes);
+    }
+    out = {...out, errors: [...out.errors, ...gaps.errors]};
+  }
+  return {...out, notes, draft: publicDraft(draft)};
+}
+// A draft as a writer reads it: without the runtime's flags.
+const publicDraft = draft => plain(draft) && Array.isArray(draft.requirements)
+  ? {...draft, requirements: draft.requirements.map(r => plain(r) ? Object.fromEntries(Object.entries(r).filter(([k]) => !RUNTIME_FLAGS.includes(k))) : r)} : draft;
+
 // ------------------------------------------------------------ validateCard (§1.2)
 // raw: the card writer's answer. goal: the text requirement sources trace
 // to. installed: the toolchain rows this deployment can run (default: every
@@ -376,7 +870,7 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     // A deliverable in a language that has a row, but no installed one, is unsupported (decision U9).
     if (row && !ids.has(row.id)) { if (!unsupported.includes(row.id)) unsupported.push(row.id); errors.push(`deliverable "${d.name}" is written in ${row.id}, which this deployment does not run.`); continue; }
     const bad = nameError(d, {rows, languages: card.languages, base: baseSet});
-    if (bad) { errors.push(`deliverable ${bad}.`); continue; }
+    if (bad) { errors.push(`deliverable ${bad}${kind === 'function' && !(plain(item) && item.kind) ? `; it has no kind, so it reads as a function: give it its kind (one of ${CONTRACT_KINDS.join(', ')}) and, unless it is a function or route, its path` : ''}.`); continue; }
     const pathBad = d.path ? deliverablePathError(d.path, baseSet) : '';
     if (pathBad) { errors.push(`deliverable "${d.name}": ${pathBad}.`); continue; }
     if (kind === 'command' && reserved.has(d.name)) { errors.push(`deliverable command "${d.name}" has the name of a system or toolchain program; name it after what it does.`); continue; }
@@ -426,13 +920,20 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     if (unknown.length) errors.push(`${label} serves ${unknown.map(s => `"${s.slice(0, 80)}"`).join(', ')}, which no deliverable is named; kept for ${serves.join(', ')}.`);
     const id = typeof r.id === 'string' && REQ_ID.test(r.id.trim()) && !taken.has(r.id.trim()) ? r.id.trim() : null;
     const req = {id, says, source, serves, check: c.check};
-    // Rule 5: a source the goal does not show is vetted by Clef, never dropped here.
-    if (!traceable(source, goal)) req.untraced = true;
+    // v8 card repair: a source the runtime inferred (repairCard) or a
+    // question it wrote (behaviourGaps) says so; only repairCard sets these,
+    // after dropping a writer's own copy.
+    if (r.source_inferred === true) req.source_inferred = true;
+    if (r.inferred === true) req.inferred = true;
+    // Rule 5: a source the goal does not show is vetted by Clef, never dropped
+    // here. An inferred source is a goal sentence: untraced only when it
+    // shares no word with the requirement.
+    if (r.source_inferred === true ? r.source_unmatched === true : !traceable(source, goal)) req.untraced = true;
     if (id) taken.add(id);
     card.requirements.push(req);
   }
   for (const r of card.requirements) if (!r.id) { r.id = nextId(taken, 'R'); taken.add(r.id); }
-  if (!card.requirements.length && card.deliverables.length && !card.blocked) errors.push('no valid requirement: list at least one yes/no requirement the goal states, with its check.');
+  if (!card.requirements.some(r => !r.inferred) && card.deliverables.length && !card.blocked) errors.push('no valid requirement: list at least one yes/no requirement the goal states, with its check.');
 
   // Rule 7: project checks; each covers only the deliverables in its own language.
   let p = 0;
@@ -455,21 +956,57 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
 }
 // A card the room can start from: not blocked, with a deliverable and a
 // requirement of the writer's own (never only the runtime's implicit or
-// project ones, v8 S3 review).
-export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && (card.requirements || []).some(r => !r.implicit && !r.project);
+// project ones, v8 S3 review, nor a document question it wrote).
+export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && (card.requirements || []).some(r => !r.implicit && !r.project && !r.inferred);
 // After Clef vetting (§1.4) a deliverable may fall back to its implicit requirement.
 export const vettedUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && card.requirements?.length > 0;
-// The requirements Clef vets (§1.4): the writer's own, untraced ones always, not the runtime's.
-export const vettable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project);
-// Vetting applied: a requirement Clef answered p < 0.5 for is dropped, one
-// whose batch failed is kept, marked unvetted, and a deliverable left with
-// none gets its implicit requirement. ps: [{id, p}] or [{id, unvetted:true}].
-export function applyVetting(card, ps, bar = 0.5) {
-  const low = new Map((ps || []).filter(x => typeof x?.p === 'number' && x.p < bar).map(x => [x.id, x.p]));
+// Clef vetting's bar (v8 card repair). The first live runs, with
+// Clef-flash vetting a small writer's card, showed p < 0.5 to be the wrong
+// bar: on "a static web page with a to-do list" Clef answered 0.492 for "the
+// page contains a to-do list structure", 0.220 for its styling and 0.261
+// for its task script, so every requirement the writer gave was dropped and
+// only "<file> exists" checks were left; on a follow-up asking for a readme
+// it answered 0.453 for "README.md exists" and about 0.15 for the existing
+// files. Clef's p is a weak signal about requirements the goal does imply,
+// so vetting drops one only when Clef is nearly sure (p < VET_DROP_BAR) and
+// its source is not found in the goal even after source inference; one kept
+// below VET_DOUBT_BAR is logged (card_requirement_doubtful) and checked.
+export const VET_DROP_BAR = 0.15, VET_DOUBT_BAR = 0.5;
+// The requirements Clef vets (§1.4): the writer's own, untraced ones always,
+// not the runtime's (implicit, project, a document question it wrote), and
+// no check that only finds a file (never dropped: the deliverable is gated
+// on its own, by the goal, the change or the base question).
+export const vettable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project && !r.inferred && !existenceOnly(r));
+// What vetting drops (drop: id -> p), what it keeps in doubt, and which
+// requirements stay unvetted (their batch failed). A requirement is dropped
+// only when p < bar and untraced(r) (its source is not in the goal), and
+// never when it is the last writer requirement that exercises one of the
+// deliverables it serves; the lowest p goes first. ps: [{id, p}] or
+// [{id, unvetted:true}].
+export function vetDecisions(card, ps, {bar = VET_DROP_BAR, untraced = r => !!r.untraced} = {}) {
+  const p = new Map((ps || []).filter(x => typeof x?.p === 'number').map(x => [x.id, x.p]));
   const unvetted = new Set((ps || []).filter(x => x?.unvetted).map(x => x.id));
-  const dropped = card.requirements.filter(r => low.has(r.id)).map(r => ({...r, p: low.get(r.id)}));
-  const kept = {...card, requirements: card.requirements.filter(r => !low.has(r.id)).map(({untraced, ...r}) => unvetted.has(r.id) ? {...r, unvetted: true} : r)};
-  return {card: withImplicit(kept), dropped};
+  const behaviour = r => !r.implicit && !r.project && !existenceOnly(r);
+  const drop = new Map(), last = new Set();
+  let left = [...(card?.requirements || [])];
+  for (const r of vettable(card).filter(r => p.has(r.id) && p.get(r.id) < bar && untraced(r)).sort((a, b) => p.get(a.id) - p.get(b.id))) {
+    const rest = left.filter(x => x !== r);
+    if ((r.serves || []).some(n => !rest.some(x => behaviour(x) && (x.serves || []).includes(n)))) { last.add(r.id); continue; }
+    left = rest;
+    drop.set(r.id, p.get(r.id));
+  }
+  const doubtful = (card?.requirements || []).filter(r => !drop.has(r.id) && p.has(r.id) && p.get(r.id) < VET_DOUBT_BAR)
+    .map(r => ({id: r.id, p: p.get(r.id), says: r.says, untraced: !!untraced(r), last: last.has(r.id)}));
+  return {drop, doubtful, unvetted};
+}
+// Vetting applied: what vetDecisions drops goes, a requirement whose batch
+// failed is kept, marked unvetted, and a deliverable left with none gets its
+// implicit requirement. {card, dropped, doubtful}.
+export function applyVetting(card, ps, opts = {}) {
+  const {drop, doubtful, unvetted} = vetDecisions(card, ps, opts);
+  const dropped = card.requirements.filter(r => drop.has(r.id)).map(r => ({...r, p: drop.get(r.id)}));
+  const kept = {...card, requirements: card.requirements.filter(r => !drop.has(r.id)).map(({untraced, ...r}) => unvetted.has(r.id) ? {...r, unvetted: true} : r)};
+  return {card: withImplicit(kept), dropped, doubtful};
 }
 
 // v8 S8b review: the card without the deliverables at these paths (an

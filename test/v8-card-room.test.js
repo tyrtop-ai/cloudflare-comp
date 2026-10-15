@@ -35,7 +35,7 @@ const FILES = {
 };
 // Clef: Root's goal splits, a piece does not; every scope and vetting question passes.
 const clef = (p = {}) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(GOAL) ? 0.9 : 0.1) : k.startsWith('requirement_') ? (p.requirement ?? 0.9) : 0.9}]))});
+  k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(GOAL) ? 0.9 : 0.1) : k.startsWith('requirement_') ? (typeof p.requirement === 'function' ? p.requirement(input.state.requirements.find(r => r.slot === Number(k.split('_').pop()))) : p.requirement ?? 0.9) : 0.9}]))});
 const v8Room = ({card = () => CARD, split = () => PIECES, clefOpts} = {}) => liveRoom({
   card, split, clef: clef(clefOpts),
   // v8 S6: workers answer in the raw file-block format (§3.2).
@@ -136,18 +136,21 @@ test('v8 room: a language this deployment does not run pauses with card_blocked'
   assert.match(room.snapshot().pause.text, /cannot run go/);
 });
 
-test('v8 room: Clef vetting drops an invented requirement, and its deliverable gets an implicit one', async () => {
-  const invented = {...CARD, requirements: [CARD.requirements[0], {id: 'R2', says: 'The script has a graphical window', source: 'a graphical window', serves: ['hello'], check: {kind: 'file', path: 'hello.py', has: ['window']}}]};
-  const {room, calls, drain} = v8Room({card: () => invented, clefOpts: {requirement: 0.2}});
+test('v8 room (v8 card repair): Clef vetting drops only an invented requirement it is nearly sure of; the goal\'s own stay, in doubt', async () => {
+  const invented = {...CARD, requirements: [...CARD.requirements, {id: 'R3', says: 'The script has a graphical window', source: 'a graphical window', serves: ['hello'], check: {kind: 'file', path: 'hello.py', has: ['window']}}]};
+  const {room, calls, drain} = v8Room({card: () => invented, clefOpts: {requirement: 0.1}});
   await room.start(GOAL, 40, {pipeline: 'v8'});
   await drain();
   const vet = calls.clef.find(c => Object.keys(c.questions).some(k => k.startsWith('requirement_')));
-  assert.deepEqual(Object.keys(vet.questions), ['requirement_0', 'requirement_1'], 'one batched call for both');
+  assert.deepEqual(Object.keys(vet.questions), ['requirement_0', 'requirement_1', 'requirement_2'], 'one batched call for all three');
   assert.match(vet.questions.requirement_0.instructions, /Does the goal state or directly imply this requirement\?/);
   assert.equal(vet.state.goal, GOAL);
-  // Both answered p=0.2: both dropped; each deliverable keeps an implicit file check.
-  assert.equal(events(room, 'card_requirement_dropped').length, 2);
-  assert.deepEqual(room.snapshot().card.requirements.map(r => [r.serves[0], r.check.kind, r.implicit]), [['README.md', 'file', true], ['hello', 'file', true]]);
+  assert.equal(vet.state.requirements[2].source_found_in_goal, false);
+  // All answered p=0.1: only R3, whose source is not in the goal, is dropped; hello keeps R2.
+  assert.deepEqual(events(room, 'card_requirement_dropped').map(e => e.body.slice(0, 62)), ['Clef judged that the goal does not state or imply R3 (p=0.100;']);
+  assert.deepEqual(events(room, 'card_requirement_doubtful').map(e => e.body.slice(0, 31)), ['Clef doubted R1 (p=0.100), and ', 'Clef doubted R2 (p=0.100), and ']);
+  assert.deepEqual(room.snapshot().card.requirements.map(r => [r.id, r.check.kind]), [['R1', 'judge'], ['R2', 'command']]);
+  assert.equal(room.get('status'), 'complete');
 });
 
 test('v7 room is unchanged: the start() requirement is appended, Root promises start, and no card is written', async () => {
@@ -229,22 +232,28 @@ test('review: language aliases and a placeholder blocked value do not hold the r
 });
 
 test('review: a function with no code language after the retry holds card_failed when several are installed', async () => {
+  // v8 card repair: a goal that names no language, so the repair cannot take one from it.
+  const goal = 'A function that adds two numbers.';
   const card = {card: 1, summary: 'a function', deliverables: [{name: 'addNumbers', kind: 'function', does: 'adds'}],
-    requirements: [{id: 'R1', says: 'addNumbers(1, 2) is 3', source: 'hello-world Python script', serves: ['addNumbers'], check: {kind: 'call', steps: [{call: 'addNumbers', args: [1, 2], expect: 3}]}}]};
+    requirements: [{id: 'R1', says: 'addNumbers(1, 2) is 3', source: 'adds two numbers', serves: ['addNumbers'], check: {kind: 'call', steps: [{call: 'addNumbers', args: [1, 2], expect: 3}]}}]};
   const {room, calls, drain} = v8Room({card: () => card});
-  await room.start(GOAL, 10, {pipeline: 'v8'});
+  await room.start(goal, 10, {pipeline: 'v8'});
   await drain();
   assert.equal(calls.card.length, 2, 'the retry heard the missing language');
   assert.ok(calls.card[1].previous_errors.some(e => /languages names no code language/.test(e)));
   assert.equal(room.snapshot().pause.kind, 'card_failed');
   assert.match(room.snapshot().pause.text, /addNumbers must be written in a code language/);
-  // With one code toolchain installed, it is used, and room.languages() is never empty.
+  // v8 card repair: held at card_failed, the snapshot carries what the writer said; the dashboard shows it.
+  assert.deepEqual(room.snapshot().card_raw.answers, [JSON.stringify(card), JSON.stringify(card)]);
+  // With one code toolchain installed, the repair takes it before validation, and room.languages() is never empty.
   const one = v8Room({card: () => card, split: () => ({summary: 'x', pieces: []})});
   one.room.save('toolchain_inventory', ['node']);
-  await one.room.start(GOAL, 1, {pipeline: 'v8'});
+  await one.room.start(goal, 1, {pipeline: 'v8'});
   one.room.save('toolchain_inventory', ['node']);
   await one.drain();
-  assert.equal(events(one.room, 'card_language_inferred').length, 1, events(one.room).map(e => e.kind).join(','));
-  assert.deepEqual(one.room.snapshot().card.languages, ['javascript', 'text']);
+  assert.match(events(one.room, 'card_repaired')[0].body, /languages named no code language; javascript is added for addNumbers/);
+  assert.equal(events(one.room, 'card_repaired').length, 1);
+  assert.deepEqual(one.room.snapshot().card.languages, ['javascript']);
   assert.deepEqual(one.room.languages(), ['javascript']);
+  assert.equal(one.room.snapshot().card_raw, undefined, 'only while held at card_failed');
 });

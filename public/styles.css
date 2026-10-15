@@ -190,6 +190,9 @@ input[type=range]:focus {box-shadow:none;}
 .req-chip.fail { color:var(--bad); border-color:var(--bad); }
 .req-chip.stale { opacity:.6; border-style:dashed; }
 .card-hold { padding:8px 10px; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
+.card-raw { margin:6px 0 10px; }
+.card-raw summary { cursor:pointer; color:var(--muted); }
+.card-raw-text { min-height:0; white-space:pre-wrap; word-break:break-word; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
 .onode-card { margin:8px 0; }
 .start-from-repo[hidden] { display:none; }
 .start-from-repo input { margin-top:6px; }

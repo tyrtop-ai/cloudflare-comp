@@ -7,14 +7,14 @@ export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, BASE_CHANGE_BAR } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, BASE_CHANGE_BAR, vetAmendChanges, AMEND_CHANGE_BAR } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
-import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard, dropDeliverables } from './card.js';
+import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, vetDecisions, codeLanguages, cardLine, providedCard, dropDeliverables, VET_DROP_BAR } from './card.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, goalView, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
+import { effectiveGoal, goalView, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, keepDeliverables, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { triggerText, RETRY, MESSAGES, BASE_LABEL } from './prompts.js';
@@ -964,6 +964,8 @@ export class ControlRoom extends DurableObject {
       // v8 §1.3: the project card's revision (the card itself rides on the snapshot, and on a delta
       // whose card_rev differs), each requirement's last result (S4b fills it), and why a v8 room is held.
       card_rev: this.cardRev(), requirement_status: this.requirementStatus(), pause: this.read('paused_state',null),
+      // v8 card repair: what the card writer said, only while the room is held at card_failed (the export always has it).
+      ...(this.read('paused_state',null)?.kind==='card_failed'?{card_raw:this.read('card_raw',null)}:{}),
       // v8 S8b: the goal's links (title, address, size, cut or why not read) and what the run starts from.
       ...this.inputsHead(),
       // v8 S9: the prompts (queued, running, done, failed, skipped), the queue's policy and the card's revisions.
@@ -1112,6 +1114,8 @@ export class ControlRoom extends DurableObject {
     const {events:_recent,cursor:_cursor,...rest}=snapshot;
     return {...rest,exports,exported_at:new Date().toISOString(),files,
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors,
+      // v8 card repair: the card writer's last answers as written, each clipped (diagnosis).
+      card_raw:this.read('card_raw',null),
       card_revisions:query(this.db(),'SELECT rev,goal_rev,card,reason,ts,delta FROM card_revisions ORDER BY rev').map(r=>({...r,card:parse(r.card,null),delta:parse(r.delta||'{}',{})})),
       // v8 S9: the goal's revisions and every prompt, with its outcome.
       goal_revisions:query(this.db(),'SELECT rev,prompt,text,effective,ts FROM goal_revisions ORDER BY rev'),prompt_history:this.promptRows(),
@@ -6356,6 +6360,10 @@ export class ControlRoom extends DurableObject {
     // Review 3 (#6): a sweep that throws never masks the turn's own error, nor counts against this node.
     finally {if(this.planned())await this.settleRequests().catch(e=>this.event('system','settle_failed',clip(`Settling the requests growth rows hold failed: ${e?.message||e}`,300)));}
   }
+  // v8 card repair: the requirements Clef doubted and vetting kept, for the dashboard only (no agent reads them).
+  logDoubtful(id, doubtful=[]) {
+    for(const r of doubtful)this.event(id,'card_requirement_doubtful',clip(`Clef doubted ${r.id} (p=${r.p.toFixed(3)}), and it is kept: ${r.last?'it is the last requirement that exercises what it serves':r.untraced?`p is above ${VET_DROP_BAR}`:'its source is in the goal'}. ${r.says}`,600));
+  }
   // v8 §1.6: Root's first act under v8. The card writer turns the goal into
   // the project card, Clef vets its requirements, and the card becomes
   // revision 1 and Root's contracts; the turn then goes on to the split gate.
@@ -6384,6 +6392,9 @@ export class ControlRoom extends DurableObject {
         sources:cardsFor(srcs,this.allRefs()),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error}))});
       const {errors,unsupported}=written;
       card=written.card;calls=`${written.attempts} call${written.attempts===1?'':'s'}`;
+      // v8 card repair: the writer's answers as written (the export has them; the snapshot only while the room is held at card_failed), and one event for what the repair fixed.
+      this.save('card_raw',{call:'writeCard',answers:written.raw_answers||[],ts:Date.now()});
+      if(written.notes?.length)this.event(id,'card_repaired',clip(`The card writer's answer was repaired before validation (${written.notes.length}): ${written.notes.join(' ')}`,1500));
       if(card?.blocked)return hold('card_blocked',`The goal cannot be started as given: ${card.blocked}`);
       if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the card names after the writer's retry (installed: ${rows.map(t=>t.id).join(', ')}).`);
       if(!cardUsable(card))return hold('card_failed',clip(`The card writer gave no usable card after ${calls}: ${errors.slice(0,8).join(' ')||'no deliverable, or no requirement of its own.'}`,1100));
@@ -6393,11 +6404,13 @@ export class ControlRoom extends DurableObject {
       this.save('card_draft',card);
     }
     try {
-      // §1.4: Clef vets the writer's requirements; p < 0.5 drops one, and a batch Clef fails keeps its own, unvetted.
+      // §1.4 (v8 card repair): Clef vets the writer's requirements; one goes only when p < VET_DROP_BAR and its source is not in the goal,
+      // never the last that exercises a deliverable; a batch Clef fails keeps its own, unvetted.
       const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card).filter(routable)});
-      let {card:vetted,dropped}=applyVetting(card,ps);
+      let {card:vetted,dropped,doubtful}=applyVetting(card,ps);
       if(failed.length)this.event(id,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
-      for(const r of dropped)this.event(id,'card_requirement_dropped',clip(`Clef judged that the goal does not state or imply ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not in the goal':''}): ${r.says}`,600));
+      for(const r of dropped)this.event(id,'card_requirement_dropped',clip(`Clef judged that the goal does not state or imply ${r.id} (p=${r.p.toFixed(3)}; its source is not in the goal): ${r.says}`,600));
+      this.logDoubtful(id,doubtful);
       if(!vettedUsable(vetted)){this.save('card_draft',null);return hold('card_failed','Clef dropped every requirement of the card, and no deliverable has an implicit one.');}
       // S8b review: a deliverable at an existing file stays only when Clef finds the goal asks to change that file (a Clef failure throws: the room holds, Continue asks again).
       const basePaths=this.basePaths(),touched=vetted.deliverables.map(d=>d.path).filter(p=>p&&basePaths.has(p));
@@ -7885,24 +7898,42 @@ export class ControlRoom extends DurableObject {
     if(written.card?.blocked)return {error:`The card writer could not apply the change: ${clip(written.card.blocked,400)}`};
     if(written.unsupported?.length)return {error:`The change needs ${listed(written.unsupported)}, which this deployment cannot run.`};
     if(!written.card?.deliverables?.length)return {error:clip(`The card writer gave no usable card for the change: ${(written.errors||[]).slice(0,6).join(' ')||'no deliverable.'}`,900)};
+    this.save('card_raw',{call:'amendCard',answers:written.raw_answers||[],ts:Date.now()});
+    if(written.notes?.length)this.event('root','card_repaired',clip(`The card writer's answer for the change was repaired before validation (${written.notes.length}): ${written.notes.join(' ')}`,1500));
     const anchors=this.read('check_anchors',{}),anchored=r=>!!anchors[anchorKey(r.id,r.says)];
     const merged=mergeAmendment(card,written.card,{change:text,anchored,reserved});
-    let {card:next}=revalidate(merged.card,{goal,installed:rows,base,packages,reserved});
+    const opts={goal,installed:rows,base,packages,reserved};
+    let {card:next}=revalidate(merged.card,opts);
     let delta=cardDelta(card,next);
-    // §1.4: Clef vets the new and changed requirements; p < 0.5 drops a new one and keeps a changed one as it was.
+    // v8 card repair (§5): a change may rewrite only the existing deliverables it touches; Clef asks for each changed one,
+    // and one it says the change is not about stays as it was. Added deliverables and requirements are not asked here.
+    if(delta.deliverables.changed.length) {
+      let ps=null;
+      try {ps=await vetAmendChanges(this.inferenceEnv(),{change:text,deliverables:delta.deliverables.changed.map(n=>card.deliverables.find(d=>d.name===n)).filter(Boolean).map(d=>({name:d.name,kind:contractKind(d),path:d.path||'',does:d.does||''}))});}
+      catch(e) {this.event('root','amend_change_unvetted',clip(`Clef could not judge whether the change touches ${delta.deliverables.changed.join(', ')} (${e?.message||e}); the written changes are kept.`,600));}
+      if(gone())return stale;
+      const refused=(ps||[]).filter(x=>x.p<AMEND_CHANGE_BAR);
+      for(const x of refused)this.event('root','amend_change_refused',clip(`Clef judged that the change is not about ${x.name} (p=${x.p.toFixed(3)}); it stays as it was: ${text}`,600));
+      if(refused.length){next=keepDeliverables(next,card,refused.map(x=>x.name),opts);delta=cardDelta(card,next);}
+    }
+    // §1.4 (v8 card repair): Clef vets the new and changed requirements; one goes only when p < VET_DROP_BAR and the writer's own
+    // source is not in the goal, never the last that exercises a deliverable: a new one is dropped, a changed one kept as it was.
     const fresh=new Set([...delta.requirements.added,...delta.requirements.changed]);
     const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(next).filter(r=>fresh.has(r.id)&&routable(r))});
     if(gone())return stale;
     if(failed.length)this.event('root','card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
-    const low=new Map(ps.filter(x=>typeof x.p==='number'&&x.p<0.5).map(x=>[x.id,x.p])),unvetted=new Set(ps.filter(x=>x.unvetted).map(x=>x.id));
-    for(const [rid,p] of low)this.event('root','card_requirement_dropped',clip(`Clef judged that the goal with its change does not state or imply ${rid} (p=${p.toFixed(3)}): ${next.requirements.find(r=>r.id===rid)?.says||''}`,600));
+    // The source a requirement carries now is the change's; whether the writer's own was in the goal decides.
+    const said=x=>String(x??'').trim().replace(/\s+/g,' ').toLowerCase(),untracedSays=new Set((written.card.requirements||[]).filter(r=>r.untraced).map(r=>said(r.says)));
+    const {drop:low,doubtful,unvetted}=vetDecisions(next,ps,{untraced:r=>untracedSays.has(said(r.says))});
+    for(const [rid,p] of low)this.event('root','card_requirement_dropped',clip(`Clef judged that the goal with its change does not state or imply ${rid} (p=${p.toFixed(3)}; its source is not in the goal): ${next.requirements.find(r=>r.id===rid)?.says||''}`,600));
+    this.logDoubtful('root',doubtful);
     const reqs=next.requirements.filter(r=>!r.implicit&&!r.project).flatMap(r=>{
       const {untraced:_,...x}=r;
       if(!low.has(r.id))return [unvetted.has(r.id)?{...x,unvetted:true}:x];
       const was=delta.requirements.changed.includes(r.id)&&card.requirements.find(o=>o.id===r.id);
       return was?[was]:[];
     });
-    ({card:next}=revalidate({...next,requirements:[...reqs,...next.requirements.filter(r=>r.implicit||r.project)]},{goal,installed:rows,base,packages,reserved}));
+    ({card:next}=revalidate({...next,requirements:[...reqs,...next.requirements.filter(r=>r.implicit||r.project)]},opts));
     // Vetting's marks stay, as cardTurn leaves them (unvetted); untraced is the writer's, gone after vetting.
     next={...next,requirements:next.requirements.map(({untraced:_,...r})=>unvetted.has(r.id)?{...r,unvetted:true}:r)};
     delta=cardDelta(card,next);

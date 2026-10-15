@@ -113,7 +113,7 @@ function cardMarkup(card,status={},history=[]) {
   const by=amendedBy(history||[]);
   const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}${amendedMark(by.deliverables.get(d.name))}</li>`;
   const requirement=r=>{const state=requirementState(r,status),detail=status?.[r.id]?.detail;
-    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}</span>${amendedMark(by.requirements.get(r.id))}</li>`;};
+    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}${r.inferred?' · the runtime\'s question':''}${r.source_inferred&&!r.inferred?' · source inferred':''}</span>${amendedMark(by.requirements.get(r.id))}</li>`;};
   const section=(title,items)=>items.length?`<div class="card-section"><div class="eyebrow">${title}</div><ul class="card-list">${items.join('')}</ul></div>`:'';
   return `${card.summary?`<p class="card-summary">${esc(card.summary)}</p>`:''}${card.languages?.length?`<p class="faint">languages: ${esc(card.languages.join(', '))}</p>`:''}`+
     section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`))+historyMarkup(history||[]);
@@ -170,10 +170,16 @@ function renderSources(s) {
   const list=s.sources||[],bad=list.filter(x=>x.error).length;
   if($('sources-verdict'))$('sources-verdict').textContent=[list.length?`${list.length} source${list.length>1?'s':''}${bad?` · ${bad} not read`:''}`:'',s.base?'base loaded':''].filter(Boolean).join(' · ')||'None';
 }
+// v8 card repair: while the room is held at card_failed, the card writer's answers as written (first, and the retry).
+function cardRawMarkup(s) {
+  const answers=s.pause?.kind==='card_failed'&&Array.isArray(s.card_raw?.answers)?s.card_raw.answers:[];
+  if(!answers.length)return '';
+  return `<details class="card-raw"><summary>what the card writer said</summary>${answers.map((a,i)=>`<div class="eyebrow">${i?'RETRY':'FIRST ANSWER'}</div><pre class="card-raw-text">${esc(a||'(empty)')}</pre>`).join('')}</details>`;
+}
 function renderCard(s) {
   if(!$('card'))return;
   const reqs=s.card?.requirements||[],count=state=>reqs.filter(r=>requirementState(r,s.requirement_status)===state).length;
-  const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>`:'';
+  const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>${cardRawMarkup(s)}`:'';
   $('card').innerHTML=held+cardMarkup(s.card,s.requirement_status,s.card_history);
   if($('card-verdict'))$('card-verdict').textContent=s.card?`${(s.card_rev||1)>1?`rev ${s.card_rev} · `:''}${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
 }

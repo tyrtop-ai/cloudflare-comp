@@ -17,9 +17,10 @@ const {ControlRoom}=await import('./helpers/room.js');
 const hasPython=spawnSync('python3',['--version']).status===0;
 
 // Clef: should_split by the assigned text, judge by the file, owner (routing) by question and child label; the rest pass.
-const clefFor=({split=()=>false,judge=()=>0.9,owner=()=>0.9,vet=()=>0.9}={})=>input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>{
+const clefFor=({split=()=>false,judge=()=>0.9,owner=()=>0.9,vet=()=>0.9,amend=()=>0.9}={})=>input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>{
   const i=Number(k.split('_').pop());
   const p=k==='should_split'?(split(String(input.state.assigned_behavior))?0.9:0.1):k==='judge'?judge(input.state.file,input.questions.judge.instructions):
+    k.startsWith('amend_change_')?amend(input.state.deliverables[i],input.state.change):
     k.startsWith('owner_')?owner(String(input.state.question),input.state.children[i]?.label):k.startsWith('requirement_')?vet(input.state.requirements.find(r=>r.slot===i)):0.9;
   return [k,{noul:p}];
 }))});
@@ -37,7 +38,7 @@ const scripted=answers=>{
 const wrote=(path,content)=>fileBlocks([{path,content}],{summary:`wrote ${path}`,done:true});
 const nothing=()=>fileBlocks([],{summary:'my part is not affected',done:true});
 // A room whose card writer answers the goal with `first` and each change with changes[i](current card).
-function amendRoom({first,changes=[],split=null,splitWhen=()=>false,owner,judge,vet,answers,cardHook=null}) {
+function amendRoom({first,changes=[],split=null,splitWhen=()=>false,owner,judge,vet,amend,answers,cardHook=null}) {
   const alarms=[];
   const r=liveRoom({card:async user=>{
       if(cardHook)await cardHook(user);
@@ -45,7 +46,7 @@ function amendRoom({first,changes=[],split=null,splitWhen=()=>false,owner,judge,
       const f=changes.find(c=>c.when.test(user.change));
       if(!f)throw new Error('no card for the change '+user.change);
       return typeof f.card==='function'?f.card(user.current_card):f.card;
-    },split:split?(typeof split==='function'?split:()=>split):null,clef:clefFor({split:splitWhen,owner,judge,vet}),leaf:scripted(answers)});
+    },split:split?(typeof split==='function'?split:()=>split):null,clef:clefFor({split:splitWhen,owner,judge,vet,amend}),leaf:scripted(answers)});
   // The Durable Object's alarm: recorded; a test fires it with room.alarm().
   r.ctx.storage.setAlarm=at=>{alarms.push(at);r.ctx.storage.alarm=at;};
   r.ctx.storage.getAlarm=()=>r.ctx.storage.alarm??null;
@@ -713,11 +714,12 @@ test('review: a prompt queued before a v7 Start is skipped, saying why',async()=
 });
 
 test('review (p18): a requirement id is never given again, a dropped implicit one\'s included',{skip:!hasPython&&'python3 is not installed'},async()=>{
-  const FIRST={...CARD,requirements:[CARD.requirements[0]]};
+  // v8 card repair: a document with no check of its own gets the runtime's question, so the usage note is a plain file here, whose only check is the implicit one.
+  const USAGE_FILE={...USAGE,kind:'file'},FIRST={...CARD,deliverables:[TEMP,USAGE_FILE],requirements:[CARD.requirements[0]]};
   const ex=card=>({...card,requirements:[...card.requirements.filter(r=>!r.implicit),{id:'R7',says:'The usage note shows an example run',source:'the usage note shows an example',serves:['USAGE.md'],check:{kind:'file',path:'USAGE.md',has:['temp.py 100']}}]});
   const bad=card=>({...card,requirements:[...card.requirements.filter(r=>!r.implicit),{id:'R2',says:'A non-number prints an error and exits with 1',source:'errors on bad input',serves:['temp'],check:{kind:'command',run:'temp abc',expect:{exit:1}}}]});
   const E_TEMP='import sys\ntry:\n    c = float(sys.argv[1])\nexcept ValueError:\n    print("not a number")\n    sys.exit(1)\nprint(f"{c * 9 / 5 + 32:g}")\n';
-  const {room,drain}=amendRoom({first:FIRST,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner:(q,l)=>/usage note/i.test(q)?(l==='Usage guide'?0.9:0.1):/non-number/i.test(q)?(l==='Converter'?0.9:0.1):0.2,
+  const {room,drain}=amendRoom({first:FIRST,split:{...SPLIT,pieces:[SPLIT.pieces[0],{...SPLIT.pieces[1],contracts:[USAGE_FILE]}]},splitWhen:t=>t.startsWith(GOAL),owner:(q,l)=>/usage note/i.test(q)?(l==='Usage guide'?0.9:0.1):/non-number/i.test(q)?(l==='Converter'?0.9:0.1):0.2,
     changes:[{when:/example/,card:ex},{when:/bad input/,card:bad}],
     answers:{'Converter':[wrote('temp.py',F_TEMP),wrote('temp.py',E_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD)]}});
   await room.start(GOAL,60,{pipeline:'v8'});await drain();
@@ -775,4 +777,34 @@ test('review: goalView keeps the goal\'s head and the latest changes within the 
   const many=Array.from({length:60},(_,i)=>`change number ${i} with some words`);
   const w=goalView(goal,many,600);
   assert.ok(w.length<=600);assert.match(w,/earlier changes left out/);assert.match(w,/Change 60: change number 59 with some words$/);
+});
+
+// ------------------------------------------------------------ v8 card repair (§5, §6)
+test('v8 card repair: a change rewrites only the deliverables it is about; the repair is logged and the writer\'s answers exported',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  // The writer's card for the README: USAGE.md rewritten for no reason, temp restated without its fields, the README served as "readme".
+  const answer=card=>{const c=withReadme(card);return {...c,
+    deliverables:c.deliverables.map(d=>d.name==='USAGE.md'?{...d,does:'a usage note rewritten for no reason'}:d.name==='temp'?{name:'temp',kind:'command',path:'temp.py'}:d),
+    requirements:c.requirements.map(r=>r.id==='R3'?{...r,serves:['readme']}:r)};};
+  const asked=[];
+  const {room,drain}=amendRoom({first:CARD,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner,amend:(d,change)=>{asked.push([d.name,change]);return d.name==='USAGE.md'?0.1:0.9;},
+    changes:[{when:/README/,card:answer}],
+    answers:{'Converter':[wrote('temp.py',F_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD)],'README.md':[wrote('README.md',README_MD)]}});
+  await room.start(GOAL,40,{pipeline:'v8'});await drain();
+  const before=room.snapshot().card;
+  await room.amend(README_CHANGE);await drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  assert.deepEqual(asked,[['USAGE.md',README_CHANGE]],'temp left fields out, which changes nothing, so only USAGE.md is asked about');
+  assert.match(events(room,'amend_change_refused')[0].body,/not about USAGE\.md \(p=0\.100\); it stays as it was/);
+  const card=room.snapshot().card;
+  assert.deepEqual(card.deliverables.find(d=>d.name==='USAGE.md'),before.deliverables.find(d=>d.name==='USAGE.md'));
+  assert.deepEqual(card.deliverables.find(d=>d.name==='temp'),before.deliverables.find(d=>d.name==='temp'));
+  const delta=JSON.parse(room.db().exec('SELECT delta FROM card_revisions WHERE rev=2').toArray()[0].delta);
+  assert.deepEqual(delta.deliverables,{added:['README.md'],changed:[]});
+  assert.match(events(room,'card_repaired').at(-1).body,/for the change was repaired before validation \(1\): R3 serves README\.md \(written "readme"\)\./);
+  assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
+  const exported=await room.exportSnapshot();
+  assert.equal(exported.card_raw.call,'amendCard');
+  assert.equal(exported.card_raw.answers.length,1);
+  assert.match(exported.card_raw.answers[0],/rewritten for no reason/);
+  assert.equal(room.snapshot().card_raw,undefined,'not held at card_failed');
 });
