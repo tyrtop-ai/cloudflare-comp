@@ -143,7 +143,7 @@ export function workerDetail(check, detail) {
   if (c.kind === 'call') for (const name of new Set((c.steps || []).map(s => s.call)))
     t = t.replace(new RegExp(`(?<![\\w$])${escapeRe(name)}\\((?:[^()]|\\([^()]*\\))*\\)`, 'g'), `${name}(…)`);
   if (c.kind === 'browser') t = t.replace(/^step (\d+) \((\w+)[^]*?\): /, (_, n, op) => `step ${n} (${op === 'expect' ? 'expect_count' : op}): `);
-  if (c.kind === 'judge') t = t.replace(/^(Clef judged p=[\d.]+): [^]*$/, `$1 that ${c.path} does not meet the requirement`);
+  if (c.kind === 'judge') t = t.replace(/^Clef judged p=([\d.]+): [^]*$/, `a reader judged that ${c.path} does not meet the requirement (p=$1)`);
   t = t
     .replace(/,? expected (?:a failure exit \(non-zero\)|(?:(?! \(at )[^;|])*)/g, '')
     .replace(new RegExp(`\\b(lacks|does not contain|never showed|still shows) (?:${QUOTED}|\\{[^}]*\\}|\\S+)`, 'g'), '$1 a text the requirement looks for');
@@ -153,6 +153,17 @@ export function workerDetail(check, detail) {
   return t.replace(/\s+/g, ' ').trim();
 }
 
+// What kind of check a requirement has, as its owner may read it: the kind
+// and what it looks at, never its inputs, steps or expected values.
+export function checkLabel(check) {
+  const c = check || {};
+  if (c.kind === 'file') return `a file check of ${c.path}`;
+  if (c.kind === 'judge') return `a reader's judgement of ${c.path}`;
+  if (c.kind === 'command') return `a command check that runs ${firstWord(c) || 'a command'}`;
+  if (c.kind === 'call') return `a call check of ${[...new Set((c.steps || []).map(s => s.call))].join(', ')}`;
+  if (c.kind === 'http' || c.kind === 'browser') return `${c.kind === 'http' ? 'a request' : 'a browser'} check against the served project (${c.serve})`;
+  return 'a check';
+}
 // The contract names a failure's output mentions, as whole words (§4.1:
 // names = serves ∪ the contract names in the output); 4 characters or more.
 export function namedContracts(text, names) {
@@ -178,8 +189,9 @@ export function checkProblems(card, results, issues = [], {origin = () => null, 
     const names = [...new Set([...(r.serves || []), ...namedContracts(workerDetail(r.check, `${res.detail || ''}\n${res.output || ''}`), contractNames)])];
     items.push({kind: 'run', path: '', sites: [...new Set(frames.map(f => f.path))],
       parties: [...new Set(frames.map(f => f.path))].map(p => party(p, 'site')),
-      detail: clip(`Requirement ${r.id} is not met (${r.says}): ${said}`, 900),
-      facts: {requirement: {id: r.id, text: clip(`${r.says.replace(/[.\s]+$/, '')} (${r.id}); the check found: ${said}`, 600), source: r.source || '', names, serves: r.serves || [],
+      detail: clip(`${r.id} (${r.says.replace(/[.\s]+$/, '')}): ${said}`, 900),
+      facts: {requirement: {id: r.id, says: clip(r.says, 200), check: checkLabel(r.check), evidence: clip(said, 400),
+        text: clip(`${r.says.replace(/[.\s]+$/, '')} (${r.id}): ${said}`, 600), source: r.source || '', names, serves: r.serves || [],
         frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0})), card: true, check_kind: r.check?.kind || ''},
       failure: failureHead(`${r.id} ${said}`)}});
   }

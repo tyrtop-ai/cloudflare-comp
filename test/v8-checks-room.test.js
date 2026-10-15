@@ -7,10 +7,12 @@ import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {liveRoom, events, twoWorkers, linkAndCompile, verifyCard, snapshotHash} from './helpers/room.js';
+import {liveRoom, events, twoWorkers, linkAndCompile, verifyCard, snapshotHash, fileBlocks} from './helpers/room.js';
+import {lintText, composedTexts} from './helpers/prompt-lint.js';
+import {contractLine, useReferences} from '../src/contracts.js';
 import {checkPlan, fileResult, workerDetail, checkSecrets, checkProblems, runNotes, callModule} from '../src/checks.js';
 import {judgeRequirement, judgeParts, JUDGE_BAR} from '../src/model.js';
-import {CLEF} from '../src/prompts.js';
+import {CLEF, MESSAGES} from '../src/prompts.js';
 import {requirementText} from '../src/problems.js';
 import {TOOLCHAINS} from '../src/toolchains.js';
 import {branchDirectory} from '../src/assembly.js';
@@ -33,18 +35,38 @@ const scripted=answers=>{
   const seen=new Map();
   return user=>{
     const list=answers[user.your_label];
-    if(!list)return {summary:'nothing to do',done:false};
+    if(!list)return fileBlocks([],{summary:'nothing to do',done:false});
     const n=seen.get(user.your_label)||0;seen.set(user.your_label,n+1);
     const a=list[Math.min(n,list.length-1)];
     return typeof a==='function'?a(user,n):a;
   };
 };
-const wrote=(path,content,summary=`wrote ${path}`)=>({summary,files:[{path,content}],done:true});
+// A worker's answer in the v8 file-block format (§3.2).
+const blocks=(files,summary='wrote the files')=>fileBlocks(files,{summary,done:true});
+const wrote=(path,content)=>blocks([{path,content}],`wrote ${path}`);
 const v8Room=({card,split=null,splitWhen=()=>false,judge,answers,executor})=>liveRoom({card:()=>card,split:split?()=>split:null,clef:clefFor({split:splitWhen,judge}),leaf:scripted(answers),executor});
 const passedOf=room=>Object.fromEntries(Object.entries(room.snapshot().requirement_status).map(([id,x])=>[id,x.passed]));
 const revisions=(room,id)=>room.files(id).map(f=>[f.path,f.revision]);
 // The repair messages a worker read in its turns (its model calls' new_messages).
-const heard=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).flatMap(u=>(u.new_messages||[]).map(m=>m.body)).filter(b=>/must satisfy|FAILED/.test(b));
+const heard=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).flatMap(u=>(u.new_messages||[]).map(m=>m.body)).filter(b=>/Requirement R\d+ failed:/.test(b));
+// v8 S6: every text the room composed in a model request passes the prompt
+// lint, the injected data (contract lines, references, names, paths, labels,
+// the goal, the card's statements and what a failed check observed) aside.
+function roomData(room) {
+  const card=room.snapshot().card,nodes=room.allNodes(),items=[...(card?.deliverables||[]),...nodes.flatMap(n=>JSON.parse(n.interfaces||'[]'))];
+  const out=[room.userGoal(),card?.summary,...(card?.decisions||[]),...(card?.requirements||[]).flatMap(r=>[r.says,r.says.replace(/[.\s]+$/,''),r.source])];
+  for(const n of nodes)out.push(n.label,n.task,...room.files(n.id).map(f=>f.path));
+  for(const c of items)out.push(contractLine(c),c.name,c.path,c.does,...(c.params||[]));
+  for(const n of nodes)for(const c of items)out.push(...useReferences([c],room.referenceFacts(n.id)).map(u=>u.reference));
+  for(const p of room.problems('1=1'))out.push(p.facts?.requirement?.evidence,p.facts?.requirement?.check);
+  return out.filter(x=>typeof x==='string'&&x);
+}
+function linted(room,calls) {
+  const data=roomData(room),texts=calls.raw.flatMap(r=>composedTexts(JSON.parse(r.text.replace(/ \/no_think$/,'')),data));
+  const problems=texts.flatMap((t,i)=>lintText(`composed ${i}`,t,{room:true}).map(x=>`${x}\n    in: ${t.slice(0,300)}`));
+  assert.deepEqual(problems,[]);
+  for(const r of calls.raw)assert.deepEqual(lintText('system',r.system),[]);
+}
 
 // ------------------------------------------------------------ the README goal (A1): atomic Root, judge checks
 const README_GOAL='Add a README that explains how to install and run this project.';
@@ -79,7 +101,8 @@ test('README goal: an atomic Root writes it, Clef judges it, a failed judge come
   assert.match(events(room,'checks_reported')[0].body,/2 of 3 requirement\(s\) pass; failing: R3/);
   assert.equal(calls.leaf.length,2);
   const repair=JSON.stringify(calls.leaf[1]);
-  assert.match(repair,/Requirement R3 is not met \(The README explains how to run the project\): Clef judged p=0\.20 that README\.md does not meet the requirement/);
+  assert.ok(repair.includes(MESSAGES.check_failed({id:'R3',says:'The README explains how to run the project',check:'a reader\'s judgement of README.md',evidence:'a reader judged that README.md does not meet the requirement (p=0.20)'})),repair);
+  linted(room,calls);
   assert.doesNotMatch(repair,/exact command that starts/);
   assert.equal(events(room,'checks_passed').length,1);
   const passed=room.read('compile_passed',null);
@@ -123,7 +146,7 @@ const RIGHT_TEMP='import sys\nc = float(sys.argv[1])\nprint(f"{c * 9 / 5 + 32:g}
 test('Python temperature CLI: a wrong output fails its command check, goes to the converter piece only, and the repair completes the room',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const requests=[],executor={build:async req=>{requests.push(req);return verifyCard({...req,snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
   const {room,calls,drain}=v8Room({card:TEMP_CARD,split:TEMP_SPLIT,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,
-    answers:{'Converter':[wrote('temp.py',WRONG_TEMP),wrote('temp.py',RIGHT_TEMP)],'Usage guide':[{summary:'wrote the guide',done:true,files:[{path:'USAGE.md',content:'# Usage\n\nRun `python3 temp.py 100`.\n'},{path:'notes.txt',content:'draft notes\n'}]}]}});
+    answers:{'Converter':[wrote('temp.py',WRONG_TEMP),wrote('temp.py',RIGHT_TEMP)],'Usage guide':[blocks([{path:'USAGE.md',content:'# Usage\n\nRun `python3 temp.py 100`.\n'},{path:'notes.txt',content:'draft notes\n'}])]}});
   await room.start(TEMP_GOAL,30,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'complete',events(room).slice(-15).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,240)}`).join('\n'));
@@ -150,7 +173,8 @@ test('Python temperature CLI: a wrong output fails its command check, goes to th
   assert.match(rows[0].trail.find(t=>t.action==='assign')?.rule,/^R2[as]$/);
   const told=heard(calls,'Converter');
   assert.equal(told.length,1);
-  assert.match(told[0],/Your command temp \(celsius\) in temp\.py \("prints the Fahrenheit value of a Celsius temperature"\) must satisfy: Converting 100 degrees Celsius prints the Fahrenheit value \(R1\); the check found: temp: output lacks a text the requirement looks for; printed "100\.0"/);
+  assert.equal(told[0],MESSAGES.requirement_repair({body:MESSAGES.check_failed({id:'R1',says:'Converting 100 degrees Celsius prints the Fahrenheit value',check:'a command check that runs temp',evidence:'temp: output lacks a text the requirement looks for; printed "100.0"'})}));
+  linted(room,calls);
   assert.equal(heard(calls,'Usage guide').length,0,'the guide piece is never told');
   assert.equal(calls.leaf.filter(u=>u.your_label==='Usage guide').length,1);
   assert.deepEqual(revisions(room,guide.id),[['USAGE.md',1],['notes.txt',1]]);
@@ -187,20 +211,21 @@ const TODO_CARD={card:1,summary:'A to-do page',languages:['text'],
   decisions:[]};
 
 test('static to-do page: the browser check runs against the served page and the room completes',{skip:browserReady||false},async()=>{
-  const {room,builds,drain}=v8Room({card:TODO_CARD,answers:{'Root objective':[wrote('index.html',TODO_HTML)]}});
+  const {room,calls,builds,drain}=v8Room({card:TODO_CARD,answers:{'Root objective':[wrote('index.html',TODO_HTML)]}});
   await room.start(TODO_GOAL,10,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'complete',events(room).slice(-10).map(e=>`${e.kind}: ${e.body.slice(0,300)}`).join('\n'));
   assert.deepEqual(passedOf(room),{R1:true});
   assert.equal(builds.length,1);
   assert.ok(room.read('toolchain_inventory',null)?.chromium,'the Chromium version is recorded');
+  linted(room,calls);
 });
 
 // ------------------------------------------------------------ rounds exhausted: the room pauses with a summary
 test('rounds exhausted: a requirement that keeps failing pauses the room with the requirement table, never fails it; Continue gives fresh rounds',async()=>{
   let n=0,fixed=false;
   const writer=()=>fixed?wrote('README.md',GOOD_README):wrote('README.md',`# Project ${++n}\n\nSee the source.\n`);
-  const {room,drain}=v8Room({card:README_CARD,judge:readmeJudge,answers:{'Root objective':[writer]}});
+  const {room,calls,drain}=v8Room({card:README_CARD,judge:readmeJudge,answers:{'Root objective':[writer]}});
   await room.start(README_GOAL,40,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'paused',events(room).slice(-10).map(e=>`${e.kind}: ${e.body.slice(0,200)}`).join('\n'));
@@ -219,13 +244,14 @@ test('rounds exhausted: a requirement that keeps failing pauses the room with th
   assert.equal(events(room,'checks_continue').length,1);
   assert.equal(room.get('status'),'complete',events(room).slice(-10).map(e=>`${e.kind}: ${e.body.slice(0,200)}`).join('\n'));
   assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
+  linted(room,calls);
 });
 
 // ------------------------------------------------------------ a split that cannot settle a requirement
 test('a split whose pieces cannot settle a requirement pauses with checks_failed and why, never fails',async()=>{
   const JS_CARD={...TEMP_CARD,languages:['javascript','text'],deliverables:[{...TEMP_CARD.deliverables[0],path:'temp.js'},TEMP_CARD.deliverables[1]]};
   const split={summary:'Two pieces',pieces:[{...TEMP_SPLIT.pieces[0],task:'Write temp.js',contracts:[JS_CARD.deliverables[0]]},TEMP_SPLIT.pieces[1]]};
-  const {room,drain}=v8Room({card:JS_CARD,split,splitWhen:t=>t.startsWith(TEMP_GOAL),
+  const {room,calls,drain}=v8Room({card:JS_CARD,split,splitWhen:t=>t.startsWith(TEMP_GOAL),
     answers:{'Converter':[wrote('temp.js','function main() { console.log(process.argv[2]); }\nmain();\n')],'Usage guide':[wrote('USAGE.md','# Usage\n\nRun `node temp.js 100`.\n')]}});
   await room.start(TEMP_GOAL,30,{pipeline:'v8'});
   await drain();
@@ -240,6 +266,7 @@ test('a split whose pieces cannot settle a requirement pauses with checks_failed
   await drain();
   assert.equal(events(room,'checks_continue').length,1);
   assert.equal(events(room,'checks_started').length,2);
+  linted(room,calls);
 });
 
 // ------------------------------------------------------------ infrastructure is nobody's work
@@ -247,8 +274,8 @@ test('a Container that cannot run the checks routes nothing: the room holds chec
   const JS_CARD={...TEMP_CARD,languages:['javascript','text'],deliverables:[{...TEMP_CARD.deliverables[0],path:'temp.js'},TEMP_CARD.deliverables[1]]};
   let down=true;
   const executor={build:async req=>{if(down)throw new Error('Container is not running');return verifyCard({...req,snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
-  const {room,calls,drain}=v8Room({card:JS_CARD,executor,answers:{'Root objective':[{summary:'both',done:true,files:[
-    {path:'temp.js',content:'function main() { console.log(String(Number(process.argv[2]) * 9 / 5 + 32)); }\nmain();\n'},{path:'USAGE.md',content:'# Usage\n\nRun `node temp.js 100`.\n'}]}]}});
+  const {room,calls,drain}=v8Room({card:JS_CARD,executor,answers:{'Root objective':[blocks([
+    {path:'temp.js',content:'function main() { console.log(String(Number(process.argv[2]) * 9 / 5 + 32)); }\nmain();\n'},{path:'USAGE.md',content:'# Usage\n\nRun `node temp.js 100`.\n'}])]}});
   await room.start(TEMP_GOAL,10,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'paused');
@@ -298,9 +325,10 @@ test('no leaks: failure details a worker reads name what its deliverable did, ne
   // Each piece heard only its own requirements.
   const toCmd=heard(calls,'Sum command'),toReadme=heard(calls,'Readme');
   assert.equal(toCmd.length,1);assert.equal(toReadme.length,1);
-  assert.match(toCmd[0],/Input that is not a number is reported as an error \(R1\); the check found: sum: stderr lacks a text the requirement looks for; stderr was "bad input"/);
+  assert.match(toCmd[0],/^Requirement R1 failed: Input that is not a number is reported as an error\. The check: a command check that runs sum\. What it observed: sum: stderr lacks a text the requirement looks for; stderr was "bad input"/);
   assert.match(toReadme[0],/README\.md does not contain a text the requirement looks for/);
-  assert.match(toReadme[0],/Clef judged p=0\.10 that README\.md does not meet the requirement/);
+  assert.match(toReadme[0],/a reader judged that README\.md does not meet the requirement \(p=0\.10\)/);
+  linted(room,calls);
   // What workers read after the failure: their model calls (inbox included), the tickets and the problem rows.
   const repairs=calls.leaf.slice(2).map(u=>JSON.stringify(u));
   assert.equal(repairs.length,2);
@@ -378,7 +406,7 @@ test('workerDetail: expected values, inputs, steps and the judge\'s question nev
   assert.equal(workerDetail(http,'step 1 POST /notes: status 500, expected 201'),'step 1 POST /notes: status 500');
   assert.equal(workerDetail(http,'step 1 POST /notes: the JSON lacks {"text":"remember the milk"}; it was {}'),'step 1 POST /notes: the JSON lacks a text the requirement looks for; it was {}');
   const judge={kind:'judge',path:'README.md',question:'Does it mention the purple elephant?'};
-  assert.equal(workerDetail(judge,'Clef judged p=0.31: Does it mention the purple elephant?'),'Clef judged p=0.31 that README.md does not meet the requirement');
+  assert.equal(workerDetail(judge,'Clef judged p=0.31: Does it mention the purple elephant?'),'a reader judged that README.md does not meet the requirement (p=0.31)');
   const file={kind:'file',path:'README.md',has:['--strict-mode-flag']};
   assert.equal(workerDetail(file,'README.md does not contain "--strict-mode-flag"'),'README.md does not contain a text the requirement looks for');
   // Anything left of a check is masked.
@@ -400,18 +428,22 @@ test('checkProblems: a failed requirement is a run problem routed by serves and 
   assert.equal(items.length,2);
   const [run,load]=items;
   assert.equal(run.kind,'run');
-  assert.equal(run.detail,'Requirement R1 is not met (Converting 100 prints 212): temp: output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
+  assert.equal(run.detail,'R1 (Converting 100 prints 212): temp: output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
+  assert.equal(run.facts.requirement.check,'a command check that runs temp');
+  assert.equal(run.facts.requirement.evidence,'temp: output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
   assert.deepEqual(run.parties,[{path:'components/c-1/conv.py',owner:'root.1.2',owner_path:'conv.py',digest:'',role:'site'}]);
   assert.deepEqual(run.facts.requirement.names,['temp','to_fahrenheit']);
   assert.deepEqual(run.facts.requirement.frames,[{path:'components/c-1/conv.py',fn:'to_f',line:3}]);
   assert.equal(run.facts.requirement.card,true);
   // The card's own statement (says) is told; what the check expected is not.
-  assert.ok(!run.facts.requirement.text.split('the check found:')[1].includes('212'));
+  assert.ok(!run.facts.requirement.evidence.includes('212'));
   assert.ok(!run.detail.split('):')[1].includes('212'));
   assert.equal(load.kind,'load');assert.equal(load.path,'temp.py');
   // The ticket text reads the requirement on the piece's own contract.
-  assert.match(requirementText(run.facts.requirement,{fn:{name:'temp',kind:'command',path:'temp.py',does:'converts'}}),/^Your command temp in temp\.py \("converts"\) must satisfy: Converting 100 prints 212 \(R1\); the check found: /);
-  assert.match(requirementText(run.facts.requirement),/^The project must satisfy: Converting 100 prints 212 \(R1\)/);
+  // The ticket reads MESSAGES.check_failed, whoever takes it.
+  const said=MESSAGES.check_failed({id:'R1',says:'Converting 100 prints 212',check:'a command check that runs temp',evidence:run.facts.requirement.evidence});
+  assert.equal(requirementText(run.facts.requirement,{fn:{name:'temp',kind:'command',path:'temp.py',does:'converts'}}),said);
+  assert.equal(requirementText(run.facts.requirement),said);
 });
 
 test('judgeRequirement: Clef yes/no on the file, the bar at 0.6, a long file in two parts, and an error is not a failure',async()=>{

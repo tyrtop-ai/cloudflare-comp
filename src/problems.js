@@ -465,6 +465,10 @@ function madeBy(does, needs, member) {
 // an array of findings. Test line 101: …".
 const article=s=>/^(?:a|an|the|its|their|this|that|one|some|each|every|all|no|nothing|undefined|null|void|true|false|whether|either|promise)\b/i.test(s)||!/^[a-z]/i.test(s)?s:`${/^[aeiou]/i.test(s)?'an':'a'} ${s}`;
 export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null, performer=false, caller=false, callee=null}={}) {
+  // v8 S4b: a failed card check reads the same to whoever takes it: the
+  // requirement, the kind of check and what it observed (never its expected
+  // values or steps, src/checks.js workerDetail).
+  if(r?.card)return MESSAGES.check_failed({id:r.id,says:String(r.says||'').replace(/[.\s]+$/,''),check:r.check,evidence:r.evidence});
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
   const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
   const rd=fn&&r?.read&&(fn.name===r.method||performer)?r.read:null,ret=rd&&fn.returns&&!noValue(fn.returns)?String(fn.returns).replace(/[.\s]+$/,''):'';
@@ -473,7 +477,7 @@ export function requirementText(r, {fn=null, more=[], module='', method='', thro
   // The runner's sentence leads once; before a head that states what the line requires, its need is not repeated (review).
   const lead=typeof r?.invented!=='string'?'':(rd?r.invented.replace(/^Test line (\d+) requires .*?, which nothing in the plan states((?: and [^;]*)?);/,'Nothing in the plan states what test line $1 requires$2;'):r.invented).trim()+' ';
   const head=lead+(fn?`Your ${signature(fn)}${does}${rest}${on} ${back||`${thrown&&r?.error?'threw':verb}: ${need}.`}`:
-    module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:r?.card?`The project must satisfy: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`);
+    module?`Your module ${base(module)} ${thrown&&r?.error?'threw':'is in the failing call and '+verb}: ${need}.`:`The runner's test ${r?.error?'failed with':'requires'}: ${need}.`);
   const line=r?.test_line?.line&&!back?` Test line ${r.test_line.line}: ${r.test_line.text}${r.test_line.expects_throw?` inside a try expecting a throw${r.test_line.catch_checks?` whose catch checks: ${r.test_line.catch_checks}`:''}`:''}.`:'';
   const at=r?.assertion?.line?` It failed at line ${r.assertion.line}: ${r.assertion.text}.`:'';
   if(caller&&r?.callee?.promise) {
@@ -1032,6 +1036,8 @@ export function instructionsFor(p, side, own=false, opts={}) {
 function v8Instructions(p, side, {reference=n=>n}={}) {
   const f=p.facts||{},many=xs=>(xs||[]).length>1;
   if(p.kind==='stuck')return MESSAGES.stuck();
+  // v8 S4b: a failed card check, also to an atomic Root.
+  if(p.kind==='run'&&f.requirement?.card)return requirementText(f.requirement);
   if(p.kind==='contract') {
     const by=(f.requested_by||[]).filter(Boolean).slice(0,8);
     const written=f.written?.length?MESSAGES.written_elsewhere({names:list(f.written),references:f.written.slice(0,8).map(reference).join('; '),many:many(f.written)}):'';

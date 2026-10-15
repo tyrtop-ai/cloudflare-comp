@@ -4,7 +4,7 @@
 // which passes the prompt lint (§8.3). The project's languages, extensions
 // and references reach a model only as data in the user JSON. Two unlike
 // goals, neither of them a tracker: a command-line tool in one language and a
-// static page in another; both reach v8_checks_pending.
+// static page in another; both reach the card's checks (S4b).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { liveRoom, events, fileBlocks } from './helpers/room.js';
@@ -17,6 +17,10 @@ const ROLES = ['card', 'splitter', 'worker', 'file', 'manager', 'linker'];
 // Clef: Root's goal splits, a piece does not; every other question passes.
 const clef = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
   k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(goal) ? 0.9 : 0.1) : 0.9}]))});
+// v8 S4b: the tree finished and the project card's checks ran (the room
+// completed, or holds at the checks with the requirement table); never failed.
+const checked = room => events(room, 'checks_started').length > 0 && !room.allNodes().some(n => n.status === 'failed') &&
+  (room.get('status') === 'complete' || String(room.snapshot().pause?.kind || '').startsWith('checks_'));
 // What every v8 room asserts about the calls it made.
 function promptsAreV8(calls, goal, room = null, extra = []) {
   const systems = calls.raw.map(r => r.system);
@@ -35,6 +39,8 @@ function promptsAreV8(calls, goal, room = null, extra = []) {
     const expected = key === 'should_split' ? [CLEF.split, CLEF.split_retry] : key.startsWith('within_') ? [clefText('scope', {i: n})]
       : key.startsWith('requirement_') ? [`About requirement ${n}: ${CLEF.requirement}`] : key.startsWith('fn_') ? [clefText('match', {j: n})]
       : key.startsWith('owner_') ? [clefText('owner', {i: n})] : key === 'inside' ? [CLEF.owns_need] : key.startsWith('names_') || key.startsWith('piece_') ? [null] : [];
+    // v8 S4b: a document requirement is judged with CLEF.judge and the check's own question.
+    if (key === 'judge') { assert.ok(q.instructions.startsWith(CLEF.judge), q.instructions); continue; }
     if (expected[0] === null) assert.ok(q.instructions.startsWith(key.startsWith('piece_') ? `Does piece ${n}'s own task produce ` : `Piece ${n} lists the contract `), q.instructions);
     else assert.ok(expected.includes(q.instructions), `${key}: ${q.instructions}`);
   }
@@ -69,14 +75,14 @@ const CLI_FILES = {
   'Command line': [{path: 'convert.py', content: 'import sys\nfrom to_fahrenheit import to_fahrenheit\nfrom to_celsius import to_celsius\n\n\ndef main(argv):\n    value, unit = float(argv[1]), argv[2].upper()\n    result = to_fahrenheit(value) if unit == "C" else to_celsius(value)\n    print(f"{result:g}")\n\n\nif __name__ == "__main__":\n    main(sys.argv)\n'}]
 };
 
-test('v8 prompts: a command-line tool, split into pieces with contracts, written as file blocks, reaches v8_checks_pending', async () => {
+test('v8 prompts: a command-line tool, split into pieces with contracts, written as file blocks, reaches the card\'s checks', async () => {
   const {room, calls, drain} = liveRoom({
     card: () => CLI_CARD, split: () => CLI_PIECES, clef: clef(CLI_GOAL),
     leaf: user => fileBlocks(CLI_FILES[user.your_label] || [], {summary: `wrote ${user.your_label}`, done: true})
   });
   await room.start(CLI_GOAL, 40, {pipeline: 'v8'});
   await drain();
-  assert.equal(room.snapshot().pause?.kind, 'v8_checks_pending', events(room).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).slice(-12).join('\n'));
+  assert.ok(checked(room), events(room).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).slice(-12).join('\n'));
   assert.deepEqual(room.promisedOf('root'), cardContracts(room.snapshot().card));
   // The splitter: its system text, its contracts, the project facts as data, and its bound.
   assert.equal(calls.split.length, 1);
@@ -141,14 +147,14 @@ const PAGE_FILES = {
   'List behaviour': [{path: 'app.js', content: 'document.querySelector("button").addEventListener("click", () => {\n  const field = document.querySelector("input");\n  const item = document.createElement("li");\n  item.textContent = field.value;\n  document.getElementById("items").append(item);\n  field.value = "";\n});\n'}]
 };
 
-test('v8 prompts: a static page of .html, .css and .js files, split by contract and written as file blocks, reaches v8_checks_pending', async () => {
+test('v8 prompts: a static page of .html, .css and .js files, split by contract and written as file blocks, reaches the card\'s checks', async () => {
   const {room, calls, drain} = liveRoom({
     card: () => PAGE_CARD, split: () => PAGE_PIECES, clef: clef(PAGE_GOAL),
     leaf: user => fileBlocks(PAGE_FILES[user.your_label] || [], {summary: `wrote ${user.your_label}`, done: true})
   });
   await room.start(PAGE_GOAL, 40, {pipeline: 'v8'});
   await drain();
-  assert.equal(room.snapshot().pause?.kind, 'v8_checks_pending', events(room).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).slice(-12).join('\n'));
+  assert.ok(checked(room), events(room).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).slice(-12).join('\n'));
   assert.deepEqual(calls.split[0].contracts_you_deliver.map(c => c.name), ['index.html', 'styles.css', 'app.js']);
   assert.deepEqual(calls.split[0].project.conventions.map(c => c.language), ['javascript', 'text']);
   assert.deepEqual(room.children('root').map(c => [c.label, JSON.parse(c.interfaces).map(f => f.name)]), [['List page', ['index.html']], ['Page styles', ['styles.css']], ['List behaviour', ['app.js']]]);
@@ -178,7 +184,7 @@ test('v8 prompts: a worker whose control block does not parse is asked again und
   });
   await room.start(CLI_GOAL, 40, {pipeline: 'v8'});
   await drain();
-  assert.equal(room.snapshot().pause?.kind, 'v8_checks_pending');
+  assert.ok(checked(room));
   const retry = calls.leaf.find(u => u.previous_answer_problems);
   assert.match(retry.previous_answer_problems[0], /^Your previous answer could not be read \(its control block was not one json object\)\. Answer again in the format your role describes/);
   assert.ok(calls.raw.filter(r => r.system === systemPrompt('worker')).length >= 3);
@@ -232,7 +238,9 @@ const askClef = input => ({answers: Object.fromEntries(Object.keys(input.questio
 // The data a room injects into a request (contract lines, references, names, paths, labels, the fixtures' tasks and asks), which the lint does not read.
 function roomData(room, extra = []) {
   const card = room.snapshot().card, nodes = room.allNodes(), items = [...(card?.deliverables || []), ...nodes.flatMap(n => JSON.parse(n.interfaces || '[]'))];
-  const out = [room.userGoal(), card?.summary, ...(card?.decisions || []), ...(card?.requirements || []).flatMap(r => [r.says, r.source]), ...extra];
+  const out = [room.userGoal(), card?.summary, ...(card?.decisions || []), ...(card?.requirements || []).flatMap(r => [r.says, r.says.replace(/[.\s]+$/, ''), r.source]), ...extra];
+  // v8 S4b: what a failed check observed (the deliverable's own output) and the check's kind are data too.
+  for (const p of room.problems("stage='check'")) out.push(p.facts?.requirement?.evidence, p.facts?.requirement?.check, p.kind === 'load' ? p.detail : null);
   for (const n of nodes) out.push(n.label, ...room.files(n.id).map(f => f.path));
   for (const c of items) out.push(contractLine(c), c.name, c.path, c.does, ...(c.params || []));
   for (const n of nodes) for (const c of items) out.push(...useReferences([c], room.referenceFacts(n.id)).map(u => u.reference));
@@ -260,8 +268,8 @@ test('v8 prompts: an ask, a growth, the done rule and a repair speak in MESSAGES
   const {room, calls, drain} = liveRoom({card: () => ASK_CARD, split: () => ASK_PIECES, clef: askClef, leaf, manager: () => ({actions: []})});
   await room.start(CLI_GOAL, 60, {pipeline: 'v8'});
   await drain();
-  for (let i = 0; i < 4 && room.snapshot().pause?.kind !== 'v8_checks_pending'; i++) { await room.resume(40); await drain(); }
-  assert.equal(room.snapshot().pause?.kind, 'v8_checks_pending', events(room).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 160)}`).slice(-15).join('\n'));
+  for (let i = 0; i < 4 && !checked(room); i++) { await room.resume(40); await drain(); }
+  assert.ok(checked(room), events(room).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 160)}`).slice(-15).join('\n'));
   composedPass(calls, roomData(room, [...NEEDS, ...ASK_PIECES.pieces.map(p => p.task)]));
   const said = calls.raw.map(r => r.text).join('\n');
   // The three answers: a sibling's contract by its reference, the asker's own, and a growth.
@@ -273,7 +281,9 @@ test('v8 prompts: an ask, a growth, the done rule and a repair speak in MESSAGES
   assert.match(room.node('root.1').task, /Keep what you already deliver and add to_kelvin\(\) \(converts degrees Celsius to Kelvin\): Command line uses it from you\.$/);
   assert.match(said, /\[contract\] Your contracts: .*to_kelvin is not defined in temperature\.py\. Write each file you change again, complete\./);
   assert.match(said, /A problem was found between your part and another part, and your manager decided what changes\. Decided: Your contracts include to_kelvin, needed by Command line/);
-  assert.doesNotMatch(said, /CONTAINER|builder|named export|module|Publish the FULL/i);
+  // v8 S4b: what a failed card check observed is the deliverable's own output (here an import the S5 glue will resolve), not the room's words.
+  const observed = room.problems("stage='check'").map(p => p.facts?.requirement?.evidence).filter(Boolean).map(e => JSON.stringify(e).slice(1, -1));
+  assert.doesNotMatch(observed.reduce((t, e) => t.split(e).join('«observed»'), said), /CONTAINER|builder|named export|module|Publish the FULL/i);
   promptsAreV8(calls, CLI_GOAL, room, [...CLI_PIECES.pieces, ...ASK_PIECES.pieces].map(p => p.task));
 });
 
