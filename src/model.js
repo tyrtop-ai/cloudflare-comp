@@ -4,7 +4,7 @@ import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText,
 import { goalMethods } from './api-coverage.js';
 import { workerAction } from './worker-output.js';
 import { systemPrompt, CLEF } from './prompts.js';
-import { validateCard } from './card.js';
+import { validateCard, settleCodeLanguage, checkSummary } from './card.js';
 import { TOOLCHAINS } from './toolchains.js';
 export { NO_ANSWER };
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
@@ -666,50 +666,71 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
 export const MOCK_CARD = Object.freeze({card:1,summary:'Notes on the goal',languages:['text'],
   deliverables:[{name:'NOTES.md',kind:'doc',path:'NOTES.md',does:'notes on the goal'}],
   requirements:[{id:'R1',says:'The notes exist',source:'notes',serves:['NOTES.md'],check:{kind:'file',path:'NOTES.md'}}],decisions:[]});
-export const CARD_MAX_TOKENS = 3000;
-export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[]}={}) {
+// v8 S3 review: reasoning and a full card (24 requirements, 12
+// deliverables) share the budget on a thinking model; modelRequest clamps
+// it to the model's context (MODEL_SETTINGS), as for every call. The retry
+// hears the validation errors (an unsupported language among them) in its
+// user JSON, never the system text (§6), and runs without thinking, as
+// decompose's malformed retry does. Only a blocked card is not retried.
+// After the retry, a function or route deliverable with no code language
+// takes the single installed one (settleCodeLanguage), else the result
+// carries language_error.
+export const CARD_MAX_TOKENS = 8192;
+export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none'}={}) {
   const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
-  const check=raw=>validateCard(raw,{goal,installed:rows,base});
-  if (env.MOCK_AI === 'true') return {...check(MOCK_CARD),raw_head:'',attempts:0};
-  const user=JSON.stringify({goal:String(goal).slice(0,GOAL_LIMIT),
+  const check=raw=>validateCard(raw,{goal,installed:rows,base,packages});
+  const settle=(r,extra)=>{const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};return {card:s.card,errors:r.errors,unsupported:r.unsupported,...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};};
+  if (env.MOCK_AI === 'true') return settle(check(MOCK_CARD),{raw_head:'',attempts:0});
+  const fields={goal:String(goal).slice(0,GOAL_LIMIT),
     toolchains:rows.map(t=>({id:t.id,files:t.extensions,...(t.run_file?{run_file:t.run_file}:{}),...(t.test?{test:t.test}:{}),executables:t.executables||[]})),
-    ...(base_digest?{existing_files:base_digest}:{}),...(prior_card?{current_card:prior_card}:{})});
+    ...(base_digest?{existing_files:base_digest}:{}),...(prior_card?{current_card:prior_card}:{})};
   const system=systemPrompt('card');
   const read=output=>{
     const text=withoutThinking(output).trim(),parsed=parseObject(text);
-    if(parsed.parse_error)return {head:text.slice(0,200),parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[]};
-    return {head:text.slice(0,200),parsed,...check(parsed)};
+    if(parsed.parse_error)return {head:text.slice(0,200),text,parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[]};
+    return {head:text.slice(0,200),text,parsed,...check(parsed)};
   };
-  const first=read(await run(env,system,user,CARD_MAX_TOKENS,{call:'writeCard',role:'card'}));
-  // A blocked card, or one naming a language this deployment lacks, stops the room as it is: no retry.
-  if(!first.errors.length||first.card?.blocked||first.unsupported.length)return {card:first.card,errors:first.errors,unsupported:first.unsupported,raw_head:first.head,attempts:1};
-  const second=read(await run(env,`${system}\n\nYour previous card had these problems; answer again with the whole corrected card as one json object:\n- ${first.errors.slice(0,20).join('\n- ')}`,user,CARD_MAX_TOKENS,{call:'writeCard',role:'card',retry:true}));
+  const first=read(await run(env,system,JSON.stringify(fields),CARD_MAX_TOKENS,{call:'writeCard',role:'card'}));
+  if(!first.errors.length||first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1});
+  const retry={...fields,previous_errors:first.errors.slice(0,24),...(first.parsed.parse_error?{}:{previous_answer:clip(first.text,6000)}),
+    instruction:'Your previous card had the problems listed in previous_errors. Answer again with the whole corrected card as one json object.'};
+  const second=read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call:'writeCard',role:'card',retry:true,noThink:true}));
   const best=second.parsed.parse_error&&!first.parsed.parse_error?first:second;
-  return {card:best.card,errors:best.errors,unsupported:best.unsupported,raw_head:best.head,attempts:2};
+  return settle(best,{raw_head:best.head,attempts:2});
 }
 // v8 §1.4: Clef vets the card writer's requirements against the goal, one
 // batched call per 12 (scopeChildren's grouping), the traced ones too: an
-// invented requirement costs a repair round later. [{id, p}]; MOCK keeps all.
+// invented requirement costs a repair round later. Clef sees each one's
+// check in a few words beside says and source, and whether its source was
+// found in the goal. v8 S3 review: a batch Clef fails keeps its
+// requirements, unvetted. {ps:[{id, p} | {id, unvetted:true}], failed:[reasons]};
+// MOCK keeps all.
 export async function vetRequirements(env, {goal='', requirements=[]}) {
-  if (!requirements.length) return [];
-  if (env.MOCK_AI === 'true') return requirements.map(r=>({id:r.id,p:1}));
+  if (!requirements.length) return {ps:[],failed:[]};
+  if (env.MOCK_AI === 'true') return {ps:requirements.map(r=>({id:r.id,p:1})),failed:[]};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
-  if (!clef) throw new Error('Unsupported Clef requirement decision model');
-  const groups=[];
+  if (!clef) return {ps:requirements.map(r=>({id:r.id,unvetted:true})),failed:['unsupported Clef decision model']};
+  const groups=[],failed=[];
   for(let start=0;start<requirements.length;start+=12)groups.push({start,group:requirements.slice(start,start+12)});
   const answered=await Promise.all(groups.map(async ({start,group})=>{
-    const questions=Object.fromEntries(group.map((_,i)=>[`requirement_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement}`}]));
-    const output=await clefRun(env,'vetRequirements',selector,{model:clef,
-      state:{goal:String(goal).slice(0,GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),source:String(r.source).slice(0,160)}))},questions});
-    return group.map((r,i)=>{
-      const probability=output?.answers?.[`requirement_${start+i}`]?.noul;
-      if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
-        throw new Error(`Clef returned no valid probability for requirement ${r.id}`);
-      return {id:r.id,p:probability};
-    });
+    try {
+      const questions=Object.fromEntries(group.map((_,i)=>[`requirement_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement}`}]));
+      const output=await clefRun(env,'vetRequirements',selector,{model:clef,
+        state:{goal:String(goal).slice(0,GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),source:String(r.source).slice(0,160),
+          check:checkSummary(r.check),...(r.untraced?{source_found_in_goal:false}:{})}))},questions});
+      return group.map((r,i)=>{
+        const probability=output?.answers?.[`requirement_${start+i}`]?.noul;
+        if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
+          throw new Error(`Clef returned no valid probability for requirement ${r.id}`);
+        return {id:r.id,p:probability};
+      });
+    } catch(e) {
+      failed.push(`${group.map(r=>r.id).join(', ')}: ${String(e?.message||e).slice(0,200)}`);
+      return group.map(r=>({id:r.id,unvetted:true}));
+    }
   }));
-  return answered.flat();
+  return {ps:answered.flat(),failed};
 }
 // v7.15.6 (run13): no triage. A failed run with no frame in a component is
 // a requirement the manager routes by the plan (readRequirement in

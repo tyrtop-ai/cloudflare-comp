@@ -162,3 +162,79 @@ test('the pipeline is fixed when a room starts: Continue keeps it', async () => 
   assert.equal(room.settings().pipeline, 'v8');
   assert.equal(events(room, 'pipeline_kept').length, 1);
 });
+
+// ------------------------------------------------------------ v8 S3 review
+test('review: Clef failing to vet keeps the card, unvetted, with no second writer call', async () => {
+  const failing = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, k.startsWith('requirement_') ? {} : {noul: k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(GOAL) ? 0.9 : 0.1) : 0.9}]))});
+  const {room, calls, drain} = liveRoom({card: () => CARD, split: () => PIECES, clef: failing,
+    leaf: user => {const f = FILES[user.your_label]; return f ? {summary: 'w', files: [f], done: true} : {summary: 'n', done: false};}});
+  await room.start(GOAL, 40, {pipeline: 'v8'});
+  await drain();
+  assert.equal(calls.card.length, 1);
+  assert.equal(events(room, 'card_vetting_failed').length, 1);
+  assert.match(events(room, 'card_vetting_failed')[0].body, /Clef could not vet R1, R2: .*kept, marked unvetted/);
+  assert.deepEqual(room.snapshot().card.requirements.map(r => [r.id, r.unvetted]), [['R1', true], ['R2', true]]);
+  assert.equal(room.snapshot().pause.kind, 'v8_checks_pending', 'the room went on');
+});
+
+test('review: a save that fails holds card_failed, and Continue saves the written card without calling the writer again', async () => {
+  const {room, calls, drain} = v8Room();
+  const save = room.save.bind(room);
+  let broken = true;
+  room.save = (key, value) => { if (key === 'card' && value && broken) { broken = false; throw new Error('storage unavailable'); } return save(key, value); };
+  await room.start(GOAL, 40, {pipeline: 'v8'});
+  await drain();
+  assert.equal(calls.card.length, 1);
+  assert.equal(room.snapshot().pause.kind, 'card_failed');
+  assert.match(room.snapshot().pause.text, /Vetting or saving the card failed: storage unavailable\. Continue vets and saves the written card again\./);
+  assert.equal(room.snapshot().card, null);
+  assert.deepEqual(room.promisedOf('root'), []);
+  await room.resume(40);
+  await drain();
+  assert.equal(calls.card.length, 1, 'the kept card is used');
+  assert.equal(events(room, 'card_draft_reused').length, 1);
+  assert.ok(room.snapshot().card);
+  assert.equal(room.snapshot().pause.kind, 'v8_checks_pending');
+});
+
+test('review: a card with only the runtime\'s implicit requirements is retried, then held card_failed', async () => {
+  const bad = {...CARD};
+  bad.requirements = [{id: 'R1', says: 'It prints a greeting', source: 'hello-world Python script', serves: ['hello'], check: {kind: 'command', run: 'hello-world-runner'}}];
+  const {room, calls, drain} = v8Room({card: () => bad});
+  await room.start(GOAL, 10, {pipeline: 'v8'});
+  await drain();
+  assert.equal(calls.card.length, 2);
+  assert.equal(room.snapshot().pause.kind, 'card_failed');
+  assert.match(room.snapshot().pause.text, /no valid requirement/);
+  assert.equal(calls.split.length, 0);
+});
+
+test('review: language aliases and a placeholder blocked value do not hold the room', async () => {
+  const {room, calls, drain} = v8Room({card: () => ({...CARD, languages: ['python', 'markdown'], blocked: 'none'})});
+  await room.start(GOAL, 40, {pipeline: 'v8'});
+  await drain();
+  assert.equal(calls.card.length, 1);
+  assert.deepEqual(room.snapshot().card.languages, ['python', 'text']);
+  assert.equal(room.snapshot().pause.kind, 'v8_checks_pending');
+});
+
+test('review: a function with no code language after the retry holds card_failed when several are installed', async () => {
+  const card = {card: 1, summary: 'a function', deliverables: [{name: 'addNumbers', kind: 'function', does: 'adds'}],
+    requirements: [{id: 'R1', says: 'addNumbers(1, 2) is 3', source: 'hello-world Python script', serves: ['addNumbers'], check: {kind: 'call', steps: [{call: 'addNumbers', args: [1, 2], expect: 3}]}}]};
+  const {room, calls, drain} = v8Room({card: () => card});
+  await room.start(GOAL, 10, {pipeline: 'v8'});
+  await drain();
+  assert.equal(calls.card.length, 2, 'the retry heard the missing language');
+  assert.ok(calls.card[1].previous_errors.some(e => /languages names no code language/.test(e)));
+  assert.equal(room.snapshot().pause.kind, 'card_failed');
+  assert.match(room.snapshot().pause.text, /addNumbers must be written in a code language/);
+  // With one code toolchain installed, it is used, and room.languages() is never empty.
+  const one = v8Room({card: () => card, split: () => ({summary: 'x', pieces: []})});
+  one.room.save('toolchain_inventory', ['node']);
+  await one.room.start(GOAL, 1, {pipeline: 'v8'});
+  one.room.save('toolchain_inventory', ['node']);
+  await one.drain();
+  assert.equal(events(one.room, 'card_language_inferred').length, 1, events(one.room).map(e => e.kind).join(','));
+  assert.deepEqual(one.room.snapshot().card.languages, ['javascript', 'text']);
+  assert.deepEqual(one.room.languages(), ['javascript']);
+});

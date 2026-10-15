@@ -127,11 +127,11 @@ test('requirements: serves names deliverables, and each check kind is valid for 
   );
   const {card, errors} = v(raw, {base: ['BASE.md']});
   const text = errors.join('\n');
-  assert.match(text, /run "bad" starts "gunicorn"/);
+  assert.match(text, /run "bad": it runs "gunicorn", which is neither/);
   assert.match(text, /R4 serves "nothing", which no deliverable is named/);
   assert.match(text, /R5: its file check names "MISSING\.md"/);
-  assert.match(text, /R6: its command check runs "cargo"/);
-  assert.match(text, /R7: its command check's input file convert\.py would replace the deliverable/);
+  assert.match(text, /R6: its command check: it runs "cargo"/);
+  assert.match(text, /R7: its command check: its input file convert\.py would replace the deliverable/);
   assert.match(text, /R8: its call check calls "convert", which is not a function deliverable/);
   assert.match(text, /R9: its browser check serves "nowhere", which is not a run id/);
   assert.match(text, /R10: its browser check has a step that is not one of the browser step forms/);
@@ -152,7 +152,7 @@ test('a command check runs a command deliverable or an installed executable; exp
   raw.requirements[0].check = {kind: 'command', run: 'python3 convert.py 100 C'};
   const {card, errors} = v(raw);
   assert.deepEqual(errors, []);
-  assert.deepEqual(card.requirements[0].check, {kind: 'command', run: 'python3 convert.py 100 C', expect: {exit: 0}});
+  assert.deepEqual(card.requirements[0].check, {kind: 'command', run: 'python3 convert.py 100 C', argv: ['python3', 'convert.py', '100', 'C'], expect: {exit: 0}});
   // An executable no installed row lists is refused.
   raw.requirements[0].check = {kind: 'command', run: 'ruby convert.rb'};
   assert.ok(v(raw).errors.some(e => /runs "ruby", which is neither a command deliverable nor an installed executable/.test(e)));
@@ -187,9 +187,9 @@ test('project checks become P<n> requirements serving the deliverables of their 
   const raw = good();
   raw.project_checks = ['python3 -m pytest -q', 'make test'];
   const {card, errors} = v(raw);
-  assert.ok(errors.some(e => /"make test" runs "make"/.test(e)));
+  assert.ok(errors.some(e => /project check "make test": it runs "make"/.test(e)));
   const p = card.requirements.find(r => r.id === 'P1');
-  assert.deepEqual(p, {id: 'P1', says: 'python3 -m pytest -q succeeds', source: '', serves: ['convert', 'to_fahrenheit'], check: {kind: 'command', run: 'python3 -m pytest -q', expect: {exit: 0}}, project: true});
+  assert.deepEqual(p, {id: 'P1', says: 'python3 -m pytest -q succeeds', source: '', serves: ['convert', 'to_fahrenheit'], covers: ['convert', 'to_fahrenheit'], check: {kind: 'command', run: 'python3 -m pytest -q', argv: ['python3', '-m', 'pytest', '-q'], expect: {exit: 0}}, project: true});
   assert.deepEqual(card.project_checks, ['python3 -m pytest -q']);
   assert.ok(!vettable(card).some(r => r.id === 'P1'), 'the runtime\'s requirements are not vetted');
 });
@@ -238,16 +238,30 @@ test('vetRequirements: one batched Clef call per 12, keyed requirement_<i>, with
     calls.push(input);
     return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'requirement_13' ? 0.1 : 0.8}]))};
   }}};
-  const reqs = Array.from({length: 14}, (_, i) => ({id: `R${i + 1}`, says: `says ${i}`, source: `source ${i}`}));
-  const ps = await vetRequirements(env, {goal: GOAL, requirements: reqs});
+  const reqs = Array.from({length: 14}, (_, i) => ({id: `R${i + 1}`, says: `says ${i}`, source: `source ${i}`, check: {kind: 'file', path: 'GUIDE.md'}, ...(i === 1 ? {untraced: true} : {})}));
+  const {ps, failed} = await vetRequirements(env, {goal: GOAL, requirements: reqs});
+  assert.deepEqual(failed, []);
   assert.equal(calls.length, 2);
   assert.deepEqual(Object.keys(calls[1].questions), ['requirement_12', 'requirement_13']);
   assert.equal(calls[0].state.goal, GOAL);
-  assert.deepEqual(calls[0].state.requirements[0], {slot: 0, says: 'says 0', source: 'source 0'});
+  // Clef sees the check in a few words, and whether the source was found in the goal.
+  assert.deepEqual(calls[0].state.requirements[0], {slot: 0, says: 'says 0', source: 'source 0', check: 'file GUIDE.md'});
+  assert.equal(calls[0].state.requirements[1].source_found_in_goal, false);
   assert.ok(calls[0].questions.requirement_0.instructions.endsWith(CLEF.requirement));
   assert.equal(ps.find(x => x.id === 'R14').p, 0.1);
-  assert.deepEqual(await vetRequirements({MOCK_AI: 'true'}, {goal: GOAL, requirements: reqs.slice(0, 2)}), [{id: 'R1', p: 1}, {id: 'R2', p: 1}]);
-  await assert.rejects(vetRequirements({...env, AI: {run: async () => ({answers: {}})}}, {goal: GOAL, requirements: reqs.slice(0, 1)}), /no valid probability for requirement R1/);
+  assert.deepEqual((await vetRequirements({MOCK_AI: 'true'}, {goal: GOAL, requirements: reqs.slice(0, 2)})).ps, [{id: 'R1', p: 1}, {id: 'R2', p: 1}]);
+  // v8 S3 review: a batch Clef fails keeps its requirements, unvetted; the other batch stands.
+  let n = 0;
+  const half = await vetRequirements({...env, AI: {run: async (_m, input) => ++n === 1 ? {answers: {}} : {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.2}]))}}}, {goal: GOAL, requirements: reqs});
+  assert.equal(half.failed.length, 1);
+  assert.match(half.failed[0], /^R1, R2, .*R12: Clef returned no valid probability for requirement R1/);
+  assert.deepEqual(half.ps.slice(0, 2), [{id: 'R1', unvetted: true}, {id: 'R2', unvetted: true}]);
+  assert.deepEqual(half.ps.slice(12), [{id: 'R13', p: 0.2}, {id: 'R14', p: 0.2}]);
+  const thrown = await vetRequirements({...env, AI: {run: async () => { throw new Error('clef 503'); }}}, {goal: GOAL, requirements: reqs.slice(0, 1)});
+  assert.deepEqual(thrown, {ps: [{id: 'R1', unvetted: true}], failed: ['R1: clef 503']});
+  const {card: kept, dropped} = applyVetting(v(good()).card, [{id: 'R1', unvetted: true}, {id: 'R2', p: 0.9}, {id: 'R3', p: 0.1}]);
+  assert.deepEqual(dropped.map(r => r.id), ['R3']);
+  assert.equal(kept.requirements.find(r => r.id === 'R1').unvetted, true);
 });
 
 // ------------------------------------------------------------ writeCard
@@ -281,7 +295,14 @@ test('writeCard: one retry hears the errors; a retry that still errs keeps its v
   const {env, calls} = modelEnv([bad, stillBad]);
   const out = await writeCard(env, {goal: GOAL});
   assert.equal(calls.length, 2);
-  assert.match(calls[1].messages[0].content, /Your previous card had these problems[^]*R2 serves "ghost"/);
+  // The system prompt stays fixed; the errors and the previous answer go in the user JSON, and the retry does not think.
+  assert.equal(calls[1].messages[0].content, systemPrompt('card'));
+  const retry = JSON.parse(calls[1].messages[1].content.replace(/ \/no_think$/, ''));
+  assert.ok(calls[1].messages[1].content.endsWith(' /no_think'));
+  assert.ok(retry.previous_errors.some(e => /R2 serves "ghost"/.test(e)));
+  assert.match(retry.previous_answer, /"ghost"/);
+  assert.equal(retry.goal, GOAL);
+  assert.ok(calls[0].max_tokens >= 8000, 'room for reasoning and a whole card');
   assert.equal(out.attempts, 2);
   assert.ok(out.errors.some(e => /R3: its judge check asks no question/.test(e)));
   assert.ok(cardUsable(out.card));
@@ -301,7 +322,7 @@ test('writeCard: a retry that does not parse never replaces a first answer that 
   assert.match(none.errors[0], /not one json object/);
 });
 
-test('writeCard: a blocked or unsupported card is returned at once, with no retry', async () => {
+test('writeCard: a blocked card is returned at once; an unsupported language gets the one retry, then stays unsupported', async () => {
   const {env, calls} = modelEnv([{card: 1, blocked: 'No project was given.'}]);
   const out = await writeCard(env, {goal: 'Add a flag to this tool.'});
   assert.equal(calls.length, 1);
@@ -309,10 +330,16 @@ test('writeCard: a blocked or unsupported card is returned at once, with no retr
   const go = good();
   go.languages = ['go'];
   go.summary = '';
-  const r = modelEnv([go]);
+  const r = modelEnv([go, go]);
   const out2 = await writeCard(r.env, {goal: GOAL});
-  assert.equal(r.calls.length, 1);
+  assert.equal(r.calls.length, 2);
+  assert.ok(JSON.parse(r.calls[1].messages[1].content.replace(/ \/no_think$/, '')).previous_errors.some(e => /language "go" is not one this deployment runs/.test(e)));
   assert.deepEqual(out2.unsupported, ['go']);
+  // A retry that names a language this deployment runs is supported.
+  const fixed = modelEnv([{...good(), languages: ['golang']}, {...good(), languages: ['py', 'markdown']}]);
+  const out3 = await writeCard(fixed.env, {goal: GOAL});
+  assert.deepEqual(out3.unsupported, []);
+  assert.deepEqual(out3.card.languages, ['python', 'text']);
 });
 
 test('writeCard under MOCK_AI: a fixed, neutral card with one doc deliverable and a file check', async () => {

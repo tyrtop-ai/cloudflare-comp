@@ -4,60 +4,164 @@
 // later (S4). The card's deliverables become Root's contracts
 // (cardContracts). Everything here is deterministic and pure: no room, no
 // model. The card writer's call and the Clef vetting are in src/model.js.
-import { TOOLCHAINS, toolchainOf, toolchainById } from './toolchains.js';
+import { TOOLCHAINS, toolchainOf, toolchainById, toolchainNamed, manifestOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, CONTRACT_KINDS, RUNTIME_PREFIXES } from './contracts.js';
+import { writerPathError } from './code-work.js';
 import { isPath } from './protocol.js';
 
 // The limits of §1.1, and the card's shape as documentation (the dashboard
 // and the tests read it; validateCard enforces it).
 export const CARD_LIMITS = Object.freeze({
   summary: 200, languages: 6, deliverables: [1, 12], run: 4, requirements: [1, 24], project_checks: 4, decisions: 8,
-  says: 200, source: 160, blocked: 600, decision: 240, question: 300, steps: 20, has: 8, fixtures: 8, command: 300, stdin: 4000, fixture: 20000, value: 1000
+  says: 200, source: 160, blocked: 600, decision: 240, question: 300, steps: 20, has: 8, fixtures: 8, command: 300, argv: 40, stdin: 4000, fixture: 20000, value: 1000
 });
 export const CARD_SCHEMA = Object.freeze({
   card: 'the number 1: the format version of the card object',
   summary: `what the user receives, at most ${CARD_LIMITS.summary} characters`,
-  languages: 'toolchain ids from the installed rows (src/toolchains.js) plus "text"; any other id is unsupported and the room stops at the card',
-  deliverables: `${CARD_LIMITS.deliverables.join('..')} contracts (§2.1): {name, kind, does, inputs, outputs, effects, examples, path}; kind one of ${CONTRACT_KINDS.join(', ')}; file, page, doc, data and command need a path outside ${RUNTIME_PREFIXES.join(', ')}; names and paths unique`,
-  run: `0..${CARD_LIMITS.run} ways to run the project: {id, static:true} or {id, run, port:true, ready}`,
-  requirements: `${CARD_LIMITS.requirements.join('..')} requirements {id:"R<n>", says, source, serves:[deliverable names], check}`,
+  languages: 'toolchain ids or their aliases (src/toolchains.js) from the installed rows, plus "text"; a function or route deliverable needs a code language; any other id is an error, and after the writer\'s retry the room stops at the card',
+  deliverables: `${CARD_LIMITS.deliverables.join('..')} contracts (§2.1): {name, kind, does, inputs, outputs, effects, examples, path}; kind one of ${CONTRACT_KINDS.join(', ')}; file, page, doc, data and command need a path a worker may place (outside ${RUNTIME_PREFIXES.join(', ')}, no hidden file, no package-manager file); names and paths unique; a command is never named as a system executable`,
+  run: `0..${CARD_LIMITS.run} ways to run the project: {id, static:true} or {id, run, port:true, ready}; run is one command and its arguments, never a shell`,
+  requirements: `${CARD_LIMITS.requirements.join('..')} requirements {id:"R<n>", says, source, serves:[deliverable names], check}; at least one from the writer`,
   check: {
     file: '{kind:"file", path, has?:[text], json?:true}',
     judge: '{kind:"judge", path, question}',
-    command: '{kind:"command", run, stdin?, files?:{path:content}, expect:{exit?, stdout?, stdout_has?, stderr_has?}}',
+    command: '{kind:"command", run (kept with its argv), stdin?, files?:{path:content}, expect:{exit?, stdout?, stdout_has?, stderr_has?}}',
     call: '{kind:"call", steps:[{call, args, save?, expect?, expect_has?, throws?}]}',
     http: '{kind:"http", serve, steps:[{method, path, body?, save?, expect:{status?, body_has?, json_has?}}]}',
     browser: '{kind:"browser", serve, steps:[{goto}|{reload}|{press}|{fill}|{click}|{expect_text}|{expect_no_text}|{expect_count}]}'
   },
   project_checks: `0..${CARD_LIMITS.project_checks} commands the project itself defines; each becomes the requirement P<n>`,
   decisions: `0..${CARD_LIMITS.decisions} choices the goal left open, one sentence each`,
-  blocked: 'set only when the goal cannot be started; the room pauses with this text'
+  blocked: 'set only when the goal cannot be started; the room pauses with this text ("none", "n/a" and the like count as unset)'
 });
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 const str = (v, n) => typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : '';
 const strings = (v, max, n) => (Array.isArray(v) ? v : []).map(x => str(x, n)).filter(Boolean).slice(0, max);
 const json = (v, n = CARD_LIMITS.value) => { try { const s = JSON.stringify(v); return s !== undefined && s.length <= n ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; } };
-const firstWord = s => String(s || '').trim().split(/\s+/)[0] || '';
 const RUN_ID = /^[A-Za-z][\w-]{0,31}$/, SAVE = /^[A-Za-z_]\w{0,31}$/, REQ_ID = /^R(?:[1-9]|1\d|2[0-4])$/;
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
-// Paths no deliverable may take (§1.2 rule 3).
-const runtimePath = p => RUNTIME_PREFIXES.some(x => p.startsWith(x));
+const CODE_KINDS = new Set(['function', 'route']);
+// A blocked value that says nothing is blocked (v8 S3 review).
+const UNSET = /^(?:none|n\/?a|null|nil|false|no|nothing|not blocked|-+|\.+)$/i;
+
+// ------------------------------------------------------------ commands (v8 S3 review)
+// A check's command is one program and its arguments (argv), never a shell
+// line. This is defense in depth: the Container sandbox (S4a: its own
+// process, network off, a throwaway directory) is the real boundary.
+const SHELL = /[;|&<>`\r\n]|\$[({A-Za-z_]/;
+// Names a command deliverable may not take: shells, network and file tools,
+// and every toolchain row's executables and package runners.
+export const SYSTEM_COMMANDS = Object.freeze(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh', 'busybox', 'env', 'sudo', 'su', 'doas', 'exec', 'eval', 'xargs', 'nohup', 'timeout',
+  'rm', 'mv', 'cp', 'dd', 'ln', 'cat', 'chmod', 'chown', 'kill', 'pkill', 'find', 'tar', 'make',
+  'curl', 'wget', 'nc', 'ncat', 'netcat', 'socat', 'ssh', 'scp', 'sftp', 'ftp', 'telnet', 'rsync', 'git', 'docker',
+  'python', 'node', 'nodejs', 'deno', 'bun', 'bunx', 'perl', 'ruby', 'php', 'pip', 'pip3', 'pipx', 'uv', 'uvx', 'yarn', 'pnpm']);
+const reservedCommands = rows => new Set([...SYSTEM_COMMANDS, ...rows.flatMap(r => [...(r.executables || []), ...(r.package_runners || []).map(p => p[0])])]);
+// Arguments that make an interpreter run code given inline or fetched:
+// allowed only when what they name is a deliverable's path.
+const INLINE = new Set(['-c', '-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader', '--experimental-loader']);
+// The argv of a command line, read by a strict tokenizer: words split by
+// spaces; '...' and "..." quote (\" and \\ inside "..."); any shell syntax,
+// a backslash outside quotes or an unclosed quote is an error.
+export function commandArgv(run) {
+  const s = String(run ?? '');
+  if (SHELL.test(s)) return {error: `"${s.slice(0, 80)}" uses shell syntax (; | & > < \` $( or a newline): a check runs one command with its arguments, never a shell; write {port} for the port`};
+  const argv = [];
+  let cur = '', quote = null, word = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      if (quote === '"' && ch === '\\' && (s[i + 1] === '"' || s[i + 1] === '\\')) { cur += s[++i]; continue; }
+      cur += ch; continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; word = true; continue; }
+    if (/\s/.test(ch)) { if (word) { argv.push(cur); cur = ''; word = false; } continue; }
+    if (ch === '\\') return {error: `"${s.slice(0, 80)}" has a backslash outside quotes`};
+    cur += ch; word = true;
+  }
+  if (quote) return {error: `"${s.slice(0, 80)}" has an unclosed quote`};
+  if (word) argv.push(cur);
+  if (!argv.length) return {error: 'it runs nothing'};
+  if (argv.length > CARD_LIMITS.argv) return {error: `"${s.slice(0, 80)}" has more than ${CARD_LIMITS.argv} arguments`};
+  return {argv};
+}
+const INSTALLERS = new Set(['pip', 'pip3', 'pipx', 'ensurepip', 'uv', 'venv', 'virtualenv']);
+// Why an argv may not run, or ''. ctx: commands (command deliverables),
+// executables (installed), paths (deliverable paths), rows (installed),
+// packages ('none' refuses the package runners).
+function argvError(argv, ctx) {
+  const [first] = argv;
+  if (ctx.commands.has(first)) return '';
+  if (!ctx.executables.has(first)) return `it runs "${first}", which is neither a command deliverable nor an installed executable (${[...ctx.executables].join(', ') || 'none'})`;
+  if (ctx.packages !== 'allowed') for (const r of ctx.rows) for (const p of r.package_runners || [])
+    if (p.every((w, i) => argv[i] === w)) return `it runs ${p.join(' ')}, which fetches packages, and this room allows none`;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i], [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, null];
+    if (INLINE.has(flag)) {
+      const target = inline ?? argv[i + 1];
+      if (!ctx.paths.has(String(target ?? '').replace(/^\.\//, ''))) return `it passes ${flag}, which runs code given inline; run a deliverable's file instead`;
+    }
+    // -m runs a module: never a package installer (-m pip), whatever the packages setting.
+    if (a === '-m' && INSTALLERS.has(String(argv[i + 1] ?? '').split('.')[0])) return `it runs ${argv[i + 1]}, which installs packages`;
+  }
+  return '';
+}
+// One command line, checked: {run, argv} or {error}.
+function commandOf(run, ctx) {
+  const parsed = commandArgv(run);
+  if (parsed.error) return parsed;
+  const why = argvError(parsed.argv, ctx);
+  return why ? {error: why} : {run: String(run).trim(), argv: parsed.argv};
+}
+
+// ------------------------------------------------------------ paths (v8 S3 review)
+// A path a check requests from the served project: one '/', then a name,
+// never another host ('//', a scheme, a backslash) or a step up ('..').
+export function urlPathError(p) {
+  if (typeof p !== 'string' || !/^\/(?:$|[^/\\])/.test(p)) return 'it must start with a single "/"';
+  if (p.length > 512 || /[\\\s\u0000-\u001f]/.test(p) || p.includes('//') || /%(?:2e|2f|5c)/i.test(p)) return 'it must be a plain path on the served site';
+  if (/(?:^|\/)\.\.(?:[/?#]|$)/.test(p)) return 'it must not step up with ".."';
+  return '';
+}
+// A deliverable's path: the path rule every worker's file meets, as a
+// placed file; no package-manager configuration or directory.
+function deliverablePathError(path) {
+  const bad = writerPathError(path, {owned: [path]});
+  if (bad) return bad;
+  // A case-insensitive checkout reads Components/ as the builders' components/.
+  if (RUNTIME_PREFIXES.some(x => path.toLowerCase().startsWith(x))) return `${path}: the runtime keeps ${RUNTIME_PREFIXES.join(', ')} for itself, in any case`;
+  const m = manifestOf(path);
+  if (m && (m.name.endsWith('/') || /lock|shrinkwrap|rc$|rc\.yml$|\.conf$|^\.python-version$/i.test(m.name))) return `${path}: package-manager configuration is the runtime's, never a deliverable`;
+  return '';
+}
+// A check's input file: the path rule of a worker's file that no contract
+// places, no project or base file, and data only (a file in a code
+// language could change how the code under test loads).
+function fixtureError(path, ctx) {
+  if (ctx.base.has(path)) return `its input file ${path} would replace a file the project starts from`;
+  if (ctx.paths.has(path)) return `its input file ${path} would replace the deliverable at that path`;
+  const bad = writerPathError(path, {base: ctx.base});
+  if (bad) return `its input file ${bad}`;
+  const row = toolchainOf(path);
+  if (row && row.id !== 'text') return `its input file ${path} is code (${row.name}); input files are data`;
+  return '';
+}
 
 // ------------------------------------------------------------ traceability (§1.2 rule 5)
 const fold = s => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 const STOP = new Set('a an the and or but of to in on for with by from as at into onto is are be been being it its this that these those there their them they your you can could should must will would may might which who whom what when where how all any each every some no not do does done so than then also only just one'.split(' '));
 const stem = w => w.length > 4 ? w.replace(/(?:ing|ed|es|s)$/, '') : w;
 const contentWords = s => (fold(s).match(/[\p{L}\p{N}]+/gu) || []).filter(w => w.length > 1 && !STOP.has(w));
-// Whether a requirement's source comes from the goal: a substring of it
-// (case-folded, whitespace normalised), or at least 60% of its content
-// words found in it (a word matches by its stem too).
+// Whether a requirement's source comes from the goal: a substring of it of
+// at least 12 characters (case-folded, whitespace normalised), or at least
+// three content words of which 60% are found in it (by stem too).
 export function traceable(source, goal) {
   const s = fold(source), g = fold(goal);
   if (!s || !g) return false;
-  if (g.includes(s)) return true;
+  if (s.length >= 12 && g.includes(s)) return true;
   const words = contentWords(s);
-  if (!words.length) return false;
+  if (words.length < 3) return false;
   const have = new Set(contentWords(g).flatMap(w => [w, stem(w)]));
   return words.filter(w => have.has(w) || have.has(stem(w))).length / words.length >= 0.6;
 }
@@ -79,13 +183,15 @@ function checkOf(raw, ctx) {
     return {check: {kind, path, ...(has.length ? {has} : {}), ...(raw.json === true ? {json: true} : {})}};
   }
   if (kind === 'command') {
-    const run = str(raw.run, CARD_LIMITS.command), word = firstWord(run);
+    const run = str(raw.run, CARD_LIMITS.command);
     if (!run) return {error: 'its command check runs nothing'};
-    if (!ctx.commands.has(word) && !ctx.executables.has(word)) return {error: `its command check runs "${word}", which is neither a command deliverable nor an installed executable (${[...ctx.executables].join(', ') || 'none'})`};
+    const cmd = commandOf(run, ctx);
+    if (cmd.error) return {error: `its command check: ${cmd.error}`};
     const files = {};
     for (const [p, c] of Object.entries(plain(raw.files) ? raw.files : {}).slice(0, CARD_LIMITS.fixtures)) {
-      if (!isPath(p) || runtimePath(p) || typeof c !== 'string') return {error: `its command check has an input file "${String(p).slice(0, 80)}" that is not a valid path with text content`};
-      if (ctx.paths.has(p)) return {error: `its command check's input file ${p} would replace the deliverable at that path`};
+      if (!isPath(p) || typeof c !== 'string') return {error: `its command check has an input file "${String(p).slice(0, 80)}" that is not a valid path with text content`};
+      const why = fixtureError(p, ctx);
+      if (why) return {error: `its command check: ${why}`};
       files[p] = c.slice(0, CARD_LIMITS.fixture);
     }
     const e = plain(raw.expect) ? raw.expect : {}, expect = {};
@@ -94,7 +200,7 @@ function checkOf(raw, ctx) {
     for (const k of ['stdout_has', 'stderr_has']) { const list = (Array.isArray(e[k]) ? e[k] : typeof e[k] === 'string' ? [e[k]] : []).filter(x => typeof x === 'string' && x).map(x => x.slice(0, 300)).slice(0, CARD_LIMITS.has); if (list.length) expect[k] = list; }
     if (!Object.keys(expect).length) expect.exit = 0;
     const stdin = typeof raw.stdin === 'string' ? raw.stdin.slice(0, CARD_LIMITS.stdin) : '';
-    return {check: {kind, run, ...(stdin ? {stdin} : {}), ...(Object.keys(files).length ? {files} : {}), expect}};
+    return {check: {kind, run: cmd.run, argv: cmd.argv, ...(stdin ? {stdin} : {}), ...(Object.keys(files).length ? {files} : {}), expect}};
   }
   if (kind === 'call') {
     const steps = [];
@@ -117,6 +223,7 @@ function checkOf(raw, ctx) {
     const steps = [];
     for (const s of (Array.isArray(raw.steps) ? raw.steps : []).slice(0, CARD_LIMITS.steps)) {
       const step = kind === 'http' ? httpStep(s) : browserStep(s);
+      if (step?.error) return {error: `its ${kind} check requests ${JSON.stringify(step.path).slice(0, 80)}: ${step.error}`};
       if (!step) return {error: `its ${kind} check has a step that is not one of the ${kind} step forms: ${JSON.stringify(s)?.slice(0, 120)}`};
       steps.push(step);
     }
@@ -126,8 +233,10 @@ function checkOf(raw, ctx) {
 }
 function httpStep(s) {
   if (!plain(s)) return null;
-  const method = String(s.method || 'GET').toUpperCase(), path = str(s.path, 512);
-  if (!METHODS.has(method) || !path.startsWith('/')) return null;
+  const method = String(s.method || 'GET').toUpperCase(), path = typeof s.path === 'string' ? s.path.trim() : '';
+  if (!METHODS.has(method)) return null;
+  const bad = urlPathError(path);
+  if (bad) return {error: bad, path};
   const e = plain(s.expect) ? s.expect : {}, expect = {};
   if (Number.isInteger(e.status) && e.status >= 100 && e.status <= 599) expect.status = e.status;
   const has = strings(e.body_has, CARD_LIMITS.has, 300);
@@ -145,7 +254,7 @@ function browserStep(s) {
   const keys = Object.keys(s);
   if (keys.length !== 1) return null;
   const [k] = keys, v = s[k];
-  if (k === 'goto') return typeof v === 'string' && v.startsWith('/') ? {goto: v.slice(0, 512)} : null;
+  if (k === 'goto') { if (typeof v !== 'string') return null; const bad = urlPathError(v.trim()); return bad ? {error: bad, path: v} : {goto: v.trim()}; }
   if (k === 'reload') return v === true ? {reload: true} : null;
   if (k === 'press') return typeof v === 'string' && v ? {press: v.slice(0, 40)} : null;
   if (k === 'expect_text' || k === 'expect_no_text') return typeof v === 'string' && v ? {[k]: v.slice(0, 300)} : null;
@@ -154,11 +263,22 @@ function browserStep(s) {
   if (k === 'expect_count') { if (!plain(v) || !Number.isInteger(v.n) || v.n < 0) return null; const l = locator(v, ['role', 'text']); return Object.keys(l).length ? {expect_count: {...l, n: v.n}} : null; }
   return null;
 }
+// A check in a few words, for Clef and the event log: its kind and target.
+export function checkSummary(check) {
+  if (!check) return '';
+  if (check.kind === 'file' || check.kind === 'judge') return `${check.kind} ${check.path}${check.question ? `: ${check.question}` : check.has ? ` contains ${check.has.map(x => JSON.stringify(x)).join(', ')}` : ''}`.slice(0, 300);
+  if (check.kind === 'command') return `command ${check.run}${check.expect?.stdout_has ? ` prints ${check.expect.stdout_has.map(x => JSON.stringify(x)).join(', ')}` : ''}`.slice(0, 300);
+  if (check.kind === 'call') return `call ${check.steps.map(s => `${s.call}(${JSON.stringify(s.args).slice(1, -1)})`).join(', ')}`.slice(0, 300);
+  return `${check.kind} on ${check.serve}: ${check.steps.map(s => s.goto || s.path || Object.keys(s)[0]).join(', ')}`.slice(0, 300);
+}
 
 // ------------------------------------------------------------ coverage (§1.2 rules 6 and 7)
 const nextId = (taken, prefix) => { for (let n = 1; ; n++) if (!taken.has(`${prefix}${n}`)) return `${prefix}${n}`; };
+// The deliverables a requirement covers: the ones it serves; a project
+// check only those in its own command's language (covers).
+const covered = r => r.project ? r.covers || [] : r.serves;
 // The requirements the runtime adds: one per deliverable no requirement
-// serves (a file check on its path; a one-step call per example of a
+// covers (a file check on its path; a one-step call per example of a
 // function; nothing for a function without examples or a route), marked
 // implicit. Earlier implicit ones are replaced, so this runs again after
 // vetting drops a requirement.
@@ -166,7 +286,7 @@ export function withImplicit(card) {
   const explicit = (card.requirements || []).filter(r => !r.implicit), taken = new Set(explicit.map(r => r.id)), added = [];
   const room = () => explicit.length + added.length < CARD_LIMITS.requirements[1] + CARD_LIMITS.project_checks;
   for (const d of card.deliverables || []) {
-    if (explicit.some(r => r.serves.includes(d.name)) || !room()) continue;
+    if (explicit.some(r => covered(r).includes(d.name)) || !room()) continue;
     const kind = kindOf(d);
     if (kind === 'function') {
       for (const e of d.examples || []) {
@@ -183,21 +303,36 @@ export function withImplicit(card) {
 }
 // The deliverables a project command belongs to: those in the language of
 // the toolchain whose executable it runs (or of the command deliverable it
-// runs); every deliverable when none is.
-function commandServes(card, cmd, rows) {
-  const word = firstWord(cmd), d = card.deliverables.find(x => kindOf(x) === 'command' && x.name === word);
+// runs). None when no deliverable is in that language.
+function commandDeliverables(card, argv, rows) {
+  const word = argv[0], d = card.deliverables.find(x => kindOf(x) === 'command' && x.name === word);
   const row = d ? toolchainOf(d.path) : rows.find(r => (r.executables || []).includes(word));
-  const mine = row ? card.deliverables.filter(x => x.path ? toolchainOf(x.path)?.id === row.id : kindOf(x) === 'function' && card.languages.includes(row.id)) : [];
-  return (mine.length ? mine : card.deliverables).map(x => x.name);
+  return row ? card.deliverables.filter(x => x.path ? toolchainOf(x.path)?.id === row.id : kindOf(x) === 'function' && card.languages.includes(row.id)).map(x => x.name) : [];
+}
+// The deliverables that must be written in a code language (functions and
+// routes) when the card names none: [] when the card is fine.
+export const codeLanguageGap = card => (card?.languages || []).some(id => id !== 'text') ? [] : (card?.deliverables || []).filter(d => CODE_KINDS.has(kindOf(d))).map(d => d.name);
+// The code rows among the installed ones.
+const codeRows = rows => rows.filter(r => r.id !== 'text' && (r.executables || []).length);
+// After the writer's retry: a card that still names no code language for
+// its function or route deliverables takes the single installed code
+// language, if there is exactly one. {card, inferred} or {card, error}.
+export function settleCodeLanguage(card, installed = TOOLCHAINS) {
+  const gap = codeLanguageGap(card);
+  if (!card || !gap.length) return {card};
+  const rows = codeRows(installed);
+  if (rows.length === 1) return {card: {...card, languages: [...card.languages.filter(id => id !== 'text'), rows[0].id, ...card.languages.filter(id => id === 'text')]}, inferred: rows[0].id};
+  return {card, error: `${gap.join(', ')} must be written in a code language, and the card names none of ${rows.map(r => r.id).join(', ') || 'the installed toolchains'}.`};
 }
 
 // ------------------------------------------------------------ validateCard (§1.2)
 // raw: the card writer's answer. goal: the text requirement sources trace
 // to. installed: the toolchain rows this deployment can run (default: every
-// row). base: the paths of the files the project starts from. Returns the
-// cleaned card (the valid part; cardUsable says whether it can start), the
-// errors the writer is told on its retry, and the unsupported languages.
-export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = []} = {}) {
+// row). base: the paths of the files the project starts from. packages: the
+// room's setting ('none' refuses the package runners in commands). Returns
+// the cleaned card (the valid part; cardUsable says whether it can start),
+// the errors the writer is told on its retry, and the unsupported languages.
+export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [], packages = 'none'} = {}) {
   const errors = [], unsupported = [];
   const o = plain(raw) ? raw : {};
   if (!plain(raw)) errors.push('The answer is not a json object.');
@@ -206,56 +341,68 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = []}
   const baseSet = new Set(Array.isArray(base) ? base : base instanceof Set ? [...base] : Object.keys(base || {}));
   const card = {card: 1, summary: str(o.summary, CARD_LIMITS.summary), languages: [], deliverables: [], run: [], requirements: [], project_checks: [], decisions: []};
   const blocked = str(o.blocked, CARD_LIMITS.blocked);
-  if (blocked) card.blocked = blocked;
-  if (!card.summary && !blocked) errors.push('summary is missing: say in one line what the user receives.');
+  if (blocked && !UNSET.test(blocked) && o.blocked !== false) card.blocked = blocked;
+  if (!card.summary && !card.blocked) errors.push('summary is missing: say in one line what the user receives.');
 
-  // Rule 2: languages.
-  const languages = [...new Set(strings(o.languages, 12, 40).map(s => s.toLowerCase()))];
-  for (const id of languages) {
+  // Rule 2: languages, by id or alias; one this deployment cannot run is an
+  // error the writer's retry may fix, and unsupported (decision U9) after it.
+  const said = new Set();
+  for (const name of strings(o.languages, 12, 40)) {
+    const row = toolchainNamed(name), id = row?.id || name.toLowerCase();
+    if (said.has(id)) continue;
+    said.add(id);
     if (ids.has(id)) card.languages.push(id);
-    else if (!unsupported.includes(id)) unsupported.push(id);
+    else { unsupported.push(id); errors.push(`language "${name}" is not one this deployment runs (${[...ids].join(', ')}): write "text" for documents, pages, styles and data${row ? '' : ', or the id of an installed toolchain'}; if the goal truly needs it, keep it and the room stops.`); }
   }
   if (card.languages.length > CARD_LIMITS.languages) card.languages = card.languages.slice(0, CARD_LIMITS.languages);
 
   // Rule 3: deliverables.
   const list = Array.isArray(o.deliverables) ? o.deliverables : [];
   if (list.length > CARD_LIMITS.deliverables[1]) errors.push(`${list.length} deliverables; list at most ${CARD_LIMITS.deliverables[1]}, the smallest set that meets the goal.`);
-  const names = new Set(), paths = new Set();
+  const names = new Set(), paths = new Set(), reserved = reservedCommands(TOOLCHAINS);
   for (const item of list.slice(0, CARD_LIMITS.deliverables[1])) {
-    if (plain(item) && typeof item.kind === 'string' && !CONTRACT_KINDS.includes(item.kind.trim().toLowerCase())) { errors.push(`deliverable "${String(item.name ?? '').slice(0, 80)}": kind "${item.kind.slice(0, 40)}" is not one of ${CONTRACT_KINDS.join(', ')}.`); continue; }
-    if (plain(item) && typeof item.path === 'string' && item.path.trim() && !isPath(item.path.trim())) { errors.push(`deliverable "${String(item.name ?? '').slice(0, 80)}": "${item.path.slice(0, 120)}" is not a valid relative path.`); continue; }
+    const label = String(plain(item) ? item.name ?? '' : '').slice(0, 80);
+    if (plain(item) && typeof item.kind === 'string' && !CONTRACT_KINDS.includes(item.kind.trim().toLowerCase())) { errors.push(`deliverable "${label}": kind "${item.kind.slice(0, 40)}" is not one of ${CONTRACT_KINDS.join(', ')}.`); continue; }
+    if (plain(item) && typeof item.path === 'string' && item.path.trim() && !isPath(item.path.trim())) { errors.push(`deliverable "${label}": "${item.path.slice(0, 120)}" is not a valid relative path.`); continue; }
     const d = normalizeContract(item, {v8: true});
     if (!d) { errors.push(`a deliverable has no name: ${JSON.stringify(item)?.slice(0, 120)}.`); continue; }
     const kind = kindOf(d), row = d.path ? toolchainOf(d.path) : null;
     // A deliverable in a language that has a row, but no installed one, is unsupported (decision U9).
-    if (row && !ids.has(row.id)) { if (!unsupported.includes(row.id)) unsupported.push(row.id); continue; }
+    if (row && !ids.has(row.id)) { if (!unsupported.includes(row.id)) unsupported.push(row.id); errors.push(`deliverable "${d.name}" is written in ${row.id}, which this deployment does not run.`); continue; }
     const bad = nameError(d, {rows, languages: card.languages});
     if (bad) { errors.push(`deliverable ${bad}.`); continue; }
+    const pathBad = d.path ? deliverablePathError(d.path) : '';
+    if (pathBad) { errors.push(`deliverable "${d.name}": ${pathBad}.`); continue; }
+    if (kind === 'command' && reserved.has(d.name)) { errors.push(`deliverable command "${d.name}" has the name of a system or toolchain program; name it after what it does.`); continue; }
     if (names.has(d.name)) { errors.push(`deliverable "${d.name}" is listed twice; list each once.`); continue; }
     if (d.path && paths.has(d.path)) { errors.push(`two deliverables share the path ${d.path}; give each its own.`); continue; }
     names.add(d.name);
     if (d.path) paths.add(d.path);
-    // A deliverable's language joins the card's when the writer left it out.
+    // A deliverable's installed language joins the card's when the writer left it out.
     if (row && !card.languages.includes(row.id) && card.languages.length < CARD_LIMITS.languages) card.languages.push(row.id);
     card.deliverables.push(d);
   }
-  if (!card.deliverables.length && !blocked) errors.push('no valid deliverable: list at least one thing the user receives.');
+  if (!card.deliverables.length && !card.blocked) errors.push('no valid deliverable: list at least one thing the user receives.');
+  // A function or route needs a code language (v8 S3 review: no card leaves a code worker without one).
+  const gap = codeLanguageGap(card);
+  if (gap.length) errors.push(`${gap.join(', ')} ${gap.length > 1 ? 'are' : 'is a'} function or route deliverable${gap.length > 1 ? 's' : ''}, and languages names no code language: add the one ${gap.length > 1 ? 'they are' : 'it is'} written in (${codeRows(rows).map(r => r.id).join(', ') || 'none installed'}).`);
   if (!card.languages.length && card.deliverables.length) card.languages.push('text');
 
   // Runs.
   const runs = new Set(), commands = new Set(card.deliverables.filter(d => kindOf(d) === 'command').map(d => d.name));
+  const ctx = {paths, base: baseSet, runs, commands, executables, rows, packages, functions: new Set(card.deliverables.filter(d => kindOf(d) === 'function').map(d => d.name))};
   for (const r of (Array.isArray(o.run) ? o.run : []).slice(0, CARD_LIMITS.run)) {
     const id = str(r?.id, 32);
     if (!plain(r) || !RUN_ID.test(id) || runs.has(id)) { errors.push(`run ${JSON.stringify(r)?.slice(0, 120)}: give each run a short unique id of letters, digits, "-" and "_".`); continue; }
     if (r.static === true) { runs.add(id); card.run.push({id, static: true}); continue; }
-    const run = str(r.run, CARD_LIMITS.command), word = firstWord(run), ready = str(r.ready, 512) || '/';
-    if (!run || !commands.has(word) && !executables.has(word)) { errors.push(`run "${id}" starts "${word}", which is neither a command deliverable nor an installed executable.`); continue; }
-    if (!ready.startsWith('/')) { errors.push(`run "${id}": ready must be a path starting with "/".`); continue; }
-    runs.add(id); card.run.push({id, run, port: true, ready});
+    const cmd = commandOf(str(r.run, CARD_LIMITS.command), ctx), ready = typeof r.ready === 'string' && r.ready.trim() ? r.ready.trim() : '/';
+    if (cmd.error) { errors.push(`run "${id}": ${cmd.error}.`); continue; }
+    const readyBad = urlPathError(ready);
+    if (readyBad) { errors.push(`run "${id}": ready ${JSON.stringify(ready).slice(0, 80)}: ${readyBad}.`); continue; }
+    runs.add(id); card.run.push({id, run: cmd.run, argv: cmd.argv, port: true, ready});
   }
 
   // Rule 4: requirements.
-  const ctx = {paths, base: baseSet, runs, commands, executables, functions: new Set(card.deliverables.filter(d => kindOf(d) === 'function').map(d => d.name))};
   const reqs = Array.isArray(o.requirements) ? o.requirements : [];
   if (reqs.length > CARD_LIMITS.requirements[1]) errors.push(`${reqs.length} requirements; list at most ${CARD_LIMITS.requirements[1]}.`);
   const taken = new Set();
@@ -279,32 +426,40 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = []}
     card.requirements.push(req);
   }
   for (const r of card.requirements) if (!r.id) { r.id = nextId(taken, 'R'); taken.add(r.id); }
-  if (!card.requirements.length && card.deliverables.length && !blocked) errors.push('no valid requirement: list at least one yes/no requirement the goal states, with its check.');
+  if (!card.requirements.length && card.deliverables.length && !card.blocked) errors.push('no valid requirement: list at least one yes/no requirement the goal states, with its check.');
 
-  // Rule 7: project checks.
+  // Rule 7: project checks; each covers only the deliverables in its own language.
   let p = 0;
   for (const cmd of strings(o.project_checks, CARD_LIMITS.project_checks + 4, CARD_LIMITS.command)) {
-    const word = firstWord(cmd);
     if (p >= CARD_LIMITS.project_checks) { errors.push(`project_checks: at most ${CARD_LIMITS.project_checks}.`); break; }
-    if (!commands.has(word) && !executables.has(word)) { errors.push(`project check "${cmd.slice(0, 80)}" runs "${word}", which is neither a command deliverable nor an installed executable.`); continue; }
-    card.project_checks.push(cmd);
-    if (card.deliverables.length) card.requirements.push({id: `P${++p}`, says: `${cmd} succeeds`, source: '', serves: commandServes(card, cmd, rows), check: {kind: 'command', run: cmd, expect: {exit: 0}}, project: true});
+    const c = commandOf(cmd, ctx);
+    if (c.error) { errors.push(`project check "${cmd.slice(0, 80)}": ${c.error}.`); continue; }
+    card.project_checks.push(c.run);
+    if (!card.deliverables.length) continue;
+    const covers = commandDeliverables(card, c.argv, rows);
+    card.requirements.push({id: `P${++p}`, says: `${c.run} succeeds`, source: '', serves: covers.length ? covers : card.deliverables.map(d => d.name), covers, check: {kind: 'command', run: c.run, argv: c.argv, expect: {exit: 0}}, project: true});
   }
   card.decisions = strings(o.decisions, CARD_LIMITS.decisions, CARD_LIMITS.decision);
   // Rule 6: coverage.
   const out = card.deliverables.length ? withImplicit(card) : card;
   return {card: out, errors, unsupported};
 }
-// A card the room can start from: not blocked, with a deliverable and a requirement.
-export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && card.requirements?.length > 0;
-// The requirements Clef vets (§1.4): the writer's own, not the runtime's.
+// A card the room can start from: not blocked, with a deliverable and a
+// requirement of the writer's own (never only the runtime's implicit or
+// project ones, v8 S3 review).
+export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && (card.requirements || []).some(r => !r.implicit && !r.project);
+// After Clef vetting (§1.4) a deliverable may fall back to its implicit requirement.
+export const vettedUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && card.requirements?.length > 0;
+// The requirements Clef vets (§1.4): the writer's own, untraced ones always, not the runtime's.
 export const vettable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project);
-// Vetting applied: a requirement Clef answered p < 0.5 for is dropped, and a
-// deliverable left with none gets its implicit requirement. ps: [{id, p}].
+// Vetting applied: a requirement Clef answered p < 0.5 for is dropped, one
+// whose batch failed is kept, marked unvetted, and a deliverable left with
+// none gets its implicit requirement. ps: [{id, p}] or [{id, unvetted:true}].
 export function applyVetting(card, ps, bar = 0.5) {
   const low = new Map((ps || []).filter(x => typeof x?.p === 'number' && x.p < bar).map(x => [x.id, x.p]));
+  const unvetted = new Set((ps || []).filter(x => x?.unvetted).map(x => x.id));
   const dropped = card.requirements.filter(r => low.has(r.id)).map(r => ({...r, p: low.get(r.id)}));
-  const kept = {...card, requirements: card.requirements.filter(r => !low.has(r.id)).map(({untraced, ...r}) => r)};
+  const kept = {...card, requirements: card.requirements.filter(r => !low.has(r.id)).map(({untraced, ...r}) => unvetted.has(r.id) ? {...r, unvetted: true} : r)};
   return {card: withImplicit(kept), dropped};
 }
 

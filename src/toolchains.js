@@ -14,6 +14,10 @@ export const TOOLCHAINS = Object.freeze([
     run_file:['node','{path}'], test:['npm','test'], project_test_markers:['package.json#scripts.test'],
     identifier:'^[A-Za-z_$][A-Za-z0-9_$]{0,63}$', reserved:'await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield',
     names_look_like:'camelCase',
+    // v8 S3 review: the names a card writer may give this toolchain, and the
+    // commands that fetch packages (refused while packages is 'none').
+    aliases:['js','node','nodejs','javascript','ecmascript','mjs','cjs'],
+    package_runners:[['npx'],['npm','exec'],['npm','x'],['npm','install'],['npm','i'],['npm','ci'],['npm','add']],
     import_line:"const { {name} } = require('./{name}');", import_line_esm:"import { {name} } from './{name}';",
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
     stack:'v8', stdlib:'node-builtins', glue:[], image:'build' }),
@@ -23,6 +27,8 @@ export const TOOLCHAINS = Object.freeze([
     run_file:['python3','{path}'], test:['python3','-m','pytest','-q'], project_test_markers:['test_*.py','*_test.py','tests/'],
     identifier:'^[A-Za-z_][A-Za-z0-9_]{0,63}$', reserved:'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield',
     names_look_like:'snake_case',
+    aliases:['py','python','python3','cpython'],
+    package_runners:[['pip'],['pip3'],['pipx'],['uv'],['uvx'],['python3','-m','pip'],['python3','-m','pipx'],['python3','-m','ensurepip']],
     import_line:'from {name} import {name}',
     extractor:'line', defs:['^(?:async\\s+)?def\\s+([A-Za-z_]\\w*)\\s*\\(','^class\\s+([A-Za-z_]\\w*)','^([A-Za-z_]\\w*)\\s*='],
     imports:['^from\\s+([\\w.]+)\\s+import\\s+(.+)$','^import\\s+([\\w., ]+)$'], private_prefix:'_',
@@ -30,7 +36,7 @@ export const TOOLCHAINS = Object.freeze([
     package_marker:'__init__.py', module_of:'dotted', dir_case:'snake',
     unresolved:["cannot import name '(?<name>\\w+)' from '(?<module>[\\w.]+)'","No module named '(?<module>[\\w.]+)'","name '(?<name>\\w+)' is not defined"],
     call_adapter:['python3','/opt/adapters/call.py'], stack:'python', stdlib:'/opt/toolchain/python-stdlib.txt', image:'build' }),
-  Object.freeze({ id:'text', name:'text', manifests:[], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:'text',
+  Object.freeze({ id:'text', name:'text', manifests:[], aliases:['html','htm','css','markdown','md','json','yaml','yml','toml','csv','svg','txt','plain','plaintext','doc','docs','documentation'], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:'text',
     syntax:null, executables:[], extractor:null, link:'placed', stack:null, image:'build' })
 ]);
 // The manifests of toolchains this deployment has no row for: a worker never
@@ -52,6 +58,12 @@ export function toolchainOf(path) {
   return ext && TOOLCHAINS.find(t => t.extensions.includes(ext)) || null;
 }
 export const toolchainById = id => TOOLCHAINS.find(t => t.id === id) || null;
+// The row a language name means: its id or one of its aliases, compared
+// without case (v8 S3 review: "html" and "markdown" are text, "py" is python).
+export function toolchainNamed(name) {
+  const n = String(name ?? '').trim().toLowerCase();
+  return n && TOOLCHAINS.find(t => t.id === n || (t.aliases || []).includes(n)) || null;
+}
 
 // The manifest a path is, or lies under, from every row's manifests (a name
 // ending in '/' is a directory at any depth) and OTHER_MANIFESTS, compared

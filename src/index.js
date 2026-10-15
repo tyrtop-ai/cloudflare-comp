@@ -9,7 +9,7 @@ import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goal
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, TOOLCHAINS, installed as installedRows } from './toolchains.js';
-import { cardContracts, cardUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
+import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
@@ -437,7 +437,14 @@ export class ControlRoom extends DurableObject {
   contractFacts() { return {rows:this.installedToolchains(),languages:this.read('card',null)?.languages||[]}; }
   // The languages a code piece delivers in: v7 links and runs JavaScript;
   // under v8 the card's (its non-text languages; a card of documents only has none).
-  languages() { return this.v8()?codeLanguages(this.read('card',null)):V7_LANGUAGES; }
+  // v8 S3 review: never none while code is required: a card with no code
+  // language (validation and the writer's retry prevent it) reads as every
+  // installed code toolchain.
+  languages() {
+    if(!this.v8())return V7_LANGUAGES;
+    const own=codeLanguages(this.read('card',null));
+    return own.length?own:this.installedToolchains().filter(r=>r.id!=='text'&&(r.executables||[]).length).map(r=>r.id);
+  }
   // The toolchain rows this deployment runs: the Container's last inventory
   // (meta toolchain_inventory, recorded by the verification step from S4),
   // else every row of the phase-1 image (src/toolchains.js).
@@ -5612,29 +5619,48 @@ export class ControlRoom extends DurableObject {
   // v8 §1.6: Root's first act under v8. The card writer turns the goal into
   // the project card, Clef vets its requirements, and the card becomes
   // revision 1 and Root's contracts; the turn then goes on to the split gate.
-  // A blocked card, a language this deployment cannot run, or no usable card
-  // after the writer's retry holds the room (card_blocked, card_failed): Root
-  // waits, and Continue runs the card writer again. True when Root goes on.
+  // A blocked card or a language this deployment cannot run after the
+  // writer's retry holds the room at card_blocked; no usable card, a
+  // function with no code language, or a vetting or save that failed holds
+  // it at card_failed. Root waits. Continue runs the card writer again, or,
+  // when the written card is kept (card_draft: vetting or the save failed),
+  // vets and saves that card again without a new writer call. True when
+  // Root goes on.
   async cardTurn(id) {
     const goal=this.userGoal(),rows=this.installedToolchains(),started=Date.now();
-    const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows});
-    const {card,errors,unsupported}=written,calls=`${written.attempts} call${written.attempts===1?'':'s'}`;
-    const hold=(kind,text)=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,`${text} Continue runs the card writer again.`);return false;};
-    if(card?.blocked)return hold('card_blocked',`The goal cannot be started as given: ${card.blocked}`);
-    if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the goal needs (installed: ${rows.map(t=>t.id).join(', ')}).`);
-    if(!cardUsable(card))return hold('card_failed',clip(`The card writer gave no usable card after ${calls}: ${errors.slice(0,8).join(' ')||'no deliverable or requirement.'}`,1100));
-    if(errors.length)this.event(id,'card_errors',clip(`The card's ${errors.length} remaining problem(s) after the writer's retry; the valid part is kept: ${errors.join(' ')}`,1500));
-    // §1.4: Clef vets the writer's requirements; p < 0.5 drops one.
-    const ps=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card)}),{card:vetted,dropped}=applyVetting(card,ps);
-    for(const r of dropped)this.event(id,'card_requirement_dropped',clip(`Clef judged that the goal does not state or imply ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not in the goal':''}): ${r.says}`,600));
-    if(!cardUsable(vetted))return hold('card_failed','Clef dropped every requirement of the card, and no deliverable has an implicit one.');
-    this.save('card',vetted);
-    this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(vetted),'goal',Date.now());
-    // Root's contracts are the card's deliverables (§2.4), up to 12, as the card holds them.
-    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(vetted)),id);
-    this.save('paused_state',null);
-    this.event(id,'card_written',clip(`Project card (${calls}, ${Date.now()-started} ms): ${vetted.summary||'(no summary)'}. ${cardLine(vetted)}.${vetted.decisions.length?` Decisions: ${vetted.decisions.join(' ')}`:''}`,1500));
-    return true;
+    const hold=(kind,text,again='Continue runs the card writer again.')=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,`${text} ${again}`);return false;};
+    let card=this.read('card_draft',null),calls='the card written before';
+    if(card) this.event(id,'card_draft_reused','The card written before is vetted and saved again; the card writer is not called.');
+    else {
+      const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages});
+      const {errors,unsupported}=written;
+      card=written.card;calls=`${written.attempts} call${written.attempts===1?'':'s'}`;
+      if(card?.blocked)return hold('card_blocked',`The goal cannot be started as given: ${card.blocked}`);
+      if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the card names after the writer's retry (installed: ${rows.map(t=>t.id).join(', ')}).`);
+      if(!cardUsable(card))return hold('card_failed',clip(`The card writer gave no usable card after ${calls}: ${errors.slice(0,8).join(' ')||'no deliverable, or no requirement of its own.'}`,1100));
+      if(written.language_error)return hold('card_failed',clip(`The card names no code language after ${calls}: ${written.language_error}`,1100));
+      if(written.inferred_language)this.event(id,'card_language_inferred',`The card named no code language for its functions or routes; ${written.inferred_language}, the one installed, is used.`);
+      if(errors.length)this.event(id,'card_errors',clip(`The card's ${errors.length} remaining problem(s) after the writer's retry; the valid part is kept: ${errors.join(' ')}`,1500));
+      this.save('card_draft',card);
+    }
+    try {
+      // §1.4: Clef vets the writer's requirements; p < 0.5 drops one, and a batch Clef fails keeps its own, unvetted.
+      const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card)}),{card:vetted,dropped}=applyVetting(card,ps);
+      if(failed.length)this.event(id,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
+      for(const r of dropped)this.event(id,'card_requirement_dropped',clip(`Clef judged that the goal does not state or imply ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not in the goal':''}): ${r.says}`,600));
+      if(!vettedUsable(vetted)){this.save('card_draft',null);return hold('card_failed','Clef dropped every requirement of the card, and no deliverable has an implicit one.');}
+      this.save('card',vetted);
+      this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(vetted),'goal',Date.now());
+      // Root's contracts are the card's deliverables (§2.4), up to 12, as the card holds them.
+      this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(vetted)),id);
+      this.save('card_draft',null);this.save('paused_state',null);
+      this.event(id,'card_written',clip(`Project card (${calls}, ${Date.now()-started} ms): ${vetted.summary||'(no summary)'}. ${cardLine(vetted)}.${vetted.decisions.length?` Decisions: ${vetted.decisions.join(' ')}`:''}`,1500));
+      return true;
+    } catch(e) {
+      // Nothing half-saved: the next attempt starts from the kept card.
+      this.db().exec('DELETE FROM card_revisions');this.save('card',null);this.db().exec("UPDATE agents SET interfaces='[]' WHERE id=?",id);
+      return hold('card_failed',clip(`Vetting or saving the card failed: ${e?.message||e}.`,900),'Continue vets and saves the written card again.');
+    }
   }
   async agentTurn(id) {
     const n = this.node(id);
