@@ -23,11 +23,6 @@ export const MAX_MANAGER_MODEL_CALLS=8;     // per manager per run, a parse retr
 export const MAX_PROBLEMS_PER_REPORT=12;
 export const MAX_PROBLEMS_PER_CALL=12;
 export const MAX_HOPS=depth=>2*depth+2;     // decisions on one problem before it is closed exhausted
-export const PLAIN_JS_CLAUSE='Write plain JavaScript (.js) with Node built-ins only: no TypeScript, JSX, React or packages.';
-// A worker the code gate rejects for this (run3's React "TicketForm", its
-// Express and pg imports) is retasked once with PLAIN_JS_CLAUSE, without the
-// model (D8).
-export const PLAIN_JS=/non_code_rejected|Leaf outputs must be executable|\.(?:tsx?|jsx)\b|\bJSX\b|\bReact\b|TypeScript|Line \d+: "\s*<[A-Za-z]|external package '/i;
 // v7.15.5 (run12): a piece that makes or holds the application's data, whose
 // assignment covers a data function a reader needs (D9): one named for it
 // (Ticket Data Manager, Ticket Store), or one whose promise has a factory, a
@@ -642,16 +637,13 @@ function decideRow(p, ctx) {
 }
 function decideParties(p, ctx, placed, flags) {
   // A stuck child. A child manager whose repair rounds ran out cannot finish
-  // its branch: it fails, unless the model retasks or retires it (M5). A
-  // worker the code gate keeps rejecting for TypeScript, JSX or a non-code
-  // file is retasked once to plain JavaScript (D8). Any other stuck child is
-  // the model's (M5); by default its branch cannot finish here, so the
+  // its branch: it fails, unless the model retasks or retires it (M5). Any
+  // other stuck child is the model's (M5; v8 S1 deleted D8, the retask to
+  // plain JavaScript); by default its branch cannot finish here, so the
   // problem goes up as this manager's own (resubject).
   if(p.kind==='stuck') {
-    const s=placed.find(x=>x.role==='subject'&&x.place==='child'),task=s&&ctx.taskOf?String(ctx.taskOf(s.child)||''):'';
+    const s=placed.find(x=>x.role==='subject'&&x.place==='child');
     if(flags.rounds_exhausted)return s?{rule:'rounds',action:'fail',child:s.child}:ctx.parent?{rule:'rounds',action:'escalate'}:{rule:'rounds',action:'exhausted'};
-    if(s&&ctx.kindOf(s.child)==='worker'&&PLAIN_JS.test(p.detail)&&task&&!task.includes(PLAIN_JS_CLAUSE)&&!ctx.plainJsDone?.(s.child))
-      return {rule:'D8',action:'retask',child:s.child,task:`${task.slice(0,2000-PLAIN_JS_CLAUSE.length-1)} ${PLAIN_JS_CLAUSE}`,plain_js:true};
     return ctx.parent?{rule:'stuck',action:'escalate',resubject:true}:{rule:'stuck',action:'exhausted',reason:'no manager above can retask or retire this branch'};
   }
   // D1 relay: the parent decided which side changes; place that side here.
@@ -735,7 +727,7 @@ export function validateDecision(dec, p, ctx) {
 // M1 nobody wrote what the reader calls; M2 several children agree on names
 // the provider lacks; M3 a builder note blames the provider; M4 the same
 // problem went to the same child twice (or came back unchanged twice); M5 a
-// stuck child D8 does not settle; M6 a child escalated it; M7 no party lies
+// stuck child; M6 a child escalated it; M7 no party lies
 // here; M8 an unanchored disagreement between two children.
 export function modelTrigger(p, dec, ctx) {
   const f=p.facts||{},flags=p.flags||{};
@@ -747,7 +739,7 @@ export function modelTrigger(p, dec, ctx) {
   // flags.model_routed: it closes); below, the parent decides.
   if(dec.route&&dec.action==='assign'&&!dec.delegate&&(ctx.recurrence?.(p,dec.child)||0)>=STUCK_AFTER)return 'M4';
   if(dec.route||dec.rule==='declined')return dec.action==='exhausted'&&!flags.model_routed?'M4':null;
-  if(p.kind==='stuck')return dec.rule==='D8'?null:'M5';
+  if(p.kind==='stuck')return 'M5';
   if(['D1','D2','D3','D5'].includes(dec.rule)||dec.unique)return null;
   if(dec.rule==='D7')return dec.action==='exhausted'?'M7':null;
   if(dec.action!=='assign')return null;

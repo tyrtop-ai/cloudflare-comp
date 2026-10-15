@@ -12,11 +12,11 @@ const I=await import('../src/interfaces.js');
 const L=await import('../src/linker.js');
 const {normalizeAction}=await import('../src/protocol.js');
 const {ROOT_PROMISE,SPLIT_USES,scopeUses}=await import('../src/model.js');
-const {contractText,codeWritingTask}=await import('../src/code-work.js');
+const {contractText}=await import('../src/code-work.js');
 
 const START=ROOT_PROMISE[0];
 const fn=(name,does,params=[])=>({name,does,params});
-// Run12's Root split, as plan.json records it (tasks before codeWritingTask).
+// Run12's Root split, as plan.json records it (its tasks, which v8 passes through unwrapped).
 const op=(verb,does)=>({label:`${verb} Ticket Operation`,task:`Write code that implements the ticket ${verb==='Create'?'creation':verb==='View'?'viewing':verb==='Update'?'update':'deletion'} logic`,functions:[fn(`${verb.toLowerCase()}Ticket`,does,['data'])]});
 const ops=[op('Create','Adds a new ticket to the data store'),op('View','Retrieves a ticket by ID from the data store'),op('Update','Modifies an existing ticket in the data store'),op('Delete','Removes a ticket from the data store')];
 const entry={label:'Entry Module',task:'Write code that implements the entry point exporting start()',functions:[{name:'start'}]};
@@ -194,7 +194,7 @@ test('v7.15.5: scopeUses asks one question per pair over the proposed pieces; MO
 // saveTickets, and each operation piece uses them; every worker waits.
 async function plan12(room) {
   await room.provision('root',null,'Root objective',`${GOAL} x`,ROOT_PROMISE);room.set('goal',GOAL);
-  await room.spawn('root',corrected().map(c=>({label:c.label,task:codeWritingTask(c.task),interfaces:c.functions.map(f=>f.name==='start'?START:f),...(c.uses?{uses:c.uses}:{})})));
+  await room.spawn('root',corrected().map(c=>({label:c.label,task:c.task,interfaces:c.functions.map(f=>f.name==='start'?START:f),...(c.uses?{uses:c.uses}:{})})));
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
 }

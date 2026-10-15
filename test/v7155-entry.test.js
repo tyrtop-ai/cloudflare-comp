@@ -84,7 +84,7 @@ test('v7.15.5: run12 replay: Root\'s split composes the entry: its promise and a
   assert.equal(calls.split.length,1);
   const [start]=room.promisedOf('root.1');
   assert.deepEqual(start,{name:'start',does:'no arguments; returns { createTicket, viewTicket, updateTicket, deleteTicket }, each imported on its own line by its name',params:[]});
-  assert.equal(room.node('root.1').task,`Write code that implements the entry point exporting start().${deliver} start() returns { createTicket, viewTicket, updateTicket, deleteTicket }, the functions other pieces promise for the goal's operations: ${FROM}. Import each on its own line, by exactly its name, with the name as the path: ${LINES} Return each under its name, itself or a wrapper that calls it; do not write them here.`);
+  assert.equal(room.node('root.1').task,`Write code that implements the entry point exporting start(). start() returns { createTicket, viewTicket, updateTicket, deleteTicket }, the functions other pieces promise for the goal's operations: ${FROM}. Import each on its own line, by exactly its name, with the name as the path: ${LINES} Return each under its name, itself or a wrapper that calls it; do not write them here.`);
   assert.deepEqual(room.promisedOf('root.2'),[readTickets,saveTickets],'the siblings are as Root split them');
   assert.deepEqual(room.children('root').map(c=>JSON.parse(c.uses)),corrected12.map(([,,,uses])=>uses||[]),'the splitter\'s uses: Clef is asked about none');
   assert.deepEqual(room.read('fn_answers:root.2',[]),[],'only the start carrier is answered up front');

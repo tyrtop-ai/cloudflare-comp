@@ -196,7 +196,8 @@ test('v7.14: Root splits like every manager: an entry mark is dropped and no chi
   assert.ok(room.snapshot().events.some(e=>e.kind==='interfaces_owned_elsewhere'&&e.actor==='root.1'&&/lists start, which "Application Entry 1" already provides/.test(e.body)));
   const kids=[...room.children('root'),...room.children('root.1')];
   assert.ok(kids.every(k=>!k.task.includes(ENTRY_CONTRACT)&&!k.task.includes(GOAL_START_REQUIREMENT)),'no child task gets a contract appended');
-  assert.match(kids[1].task,/^Write executable source code to implement the following specific piece: Write the entry module 1 that wires the pieces together\. Deliver working source files/);
+  // v8 S1: the task passes through as the splitter wrote it (no "Write executable source code" wrapper).
+  assert.equal(kids[1].task,'Write the entry module 1 that wires the pieces together');
   assert.equal(room.get('entry_child'),'');
   assert.ok(!room.snapshot().events.some(e=>e.kind==='entry_child'));
   assert.ok(room.node('root').task.endsWith(' '+GOAL_START_REQUIREMENT),'the requirement is part of the goal');

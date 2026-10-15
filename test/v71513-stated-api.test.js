@@ -234,7 +234,7 @@ test('v7.15.13 room 1 (run18\'s shape): the start carrier is composed to write a
   assert.deepEqual(room.children('root').map(c=>c.label),[...PLAN18.map(p=>p.label),'Temporary builder','Compiler']);
   assert.deepEqual(dbEvents(room,'start_composed').map(e=>e.body),['"Start entry point" carries start: it returns analyze, written here from processInterfaces(interfaces), processCircuits(circuits), processDNS(dns), processServices(services), generateReport(findings), from the plan.']);
   assert.deepEqual(room.promisedOf('root.1'),[{name:'start',does:'no arguments; returns { analyze }, written here',params:[]},WRITTEN]);
-  assert.equal(room.node('root.1').task,PLAN18[0].task+deliver+TAIL18);
+  assert.equal(room.node('root.1').task,PLAN18[0].task+TAIL18);
   assert.doesNotMatch(room.node('root.1').task,/one method per other goal operation|ask your manager|goal operation/);
   assert.deepEqual(room.read('fn_answers:root.1',[]).map(a=>[a.key,a.kind,a.fn.name,a.fn.owner]),[['fn processInterfaces','provided','processInterfaces','Process interfaces'],['fn processCircuits','provided','processCircuits','Process circuits'],['fn processDNS','provided','processDNS','Process DNS'],['fn processServices','provided','processServices','Process services'],['fn generateReport','provided','generateReport','Generate report']]);
   const carrier=inputs.find(u=>u.your_label==='Start entry point');
@@ -264,7 +264,7 @@ test('v7.15.13 room 2 (run19\'s shape): analyze and processCircuits are kept aga
   assert.deepEqual(room.promisedOf('root.4').map(f=>f.name),['processCircuits']);
   assert.deepEqual(dbEvents(room,'start_composed').map(e=>e.body),['"Entry module" carries start: it returns analyze from "Analyze snapshot", from the plan.']);
   assert.deepEqual(room.promisedOf('root.1'),[{name:'start',does:'no arguments; returns { analyze }, each imported on its own line by its name',params:[]}]);
-  assert.equal(room.node('root.1').task,PLAN19[0].task+deliver+TAIL19);
+  assert.equal(room.node('root.1').task,PLAN19[0].task+TAIL19);
   assert.deepEqual(room.read('fn_answers:root.1',[]).map(a=>[a.fn.name,a.fn.owner]),[['analyze','Analyze snapshot']],'the carrier is answered analyze alone');
   assert.deepEqual(dbEvents(room,'api_covered').map(e=>e.body),['Each method the goal states start() returns is there: analyze']);
   assert.deepEqual([calls.coverage.length,calls.link.length,calls.manager.length,calls.runner.length,dbEvents(room,'run_passed').length,dbEvents(room,'contract_returned').length,rounds(room)],[0,0,0,1,1,0,0]);

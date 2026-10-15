@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {liveRoom,events,trace,openProblems} from './helpers/room.js';
-import {sourceCodeError} from '../src/code-work.js';
+import {fileGateError} from '../src/code-work.js';
 const L=await import('../src/linker.js');
 const {ROOT_PROMISE,GOAL_START_REQUIREMENT}=await import('../src/model.js');
 const {MAX_INTERFACES}=await import('../src/interfaces.js');
@@ -99,8 +99,8 @@ test('v7.15.6 review: contractCheck, foreign in a stub beside the module that im
   assert.equal(more.length,0);
   assert.deepEqual([x.rule,x.name,x.path,x.dropped,x.how],['foreign','deleteTicket','deleteTicket.js',true,'deleteTicket: "Delete ticket" promises it.']);
   assert.equal(x.text,"deleteTicket.js exports deleteTicket, which \"Delete ticket\" promises: leave it with no export of it (module.exports = {}) or re-export the import (const { deleteTicket } = require('./deleteTicket'); module.exports = { deleteTicket }); entry.js already imports it.");
-  for(const form of ['module.exports = {};',"const { deleteTicket } = require('./deleteTicket');\nmodule.exports = { deleteTicket };"]){assert.equal(sourceCodeError('deleteTicket.js',form),null,form);assert.deepEqual(L.contractCheck({'entry.js':RUN13.entry,'deleteTicket.js':form},{promise:[ROOT_PROMISE[0]],foreign,goal:GOAL}),[],form);}
-  assert.match(sourceCodeError('deleteTicket.js',''),/no substantive source code/,'the natural move, an empty file, is refused: not offered');
+  for(const form of ['module.exports = {};',"const { deleteTicket } = require('./deleteTicket');\nmodule.exports = { deleteTicket };"]){assert.equal(fileGateError('deleteTicket.js',form),null,form);assert.deepEqual(L.contractCheck({'entry.js':RUN13.entry,'deleteTicket.js':form},{promise:[ROOT_PROMISE[0]],foreign,goal:GOAL}),[],form);}
+  assert.match(fileGateError('deleteTicket.js',''),/the file is empty/,'the natural move, an empty file, is refused: not offered');
   // Declared and no longer exported: the declaration goes too; the module exports nothing, so it is no stub to drop.
   const kept=L.contractCheck({'entry.js':RUN13.entry,'deleteTicket.js':"function deleteTicket(id) { return { id, status: 'deleted' }; }\nmodule.exports = {};\n"},{promise:[ROOT_PROMISE[0]],foreign,goal:GOAL});
   assert.deepEqual(kept.map(x=>[x.dropped,x.text]),[[false,"deleteTicket.js declares deleteTicket, which \"Delete ticket\" promises: leave it without that function (module.exports = {}) or re-export the import (const { deleteTicket } = require('./deleteTicket'); module.exports = { deleteTicket }); entry.js already imports it."]]);
@@ -108,8 +108,8 @@ test('v7.15.6 review: contractCheck, foreign in a stub beside the module that im
   const esmEntry=RUN13.entry.replace(/const \{ (\w+) \} = require\('(\.\/\w+)'\);/g,"import { $1 } from '$2';").replace('function start()','export function start()').replace('\nmodule.exports = { start };\n','');
   const esm=L.contractCheck({'entry.js':esmEntry,'deleteTicket.js':"export function deleteTicket(id) {\n  return { id, status: 'deleted' };\n}\n"},{promise:[ROOT_PROMISE[0]],foreign,goal:GOAL,esm:true});
   assert.deepEqual(view(esm),[['foreign','deleteTicket','deleteTicket.js',"deleteTicket.js exports deleteTicket, which \"Delete ticket\" promises: leave it with no export of it (export default {}) or re-export the import (import { deleteTicket } from './deleteTicket'; export { deleteTicket };); entry.js already imports it."]]);
-  for(const form of ['export default {};',"import { deleteTicket } from './deleteTicket';\nexport { deleteTicket };"]){assert.equal(sourceCodeError('deleteTicket.js',form),null,form);assert.deepEqual(L.contractCheck({'entry.js':esmEntry,'deleteTicket.js':form},{promise:[ROOT_PROMISE[0]],foreign,goal:GOAL,esm:true}),[],form);}
-  assert.match(sourceCodeError('deleteTicket.js','export {};'),/no substantive source code/);
+  for(const form of ['export default {};',"import { deleteTicket } from './deleteTicket';\nexport { deleteTicket };"]){assert.equal(fileGateError('deleteTicket.js',form),null,form);assert.deepEqual(L.contractCheck({'entry.js':esmEntry,'deleteTicket.js':form},{promise:[ROOT_PROMISE[0]],foreign,goal:GOAL,esm:true}),[],form);}
+  assert.match(fileGateError('deleteTicket.js','export {};'),/no substantive source code/);
   // Written inside the module that would import it: the existing wording, nothing to drop.
   const inside=L.contractCheck({'entry.js':RUN13.entry.replace("const { deleteTicket } = require('./deleteTicket');","const deleteTicket = (id) => ({ id, status: 'deleted' });")},{promise:[ROOT_PROMISE[0]],foreign,goal:GOAL});
   assert.deepEqual(inside.map(x=>[x.path,x.dropped,x.text]),[['entry.js',false,"deleteTicket is promised by \"Delete ticket\": import it on its own line, const { deleteTicket } = require('./deleteTicket'), and use it; do not write it here."]]);

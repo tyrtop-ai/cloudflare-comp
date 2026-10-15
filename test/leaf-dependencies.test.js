@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {register} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
-import {sourceDependencyError} from '../src/code-work.js';
-import {decide,generateFile} from '../src/model.js';
+import {sourceDependencyError,fileGateError} from '../src/code-work.js';
+import {generateFile} from '../src/model.js';
 register('./cloudflare-loader.mjs',import.meta.url);
-const {ControlRoom}=await import('../src/index.js');
+const {ControlRoom,normalizeRoomSettings,DEFAULT_ROOM_SETTINGS}=await import('../src/index.js');
 
 class Sql {
   constructor(){this.db=new DatabaseSync(':memory:');}
@@ -23,9 +23,10 @@ class Artifacts {
   async write({name,path,content}){this.repos.get(name).set(path,content);return{commit:'a'.repeat(40)};}
 }
 const response=x=>({response:JSON.stringify(x)});
-async function leafRoom(run){
+async function leafRoom(run,settings=null){
   const artifacts=new Artifacts();
   const room=new ControlRoom({storage:{sql:new Sql()},waitUntil(){}},{AI:{run},TEST_ARTIFACT_STORE:artifacts});
+  if(settings)room.save('settings',normalizeRoomSettings(settings));
   await room.provision('root',null,'Root','Write code for ticket operations');
   room.set('goal','Write code for ticket operations');
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root'");
@@ -107,19 +108,27 @@ test('two source files authored by one leaf can refer to each other even if emit
   assert.ok(!room.snapshot().events.some(e=>e.kind==='code_retry'));
 });
 
-test('both generation prompts contain the identical ownership rule and mock builds omit Express',async()=>{
-  const prompts=[];
-  const AI={run:async(_name,args)=>{prompts.push(args.messages[0].content);return response({summary:'Source',done:true,files:[{path:'logic.js',content:'export const main = x => x;'}]});}};
-  await decide({AI},{your_label:'Leaf',phase:'implement',your_responsibility:'Write logic',your_private_children:[],neighbor_owners:[]});
-  await generateFile({AI:{run:async(_name,args)=>{prompts.push(args.messages[0].content);return{response:'export const main = x => x;'};}}},
-    {node:{id:'root.1',label:'Leaf'},path:'logic.js',task:'Write logic',files:[],inbox:[],children:[]});
-  for(const prompt of prompts){
-    assert.match(prompt,/Node\.js built-in modules/);
-    assert.match(prompt,/import it with a relative path and the export name you expect/);
-    assert.match(prompt,/get collaborators only by importing them, never as function or constructor parameters, factories or a start\(\.\.\.\) of your own/);
-    assert.match(prompt,/keep any shared state at module level in the module that owns it/);
-    assert.doesNotMatch(prompt,/may also receive collaborators|accept them as parameters/);
-  }
+// v8 S1: the npm ban is the room setting packages (decision U4): 'none', the
+// default, keeps the JavaScript row's stdlib rule; 'allowed' lifts it.
+test('v8 S1: packages is a room setting, none by default; allowed lets a package import through the gate',async()=>{
+  assert.equal(DEFAULT_ROOM_SETTINGS.packages,'none');
+  assert.equal(normalizeRoomSettings({packages:'allowed'}).packages,'allowed');
+  assert.throws(()=>normalizeRoomSettings({packages:'some'}),/Invalid packages/);
+  const express="const express=require('express'); module.exports=express();";
+  assert.match(fileGateError('server.js',express),/external package 'express'/);
+  assert.match(fileGateError('server.js',express,{packages:'none'}),/external package 'express'/);
+  assert.equal(fileGateError('server.js',express,{packages:'allowed'}),null);
+  // Allowed, the parse gate still holds.
+  assert.match(fileGateError('server.js',"const express=require('express'; ",{packages:'allowed'}),/does not parse as JavaScript/);
+  let calls=0;
+  const {room,artifacts}=await leafRoom(async()=>{calls++;return response({summary:'HTTP server',done:true,files:[{path:'server.js',content:express}]});},{packages:'allowed'});
+  await room.turn('root');
+  assert.equal(calls,1,'no correction asked for');
+  assert.equal(await artifacts.read(room.node('root').repo_name,'server.js'),express);
+});
+
+// The prompt-rule text test is deleted in v8 S1 (prompts are S6's); the mock builds still use no packages.
+test('mock builds omit Express and dependencies',async()=>{
   const packageJSON=JSON.parse(await generateFile({MOCK_AI:'true'}, {node:{id:'root.3',label:'Temporary builder'},path:'package.json'}));
   assert.equal(packageJSON.dependencies,undefined);
   assert.equal(packageJSON.devDependencies,undefined);

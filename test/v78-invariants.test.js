@@ -34,11 +34,22 @@ test('permanent entrypoint loads mixed JS modules and passes namespaces into wir
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-test('production leaf rejects compiled TS/JSX outputs; accepts JS/MJS/CJS',async()=>{
+// v8 S1 (was "production leaf rejects compiled TS/JSX outputs; accepts
+// JS/MJS/CJS"): a worker writes any text file; JavaScript alone is parsed by
+// Acorn in the Worker, and only the runtime's own paths are refused.
+test('production leaf writes any text file; JS is parsed by Acorn; runtime-owned paths are refused',async()=>{
   const room=await roomFixture({run:async()=>{throw new Error('unused')}});
-  for(const ext of ['ts','tsx','jsx','html']) await assert.rejects(room.putFile('root.1','ticket.'+ext,'export interface Ticket { id: number }'),/Leaf outputs must be executable/);
+  const {fileGateError}=await import('../src/code-work.js');
+  const typed='export interface Ticket { id: number }';
+  for(const ext of ['ts','tsx','jsx','html','md','py','css','txt']) await room.putFile('root.1','ticket.'+ext,typed);
   for(const ext of ['js','mjs','cjs']) await room.putFile('root.1','ticket.'+ext,'module.exports = { Ticket: class Ticket {} };');
-  assert.equal(room.files('root.1').filter(f=>f.path.startsWith('ticket.')).length,3);
+  assert.equal(room.files('root.1').filter(f=>f.path.startsWith('ticket.')).length,11);
+  for(const path of ['glue/index.js','.recursive/RUN.md'])await assert.rejects(room.putFile('root.1',path,'x'),/runtime-owned path/);
+  // The gate: Acorn for the JavaScript row only; no check for a row the Worker cannot parse.
+  assert.match(fileGateError('ticket.js',typed),/does not parse as JavaScript/);
+  for(const ext of ['ts','tsx','jsx','py','md','html'])assert.equal(fileGateError('ticket.'+ext,typed),null,ext);
+  assert.match(fileGateError('data.json','{"a":'),/invalid JSON/);
+  assert.equal(fileGateError('data.json','{"a":1}'),null);
 });
 
 test('assembly filter catches Application Orchestrator and Main Application, not user-facing features',async()=>{

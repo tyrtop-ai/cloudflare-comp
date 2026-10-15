@@ -330,7 +330,7 @@ test('v7.15.2 review: an atomic top\'s write to the runner\'s test is refused an
   await room.start(GOAL,8);await drain();
   assert.equal(room.get('status'),'complete',trace(room));
   assert.deepEqual(events(room,'glue_rejected').map(e=>e.body),['Not written: glue/smoke.js, package.json, which the runtime writes for each run.']);
-  assert.equal(events(room,'non_code_rejected').length,0);
+  assert.equal(events(room,'glue_rejected').length,1,'only the runtime\'s own files were refused');
   assert.equal(await room.indexedContent('root','glue/smoke.js'),room.read('runner_test',null).test,'the runner\'s test is the runner\'s');
   assert.equal(room.files('root').find(f=>f.path==='glue/smoke.js').revision,1,'never rewritten');
   // Its files did not change, so the problem went back with no run, saying so, beside the reason.

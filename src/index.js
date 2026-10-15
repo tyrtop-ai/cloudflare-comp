@@ -5,7 +5,7 @@ export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
-import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
+import { contractText, assignedPiece, fileGateError, deliveredFiles, productionFiles, runtimeOwned } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
@@ -65,9 +65,11 @@ const ROOM_SCHEMA = '7.14';
 const PROBLEM_JSON = ['parties','facts','evidence','directive','flags','trail'];
 // A failed turn the code gate caused (spec 3.2): the worker's own output was
 // rejected, not the infrastructure (an Artifacts commit, a network error).
-const CODE_GATE = /^(?:missing_code|non_code_rejected|split_rejected|code_retry|ask_unheard)\b|Worker artifact rejected|Leaf outputs must be executable|Leaf cannot finish without|Bad (?:decomposition|action) response/;
+// v8 S1: missing_deliverable replaces missing_code (still read in rooms
+// stored before it); non_code_rejected is gone: any text file is a deliverable.
+const CODE_GATE = /^(?:missing_deliverable|missing_code|split_rejected|code_retry|ask_unheard)\b|Worker artifact rejected|Leaf cannot finish without|Bad (?:decomposition|action) response/;
 // The events a stuck worker's manager reads as its last failures.
-const FAILURE_EVENTS = ['error','missing_code','non_code_rejected','split_rejected','code_retry','ask_unheard'];
+const FAILURE_EVENTS = ['error','missing_deliverable','missing_code','split_rejected','code_retry','ask_unheard'];
 const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
 // v7.15.13 (run20): the parameters of a function a module exports, from its
 // surface (a named export, a default function, a default object's member, a
@@ -167,6 +169,7 @@ export const ROOM_LIMITS = Object.freeze({
   max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000], max_children: [2, 64]
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
+  packages: 'none',
   max_agents: 64, max_depth: 10, parallel: 16, max_children: 7,
   model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
 });
@@ -208,6 +211,12 @@ export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
     const p=Number(raw.split_threshold);
     if (!Number.isFinite(p) || p<0.2 || p>0.8) throw new Error('Invalid split threshold: expected 0.2–0.8');
     result.split_threshold=p;
+  }
+  // v8 S1 (decision U4): third-party packages. 'none' keeps each toolchain's
+  // stdlib rule (the JavaScript row's ban on npm packages); 'allowed' lifts it.
+  if (raw.packages !== undefined) {
+    if (!['none','allowed'].includes(raw.packages)) throw new Error("Invalid packages: expected 'none' or 'allowed'");
+    result.packages=raw.packages;
   }
   return result;
 }
@@ -4098,9 +4107,9 @@ export class ControlRoom extends DurableObject {
        !(runtimeGlue?RUNTIME_GLUE.includes(path):materialized?path===COMPILE_MANIFEST:path==='glue/smoke.js'))
       throw new Error('The compiler writes only glue/index.js, package.json, glue/smoke.js and '+COMPILE_MANIFEST+': '+path);
     // runtimeGlue: an atomic top's package.json, which its compile writes.
-    if(this.env.MOCK_AI!=='true' && !materialized && !runtimeGlue && n.phase==='implement' && !isRuntimeNode(n) &&
-       !path.startsWith('memory/') && ![PUBLIC_KNOWLEDGE,PRIVATE_KNOWLEDGE].includes(path) && !isRuntimeLeafFile(path))
-       throw new Error('Leaf outputs must be executable .js, .mjs, or .cjs source: '+path);
+    // v8 S1: a worker writes any text file, except the paths the runtime owns.
+    if(this.env.MOCK_AI!=='true' && !materialized && !runtimeGlue && n.phase==='implement' && !isRuntimeNode(n) && runtimeOwned(path))
+       throw new Error('Workers cannot write a runtime-owned path: '+path);
     if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
       if(!materialized && !runtimeGlue && ![PUBLIC_KNOWLEDGE,PRIVATE_KNOWLEDGE].includes(path) && !['glue/wiring.js','glue/smoke.js'].includes(path))
         throw new Error('Only glue/wiring.js and glue/smoke.js may be authored by a builder; glue/index.js and package.json belong to runtime');
@@ -5367,16 +5376,15 @@ export class ControlRoom extends DurableObject {
       }
       // Written again with this turn's writes, which a failed commit rolls back.
       if(owners)action.remember.push({visibility:'private',key:'owned_elsewhere',value:owners});
-      // A splitter does not delegate decisions or documents. Its children are
-      // explicitly contracted to write actual code for their piece, regardless
-      // of whether Qwen used a vague label while proposing the split.
-      // v7.14: the top splits like every manager; the start() requirement is
-      // part of the goal, assigned like any other requirement.
-      if(this.env.MOCK_AI!=='true' && (splitting || action.spawn.length))
-        action.spawn=action.spawn.map(spec=>spec.label==='Temporary builder'?spec:{...spec,task:codeWritingTask(spec.task)});
-      // Leaves publish their own source; builders author only narrow wiring
+      // v8 S1: a split's tasks pass through as the splitter wrote them (no
+      // "Write executable source code" wrapper): a piece may deliver any file.
+      // Leaves publish their own files; builders author only narrow wiring
       // and smoke tests. Runtime alone owns package/entrypoint generation.
       if(this.env.MOCK_AI!=='true' && !splitting && !this.manager(id) && n.label!=='Temporary builder') {
+        // v8 §3.2: an answer in the file-block format; a file the token cap
+        // cut is written again alone (the code_retry path below).
+        if(raw.format_fallback)this.event(id,'format_fallback',`The answer was read as ${raw.format_fallback==='json'?'a JSON action':'one fenced file'}, not file blocks.`);
+        if(raw.truncated?.length)this.event(id,'code_retry',`Cut off before its end, written again alone: ${raw.truncated.join(', ')}`);
         // v7.15.2: an atomic top's loader, package and runner's test are the
         // runtime's, written again for each run: an edit was undone and its
         // repair heard that nothing changed (review).
@@ -5386,22 +5394,17 @@ export class ControlRoom extends DurableObject {
           action.files=action.files.filter(f=>!RUNTIME_GLUE.includes(f.path));
           (action.notes||=[]).push(`${glue.map(f=>f.path).join(', ')} ${glue.length>1?'were':'was'} not written: glue/index.js (the loader), package.json and glue/smoke.js (the runner's test, fixed for the whole run) are the runtime's and are written again for each run. Change your own modules so that the application passes.`);
         }
-        const prose=action.files.filter(f=>!isRuntimeLeafFile(f.path));
-        if(prose.length) {
-          this.event(id,'non_code_rejected',`Rejected non-code files: ${prose.map(f=>f.path).join(', ')}`);
-          action.files=action.files.filter(f=>isRuntimeLeafFile(f.path));
+        // v8 S1: any text file is kept (under v7 a non-JS file is carried to
+        // the export, never linked or run); only the runtime's own paths are not.
+        const owned=action.files.filter(f=>runtimeOwned(f.path));
+        if(owned.length) {
+          this.event(id,'glue_rejected',`Not written: ${owned.map(f=>f.path).join(', ')}, which the runtime owns.`);
+          action.files=action.files.filter(f=>!runtimeOwned(f.path));
         }
-        if(action.done && !action.spawn.length) {
-          const existing=productionFiles(this.files(id)).map(f=>f.path);
-          const allPaths=[...existing,...action.files.map(f=>f.path)];
-          const required=requiredCodeModule(n.task);
-          if(!allPaths.length || required && !allPaths.includes(required)) {
-            this.event(id,'missing_code',required ?
-              `Leaf must publish its assigned module ${required}, not just other source files.`:
-              'Leaf attempted to complete its code-writing assignment without any executable code.');
-            this.incrementFailures(id,'missing_code');
-            return;
-          }
+        if(action.done && !action.spawn.length && !deliveredFiles([...this.files(id),...action.files]).length) {
+          this.event(id,'missing_deliverable','Leaf attempted to finish its assignment without delivering any file.');
+          this.incrementFailures(id,'missing_deliverable');
+          return;
         }
       }
       // Knowledge can only be written using remember, never generated as a
@@ -5654,7 +5657,7 @@ export class ControlRoom extends DurableObject {
               // The worker's own file must parse before it is committed. A
               // parse failure goes straight back to the same worker as a
               // targeted correction; it never reaches the builder.
-              const invalid=sourceCodeError(f.path,content)||sourceParseError(f.path,content)||sourceDependencyError(f.path,content);
+              const invalid=fileGateError(f.path,content,{packages:this.settings().packages,runtime:isRuntimeNode(current)});
               if(invalid)throw new Error('Worker artifact rejected: '+invalid);
             }
             await this.putFile(id,f.path,content);
@@ -5718,8 +5721,8 @@ export class ControlRoom extends DurableObject {
             return;
           }
           if(this.env.MOCK_AI!=='true' && !this.manager(id) && n.label!=='Temporary builder' &&
-              !productionFiles(this.files(id)).length) {
-            throw new Error('Leaf cannot finish without publishing actual source code for its assigned module');
+              !deliveredFiles(this.files(id)).length) {
+            throw new Error('Leaf cannot finish without delivering any file for its assignment');
           }
           // v7.15: the plan is checked on return, before linking. No throw:
           // a thrown op replays without asking the model (F4).

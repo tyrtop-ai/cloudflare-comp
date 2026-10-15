@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {register} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
-import {codeWritingTask,isCodeFile,sourceCodeError,requiredCodeModule} from '../src/code-work.js';
+import {fileGateError,deliveredFiles} from '../src/code-work.js';
 import {normalizeAction} from '../src/protocol.js';
 import {decompose,decide} from '../src/model.js';
 register('./cloudflare-loader.mjs',import.meta.url);
@@ -31,18 +31,15 @@ async function roomWithAI(run,task='Write the source code for a ticket module') 
 }
 const response=x=>({response:JSON.stringify(x)});
 
-test('code writing assignments do not invent source filenames or interfaces',()=>{
-  const task=codeWritingTask('Validate a ticket title',{module:'src/validateTitle.js',exports:['validateTitle(title) -> boolean']});
-  assert.match(task,/Write executable source code/);
-  assert.doesNotMatch(task,/Required source file|Required public export|src\/validateTitle|validateTitle\(title\)/);
-  assert.equal(requiredCodeModule(task),null);
-  const inherited=codeWritingTask('Implement the exact interface Required source file: src/explicit.js.');
-  assert.match(inherited,/Required source file: src\/explicit.js/);
-  assert.equal(requiredCodeModule(inherited),'src/explicit.js');
-  assert.equal(isCodeFile('README.md'),false);
-  assert.equal(isCodeFile('module.js'),true);
-  assert.match(sourceCodeError('module.js','// TODO: design the validation rules'),/no executable declaration|no substantive/i);
-  assert.equal(sourceCodeError('module.js','export function validateTitle(t) { return t.length>0; }'),null);
+// v8 S1 (the first test was "code writing assignments do not invent source
+// filenames"): a task is no longer wrapped as "Write executable source code";
+// any text file is a deliverable, and a JS file still passes the JS row's gate.
+test('v8 S1: any text file is a deliverable; a JS file still passes the JavaScript gate',()=>{
+  const files=['README.md','LICENSE','docs/guide.md','app.py','index.html','module.js','memory/public/notes.json','components/a/x.js','glue/index.js','.recursive/RUN.md'].map(path=>({path}));
+  assert.deepEqual(deliveredFiles(files).map(f=>f.path),['README.md','LICENSE','docs/guide.md','app.py','index.html','module.js']);
+  assert.equal(fileGateError('README.md','# How to run it\n\nRun the tool.'),null);
+  assert.match(fileGateError('module.js','// TODO: design the validation rules'),/no executable declaration|no substantive/i);
+  assert.equal(fileGateError('module.js','export function validateTitle(t) { return t.length>0; }'),null);
 });
 
 test('Qwen splitter only assigns code to write; unrequested module and export fields are ignored',async()=>{
@@ -72,7 +69,7 @@ test('a leaf can publish complete code in one Qwen inference rather than separat
     return response({summary:'Implemented ticket-title validator',done:true,files:[
       {path:'validateTitle.js',content:source}
     ]});
-  },codeWritingTask('Validate a ticket title',{module:'validateTitle.js',exports:['validateTitle(title) -> boolean']}));
+  },'Validate a ticket title');
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root'");
   await room.turn('root');
   assert.equal(modelCalls,1,'source returned inline; no redundant generation call');
@@ -82,23 +79,56 @@ test('a leaf can publish complete code in one Qwen inference rather than separat
   assert.notEqual(room.node('root').status,'done');
 });
 
-test('a leaf cannot finish a code-writing assignment by publishing a README',async()=>{
-  const {room}=await roomWithAI(async()=>response({summary:'Defined rules in a README',done:true,files:[{path:'README.md',content:'# How the code could work'}]}));
-  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root'");
-  await room.turn('root');
-  assert.equal(room.files('root').some(f=>f.path==='README.md'),false);
-  assert.notEqual(room.node('root').status,'done');
-  assert.ok(room.snapshot().events.some(e=>e.kind==='non_code_rejected'));
-  assert.ok(room.snapshot().events.some(e=>e.kind==='missing_code'));
+// v8 S1 inverts v7's "a leaf cannot finish a code-writing assignment by
+// publishing a README": a piece whose work is a document finishes with it.
+async function docWorker(run,task='Write the README that explains how to install and run the tool') {
+  const {room,artifacts}=await roomWithAI(run,'Build a small command-line tool');
+  await room.spawn('root',[{label:'Docs',task}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
+  room.db().exec("UPDATE agents SET phase='implement',status='ready' WHERE id='root.1'");
+  return {room,artifacts};
+}
+test('v8 S1: a leaf finishes its assignment by publishing a README, committed as written',async()=>{
+  const readme='# Word counter\n\n## Install\n\nNothing to install.\n\n## Run\n\n    node index.js notes.txt\n';
+  const {room,artifacts}=await docWorker(async()=>response({summary:'Wrote the README',done:true,files:[{path:'README.md',content:readme}]}));
+  await room.turn('root.1');
+  assert.equal(await artifacts.read(room.node('root.1').repo_name,'README.md'),readme);
+  assert.equal(room.node('root.1').status,'done');
+  assert.equal(room.node('root.1').task,'Write the README that explains how to install and run the tool','the task passes through unwrapped');
+  for(const kind of ['non_code_rejected','missing_deliverable','missing_code','code_retry'])assert.ok(!room.snapshot().events.some(e=>e.kind===kind),kind);
+});
+test('v8 S1: a leaf that delivers no file still cannot finish (missing_deliverable)',async()=>{
+  const {room}=await docWorker(async()=>response({summary:'Planned the README',done:true,files:[]}));
+  await room.turn('root.1');
+  assert.notEqual(room.node('root.1').status,'done');
+  assert.ok(room.snapshot().events.some(e=>e.kind==='missing_deliverable'));
+  assert.equal(room.read('failures',{})['root.1'],1);
+});
+test('v8 S1: an empty file and a runtime-owned path are refused; the rest of the answer is written',async()=>{
+  let calls=0;
+  const {room,artifacts}=await docWorker(async(_model,params)=>{
+    calls++;
+    if(params.messages[0].content.includes('Return ONLY the complete text'))return {response:'# Notes\n\nFilled in.'};
+    return response({summary:'Docs',done:true,files:[{path:'NOTES.md',content:'   \n'},{path:'glue/index.js',content:'module.exports = {};'},{path:'docs/usage.md',content:'Usage: wc FILE'}]});
+  });
+  await room.turn('root.1');
+  const repo=room.node('root.1').repo_name;
+  assert.equal(await artifacts.read(repo,'glue/index.js'),null);
+  assert.ok(room.snapshot().events.some(e=>e.kind==='glue_rejected'&&/glue\/index\.js/.test(e.body)));
+  assert.ok(room.snapshot().events.some(e=>e.kind==='code_retry'&&/NOTES\.md: the file is empty/.test(e.body)));
+  assert.equal(await artifacts.read(repo,'NOTES.md'),'# Notes\n\nFilled in.');
+  assert.equal(await artifacts.read(repo,'docs/usage.md'),'Usage: wc FILE');
+  assert.equal(calls,2);
+  await assert.rejects(room.putFile('root.1','glue/x.js','module.exports = {};'),/runtime-owned path/);
 });
 
-test('a leaf chooses its source filename unless its actual assigned task specifies one',async()=>{
+test('a leaf chooses its own filenames; no assigned module is required of it',async()=>{
   const {room,artifacts}=await roomWithAI(async()=>response({summary:'Wrote source',done:true,files:[{path:'different.js',content:'export const validateTitle = title => typeof title === "string" && title.trim().length > 0;'}]}),
-    codeWritingTask('Validate ticket titles',{module:'ticketValidation.js'}));
+    'Validate ticket titles');
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root'");
   await room.turn('root');
   assert.equal(await artifacts.read(room.node('root').repo_name,'different.js'),'export const validateTitle = title => typeof title === "string" && title.trim().length > 0;');
-  assert.equal(room.snapshot().events.some(e=>e.kind==='missing_code' && /ticketValidation/.test(e.body)),false);
+  assert.equal(room.snapshot().events.some(e=>e.kind==='missing_deliverable'),false);
 });
 
 test('invalid inline source is corrected with one targeted file generation',async()=>{
@@ -108,7 +138,7 @@ test('invalid inline source is corrected with one targeted file generation',asyn
     if(params.messages[0].content.includes('Return ONLY the complete text'))
       return {response:'export function validate(x) { return Boolean(x); }'};
     return response({summary:'Code',done:true,files:[{path:'validator.js',content:'// TODO'}]});
-  },codeWritingTask('Validate inputs',{module:'validator.js'}));
+  },'Validate inputs');
   room.db().exec("UPDATE agents SET phase='implement' WHERE id='root'");
   await room.turn('root');
   assert.equal(calls,2);
@@ -142,12 +172,9 @@ test('Clef routes, Qwen splits source modules, and a manager records only those 
   assert.deepEqual(calls,['clef','qwen','clef']);
   assert.equal(room.node('root').phase,'manager');
   assert.equal(room.children('root').length,2);
-  for(const child of room.children('root')) {
-    assert.match(child.task,/Write executable source code/);
-    assert.doesNotMatch(child.task,/Required source file|Required public export/);
-    assert.doesNotMatch(child.task,/(?:validate\.js|store\.js)/);
-    assert.equal(room.files(child.id).filter(f=>isCodeFile(f.path)).length,0,'router did not write code');
-  }
+  // v8 S1: each task is the splitter's, unwrapped; module and export fields stay dropped.
+  assert.deepEqual(room.children('root').map(c=>c.task),['Validate input values','Persist ticket records']);
+  for(const child of room.children('root'))assert.equal(deliveredFiles(room.files(child.id)).length,0,'router did not write code');
 });
 
 test('Qwen can delegate five independent code modules without a fabricated three-child ceiling',async()=>{

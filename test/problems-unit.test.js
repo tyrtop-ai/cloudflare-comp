@@ -154,28 +154,23 @@ test('instructions and the repair text a worker reads',()=>{
 });
 
 // ------------------------------------------------------------------ slice 2
-test('D8: a worker the code gate keeps rejecting for TypeScript or JSX is retasked once to plain JavaScript; else the model decides',()=>{
+test('v8 S1: a stuck worker goes to the model (M5), whatever its code gate said; D8, the retask to plain JavaScript, is gone',()=>{
   const stuck=(detail,extra={})=>problem('stuck',[party('root.1.2','subject','')],{detail,...extra});
   const ctx=view('root.1',{'root.1.1':'worker','root.1.2':'worker'});
-  const d=P.deterministicDecision(stuck('Form stopped after three failed turns at the code gate: non_code_rejected: Rejected non-code files: Form.tsx | missing_code: ...'),ctx);
-  assert.deepEqual([d.rule,d.action,d.child,d.plain_js],['D8','retask','root.1.2',true]);
-  assert.equal(d.task,`Write the root.1.2 module. ${P.PLAIN_JS_CLAUSE}`);
-  assert.equal(P.validateDecision(d,stuck('x'),ctx),null);
-  assert.equal(P.modelTrigger(stuck('x'),d,ctx),null,'D8 needs no model');
-  // run3's React worker: a JSX parse error, or the react package; its Express and pg imports.
-  for(const detail of ['error: Operation 2/5 failed: Worker artifact rejected: TicketForm.js: does not parse as JavaScript (Unexpected token at 12:4). Line 12: "    <form onSubmit={handleSubmit}>"',
+  assert.equal(P.PLAIN_JS_CLAUSE,undefined);
+  assert.equal(P.PLAIN_JS,undefined);
+  // run3's React worker (a .tsx file, a JSX parse error, the react package) and Express and pg imports: no deterministic retask.
+  for(const detail of ['Form stopped after three failed turns at the code gate: missing_deliverable: Leaf attempted to finish its assignment without delivering any file.',
+    'error: Operation 2/5 failed: Worker artifact rejected: TicketForm.js: does not parse as JavaScript (Unexpected token at 12:4). Line 12: "    <form onSubmit={handleSubmit}>"',
     "error: Worker artifact rejected: TicketForm.js: external package 'react' is not permitted in a leaf",
-    "code_retry: Leaf source rejected; using a targeted code-generation correction: Worker artifact rejected: ticketRoutes.js: external package 'express' is not permitted in a leaf"])
-    assert.equal(P.deterministicDecision(stuck(detail),ctx).rule,'D8',detail);
-  // Once only, and not for another failure: the model's (M5); by default the branch cannot finish here.
-  const again=P.deterministicDecision(stuck('non_code_rejected: Form.tsx'),{...ctx,plainJsDone:id=>id==='root.1.2'});
-  assert.deepEqual([again.rule,again.action,again.resubject],['stuck','escalate',true]);
-  assert.equal(P.modelTrigger(stuck('x'),again,ctx),'M5');
-  const other=P.deterministicDecision(stuck('missing_code: Leaf attempted to complete its code-writing assignment without any executable code.'),ctx);
-  assert.deepEqual([other.rule,other.action],['stuck','escalate']);
-  assert.deepEqual([P.deterministicDecision(stuck('missing_code'),view('root',{'root.1':'worker'})).action],['exhausted'],'nobody above at the top');
-  // A sub-manager subject (an escalated stuck) is never D8; a branch out of rounds fails by default (M5).
-  const branch=problem('stuck',[party('root.1','subject','')],{detail:'non_code_rejected',flags:{escalated_from:'root.1'}});
+    "code_retry: Leaf source rejected; using a targeted code-generation correction: Worker artifact rejected: ticketRoutes.js: external package 'express' is not permitted in a leaf"]) {
+    const d=P.deterministicDecision(stuck(detail),ctx);
+    assert.deepEqual([d.rule,d.action,d.resubject],['stuck','escalate',true],detail);
+    assert.equal(P.modelTrigger(stuck(detail),d,ctx),'M5',detail);
+  }
+  assert.deepEqual([P.deterministicDecision(stuck('missing_deliverable'),view('root',{'root.1':'worker'})).action],['exhausted'],'nobody above at the top');
+  // A sub-manager subject (an escalated stuck); a branch out of rounds fails by default (M5).
+  const branch=problem('stuck',[party('root.1','subject','')],{detail:'missing_deliverable',flags:{escalated_from:'root.1'}});
   assert.equal(P.deterministicDecision(branch,view('root',{'root.1':'manager'})).rule,'stuck');
   const rounds=P.deterministicDecision({...branch,flags:{rounds_exhausted:true,escalated_from:'root.1'}},view('root',{'root.1':'manager'}));
   assert.deepEqual([rounds.rule,rounds.action,P.modelTrigger(branch,rounds,ctx)],['rounds','fail','M5']);

@@ -330,7 +330,7 @@ test('v7.15: a worker\'s requests travel together and wake it once',async()=>{
   room.db().exec("UPDATE agents SET status='ready' WHERE id=?",worker);
   await room.turn(worker);
   assert.deepEqual(rows(room,'route_workers').map(r=>r.topic).sort(),['fn formatDate','fn getTickets','fn saveTicket']);
-  assert.equal(events(room,'missing_code').length,0,'a done with asks and no files counts no missing_code failure');
+  assert.equal(events(room,'missing_deliverable').length,0,'a done with asks and no files counts no missing_deliverable failure');
   assert.deepEqual([room.node(worker).status,room.read('failures',{})[worker]||0],['waiting',0]);
   const g0=room.wakeGeneration(worker);
   await managerTurn(room,'root.2');

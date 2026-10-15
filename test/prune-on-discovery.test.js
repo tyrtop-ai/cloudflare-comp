@@ -20,9 +20,9 @@ class Store {
   async read(name,path){return this.repos.get(name)?.get(path)??null;}
   async write({name,path,content}){this.repos.get(name).set(path,content);return {commit:'b'.repeat(40)};}
 }
-// Live run3 (v7.12, threshold 0.5): Root's children with the tasks Qwen wrote.
+// Live run3 (v7.12, threshold 0.5): Root's children with the tasks Qwen wrote
+// (v8 S1: as written, without v7's "Deliver working source files" wrapper).
 const goal='Build a small issue tracker that lets someone create, view, update, and delete tickets. Decompose work into independently solvable behaviors where necessary. Each strand owns its interfaces; use public Artifacts knowledge before asking owners for missing information. Assemble the completed components into one application.';
-const deliver=' Deliver working source files, not prose, plans, or design documents.';
 const run3Root=[
   ['Ticket Interface','Write code that defines the Ticket data structure with required properties (id, title, description, status, createdAt).'],
   ['In-Memory Ticket Repository','Write code that implements the TicketRepository interface using an in-memory array for storage.'],
@@ -31,8 +31,8 @@ const run3Root=[
   ['Update Ticket Service','Write code that modifies existing tickets by ID, ensuring proper validation and persistence.'],
   ['Delete Ticket Service','Write code that removes tickets from the repository by their unique identifier.'],
   ['Application Entry Module','Write code that imports and wires together all components, exposing a start() method to initialize the tracker.']
-].map(([label,task])=>({label,task:task+deliver}));
-// root.4's live split, before codeWritingTask wrapped each task.
+].map(([label,task])=>({label,task}));
+// root.4's live split, its tasks as the splitter wrote them.
 const ticketTs={label:'Ticket.ts',task:'Define the Ticket data model structure used throughout the system'};
 const repoImpl={label:'TicketRepositoryImpl.ts',task:'Implement repository logic to retrieve tickets with status/search filters'};
 const service={label:'TicketService.ts',task:'Create service class that uses repository to fetch filtered tickets'};

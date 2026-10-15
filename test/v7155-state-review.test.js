@@ -11,7 +11,6 @@ import {liveRoom,events,GOAL} from './helpers/room.js';
 const I=await import('../src/interfaces.js');
 const L=await import('../src/linker.js');
 const {ROOT_PROMISE,SPLIT_USES,scopeUses,decompose}=await import('../src/model.js');
-const {codeWritingTask}=await import('../src/code-work.js');
 
 const START=ROOT_PROMISE[0];
 const fn=(name,does='',params=[])=>({name,does,params});
@@ -31,7 +30,7 @@ const usesOf=(room,parent='root')=>Object.fromEntries(room.children(parent).map(
 // A planned room whose Root split is given: every worker waits.
 async function plan(room,spawn) {
   await room.provision('root',null,'Root objective',`${GOAL} x`,ROOT_PROMISE);room.set('goal',GOAL);
-  await room.spawn('root',spawn.map(c=>({label:c.label,task:codeWritingTask(c.task),interfaces:c.functions.map(f=>f.name==='start'?START:f),...(c.uses?{uses:c.uses}:{})})));
+  await room.spawn('root',spawn.map(c=>({label:c.label,task:c.task,interfaces:c.functions.map(f=>f.name==='start'?START:f),...(c.uses?{uses:c.uses}:{})})));
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
 }

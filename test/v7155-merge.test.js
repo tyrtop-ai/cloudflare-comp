@@ -15,7 +15,6 @@ const I=await import('../src/interfaces.js');
 const L=await import('../src/linker.js');
 const P=await import('../src/problems.js');
 const {ROOT_PROMISE,GOAL_START_REQUIREMENT,ENTRY_CONTRACT}=await import('../src/model.js');
-const {codeWritingTask}=await import('../src/code-work.js');
 
 const fn=(name,does='',params=[])=>({name,does,params});
 const CRUD='Build a small issue tracker that lets someone create, read, update, and delete tickets.';
@@ -150,7 +149,7 @@ test('v7.15.5 merge: D9 never retasks an operation piece to keep data while a da
   const {room}=liveRoom({clef,coverage:()=>({}),runner:()=>'',link:()=>({edits:[],issues:[]}),manager:()=>({actions:[]})});
   await room.provision('root',null,'Root objective',`${VIEW} ${GOAL_START_REQUIREMENT}`,ROOT_PROMISE);room.set('goal',`${VIEW} ${GOAL_START_REQUIREMENT}`);
   const U=['readTickets','saveTickets'],spec=[['Entry Module',[ROOT_PROMISE[0]]],['Ticket Data Manager',storeItems],['Create Ticket Operation',[fn('createTicket','Adds a new ticket',['data'])],U],['View Ticket Operation',[fn('viewTicket','',['data'])],['readTickets']],['Update Ticket Operation',[fn('updateTicket','',['data'])],U],['Delete Ticket Operation',[fn('deleteTicket','',['data'])],U]];
-  await room.spawn('root',room.composeStart('root',spec.map(([label,interfaces,uses])=>({label,task:codeWritingTask('Write '+label),interfaces,...(uses?{uses}:{})}))));
+  await room.spawn('root',room.composeStart('root',spec.map(([label,interfaces,uses])=>({label,task:'Write '+label,interfaces,...(uses?{uses}:{})}))));
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   const src={'root.1':['module.js',entryWith(['createTicket','viewTicket','updateTicket','deleteTicket'])],'root.2':['ticketDataManager.js',store],
     'root.3':['createTicket.js',op('createTicket','const t = { id: next++, ...data }; saveTickets([...readTickets(), t]); return t;')],'root.4':['viewTicket.js',op('viewTicket','return readTickets().find(t => t.id === data.id) || null;',['readTickets'])],

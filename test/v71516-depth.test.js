@@ -18,7 +18,6 @@ import assert from 'node:assert/strict';
 import {liveRoom,events,trace} from './helpers/room.js';
 const M=await import('../src/model.js');
 const {normalizeAction}=await import('../src/protocol.js');
-const {codeWritingTask}=await import('../src/code-work.js');
 
 const START=M.ROOT_PROMISE[0];
 const fn=(name,does='',params=[],returns)=>({name,does,params,...returns?{returns}:{}});
@@ -67,7 +66,7 @@ async function planted({clef,split,leaf,threshold=0.45,goal=NETTRIAGE,root=ROOT2
   const {room}=r;
   await room.provision('root',null,'Root objective',goal,M.ROOT_PROMISE);room.set('goal',goal);
   room.save('settings',{...room.settings(),split_threshold:threshold});
-  await room.spawn('root',root.map(c=>({label:c.label,task:codeWritingTask(c.task),interfaces:c.interfaces,...c.uses?{uses:c.uses}:{}})));
+  await room.spawn('root',root.map(c=>({label:c.label,task:c.task,interfaces:c.interfaces,...c.uses?{uses:c.uses}:{}})));
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   for(const c of room.children('root'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",c.id);
   if(ready)room.db().exec("UPDATE agents SET phase='decompose',status='ready' WHERE id=?",ready);
@@ -77,7 +76,7 @@ async function planted({clef,split,leaf,threshold=0.45,goal=NETTRIAGE,root=ROOT2
 async function chain(room,parent,levels) {
   let at=parent;
   for(const [label,names] of levels) {
-    await room.spawn(at,[{label,task:codeWritingTask(`Write code that ${label.toLowerCase()}`),interfaces:names.map(n=>F[n]||fn(n))}]);
+    await room.spawn(at,[{label,task:`Write code that ${label.toLowerCase()}`,interfaces:names.map(n=>F[n]||fn(n))}]);
     room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",at);
     at=room.children(at).at(-1).id;
   }
@@ -350,13 +349,13 @@ test('v7.15.16 (D4, review p5): a Node function\'s name (readFileSync, createSer
 async function sameNames(owner=()=>null) {
   const c=clefFor({owner});
   const {room}=await planted({clef:c.clef,ready:null});
-  await room.spawn('root.2',[{label:'Handle malformed files',task:codeWritingTask('Write code that handles malformed telemetry files'),interfaces:[F.handleMalformed]}]);
+  await room.spawn('root.2',[{label:'Handle malformed files',task:'Write code that handles malformed telemetry files',interfaces:[F.handleMalformed]}]);
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root.2'");
-  await room.spawn('root.2.1',[{label:'Handle malformed telemetry',task:codeWritingTask('Write code that handles malformed telemetry'),interfaces:[F.handleMalformed]},
-    {label:'Log telemetry errors',task:codeWritingTask('Write code that appends a telemetry parse error to the skipped-files list'),interfaces:[fn('logError','records a malformed telemetry file in the skipped list',['filePath','error'])]},
-    {label:'Validate file structure',task:codeWritingTask('Write code that checks a telemetry JSON object has device, site and timestamp'),interfaces:[fn('validateData','checks telemetry has device, site and timestamp',['telemetry'],'boolean')]},
-    {label:'Format timestamps',task:codeWritingTask('Write code that parses telemetry timestamps into Date objects'),interfaces:[fn('formatDate','parses a telemetry timestamp',['ts'],'Date')]},
-    {label:'Parse telemetry',task:codeWritingTask('Write code that parses raw JSON telemetry'),interfaces:[F.parseTelemetry]}]);
+  await room.spawn('root.2.1',[{label:'Handle malformed telemetry',task:'Write code that handles malformed telemetry',interfaces:[F.handleMalformed]},
+    {label:'Log telemetry errors',task:'Write code that appends a telemetry parse error to the skipped-files list',interfaces:[fn('logError','records a malformed telemetry file in the skipped list',['filePath','error'])]},
+    {label:'Validate file structure',task:'Write code that checks a telemetry JSON object has device, site and timestamp',interfaces:[fn('validateData','checks telemetry has device, site and timestamp',['telemetry'],'boolean')]},
+    {label:'Format timestamps',task:'Write code that parses telemetry timestamps into Date objects',interfaces:[fn('formatDate','parses a telemetry timestamp',['ts'],'Date')]},
+    {label:'Parse telemetry',task:'Write code that parses raw JSON telemetry',interfaces:[F.parseTelemetry]}]);
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root.2.1'");
   for(const k of room.children('root.2.1'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",k.id);
   const spawn=normalizeAction({spawn:[piece('Analyze interface health','Write code that analyzes interface health',['analyzeInterface']),piece('Analyze wireless health','Write code that analyzes wireless health',['analyzeWireless']),
