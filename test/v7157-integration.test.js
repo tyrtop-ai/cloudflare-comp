@@ -233,11 +233,11 @@ test('v7.15.7 integration (v7.15.8): run14 replayed from the split to completion
   assert.ok(TICKET14.length<=900);
   assert.equal(dbEvents(room,'problem_assigned').filter(e=>e.recipient==='root.6').length,0,'the start carrier is never ticketed');
   for(const text of calls.leaf.flatMap(u=>u.new_messages.map(m=>m.body)))assert.doesNotMatch(text,/REAL CONTAINER BUILD FAILED|NOTHING CHANGED|Your manager decided|Builder renames|Fix the error below|by the plan|components\//);
-  // The counts: no repair round (the live run spent five, two of them link rounds with a link-model call each; v7.15.7's replay one); six first turns and five refusals answered: eleven model calls to workers; one splitter, one runner draft, one coverage call, no linker, no manager, five Clef calls (the gate at Root, the storage and the entry, the scope check and the names check; v7.15.16: the four operations promise one function each and write it with no gate).
+  // The counts: no repair round (the live run spent five, two of them link rounds with a link-model call each; v7.15.7's replay one); six first turns and five refusals answered: eleven model calls to workers; one splitter, one runner draft, one coverage call, no linker, no manager, eight Clef calls (the gate at Root and five pieces, the scope check and the names check; v7.15.16: the entry, carrying Root's whole promise, is never gated).
   assert.deepEqual(rounds(room),[]);
   assert.deepEqual(turns,{'Ticket storage':1,'Create ticket':4,'View ticket':2,'Update ticket':2,'Delete ticket':1,'Entry module':1});
-  assert.deepEqual({split:calls.split.length,link:calls.link.length,runner:calls.runner.length,coverage:calls.coverage.length,manager:calls.manager.length,clef:calls.clef.length,leaf:calls.leaf.length},{split:1,link:0,runner:1,coverage:1,manager:0,clef:5,leaf:11});
-  assert.deepEqual([calls.clef.filter(c=>c.questions?.should_split).length,dbEvents(room,'route_ranked').length,dbEvents(room,'runner_rejected').length,dbEvents(room,'runner_invented').length],[3,0,0,0],'the live fixed test asserts only what the plan states');
+  assert.deepEqual({split:calls.split.length,link:calls.link.length,runner:calls.runner.length,coverage:calls.coverage.length,manager:calls.manager.length,clef:calls.clef.length,leaf:calls.leaf.length},{split:1,link:0,runner:1,coverage:1,manager:0,clef:8,leaf:11});
+  assert.deepEqual([calls.clef.filter(c=>c.questions?.should_split).length,dbEvents(room,'route_ranked').length,dbEvents(room,'runner_rejected').length,dbEvents(room,'runner_invented').length],[6,0,0,0],'the live fixed test asserts only what the plan states');
   assert.match(dbEvents(room,'link_auto')[0].body,/^Applied 11 rename\(s\) without the model/);
   assert.equal(dbEvents(room,'api_covered').length,1,'coverage is checked once; the fixed test is reused');
 });

@@ -390,7 +390,7 @@ export async function decompose(env, context, opts = {}) {
     const items=Array.isArray(parsed.spawn)?spawnObjects(parsed.spawn):[],pieces=items.filter(spawnPiece);
     // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
     if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,output,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
-    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||e.check!=='C7');
+    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal}).filter(e=>planned||!['C7','C8'].includes(e.check));
     // v7.15.14 (run21): the pieces counted are those the admission spawns, test pieces aside (testPieces); more than max_children is a size failure.
     const tests=testPieces(spawn,{promised,stated:goalMethods(goal),goal}),size=spawn.length-tests.length;
     return {parsed,text,output,spawn,inferred,vague,bad,size,tests,over:size>cap,ok:size>=2&&size<=available,count:vague.length+bad.length};

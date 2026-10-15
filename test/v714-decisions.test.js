@@ -684,8 +684,7 @@ async function stuckSplitter(manager) {
       {label:'Checker',task:'Write code that validates ticket input',functions:[{name:'validateTicket'}]}]})});
   const {room}=r;
   await room.provision('root',null,'Root objective',GOAL,ROOT_PROMISE);room.set('goal',GOAL);
-  // v7.15.16: the branch promises two functions, so it splits (a node promising one writes it).
-  await room.spawn('root',[{label:'Create branch',task:'Write the ticket creation code',interfaces:[{name:'createTicket',does:'creates a ticket',params:['title']},{name:'validateTicket',does:'validates ticket input',params:['data']}]},
+  await room.spawn('root',[{label:'Create branch',task:'Write the ticket creation code',interfaces:[{name:'createTicket',does:'creates a ticket',params:['title']}]},
     {label:'Entry',task:'Write app.js exporting start()',interfaces:[ROOT_PROMISE[0]]}]);
   room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root'");
   room.db().exec("UPDATE agents SET phase='implement',status='done' WHERE id='root.2'");
@@ -719,7 +718,7 @@ test('v7.15 × slice 2: a child stuck at its split (C5) that Root\'s model retas
   assert.equal(calls.split[splits].assigned_code,task);
   assert.equal(calls.split[splits].previous_split_rejection,undefined);
   assert.deepEqual(room.children('root.1').map(c=>[c.label,room.promisedOf(c.id).map(f=>f.name)]),[['Writer',['createTicket']],['Checker',['validateTicket']]],trace(room));
-  assert.deepEqual(room.promisedOf('root.1').map(f=>f.name),['createTicket','validateTicket']);
+  assert.deepEqual(room.promisedOf('root.1').map(f=>f.name),['createTicket']);
 });
 test('v7.14 (5c): the model cannot retire a worker a sibling imports; the default applies and the problem goes up as the branch\'s',async()=>{
   // The service imports the form (the runtime links './TicketForm' by its name).

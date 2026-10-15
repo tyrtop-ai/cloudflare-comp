@@ -12,9 +12,11 @@ export const MAX_INTERFACES = 5;
 // any other, but never used to prune or to answer a request by name.
 export const GENERIC_NAMES = new Set('init run main handle process validate create get set update remove delete list load save'.split(' '));
 // v7.15.16 (run25): functions Node's own modules export (fs, child_process,
-// readline, http), which no piece's task writes: "File Handling" promised
-// readFileSync, "Read file" under it wrapped fs.readFileSync, and the deepest
-// chain grew below it. Never promised by a piece (an inherited name aside).
+// readline, http): "File Handling" promised readFileSync, "Read file" under
+// it wrapped fs.readFileSync, and the deepest chain grew below it. A naming
+// error the splitter is told in the same call (C8), as GENERIC_NAMES are;
+// still there after its retry, the name is kept (review: "HTTP server"
+// [createServer] and "Note storage" [readFile, writeFile] are real pieces).
 export const NODE_FUNCTIONS = new Set(('accessSync appendFile appendFileSync copyFile copyFileSync createReadStream createWriteStream existsSync lstatSync mkdirSync mkdtempSync opendirSync ' +
   'readFile readFileSync readdir readdirSync readlinkSync realpathSync renameSync rmSync rmdirSync statSync unlinkSync writeFile writeFileSync execSync execFileSync spawnSync createInterface createServer').split(' '));
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
@@ -126,6 +128,9 @@ export function interfaceErrors(spawn, promised = [], {goal = ''} = {}) {
     const holders = kids.filter(k => namesOf(k).includes(p.name));
     if (holders.length !== 1) errors.push({label: '', name: p.name, check: 'C5', text: `Your assignment promises ${described(p)}; ${holders.length ? `${holders.map(k => `"${k.label}"`).join(' and ')} ${holders.length > 2 ? 'all' : 'both'} list it; ` : ''}give it, unchanged, to exactly one piece, the one whose task writes it.`});
   }
+  // C8 (v7.15.16, run25): a new name that is Node's own function.
+  for (const c of kids) for (const name of namesOf(c)) if (!own.has(name) && NODE_FUNCTIONS.has(name))
+    errors.push({label: c.label, name, check: 'C8', text: `"${c.label}": ${name} is Node's own function: name the function after what your piece does with it.`});
   // C7 (v7.15.5): a new name that is a factory (isFactory), or a piece's
   // only promise that sets up its data and takes nothing (setupOnly). The
   // goal's words exempt its operations (review: createService in a catalog).

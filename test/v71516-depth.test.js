@@ -8,10 +8,11 @@
 // Parsing" [readFileSync, parseTelemetry] > "Parse telemetry" [parseTelemetry]
 // > "Subproblem" [parseInterfaceHealth] > "Extract link status"
 // [extractLinkStatus] > "Subproblem" [extractLinkStatus] > "Interface Status
-// Analyzer" [extractLinkStatus]. A split makes progress or it is not one
-// (D1), the gate's bar rises with depth (D2), placeholder labels are never
-// admitted (D3), and a piece promising a function another branch, or Node,
-// already provides is not spawned (D4).
+// Analyzer" [extractLinkStatus]. A split makes progress or it is not one,
+// and the carrier of its parent's whole promise writes it (D1); the gate's
+// bar rises with depth (D2); placeholder labels are never admitted (D3); a
+// Node function's name is a naming error, and a name promised deeper in
+// another branch is weighed by the Clef walk, never pruned by name (D4).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {liveRoom,events,trace} from './helpers/room.js';
@@ -86,102 +87,129 @@ async function chain(room,parent,levels) {
 const ready=(room,id)=>room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
 const mine=(room,id,kind)=>room.snapshot().events.filter(e=>e.actor===id&&(!kind||e.kind===kind));
 
+const gates=c=>c.asked.filter(a=>a.kind==='gate').length;
+
 // ------------------------------------------------------------------ D1
-test('v7.15.16 (D1, run25): root.2 splits as live, and its four pieces, each promising one function, write it: no Clef gate, no splitter; run25 split "Handle malformed files" nine levels further',async()=>{
-  const c=clefFor({gate:()=>0.66});
-  const {room,calls}=await planted({clef:c.clef,split:()=>({summary:'Split',spawn:SPLIT2})});
-  await room.turn('root.2');
-  assert.deepEqual(room.children('root.2').map(k=>[k.label,room.promisedOf(k.id).map(f=>f.name)]),[['Read and parse telemetry files',['readFiles']],['Check directory paths',['isDirectory']],['Process files concurrently',['processConcurrently']],['Handle malformed files',['handleMalformed']]],trace(room));
-  assert.match(mine(room,'root.2','split_gate')[0].body,/^Clef decision YES \(p=0\.660; bar 0\.45; \d+ ms\)\.$/,'depth 1 keeps the room\'s threshold');
-  const gates=c.asked.filter(a=>a.kind==='gate').length;
-  for(const id of ['root.2.1','root.2.2','root.2.3','root.2.4']) {
-    ready(room,id);await room.turn(id);
-    assert.equal(room.node(id).phase,'implement');
-    assert.deepEqual(mine(room,id,'atomic').map(e=>e.body),[`One promised function: implemented directly (${room.promisedOf(id)[0].name}).`]);
-    assert.equal(mine(room,id,'split_gate').length,0);
-    assert.deepEqual(room.children(id),[]);
-  }
-  assert.equal(c.asked.filter(a=>a.kind==='gate').length,gates,'no gate below root.2');
-  assert.equal(calls.split.length,1,'one splitter call: root.2\'s');
-  assert.equal(calls.leaf.length,4);
-  assert.equal(Math.max(...room.allNodes().map(n=>n.id.split('.').length-1)),2,'run25\'s chain reached depth 10');
+// run25's split of "Handle malformed files" [handleMalformed], as ownership.json keeps it.
+const MALFORMED25=[piece('Handle malformed telemetry','Write code that handles malformed telemetry',['handleMalformed'],['logError','recoverData','skipFile']),piece('Log telemetry errors','Write code that logs telemetry errors',['logError']),
+  piece('Recover partial data','Write code that attempts to salvage usable data from malformed files',['recoverData']),piece('Skip invalid files','Write code that skips invalid files',['skipFile']),piece('Validate file structure','Write code that validates file structure',['validateFile'])];
+test('v7.15.16 (D1, run25): an orchestrator beside helpers is a split; its carrier, holding its parent\'s whole promise, writes it with no Clef gate, where run25 split it again; a fresh one-function helper is gated',async()=>{
+  const c=clefFor({gate:state=>/^Write code that handle malformed files/.test(state.assigned_behavior)?0.66:0.3});
+  const {room,calls}=await planted({clef:c.clef,ready:null,split:()=>({summary:'Split',spawn:MALFORMED25})});
+  const at=await chain(room,'root.2',[['Handle malformed files',['handleMalformed']]]);
+  await room.turn(at);
+  assert.match(mine(room,at,'split_gate')[0].body,/^Clef decision YES \(p=0\.660; bar 0\.500; \d+ ms\)\.$/,'a fresh one-function piece is gated, at depth 2');
+  assert.deepEqual(room.children(at).map(k=>[k.label,room.promisedOf(k.id).map(f=>f.name)]),MALFORMED25.map(p=>[p.label,p.functions.map(f=>f.name)]),trace(room));
+  assert.equal(mine(room,at,'split_rejected').length,0);
+  const [carrier,log]=room.children(at).map(k=>k.id),before=gates(c);
+  ready(room,carrier);await room.turn(carrier);
+  assert.equal(gates(c),before,'no gate for the carrier');
+  assert.deepEqual(mine(room,carrier,'atomic').map(e=>e.body),['It carries its parent\'s whole promise (handleMalformed): implemented directly, with no Clef gate.']);
+  assert.equal(room.node(carrier).phase,'implement');
+  ready(room,log);await room.turn(log);
+  assert.match(mine(room,log,'split_gate')[0].body,/^Clef decision NO \(p=0\.300; bar 0\.550; \d+ ms\)\.$/);
+  assert.equal(calls.split.length,1);
 });
 
-test('v7.15.16 (D1, run25): each split of run25\'s chain that handed one piece its parent\'s whole promise is no progress, and admission rejects it before any Clef call; run25\'s split of "File I/O and Parsing" is one',async()=>{
+test('v7.15.16 (D1, run25): run25\'s chain stops at "Subproblem" [extractLinkStatus]: admitted beside its helpers, it writes extractLinkStatus with no gate, where run25 split it into "Interface Status Analyzer" [extractLinkStatus]',async()=>{
+  const c=clefFor({gate:()=>0.73});
+  const LINK25=[piece('Subproblem link','Write code that analyzes interface link status and flapping indicators',['extractLinkStatus']),piece('Link state','Write code that gets the link state',['getLinkState'],['extractLinkStatus']),piece('Malformed interfaces','Write code that handles a malformed interface',['handleMalformedInterface'],['extractLinkStatus'])];
+  const {room}=await planted({clef:c.clef,ready:null,split:()=>({summary:'Split',spawn:LINK25})});
+  const at=await chain(room,'root.2',[['Handle malformed files',['handleMalformed','recoverData']],['Parse telemetry',['parseTelemetry','parseInterfaceHealth']],['Extract link status',['extractLinkStatus']]]);
+  await room.turn(at);
+  assert.deepEqual(room.children(at).map(k=>k.label),LINK25.map(p=>p.label),trace(room));
+  const carrier=room.children(at)[0].id,before=gates(c);
+  ready(room,carrier);await room.turn(carrier);
+  assert.equal(gates(c),before);
+  assert.equal(room.node(carrier).phase,'implement');
+  assert.deepEqual(room.children(carrier),[]);
+});
+
+test('v7.15.16 (D1, review p1): run25\'s "Interface Analysis" [analyzeInterface] under "Diagnostic Analysis Engine" is fresh: gated, and its orchestrator-plus-checks split is admitted',async()=>{
+  const c=clefFor({gate:()=>0.66});
+  const IA={label:'Interface Analysis',task:'Write code that analyzes interface health: link status, flapping, errors, speed mismatches and utilization, and returns findings with severity',functions:[F.analyzeInterface]};
+  const WA={label:'Wireless Analysis',task:'Write code that analyzes wireless health',functions:[F.analyzeWireless]};
+  const CHECKS=[piece('Analyze interface health','Write code that runs every interface check and returns findings',['analyzeInterface'],['checkLinkStatus','checkFlapping']),
+    {label:'Check link status',task:'Write code that checks link status',functions:[fn('checkLinkStatus','checks link status',['iface'])]},{label:'Check flapping',task:'Write code that checks flapping',functions:[fn('checkFlapping','checks flapping',['iface'])]}];
+  const {room}=await planted({clef:c.clef,ready:'root.3',split:(_u,n)=>({summary:'Split',spawn:n===1?[IA,WA]:CHECKS})});
+  await room.turn('root.3');
+  ready(room,'root.3.1');await room.turn('root.3.1');
+  assert.equal(mine(room,'root.3.1','split_gate').length,1,'gated');
+  assert.deepEqual(room.children('root.3.1').map(k=>k.label),CHECKS.map(p=>p.label),trace(room));
+});
+
+test('v7.15.16 (D1, run25): a piece carrying the whole promise beside pieces that add no name is no progress, before any Clef call (run25\'s one such split: "Analyze DNS health metrics" beside a function-less "Application health analysis"); placement on the last attempt runs after the check',async()=>{
   const c=clefFor();
   const {room}=await planted({clef:c.clef,ready:null});
-  const at=await chain(room,'root.2',[['Handle malformed files',['handleMalformed']],['Recover partial data',['recoverData']],['File Handling',['readFileSync']],['File I/O and Parsing',['readFileSync','parseTelemetry']],['Parse telemetry',['parseTelemetry']],['Subproblem',['parseInterfaceHealth']],['Extract link status',['extractLinkStatus']]]);
-  const ids=[];for(let id=at;id!=='root.2';id=room.node(id).parent)ids.unshift(id);
-  const [malformed,recover,files,fileIO,,,link]=ids;
-  const admit=(id,spawn)=>room.admitChildren(id,room.node(id),normalizeAction({spawn}).spawn);
-  // run25's answers, as ownership.json keeps them.
-  const cases=[
-    [malformed,[piece('Handle malformed telemetry','Write code that handles malformed telemetry',['handleMalformed'],['logError','recoverData','skipFile']),piece('Log telemetry errors','Write code that logs telemetry errors',['logError']),piece('Recover partial data','Write code that attempts to salvage usable data from malformed files',['recoverData']),piece('Skip invalid files','Write code that skips invalid files',['skipFile']),piece('Validate file structure','Write code that validates file structure',['validateFile'])],'Handle malformed telemetry',['handleMalformed']],
-    [recover,[piece('Recover Data','Write code that attempts to salvage usable data from malformed files',['recoverData'],['readFileSync','parseJSON','salvageData','validateData']),piece('File Handling','Write code that reads and processes file content',['readFileSync']),piece('Data Parsing','Write code that parses JSON and handles corruptions',['parseJSON']),piece('Data Salvage','Write code that extracts valid data from parsed content',['salvageData']),piece('Data Validation','Write code that validates salvaged data',['validateData'])],'Recover Data',['recoverData']],
-    [files,[piece('File I/O and Parsing','Write code that reads and parses JSON telemetry files, handling errors gracefully',['readFileSync','parseTelemetry']),piece('Rule Management','Write code that handles diagnostic rules and thresholds',['listDiagnosticRules','validateRuleThresholds'])],'File I/O and Parsing',['readFileSync']],
-    [link,[piece('Subproblem','Write code that analyzes interface link status and flapping indicators',['extractLinkStatus']),piece('Subproblem','Write code that gets the link state',['getLinkState'],['extractLinkStatus']),piece('Subproblem','Write code that handles a malformed interface',['handleMalformedInterface'],['extractLinkStatus'])],'Subproblem',['extractLinkStatus']],
-    // Clause one: a piece carrying a two-function promise whole.
-    [fileIO,[piece('Telemetry file reader','Write code that reads and parses telemetry files',['readFileSync','parseTelemetry']),piece('Rule Management','Write code that handles diagnostic rules and thresholds',['listDiagnosticRules'])],'Telemetry file reader',['readFileSync','parseTelemetry']]];
-  for(const [id,spawn,label,names] of cases) {
-    const out=await admit(id,spawn);
-    assert.deepEqual(out.degenerate,{label,names},room.node(id).label);
-  }
-  assert.deepEqual(c.asked,[],'no Clef call for a split that makes no progress');
-  // run25's own split of "File I/O and Parsing" gives each function to its own piece: a split.
-  const real=await admit(fileIO,[piece('Read file','Write code that reads file content using Node.js built-in modules',['readFileSync']),piece('Parse telemetry','Write code that parses JSON content into structured telemetry data',['parseTelemetry'])]);
-  assert.equal(real.degenerate,undefined);
-  assert.deepEqual(real.spawn.map(k=>[k.label,k.interfaces.map(f=>f.name)]),[['Read file',['readFileSync']],['Parse telemetry',['parseTelemetry']]]);
+  const dns=await chain(room,'root.2',[['Analyze DNS health',['analyzeDNSHealth']]]);
+  const two=await chain(room,'root.2',[['File I/O and Parsing',['readFileSync','parseTelemetry']]]);
+  const admit=(id,spawn,opts={})=>room.admitChildren(id,room.node(id),normalizeAction({spawn}).spawn,opts);
+  const cases=[[dns,[piece('Analyze DNS health metrics','Write code that analyzes DNS health metrics from telemetry data',['analyzeDNSHealth']),{label:'Application health analysis',task:'Write code that analyzes application health metrics'}],'Analyze DNS health metrics',['analyzeDNSHealth']],
+    [two,[piece('Telemetry file reader','Write code that reads and parses telemetry files',['readFileSync','parseTelemetry','readTelemetryDir']),{label:'Error notes',task:'Write code that formats read errors'}],'Telemetry file reader',['readFileSync','parseTelemetry']]];
+  for(const [id,spawn,label,names] of cases)assert.deepEqual((await admit(id,spawn)).degenerate,{label,names});
+  assert.deepEqual(c.asked,[],'no Clef call');
+  // run25's own splits with helpers that add names are admitted (196 of its 197 such splits).
+  assert.equal((await admit(two,[piece('Read file','Write code that reads file content using Node.js built-in modules',['readFileSync']),piece('Parse telemetry','Write code that parses JSON content into structured telemetry data',['parseTelemetry'])])).degenerate,undefined);
+  // Review (8): on the last attempt the check runs before R6 places names; placement then gives one piece both, and the split is admitted.
+  const placed=await admit(two,[{label:'Telemetry reader',task:'Write code that calls readFileSync(path) and then parseTelemetry(content)'},{label:'Reader notes',task:'Write code that formats read errors'}],{place:true});
+  assert.equal(placed.degenerate,undefined);
+  assert.deepEqual(placed.spawn.map(k=>[k.label,k.interfaces.map(f=>f.name)]),[['Telemetry reader',['readFileSync','parseTelemetry']],['Reader notes',[]]]);
+  assert.equal(events(room,'interfaces_placed').length,2);
 });
 
-test('v7.15.16 (D1): a split giving one piece the whole promise is split_rejected and Clef reconsiders, which may implement it directly; a one-function worker\'s late split of the same kind is turned back to it',async()=>{
+test('v7.15.16 (D1): in the room the degenerate split is split_rejected and Clef reconsiders, which may implement it directly; a worker\'s late split of the same kind is turned back to it',async()=>{
   const c=clefFor({gate:state=>state.previous_split_rejection?0.2:0.74});
-  const whole=[piece('Telemetry file reader','Write code that reads and parses telemetry files',['readFileSync','parseTelemetry']),piece('Rule Management','Write code that handles diagnostic rules and thresholds',['listDiagnosticRules'])];
+  const whole=[piece('Telemetry file reader','Write code that reads and parses telemetry files',['readFileSync','parseTelemetry']),{label:'Rule notes',task:'Write code that explains the diagnostic rules'}];
   const {room,calls}=await planted({clef:c.clef,ready:null,split:()=>({summary:'Split',spawn:whole})});
-  const at=await chain(room,'root.2',[['Handle malformed files',['handleMalformed','recoverData']],['Recover partial data',['recoverData','readFileSync']],['File Handling',['readFileSync','parseTelemetry']],['File I/O and Parsing',['readFileSync','parseTelemetry']]]);
+  const at=await chain(room,'root.2',[['Handle malformed files',['handleMalformed','recoverData']],['Recover partial data',['recoverData','readFileSync']],['File Handling',['readFileSync','parseTelemetry','listRules']],['File I/O and Parsing',['readFileSync','parseTelemetry']]]);
   await room.turn(at);
-  assert.match(mine(room,at,'split_gate')[0].body,/^Clef decision YES \(p=0\.740; bar 0\.65; \d+ ms\)\.$/,'depth 5 at 0.45: bar 0.65');
+  assert.match(mine(room,at,'split_gate')[0].body,/^Clef decision YES \(p=0\.740; bar 0\.650; \d+ ms\)\.$/,'depth 5 at 0.45, max_depth 10: bar 0.65');
   assert.deepEqual(mine(room,at,'split_rejected').map(e=>e.body),['No progress: a piece would carry its parent\'s whole promise ("Telemetry file reader" carries readFileSync and parseTelemetry). Clef will reconsider routing with this feedback; it may implement the assignment directly.']);
   assert.deepEqual(room.children(at),[]);
-  const feedback=room.read(`split_feedback:${at}`,null);
-  assert.deepEqual([feedback.kind,feedback.rejected.map(x=>x.label)],[undefined,['Telemetry file reader']]);
   assert.equal(c.asked.filter(a=>a.kind!=='gate').length,0,'no scope or walk call');
   await room.turn(at);
-  const gate=c.asked.filter(a=>a.kind==='gate').at(-1);
-  assert.match(gate.state.previous_split_rejection.reason,/^No progress: a piece would carry its parent's whole promise/);
+  assert.match(c.asked.filter(a=>a.kind==='gate').at(-1).state.previous_split_rejection.reason,/^No progress: a piece would carry its parent's whole promise/);
   assert.deepEqual(mine(room,at,'atomic').map(e=>e.body),['Clef reviewed the rejected partition and routed this assignment to direct code implementation.']);
-  assert.equal(room.node(at).phase,'implement');
   assert.equal(calls.split.length,1);
-  // A late split: a worker promising one function proposes a piece carrying it.
   const late=clefFor();
-  const {room:lr}=await planted({clef:late.clef,ready:null,leaf:()=>({summary:'Split it',spawn:[piece('Link status core','Write code that analyzes link status',['extractLinkStatus']),piece('Link state','Write code that gets the link state',['getLinkState'])]})});
+  const {room:lr}=await planted({clef:late.clef,ready:null,leaf:()=>({summary:'Split it',spawn:[piece('Link status core','Write code that analyzes link status',['extractLinkStatus']),{label:'Link notes',task:'Write code that explains link states'}]})});
   const worker=await chain(lr,'root.2',[['Extract link status',['extractLinkStatus']]]);
   lr.db().exec("UPDATE agents SET phase='implement' WHERE id=?",worker);
   await lr.turn(worker);
   assert.deepEqual(mine(lr,worker,'split_rejected').map(e=>e.body),['Late decomposition rejected. No progress: a piece would carry its parent\'s whole promise ("Link status core" carries extractLinkStatus).']);
   assert.equal((await lr.readKnowledge(worker,'private')).late_split_rejected,'Your proposed pieces were not created: "Link status core" would carry your whole promise (extractLinkStatus), which is no split. Write it yourself.');
-  assert.deepEqual(lr.children(worker),[]);
-  assert.deepEqual(late.asked,[],'no Clef call');
+  assert.deepEqual(late.asked,[]);
+});
+
+test('v7.15.16 (D1, review p2): a carrier promising only start is composed from the plan, never gated or split',async()=>{
+  const c=clefFor({gate:()=>0.8});
+  const root=[{label:'CLI entry',task:'Write code that parses the command line, dispatches the scan, compare and rules commands, and prints reports',interfaces:[START]},...ROOT25.slice(1)];
+  const {room,calls}=await planted({clef:c.clef,root,ready:'root.1'});
+  await room.turn('root.1');
+  assert.deepEqual([gates(c),calls.split.length,room.node('root.1').phase,room.node('root.1').status==='waiting'&&events(room,'paused').length>0],[0,0,'implement',false]);
+  assert.deepEqual(mine(room,'root.1','atomic').map(e=>e.body),['It carries its parent\'s whole promise (start): implemented directly, with no Clef gate.']);
 });
 
 // ------------------------------------------------------------------ D2
-test('v7.15.16 (D2): the split gate\'s bar is the threshold plus 0.05 a level below depth 1, at most 0.95; Root and its children keep the room\'s threshold, and the event shows the bar',async()=>{
+test('v7.15.16 (D2): the bar is threshold + (0.95 - threshold) x (depth - 1) / max_depth; Root and its children keep the threshold; the event shows it',async()=>{
   const c=clefFor({gate:()=>0.739});
   const {room}=await planted({clef:c.clef,ready:null});
-  assert.deepEqual(['root','root.2','root.2.4','root.2.4.3','root.2.4.3.2.1','root.2.4.3.2.1.2.2.2.1','root.2.4.3.2.1.2.2.2.1.1'].map(id=>room.splitBar(id)),[0.45,0.45,0.5,0.55,0.65,0.85,0.9]);
-  room.save('settings',{...room.settings(),split_threshold:0.8});
-  assert.deepEqual(['root','root.1','root.1.1','root.1.1.1.1.1.1.1.1.1','root.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1'].map(id=>room.splitBar(id)),[0.8,0.8,0.85,0.95,0.95]);
-  room.save('settings',{...room.settings(),split_threshold:0.45});
-  // run25's gate at depth 9 answered p=0.739, a YES at 0.45; with the bar at 0.85 it is a NO (a two-function piece, as one-function pieces are never gated).
-  const at=await chain(room,'root.2',[['Handle malformed files',['handleMalformed','recoverData']],['Recover partial data',['recoverData','readFileSync']],['File Handling',['readFileSync','parseTelemetry']],['File I/O and Parsing',['readFileSync','parseTelemetry']],['Parse telemetry',['parseTelemetry','parseInterfaceHealth']],['Interface health',['parseInterfaceHealth','extractLinkStatus']],['Extract link status',['extractLinkStatus','getLinkState']],['Interface Status Analyzer',['extractLinkStatus','getLinkState']]]);
-  assert.equal(at.split('.').length-1,9);
-  await room.turn(at);
-  assert.match(mine(room,at,'split_gate')[0].body,/^Clef decision NO \(p=0\.739; bar 0\.85; \d+ ms\)\.$/);
-  assert.deepEqual(mine(room,at,'atomic').map(e=>e.body),['Clef classified this as an indivisible behavior; implementing directly.']);
-  assert.equal(room.node(at).phase,'implement');
+  const at=d=>['root',...Array(d).fill(1)].join('.');
+  assert.deepEqual([0,1,2,3,5,9,10].map(d=>room.splitBar(at(d))),[0.45,0.45,0.5,0.55,0.65,0.85,0.9]);
+  room.save('settings',{...room.settings(),split_threshold:0.7});
+  assert.deepEqual([0,1,2,3,10].map(d=>room.splitBar(at(d))),[0.7,0.7,0.725,0.75,0.925]);
+  room.save('settings',{...room.settings(),max_depth:20});
+  assert.deepEqual([2,10,20].map(d=>room.splitBar(at(d))),[0.712,0.813,0.938]);
+  room.save('settings',{...room.settings(),split_threshold:0.45,max_depth:10});
+  // run25's gate at depth 9 answered 0.739, a YES at 0.45; for a fresh two-function piece there the bar is 0.85.
+  const deep=await chain(room,'root.2',[['Handle malformed files',['handleMalformed','recoverData']],['Recover partial data',['recoverData','readFileSync']],['File Handling',['readFileSync','parseTelemetry']],['File I/O and Parsing',['readFileSync','parseTelemetry','listRules']],['Parse telemetry',['parseTelemetry','parseInterfaceHealth']],['Interface health',['parseInterfaceHealth','extractLinkStatus']],['Extract link status',['extractLinkStatus','getLinkState']],['Interface Status Analyzer',['extractLinkStatus','detectFlapping']]]);
+  assert.equal(deep.split('.').length-1,9);
+  await room.turn(deep);
+  assert.match(mine(room,deep,'split_gate')[0].body,/^Clef decision NO \(p=0\.739; bar 0\.850; \d+ ms\)\.$/);
+  assert.equal(room.node(deep).phase,'implement');
 });
 
 // ------------------------------------------------------------------ D3
-// run25's root.2.4.3.2.1.2 answer ("Parse telemetry" [parseTelemetry]): five "Subproblem" pieces.
 const SUB25=[piece('Subproblem','Write code that parses raw JSON content into structured telemetry data with validation',['parseTelemetry']),
   piece('Subproblem','Write code that extracts and structures interface health metrics from JSON',['parseInterfaceHealth'],['parseTelemetry']),
   piece('Subproblem','Write code that extracts and structures WAN circuit health metrics',['parseWANHealth'],['parseTelemetry']),
@@ -198,73 +226,100 @@ test('v7.15.16 (D3, run25): "Subproblem" labels still there after the splitter\'
     prompts.length=0;
     assert.deepEqual(await M.decompose(env,ctx,{planned:true,goal:NETTRIAGE,...opts}),{parse_error:true,raw:`placeholder labels after a retry: ${FIVE}; never admitted.`,vague:Array(5).fill('Subproblem')});
     assert.equal(prompts.length,2);
-    assert.ok(prompts[1].endsWith(' '+M.vagueText(Array(5).fill('Subproblem'))),'the retry said so, as before');
+    assert.ok(prompts[1].includes(' '+M.vagueText(Array(5).fill('Subproblem'))),'the retry said so, as before');
   }
-  assert.equal(M.vagueText(['Subproblem','Piece A']),'Your previous answer used placeholder labels or tasks copied from the example ("Subproblem", "Piece A"); be more specific: name each piece after what it does and say in its task what code it writes.');
-  // A retry that names its pieces is the split.
   let n=0;const fixed={AI:{run:async()=>({response:JSON.stringify({summary:'Split',spawn:++n===1?SUB25:NAMED})})}};
   assert.deepEqual((await M.decompose(fixed,ctx,{planned:true,goal:NETTRIAGE})).spawn.map(c=>c.label),['Parse telemetry JSON','Interface health parser']);
-  // A room without promises (v7.14) keeps the v7.15.4 retry: the answer is admitted as before.
   const legacy=await M.decompose(env,{...ctx,your_promised_functions:undefined},{planned:false});
-  assert.deepEqual(legacy.spawn.map(c=>c.label),Array(5).fill('Subproblem'));
+  assert.deepEqual(legacy.spawn.map(c=>c.label),Array(5).fill('Subproblem'),'a room without promises keeps the v7.15.4 retry');
 });
 
-test('v7.15.16 (D3, run25): in a room the placeholder answer is retried next turn under Clef\'s YES with its labels as feedback, and the named answer is admitted',async()=>{
+test('v7.15.16 (D3): in a room the placeholder answer is retried once under Clef\'s YES with its labels as feedback; still placeholders, the last turn asks Clef again, which may route the piece to an implementation, and the room does not pause',async()=>{
   const c=clefFor({gate:()=>0.66});
   const {room,calls}=await planted({clef:c.clef,ready:null,split:(_u,n)=>({summary:'Split',spawn:n<=2?SUB25:NAMED})});
   const at=await chain(room,'root.2',[['File I/O and Parsing',['parseTelemetry','parseInterfaceHealth']]]);
   await room.turn(at);
   assert.deepEqual(mine(room,at,'error').map(e=>e.body),[`Bad decomposition response: placeholder labels after a retry: ${FIVE}; never admitted.`]);
-  assert.deepEqual(room.children(at),[]);
   assert.deepEqual(room.read(`split_feedback:${at}`,null),{kind:'labels',reason:M.vagueText(Array(5).fill('Subproblem')),proposed:Array(5).fill('Subproblem')});
   assert.equal(room.get(`split_yes:${at}`),'1');
   await room.turn(at);
-  assert.equal(c.asked.filter(a=>a.kind==='gate').length,1,'Clef\'s YES stands');
+  assert.equal(gates(c),1,'Clef\'s YES stands');
   assert.equal(mine(room,at,'split_gate').at(-1).body,`Clef's YES stands: the last split answer still had placeholder labels (${FIVE}), so the splitter answers again.`);
   assert.equal(calls.split[2].previous_split_rejection.reason,M.vagueText(Array(5).fill('Subproblem')));
   assert.deepEqual(room.children(at).map(k=>k.label),['Parse telemetry JSON','Interface health parser'],trace(room));
-  assert.equal(room.get(`split_feedback:${at}`),'');
+  // Review (6): a splitter that keeps answering "Subproblem".
+  const k=clefFor({gate:state=>state.previous_split_rejection?0.2:0.66});
+  const {room:stuck,calls:sc}=await planted({clef:k.clef,ready:null,split:()=>({summary:'Split',spawn:SUB25})});
+  const node=await chain(stuck,'root.2',[['File I/O and Parsing',['parseTelemetry','parseInterfaceHealth']]]);
+  for(let t=0;t<3&&stuck.node(node).status==='ready';t++)await stuck.turn(node);
+  assert.deepEqual([gates(k),sc.split.length,stuck.get(`split_yes:${node}`,'')],[2,4,''],'turn 2 under the YES, turn 3 asks Clef again');
+  assert.equal(k.asked.filter(a=>a.kind==='gate').at(-1).state.previous_split_rejection.kind,'labels');
+  assert.deepEqual(mine(stuck,node,'atomic').map(e=>e.body),['Clef reviewed the rejected partition and routed this assignment to direct code implementation.']);
+  assert.deepEqual([stuck.node(node).phase,mine(stuck,node,'paused').length,stuck.problems("kind='stuck'").length],['implement',0,0]);
 });
 
 // ------------------------------------------------------------------ D4
-test('v7.15.16 (D4, run25): a function Node\'s own modules export (readFileSync) is no piece\'s: deleted from the piece, a piece left with none is not spawned, and the use of it is dropped',async()=>{
-  const c=clefFor({gate:()=>0.66});
-  const fileHandling=piece('File Handling','Write code that reads and processes file content',['readFileSync']);
-  const spawn=[{...SPLIT2[0],uses:['readFileSync']},{...SPLIT2[1],functions:[F.isDirectory,{name:'readdirSync',does:'lists a directory'}]},SPLIT2[2],SPLIT2[3],fileHandling];
-  const {room}=await planted({clef:c.clef,split:()=>({summary:'Split',spawn})});
-  await room.turn('root.2');
-  assert.deepEqual(room.children('root.2').map(k=>[k.label,room.promisedOf(k.id).map(f=>f.name)]),[['Read and parse telemetry files',['readFiles']],['Check directory paths',['isDirectory']],['Process files concurrently',['processConcurrently']],['Handle malformed files',['handleMalformed']]],trace(room));
-  assert.deepEqual(mine(room,'root.2','interfaces_builtin').map(e=>e.body),[
-    'Deleted readdirSync from "Check directory paths": Node\'s own modules export it, so no piece writes it; import it from Node.',
-    'Deleted readFileSync from "File Handling": Node\'s own modules export it, so no piece writes it; import it from Node. "File Handling" promises nothing else and is not spawned.']);
-  assert.match(mine(room,'root.2','uses_dropped')[0].body,/^Not kept as uses: readFileSync on "Read and parse telemetry files"/);
-  assert.equal(c.asked.filter(a=>a.kind==='owner').length,0,'carriers only: no walk');
-  // An inherited name is the piece's: a parent promising readFileSync hands it on.
-  const own=await room.admitChildren('root.2.1',room.node('root.2.1'),normalizeAction({spawn:[piece('Read file','Write code that reads the file',['readFiles','readFileSync']),piece('Parse it','Write code that parses it',['parseTelemetry'])]}).spawn);
-  assert.equal(own.spawn.length,2);
+const NOTES='Build a small HTTP JSON API in Node.js with no dependencies that stores notes in a JSON file and serves create, list and delete endpoints.';
+const NOTES_SPLIT=[{label:'Entry',task:'Write code that starts the app',functions:[START]},
+  {label:'HTTP server',task:'Write code that creates the HTTP server, routes POST /notes, GET /notes and DELETE /notes/:id to the note handlers and sends JSON responses',functions:[fn('createServer','creates the configured HTTP server with the note routes',['store'],'http.Server')]},
+  {label:'Note storage',task:'Write code that reads and writes the notes JSON file',functions:[fn('readFile','reads the notes file and returns the notes',[],'array of notes'),fn('writeFile','writes the notes array to the notes file',['notes'])]},
+  {label:'Note handlers',task:'Write code that creates, lists and deletes notes',functions:[fn('createNote','creates a note',['data']),fn('listNotes','lists notes',[]),fn('deleteNote','deletes a note',['id'])],uses:['readFile','writeFile']}];
+test('v7.15.16 (D4, review p5): a Node function\'s name (readFileSync, createServer, readFile) is a naming error the splitter hears in the same call; still there after its retry, the name is kept and no piece or use is dropped',async()=>{
+  const prompts=[];
+  const env={AI:{run:async(_m,args)=>{prompts.push(args.messages[0].content);return {response:JSON.stringify({summary:'Split',spawn:NOTES_SPLIT})};}}};
+  const out=await M.decompose(env,{your_id:'root',your_responsibility:NOTES,root_scope:NOTES,max_child_writers:60,max_children:7,your_promised_functions:M.ROOT_PROMISE},{planned:true,goal:NOTES});
+  assert.equal(prompts.length,2);
+  for(const t of ['"HTTP server": createServer is Node\'s own function: name the function after what your piece does with it.','"Note storage": readFile is Node\'s own function: name the function after what your piece does with it.','"Note storage": writeFile is Node\'s own function: name the function after what your piece does with it.'])assert.ok(prompts[1].includes(t),t);
+  assert.deepEqual(out.spawn.map(k=>[k.label,k.interfaces.map(f=>f.name)]),NOTES_SPLIT.map(p=>[p.label,p.functions.map(f=>f.name)]));
+  const {interfaceErrors}=await import('../src/interfaces.js');
+  assert.deepEqual(interfaceErrors(normalizeAction({spawn:[piece('File Handling','Write code that reads and processes file content',['readFileSync']),piece('Parse it','Write code that parses it',['parseTelemetry'])]}).spawn,[F.parseTelemetry]).map(e=>[e.check,e.text]),
+    [['C8','"File Handling": readFileSync is Node\'s own function: name the function after what your piece does with it.']]);
+  assert.deepEqual(interfaceErrors(normalizeAction({spawn:[piece('Read file','Write code that reads the file',['readFileSync'])]}).spawn,[F.readFileSync]),[],'an inherited name is the piece\'s');
+  // Admission keeps every piece and use.
+  const c=clefFor();
+  const {room}=liveRoom({clef:c.clef});
+  await room.provision('root',null,'Root objective',NOTES,M.ROOT_PROMISE);room.set('goal',NOTES);
+  const admitted=await room.admitChildren('root',room.node('root'),normalizeAction({spawn:NOTES_SPLIT}).spawn);
+  assert.deepEqual(admitted.spawn.map(k=>[k.label,k.interfaces.map(f=>f.name),k.uses||[]]),[['Entry',['start'],[]],['HTTP server',['createServer'],[]],['Note storage',['readFile','writeFile'],[]],['Note handlers',['createNote','listNotes','deleteNote'],['readFile','writeFile']]]);
 });
 
-test('v7.15.16 (D4, run25): a piece promising a name another branch\'s subtree promises is pruned to that branch, by name: run25\'s parseTelemetry, promised in root.2 five levels down, was promised again under root.3',async()=>{
-  const c=clefFor({gate:()=>0.7});
-  const {room}=await planted({clef:c.clef,ready:null,split:()=>({summary:'Split',spawn:[
-    piece('Analyze wireless','Write code that analyzes wireless health',['analyzeWireless'],['parseTelemetry']),
-    piece('Analyze channel utilization','Write code that analyzes channel utilization',['analyzeChannelUtilization'],['parseTelemetry']),
-    piece('Parse telemetry data','Write code that parses raw JSON content into structured telemetry data',['parseTelemetry'])]})});
-  await chain(room,'root.2',[['Handle malformed files',['handleMalformed']],['Recover partial data',['recoverData']],['File Handling',['readFileSync']],['File I/O and Parsing',['readFileSync','parseTelemetry']]]);
-  const at=await chain(room,'root.3',[['Wireless health',['analyzeWireless','analyzeChannelUtilization']]]);
-  assert.deepEqual(room.ownerBranch('parseTelemetry',at),{id:'root.2',label:'File and Telemetry Processing',level:'root'});
-  await room.turn(at);
-  assert.deepEqual(room.children(at).map(k=>k.label),['Analyze wireless','Analyze channel utilization'],trace(room));
-  assert.deepEqual(mine(room,at,'scope_pruned').map(e=>e.body),['Proposed child "Parse telemetry data" exports parseTelemetry, which "File and Telemetry Processing" already provides; not spawned. Import them by those names.']);
-  assert.equal(c.asked.filter(a=>a.kind==='owner').length,0,'pruned by name, with no Clef walk');
-  assert.match((await room.readKnowledge(at)).owned_elsewhere,/Parse telemetry data is owned outside this branch; import parseTelemetry by exactly those names/);
+// Review p4: root.2.1's helpers promise logError, validateData and formatDate; root.3's split proposes the same names for other functions.
+async function sameNames(owner=()=>null) {
+  const c=clefFor({owner});
+  const {room}=await planted({clef:c.clef,ready:null});
+  await room.spawn('root.2',[{label:'Handle malformed files',task:codeWritingTask('Write code that handles malformed telemetry files'),interfaces:[F.handleMalformed]}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root.2'");
+  await room.spawn('root.2.1',[{label:'Handle malformed telemetry',task:codeWritingTask('Write code that handles malformed telemetry'),interfaces:[F.handleMalformed]},
+    {label:'Log telemetry errors',task:codeWritingTask('Write code that appends a telemetry parse error to the skipped-files list'),interfaces:[fn('logError','records a malformed telemetry file in the skipped list',['filePath','error'])]},
+    {label:'Validate file structure',task:codeWritingTask('Write code that checks a telemetry JSON object has device, site and timestamp'),interfaces:[fn('validateData','checks telemetry has device, site and timestamp',['telemetry'],'boolean')]},
+    {label:'Format timestamps',task:codeWritingTask('Write code that parses telemetry timestamps into Date objects'),interfaces:[fn('formatDate','parses a telemetry timestamp',['ts'],'Date')]},
+    {label:'Parse telemetry',task:codeWritingTask('Write code that parses raw JSON telemetry'),interfaces:[F.parseTelemetry]}]);
+  room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id='root.2.1'");
+  for(const k of room.children('root.2.1'))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",k.id);
+  const spawn=normalizeAction({spawn:[piece('Analyze interface health','Write code that analyzes interface health',['analyzeInterface']),piece('Analyze wireless health','Write code that analyzes wireless health',['analyzeWireless']),
+    {label:'Validate rule thresholds',task:'Write code that checks the diagnostic rule thresholds config has numeric warn and crit levels',functions:[fn('validateData','checks rule thresholds config',['rules'],'list of config errors')]},
+    {label:'Render report dates',task:'Write code that formats a Date as YYYY-MM-DD HH:mm for the terminal report',functions:[fn('formatDate','formats a date for the report',['date'],'string')]},
+    {label:'Print analysis errors',task:'Write code that prints an analysis error to stderr with its severity',functions:[fn('logError','prints an analysis error to stderr',['error','severity'])]},
+    {label:'Parse telemetry data',task:'Write code that parses raw JSON content into structured telemetry data',functions:[F.parseTelemetry]}]}).spawn;
+  return {room,c,admitted:await room.admitChildren('root.3',room.node('root.3'),spawn)};
+}
+test('v7.15.16 (D4, review p4): a name another branch promises deeper down is never a prune by the name alone: the Clef walk hears that piece\'s promise and decides',async()=>{
+  const {room,c,admitted}=await sameNames();
+  for(const nm of ['validateData','formatDate','logError','parseTelemetry'])assert.equal(room.ownerBranch(nm,'root.3'),null,nm);
+  assert.deepEqual(admitted.spawn.map(k=>k.label),['Analyze interface health','Analyze wireless health','Validate rule thresholds','Render report dates','Print analysis errors','Parse telemetry data'],'nothing pruned when Clef names no owner');
+  assert.equal(events(room,'scope_pruned').length,0);
+  const walk=c.asked.filter(a=>a.kind==='owner').map(a=>a.question);
+  assert.ok(walk.some(q=>q.startsWith('Which branch\'s assigned code already covers this proposed piece? Render report dates: ')&&q.endsWith(' Elsewhere, "Format timestamps" promises formatDate(ts): parses a telemetry timestamp; returns Date.')),walk.join('\n'));
+  // run25's parseTelemetry: Clef, hearing both, names "File and Telemetry Processing" at Root.
+  const {room:r2,admitted:a2}=await sameNames((q,labels)=>/^Which branch's assigned code already covers this proposed piece\? Parse telemetry data: /.test(q)&&labels.includes('File and Telemetry Processing')?'File and Telemetry Processing':null);
+  assert.deepEqual(a2.spawn.map(k=>k.label),['Analyze interface health','Analyze wireless health','Validate rule thresholds','Render report dates','Print analysis errors']);
+  assert.deepEqual(events(r2,'scope_pruned').map(e=>e.body),['Proposed child "Parse telemetry data" is owned by "File and Telemetry Processing" (root.2); not spawned. Import it from that strand instead of rebuilding it.']);
 });
 
 // ------------------------------------------------------------------ unchanged
 // run24 (the issue tracker with a GUI, threshold 0.7): Root > Entry Module,
 // Data Management, Ticket Operations, GUI Module; Data Management > Read and
-// Save tickets; Ticket Operations > the four operations. Every second-level
-// piece promises one function, so it writes it with no gate; the tree is the same.
+// Save tickets; Ticket Operations > the four operations.
 const GOAL24='Build a small issue tracker that lets someone create, view, update, and delete tickets. It needs to have a gui.';
 const T={readTickets:fn('readTickets','reads all tickets from storage',[],'array of ticket objects'),saveTickets:fn('saveTickets','saves tickets to storage',['tickets'],'nothing'),
   createTicket:fn('createTicket','creates a new ticket',['data'],'created ticket'),viewTicket:fn('viewTicket','finds a ticket by ID',['id'],'ticket or undefined'),
@@ -277,9 +332,10 @@ const DATA24=[p24('Read tickets','Write code that reads tickets from storage',[T
 const OPS24=[p24('Create ticket','Write code that creates a new ticket',[T.createTicket],['readTickets','saveTickets']),p24('View ticket','Write code that retrieves a ticket by ID',[T.viewTicket],['readTickets']),
   p24('Update ticket','Write code that updates an existing ticket',[T.updateTicket],['readTickets','saveTickets']),p24('Delete ticket','Write code that deletes a ticket by ID',[T.deleteTicket],['readTickets','saveTickets']),
   p24('Data management','Write code that reads and saves tickets',[T.readTickets,T.saveTickets]),p24('Entry module','Write code that exports start()',[{name:'start'}])];
-test('v7.15.16: run24\'s two-level tree is unchanged: Root\'s four pieces are gated at the room\'s threshold as live, Data Management and Ticket Operations split as live, and their six one-function pieces write theirs with no gate',async()=>{
-  const P={'Entry Module':0.096,'Data Management':0.755,'Ticket Operations':0.781,'GUI Module':0.604};
-  const gate=state=>{const t=String(state.assigned_behavior);return t.startsWith('Build')?0.867:P[ROOT24.find(r=>t.startsWith(r.task))?.label]??0.05;};
+test('v7.15.16: run24\'s two-level tree is unchanged: the same gates on the same live answers (bar 0.70 at depth 1, 0.725 at depth 2), the same splits; only the entry, carrying Root\'s start, is no longer gated',async()=>{
+  const P={'Entry Module':0.096,'Data Management':0.755,'Ticket Operations':0.781,'GUI Module':0.604,'Read tickets':0.647,'Save tickets':0.622,'Create ticket':0.221,'View ticket':0.119,'Update ticket':0.257,'Delete ticket':0.316};
+  const all=[...ROOT24,...DATA24,...OPS24.slice(0,4)];
+  const gate=state=>{const t=String(state.assigned_behavior);return t.startsWith('Build')?0.867:P[all.find(r=>t.startsWith(r.task))?.label]??0.05;};
   const c=clefFor({gate});
   let R=null;
   const {room,calls,drain}=liveRoom({clef:c.clef,split:u=>({summary:'Split',spawn:/^Build/.test(u.assigned_code)?ROOT24:/reading and saving/.test(u.assigned_code)?DATA24:OPS24}),leaf:u=>writes(R)(u)});R=room;
@@ -289,21 +345,23 @@ test('v7.15.16: run24\'s two-level tree is unchanged: Root\'s four pieces are ga
   assert.deepEqual(room.children('root.2').map(k=>k.label),DATA24.map(r=>r.label));
   assert.deepEqual(room.children('root.3').map(k=>k.label),OPS24.slice(0,4).map(r=>r.label),trace(room));
   assert.deepEqual(mine(room,'root.3','scope_pruned').map(e=>e.body),['Proposed child "Data management" exports readTickets, saveTickets, which "Data Management" already provides; not spawned. Import them by those names.','Proposed child "Entry module" exports start, which "Entry Module" already provides; not spawned. Import them by those names.']);
-  assert.deepEqual(['root','root.1','root.2','root.3','root.4'].map(id=>mine(room,id,'split_gate')[0]?.body.replace(/; \d+ ms\)\.$/,'')),
-    ['Clef decision YES (p=0.867; bar 0.70','Clef decision NO (p=0.096; bar 0.70','Clef decision YES (p=0.755; bar 0.70','Clef decision YES (p=0.781; bar 0.70','Clef decision NO (p=0.604; bar 0.70']);
-  for(const id of ['root.2.1','root.2.2','root.3.1','root.3.2','root.3.3','root.3.4']){ready(room,id);await room.turn(id);assert.deepEqual(mine(room,id,'atomic').map(e=>e.body),[`One promised function: implemented directly (${room.promisedOf(id)[0].name}).`]);}
-  assert.equal(c.asked.filter(a=>a.kind==='gate').length,5,'run24 asked eleven; the six one-function pieces implemented on NO answers');
+  const leaves=['root.2.1','root.2.2','root.3.1','root.3.2','root.3.3','root.3.4'];
+  for(const id of leaves){ready(room,id);await room.turn(id);}
+  assert.deepEqual(['root','root.2','root.3','root.4',...leaves].map(id=>mine(room,id,'split_gate')[0]?.body.replace(/; \d+ ms\)\.$/,'')),
+    ['Clef decision YES (p=0.867; bar 0.700','Clef decision YES (p=0.755; bar 0.700','Clef decision YES (p=0.781; bar 0.700','Clef decision NO (p=0.604; bar 0.700',
+     'Clef decision NO (p=0.647; bar 0.725','Clef decision NO (p=0.622; bar 0.725','Clef decision NO (p=0.221; bar 0.725','Clef decision NO (p=0.119; bar 0.725','Clef decision NO (p=0.257; bar 0.725','Clef decision NO (p=0.316; bar 0.725']);
+  assert.deepEqual(mine(room,'root.1','atomic').map(e=>e.body),['It carries its parent\'s whole promise (start): implemented directly, with no Clef gate.']);
+  assert.equal(gates(c),10,'run24 asked eleven: the entry\'s 0.096 is no longer asked');
   assert.equal(calls.split.length,3);
+  assert.ok(leaves.every(id=>room.node(id).phase==='implement'));
   assert.deepEqual(room.children('root.3').map(k=>JSON.parse(k.uses)),[['readTickets','saveTickets'],['readTickets'],['readTickets','saveTickets'],['readTickets','saveTickets']]);
 });
 
-// The issue tracker's MOCK run (no promises) is unchanged.
-test('v7.15.16: a MOCK room (no promises) completes as before: no one-function rule, bar or placeholder rule applies',async()=>{
+test('v7.15.16: a MOCK room (no promises) completes as before',async()=>{
   const {ControlRoom,Sql,Store}=await import('./helpers/room.js');
   const pending=[];
   const room=new ControlRoom({storage:{sql:new Sql()},waitUntil:p=>pending.push(p)},{MOCK_AI:'true',TEST_ARTIFACT_STORE:new Store()});
   await room.start('Build a ticket app with API and UI from multiple agents',30);await Promise.all(pending.splice(0));
   assert.equal(room.snapshot().status,'complete');
-  assert.equal(events(room,'atomic').filter(e=>/^One promised function/.test(e.body)).length,0);
-  assert.equal(events(room,'interfaces_builtin').length,0);
+  assert.equal(events(room,'atomic').filter(e=>/whole promise/.test(e.body)).length,0);
 });
