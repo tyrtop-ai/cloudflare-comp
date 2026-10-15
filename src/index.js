@@ -29,7 +29,7 @@ import { MAX_INTERFACES } from './interfaces.js';
 import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, useReferences, USES_SHOWN, PLACED_KINDS, functionRows } from './contracts.js';
 import { branchDirectory, packageDirectory, packagePath } from './assembly.js';
 // v8 S5: the polyglot linker (bundle links, runtime glue, rename-only repair).
-import { linkBundle, renameFromRun, knownNames as linkKnownNames, textHash } from './glue.js';
+import { linkBundle, renameFromRun, editChecks, textHash, stdlibNames } from './glue.js';
 import { applyTextEdits } from './linker.js';
 import { unresolvedNames } from './toolchains.js';
 import { checkSecrets } from './checks.js';
@@ -3255,7 +3255,7 @@ export class ControlRoom extends DurableObject {
       const key=`${path}:${textHash(files.get(path))}:${textHash(JSON.stringify(list.map(h=>[h.module,h.name,h.specifier])))}`;
       if(tried.has(key))continue;
       tried.add(key);
-      const row=toolchainOf(path),known=linkKnownNames(files,contracts);
+      const row=toolchainOf(path),checks=editChecks(files,path,{contracts,pieces,free:list.map(h=>h.name)});
       const facts=this.referenceFacts(),fns=this.allNodes().flatMap(x=>this.promisedOf(x.id)).filter(c=>contractKind(c)==='function');
       const what=list.map(h=>h.specifier?`the reference '${h.specifier}' names no file of the project`:h.name&&h.module?`${h.module} offers no ${h.name}`:h.module?`nothing in the project is named ${h.module}`:`${h.name} is bound nowhere in the file`);
       let out;
@@ -3266,7 +3266,7 @@ export class ControlRoom extends DurableObject {
       } catch(e) {out={edits:[]};this.event(id,'link_model_error',clip(`The linker could not be asked about ${path}: ${e?.message||e}`,400));}
       const edits=out.edits.filter(e=>e.file===path);
       if(!edits.length){this.event(id,'link_unresolved',clip(`${path}: ${[...new Set(what)].join('; ')}; no rename joins it, so it goes to its piece.`,600));continue;}
-      const result=row?.id==='javascript'?applyEdits(files.get(path),edits,{knownNames:known}):applyTextEdits(files.get(path),edits,row,{knownNames:known});
+      const result=row?.id==='javascript'?applyEdits(files.get(path),edits,{knownNames:checks.knownNames}):applyTextEdits(files.get(path),edits,row,{...checks,original:files.get(path)});
       for(const r of result.rejected.slice(0,6))this.event(id,'link_edit_rejected',clip(`${path}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
       if(result.content!==files.get(path))keep(path,result.content,result.applied.map(e=>({from:e.find,to:e.replace,reason:'the linker'})),'renamed by the linker');
     }
@@ -3363,6 +3363,19 @@ export class ControlRoom extends DurableObject {
     const line=new Set();for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.add(x.id);
     const owner=this.allNodes().filter(n=>!line.has(n.id)&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status)&&this.promisedOf(n.id).some(c=>c.path===path)).sort((a,b)=>b.id.length-a.id.length)[0];
     return owner?`${path} is delivered by "${owner.label}", whose contract places it; refer to it there rather than writing a copy`:'';
+  }
+  // v8 S5 review: a file that would sit at the bundle root under the name of
+  // its language's standard library (or a start-up hook) would hide it from
+  // every part of the project, the runtime's adapters included: refused,
+  // naming why. Root: a path the writer's contract places there, or any path
+  // of a Root that writes the project itself. '' when it may.
+  shadowsStandard(id, path) {
+    if(!this.v8()||String(path).includes('/'))return '';
+    const row=toolchainOf(path),stem=String(path).replace(/\.[^.]+$/,'');
+    if(!row?.stdlib_names||!stdlibNames(row).has(stem))return '';
+    const n=this.node(id),root=!n?.parent&&!this.manager(id);
+    if(!root&&!this.promisedOf(id).some(c=>c.path===path))return '';
+    return `${path} would take the name of the standard library's ${stem} at the project root and hide it from the whole project; give the file another name, such as ${stem}_tools${path.slice(stem.length)}`;
   }
   // A hold at checks_blocked retries itself (S4b review): up to
   // CHECK_RETRY_MS.length times, by the Durable Object's alarm, before it
@@ -3504,7 +3517,8 @@ export class ControlRoom extends DurableObject {
       if(passed&&!anchors[anchorKey(r.id,r.says)])anchors[anchorKey(r.id,r.says)]={id:r.id,says:r.says,serves:r.serves,check:r.check};
     }
     this.save('requirement_status',status);this.save('check_anchors',anchors);
-    const issues=report?.issues||[],failed=card.requirements.filter(r=>status[r.id].passed===false),untested=card.requirements.filter(r=>status[r.id].passed===null);
+    // S5: a link issue (a browser script that cannot load) goes to its file's owner like a file that does not compile.
+    const issues=[...(report?.issues||[]),...(bundle.link?.issues||[])],failed=card.requirements.filter(r=>status[r.id].passed===false),untested=card.requirements.filter(r=>status[r.id].passed===null);
     const line=`${card.requirements.length-failed.length-untested.length} of ${card.requirements.length} requirement(s) pass`+(failed.length?`; failing: ${failed.map(r=>r.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(r=>r.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
     const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure;
     if(!blocked||failed.length||issues.length)this.set('checks_retries','0');
@@ -6389,7 +6403,7 @@ export class ControlRoom extends DurableObject {
         // package.json turned its CommonJS into ES modules). Memory is
         // skipped below, as before.
         // v8 S4b review: a path another piece's contract places is that piece's: a copy is refused here, naming its owner.
-        const refused=action.files.map(f=>({f,why:f.path.startsWith('memory/')?null:writerPathError(f.path)||this.placedElsewhere(id,f.path)})).filter(x=>x.why);
+        const refused=action.files.map(f=>({f,why:f.path.startsWith('memory/')?null:writerPathError(f.path)||this.placedElsewhere(id,f.path)||this.shadowsStandard(id,f.path)})).filter(x=>x.why);
         if(refused.length) {
           this.event(id,'file_refused',`Not written: ${refused.map(x=>x.why).join('; ')}`);
           action.files=action.files.filter(f=>!refused.some(x=>x.f===f));

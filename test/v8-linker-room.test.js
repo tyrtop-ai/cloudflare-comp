@@ -93,16 +93,18 @@ test('A4: a split Python project whose pieces import each other completes; the r
   const D1=packageDirectory('Counter',counter.id),D2=packageDirectory('Ranker',ranker.id);
   const bundle=builds[0];
   assert.deepEqual(Object.keys(bundle).sort(),[`components/${D1}/__init__.py`,`components/${D1}/counter.py`,`components/${D1}/textutil.py`,`components/${D2}/__init__.py`,`components/${D2}/ranking.py`,
-    'components/__init__.py','glue/python/count_words.py','glue/python/textutil.py','glue/python/top_words.py','wordfreq.py'].sort());
+    'components/__init__.py','count_words.py','top_words.py','wordfreq.py'].sort());
   assert.equal(bundle['wordfreq.py'],WORDFREQ,'a worker file ships as written');
-  assert.equal(bundle['glue/python/top_words.py'],`# Runtime-owned: top_words is defined in components/${D2}/ranking.py.\nfrom components.${D2}.ranking import top_words  # noqa: F401\n`);
-  assert.deepEqual(room.read('glue_files',[]).sort(),Object.keys(bundle).filter(p=>p.startsWith('glue/')||p.endsWith('__init__.py')).sort());
-  assert.match(events(room,'link_glue')[0].body,/The runtime wrote 6 glue file\(s\)/);
+  assert.equal(bundle[`components/${D1}/counter.py`],COUNTER.content.replace('from textutil import words','from .textutil import words'),'the piece\'s own helper, relatively');
+  assert.equal(bundle['top_words.py'],`# Runtime-owned: top_words is defined in components/${D2}/ranking.py.\nfrom components.${D2}.ranking import top_words  # noqa: F401\n`);
+  assert.deepEqual(room.read('glue_files',[]).sort(),['count_words.py','top_words.py',...Object.keys(bundle).filter(p=>p.endsWith('__init__.py'))].sort());
+  assert.match(events(room,'link_glue')[0].body,/The runtime wrote 5 glue file\(s\)/);
   // The export: the project, the glue where it is needed to run, and how to run it.
   const app=await room.appFiles();
   assert.equal(app.passed,true);
-  assert.ok(app.files.some(f=>f.path==='glue/python/count_words.py'));
-  assert.match(app.files.find(f=>f.path==='.recursive/RUN.md').content,/- `wordfreq`: `PYTHONPATH=glue\/python:\. python3 wordfreq\.py`/);
+  assert.ok(app.files.some(f=>f.path==='count_words.py'));
+  assert.ok(!app.files.some(f=>f.path.startsWith('glue/')),'no module path for a project at the root');
+  assert.match(app.files.find(f=>f.path==='.recursive/RUN.md').content,/- `wordfreq`: `python3 wordfreq\.py`/);
   linted(room,calls);
 });
 
@@ -117,7 +119,7 @@ test('A4 repair variant: a worker writes from count_word import count_words; the
   assert.equal(builds[0][at],RANKING,'the linked copy reads the contract by its reference');
   assert.equal(room.files(ranker.id).find(f=>f.path==='ranking.py').revision,1);
   assert.equal(turnsOf(calls,'Ranker'),1,'no repair turn');
-  assert.match(events(room,'link_auto')[0].body,new RegExp(`${at}: count_word → count_words`));
+  assert.match(events(room,'link_auto')[0].body,new RegExp(`${at}: from count_word import count_words → from count_words import count_words`));
   assert.equal(calls.link.length,0,'no linker model call');
 });
 
@@ -145,7 +147,7 @@ test('A4 with the linker model: a reference no rename of the runtime\'s joins go
   // First room: the linker answers with renames only.
   let seen=null;
   const good=v8Room({card:WF_CARD,split:WF_SPLIT,goal:WF_GOAL,answers:wfAnswers({wordfreq:odd}),
-    link:user=>{seen=user;return {edits:[{file:'wordfreq.py',find:'tally',replace:'top_words'},{file:'wordfreq.py',find:'most_common',replace:'top_words'}],issues:[]};}});
+    link:user=>{seen=user;return {edits:[{file:'wordfreq.py',find:'from tally import most_common',replace:'from top_words import top_words as most_common'}],issues:[]};}});
   await good.room.start(WF_GOAL,40,{pipeline:'v8'});
   await good.drain();
   assert.equal(good.room.get('status'),'complete',tail(good.room));
@@ -154,7 +156,7 @@ test('A4 with the linker model: a reference no rename of the runtime\'s joins go
   assert.match(seen.previous_attempt_error,/in wordfreq\.py: nothing in the project is named tally/);
   assert.ok(seen.other_modules_exports.some(x=>/top_words/.test(x)&&/refer to it as: from top_words import top_words/.test(x)));
   assert.equal(good.builds.length,1,'linked before the Container ran');
-  assert.equal(good.builds[0]['wordfreq.py'],WORDFREQ);
+  assert.equal(good.builds[0]['wordfreq.py'],odd.replace('from tally import most_common','from top_words import top_words as most_common'));
   assert.equal(turnsOf(good.calls,'Command'),1);
   linted(good.room,good.calls,[odd,...Object.keys(good.builds[0])]);
   // Second room: the linker changes logic too; the edit is refused, the run
@@ -164,7 +166,7 @@ test('A4 with the linker model: a reference no rename of the runtime\'s joins go
   await bad.room.start(WF_GOAL,40,{pipeline:'v8'});
   await bad.drain();
   assert.equal(bad.room.get('status'),'complete',tail(bad.room));
-  assert.match(events(bad.room,'link_edit_rejected')[0].body,/edit (?:adds or removes code|changes code, not a name)/);
+  assert.match(events(bad.room,'link_edit_rejected')[0].body,/edit changes more than names at line 6/);
   const p=bad.room.problems("stage='check'");
   assert.ok(p.length>=1);
   const command=bad.room.children('root')[2];
@@ -203,7 +205,7 @@ test('S4b\'s Python CLI room: a command that imports another piece\'s function n
   assert.equal(builds.length,1);
   assert.ok(!JSON.stringify(events(room)).includes('ModuleNotFoundError'));
   const formula=room.children('root')[1];
-  assert.match(builds[0]['glue/python/to_fahrenheit.py'],new RegExp(`from components\\.${packageDirectory('Formula',formula.id)}\\.formula import to_fahrenheit`));
+  assert.match(builds[0]['to_fahrenheit.py'],new RegExp(`from components\\.${packageDirectory('Formula',formula.id)}\\.formula import to_fahrenheit`));
   for(const label of ['Converter','Formula','Usage guide'])assert.equal(turnsOf(calls,label),1);
   linted(room,calls);
 });
@@ -299,4 +301,16 @@ test('runUnresolved: a run\'s unresolved names per reader by its frame or its re
     ['R3',{passed:false,infrastructure:true,output:"No module named 'other'"}]]);
   assert.deepEqual(room.runUnresolved(results,bundle,card),[{path:'cli.py',row:'python',module:'tally'}]);
   assert.deepEqual(room.runUnresolved(new Map([results.get('R1')].map(r=>['R9',r])),bundle,card),[{path:'cli.py',row:'python',name:'zebraName'}]);
+});
+
+test('a Python file that would sit at the project root under a standard name (json.py) is refused at the gate, naming why; the project completes without it',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const card={card:1,summary:'A greeting command',languages:['python'],deliverables:[{name:'greet',kind:'command',path:'greet.py',does:'prints a greeting'}],
+    requirements:[{id:'R1',says:'It greets',source:'a command that greets',serves:['greet'],check:{kind:'command',run:'greet',expect:{exit:0,stdout_has:['hello']}}}],decisions:[]};
+  const {room,calls,drain}=v8Room({card,goal:'A command that greets.',answers:{'Root objective':[blocks([{path:'greet.py',content:'print("hello")\n'},{path:'json.py',content:'def dumps(x):\n    return str(x)\n'}])]}});
+  await room.start('A command that greets.',10,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  assert.match(events(room,'file_refused')[0].body,/json\.py would take the name of the standard library's json at the project root and hide it from the whole project; give the file another name, such as json_tools\.py/);
+  assert.deepEqual(room.files('root').map(f=>f.path),['greet.py']);
+  linted(room,calls);
 });

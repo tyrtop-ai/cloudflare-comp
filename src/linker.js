@@ -2615,56 +2615,279 @@ export function shapeEditError(before, after, {path, files, surfaces, knownNames
 // A file of a toolchain row with no native parser (Python; a page) is read as
 // text tokens, by the row's own data: identifiers by its identifier pattern,
 // string literals by its quote marks (the longest first, so a triple quote is
-// one), comments by its comment marks, numbers, single punctuation marks.
-// Whitespace is not a token. Every token keeps its line.
+// one) with a string_prefixes word before the quote taken into the string,
+// comments by its comment marks, numbers, single punctuation marks. In a
+// string whose prefix has an interpolation letter, each {...} field is code:
+// its tokens follow the string's own token (field: true). Whitespace is not a
+// token. Every token keeps its line.
 const identifierSource=row=>String(row?.identifier||'^[A-Za-z_$][A-Za-z0-9_$]*$').replace(/^\^/,'').replace(/\$$/,'').replace(/\{\d+,\d+\}/g,'*');
+const lineStarts=s=>{const out=[0];for(let i=0;i<s.length;i++)if(s[i]==='\n')out.push(i+1);return out;};
+const lineOf=(starts,at)=>{let lo=0,hi=starts.length-1;while(lo<hi){const mid=(lo+hi+1)>>1;if(starts[mid]<=at)lo=mid;else hi=mid-1;}return lo+1;};
 export function textTokens(text, row) {
-  const s=String(text??''),out=[],word=new RegExp(identifierSource(row),'y'),num=/\d[\w.]*/y;
+  const s=String(text??''),out=[],starts=lineStarts(s);
+  scanTokens(s,0,s.length,row,out,false);
+  for(const t of out)t.line=lineOf(starts,t.start);
+  return out.sort((a,b)=>a.start-b.start);
+}
+function scanTokens(s, from, to, row, out, field) {
+  const word=new RegExp(identifierSource(row),'y'),num=/\d[\w.]*/y;
   const quotes=[...(Array.isArray(row?.strings)?row.strings:[])].sort((a,b)=>b.length-a.length);
+  const prefix=row?.string_prefixes?new RegExp(`^(?:${row.string_prefixes})$`):null,interp=String(row?.interpolation||'');
   const line=row?.line_comment||null,[open,close]=Array.isArray(row?.block_comment)?row.block_comment:[null,null];
-  let i=0,ln=1;
-  const push=(type,from,to)=>{const value=s.slice(from,to);out.push({type,value,start:from,end:to,line:ln});ln+=(value.match(/\n/g)||[]).length;i=to;};
-  while(i<s.length) {
+  const push=(type,start,end,extra={})=>{out.push({type,value:s.slice(start,end),start,end,...(field?{field:true}:{}),...extra});return end;};
+  const quoteAt=i=>quotes.find(x=>s.startsWith(x,i));
+  const string=(start,q,at,pre)=>{
+    let j=at+q.length;
+    while(j<to&&!s.startsWith(q,j)){if(s[j]==='\\')j++;else if(q.length===1&&s[j]==='\n'&&q!=='`')break;j++;}
+    const end=Math.min(to,s.startsWith(q,j)?j+q.length:j);
+    push('string',start,end);
+    if(pre&&[...pre].some(c=>interp.includes(c)))fieldTokens(s,at+q.length,Math.min(j,to),row,out);
+    return end;
+  };
+  let i=from;
+  while(i<to) {
     const c=s[i];
-    if(c==='\n'){ln++;i++;continue;}
     if(/\s/.test(c)){i++;continue;}
-    if(line&&s.startsWith(line,i)){const e=s.indexOf('\n',i);push('comment',i,e<0?s.length:e);continue;}
-    if(open&&s.startsWith(open,i)){const e=s.indexOf(close,i+open.length);push('comment',i,e<0?s.length:e+close.length);continue;}
-    const q=quotes.find(x=>s.startsWith(x,i));
-    if(q) {
-      let j=i+q.length;
-      while(j<s.length&&!s.startsWith(q,j)){if(s[j]==='\\')j++;else if(q.length===1&&s[j]==='\n'&&q!=='`')break;j++;}
-      push('string',i,Math.min(s.length,j+q.length));continue;
-    }
+    if(line&&s.startsWith(line,i)){const e=s.indexOf('\n',i);i=push('comment',i,e<0||e>to?to:e);continue;}
+    if(open&&s.startsWith(open,i)){const e=s.indexOf(close,i+open.length);i=push('comment',i,e<0||e>to?to:Math.min(to,e+close.length));continue;}
+    const q=quoteAt(i);
+    if(q){i=string(i,q,i,'');continue;}
     word.lastIndex=i;const w=word.exec(s);
-    if(w&&w[0]){push('name',i,i+w[0].length);continue;}
+    if(w&&w[0]&&i+w[0].length<=to) {
+      const q2=prefix&&prefix.test(w[0])?quoteAt(i+w[0].length):null;
+      if(q2){i=string(i,q2,i+w[0].length,w[0]);continue;}
+      i=push('name',i,i+w[0].length);continue;
+    }
     num.lastIndex=i;const n=num.exec(s);
-    if(n){push('number',i,i+n[0].length);continue;}
-    push('punct',i,i+1);
+    if(n){i=push('number',i,Math.min(to,i+n[0].length));continue;}
+    i=push('punct',i,i+1);
+  }
+}
+// The code fields of an interpolated string's body [a, b): '{{' is a brace,
+// '{' opens a field whose expression ends at its '}' or at a top-level '!'
+// or ':' (a format spec, whose own {...} fields are read the same way).
+function fieldTokens(s, a, b, row, out) {
+  let k=a;
+  while(k<b) {
+    if(s[k]==='{'&&s[k+1]==='{'){k+=2;continue;}
+    if(s[k]!=='{'){k++;continue;}
+    let m=k+1,depth=0;
+    while(m<b) {
+      const ch=s[m];
+      if(ch==='"'||ch==="'"){const e=s.indexOf(ch,m+1);m=e<0||e>=b?b:e+1;continue;}
+      if('([{'.includes(ch))depth++;
+      else if(')]}'.includes(ch)){if(!depth)break;depth--;}
+      else if(!depth&&(ch===':'||ch==='!'&&s[m+1]!=='='))break;
+      m++;
+    }
+    scanTokens(s,k+1,m,row,out,true);
+    if(s[m]===':'||s[m]==='!') {
+      let n=m,d=0;
+      while(n<b){if(s[n]==='{')d++;else if(s[n]==='}'){if(!d)break;d--;}n++;}
+      fieldTokens(s,m+1,n,row,out);
+      k=n+1;
+    } else k=m+1;
+  }
+}
+// The role of each name token: 'attr' right after a '.', 'kwarg' right
+// before a single '=' inside call parentheses (a keyword argument, or a
+// parameter's default), else 'name'.
+export function nameRoles(tokens) {
+  const roles=new Map(),stack=[];
+  for(let i=0;i<tokens.length;i++) {
+    const t=tokens[i];
+    if(t.type==='punct'){if('([{'.includes(t.value))stack.push(t.value);else if(')]}'.includes(t.value))stack.pop();continue;}
+    if(t.type!=='name')continue;
+    const prev=tokens[i-1],next=tokens[i+1],after=tokens[i+2];
+    if(prev?.type==='punct'&&prev.value==='.'&&prev.end<=t.start)roles.set(t,'attr');
+    else if(next?.type==='punct'&&next.value==='='&&!(after?.type==='punct'&&after.value==='='&&after.start===next.end)&&stack.at(-1)==='(')roles.set(t,'kwarg');
+    else roles.set(t,'name');
+  }
+  return roles;
+}
+
+// The names a text binds itself, at any indentation (v8 S5 review, for a row
+// with import_syntax 'python'): def and class names, parameters (of a def
+// and of a lambda), every name before a statement's top-level '=' (tuple
+// targets, a subscript's names too: erring on bound is the safe side), an
+// augmented or ':=' target, for targets up to 'in', 'as' targets (with,
+// except, import), global and nonlocal names. Import statements are not
+// read here (importLocals).
+export function boundTextNames(tokens) {
+  const out=new Set(),code=tokens.filter(t=>t.type!=='comment');
+  const isP=(t,v)=>t?.type==='punct'&&t.value===v;
+  const stack=[];
+  let stmt=[];
+  const closeStatement=()=>{
+    // A top-level single '=' in the statement: every name before it at the statement's own depth.
+    let depth=0;
+    for(let i=0;i<stmt.length;i++) {
+      const t=stmt[i];
+      if(t.type==='punct'){if('([{'.includes(t.value))depth++;else if(')]}'.includes(t.value))depth--;}
+      if(!depth&&isP(t,'=')&&!isP(stmt[i+1],'=')&&!isP(stmt[i-1],'=')&&!'<>!:+-*/%&|^@'.includes(stmt[i-1]?.value||'#')) {
+        for(const x of stmt.slice(0,i))if(x.type==='name'&&!isP(stmt[stmt.indexOf(x)-1],'.'))out.add(x.value);
+        break;
+      }
+    }
+    stmt=[];
+  };
+  for(let i=0;i<code.length;i++) {
+    const t=code[i],prev=code[i-1],next=code[i+1];
+    if(i>0&&!stack.length&&(isP(prev,';')||t.line>prev.line&&!isP(prev,'\\')))closeStatement();
+    stmt.push(t);
+    if(t.type==='punct') {
+      if('([{'.includes(t.value))stack.push(t.value==='('&&prev?.type==='name'&&code[i-2]?.value==='def'?'def':t.value);
+      else if(')]}'.includes(t.value))stack.pop();
+      continue;
+    }
+    if(t.type!=='name')continue;
+    if(isP(prev,'.'))continue;
+    const kw=prev?.type==='name'?prev.value:'';
+    if(kw==='def'||kw==='class'||kw==='as'||kw==='global'||kw==='nonlocal')out.add(t.value);
+    if((kw==='global'||kw==='nonlocal')||isP(prev,',')&&stmt.some(x=>x.value==='global'||x.value==='nonlocal'))out.add(t.value);
+    if(stack.at(-1)==='def'&&(isP(next,',')||isP(next,')')||isP(next,'=')||isP(next,':')||isP(prev,'*')||isP(prev,'(')))out.add(t.value);
+    if(isP(next,':')&&isP(code[i+2],'='))out.add(t.value);
+    // An augmented target (x += 1, x **= 2; a comparison may count too: the safe side).
+    if(next?.type==='punct'&&'+-*/%&|^@<>'.includes(next.value)&&(isP(code[i+2],'=')||code[i+2]?.value===next.value&&isP(code[i+3],'=')))out.add(t.value);
+    // for x, (y, z) in ... (a statement's or a comprehension's)
+    for(let j=i-1;j>=0;j--) {
+      const x=code[j];
+      if(x.type==='name'&&x.value==='for'){out.add(t.value);break;}
+      if(x.type==='name'&&x.value==='in'||!(x.type==='name'||isP(x,',')||isP(x,'(')||isP(x,'[')||isP(x,')')||isP(x,']')))break;
+    }
+    // lambda a, b: ...
+    for(let j=i-1;j>=0;j--){const x=code[j];if(x.type==='name'&&x.value==='lambda'){out.add(t.value);break;}if(!(x.type==='name'||isP(x,',')||isP(x,'*')||isP(x,'=')))break;}
+  }
+  closeStatement();
+  return out;
+}
+
+// ---------- reference statements (a row's import_syntax) ----------
+// The import statements of a text, read with the row's grammar ('python'):
+// a statement starts a logical line and ends at a newline outside brackets
+// (no backslash before it) or at ';'; it counts only when it is import
+// grammar throughout. Each: {start, end, line, bindings: [{level, module,
+// name, local}]} (name null for a whole module; '*' for a star import).
+// Statements joined by ';' on one line form one group ({start, end,
+// statements}).
+export function importStatements(text, row) {
+  if(row?.import_syntax!=='python')return [];
+  const s=String(text??''),tokens=textTokens(s,row).filter(t=>!t.field&&t.type!=='comment'),out=[];
+  const reserved=new Set(String(row.reserved||'').split(/\s+/).filter(Boolean));
+  let depth=0,lineStart=true;
+  for(let i=0;i<tokens.length;i++) {
+    const t=tokens[i],prev=tokens[i-1];
+    if(i>0&&!depth&&(prev.type==='punct'&&prev.value===';'||t.line>prev.line&&!(prev.type==='punct'&&prev.value==='\\')))lineStart=true;
+    if(lineStart&&t.type==='name'&&(t.value==='from'||t.value==='import')) {
+      const body=[];let d=0,j=i;
+      for(;j<tokens.length;j++) {
+        const x=tokens[j],p=tokens[j-1];
+        if(j>i&&!d&&(x.type==='punct'&&x.value===';'||x.line>p.line&&!(p.type==='punct'&&p.value==='\\')))break;
+        if(x.type==='punct'&&x.value==='(')d++;else if(x.type==='punct'&&x.value===')')d--;
+        if(!(x.type==='punct'&&x.value==='\\'))body.push(x);
+      }
+      const bindings=parseImport(body,reserved);
+      if(bindings)out.push({start:t.start,end:body.at(-1).end,line:t.line,bindings});
+    }
+    if(t.type==='punct'){if('([{'.includes(t.value))depth++;else if(')]}'.includes(t.value))depth=Math.max(0,depth-1);}
+    lineStart=false;
   }
   return out;
 }
-// The lines of a text (1-based) that its row's reference patterns match (an
-// import line), each read with its indentation taken off.
-export function referenceLines(text, row) {
-  const res=(row?.imports||[]).map(x=>new RegExp(x)),lines=new Set();
-  String(text??'').split('\n').forEach((l,i)=>{if(res.some(re=>re.test(l.trim())))lines.add(i+1);});
-  return lines;
+function parseImport(body, reserved) {
+  let k=0;
+  const peek=()=>body[k],is=(type,v)=>body[k]?.type===type&&(v===undefined||body[k].value===v);
+  const name=()=>is('name')&&!reserved.has(body[k].value)?body[k++].value:null;
+  const dotted=()=>{let n=name();if(!n)return null;while(is('punct','.')&&body[k+1]?.type==='name'){k++;const m=name();if(!m)return null;n+='.'+m;}return n;};
+  const alias=()=>{if(!is('name','as'))return undefined;k++;return name()||null;};
+  if(is('name','import')) {
+    k++;const out=[];
+    for(;;) {
+      const m=dotted();if(!m)return null;
+      const a=alias();if(a===null)return null;
+      out.push({level:0,module:m,name:null,local:a||m.split('.')[0]});
+      if(is('punct',',')){k++;continue;}
+      break;
+    }
+    return k===body.length?out:null;
+  }
+  if(!is('name','from'))return null;
+  k++;let level=0;
+  while(is('punct','.')){level++;k++;}
+  const module=is('name','import')?'':dotted();
+  if(module===null||!level&&!module||!is('name','import'))return null;
+  k++;
+  if(is('punct','*')){k++;return k===body.length?[{level,module,name:'*',local:'*'}]:null;}
+  const paren=is('punct','(');if(paren)k++;
+  const out=[];
+  for(;;) {
+    const n=name();if(!n)return null;
+    const a=alias();if(a===null)return null;
+    out.push({level,module,name:n,local:a||n});
+    if(is('punct',',')){k++;if(paren&&is('punct',')'))break;continue;}
+    break;
+  }
+  if(paren){if(!is('punct',')'))return null;k++;}
+  return k===body.length&&out.length?out:null;
 }
-// Whether after is before with only names and reference paths changed, as
-// §5.2 (b) allows for a row read as text: '' when it is, the reason when not.
-// A row with an identifier pattern (code): the same tokens in the same
-// order; a string literal may change only on a reference line; a name may
-// change on a reference line (the path it reads, or the name it binds),
-// and anywhere else only one to one, consistently across the file: each
-// old name becomes one new name at every place, two old names never become
-// one, and a new name that is already in the file is taken only when the
-// old one is bound nowhere in it (by the row's defs or a reference line), so
-// two names never merge into one. A reserved word never changes. knownNames:
-// the names a new name may be (contract names, the names defined in the
-// bundle, its module names). A row without one (a page): only reference
-// lines change, and only in the paths they read.
-export function renameOnlyTextError(before, after, row, {knownNames=null}={}) {
+export function importGroups(text, row) {
+  const s=String(text??''),groups=[];
+  for(const st of importStatements(s,row)) {
+    const g=groups.at(-1);
+    if(g&&/^[ \t]*;[ \t]*$/.test(s.slice(g.end,st.start))){g.end=st.end;g.statements.push(st);}
+    else groups.push({start:st.start,end:st.end,line:st.line,statements:[st]});
+  }
+  return groups;
+}
+// One binding as import grammar ('python').
+export function bindingText(b) {
+  if(b.name===null)return `import ${b.module}${b.local!==b.module.split('.')[0]?` as ${b.local}`:''}`;
+  return `from ${'.'.repeat(b.level||0)}${b.module} import ${b.name}${b.local!==b.name?` as ${b.local}`:''}`;
+}
+// Bindings as statements: the from-form bindings of one module in a run share one statement.
+export function renderImports(bindings) {
+  const parts=[];
+  for(const b of bindings) {
+    const last=parts.at(-1);
+    if(b.name!==null&&last&&last.from&&last.level===(b.level||0)&&last.module===b.module&&b.name!=='*'&&!last.star)last.items.push(b);
+    else parts.push(b.name===null?{text:bindingText(b)}:{from:true,level:b.level||0,module:b.module,star:b.name==='*',items:[b]});
+  }
+  return parts.map(p=>p.text||`from ${'.'.repeat(p.level)}${p.module} import ${p.items.map(b=>b.name+(b.local!==b.name?` as ${b.local}`:'')).join(', ')}`).join('; ');
+}
+
+// ---------- the rename-only check ----------
+const PROTECTED_TEXT=row=>new Set(`${row?.reserved||''} ${row?.builtin_names||''}`.split(/\s+/).filter(Boolean));
+const dunder=n=>/^__\w+__$/.test(n);
+// Each import group's span replaced by a marker of its index.
+function maskGroups(text, groups) {
+  let out='',last=0;
+  groups.forEach((g,k)=>{out+=text.slice(last,g.start)+`\u0001${k}\u0001`;last=g.end;});
+  return out+text.slice(last);
+}
+// The names a text binds by its import statements.
+export const importLocals=(text,row)=>new Set(importStatements(text,row).flatMap(s=>s.bindings.map(b=>b.local)).filter(n=>n!=='*'));
+// Whether after is before with only names changed, as §5.2 (b) allows for a
+// row read as text (v8 S5 review): '' when it is, the reason when not.
+// A row with an identifier pattern (code):
+// - Byte identity: outside the import statements the two texts are equal
+//   character for character except inside name tokens (whitespace, line
+//   breaks, indentation, punctuation, strings, comments and the literal
+//   parts of interpolated strings are untouched).
+// - Import statements: the same statements in the same places, each binding
+//   the same names in the same order; a binding may read another target
+//   (another module, a relative path, another name, with or without an
+//   alias) only when opts.allowTarget(after, before) answers '' (the
+//   caller's resolver: the project, never the standard library).
+// - Renames: one to one and consistent across the file (every name use of
+//   the old name, none of its attribute or keyword uses); never a reserved,
+//   built-in or dunder name; only a name the file binds by an import, or one
+//   the caller reports unresolved (opts.free); the new name occurs nowhere in
+//   the file, except, for an unresolved old name, as the name an import binds
+//   (the use of a binding under a wrong spelling). opts.knownNames: the
+//   names a new name may be.
+// A row without one (a page): only reference lines (the row's imports
+// patterns) change, and only in the paths they read.
+export function renameOnlyTextError(before, after, row, {knownNames=null, allowTarget=null, free=null}={}) {
   const A=String(before??''),B=String(after??'');
   if(A===B)return '';
   if(!row?.identifier) {
@@ -2675,72 +2898,73 @@ export function renameOnlyTextError(before, after, row, {knownNames=null}={}) {
     for(let i=0;i<a.length;i++)if(a[i]!==b[i]&&(!res.some(re=>{re.lastIndex=0;return re.test(a[i]);})||blank(a[i])!==blank(b[i])))return `edit changes line ${i+1}, which is not a reference to another file, or changes more than the path it reads`;
     return '';
   }
-  const x=textTokens(A,row),y=textTokens(B,row),refs=referenceLines(A,row);
-  if(x.length!==y.length)return `edit adds or removes code (${x.length} tokens before, ${y.length} after)`;
-  const reserved=new Set(`${row.reserved||''} ${row.builtin_names||''}`.split(/\s+/).filter(Boolean)),show=t=>JSON.stringify(t.value.slice(0,40));
-  const map=new Map(),back=new Map(),changedNew=new Set();
-  for(let i=0;i<x.length;i++) {
-    const a=x[i],b=y[i],where=`line ${a.line} (${show(a)} → ${show(b)})`;
-    if(a.type!==b.type)return `edit changes code, not a name, at ${where}`;
-    if(a.value===b.value)continue;
-    if(a.type==='string'){if(refs.has(a.line))continue;return `edit changes a string that is not a reference path at ${where}`;}
-    if(a.type!=='name')return `edit changes code, not a name, at ${where}`;
-    if(reserved.has(a.value)||reserved.has(b.value))return `edit changes a reserved or built-in name at ${where}`;
-    if(knownNames&&!knownNames.has(b.value))return `edit renames ${show(a)} to ${show(b)}, which nothing in the project defines, at ${where}`;
-    if(refs.has(a.line))continue;
-    if(map.has(a.value)&&map.get(a.value)!==b.value)return `edit renames ${show(a)} two different ways`;
-    if(back.has(b.value)&&back.get(b.value)!==a.value)return `edit renames two names to ${show(b)}`;
-    map.set(a.value,b.value);back.set(b.value,a.value);changedNew.add(b.value);
+  const ga=importGroups(A,row),gb=importGroups(B,row);
+  if(ga.length!==gb.length)return `edit adds or removes an import statement (${ga.length} before, ${gb.length} after)`;
+  const ma=maskGroups(A,ga),mb=maskGroups(B,gb),ta=textTokens(ma,row),tb=textTokens(mb,row);
+  const na=ta.filter(t=>t.type==='name'),nb=tb.filter(t=>t.type==='name');
+  const skeleton=(text,names)=>{let out='',last=0;for(const t of names){out+=text.slice(last,t.start)+'\u0002';last=t.end;}return out+text.slice(last);};
+  const sa=skeleton(ma,na),sb=skeleton(mb,nb);
+  if(sa!==sb||na.length!==nb.length) {
+    let i=0;while(i<sa.length&&sa[i]===sb[i])i++;
+    return `edit changes more than names at line ${sa.slice(0,i).split('\n').length}: whitespace, line breaks, punctuation, strings and comments stay as they are`;
   }
-  // Consistency: every place an old name stands (off reference lines) changed the same way.
-  const bound=boundTextNames(A,row);
-  for(let i=0;i<x.length;i++) {
-    const a=x[i],b=y[i];
-    if(a.type!=='name'||refs.has(a.line))continue;
-    if(map.has(a.value)&&b.value!==map.get(a.value))return `edit renames ${JSON.stringify(a.value)} at some places and not at line ${a.line}`;
-    // A new name already in the file merges two names unless the old one was bound nowhere.
-    if(changedNew.has(a.value)&&a.value===b.value&&bound.has(back.get(a.value)))return `edit renames ${JSON.stringify(back.get(a.value))} to ${JSON.stringify(a.value)}, a name the file already uses for something else`;
+  const roles=nameRoles(ta),protectedNames=PROTECTED_TEXT(row),locals=importLocals(A,row),used=new Set(na.map(t=>t.value)),bound=boundTextNames(ta);
+  const pairs=[];
+  na.forEach((t,i)=>{if(t.value!==nb[i].value)pairs.push({old:t.value,new:nb[i].value,role:roles.get(t),line:t.line});});
+  for(const [k,g] of ga.entries()) {
+    const x=g.statements.flatMap(s=>s.bindings),y=gb[k].statements.flatMap(s=>s.bindings);
+    if(x.length!==y.length)return `edit changes what the import statement at line ${g.line} binds (${x.length} names before, ${y.length} after)`;
+    for(let j=0;j<x.length;j++) {
+      if(x[j].local!==y[j].local)pairs.push({old:x[j].local,new:y[j].local,role:'import',line:g.line});
+      if(x[j].level!==y[j].level||x[j].module!==y[j].module||x[j].name!==y[j].name) {
+        const why=allowTarget?allowTarget(y[j],x[j]):'nothing here may change what an import reads';
+        if(why)return `edit points ${y[j].local} at ${bindingText(y[j])} (line ${g.line}): ${why}`;
+      }
+    }
+  }
+  const map=new Map(),back=new Map();
+  for(const p of pairs) {
+    if(p.role==='attr'||p.role==='kwarg')return `edit renames ${JSON.stringify(p.old)} where it is ${p.role==='attr'?'an attribute':'a keyword name'} (line ${p.line})`;
+    if(protectedNames.has(p.old)||protectedNames.has(p.new)||dunder(p.old)||dunder(p.new))return `edit changes a reserved, built-in or dunder name (${JSON.stringify(p.old)} → ${JSON.stringify(p.new)}, line ${p.line})`;
+    if(map.has(p.old)&&map.get(p.old)!==p.new)return `edit renames ${JSON.stringify(p.old)} two different ways`;
+    if(back.has(p.new)&&back.get(p.new)!==p.old)return `edit renames two names to ${JSON.stringify(p.new)}`;
+    map.set(p.old,p.new);back.set(p.new,p.old);
+  }
+  for(const [o,n] of map) {
+    const unresolved=!!free?.has(o)&&!locals.has(o)&&!bound.has(o);
+    if(!(locals.has(o)&&!bound.has(o))&&!unresolved)return `edit renames ${JSON.stringify(o)}, a name the file binds or reads itself; only a name an import binds, or one the run found unresolved, may change`;
+    if(knownNames&&!knownNames.has(n))return `edit renames ${JSON.stringify(o)} to ${JSON.stringify(n)}, which nothing in the project defines`;
+    if((used.has(n)||locals.has(n))&&!(unresolved&&locals.has(n)&&!bound.has(n)))return `edit renames ${JSON.stringify(o)} to ${JSON.stringify(n)}, a name the file already has`;
+  }
+  // Consistency: every name use of an old name changed the same way, and an
+  // import binding whose name changed changed with it.
+  for(let i=0;i<na.length;i++)if(map.has(na[i].value)&&roles.get(na[i])==='name'&&nb[i].value!==map.get(na[i].value))return `edit renames ${JSON.stringify(na[i].value)} at some places and not at line ${na[i].line}`;
+  for(const [k,g] of ga.entries()) {
+    const x=g.statements.flatMap(s=>s.bindings),y=gb[k].statements.flatMap(s=>s.bindings);
+    for(let j=0;j<x.length;j++)if(map.has(x[j].local)&&y[j].local!==map.get(x[j].local))return `edit renames ${JSON.stringify(x[j].local)} in the file but not where an import binds it (line ${g.line})`;
   }
   return '';
 }
-// The names a text binds: those the row's defs patterns define, and those
-// its reference lines bring in (each imported name, or the alias it takes).
-export function boundTextNames(text, row) {
-  const out=new Set(),t=String(text??'');
-  for(const d of row?.defs||[])for(const m of t.matchAll(new RegExp(d,'gm')))if(m[1])out.add(m[1]);
-  for(const ref of referenceItems(t,row))for(const n of ref.names)out.add(n.alias||n.name);
-  return out;
-}
-// The references of a text, read with the row's import patterns: each
-// {line, module, names: [{name, alias}], from: whether it names what it
-// imports}. A parenthesised list may span lines. A relative module ('.x')
-// is kept with its dots.
-export function referenceItems(text, row) {
-  const lines=String(text??'').split('\n'),out=[],res=(row?.imports||[]).map(x=>new RegExp(x));
-  for(let i=0;i<lines.length;i++) {
-    let l=lines[i].replace(/\s+#.*$/,'').trim();
-    const re=res.findIndex(r=>r.test(l));
-    if(re<0)continue;
-    if(/\($/.test(l)||/\([^)]*$/.test(l)){let j=i;while(j+1<lines.length&&!lines[j].includes(')')){j++;l+=' '+lines[j].replace(/#.*$/,'').trim();}}
-    const m=res[re].exec(l);
-    if(!m)continue;
-    const items=s=>String(s).replace(/[()]/g,' ').split(',').map(x=>x.trim()).filter(Boolean).map(x=>{const [name,alias]=x.split(/\s+as\s+/);return {name:name.trim(),alias:alias?.trim()||null};});
-    if(m[2]!==undefined)out.push({line:i+1,module:m[1],names:items(m[2]).filter(n=>n.name!=='*'),from:true,star:/\*/.test(m[2])});
-    else for(const it of items(m[1]))out.push({line:i+1,module:it.name,names:[],alias:it.alias,from:false});
-  }
-  return out;
-}
-// One name renamed as a token: every name token equal to from becomes to
-// (only on the given lines, when lines is a set), strings and comments untouched.
-export function renameTextName(text, row, from, to, {lines=null}={}) {
-  const t=String(text??'');let out='',last=0;
-  for(const tok of textTokens(t,row))if(tok.type==='name'&&tok.value===from&&(!lines||lines.has(tok.line))){out+=t.slice(last,tok.start)+to;last=tok.end;}
+// One name renamed: every name use of from (never an attribute or keyword
+// use, never inside an import statement) becomes to, interpolated fields
+// included, strings and comments untouched.
+export function renameTextName(text, row, from, to) {
+  const t=String(text??''),groups=importGroups(t,row),inGroup=at=>groups.some(g=>at>=g.start&&at<g.end);
+  const tokens=textTokens(t,row),roles=nameRoles(tokens);
+  let out='',last=0;
+  for(const tok of tokens)if(tok.type==='name'&&tok.value===from&&roles.get(tok)==='name'&&!inGroup(tok.start)){out+=t.slice(last,tok.start)+to;last=tok.end;}
   return out+t.slice(last);
+}
+// One import group's text replaced (its bindings rendered anew).
+export function replaceGroup(text, group, bindings) {
+  const t=String(text??'');
+  return t.slice(0,group.start)+renderImports(bindings)+t.slice(group.end);
 }
 // A model's find/replace edits to a file of a row read as text: each must
 // find text in the file (every occurrence is replaced) and leave the file
 // rename-only against the text before the edit and the worker's original.
-export function applyTextEdits(content, edits, row, {knownNames=null,original=null}={}) {
+export function applyTextEdits(content, edits, row, opts={}) {
+  const {original=null,...check}=opts;
   let current=String(content);
   const applied=[],rejected=[];
   for(const edit of edits) {
@@ -2749,7 +2973,7 @@ export function applyTextEdits(content, edits, row, {knownNames=null,original=nu
     if(find===replace)continue;
     if(!current.includes(find)){rejected.push({edit,reason:'find text is not in the file'});continue;}
     const next=current.split(find).join(replace);
-    const why=renameOnlyTextError(current,next,row,{knownNames})||(original!=null&&renameOnlyTextError(original,next,row,{knownNames}));
+    const why=renameOnlyTextError(current,next,row,check)||(original!=null&&renameOnlyTextError(original,next,row,check));
     if(why){rejected.push({edit,reason:why});continue;}
     current=next;applied.push(edit);
   }

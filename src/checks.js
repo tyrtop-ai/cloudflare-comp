@@ -249,15 +249,15 @@ export function runNotes(app, card, status = {}) {
   if (card?.summary) lines.push('## What it is', '', card.summary, '');
   const run = [];
   for (const r of card?.run || []) run.push(r.static ? `- \`${r.id}\`: serve this folder with any static file server and open \`/\` in a browser.` : `- \`${r.id}\`: \`${r.run}\` (it reads the port from \`PORT\`; ready at \`${r.ready || '/'}\`).`);
-  // S5: a row whose glue sets a module path runs with it (app.paths, the bundle's).
-  const setup = row => { const s = row?.glue?.path_setup, dirs = s && app?.paths?.[s.env]; return dirs?.length ? `${s.env}=${dirs.join(s.separator || ':')} ` : ''; };
+  // S5: a row whose glue needs a module path (a file placed outside the root) runs through its script; otherwise the plain command.
+  const setup = row => { const s = row?.glue?.path_setup, dirs = s && app?.paths?.[s.env]; return !dirs?.length ? '' : s.script ? `sh ${s.script.path} ` : `${s.env}=${dirs.join(s.separator || ':')} `; };
   for (const d of (card?.deliverables || []).filter(d => kindOf(d) === 'command' && d.path)) {
     const row = toolchainOf(d.path);
     if (row?.run_file) run.push(`- \`${d.name}\`: \`${setup(row)}${row.run_file.map(x => x === '{path}' ? d.path : x).join(' ')}\`${d.does ? `: ${d.does}` : ''}`);
   }
   for (const d of (card?.deliverables || []).filter(d => ['doc', 'page', 'file', 'data'].includes(kindOf(d)) && d.path)) run.push(`- \`${d.path}\` (${kindOf(d)})${d.does ? `: ${d.does}` : ''}`);
   for (const p of card?.project_checks || []) run.push(`- the project's own check: \`${setup(TOOLCHAINS.find(r => (r.executables || []).includes(String(p).trim().split(/\s+/)[0])))}${p}\``);
-  if (app?.paths && Object.keys(app.paths).length) run.push(`- \`glue/\` holds files the runtime wrote so the parts find each other where they sit; the commands above set the module path to it.`);
+  if (app?.paths && Object.keys(app.paths).length) run.push(`- The runtime's script under \`glue/\` puts the project folder on the module path for files that sit in a folder of their own.`);
   lines.push('## How to run', '', ...(run.length ? run : ['- See the files.']), '');
   // A result from another snapshot than these files is stale, never shown as current.
   const reqs = card?.requirements || [], state = r => { const s = status?.[r.id]; return !s || typeof s.passed !== 'boolean' ? 'untested' : s.digest && app?.digest && s.digest !== app.digest ? 'stale' : s.passed ? 'pass' : 'fail'; };

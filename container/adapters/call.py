@@ -46,7 +46,11 @@ def supervise():
         out.flush()
 
     request = sys.stdin.read()
-    worker = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--worker"],
+    # v8 S5 review: the worker starts isolated too (-I: no PYTHON* variables,
+    # no user site, no script or working folder on sys.path), so no bundle
+    # file can stand in for a standard module; load() adds the bundle root
+    # after the standard library.
+    worker = subprocess.Popen([sys.executable, "-I", "-X", "utf8", "-B", os.path.abspath(__file__), "--worker"],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None)
     worker.stdin.write(request.encode("utf-8"))
     worker.stdin.close()
@@ -138,11 +142,17 @@ def load(module_path):
     root = os.getcwd()
     absolute = os.path.join(root, module_path)
     directory = os.path.dirname(absolute)
-    # The bundle root first (dotted imports), then the module's own folder
-    # (a sibling imported by its bare name, as when the file runs as a script).
-    for p in (directory, root):
+    # v8 S5 review: the bundle root (dotted imports, the runtime's root shims)
+    # and, for a file placed in a folder outside components/, that folder (a
+    # sibling read by its bare name, as when the file runs as a script): both
+    # AFTER the standard library, so no bundle file shadows a standard module.
+    # A piece's own files refer to each other relatively (the linker's form).
+    extra = [root]
+    if not module_path.startswith("components/") and directory != root:
+        extra.append(directory)
+    for p in extra:
         if p not in sys.path:
-            sys.path.insert(0, p)
+            sys.path.append(p)
     parts = module_path[:-3].split("/") if module_path.endswith(".py") else []
     if parts and all(p and "." not in p for p in parts):
         return importlib.import_module(".".join(parts))
