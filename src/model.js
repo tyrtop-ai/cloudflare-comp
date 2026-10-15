@@ -12,27 +12,30 @@ const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 //                 reasoning_effort, the lowest each supports (DeepSeek V4
 //                 can be told none); it thinks unless the effort is none;
 //   'none'        max_tokens, no reasoning control.
-// sampling: the model card's recommended temperature and top_p, for the
-// mode the call runs in (think, or no_think), or one set for a model with
-// no such modes. context: the model's context window in tokens; a call's
-// output budget is clamped so the prompt and the answer fit in it.
-// source: where the sampling comes from. A model missing from the table
-// keeps the settings every model had before (temperature 0.2, max_tokens).
+// sampling: the vendor's recommended temperature and top_p for the mode
+// the call runs in (think, or no_think), or one set for a model with no such
+// modes, only where it was verified on the vendor's own card or config
+// (verified: true); every other model keeps the 0.2 all models had before,
+// so nothing changes for it until its card is checked (review M4). context:
+// the model's context window in tokens (the output budget is clamped to fit
+// it, never below CLAMP_FLOOR). source: where the sampling comes from.
 // Clef (the yes/no gates) takes no sampling: its requests are unchanged.
+const PREVIOUS = Object.freeze({temperature:0.2});
 export const MODEL_SETTINGS = Object.freeze({
-  '@cf/qwen/qwen3-30b-a3b-fp8':{reasoning:'soft_switch',suffix:' /no_think',context:32768,
-    sampling:{think:{temperature:0.6,top_p:0.95},no_think:{temperature:0.7,top_p:0.8}},source:'Qwen/Qwen3-30B-A3B model card (verified)'},
-  '@cf/qwen/qwen3.8-27b':{reasoning:'effort',effort:'low',context:32768,
-    sampling:{think:{temperature:1.0,top_p:0.95},no_think:{temperature:0.7,top_p:0.8}},source:'Qwen3.8-27B, as the Unsloth and Friendli pages restate its card (not verified on the official card)'},
-  '@cf/deepseek-ai/deepseek-v4-flash-0731':{reasoning:'effort',effort:'none',context:131072,
-    sampling:{think:{temperature:1.0,top_p:1.0},no_think:{temperature:1.0,top_p:1.0}},source:'DeepSeek V4 card as mirrored for V4-Pro, and Unsloth for V4-Flash-0731 (not verified on the official Flash card)'},
-  '@cf/meta/llama-4-scout-17b-16e-instruct':{reasoning:'none',context:131000,sampling:{temperature:0.6,top_p:0.9},source:'Llama-4-Scout-17B-16E-Instruct generation_config.json'},
-  '@cf/qwen/qwen2.5-coder-32b-instruct':{reasoning:'none',context:32768,sampling:{temperature:0.7,top_p:0.8},source:'Qwen2.5-Coder-32B-Instruct generation_config.json'},
-  '@cf/mistralai/mistral-small-3.1-24b-instruct':{reasoning:'none',context:128000,sampling:{temperature:0.15},source:'Mistral-Small-3.1-24B-Instruct-2503 model card ("a relatively low temperature, such as temperature=0.15")'},
-  '@cf/meta/llama-3.2-1b-instruct':{reasoning:'none',context:60000,sampling:{temperature:0.6,top_p:0.9},source:'Llama-3.2-1B-Instruct generation_config.json'}
+  '@cf/qwen/qwen3-30b-a3b-fp8':{reasoning:'soft_switch',suffix:' /no_think',context:32768,verified:true,
+    sampling:{think:{temperature:0.6,top_p:0.95},no_think:{temperature:0.7,top_p:0.8}},source:'Qwen/Qwen3-30B-A3B model card on Hugging Face (verified)'},
+  '@cf/qwen/qwen2.5-coder-32b-instruct':{reasoning:'none',context:32768,verified:true,sampling:{temperature:0.7,top_p:0.8},source:'Qwen/Qwen2.5-Coder-32B-Instruct generation_config.json in the vendor\'s repository (verified)'},
+  '@cf/mistralai/mistral-small-3.1-24b-instruct':{reasoning:'none',context:128000,verified:true,sampling:{temperature:0.15},source:'mistralai/Mistral-Small-3.1-24B-Instruct-2503 model card: "a relatively low temperature, such as temperature=0.15" (verified)'},
+  '@cf/qwen/qwen3.8-27b':{reasoning:'effort',effort:'low',context:32768,verified:false,sampling:PREVIOUS,source:'unverified: the official card was not reachable; previous 0.2 kept'},
+  '@cf/deepseek-ai/deepseek-v4-flash-0731':{reasoning:'effort',effort:'none',context:131072,verified:false,sampling:PREVIOUS,source:'unverified: the official card was not reachable; previous 0.2 kept'},
+  '@cf/meta/llama-4-scout-17b-16e-instruct':{reasoning:'none',context:131000,verified:false,sampling:PREVIOUS,source:'unverified: the official repository is gated; previous 0.2 kept'},
+  '@cf/meta/llama-3.2-1b-instruct':{reasoning:'none',context:60000,verified:false,sampling:PREVIOUS,source:'unverified: the official repository is gated; previous 0.2 kept'}
 });
-const LEGACY_SETTINGS = Object.freeze({reasoning:'none',context:0,sampling:{temperature:0.2},source:'none: the settings every model had before'});
-// What a call to model sends, besides its messages: {params, suffix, thinking}.
+const LEGACY_SETTINGS = Object.freeze({reasoning:'none',context:0,verified:false,sampling:PREVIOUS,source:'none: the settings every model had before'});
+// Review: the clamp never leaves an answer less than this; a prompt so long
+// that it would leaves the budget alone and marks the call context_tight.
+export const CLAMP_FLOOR = 2048;
+// What a call to model sends, besides its messages: {params, suffix, thinking, tight}.
 // params: the token budget (max_tokens, or max_completion_tokens with
 // reasoning_effort), temperature and top_p when the table states it.
 // suffix: what ends the user turn (the soft switch). promptChars: the
@@ -41,9 +44,10 @@ export function modelRequest(model, maxTokens, {noThink=false, promptChars=0}={}
   const m=MODEL_SETTINGS[model]||LEGACY_SETTINGS;
   const thinking=m.reasoning==='soft_switch'?!noThink:m.reasoning==='effort'?m.effort!=='none':false;
   const sampling=m.sampling.think||m.sampling.no_think?(thinking?m.sampling.think:m.sampling.no_think):m.sampling;
-  const budget=m.context?Math.min(maxTokens,Math.max(256,m.context-Math.ceil(promptChars/3.5)-64)):maxTokens;
+  const room=m.context?m.context-Math.ceil(promptChars/3.5)-64:Infinity,tight=room<maxTokens&&room<CLAMP_FLOOR;
+  const budget=room>=maxTokens||tight?maxTokens:room;
   const tokens=m.reasoning==='effort'?{max_completion_tokens:budget,reasoning_effort:m.effort}:{max_tokens:budget};
-  return {params:{...tokens,...sampling},suffix:m.reasoning==='soft_switch'&&noThink?m.suffix:'',thinking};
+  return {params:{...tokens,...sampling},suffix:m.reasoning==='soft_switch'&&noThink?m.suffix:'',thinking,tight};
 }
 
 // Every Workers AI call goes through traced(): env.TRACE, when the room gives
@@ -74,9 +78,9 @@ export async function run(env, system, user, maxTokens, {noThink=false, call='ru
   // switch, whose reasoning counts against max_tokens (run7's runner and
   // coverage calls each took time in proportion to their caps, as if
   // reasoning filled them), an effort, the card's sampling, the context clamp.
-  const {params,suffix,thinking}=modelRequest(selected,maxTokens,{noThink,promptChars:String(system).length+String(user).length});
+  const {params,suffix,thinking,tight}=modelRequest(selected,maxTokens,{noThink,promptChars:String(system).length+String(user).length});
   const messages=[{ role: 'system', content: system }, { role: 'user', content: user+suffix }];
-  return traced(env, {kind:'model', name:call, role, model:selected, retry:!!retry, max_tokens:params.max_tokens??params.max_completion_tokens, no_think:!!noThink, thinking},
+  return traced(env, {kind:'model', name:call, role, model:selected, retry:!!retry, max_tokens:params.max_tokens??params.max_completion_tokens, no_think:!!noThink, thinking, ...(tight?{context_tight:true}:{})},
     () => env.AI.run(selected, {messages,...params}));
 }
 
