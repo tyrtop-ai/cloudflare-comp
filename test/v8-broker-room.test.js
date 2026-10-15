@@ -148,7 +148,8 @@ test('broker: a writer reads its granted file, a chunk it holds, and the neutral
   // v8 live 4: each writer's packages follow its contracts in the catalogue; the rest is as before.
   const mine = list => list.filter(e => !e.is.startsWith('an installed package'));
   const seen = label => mine(turns(label)[0].available).map(e => e.name);
-  assert.ok(turns('Shout keeper')[0].available.some(e => e.name === 'node:fs'), 'a writer of a script reads its packages');
+  // v8 live 4 review: the standard library is the language's, never listed; the image installs no JavaScript package.
+  assert.ok(!turns('Shout keeper')[0].available.some(e => e.is.startsWith('an installed package')), 'a writer of a script lists no standard library module');
   assert.ok(!turns('Notes writer')[0].available.some(e => e.is.startsWith('an installed package')), 'a writer of documents only has none');
   assert.deepEqual(seen('Shout keeper'), ['src/shout.js']);
   assert.deepEqual(seen('Notes writer'), ['NOTES.md', 'S2#1', 'S2#2', 'S2#3']);

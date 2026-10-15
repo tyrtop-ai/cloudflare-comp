@@ -294,34 +294,57 @@ function browserStep(s) {
 export const SELECTOR = /^[a-z][a-z0-9-]*(?:#[A-Za-z_][\w-]*|\.[A-Za-z_][\w-]*|\[[A-Za-z_][\w-]*(?:=(?:[\w-]+|"[^"\\]*"))?\])*$/;
 // Markup in a text a page should show: an opening or a closing tag.
 export const MARKUP = /<\/?[A-Za-z][A-Za-z0-9-]*(?=[\s>\/]|$)/;
+// The most of an expected text the markup repair reads (an expect_text's own limit).
+export const MARKUP_CHARS = 300;
 const cssIdent = s => /^[A-Za-z_][\w-]*$/.test(s);
 // Elements that hold no text: what follows one is not its text.
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
-// v8 live 4 (the to-do card's R1): a page's visible text holds no markup, so
-// an expected text written as markup ("<input type='text'", "<button>Add</
-// button>") names elements. Each opening tag becomes {selector, text?}: its
-// tag, its id and classes, its other attributes, and the text right after it
-// when that text holds no tag. [] when the text has no opening tag.
-export function markupElements(text) {
-  const out = [], src = String(text ?? '');
-  const TAG = /<([A-Za-z][A-Za-z0-9-]*)((?:\s+[^\s=>\/"']+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>"']+))?)*)\s*(\/?)\s*(>|$)/g;
-  for (const m of src.matchAll(TAG)) {
-    let sel = m[1].toLowerCase();
-    for (const a of (m[2] || '').matchAll(/([^\s=>\/"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+)))?/g)) {
-      const name = a[1].toLowerCase(), value = a[2] ?? a[3] ?? a[4];
-      if (!cssIdent(name)) continue;
-      if (name === 'id' && value && cssIdent(value)) sel += `#${value}`;
-      else if (name === 'class' && value) sel += value.split(/\s+/).filter(cssIdent).map(c => `.${c}`).join('');
-      else if (value === undefined) sel += `[${name}]`;
-      else if (/^[\w-]+$/.test(value)) sel += `[${name}=${value}]`;
-      else if (!/["\\]/.test(value)) sel += `[${name}="${value}"]`;
+// One attribute of a start tag, read from where the last one ended (sticky, so the read is linear).
+const ATTRIBUTE = /\s+([^\s=>\/"'<]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"'<=`]+)))?/y;
+// v8 live 4 review: an expected text that is one well-formed element names
+// it: a start tag with its attributes, then optionally its text and its
+// matching end tag (or "/>"), and nothing else ("<button>Add</button>",
+// "<ul id='list'></ul>"). A start tag the text ends inside, with at least
+// one attribute given a value, is read as that tag ("<input type='text'",
+// the live card's R1). Anything else is prose and stays expected text
+// ("Press <Enter> to add", "<p>Hello <b>world</b></p>"), and so does an
+// element a simple selector cannot carry as written (an attribute or class
+// that is no CSS name, a value with a quote or an entity, text with a tag or
+// an entity). Attribute names keep their case (SVG's viewBox). Returns
+// {selector, text?} or null.
+export function markupElement(text) {
+  const src = String(text ?? '').slice(0, MARKUP_CHARS).trim(), open = /^<([A-Za-z][A-Za-z0-9-]*)/.exec(src);
+  if (!open) return null;
+  const tag = open[1].toLowerCase(), attrs = [];
+  let at = open[0].length;
+  for (let m; (ATTRIBUTE.lastIndex = at, m = ATTRIBUTE.exec(src)); at = ATTRIBUTE.lastIndex) attrs.push({name: m[1], value: m[2] ?? m[3] ?? m[4]});
+  const rest = src.slice(at), shut = /^\s*(\/?)>/.exec(rest);
+  let inner = '';
+  if (!shut) { if (rest.trim() || !attrs.some(a => a.value !== undefined)) return null; }
+  else {
+    const after = rest.slice(shut[0].length);
+    if (shut[1] || VOID.has(tag)) { if (after.trim()) return null; }
+    else if (after.trim()) {
+      const end = new RegExp(`</${tag}\\s*>$`, 'i').exec(after.trimEnd());
+      if (!end) return null;
+      inner = after.trimEnd().slice(0, end.index);
+      if (/<[A-Za-z\/!]|&#?\w+;/.test(inner)) return null;
+      inner = inner.replace(/\s+/g, ' ').trim();
     }
-    if (!SELECTOR.test(sel) || sel.length > 200) continue;
-    const inner = m[4] === '>' && !m[3] && !VOID.has(m[1].toLowerCase()) ? /^([^<]*)/.exec(src.slice(m.index + m[0].length))[1].replace(/\s+/g, ' ').trim() : '';
-    out.push({selector: sel, ...(inner ? {text: inner.slice(0, 200)} : {})});
   }
-  return out;
+  let sel = tag;
+  for (const {name, value} of attrs) {
+    if (!cssIdent(name) || value !== undefined && /["\\]|&#?\w+;/.test(value)) return null;
+    if (name.toLowerCase() === 'id' && value) { if (!cssIdent(value)) return null; sel += `#${value}`; }
+    else if (name.toLowerCase() === 'class' && value?.trim()) { const cs = value.trim().split(/\s+/); if (!cs.every(cssIdent)) return null; sel += cs.map(c => `.${c}`).join(''); }
+    else if (value === undefined) sel += `[${name}]`;
+    else sel += /^[\w-]+$/.test(value) ? `[${name}=${value}]` : `[${name}="${value}"]`;
+  }
+  if (!SELECTOR.test(sel) || sel.length > 200) return null;
+  return {selector: sel, ...(inner ? {text: inner.slice(0, 200)} : {})};
 }
+// The element a markup text names, as a list: [] when it names none.
+export const markupElements = text => { const e = markupElement(text); return e ? [e] : []; };
 // What an untested requirement keeps of its check: the writer's text, clipped, under a kind no runner runs.
 export const UNTESTED = 'untested';
 function untestedCheck(raw) {
@@ -870,14 +893,14 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
         if (kind === 'browser' && Array.isArray(c.steps)) {
           const steps = c.steps.map(browserStepOf);
           if (steps.some((x, i) => x !== c.steps[i])) notes.push(`${label}: its browser steps are read as goto, fill, click, press and expect_text steps.`);
-          // v8 live 4: an expected text written as markup names elements: each becomes an element step.
-          c.steps = steps.flatMap(st => {
-            const op = plain(st) ? ['expect_text', 'expect_no_text'].find(k => typeof st[k] === 'string' && MARKUP.test(st[k])) : null;
-            const els = op ? markupElements(st[op]) : [];
-            if (!els.length) return [st];
+          // v8 live 4: an expected text written as one element (markupElement) checks that element.
+          c.steps = steps.map(st => {
+            const op = plain(st) ? ['expect_text', 'expect_no_text'].find(k => typeof st[k] === 'string' && st[k].length <= MARKUP_CHARS && MARKUP.test(st[k])) : null;
+            const el = op ? markupElement(st[op]) : null;
+            if (!el) return st;
             const to = op === 'expect_text' ? 'expect_element' : 'expect_no_element';
-            notes.push(`${label}: a page's visible text holds no tags, so its step for ${JSON.stringify(String(st[op]).slice(0, 120))} checks the element${els.length > 1 ? 's' : ''} ${els.map(e => `${e.selector}${e.text ? ` with the text ${JSON.stringify(e.text)}` : ''}`).join(' and ')} (${to}).`);
-            return els.map(e => ({[to]: e}));
+            notes.push(`${label}: a page's visible text holds no tags, so its step for ${JSON.stringify(String(st[op]).slice(0, 120))} checks the element ${el.selector}${el.text ? ` with the text ${JSON.stringify(el.text)}` : ''} (${to}).`);
+            return {[to]: el};
           });
           c.steps = c.steps.map(st => {
             const to = plain(st) && typeof st.goto === 'string' ? localPath(st.goto, hosts) : null;

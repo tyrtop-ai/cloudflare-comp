@@ -175,22 +175,36 @@ async function offersOf(page, ms = 1500) {
 const offersLine = o => !o ? '' : `; fields found: ${o.fields.length ? o.fields.map(f => [f.label && `label ${quote(f.label)}`, f.placeholder && `placeholder ${quote(f.placeholder)}`, f.name && `name ${quote(f.name)}`].filter(Boolean).join(' ') || 'an unlabelled field').join(', ') : 'none'}; buttons and links found: ${o.buttons.length ? o.buttons.map(b => quote(b.text)).join(', ') : 'none'}`;
 // v8 live 4: the elements of a page that a simple selector matches (the
 // card's SELECTOR: a tag, #id, .class, [attribute], [attribute=value]),
-// each as {text, said}: its visible text (or value, aria-label, alt,
-// title), and how a report names it. A text step matches case-insensitively
-// a text that equals or holds it.
+// each as {text, shown, said}: its visible text (innerText, as expect_text
+// reads the page), whether it shows, and how a report names it (with its
+// value, aria-label, alt or title when it has no text). v8 live 4 review:
+// a step matches shown elements only, and its text as expect_text does
+// (the element's text holds it, in the same case).
 const ELEMENT_SELECTOR = /^[a-z][a-z0-9-]*(?:#[A-Za-z_][\w-]*|\.[A-Za-z_][\w-]*|\[[A-Za-z_][\w-]*(?:=(?:[\w-]+|"[^"\\]*"))?\])*$/;
 const ELEMENT_INFO = els => els.map(el => {
   const t = s => String(s || '').replace(/\s+/g, ' ').trim();
-  const text = t(el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('title') || el.textContent);
+  const text = t(el.innerText), shown = typeof el.checkVisibility === 'function' ? el.checkVisibility({visibilityProperty: true, checkVisibilityCSS: true}) : el.getClientRects().length > 0;
+  const named = text || t(el.value || el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('title'));
   const tag = el.tagName.toLowerCase(), type = el.getAttribute('type'), id = el.id, cls = t(el.getAttribute('class'));
-  return {text, said: `${tag}${type ? `[type=${type}]` : ''}${id ? `#${id}` : ''}${cls ? `.${cls.split(' ').join('.')}` : ''}${text ? ` "${text.slice(0, 40)}"` : ''}`};
+  return {text, shown, said: `${tag}${type ? `[type=${type}]` : ''}${id ? `#${id}` : ''}${cls ? `.${cls.split(' ').join('.')}` : ''}${named ? ` "${named.slice(0, 40)}"` : ''}${shown ? '' : ' (hidden)'}`};
 });
+// HTML's attribute defaults, as data: an element without the attribute has
+// its default value, so [name=default] matches it too (an <input> with no
+// type is a text input).
+const ATTRIBUTE_DEFAULTS = Object.freeze({input: Object.freeze({type: 'text'})});
+function withDefaults(sel) {
+  const tag = (/^[a-z][a-z0-9-]*/.exec(sel) || [''])[0];
+  let other = sel;
+  for (const [name, value] of Object.entries(ATTRIBUTE_DEFAULTS[tag] || {}))
+    other = other.replace(new RegExp(`\\[${escapeRe(name)}=(?:${escapeRe(value)}|"${escapeRe(value)}")\\]`, 'i'), `:not([${name}])`);
+  return other === sel ? sel : `${sel}, ${other}`;
+}
 async function elementMatches(page, arg, ms) {
   const sel = String(arg?.selector || '').trim();
   if (!ELEMENT_SELECTOR.test(sel)) throw new Error(`the selector ${quote(sel)} is not a simple one (a tag, #id, .class, [attribute])`);
-  const infos = await within(page.locator(sel).evaluateAll(ELEMENT_INFO), ms, 'reading the page');
-  const want = arg?.text ? norm(arg.text) : '';
-  return want ? infos.filter(x => norm(x.text).includes(want)) : infos;
+  const infos = (await within(page.locator(withDefaults(sel)).evaluateAll(ELEMENT_INFO), ms, 'reading the page')).filter(x => x.shown);
+  const want = typeof arg?.text === 'string' ? arg.text.replace(/\s+/g, ' ').trim() : '';
+  return want ? infos.filter(x => x.text.includes(want)) : infos;
 }
 // What a page has of the element kind a step looked for: up to 8 elements of its tag.
 async function elementsOf(page, arg, ms = 1500) {

@@ -868,7 +868,7 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
     const layer1=repairCard(parsed,facts),card=draft?keepDraft(layer1.card,draft):layer1.card;
     const ranks=layer1.unresolved?.length?await rankReferences(env,card,layer1.unresolved):[];
     const r={head:text.slice(0,200),text,parsed,layer1:card,...settleCard(card,layer1,ranks,facts)};
-    r.review=r.card?.deliverables?.length&&!r.card.blocked&&!r.unsupported.length?await reviewCard(env,{goal,change:amend?change:'',card:r.card,installed:rows,held}):{notes:[],failed:[]};
+    r.review=r.card?.deliverables?.length&&!r.card.blocked&&!r.unsupported.length?await reviewCard(env,{goal,change:amend?change:'',card:r.card,installed:rows,held,packages}):{notes:[],failed:[]};
     r.all=[...new Set([...(r.runnability||[]),...r.review.notes,...markupNotes(layer1.notes),...wordingNotes(r.card,`${goal}\n${amend?change:''}`),...saysNotes(r.card,`${goal}\n${amend?change:''}`)])];
     r.substantive=r.all.filter(n=>SUBSTANTIVE.test(n));
     r.learn=r.all.filter(n=>LEARN.test(n));
@@ -936,18 +936,21 @@ export async function rankReferences(env, card, unresolved=[]) {
 // from computing the right values? A NO is substantive: the writer states in
 // says what the check needs (the exit status, the stream, an exact text).
 export const REVIEW_BAR = 0.5;
-export async function reviewCard(env, {goal='', change='', card, installed=[], held=[]}) {
+// v8 live 4 review (M3): under packages 'allowed' the person allows third
+// parties' packages, so the installed question is not asked (as before live 4).
+export async function reviewCard(env, {goal='', change='', card, installed=[], held=[], packages='none'}) {
   if (env.MOCK_AI === 'true' || !card?.deliverables?.length) return {notes:[],failed:[]};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) return {notes:[],failed:['unsupported Clef decision model']};
   const phrases=goalSentences(change||goal).slice(0,12),reqs=(card.requirements||[]).filter(r=>!r.implicit&&!r.project).slice(0,24),dels=card.deliverables.slice(0,12),scope=cardScope(card,{goal:`${goal}\n${change}`}),facts=interfaceFacts(card,{scope});
   // Live 2 review: Clef reads each check with its expected values as their kinds, so the implementable question is never about values or wording.
   const shapeOf=check=>{try{return checkShapeForReview(check,scope);}catch{return summaryOf(check);}};
+  const asksInstalled=packages!=='allowed'&&(installed||[]).length>0;
   const state={goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),phrases:phrases.map((text,slot)=>({slot,text:text.slice(0,300)})),
     requirements:reqs.map((r,slot)=>({slot,id:r.id,says:String(r.says).slice(0,200),check:shapeOf(r.check),serves:(r.serves||[]).slice(0,6)})),
     deliverables:dels.map((d,slot)=>({slot,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160),...(facts.get(d.name)?.length?{interface:facts.get(d.name)}:{})})),
-    // v8 live 4: what is installed (the toolchains and Root's packages), and the card's plan and decisions, for CLEF.installed.
-    ...(held.length?{installed:{toolchains:(installed||[]).map(t=>t.id),packages:held.map(p=>p.name)},run:(card.run||[]).map(r=>r.static?'serve the files as they are':String(r.run||'')).slice(0,4),decisions:(card.decisions||[]).slice(0,8).map(d=>String(d).slice(0,240))}:{})};
+    // v8 live 4: what is installed (the toolchains, each with its language's standard library, and Root's packages), and the card's plan and decisions, for CLEF.installed.
+    ...(asksInstalled?{installed:{toolchains:(installed||[]).map(t=>t.id),packages:held.map(p=>p.name)},run:(card.run||[]).map(r=>r.static?'serve the files as they are':String(r.run||'')).slice(0,4),decisions:(card.decisions||[]).slice(0,8).map(d=>String(d).slice(0,240))}:{})};
   const asks=[...phrases.map((_,i)=>({key:`covered_${i}`,text:clefText('covered',{i}),note:p=>`The goal phrase "${clip(phrases[i],160)}" may be covered by no requirement (Clef p=${p.toFixed(2)}): add a requirement whose check fails when the project ignores it.`})),
     ...reqs.map((r,i)=>({key:`exercises_${i}`,text:clefText('exercises',{i}),note:p=>`${r.id}'s check may not exercise what it states (Clef p=${p.toFixed(2)}; ${clip(summaryOf(r.check),120)}): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader's question about a document.`})),
     ...reqs.map((r,i)=>({r,i})).filter(({r})=>!r.untested&&r.check?.kind!=='judge'&&!existenceOnly(r)).map(({r,i})=>({key:`implementable_${i}`,text:clefText('implementable',{i}),note:p=>`${r.id}'s check may need what its statement and contract leave unsaid (Clef p=${p.toFixed(2)}; ${clip(shapeOf(r.check),160)}): state in says the behaviour and interface the check needs, such as the exit status or the stream a message goes to, and keep its values in the check.`})),
@@ -955,7 +958,7 @@ export async function reviewCard(env, {goal='', change='', card, installed=[], h
     ...reqs.map((r,i)=>({r,i})).filter(({r})=>!r.untested&&internalFileCheck(r.check)).map(({r,i})=>({key:`internal_${i}`,text:clefText('internal',{i}),note:p=>`${r.id}'s check looks at an internal detail of ${clip(r.check.path,80)} (Clef p=${p.toFixed(2)}; ${clip(shapeOf(r.check),120)}): check the behaviour a user meets instead, such as a page's text, a command's output or a function's result, and keep a file check for what the goal names in the file.`})),
     ...dels.map((d,i)=>({key:`kind_${i}`,text:clefText('kind_fits',{i}),note:p=>`Kind: deliverable "${clip(d.name,80)}" may fit another kind than ${d.kind||'function'} (Clef p=${p.toFixed(2)}).`})),
     // v8 live 4 (the tracker card chose a web framework the project does not have): does the plan keep to what is installed? A NO is substantive.
-    ...(held.length?[{key:'installed',text:clefText('installed'),note:p=>`Installed: the card's plan or decisions may rely on something beyond the installed packages (Clef p=${p.toFixed(2)}): use what is installed: ${clip(installedSummary(held.filter(p=>!(card.languages||[]).some(l=>held.some(q=>q.language===l))||(card.languages||[]).includes(p.language))),400)}.`}]:[])];
+    ...(asksInstalled?[{key:'installed',text:clefText('installed'),note:p=>`Installed: the card's plan or decisions may rely on something beyond what is installed (Clef p=${p.toFixed(2)}): use each language's standard library${(own=>own.length?` and the installed packages: ${clip(installedSummary(own),400)}`:'')(held.filter(p=>!(card.languages||[]).length||(card.languages||[]).includes(p.language)))}.`}]:[])];
   const groups=[];
   for(let i=0;i<asks.length;i+=12)groups.push(asks.slice(i,i+12));
   const failed=[];
