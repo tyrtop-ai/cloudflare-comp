@@ -142,8 +142,16 @@ test('requirements: serves names deliverables, and each check kind is valid for 
   assert.equal(card.requirements.find(r => r.id === 'R4').unattached, true);
   assert.equal(card.requirements.find(r => r.id === 'R17').untraced, true);
   assert.deepEqual(card.requirements.find(r => r.id === 'R18').serves, ['GUIDE.md']);
+  // v8 live 2: a refused check never takes its requirement along: each is kept, marked untested, its check never run.
   const ids = card.requirements.filter(r => !r.implicit).map(r => r.id);
-  assert.deepEqual(ids, ['R1', 'R2', 'R3', 'R4', 'R11', 'R12', 'R15', 'R17', 'R18']);
+  assert.deepEqual(ids, ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15', 'R17', 'R18']);
+  const untested = card.requirements.filter(r => r.untested);
+  assert.deepEqual(untested.map(r => r.id), ['R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R13', 'R14']);
+  for (const r of untested) {
+    assert.equal(r.check.kind, 'untested');
+    assert.ok(text.includes(`${r.id}: ${r.check_error}`), r.id);
+  }
+  assert.equal(card.requirements.find(r => r.id === 'R6').check.written, JSON.stringify({kind: 'command', run: 'cargo run', expect: {exit: 0}}));
   assert.equal(card.requirements.find(r => r.id === 'R12').check.steps[0].method, 'GET');
   assert.deepEqual(card.run.map(r => r.id), ['site', 'api']);
   assert.deepEqual(card.requirements.find(r => r.id === 'R15').check, {kind: 'file', path: 'BASE.md', has: ['x']}, 'a base file may be checked');
@@ -309,9 +317,9 @@ test('writeCard: layer 3 places a reference; the one retry hears the errors left
   bad.requirements[0].check = {kind: 'command', run: 'cargo run', expect: {exit: 0}};
   const stillBad = good();
   stillBad.requirements[2].check = {kind: 'judge', path: 'GUIDE.md'};
-  // The review says NO once: R2's check (first pass), and nothing on the revision.
+  // The review says NO once: R2's check (first pass; R1 is kept untested, so R2 is slot 1), and nothing on the revision.
   let pass = 0;
-  const {env, calls, clefCalls} = modelEnv([bad, stillBad], placing((k, input) => { if (k === 'covered_0') pass++; return k === 'exercises_0' && pass === 1 ? 0.2 : 0.9; }));
+  const {env, calls, clefCalls} = modelEnv([bad, stillBad], placing((k, input) => { if (k === 'covered_0') pass++; return k === 'exercises_1' && pass === 1 ? 0.2 : 0.9; }));
   const out = await writeCard(env, {goal: GOAL});
   assert.equal(calls.length, 2, 'the writer: one answer and one revision');
   assert.deepEqual([...new Set(clefCalls.map(c => Object.keys(c.questions)[0].split('_')[0]))], ['reference', 'covered']);
@@ -331,9 +339,11 @@ test('writeCard: layer 3 places a reference; the one retry hears the errors left
   assert.deepEqual(out.raw_answers, [JSON.stringify(bad), JSON.stringify(stillBad)]);
   assert.ok(out.errors.some(e => /R3: its judge check asks no question/.test(e)));
   assert.ok(cardUsable(out.card));
-  assert.deepEqual(out.card.requirements.filter(r => !r.implicit).map(r => r.id), ['R1', 'R2']);
-  assert.deepEqual(out.review_notes, [], 'the revision drew no note');
-  assert.equal(out.card.review_notes, undefined);
+  // v8 live 2: R3's refused check keeps R3, untested, with the refusal as its review note.
+  assert.deepEqual(out.card.requirements.filter(r => !r.implicit).map(r => r.id), ['R1', 'R2', 'R3']);
+  assert.equal(out.card.requirements[2].untested, true);
+  assert.deepEqual(out.review_notes, ['R3 is kept untested, and its check is never run: its judge check asks no question'], 'the revision drew no note of Clef\'s');
+  assert.deepEqual(out.card.review_notes, out.review_notes);
 });
 
 test('writeCard: a retry that does not parse never replaces a first answer that did; reasoning is stripped; remaining notes stay on the card', async () => {
@@ -346,7 +356,7 @@ test('writeCard: a retry that does not parse never replaces a first answer that 
   assert.ok(out.errors.some(e => /R2: its check kind "smoke"/.test(e)));
   assert.ok(out.notes.some(n => /R1 named no deliverable; it serves convert, which its check names/.test(n)), 'the repair\'s notes come with it');
   assert.equal(out.raw_answers[0], JSON.stringify(bad), 'the raw answer without its reasoning');
-  assert.deepEqual(out.card.review_notes, ['Kind: deliverable "GUIDE.md" may fit another kind than doc (Clef p=0.30).'], 'a kind note only annotates');
+  assert.deepEqual(out.card.review_notes, ['R2 is kept untested, and its check is never run: its check kind "smoke" is not one of file, judge, command, call, http, browser', 'Kind: deliverable "GUIDE.md" may fit another kind than doc (Clef p=0.30).'], 'a kind note only annotates');
   const {env: env2} = modelEnv(['nothing', 'still nothing']);
   const none = await writeCard(env2, {goal: GOAL});
   assert.equal(none.card, null);

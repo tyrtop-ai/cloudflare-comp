@@ -277,20 +277,46 @@ function browserStep(s) {
   if (k === 'expect_count') { if (!plain(v) || !Number.isInteger(v.n) || v.n < 0) return null; const l = locator(v, ['role', 'text']); return Object.keys(l).length ? {expect_count: {...l, n: v.n}} : null; }
   return null;
 }
+// What an untested requirement keeps of its check: the writer's text, clipped, under a kind no runner runs.
+export const UNTESTED = 'untested';
+function untestedCheck(raw) {
+  const written = plain(raw) && raw.kind === UNTESTED && typeof raw.written === 'string' ? raw.written : (() => { try { return JSON.stringify(raw) ?? String(raw); } catch { return String(raw); } })();
+  return {kind: UNTESTED, written: String(written).slice(0, 600)};
+}
+// A requirement whose check can be run: not one kept untested.
+export const testable = r => !!r && !r.untested && r.check?.kind !== UNTESTED;
 // A check in a few words, for Clef and the event log: its kind and target.
 export function checkSummary(check) {
   if (!check) return '';
+  if (check.kind === UNTESTED) return `untested: ${String(check.written || '').slice(0, 200)}`;
   if (check.kind === 'file' || check.kind === 'judge') return `${check.kind} ${check.path}${check.question ? `: ${check.question}` : check.has ? ` contains ${check.has.map(x => JSON.stringify(x)).join(', ')}` : ''}`.slice(0, 300);
-  if (check.kind === 'command') return `command ${check.run}${check.expect?.stdout_has ? ` prints ${check.expect.stdout_has.map(x => JSON.stringify(x)).join(', ')}` : ''}`.slice(0, 300);
+  if (check.kind === 'command') {
+    // v8 live 2: Clef's implementable question reads what the check expects: its exit status, streams and texts.
+    const e = check.expect || {}, said = [Number.isInteger(e.exit) ? `exits ${e.exit}` : '', e.stdout !== undefined ? `prints exactly ${JSON.stringify(e.stdout)}` : '',
+      e.stdout_has ? `prints ${e.stdout_has.map(x => JSON.stringify(x)).join(', ')}` : '', e.stderr_has ? `writes ${e.stderr_has.map(x => JSON.stringify(x)).join(', ')} to stderr` : ''].filter(Boolean);
+    return `command ${check.run}${check.stdin ? ' with stdin' : ''}${said.length ? ` ${said.join(', ')}` : ''}`.slice(0, 300);
+  }
   if (check.kind === 'call') return `call ${check.steps.map(s => `${s.call}(${JSON.stringify(s.args).slice(1, -1)})`).join(', ')}`.slice(0, 300);
-  return `${check.kind} on ${check.serve}: ${check.steps.map(s => s.goto || s.path || Object.keys(s)[0]).join(', ')}`.slice(0, 300);
+  if (check.kind === 'http') return `http on ${check.serve}: ${(check.steps || []).map(s => `${s.method || 'GET'} ${s.path}${s.expect?.status ? ` → ${s.expect.status}` : ''}`).join(', ')}`.slice(0, 300);
+  return `${check.kind} on ${check.serve}: ${(check.steps || []).map(browserWords).join(', ')}`.slice(0, 300);
+}
+// A browser step in a few words, for Clef: what it opens, fills, clicks and looks for.
+function browserWords(s) {
+  const [k, v] = Object.entries(s || {})[0] || ['?', ''];
+  const who = o => plain(o) ? JSON.stringify(o.label || o.placeholder || o.name || o.text || o.role || '') : '""';
+  if (k === 'goto') return `goto ${v}`;
+  if (k === 'fill') return `fill ${who(v)}`;
+  if (k === 'click') return `click ${plain(v) && v.role ? `${v.role} ` : ''}${who(v)}`;
+  if (k === 'expect_text' || k === 'expect_no_text') return `${k} ${JSON.stringify(v)}`;
+  if (k === 'expect_count') return `expect_count ${plain(v) ? v.role || JSON.stringify(v.text) : ''}`;
+  return k;
 }
 
 // ------------------------------------------------------------ coverage (§1.2 rules 6 and 7)
 const nextId = (taken, prefix) => { for (let n = 1; ; n++) if (!taken.has(`${prefix}${n}`)) return `${prefix}${n}`; };
 // The deliverables a requirement covers: the ones it serves; a project
 // check only those in its own command's language (covers).
-const covered = r => r.project ? r.covers || [] : r.serves;
+const covered = r => r.project ? r.covers || [] : testable(r) ? r.serves : [];
 // The requirements the runtime adds: one per deliverable no requirement
 // covers (a file check on its path; a one-step call per example of a
 // function; nothing for a function without examples or a route), marked
@@ -351,7 +377,7 @@ export function settleCodeLanguage(card, installed = TOOLCHAINS) {
 // denylist, the path and URL rules and base gating all still apply.
 // Pure. facts: {goal, installed, base, change}.
 // The flags only the runtime sets: a writer's copy of one is dropped.
-const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'serves_inferred', 'unattached', 'vet_p', 'doubtful'];
+const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'serves_inferred', 'unattached', 'vet_p', 'doubtful', 'untested', 'check_error'];
 const CHECK_KINDS = ['file', 'judge', 'command', 'call', 'http', 'browser'];
 // Kinds a writer names in other words ('' leaves the kind to the name).
 // 'usage': a script, program or tool is a command only when a requirement runs it (a page's script is a file).
@@ -445,6 +471,36 @@ function looseArgv(check) {
   if (!plain(c)) return null;
   const run = c.run ?? c.command ?? c.cmd;
   return commandArgv(Array.isArray(run) ? joinArgv(run) : run).argv || null;
+}
+
+// v8 live 2: a path a check requests, written as a whole URL on the run's own
+// host ("http://localhost:8000/index.html") or with no leading "/"
+// ("index.html"): the path itself, or null when it names another host or is
+// no plain path. hosts: the loopback names and those a run's command binds.
+const LOCAL_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'];
+function hostsOf(runs) {
+  const out = new Set(LOCAL_HOSTS);
+  for (const r of runs) {
+    const argv = plain(r) && typeof r.run === 'string' ? commandArgv(r.run).argv || [] : [];
+    argv.forEach((a, i) => {
+      const flag = /^--?(?:host|bind|b|H)(?:=(.+))?$/.exec(a), value = flag ? flag[1] ?? argv[i + 1] : null;
+      if (typeof value === 'string' && /^[\w.-]+(?::\d+)?$/.test(value)) out.add(value.replace(/:\d+$/, '').toLowerCase());
+    });
+  }
+  return out;
+}
+export function localPath(value, hosts = new Set(LOCAL_HOSTS)) {
+  const v = typeof value === 'string' ? value.trim() : '';
+  if (!v || v.startsWith('/') && !v.startsWith('//')) return null;
+  const withScheme = /^https?:\/\//i.test(v) ? v : /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(v) ? `http://${v}` : null;
+  if (withScheme) {
+    let u;
+    try { u = new URL(withScheme); } catch { return null; }
+    if (!hosts.has(u.hostname.toLowerCase())) return null;
+    return `${u.pathname || '/'}${u.search}${u.hash}`;
+  }
+  // A relative page name: index.html, about/team.html.
+  return /^[\w-][\w.-]*(?:\/[\w.-]+)*\/?(?:[?#]\S*)?$/.test(v) && !/(?:^|\/)\.\.(?:\/|$)/.test(v) ? `/${v}` : null;
 }
 
 export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], change = ''} = {}) {
@@ -671,6 +727,12 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
   o.run = runs;
   delete o.runs;
   const runOf = id => runs.find(r => plain(r) && r.id === id);
+  const hosts = hostsOf(runs);
+  // A run's ready path written as a URL on its own host, or without its "/".
+  for (const r of runs) {
+    const to = plain(r) && typeof r.ready === 'string' ? localPath(r.ready, hosts) : null;
+    if (to) { notes.push(`run "${r.id}": ready "${r.ready.slice(0, 120)}" is ${to}.`); r.ready = to; }
+  }
 
   // Requirements.
   const functionNames = finals.filter(f => f.kind === 'function').map(f => f.name);
@@ -760,11 +822,22 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
         if (kind === 'browser' && Array.isArray(c.steps)) {
           const steps = c.steps.map(browserStepOf);
           if (steps.some((x, i) => x !== c.steps[i])) notes.push(`${label}: its browser steps are read as goto, fill, click, press and expect_text steps.`);
-          c.steps = steps;
+          c.steps = steps.map(st => {
+            const to = plain(st) && typeof st.goto === 'string' ? localPath(st.goto, hosts) : null;
+            if (!to) return st;
+            notes.push(`${label}: its browser check opens "${st.goto.slice(0, 120)}" as ${to}, the path on the served project.`);
+            return {...st, goto: to};
+          });
         }
         if (kind === 'http' && Array.isArray(c.steps)) {
           c.steps = c.steps.map(s => plain(s) ? {...s, ...(s.path === undefined && typeof s.url === 'string' ? {path: s.url} : {}), ...(plain(s.expect) ? {expect: httpExpectOf(s.expect)} : {})} : s);
           for (const st of c.steps) if (plain(st)) delete st.url;
+          c.steps = c.steps.map(st => {
+            const to = plain(st) && typeof st.path === 'string' ? localPath(st.path, hosts) : null;
+            if (!to) return st;
+            notes.push(`${label}: its http check requests "${st.path.slice(0, 120)}" as ${to}, the path on the served project.`);
+            return {...st, path: to};
+          });
           // An http check whose steps expect nothing passes on any answer below 500: the writer is asked for an expectation.
           const expects = st => plain(st?.expect) && ['status', 'body_has', 'json_has'].some(k => st.expect[k] !== undefined);
           if (!c.steps.some(expects)) runnability.push(`${label}'s http check expects nothing of the answer: give a step an expect with the status, a text the body holds (body_has) or json it holds (json_has), so the check can fail.`);
@@ -888,8 +961,10 @@ export function applyResolutions(card, unresolved = [], ranks = []) {
 // writer revises for whatever Clef says.
 export function settleCard(repaired, {notes = [], unresolved = [], runnability = []} = {}, ranks = [], opts = {}) {
   const applied = applyResolutions(repaired, unresolved, ranks), out = validateCard(applied.card, opts);
-  return {...out, notes: [...notes, ...applied.notes], runnability: [...runnability, ...unexercised(out.card)], draft: publicDraft(applied.card)};
+  return {...out, notes: [...notes, ...applied.notes], runnability: [...runnability, ...unexercised(out.card), ...untestedNotes(out.card)], draft: publicDraft(applied.card)};
 }
+// The requirements kept untested, each with why its check cannot run (a review note the card shows).
+export const untestedNotes = card => (card?.requirements || []).filter(r => r.untested).map(r => `${r.id} is kept untested, and its check is never run: ${r.check_error}`);
 // The pages, commands and functions no runnable check exercises (a command
 // a run starts is exercised by the http and browser checks on that run), as
 // notes for the writer: what to add.
@@ -1019,10 +1094,15 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     // is kept, unattached, and a missing source leaves it untraced.
     const listed = [...new Set((Array.isArray(r.serves) ? r.serves : typeof r.serves === 'string' ? [r.serves] : []).filter(s => typeof s === 'string').map(s => s.trim()))];
     const serves = listed.filter(s => names.has(s));
-    const c = checkOf(r.check, ctx);
-    if (c.error) { errors.push(`${label}: ${c.error}.`); continue; }
+    // v8 live 2: a check layer 2 refuses never takes its requirement along.
+    // The requirement is kept, marked untested with the refusal (the writer's
+    // retry hears it as an error, the card shows it), and its check, kept only
+    // as written, is never run.
+    const kept = plain(r.check) && r.check.kind === 'untested' && r.untested === true && typeof r.check_error === 'string' ? r : null;
+    const c = kept ? {error: kept.check_error} : checkOf(r.check, ctx);
+    if (c.error && !kept) errors.push(`${label}: ${c.error}.`);
     const id = typeof r.id === 'string' && REQ_ID.test(r.id.trim()) && !taken.has(r.id.trim()) ? r.id.trim() : null;
-    const req = {id, says, source, serves, check: c.check};
+    const req = c.error ? {id, says, source, serves, check: untestedCheck(r.check), untested: true, check_error: String(c.error).slice(0, 300)} : {id, says, source, serves, check: c.check};
     // v8 card repair: a source the runtime inferred (repairCard) says so; only
     // repairCard sets it, after dropping a writer's own copy.
     if (r.source_inferred === true) req.source_inferred = true;
@@ -1040,7 +1120,7 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     card.requirements.push(req);
   }
   for (const r of card.requirements) if (!r.id) { r.id = nextId(taken, 'R'); taken.add(r.id); }
-  if (!card.requirements.length && card.deliverables.length && !card.blocked) errors.push('no valid requirement: list at least one yes/no requirement the goal states, with its check.');
+  if (!card.requirements.some(testable) && card.deliverables.length && !card.blocked) errors.push('no valid requirement: list at least one yes/no requirement the goal states, with its check.');
 
   // Rule 7: project checks; each covers only the deliverables in its own language.
   let p = 0;
@@ -1064,7 +1144,7 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
 // A card the room can start from: not blocked, with a deliverable and a
 // requirement of the writer's own (never only the runtime's implicit or
 // project ones, v8 S3 review).
-export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && (card.requirements || []).some(r => !r.implicit && !r.project);
+export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && (card.requirements || []).some(r => !r.implicit && !r.project && testable(r));
 // After Clef vetting (§1.4) a deliverable may fall back to its implicit requirement.
 export const vettedUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && card.requirements?.length > 0;
 // Clef vetting (v8 card repair): Clef reviews, it never deletes. The first

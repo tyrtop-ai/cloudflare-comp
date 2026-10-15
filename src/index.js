@@ -3763,15 +3763,17 @@ export class ControlRoom extends DurableObject {
     if(run?.infrastructure)for(const c of plan.checks.concat(plan.project))if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});
     // Each requirement's status (§1.3), with the anchor of one that ever passed.
     const old=this.read('requirement_status',{}),anchors=this.read('check_anchors',{}),status={};
-    for(const r of card.requirements) {
+    // v8 live 2: a requirement kept untested (its check refused as written) is shown, never run, and holds nothing.
+    for(const r of card.requirements.filter(r=>r.untested))status[r.id]=statusEntry(null,digest,`its check is never run: ${r.check_error||'it could not be read as written'}`,{untested:true});
+    for(const r of card.requirements.filter(r=>!r.untested)) {
       const res=results.get(r.id),passed=!res||res.infrastructure?null:!!res.passed;
       status[r.id]=statusEntry(passed,digest,res?.detail||'not run',passed||old[r.id]?.anchor?{anchor:true}:{});
       if(passed&&!anchors[anchorKey(r.id,r.says)])anchors[anchorKey(r.id,r.says)]={id:r.id,says:r.says,serves:r.serves,check:r.check};
     }
     this.save('requirement_status',status);this.save('check_anchors',anchors);
     // S5: a link issue (a browser script that cannot load) goes to its file's owner like a file that does not compile.
-    const issues=[...(report?.issues||[]),...(bundle.link?.issues||[])],failed=card.requirements.filter(r=>status[r.id].passed===false),untested=card.requirements.filter(r=>status[r.id].passed===null);
-    const line=`${card.requirements.length-failed.length-untested.length} of ${card.requirements.length} requirement(s) pass`+(failed.length?`; failing: ${failed.map(r=>r.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(r=>r.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
+    const issues=[...(report?.issues||[]),...(bundle.link?.issues||[])],failed=card.requirements.filter(r=>status[r.id].passed===false),untested=card.requirements.filter(r=>!r.untested&&status[r.id].passed===null),kept=card.requirements.filter(r=>r.untested);
+    const line=`${card.requirements.length-failed.length-untested.length-kept.length} of ${card.requirements.length} requirement(s) pass`+(failed.length?`; failing: ${failed.map(r=>r.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(r=>r.id).join(', ')}`:'')+(kept.length?`; untested, their checks never run: ${kept.map(r=>r.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
     const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure;
     if(!blocked||failed.length||issues.length)this.set('checks_retries','0');
     if(!failed.length&&!untested.length&&!issues.length&&!report?.infrastructure_issue&&!run?.infrastructure) {
@@ -3779,7 +3781,7 @@ export class ControlRoom extends DurableObject {
       this.save('compile_passed',{input,digest,goal_rev:rows?.goal_rev??1,card_rev:rev,ts:Date.now()});
       this.save('compile_reported',null);this.save('compile_blocked',null);this.set('compile_infrastructure','');
       this.closeProblemsFrom(id,'resolved');
-      this.event(id,'checks_passed',`Every requirement of the project card passed (${card.requirements.length}) against snapshot ${digest.slice(0,14)}.`);
+      this.event(id,'checks_passed',kept.length?`Every requirement of the project card that has a runnable check passed (${card.requirements.length-kept.length}) against snapshot ${digest.slice(0,14)}; ${kept.map(r=>r.id).join(', ')} stay${kept.length>1?'':'s'} untested.`:`Every requirement of the project card passed (${card.requirements.length}) against snapshot ${digest.slice(0,14)}.`);
       return finish();
     }
     const items=checkProblems(card,results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name))});
@@ -6559,7 +6561,8 @@ export class ControlRoom extends DurableObject {
       if(!cardUsable(card))return hold('card_failed',clip(`The card writer gave no usable card after ${calls}: ${errors.slice(0,8).join(' ')||'no deliverable, or no requirement of its own.'}`,1100));
       if(written.language_error)return hold('card_failed',clip(`The card names no code language after ${calls}: ${written.language_error}`,1100));
       if(written.inferred_language)this.event(id,'card_language_inferred',`The card named no code language for its functions or routes; ${written.inferred_language}, the one installed, is used.`);
-      if(errors.length)this.event(id,'card_errors',clip(`The card's ${errors.length} remaining problem(s) after the writer's retry; the valid part is kept: ${errors.join(' ')}`,1500));
+      // v8 live 2: nothing is dropped for a check error: a requirement whose check stays refused is kept, untested, and never run.
+      if(errors.length){const kept=(card.requirements||[]).filter(r=>r.untested).map(r=>r.id);this.event(id,'card_errors',clip(`The card's ${errors.length} remaining problem(s) after the writer's retry; every requirement is kept${kept.length?`, and ${kept.join(', ')} ${kept.length>1?'are':'is'} marked untested: ${kept.length>1?'their checks are':'its check is'} never run`:''}: ${errors.join(' ')}`,1500));}
       this.save('card_draft',card);
     }
     try {

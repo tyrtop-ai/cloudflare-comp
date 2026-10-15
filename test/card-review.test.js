@@ -1,7 +1,7 @@
 // v8 S3 review: the card's language, command, path and coverage rules.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateCard, cardUsable, vettedUsable, traceable, codeLanguageGap, settleCodeLanguage, commandArgv, urlPathError, SYSTEM_COMMANDS, checkSummary } from '../src/card.js';
+import { validateCard, cardUsable, vettedUsable, traceable, codeLanguageGap, settleCodeLanguage, commandArgv, urlPathError, SYSTEM_COMMANDS, checkSummary, localPath, repairCard } from '../src/card.js';
 import { TOOLCHAINS, toolchainNamed } from '../src/toolchains.js';
 
 const GOAL = 'A command-line tool that converts temperatures between Celsius and Fahrenheit, with a short guide.';
@@ -123,6 +123,24 @@ test('http, browser and ready paths stay on the served site', () => {
   assert.ok(errors.some(e => /^R4: its browser check requests "\/\/evil\.example\/steal": it must start with a single/.test(e)));
   assert.ok(errors.some(e => /^R5: its http check requests "\/\.\.\/etc\/passwd": it must not step up/.test(e)));
   assert.ok(card.requirements.some(r => r.id === 'R6'));
+  // v8 live 2: R4 and R5 are kept, untested, never run.
+  assert.deepEqual(card.requirements.filter(r => r.untested).map(r => r.id), ['R4', 'R5']);
+});
+
+test('layer 1 reads a URL on the run\'s own host, or a page name without its "/", as the path; another host stays refused', () => {
+  for (const [v, want] of [['http://localhost:8000/index.html', '/index.html'], ['http://127.0.0.1:3000/', '/'], ['https://localhost', '/'], ['http://0.0.0.0:8080/tickets?x=1#t', '/tickets?x=1#t'],
+    ['localhost:8000/app', '/app'], ['index.html', '/index.html'], ['docs/help.html', '/docs/help.html'], ['http://[::1]:9000/a', '/a']]) assert.equal(localPath(v), want, v);
+  for (const v of ['/already', '//evil.example/x', 'https://evil.example/x', 'file:///etc/passwd', 'javascript:alert(1)', '../up.html', 'a b.html', '']) assert.equal(localPath(v), null, v);
+  // A host the run's command binds is the run's own.
+  const card = {card: 1, summary: 'x', languages: ['python'], deliverables: [{name: 'serve', kind: 'command', path: 'serve.py'}, {name: 'index.html', kind: 'page', path: 'index.html'}],
+    run: [{id: 'app', run: 'serve --host devbox.local', port: true, ready: 'http://devbox.local:8000/health'}],
+    requirements: [{id: 'R1', says: 'It answers', source: 'x', serves: ['serve'], check: {kind: 'http', serve: 'app', steps: [{method: 'GET', url: 'http://devbox.local:8000/items', expect: {status: 200}}]}},
+      {id: 'R2', says: 'It shows', source: 'x', serves: ['index.html'], check: {kind: 'browser', serve: 'app', steps: [{goto: 'https://elsewhere.example/'}]}}]};
+  const {card: out, notes} = repairCard(card, {goal: 'x'});
+  assert.equal(out.run[0].ready, '/health');
+  assert.equal(out.requirements[0].check.steps[0].path, '/items');
+  assert.equal(out.requirements[1].check.steps[0].goto, 'https://elsewhere.example/', 'another host is left for layer 2 to refuse');
+  assert.ok(notes.some(n => /its http check requests "http:\/\/devbox\.local:8000\/items" as \/items/.test(n)));
 });
 
 test('deliverables and check input files follow the workers\' path rules and never replace a base file', () => {

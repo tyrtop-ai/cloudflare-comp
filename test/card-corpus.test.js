@@ -57,6 +57,39 @@ const CORPUS = [
     deliverables: [['wordcount', 'command', 'wordcount.py']],
     check: out => { assert.equal(out.card.requirements[0].id, 'R1'); assert.match(out.card.summary, /counts the words/); }},
 
+  // ---------------------------------------------------------------- live 2: a requirement silently lost
+  // The second live runs' to-do card (reconstructed from its export): the
+  // writer's R1 opened http://localhost:8000/index.html, layer 2 refused it
+  // ("must start with a single /"), card_errors said "the valid part is kept",
+  // and R1 was gone; the implicit "styles.css exists" took its id.
+  {name: 'live 2: a to-do page whose browser check opens http://localhost:8000/index.html', goal: 'A static web page with a to-do list.',
+    answer: json({card: 1, summary: 'Static to-do list web page with HTML, CSS, and JavaScript.', languages: ['text', 'javascript'],
+      deliverables: [{name: 'index.html', kind: 'page', path: 'index.html', does: 'Serves the to-do list interface'}, {name: 'styles.css', kind: 'data', path: 'styles.css', does: 'Styles the to-do list for visual clarity'},
+        {name: 'script.js', kind: 'file', path: 'script.js', does: 'Adds interactivity for task management'}],
+      run: [{id: 'serve', static: true}],
+      requirements: [{id: 'R1', says: 'The page shows the to-do list', source: 'A static web page with a to-do list', serves: ['index.html'], check: {kind: 'browser', serve: 'serve', steps: [{goto: 'http://localhost:8000/index.html'}, {expect_text: 'To-Do'}]}},
+        {id: 'R2', says: 'Tasks can be added and displayed', source: 'A static web page with a to-do list', serves: ['index.html', 'script.js'], check: {kind: 'browser', serve: 'serve', steps: [{fill: {label: 'Task', text: 'Sample task'}}, {click: {role: 'button', name: 'Add'}}, {expect_text: 'Sample task'}]}},
+        {id: 'R3', says: 'CSS file is linked and applied', source: 'A static web page with a to-do list', serves: ['index.html'], check: {kind: 'file', path: 'index.html', has: ['<link rel="stylesheet" href="styles.css">']}}]}),
+    deliverables: [['index.html', 'page', 'index.html'], ['styles.css', 'data', 'styles.css'], ['script.js', 'file', 'script.js']],
+    check: out => {
+      const r1 = out.card.requirements.find(r => r.id === 'R1');
+      assert.deepEqual(r1.check.steps[0], {goto: '/index.html'}, 'layer 1 reads the URL on the run\'s host as its path');
+      assert.ok(out.notes.some(n => /R1: its browser check opens "http:\/\/localhost:8000\/index\.html" as \/index\.html/.test(n)), out.notes.join('\n'));
+      assert.ok(!out.card.requirements.some(r => r.untested));
+      assert.equal(out.card.requirements.find(r => r.implicit)?.id, 'R4', 'the implicit requirement takes a free id, never the writer\'s');
+    }},
+  {name: 'live 2: a check layer 2 still refuses keeps its requirement, untested, never run', goal: 'A static web page with a to-do list.',
+    answer: json({card: 1, summary: 'A to-do page', languages: ['text'], deliverables: [{name: 'index.html', kind: 'page', path: 'index.html'}], run: [{id: 'site', static: true}],
+      requirements: [{id: 'R1', says: 'The page links to the shared list', source: 'a to-do list', serves: ['index.html'], check: {kind: 'browser', serve: 'site', steps: [{goto: 'https://lists.example.com/shared'}, {expect_text: 'Shared'}]}},
+        {id: 'R2', says: 'A task can be added', source: 'a to-do list', serves: ['index.html'], check: {kind: 'browser', serve: 'site', steps: [{goto: '/'}, {fill: {label: 'Task', text: 'Walk'}}, {click: {role: 'button', name: 'Add'}}, {expect_text: 'Walk'}]}}]}),
+    deliverables: [['index.html', 'page', 'index.html']], errors: [/R1: its browser check requests "https:\/\/lists\.example\.com\/shared": it must start with a single "\/"/],
+    check: out => {
+      const r1 = out.card.requirements.find(r => r.id === 'R1');
+      assert.deepEqual([r1.untested, r1.check.kind, r1.says], [true, 'untested', 'The page links to the shared list']);
+      assert.match(r1.check_error, /must start with a single/);
+      assert.ok(out.card.review_notes.some(n => /^R1 is kept untested, and its check is never run: /.test(n)), 'the refusal is a review note the card shows');
+    }},
+
   // ---------------------------------------------------------------- the issue tracker, three ways
   {name: 'live B: an issue tracker web server listed as a function', goal: 'Build a small issue tracker that lets someone create, view, update, and delete tickets.',
     answer: json({card: 1, summary: 'An issue tracker server', languages: ['javascript'], deliverables: [{name: 'server.js', kind: 'function', does: 'serves the tracker API'}],

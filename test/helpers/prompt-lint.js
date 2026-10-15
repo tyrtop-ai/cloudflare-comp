@@ -75,7 +75,9 @@ const DATA_KEYS = new Set(['project', 'toolchains', 'contracts_you_may_use', 'co
   'original_goal_scope_boundary', 'your_own_files', 'your_other_files', 'existing_file', 'your_exposed_files', 'adjacent_public_memory', 'your_memory_topics', 'neighbor_owners',
   'parent', 'your_private_children', 'file', 'your_label', 'your_id', 'label', 'id', 'key', 'fn', 'contracts', 'functions', 'your_progress', 'summary', 'requested_by', 'previous_answer_head',
   // Capability boxes S5: a broker answer ({name, label, value}) quotes data under answered_requests.
-  'answered_requests']);
+  'answered_requests',
+  // v8 live 2: the card writer's retry quotes its own previous card, as the runtime read it, as data.
+  'previous_answer']);
 // Capability boxes S5: answered_requests holds the room's own answers to
 // contract asks too, as strings composed from MESSAGES; those stay linted.
 // Its labelled objects are the broker's answers, data as a whole.

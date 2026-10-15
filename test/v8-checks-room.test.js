@@ -299,6 +299,36 @@ test('a Container that cannot run the checks routes nothing: the room holds chec
   assert.equal(calls.leaf.length,1,'Root did not write again');
 });
 
+// v8 live 2: a requirement whose check layer 2 refuses is kept, marked
+// untested, shown, never run, and holds nothing: the room completes on the
+// rest. A file check's markup matches whatever the self-closing slash, quote
+// style and whitespace (the to-do page's <link ... />).
+test('live 2: a refused check keeps its requirement, untested and never run; a link written self-closing meets the file check',async()=>{
+  const card={...README_CARD,run:[{id:'site',static:true}],requirements:[README_CARD.requirements[0],
+    {id:'R2',says:'The README shows the project page',source:'a README that explains how to install',serves:['README.md'],check:{kind:'browser',serve:'site',steps:[{goto:'https://project.example.com/'}]}},
+    {id:'R3',says:'The README links its stylesheet',source:'a README that explains how to install',serves:['README.md'],check:{kind:'file',path:'README.md',has:['<link rel="stylesheet" href="styles.css">']}}]};
+  const text=`# Project\n\n## Install\n\nnpm install\n\n<link rel='stylesheet'  href='styles.css' />\n`;
+  const {room,calls,builds,drain}=v8Room({card,answers:{'Root objective':[wrote('README.md',text)]}});
+  await room.start(README_GOAL,20,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.get('status'),'complete',JSON.stringify(events(room).slice(-8).map(e=>`${e.kind}: ${e.body.slice(0,200)}`),null,1));
+  const kept=room.snapshot().card.requirements.find(r=>r.id==='R2');
+  assert.deepEqual([kept.untested,kept.check.kind],[true,'untested']);
+  assert.match(kept.check_error,/must start with a single "\/"/);
+  assert.match(events(room,'card_errors')[0].body,/every requirement is kept, and R2 is marked untested: its check is never run/);
+  assert.doesNotMatch(events(room,'card_errors')[0].body,/valid part is kept/);
+  const st=room.snapshot().requirement_status;
+  assert.deepEqual([st.R1.passed,st.R2.passed,st.R3.passed],[true,null,true]);
+  assert.equal(st.R2.untested,true);
+  assert.match(st.R2.detail,/^its check is never run: its browser check requests/);
+  assert.equal(builds.length,0,'the untested browser check is never run');
+  assert.match(events(room,'checks_passed')[0].body,/R2 stays untested/);
+  const notes=(await room.appFiles()).files.find(f=>f.path==='.recursive/RUN.md').content;
+  assert.match(notes,/\| R2 \| untested: its check is never run: its browser check requests/);
+  assert.ok(room.snapshot().card.review_notes.some(n=>/^R2 is kept untested/.test(n)));
+  linted(room,calls);
+});
+
 // ------------------------------------------------------------ no leaks: a worker never reads a check
 const SUM_GOAL='A command-line tool that sums the numbers it reads on standard input and reports anything that is not a number, with a README.';
 const SECRET_STDIN='3\n4\nzebra-quokka\n';
@@ -468,6 +498,20 @@ test('checkPlan: command deliverables run by their own path, project checks apar
   assert.deepEqual(fileResult({path:'GUIDE.md',has:['# g']},files),{passed:true,detail:''});
   assert.equal(fileResult({path:'GUIDE.md',has:['Usage']},files).detail,'GUIDE.md does not contain "Usage"');
   assert.equal(fileResult({path:'x.json',json:true},new Map([['x.json','{']])).passed,false);
+});
+
+// v8 live 2: the to-do page's R3 wanted <link rel="stylesheet" href="styles.css"> and the file had <link rel="stylesheet" href="styles.css" />.
+test('fileResult: markup matches whatever its whitespace, quote style and self-closing slash; plain text exactly, apart from whitespace',()=>{
+  const files=new Map([['index.html','<head>\n  <link rel="stylesheet" href="styles.css" />\n  <meta  charset="utf-8">\n</head>'],['NOTES.md','Run the\n   tool, then "stop" it.']]);
+  const has=(path,...texts)=>fileResult({path,has:texts},files).passed;
+  assert.equal(has('index.html','<link rel="stylesheet" href="styles.css">'),true);
+  assert.equal(has('index.html',"<link rel='stylesheet' href='styles.css'/>"),true);
+  assert.equal(has('index.html','<link  rel="stylesheet"\nhref="styles.css" >','<meta charset="utf-8"/>'),true);
+  assert.equal(has('index.html','<link rel="stylesheet" href="style.css">'),false,'another file name is another text');
+  assert.equal(has('index.html','<LINK rel="stylesheet" href="styles.css">'),false,'letter case still counts');
+  assert.equal(has('NOTES.md','Run the tool, then "stop" it.'),true,'whitespace runs');
+  assert.equal(has('NOTES.md',"then 'stop' it"),false,'plain text keeps its quotes');
+  assert.equal(has('NOTES.md','run the tool'),false,'plain text keeps its case');
 });
 
 test('workerDetail: built from what the check observed; expected values, inputs, steps and the judge\'s question never reach a worker',()=>{

@@ -76,7 +76,8 @@ export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), p
   const missingCommand = c => { const d = commandsOf.get(firstWord(c)); return d && !files.has(d.path) ? `${d.path}, the file of the command ${d.name}, is missing` : ''; };
   for (const r of reqs) {
     const c = r.check;
-    if (!c || WORKER_CHECKS.includes(c.kind)) continue;
+    // v8 live 2: a requirement kept untested (its check refused as written) is never run.
+    if (!c || r.untested || c.kind === 'untested' || WORKER_CHECKS.includes(c.kind)) continue;
     if (c.kind === 'command') {
       const missing = missingCommand(c);
       if (missing) { local.set(r.id, {id: r.id, kind: c.kind, passed: false, detail: missing, frames: [], observed: {what: 'local', note: missing}}); continue; }
@@ -97,11 +98,24 @@ export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), p
 // A file check, in the Worker (§4.1 step 2): exists, non-empty, has each
 // text, parses as json. detail: the dashboard's (the runner's wording);
 // observed: what a worker may hear (never the texts it looks for).
+// v8 live 2: has ['<link rel="stylesheet" href="styles.css">'] failed on
+// <link rel="stylesheet" href="styles.css" />. A text with markup in it
+// matches after whitespace runs, quote style (' or ") and a self-closing "/"
+// before ">" are normalised, in the text and the file alike; plain text
+// matches exactly, apart from whitespace runs.
+const MARKUP = /<[A-Za-z!/?]/;
+const spaced = t => String(t).replace(/\s+/g, ' ');
+const markup = t => spaced(t).replace(/'/g, '"').replace(/\s*\/?\s*>/g, '>').replace(/\s*=\s*/g, '=').replace(/<\s+/g, '<');
+export function hasText(text, wanted) {
+  const w = String(wanted);
+  if (text.includes(w)) return true;
+  return MARKUP.test(w) ? markup(text).includes(markup(w).trim()) : spaced(text).includes(spaced(w).trim());
+}
 export function fileResult(check, files) {
   const p = String(check?.path || ''), text = files.get(p);
   if (typeof text !== 'string') return {passed: false, detail: `${p} is missing`, observed: {what: 'missing'}};
   if (!text.trim()) return {passed: false, detail: `${p} is empty`, observed: {what: 'empty'}};
-  for (const s of check.has || []) if (!text.includes(String(s))) return {passed: false, detail: `${p} does not contain ${show(String(s))}`, observed: {what: 'lacks'}};
+  for (const s of check.has || []) if (!hasText(text, s)) return {passed: false, detail: `${p} does not contain ${show(String(s))}`, observed: {what: 'lacks'}};
   if (check.json === true) { try { JSON.parse(text); } catch (e) { return {passed: false, detail: `${p} is not valid JSON: ${clip(e.message, 120)}`, observed: {what: 'json', error: clip(e.message, 120)}}; } }
   return {passed: true, detail: ''};
 }
