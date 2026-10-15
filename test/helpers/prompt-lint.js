@@ -73,10 +73,17 @@ export const lintAll = texts => Object.entries(texts).flatMap(([name, text]) => 
 // The keys whose values are data as a whole are left out.
 const DATA_KEYS = new Set(['project', 'toolchains', 'contracts_you_may_use', 'contracts_available', 'contracts_you_deliver', 'goal', 'goal_scope_boundary', 'root_scope',
   'original_goal_scope_boundary', 'your_own_files', 'your_other_files', 'existing_file', 'your_exposed_files', 'adjacent_public_memory', 'your_memory_topics', 'neighbor_owners',
-  'parent', 'your_private_children', 'file', 'your_label', 'your_id', 'label', 'id', 'key', 'fn', 'contracts', 'functions', 'your_progress', 'summary', 'requested_by', 'previous_answer_head']);
+  'parent', 'your_private_children', 'file', 'your_label', 'your_id', 'label', 'id', 'key', 'fn', 'contracts', 'functions', 'your_progress', 'summary', 'requested_by', 'previous_answer_head',
+  // Capability boxes S5: a broker answer ({name, label, value}) quotes data under answered_requests.
+  'answered_requests']);
+// Capability boxes S5: answered_requests holds the room's own answers to
+// contract asks too, as strings composed from MESSAGES; those stay linted.
+// Its labelled objects are the broker's answers, data as a whole.
+const DATA_ENTRIES = new Set(['answered_requests']);
 export function composedTexts(user, data = []) {
   const out = [], seen = new Set();
   const walk = (v, key) => {
+    if (DATA_ENTRIES.has(key) && Array.isArray(v)) { for (const x of v) if (typeof x === 'string') walk(x, ''); return; }
     if (DATA_KEYS.has(key)) return;
     if (typeof v === 'string') {
       // A routed answer is JSON inside a message: its value is read, its data keys are not.
