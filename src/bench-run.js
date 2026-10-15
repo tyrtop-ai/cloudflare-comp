@@ -6,10 +6,10 @@
 // the dashboard closed: each tick polls the running task rooms
 // (ControlRoom.benchSummary), records the ones that ended, and starts queued
 // tasks up to `concurrency`, each in its own room through the same call
-// /api/run makes (ControlRoom.start), with the task's card provided and one
-// executor of the run's pool (bench-pool-<slot>), so N rooms never ask for
-// more Containers than the deployment has (BENCH_EXECUTORS, its
-// max_instances). A scored room's repositories and storage are deleted
+// /api/run makes (ControlRoom.start), with the task's card provided. Each
+// compile of a task room runs in its own fresh box (capability boxes S1,
+// src/box.js): no two tasks share a VM. A slot (at most BENCH_EXECUTORS)
+// only caps how many rooms run at once. A scored room's repositories and storage are deleted
 // unless the run keeps it (keep_rooms: 'failed', the default, keeps every
 // room that did not pass; 'all'; 'none'). One more instance ('index') lists
 // the runs for the dashboard.
@@ -34,13 +34,12 @@ export const RUN_ID = /^[a-f0-9]{12}$/;
 export const KEEP_ROOMS = Object.freeze(['failed', 'all', 'none']);
 export const BENCH_DEFAULTS = Object.freeze({limit: BENCH_LIMITS.defaultLimit, concurrency: 2, budget: 60, task_timeout_ms: 30 * 60_000, poll_ms: 10_000, executors: 4, keep_rooms: 'failed'});
 const MAX_POLL_ERRORS = 5, MAX_PURGE_TRIES = 10;
-// The Container slots a deployment has: BENCH_EXECUTORS (keep it equal to
-// wrangler.jsonc's containers[].max_instances), else 4.
+// How many task rooms run at once at most: BENCH_EXECUTORS, else 4. (Each
+// compile opens its own box; the durable_object policy has no max_instances.)
 export const executorSlots = env => { const n = Number(env?.BENCH_EXECUTORS); return Number.isInteger(n) && n >= 1 && n <= 64 ? n : BENCH_DEFAULTS.executors; };
 // The room of one attempt at a task: a fresh room each attempt, so a room
 // still stopping never blocks the task's next start.
 export const taskRoom = (id, idx, attempt) => `bench-${id}-${idx}-${attempt}`;
-export const poolExecutor = slot => `bench-pool-${slot}`;
 const COSTS = ['tokens', 'prompt_tokens', 'completion_tokens', 'model_calls', 'container_ms'];
 
 export class BenchRun extends DurableObject {
@@ -141,7 +140,7 @@ export class BenchRun extends DurableObject {
       this.db().exec("UPDATE tasks SET status='running',room=?,slot=?,started_at=?,poll_errors=0 WHERE idx=?", room, slot, started, t.idx);
       this.db().exec("INSERT INTO rooms(room,idx,state) VALUES (?,?,'running') ON CONFLICT(room) DO NOTHING", room, t.idx);
       let r;
-      try { r = await this.env.ROOMS.getByName(room).start(t.goal, budget, settings, room, parse(t.card, null), {executor: poolExecutor(slot)}); }
+      try { r = await this.env.ROOMS.getByName(room).start(t.goal, budget, settings, room, parse(t.card, null)); }
       catch (e) { r = {error: clip(e?.message || e)}; }
       const now2 = this.row(t.idx), ours = now2?.status === 'running' && now2.room === room;
       if (!this.running() || !ours) {

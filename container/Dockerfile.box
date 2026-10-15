@@ -1,0 +1,24 @@
+# Capability boxes (S0/S1): the `check` and `browser` images of the Box
+# Container application (wrangler.jsonc, scheduling_policy durable_object).
+# One Dockerfile, two images: BOX_BROWSER=1 adds Playwright's Chromium
+# headless shell. Otherwise the same layout as ./Dockerfile, so today's
+# build runner (/opt/build-runner.mjs) runs unchanged inside a box (Level A),
+# with its in-runner isolation (util-linux: prlimit, unshare, nsenter).
+# iputils-ping is here for the S0 probe's ICMP question only.
+FROM node:lts-bookworm-slim
+ARG BOX_BROWSER=0
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest ca-certificates iputils-ping \
+ && rm -rf /var/lib/apt/lists/*
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright NODE_PATH=/usr/local/lib/node_modules
+RUN if [ "$BOX_BROWSER" = "1" ]; then npm install -g playwright && playwright install --with-deps --only-shell chromium \
+ && rm -rf /root/.npm /root/.cache /var/lib/apt/lists/*; fi \
+ && mkdir -p /opt/toolchain /ms-playwright && python3 -c "import sys;print('\n'.join(sorted(sys.stdlib_module_names)))" > /opt/toolchain/python-stdlib.txt
+RUN command -v timeout && command -v unshare && command -v nsenter && command -v prlimit && useradd --create-home --uid 10001 builder
+COPY build-runner.mjs build-path.mjs stack-frames.mjs /opt/
+COPY adapters/ /opt/adapters/
+COPY box/probe.mjs /opt/box/probe.mjs
+RUN chmod 0444 /opt/build-runner.mjs /opt/build-path.mjs /opt/stack-frames.mjs /opt/box/probe.mjs && chmod -R a+rX /opt/adapters /opt/box /opt/toolchain /ms-playwright \
+ && mkdir -p /work && chown builder:builder /work
+USER builder
+WORKDIR /work
+CMD ["sleep", "infinity"]

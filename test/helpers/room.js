@@ -12,6 +12,7 @@ const {verifyBuild}=await import('../../container/build-runner.mjs');
 const {snapshotHash}=await import('../../src/build-verification.js');
 const {materializedPath}=await import('../../src/assembly.js');
 const {ROLE}=await import('../../src/prompts.js');
+const {fakeBoxes}=await import('./boxes.js');
 export {ControlRoom,verifyBuild,snapshotHash,materializedPath};
 
 export class Sql {constructor(db){this.db=db||new DatabaseSync(':memory:');}exec(s,...p){if(!p.length&&!/^\s*select/i.test(s)){this.db.exec(s);return{toArray:()=>[]};}const q=this.db.prepare(s);const rows=/^\s*select/i.test(s)?q.all(...p):(q.run(...p),[]);return{toArray:()=>rows};}}
@@ -93,7 +94,7 @@ export const {verifyCard}=await import('../../container/build-runner.mjs');
 // fails open, as these rooms predate it (v7.13.3). raw holds every
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,card=null,source=null,executor,room_id='v714-test'}={}) {
+export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,card=null,source=null,executor,boxes,room_id='v714-test'}={}) {
   const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],card:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
@@ -139,12 +140,15 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
   const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits})=>{builds.push(files);
     return mode==='card'?verifyCard({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
   const pending=[],store=new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
-  const env={MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec}};
+  // Capability boxes S1: a v8 compile opens a fresh Box (the real class over
+  // a fake Container) whose runner request goes to the same executor.
+  const BOXES=boxes||fakeBoxes({run:req=>exec.build(req)});
+  const env={MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec},BOXES};
   const room=new ControlRoom(ctx,env);
   room.set('room_id',room_id);
   // Await what start() or resume() left running.
   const drain=async()=>{while(pending.length)await Promise.all(pending.splice(0));};
-  return {room,store,calls,builds,sql,ctx,env,drain};
+  return {room,store,calls,builds,sql,ctx,env,drain,boxes:BOXES};
 }
 // v8 §3.2: a worker's answer in the raw file-block format, for scripted v8
 // workers. The newline before the END line is the format's, so each file's
