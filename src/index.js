@@ -20,6 +20,7 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
+import { inheritServes } from './contracts.js';
 import { branchDirectory } from './assembly.js';
 import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -3945,7 +3946,10 @@ export class ControlRoom extends DurableObject {
     rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
     // Uses only name what a surviving sibling promises (planUses); a room
     // without promises keeps none.
-    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive,outer):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]},survivors=final.spawn;
+    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive,outer):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]};
+    // v8 (S2, §2.3): a contract this split adds serves what the pieces using it serve; carried ones keep the parent's serves.
+    const served=inheritServes(final.spawn,promised),survivors=served.spawn;
+    if(served.inherited.length)this.event(id,'serves_inherited',clip(`Serves inherited by use: ${served.inherited.map(x=>`${x.name} on "${clip(x.label,70)}" serves ${x.serves.join(', ')}`).join('; ')}.`,600));
     if(final.dropped.length)this.event(id,'uses_dropped',`Not kept as uses: ${final.dropped.map(x=>`${x.name} on "${clip(x.label,70)}"`).join(', ')}; a piece uses only what another piece of this split, or the plan above it, promises, and the start carrier none.`);
     const using=survivors.filter(c=>c.uses?.length);
     if(using.length)this.event(id,'uses_planned',using.map(c=>`"${clip(c.label,70)}" uses ${c.uses.map(u=>clefP.has(`${c.task}\n${u}`)?`${u} (Clef p=${clefP.get(`${c.task}\n${u}`).toFixed(3)})`:u).join(', ')}`).join('; ')+'.');

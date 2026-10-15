@@ -9,7 +9,7 @@ import {DatabaseSync} from 'node:sqlite';
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../src/index.js');
 const {normalizeAction}=await import('../src/protocol.js');
-const {ids,requestNames,requestKey,nameMatch,MAX_REQUESTS}=await import('../src/interfaces.js');
+const {ids,requestNames,requestKey,nameMatch,MAX_REQUESTS,normalizeInterfaces}=await import('../src/interfaces.js');
 const {decide,generateFile,matchFunction,ownsNeed,ROOT_PROMISE,LEAF_DEPENDENCY_RULE,ASK_FUNCTIONS,FUNCTION_MATCH_THRESHOLD}=await import('../src/model.js');
 const {validKnowledgeKey}=await import('../src/knowledge.js');
 class Sql {
@@ -627,4 +627,46 @@ test('v7.15: a retask voids the requests of the retasked child and of its killed
   await managerTurn(w,'root.1');
   assert.equal(events(w,'route_stale').length,1);
   assert.deepEqual([flat.calls.filter(c=>c.kind==='inside').length,w.read(`fn_answers:${worker}`,[]).length,w.receive(worker).length,w.wakeGeneration(worker)],[0,0,0,seen]);
+});
+
+// ------------------------------------------------------------ v8 S2: requests over contracts
+test('v8 S2: a request {need, name, kind?} may name a contract of any kind, and is matched by that exact name against contracts of any kind',()=>{
+  const action=normalizeAction({ask:[{need:'the usage guide',name:'README.md',kind:'doc'},{need:'lists the items',name:'GET /items',kind:'route'},{need:'converts a value',name:'convert-units',kind:'command'},
+    {need:'a helper',name:'bad name',kind:'doc'},{need:'counts words',name:'count_words',kind:'widget'},{need:'stores a ticket',name:'saveTicket',kind:'function'}]});
+  assert.deepEqual(action.ask,[
+    {to:'parent',key:'fn README.md',question:'the usage guide',name:'README.md',kind:'doc'},
+    {to:'parent',key:'fn GET /items',question:'lists the items',name:'GET /items',kind:'route'},
+    {to:'parent',key:'fn convert-units',question:'converts a value',name:'convert-units',kind:'command'},
+    {to:'parent',key:'fn a helper',question:'a helper'},
+    {to:'parent',key:'fn count_words',question:'counts words',name:'count_words'},
+    {to:'parent',key:'fn saveTicket',question:'stores a ticket',name:'saveTicket',kind:'function'}],'a kind is kept only beside a name, and only a contract kind');
+  for(const a of action.ask)assert.ok(validKnowledgeKey(a.key),a.key);
+  assert.ok(validKnowledgeKey(requestKey({name:'docs/'+'a'.repeat(190)+'.md'})),'a long path is clipped to a knowledge key');
+  const offers=[{id:'root.1',label:'Docs',items:normalizeInterfaces([{name:'README.md',kind:'doc'},{name:'docs/api.md',kind:'doc'}])},
+    {id:'root.2',label:'API',items:normalizeInterfaces([{name:'GET /items',kind:'route'},{name:'listItems'}])}];
+  assert.equal(nameMatch(offers,requestNames('GET /items')).child.label,'API');
+  assert.equal(nameMatch(offers,requestNames('README.md')).item.kind,'doc');
+  assert.equal(nameMatch(offers,requestNames('GET /item')),null,'only the exact name');
+});
+
+test('v8 S2: a request is answered over contracts: by name for a contract in the v8 spelling, which the reply states as v7 reads it; Clef reads every kind by its head',async()=>{
+  const v8={root:[{label:'tickets',fns:[fn('createTicket','creates a ticket and returns it',['title','description'],'create a ticket')]},{label:'entry module',fns:[START]}],
+    'root.1':[{label:'create ticket',fns:[fn('createTicket','creates a ticket and returns it',['title','description'],'create a ticket')]},
+      {label:'ticket storage',fns:[{name:'saveTicket',kind:'function',does:'stores a ticket',inputs:[{name:'ticket',is:'the ticket to store'}],outputs:'the stored ticket',examples:[{given:[{title:'a'}],expect:{id:1,title:'a'}}],serves:['R1']},{name:'docs/storage.md',kind:'doc',does:'where tickets live'}]}]};
+  const ai=thrower(),{room}=await plannedTree(ai,v8);
+  assert.deepEqual(room.promisedOf('root.1.2').map(f=>[f.name,f.params,f.returns||f.outputs,f.serves]),[['saveTicket',['ticket'],'the stored ticket',['R1']],['docs/storage.md',[],undefined,undefined]]);
+  const worker='root.1.1';
+  ask(room,worker,'stores a ticket','saveTicket');
+  await managerTurn(room,'root.1');
+  const [reply]=replies(room,worker);
+  assert.equal(reply.kind,'provided');
+  assert.deepEqual(reply.fn,{name:'saveTicket',params:['ticket'],does:'stores a ticket',returns:'the stored ticket',owner:'ticket storage'});
+  assert.match(reply.value,/^saveTicket\(ticket\): stores a ticket; returns the stored ticket; e\.g\. saveTicket\(\{"title":"a"\}\) → \{"id":1,"title":"a"\}\. It is exported by "ticket storage"\./);
+  assert.equal(ai.calls,0,'by name, no model call');
+  // Clef's view of the offered contracts: a doc by its head, a function by its signature.
+  let state;
+  const env={AI:{run:async(_m,input)=>{state=input.state;return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:k==='fn_1'?0.9:0.1}]))};}}};
+  const items=room.promisedOf('root.1.2').map(f=>({...f,owner:'ticket storage'}));
+  assert.deepEqual(await matchFunction(env,{need:'explains where tickets are stored'},items),{index:1,p:0.9});
+  assert.deepEqual(state.functions.map(f=>[f.signature,f.does]),[['saveTicket(ticket)','stores a ticket'],['doc docs/storage.md','where tickets live']]);
 });

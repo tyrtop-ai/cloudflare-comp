@@ -4,9 +4,14 @@
 // worker may export more.
 // Pure: no room, no model. The runtime checks a split's names here before any
 // child exists; only a promised name without exactly one carrier rejects it.
-import { PROTECTED_NAMES, noValue } from './linker.js';
 import { assignedPiece } from './code-work.js';
+// v8 (S2): a promise is a function contract (src/contracts.js); the v7 names
+// below are kept as aliases until S7, and read contracts of any kind.
+import { normalizeContracts, contractErrors, contractLine, exampleText, signatureOf, nameError, kindOf, otherName, IDENTIFIER, EXAMPLE } from './contracts.js';
+export { normalizeContracts as normalizeInterfaces } from './contracts.js';
 
+// MAX_CONTRACTS (src/contracts.js), as a literal: this module and contracts.js
+// import each other, so neither reads the other at load time.
 export const MAX_INTERFACES = 5;
 // Names that say what a function does but not what it acts on. Binding like
 // any other, but never used to prune or to answer a request by name.
@@ -17,54 +22,14 @@ export const GENERIC_NAMES = new Set('init run main handle process validate crea
 // error the splitter is told in the same call (C8), as GENERIC_NAMES are;
 // still there after its retry, the name is kept (review: "HTTP server"
 // [createServer] and "Note storage" [readFile, writeFile] are real pieces).
+// v7 only (§2.2: deleted under v8).
 export const NODE_FUNCTIONS = new Set(('accessSync appendFile appendFileSync copyFile copyFileSync createReadStream createWriteStream existsSync lstatSync mkdirSync mkdtempSync opendirSync ' +
   'readFile readFileSync readdir readdirSync readlinkSync realpathSync renameSync rmSync rmdirSync statSync unlinkSync writeFile writeFileSync execSync execFileSync spawnSync createInterface createServer').split(' '));
-const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
-const RESERVED = new Set('await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield'.split(' '));
-// The prompts' and LEAF_DEPENDENCY_RULE's example names, and stock fillers.
-const EXAMPLE = /^(?:(?:other)?functionName|fnName|name|listedName|camelCaseIdentifier|example\w*|foo|bar)$/i;
-// The splitter prompt's example does, params and returns, copied: no hint at all.
-const FILLER = /^(?:one line|what it does|optional hint|argument|what it returns|what a call returns(?:, in a few words)?)$/i;
-// Review: the filler is read past a final stop ("What it returns.").
-const text = (v, n) => typeof v === 'string' && !FILLER.test(v.trim().replace(/[.\s]+$/, '')) ? v.trim().slice(0, n) : '';
 const escape = s => s.replace(/[$]/g, '\\$');
 
-// One item: an object, or a string such as "createTicket(title, description)",
-// "start(): returns the API" or "getTickets: returns all tickets", in
-// backticks or not; the text after the signature is its does. v7.15.7
-// (run14): returns, what a call gives back, kept beside does (120 chars,
-// without its final stop), so a caller knows the shape before any code exists.
-// Review: does loses its final stop here, once, so no text reads ".;".
-function item(raw) {
-  const o = typeof raw === 'string' ? {name: raw} : raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
-  if (!o || typeof o.name !== 'string') return null;
-  let name = o.name.trim().replace(/^`+|`+$/g, ''), params = Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [], does = text(o.does, 160);
-  // v7.15.8 review: returns at the seam: a leading "returns" is the splitter's echo, and every no-value phrasing (n/a, -, none, no return, does not return, nothing is returned, void, undefined, a Promise<void>) is "nothing", so the returns rule, the ticket and the runner read one word.
-  let returns = text(o.returns, 120).replace(/[.\s]+$/, '').replace(/^\W*(?:it |this |the (?:function|method|call) )?returns?\s+/i, '');
-  if (returns && noValue(returns)) returns = 'nothing';
-  const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name) || /^([A-Za-z_$][\w$]*)`?\s*(?:\(([^)]*)\)`?)?(?:\s*:|\s+-+|\s+[–—])\s*([\s\S]*)$/.exec(name);
-  if (call) { name = call[1].trim(); if (!params.length) params = (call[2] || '').split(','); if (!does) does = text(call[3], 160); }
-  name = name.slice(0, 64);
-  if (!name) return null;
-  const operation = text(o.operation, 80);
-  return {name, does: does.replace(/[.\s]+$/, ''), params: params.map(p => text(p, 40)).filter(Boolean).slice(0, 6), ...(operation ? {operation} : {}), ...(returns ? {returns} : {})};
-}
-// Cleaned, merged by name, at most 8 kept so the more-than-five check still fires.
-export function normalizeInterfaces(raw) {
-  const out = [];
-  for (const r of Array.isArray(raw) ? raw : []) {
-    const x = item(r);
-    if (!x) continue;
-    const prior = out.find(y => y.name === x.name);
-    if (!prior) { if (out.length < 8) out.push(x); continue; }
-    if (!prior.does) prior.does = x.does;
-    if (!prior.params.length) prior.params = x.params;
-    if (!prior.operation && x.operation) prior.operation = x.operation;
-    if (!prior.returns && x.returns) prior.returns = x.returns;
-  }
-  return out;
-}
-export const signature = f => `${f.name}(${(f.params || []).join(', ')})`;
+// v7.15: a promise's signature; v8: a contract's head for any other kind
+// (doc README.md, route GET /items, command convert (value, unit)).
+export const signature = f => signatureOf(f);
 // v7.15.7 (run14): a promise as a worker, a manager or Clef reads it: its
 // signature, what it does and what a call returns ("readTickets(): reads
 // all tickets from storage; returns the array of ticket objects"). The
@@ -77,8 +42,10 @@ export const returnsOf = f => f?.returns ? `${f.does ? ';' : ':'} returns ${f.re
 // use: async readTickets(): reads all tickets from storage; returns the
 // array of ticket objects (the ROUTE slice's facts line, at the merge).
 const asyncIn = (name, surface) => (Array.isArray(surface) ? surface : [...(surface?.named || []), ...(surface?.default?.members || []), ...(surface?.default?.methods || [])]).some(n => n?.async && String(n.name).replace(/^static /, '') === name);
-export const promiseText = (f, surface = null) => `${surface && asyncIn(f.name, surface) ? 'async ' : ''}${signature(f)}${f.does ? ': ' + String(f.does).replace(/[.\s]+$/, '') : ''}${returnsOf(f)}`;
-const described = f => `${signature(f)}${f.does ? ': ' + f.does : ''}${returnsOf(f)}`;
+// v8: one renderer for any kind (contractLine); a function keeps v7's form,
+// with its examples after it when the contract carries any.
+export const promiseText = (f, surface = null) => kindOf(f) !== 'function' ? contractLine(f) :
+  `${surface && asyncIn(f.name, surface) ? 'async ' : ''}${signature(f)}${f.does ? ': ' + String(f.does).replace(/[.\s]+$/, '') : ''}${returnsOf(f)}${f.examples?.length ? `; e.g. ${f.examples.map(e => exampleText(f, e)).join('; ')}` : ''}`;
 const namesOf = c => (c.interfaces || []).map(f => f.name);
 // C0: a piece whose own text says it exports a promised name carries it. A
 // mere mention ("so start() can return it") does not count.
@@ -86,12 +53,14 @@ const saysExports = (c, name) => new RegExp(`\\b[Ee]xport(?:s|ing|ed)?\\s+(?:[Aa
 // NAME( anywhere, or a camelCase name as a whole word ("exports assignTicket."):
 // a plain word such as start is prose without its parentheses.
 const mentions = (c, name) => new RegExp(`(?:^|[^\\w$])${escape(name)}${/[A-Z0-9_$]/.test(name.slice(1)) ? '(?![\\w$])' : '\\s*\\('}`).test(`${c.label || ''}\n${c.task || ''}`);
+// v8: a piece's contracts arrive under "contracts" (the v8 splitter key),
+// "functions" (v7's) or "interfaces" (the stored name).
 export function normalizeSpawn(spawn, promised = []) {
   if (!Array.isArray(spawn)) return {spawn, inferred: []};
   const out = spawn.map(s => {
     if (!s || typeof s !== 'object') return s;
-    const {functions, interfaces, ...rest} = s;
-    return {...rest, interfaces: normalizeInterfaces(Array.isArray(functions) ? functions : interfaces)};
+    const {functions, interfaces, contracts, ...rest} = s;
+    return {...rest, interfaces: normalizeContracts(Array.isArray(contracts) ? contracts : Array.isArray(functions) ? functions : interfaces)};
   });
   const inferred = [];
   for (const p of promised) {
@@ -103,39 +72,22 @@ export function normalizeSpawn(spawn, promised = []) {
   }
   return {spawn: out, inferred};
 }
-const notIdentifier = name => !IDENTIFIER.test(name) || RESERVED.has(name) || PROTECTED_NAMES.has(name);
-// C1-C5, in the order the repairs run. Promised names passed C1/C2 at the
-// parent's split (Root's start is the runtime's), so only new names are checked.
-export function interfaceErrors(spawn, promised = [], {goal = ''} = {}) {
-  const own = new Set(promised.map(p => p.name)), errors = [];
+// A name its kind's rule rejects (C1; v7: not a JavaScript identifier).
+const badName = f => !!nameError(f);
+// C1-C5 and C9 (contractErrors), then v7's C8 and C7, which v8 deletes.
+// Promised names passed C1/C2 at the parent's split (Root's start is the
+// runtime's), so only new names are checked.
+export function interfaceErrors(spawn, promised = [], {goal = '', facts = null} = {}) {
+  const own = new Set(promised.map(p => p.name)), errors = contractErrors(spawn, promised, {facts});
   const kids = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object');
-  for (const c of kids) for (const name of namesOf(c)) {
-    if (own.has(name)) continue;
-    if (notIdentifier(name)) errors.push({label: c.label, name, check: 'C1', text: `"${c.label}": "${name}" is not a plain JavaScript function name; use an identifier such as createTicket.`});
-    else if (EXAMPLE.test(name)) errors.push({label: c.label, name, check: 'C2', text: `"${c.label}": "${name}" is copied from the example; name the function after what it does.`});
-  }
-  const seen = new Set();
-  for (const c of kids) for (const name of namesOf(c)) {
-    if (own.has(name) || seen.has(name)) continue;
-    const holders = kids.filter(k => namesOf(k).includes(name));
-    if (holders.length < 2) continue;
-    seen.add(name);
-    errors.push({label: holders[0].label, name, check: 'C4', text: `"${name}" is listed by both "${holders[0].label}" and "${holders[1].label}"; give each function to exactly one piece.`});
-  }
-  for (const c of kids) if (namesOf(c).length > MAX_INTERFACES)
-    errors.push({label: c.label, name: '', check: 'C3', text: `"${c.label}" lists ${namesOf(c).length} functions; list at most ${MAX_INTERFACES}, only those another piece calls.`});
-  for (const p of promised) {
-    const holders = kids.filter(k => namesOf(k).includes(p.name));
-    if (holders.length !== 1) errors.push({label: '', name: p.name, check: 'C5', text: `Your assignment promises ${described(p)}; ${holders.length ? `${holders.map(k => `"${k.label}"`).join(' and ')} ${holders.length > 2 ? 'all' : 'both'} list it; ` : ''}give it, unchanged, to exactly one piece, the one whose task writes it.`});
-  }
   // C8 (v7.15.16, run25): a new name that is Node's own function.
-  for (const c of kids) for (const name of namesOf(c)) if (!own.has(name) && NODE_FUNCTIONS.has(name))
-    errors.push({label: c.label, name, check: 'C8', text: `"${c.label}": ${name} is Node's own function: name the function after what your piece does with it.`});
+  for (const c of kids) for (const f of c.interfaces || []) if (!own.has(f.name) && kindOf(f) === 'function' && NODE_FUNCTIONS.has(f.name))
+    errors.push({label: c.label, name: f.name, check: 'C8', text: `"${c.label}": ${f.name} is Node's own function: name the function after what your piece does with it.`});
   // C7 (v7.15.5): a new name that is a factory (isFactory), or a piece's
   // only promise that sets up its data and takes nothing (setupOnly). The
   // goal's words exempt its operations (review: createService in a catalog).
   const record = recordOf(kids, goal);
-  for (const c of kids) for (const f of c.interfaces || []) if (!own.has(f.name)) {
+  for (const c of kids) for (const f of c.interfaces || []) if (!own.has(f.name) && kindOf(f) === 'function') {
     const factory = isFactory(f, goal), example = storageExample(c.label, f.name, record);
     if (factory) errors.push({label: c.label, name: f.name, check: 'C7', text: `"${c.label}": ${f.name}()${f.does ? ` ("${String(f.does).replace(/[.\s]+$/, '')}")` : ''} is a factory; promise the functions the other pieces call, e.g. ${example}, not a factory that returns them.`});
     else if (setupOnly(c, f, goal)) errors.push({label: c.label, name: f.name, check: 'C7', text: `"${c.label}": ${f.name}() is its only function and takes nothing, so no other piece can call it to read or change the data; promise the functions the other pieces call, e.g. ${example}.`});
@@ -299,7 +251,8 @@ export function duplicateNames(spawn, promised = [], elsewhere = new Set()) {
   const own = new Set(promised.map(p => p.name)), out = [];
   const kids = (Array.isArray(spawn) ? spawn : []).map((c, i) => ({c, i})).filter(x => x.c && typeof x.c === 'object');
   for (const name of new Set(kids.flatMap(x => namesOf(x.c)))) {
-    if (own.has(name) || elsewhere.has(name) || notIdentifier(name) || EXAMPLE.test(name)) continue;
+    const first = kids.map(x => (x.c.interfaces || []).find(f => f.name === name)).find(Boolean);
+    if (own.has(name) || elsewhere.has(name) || badName(first) || EXAMPLE.test(name)) continue;
     const holders = kids.filter(x => namesOf(x.c).includes(name));
     if (holders.length < 2) continue;
     const one = xs => xs.length === 1 ? xs[0].i : null, task = one(holders.filter(x => saysExports(x.c, name))), label = one(holders.filter(x => labelNames(x.c.label, name)));
@@ -319,12 +272,12 @@ export function repairInterfaces(spawn, promised = [], elsewhere = new Set(), ow
   const own = new Set(promised.map(p => p.name)), removed = [];
   const drop = (c, keep, why) => {
     const kept = [];
-    for (const f of c.interfaces || []) if (own.has(f.name) || keep(f)) kept.push(f); else removed.push({label: c.label, name: f.name, why});
+    for (const f of c.interfaces || []) if (own.has(f.name) || keep(f)) kept.push(f); else removed.push({label: c.label, name: f.name, why: typeof why === 'function' ? why(f) : why});
     return {...c, interfaces: kept};
   };
   let out = (Array.isArray(spawn) ? spawn : []).map(c => c && typeof c === 'object' ? {...c, interfaces: [...(c.interfaces || [])]} : c);
   const kids = () => out.filter(c => c && typeof c === 'object');
-  out = out.map(c => c && typeof c === 'object' ? drop(c, f => !notIdentifier(f.name), 'not a plain function name') : c);
+  out = out.map(c => c && typeof c === 'object' ? drop(c, f => !badName(f), f => kindOf(f) === 'function' ? 'not a plain function name' : `not a valid ${kindOf(f)} name`) : c);
   out = out.map(c => c && typeof c === 'object' ? drop(c, f => !EXAMPLE.test(f.name), 'copied from the example') : c);
   const count = name => kids().filter(k => namesOf(k).includes(name)).length;
   const shared = new Set(kids().flatMap(namesOf).filter(name => !own.has(name) && !elsewhere.has(name) && count(name) > 1));
@@ -352,7 +305,7 @@ export const ids = text => new Set(String(text ?? '').match(/[A-Za-z_$][\w$]{2,}
 // a request without a name goes to Clef.
 export const requestNames = name => name && !GENERIC_NAMES.has(name) ? [name] : [];
 // One route topic per request; a knowledge key ($ is not allowed in one).
-export const requestKey = ({need, name}) => name ? 'fn ' + name.replace(/\$/g, '_') : 'fn ' + String(need ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90).trim();
+export const requestKey = ({need, name}) => name ? ('fn ' + name.replace(/\$/g, '_')).slice(0, 100) : 'fn ' + String(need ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90).trim();
 // The one offer whose promise holds a name, trying names in order; two
 // offers holding the same name is ambiguous, and no answer.
 export function nameMatch(offers, names) {
@@ -434,8 +387,10 @@ export function storageExample(label, name, record = []) {
 }
 // A piece's uses, the functions its siblings promise that its code calls:
 // names, from an array of names or {name} items, or one string of them.
+// v8: a contract name of any kind (README.md, GET /items, a command).
+const useName = v => validName(v) || otherName(v);
 export const normalizeUses = raw => [...new Set((Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;]+/) : [])
-  .map(u => validName(typeof u === 'string' ? u.replace(/^`+|`+$/g, '').replace(/\(.*$/, '') : u?.name ?? u?.function)).filter(Boolean))].slice(0, 8);
+  .map(u => useName(typeof u === 'string' ? u.replace(/^`+|`+$/g, '').replace(/\(.*$/, '') : u?.name ?? u?.function)).filter(Boolean))].slice(0, 8);
 // Only a name another piece of the split promises is kept, never its own.
 // The start carrier's are dropped: what it is told is the entry's own text.
 // Review (nested splits): outer, the names the plan offers this level from

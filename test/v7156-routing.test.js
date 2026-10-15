@@ -576,3 +576,34 @@ test('v7.15.6 review: an issue carrying facts.requirement.invented reaches Root\
   assert.deepEqual([p.facts.requirement.invented,p.facts.requirement.text,p.facts.requirement.method,p.facts.lead,p.facts.via],[true,'Deleting ticket should result in an error when viewing','viewTicket','The fixed test requires it anyway.','root.7'],trace(room));
   assert.ok(p.detail.startsWith("The runner's test failed: smoke failed (exit 1): AssertionError [ERR_ASSERTION]: Deleting ticket should result in an error when viewing"),p.detail);
 });
+
+// ------------------------------------------------------------ v8 S2: routing by serves
+test('v8 S2: requirementRoute\'s (s) stage: after the frames and the named contracts, before Clef\'s ranks, the direct children whose contracts serve the requirement',()=>{
+  const C=(name,kind,serves,extra={})=>({name,...(kind?{kind}:{}),does:'',params:[],...extra,...(serves?{serves}:{})});
+  const promises=[
+    {child:'root.1',fns:[C('convert','command',['R1','R2'],{path:'convert.py'})]},
+    {child:'root.2',fns:[C('to_celsius',null,['R1']),C('round_to',null,['R1','R3'])]},
+    {child:'root.3',fns:[C('README.md','doc',['R4'],{path:'README.md'})]},
+    {child:'root.4',fns:[C('parse_args',null,null)]}];
+  const view={promises,frameOwner:p=>({'convert.py':'root.1','parse.py':'root.4'})[p]||null,performer:()=>null};
+  // Nothing named and no frame: the serving children, in plan order, each with its first serving contract; no Clef call wanted.
+  const r1=P.requirementRoute({id:'R1',text:'Converting 100 from Celsius prints 212',error:false,frames:[]},view);
+  assert.deepEqual([r1.ask,r1.candidates.map(c=>[c.child,c.how,c.fn?.name,c.more,c.providers])],[null,[['root.1','s','convert',[],['root.2']],['root.2','s','to_celsius',['round_to'],['root.1']]]]);
+  assert.equal(r1.candidates[0].text,'Your command convert in convert.py must satisfy: Converting 100 from Celsius prints 212.');
+  assert.equal(r1.candidates[1].text,'Your to_celsius() (with your round_to) must satisfy: Converting 100 from Celsius prints 212.');
+  // The frames go first (a, b), then the serving children; a child already a candidate is not repeated.
+  const framed=P.requirementRoute({id:'R1',text:"NameError: name 'x' is not defined",error:true,frames:[{path:'parse.py',fn:'parse_args'},{path:'convert.py',fn:'main'}]},view);
+  assert.deepEqual(framed.candidates.map(c=>[c.child,c.how]),[['root.4','a'],['root.1','b'],['root.2','s']]);
+  // A named contract (a) first: a non-identifier name is named by its exact text, and r.serves names the deliverables.
+  const doc=P.requirementRoute({id:'R3',text:'README.md does not list the units',error:false,frames:[]},view);
+  assert.deepEqual(doc.candidates.map(c=>[c.child,c.how,c.fn?.name]),[['root.3','a','README.md'],['root.2','s','round_to']]);
+  const served=P.requirementRoute({id:'R2',text:'The output has one decimal',serves:['convert'],error:false,frames:[]},view);
+  assert.deepEqual(served.candidates.map(c=>[c.child,c.how]),[['root.1','a']]);
+  // Declined children are left out; Clef's ranks come after the serving children; a requirement nothing serves still asks Clef.
+  assert.deepEqual(P.requirementRoute({id:'R1',text:'x',frames:[]},view,['root.1']).candidates.map(c=>[c.child,c.how,c.providers]),[['root.2','s',['root.1']]]);
+  assert.deepEqual(P.requirementRoute({id:'R1',text:'x',frames:[]},{...view,ranks:['root.4','root.2']}).candidates.map(c=>[c.child,c.how]),[['root.1','s'],['root.2','s'],['root.4','d']]);
+  assert.deepEqual(P.requirementRoute({id:'R9',text:'x',frames:[]},view),{candidates:[],ask:[]});
+  assert.deepEqual(P.requirementRoute({text:'x',frames:[]},view),{candidates:[],ask:[]},'a v7 requirement has no id: no (s) stage');
+  // namedFunctions reads contract names of any kind, each as a whole name (GET /item is not GET /items); an identifier as a word, as before.
+  assert.deepEqual(P.namedFunctions('GET /items returned 500; see README.md. And convert-units',[C('GET /items','route'),C('README.md','doc'),C('convert-units','command'),C('convert',null),C('GET /item','route'),C('docs/README.md','doc')]).map(f=>f.name),['GET /items','README.md','convert-units','convert']);
+});

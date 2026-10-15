@@ -714,3 +714,43 @@ test('v7.15: a late split that drops the worker\'s promise is rejected, and the 
   assert.match(second.your_memory.private.late_split_rejected,/^Your proposed pieces were not created: Your assignment promises createTicket\(title, description\): creates a ticket and returns it; give it/);
   assert.equal(room.node('root.3').status,'done');
 });
+
+// ------------------------------------------------------------ v8 S2: contracts of any kind
+test('v8 S2: normalize, C1-C5 and the repairs read contracts of any kind; a v7 function row is unchanged',()=>{
+  const [doc,route,cmd,fn]=normalizeInterfaces([{name:'README.md',kind:'doc',does:'usage'},{name:'GET /tickets',kind:'route'},{name:'tickets',kind:'command',path:'tickets.py'},{name:'createTicket',params:['title'],operation:'create a ticket'}]);
+  assert.deepEqual([doc.kind,doc.path,route.kind,cmd.path],['doc','README.md','route','tickets.py']);
+  assert.deepEqual(fn,{name:'createTicket',does:'',params:['title'],operation:'create a ticket'});
+  const piece=(label,...items)=>({label,task:'Write it',interfaces:normalizeInterfaces(items)});
+  // C1 by kind (v7's words for a function), C4 on a shared doc, C5 on a promised route.
+  const spawn=[piece('Docs',{name:'README.md',kind:'doc'},{name:'readme',kind:'doc',path:'README.md'}),piece('Guide',{name:'README.md',kind:'doc'}),piece('API',{name:'get /tickets',kind:'route'},{name:'bad name'})];
+  assert.deepEqual(interfaceErrors(spawn,[route]).map(e=>[e.check,e.text]),[
+    ['C1','"Docs": doc "readme" must be named by its path README.md.'],
+    ['C1','"API": "get /tickets" is not a route; name it as a method and a path, such as "GET /path".'],
+    ['C1','"API": "bad name" is not a plain JavaScript function name; use an identifier such as createTicket.'],
+    ['C4','"README.md" is listed by both "Docs" and "Guide"; give each contract to exactly one piece.'],
+    ['C5','Your assignment promises route GET /tickets; give it, unchanged, to exactly one piece, the one whose task writes it.']]);
+  // R1 deletes a name its kind rejects and keeps a valid one of any kind; R3 deletes a shared doc from both.
+  const {spawn:out,removed}=repairInterfaces(spawn,[]);
+  assert.deepEqual(out.map(c=>c.interfaces.map(f=>f.name)),[[],[],[]]);
+  assert.deepEqual(removed.map(r=>[r.label,r.name,r.why]),[['Docs','readme','not a valid doc name'],['API','get /tickets','not a valid route name'],['API','bad name','not a plain function name'],['Docs','README.md','listed by two pieces'],['Guide','README.md','listed by two pieces']]);
+  assert.deepEqual(repairInterfaces([piece('Docs',{name:'README.md',kind:'doc'},{name:'GET /tickets',kind:'route'},{name:'tickets',kind:'command',path:'tickets.py'})],[]).removed,[],'valid names of every kind are kept');
+});
+
+test('v8 S2: admission: a carried contract keeps its serves, one the split adds inherits them through uses, and Clef reads each kind by its line',async()=>{
+  const kids=run6Root.map(c=>c.label==='create ticket'?{...c,functions:[{...c.functions[0],serves:['R1','R2']}]}:c);
+  const spawn=[
+    {label:'Create handler',task:'Write code that creates a ticket from validated input',contracts:[{name:'createTicket'}],uses:['validateTicketInput']},
+    {label:'Ticket validation',task:'Write code that checks a new ticket\'s title and description',contracts:[{name:'validateTicketInput',does:'checks the fields',serves:['R7']}]},
+    {label:'Create guide',task:'Write the guide to creating a ticket',contracts:[{name:'docs/create.md',kind:'doc',does:'how to create a ticket'}],uses:['createTicket']}];
+  const ai=fakeAI({split:()=>spawn});
+  const {room}=await tree(ai,kids,{phases:{'create ticket':'decompose'}});
+  assert.deepEqual(room.promisedOf('root.3')[0].serves,['R1','R2'],'the parent\'s promise carries its serves');
+  await room.turn('root.3');
+  assert.deepEqual(room.children('root.3').map(c=>[c.label,room.promisedOf(c.id).map(f=>[f.name,f.serves||[]])]),[
+    ['Create handler',[['createTicket',['R1','R2']]]],
+    ['Ticket validation',[['validateTicketInput',['R1','R2']]]],
+    ['Create guide',[['docs/create.md',[]]]]],'a model\'s serves is dropped; the runtime\'s is inherited');
+  assert.deepEqual(events(room,'serves_inherited').map(e=>e.body),['Serves inherited by use: validateTicketInput on "Ticket validation" serves R1, R2.']);
+  const names=ai.calls.find(c=>c.kind==='names');
+  assert.deepEqual(names.state.proposed_children.map(c=>c.functions),[['createTicket()'],['validateTicketInput(): checks the fields'],['doc docs/create.md: how to create a ticket']]);
+});

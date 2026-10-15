@@ -1,5 +1,6 @@
 import { validKnowledgeKey } from './knowledge.js';
 import { normalizeInterfaces, normalizeUses, requestKey, validName, MAX_REQUESTS } from './interfaces.js';
+import { otherName, CONTRACT_KINDS } from './contracts.js';
 
 // Small coordination messages. Source code never travels inside the control JSON.
 export const clip = (v, n = 1200) => String(v ?? '').slice(0, n);
@@ -38,6 +39,8 @@ export const spawnObjects = spawn => Array.isArray(spawn) ? spawn.map(s => {
   if (typeof s !== 'string' || !/^\s*\{/.test(s)) return s;
   try { const o = JSON.parse(s); return o && typeof o === 'object' && !Array.isArray(o) ? o : s; } catch { return s; }
 }) : spawn;
+// A split's pieces: "spawn" (v7) or "pieces" (v8, S2).
+export const splitPieces = raw => Array.isArray(raw?.spawn) ? raw.spawn : Array.isArray(raw?.pieces) ? raw.pieces : [];
 // A spawn item a child can be made from; normalizeAction keeps only these.
 export const spawnPiece = s => Boolean(s) && typeof s === 'object' && !Array.isArray(s) && typeof s.task === 'string' && s.task.trim().length >= 8;
 // A split's pieces: a spawn list of objects, each with a label and a task.
@@ -138,12 +141,14 @@ export function jsonObjects(text) {
 // requests too: a worker told to wait whose every ask was dropped never ran
 // again (slice B review). Every request, unclipped; an action keeps the first
 // MAX_REQUESTS.
+// v8 (S2): a request {need, name, kind?} may name a contract of any kind
+// (README.md, GET /items, a command); kind is kept when it is one.
 export function normalizeAsk(ask) {
-  const request = (need, name) => ({ to: 'parent', key: requestKey({need, name}), question: clip(need, 300), ...(name ? {name} : {}) });
   return (Array.isArray(ask) ? ask : ask && typeof ask === 'object' || typeof ask === 'string' ? [ask] : []).map(q => {
     if (typeof q === 'string') q = { need: q, name: q };
     if (!q || typeof q !== 'object') return null;
-    const name = validName(q.name ?? q.function);
+    const name = validName(q.name ?? q.function) || otherName(q.name ?? q.function), kind = CONTRACT_KINDS.includes(q.kind) ? q.kind : '';
+    const request = (need, name) => ({ to: 'parent', key: requestKey({need, name}), question: clip(need, 300), ...(name ? {name} : {}), ...(name && kind ? {kind} : {}) });
     if (typeof q.need === 'string' && q.need.trim()) return request(q.need.trim(), name);
     if ((q.to === undefined || typeof q.to === 'string') && validKnowledgeKey(q.key) && typeof q.question === 'string' && q.question.length > 0)
       return { to: clip(q.to || 'parent',70), key: q.key, question: clip(q.question,900) };
@@ -165,15 +170,17 @@ export function normalizeAction(raw,{maxFiles=Infinity}={}) {
     imports: (Array.isArray(raw.imports) ? raw.imports : [])
       .filter(f => f && isId(f.from) && isPath(f.path) && isPath(f.as || f.path))
       .map(f => ({ from: f.from, path: f.path, as: f.as || f.path })),
-    spawn: spawnObjects(Array.isArray(raw.spawn) ? raw.spawn : []).filter(spawnPiece)
+    spawn: spawnObjects(splitPieces(raw)).filter(spawnPiece)
       // Module paths are not splitter output; function names are (v7.15, key
       // "functions"), with what each returns (v7.15.7, "returns", kept by
       // normalizeInterfaces beside does and params), and so are the siblings'
       // functions a piece calls (v7.15.5, "uses"). Discard other fields so they
-      // cannot become requirements.
+      // cannot become requirements. v8 (S2): "pieces" and "contracts" are the
+      // splitter's keys too; a contract's serves is the runtime's (§2.3),
+      // never a model's.
       .map(s => {
-        const fns = Array.isArray(s.functions) ? s.functions : Array.isArray(s.interfaces) ? s.interfaces : null;
-        const interfaces = fns?.length ? normalizeInterfaces(fns) : [], uses = normalizeUses(s.uses);
+        const fns = [s.contracts, s.functions, s.interfaces].find(Array.isArray) || null;
+        const interfaces = fns?.length ? normalizeInterfaces(fns).map(({serves: _, ...c}) => c) : [], uses = normalizeUses(s.uses);
         return { label: clip(s.label || 'Subproblem', 70), task: clip(s.task, 1700), ...(interfaces.length ? {interfaces} : {}), ...(uses.length ? {uses} : {}) };
       }),
     messages: (Array.isArray(raw.messages) ? raw.messages : [])
