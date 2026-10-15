@@ -216,3 +216,25 @@ input[type=range]:focus {box-shadow:none;}
 .bench-compare-bar .secondary { margin:0; width:auto; padding:10px 14px; }
 .bench-diff.up { color:var(--ok); } .bench-diff.down { color:var(--bad); }
 @media(max-width:700px) { .bench-row,.bench-compare-bar { grid-template-columns:1fr; } }
+
+/* v8 S9: the Prompts panel (the queue) and the card's revisions. */
+.prompt-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.prompt-actions .secondary { margin-top:8px; }
+.queue-stopped { margin-top:10px; font-size:11px; }
+.queue-stopped[hidden] { display:none; }
+.prompt-list { list-style:none; margin:12px 0 0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:12px; }
+.prompt-list .empty { color:var(--muted); font-size:11px; }
+.prompt-item { border:thin solid var(--code-bd); border-radius:4px; padding:6px 8px; background:var(--bg); }
+.prompt-item[draggable="true"] { cursor:grab; }
+.prompt-item.dragging { opacity:.5; }
+.prompt-item.drop { border-color:var(--path); }
+.prompt-item .prompt-text { margin:4px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.prompt-item .prompt-meta { color:var(--muted); font-size:10px; }
+.prompt-item .prompt-tools { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.prompt-item .prompt-tools .secondary { width:auto; margin:0; padding:2px 8px; font-size:11px; font-weight:600; display:inline-flex; }
+.prompt-item textarea { margin-top:4px; }
+.req-chip.queued { color:var(--fg); }
+.req-chip.done { color:var(--ok); border-color:var(--ok); }
+.req-chip.failed { color:var(--bad); border-color:var(--bad); }
+.req-chip.skipped { opacity:.6; border-style:dashed; }
+.card-amended { color:var(--path); font-size:10px; }

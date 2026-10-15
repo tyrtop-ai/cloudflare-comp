@@ -95,14 +95,63 @@ const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.nam
 // v8 S4b: passed null is a check that could not run (infrastructure): untested.
 // S4b review: a result from before the delivered files last changed is stale (the snapshot marks it).
 const requirementState=(r,status)=>{const st=status?.[r.id];return typeof st?.passed!=='boolean'?'untested':st.stale?'stale':st.passed?'pass':'fail';};
-function cardMarkup(card,status={}) {
+// v8 S9: the card's revisions; each item an amendment added or changed says which change it came from.
+function amendedBy(history=[]) {
+  const by={deliverables:new Map(),requirements:new Map()};
+  for(const h of history.filter(h=>h.rev>1))for(const k of ['deliverables','requirements'])for(const x of [...(h.delta?.[k]?.added||[]),...(h.delta?.[k]?.changed||[])])by[k].set(x,h);
+  return by;
+}
+const amendedMark=h=>h?` <span class="card-amended" title="${esc(h.reason)}">rev ${esc(h.rev)} · ${esc(String(h.reason||'').slice(0,60))}</span>`:'';
+function historyMarkup(history=[]) {
+  const change=h=>{const d=h.delta||{},parts=[d.deliverables?.added?.length&&`adds ${d.deliverables.added.join(', ')}`,d.deliverables?.changed?.length&&`changes ${d.deliverables.changed.join(', ')}`,
+    d.requirements?.added?.length&&`new ${d.requirements.added.join(', ')}`,d.requirements?.changed?.length&&`changed ${d.requirements.changed.join(', ')}`].filter(Boolean);
+    return `<li><b class="mono">rev ${esc(h.rev)}</b> <span class="faint">goal rev ${esc(h.goal_rev)}</span> ${h.rev>1?`“${esc(h.reason)}”`:'the goal'}${parts.length?` <span class="faint">· ${esc(parts.join('; '))}</span>`:''}</li>`;};
+  return history.length>1?`<div class="card-section"><div class="eyebrow">REVISIONS</div><ul class="card-list">${history.map(change).join('')}</ul></div>`:'';
+}
+function cardMarkup(card,status={},history=[]) {
   if(!card)return '<p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p>';
-  const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}</li>`;
+  const by=amendedBy(history||[]);
+  const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}${amendedMark(by.deliverables.get(d.name))}</li>`;
   const requirement=r=>{const state=requirementState(r,status),detail=status?.[r.id]?.detail;
-    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}</span></li>`;};
+    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}</span>${amendedMark(by.requirements.get(r.id))}</li>`;};
   const section=(title,items)=>items.length?`<div class="card-section"><div class="eyebrow">${title}</div><ul class="card-list">${items.join('')}</ul></div>`:'';
   return `${card.summary?`<p class="card-summary">${esc(card.summary)}</p>`:''}${card.languages?.length?`<p class="faint">languages: ${esc(card.languages.join(', '))}</p>`:''}`+
-    section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`));
+    section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`))+historyMarkup(history||[]);
+}
+// v8 S9: the Prompts panel. Each prompt with its state (queued, running,
+// done, failed, skipped); a queued one can be edited, removed, skipped and
+// dragged (or moved with its arrows) into another place in the queue.
+let editingPrompt='',renderedPrompts=null,dragPrompt='';
+function promptMarkup(p,queued) {
+  const i=queued.indexOf(p.id),q=i>=0,o=p.outcome||{};
+  const meta=[p.kind==='adjust'?'applied now':'queued',p.goal_rev?`goal rev ${p.goal_rev}`:'',p.budget?`${p.budget} turns`:'',p.status==='done'?(o.passed?'checks passed':'not verified'):'',o.error?String(o.error).slice(0,200):o.note||''].filter(Boolean).join(' · ');
+  const text=editingPrompt===p.id?`<textarea id="prompt-edit-text" rows="3" aria-label="Edit the queued prompt">${esc(p.text)}</textarea>`:`<div class="prompt-text">${esc(p.text)}</div>`;
+  const tools=!q?'':editingPrompt===p.id?`<button type="button" class="secondary" data-prompt-save="${esc(p.id)}">Save</button><button type="button" class="secondary" data-prompt-cancel="${esc(p.id)}">Cancel</button>`:
+    `<button type="button" class="secondary" data-prompt-up="${esc(p.id)}" aria-label="Move up"${i===0?' disabled':''}>↑</button><button type="button" class="secondary" data-prompt-down="${esc(p.id)}" aria-label="Move down"${i===queued.length-1?' disabled':''}>↓</button><button type="button" class="secondary" data-prompt-edit="${esc(p.id)}">Edit</button><button type="button" class="secondary" data-prompt-skip="${esc(p.id)}">Skip</button><button type="button" class="secondary" data-prompt-remove="${esc(p.id)}">Remove</button>`;
+  return `<li class="prompt-item"${q?` draggable="true" data-prompt="${esc(p.id)}"`:''}><span class="req-chip ${esc(p.status)}">${esc(p.status)}</span> <span class="prompt-meta">${esc(meta)}</span>${text}${tools?`<div class="prompt-tools">${tools}</div>`:''}</li>`;
+}
+function renderPrompts(s) {
+  if(!$('prompts'))return;
+  const list=s.prompts||[],queued=list.filter(p=>p.status==='queued').map(p=>p.id),running=s.status==='running';
+  if($('prompt-now')){$('prompt-now').textContent=running?'Adjust now':'Apply now';$('prompt-now').disabled=s.settings?.pipeline!=='v8'||!s.agents?.length||!!s.amending;}
+  if($('queue-on-fail')&&document.activeElement!==$('queue-on-fail'))$('queue-on-fail').value=s.queue_on_fail||'stop';
+  if($('queue-stopped')){$('queue-stopped').hidden=!s.queue_stopped;$('queue-stopped').innerHTML=s.queue_stopped?`${esc(s.queue_stopped)} <button type="button" class="secondary" data-queue-resume="1">Go on</button>`:'';}
+  // Polling never overwrites a prompt being edited.
+  if(editingPrompt&&queued.includes(editingPrompt)&&renderedPrompts!==null)return;
+  const key=JSON.stringify(list.map(p=>[p.id,p.status,p.text,p.goal_rev,p.outcome]))+editingPrompt;
+  if(key===renderedPrompts)return;
+  renderedPrompts=key;
+  $('prompts').innerHTML=list.length?list.map(p=>promptMarkup(p,queued)).join(''):'<li class="empty">No prompts yet. Start a v8 room, then queue follow-ups here.</li>';
+}
+const queuedOrder=()=>(current?.prompts||[]).filter(p=>p.status==='queued').map(p=>p.id);
+async function promptAction(route,data) {
+  try {$('error').textContent='';await call(route,'POST',data);renderedPrompts=null;await refresh();return true;}
+  catch(err){showError(err);return false;}
+}
+function movePrompt(id,to) {
+  const order=queuedOrder().filter(x=>x!==id);
+  order.splice(Math.max(0,Math.min(order.length,to)),0,id);
+  return promptAction('/api/prompts/reorder',{order});
 }
 // v8 S8b: the goal's links (title, host, size, cut or not read) and what the run starts from.
 const hostOf=u=>{try{return new URL(u).host;}catch{return '';}};
@@ -123,8 +172,8 @@ function renderCard(s) {
   if(!$('card'))return;
   const reqs=s.card?.requirements||[],count=state=>reqs.filter(r=>requirementState(r,s.requirement_status)===state).length;
   const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>`:'';
-  $('card').innerHTML=held+cardMarkup(s.card,s.requirement_status);
-  if($('card-verdict'))$('card-verdict').textContent=s.card?`${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
+  $('card').innerHTML=held+cardMarkup(s.card,s.requirement_status,s.card_history);
+  if($('card-verdict'))$('card-verdict').textContent=s.card?`${(s.card_rev||1)>1?`rev ${s.card_rev} · `:''}${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
 }
 function nodeDetail(n,index) {
   const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
@@ -137,7 +186,7 @@ function nodeDetail(n,index) {
     const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
     compile=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
   }
-  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}</div>${!n.parent&&current?.card?`<div class="onode-card">${cardMarkup(current.card,current.requirement_status)}</div>`:`<p>${esc(n.task)}</p>`}${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}</div>${!n.parent&&current?.card?`<div class="onode-card">${cardMarkup(current.card,current.requirement_status,current.card_history)}</div>`:`<p>${esc(n.task)}</p>`}${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
 }
 // The selected node's edges ride on the overlay as data-edges ("from:to ...");
 // drawPath measures the dots after layout and draws them.
@@ -250,6 +299,7 @@ function render(s) {
   showTree(s.agents);
   renderCard(s);
   renderSources(s);
+  renderPrompts(s);
   // Newest first: the latest traffic is at the top; scroll down for older events.
   // Only when the events changed: a delta with none leaves the list as it is.
   const eventsKey=`${s.events?.length||0}:${s.events?.at(-1)?.id??''}`;
@@ -381,6 +431,30 @@ $('start').addEventListener('click',()=>{
   return action('/api/run',{goal:$('goal').value,budget:countSetting('budget'),settings:settings(),...(base?{base}:{})});
 });
 $('continue').addEventListener('click',()=>action('/api/continue',{budget:countSetting('budget'),settings:settings()}));
+// v8 S9: queue a prompt, or apply it now (an adjustment while running).
+const promptInput=()=>$('prompt-text')?.value.trim()||'';
+$('prompt-queue')?.addEventListener('click',async()=>{const text=promptInput();if(!text)return showError('Write the prompt to queue.');if(await promptAction('/api/prompts',{text,budget:countSetting('budget')}))$('prompt-text').value='';});
+$('prompt-now')?.addEventListener('click',async()=>{const text=promptInput();if(!text)return showError('Write the change to apply.');if(await promptAction('/api/amend',{text,budget:countSetting('budget')}))$('prompt-text').value='';});
+$('queue-on-fail')?.addEventListener('change',()=>promptAction('/api/prompts/policy',{queue_on_fail:$('queue-on-fail').value}));
+$('queue-stopped')?.addEventListener('click',e=>{if(e.target.closest?.('[data-queue-resume]'))promptAction('/api/prompts/policy',{resume:true});});
+$('prompts')?.addEventListener('click',e=>{
+  const d=e.target.closest?.('button')?.dataset;
+  if(!d)return;
+  const order=queuedOrder();
+  if(d.promptUp)movePrompt(d.promptUp,order.indexOf(d.promptUp)-1);
+  else if(d.promptDown)movePrompt(d.promptDown,order.indexOf(d.promptDown)+1);
+  else if(d.promptEdit){editingPrompt=d.promptEdit;renderedPrompts=null;if(current)renderPrompts(current);}
+  else if(d.promptCancel){editingPrompt='';renderedPrompts=null;if(current)renderPrompts(current);}
+  else if(d.promptSave){const text=$('prompt-edit-text')?.value||'';editingPrompt='';promptAction('/api/prompts/edit',{id:d.promptSave,text});}
+  else if(d.promptSkip)promptAction('/api/prompts/skip',{id:d.promptSkip});
+  else if(d.promptRemove&&confirm('Remove this queued prompt?'))promptAction('/api/prompts/remove',{id:d.promptRemove});
+});
+// Drag a queued prompt onto another to put it in that one's place.
+$('prompts')?.addEventListener('dragstart',e=>{const li=e.target.closest?.('[data-prompt]');if(!li)return;dragPrompt=li.dataset.prompt;li.classList.add('dragging');e.dataTransfer?.setData('text/plain',dragPrompt);});
+$('prompts')?.addEventListener('dragover',e=>{const li=e.target.closest?.('[data-prompt]');if(!li||!dragPrompt)return;e.preventDefault();li.classList.add('drop');});
+$('prompts')?.addEventListener('dragleave',e=>e.target.closest?.('[data-prompt]')?.classList.remove('drop'));
+$('prompts')?.addEventListener('dragend',()=>{dragPrompt='';renderedPrompts=null;if(current)renderPrompts(current);});
+$('prompts')?.addEventListener('drop',e=>{const li=e.target.closest?.('[data-prompt]');if(!li||!dragPrompt)return;e.preventDefault();const id=dragPrompt;dragPrompt='';if(li.dataset.prompt!==id)movePrompt(id,queuedOrder().indexOf(li.dataset.prompt));});
 $('reset').addEventListener('click',()=>{if(confirm('Clear the room session? Existing Artifacts repos will remain.'))action('/api/reset');});
 $('export').addEventListener('click',async()=>{
   try {

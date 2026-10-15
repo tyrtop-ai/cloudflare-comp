@@ -193,6 +193,10 @@ export const MESSAGES = Object.freeze({
   request_problem: ({label, want}) => `${label} asks for ${want}, which no part delivers and its assignment does not cover.`,
   // §4 (S4b): one card check that failed, as its owner reads it.
   check_failed: ({id, says, check, evidence}) => `Requirement ${id} failed: ${says}. The check: ${check}.${evidence ? ` What it observed: ${evidence}` : ''} Fix the cause in your part, or say plainly which other part's contract it lies in.`,
+  // v8 S9 (§7.2): a follow-up the user gave, as the card writer reads it beside current_card.
+  amend_note: () => 'change is a new instruction from the user for the project that current_card describes, and goal now ends with it. Return the whole card for the goal with the change: keep each deliverable and requirement of current_card that the change leaves as it is, with its id and its check, and add or change only what the change asks for. Give each new or changed requirement the phrase of the change it comes from as its source.',
+  // The amendment as the part it is routed to reads it (an amendment travels the path a repair does).
+  amendment: ({change, id, says}) => `The user changed the goal: "${change}". With it, requirement ${id} is new or changed: ${says}. Change your files where your part is affected, and keep what already works. If the change leaves your part as it is, answer done and change nothing, so your manager passes it on.`,
   // The done rule's send-back (§3.4): the contracts and what is missing.
   contract_returned: ({contracts, findings}) => `Your contracts: ${contracts}. ${findings} Write each file you change again, complete.`,
   // ------------------------------------------------------------ request answers

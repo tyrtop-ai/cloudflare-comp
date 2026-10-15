@@ -469,6 +469,8 @@ export function requirementText(r, {fn=null, more=[], module='', method='', thro
   // requirement, the kind of check and what it observed (never its expected
   // values or steps, src/checks.js workerDetail).
   if(r?.card)return MESSAGES.check_failed({id:r.id,says:String(r.says||'').replace(/[.\s]+$/,''),check:r.check,evidence:r.evidence});
+  // v8 S9: an amendment's requirement reads as the user's change, never its check.
+  if(r?.amendment)return MESSAGES.amendment({change:String(r.amendment).trim().replace(/[.\s]+$/,''),id:r.id,says:String(r.says||'').replace(/[.\s]+$/,'')});
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
   const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
   const rd=fn&&r?.read&&(fn.name===r.method||performer)?r.read:null,ret=rd&&fn.returns&&!noValue(fn.returns)?String(fn.returns).replace(/[.\s]+$/,''):'';
@@ -627,6 +629,8 @@ function decideRow(p, ctx) {
       if(first)return {rule:`R2${first.how}`,route:true,action:'assign',child:first.child,side:'site',...ctx.kindOf(first.child)==='manager'?{delegate:true}:{instructions:said+first.text,facts_text:first.facts||'',providers:first.providers||[]}};
       // v7.15.13 (run20, R3): a child that changed a file for this failure without progress is skipped as a declined one (flags.exhausted, read by the route).
       const spent=(flags.exhausted||[]).filter(id=>ctx.kindOf(id)),why=`no piece takes the requirement${declined.size?` (declined by ${names([...declined])})`:''}${spent.length?` (${names(spent)} changed a file for it without progress)`:''}: ${clip(p.facts.requirement.text,200)}`;
+      // v8 S9 (§7.2): an amendment nobody at Root takes grows the plan: Root splits off one new piece (the room's amendGrow).
+      if(!ctx.parent&&p.stage==='amend')return {rule:'A2',route:true,action:'grow',reason:why};
       return ctx.parent?{rule:'R2',route:true,action:'escalate',declined:true,reason:why}:{rule:'R2',route:true,action:'exhausted',reason:why};
     }
     // v7.15.6 (R5): the parent asked this branch to take names on a promise (grow).
@@ -720,8 +724,9 @@ function decideParties(p, ctx, placed, flags) {
 // The deterministic subset of the validator: an action names only a direct
 // child that can take it. Returns the reason it is refused, or null.
 export function validateDecision(dec, p, ctx) {
-  if(!['assign','escalate','exhausted','fail','retask','defer'].includes(dec?.action))return 'unknown action';
+  if(!['assign','escalate','exhausted','fail','retask','defer','grow'].includes(dec?.action))return 'unknown action';
   if(dec.action==='escalate')return ctx.parent?null:'the top manager has no parent to escalate to';
+  if(dec.action==='grow')return !ctx.parent&&p.stage==='amend'?null:'only an amendment at the top grows a new piece';
   if(dec.action==='exhausted'||dec.action==='defer')return null;
   const kind=ctx.kindOf(dec.child),status=ctx.statusOf?.(dec.child);
   if(!kind)return `${dec.child} is not a direct child`;
@@ -747,7 +752,7 @@ export function validateDecision(dec, p, ctx) {
 // here; M8 an unanchored disagreement between two children.
 export function modelTrigger(p, dec, ctx) {
   const f=p.facts||{},flags=p.flags||{};
-  if(dec.rule==='hops')return null;
+  if(dec.rule==='hops'||dec.action==='grow')return null;
   // v7.15.6 (R4): the same requirement routed to the same child a third time
   // is the model's as any recurrence is (M4; review: a worker revising its
   // file every round was never shown to the model); one nobody takes, or a

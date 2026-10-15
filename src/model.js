@@ -7,6 +7,7 @@ import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE, MESSAGES, BASE_LABEL }
 import { contractLine } from './contracts.js';
 import { validateCard, settleCodeLanguage, checkSummary } from './card.js';
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
+import { EFFECTIVE_GOAL_LIMIT } from './amend.js';
 import { SOURCE_CLAUSE } from './fetcher.js';
 export { NO_ANSWER };
 // v8 (S6): a call runs v8's prompts when the room's pipeline is v8. The room
@@ -778,12 +779,17 @@ export const CARD_MAX_TOKENS = 8192;
 // v8 S8b: sources are the goal's links as source cards (quoted, beside
 // SOURCE_CLAUSE), sources_unavailable the links that could not be read and
 // why; existing_files is the base's digest (repoDigest).
-export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[]}={}) {
+// v8 S9 (§7.2): change is a follow-up the user gave for the project in
+// prior_card (an amendment): the writer returns the whole card updated for
+// it, the goal is the effective goal (the user's goal and each change), and
+// the call is amendCard's.
+export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[], change=''}={}) {
   const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
   const check=raw=>validateCard(raw,{goal,installed:rows,base,packages});
   const settle=(r,extra)=>{const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};return {card:s.card,errors:r.errors,unsupported:r.unsupported,...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};};
   if (env.MOCK_AI === 'true') return settle(check(MOCK_CARD),{raw_head:'',attempts:0});
-  const fields={goal:String(goal).slice(0,GOAL_LIMIT),
+  const amend=!!(change&&prior_card),call=amend?'amendCard':'writeCard';
+  const fields={goal:String(goal).slice(0,amend?EFFECTIVE_GOAL_LIMIT:GOAL_LIMIT),...(amend?{change:String(change).slice(0,GOAL_LIMIT),change_note:MESSAGES.amend_note()}:{}),
     toolchains:rows.map(t=>({id:t.id,files:t.extensions,...(t.run_file?{run_file:t.run_file}:{}),...(t.test?{test:t.test}:{}),executables:t.executables||[]})),
     // v8 S8b review: the existing project's digest is quoted, labelled, beside the base clause.
     ...(base_digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest:base_digest}}:{}),...(prior_card?{current_card:prior_card}:{}),
@@ -794,11 +800,11 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
     if(parsed.parse_error)return {head:text.slice(0,200),text,parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[]};
     return {head:text.slice(0,200),text,parsed,...check(parsed)};
   };
-  const first=read(await run(env,system,JSON.stringify(fields),CARD_MAX_TOKENS,{call:'writeCard',role:'card'}));
+  const first=read(await run(env,system,JSON.stringify(fields),CARD_MAX_TOKENS,{call,role:'card'}));
   if(!first.errors.length||first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1});
   const retry={...fields,previous_errors:first.errors.slice(0,24),...(first.parsed.parse_error?{}:{previous_answer:clip(first.text,6000)}),
     instruction:'Your previous card had the problems listed in previous_errors. Answer again with the whole corrected card as one json object.'};
-  const second=read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call:'writeCard',role:'card',retry:true,noThink:true}));
+  const second=read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call,role:'card',retry:true,noThink:true}));
   const best=second.parsed.parse_error&&!first.parsed.parse_error?first:second;
   return settle(best,{raw_head:best.head,attempts:2});
 }
@@ -813,7 +819,7 @@ export async function vetBaseChanges(env, {goal='', paths=[]}) {
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('unsupported Clef decision model');
   const list=paths.slice(0,24);
-  const output=await clefRun(env,'vetBaseChanges',selector,{model:clef,state:{goal:String(goal).slice(0,GOAL_LIMIT),files:list.map((path,i)=>({slot:i,path}))},
+  const output=await clefRun(env,'vetBaseChanges',selector,{model:clef,state:{goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),files:list.map((path,i)=>({slot:i,path}))},
     questions:Object.fromEntries(list.map((_,i)=>[`base_change_${i}`,{type:'noul',instructions:clefText('base_change',{i})}]))});
   return list.map((path,i)=>{
     const p=output?.answers?.[`base_change_${i}`]?.noul;
@@ -846,7 +852,7 @@ export async function vetRequirements(env, {goal='', requirements=[]}) {
     try {
       const questions=Object.fromEntries(group.map((_,i)=>[`requirement_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement}`}]));
       const output=await clefRun(env,'vetRequirements',selector,{model:clef,
-        state:{goal:String(goal).slice(0,GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),source:String(r.source).slice(0,160),
+        state:{goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),source:String(r.source).slice(0,160),
           check:checkSummary(r.check),...(r.untraced?{source_found_in_goal:false}:{})}))},questions});
       return group.map((r,i)=>{
         const probability=output?.answers?.[`requirement_${start+i}`]?.noul;

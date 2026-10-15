@@ -559,3 +559,43 @@ test('v8 S8b review: the Sources panel marks an unverified previous result and c
   assert.match(panel,/· 2 carried untouched/);
   assert.match(panel,/<span class="req-chip fail" title="base_unverified: that result had not passed its checks">unverified<\/span>/);
 });
+
+// v8 S9: the Prompts panel beside the goal box and the card's revisions.
+test('v8 S9: the Prompts panel lists each prompt with its state; only queued ones can be edited, moved, skipped or removed',()=>{
+  assert.match(html,/<option value="v8">v8 \(experimental\) · project card, checks, any language<\/option>/);
+  assert.ok(html.indexOf('id="goal"')<html.indexOf('id="prompts-box"')&&html.indexOf('id="prompts-box"')<html.indexOf('id="start-from"'),'beside the goal box');
+  const prompts=[{id:'a',text:'add a <README>',status:'done',kind:'queued',goal_rev:2,outcome:{passed:true}},{id:'b',text:'also support kelvin',status:'running',kind:'adjust',goal_rev:3,outcome:{}},
+    {id:'c',text:'queued one',status:'queued',kind:'queued',outcome:{}},{id:'d',text:'queued two',status:'queued',kind:'queued',outcome:{}},{id:'e',text:'skipped one',status:'skipped',kind:'queued',outcome:{}}];
+  const running=renderWithPage(true,{status:'running',settings:{pipeline:'v8'},agents:[{id:'root',label:'Root objective',status:'waiting',interfaces:[]}],prompts,queue_on_fail:'continue',queue_stopped:''});
+  const list=running.get('prompts').innerHTML;
+  for(const st of ['done','running','queued','skipped'])assert.match(list,new RegExp(`<span class="req-chip ${st}">${st}</span>`));
+  assert.match(list,/add a &lt;README&gt;/,'escaped');
+  assert.match(list,/goal rev 2 · checks passed/);
+  assert.match(list,/applied now · goal rev 3/);
+  assert.equal((list.match(/data-prompt-edit=/g)||[]).length,2,'only the queued ones');
+  assert.equal((list.match(/draggable="true"/g)||[]).length,2);
+  assert.match(list,/data-prompt-up="c" aria-label="Move up" disabled/);
+  assert.match(list,/data-prompt-down="d" aria-label="Move down" disabled/);
+  assert.equal(running.get('prompt-now').textContent,'Adjust now');
+  assert.equal(running.get('prompt-now').disabled,false);
+  assert.equal(running.get('queue-on-fail').value,'continue');
+  assert.equal(running.get('queue-stopped').hidden,true);
+  const done=renderWithPage(true,{status:'complete',settings:{pipeline:'v8'},agents:[{id:'root',label:'Root objective',status:'done',interfaces:[]}],prompts,queue_stopped:'The last prompt failed; the queue waits.'});
+  assert.equal(done.get('prompt-now').textContent,'Apply now');
+  assert.equal(done.get('queue-stopped').hidden,false);
+  assert.match(done.get('queue-stopped').innerHTML,/The last prompt failed; the queue waits\. <button type="button" class="secondary" data-queue-resume="1">Go on<\/button>/);
+  assert.equal(renderWithPage(true,{settings:{pipeline:'v7'},agents:[{id:'root',label:'Root',status:'done',interfaces:[]}]}).get('prompt-now').disabled,true,'a v7 room takes no change');
+});
+test('v8 S9: the Card panel shows each revision with the change that caused it, and marks what it added or changed',()=>{
+  const card={card:1,summary:'A converter',languages:['python','text'],deliverables:[{name:'temp',kind:'command',path:'temp.py',does:'converts'},{name:'README.md',kind:'doc',path:'README.md',does:'how to run it'}],
+    requirements:[{id:'R1',says:'It converts',serves:['temp'],check:{kind:'command'}},{id:'R3',says:'The README explains it',serves:['README.md'],check:{kind:'judge'}}],decisions:[]};
+  const history=[{rev:1,goal_rev:1,reason:'goal',delta:{}},{rev:2,goal_rev:2,reason:'add a README explaining how to run it',delta:{deliverables:{added:['README.md'],changed:[]},requirements:{added:['R3'],changed:[]}}}];
+  const elements=renderWithPage(true,{settings:{pipeline:'v8'},card,card_rev:2,card_history:history,requirement_status:{}});
+  const panel=elements.get('card').innerHTML;
+  assert.match(panel,/REVISIONS/);
+  assert.match(panel,/<b class="mono">rev 2<\/b> <span class="faint">goal rev 2<\/span> “add a README explaining how to run it” <span class="faint">· adds README\.md; new R3<\/span>/);
+  assert.match(panel,/README\.md<\/b> · how to run it <span class="card-amended" title="add a README explaining how to run it">rev 2 · add a README/);
+  assert.match(panel,/R3<\/b> The README explains it .*card-amended/);
+  assert.doesNotMatch(panel.split('R1</b>')[1].split('</li>')[0],/card-amended/,'R1 came with the goal');
+  assert.match(elements.get('card-verdict').textContent,/^rev 2 · 2 requirements/);
+});
