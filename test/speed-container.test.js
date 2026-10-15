@@ -69,6 +69,20 @@ test('runner: describe_api loads, describes start() and runs the runner\'s test 
   assert.deepEqual(buildOptions({describe_api:true,prechecked:'yes',x:1}),{describe_api:true,prechecked:false});
 });
 
+// Review M2 (probes/speed1/run-combined.mjs): a start() that writes a store
+// into its working folder. The runner's test expects a fresh store, as the
+// separate run exec gave it; describing start() must not leave the store behind.
+test('runner: describing start() beside the runner\'s test never leaves start()\'s writes for the test',async()=>{
+  const app="const fs=require('node:fs');\nfunction start(){ const n=fs.existsSync('store.json')?JSON.parse(fs.readFileSync('store.json','utf8')).starts:0; fs.writeFileSync('store.json',JSON.stringify({starts:n+1})); return { starts:()=>n+1, listTickets:()=>[] }; }\nmodule.exports={start};\n";
+  const smoke="const assert=require('node:assert/strict');const {start}=require('./index.js');\n(async()=>{const app=await start();assert.equal(app.starts(),1,'fresh store expected');})().catch(e=>{console.error(e);process.exitCode=1;});\n";
+  const files={'glue/index.js':L.entryLoader('components/app.js'),'components/app.js':app,'package.json':L.RUNTIME_PACKAGE,'glue/smoke.js':smoke};
+  const separate=await verify(files,{prechecked:true}),combined=await verify(files,{describe_api:true});
+  assert.equal(separate.passed,true,separate.log);
+  assert.equal(combined.passed,true,combined.log);
+  assert.deepEqual(combined.checks.map(c=>[c.name,c.exit_code]),[['syntax',0],['install-skipped',0],['module-import',0],['api-surface',0],['smoke',0]]);
+  assert.deepEqual(Object.keys(JSON.parse(combined.api_surface).members).sort(),['listTickets','starts']);
+});
+
 test('splitCombinedRun: what the static check would have said, and the test\'s verdict when it ran',()=>{
   const c=(name,exit_code=0)=>({name,exit_code,log:name});
   const ran={passed:false,issues:[{path:'',detail:'smoke failed'}],checks:[c('syntax'),c('module-import'),c('api-surface'),c('smoke',1)],api_surface:'{}',log:''};

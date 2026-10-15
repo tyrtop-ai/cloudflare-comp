@@ -1,5 +1,5 @@
 // Runs only inside the isolated Cloudflare build container.
-import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat} from 'node:fs/promises';
+import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat,cp} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -279,9 +279,9 @@ export async function verifyBuild(request,{runStage=run}={}) {
       await mkdir(path.dirname(location),{recursive:true});await writeFile(location,content,'utf8');
     }
     let pkg={};try {pkg=files['package.json']?JSON.parse(files['package.json']):{};}catch(e){issues.push({path:'package.json',detail:'Invalid package.json: '+e.message});passed=false;}
-    async function check(label,cmd,args,ms=20000,stdin='') {
+    async function check(label,cmd,args,ms=20000,stdin='',cwd=folder) {
       if(!passed)return;
-      const began=Date.now(),r=await runStage(cmd,args,folder,ms,stdin);
+      const began=Date.now(),r=await runStage(cmd,args,cwd,ms,stdin);
       checks.push({name:label,exit_code:r.code,timed_out:r.timedOut,ms:Date.now()-began,log:String(r.log||'').slice(-4000)});
       if(r.code!==0||r.timedOut){
         passed=false;
@@ -330,8 +330,16 @@ export async function verifyBuild(request,{runStage=run}={}) {
     // promises start(); older or hand-written glue keeps the previous checks.
     const runtimeLoader=/Generated from the linker's entry choice/.test(files['glue/index.js']||'');
     if(passed&&!scripts.build&&runtimeLoader&&(!files['glue/smoke.js']||options.describe_api)) {
-      const r=await check('api-surface','node',['-e',API_SURFACE_SCRIPT],12_000);
-      api_surface=apiSurfaceFrom(r?.log);
+      // Review M2: beside the runner's test, start() is called in a throwaway
+      // copy of the folder as it stands after the load, so whatever start()
+      // writes never reaches the test: the test sees the folder the separate
+      // run exec gave it.
+      const scratch=files['glue/smoke.js']?await mkdtemp(path.join(base,'api-')):null;
+      try {
+        if(scratch)await cp(folder,scratch,{recursive:true,verbatimSymlinks:true});
+        const r=await check('api-surface','node',['-e',API_SURFACE_SCRIPT],12_000,'',scratch||folder);
+        api_surface=apiSurfaceFrom(r?.log);
+      } finally {if(scratch)await rm(scratch,{recursive:true,force:true});}
     }
     if(passed && scripts.build)await check('build','npm',['run','build'],50_000);
     if(passed && scripts.test)await check('test','npm',['run','test'],40_000);
