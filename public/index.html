@@ -128,6 +128,39 @@
             </div>
           </section>
         </div>
+        <section class="panel bench-panel" id="bench-panel">
+          <div class="section-head"><span class="counter">06</span><h2>Benchmarks</h2><span class="right-note">One v8 room per task · room settings from the pickers on the left</span></div>
+          <div class="bench-form">
+            <label for="bench-url">Dataset URL <span class="faint">(a JSON lines file on raw.githubusercontent.com, or a datasets-server.huggingface.co rows URL)</span></label>
+            <input id="bench-url" class="mono" spellcheck="false" autocomplete="off" placeholder="https://datasets-server.huggingface.co/rows?dataset=openai%2Fopenai_humaneval&amp;config=openai_humaneval&amp;split=test" />
+            <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E, or {"id", "prompt", "tests"})</span></label>
+            <textarea id="bench-text" class="mono bench-text" rows="3" spellcheck="false" placeholder='{"id": "t1", "language": "python", "prompt": "Write a function triple(n)…", "entry": "triple", "tests": "assert triple(2) == 6"}'></textarea>
+            <input id="bench-file" type="file" accept=".jsonl,.json,.txt,application/json" aria-label="Upload a JSON lines file" />
+            <div class="bench-row">
+              <div><label for="bench-limit">Tasks</label><input id="bench-limit" class="mono" type="number" inputmode="numeric" min="1" max="500" step="1" value="20" /></div>
+              <div><label for="bench-concurrency">Rooms at once</label><input id="bench-concurrency" class="mono" type="number" inputmode="numeric" min="1" max="16" step="1" value="2" /></div>
+              <div class="bench-label"><label for="bench-label">Label</label><input id="bench-label" placeholder="e.g. Scout workers" autocomplete="off" /></div>
+            </div>
+            <label for="bench-keep">Keep task rooms</label>
+            <select id="bench-keep">
+              <option value="failed">Keep the rooms that did not pass, delete the passed ones (default)</option>
+              <option value="all">Keep every room</option>
+              <option value="none">Delete every room once it is scored</option>
+            </select>
+            <p class="helper" id="bench-slots">Rooms at once is capped by the deployment's Container slots: each room builds on one executor of the run's pool.</p>
+            <button class="primary" id="bench-start" title="Run the benchmark">Run benchmark <span>↗</span></button>
+            <p class="helper">Each task gets its own room, with a project card fixed by the benchmark: the function, and the benchmark's tests as a hidden check no agent sees. The run goes on with this page closed. The turn budget is the one above.</p>
+          </div>
+          <div class="bench-head"><span class="eyebrow">RUNS</span></div>
+          <div id="bench-runs" class="bench-runs"><p class="empty">No benchmark runs yet.</p></div>
+          <div class="bench-compare-bar">
+            <label for="bench-a">Compare</label>
+            <select id="bench-a" aria-label="First run"></select>
+            <select id="bench-b" aria-label="Second run"></select>
+            <button class="secondary" id="bench-compare">Compare runs</button>
+          </div>
+          <div id="bench-results" class="bench-results"></div>
+        </section>
       </section>
     </div>
   </div>

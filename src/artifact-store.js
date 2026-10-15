@@ -19,6 +19,11 @@ export class CloudflareArtifactStore {
     const created = await this.artifacts.create(name, { description, readOnly: false, setDefaultBranch: 'main' });
     return { name: created.name, remote: created.remote, branch: created.defaultBranch || 'main' };
   }
+  // B1: a scored benchmark room's repositories are deleted (BenchRun).
+  async delete(name) {
+    if (typeof this.artifacts.delete !== 'function') throw new Error('The ARTIFACTS binding offers no delete');
+    await this.artifacts.delete(name);
+  }
   async read(name, path) {
     if (!isPath(path)) throw new Error(`Unsafe artifact path: ${path}`);
     const repo = await this.artifacts.get(name);
