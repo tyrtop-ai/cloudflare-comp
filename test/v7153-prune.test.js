@@ -11,6 +11,7 @@ import {DatabaseSync} from 'node:sqlite';
 register('./cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom,ManagerShard}=await import('../src/index.js');
 const {ROOT_PROMISE}=await import('../src/model.js');
+const {normalizeAction}=await import('../src/protocol.js');
 class Sql {
   constructor(){this.db=new DatabaseSync(':memory:');}
   exec(sql,...args){
@@ -192,22 +193,30 @@ async function run5(store) {
   for(const id of ['root','root.2'])room.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",id);
   for(const n of room.allNodes())if(!['root','root.2','root.2.2'].includes(n.id))room.db().exec("UPDATE agents SET phase='implement',status='waiting' WHERE id=?",n.id);
   room.db().exec("UPDATE agents SET phase='decompose',status='ready' WHERE id='root.2.2'");
-  await room.turn('root.2.2');
-  return {room,ai};
+  // v7.15.16 (run25): "Ticket creation logic" carries its parent's whole promise (createTicket), so it no longer splits; its split's admission is replayed directly.
+  const admit=await room.admitChildren('root.2.2',room.node('root.2.2'),normalizeAction({spawn:run5Split}).spawn);
+  return {room,ai,admit};
 }
 test('v7.15.3: run5 replay: a store Clef ranks first to the Data storage handler at Root, below the bar, is pruned there, past root.2\'s lean to this strand; one Clef ranks to nobody is kept',async()=>{
-  const {room,ai}=await run5({'Data storage handler':0.5,'Create ticket logic':0.3});
+  const {room,ai,admit}=await run5({'Data storage handler':0.5,'Create ticket logic':0.3});
   assert.deepEqual(events(room,'scope_pruned').map(e=>e.body),[
     'Proposed child "Ticket validation logic" is owned by "Input validation" (root.2.1); not spawned. Import it from that strand instead of rebuilding it.',
     'Proposed child "In-memory data store" is owned by "Data storage handler" (root.1), Clef\'s best answer (p=0.500, below 0.6); not spawned. Decided at root: this strand is told only that it is owned outside this branch, and imports it by name.']);
-  assert.deepEqual(room.children('root.2.2').map(c=>c.label),['Ticket creation workflow','Entry module export']);
+  assert.deepEqual(admit.spawn.map(c=>c.label),['Ticket creation workflow','Entry module export']);
   assert.equal(ai.calls.filter(c=>c.kind==='owner'&&about(c.question,'In-memory data store')).length,2,'asked at root.2, then at Root');
-  assert.equal((await room.readKnowledge('root.2.2')).owned_elsewhere,
-    'Ticket validation logic is owned outside this branch; import it by name and write here only what it lacks. In-memory data store is owned outside this branch; import it by name and write here only what it lacks.');
+  assert.deepEqual(admit.rejectedChildren.map(x=>[x.label,x.owner]),[['Ticket validation logic','Input validation'],['In-memory data store','outside this branch']]);
   // The trade-off: when Clef leans to no branch at all, the store is kept.
-  const {room:missed}=await run5(null);
+  const {room:missed,admit:all}=await run5(null);
   assert.deepEqual(events(missed,'scope_kept').map(e=>e.body).filter(b=>b.includes('In-memory')),[kept('In-memory data store')]);
-  assert.deepEqual(missed.children('root.2.2').map(c=>c.label),['In-memory data store','Ticket creation workflow','Entry module export']);
+  assert.deepEqual(all.spawn.map(c=>c.label),['In-memory data store','Ticket creation workflow','Entry module export']);
+  // v7.15.16: what root.2.2 now does at depth 2 (run5's live gate answered 0.746): as the carrier of root.2's whole promise it is never gated and writes createTicket itself; a fresh piece there would meet a bar of 0.725, which 0.746 passes.
+  assert.equal(room.splitBar('root.2.2'),0.725);
+  const gates=ai.calls.filter(c=>c.kind==='gate').length;
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root.2.2'");
+  await assert.rejects(room.turn('root.2.2'),/Unexpected model call/,'the worker\'s own model call, which this fake does not answer');
+  assert.equal(ai.calls.filter(c=>c.kind==='gate').length,gates,'no gate');
+  assert.equal(room.node('root.2.2').phase,'implement');
+  assert.deepEqual(events(room,'atomic').map(e=>e.body),['It carries its parent\'s whole promise (createTicket): implemented directly, with no Clef gate.']);
 });
 
 test('v7.15.3: the manager DO hands the walk Clef\'s answers below the bar; routing callers still get an id',async()=>{
