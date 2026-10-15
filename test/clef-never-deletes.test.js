@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import { liveRoom, events, fileBlocks } from './helpers/room.js';
+import { validateManagerActions } from '../src/problems.js';
 
 const hasPython = spawnSync('python3', ['--version']).status === 0;
 const GOAL = 'add a README explaining how to run a hello-world Python script';
@@ -80,4 +81,17 @@ test('Clef never deletes: with NO to every review and gating question, no requir
   assert.equal(next.requirements.find(r => r.id === 'R4').doubtful, true);
   assert.equal(events(room, 'card_requirement_dropped').length, 0);
   assert.equal(events(room, 'amend_change_doubtful').length, 1);
+});
+
+test('Clef never vetoes a manager\'s retask under v8: one Clef doubts, or could not judge, is applied and marked doubtful', () => {
+  const call = [{id: 'p1', p: {kind: 'run', status: 'open'}, dec: {action: 'assign', child: 'root.1'}, trigger: 'M5'}];
+  const ctx = {kindOf: c => c === 'root.1' ? 'worker' : '', labelOf: c => c, production: ['root.1', 'root.2'], scope: () => 0.1};
+  const action = {action: 'retask', child: 'root.1', task: 'Write the greeting module again, with a name argument', problems: ['p1'], reason: 'it is stuck'};
+  const v8 = validateManagerActions([action], call, {...ctx, v8: true});
+  assert.deepEqual(v8.rejected, []);
+  assert.deepEqual(v8.retask.map(r => [r.child, r.doubtful]), [['root.1', {p: 0.1}]]);
+  const failed = validateManagerActions([action], call, {...ctx, v8: true, scope: () => undefined});
+  assert.deepEqual(failed.retask.map(r => r.doubtful), [{p: null}], 'Clef could not judge: applied, marked');
+  // v7 keeps its gate (removed with v7 in S7).
+  assert.equal(validateManagerActions([action], call, ctx).rejected.length, 1);
 });

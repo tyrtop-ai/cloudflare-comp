@@ -116,7 +116,7 @@ function cardMarkup(card,status={},history=[]) {
   const pMark=(label,x,title)=>x?` <span class="req-chip doubtful"${title?` title="${esc(title)}"`:''}>${label}${typeof x.p==='number'?` p=${esc(x.p.toFixed(2))}`:''}</span>`:'';
   const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}${pMark('needs confirmation',d.needs_confirmation,'an existing file the goal does not name; Continue confirms it')}${pMark('change doubtful',d.change_doubtful,'Clef doubted the change is about it')}${amendedMark(by.deliverables.get(d.name))}</li>`;
   const requirement=r=>{const state=requirementState(r,status),detail=status?.[r.id]?.detail;
-    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}${r.source_inferred?' · source inferred':''}${r.unvetted?' · unvetted':''}</span>${r.doubtful?pMark('doubtful',{p:r.vet_p},'Clef doubted the goal asks for it'):''}${r.unattached?' <span class="req-chip doubtful" title="no deliverable matched what it serves">unattached</span>':''}${amendedMark(by.requirements.get(r.id))}</li>`;};
+    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}${r.source_inferred?' · source inferred':''}${r.serves_inferred?' · serves inferred':''}${r.unvetted?' · unvetted':''}</span>${r.doubtful?pMark('doubtful',{p:r.vet_p},'Clef doubted the goal asks for it'):''}${r.unattached?' <span class="req-chip doubtful" title="no deliverable matched what it serves">unattached</span>':''}${amendedMark(by.requirements.get(r.id))}</li>`;};
   const section=(title,items)=>items.length?`<div class="card-section"><div class="eyebrow">${title}</div><ul class="card-list">${items.join('')}</ul></div>`:'';
   return `${card.summary?`<p class="card-summary">${esc(card.summary)}</p>`:''}${card.languages?.length?`<p class="faint">languages: ${esc(card.languages.join(', '))}</p>`:''}`+
     section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`))+section('REVIEW NOTES',(card.review_notes||[]).map(n=>`<li class="faint">${esc(n)}</li>`))+historyMarkup(history||[]);
@@ -173,6 +173,14 @@ function renderSources(s) {
   const list=s.sources||[],bad=list.filter(x=>x.error).length;
   if($('sources-verdict'))$('sources-verdict').textContent=[list.length?`${list.length} source${list.length>1?'s':''}${bad?` · ${bad} not read`:''}`:'',s.base?'base loaded':''].filter(Boolean).join(' · ')||'None';
 }
+// v8 card repair: at base_confirm, each existing file waiting for the person's grant, with Clef's p and
+// whether the goal names it (then pre-selected); Continue grants the selected ones.
+function baseConfirmMarkup(s) {
+  const list=s.pause?.kind==='base_confirm'&&Array.isArray(s.base_pending)?s.base_pending:[];
+  if(!list.length)return '';
+  return `<ul class="card-list base-grants">${list.map(x=>`<li><label><input type="checkbox" data-grant="${esc(x.path)}"${x.named?' checked':''}> <b class="mono">${esc(x.path)}</b> <span class="faint">· ${x.named?'named in the goal':'not named in the goal'}${typeof x.p==='number'?` · Clef p=${esc(x.p.toFixed(2))}`:''}</span></label></li>`).join('')}</ul>`;
+}
+const selectedGrants=()=>current?.pause?.kind==='base_confirm'&&typeof document!=='undefined'&&document.querySelectorAll?[...document.querySelectorAll('input[data-grant]')].filter(x=>x.checked).map(x=>x.dataset.grant):undefined;
 // v8 card repair: while the room is held at card_failed, the card writer's answers as written (first, and the retry).
 function cardRawMarkup(s) {
   const answers=s.pause?.kind==='card_failed'&&Array.isArray(s.card_raw?.answers)?s.card_raw.answers:[];
@@ -182,7 +190,7 @@ function cardRawMarkup(s) {
 function renderCard(s) {
   if(!$('card'))return;
   const reqs=s.card?.requirements||[],count=state=>reqs.filter(r=>requirementState(r,s.requirement_status)===state).length;
-  const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>${cardRawMarkup(s)}`:'';
+  const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>${baseConfirmMarkup(s)}${cardRawMarkup(s)}`:'';
   $('card').innerHTML=held+cardMarkup(s.card,s.requirement_status,s.card_history);
   if($('card-verdict'))$('card-verdict').textContent=s.card?`${(s.card_rev||1)>1?`rev ${s.card_rev} · `:''}${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
 }
@@ -441,7 +449,7 @@ $('start').addEventListener('click',()=>{
   if($('start-from')?.value==='repo'&&!base)return showError('Enter the GitHub repository to start from as owner/name.');
   return action('/api/run',{goal:$('goal').value,budget:countSetting('budget'),settings:settings(),...(base?{base}:{})});
 });
-$('continue').addEventListener('click',()=>action('/api/continue',{budget:countSetting('budget'),settings:settings()}));
+$('continue').addEventListener('click',()=>{const grants=selectedGrants();action('/api/continue',{budget:countSetting('budget'),settings:settings(),...(grants?{grants}:{})});});
 // v8 S9: queue a prompt, or apply it now (an adjustment while running).
 const promptInput=()=>$('prompt-text')?.value.trim()||'';
 $('prompt-queue')?.addEventListener('click',async()=>{const text=promptInput();if(!text)return showError('Write the prompt to queue.');if(await promptAction('/api/prompts',{text,budget:countSetting('budget')}))$('prompt-text').value='';});

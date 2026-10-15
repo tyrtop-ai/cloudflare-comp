@@ -110,7 +110,8 @@ function brokerRoom({goal, card, split = null, answers}) {
   Object.assign(r.env, {TEST_FETCH: fetch, FETCH_ALLOW: 'docs.example.com'});
   return {...r, fetch};
 }
-const start = room => room.start(GOAL, 60, {pipeline: 'v8'}, 'room-brkr-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
+// v8 card repair: only the person grants a change to an existing file; these rooms grant src/shout.js at Start.
+const start = room => room.start(GOAL, 60, {pipeline: 'v8'}, 'room-brkr-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com'], grants: ['src/shout.js']});
 
 // ------------------------------------------------------------ a split room
 const GOAL = `Write NOTES.md and FAQ.md for the widget from the format at ${FORMAT_URL} and the guide at ${GUIDE_URL}, and make the shout in src/shout.js louder.`;
@@ -210,7 +211,7 @@ const TOP_CARD = {card: 1, summary: 'A louder shout', languages: ['text', 'javas
 test('broker: the top, which has no manager, still reads its granted file and hears the neutral answer; a contract ask of its own goes nowhere as before', async () => {
   const {room, calls, drain} = brokerRoom({goal: 'no split', card: TOP_CARD, answers: {
     'Root objective': [asks([['src/shout.js', 'the shout as it stands'], ['package.json', 'the manifest'], ['parse_input', 'reads the input']]), wrote([['src/shout.js', LOUDER]])]}});
-  assert.deepEqual(await room.start(TOP_GOAL, 30, {pipeline: 'v8'}, 'room-brkr-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']}), {status: 'running'});
+  assert.deepEqual(await room.start(TOP_GOAL, 30, {pipeline: 'v8'}, 'room-brkr-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com'], grants: ['src/shout.js']}), {status: 'running'});
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
   const [first, second] = calls.leaf;

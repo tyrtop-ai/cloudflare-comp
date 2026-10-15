@@ -12,12 +12,12 @@ export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, BASE_CHANGE_BAR, vetAmendChanges, AMEND_CHANGE_BAR } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, vetAmendChanges, AMEND_CHANGE_BAR } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
-import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard } from './card.js';
+import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard, namedInGoal } from './card.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
@@ -555,34 +555,40 @@ export class ControlRoom extends DurableObject {
   // v8 S8b: the folder of the pieces' unplaced files (partsRoot): components,
   // unless the base holds a components/ of its own. Fixed when the run starts.
   partsRoot() { return this.get('parts_root','')||PARTS_ROOT; }
-  // Clef's base_change question over existing files a contract names (the
-  // card's deliverables, a split's new contracts): {yes, no}, the approved
-  // paths kept in base_approved. A Clef failure throws.
-  // v8 card repair: Clef reviews, it never deletes. A path the goal (or a
-  // change) names literally is approved without a question; one Clef finds
-  // the goal asks to change is approved; any other waits for the person
-  // (base_pending, the base_confirm hold), and nothing that names it is
-  // removed: the file gate keeps writers off it until it is confirmed.
-  // {yes: paths, no: [{path, p}]}.
+  // v8 card repair: only the person grants a change to an existing file. A
+  // path a contract names is changed only once the person confirmed it
+  // (Continue at base_confirm, or the Start payload's grants). Clef's
+  // base_change p is shown beside it as a review, and so is whether the goal
+  // names it (namedInGoal; such a path is shown pre-selected). Nothing that
+  // names a waiting path is removed: the file gate keeps writers off it, and
+  // the pieces that carry it wait. {yes: approved paths, no: [{path, p, named}]}.
   async approveBasePaths(id, paths, goal=this.userGoal()) {
-    const approved=new Set(this.read('base_approved',[])),pendingNow=new Map(this.read('base_pending',[]).map(x=>[x.path,x])),ask=[...new Set(paths)].filter(p=>!approved.has(p));
-    if(!ask.length)return {yes:[...new Set(paths)],no:[]};
-    const text=[goal,...this.goalChanges()].join('\n'),named=ask.filter(p=>new RegExp(`(?<![\\w./-])${p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![\\w/-])`,'i').test(text));
-    for(const p of named){approved.add(p);this.event(id,'base_change_named',clip(`The goal names ${p}, so changing it is allowed.`,300));}
-    const rest=ask.filter(p=>!named.includes(p)&&!pendingNow.has(p)),ps=rest.length?await vetBaseChanges(this.inferenceEnv(),{goal,paths:rest}):[],no=ps.filter(x=>x.p<BASE_CHANGE_BAR);
-    for(const x of ps)if(x.p>=BASE_CHANGE_BAR)approved.add(x.path);
-    for(const x of no)pendingNow.set(x.path,{path:x.path,p:Math.round(x.p*1000)/1000});
-    this.save('base_approved',[...approved]);this.save('base_pending',[...pendingNow.values()]);
-    for(const x of no)this.event(id,'base_change_doubtful',clip(`Clef doubted that the goal asks to change ${x.path} (p=${x.p.toFixed(3)}); it stays on the plan and waits for the person to confirm it (Continue), or to leave it out with a follow-up prompt.`,500));
-    return {yes:[...new Set(paths)].filter(p=>approved.has(p)),no:[...new Set(paths)].filter(p=>pendingNow.has(p)).map(p=>pendingNow.get(p))};
+    const approved=new Set(this.read('base_approved',[])),pendingNow=new Map(this.read('base_pending',[]).map(x=>[x.path,x])),ask=[...new Set(paths)].filter(p=>!approved.has(p)&&!pendingNow.has(p));
+    if(ask.length) {
+      const text=[goal,...this.goalChanges()].join('\n');
+      let ps=[];
+      try {ps=await vetBaseChanges(this.inferenceEnv(),{goal,paths:ask});}
+      catch(e){this.event(id,'base_change_unvetted',clip(`Clef could not review ${ask.join(', ')} (${e?.message||e}); ${ask.length>1?'they wait':'it waits'} for the person all the same.`,400));}
+      for(const path of ask) {
+        const p=ps.find(x=>x.path===path)?.p,x={path,p:typeof p==='number'?Math.round(p*1000)/1000:null,named:namedInGoal(path,text)};
+        pendingNow.set(path,x);
+        this.event(id,'base_change_pending',clip(`The plan changes the existing file ${path}; it waits for the person's grant (${x.named?'the goal names it':'the goal does not name it'}${x.p===null?'':`; Clef's review p=${x.p.toFixed(3)}`}).`,400));
+      }
+      this.save('base_pending',[...pendingNow.values()]);
+    }
+    const all=[...new Set(paths)];
+    return {yes:all.filter(p=>approved.has(p)),no:all.filter(p=>pendingNow.has(p)).map(p=>pendingNow.get(p))};
   }
-  // v8 card repair: the room holds for the person at base_confirm: the
-  // existing files the plan would change that the goal does not name and
-  // Clef doubted, with their p. Root waits; Continue confirms them.
-  holdBaseConfirm(id) {
+  // The room holds for the person at base_confirm, listing every waiting
+  // path with Clef's p and whether the goal names it; the hold is refreshed
+  // whenever the waiting set changes, and Continue grants exactly the paths
+  // it listed (or those the person selected).
+  holdBaseConfirm(id=null) {
     const pending=this.read('base_pending',[]);
-    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-    this.holdRoom('base_confirm',`The plan changes existing file${pending.length>1?'s':''} the goal does not name, and Clef doubted the goal asks for ${pending.length>1?'them':'it'}: ${pending.map(x=>`${x.path} (p=${Number(x.p).toFixed(3)})`).join(', ')}. Continue confirms ${pending.length>1?'them':'it'}; a follow-up prompt can leave ${pending.length>1?'them':'it'} out instead.`);
+    if(!pending.length)return false;
+    if(id)this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+    const line=x=>`${x.path} (${x.named?'named in the goal':'not named in the goal'}${typeof x.p==='number'?`; Clef p=${x.p.toFixed(3)}`:''})`;
+    this.holdRoom('base_confirm',`The plan changes existing file${pending.length>1?'s':''} that only you can grant: ${pending.map(line).join(', ')}. Continue grants ${pending.length>1?'them':'it'}; a follow-up prompt can leave ${pending.length>1?'them':'it'} out instead.`,{paths:pending.map(x=>x.path)});
     return false;
   }
   sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,card,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,card:parse(r.card,null)})); }
@@ -668,9 +674,15 @@ export class ControlRoom extends DurableObject {
   // card_blocked, card_failed; and (S4b) at the card's checks: checks_failed,
   // checks_blocked, checks_exhausted. Root waits; the run ends
   // paused with this text.
-  holdRoom(kind, text) {
+  holdRoom(kind, text, extra={}) {
     const prior=this.read('paused_state',null);
-    this.save('paused_state',{kind,text:clip(text,1200),ts:Date.now()});
+    // v8 card repair: a pending grant (base_confirm) is never overwritten; a later hold waits behind it, and Continue restores it after the grant.
+    if(kind!=='base_confirm'&&prior?.kind==='base_confirm'&&this.read('base_pending',[]).length) {
+      this.save('queued_hold',{kind,text:clip(text,1200),ts:Date.now(),...extra});
+      this.event('root','hold_queued',clip(`${kind} waits behind the files waiting for the person's grant: ${text}`,600));
+      return;
+    }
+    this.save('paused_state',{kind,text:clip(text,1200),ts:Date.now(),...extra});
     if(prior?.kind!==kind||prior?.text!==clip(text,1200))this.event('root',kind,clip(text,1200));
   }
   get(key, otherwise = '') { return query(this.db(), 'SELECT value FROM meta WHERE key=?', key)[0]?.value ?? otherwise; }
@@ -992,6 +1004,8 @@ export class ControlRoom extends DurableObject {
       card_rev: this.cardRev(), requirement_status: this.requirementStatus(), pause: this.read('paused_state',null),
       // v8 card repair: what the card writer said, only while the room is held at card_failed (the export always has it).
       ...(this.read('paused_state',null)?.kind==='card_failed'?{card_raw:this.read('card_raw',null)}:{}),
+      // v8 card repair: the existing files waiting for the person's grant (Clef's p and whether the goal names each), for the hold panel.
+      ...(this.read('base_pending',[]).length?{base_pending:this.read('base_pending',[])}:{}),
       // v8 S8b: the goal's links (title, address, size, cut or why not read) and what the run starts from.
       ...this.inputsHead(),
       // v8 S9: the prompts (queued, running, done, failed, skipped), the queue's policy and the card's revisions.
@@ -4115,6 +4129,7 @@ export class ControlRoom extends DurableObject {
     const blocks=result.actions.some(a=>a?.action==='retire')?await this.retireBlocks(m):()=>'';
     const v=validateManagerActions(result.actions,call,{...ctx,scope:a=>scope.get(a),retireBlock:blocks});
     for(const r of v.rejected)this.event(m,'problem_decision_rejected',clip(`${r.action?.action||'?'} ${r.action?.child||''}: ${r.reason}`,600));
+    for(const r of v.retask.filter(r=>r.doubtful))this.event(m,'retask_doubtful',clip(`Clef doubted that the retask of ${ctx.labelOf(r.child)} is within the goal and this manager's responsibility (${r.doubtful.p===null?'Clef could not judge':`p=${r.doubtful.p.toFixed(3)}`}); it is applied, marked doubtful: ${r.task}`,600),r.child);
     const left=v.decisions.filter(d=>d.how==='default');
     if(left.length&&!result.error)this.event(m,'problem_default',clip(`${left.length} problem(s) the decision left out keep their default: ${left.map(d=>`${d.id} ${d.dec.action} ${d.dec.child?ctx.labelOf(d.dec.child):''}`).join(', ')}.`,600));
     // Facts per assignment: the listed children's modules that its problems name first.
@@ -5047,45 +5062,52 @@ export class ControlRoom extends DurableObject {
     return {spawn:v8?await this.baseContracts(id,survivors):survivors,c5:[],rejectedScope,rejectedChildren};
   }
   // v8 S8b (v8 card repair): a split's contract that names an existing file
-  // stays on its piece. One the goal names, or Clef finds it asks to change,
-  // is approved; any other waits for the person (base_pending, shown at the
-  // base_confirm hold), and the file gate keeps writers off it until then. A
-  // Clef failure leaves it waiting too.
+  // stays on its piece, and waits for the person's grant (approveBasePaths);
+  // the hold is refreshed with every waiting path, and the pieces carrying
+  // one wait (agentTurn) until it is granted.
   async baseContracts(id, spawn) {
     const base=this.basePaths();
     if(!base.size)return spawn;
     const paths=spawn.flatMap(c=>(c?.interfaces||[]).map(f=>f.path).filter(p=>p&&base.has(p)));
     if(!paths.length)return spawn;
-    let no;
-    try {({no}=await this.approveBasePaths(id,paths));}
-    catch(e){
-      const approved=new Set(this.read('base_approved',[])),pend=new Map(this.read('base_pending',[]).map(x=>[x.path,x]));
-      no=[...new Set(paths)].filter(p=>!approved.has(p)).map(p=>pend.get(p)||{path:p,p:0});
-      for(const x of no)pend.set(x.path,x);
-      this.save('base_pending',[...pend.values()]);
-      this.event(id,'base_change_unvetted',clip(`Clef could not judge whether the goal asks to change ${no.map(x=>x.path).join(', ')} (${e?.message||e}); ${no.length>1?'they wait':'it waits'} for the person to confirm.`,500));
-    }
-    if(no.length&&!this.read('paused_state',null))this.holdRoom('base_confirm',`A split's contracts change existing file${no.length>1?'s':''} the goal does not name, and Clef doubted the goal asks for ${no.length>1?'them':'it'}: ${no.map(x=>`${x.path} (p=${Number(x.p).toFixed(3)})`).join(', ')}. Writers start on ${no.length>1?'them':'it'} once Continue confirms; a follow-up prompt can leave ${no.length>1?'them':'it'} out instead.`);
+    const {no}=await this.approveBasePaths(id,paths);
+    if(no.length)this.holdBaseConfirm();
     return spawn;
   }
-  // v8 card repair: the person's confirmation (Continue at base_confirm):
-  // every waiting file is approved, the card's marks are cleared, and Root
-  // goes on.
-  confirmBase() {
-    const pending=this.read('base_pending',[]);
+  // The paths a node's contracts name that wait for the person's grant.
+  waitingPaths(id) {
+    const pending=new Set(this.read('base_pending',[]).map(x=>x.path));
+    return pending.size?this.promisedOf(id).map(c=>c.path).filter(p=>p&&pending.has(p)):[];
+  }
+  // The person's grant (Continue at base_confirm): the paths the hold listed,
+  // or those the person selected (grants), are approved; the card's marks
+  // are cleared; Root and the pieces that waited go on. Paths the person did
+  // not grant keep waiting, and the hold is shown again for them. A hold
+  // that waited behind the grant is restored once nothing waits. True when
+  // something was granted.
+  confirmBase(grants=null) {
+    const hold=this.read('paused_state',null),pending=this.read('base_pending',[]);
     this.save('paused_state',null);
     // A change folded the card away (applyAmendment): Root writes it again.
-    if(!pending.length){if(!this.read('card',null)&&this.node('root')?.status==='waiting'){this.event('root','card_continue','Continue runs the card writer again.');this.wake('root');}return;}
-    this.save('base_approved',[...new Set([...this.read('base_approved',[]),...pending.map(x=>x.path)])]);
-    this.save('base_pending',[]);
-    const card=this.read('card',null);
-    if(card?.deliverables?.some(d=>d.needs_confirmation)) {
-      const next={...card,deliverables:card.deliverables.map(({needs_confirmation:_,...d})=>d)};
+    if(!pending.length){if(!this.read('card',null)&&this.node('root')?.status==='waiting'){this.event('root','card_continue','Continue runs the card writer again.');this.wake('root');}return false;}
+    const listed=new Set(Array.isArray(hold?.paths)?hold.paths:pending.map(x=>x.path));
+    const chosen=Array.isArray(grants)?new Set(grants.filter(p=>listed.has(p))):listed;
+    const granted=pending.filter(x=>chosen.has(x.path)).map(x=>x.path),left=pending.filter(x=>!chosen.has(x.path));
+    this.save('base_approved',[...new Set([...this.read('base_approved',[]),...granted])]);
+    this.save('base_pending',left);
+    const card=this.read('card',null),done=new Set(granted);
+    if(card?.deliverables?.some(d=>d.needs_confirmation&&done.has(d.path))) {
+      const next={...card,deliverables:card.deliverables.map(d=>d.needs_confirmation&&done.has(d.path)?(({needs_confirmation:_,...x})=>x)(d):d)};
       this.save('card',next);
       this.db().exec('UPDATE card_revisions SET card=? WHERE rev=?',JSON.stringify(next),this.cardRev());
     }
-    this.event('root','base_confirmed',clip(`The person confirmed changing ${pending.map(x=>x.path).join(', ')}.`,500));
-    if(this.node('root')?.status==='waiting')this.wake('root');
+    if(granted.length)this.event('root','base_confirmed',clip(`The person granted changing ${granted.join(', ')}.`,500));
+    if(left.length){this.holdBaseConfirm();return granted.length>0;}
+    // The pieces that waited for a grant go on.
+    for(const n of this.allNodes())if(n.status==='waiting'&&(n.id==='root'||this.read(`base_wait:${n.id}`,null))){this.save(`base_wait:${n.id}`,null);this.wake(n.id);}
+    const queued=this.read('queued_hold',null);
+    if(queued){this.save('queued_hold',null);this.save('paused_state',queued);}
+    return granted.length>0;
   }
   // Prune on discovery: before a manager with a parent spawns an admitted
   // child, walk up from its parent. At each level Clef picks the direct child
@@ -6553,8 +6575,8 @@ export class ControlRoom extends DurableObject {
       let pending=[];
       if(touched.length) {
         ({no:pending}=await this.approveBasePaths(id,touched,goal));
-        const p=new Map(pending.map(x=>[x.path,x.p]));
-        if(p.size)vetted={...vetted,deliverables:vetted.deliverables.map(d=>p.has(d.path)?{...d,needs_confirmation:{p:p.get(d.path)}}:d)};
+        const p=new Map(pending.map(x=>[x.path,x]));
+        if(p.size)vetted={...vetted,deliverables:vetted.deliverables.map(d=>p.has(d.path)?{...d,needs_confirmation:{p:p.get(d.path).p,named:p.get(d.path).named}}:d)};
       }
       // S8b review: Root holds the chunks the card cites (or the first of each source), at most 16.
       if(this.allRefs().length)this.save('root_refs',rootRefs(vetted.refs,this.allRefs()));
@@ -6631,8 +6653,16 @@ export class ControlRoom extends DurableObject {
     if (!n || n.status !== 'ready') return;
     if (!n.parent && (this.get('amend_wake')||this.get('root_held_amend'))) {this.set('amend_wake','');this.set('root_held_amend','');}
     if(this.v8()&&!n.parent&&n.phase==='decompose'&&!this.read('card',null)&&!query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length&&!await this.cardTurn(id))return;
-    // v8 card repair: Root splits only once the person confirmed the existing files the card waits on.
+    // v8 card repair: Root splits only once the person granted the existing files the card waits on.
     if(this.v8()&&!n.parent&&n.phase==='decompose'&&this.read('card',null)?.deliverables?.some(d=>d.needs_confirmation)&&this.read('base_pending',[]).length)return void this.holdBaseConfirm(id);
+    // A piece whose contracts name a file waiting for the person's grant waits with it (it never finishes without it).
+    if(this.v8()&&n.parent&&!isRuntimeNode(n)&&this.waitingPaths(id).length) {
+      this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+      if(!this.read(`base_wait:${id}`,null))this.event(id,'base_waiting',clip(`${n.label} waits for the person's grant to change ${this.waitingPaths(id).join(', ')}.`,400));
+      this.save(`base_wait:${id}`,this.waitingPaths(id));
+      this.holdBaseConfirm();
+      return;
+    }
     const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
     // Builders and the compiler run runtime turns, never a model action.
     if(isRuntimeNode(n) && this.live()) return n.label==='Compiler'?this.compilerTurn(id):this.builderTurn(id);
@@ -7511,7 +7541,8 @@ export class ControlRoom extends DurableObject {
   // reach. The base is read before the room is wiped, so a base that cannot
   // be read refuses the Start and leaves the previous run as it was; the
   // goal's links are read at Root's first turn (loadSources).
-  async start(goal,budget,settings = {},roomId='',provided=null,{base=null,selfHosts=[]}={}) {
+  // grants (v8 card repair): the existing files the person grants a change to in advance.
+  async start(goal,budget,settings = {},roomId='',provided=null,{base=null,selfHosts=[],grants=[]}={}) {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
     // v8 S9 review: a change in flight would write the old project into the new run.
     if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then Start.',status:409};
@@ -7543,6 +7574,7 @@ export class ControlRoom extends DurableObject {
     if (roomId) this.set('room_id',roomId);
     if (provided) this.save('card_provided',provided);
     this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h).slice(0,8));
+    if(Array.isArray(grants)&&grants.length){const given=[...new Set(grants.filter(p=>typeof p==='string'&&isPath(p)))].slice(0,64);this.save('base_approved',given);if(given.length)this.event('system','base_granted',clip(`The person granted changing ${given.join(', ')} at Start.`,500));}
     if(loaded) {
       for(const [path,content] of loaded.files)this.db().exec('INSERT INTO base_files(path,content,sha256,mode) VALUES (?,?,?,?)',path,content,await sha256(content),loaded.modes?.get(path)??0o644);
       for(const p of loaded.passthrough||[])this.db().exec('INSERT INTO base_passthrough(path,bytes,mode,sha256,reason) VALUES (?,?,?,?,?)',p.path,p.bytes,p.mode??0o644,await sha256Bytes(p.bytes),p.reason||'');
@@ -7584,7 +7616,8 @@ export class ControlRoom extends DurableObject {
     this.event('system','stop_requested','Stop requested: no new turns start; the running ones finish, then the run pauses.');
     return {status:'stopping'};
   }
-  async resume(budget,settings = {}) {
+  // options.grants (v8 card repair): at base_confirm, the paths the person selected to grant.
+  async resume(budget,settings = {},options = {}) {
     if (this.busy) return {error:'Experiment running'};
     if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then Continue.',status:409};
     this.set('stop_requested','');
@@ -7607,9 +7640,9 @@ export class ControlRoom extends DurableObject {
     this.save('failures',failures);
     for(const id of continued)this.clearFailures(id);
     // v8 S3: Continue on a room held at the card runs the card writer again.
-    const hold=this.read('paused_state',null);
-    // v8 card repair: Continue at base_confirm is the person's confirmation of the files it lists.
-    if(this.v8()&&hold?.kind==='base_confirm')this.confirmBase();
+    let hold=this.read('paused_state',null);
+    // v8 card repair: Continue at base_confirm is the person's grant of the files it lists (or of those selected).
+    if(this.v8()&&hold?.kind==='base_confirm'){this.confirmBase(options.grants??null);hold=this.read('paused_state',null);}
     if(this.v8()&&['card_blocked','card_failed'].includes(hold?.kind)) {
       this.save('paused_state',null);
       if(this.node('root')?.status==='waiting'&&!this.read('card',null)) {
@@ -8304,10 +8337,10 @@ export default {
         const goal=String(payload.goal||'').trim();
         if (goal.length<8 || goal.length>GOAL_LIMIT) return json({error:`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
-        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,null,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)]});
+        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,null,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)],...(Array.isArray(payload.grants)?{grants:payload.grants}:{})});
         return json(started,started.error?started.status||400:200);
       }
-      if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));
+      if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{},{grants:Array.isArray(payload.grants)?payload.grants.filter(p=>typeof p==='string').slice(0,64):null}));
       // v8 S9: a change applied now (an adjustment while running), and the prompt queue.
       // v8 S9 review: a budget that is no turn budget is the request's error (400), not the server's.
       const turnsOf=v=>{try{return {budget:v==null?null:normalizeTurnBudget(v)};}catch(e){return {error:String(e?.message||e)};}};

@@ -351,10 +351,11 @@ export function settleCodeLanguage(card, installed = TOOLCHAINS) {
 // denylist, the path and URL rules and base gating all still apply.
 // Pure. facts: {goal, installed, base, change}.
 // The flags only the runtime sets: a writer's copy of one is dropped.
-const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'unattached', 'vet_p', 'doubtful'];
+const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'serves_inferred', 'unattached', 'vet_p', 'doubtful'];
 const CHECK_KINDS = ['file', 'judge', 'command', 'call', 'http', 'browser'];
 // Kinds a writer names in other words ('' leaves the kind to the name).
-const KIND_ALIASES = Object.freeze({cli: 'command', script: 'command', program: 'command', executable: 'command', tool: 'command', binary: 'command',
+// 'usage': a script, program or tool is a command only when a requirement runs it (a page's script is a file).
+const KIND_ALIASES = Object.freeze({cli: 'command', script: 'usage', program: 'usage', executable: 'usage', tool: 'usage', binary: 'usage', test: '', tests: '', 'test file': '', output: '', 'output file': '',
   document: 'doc', documentation: 'doc', docs: 'doc', readme: 'doc', markdown: 'doc', guide: 'doc', manual: 'doc', text: 'doc',
   html: 'page', webpage: 'page', 'web page': 'page', website: 'page', site: 'page', 'html page': 'page',
   endpoint: 'route', 'api endpoint': 'route', 'http route': 'route', handler: 'route',
@@ -387,11 +388,13 @@ export const goalSentences = text => String(text ?? '').split(/\n+|(?<=[.!?])\s+
 // length so it stays a part of the goal. {phrase, score}; score 0 when no
 // sentence shares a word with it.
 export function bestPhrase(text, {goal = '', change = ''} = {}) {
-  const want = [...new Set(aboutWords(text))], list = [...(change ? goalSentences(change) : []), ...goalSentences(goal)];
+  // A word's base form for matching (dates and date, replies and reply, matches and match).
+  const base = w => w.length <= 3 ? w : w.replace(/ies$/, 'y').replace(/(?<=(?:[sxz]|ch|sh))es$/, '').replace(/(?<![su])s$/, '').replace(/(?<=..)(?:ing|ed)$/, '');
+  const want = [...new Set(aboutWords(text).map(base))], list = [...(change ? goalSentences(change) : []), ...goalSentences(goal)];
   let best = {phrase: '', score: -1};
   for (const s of list) {
-    const have = new Set(aboutWords(s).flatMap(w => [w, stem(w)]));
-    const score = want.filter(w => have.has(w) || have.has(stem(w))).length;
+    const have = new Set(aboutWords(s).map(base));
+    const score = want.filter(w => have.has(w)).length;
     if (score > best.score) best = {phrase: s.slice(0, CARD_LIMITS.source).trim(), score};
   }
   return best.score < 0 ? {phrase: '', score: 0} : best;
@@ -407,6 +410,34 @@ function listOf(v, key, label, notes) {
   }
   notes.push(`${label} was one item; read as a list of one.`);
   return [v];
+}
+// A browser step written as {action, target, value} (or text, url, key), in the validator's own form.
+function browserStepOf(s) {
+  if (plain(s) && typeof s.action !== 'string') {
+    const keys = Object.keys(s);
+    if (keys.length === 1 && /^(?:assert_text|see|should_see|expect|expect_visible|assert_visible)$/.test(keys[0]) && typeof s[keys[0]] === 'string') return {expect_text: s[keys[0]]};
+    return s;
+  }
+  if (!plain(s)) return s;
+  const a = s.action.trim().toLowerCase().replace(/[\s-]+/g, '_'), target = s.target ?? s.selector ?? s.label ?? s.name, value = s.value ?? s.text ?? s.input;
+  if (/^(?:goto|go_to|open|visit|navigate)$/.test(a)) return {goto: String(s.url ?? s.path ?? target ?? '/')};
+  if (/^(?:fill|type|enter|input)$/.test(a) && typeof target === 'string' && value !== undefined) return {fill: {label: target, text: String(value)}};
+  if (/^(?:click|press_button|tap)$/.test(a) && typeof target === 'string') return {click: {text: target}};
+  if (a === 'press' && typeof (s.key ?? target) === 'string') return {press: String(s.key ?? target)};
+  if (/^(?:expect|expect_text|assert_text|see|check)$/.test(a) && typeof (value ?? target) === 'string') return {expect_text: String(value ?? target)};
+  if (a === 'reload') return {reload: true};
+  return s;
+}
+// An http step's expectation in the validator's words (status, body_has, json_has).
+function httpExpectOf(e) {
+  if (!plain(e)) return e;
+  const x = {...e};
+  for (const k of ['status_code', 'statusCode', 'code', 'status_is']) if (x[k] !== undefined) { if (x.status === undefined) x.status = x[k]; delete x[k]; }
+  if (typeof x.status === 'string' && /^\d+$/.test(x.status)) x.status = Number(x.status);
+  for (const k of ['body_contains', 'contains', 'body_includes', 'text']) if (x[k] !== undefined) { if (x.body_has === undefined) x.body_has = x[k]; delete x[k]; }
+  if (typeof x.body_has === 'string') x.body_has = [x.body_has];
+  if (x.json !== undefined && x.json_has === undefined) { x.json_has = x.json; delete x.json; }
+  return x;
 }
 // The argv a loosely written check runs, or null.
 function looseArgv(check) {
@@ -438,6 +469,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
   if (typeof o.languages === 'string') { o.languages = o.languages.split(/[,;]+|\s+/).filter(Boolean); notes.push('languages was a text; read as a list.'); }
   if (!Array.isArray(o.languages)) o.languages = [];
   for (const k of ['decisions', 'project_checks']) if (typeof o[k] === 'string' && o[k].trim()) o[k] = [o[k]];
+  const runnability = [];
 
   const rawReqs = listOf(o.requirements, 'id', 'requirements', notes);
   // Whether a requirement runs this file, or one of these names, as a command.
@@ -470,7 +502,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
   };
   const commandFrom = s => {
     const name = String(s ?? '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z]+/, '').replace(/[-_]+$/, '').slice(0, 32);
-    return COMMAND_WORD.test(name) && !reserved.has(name) ? name : '';
+    return COMMAND_WORD.test(name) && !reserved.has(name.toLowerCase()) ? name : '';
   };
 
   // Deliverables.
@@ -490,6 +522,16 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
     if (kind && !CONTRACT_KINDS.includes(kind)) {
       const alias = KIND_ALIASES[kind.replace(/[\s_-]+/g, ' ')];
       if (alias !== undefined) { notes.push(`${original}: kind "${d.kind}" is read as ${alias || 'unset, so its name decides'}.`); kind = alias; }
+    }
+    if (!kind && /^(?:get|post|put|patch|delete)\s+\/\S*$/i.test(name.trim())) { kind = 'route'; notes.push(`"${original}" names a request, so it is a route.`); }
+    if (kind === 'usage') {
+      // Decided by how the card uses it: a script a requirement runs is a command; one a page loads is a file.
+      const p = path || (fileName(cleanPath(name)) ? cleanPath(name) : '');
+      if (p && !scriptExtensions.has(fileExtension(p))) { path = p; kind = KIND_BY_EXTENSION.find(([re]) => re.test(p))?.[1] || 'file'; }
+      else if (p) { path = p; kind = runAsCommand(p, [name, stemOf(p), p]) ? 'command' : 'file'; }
+      else kind = 'command';
+      if (kind !== 'command') name = path;
+      notes.push(`"${original}" (kind ${d.kind}) is ${kind === 'command' ? 'a command, which a requirement runs' : `the ${kind} ${path}, which no requirement runs`}.`);
     }
     if (!kind || kind === 'function') {
       const head = name.split('(')[0].trim(), tail = name.slice(head.length);
@@ -529,7 +571,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
     }
     if (kind === 'command') {
       if (fileName(cleanPath(name))) { path ||= cleanPath(name); name = stemOf(cleanPath(name)); notes.push(`command "${original}" is named ${name}, at ${path}.`); }
-      if (!COMMAND_WORD.test(name) || reserved.has(name)) {
+      if (!COMMAND_WORD.test(name) || reserved.has(name.toLowerCase())) {
         const to = commandFrom(name) || (path ? commandFrom(stemOf(path)) : '');
         if (to) { notes.push(`command "${original}" is named ${to}${to === commandFrom(name) ? '' : `, after ${path}`}.`); name = to; }
       }
@@ -548,8 +590,21 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
       const m = /^(get|post|put|patch|delete)\s+(\/\S*)$/i.exec(name.trim());
       if (m && `${m[1].toUpperCase()} ${m[2]}` !== name) { name = `${m[1].toUpperCase()} ${m[2]}`; notes.push(`route "${original}" is named ${name}.`); }
     }
+    // An existing file named apart from letter case is that file (it still waits for the person's grant).
+    const twin = path && caseTwin(path, baseSet);
+    if (twin && twin !== path) { notes.push(`${original}: ${path} is the existing file ${twin}.`); path = twin; }
     if (['page', 'doc', 'data', 'file'].includes(kind) && path) name = path;
     const out = {...d, name};
+    // A function read as the validator reads it: "name(a, b)" is name, with a and b its inputs.
+    if (!kind || kind === 'function') {
+      const n = normalizeContract({...d, name, kind: 'function', ...(path ? {path} : {})}, {v8: true});
+      if (n && n.name !== name) {
+        notes.push(`function "${name}" is named ${n.name}${n.params?.length ? `, with inputs ${n.params.join(', ')}` : ''}.`);
+        name = out.name = n.name;
+        if (!d.inputs && !d.params && n.params?.length) out.params = n.params;
+        if (!d.does && n.does) out.does = n.does;
+      }
+    }
     if (kind) out.kind = kind; else delete out.kind;
     delete out.file;
     if (path) out.path = path; else delete out.path;
@@ -585,6 +640,17 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
       || (fn ? one(f => f.kind === 'function' && f.name === fn) : '');
   };
 
+  // A program written by a toolchain's other name ("python" for the installed "python3") runs as the toolchain runs files.
+  const executables = new Set(rows.flatMap(r => r.executables || []));
+  const programOf = (run, label) => {
+    const argv = commandArgv(run).argv, first = argv?.[0];
+    if (!first || executables.has(first) || finals.some(f => f.kind === 'command' && f.name === first)) return run;
+    const row = toolchainNamed(first), to = row && codeRows.some(c => c.id === row.id) ? (row.run_file?.[0] || row.executables?.[0]) : '';
+    if (!to || to === first || !executables.has(to)) return run;
+    notes.push(`${label}: "${first}" runs as ${to}, the installed program for ${row.id}.`);
+    const at = run.indexOf(first);
+    return `${run.slice(0, at)}${to}${run.slice(at + first.length)}`;
+  };
   // Runs.
   const runIds = new Map(), runs = [];
   for (const item of listOf(o.run ?? o.runs, 'id', 'run', notes)) {
@@ -592,6 +658,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
     if (!r) { runs.push(item); continue; }
     if (r.run === undefined && (typeof r.command === 'string' || Array.isArray(r.command))) r.run = r.command;
     if (Array.isArray(r.run)) r.run = joinArgv(r.run);
+    if (typeof r.run === 'string') r.run = programOf(r.run, `run ${JSON.stringify(r.id ?? '')}`);
     if (r.static === 'true' || r.static === 'yes') r.static = true;
     if (r.static !== true && !(typeof r.run === 'string' && r.run.trim())) { r.static = true; notes.push(`run ${JSON.stringify(r.id ?? '')} named no command; it serves the delivered files as they are.`); }
     const given = typeof r.id === 'string' ? r.id.trim() : '';
@@ -645,16 +712,19 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
         if (Array.isArray(c.run)) c.run = joinArgv(c.run);
         if (Array.isArray(c.args) && typeof c.run === 'string') c.run = `${c.run} ${joinArgv(c.args)}`;
         delete c.args;
+        if (typeof c.run === 'string') c.run = programOf(c.run, label);
         const argv = typeof c.run === 'string' ? commandArgv(c.run).argv : null;
-        if (argv && !reserved.has(argv[0]) && !finals.some(f => f.kind === 'command' && f.name === argv[0])) {
-          const to = resolve(argv[0], ['command']), at = c.run.indexOf(argv[0]);
+        // Re-pointed only at the command deliverable it names exactly: its path, or its name in another case.
+        if (argv && !executables.has(argv[0]) && !finals.some(f => f.kind === 'command' && f.name === argv[0])) {
+          const hit = finals.filter(f => f.kind === 'command' && (f.path && f.path === cleanPath(argv[0]) || f.name.toLowerCase() === argv[0].toLowerCase()));
+          const to = hit.length === 1 ? hit[0].name : '', at = c.run.indexOf(argv[0]);
           if (to && at >= 0) { c.run = `${c.run.slice(0, at)}${to}${c.run.slice(at + argv[0].length)}`.trim(); notes.push(`${label}: its command runs ${to} (written "${argv[0]}").`); }
         }
         if (plain(c.expect)) {
           const e = {...c.expect};
           const move = (from, to, list) => { if (e[from] !== undefined && e[to] === undefined) e[to] = list && typeof e[from] === 'string' ? [e[from]] : e[from]; if (from !== to) delete e[from]; };
-          move('exit_code', 'exit'); move('code', 'exit'); move('status', 'exit');
-          for (const k of ['stdout_contains', 'contains', 'output_has', 'output']) move(k, 'stdout_has', true);
+          move('exit_code', 'exit'); move('code', 'exit'); move('status', 'exit'); move('returncode', 'exit'); move('return_code', 'exit');
+          for (const k of ['stdout_contains', 'contains', 'output_has', 'output', 'stdout_contains_text', 'stdout_includes']) move(k, 'stdout_has', true);
           move('stderr_contains', 'stderr_has', true);
           if (typeof e.exit === 'string' && /^\d+$/.test(e.exit)) e.exit = Number(e.exit);
           c.expect = e;
@@ -669,7 +739,6 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
             const to = functionNames.includes(call.trim()) ? call.trim() : resolve(call, ['function']);
             step.call = to || call;
             if (to && to !== call) notes.push(`${label}: its call to "${call}" calls ${to}.`);
-            if (!to && finals.some(f => f.kind === 'function')) unresolved.push({at: requirements.length, kind: 'call', step: c.steps.indexOf(s), written: call});
           }
           if (!('expect' in step) && 'expected' in step) step.expect = step.expected;
           delete step.expected;
@@ -681,7 +750,6 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
         if (p && !finals.some(f => f.path === p) && !baseSet.has(p)) {
           const to = finals.find(f => f.name === resolve(p))?.path;
           if (to) notes.push(`${label}: its ${kind} check reads ${to} (written "${p}").`);
-          else if (finals.some(f => f.path)) unresolved.push({at: requirements.length, kind: 'path', written: p});
           c.path = to || p;
         } else if (p) c.path = p;
         if (kind === 'judge' && !c.question && typeof (c.ask ?? c.prompt) === 'string') c.question = c.ask ?? c.prompt;
@@ -689,7 +757,18 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
       } else if (kind === 'http' || kind === 'browser') {
         if (!Array.isArray(c.steps) && Array.isArray(c.actions)) c.steps = c.actions;
         delete c.actions;
-        if (kind === 'http' && Array.isArray(c.steps)) c.steps = c.steps.map(s => plain(s) && s.path === undefined && typeof s.url === 'string' ? {...s, path: s.url} : s);
+        if (kind === 'browser' && Array.isArray(c.steps)) {
+          const steps = c.steps.map(browserStepOf);
+          if (steps.some((x, i) => x !== c.steps[i])) notes.push(`${label}: its browser steps are read as goto, fill, click, press and expect_text steps.`);
+          c.steps = steps;
+        }
+        if (kind === 'http' && Array.isArray(c.steps)) {
+          c.steps = c.steps.map(s => plain(s) ? {...s, ...(s.path === undefined && typeof s.url === 'string' ? {path: s.url} : {}), ...(plain(s.expect) ? {expect: httpExpectOf(s.expect)} : {})} : s);
+          for (const st of c.steps) if (plain(st)) delete st.url;
+          // An http check whose steps expect nothing passes on any answer below 500: the writer is asked for an expectation.
+          const expects = st => plain(st?.expect) && ['status', 'body_has', 'json_has'].some(k => st.expect[k] !== undefined);
+          if (!c.steps.some(expects)) runnability.push(`${label}'s http check expects nothing of the answer: give a step an expect with the status, a text the body holds (body_has) or json it holds (json_has), so the check can fail.`);
+        }
       }
     }
     r.check = c;
@@ -704,25 +783,24 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
     for (const s of listed) {
       const to = resolve(s);
       if (!to) { unmatched.push(String(s).trim().slice(0, 80)); continue; }
-      if (to !== s.trim()) notes.push(`${label} serves ${to} (written "${String(s).slice(0, 80)}").`);
+      if (to !== s.trim()) { notes.push(`${label} serves ${to} (written "${String(s).slice(0, 80)}").`); r.serves_inferred = true; }
       if (!serves.includes(to)) serves.push(to);
     }
-    if (finals.length === 1 && !serves.length) { serves.push(finals[0].name); notes.push(`${label} serves ${finals[0].name}, the only deliverable${unmatched.length ? ` (written ${unmatched.map(x => `"${x}"`).join(', ')})` : ''}.`); }
+    if (finals.length === 1 && !serves.length) { serves.push(finals[0].name); r.serves_inferred = true; notes.push(`${label} serves ${finals[0].name}, the only deliverable${unmatched.length ? ` (written ${unmatched.map(x => `"${x}"`).join(', ')})` : ''}.`); }
     else if (unmatched.length) unresolved.push({at: requirements.length, kind: 'serves', written: unmatched.join(', ')});
     else if (!serves.length && finals.length) {
       const named = checkNames(c, finals, runOf, resolve);
-      if (named.length) { serves.push(...named); notes.push(`${label} named no deliverable; it serves ${named.join(', ')}, which its check names.`); }
+      if (named.length) { serves.push(...named); r.serves_inferred = true; notes.push(`${label} named no deliverable; it serves ${named.join(', ')}, which its check names.`); }
       else unresolved.push({at: requirements.length, kind: 'serves', written: ''});
     }
     r.serves = serves;
     // A missing source: the goal sentence sharing the most words with it, marked source_inferred.
     if (Array.isArray(r.source)) r.source = r.source.filter(x => typeof x === 'string').join(' ');
     if (!str(r.source, CARD_LIMITS.source) && str(r.says, CARD_LIMITS.says)) {
-      const {phrase, score} = bestPhrase(`${r.says} ${serves.join(' ')}`, {goal, change});
-      r.source = phrase || str(r.says, CARD_LIMITS.source);
-      r.source_inferred = true;
-      if (!score) r.source_unmatched = true;
-      notes.push(`${label} had no source; ${score ? `it comes from "${r.source}"` : 'no goal sentence shares its words, so it stays untraced'}.`);
+      // On its statement alone (a deliverable's name is no evidence), and at least two shared words.
+      const {phrase, score} = bestPhrase(r.says, {goal, change});
+      if (score >= 2) { r.source = phrase; r.source_inferred = true; notes.push(`${label} had no source; it comes from "${r.source}".`); }
+      else { r.source = ''; notes.push(`${label} had no source, and no goal sentence shares two of its words, so it stays untraced.`); }
     }
     requirements.push(r);
   });
@@ -746,7 +824,8 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
     }
   }
   o.requirements = requirements;
-  return {card: o, notes, unresolved};
+  // Each reference once: Clef ranks a written name once, whichever requirements wrote it.
+  return {card: o, notes, unresolved, runnability};
 }
 // The deliverables a check names: a file or judge check's path, a command's
 // program or file, a call's functions, an http check's routes or its run's
@@ -787,31 +866,41 @@ export function applyResolutions(card, unresolved = [], ranks = []) {
   const finals = ds.map(d => ({name: d.name, kind: CONTRACT_KINDS.includes(d.kind) ? d.kind : 'function', path: d.path || '', aliases: []}));
   const runOf = id => (Array.isArray(o.run) ? o.run : []).find(r => plain(r) && r.id === id);
   const exact = (v, want) => finals.find(f => f.name === v && (!want || want.includes(f.kind)))?.name || '';
-  const order = unresolved.map((u, k) => ({u, k})).sort((a, b) => (a.u.kind === 'serves') - (b.u.kind === 'serves'));
-  for (const {u, k} of order) {
+  unresolved.forEach((u, k) => {
     const r = Array.isArray(o.requirements) ? o.requirements[u.at] : null;
-    if (!plain(r)) continue;
+    if (!plain(r) || u.kind !== 'serves') return;
     const label = typeof r.id === 'string' ? r.id : `requirement ${u.at + 1}`, rank = ranks[k], pick = rank?.name ? finals.find(f => f.name === rank.name) : null;
-    const p = typeof rank?.p === 'number' ? ` (Clef p=${rank.p.toFixed(3)})` : '';
-    if (u.kind === 'call' && pick?.kind === 'function' && plain(r.check?.steps?.[u.step])) { r.check.steps[u.step].call = pick.name; notes.push(`${label}: its call to "${u.written}" calls ${pick.name}${p}.`); }
-    else if (u.kind === 'path' && pick?.path && plain(r.check)) { r.check.path = pick.path; notes.push(`${label}: its ${r.check.kind} check reads ${pick.path} (written "${u.written}")${p}.`); }
-    else if (u.kind === 'serves') {
-      const serves = Array.isArray(r.serves) ? r.serves : [];
-      if (pick) { r.serves = [...new Set([...serves, pick.name])]; notes.push(`${label} serves ${pick.name}${u.written ? ` (written "${u.written}")` : ''}${p}.`); continue; }
-      if (serves.length) { notes.push(`${label}: "${u.written}" names no deliverable, and Clef placed it nowhere; it serves ${serves.join(', ')}.`); continue; }
-      const named = checkNames(r.check, finals, runOf, v => exact(v, ['function']));
-      if (named.length) { r.serves = named; notes.push(`${label} serves ${named.join(', ')}, which its check names${u.written ? ` (written "${u.written}")` : ''}.`); }
-      else { r.unattached = true; notes.push(`${label} serves no deliverable${u.written ? ` (written "${u.written}")` : ''}, and Clef placed it nowhere; it is kept, unattached.`); }
-    }
-  }
+    const p = typeof rank?.p === 'number' ? ` (Clef p=${rank.p.toFixed(3)})` : '', serves = Array.isArray(r.serves) ? r.serves : [];
+    // What the check itself names is attached too: Clef adds a deliverable, never takes the check's own away.
+    const named = checkNames(r.check, finals, runOf, v => exact(v, ['function']));
+    if (pick) { r.serves = [...new Set([...serves, pick.name, ...named])]; r.serves_inferred = true; notes.push(`${label} serves ${r.serves.join(', ')}${u.written ? ` (written "${u.written}")` : ''}; Clef placed ${pick.name}${p}.`); return; }
+    if (serves.length) { notes.push(`${label}: "${u.written}" names no deliverable, and Clef placed it nowhere; it serves ${serves.join(', ')}.`); return; }
+    if (named.length) { r.serves = named; r.serves_inferred = true; notes.push(`${label} serves ${named.join(', ')}, which its check names${u.written ? ` (written "${u.written}")` : ''}.`); }
+    else { r.unattached = true; notes.push(`${label} serves no deliverable${u.written ? ` (written "${u.written}")` : ''}, and Clef placed it nowhere; it is kept, unattached.`); }
+  });
   return {card: o, notes};
 }
 // Layers 2 and 3 after layer 1: the answers applied, then validated.
 // {card, errors, unsupported, notes, draft}; draft is the repaired answer a
 // retry is shown.
-export function settleCard(repaired, {notes = [], unresolved = []} = {}, ranks = [], opts = {}) {
-  const applied = applyResolutions(repaired, unresolved, ranks);
-  return {...validateCard(applied.card, opts), notes: [...notes, ...applied.notes], draft: publicDraft(applied.card)};
+// runnability: what the card needs to be checked at all (layer 1's, and
+// each page, command or function no runnable check exercises), notes the
+// writer revises for whatever Clef says.
+export function settleCard(repaired, {notes = [], unresolved = [], runnability = []} = {}, ranks = [], opts = {}) {
+  const applied = applyResolutions(repaired, unresolved, ranks), out = validateCard(applied.card, opts);
+  return {...out, notes: [...notes, ...applied.notes], runnability: [...runnability, ...unexercised(out.card)], draft: publicDraft(applied.card)};
+}
+// The pages, commands and functions no runnable check exercises (a command
+// a run starts is exercised by the http and browser checks on that run), as
+// notes for the writer: what to add.
+const EXERCISES = {page: ['browser', 'http'], command: ['command', 'http', 'browser'], function: ['call', 'command', 'http', 'browser']};
+export function unexercised(card) {
+  if (!card?.deliverables?.length || card.blocked) return [];
+  const runs = new Map((card.run || []).filter(r => r.argv).map(r => [r.id, r.argv]));
+  const started = (d, c) => ['http', 'browser'].includes(c?.kind) && !!runs.get(c.serve) && (runs.get(c.serve)[0] === d.name || !!d.path && runs.get(c.serve).slice(1).includes(d.path));
+  const how = {page: 'a browser check that does what the goal asks on the page', command: 'a command check that runs it with arguments the goal implies and expects its output', function: 'a call check with arguments and the result it expects'};
+  return card.deliverables.filter(d => EXERCISES[kindOf(d)] && !(card.requirements || []).some(r => (r.serves || []).includes(d.name) && EXERCISES[kindOf(d)].includes(r.check?.kind) || kindOf(d) === 'command' && started(d, r.check)))
+    .map(d => `Deliverable "${d.name}" (a ${kindOf(d)}) has no check that exercises it: add a requirement serving it with ${how[kindOf(d)]}.`);
 }
 // Layers 1 and 2 with no Clef: every unresolved reference falls back as when
 // Clef places it nowhere.
@@ -887,7 +976,7 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     const pathBad = d.path ? deliverablePathError(d.path, baseSet) : '';
     if (pathBad) { errors.push(`deliverable "${d.name}": ${pathBad}.`); continue; }
     // Interim: replaced by check sandboxing (capability slice).
-    if (kind === 'command' && reserved.has(d.name)) { errors.push(`deliverable command "${d.name}" has the name of a system or toolchain program; name it after what it does.`); continue; }
+    if (kind === 'command' && reserved.has(d.name.toLowerCase())) { errors.push(`deliverable command "${d.name}" has the name of a system or toolchain program; name it after what it does.`); continue; }
     if (names.has(d.name)) { errors.push(`deliverable "${d.name}" is listed twice; list each once.`); continue; }
     if (d.path && paths.has(d.path)) { errors.push(`two deliverables share the path ${d.path}; give each its own.`); continue; }
     names.add(d.name);
@@ -937,6 +1026,7 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     // v8 card repair: a source the runtime inferred (repairCard) says so; only
     // repairCard sets it, after dropping a writer's own copy.
     if (r.source_inferred === true) req.source_inferred = true;
+    if (r.serves_inferred === true && serves.length) req.serves_inferred = true;
     if (!serves.length) req.unattached = true;
     // Vetting's annotations, kept when a stored card is validated again (repairCard drops a writer's copy).
     if (typeof r.vet_p === 'number') req.vet_p = r.vet_p;
@@ -945,7 +1035,7 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     // Rule 5: a source the goal does not show is vetted by Clef, never dropped
     // here. An inferred source is a goal sentence: untraced only when it
     // shares no word with the requirement.
-    if (!source || (r.source_inferred === true ? r.source_unmatched === true : !traceable(source, goal))) req.untraced = true;
+    if (!source || r.source_inferred !== true && !traceable(source, goal)) req.untraced = true;
     if (id) taken.add(id);
     card.requirements.push(req);
   }
@@ -1007,6 +1097,25 @@ export function applyVetting(card, ps) {
     return {...rest, vet_p: Math.round(v * 1000) / 1000, ...(v < VET_DOUBT_BAR ? {doubtful: true} : {})};
   });
   return {card: {...card, requirements}, doubtful};
+}
+
+// v8 card repair: whether the goal names an existing file, for display only
+// (the dashboard shows such a path pre-selected; only the person grants).
+// The exact path, in its own case, as a word of its own; an occurrence the
+// goal asks to leave alone ("do not touch X", "keep X as it is", "without
+// changing X") does not count.
+export function namedInGoal(path, text) {
+  const t = String(text ?? ''), esc = String(path).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), re = new RegExp(`(?<![\\w./-])${esc}(?![\\w/-])`, 'g');
+  for (const m of t.matchAll(re)) {
+    const before = t.slice(Math.max(0, m.index - 60), m.index).toLowerCase(), after = t.slice(m.index + m[0].length, m.index + m[0].length + 40).toLowerCase();
+    const sentence = before.split(/[.!?\n]/).pop();
+    if (/\b(?:do not|don't|never|without|no need to|not)\s+(?:\w+\s+){0,2}?(?:touch|touching|change|changing|modify|modifying|edit|editing|alter|altering|rewrite|rewriting)\b/.test(sentence)) continue;
+    if (/\b(?:keep|leave)\s*$/.test(sentence) && /^\s*(?:as it is|as is|unchanged|alone|intact)/.test(after)) continue;
+    if (/^\s*(?:stays|remains|must stay|should stay)\s+(?:as it is|unchanged|the same)/.test(after)) continue;
+    if (/^\s*,?\s*(?:without (?:changing|touching|modifying|editing|altering) it|but (?:do not|don't|never) (?:change|touch|modify|edit) it|untouched|as it is)\b/.test(after)) continue;
+    return true;
+  }
+  return false;
 }
 
 // ------------------------------------------------------------ provided cards (B1)

@@ -864,7 +864,9 @@ export function validateManagerActions(actions, call, ctx) {
       // v7.15.5 review: the model reads the problems' linked paths; its new task reaches the worker as written.
       const task=typeof a.task==='string'?ownPaths(a.task.trim()):'',p=ctx.scope?.(a);
       if(task.length<8||task.length>1700){refuse(a,'a retask needs a task of 8 to 1700 characters');continue;}
-      if(!(p>=0.5)){refuse(a,`the new task is outside the goal or this manager's responsibility (p=${Number(p||0).toFixed(3)})`);continue;}
+      // v8 card repair: Clef reviews, it never vetoes: under v8 a retask Clef doubts (or could not judge) is applied, marked doubtful.
+      if(!(p>=0.5)&&!ctx.v8){refuse(a,`the new task is outside the goal or this manager's responsibility (p=${Number(p||0).toFixed(3)})`);continue;}
+      const doubtful=!(p>=0.5)?{p:typeof p==='number'?Math.round(p*1000)/1000:null}:null;
       // v7.15 §10.1: a retask keeps the child's promise; interfaces replace
       // it, cleaned and repaired as a split's (R1-R4), a function this
       // manager promised taking its item (the description travels down).
@@ -876,7 +878,7 @@ export function validateManagerActions(actions, call, ctx) {
         const items=normalizeInterfaces(Array.isArray(given)?given:[given],{v8:!!ctx.v8}),own=ctx.promise?.items||[];
         interfaces=repairInterfaces([{label:child,interfaces:items}],own).spawn[0].interfaces.map(f=>own.find(x=>x.name===f.name)||f);
       }
-      gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300),...interfaces?{interfaces}:{}});actionOf.set(retask.at(-1),a);
+      gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300),...interfaces?{interfaces}:{},...doubtful?{doubtful}:{}});actionOf.set(retask.at(-1),a);
       for(const id of open)covered.set(id,{rule:'model',action:'close',outcome:'retasked',child});
       continue;
     }

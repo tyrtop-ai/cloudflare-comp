@@ -131,7 +131,7 @@ export function mergeAmendment(old, written, {change = '', anchored = () => fals
   const had = new Set((old.deliverables || []).map(d => d.path).filter(Boolean));
   for (const w of fresh) {
     const o = matched.get(w);
-    if (!o && existenceOnly(w) && had.has(w.check.path)) continue;
+    if (!o && existenceOnly(w) && had.has(w.check.path)) { notes.push(`"${w.says}" only checks that ${w.check.path} exists, which the card already checks; it is not added again.`); continue; }
     if (o) {
       if (reqKey(o) === reqKey(w)) continue;
       if (anchored(o)) { notes.push(`${o.id} keeps the check that passed: a check that has passed is never changed.`); continue; }

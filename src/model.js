@@ -785,23 +785,39 @@ export const CARD_MAX_TOKENS = 8192;
 // the call is amendCard's.
 // v8 card repair: each answer goes through three layers. Layer 1
 // (repairCard) reads it leniently; layer 3's ranking (rankReferences) places
-// the references layer 1 could not match; layer 2 (validateCard) keeps only
-// the rules that make a card safe and runnable. Then Clef reviews the card
-// (reviewCard): what it says NO to are notes, never edits. The retry, the
-// writer's one revision call, hears the errors left and the review notes
-// beside the repaired draft (previous_answer), and goes through the layers
-// again; the notes the final card still draws stay on it (review_notes).
+// the serves layer 1 could not match; layer 2 (validateCard) keeps only the
+// rules that make a card safe and runnable. Then Clef reviews the card
+// (reviewCard): its NO answers are notes, never edits. The writer gets one
+// revision call only for substantive notes (a goal phrase no requirement
+// covers, a check that does not exercise its behaviour, a card that cannot
+// be checked: runnability) or errors left; a kind note only annotates. A
+// revision never loses work: what the draft had and the revision leaves
+// out is kept, and a revision that validates worse (more errors, fewer
+// runnable checks) is discarded, the draft kept with the notes on it.
 // notes: what the chosen answer's repair did; raw_answers: the writer's
 // answers as written (each clipped to CARD_RAW_CHARS), for diagnosis.
 export const CARD_RAW_CHARS = 6000;
+const SUBSTANTIVE = /^(?:The goal phrase |\S+'s check may not exercise|Deliverable "[^"]*" \(a \w+\) has no check|\S+'s http check expects nothing)/;
+const said = s => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+// The draft's deliverables and requirements a revision left out, added back to it (layer 1's output, before ranking).
+function keepDraft(revised, draft) {
+  if (!revised || !draft?.deliverables) return revised;
+  const out = {...revised, deliverables: [...(Array.isArray(revised.deliverables) ? revised.deliverables : [])], requirements: [...(Array.isArray(revised.requirements) ? revised.requirements : [])]};
+  const names = new Set(out.deliverables.filter(d => d && typeof d.name === 'string').map(d => d.name.toLowerCase()));
+  for (const d of draft.deliverables) if (!names.has(d.name.toLowerCase())) out.deliverables.push(d);
+  const ids = new Set(out.requirements.map(r => r?.id)), says = new Set(out.requirements.map(r => said(r?.says)));
+  for (const r of (draft.requirements || []).filter(r => !r.implicit && !r.project)) if (!ids.has(r.id) && !says.has(said(r.says))) out.requirements.push({...r});
+  return out;
+}
+const runnable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project).length;
 export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[], change=''}={}) {
   const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
   const amend=!!(change&&prior_card),call=amend?'amendCard':'writeCard';
   const facts={goal,installed:rows,base,packages,...(amend?{change}:{})};
-  const settle=(r,extra,review={notes:[],failed:[]})=>{
+  const settle=(r,extra,notes=[])=>{
     const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};
-    const card=s.card&&review.notes.length?{...s.card,review_notes:review.notes}:s.card;
-    return {card,errors:r.errors,unsupported:r.unsupported,notes:r.notes||[],review_notes:review.notes,review_failed:review.failed,...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};
+    const card=s.card&&notes.length?{...s.card,review_notes:notes}:s.card;
+    return {card,errors:r.errors,unsupported:r.unsupported,notes:r.notes||[],review_notes:notes,review_failed:r.review?.failed||[],...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};
   };
   // The fixed mock card is the runtime's own, so it is validated as written.
   if (env.MOCK_AI === 'true') return settle(validateCard(MOCK_CARD,facts),{raw_head:'',attempts:0,raw_answers:[]});
@@ -811,55 +827,74 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
     ...(base_digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest:base_digest}}:{}),...(prior_card?{current_card:prior_card}:{}),
     ...(sources?.length||sources_unavailable?.length?{sources_note:SOURCE_CLAUSE}:{}),...(sources?.length?{sources}:{}),...(sources_unavailable?.length?{sources_unavailable}:{})};
   const system=systemPrompt('card'),raw_answers=[];
-  const read=async output=>{
+  const read=async (output,draft=null)=>{
     const text=withoutThinking(output).trim(),parsed=parseObject(text);
     raw_answers.push(clip(text||contentOf(output)||'',CARD_RAW_CHARS));
-    if(parsed.parse_error)return {head:text.slice(0,200),text,parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[],notes:[]};
-    const layer1=repairCard(parsed,facts),ranks=layer1.unresolved?.length?await rankReferences(env,layer1.card,layer1.unresolved):[];
-    return {head:text.slice(0,200),text,parsed,...settleCard(layer1.card,layer1,ranks,facts)};
+    if(parsed.parse_error)return {head:text.slice(0,200),text,parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[],notes:[],runnability:[],all:[],substantive:[]};
+    const layer1=repairCard(parsed,facts),card=draft?keepDraft(layer1.card,draft):layer1.card;
+    const ranks=layer1.unresolved?.length?await rankReferences(env,card,layer1.unresolved):[];
+    const r={head:text.slice(0,200),text,parsed,layer1:card,...settleCard(card,layer1,ranks,facts)};
+    r.review=r.card?.deliverables?.length&&!r.card.blocked&&!r.unsupported.length?await reviewCard(env,{goal,change:amend?change:'',card:r.card}):{notes:[],failed:[]};
+    r.all=[...new Set([...(r.runnability||[]),...r.review.notes])];
+    r.substantive=r.all.filter(n=>SUBSTANTIVE.test(n));
+    return r;
   };
-  const review=r=>r.card?.deliverables?.length&&!r.card.blocked?reviewCard(env,{goal,change:amend?change:'',card:r.card}):{notes:[],failed:[]};
   const first=await read(await run(env,system,JSON.stringify(fields),CARD_MAX_TOKENS,{call,role:'card'}));
-  if(first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1,raw_answers});
-  const firstReview=await review(first);
-  if(!first.errors.length&&!firstReview.notes.length)return settle(first,{raw_head:first.head,attempts:1,raw_answers},firstReview);
-  const retry={...fields,...(first.errors.length?{previous_errors:first.errors.slice(0,24)}:{}),...(firstReview.notes.length?{review_notes:firstReview.notes.slice(0,24)}:{}),
+  if(first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1,raw_answers},first.all||[]);
+  if(!first.errors.length&&!first.substantive.length)return settle(first,{raw_head:first.head,attempts:1,raw_answers},first.all);
+  const retry={...fields,...(first.errors.length?{previous_errors:first.errors.slice(0,24)}:{}),...(first.substantive.length?{review_notes:first.substantive.slice(0,24)}:{}),
     ...(first.parsed.parse_error?{}:{previous_answer:clip(JSON.stringify(first.draft),6000)}),
     instruction:'Your previous card, as the runtime read it, is previous_answer. Fix the problems in previous_errors, and revise the card for the reviewer\'s notes in review_notes where they are right. Answer again with the whole card as one json object.'};
-  const second=await read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call,role:'card',retry:true,noThink:true}));
-  const best=second.parsed.parse_error&&!first.parsed.parse_error?first:second;
-  return settle(best,{raw_head:best.head,attempts:2,raw_answers},best===first?firstReview:await review(second));
+  const second=await read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call,role:'card',retry:true,noThink:true}),first.parsed.parse_error?null:first.layer1);
+  // A revision that validates worse is discarded: the draft stays, with the notes on it.
+  const worse=!first.parsed.parse_error&&(second.parsed.parse_error||second.errors.length>first.errors.length||runnable(second.card)<runnable(first.card));
+  const best=worse?first:second;
+  return settle(best,{raw_head:best.head,attempts:2,raw_answers,...(worse&&!second.parsed.parse_error?{revision_discarded:true}:{})},best.all);
 }
-// v8 card repair (layer 3): Clef places each reference layer 1 could not
-// match, one call per reference, with the ranked-owner rule: the deliverable
-// it ranks first at OWNER_BAR or above (functions only for a call, placed
-// files only for a path). state {requirement: {says, source, check, written},
-// deliverables: [{slot, name, kind, path, does}]}. [{name, p} | {name: null,
-// p} | null]; a failed call, or none at the bar, falls back (applyResolutions).
+// v8 card repair (layer 3): Clef places each serves reference layer 1
+// could not match, with the ranked-owner rule: the deliverable it ranks
+// first at OWNER_BAR or above. Each written name is asked once; the
+// references go in one batched call (REFERENCE_BATCH of them, at most
+// REFERENCE_QUESTIONS questions), and a second batch only for those the
+// first could not hold. state {requirements: [{slot, says, source, check,
+// written}], deliverables: [{slot, name, kind, path, does}]}, question
+// reference_<requirement>_<deliverable>. [{name, p} | {name: null, p} |
+// null] per unresolved entry; a failed call, or none at the bar, falls back
+// (applyResolutions). Clef sets serves only, never a check's target.
+export const REFERENCE_BATCH = 24, REFERENCE_QUESTIONS = 96;
 const summaryOf=check=>{try{return checkSummary(check)||'';}catch{return clip(JSON.stringify(check)||'',200);}};
 export async function rankReferences(env, card, unresolved=[]) {
   if (!unresolved.length || env.MOCK_AI === 'true') return [];
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) return unresolved.map(()=>null);
-  const all=(Array.isArray(card?.deliverables)?card.deliverables:[]).filter(d=>d&&typeof d.name==='string');
-  return Promise.all(unresolved.map(async u=>{
-    const r=card.requirements?.[u.at]||{},pool=all.filter(d=>u.kind==='call'?!d.kind||d.kind==='function':u.kind==='path'?!!d.path:true).slice(0,12);
-    if(!pool.length)return null;
+  const pool=(Array.isArray(card?.deliverables)?card.deliverables:[]).filter(d=>d&&typeof d.name==='string').slice(0,12);
+  if(!pool.length)return unresolved.map(()=>null);
+  // One question set per distinct (written name, requirement statement) pair: the same name in several steps is asked once.
+  const keyOf=u=>{const r=card.requirements?.[u.at]||{};return `${u.written}\n${u.written?'':said(r.says)}`;};
+  const unique=[...new Map(unresolved.map(u=>[keyOf(u),u])).values()];
+  const per=Math.max(1,Math.min(REFERENCE_BATCH,Math.floor(REFERENCE_QUESTIONS/pool.length))),found=new Map();
+  for(let start=0;start<unique.length&&start<per*2;start+=per) {
+    const batch=unique.slice(start,start+per);
     try {
       const output=await clefRun(env,'rankReferences',selector,{model:clef,
-        state:{requirement:{says:String(r.says||'').slice(0,200),source:String(r.source||'').slice(0,160),check:summaryOf(r.check),written:String(u.written||'').slice(0,120)},
-          deliverables:pool.map((d,i)=>({slot:i,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160)}))},
-        questions:Object.fromEntries(pool.map((_,i)=>[`reference_${i}`,{type:'noul',instructions:clefText('reference',{i})}]))});
-      const ranks=pool.map((d,i)=>({name:d.name,p:output?.answers?.[`reference_${i}`]?.noul})).filter(x=>typeof x.p==='number'&&Number.isFinite(x.p)).sort((a,b)=>b.p-a.p);
-      return !ranks.length?null:ranks[0].p>=OWNER_BAR?ranks[0]:{name:null,p:ranks[0].p};
-    } catch { return null; }
-  }));
+        state:{requirements:batch.map((u,i)=>{const r=card.requirements?.[u.at]||{};return {slot:i,says:String(r.says||'').slice(0,200),source:String(r.source||'').slice(0,160),check:summaryOf(r.check),written:String(u.written||'').slice(0,120)};}),
+          deliverables:pool.map((d,j)=>({slot:j,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160)}))},
+        questions:Object.fromEntries(batch.flatMap((_,i)=>pool.map((_,j)=>[`reference_${i}_${j}`,{type:'noul',instructions:clefText('reference',{i,j})}])))});
+      batch.forEach((u,i)=>{
+        const ranks=pool.map((d,j)=>({name:d.name,p:output?.answers?.[`reference_${i}_${j}`]?.noul})).filter(x=>typeof x.p==='number'&&Number.isFinite(x.p)).sort((a,b)=>b.p-a.p);
+        found.set(keyOf(u),!ranks.length?null:ranks[0].p>=OWNER_BAR?ranks[0]:{name:null,p:ranks[0].p});
+      });
+    } catch { /* this batch falls back */ }
+    // The first batch placed every reference it held, and nothing is left: done.
+    if(start+per>=unique.length)break;
+  }
+  return unresolved.map(u=>found.get(keyOf(u))??null);
 }
 // v8 card repair (layer 3): Clef reviews the card, one batched pass (12
 // questions a call): is each goal phrase covered by some requirement, does
 // each requirement's check exercise what it states, and is each
 // deliverable's kind right for what it does. A NO (p < REVIEW_BAR) is a
-// note for the writer, never an edit. {notes, failed}.
+// note, never an edit; only the first two lead to a revision. {notes, failed}.
 export const REVIEW_BAR = 0.5;
 export async function reviewCard(env, {goal='', change='', card}) {
   if (env.MOCK_AI === 'true' || !card?.deliverables?.length) return {notes:[],failed:[]};
@@ -871,7 +906,7 @@ export async function reviewCard(env, {goal='', change='', card}) {
     deliverables:dels.map((d,slot)=>({slot,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160)}))};
   const asks=[...phrases.map((_,i)=>({key:`covered_${i}`,text:clefText('covered',{i}),note:p=>`The goal phrase "${clip(phrases[i],160)}" may be covered by no requirement (Clef p=${p.toFixed(2)}): add a requirement whose check fails when the project ignores it.`})),
     ...reqs.map((r,i)=>({key:`exercises_${i}`,text:clefText('exercises',{i}),note:p=>`${r.id}'s check may not exercise what it states (Clef p=${p.toFixed(2)}; ${clip(summaryOf(r.check),120)}): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader's question about a document.`})),
-    ...dels.map((d,i)=>({key:`kind_${i}`,text:clefText('kind_fits',{i}),note:p=>`Deliverable "${clip(d.name,80)}" may not be a ${d.kind||'function'} (Clef p=${p.toFixed(2)}): give it the kind that fits what it does.`}))];
+    ...dels.map((d,i)=>({key:`kind_${i}`,text:clefText('kind_fits',{i}),note:p=>`Kind: deliverable "${clip(d.name,80)}" may fit another kind than ${d.kind||'function'} (Clef p=${p.toFixed(2)}).`}))];
   const groups=[];
   for(let i=0;i<asks.length;i+=12)groups.push(asks.slice(i,i+12));
   const failed=[];
@@ -950,7 +985,7 @@ export async function vetRequirements(env, {goal='', requirements=[]}) {
       const questions=Object.fromEntries(group.map((_,i)=>[`requirement_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement}`}]));
       const output=await clefRun(env,'vetRequirements',selector,{model:clef,
         state:{goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),source:String(r.source).slice(0,160),
-          check:checkSummary(r.check),...(r.untraced?{source_found_in_goal:false}:{})}))},questions});
+          check:checkSummary(r.check),...(r.untraced?{source_found_in_goal:false}:{}),...(r.source_inferred?{source_inferred:true}:{})}))},questions});
       return group.map((r,i)=>{
         const probability=output?.answers?.[`requirement_${start+i}`]?.noul;
         if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)

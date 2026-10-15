@@ -302,7 +302,7 @@ test('writeCard: the system prompt is PRINCIPLES + ROLE.card + FORMAT.card, and 
 });
 
 // Clef in the writer's tests: references placed by name (reference_<i> says yes for to_fahrenheit), the review as given.
-const placing = (review = () => 0.9) => (k, input) => k.startsWith('reference_') ? (input.state.deliverables[Number(k.split('_').pop())].name === 'to_fahrenheit' ? 0.9 : 0.1) : review(k, input);
+const placing = (review = () => 0.9) => (k, input) => k.startsWith('reference_') ? (input.state.deliverables[Number(k.split('_')[2])].name === 'to_fahrenheit' ? 0.9 : 0.1) : review(k, input);
 test('writeCard: layer 3 places a reference; the one retry hears the errors left and Clef\'s review notes, beside the repaired draft', async () => {
   const bad = good();
   bad.requirements[1].serves = ['the temperature function'];
@@ -315,14 +315,15 @@ test('writeCard: layer 3 places a reference; the one retry hears the errors left
   const out = await writeCard(env, {goal: GOAL});
   assert.equal(calls.length, 2, 'the writer: one answer and one revision');
   assert.deepEqual([...new Set(clefCalls.map(c => Object.keys(c.questions)[0].split('_')[0]))], ['reference', 'covered']);
-  assert.deepEqual(clefCalls[0].state.requirement.written, 'the temperature function');
+  assert.deepEqual(clefCalls[0].state.requirements[0].written, 'the temperature function');
+  assert.ok(clefCalls[0].questions.reference_0_1.instructions.startsWith('Is deliverable 1 what requirement 0 is about'));
   // The system prompt stays fixed; the errors, the notes and the repaired answer go in the user JSON, and the retry does not think.
   assert.equal(calls[1].messages[0].content, systemPrompt('card'));
   const retry = JSON.parse(calls[1].messages[1].content.replace(/ \/no_think$/, ''));
   assert.ok(calls[1].messages[1].content.endsWith(' /no_think'));
   assert.ok(retry.previous_errors.some(e => /R1: its command check: it runs "cargo"/.test(e)));
   assert.ok(!retry.previous_errors.some(e => /temperature function/.test(e)), 'a reference Clef placed is no error');
-  assert.deepEqual(retry.review_notes, ['R2\'s check may not exercise what it states (Clef p=0.20; call to_fahrenheit(100)): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader\'s question about a document.']);
+  assert.deepEqual(retry.review_notes, ['Deliverable "convert" (a command) has no check that exercises it: add a requirement serving it with a command check that runs it with arguments the goal implies and expects its output.', 'R2\'s check may not exercise what it states (Clef p=0.20; call to_fahrenheit(100)): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader\'s question about a document.']);
   assert.deepEqual(JSON.parse(retry.previous_answer).requirements[1].serves, ['to_fahrenheit'], 'the retry sees the draft as layer 3 placed it');
   assert.equal(retry.goal, GOAL);
   assert.ok(calls[0].max_tokens >= 8000, 'room for reasoning and a whole card');
@@ -345,12 +346,38 @@ test('writeCard: a retry that does not parse never replaces a first answer that 
   assert.ok(out.errors.some(e => /R2: its check kind "smoke"/.test(e)));
   assert.ok(out.notes.some(n => /R1 named no deliverable; it serves convert, which its check names/.test(n)), 'the repair\'s notes come with it');
   assert.equal(out.raw_answers[0], JSON.stringify(bad), 'the raw answer without its reasoning');
-  assert.deepEqual(out.card.review_notes, ['Deliverable "GUIDE.md" may not be a doc (Clef p=0.30): give it the kind that fits what it does.']);
+  assert.deepEqual(out.card.review_notes, ['Kind: deliverable "GUIDE.md" may fit another kind than doc (Clef p=0.30).'], 'a kind note only annotates');
   const {env: env2} = modelEnv(['nothing', 'still nothing']);
   const none = await writeCard(env2, {goal: GOAL});
   assert.equal(none.card, null);
   assert.match(none.errors[0], /not one json object/);
   assert.deepEqual(none.raw_answers, ['nothing', 'still nothing']);
+});
+
+test('writeCard (review fix): a kind note only annotates; a revision keeps what the draft had, and a worse revision is discarded', async () => {
+  const goal = 'A Python CLI that converts temperatures between Celsius and Fahrenheit.';
+  const first = {card: 1, summary: 'converter', languages: ['python'], deliverables: [{name: 'convert', kind: 'command', path: 'convert.py'}],
+    requirements: [{id: 'R1', says: '100 C prints 212', source: 'converts temperatures between Celsius and Fahrenheit', serves: ['convert'], check: {kind: 'command', run: 'convert 100 C', expect: {stdout_has: ['212']}}},
+      {id: 'R2', says: '32 F prints 0', source: 'converts temperatures between Celsius and Fahrenheit', serves: ['convert'], check: {kind: 'command', run: 'convert 32 F', expect: {stdout_has: ['0']}}}]};
+  // A kind NO alone: one call, the note on the card.
+  const kindOnly = modelEnv([first, first], k => k.startsWith('kind_') ? 0.3 : 0.9);
+  const a = await writeCard(kindOnly.env, {goal});
+  assert.equal(kindOnly.calls.length, 1);
+  assert.match(a.card.review_notes[0], /^Kind: deliverable "convert" may fit another kind/);
+  // A substantive note: the revision drops R2 and refuses R1's check; the draft is kept, with its notes.
+  const worse = {...first, requirements: [{...first.requirements[0], check: {kind: 'command', run: 'sh -c "convert 100 C"'}}]};
+  const sub = modelEnv([first, worse], k => k === 'exercises_1' ? 0.2 : 0.9);
+  const b = await writeCard(sub.env, {goal});
+  assert.equal(sub.calls.length, 2);
+  assert.equal(b.revision_discarded, true);
+  assert.deepEqual(b.errors, []);
+  assert.deepEqual(b.card.requirements.filter(r => !r.implicit).map(r => r.id), ['R1', 'R2']);
+  assert.match(b.card.review_notes.join(' '), /R2's check may not exercise/);
+  // A revision that leaves R2 out and adds R3: R2 is kept from the draft.
+  const added = {...first, requirements: [first.requirements[0], {id: 'R3', says: '-40 C prints -40', source: 'converts temperatures between Celsius and Fahrenheit', serves: ['convert'], check: {kind: 'command', run: 'convert -40 C', expect: {stdout_has: ['-40']}}}]};
+  const kept = modelEnv([first, added], k => k === 'exercises_1' && kept.calls.length === 1 ? 0.2 : 0.9);
+  const c = await writeCard(kept.env, {goal});
+  assert.deepEqual(c.card.requirements.filter(r => !r.implicit).map(r => r.says), ['100 C prints 212', '-40 C prints -40', '32 F prints 0']);
 });
 
 test('writeCard: a blocked card is returned at once; an unsupported language gets the one retry, then stays unsupported', async () => {
