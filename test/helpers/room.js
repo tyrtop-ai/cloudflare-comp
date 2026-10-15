@@ -93,8 +93,8 @@ export const {verifyCard}=await import('../../container/build-runner.mjs');
 // fails open, as these rooms predate it (v7.13.3). raw holds every
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,card=null,executor,room_id='v714-test'}={}) {
-  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],card:[],raw:[]};
+export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,card=null,source=null,executor,room_id='v714-test'}={}) {
+  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],card:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
@@ -102,6 +102,8 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     }
     const {messages}=input,system=messages[0].content,text=messages[1].content,user=JSON.parse(text.replace(/ \/no_think$/,''));
     calls.raw.push({system,text});
+    // v8 S8b: the source cards' gist and card calls (src/fetcher.js sourceCards), by their system text.
+    if(/^(?:Summarise the quoted chunk|Write a source card)/.test(system)){calls.source.push(user);if(!source)throw new Error('no source model in this test');const a=await source(user,system);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     // v8 (S6): a v8 prompt is PRINCIPLES + ROLE[role] + FORMAT[role]; its role
     // paragraph says which fake answers. A fake's string answer is sent as
     // written (a worker's file blocks), an object as JSON.

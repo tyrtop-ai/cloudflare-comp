@@ -105,6 +105,10 @@ npx wrangler secret put GITHUB_TOKEN
 
 Use a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) limited to the repositories you export to, with **Contents: Read and write** and **Pull requests: Read and write** (GitHub adds **Metadata: Read** itself). The token stays in the Worker: the export reads it from the secret only, never from a request, never returns or logs it, and removes it from every error message. The Worker talks only to `https://github.com` and `https://api.github.com` for exports. Without the secret, `POST /api/export/github` returns `503` with `Set GITHUB_TOKEN with wrangler secret put GITHUB_TOKEN`; downloading the app as a ZIP needs no token.
 
+### Optional: which sites a goal's links may be read from (v8 pipeline)
+
+A v8 run reads the `https://` links written in its goal once, at the start, and a run can start from a public GitHub repo or a room's previous result (**Start from** in the dashboard, or `base` in `POST /api/run`). Links are read only from hosts on an allowlist of host suffixes. Without a setting, the list is the suggested default in `src/fetcher.js` (`DEFAULT_ALLOW`); to set your own, add a comma-separated `FETCH_ALLOW` var, for example `"FETCH_ALLOW": "github.com,raw.githubusercontent.com,docs.python.org"` under `vars` in `wrangler.jsonc`. The Worker's own host is never read, whatever the list says. A repo is read from `api.github.com` and `codeload.github.com` without a token (`GITHUB_TOKEN` is never used to read), up to 400 text files and 2 MB. A link that cannot be read is listed in the dashboard's **Sources and base** panel and the run goes on without it; a base that cannot be read refuses the Start.
+
 ## 6. Verify the deployment
 
 ```bash
@@ -198,7 +202,7 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 | `GET /api/state?room=` | Dashboard snapshot |
 | `GET /api/export?room=` | Full export |
 | `GET /api/file?room=&agent=&path=` | One file an agent wrote, from the room's index of its Artifacts writes |
-| `POST /api/run` | `{room, goal, budget, settings}`: start a new run. The goal must be 8–1800 characters. |
+| `POST /api/run` | `{room, goal, budget, settings, base?}`: start a new run. The goal must be 8–1800 characters. `base` (v8 pipeline only) is `{repo: "owner/name", ref?}` for a public GitHub repo or `{room: "<room id>"}` for a room's previous result. |
 | `POST /api/continue` | `{room, budget, settings}`: resume a run |
 | `POST /api/stop` | `{room}`: stop a run. No new turns start; the running ones finish, then the room pauses (`status: paused`, event `stopped`) and the snapshot's `stopping` is `true` until then. Returns `{status: "stopping"}`, or `{error: "Nothing is running"}`; `/api/continue` resumes it |
 | `POST /api/reset` | `{room}`: clear the room's state |

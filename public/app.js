@@ -104,6 +104,21 @@ function cardMarkup(card,status={}) {
   return `${card.summary?`<p class="card-summary">${esc(card.summary)}</p>`:''}${card.languages?.length?`<p class="faint">languages: ${esc(card.languages.join(', '))}</p>`:''}`+
     section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`));
 }
+// v8 S8b: the goal's links (title, host, size, cut or not read) and what the run starts from.
+const hostOf=u=>{try{return new URL(u).host;}catch{return '';}};
+function sourcesMarkup(s) {
+  const base=s.base,list=s.sources||[];
+  const baseLine=base?`<p class="card-summary">Starts from <b class="mono">${esc(base.source)}</b>${base.ref?` at <span class="mono">${esc(base.ref)}</span>`:''}${base.resolved_sha?` <span class="faint mono">${esc(String(base.resolved_sha).slice(0,12))}</span>`:''} · ${Number(base.files)||0} files · ${Number(base.bytes)||0} bytes${base.skipped_count?` · ${Number(base.skipped_count)} skipped`:''}${base.truncated?' · <span class="req-chip fail">truncated</span>':''}</p>`:'';
+  const source=x=>`<li><span class="req-chip ${x.error?'fail':x.truncated?'stale':'pass'}">${x.error?'not read':x.truncated?'truncated':'read'}</span> <b class="mono">${esc(x.id)}</b> ${esc(x.title||x.url)} <span class="faint">· ${esc(hostOf(x.final_url||x.url))} · ${Number(x.bytes)||0} bytes${x.parts?` · ${Number(x.parts)} parts`:''}${x.error?` · ${esc(x.error)}`:''}</span></li>`;
+  const items=list.length?`<div class="card-section"><div class="eyebrow">SOURCES</div><ul class="card-list">${list.map(source).join('')}</ul></div>`:'';
+  return baseLine+items||'<p class="empty">No links in the goal, and the run starts from nothing.</p>';
+}
+function renderSources(s) {
+  if(!$('sources'))return;
+  $('sources').innerHTML=sourcesMarkup(s);
+  const list=s.sources||[],bad=list.filter(x=>x.error).length;
+  if($('sources-verdict'))$('sources-verdict').textContent=[list.length?`${list.length} source${list.length>1?'s':''}${bad?` · ${bad} not read`:''}`:'',s.base?'base loaded':''].filter(Boolean).join(' · ')||'None';
+}
 function renderCard(s) {
   if(!$('card'))return;
   const reqs=s.card?.requirements||[],count=state=>reqs.filter(r=>requirementState(r,s.requirement_status)===state).length;
@@ -234,6 +249,7 @@ function render(s) {
   $('file-count').textContent=fileRows.length;
   showTree(s.agents);
   renderCard(s);
+  renderSources(s);
   // Newest first: the latest traffic is at the top; scroll down for older events.
   // Only when the events changed: a delta with none leaves the list as it is.
   const eventsKey=`${s.events?.length||0}:${s.events?.at(-1)?.id??''}`;
@@ -349,7 +365,21 @@ $('split-model').addEventListener('change',()=>{controlsDirty=true;});
 $('pipeline')?.addEventListener('change',()=>{controlsDirty=true;});
 $('split-threshold').addEventListener('input',()=>{controlsDirty=true;});
 updateModelHint();
-$('start').addEventListener('click',()=>current?.status==='running'?action('/api/stop'):action('/api/run',{goal:$('goal').value,budget:countSetting('budget'),settings:settings()}));
+// v8 S8b: the Start-from field: a public GitHub repo (and a ref), or this room's previous result.
+const startFrom=()=>{
+  const kind=$('start-from')?.value||'';
+  if(kind==='previous')return {room};
+  if(kind!=='repo')return null;
+  const repo=$('base-repo')?.value.trim()||'',ref=$('base-ref')?.value.trim()||'';
+  return repo?{repo,...(ref?{ref}:{})}:null;
+};
+$('start-from')?.addEventListener('change',()=>{if($('start-from-repo'))$('start-from-repo').hidden=$('start-from').value!=='repo';});
+$('start').addEventListener('click',()=>{
+  if(current?.status==='running')return action('/api/stop');
+  const base=startFrom();
+  if($('start-from')?.value==='repo'&&!base)return showError('Enter the GitHub repository to start from as owner/name.');
+  return action('/api/run',{goal:$('goal').value,budget:countSetting('budget'),settings:settings(),...(base?{base}:{})});
+});
 $('continue').addEventListener('click',()=>action('/api/continue',{budget:countSetting('budget'),settings:settings()}));
 $('reset').addEventListener('click',()=>{if(confirm('Clear the room session? Existing Artifacts repos will remain.'))action('/api/reset');});
 $('export').addEventListener('click',async()=>{

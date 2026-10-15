@@ -22,6 +22,16 @@
           <input id="room" class="mono" spellcheck="false" />
           <label for="goal">Problem statement</label>
           <textarea id="goal" rows="4">Build a small issue tracker that lets someone create, view, update, and delete tickets.</textarea>
+          <label for="start-from">Start from (v8 pipeline)</label>
+          <select id="start-from">
+            <option value="">Nothing · a new project</option>
+            <option value="repo">A public GitHub repo</option>
+            <option value="previous">This room's previous result</option>
+          </select>
+          <div class="start-from-repo" id="start-from-repo" hidden>
+            <input id="base-repo" class="mono" placeholder="owner/name or https://github.com/owner/name" spellcheck="false" autocomplete="off" aria-label="Public GitHub repository to start from" />
+            <input id="base-ref" class="mono" placeholder="branch, tag or commit (default branch if empty)" spellcheck="false" autocomplete="off" aria-label="Branch, tag or commit to start from" />
+          </div>
           <div class="control-heading">Runtime settings <span>Per room · applied on Start / Continue</span></div>
           <div class="range-control"><label for="budget">Turn budget <input id="budget-value" class="count" type="number" inputmode="numeric" min="1" max="10000000" step="1" value="100" aria-label="Turn budget, exact value" /></label>
             <input id="budget" type="range" min="0" max="1000" step="1" value="0" data-min="1" data-max="10000000" /></div>
@@ -107,6 +117,10 @@
         <section class="panel card-panel" id="card-panel">
           <div class="section-head"><h2>Project card</h2><span class="right-note" id="card-verdict">No card</span></div>
           <div id="card" class="card-view"><p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p></div>
+        </section>
+        <section class="panel sources-panel" id="sources-panel">
+          <div class="section-head"><h2>Sources and base</h2><span class="right-note" id="sources-verdict">None</span></div>
+          <div id="sources" class="card-view"><p class="empty">Links written in the goal are read once, at the start, and a run can start from a public GitHub repo or this room's previous result.</p></div>
         </section>
         <section class="panel tree-panel">
           <div class="section-head"><span class="counter">03</span><h2>Ownership tree</h2><span class="right-note">Observer sees the tree. Individual models don't.</span><button type="button" class="secondary tree-save" id="save-tree" title="Save the ownership tree as an SVG image">Save as SVG</button></div>

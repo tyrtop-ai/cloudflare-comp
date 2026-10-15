@@ -512,3 +512,42 @@ test('v8 S3: Root\'s detail shows the card in place of its task; contracts read 
   assert.match(root,/promises: doc README\.md, command hello/);
   assert.match(pick('root.1'),/<p>Write README\.md<\/p>/);
 });
+
+// v8 S8b: the Start-from field and the Sources panel.
+test('v8 S8b: Start from sends a repo (and its ref) or this room\'s previous result as base; nothing sends none',async()=>{
+  const elements=renderWithPage(true),sent=[];
+  elements.context.fetch=async(url,init)=>{sent.push({url,body:init?.body?JSON.parse(init.body):null});return {ok:false,status:500,json:async()=>({error:'stopped here'})};};
+  elements.get('token').value='fixture-token';
+  const start=async()=>{fire(elements.get('start'),'click');await new Promise(r=>setTimeout(r,0));return sent.filter(x=>x.url==='/api/run').at(-1)?.body;};
+  assert.equal((await start()).base,undefined);
+  elements.get('start-from').value='repo';fire(elements.get('start-from'),'change');
+  assert.equal(elements.get('start-from-repo').hidden,false);
+  elements.get('base-repo').value=' acme-example/widget ';elements.get('base-ref').value='v1.2';
+  assert.deepEqual((await start()).base,{repo:'acme-example/widget',ref:'v1.2'});
+  elements.get('base-ref').value='';
+  assert.deepEqual((await start()).base,{repo:'acme-example/widget'});
+  elements.get('base-repo').value='';
+  const before=sent.length;await start();
+  assert.equal(sent.length,before,'no run without the repo');
+  assert.match(elements.get('error').textContent,/owner\/name/);
+  elements.get('start-from').value='previous';fire(elements.get('start-from'),'change');
+  assert.equal(elements.get('start-from-repo').hidden,true);
+  const body=await start();
+  assert.deepEqual(body.base,{room:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'});
+  assert.equal(body.room,'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+});
+
+test('v8 S8b: the Sources panel shows each link\'s title, host, size, and whether it was cut or not read, and what the run starts from',()=>{
+  const elements=renderWithPage(true,{settings:{pipeline:'v8'},
+    sources:[{id:'S1',url:'https://docs.example.com/a',final_url:'https://docs.example.com/a?x=1',title:'Widget <format>',bytes:1234,truncated:true,error:null,parts:3},
+      {id:'S2',url:'https://docs.example.com/b',final_url:null,title:'',bytes:0,truncated:false,error:'source_refused: http 404',parts:0}],
+    base:{kind:'repo',source:'https://github.com/acme-example/widget',ref:'main',resolved_sha:'0123456789abcdef0123456789abcdef01234567',room:null,files:3,bytes:400,skipped_count:1,truncated:false}});
+  const panel=elements.get('sources').innerHTML;
+  assert.match(panel,/Starts from <b class="mono">https:\/\/github\.com\/acme-example\/widget<\/b> at <span class="mono">main<\/span> <span class="faint mono">0123456789ab<\/span> · 3 files · 400 bytes · 1 skipped/);
+  assert.match(panel,/<span class="req-chip stale">truncated<\/span> <b class="mono">S1<\/b> Widget &lt;format&gt; <span class="faint">· docs\.example\.com · 1234 bytes · 3 parts<\/span>/);
+  assert.match(panel,/<span class="req-chip fail">not read<\/span> <b class="mono">S2<\/b> https:\/\/docs\.example\.com\/b <span class="faint">· docs\.example\.com · 0 bytes · source_refused: http 404<\/span>/);
+  assert.equal(elements.get('sources-verdict').textContent,'2 sources · 1 not read · base loaded');
+  const none=renderWithPage(true,{});
+  assert.match(none.get('sources').innerHTML,/No links in the goal/);
+  assert.equal(none.get('sources-verdict').textContent,'None');
+});

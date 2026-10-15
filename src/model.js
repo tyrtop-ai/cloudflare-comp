@@ -7,6 +7,7 @@ import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE } from './prompts.js';
 import { contractLine } from './contracts.js';
 import { validateCard, settleCodeLanguage, checkSummary } from './card.js';
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
+import { SOURCE_CLAUSE } from './fetcher.js';
 export { NO_ANSWER };
 // v8 (S6): a call runs v8's prompts when the room's pipeline is v8. The room
 // says so in the env it passes (inferenceEnv's PIPELINE), so every call site
@@ -464,6 +465,10 @@ export async function decompose(env, context, opts = {}) {
     contracts_available:Array.isArray(context.contracts_available)&&context.contracts_available.length?context.contracts_available:undefined,
     project:context.project||undefined,
     goal_scope_boundary:context.root_scope || undefined,
+    // v8 S8b: the existing project's digest, and the source cards of the refs this splitter holds (quoted, beside SOURCE_CLAUSE).
+    existing_files:context.existing_files || undefined,
+    sources_note:context.sources?.length ? SOURCE_CLAUSE : undefined,
+    sources:context.sources?.length ? context.sources : undefined,
     previous_split_rejection:undefined,
     max_pieces:available}:{assigned_code:context.your_responsibility,
     your_promised_functions:promised.length?promised:undefined,
@@ -767,14 +772,18 @@ export const MOCK_CARD = Object.freeze({card:1,summary:'Notes on the goal',langu
 // takes the single installed one (settleCodeLanguage), else the result
 // carries language_error.
 export const CARD_MAX_TOKENS = 8192;
-export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none'}={}) {
+// v8 S8b: sources are the goal's links as source cards (quoted, beside
+// SOURCE_CLAUSE), sources_unavailable the links that could not be read and
+// why; existing_files is the base's digest (repoDigest).
+export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[]}={}) {
   const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
   const check=raw=>validateCard(raw,{goal,installed:rows,base,packages});
   const settle=(r,extra)=>{const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};return {card:s.card,errors:r.errors,unsupported:r.unsupported,...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};};
   if (env.MOCK_AI === 'true') return settle(check(MOCK_CARD),{raw_head:'',attempts:0});
   const fields={goal:String(goal).slice(0,GOAL_LIMIT),
     toolchains:rows.map(t=>({id:t.id,files:t.extensions,...(t.run_file?{run_file:t.run_file}:{}),...(t.test?{test:t.test}:{}),executables:t.executables||[]})),
-    ...(base_digest?{existing_files:base_digest}:{}),...(prior_card?{current_card:prior_card}:{})};
+    ...(base_digest?{existing_files:base_digest}:{}),...(prior_card?{current_card:prior_card}:{}),
+    ...(sources?.length||sources_unavailable?.length?{sources_note:SOURCE_CLAUSE}:{}),...(sources?.length?{sources}:{}),...(sources_unavailable?.length?{sources_unavailable}:{})};
   const system=systemPrompt('card');
   const read=output=>{
     const text=withoutThinking(output).trim(),parsed=parseObject(text);
@@ -789,6 +798,12 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
   const best=second.parsed.parse_error&&!first.parsed.parse_error?first:second;
   return settle(best,{raw_head:best.head,attempts:2});
 }
+// v8 S8b: the model call src/fetcher.js sourceCards makes for each chunk's
+// gist and each source's card, on the card writer's model with role 'card'
+// (a span per call); the quoted text travels in the user JSON only.
+export const SOURCE_CARD_TOKENS = 700;
+export const sourceModel = env => async ({role:part, system, user}) =>
+  withoutThinking(await run(env, system, user, SOURCE_CARD_TOKENS, {call: part==='source_gist'?'sourceGist':'sourceCard', role:'card', noThink:true}));
 // v8 §1.4: Clef vets the card writer's requirements against the goal, one
 // batched call per 12 (scopeChildren's grouping), the traced ones too: an
 // invented requirement costs a repair round later. Clef sees each one's
