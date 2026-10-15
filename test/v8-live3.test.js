@@ -332,16 +332,17 @@ test('E: the worker format is one worked answer of the exact shape, its control 
   assert.deepEqual([r.files, r.done, r.summary, r.format_fallback, r.implicit_end, r.control_error], [[{path: 'notes/overview', content: 'Every line of the file, complete.'}], true, 'Wrote notes/overview.', undefined, undefined, undefined]);
 });
 
-test('E: a scripted, realistic answer set: retries 4 → 0 and fallbacks 8 → 4; the JSON fallback still works', () => {
+// Measured on this set with the parser before live 3: 4 retries, 3 files written again, 9 answers with a fallback.
+test('E: a scripted, realistic answer set: retries 4 → 0, files written again 3 → 1, fallbacks 9 → 5; the JSON fallback still works', () => {
   const c = formatCosts();
-  assert.deepEqual({answers: c.answers, retries: c.retries, fallbacks: c.fallbacks, events: c.events}, {answers: 13, retries: 0, fallbacks: 4, events: 4});
+  assert.deepEqual({answers: c.answers, retries: c.retries, fallbacks: c.fallbacks, events: c.events}, {answers: 14, retries: 0, fallbacks: 5, events: 5});
   const kinds = Object.fromEntries(Object.entries(c.each).map(([k, v]) => [k, [v.retry, v.events.join(',')]]));
   assert.deepEqual(kinds, {exact: [false, ''], field_list: [false, ''], field_list_no_end: [false, 'implicit_end'], no_end: [false, 'implicit_end'], label_line: [false, ''],
     fenced_control: [false, ''], trailing_comma: [false, ''], key_lines: [false, ''], capital_booleans: [false, ''], legacy_json: [false, 'format_fallback'],
-    files_only: [false, ''], prose_around: [false, ''], open_at_stop: [false, 'implicit_end']});
+    files_only: [false, ''], prose_around: [false, ''], open_at_stop: [false, 'code_retry'], open_after_control: [false, 'implicit_end']});
   // Every answer delivers the file whole, with the summary and done its control block gave.
-  for (const [k, v] of Object.entries(c.each)) {
-    const f = v.raw.files.find(x => x.path === 'convert.py' || x.path === 'index.html');
+  for (const [k, v] of Object.entries(c.each).filter(([k]) => k !== 'open_at_stop')) {
+    const f = v.raw.files.find(x => ['convert.py', 'index.html', 'app.js'].includes(x.path));
     assert.ok(f && typeof f.content === 'string' && !/=== |"summary"|^- /m.test(f.content), `${k}: ${JSON.stringify(f)}`);
   }
   assert.deepEqual(['field_list', 'key_lines', 'capital_booleans', 'trailing_comma'].map(k => [c.each[k].raw.done, typeof c.each[k].raw.summary]), [[true, 'string'], [true, 'string'], [true, 'string'], [true, 'string']]);
@@ -356,4 +357,199 @@ test('E: a scripted, realistic answer set: retries 4 → 0 and fallbacks 8 → 4
   const cut = workerAction({choices: [{message: {content: '=== FILE: a.txt ===\nhalf'}, finish_reason: 'length'}]}, {expect: 'blocks'});
   assert.deepEqual(cut.truncated, ['a.txt']);
   assert.ok(ANSWERS.open_at_stop.choices[0].finish_reason === 'stop');
+});
+
+// ------------------------------------------------------------ live 3 review
+// 1. The classifier, per check: a text isValueText calls wording is shown only
+// when its check takes no input, or it is an error label of a failing
+// command; one the goal or a served contract states is no secret, but is
+// never bound to a check that takes input.
+const toolCard = (goal, reqs, dels = [{name: 'tool.py', kind: 'command', path: 'tool.py', does: 'the tool'}]) => ({goal, card: {card: 1, summary: 's', languages: dels[0].path.endsWith('.py') ? ['python'] : ['javascript', 'text'], deliverables: dels, requirements: reqs, decisions: [],
+  run: [{id: 'serve', static: true}, {id: 'server', run: 'node server.js', port: true, ready: '/'}]}});
+const tool = (argv, expect, extra = {}) => ({id: 'R1', says: 'R1 behaviour', source: 'goal', serves: ['tool.py'], check: {kind: 'command', run: argv.join(' '), argv, expect, ...extra}});
+const page = [{name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}];
+const LEAKS = {
+  fizzbuzz: [toolCard('A FizzBuzz command line program.', [tool(['python3', 'tool.py', '15'], {exit: 0, stdout: 'FizzBuzz'})]), 'FizzBuzz'],
+  reverse: [toolCard('A CLI that reverses a word.', [tool(['python3', 'tool.py', 'hello'], {exit: 0, stdout: 'olleh'})]), 'olleh'],
+  roman: [toolCard('A CLI that converts numbers to Roman numerals.', [tool(['python3', 'tool.py', '14'], {exit: 0, stdout: 'XIV'})]), 'XIV'],
+  words: [toolCard('A CLI that spells numbers in English.', [tool(['python3', 'tool.py', '42'], {exit: 0, stdout: 'forty-two'})]), 'forty-two'],
+  weekday: [toolCard('A CLI that prints the weekday of a date.', [tool(['python3', 'tool.py', '2024-01-01'], {exit: 0, stdout: 'Monday'})]), 'Monday'],
+  pytrue: [toolCard('A CLI that says whether a number is prime.', [tool(['python3', 'tool.py', '7'], {exit: 0, stdout: 'True'})]), 'True'],
+  odd: [toolCard('A CLI that says whether a number is even or odd.', [tool(['python3', 'tool.py', '7'], {exit: 0, stdout_has: ['odd']})]), 'odd'],
+  camel: [toolCard('A CLI that converts snake_case to camelCase.', [tool(['python3', 'tool.py', 'hello_world'], {exit: 0, stdout: 'helloWorld'})]), 'helloWorld'],
+  caesar: [toolCard('A Caesar cipher CLI.', [tool(['python3', 'tool.py', '--shift', '3', 'abc'], {exit: 0, stdout: 'def'})]), 'def'],
+  vowels: [toolCard('A CLI that removes vowels.', [tool(['python3', 'tool.py', 'banana'], {exit: 0, stdout: 'bnn'})]), 'bnn'],
+  grade: [toolCard('A CLI that turns a score into a letter grade.', [tool(['python3', 'tool.py', '85'], {exit: 0, stdout: 'B'})]), 'B'],
+  sort_stdin: [toolCard('A CLI that sorts the words on a line.', [tool(['python3', 'tool.py'], {exit: 0, stdout: 'apple banana cherry'}, {stdin: 'cherry banana apple'})]), 'apple banana cherry'],
+  sort_csv: [toolCard('A CLI that sorts comma-separated words.', [tool(['python3', 'tool.py', 'pear,fig,apple'], {exit: 0, stdout: 'apple,fig,pear'})]), 'apple,fig,pear'],
+  http_body: [toolCard('A FizzBuzz web API.', [{id: 'R1', says: 'R1', source: 'g', serves: ['server.js'], check: {kind: 'http', serve: 'server', steps: [{method: 'GET', path: '/fizzbuzz?n=15', expect: {status: 200, body_has: ['FizzBuzz']}}]}}], [{name: 'server.js', kind: 'file', path: 'server.js', does: 'the api'}]), 'FizzBuzz'],
+  reverse_after_click: [toolCard('A page that reverses text.', [{id: 'R1', says: 'R1', source: 'g', serves: ['index.html'], check: {kind: 'browser', serve: 'serve', steps: [{goto: '/'}, {fill: {label: 'Text', text: 'stressed'}}, {click: {role: 'button', name: 'Reverse'}}, {expect_text: 'desserts'}]}}], page), 'desserts']
+};
+const observedFor = c => c.kind === 'command' ? {what: c.expect.stdout !== undefined ? 'stdout' : 'stdout_has', exit: 0, stdout: 'nope'} : c.kind === 'http' ? {what: 'body', step: 1, op: 'GET', status: 200, body: 'nope'} : {what: 'step', step: 4, op: 'expect_text', status: 200, page: 'nope'};
+const quotedIn = (text, t) => new RegExp(`"[^"]*(?<![\\p{L}\\p{N}])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])[^"]*"`, 'u').test(text);
+
+test('review 1: an output computed from a check\'s input is never shown, bound to that check, in a contract, a repair or Clef\'s reading', () => {
+  for (const [name, [{goal, card}, expected]] of Object.entries(LEAKS)) {
+    const scope = cardScope(card, {goal}), r = card.requirements[0];
+    assert.equal(scope.isWording(expected, r.check), false, `${name}: ${expected} is not shown for its check`);
+    const lines = cardContracts(card, {goal}).map(c => contractLine(c)).join('\n');
+    const [p] = checkProblems(card, new Map([['R1', {passed: false, observed: observedFor(r.check)}]]), [], {goal});
+    const shape = checkShapeForReview(r.check, scope);
+    for (const [where, text] of [['contract', lines], ['repair', p.detail], ['clef', shape]]) assert.ok(!quotedIn(text, expected), `${name} ${where}: ${text}`);
+  }
+  // The step order counts: a text a page shows only after a step acts on it is the step's result.
+  const after = LEAKS.reverse_after_click[0];
+  assert.deepEqual(interfaceFacts(after.card, {goal: after.goal}).get('index.html'), ['page / has the field labelled "Text", the button "Reverse"']);
+  // A text the goal states ("FizzBuzz", "odd") is no secret: the statement and the observed output keep it.
+  assert.ok(!cardScope(LEAKS.fizzbuzz[0].card, {goal: LEAKS.fizzbuzz[0].goal}).secrets.includes('FizzBuzz'));
+  const odd = LEAKS.odd[0];
+  assert.match(workerDetail(odd.card.requirements[0].check, {observed: {what: 'stdout_has', exit: 0, stdout: 'even'}}, cardScope(odd.card, {goal: odd.goal})), /printed "even"$/);
+});
+
+test('review 1: the six live wording texts stay visible; a check with no input, an error label and a flag the goal states keep their wording', () => {
+  const visible = [[CLI_CARD, CLI_GOAL, ['import sys', 'invalid literal']], [TODO_CARD, TODO_GOAL, ['To-Do List', 'body {', 'todo-item {']], [TRACKER_CARD, TRACKER_GOAL, ['Ticket List']]];
+  for (const [card, goal, texts] of visible) {
+    const scope = cardScope(card, {goal}), facts = JSON.stringify([...interfaceFacts(card, {goal})]);
+    for (const t of texts) { assert.ok(scope.wording.has(t), t); assert.ok(facts.includes(JSON.stringify(t).slice(1, -1)), `${t}: ${facts}`); }
+  }
+  const hello = toolCard('A hello world CLI.', [tool(['python3', 'tool.py'], {exit: 0, stdout: 'Hello, World!'})]);
+  assert.match(interfaceFacts(hello.card, {goal: hello.goal}).get('tool.py')[0], /exactly "Hello, World!" on stdout$/);
+  const err = toolCard('A CLI that converts temperatures.', [tool(['python3', 'tool.py', 'abc', 'C'], {exit: 1, stderr_has: ['Invalid temperature']})]);
+  assert.match(interfaceFacts(err.card, {goal: err.goal}).get('tool.py')[0], /a message on stderr containing "Invalid temperature"$/);
+  const help = toolCard('A CLI with a help screen.', [tool(['python3', 'tool.py', '--help'], {exit: 0, stdout_has: ['usage']})]);
+  assert.match(interfaceFacts(help.card, {goal: help.goal}).get('tool.py')[0], /^R1 runs `python3 tool\.py --help` and expects exit status 0 and its output on stdout containing "usage"$/);
+  // The same text on two checks: a value of the one that takes input is a value everywhere, so it is shown for neither.
+  const two = toolCard('A CLI that greets.', [tool(['python3', 'tool.py'], {exit: 0, stdout_has: ['Welcome']}), {...tool(['python3', 'tool.py', 'Ada'], {exit: 0, stdout_has: ['Welcome']}), id: 'R2'}]);
+  const scope = cardScope(two.card, {goal: two.goal});
+  assert.deepEqual(two.card.requirements.map(r => scope.isWording('Welcome', r.check)), [false, false]);
+  assert.ok(scope.secrets.includes('Welcome'));
+  // A goal-stated text shown for a check that takes no input is never bound to one that does.
+  const stated = toolCard('A CLI that prints Welcome, then greets a name.', [tool(['python3', 'tool.py'], {exit: 0, stdout_has: ['Welcome']}), {...tool(['python3', 'tool.py', 'Ada'], {exit: 0, stdout_has: ['Welcome']}), id: 'R2'}]);
+  const sscope = cardScope(stated.card, {goal: stated.goal});
+  assert.deepEqual(stated.card.requirements.map(r => sscope.isWording('Welcome', r.check)), [true, false]);
+  assert.deepEqual(interfaceFacts(stated.card, {goal: stated.goal}).get('tool.py'), ['R1 runs `python3 tool.py` and expects exit status 0 and its output on stdout containing "Welcome"', 'R2 runs `python3 tool.py <word>` and expects exit status 0 and its output on stdout']);
+});
+
+test('review 1 (low): wording a hidden requirement or an input holds in part is a value; quoted wording is masked as the facts are', () => {
+  const goal = 'A greeting page.';
+  const card = {deliverables: page, requirements: [
+    {id: 'R1', says: 'shows a welcome', serves: ['index.html'], check: {kind: 'browser', serve: 'serve', steps: [{goto: '/'}, {expect_text: 'Welcome aboard, traveller'}]}},
+    {id: 'R2', says: 'hidden grader', serves: ['index.html'], hidden: true, check: {kind: 'browser', serve: 'serve', steps: [{goto: '/'}, {expect_text: 'aboard, traveller'}]}}]};
+  const scope = cardScope(card, {goal});
+  assert.equal(scope.isWording('Welcome aboard, traveller'), false);
+  const [p] = checkProblems(card, new Map([['R1', {passed: false, observed: {what: 'step', step: 2, op: 'expect_text', status: 200, page: 'Hi'}}]]), [], {goal});
+  assert.ok(!/aboard|traveller/.test(p.detail), p.detail);
+});
+
+// 2. Progress: id + category + the point reached, and the best each requirement reached in the whole run.
+const PROGRESS_GOAL = 'A to-do list page where tasks can be added, checked off and removed.';
+const PROGRESS_CARD = {card: 1, deliverables: [{name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}, {name: 'style.css', kind: 'file', path: 'style.css', does: 'styles'}],
+  requirements: [
+    {id: 'R1', says: 'Adds, checks and removes a task', serves: ['index.html'], check: {kind: 'browser', serve: 'serve', steps: [{goto: '/'}, {fill: {placeholder: 'New task', text: 'Buy milk'}}, {click: {role: 'button', name: 'Add'}}, {expect_text: 'Buy milk'}, {click: {role: 'checkbox', name: 'Buy milk'}}, {expect_text: '1 done'}]}},
+    {id: 'R2', says: 'styles', serves: ['style.css'], check: {kind: 'file', path: 'style.css', has: ['.task {', '.done {', '.remove {']}},
+    {id: 'R3', says: 'sorts', serves: ['index.html'], check: {kind: 'command', run: 'node sort.js', argv: ['node', 'sort.js'], stdin: 'cherry banana apple', expect: {exit: 0, stdout: 'apple banana cherry'}}}]};
+// The verdict of each round under countRound's stall rule: P progress, - none, STOP when the repairs end.
+function rounds(seq) {
+  const rows = [], counted = [], out = [];
+  let stalled = 0;
+  for (let w = 0; w < seq.length; w++) {
+    const wave = `w${w}`;
+    for (const p of checkProblems(PROGRESS_CARD, new Map(Object.entries(seq[w])), [], {goal: PROGRESS_GOAL})) rows.push({...p, flags: {wave}});
+    const progress = reportProgress(rows, wave, counted);
+    if (!progress && stalled >= MANAGER_MAX_STALLED) { out.push('STOP'); break; }
+    stalled = progress ? 0 : stalled + 1; counted.push(wave); out.push(progress ? 'P' : '-');
+  }
+  return out.join(' ');
+}
+test('review 2: a check that gets one step further, holds one more text, or prints nearer output each round makes progress', () => {
+  const step = (n, op) => ({R1: {passed: false, observed: {what: 'step', step: n, op, status: 200, page: 'x'}}});
+  assert.equal(rounds([step(2, 'fill'), step(3, 'click'), step(4, 'expect_text'), step(5, 'click'), step(6, 'expect_text')]), 'P P P P P');
+  const style = text => ({R2: {passed: false, ...fileResult(PROGRESS_CARD.requirements[1].check, new Map([['style.css', text]]))}});
+  assert.equal(rounds([style('body {}'), style('.task {}'), style('.task {}\n.done {}'), style('.task {}\n.done {}'), style('.task {}\n.done {}'), style('.task {}\n.done {}'), style('.task {}\n.done {}')]), 'P P P - - - STOP');
+  const out = stdout => ({R3: {passed: false, observed: {what: 'stdout', exit: 0, stdout}}});
+  assert.equal(rounds([out(''), out('apple'), out('apple banana'), out('apple banana cherr'), out('apple banana cherr'), out('apple banana cherr'), out('apple banana cherr'), out('apple banana cherr')]), 'P P P P - - - STOP');
+  // Going back is no progress; the nearness is never told.
+  assert.equal(rounds([step(5, 'click'), step(2, 'fill'), step(3, 'click'), step(4, 'expect_text'), step(5, 'click')]), 'P - - - STOP');
+  const [p] = checkProblems(PROGRESS_CARD, new Map(Object.entries(out('apple banana'))), [], {goal: PROGRESS_GOAL});
+  assert.ok(!JSON.stringify([p.detail, p.facts.requirement.text, p.facts.requirement.evidence, p.facts.requirement.check]).includes(String(p.facts.requirement.reach.near)));
+});
+
+test('review 2: categories that flip-flop never count twice: the best each requirement reached holds for the whole run', () => {
+  const cats = [{what: 'exit', exit: 1, stderr: ''}, {what: 'stdout', exit: 0, stdout: 'x'}, {what: 'timeout'}];
+  const seq = Array.from({length: 30}, (_, w) => ({R3: {passed: false, observed: cats[w % 3]}, R2: {passed: false, observed: w % 2 ? {what: 'json', error: 'x'} : {what: 'lacks', index: 0, met: 0}}}));
+  assert.equal(rounds(seq), 'P P P - - - STOP');
+  // A requirement that passed, fails, and passes again is no new pass.
+  const fail = {R3: {passed: false, observed: {what: 'stdout', exit: 0, stdout: 'x'}}}, other = {R2: {passed: false, observed: {what: 'lacks', index: 0, met: 0}}};
+  assert.equal(rounds([{...fail, ...other}, other, {...fail, ...other}, other, {...fail, ...other}, other]), 'P P - - - STOP');
+  // Route exhaustion reads the same key: a further step is another failure.
+  const at = n => checkProblems(PROGRESS_CARD, new Map([['R1', {passed: false, observed: {what: 'step', step: n, op: 'click', status: 200}}]]), [], {goal: PROGRESS_GOAL})[0];
+  assert.notEqual(failureKey(at(2)), failureKey(at(5)));
+  assert.equal(failureKey(at(5)), failureKey(at(5)));
+});
+
+// 3. A field-line control block closes an open file only when it is a control block.
+test('review 3: a YAML file or a page about the format keeps its CONTROL and field lines; object-valued fields are read in one object', () => {
+  const env = text => ({choices: [{message: {content: text}, finish_reason: 'stop'}]});
+  const yaml = parseWorkerAnswer(env('=== FILE: ci/pipeline.yaml ===\nstages:\n=== CONTROL ===\ndone: true\nsummary: deploy stage\n=== END FILE ===\n=== CONTROL ===\n{"summary": "wrote the pipeline", "done": false}\n'));
+  assert.deepEqual(yaml.files, [{path: 'ci/pipeline.yaml', content: 'stages:\n=== CONTROL ===\ndone: true\nsummary: deploy stage'}]);
+  assert.deepEqual(yaml.control, {summary: 'wrote the pipeline', done: false});
+  const doc = parseWorkerAnswer(env('=== FILE: docs/format.md ===\n# Answer format\nEnd with:\n=== CONTROL ===\n- "summary": what you did\n- "done": true when finished\n\nThat is all.\n=== END FILE ===\n=== CONTROL ===\n{"summary": "documented the format", "done": false}\n'));
+  assert.equal(doc.files[0].content, '# Answer format\nEnd with:\n=== CONTROL ===\n- "summary": what you did\n- "done": true when finished\n\nThat is all.');
+  // Field lines that are no control (no summary, no done) are a code file's content too.
+  const code = parseWorkerAnswer(env('=== FILE: app.js ===\nconst a = 1;\n=== CONTROL ===\nask: later\n=== END FILE ===\n=== CONTROL ===\n{"done": true}\n'));
+  assert.equal(code.files[0].content, 'const a = 1;\n=== CONTROL ===\nask: later');
+  // An ask or pieces value that holds objects: the whole block is one control object.
+  for (const ctl of ['summary: need the store\nwait: true\nask: [{"need": "the store module API", "name": "createStore"}]', '- "summary": "need the store",\n- "wait": True,\n- "ask": [{"need": "the store module API", "name": "createStore"}]']) {
+    const r = parseWorkerAnswer(env(`=== FILE: a.js ===\nexport const a = 1;\n=== END FILE ===\n=== CONTROL ===\n${ctl}\n`));
+    assert.deepEqual([r.control, r.action.wait, r.action.ask.map(a => a.name), r.control_error], [{summary: 'need the store', wait: true, ask: [{need: 'the store module API', name: 'createStore'}]}, true, ['createStore'], false]);
+  }
+  const pieces = parseWorkerAnswer(env('=== FILE: a.txt ===\nA\n=== END FILE ===\n=== CONTROL ===\n- "summary": "split",\n- "pieces": [\n  {"label": "ui", "task": "the page", "contracts": [], "uses": []},\n],\n- "done": False\n'));
+  assert.deepEqual(pieces.control, {summary: 'split', pieces: [{label: 'ui', task: 'the page', contracts: [], uses: []}], done: false});
+});
+
+// 4. A file left open at a natural stop.
+test('review 4: a file left open at a natural stop is kept only when it parses, ends in code, and the answer has a control block; never done by default', () => {
+  const env = text => ({choices: [{message: {content: text}, finish_reason: 'stop'}]});
+  const cases = {
+    control_json_without_header: '=== FILE: app.py ===\nprint("hi")\n{"summary": "wrote app.py", "done": true}\n',
+    control_then_prose: '=== FILE: app.py ===\nprint(1)\n=== CONTROL ===\nHere is the control object:\n{"summary": "x", "done": true}\n',
+    closing_prose: '=== FILE: app.py ===\ndef add(a, b):\n    return a + b\n\nThis file defines add. Let me know if you need anything else!\n',
+    mid_function: '=== FILE: app.py ===\ndef add(a, b):\n    return a +',
+    settings_no_control: '=== FILE: settings.py ===\nCONFIG = {\n    "debug": True,\n    "done": False,\n    "cache": None,\n}\n'
+  };
+  for (const [name, text] of Object.entries(cases)) {
+    const r = parseWorkerAnswer(env(text));
+    assert.deepEqual([r.files, r.truncated.length, r.action.done], [[], 1, false], name);
+    assert.deepEqual(workerAction(env(text), {expect: 'blocks'}).files.map(f => 'content' in f), [false], `${name}: written again`);
+  }
+  // A JavaScript file that parses, ends in code, after the answer's control block: kept as written.
+  const kept = parseWorkerAnswer(env('=== CONTROL ===\n{"summary": "wrote app.js", "done": true}\n=== FILE: app.js ===\nexport function add(a, b) {\n  return a + b;\n}\n'));
+  assert.deepEqual([kept.files.map(f => f.path), kept.implicit_end, kept.truncated], [['app.js'], ['app.js'], []]);
+  // The same file, cut mid-function or ending in a control line or prose: written again.
+  for (const tail of ['export function add(a, b) {\n  return a +', 'export const a = 1;\n{"summary": "x", "done": true}', 'export const a = 1;\nThis module exports the constant you asked for.'])
+    assert.deepEqual(parseWorkerAnswer(env(`=== CONTROL ===\n{"summary": "x", "done": true}\n=== FILE: app.js ===\n${tail}`)).truncated, ['app.js'], tail);
+});
+
+// Benchmark rooms (review, info): no line of the hidden test, its harness or its nonce reaches any model request or Clef input.
+test('review: benchmark rooms send no hidden-test content to any model, right or wrong, with Clef for or against', async () => {
+  const {taskFromRow, FIXTURE} = await import('../src/bench.js');
+  const F = await import('./helpers/bench-fixtures.js');
+  const rows = [[F.MULTIPLE_JS[0], 'solution.js', 'function add_two(a,b){return a*b}\nmodule.exports={add_two};\n', 'function add_two(a,b){return a+b}\nmodule.exports={add_two};\n'],
+    ...(hasPython ? [[F.HUMANEVAL[0], 'solution.py', 'def total(xs):\n    return len(xs)\n', 'def total(xs):\n    return sum(xs)\n']] : [])];
+  for (const [row, path, wrong, right] of rows) {
+    const task = taskFromRow(row), files = task.card.requirements[0].check.files || {};
+    const hidden = [files[FIXTURE.tests], files[FIXTURE.nonce], files[FIXTURE.harness]].map(t => String(t || '')).join('\n');
+    const needles = [...new Set([...hidden.split('\n').map(s => s.trim()).filter(s => s.length >= 6), 'bench_tests', 'bench_check', 'bench_nonce', String(files[FIXTURE.nonce] || '')])].filter(n => n && !task.prompt.includes(n));
+    assert.ok(needles.length > 3);
+    for (const [content, vet] of [[wrong, 0.1], [right, 0.9]]) {
+      const r = liveRoom({card: () => { throw new Error('no writer in bench mode'); },
+        clef: input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.1 : vet}]))}),
+        leaf: () => fileBlocks([{path, content}], {summary: 'wrote', done: true})});
+      await r.room.start(task.prompt, 20, {pipeline: 'v8'}, 'bench-abcdef012345-0-0', task.card);
+      await r.drain();
+      const sent = [...r.calls.raw.map(x => x.system + '\n' + x.text), ...r.calls.clef.map(x => JSON.stringify(x))].join('\n');
+      assert.deepEqual(needles.filter(n => sent.includes(n)), [], path);
+      assert.equal(r.room.get('status'), content === right ? 'complete' : 'failed', path);
+    }
+  }
 });

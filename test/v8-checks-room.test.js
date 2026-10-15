@@ -576,8 +576,8 @@ test('fileResult: markup in a markup file matches whatever the whitespace betwee
 test('workerDetail: built from what the check observed; expected values, inputs and the judge\'s question never reach a worker, its interface does',()=>{
   const cmd={kind:'command',run:'temp 100',argv:['temp','100'],stdin:'secret input line\nsecond SECRET-LINE\n',files:{'in.txt':'fixture body\nFIXTURE-TWO'},expect:{exit:0,stdout:'212; TOKEN-ALPHA',stdout_has:['212'],stderr_has:['bad value']}};
   // v8 live 2: a command is named by its argv shape (values as their kind); an exit status it did not expect is told with the one it expects and the streams it reads.
-  // Live 3: "bad value" is wording (no digit, no input): the report names it; "212" is a value and stays hidden.
-  assert.equal(workerDetail(cmd,{observed:{what:'exit',exit:1,stdout:'',stderr:'ValueError: could not convert'}}),'`temp <integer>`: exit 1; the requirement expects exit status 0 and its output on stdout and a message on stderr containing "bad value"; stderr: "ValueError: could not convert"');
+  // Live 3 review: "bad value" is expected of a check that takes input and should exit 0, so it is a value, as "212" is; only an error label of a failing command is shown.
+  assert.equal(workerDetail(cmd,{observed:{what:'exit',exit:1,stdout:'',stderr:'ValueError: could not convert'}}),'`temp <integer>`: exit 1; the requirement expects exit status 0 and its output on stdout and a message on stderr; stderr: "ValueError: could not convert"');
   // The runner's sentence (with what it expected) is never read: only the observed fields.
   assert.equal(workerDetail(cmd,{detail:'temp 100: printed "x", expected "212; TOKEN-ALPHA"',observed:{what:'stdout',exit:0,stdout:'x'}}),'`temp <integer>`: exit 0; its output is not what the requirement expects; printed "x"');
   // Partial echoes: one line of stdin, one line of an input file, one word of an expected value, case aside.

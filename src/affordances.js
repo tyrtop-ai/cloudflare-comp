@@ -25,6 +25,8 @@
 // expected text is a value when it holds a digit, equals or holds an input
 // of the card's checks (or an input holds it), or is a JSON value; any other
 // is wording. A benchmark's hidden requirement keeps every text hidden.
+// Live 3 review: wording is shown per check, and only when the check takes
+// no input or the text is an error label of a failing command (cardScope).
 // Pure: no room, no model.
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -108,6 +110,9 @@ export function cardInputs(card, {goal = ''} = {}) {
   return [...out].sort((a, b) => b.length - a.length);
 }
 
+// One check, as a key: the same check read from the same card.
+const checkKey = c => { try { return JSON.stringify(c); } catch { return String(c); } };
+
 // ------------------------------------------------------------ the card's scope
 // The words a text states, lower case: letters, digits, '_' and '-'.
 const wordsOf = s => String(s ?? '').toLowerCase().match(/[\p{L}\p{N}_-]+/gu) || [];
@@ -129,7 +134,9 @@ function jsonValues(v, add) {
 //  secrets: every expected value and input (strings, longest first); never
 //    an expected text that is wording (live 3), unless a hidden requirement
 //    or a value elsewhere on the card holds it;
-//  wording: the expected texts shown as interface (isWording);
+//  wording: the expected texts shown as interface; isWording(text, check)
+//    says whether one check's text is (live 3 review: per check, so a text
+//    shown for one check is never bound to another that takes input);
 //  whole: texts masked only whole (a judge's question: its words are the reader's, not values);
 //  keep: the interface names a text may show (their words are never masked
 //    as a part of a value): labels, placeholders and button names no check
@@ -142,20 +149,42 @@ export function cardScope(card, {goal = ''} = {}) {
   const reqs = (card?.requirements || []).filter(r => plain(r?.check)), dels = card?.deliverables || [];
   const values = new Set(), whole = new Set(), add = v => { if (typeof v === 'string' && v.trim()) values.add(v); else if (v !== undefined && v !== null && typeof v !== 'object') values.add(String(v)); };
   // Live 3: an expected text is a value or wording; a hidden requirement's are all values.
-  const inputs = cardInputs(card, {goal}), worded = new Set();
-  const expect = (r, t) => { if (typeof t === 'string' && t.trim() && !r.hidden && !isValueText(t, inputs)) worded.add(t); else add(t); };
+  // Live 3 review: isValueText alone let any transform of an input through
+  // (olleh for hello, XIV for 14, Monday for a date), so a text it calls
+  // wording is shown only when (a) its check takes no input (a browser
+  // check's expect before any fill, click or press), or (b) it is a stderr
+  // text of a command expected to fail (an error label). (c) A text the goal
+  // or a served contract states is no secret, but is shown bound to no
+  // check that takes input (FizzBuzz for 15 would say which input gives it).
+  // Any other text is a value.
+  const inputs = cardInputs(card, {goal}), worded = [], stated = new Set();
   const goalWords = new Set(wordsOf(goal)), allStated = new Set([...goalWords, ...dels.flatMap(d => wordsOf(contractText(d)))]);
+  const served = r => dels.filter(d => (r.serves || []).includes(d.name));
+  const statedIn = (r, t) => holds([goal, ...served(r).flatMap(d => [d.does, d.outputs, d.returns, ...(d.params || []), ...(d.inputs || []).flatMap(x => [x?.name, x?.is]), ...(d.examples || []).flatMap(e => [e?.given, e?.expect])])].filter(x => typeof x === 'string').join('\n'), squash(t));
+  // The inputs one check takes; a flag its served contracts or the goal state (--help) is interface.
+  const takesInput = r => { const words = new Set([...goalWords, ...served(r).flatMap(d => wordsOf(contractText(d)))]); return cardInputs({deliverables: dels, requirements: [r]}, {goal}).some(i => !(/^--?[A-Za-z][\w-]*$/.test(i) && words.has(i.replace(/^--?/, '').toLowerCase()))); };
+  const expect = (r, t, free) => {
+    if (typeof t !== 'string' || !t.trim() || r.hidden || isValueText(t, inputs)) { add(t); return; }
+    const says = statedIn(r, t);
+    if (free) worded.push({t, key: checkKey(r.check)});
+    else if (!says) add(t);
+    if (says) stated.add(t);
+  };
   const paths = new Set(dels.map(d => d?.path).filter(Boolean)), routeWords = new Set(dels.filter(d => d?.kind === 'route').flatMap(d => wordsOf(String(d.name).split(' ')[1] || '')));
   const argvWords = [], pathWords = [], affordances = [], keep = new Set();
   for (const r of reqs) {
     const c = r.check, statedFor = new Set([...goalWords, ...dels.filter(d => (r.serves || []).includes(d.name)).flatMap(d => wordsOf(contractText(d)))]);
-    if (c.kind === 'file') { (c.has || []).forEach(t => expect(r, t)); if (c.path) keep.add(c.path); }
+    const free = c.kind === 'file' || ['command', 'http', 'browser'].includes(c.kind) && !takesInput(r);
+    if (c.kind === 'file') { (c.has || []).forEach(t => expect(r, t, true)); if (c.path) keep.add(c.path); }
     if (c.kind === 'judge') { if (c.question) whole.add(c.question); if (c.path) keep.add(c.path); }
     if (c.kind === 'command') {
       add(c.stdin);
       for (const [p, t] of Object.entries(c.files || {})) { add(p); add(t); }
-      const {exit: _exit, stderr: _stderr, stdout, stdout_has, stderr_has, ...expected} = c.expect || {};
-      for (const t of [stdout, ...(Array.isArray(stdout_has) ? stdout_has : [stdout_has]), ...(Array.isArray(stderr_has) ? stderr_has : [stderr_has])]) if (typeof t === 'string') expect(r, t); else jsonValues(t, add);
+      const {exit, stderr: _stderr, stdout, stdout_has, stderr_has, ...expected} = c.expect || {};
+      // (b) an error label: stderr of a command expected to fail (no exit named reads stderr as a failure, as the runner does).
+      const failing = Number.isInteger(exit) ? exit !== 0 : true;
+      for (const t of [stdout, ...(Array.isArray(stdout_has) ? stdout_has : [stdout_has])]) if (typeof t === 'string') expect(r, t, free); else jsonValues(t, add);
+      for (const t of Array.isArray(stderr_has) ? stderr_has : [stderr_has]) if (typeof t === 'string') expect(r, t, free || failing); else jsonValues(t, add);
       for (const v of Object.values(expected)) jsonValues(v, add);
       const argv = Array.isArray(c.argv) ? c.argv : String(c.run || '').trim().split(/\s+/).filter(Boolean);
       if (argv[0]) keep.add(argv[0]);
@@ -165,26 +194,27 @@ export function cardScope(card, {goal = ''} = {}) {
     if (c.kind === 'http') for (const s of c.steps || []) {
       jsonValues(s.body, add);
       const {status: _status, body_has, ...expected} = s.expect || {};
-      for (const t of Array.isArray(body_has) ? body_has : [body_has]) if (typeof t === 'string') expect(r, t); else jsonValues(t, add);
+      for (const t of Array.isArray(body_has) ? body_has : [body_has]) if (typeof t === 'string') expect(r, t, free); else jsonValues(t, add);
       for (const v of Object.values(expected)) jsonValues(v, add);
       if (s.method) keep.add(String(s.method).toUpperCase());
       const {segments, pairs} = urlParts(s.path);
       segments.forEach(seg => pathWords.push(seg));
       for (const [k, v] of pairs) { pathWords.push(k); add(v); }
     }
+    let acted = c.kind === 'browser' && !free;
     if (c.kind === 'browser') for (const s of c.steps || []) {
       const [op, v] = Object.entries(s || {})[0] || [];
+      // (a) for a page: what it shows before any step acts on it.
+      if (op === 'fill' || op === 'click' || op === 'press') acted = true;
       if (op === 'fill' && plain(v)) { add(v.text); for (const k of ['label', 'placeholder', 'name']) if (typeof v[k] === 'string') affordances.push(v[k]); if (v.role) keep.add(roleOf(v.role)); }
       if (op === 'click' && plain(v)) { for (const k of ['name', 'text', 'label']) if (typeof v[k] === 'string') affordances.push(v[k]); if (v.role) keep.add(roleOf(v.role)); }
-      if (op === 'expect_text' || op === 'expect_no_text') expect(r, v);
-      if (op === 'expect_count' && plain(v)) { expect(r, v.text); if (v.role) keep.add(roleOf(v.role)); }
+      if (op === 'expect_text' || op === 'expect_no_text') expect(r, v, !acted);
+      if (op === 'expect_count' && plain(v)) { expect(r, v.text, !acted); if (v.role) keep.add(roleOf(v.role)); }
       if (op === 'press' && typeof v === 'string') keep.add(v);
       if (op === 'goto' && typeof v === 'string') { const {segments, pairs} = urlParts(v); segments.forEach(seg => pathWords.push(seg)); for (const [k, x] of pairs) { pathWords.push(k); add(x); } }
     }
   }
   const isValue = s => { const l = low(s); return !!l && [...values].some(v => low(v) === l); };
-  // Wording a value elsewhere on the card (or a hidden requirement) also holds stays hidden.
-  const wording = new Set([...worded].filter(t => !isValue(t)));
   // A word is shown as it is when a contract or the goal states it and no check uses it as a value.
   const literal = new Set(), secrets = new Set(values);
   for (const {a, stated, files} of argvWords) {
@@ -197,12 +227,18 @@ export function cardScope(card, {goal = ''} = {}) {
     const interfaceWord = (paths.has(seg) || routeWords.has(seg.toLowerCase()) || /^[\p{L}\p{N}_.-]+$/u.test(seg) && wordsOf(seg).every(w => allStated.has(w))) && !/^\d+$/.test(seg) && !/^\$\w+$/.test(seg) && !isValue(seg);
     if (interfaceWord) { literal.add(seg); keep.add(seg); } else if (!/^\$\w+$/.test(seg)) secrets.add(seg);
   }
+  // Wording that holds a value or an input of the card, or that one holds (a hidden requirement's too), is a value (live 3 review).
+  const near = t => { const s = squash(t); return [...secrets].some(v => { const x = squash(v); return x && (holds(s, x) || s.length >= 3 && holds(x, s)); }); };
+  const wordingBy = new Map(), wording = new Set();
+  for (const {t, key} of worded) { if (near(t)) { secrets.add(t); continue; } wording.add(t); if (!wordingBy.has(key)) wordingBy.set(key, new Set()); wordingBy.get(key).add(t); }
+  for (const t of stated) if (!wording.has(t) && near(t)) secrets.add(t);
   const shown = new Set();
   for (const a of affordances) if (!isValue(a)) { shown.add(a); keep.add(a); }
   for (const p of paths) keep.add(p);
   for (const d of dels) if (d?.name) keep.add(d.name);
   return {secrets: [...secrets].filter(s => s.trim().length >= 3).sort((a, b) => b.length - a.length),
-    whole: [...whole], keep: [...keep].filter(k => !isValue(k)), literal, shown, isValue, wording, isWording: s => typeof s === 'string' && wording.has(s)};
+    whole: [...whole], keep: [...keep].filter(k => !isValue(k)), literal, shown, isValue, wording,
+    isWording: (s, check) => typeof s === 'string' && (check ? !!wordingBy.get(checkKey(check))?.has(s) : wording.has(s))};
 }
 
 // ------------------------------------------------------------ masking
@@ -266,13 +302,15 @@ export function stepTarget(op, t = {}, scope = null) {
 // stream each message goes to, and (live 3) the wording it looks for there.
 const listOf = v => Array.isArray(v) ? v : v === undefined ? [] : [v];
 // The wording among texts, quoted: ' containing "a" and "b"', or ''.
-const containing = (texts, scope) => { const ws = listOf(texts).filter(t => scope?.isWording?.(t)); return ws.length ? ` containing ${ws.map(q).join(' and ')}` : ''; };
+// Each is masked with the card's scope as a last pass, as the facts are (live 3 review: the facts and the repairs agree).
+const quoted = (t, scope) => q(scope?.secrets ? maskWith(t, scope) : t);
+const containing = (texts, scope, check) => { const ws = listOf(texts).filter(t => scope?.isWording?.(t, check)); return ws.length ? ` containing ${ws.map(t => quoted(t, scope)).join(' and ')}` : ''; };
 export function commandExpects(c, scope = null) {
   const e = c.expect || {}, out = [];
   if (Number.isInteger(e.exit)) out.push(`exit status ${e.exit}`);
-  if (scope?.isWording?.(e.stdout)) out.push(`exactly ${q(e.stdout)} on stdout`);
-  else if (e.stdout !== undefined || e.stdout_has) out.push(`its output on stdout${containing(e.stdout_has, scope)}`);
-  if (e.stderr_has || e.stderr === true) out.push(`a message on stderr${containing(e.stderr_has, scope)}`);
+  if (scope?.isWording?.(e.stdout, c)) out.push(`exactly ${quoted(e.stdout, scope)} on stdout`);
+  else if (e.stdout !== undefined || e.stdout_has) out.push(`its output on stdout${containing(e.stdout_has, scope, c)}`);
+  if (e.stderr_has || e.stderr === true) out.push(`a message on stderr${containing(e.stderr_has, scope, c)}`);
   return out;
 }
 // A command as a worker reads it: its argv shape.
@@ -283,7 +321,7 @@ export const commandShape = (c, scope) => Array.isArray(c?.argv) && c.argv.lengt
 // Set of what it has (shared across the card's browser checks); texts: page
 // shape → Set of the wording it shows (live 3); routes the same.
 function checkFacts(r, scope, pages, routes, texts = new Map()) {
-  const c = r.check, own = [], w = t => scope.isWording?.(t);
+  const c = r.check, own = [], w = t => scope.isWording?.(t, c);
   if (c.kind === 'browser') {
     const touched = new Set();
     let page = '/';
@@ -361,7 +399,7 @@ export function interfaceFacts(card, {goal = '', scope = cardScope(card, {goal})
 // is about what the statement and contract leave unsaid, never the values.
 // Live 3: wording is interface, so it reads as it is; values stay their kinds.
 export function checkShapeForReview(check, scope) {
-  const c = check || {}, text = v => typeof v === 'string' ? '<text>' : jsonKind(v), said = v => scope?.isWording?.(v) ? q(v) : '<text>';
+  const c = check || {}, text = v => typeof v === 'string' ? '<text>' : jsonKind(v), said = v => scope?.isWording?.(v, c) ? quoted(v, scope) : '<text>';
   if (c.kind === 'untested') return 'untested';
   if (c.kind === 'file') return `file ${c.path}${c.has?.length ? ` contains ${c.has.map(said).join(', ')}` : ''}${c.json ? ' as JSON' : ''}`;
   if (c.kind === 'judge') return `judge ${c.path}`;

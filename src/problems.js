@@ -82,7 +82,8 @@ export function failureHead(output) {
 // (failureCategory in src/checks.js), never its wording: a round that only
 // changes what a failing check printed is no progress, and the same
 // requirement failing the same way is the same failure.
-export const failureKey=p=>p.facts?.requirement?.card&&p.facts.requirement.category?`${p.kind}|${p.facts.requirement.id}|${p.facts.requirement.category}`:p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
+// v8 live 3 review: and the point it reached (a later step or more expectations met is another failure), as route exhaustion reads it too.
+export const failureKey=p=>p.facts?.requirement?.card&&p.facts.requirement.category?`${p.kind}|${p.facts.requirement.id}|${p.facts.requirement.category}|${Number(p.facts.requirement.reach?.point)||0}`:p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
 export const progressKey=p=>p.facts?.failure?`${failureKey(p)}${p.flags?.routed_to?`|>${p.flags.routed_to}`:''}`:p.signature;
 
 // ---------- v7.15.6: a run failure is a requirement, routed by the plan ----------
@@ -555,16 +556,59 @@ export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer
 // real bug per round and failed on a flat six-round count while converging.
 // rows: the source's problem rows in report order; counted: the waves the
 // manager paid a round for (all, when not given).
+// v8 live 3 review: a card requirement's rows (cardRow) are read apart, by
+// the best each one reached across every round the manager paid for, never
+// a lookback that a cycle can outrun: a round is progress when a
+// requirement that failed passes for the first time, or a failing one
+// reaches what it never reached before: a category it never failed with, a
+// further point in one it did (a later step, more expectations met), or, at
+// its furthest point, output nearer to what it expects (cardProgress).
+// Every other row keeps the rule above.
 export function reportProgress(rows, wave, counted=null) {
+  const inWave=w=>rows.filter(p=>p.flags?.wave===w);
+  if(!inWave(wave).length)return false;
+  const waves=[...new Set(rows.map(p=>p.flags?.wave).filter(Boolean))];
+  const earlier=waves.slice(0,waves.indexOf(wave)).filter(w=>!counted||counted.includes(w));
+  if(!earlier.length)return true;
+  if(cardProgress(earlier.map(w=>inWave(w).filter(cardRow)),inWave(wave).filter(cardRow)))return true;
   // Review: the route target joins the key once this wave has one (countRound, after the decision); before it (roundsLeft), the failure alone is compared.
   const key=rows.some(p=>p.flags?.wave===wave&&p.flags?.routed_to)?progressKey:failureKey;
-  const keys=w=>new Set(rows.filter(p=>p.flags?.wave===w).map(key)),now=keys(wave);
-  if(!now.size)return false;
-  const waves=[...new Set(rows.map(p=>p.flags?.wave).filter(Boolean))];
-  const before=waves.slice(0,waves.indexOf(wave)).filter(w=>!counted||counted.includes(w)).slice(-PROGRESS_LOOKBACK).map(keys);
-  if(!before.length)return true;
+  const keys=w=>new Set(inWave(w).filter(p=>!cardRow(p)).map(key)),now=keys(wave);
+  const before=earlier.slice(-PROGRESS_LOOKBACK).map(keys);
   const same=(a,b)=>a.size===b.size&&[...a].every(k=>b.has(k));
   return [...before.at(-1)].some(k=>!now.has(k))&&!before.some(b=>same(b,now));
+}
+// A card requirement's row (src/checks.js checkProblems), read by cardProgress.
+export const cardRow=p=>!!(p?.facts?.requirement?.card&&p.facts.requirement.category);
+// The nearness that breaks a tie at a requirement's furthest point must grow by this much.
+export const NEARER=0.05;
+// before: the card rows of each earlier counted round, in order; now: this round's.
+export function cardProgress(before, now) {
+  const best=new Map(),failedOnce=new Set(),passedSince=new Set();
+  const idOf=p=>p.facts.requirement.id;
+  for(const rows of before) {
+    const ids=new Set(rows.map(idOf));
+    for(const id of failedOnce)if(!ids.has(id))passedSince.add(id);
+    for(const p of rows) {
+      const id=idOf(p),{category}=p.facts.requirement,reach=p.facts.requirement.reach||{},b=best.get(id)||new Map();
+      failedOnce.add(id);
+      const at=b.get(category);
+      const point=Number(reach.point)||0,near=Number(reach.near)||0;
+      if(!at||point>at.point)b.set(category,{point,near});
+      else if(point===at.point&&near>at.near)at.near=near;
+      best.set(id,b);
+    }
+  }
+  const ids=new Set(now.map(idOf));
+  // A requirement that failed before passes now, for the first time since it first failed.
+  if([...failedOnce].some(id=>!ids.has(id)&&!passedSince.has(id)))return true;
+  return now.some(p=>{
+    const id=idOf(p),b=best.get(id);
+    if(!b)return false;
+    const {category}=p.facts.requirement,reach=p.facts.requirement.reach||{},at=b.get(category);
+    const point=Number(reach.point)||0,near=Number(reach.near)||0;
+    return !at||point>at.point||point===at.point&&near>=at.near+NEARER;
+  });
 }
 
 // Where each party of a problem held by `holder` lies: under one of its direct

@@ -35,7 +35,8 @@ test('a block the token cap left open is reported in truncated and never committ
   const r=parseWorkerAnswer(text);
   assert.deepEqual(r.files.map(f=>f.path),['index.html']);
   assert.deepEqual(r.truncated,['app.js']);
-  assert.equal(r.action.done,true,'no control block: done because files exist');
+  // Live 3 review: an answer that left a file open is never done by default.
+  assert.equal(r.action.done,false,'no control block, and a file left open: not done');
   // decide's raw action: the cut file is a path with no content, which the room writes again alone.
   const raw=workerAction(text);
   assert.deepEqual(raw.files.map(f=>[f.path,'content' in f]),[['index.html',true],['app.js',false]]);

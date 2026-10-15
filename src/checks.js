@@ -173,7 +173,9 @@ export function fileResult(check, files) {
   const p = String(check?.path || ''), text = files.get(p);
   if (typeof text !== 'string') return {passed: false, detail: `${p} is missing`, observed: {what: 'missing'}};
   if (!text.trim()) return {passed: false, detail: `${p} is empty`, observed: {what: 'empty'}};
-  for (const [index, s] of (check.has || []).entries()) if (!hasText(text, s, p)) return {passed: false, detail: `${p} does not contain ${show(String(s))}`, observed: {what: 'lacks', index}};
+  // Live 3 review: how many of the texts it holds (met), so a file that holds one more each round makes progress.
+  const lacking = (check.has || []).map((s, index) => ({s, index})).filter(({s}) => !hasText(text, s, p));
+  if (lacking.length) return {passed: false, detail: `${p} does not contain ${show(String(lacking[0].s))}`, observed: {what: 'lacks', index: lacking[0].index, met: (check.has || []).length - lacking.length}};
   if (check.json === true) { try { JSON.parse(text); } catch (e) { return {passed: false, detail: `${p} is not valid JSON: ${clip(e.message, 120)}`, observed: {what: 'json', error: clip(e.message, 120)}}; } }
   return {passed: true, detail: ''};
 }
@@ -197,14 +199,14 @@ const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const q = s => `"${s}"`;
 // A browser step as a worker reads it: its kind, and for a fill or a click
 // the affordance it looks for, never a text it types or looks for; a page by its shape.
-export function stepWords(step, scope = null) {
+export function stepWords(step, scope = null, check = null) {
   const [op, v] = Object.entries(step || {})[0] || ['step', ''];
   if (op === 'fill' || op === 'click') return `${op} ${stepTarget(op, v, scope) || 'an element'}`;
   if (op === 'goto') return `goto ${routeShape(typeof v === 'string' ? v : '/', scope?.literal)}`;
   if (op === 'press') return `press ${typeof v === 'string' ? v : 'a key'}`;
   if (op === 'expect_count' && v && typeof v === 'object' && v.role) return `expect_count of ${roleOf(v.role)} elements`;
   // Live 3: wording a step looks for is interface, and is named.
-  if ((op === 'expect_text' || op === 'expect_no_text') && scope?.isWording?.(v)) return `${op} ${q(clip(v, 80))}`;
+  if ((op === 'expect_text' || op === 'expect_no_text') && scope?.isWording?.(v, check)) return `${op} ${q(clip(scope.secrets ? maskWith(v, scope) : v, 80))}`;
   return op;
 }
 const missWords = (step, scope) => {
@@ -223,7 +225,7 @@ export const commandWords = (c, scope = null) => commandShape(c, scope) || first
 // The exit status a command check expects, the streams it reads and the wording it looks for there, as its contract states them.
 const commandExpectation = (c, scope) => `the requirement expects ${commandExpects(c, scope).join(' and ')}`;
 // Live 3: the wording among a check's expected texts, quoted, for a report; '' when they are all values.
-const wordingOf = (texts, scope) => { const list = (Array.isArray(texts) ? texts : texts === undefined ? [] : [texts]).filter(t => scope?.isWording?.(t)); return list.length ? `; it looks for ${list.map(t => q(clip(t, 80))).join(' and ')}` : ''; };
+const wordingOf = (texts, scope, check) => { const list = (Array.isArray(texts) ? texts : texts === undefined ? [] : [texts]).filter(t => scope?.isWording?.(t, check)); return list.length ? `; it looks for ${list.map(t => q(clip(maskWith(t, scope), 80))).join(' and ')}` : ''; };
 // A failure as a worker may hear it (S4a handoff, S4b review): built only
 // from what the check observed (res.observed: the runner's, the Worker's
 // file and judge checks'), the check's kind and its interface, never from
@@ -243,7 +245,7 @@ export function workerDetail(check, res = {}, ctx = null) {
   else if (c.kind === 'file') {
     const lacking = Number.isInteger(o.index) ? c.has?.[o.index] : undefined;
     out.push(o.what === 'missing' ? `${c.path} is missing` : o.what === 'empty' ? `${c.path} is empty` : o.what === 'json' ? `${c.path} is not valid JSON: ${m(o.error, 120)}`
-      : scope.isWording?.(lacking) ? `${c.path} lacks ${q(clip(lacking, 80))}, which the requirement looks for` : `${c.path} lacks a text the requirement looks for`);
+      : scope.isWording?.(lacking, c) ? `${c.path} lacks ${q(clip(maskWith(lacking, scope), 80))}, which the requirement looks for` : `${c.path} lacks a text the requirement looks for`);
   }
   else if (c.kind === 'judge') out.push(`a reader judged that ${c.path} does not meet the requirement (p=${Number(o.p ?? 0).toFixed(2)})${o.note ? `; ${m(o.note, 160)}` : ''}`);
   else if (c.kind === 'command') {
@@ -252,7 +254,7 @@ export function workerDetail(check, res = {}, ctx = null) {
     else if (o.what === 'timeout') out.push(`${name}: did not finish in time`);
     else {
       // v8 live 2: an exit status the requirement did not expect is told with the one it expects, and the streams it reads (interface, never a value).
-      const e = c.expect || {}, why = {exit: Number.isInteger(e.exit) ? commandExpectation(c, scope) : 'its exit status is not what the requirement expects', stdout: `its output is not what the requirement expects${wordingOf(e.stdout, scope).replace('it looks for', 'it expects exactly')}`, stdout_has: `its output lacks a text the requirement looks for${wordingOf(e.stdout_has, scope)}`, stderr_has: `its error output (stderr) lacks a text the requirement looks for${wordingOf(e.stderr_has, scope)}`, stderr: 'it wrote nothing to stderr, where the requirement expects a message'}[o.what] || 'the check failed';
+      const e = c.expect || {}, why = {exit: Number.isInteger(e.exit) ? commandExpectation(c, scope) : 'its exit status is not what the requirement expects', stdout: `its output is not what the requirement expects${wordingOf(e.stdout, scope, c).replace('it looks for', 'it expects exactly')}`, stdout_has: `its output lacks a text the requirement looks for${wordingOf(e.stdout_has, scope, c)}`, stderr_has: `its error output (stderr) lacks a text the requirement looks for${wordingOf(e.stderr_has, scope, c)}`, stderr: 'it wrote nothing to stderr, where the requirement expects a message'}[o.what] || 'the check failed';
       out.push(`${name}: exit ${o.exit}; ${why}${o.stdout ? `; printed ${q(m(o.stdout, 200))}` : ''}${o.stderr ? `; stderr: ${q(m(o.stderr, 200))}` : ''}`);
     }
   } else if (c.kind === 'call') {
@@ -266,11 +268,11 @@ export function workerDetail(check, res = {}, ctx = null) {
     else out.push('the check failed');
   } else if (c.kind === 'http') {
     const st = (c.steps || [])[(o.step || 1) - 1], route = st ? `${String(st.method || 'GET').toUpperCase()} ${routeShape(st.path, scope.literal)}` : o.op || 'request';
-    out.push(`step ${o.step || '?'} (${route}): ${Number.isInteger(o.status) ? `status ${o.status}` : 'no answer'}${o.what === 'status' ? `, which is not what the requirement expects${Number.isInteger(st?.expect?.status) ? ` (it expects ${st.expect.status})` : ''}` : o.what === 'body' || o.what === 'json' ? `; the response is not what the requirement expects${o.what === 'body' ? wordingOf(st?.expect?.body_has, scope) : ''}` : ''}${o.body ? `; the body was ${q(m(o.body, 160))}` : ''}${o.server_exited ? ' (the server exited)' : ''}`);
+    out.push(`step ${o.step || '?'} (${route}): ${Number.isInteger(o.status) ? `status ${o.status}` : 'no answer'}${o.what === 'status' ? `, which is not what the requirement expects${Number.isInteger(st?.expect?.status) ? ` (it expects ${st.expect.status})` : ''}` : o.what === 'body' || o.what === 'json' ? `; the response is not what the requirement expects${o.what === 'body' ? wordingOf(st?.expect?.body_has, scope, c) : ''}` : ''}${o.body ? `; the body was ${q(m(o.body, 160))}` : ''}${o.server_exited ? ' (the server exited)' : ''}`);
   } else if (c.kind === 'browser') {
     const st = (c.steps || [])[(o.step || 1) - 1];
     const several = Array.isArray(o.ambiguous) && o.ambiguous.length ? `: several elements hold it only in part: ${o.ambiguous.map(x => m(x, 80)).join(', ')}` : '';
-    out.push(`step ${o.step || '?'} (${st ? stepWords(st, scope) : o.op || 'step'}) failed${o.miss && st ? `${several || `: ${missWords(st, scope)}`}${offeredWords(o.offers, m)}` : ''}${Number.isInteger(o.status) ? `: the page answered HTTP ${o.status}` : ''}${o.page ? `; the page showed ${q(m(o.page, 200))}` : ''}${o.console?.length ? `; console errors: ${m(o.console.join(' | '), 200)}` : ''}`);
+    out.push(`step ${o.step || '?'} (${st ? stepWords(st, scope, c) : o.op || 'step'}) failed${o.miss && st ? `${several || `: ${missWords(st, scope)}`}${offeredWords(o.offers, m)}` : ''}${Number.isInteger(o.status) ? `: the page answered HTTP ${o.status}` : ''}${o.page ? `; the page showed ${q(m(o.page, 200))}` : ''}${o.console?.length ? `; console errors: ${m(o.console.join(' | '), 200)}` : ''}`);
   } else out.push('the check failed');
   return `${out.join('')}${at}`.replace(/\s+/g, ' ').trim();
 }
@@ -299,6 +301,36 @@ export function failureCategory(check, res = {}) {
   }
   if (c.kind === 'file') return what === 'json' ? 'wrong output' : 'missing text';
   return 'wrong output';
+}
+
+// v8 live 3 review: how far a failing check got, beside its category: the
+// failing step of a browser, http or call check, the expectations a file or
+// command check met (texts held, the exit status, each text of its output),
+// and, only to break a tie, how near its output came to what it expects
+// (1 - edit distance / length, stdout only). A round that gets further is progress
+// (src/problems.js reportProgress). The nearness is never told: it is for
+// the progress rule alone. {point, near}.
+const nearness = (a, b) => {
+  const x = String(a ?? '').replace(/\s+/g, ' ').trim().slice(0, 300), y = String(b ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  if (!x && !y) return 1;
+  let prev = Array.from({length: y.length + 1}, (_, j) => j);
+  for (let i = 1; i <= x.length; i++) { const cur = [i]; for (let j = 1; j <= y.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1)); prev = cur; }
+  return 1 - prev[y.length] / Math.max(x.length, y.length);
+};
+export function failureReach(check, res = {}) {
+  const c = check || {}, o = res?.observed || {}, round = v => Math.round(v * 100) / 100;
+  if (['browser', 'http', 'call'].includes(c.kind)) return {point: Number.isInteger(o.step) ? o.step : 0, near: 0};
+  if (c.kind === 'file') return {point: o.what === 'lacks' ? Number(o.met ?? o.index) || 0 : o.what === 'json' ? (c.has || []).length + 1 : 0, near: 0};
+  if (c.kind !== 'command' || ['start', 'timeout', 'setup', 'local', 'run'].includes(o.what)) return {point: 0, near: 0};
+  const e = c.expect || {}, out = String(o.stdout ?? ''), err = String(o.stderr ?? ''), list = v => Array.isArray(v) ? v : v === undefined ? [] : [v];
+  const failing = list(e.stderr_has).length > 0 || e.stderr === true;
+  const exitMet = Number.isInteger(o.exit) && (Number.isInteger(e.exit) ? o.exit === e.exit : failing ? o.exit !== 0 : o.exit === 0);
+  const norm = s => String(s).replace(/\r\n/g, '\n').trimEnd();
+  const texts = [...(typeof e.stdout === 'string' ? [[norm(out) === norm(e.stdout), e.stdout, true]] : []), ...list(e.stdout_has).map(t => [out.includes(String(t)), t, true]),
+    ...list(e.stderr_has).map(t => [err.includes(String(t)), t, false]), ...(e.stderr === true ? [[!!err.trim(), '', false]] : [])];
+  // The nearness reads stdout only: a computed output getting closer, never a message's wording (the live CLI changed its stderr every round).
+  const unmet = texts.filter(([ok]) => !ok), nearOut = unmet.filter(([, , stdout]) => stdout);
+  return {point: (exitMet ? 1 : 0) + texts.length - unmet.length, near: nearOut.length ? round(Math.max(...nearOut.map(([, t]) => nearness(out, t)))) : 0};
 }
 
 // What kind of check a requirement has, as its owner may read it: the kind
@@ -343,7 +375,7 @@ export function checkProblems(card, results, issues = [], {origin = () => null, 
       detail: clip(`${r.id} (${says}): ${said}`, 900),
       facts: {requirement: {id: r.id, says: clip(says, 200), check: checkLabel(r.check, scope), evidence: clip(said, 600),
         text: clip(`${says} (${r.id}): ${said}`, 600), source: r.source || '', names, serves: r.serves || [],
-        frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0})), card: true, check_kind: r.check?.kind || '', category: failureCategory(r.check, res)},
+        frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0})), card: true, check_kind: r.check?.kind || '', category: failureCategory(r.check, res), reach: failureReach(r.check, res)},
       failure: failureHead(`${r.id} ${said}`)}});
   }
   for (const x of issues || []) {

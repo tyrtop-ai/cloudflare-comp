@@ -21,6 +21,7 @@
 // is the first balanced object after CONTROL, with the template's copyable
 // forms (true|false, [...]) read as false and [], and prose after it ignored.
 import { stripReasoning, parseObject, normalizeAction, contentOf } from './protocol.js';
+import { parse as parseJs } from './vendor/acorn.mjs';
 
 // One marker line: kind (FILE, END FILE, CONTROL) and what follows it.
 const MARKER = /^[ \t]*(?:\*\*|__|`+)?[ \t]*===[ \t]*(end[ \t]+file|file|control)\b[ \t]*:?[ \t]*(.*?)[ \t]*===[ \t]*(?:\*\*|__|`+)?[ \t]*\r?$/i;
@@ -136,7 +137,8 @@ function fieldValue(first, rest) {
     }
     return {value: undefined, used: 0};
   }
-  if (/^(?:true|false)$/i.test(t)) return {value: t.toLowerCase() === 'true', used: 0};
+  const bare = t.replace(/\s+#.*$/, '').trim();
+  if (/^(?:true|false|yes|no)$/i.test(bare)) return {value: /^(?:true|yes)$/i.test(bare), used: 0};
   try { return {value: JSON.parse(nearJson(t)), used: 0}; } catch { return {value: t.replace(/^["']|["']$/g, ''), used: 0}; }
 }
 // The control written as one field a line (the format's field list copied as
@@ -147,15 +149,22 @@ function fieldLines(text) {
     const m = FIELD_LINE.exec(lines[i]);
     if (!m) continue;
     const {value, used} = fieldValue(m[2], lines.slice(i + 1).join('\n'));
-    if (value !== undefined) out[m[1].toLowerCase()] = value;
+    const key = m[1].toLowerCase();
+    // done and wait are flags: "true" or "yes" as text reads as true.
+    if (value !== undefined) out[key] = (key === 'done' || key === 'wait') && typeof value === 'string' ? /^(?:true|yes)$/i.test(value.trim()) : value;
     i += used;
   }
   return Object.keys(out).length ? out : null;
 }
 // The control object, read leniently: {value} or {error:true}. v8 live 3:
 // near-JSON (nearJson) and a field a line (fieldLines) are read too.
+// Live 3 review: a block that starts with a field line is read as fields, as
+// one object (an ask or pieces value that holds objects is never read as
+// the control itself); the first object is read only otherwise.
 export function readControl(text) {
-  const plainText = String(text ?? '').replace(/^[ \t]*```[\w-]*[ \t]*$/gm, ''), found = firstObject(plainText);
+  const plainText = String(text ?? '').replace(/^[ \t]*```[\w-]*[ \t]*$/gm, ''), head = plainText.split('\n').find(l => l.trim());
+  if (head && FIELD_LINE.test(head)) { const fields = fieldLines(plainText); return fields ? {value: fields} : {error: true}; }
+  const found = firstObject(plainText);
   if (found && !found.cut) {
     const body = found.text
       .replace(/:\s*(?:true\s*\|\s*false|false\s*\|\s*true)\b/g, ': false')
@@ -163,12 +172,38 @@ export function readControl(text) {
     const value = tryJson(body) || tryJson(escapeRawControls(body)) || tryJson(nearJson(body)) || tryJson(escapeRawControls(nearJson(body)));
     if (value) return {value};
   }
-  // Only when the text starts with a field line, so a broken object is never read in part.
-  const head = plainText.split('\n').find(l => l.trim());
-  const fields = head && FIELD_LINE.test(head) ? fieldLines(plainText) : null;
-  return fields ? {value: fields} : {error: true};
+  return {error: true};
 }
 
+// v8 live 3 review: a CONTROL line followed by a field line closes an open
+// file only when that file is no data, config or document file (a YAML file
+// or a page about the answer format may hold such lines) and the field
+// lines, up to the next marker, include "summary" or "done".
+const DATA_FILE = /\.(?:ya?ml|json|toml|ini|md|txt)$/i;
+function fieldControl(path, lines, at) {
+  if (DATA_FILE.test(path)) return false;
+  for (let j = at + 1; j < lines.length; j++) {
+    if (markerOf(lines[j], {open: false})) break;
+    const m = FIELD_LINE.exec(lines[j]);
+    if (m && /^(?:summary|done)$/i.test(m[1])) return true;
+  }
+  return false;
+}
+// v8 live 3 review: a file left open at a natural stop is kept only when the
+// Worker can parse it as its language (JavaScript, JSON) and its last line
+// is neither a control object nor prose after code.
+const CONTROL_LINE = /^\s*\{.*"(?:summary|done|wait|ask|pieces)"\s*:/;
+const PROSE_LINE = /^[A-Z][a-z]+(?: [\w'’,-]+){3,}[.!?]$/;
+function keptAtStop(path, lines) {
+  const text = lines.join('\n'), last = [...lines].reverse().find(l => l.trim())?.trim() ?? '';
+  if (!last || CONTROL_LINE.test(last) || PROSE_LINE.test(last)) return false;
+  if (/\.json$/i.test(path)) { try { JSON.parse(text); return true; } catch { return false; } }
+  if (/\.(?:m?js|cjs)$/i.test(path)) {
+    for (const sourceType of ['module', 'script']) { try { parseJs(text, {ecmaVersion: 'latest', sourceType, allowHashBang: true}); return true; } catch {} }
+    return false;
+  }
+  return false;
+}
 // Why the model stopped, as its envelope says (a chat completion's finish_reason), or ''.
 const STOPS = new Set(['stop', 'eos', 'end_turn', 'stop_sequence']);
 const finishOf = output => output?.choices?.[0]?.finish_reason ?? output?.finish_reason ?? '';
@@ -198,7 +233,7 @@ export function parseWorkerAnswer(output, {placed = null} = {}) {
       const end = markerOf(line, {open: false});
       if (end?.kind === 'end file' && (!end.path || end.path === open.path)) { close(); continue; }
       const header = !open.fence && EXACT_FILE.exec(line), next = lines.slice(i + 1).find(l => l.trim());
-      const ends = !open.fence && (header && !/===/.test(header[1]) || EXACT_CONTROL.test(line) && next !== undefined && (JSONISH.test(next) || FIELD_LINE.test(next)));
+      const ends = !open.fence && (header && !/===/.test(header[1]) || EXACT_CONTROL.test(line) && next !== undefined && (JSONISH.test(next) || FIELD_LINE.test(next) && fieldControl(open.path, lines, i)));
       if (ends) { implicit.push(open.path); close(); }
       else {
         if (!open.started && isLeftover(line)) { open.started = true; continue; }
@@ -218,14 +253,18 @@ export function parseWorkerAnswer(output, {placed = null} = {}) {
   // the model ended itself (its envelope's finish_reason is a stop, never the
   // token cap) was not cut: its open block is the file as written, closed
   // there and listed in implicit_end, as a block the next marker closes is.
-  if (open && STOPS.has(String(finishOf(output)).toLowerCase()) && open.lines.some(l => l.trim())) { implicit.push(open.path); close(); }
+  // Live 3 review: only when the answer had a control block, the file parses
+  // as its language (where the Worker can parse it) and it ends in neither a
+  // control object nor prose: anything else is written again, as before.
+  const leftOpen = !!open;
+  if (open && STOPS.has(String(finishOf(output)).toLowerCase()) && controlText !== null && keptAtStop(open.path, open.lines)) { implicit.push(open.path); close(); }
   if (open && !files.has(open.path) && !truncated.includes(open.path)) truncated.push(open.path);
   if (sawBlocks) {
     const list = [...files].map(([path, content]) => ({path, content}));
     const read = controlText !== null && controlText.trim() ? readControl(controlText) : null;
-    // The default reads done from the files only when there is no control block at all.
+    // The default reads done from the files only when there is no control block at all, and never from an answer that left a file open.
     const control_error = controlText !== null && !read?.value;
-    const control = control_error ? {done: false} : read ? {...read.value} : {done: list.length > 0};
+    const control = control_error ? {done: false} : read ? {...read.value} : {done: list.length > 0 && !leftOpen};
     delete control.files;
     return {files: list, action: normalizeAction({...control, files: list}), truncated, implicit_end: implicit, control, fallback: null, control_error};
   }

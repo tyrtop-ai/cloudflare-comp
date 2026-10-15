@@ -137,6 +137,32 @@ The third live runs passed every behaviour check: adding and removing a to-do in
 - **Parser.** One section label such as `=== CONTENT ===` right after a FILE header is dropped. A label anywhere else stays.
 - **Format.** The format is now one short answer of the exact shape, with the control object on one line. Before, the field list sat under the CONTROL line as `- "summary": …` lines, which a small model copied. The control block is also read when a model writes it as one field per line, with a trailing comma, or with `True`. A file left open when the model stopped by itself is kept as written; only a file cut off by the token limit is written again. On a scripted set of 13 realistic answers, second calls went from 4 to 0, files written again from 2 to 0, and answers with any fallback from 8 to 4. The JSON action still works.
 
+The review of this work found four problems, now fixed:
+
+- **Wording is decided per check.** The value rule let any transform of an input through: `olleh` for `hello`, `XIV` for `14`, `Monday` for a date, a sorted list, or a page's text after a click. A text is now shown only when the value rule calls it wording and one of these holds:
+  - its check takes no input. For a page, the text must be expected before any fill, click or press. A flag the goal or a contract states, like `--help`, counts as interface, not input.
+  - it is the stderr text of a command expected to fail.
+
+  A text the goal or a served contract states, like "FizzBuzz", is no secret, but it is never shown bound to a check that takes input. Wording that a hidden requirement or an input holds in part is a value. Quoted wording is masked in repairs the same way as in the facts. The six wording texts of the live cards stay visible.
+- **Progress reads how far a check got.** A failure's key is now its id, its category and the point it reached: the failing step of a browser, http or call check, or the number of expectations a file or command check met. A round is progress when:
+  - a requirement passes for the first time since it first failed;
+  - a requirement fails in a category it never failed with before;
+  - a requirement gets further than it ever has;
+  - at its furthest point, its stdout comes nearer to what the check expects. This tie-breaker is never shown to agents.
+
+  Each requirement's best is kept across the whole run, so flip-flopping cannot count as progress. Route exhaustion uses the same key, so a worker that got further is not taken off the requirement.
+- **Field-line control.** A CONTROL line followed by field lines closes an open file only if both hold:
+  - the file is not a data, config or document file;
+  - the field lines include `summary` or `done`.
+
+  A control block that starts with a field line is read as one object, so an `ask` or `pieces` value that holds objects is read correctly.
+- **A file left open at a natural stop** is kept only if all of these hold:
+  - the answer had a control block;
+  - the Worker can parse the file (JavaScript, JSON);
+  - the file does not end in a control line or prose.
+
+  Any other such file is written again, as before. An answer that left a file open is never marked done by default. On the scripted set, now 14 answers: second calls went from 4 to 0, files written again from 3 to 1, and answers with any fallback from 9 to 5.
+
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.

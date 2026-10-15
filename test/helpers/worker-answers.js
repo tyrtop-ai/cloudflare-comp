@@ -26,7 +26,9 @@ export const ANSWERS = Object.freeze({
   legacy_json: envelope(JSON.stringify({summary: 'Wrote the converter.', files: [{path: 'convert.py', content: CODE}], done: true})),
   files_only: envelope(block('convert.py', CODE)),
   prose_around: envelope(`Here is the corrected file.\n\n${block('convert.py', CODE)}=== CONTROL ===\n{"summary": "Wrote the converter.", "done": true}\n\nLet me know if anything else is needed.`),
-  open_at_stop: envelope(block('convert.py', CODE, false))
+  // A file left open at a natural stop: kept only when the answer has a control block, it parses, and it ends in code (live 3 review).
+  open_at_stop: envelope(block('convert.py', CODE, false)),
+  open_after_control: envelope(`=== CONTROL ===\n{"summary": "Wrote the module.", "done": true}\n${block('app.js', 'export function add(a, b) {\n  return a + b;\n}\n', false)}`)
 });
 
 // What one answer costs: retry (the room asks again), events (format_fallback and code_retry notes).
