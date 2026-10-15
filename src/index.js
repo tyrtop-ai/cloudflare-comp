@@ -2650,8 +2650,8 @@ export class ControlRoom extends DurableObject {
     if(!carrier)return {grown:[],rest:gaps};
     const goal=this.userGoal(),stated=goalMethods(goal),esm=esmSyntax(files.get(entry)||''),grown=[],rest=[],seen=new Set(),noun=this.goalNoun();
     for(const g of gaps) {
-      // Review (#6): a stated method with a generic name (remove(id), view(id)) grows under a specific one, removeTicket, and start() returns it under the stated key.
-      const s=stated.find(s=>signature(s)===g.operation),generic=s&&(GENERIC_NAMES.has(s.name)||s.name==='view'||Object.hasOwn(VERB_CLASS,s.name)),name=s&&!generic?s.name:operationName(s?s.name:g.operation,noun);
+      // Review (#6; review 2 #5): a stated method with a generic or one-word name (remove(id), view(id), close(id), search(query)) grows under the operation and the goal's noun (removeTicket, closeTicket, searchTickets; never a lifecycle name such as close), and start() returns it under the stated key.
+      const s=stated.find(s=>signature(s)===g.operation),generic=s&&(GENERIC_NAMES.has(s.name)||functionKey(s.name)===''),name=s&&!generic?s.name:operationName(s?s.name:g.operation,noun);
       // Review (#9): one name per operation per batch (view a ticket and view a ticket by id are one).
       const op=s?s.name:goalOps(goal,{name})[0]||name;
       if(g.fn||g.same_as||!growable(name)||seen.has(op)||!s&&!this.performsGoal({name})||this.performedOp(name,s)||this.linkableName(files,surfaces,name,entry)){rest.push(g);continue;}
@@ -2944,6 +2944,8 @@ export class ControlRoom extends DurableObject {
         const own=(dec.resubject||p.kind==='stuck'&&!p.flags.rounds_exhausted)&&!p.parties.some(x=>x.owner===m&&x.role==='subject')?{parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:clip(`${n.label} cannot finish its branch: ${p.detail}`,950)}:{};
         // v7.15.6 (R4): a branch with nobody left to take it declines it as a whole: the parent routes past it, and decides it anew (no directive travels up).
         const declined=dec.declined?{declined:[...new Set([...(p.flags.declined||[]),m])]}:{};
+        // v7.15.15 review 2 (#3): a branch that could not place a grown name refused the row: it is never ranked for it again.
+        if(dec.rule==='D9'&&p.directive?.grow)declined.refused=[...new Set([...(p.flags.refused||[]),m])];
         if(this.moveProblem(p,{holder:n.parent,directive:null,...own,flags:{...p.flags,escalated_from:m,...declined},trail:trail(p,'escalate',n.parent,dec.rule)})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_escalated',clip(`${p.kind} problem (${dec.rule}) goes to the parent${dec.reason?` (${dec.reason})`:''}: ${p.detail}`,600),n.parent);
           this.wake(n.parent);
@@ -3206,6 +3208,13 @@ export class ControlRoom extends DurableObject {
       const named=grow||operation?null:p.parties.find(x=>x.role==='provider')?.owner||(p.kind==='unresolved'?(f.named?this.buildSourceOrigin(f.via,f.named)?.owner:datas.length===1?datas[0].id:null):null);
       found.push({p,provider:named?nextDirectChild(m,named):null,reader:reader.owner,path:reader.owner_path,names,calls,operation:!!operation,api:!!api||!!grow?.api,gap:!!grow?.gap||!!f.operation?.gap,request,esm});
     }
+    // v7.15.15 review 2 (#1): two growth rows for one name at this manager are one: the later's requests join the first, which alone is ranked.
+    for(const x of [...found]) {
+      const first=found.find(y=>y!==x&&y.names.length===1&&x.names.length===1&&y.names[0]===x.names[0]&&found.indexOf(y)<found.indexOf(x));
+      if(!first||!x.p.facts.operation||!first.p.facts.operation)continue;
+      const requests=[...(first.p.facts.requests||[]),...(x.p.facts.requests||[])];
+      if(this.moveProblem(first.p,{facts:{...first.p.facts,requests}})&&this.moveProblem(x.p,{status:'closed',outcome:'merged',facts:{...x.p.facts,requests:[]}})){found.splice(found.indexOf(x),1);this.event(m,'problem_merged',clip(`${x.names[0]}: two growth rows are one; its requests join the first.`,300));}
+    }
     const chosen=[];
     // v7.15.15 review (#10): a child whose split is still in flight (run23's Ticket management at 40.8 s) is no place yet: the row waits until it is a manager with children or a worker, then goes on it or its branch, with no second ranking.
     const unsettled=id=>this.node(id)?.phase==='decompose'&&!this.children(id).some(k=>!isRuntimeNode(k)&&!['retired','failed'].includes(k.status));
@@ -3218,7 +3227,8 @@ export class ControlRoom extends DurableObject {
       }
       // v7.15.7 review (T3(ii), probe H): a row that came up from the reader's own manager was looked at there (mine); an api row at the top was not: the carrier's branch is a candidate (it relays down to the carrier's siblings), never the carrier itself.
       const mine=x.reader===m||x.api?null:nextDirectChild(m,x.reader),pool=[];
-      for(const c of live.filter(c=>c.id!==mine&&c.id!==x.reader&&(!starts(c.id)||x.api&&branch(c.id))&&(worker(c.id)||branch(c.id))&&!x.names.every(nm=>askedOf(c.id).has(nm)))) {
+      // v7.15.15 review 2 (#3): a branch that refused this row (flags.refused) is never a candidate for it again, on the way down or up.
+      for(const c of live.filter(c=>c.id!==mine&&c.id!==x.reader&&!(x.p.flags?.refused||[]).includes(c.id)&&(!starts(c.id)||x.api&&branch(c.id))&&(worker(c.id)||branch(c.id))&&!x.names.every(nm=>askedOf(c.id).has(nm)))) {
         // v7.15.5 merge: never an operation piece while a data piece is here (a data name; an operation's pieces are its candidates, T3); nor one that has the name in another case (createdata).
         if(!x.operation&&worker(c.id)&&datas.length&&!datas.some(d=>d.id===c.id)&&this.opPieces(m).has(c.id))continue;
         const own=new Set([...this.promisedOf(c.id).map(g=>g.name),...(await exportsOf(c.id)).names].map(fold));
@@ -3331,7 +3341,7 @@ export class ControlRoom extends DurableObject {
     for(const r of requests) {
       const w=this.node(r.worker),up=w?.parent,name=r.name;
       if(!up||!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id).length)continue;
-      const own=answered.items?.find(f=>f.name===name),offer=answered.provided?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=`const { ${name} } = require('./${name}');`;
+      const own=answered.items?.find(f=>f.name===name),offer=answered.provided||this.planIndex().has(name)?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=`const { ${name} } = require('./${name}');`;
       const [kind,value,fn]=offer?['provided',providedText(offer.item,offer.owner),providedFn(offer.item,offer.owner)]:
         answered.exported?['unowned',`No piece of the application promises ${r.want}, but "${answered.exported}"'s module exports it: import it on its own line, with the name as the path: ${line} The builder links it to that module. Do not write it yourself.`,null]:
         ['unowned',`No piece of the application promises ${r.want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`,null];
@@ -3342,6 +3352,48 @@ export class ControlRoom extends DurableObject {
       this.event(up,kind==='provided'?'route_provided':'route_unowned',clip(kind==='provided'?`${r.want}: no piece promised it; "${offer.owner}" promises it now.`:value,500),r.worker);
     }
   }
+  // v7.15.15 review 2 (#4): a split landed on id (its pieces spawned, or Clef
+  // found it atomic): a growth row its parent holds waiting on it
+  // (grow_wait) is decided now, not when id's branch completes.
+  wakeGrowWaiter(id) {
+    const up=this.node(id)?.parent;
+    if(up&&this.problems("holder=? AND status='open'",up).some(p=>p.flags.grow_wait?.child===id))this.wake(up);
+  }
+  // v7.15.15 review 2 (#1): the one invariant of a request a growth row
+  // holds (facts.requests): it is answered on every transition that takes the
+  // row out of the open state without a promise_added (closed for any
+  // reason, superseded by a new report, handed to its reader by any rule,
+  // the hop or round bound, the owed path, the retask of the branch holding
+  // it): provided when the name is promised now, an import when some module
+  // exports it, else the requester's to write. A promise_added answers its
+  // requests itself, and an answered request leaves route_workers, so each is
+  // answered once. orphans (Continue, the idle nudge): also a request with no
+  // row, no hop and no message in flight. True when one was answered.
+  async settleRequests(orphans=false) {
+    const open=new Set(),left=[],waiting=id=>query(this.db(),'SELECT request_id FROM route_workers WHERE request_id=?',id).length>0;
+    for(const p of this.problems("facts LIKE '%\"requests\":[{%'")) {
+      const rs=(p.facts.requests||[]).map(r=>({...r,name:r.name||p.facts.names?.[0]}));
+      if(p.status==='open')rs.forEach(r=>open.add(r.request_id));else left.push(...rs);
+    }
+    if(orphans)for(const w of query(this.db(),'SELECT worker,topic,request_id FROM route_workers')) {
+      const name=String(w.topic).replace(/^fn /,'');
+      if(open.has(w.request_id)||left.some(r=>r.request_id===w.request_id)||!validName(name)||query(this.db(),'SELECT request_id FROM route_hops WHERE request_id=?',w.request_id).length||query(this.db(),'SELECT id FROM messages WHERE delivered=0 AND body LIKE ?',`%${w.request_id}%`).length)continue;
+      left.push({worker:w.worker,request_id:w.request_id,topic:w.topic,want:name,name});
+    }
+    let answered=false;
+    for(const r of left.filter(r=>!open.has(r.request_id)&&waiting(r.request_id))) {
+      const plan=this.planIndex().has(r.name),exporter=plan?'':await this.exporterOf(r.name,r.worker);
+      this.answerRequests([r],plan?{provided:true}:exporter?{exported:exporter}:{write:true});
+      answered=true;
+    }
+    return answered;
+  }
+  // The live piece whose module exports name (none: '').
+  async exporterOf(name, except='') {
+    for(const n of this.allNodes().filter(n=>n.id!==except&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status)&&!this.manager(n.id)))
+      for(const f of productionFiles(this.files(n.id)).filter(f=>LINKABLE.test(f.path))){let t='';try{t=await this.indexedContent(n.id,f.path)??'';}catch{}if(providedNames(exportSurface(f.path,t)).has(name))return n.label;}
+    return '';
+  }
   // v7.15.15 review (#1): a promised name as worker id finds it: on its walk
   // (the nearest level that offers it, as routeFunction answers), else from
   // its deepest holder anywhere in the plan.
@@ -3350,16 +3402,22 @@ export class ControlRoom extends DurableObject {
     const c=[...(this.planIndex().get(name)||[])].find(c=>c!==id),n=c&&this.node(c);
     return n?{item:this.promisedOf(c).find(f=>f.name===name),owner:n.label}:null;
   }
-  // v7.15.15 review (#4): the promise anywhere that is the function a request
-  // names under another name: one that performs the same goal operation
-  // (performedOp), or one verb by its synonyms and the same object
-  // (getTickets beside readTickets). null for none, or two.
+  // v7.15.15 review 2 (#2): the promise anywhere that is the function a
+  // request names under another name: the same verb by its synonyms and
+  // exactly the same object words, nothing more on either side (getTickets
+  // is readTickets; deleteAllTickets, deleteTickets, createTicketForm,
+  // viewTicketHistory, removeTicketFromList and updateTicketStatus are none
+  // of deleteTicket, createTicket, viewTicket and updateTicket). Clef's
+  // no-match on the walk stands for anything looser. Two candidates: the one
+  // that provides its object rather than takes it (readTickets, not a GUI's
+  // showTickets(tickets)), else none.
   renameOf(id, name) {
-    const goal=this.userGoal(),key=functionKey(name),plan=this.planIndex(),hits=new Set();
-    if(this.performsGoal({name})&&this.performedOp(name)){const ops=goalOps(goal,{name});for(const p of this.plannedOperations())if(goalOps(goal,{name:p.method,operation:p.operation}).some(v=>ops.includes(v))&&plan.has(p.method))hits.add(p.method);}
-    if(key)for(const n of plan.keys())if(n!==name&&functionKey(n)===key)hits.add(n);
-    const [hit,...more]=[...hits];
-    return hit&&!more.length?this.offerFor(id,hit):null;
+    const key=functionKey(name);
+    if(!key)return null;
+    const obj=key.split(' ').slice(1),takes=f=>(f.params||[]).some(x=>obj.includes(String(x).toLowerCase())),hits=[];
+    for(const [n,ids] of this.planIndex())if(n!==name&&functionKey(n)===key)for(const c of ids){const f=this.promisedOf(c).find(g=>g.name===n);if(f&&c!==id)hits.push(f);}
+    const names=[...new Set(hits.map(f=>f.name))],pick=names.length===1?names[0]:(([one,...more])=>more.length?null:one)([...new Set(hits.filter(f=>!takes(f)).map(f=>f.name))]);
+    return pick?this.offerFor(id,pick):null;
   }
   // What the named children export, read from this manager's linked bundle
   // (a sub-manager by the modules its branch offers): the facts a decision
@@ -4827,7 +4885,7 @@ export class ControlRoom extends DurableObject {
       this.event(m,'route_provided',`${want}: ${held?`"${o.owner}" promises it`:`the plan has it as ${o.item.name} from "${o.owner}"`}.`);
       return {kind:'provided',value:providedText(o.item,o.owner),fn:providedFn(o.item,o.owner)};
     }
-    const open=this.problems("kind='unresolved' AND status!='closed'").find(p=>p.facts.operation?.name===name&&p.facts.names?.length===1);
+    const open=this.problems("kind='unresolved' AND status='open'").find(p=>p.facts.operation?.name===name&&p.facts.names?.length===1);
     if(open) {
       this.db().exec('UPDATE problems SET facts=?,updated=? WHERE id=?',JSON.stringify({...open.facts,requests:[...(open.facts.requests||[]),r]}),Date.now(),open.id);
       this.event(m,'route_grow',`${want}: its growth is already being decided for another request; "${worker.label}" waits on it too.`);
@@ -5055,7 +5113,15 @@ export class ControlRoom extends DurableObject {
     // Never let this turn's final status overwrite a newer completion/message.
     if(this.receive(id).length || staleTurn || this.wakeGeneration(id)!==seenWake) this.wake(id);
   }
+  // v7.15.15 review 2 (#1): every turn ends by settling the requests growth
+  // rows hold (settleRequests): whatever moved a row (a rule, a supersede, a
+  // retask, the hop or round bounds), its requesters are answered once it
+  // has left the open state without a promise_added.
   async turn(id) {
+    try {return await this.agentTurn(id);}
+    finally {if(this.planned())await this.settleRequests();}
+  }
+  async agentTurn(id) {
     const n = this.node(id);
     if (!n || n.status !== 'ready') return;
     const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
@@ -5174,6 +5240,7 @@ export class ControlRoom extends DurableObject {
           if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
           this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
           n.phase='implement';splitting=false;
+          this.wakeGrowWaiter(id);
           // From here it is an isolated worker, as on its later turns: its own
           // contract, and no parent, sibling or neighbour memory (decision 2; a
           // sibling's prune note named getTickets to the create worker).
@@ -5457,6 +5524,7 @@ export class ControlRoom extends DurableObject {
         if(children.length === action.spawn.length) {
           this.db().exec("UPDATE agents SET phase='manager' WHERE id=?",id);
           this.event(id,'decompose',`Delegated all ${children.length} behaviors; now permanently a manager.`);
+          this.wakeGrowWaiter(id);
         } else if (!this.manager(id)) {
           this.db().exec("UPDATE agents SET phase='decompose',status='waiting' WHERE id=?",id);
           this.event(id,'split_capacity_blocked','Unable to allocate all code-writing children; keep the delegated code assignment awaiting additional capacity.');
@@ -5780,6 +5848,8 @@ export class ControlRoom extends DurableObject {
           tally();
           let [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && active.size===0 && this.nudgeQuiescentManager()) [id]=this.takeReadyBatch(1,spent>=cap);
+          // v7.15.15 review 2 (#1): a worker waiting on a request nobody holds any more is answered (and so woken) before the idle nudge, which skips it.
+          if (!id && active.size===0 && this.planned() && await this.settleRequests(true)) [id]=this.takeReadyBatch(1,spent>=cap);
           if (!id && spent<cap && active.size===0 && this.nudgeQuiescentLeaf()) [id]=this.takeReadyBatch(1);
           if (!id) break;
           const step=Number(this.get('step','0'))+1;
@@ -5868,6 +5938,8 @@ export class ControlRoom extends DurableObject {
     }
     this.save('failures',failures);
     for(const id of continued)this.clearFailures(id);
+    // v7.15.15 review 2 (#1): Continue answers a request no row, hop or message holds any more.
+    if(this.planned())await this.settleRequests(true);
     // A planned worker waiting with no request open, nothing unread and no
     // source has nothing that would wake it; Continue does (slice B review).
     if(this.planned())for(const n of this.allNodes().filter(x=>x.status==='waiting'&&x.parent&&x.phase==='implement'&&!isRuntimeNode(x)&&!this.manager(x.id)))

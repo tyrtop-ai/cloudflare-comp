@@ -124,6 +124,17 @@ test('v7.15.15 (G1, review #3, #10): run23\'s timing through the real builders, 
   assert.equal(events(room,'child_retasked').length,0,'no retask of a piece in its split');
   split.release();await splitting;
   assert.deepEqual(room.children('root.2').map(c=>c.label),['Data storage','Create ticket','Update ticket','Delete ticket']);
+  // Review 2 (#4): the split's landing wakes Root for the row that waits on it: the relay and the placement happen now, before any of Ticket management's pieces has run.
+  assert.equal(room.node('root').status,'ready','the split woke Root');
+  await room.turn('root');
+  assert.equal(dbEvents(room,'promise_relayed').length,1,trace(room));
+  await room.turn('root.2');
+  // Data storage, Clef's pick there, is itself still at its gate: the row waits on it, and its landing (atomic) wakes Ticket management.
+  assert.deepEqual(room.problems('1=1').map(p=>[p.holder,p.flags.grow_wait?.child]),[['root.2','root.2.1']]);
+  await room.turn('root.2.1');
+  assert.equal(room.node('root.2').status,'ready','Data storage\'s landing woke Ticket management');
+  await room.turn('root.2');
+  assert.deepEqual([dbEvents(room,'promise_added').length,replies(room,'root.1').length,room.children('root.2').filter(c=>c.status==='done').length],[1,1,0],'placed and answered before the branch has built anything');
   await settle(room,300);
   assert.equal(room.get('status'),'complete',trace(room));
   assert.equal(events(room,'split_rejected').length,0,'the split was never refused for a promise changed under it');
@@ -163,7 +174,6 @@ test('v7.15.15 (G1, review #1, #2): two requests for one name share one growth r
 });
 
 test('v7.15.15 (G1, review #4): a request for a function the plan has under another name is provided as that one (getTickets beside readTickets), never grown; a request inside the assignment still answers "write it"; nobody covering it up to Root, the requester is answered to write it',async()=>{
-  const settledTm=async opts=>{const r=await construction({leaf:leaf23,...opts},'implement');await r.room.putFile('root.2','ticketManagement.js',tm(false));r.room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");return r;};
   {
     const {room,calls}=await settledTm({clef:clef23(()=>true)});
     room.askManager('root.3','fn getTickets','returns all stored tickets','getTickets');
@@ -183,6 +193,58 @@ test('v7.15.15 (G1, review #4): a request for a function the plan has under anot
     assert.deepEqual([events(room,'promise_added').length,events(room,'child_retasked').length,room.promisedOf('root.2').length],[0,0,4]);
     assert.deepEqual(room.problems('1=1').map(p=>[p.status,p.outcome]),inside>=0.5?[]:[['closed','exhausted']]);
   }
+});
+
+// Run23 at construction with Ticket management written whole (Clef found it atomic) and done.
+const settledTm=async opts=>{const r=await construction({leaf:leaf23,...opts},'implement');await r.room.putFile('root.2','ticketManagement.js',tm(false));r.room.db().exec("UPDATE agents SET status='done' WHERE id='root.2'");return r;};
+const WRITE_IT='No piece of the application promises viewTicket (returns one ticket by id), and no other piece\'s assignment covers it (your manager asked each level): write it in your own module.';
+
+test('v7.15.15 review 2 (#1): a request joined to a G3 row is answered whatever ends that row: superseded by a new report, handed to its reader (the entry, nobody covering it), or gone (Continue and the idle nudge answer a request no row, hop or message holds)',async()=>{
+  for(const mode of ['superseded','reader','orphan']) {
+    const {room}=await settledTm({clef:clef23(()=>false)});
+    room.insertProblem({holder:'root',kind:'unresolved',stage:'link',source:'root.9',input:'fp1',parties:[{path:'entry.js',owner:'root.1',owner_path:'entry.js',digest:'',role:'reader'}],detail:"Import './viewTicket' does not match any published module.",
+      facts:{specifier:'./viewTicket',names:['viewTicket'],unpromised:true,esm:false,operation:{op:'viewTicket',name:'viewTicket',params:[],line:'start() returns it as viewTicket: viewTicket()',does:'performs the goal\'s view ticket operation'},provider_text:''},flags:{wave:'w1'}});
+    // The request reaches Root's needScope while the G3 row is still open (its routing walk already ran).
+    room.askManager('root.3','fn viewTicket','returns one ticket by id','viewTicket');
+    room.db().exec('UPDATE messages SET delivered=1');
+    const [w]=room.db().exec('SELECT request_id,topic FROM route_workers').toArray();
+    assert.deepEqual(await room.requestGrowth('root',room.node('root.3'),{name:'viewTicket',question:'returns one ticket by id',request_id:w.request_id,topic:w.topic}),{wait:true});
+    assert.deepEqual([dbEvents(room,'route_grow').map(e=>e.body),room.problems("kind='unresolved'").map(p=>p.facts.requests?.map(r=>r.worker))],[['viewTicket (returns one ticket by id): its growth is already being decided for another request; "GUI module" waits on it too.'],[['root.3']]],mode);
+    assert.equal(replies(room,'root.3').length,0,mode);
+    if(mode==='superseded'){room.closeProblemsFrom('root.9','superseded');room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");await room.turn('root');}
+    if(mode==='reader'){room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");await room.turn('root');assert.deepEqual(room.problems("kind='unresolved'").map(p=>[p.status,p.assignee]),[['assigned','root.1']],'the entry\'s to write');}
+    if(mode==='orphan'){room.db().exec('DELETE FROM problems');assert.equal(await room.settleRequests(),false,'no row: only Continue and the nudge look');assert.equal(await room.settleRequests(true),true);}
+    assert.deepEqual(replies(room,'root.3'),[['root','unowned',mode==='orphan'?WRITE_IT.replace(' (returns one ticket by id)',''):WRITE_IT]],mode+(mode==='orphan'?' (the request alone: its need is gone with its row)':''));
+    assert.equal(room.db().exec('SELECT COUNT(*) AS n FROM route_workers').toArray()[0].n,0,mode);
+  }
+});
+
+test('v7.15.15 review 2 (#2): a rename is the same verb by its synonyms and exactly the same object, one candidate across the plan (the store\'s, not a GUI\'s showTickets(tickets)); every other name is no rename',async()=>{
+  const {room}=await settledTm({clef:clef23(()=>false)});
+  room.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify([...TM.slice(0,2),fn('viewTicket','returns one ticket',['id']),...TM.slice(2)]),'root.2');
+  room.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify([fn('startGui','runs the GUI'),fn('showTickets','renders the ticket list in the page',['tickets'])]),'root.3');
+  const as=n=>room.renameOf('root.1',n)?.item.name||null;
+  assert.deepEqual(Object.fromEntries(['getTickets','fetchTickets','loadTickets','getTicket','findTicket','removeTicket','eraseTicket','editTicket','addTicket'].map(n=>[n,as(n)])),
+    {getTickets:'readTickets',fetchTickets:'readTickets',loadTickets:'readTickets',getTicket:'viewTicket',findTicket:'viewTicket',removeTicket:'deleteTicket',eraseTicket:'deleteTicket',editTicket:'updateTicket',addTicket:'createTicket'});
+  assert.deepEqual(['deleteAllTickets','deleteTickets','createTicketForm','viewTicketHistory','removeTicketFromList','updateTicketStatus','createTickets','loadTicketsFromFile','storeTickets','addComment','formatDate'].map(as).filter(Boolean),[],'more or other object words on either side are another function');
+});
+
+test('v7.15.15 review 2 (#3): a branch that refused a relayed row is never ranked for it again: the row goes back up and closes at Root with the requester answered, with no delegation back down',async()=>{
+  const {room,calls}=await linked(SRC.entry,{clef:clef23((label,q)=>/^viewTicket\(/.test(q)&&label==='Ticket management')});
+  room.askManager('root.3','fn viewTicket','returns one ticket by id','viewTicket');
+  for(let i=0;i<4;i++)for(const id of ['root','root.2']){room.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);await room.turn(id);}
+  const [p]=room.problems("kind='unresolved'");
+  assert.deepEqual([p.status,p.outcome,p.flags.refused,p.trail.map(t=>[t.at,t.action,t.to,t.rule])],['closed','exhausted',['root.2'],[['root','relay','root.2','D9'],['root.2','escalate','root','D9'],['root','close','','D9']]],trace(room));
+  assert.equal(calls.clef.filter(c=>c.state?.children&&/^viewTicket\(/.test(c.state.question)).length,2,'Root once, Ticket management once; never Ticket management again');
+  assert.deepEqual(replies(room,'root.3'),[['root','unowned',WRITE_IT]]);
+});
+
+test('v7.15.15 review 2 (#5): a one-word stated method nothing performs grows as its verb and the goal\'s noun, never a lifecycle name, and start() returns it under the stated key',async()=>{
+  const {room}=await linked(SRC.entry,{clef:clef23(viewPick)});
+  room.entryOwner=()=> 'root.1';
+  room.set('goal','Build a ticket tracker. start() returns an object with close(id), archive(id) and search(query).');
+  const g=room.gapOperations('root.5','components/entry/entry.js',new Map([['components/entry/entry.js',SRC.entry]]),new Map(),[{operation:'close(id)'},{operation:'archive(id)'},{operation:'search(query)'}]);
+  assert.deepEqual(g.grown.map(x=>[x.facts.names[0],x.facts.operation.op,x.facts.operation.params]),[['closeTicket','close',['id']],['archiveTicket','archive',['id']],['searchTickets','search',['query']]]);
 });
 
 // Run23 at the linked state: Ticket management split into its four pieces, every piece written, the entry without view.
@@ -259,9 +321,9 @@ test('v7.15.15 (G2, G3): what stays the entry\'s: a gap the plan has a performer
   assert.deepEqual(g.rest.map(x=>x.operation),['update a ticket','read tickets','list tickets'],'a performer the entry left out; readTicket and listTickets perform no operation this goal names');
   // A name a piece promises or a module exports is a link to make, the entry's.
   assert.deepEqual(room.gapOperations('root.5','components/entry/entry.js',new Map([...files,['components/x/view.js','exports.viewTicket = id => null;\n']]),surfaces,[{operation:'view a ticket'}]).rest.map(x=>x.operation),['view a ticket']);
-  // A method the goal states that nothing performs (v7.15.13's stated gap) grows under its own name and params.
+  // A method the goal states that nothing performs (v7.15.13's stated gap) grows with its params; a one-word name (review 2 #5) as verb and the goal's noun, returned under the stated key.
   room.set('goal','Build a ticket tracker. start() returns an object with createTicket(data) and summarize(tickets).');
-  assert.deepEqual(room.gapOperations('root.5','components/entry/entry.js',files,surfaces,[{operation:'summarize(tickets)'}]).grown.map(x=>x.facts.operation),[{op:'summarize',name:'summarize',params:['tickets'],line:'start() returns it as summarize: summarize(tickets)',does:'performs the goal\'s summarize operation; Entry module returns it from start() as summarize',gap:'summarize(tickets)'}]);
+  assert.deepEqual(room.gapOperations('root.5','components/entry/entry.js',files,surfaces,[{operation:'summarize(tickets)'}]).grown.map(x=>x.facts.operation),[{op:'summarize',name:'summarizeTicket',params:['tickets'],line:'start() returns it as summarize: summarizeTicket(tickets)',does:'performs the goal\'s summarize operation; Entry module returns it from start() as summarize',gap:'summarize(tickets)'}]);
   room.set('goal',GOAL);
   room.entryOwner=()=> 'root.3';
   assert.deepEqual(room.gapOperations('root.5','components/entry/entry.js',files,surfaces,[{operation:'view a ticket'}]).grown,[],'not a start carrier');
@@ -311,4 +373,17 @@ test('v7.15.15 review (#7): nobody covering the operation up to Root, it goes ba
     assert.match(ticket,/Your manager decided: No piece promises viewTicket, and no piece's assignment covers it \(your manager asked each\): write viewTicket\(\) here, in your own module, and return it from start\(\) as viewTicket\./);
     assert.doesNotMatch(ticket,/Nothing was run/);
   }
+});
+
+test('v7.15.15 review 2 (#1): two growth rows for one name at one manager merge before ranking: one Clef call, one promise_added, every requester answered',async()=>{
+  const {room,calls}=await settledTm({clef:clef23(viewPick)});
+  for(const id of ['root.1','root.3'])room.askManager(id,'fn viewTicket','returns one ticket by id','viewTicket');
+  room.db().exec('UPDATE messages SET delivered=1');
+  for(const w of room.db().exec('SELECT worker,request_id,topic FROM route_workers ORDER BY worker').toArray())
+    room.insertProblem({holder:'root',kind:'unresolved',stage:'work',source:w.worker,input:`request:${w.request_id}`,parties:[{path:'',owner:w.worker,owner_path:'',digest:'',role:'reader'}],detail:'asks for viewTicket',
+      facts:{names:['viewTicket'],unpromised:true,specifier:'./viewTicket',esm:false,operation:{op:'viewTicket',name:'viewTicket',params:[],line:'imports it: viewTicket()',does:'returns one ticket by id',request:true},requests:[{...w,want:'viewTicket (returns one ticket by id)'}]},flags:{wave:'w'}});
+  room.db().exec("UPDATE agents SET status='ready' WHERE id='root'");
+  await room.turn('root');
+  assert.deepEqual([dbEvents(room,'problem_merged').map(e=>e.body),dbEvents(room,'promise_added').length,calls.clef.filter(c=>c.state?.children).length],[['viewTicket: two growth rows are one; its requests join the first.'],1,1],trace(room));
+  assert.deepEqual(['root.1','root.3'].map(id=>replies(room,id).map(r=>r[1])),[['provided'],['provided']]);
 });

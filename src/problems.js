@@ -581,7 +581,17 @@ export function lowestCommon(placed, kindOf, flags={}) {
 // Root covers it: the requester writes it), closed as it is answered; or one
 // whose chosen child is still splitting, which waits for it.
 const settled=add=>add?.answered?{rule:'D9',action:'exhausted',answered:add.answered,reason:add.reason||''}:add?.wait?{rule:'D9',action:'defer',wait:add.wait,reason:add.reason||''}:null;
+// v7.15.15 review 2 (#1, #3): a function request's growth row is never a
+// reader's repair: a decision that is no placement, wait or escalation (D4,
+// D6, D3 back into a branch that refused it, the hop bound at Root) answers
+// its requester instead (provided when the name is promised by then, else
+// its own to write) and closes it.
 export function deterministicDecision(p, ctx) {
+  const dec=decideRow(p,ctx);
+  if(!p.facts?.operation?.request||dec.rule==='D9'||['escalate','defer'].includes(dec.action))return dec;
+  return {rule:'D9',action:'exhausted',answered:{write:true},reason:`no piece takes ${p.facts.names?.[0]||'it'} (${dec.rule})`};
+}
+function decideRow(p, ctx) {
   const flags=p.flags||{},placed=placeParties(ctx.holder,p.parties),declined=new Set(flags.declined||[]),names=ids=>ids.map(id=>ctx.labelOf?.(id)||id).join(', ');
   // Review: a route's declines are no hops (run13 with every child declining
   // closed at root.2 at 6 with Create and Update untried), and below Root
@@ -684,7 +694,7 @@ function decideParties(p, ctx, placed, flags) {
   if(add?.relay)return {rule:'D9',action:'assign',child:add.child,side:'provider',grow:add.grow,instructions:add.instructions};
   if(add)return {rule:'D9',action:'retask',child:add.child,task:add.task,interfaces:add.interfaces,promise_add:add};
   // D3 delegate: every party lies in one child branch; that branch decides.
-  if(kids.length===1&&ctx.kindOf(kids[0])==='manager'&&flags.escalated_from!==kids[0])return {rule:'D3',action:'assign',child:kids[0],delegate:true};
+  if(kids.length===1&&ctx.kindOf(kids[0])==='manager'&&flags.escalated_from!==kids[0]&&!(flags.refused||[]).includes(kids[0]))return {rule:'D3',action:'assign',child:kids[0],delegate:true};
   // D4 single owner: every party lies in one worker.
   if(kids.length===1&&ctx.kindOf(kids[0])==='worker')return {rule:'D4',action:'assign',child:kids[0],side:DEFAULT_ROLE[p.kind]||'reader'};
   // A child escalated what its branch lacks, and exactly one other child
