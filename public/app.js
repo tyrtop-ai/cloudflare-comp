@@ -144,6 +144,19 @@ function showTree(agents) {
   if($('node-detail'))$('node-detail').innerHTML=renderDetail(agents);
   drawPath();
 }
+// The status cells flash once when the run reaches a limit: every slot busy,
+// the agent cap, the depth cap, or a new limit event (agent or depth cap, no
+// capacity for a split, the turn budget, repair rounds exhausted).
+let limitState=null,lastLimitEvent=null;
+const LIMIT_EVENTS=/^(?:limit|split_capacity_blocked|repair_exhausted)$/;
+function flashLimits(s) {
+  const c=s.settings||{},agents=s.agents||[],depth=Math.max(0,...agents.map(n=>n.id.split('.').length-1));
+  const now={'active-parallel':(s.active_agents?.length||0)>=(s.max_parallel||Infinity),'agent-count':!!c.max_agents&&agents.length>=c.max_agents,'depth':!!c.max_depth&&depth>=c.max_depth};
+  const events=(s.events||[]).filter(e=>LIMIT_EVENTS.test(e.kind)||e.kind==='paused'&&/budget/i.test(e.body||'')),last=events.at(-1)?.id??null;
+  if(limitState){for(const [id,on] of Object.entries(now))if(on&&!limitState[id])flashLimit($(id));
+    if(last!=null&&last!==lastLimitEvent){const e=events.at(-1);flashLimit($(/depth/i.test(e.body||'')?'depth':/agent cap|no space|capacity/i.test(e.body||'')?'agent-count':e.kind==='paused'?'steps':'status'));}}
+  limitState=now;lastLimitEvent=last;
+}
 function render(s) {
   current=s;
   applySnapshotSettings(s);
@@ -155,6 +168,7 @@ function render(s) {
   $('steps').textContent=s.step??0;
   $('agent-count').textContent=s.agents?.length||0;
   $('depth').textContent=Math.max(0,...(s.agents||[]).map(n=>n.id.split('.').length-1));
+  flashLimits(s);
   if($('build-verdict')) {
     const b=s.build;
     $('build-verdict').textContent=s.build_infrastructure?'EXECUTOR UNAVAILABLE':!b?'NOT RUN':b.passed?'BUILD PASSED':'BUILD FAILED';
@@ -210,6 +224,10 @@ function logValue(id,pos) {const [lo,hi]=boundsOf(id);return Math.max(lo,Math.mi
 function logPosition(id,value) {const [lo,hi]=boundsOf(id),x=Math.max(lo,Math.min(hi,Number(value)||lo));return hi>lo?Math.round(LOG_STEPS*Math.log(x/lo)/Math.log(hi/lo)):0;}
 function countSetting(id) {const [lo,hi]=boundsOf(id),v=Math.round(Number(numberOf(id)?.value));return Number.isFinite(v)&&v>0?Math.max(lo,Math.min(hi,v)):lo;}
 const setCount=(id,value)=>{const box=numberOf(id),slider=$(id);if(box)box.value=value;if(slider)slider.value=logPosition(id,value);};
+// A short red flash where a limit is reached: a count control at its floor or
+// ceiling, a status cell when the run hits one (restarted on each hit).
+function flashLimit(el) {if(!el?.classList)return;el.classList.remove('flash-limit');void el.offsetWidth;el.classList.add('flash-limit');}
+const atBound=(id,v)=>{const [lo,hi]=boundsOf(id);return v<=lo||v>=hi;};
 const ranges=['budget','parallel-limit','max-agents','max-depth','max-children','split-threshold'];
 for(const id of ranges) {
   const input=$(id), display=numberOf(id);
@@ -218,8 +236,8 @@ for(const id of ranges) {
     const sync=()=>{display.textContent=input.value+'%';};
     input.addEventListener('input',sync);sync();
   } else {
-    input.addEventListener('input',()=>{display.value=logValue(id,input.value);controlsDirty=true;});
-    display.addEventListener('change',()=>{setCount(id,countSetting(id));controlsDirty=true;});
+    input.addEventListener('input',()=>{const v=logValue(id,input.value),was=Number(display.value);display.value=v;controlsDirty=true;if(atBound(id,v)&&v!==was){flashLimit(display);flashLimit(input);}});
+    display.addEventListener('change',()=>{const typed=Math.round(Number(display.value)),v=countSetting(id);setCount(id,v);controlsDirty=true;if(typed!==v||atBound(id,v)){flashLimit(display);flashLimit(input);}});
     input.value=logPosition(id,display.value);
   }
 }
