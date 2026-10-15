@@ -335,17 +335,25 @@ test('the injected fetch only ever receives the parsed URL href, and final_url i
   assert.ok(seen.every(u => !u.includes('\\')));
 });
 
+// Linear time is checked by growth, not by a wall-clock bound: doubling the
+// input must not much more than double the time (a quadratic path gives about
+// 4x). The best of three runs is used, so load from other processes does not
+// decide the result.
+const best = (f, s) => Math.min(...[0, 1, 2].map(() => { const t = performance.now(); f(s); return performance.now() - t; }));
+const grows = (f, make, n, name) => {
+  f(make(n)); // warm up
+  const a = best(f, make(n)), b = best(f, make(2 * n));
+  assert.ok(b < 3 * Math.max(a, 1), `${name}: ${a.toFixed(1)} ms at n, ${b.toFixed(1)} ms at 2n`);
+};
+
 test('htmlToText is linear: the review\'s pathological inputs finish within a time bound', () => {
   const fill = (unit, bytes) => unit.repeat(Math.ceil(bytes / unit.length));
-  const time = s => { const t = performance.now(); htmlToText(s); return performance.now() - t; };
-  htmlToText(fill('<p hidden>x<a hidden <script>', 64 * 1024)); // warm up
-  assert.ok(time(fill('<a hidden ', 64 * 1024)) < 100, '64 KB of <a hidden ');
-  for (const [name, s] of Object.entries({
-    'a hidden': fill('<a hidden ', 512 * 1024), 'p hidden': fill('<p hidden>x', 512 * 1024), 'br hidden': fill('<br hidden>line', 512 * 1024),
-    'div open/close': fill('<div hidden>', 256 * 1024) + fill('</div>', 256 * 1024), 'nested': fill('<div hidden><div>', 512 * 1024),
-    'script': fill('<script>', 512 * 1024), 'lt': fill('<', 512 * 1024), 'quotes': fill('<a title="', 512 * 1024),
-    'style attr': fill('<p style=style=display:none ', 512 * 1024), 'entities': fill('&#&aaaaaaaaaaaa', 512 * 1024)
-  })) assert.ok(time(s) < 400, `${name}: 512 KB`);
+  for (const [name, make] of Object.entries({
+    'a hidden': n => fill('<a hidden ', n), 'p hidden': n => fill('<p hidden>x', n), 'br hidden': n => fill('<br hidden>line', n),
+    'div open/close': n => fill('<div hidden>', n / 2) + fill('</div>', n / 2), 'nested': n => fill('<div hidden><div>', n),
+    'script': n => fill('<script>', n), 'lt': n => fill('<', n), 'quotes': n => fill('<a title="', n),
+    'style attr': n => fill('<p style=style=display:none ', n), 'entities': n => fill('&#&aaaaaaaaaaaa', n)
+  })) grows(htmlToText, make, 256 * 1024, name);
   // Still correct on ordinary markup after the rewrite.
   const {text: t} = htmlToText('<p>a<span hidden>b</span>c</p><div aria-hidden="true">d<div>e</div></div><p style="display: none">f</p><p>g &amp; h</p><a title="x>y" href=\'z\'>link</a>');
   assert.equal(t, 'ac\n\ng & h\nlink');
@@ -431,10 +439,9 @@ test('deflate bombs and low-output gzip: capped early, and a bounded input retur
 test('chunkText cuts long single-line blocks at the size limit; goalUrls trims in linear time', () => {
   const lens = chunkText('a'.repeat(20000) + '\n# h\n' + 'b'.repeat(100), 6000).map(c => c.length);
   assert.deepEqual(lens.slice(0, 3), [6000, 6000, 6000]);
-  const t = performance.now();
   assert.deepEqual(goalUrls('https://example.com/a' + ')'.repeat(200000)), ['https://example.com/a']);
   assert.deepEqual(goalUrls('(https://example.org/w/Foo_(bar)).'), ['https://example.org/w/Foo_(bar)']);
-  assert.ok(performance.now() - t < 200);
+  grows(goalUrls, n => 'https://example.com/a' + ')'.repeat(n), 100000, 'goalUrls trailing parens');
 });
 
 test('allowlist entries are validated for strings and arrays; public suffixes refused; selfHosts can be required', () => {
@@ -454,15 +461,11 @@ test('allowlist entries are validated for strings and arrays; public suffixes re
 // --- second review ------------------------------------------------------------------
 
 test('htmlToText stays linear on long whitespace in a tag and on many distinct unclosed hidden names', () => {
-  const time = s => { const t = performance.now(); htmlToText(s); return performance.now() - t; };
-  htmlToText('<a hidden  x><x1 hidden>t'.repeat(1000)); // warm up
-  assert.ok(time('<a hidden' + ' '.repeat(256 * 1024) + 'x>') < 100, '<a hidden + 256 KB of spaces');
-  let uniq = '';
-  for (let i = 0; uniq.length < 512 * 1024; i++) uniq += `<x${i} hidden>t`;
-  assert.ok(time(uniq) < 400, 'distinct hidden names, never closed');
-  let many = '<div ';
-  for (let i = 0; many.length < 512 * 1024; i++) many += `a${i}='v' `;
-  assert.ok(time(many + 'hidden>s</div>') < 400, 'many attributes');
+  grows(htmlToText, n => '<a hidden' + ' '.repeat(n) + 'x>', 128 * 1024, '<a hidden + spaces');
+  const uniq = n => { let s = ''; for (let i = 0; s.length < n; i++) s += `<x${i} hidden>t`; return s; };
+  grows(htmlToText, uniq, 256 * 1024, 'distinct hidden names, never closed');
+  const many = n => { let s = '<div '; for (let i = 0; s.length < n; i++) s += `a${i}='v' `; return s + 'hidden>s</div>'; };
+  grows(htmlToText, many, 256 * 1024, 'many attributes');
 });
 
 test('hidden subtrees fail closed: unclosed, mis-nested, tags inside comments, attributes and scripts', () => {
