@@ -126,12 +126,14 @@ async function runAdapter(html, checks) {
 }
 
 // ------------------------------------------------------------ 1: markup as visible text
-test('1: a markup snippet names its elements: tag, id, classes, attributes, and the text right after it', () => {
+test('1: a markup snippet that is one element names it: tag, id, classes, attributes, and its text (v8 live 4 review: one well-formed element only)', () => {
   assert.deepEqual(markupElements("<input type='text'"), [{selector: 'input[type=text]'}]);
   assert.deepEqual(markupElements('<button>Add</button>'), [{selector: 'button', text: 'Add'}]);
   assert.deepEqual(markupElements('<ul id="todo-list" class="list big"></ul>'), [{selector: 'ul#todo-list.list.big'}]);
-  assert.deepEqual(markupElements('<input type="text" placeholder="Add a task" required>Ignored'), [{selector: 'input[type=text][placeholder="Add a task"][required]'}]);
-  assert.deepEqual(markupElements('<form><button id=add>Add task</button></form>'), [{selector: 'form'}, {selector: 'button#add', text: 'Add task'}]);
+  assert.deepEqual(markupElements('<input type="text" placeholder="Add a task" required>'), [{selector: 'input[type=text][placeholder="Add a task"][required]'}]);
+  // Text after a void element, or several elements, is no one element: it stays expected text.
+  assert.deepEqual(markupElements('<input type="text" placeholder="Add a task" required>Ignored'), []);
+  assert.deepEqual(markupElements('<form><button id=add>Add task</button></form>'), []);
   assert.deepEqual(markupElements('Add a task'), []);
 });
 
@@ -165,10 +167,10 @@ test('1: a worker reads an element step as the page\'s interface: "the page has 
   assert.equal(failureCategory(card.requirements[0].check, {observed: {what: 'step', step: 3, op: 'expect_element', miss: true}}), 'missing text');
 });
 
-test('1: the adapter in real Chromium: expect_element passes when the page has a match (text in any case), and a miss lists the candidates', {skip: browserReady || false}, async () => {
+test('1: the adapter in real Chromium: expect_element passes when the page has a match (its text as expect_text reads it), and a miss lists the candidates', {skip: browserReady || false}, async () => {
   const html = '<!doctype html><html><body><h1>To-do</h1><input type="text" placeholder="Task"><button>Add</button><ul id="list"></ul></body></html>';
   const [ok, miss, absent, gone] = await runAdapter(html, [
-    {id: 'ok', steps: [{goto: '/'}, {expect_element: {selector: 'input[type=text]'}}, {expect_element: {selector: 'button', text: 'add'}}, {expect_element: {selector: 'ul#list'}}]},
+    {id: 'ok', steps: [{goto: '/'}, {expect_element: {selector: 'input[type=text]'}}, {expect_element: {selector: 'button', text: 'Add'}}, {expect_element: {selector: 'ul#list'}}]},
     {id: 'miss', steps: [{goto: '/'}, {expect_element: {selector: 'button', text: 'Remove'}}]},
     {id: 'absent', steps: [{goto: '/'}, {expect_no_element: {selector: 'li'}}]},
     {id: 'gone', steps: [{goto: '/'}, {expect_no_element: {selector: 'button', text: 'Add'}}]}]);

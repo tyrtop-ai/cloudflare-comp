@@ -149,7 +149,10 @@ function jsonValues(v, add) {
 // goal: the effective goal (its words count as stated).
 export function cardScope(card, {goal = ''} = {}) {
   const reqs = (card?.requirements || []).filter(r => plain(r?.check)), dels = card?.deliverables || [];
-  const values = new Set(), whole = new Set(), add = v => { if (typeof v === 'string' && v.trim()) values.add(v); else if (v !== undefined && v !== null && typeof v !== 'object') values.add(String(v)); };
+  // v8 live 4 review: the values a hidden requirement's check holds (hiddenValues), which an element step's attribute may not show.
+  const values = new Set(), whole = new Set(), hiddenValues = new Set();
+  let current = null;
+  const add = v => { const t = typeof v === 'string' ? (v.trim() ? v : '') : v !== undefined && v !== null && typeof v !== 'object' ? String(v) : ''; if (!t) return; values.add(t); if (current?.hidden) hiddenValues.add(t); };
   // Live 3: an expected text is a value or wording; a hidden requirement's are all values.
   // Live 3 review: isValueText alone let any transform of an input through
   // (olleh for hello, XIV for 14, Monday for a date), so a text it calls
@@ -173,8 +176,9 @@ export function cardScope(card, {goal = ''} = {}) {
     if (says) stated.add(t);
   };
   const paths = new Set(dels.map(d => d?.path).filter(Boolean)), routeWords = new Set(dels.filter(d => d?.kind === 'route').flatMap(d => wordsOf(String(d.name).split(' ')[1] || '')));
-  const argvWords = [], pathWords = [], affordances = [], keep = new Set();
+  const argvWords = [], pathWords = [], affordances = [], keep = new Set(), attributeValues = [];
   for (const r of reqs) {
+    current = r;
     const c = r.check, statedFor = new Set([...goalWords, ...dels.filter(d => (r.serves || []).includes(d.name)).flatMap(d => wordsOf(contractText(d)))]);
     const free = c.kind === 'file' || ['command', 'http', 'browser'].includes(c.kind) && !takesInput(r);
     if (c.kind === 'file') { (c.has || []).forEach(t => expect(r, t, true)); if (c.path) keep.add(c.path); }
@@ -212,12 +216,25 @@ export function cardScope(card, {goal = ''} = {}) {
       if (op === 'click' && plain(v)) { for (const k of ['name', 'text', 'label']) if (typeof v[k] === 'string') affordances.push(v[k]); if (v.role) keep.add(roleOf(v.role)); }
       if (op === 'expect_text' || op === 'expect_no_text') expect(r, v, !acted);
       if (op === 'expect_count' && plain(v)) { expect(r, v.text, !acted); if (v.role) keep.add(roleOf(v.role)); }
-      // v8 live 4: an element step names the page's interface, as a click does: its text and its selector's words.
-      if ((op === 'expect_element' || op === 'expect_no_element') && plain(v)) { if (typeof v.text === 'string') affordances.push(v.text); for (const w of selectorParts(v.selector).words) keep.add(w); }
+      // v8 live 4 review: an element step's text is an expected text (a value
+      // after an input step, a hidden requirement's always); its tag, id,
+      // classes and attribute names are interface; an attribute's value is
+      // too, unless it is (or holds) a value a check types or a hidden
+      // requirement holds. A hidden requirement's step shows nothing.
+      if ((op === 'expect_element' || op === 'expect_no_element') && plain(v)) {
+        expect(r, v.text, !acted);
+        const {tag, id, classes, attrs} = selectorParts(v.selector);
+        if (r.hidden) attrs.forEach(a => add(a.value));
+        else { [tag, id, ...classes, ...attrs.map(a => a.name)].filter(Boolean).forEach(w => keep.add(w)); attrs.forEach(a => { if (typeof a.value === 'string' && a.value.trim()) attributeValues.push(a.value); }); }
+      }
       if (op === 'press' && typeof v === 'string') keep.add(v);
       if (op === 'goto' && typeof v === 'string') { const {segments, pairs} = urlParts(v); segments.forEach(seg => pathWords.push(seg)); for (const [k, x] of pairs) { pathWords.push(k); add(x); } }
     }
   }
+  current = null;
+  // An attribute's value that equals or holds a typed value or a hidden requirement's value is a value; any other is interface.
+  const typedOrHidden = [...inputs, ...[...hiddenValues].map(squash)].filter(Boolean);
+  for (const a of attributeValues) { const s = squash(a); if (typedOrHidden.some(x => holds(s, x) || low(s) === low(x))) add(a); else keep.add(a); }
   const isValue = s => { const l = low(s); return !!l && [...values].some(v => low(v) === l); };
   // A word is shown as it is when a contract or the goal states it and no check uses it as a value.
   const literal = new Set(), secrets = new Set(values);
@@ -307,11 +324,14 @@ const ELEMENT_NOUNS = {button: 'a button', a: 'a link', ul: 'a list', ol: 'a lis
 // An element step's element as a worker reads it: "a text input", "a
 // button "Add"", "a list with id "todo-list"". The text is left out when it
 // is one of the card's values (scope.isValue).
+// v8 live 4 review: an attribute's value, as the text, is masked by the
+// scope as expect_text's are (a value reads as "…").
 export function elementWords(t = {}, scope = null) {
   const {tag, id, classes, attrs} = selectorParts(plain(t) ? t.selector : t), type = attrs.find(a => a.name === 'type')?.value?.toLowerCase();
   const noun = tag === 'input' ? (type === 'checkbox' ? 'a checkbox' : type ? `${/^[aeiou]/.test(type) ? 'an' : 'a'} ${type} input` : 'an input field') : ELEMENT_NOUNS[tag] || `${/^[aeiou]/.test(tag) ? 'an' : 'a'} ${tag} element`;
-  const text = plain(t) && typeof t.text === 'string' && t.text && !(scope && scope.isValue(t.text)) ? ` ${q(t.text)}` : '';
-  const more = [id ? `id ${q(id)}` : '', classes.length ? `class ${q(classes.join(' '))}` : '', ...attrs.filter(a => !(tag === 'input' && a.name === 'type')).map(a => a.value === undefined ? `the ${a.name} attribute` : `${a.name} ${q(a.value)}`)].filter(Boolean);
+  const shown = v => scope?.isValue?.(v) ? '…' : scope?.secrets ? maskWith(v, scope) : v;
+  const text = plain(t) && typeof t.text === 'string' && t.text && !(scope && scope.isValue(t.text)) ? ` ${q(shown(t.text))}` : '';
+  const more = [id ? `id ${q(id)}` : '', classes.length ? `class ${q(classes.join(' '))}` : '', ...attrs.filter(a => !(tag === 'input' && a.name === 'type')).map(a => a.value === undefined ? `the ${a.name} attribute` : `${a.name} ${q(shown(a.value))}`)].filter(Boolean);
   return `${noun}${text}${more.length ? ` with ${more.join(', ')}` : ''}`;
 }
 export function stepTarget(op, t = {}, scope = null) {
