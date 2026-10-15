@@ -184,29 +184,61 @@ test('fallback: the pre-v8 JSON action with files[].content is accepted',()=>{
 // v8 live 2: the tracker's index.html, style.css and server.js began with a
 // line "===", the file-block marker leaking into the file. The shapes a
 // small model writes a header in, each read as the header alone.
-test('live 2: a header split across lines, missing its closing ===, or followed by a bare === or --- line leaves no marker in the file',()=>{
+test('live 2: a header missing its closing ===, or followed by a line of exactly ===, leaves no marker in the file',()=>{
   const html='<!DOCTYPE html>\n<html lang="en">\n<body></body>\n</html>',css='body {\n  margin: 0;\n}';
   const shapes={
     split:`=== FILE: index.html\n===\n${html}\n=== END FILE ===\n=== FILE: style.css\n===\n${css}\n=== END FILE ===`,
-    unclosed:`=== FILE: index.html\n${html}\n=== END FILE\n=== FILE: style.css\n${css}\n=== END FILE`,
-    bare_after:`=== FILE: index.html ===\n===\n${html}\n=== END FILE ===\n=== FILE: style.css ===\n---\n${css}\n=== END FILE ===`,
-    mirrored:`=== FILE: index.html ===\n===\n${html}\n===\n=== END FILE ===\n=== FILE: style.css ===\n${css}\n===\n=== END FILE ===`,
-    no_end:`=== FILE: index.html\n===\n${html}\n=== FILE: style.css\n===\n${css}\n=== CONTROL\n{"summary":"wrote","done":true}`};
+    unclosed_header:`=== FILE: index.html\n${html}\n=== END FILE ===\n=== FILE: style.css\n${css}\n=== END FILE ===`,
+    bare_after:`=== FILE: index.html ===\n===\n${html}\n=== END FILE ===\n=== FILE: style.css ===\n===\n${css}\n=== END FILE ===`,
+    no_end:`=== FILE: index.html\n===\n${html}\n=== FILE: style.css ===\n===\n${css}\n=== CONTROL ===\n{"summary":"wrote","done":true}`};
   for(const [name,text] of Object.entries(shapes)) {
     const r=parseWorkerAnswer(text+(name==='no_end'?'':'\n=== CONTROL ===\n{"done":true}'));
     assert.deepEqual(r.files,[{path:'index.html',content:html},{path:'style.css',content:css}],name);
     assert.deepEqual([r.truncated,r.control_error,r.action.done],[[],false,true],name);
   }
-  // A document keeps a --- that opens its front matter; a setext heading's === stays (it follows a text line).
-  const md='---\ntitle: Guide\n---\n# Guide\n\nIntro\n===\n\nmore';
-  assert.deepEqual(parseWorkerAnswer(`=== FILE: docs/guide.md ===\n${md}\n=== END FILE ===`).files,[{path:'docs/guide.md',content:md}]);
   // The single-file call reads the same shapes.
   assert.equal(singleFileText({response:`=== FILE: server.js\n===\nconst http = require('http');\n=== END FILE ===`},'server.js'),"const http = require('http');");
   assert.equal(singleFileText({response:`=== FILE: server.js ===\n===\nconst a = 1;\nconst b = 2;`},'server.js'),'const a = 1;\nconst b = 2;');
-  // Prose that only starts like a marker stays content: a CONTROL line with words after it, a FILE line with words.
-  const prose='=== Control panel\n=== control panel ===x\n=== FILE: two words here\nend';
-  assert.deepEqual(parseWorkerAnswer(`=== FILE: notes.txt ===\n${prose}\n=== END FILE ===`).files,[{path:'notes.txt',content:prose}]);
 });
+
+// v8 live 2 review: legitimate files whose lines look like rules or markers
+// stay exactly as written (the review's probes), in the block parser and the
+// single-file call, and the v7 implementer path reads them as 0562110 did.
+const KEEP={
+  'astro front matter':['src/pages/index.astro','---\nconst title = "Hi";\n---\n<h1>{title}</h1>'],
+  'jekyll html front matter':['_layouts/default.html','---\nlayout: base\n---\n<main>{{ content }}</main>'],
+  'eleventy njk':['index.njk','---\ntitle: Home\n---\n<h1>{{ title }}</h1>'],
+  'quarto qmd':['report.qmd','---\ntitle: R\n---\n# R'],
+  'markdown front matter':['docs/guide.md','---\ntitle: Guide\n---\n# Guide'],
+  'rst overline title':['README.rst','=======\nProject\n=======\n\nIntro text.'],
+  'md ends with setext h1':['NOTES.md','# Notes\n\nSome text.\n\nAppendix\n========'],
+  'md ends with ===':['NOTES2.md','Title\n==='],
+  'rst simple table end':['table.rst','=====\nName\n=====\nAda\n====='],
+  'txt banner':['banner.txt','==========\nWELCOME\n=========='],
+  'txt ends with rule':['report.txt','Totals: 5\n==='],
+  'diff file':['fix.diff','--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b'],
+  'patch with bare ---':['0001.patch','---\n x | 2 +-\n'],
+  'csv with --- header':['data.csv','---\na,b\n1,2'],
+  'cff with ---':['cfg.cff','---\ncff-version: 1.2.0\n'],
+  'content line === FILE one word':['PROTOCOL.txt','Write each file as:\n=== FILE: path.js\ncontent\n=== END FILE\nDone.'],
+  'content line === CONTROL alone':['notes.txt','Sections:\n=== CONTROL\nthe control part'],
+  'content line exact CONTROL, prose after':['format.txt','The answer ends with:\n=== CONTROL ===\nand a json object.'],
+  'content line FILE header, indented':['fmt.md','Write:\n  === FILE: a.js ===\nthen the text'],
+};
+test('live 2 review: front matter, rules, setext and RST titles, tables, banners and marker-like lines stay exactly as written',()=>{
+  for(const [name,[path,content]] of Object.entries(KEEP)) {
+    const answer=`=== FILE: ${path} ===\n${content}\n=== END FILE ===\n=== CONTROL ===\n{"summary":"x","done":true}`;
+    const r=parseWorkerAnswer(answer);
+    assert.deepEqual(r.files,[{path,content}],name);
+    assert.equal(singleFileText({response:`=== FILE: ${path} ===\n${content}\n=== END FILE ===`},path),content,`single file: ${name}`);
+    // The v7 implementer reads a block answer through workerAction (expect json), as 0562110 did: the file exactly.
+    assert.deepEqual(workerAction(answer,{expect:'json'}).files,[{path,content}],`v7: ${name}`);
+  }
+  // A content line that is a header written exactly at column 0 still closes the open block (S6), and an exact CONTROL followed by json ends the files.
+  const two=parseWorkerAnswer('=== FILE: a.py ===\nprint(1)\n=== FILE: b.py ===\nprint(2)\n=== CONTROL ===\n{"done":true}');
+  assert.deepEqual([two.files.map(f=>f.path),two.implicit_end],[['a.py','b.py'],['a.py','b.py']]);
+});
+
 
 test('hasWorkerBlocks: only a line-anchored marker counts',()=>{
   assert.equal(hasWorkerBlocks(block('a','b')),true);

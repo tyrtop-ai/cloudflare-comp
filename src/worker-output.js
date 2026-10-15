@@ -24,27 +24,31 @@ import { stripReasoning, parseObject, normalizeAction, contentOf } from './proto
 
 // One marker line: kind (FILE, END FILE, CONTROL) and what follows it.
 const MARKER = /^[ \t]*(?:\*\*|__|`+)?[ \t]*===[ \t]*(end[ \t]+file|file|control)\b[ \t]*:?[ \t]*(.*?)[ \t]*===[ \t]*(?:\*\*|__|`+)?[ \t]*\r?$/i;
-// v8 live 2: a marker whose closing === is missing or on the next line
-// ("=== FILE: index.html" alone): a FILE line with one path-like word, a
-// CONTROL or END FILE line with nothing after it but an END FILE's path.
+// v8 live 2: a header whose closing === is missing ("=== FILE: index.html"
+// alone, the tracker's leak): a FILE line with one path-like word, or a
+// CONTROL or END FILE line. Read only while no block is open; inside one it
+// is content (a file may document the format).
 const OPEN_MARKER = /^[ \t]*(?:\*\*|__|`+)?[ \t]*===[ \t]*(end[ \t]+file|file|control)\b[ \t]*:?[ \t]*([^\s=]*)[ \t]*(?:\*\*|__|`+)?[ \t]*\r?$/i;
 const FENCE = /^[ \t]*```/;
-// A line of only === or ---: what is left of a header split across lines.
-const BARE_RULE = /^[ \t]*(?:={3,}|-{3,})[ \t]*\r?$/;
-export function markerOf(line) {
+// Inside an open block, only these end it: an END FILE marker (its own path
+// or none), a FILE header written exactly at column 0 (S6: the END line a
+// small model leaves out), and an exact CONTROL line at column 0 whose next
+// line opens the json.
+const EXACT_FILE = /^===[ \t]*file[ \t]*:[ \t]*(\S(?:.*?\S)?)[ \t]*===[ \t]*\r?$/i;
+const EXACT_CONTROL = /^===[ \t]*control[ \t]*===[ \t]*\r?$/i;
+const JSONISH = /^[ \t]*(?:\{|```)/;
+// A header's leftover: a line of exactly === right after it (a setext
+// underline is never a file's first line). Nothing else is dropped.
+const LEFTOVER = /^===\r?$/;
+export function markerOf(line, {open = true} = {}) {
   const s = String(line), m = MARKER.exec(s);
   if (m && !/===/.test(m[2])) return {kind: m[1].toLowerCase().replace(/\s+/, ' '), path: cleanPath(m[2])};
-  const o = OPEN_MARKER.exec(s);
+  const o = open ? OPEN_MARKER.exec(s) : null;
   if (!o) return null;
   const kind = o[1].toLowerCase().replace(/\s+/, ' '), path = cleanPath(o[2]);
   if (kind === 'control' ? path : kind === 'file' ? !path : false) return null;
   return {kind, path};
 }
-// A bare === or --- line right after a FILE header is the header's leftover,
-// never the file's first line; --- stays in a document or yaml file, where
-// it opens front matter. A bare === closing a file is the same leftover.
-const leftover = (line, path) => BARE_RULE.test(line) && (/^[ \t]*=/.test(line) || !/\.(?:md|markdown|mdx|txt|rst|adoc|ya?ml)$/i.test(path));
-const trimLeftover = lines => lines.length && /^[ \t]*={3,}[ \t]*\r?$/.test(lines.at(-1)) ? lines.slice(0, -1) : lines;
 // A path as a model may wrap it: `x`, <x>, "x", **x**, ./x.
 export function cleanPath(p) {
   let s = String(p ?? '').trim();
@@ -55,7 +59,7 @@ export function cleanPath(p) {
 const ACTION_KEYS = ['summary', 'done', 'wait', 'files', 'ask', 'spawn', 'remember', 'messages'];
 const isAction = o => !!o && typeof o === 'object' && !Array.isArray(o) && !o.parse_error && ACTION_KEYS.some(k => k in o);
 // Whether an answer uses the block format at all.
-export const hasWorkerBlocks = text => String(text ?? '').split('\n').some(l => !!markerOf(l) && markerOf(l).kind !== 'end file');
+export const hasWorkerBlocks = text => String(text ?? '').split('\n').some(l => { const m = markerOf(l, {open: false}); return !!m && m.kind !== 'end file'; });
 
 // Documents keep a fence that is their whole content (a README that is one
 // code sample); any other file written inside one fence is that fence's text.
@@ -121,25 +125,28 @@ export function parseWorkerAnswer(output, {placed = null} = {}) {
   const files = new Map(), truncated = [], implicit = [], lines = text.split('\n');
   let open = null, controlText = null, inControl = false, sawBlocks = false;
   const close = () => {
-    files.set(open.path, unfence(trimLeftover(open.lines).join('\n').replace(/\r$/, ''), open.path));
+    files.set(open.path, unfence(open.lines.join('\n').replace(/\r$/, ''), open.path));
     const t = truncated.indexOf(open.path);
     if (t >= 0) truncated.splice(t, 1);
     open = null;
   };
-  for (const line of lines) {
-    const m = markerOf(line);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (open) {
-      if (m?.kind === 'end file' && (!m.path || m.path === open.path)) { close(); continue; }
-      if (m && m.kind !== 'end file' && !open.fence && (m.kind === 'control' || m.path)) { implicit.push(open.path); close(); }
+      const end = markerOf(line, {open: false});
+      if (end?.kind === 'end file' && (!end.path || end.path === open.path)) { close(); continue; }
+      const header = !open.fence && EXACT_FILE.exec(line), next = lines.slice(i + 1).find(l => l.trim());
+      const ends = !open.fence && (header && !/===/.test(header[1]) || EXACT_CONTROL.test(line) && next !== undefined && JSONISH.test(next));
+      if (ends) { implicit.push(open.path); close(); }
       else {
-        const first = !open.lines.length && !open.started;
+        if (!open.started && LEFTOVER.test(line)) { open.started = true; continue; }
         open.started = true;
-        if (first && leftover(line, open.path)) continue;
         open.lines.push(line);
         if (FENCE.test(line)) open.fence = !open.fence;
         continue;
       }
     }
+    const m = markerOf(line);
     if (m?.kind === 'file' && m.path) { sawBlocks = true; inControl = false; open = {path: m.path, lines: [], fence: false}; continue; }
     if (m?.kind === 'control') { sawBlocks = true; inControl = true; controlText = controlText === null ? '' : controlText + '\n'; continue; }
     if (inControl) controlText += line + '\n';
@@ -198,7 +205,7 @@ export function singleFileText(output, path) {
   if (!r.parse_error && r.truncated.length) {
     const lines = text.split('\n'), at = lines.findIndex(l => markerOf(l)?.kind === 'file');
     const rest = lines.slice(at + 1);
-    return (rest.length && leftover(rest[0], path) ? rest.slice(1) : rest).join('\n');
+    return (rest.length && LEFTOVER.test(rest[0]) ? rest.slice(1) : rest).join('\n');
   }
   const lines = text.split('\n');
   if (DOCUMENT.test(path)) {
