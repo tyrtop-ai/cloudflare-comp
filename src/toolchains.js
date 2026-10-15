@@ -42,11 +42,9 @@ export const TOOLCHAINS = Object.freeze([
 // The manifests of toolchains this deployment has no row for: a worker never
 // writes one either, since nothing here would read it as intended.
 export const OTHER_MANIFESTS = Object.freeze(['go.mod','go.sum','Cargo.toml','Cargo.lock','Gemfile','Gemfile.lock','composer.json','composer.lock','pom.xml','build.gradle','build.gradle.kts','settings.gradle','Package.swift','mix.exs','deno.json','deno.jsonc']);
-// Stack-frame readers by a row's stack field: named groups path, line and fn.
-export const STACKS = Object.freeze({
-  v8:     '^\\s+at (?:(?<fn>.+?) \\()?(?:file://)?(?<path>/[^():]+):(?<line>\\d+):\\d+\\)?$',
-  python: '^\\s+File "(?<path>[^"]+)", line (?<line>\\d+), in (?<fn>.+)$'
-});
+// Stack-frame readers by a row's stack field (named groups path, line and
+// fn) and the frame reader: shared with the Container (container/stack-frames.mjs).
+export {STACKS, stackFrames} from '../container/stack-frames.mjs';
 
 const extensionOf = path => {
   const base = String(path || '').split('/').pop(), dot = base.lastIndexOf('.');
@@ -134,22 +132,6 @@ export function extractSurface(path, content) {
   for (const re of lineRegexes(row.defs)) for (const m of text.matchAll(re))
     if (m[1] && !(row.private_prefix && m[1].startsWith(row.private_prefix))) names.add(m[1]);
   return {toolchain: row.id, names: [...names]};
-}
-
-// The frames of a stack trace, as bundle paths: a frame's absolute path is
-// mapped to the longest bundle path it ends with; a frame outside the bundle
-// (the runtime's own, a library's) is left out. files: the bundle's paths,
-// as an array, a Set, a Map or an object keyed by path.
-export function stackFrames(text, files, row) {
-  const source = row && STACKS[row.stack];
-  if (!source) return [];
-  const paths = Array.isArray(files) ? files : files instanceof Map || files instanceof Set ? [...files.keys()] : Object.keys(files || {});
-  const byLength = [...paths].sort((a, b) => b.length - a.length), frames = [];
-  for (const m of String(text ?? '').matchAll(new RegExp(source, 'gm'))) {
-    const abs = m.groups.path, hit = byLength.find(p => abs === p || abs.endsWith('/' + p));
-    if (hit) frames.push({path: hit, line: Number(m.groups.line), fn: m.groups.fn?.trim() || null});
-  }
-  return frames;
 }
 
 // The names and modules a build's error output says it could not resolve,
