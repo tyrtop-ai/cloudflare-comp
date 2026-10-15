@@ -11,6 +11,7 @@ import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createDeflate, createGzip} from 'node:zlib';
+import {tinyBlocks} from './helpers/deflate-craft.js';
 
 const BIN = new URL('../node_modules/workerd/bin/workerd', import.meta.url).pathname;
 const SRC = name => new URL(`../src/${name}`, import.meta.url).pathname;
@@ -42,11 +43,12 @@ function* zeroTar() {
 }
 
 const WORKER = `
-import {fetchSource, fetchPolicy, htmlToText} from './fetcher.js';
+import {fetchSource, fetchGoalSources, fetchPolicy, htmlToText} from './fetcher.js';
 import {fetchGithubRepo} from './base.js';
 import gzipBomb from './bomb-gzip.bin';
 import deflateBomb from './bomb-deflate.bin';
 import tarBomb from './bomb-tar.bin';
+import tiny from './tiny-blocks.bin';
 const serve = (buf, headers, stats) => async () => new Response(new ReadableStream({
   pull(c) {
     if (stats.fed >= buf.byteLength) return c.close();
@@ -56,7 +58,9 @@ const serve = (buf, headers, stats) => async () => new Response(new ReadableStre
   }
 }, {highWaterMark: 0}), {headers});
 const fill = (u, b) => u.repeat(Math.ceil(b / u.length));
-const HTML = {a: () => fill('<a hidden ', 512 * 1024), p: () => fill('<p hidden>x', 512 * 1024), br: () => fill('<br hidden>line', 512 * 1024)};
+const uniq = b => { let s = ''; for (let i = 0; s.length < b; i++) s += '<x' + i + ' hidden>t'; return s; };
+const HTML = {a: () => fill('<a hidden ', 512 * 1024), p: () => fill('<p hidden>x', 512 * 1024), br: () => fill('<br hidden>line', 512 * 1024),
+  ws: () => '<a hidden' + ' '.repeat(256 * 1024) + 'x>', uniq: () => uniq(512 * 1024)};
 export default {async fetch(req) {
   const url = new URL(req.url), p = url.pathname, stats = {fed: 0};
   if (p === '/gzip' || p === '/deflate') {
@@ -69,6 +73,17 @@ export default {async fetch(req) {
     const r = await fetchGithubRepo({repo: 'https://github.com/acme-example/widget', ref: 'main'},
       {fetch: serve(tarBomb, {'content-type': 'application/x-gzip'}, stats)});
     return Response.json({files: Object.keys(r.files), truncated: r.truncated, error: r.error, skipped: r.skipped, fed: stats.fed});
+  }
+  if (p === '/tiny') {
+    const u = 'https://example.com/t';
+    const r = await fetchSource(u, u, {policy: fetchPolicy({allow: ['example.com']}), fetch: serve(tiny, {'content-type': 'text/plain'}, stats)});
+    return Response.json({error: r.error, wire: r.wire_bytes});
+  }
+  if (p === '/tiny-goal') {
+    const goal = Array.from({length: 8}, (_, i) => 'https://example.com/p' + i).join(' ');
+    const rs = await fetchGoalSources(goal, {policy: fetchPolicy({allow: ['example.com']}),
+      fetch: async () => serve(tiny, {'content-type': 'text/plain'}, {fed: 0})()});
+    return Response.json({errors: rs.map(r => r.error)});
   }
   if (p === '/html') return Response.json({chars: htmlToText(HTML[url.searchParams.get('case')]()).text.length});
   return Response.json({ok: true});
@@ -91,13 +106,14 @@ test('workerd: gzip, deflate and tar.gz bombs stay bounded; pathological HTML st
     writeFileSync(join(dir, 'bomb-gzip.bin'), await compress(createGzip, () => repeat(0x61, 100 * MB)));
     writeFileSync(join(dir, 'bomb-deflate.bin'), await compress(createDeflate, () => repeat(0x62, 100 * MB)));
     writeFileSync(join(dir, 'bomb-tar.bin'), await compress(createGzip, zeroTar));
+    writeFileSync(join(dir, 'tiny-blocks.bin'), tinyBlocks(536 * 1024));
     // The deployment's date, unless this binary is older than it.
     const binDate = /(\d{4}-\d{2}-\d{2})/.exec(spawnSync(BIN, ['--version'], {encoding: 'utf8'}).stdout)?.[1] ?? '2026-01-01';
     const deployDate = /"compatibility_date"\s*:\s*"([\d-]+)"/.exec(readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8'))?.[1] ?? binDate;
     const date = deployDate < binDate ? deployDate : binDate;
     const port = await freePort();
     const mods = [['worker.js', 'esModule'], ['fetcher.js', 'esModule'], ['base.js', 'esModule'], ['inflate.js', 'esModule'],
-      ['bomb-gzip.bin', 'data'], ['bomb-deflate.bin', 'data'], ['bomb-tar.bin', 'data']]
+      ['bomb-gzip.bin', 'data'], ['bomb-deflate.bin', 'data'], ['bomb-tar.bin', 'data'], ['tiny-blocks.bin', 'data']]
       .map(([n, kind]) => `(name = "${n}", ${kind} = embed "${n}")`).join(', ');
     writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
@@ -137,11 +153,22 @@ const config :Workerd.Config = (
     assert.deepEqual(tar.body.files, []);
     assert.ok(tar.body.skipped.some(s => s.path === 'zeros.txt' && s.reason === 'too large'));
     if (tar.growth != null) assert.ok(tar.growth < LIMIT, `/tar: workerd peak RSS grew ${(tar.growth / MB).toFixed(1)} MB`);
-    for (const c of ['a', 'p', 'br']) {
+    for (const c of ['a', 'p', 'br', 'ws', 'uniq']) {
       const {ms} = await measure(`/html?case=${c}`);
       t.diagnostic(`/html ${c}: ${ms} ms`);
       assert.ok(ms < 2000, `htmlToText ${c} took ${ms} ms in workerd`);
     }
+    // 536 KB of tiny 15-bit-code blocks: refused after the first chunk, so
+    // eight of them in one goal cost little (the room budget, charged with
+    // wire bytes, is the backstop when bodies arrive in larger chunks).
+    const tiny = await measure('/tiny');
+    t.diagnostic(`/tiny: ${JSON.stringify(tiny.body)} ${tiny.ms} ms`);
+    assert.match(tiny.body.error, /too many blocks/);
+    assert.ok(tiny.ms < 1000, `/tiny took ${tiny.ms} ms`);
+    const goal = await measure('/tiny-goal');
+    t.diagnostic(`/tiny-goal: ${goal.ms} ms, errors ${JSON.stringify([...new Set(goal.body.errors)])}`);
+    assert.ok(goal.body.errors.every(e => /too many blocks|budget is spent/.test(e)));
+    assert.ok(goal.ms < 3000, `/tiny-goal took ${goal.ms} ms`);
   } finally {
     child?.kill('SIGKILL');
     rmSync(dir, {recursive: true, force: true});

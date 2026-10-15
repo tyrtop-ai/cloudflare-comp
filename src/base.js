@@ -298,9 +298,18 @@ export function clipBytes(s, n) {
 }
 const basename = p => p.split('/').pop();
 const depth = p => p.split('/').length;
+// Keys of one TOML table, line by line (no backtracking regexes).
 const tomlTable = (text, name) => {
-  const m = new RegExp(`^\\[${name.replace(/\./g, '\\.')}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, 'm').exec(text);
-  return m ? [...m[1].matchAll(/^\s*([A-Za-z0-9_.-]+)\s*=/gm)].map(x => x[1]) : null;
+  const lines = text.split('\n'), at = lines.findIndex(l => l.trim() === `[${name}]`);
+  if (at < 0) return null;
+  const keys = [];
+  for (const line of lines.slice(at + 1)) {
+    const t = line.trim();
+    if (t.startsWith('[')) break;
+    const eq = t.indexOf('=');
+    if (eq > 0 && /^[A-Za-z0-9_.-]+$/.test(t.slice(0, eq).trim())) keys.push(t.slice(0, eq).trim());
+  }
+  return keys;
 };
 function hintsOf(files) {
   const hints = [];

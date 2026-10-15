@@ -450,3 +450,96 @@ test('allowlist entries are validated for strings and arrays; public suffixes re
   assert.match(urlRefusal('https://x.app.example.com/', p), /own host/);
   assert.equal(urlRefusal('https://docs.example.com/', p), null);
 });
+
+// --- second review ------------------------------------------------------------------
+
+test('htmlToText stays linear on long whitespace in a tag and on many distinct unclosed hidden names', () => {
+  const time = s => { const t = performance.now(); htmlToText(s); return performance.now() - t; };
+  htmlToText('<a hidden  x><x1 hidden>t'.repeat(1000)); // warm up
+  assert.ok(time('<a hidden' + ' '.repeat(256 * 1024) + 'x>') < 100, '<a hidden + 256 KB of spaces');
+  let uniq = '';
+  for (let i = 0; uniq.length < 512 * 1024; i++) uniq += `<x${i} hidden>t`;
+  assert.ok(time(uniq) < 400, 'distinct hidden names, never closed');
+  let many = '<div ';
+  for (let i = 0; many.length < 512 * 1024; i++) many += `a${i}='v' `;
+  assert.ok(time(many + 'hidden>s</div>') < 400, 'many attributes');
+});
+
+test('hidden subtrees fail closed: unclosed, mis-nested, tags inside comments, attributes and scripts', () => {
+  const cases = [
+    '<div hidden>SECRET', '<div hidden>SECRET<div>more</div>', '<div hidden><!-- <div> -->SECRET</div>ok',
+    '<div hidden><a title="</div>">SECRET</a></div>ok', '<div hidden><script>"</div>"</script>SECRET</div>ok',
+    '<div hidden><!-- </div> -->SECRET</div>ok', '<div hidden/>SECRET</div>ok', '<p hidden>SECRET<p>ok',
+    '<div style="display:/**/none">SECRET</div>ok', '<div style="display:n\\6f ne">SECRET</div>ok',
+    '<div style="\\64 isplay: none">SECRET</div>ok', '<div style="display&#58;none">SECRET</div>ok',
+    '<div style="visibility:collapse">SECRET</div>ok', '<span aria-hidden="&#116;rue">SECRET</span>ok',
+    '<noembed>SECRET</noembed>ok', '<noframes>SECRET</noframes>ok', '<script><!--<script></script>SECRET</script>ok',
+    '<span hidden><div>x</span>SECRET</div>', '<b><div hidden>x</b>SECRET</div>',
+    '<x.y hidden>SECRET</x.z>SECRET2</x.y>ok', '<svg><text>SECRET</text></svg>ok', '<template>SECRET</template>ok',
+    '<li hidden>SECRET<li>ok', '<div hidden><p>SECRET<p>SECRET</div>ok'
+  ];
+  for (const html of cases) {
+    const {text, title} = htmlToText(html);
+    assert.ok(!/SECRET/.test(text + title), `leak: ${html} -> ${JSON.stringify(text)}`);
+    if (html.endsWith('ok')) assert.match(text, /ok$/, `visible text after the hidden part: ${html}`);
+  }
+  // Visible text that a closing ancestor makes visible again stays visible.
+  assert.equal(htmlToText('<div><span hidden>SECRET</div>visible').text, 'visible');
+  assert.equal(htmlToText('<div hidden><b>x</div>shown').text, 'shown'); // </div> closes the b as well
+  assert.equal(htmlToText('<!-->ok<!-- -->').text, 'ok');
+  assert.equal(htmlToText('<svg><rect/><text>x</text></svg>ok').text, 'ok');
+});
+
+test('inflater CPU: tiny-block streams fail fast, and wire bytes are charged to the room budget', async () => {
+  const {tinyBlocks} = await import('./helpers/deflate-craft.js');
+  const complete = tinyBlocks(536 * 1024), incomplete = tinyBlocks(536 * 1024, {complete: false});
+  for (const [name, bytes, why] of [['complete', complete, /too many blocks/], ['incomplete', incomplete, /incomplete code/]]) {
+    const fetch = fakeFetch({'https://example.com/t': text(new Uint8Array(bytes))});
+    const t0 = performance.now(), cpu0 = process.cpuUsage();
+    const r = await fetchSource('https://example.com/t', 'https://example.com/t', {fetch, policy: policy()});
+    const ms = performance.now() - t0, cpu = process.cpuUsage(cpu0);
+    assert.match(r.error, why, name);
+    assert.ok(ms < 250 && (cpu.user + cpu.system) / 1000 < 250, `${name}: ${ms.toFixed(0)} ms`);
+    assert.ok(r.wire_bytes > 0, name);
+  }
+  // Eight such URLs in one goal: each is charged its wire bytes, so the
+  // 2 MB room budget runs out instead of every URL getting a full input cap.
+  const goal = Array.from({length: 8}, (_, i) => `https://example.com/p${i}`).join(' ');
+  const served = [];
+  const fetch = async url => { served.push(url); return new Response(new Uint8Array(complete), {headers: {'content-type': 'text/plain'}}); };
+  const out = await fetchGoalSources(goal, {fetch, policy: policy()});
+  assert.ok(served.length < 8, `fetched ${served.length} of 8`);
+  assert.ok(out.some(s => /budget is spent/.test(s.error)));
+  // Each body arrives as one chunk here, so the overshoot is at most one body.
+  assert.ok(out.reduce((a, s) => a + Math.max(s.bytes, s.wire_bytes), 0) <= 2 * 1024 * 1024 + complete.length);
+});
+
+test('the inflater never produces more than the reader asked for, and chunks are at most 64 KB', async () => {
+  const {plainChunks} = await import('../src/fetcher.js');
+  const bomb = new Uint8Array(gzipSync(Buffer.alloc(10 * 1024 * 1024, 'q')));
+  for (const limit of [1, 2, 65536, 98305, 512 * 1024 + 1, Infinity]) {
+    const s = chunked(bomb, 16384);
+    const chunks = await plainChunks(s.stream, {limit});
+    let produced = 0, max = 0;
+    for (;;) { const r = await chunks.read(); if (r.done) break; produced += r.value.length; max = Math.max(max, r.value.length); }
+    assert.equal(produced, Math.min(limit, 10 * 1024 * 1024), String(limit));
+    assert.ok(max <= 65536, `chunk ${max}`);
+  }
+  // A 1-byte cap returns 1 byte.
+  const fetch = fakeFetch({'https://example.com/one': text(bomb)});
+  const r = await fetchSource('https://example.com/one', 'https://example.com/one', {fetch, policy: policy({maxBytes: 1})});
+  assert.equal(r.text, 'q');
+  assert.equal(r.truncated, true);
+});
+
+test('redaction covers apikey values, cookies, schemeless userinfo and JWTs; multi-tenant suffixes are refused', () => {
+  for (const [input, secret] of [['apikey 0123456789abcdef', '0123456789abcdef'], ['cookie: session=abc; theme=dark', 'abc'],
+    ['Set-Cookie: sid=xyz123', 'xyz123'], ['connect to admin:hunter2@db.example.com failed', 'hunter2'],
+    ['token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl', 'eyJzdWIiOiIxMjM0In0']]) {
+    assert.ok(!redactText(input).includes(secret), `${input} -> ${redactText(input)}`);
+  }
+  assert.equal(redactText('mail a@example.com about http 404'), 'mail a@example.com about http 404');
+  assert.deepEqual(parseAllow(['myshopify.com', 'blob.core.windows.net', 'web.core.windows.net', 'azureedge.net', 'azurewebsites.net',
+    'cloudfront.net', 'herokuapp.com', 'netlify.app', 'vercel.app', 'fly.dev', 'onrender.com', 'codeberg.page', 'gitbook.io',
+    'storage.googleapis.com', 'pythonanywhere.com', 'docs.example.com']), ['docs.example.com']);
+});

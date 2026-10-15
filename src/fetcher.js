@@ -39,7 +39,17 @@ const PUBLIC_SUFFIXES = new Set(['co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk', 
   'workers.dev', 'r2.dev', 'trycloudflare.com', 'cloudflareworkers.com', 'herokuapp.com', 'vercel.app', 'netlify.app',
   'appspot.com', 'web.app', 'firebaseapp.com', 'blogspot.com', 'cloudfront.net', 'amazonaws.com', 's3.amazonaws.com',
   'azurewebsites.net', 'azurestaticapps.net', 'fly.dev', 'onrender.com', 'deno.dev', 'glitch.me', 'repl.co',
-  'ngrok.io', 'ngrok-free.app', 'readthedocs.io', 'surge.sh', 'neocities.org']);
+  'ngrok.io', 'ngrok-free.app', 'ngrok.app', 'ngrok-free.dev', 'readthedocs.io', 'surge.sh', 'neocities.org',
+  // multi-tenant hosting and storage: one entry would allow every tenant
+  'myshopify.com', 'blob.core.windows.net', 'web.core.windows.net', 'file.core.windows.net', 'azureedge.net', 'azurefd.net',
+  'cloudapp.net', 'cloudapp.azure.com', 'trafficmanager.net', 'storage.googleapis.com', 'googleusercontent.com',
+  'cloudfunctions.net', 'run.app', 'firebaseio.com', 'on.aws', 'elasticbeanstalk.com', 'digitaloceanspaces.com',
+  'ondigitalocean.app', 'railway.app', 'up.railway.app', 'codeberg.page', 'gitbook.io', 'sourceforge.io', 'bitbucket.io',
+  'pythonanywhere.com', 'github.dev', 'gitpod.io', 'replit.dev', 'replit.app', 'wixsite.com', 'squarespace.com',
+  'wordpress.com', 'tumblr.com', 'substack.com', 'webflow.io', 'notion.site', 'framer.app', 'hf.space', 'carrd.co',
+  'loca.lt', 'localtunnel.me', 'serveo.net', 'pagekite.me', 'duckdns.org', 'no-ip.org', 'ddns.net', 'stackblitz.io',
+  'csb.app', 'vercel.dev', 'netlify.com', 'firebasestorage.app', 'supabase.co', 'deta.dev', 'workers.cloudflare.com',
+  'googleapis.com', 'firebasestorage.googleapis.com', 'ipfs.io', 'dweb.link', 'cloudflare-ipfs.com']);
 
 export class FetchRefused extends Error {}
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
@@ -124,9 +134,12 @@ export function redactText(text) {
   return clip(String(text ?? ''), 1000)
     .replace(/\b(https?|wss?|ftp):\/\/([^\s/?#]*)([^\s?#]*)(\?[^\s#]*)?(#\S*)?/gi, (m, scheme, auth, path, q, h) =>
       `${scheme}://${auth.includes('@') ? '[redacted]@' + auth.slice(auth.lastIndexOf('@') + 1) : auth}${path}${q ? '?[redacted]' : ''}${h ? '#[redacted]' : ''}`)
+    .replace(/\b[^\s/@:'"()<>]{1,100}:[^\s/@'"()<>]{1,200}@(?=[A-Za-z0-9])/g, '[redacted]@') // user:pass@host without a scheme
+    .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g, '[redacted]') // JWT
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|AKIA[0-9A-Z]{16}|xox[abpr]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{16,})/g, '[redacted]')
-    .replace(/\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]')
-    .replace(/\b([A-Za-z0-9_-]{0,40}(?:token|secret|password|passwd|api[_-]?key|auth)[A-Za-z0-9_-]{0,40})\s{0,3}[:=]\s{0,3}(?!\[redacted\])("[^"]{0,500}"|'[^']{0,500}'|[^\s,;]{1,500})/gi, '$1=[redacted]')
+    .replace(/\b(set-cookie|cookie)\s{0,3}[:=][^\n]{0,1000}/gi, '$1: [redacted]')
+    .replace(/\b(bearer|basic|token|api[_-]?key|apikey|secret|password)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]')
+    .replace(/\b([A-Za-z0-9_-]{0,40}(?:token|secret|password|passwd|api[_-]?key|auth|session|sid)[A-Za-z0-9_-]{0,40})\s{0,3}[:=]\s{0,3}(?!\[redacted\])("[^"]{0,500}"|'[^']{0,500}'|[^\s,;]{1,500})/gi, '$1=[redacted]')
     .replace(/[A-Za-z0-9+/_-]{40,}={0,2}/g, '[redacted]');
 }
 
@@ -151,11 +164,14 @@ export function concatBytes(parts, n = parts.reduce((a, p) => a + p.length, 0)) 
 // The body as plain bytes. A body that still carries gzip magic, or zlib
 // magic under Content-Encoding: deflate (the runtime did not decode it, or
 // it is a .tar.gz), is inflated by ./inflate.js, which only works when the
-// reader asks for the next chunk: a bomb expands by at most one 64 KB chunk
-// past the reader's cap, on every runtime. Compressed input stops after
-// inputCap bytes (gzip never grows data by more than a sliver, so a real
-// body reaches the decompressed cap first); reading then ends with what was
-// decoded and sets state.inputCapped.
+// reader asks for the next chunk. With `limit` (plainBody passes the
+// reader's cap + 1), the inflater never produces more than that many bytes
+// in all; without it, at most one 64 KB chunk past the point where the
+// reader stops. Compressed input stops after inputCap bytes (gzip never
+// grows data by more than a sliver, so a real body reaches the decompressed
+// cap first); reading then ends with what was decoded and sets
+// state.inputCapped. state.fed counts the bytes read from the body as the
+// runtime delivered them (compressed, when this module inflates).
 //
 // plainChunks is the pull reader: read() resolves to {done, value}. When
 // `views` is true, each value is a view into the inflater's buffer that is
@@ -174,8 +190,9 @@ export async function plainBody(body, opts) {
     cancel(reason) { chunks.cancel(reason); }
   }, {highWaterMark: 0});
 }
-export async function plainChunks(body, {race = p => p, encoding = '', inputCap = Infinity, state = {}} = {}) {
+export async function plainChunks(body, {race = p => p, encoding = '', inputCap = Infinity, limit = Infinity, state = {}} = {}) {
   state.inputCapped = false;
+  state.fed = 0;
   if (!body) return {views: false, read: async () => ({done: true}), cancel() {}};
   const reader = body.getReader();
   let head = new Uint8Array(0), ended = false;
@@ -183,6 +200,7 @@ export async function plainChunks(body, {race = p => p, encoding = '', inputCap 
     const r = await race(reader.read());
     if (r.done) ended = true; else head = concatBytes([head, toBytes(r.value)]);
   }
+  state.fed = head.length;
   const format = head[0] === 0x1f && head[1] === 0x8b ? 'gzip'
     : /deflate/i.test(encoding) && head[0] === 0x78 && (head[0] * 256 + head[1]) % 31 === 0 ? 'deflate' : null;
   if (!format) {
@@ -194,30 +212,33 @@ export async function plainChunks(body, {race = p => p, encoding = '', inputCap 
         if (ended) return {done: true};
         const r = await race(reader.read());
         if (r.done) { ended = true; return {done: true}; }
-        return {done: false, value: toBytes(r.value)};
+        const v = toBytes(r.value);
+        state.fed += v.length;
+        return {done: false, value: v};
       },
       cancel(reason) { ended = true; first = null; reader.cancel(reason).catch(() => {}); }
     };
   }
-  const io = {buf: head, pos: 0, ended};
+  const io = {buf: head, pos: 0, ended, want: limit};
   const gen = inflater(format, io);
-  let fed = head.length, finished = false;
+  let produced = 0, finished = false;
   const stop = () => { finished = true; reader.cancel().catch(() => {}); try { gen.return(); } catch {} };
   return {
     views: true,
     async read() {
-      while (!finished) {
+      while (!finished && produced < limit) {
+        io.want = limit - produced;
         let step;
         try { step = gen.next(); } catch (e) { stop(); throw e; }
         if (step.done) break;
-        if (step.value) return {done: false, value: step.value};
-        if (fed >= inputCap) { state.inputCapped = true; break; }
+        if (step.value) { produced += step.value.length; return {done: false, value: step.value}; }
+        if (state.fed >= inputCap) { state.inputCapped = true; break; }
         const r = await race(reader.read());
         if (r.done) { io.ended = true; continue; }
         const v = toBytes(r.value), keep = Math.max(0, io.pos - 8);
         io.buf = concatBytes([io.buf.subarray(keep), v]);
         io.pos -= keep;
-        fed += v.length;
+        state.fed += v.length;
       }
       stop();
       return {done: true};
@@ -279,25 +300,38 @@ export function allowedType(type, policy) {
 
 // --- text ------------------------------------------------------------------------
 
-const ENTITIES = {amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '\u2014', ndash: '\u2013', hellip: '\u2026', copy: '\u00a9'};
-const decodeEntities = s => s.replace(/&(#[xX][0-9a-fA-F]{1,6}|#[0-9]{1,7}|[a-zA-Z]{1,10});/g, (m, e) => {
-  if (e[0] === '#') {
-    const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
-    return n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : '';
+const ENTITIES = {amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '\u2014', ndash: '\u2013', hellip: '\u2026', copy: '\u00a9',
+  colon: ':', semi: ';', sol: '/', bsol: '\\', ast: '*', excl: '!', num: '#', lpar: '(', rpar: ')', period: '.', comma: ',',
+  equals: '=', lowbar: '_', tab: '\t', newline: '\n'};
+// Numeric references may omit the semicolon, as browsers allow.
+const decodeEntities = s => s.replace(/&(?:#([xX][0-9a-fA-F]{1,6}|[0-9]{1,7});?|([a-zA-Z]{1,10});)/g, (m, num, name) => {
+  if (num) {
+    const n = num[0] === 'x' || num[0] === 'X' ? parseInt(num.slice(1), 16) : parseInt(num, 10);
+    return n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : '\ufffd';
   }
-  return ENTITIES[e.toLowerCase()] ?? m;
+  return ENTITIES[name.toLowerCase()] ?? m;
 });
 const words = s => new Set(s.split(' '));
-// Raw text, embedded or interactive content: dropped with its contents.
-const DROP = words('script style noscript iframe frame frameset svg math template form object embed applet select textarea button canvas audio video picture map dialog');
-const VOID = words('area base br col embed hr img input link meta param source track wbr keygen');
+// Raw text: the content runs to the matching end tag and is never shown.
+const RAW = words('script style textarea title xmp iframe noembed noframes noscript');
+// Dropped with their descendants, like hidden elements.
+const SUBTREE = words('svg math template form object applet select button canvas audio video picture map dialog frameset datalist');
+const VOID = words('area base br col embed hr img input link meta param source track wbr keygen frame basefont bgsound');
 const BLOCK = words('p div section article header footer main nav aside ul ol table tr pre blockquote dl dt dd figure figcaption hr details summary address fieldset legend caption');
-const TAG = /<(\/?)([A-Za-z][A-Za-z0-9:-]*)/y;
+// The HTML tree builder's "special" elements and scope boundaries, used to
+// decide which open elements an end tag closes.
+const SPECIAL = words('address applet area article aside base basefont bgsound blockquote body br button caption center col colgroup dd details dir div dl dt embed fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hgroup hr html iframe img input keygen li link listing main marquee menu meta nav noembed noframes noscript object ol p param plaintext pre script search section select source style summary table tbody td template textarea tfoot th thead title tr track ul wbr xmp');
+const BOUNDARY = words('applet caption html table td th marquee object template svg math');
+const BLOCK_END = words('address article aside blockquote button center details dialog dir div dl fieldset figcaption figure footer header hgroup listing main menu nav ol pre search section summary ul p li dd dt h1 h2 h3 h4 h5 h6');
+const P_CLOSERS = words('address article aside blockquote center details dialog dir div dl fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr main menu nav ol p pre search section summary table ul');
+const WALK = 64; // end tags look at most this many open elements (keeps the scan linear)
+const TAG = /<(\/?)([A-Za-z][^\s/>]*)/y;
+const RAW_END = new Map([...RAW].map(n => [n, new RegExp(`</${n}(?=[\\s/>]|$)`, 'gi')]));
+const space = c => c === ' ' || c === '\n' || c === '\t' || c === '\r' || c === '\f';
 
 // Attributes of one tag, in one left-to-right pass.
 function attributes(a) {
   const map = new Map(), n = a.length;
-  const space = c => c === ' ' || c === '\n' || c === '\t' || c === '\r' || c === '\f';
   let i = 0;
   while (i < n) {
     while (i < n && (space(a[i]) || a[i] === '/')) i++;
@@ -320,46 +354,123 @@ function attributes(a) {
   }
   return map;
 }
-const isHidden = attrs => {
-  if (!/hidden|display|visibility/i.test(attrs)) return false;
-  if (/^\s*hidden\s*\/?\s*$/i.test(attrs)) return true;
-  const m = attributes(attrs), style = (m.get('style') || '').toLowerCase().replace(/\s+/g, '');
-  return m.has('hidden') || (m.get('aria-hidden') || '').trim().toLowerCase() === 'true' ||
-    style.includes('display:none') || style.includes('visibility:hidden');
-};
+// A CSS declaration list with comments and whitespace removed and escapes
+// decoded, lower-cased: "DISPLAY : n\6f ne /**/" becomes "display:none".
+function cssPlain(v) {
+  let r = '';
+  for (let k = 0; k < v.length; k++) {
+    const c = v[k];
+    if (c === '/' && v[k + 1] === '*') { const e = v.indexOf('*/', k + 2); if (e < 0) break; k = e + 1; continue; }
+    if (c === '\\') {
+      let j = k + 1, h = '';
+      while (j < v.length && h.length < 6 && /[0-9a-fA-F]/.test(v[j])) h += v[j++];
+      if (h) {
+        const cp = parseInt(h, 16);
+        r += cp > 0 && cp <= 0x10ffff && (cp < 0xd800 || cp > 0xdfff) ? String.fromCodePoint(cp) : '\ufffd';
+        if (space(v[j] ?? '')) j++;
+        k = j - 1;
+      } else if (j < v.length && v[j] !== '\n') { r += v[j]; k = j; }
+      continue;
+    }
+    if (!space(c)) r += c;
+  }
+  return r.toLowerCase();
+}
+function isHidden(attrs) {
+  if (!/hidden|display|visibility|\\|&/i.test(attrs)) return false;
+  const m = attributes(attrs);
+  if (m.has('hidden')) return true;
+  if (decodeEntities(m.get('aria-hidden') || '').trim().toLowerCase() === 'true') return true;
+  const style = cssPlain(decodeEntities(m.get('style') || ''));
+  return style.includes('display:none') || style.includes('visibility:hidden') || style.includes('visibility:collapse');
+}
+// End of a script element, following the script-data escape states that
+// browsers use ("<!--<script>" opens a double-escaped section in which
+// "</script>" does not end the element). Returns [start, end] or null.
+function scriptEnd(s, from) {
+  const n = s.length;
+  let state = 0; // 0 data, 1 escaped, 2 double-escaped
+  for (let k = from; k < n; k++) {
+    const c = s.charCodeAt(k);
+    if (c === 45 && state && s.startsWith('-->', k)) { state = 0; k += 2; continue; }
+    if (c !== 60) continue;
+    if (s.startsWith('<!--', k)) { if (!state) { state = 1; k += 3; } continue; }
+    const close = s[k + 1] === '/', j = close ? k + 2 : k + 1;
+    if (s.slice(j, j + 6).toLowerCase() !== 'script' || !(j + 6 >= n || space(s[j + 6]) || s[j + 6] === '/' || s[j + 6] === '>')) continue;
+    if (!close) { if (state === 1) state = 2; continue; }
+    if (state === 2) { state = 1; continue; }
+    const gt = s.indexOf('>', j + 6);
+    return [k, gt < 0 ? n : gt + 1];
+  }
+  return null;
+}
+function rawEnd(s, name, from) {
+  if (name === 'script') return scriptEnd(s, from);
+  const re = RAW_END.get(name);
+  re.lastIndex = from;
+  const m = re.exec(s);
+  if (!m) return null;
+  const gt = s.indexOf('>', re.lastIndex);
+  return [m.index, gt < 0 ? s.length : gt + 1];
+}
 
-// HTML to plain text in one linear scan: comments, doctype, scripts,
-// styles, frames, forms, media and hidden elements dropped; headings, list
-// items, paragraphs and code kept as text. Searches for closing tags never
-// rescan text: a name with no closing tag after some point is remembered.
+// HTML to plain text in one linear pass with a stack of open elements, as
+// a browser builds it closely enough to know what is hidden. Comments,
+// doctype, raw-text elements (script, style, noscript, noembed, noframes,
+// iframe, textarea, title) and embedded or interactive subtrees (svg, math,
+// template, form, ...) are dropped. So is every element that is hidden
+// (`hidden`, aria-hidden="true", or an inline display:none or
+// visibility:hidden after CSS comments, whitespace, escapes and character
+// references are resolved). Hiding fails closed: a hidden element that is
+// never closed hides the rest of the page, and an end tag only closes what
+// the tree builder would close (special elements and scope boundaries stop
+// it; formatting and block end tags close through). `/>` is honoured only
+// inside svg and math. Headings, list items, paragraphs and code are kept
+// as text.
 export function htmlToText(html) {
   const s = String(html ?? ''), n = s.length, out = [];
-  const missing = new Set(), finders = new Map();
-  let i = 0, title = '';
-  // The next closing tag of `name` from `from` ([start, end]), or null.
-  const closing = (name, from, nested) => {
-    const key = (nested ? '+' : '-') + name;
-    if (missing.has(key)) return null;
-    let re = finders.get(name);
-    if (!re) finders.set(name, re = new RegExp(`<(/?)${name}(?=[\\s/>]|$)`, 'gi'));
-    re.lastIndex = from;
-    let depth = 1, m;
-    while ((m = re.exec(s))) {
-      if (!m[1]) { if (nested) depth++; continue; }
-      if (--depth === 0) { const gt = s.indexOf('>', re.lastIndex); return [m.index, gt < 0 ? n : gt + 1]; }
+  const stack = [], count = new Map();
+  let i = 0, title = null, hiddenAt = -1, foreign = 0;
+  const push = name => { stack.push(name); count.set(name, (count.get(name) || 0) + 1); if (name === 'svg' || name === 'math') foreign++; };
+  const popTo = k => { // pop stack[k] and everything above it
+    while (stack.length > k) {
+      const name = stack.pop();
+      count.set(name, count.get(name) - 1);
+      if (name === 'svg' || name === 'math') foreign--;
     }
-    missing.add(key);
-    return null;
+    if (hiddenAt >= stack.length) hiddenAt = -1;
   };
+  // The nearest open `name`, if an end tag (or an implied end) reaches it.
+  const reach = (name, through) => {
+    if (!count.get(name)) return -1;
+    for (let k = stack.length - 1, seen = 0; k >= 0 && seen < WALK; k--, seen++) {
+      const node = stack[k];
+      if (node === name) return k;
+      if (BOUNDARY.has(node) || (!through && SPECIAL.has(node))) return -1;
+    }
+    return -1;
+  };
+  const visible = () => hiddenAt < 0;
   while (i < n) {
     const lt = s.indexOf('<', i);
-    if (lt < 0) { out.push(s.slice(i)); break; }
-    if (lt > i) out.push(s.slice(i, lt));
-    if (s.startsWith('<!--', lt)) { const e = s.indexOf('-->', lt + 4); i = e < 0 ? n : e + 3; continue; }
-    if (s[lt + 1] === '!' || s[lt + 1] === '?') { const e = s.indexOf('>', lt); i = e < 0 ? n : e + 1; continue; }
+    if (lt < 0) { if (visible()) out.push(s.slice(i)); break; }
+    if (lt > i && visible()) out.push(s.slice(i, lt));
+    if (s.startsWith('<!--', lt)) {
+      if (s.startsWith('<!-->', lt)) { i = lt + 5; continue; }
+      if (s.startsWith('<!--->', lt)) { i = lt + 6; continue; }
+      const e = s.indexOf('-->', lt + 4);
+      i = e < 0 ? n : e + 3;
+      continue;
+    }
+    const next = s[lt + 1];
+    if (next === '!' || next === '?' || (next === '/' && !/[A-Za-z]/.test(s[lt + 2] ?? '') && lt + 2 < n)) {
+      const e = s.indexOf('>', lt); // doctype, bogus comments, "</>"
+      i = e < 0 ? n : e + 1;
+      continue;
+    }
     TAG.lastIndex = lt;
     const m = TAG.exec(s);
-    if (!m) { out.push('<'); i = lt + 1; continue; }
+    if (!m) { if (visible()) out.push('<'); i = lt + 1; continue; }
     // End of the tag: the first '>' outside a quoted attribute value.
     let k = TAG.lastIndex, quote = '', afterEq = false;
     for (; k < n; k++) {
@@ -368,31 +479,38 @@ export function htmlToText(html) {
       if (c === '>') break;
       if ((c === '"' || c === "'") && afterEq) { quote = c; afterEq = false; continue; }
       if (c === '=') afterEq = true;
-      else if (c !== ' ' && c !== '\t' && c !== '\n' && c !== '\r') afterEq = false;
+      else if (!space(c)) afterEq = false;
     }
     const attrs = s.slice(TAG.lastIndex, k), name = m[2].toLowerCase();
     i = k < n ? k + 1 : n;
-    if (m[1]) {
-      if (BLOCK.has(name) || /^h[1-6]$/.test(name)) out.push('\n');
-      else if (name === 'td' || name === 'th') out.push('\t');
+    if (m[1]) { // end tag
+      if (name === 'br') { if (visible()) out.push('\n'); continue; }
+      const at = reach(name, BLOCK_END.has(name)); // formatting end tags stop at special elements, as the adoption agency does
+      if (at < 0) continue;
+      const shown = visible();
+      popTo(at);
+      if (shown && (BLOCK.has(name) || /^h[1-6]$/.test(name))) out.push('\n');
+      else if (shown && (name === 'td' || name === 'th')) out.push('\t');
       continue;
     }
-    if (name === 'title') {
-      const c = closing('title', i, false);
-      if (!title) title = s.slice(i, c ? c[0] : n).slice(0, 2000);
-      i = c ? c[1] : n;
+    if (name === 'html' || name === 'head' || name === 'body') continue;
+    if (RAW.has(name)) {
+      const end = rawEnd(s, name, i);
+      if (name === 'title' && title === null && visible()) title = s.slice(i, end ? end[0] : n).slice(0, 2000);
+      i = end ? end[1] : n;
       continue;
     }
-    if (DROP.has(name)) {
-      if (VOID.has(name)) continue;
-      const c = closing(name, i, false);
-      i = c ? c[1] : n;
-      continue;
-    }
-    if (isHidden(attrs)) {
-      if (!VOID.has(name) && !attrs.trimEnd().endsWith('/')) { const c = closing(name, i, true); if (c) i = c[1]; }
-      continue;
-    }
+    // Implied ends: a block start closes an open p; li, dt/dd and headings
+    // close their open siblings.
+    if (P_CLOSERS.has(name)) { const at = reach('p', false); if (at >= 0) popTo(at); }
+    if (name === 'li') { const at = reach('li', false); if (at >= 0) popTo(at); }
+    if (name === 'dd' || name === 'dt') { const at = Math.max(reach('dd', false), reach('dt', false)); if (at >= 0) popTo(at); }
+    if (/^h[1-6]$/.test(name) && /^h[1-6]$/.test(stack[stack.length - 1] || '')) popTo(stack.length - 1);
+    const selfClosing = VOID.has(name) || (foreign > 0 && attrs.trimEnd().endsWith('/'));
+    const hides = visible() && (SUBTREE.has(name) || isHidden(attrs));
+    const shown = visible() && !hides;
+    if (!selfClosing) { push(name); if (hides) hiddenAt = stack.length - 1; }
+    if (!shown) continue;
     if (name === 'br' || name === 'hr') out.push('\n');
     else if (/^h[1-6]$/.test(name)) out.push('\n\n' + '#'.repeat(+name[1]) + ' ');
     else if (name === 'li') out.push('\n- ');
@@ -400,7 +518,7 @@ export function htmlToText(html) {
   }
   const text = decodeEntities(out.join('')).split('\n').map(l => l.replace(/[ \t\u00a0]+/g, ' ').trimEnd()).join('\n')
     .replace(/\n{3,}/g, '\n\n').trim();
-  return {title: decodeEntities(title).replace(/\s+/g, ' ').trim(), text};
+  return {title: decodeEntities(title ?? '').replace(/\s+/g, ' ').trim(), text};
 }
 
 // Envelopes the runtime parses out of messages ([route:…], [build:repair],
@@ -435,14 +553,15 @@ async function sha256(bytes) {
 // (what the sources table stores), so different pages never share one.
 // `final_url` is the normalised href of the last hop. `urls` may pass the
 // goal's already-extracted URLs; `redact` is an extra redaction step for
-// error text.
+// error text. `wire_bytes` counts what was read from the network (before
+// this module inflates it), even when the fetch then fails.
 export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), maxBytes = policy.maxBytes, urls = null, redact = t => t} = {}) {
   const result = {url: String(url), final_url: null, status: null, content_type: null, title: '', text: '',
-    bytes: 0, truncated: false, sha256: null, error: null};
+    bytes: 0, wire_bytes: 0, truncated: false, sha256: null, error: null};
   if (!(urls || goalUrls(goal, Infinity)).includes(result.url)) return {...result, error: 'source_refused: only URLs written in the goal are fetched'};
   const why = urlRefusal(url, policy);
   if (why) return {...result, error: `source_refused: ${why}`};
-  const clock = deadline(policy.timeoutMs);
+  const clock = deadline(policy.timeoutMs), state = {fed: 0};
   try {
     const {response, final_url} = await guardedFetch(url, {fetch, policy: {...policy, archive: false}, race: clock.race, signal: clock.signal,
       accept: 'text/html, text/markdown, text/plain, application/json;q=0.9, text/*;q=0.8'});
@@ -452,8 +571,8 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
       cancelBody(response);
       throw new FetchRefused(`content type ${result.content_type || '(none)'} is not fetched`);
     }
-    const cap = Math.max(0, maxBytes), state = {};
-    const body = await plainBody(response.body, {race: clock.race, inputCap: inputCapFor(cap), state,
+    const cap = Math.max(0, maxBytes);
+    const body = await plainBody(response.body, {race: clock.race, inputCap: inputCapFor(cap), limit: cap + 1, state,
       encoding: response.headers?.get?.('content-encoding') || ''});
     const read = await readCapped(body, cap, clock.race);
     const {bytes} = read, truncated = read.truncated || state.inputCapped;
@@ -467,18 +586,20 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
   } catch (e) {
     const message = e instanceof FetchRefused ? `source_refused: ${e.message}` : `fetch failed: ${e?.message || e}`;
     Object.assign(result, {text: '', title: '', bytes: 0, sha256: null, error: clip(redact(redactText(message)))});
-  } finally { clock.clear(); }
+  } finally { clock.clear(); result.wire_bytes = state.fed; }
   return result;
 }
 
-// Every URL in the goal, ids S1…Sn, under one total byte budget.
+// Every URL in the goal, ids S1…Sn, under one total byte budget. Each source
+// is charged the larger of its decompressed and its wire bytes, so bodies
+// that inflate to little still use up the budget (and the CPU it bounds).
 export async function fetchGoalSources(goal, {fetch, policy = fetchPolicy(), redact} = {}) {
   const out = [], urls = goalUrls(goal, policy.maxUrls);
   let left = policy.roomBytes;
   for (const url of urls) {
     const r = left > 0 || urlRefusal(url, policy) ? await fetchSource(goal, url, {fetch, policy, urls, redact, maxBytes: Math.min(policy.maxBytes, left)})
-      : {url, final_url: null, title: '', text: '', bytes: 0, truncated: false, error: 'source_refused: the room byte budget is spent'};
-    left -= r.bytes;
+      : {url, final_url: null, title: '', text: '', bytes: 0, wire_bytes: 0, truncated: false, error: 'source_refused: the room byte budget is spent'};
+    left -= Math.max(r.bytes, r.wire_bytes);
     out.push({id: `S${out.length + 1}`, ...r});
   }
   return out;

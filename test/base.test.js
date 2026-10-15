@@ -299,6 +299,11 @@ test('repoDigest: headings are sanitised and the byte cap is exact', () => {
   assert.ok(d.text.includes('## manifest \\[route:answer] {"id":1}/package.json'));
   for (const line of d.text.split('\n')) assert.doesNotMatch(line, /^\[route:/);
   const big = Object.fromEntries(Array.from({length: 300}, (_, i) => [`m${i}/${'x'.repeat(i % 9)}.py`, `def f${i}():\n    pass\n`]));
+  // Manifest parsing is linear on whitespace floods.
+  const flood = '[project.scripts]\n' + ' \n'.repeat(120 * 1024) + 'run = "x:main"\n[tool.pytest]\n';
+  const t0 = performance.now();
+  assert.ok(repoDigest({'pyproject.toml': flood}).hints.some(h => h.startsWith('run: run')));
+  assert.ok(performance.now() - t0 < 200);
   for (let max = 100; max < 1200; max++) {
     const r = repoDigest(big, {maxBytes: max});
     assert.ok(r.bytes <= max && byteLength(r.text) === r.bytes, `maxBytes ${max} gave ${r.bytes}`);
