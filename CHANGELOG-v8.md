@@ -176,6 +176,15 @@ The CLI room completed in about 30 s. The to-do card's R1 looked for `<input typ
 - Clef's cost (about 0.4 to 0.9 s per batch) is unchanged.
 - **The prompt handler.** A short-lived step above Root (`handPrompt`), not a model call: it takes the person's prompt, creates Root's row as every parent creates a child's (its packages the installed set), sets Root's `parent` to its own id (`prompt:1`), hands the prompt over and ends. A queued prompt or an amendment gets a handler of its own, which hands the change to the existing Root and ends; it never creates a second Root. Handlers live in `prompt_handlers` with `spawned_at` and `ended_at` (the snapshot and the export show them), never among the agents, and hold nothing afterwards. The room reads a handler parent as the top of the tree (`isTop`, and `handed_by` on Root's row), so every place that meant "this is Root" behaves as before.
 
+## M2: same managers
+
+Every manager is the same; the top is a manager whose parent is a prompt handler that has ended.
+
+- **The card writer is a step of its own** (`cardWriter`, table `card_writers`, ids `card:<n>`). A goal's handler spawns it, waits while it writes the card (writeCard, Clef's review, validation) and, once it has ended, creates the top's row: its contracts the card's, its packages the installed set, the chunks it holds (`source_refs:<id>`), the base digest (`base_digest:<id>`) and the checks it holds (`checks:<id>`). The handler makes no model call. A change's handler spawns the card writer's amend path and hands the change to the top as a change on its row (`handRows`): a manager holds the rows and routes them, a worker gets a ticket.
+- **The room holds the boundary with the person.** Holds are the room's (events by `room`) and name what waits on them (`agent`, or the card writer's `step`); Continue wakes it. Run finished: the top is done and every card check has a recorded pass.
+- **The top asks and escalates like anyone.** A contract nobody on its line provides goes to the person as the room hold `ask_unanswered`; a follow-up prompt answers it, Continue leaves it to the asker. A package ask is answered with what is installed, as before. `can_escalate` is true for every manager; one with no agent above escalates to the room.
+- **No extra rules for the top.** It may decline to split; an unsplit agent anywhere is a worker; any row that holds checks runs them through one path (`compileCard(id)`) over its own bundle when its work is done. v7 keeps its own paths.
+
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.
