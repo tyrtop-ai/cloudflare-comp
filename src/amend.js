@@ -20,6 +20,29 @@ export function effectiveGoal(goal, changes = []) {
   return [String(goal ?? '').trim(), ...list.map((c, i) => `Change ${i + 1}: ${c}`)].filter(Boolean).join('\n\n');
 }
 
+// The goal as a reader with a limit sees it (S9 review): both ends kept,
+// the head of the user's goal and the latest changes, within `limit`
+// characters. The whole effective goal when it fits. The changes get at
+// most 60% of the room (the newest first, the newest one clipped if it
+// alone is too long), and the goal's head the rest; what is left out is
+// marked.
+export function goalView(goal, changes = [], limit = EFFECTIVE_GOAL_LIMIT) {
+  const whole = effectiveGoal(goal, changes), n = Math.max(40, Number(limit) || 0);
+  if (whole.length <= n) return whole;
+  const list = (Array.isArray(changes) ? changes : []).map(c => String(c ?? '').trim()).filter(Boolean).map((c, i) => `Change ${i + 1}: ${c}`);
+  const cut = (s, m) => s.length <= m ? s : `${s.slice(0, Math.max(0, m - 1))}…`;
+  const room = Math.floor(n * 0.6), kept = [];
+  let used = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const line = kept.length ? list[i] : cut(list[i], room);
+    if (used + line.length + 2 > room) break;
+    kept.unshift(line); used += line.length + 2;
+  }
+  const skipped = list.length - kept.length, note = skipped ? `(${skipped} earlier change${skipped > 1 ? 's' : ''} left out)` : '';
+  const tail = [note, ...kept].filter(Boolean).join('\n\n'), head = cut(String(goal ?? '').trim(), Math.max(0, n - tail.length - 2));
+  return [head, tail].filter(Boolean).join('\n\n').slice(0, n);
+}
+
 // A prompt's text as the queue and /api/amend take it: trimmed, 8 to
 // PROMPT_LIMIT characters. {text} or {error}.
 export function promptText(raw) {
@@ -56,7 +79,8 @@ const delKey = d => { const {source: _s, ...rest} = d || {}; return JSON.stringi
 // items carry the change as their source. Returns {card, delta, notes}:
 // delta {deliverables:{added, changed}, requirements:{added, changed}, kept}
 // (names and ids); notes: what was not taken, and why.
-export function mergeAmendment(old, written, {change = '', anchored = () => false} = {}) {
+// reserved: every requirement id the room has ever used (S9 review: an id is never given again).
+export function mergeAmendment(old, written, {change = '', anchored = () => false, reserved = []} = {}) {
   const source = String(change).trim().slice(0, CARD_LIMITS.source), notes = [];
   const card = {...old, deliverables: [...(old.deliverables || [])], requirements: explicit(old).map(r => ({...r})), run: [...(old.run || [])],
     languages: [...(old.languages || [])], decisions: [...(old.decisions || [])], project_checks: [...(old.project_checks || [])]};
@@ -92,7 +116,7 @@ export function mergeAmendment(old, written, {change = '', anchored = () => fals
     const o = card.requirements.find(r => !used.has(r.id) && r.id === w.id && !anchored(r));
     if (o) { matched.set(w, o); used.add(o.id); }
   }
-  const taken = new Set([...(old.requirements || []).map(r => r.id), ...card.requirements.map(r => r.id)]);
+  const taken = new Set([...reserved, ...(old.requirements || []).map(r => r.id), ...card.requirements.map(r => r.id)]);
   for (const w of fresh) {
     const o = matched.get(w);
     if (o) {
@@ -137,13 +161,15 @@ export function cardDelta(old, next) {
 // The merged card validated once more as a whole (its cross references: a
 // check's path, run and serves), with the effective goal as the text its
 // sources trace to. The runtime's own requirements are rebuilt by it.
-export function revalidate(card, {goal = '', installed, base = [], packages = 'none'} = {}) {
+// reserved: ids a new implicit requirement may not take (ever used, and not this one's).
+export function revalidate(card, {goal = '', installed, base = [], packages = 'none', reserved = []} = {}) {
   const raw = {...card, requirements: explicit(card)};
   const out = validateCard(raw, {goal, installed, base, packages});
   // validateCard drops a deliverable's source; the merged card keeps it, and its implicit requirements' ids.
   const src = new Map((card.deliverables || []).filter(d => d.source).map(d => [d.name, d.source]));
   const ids = new Map((card.requirements || []).filter(r => r.implicit || r.project).map(r => [reqKey(r), r.id]));
-  const taken = new Set(out.card.requirements.filter(r => !r.implicit).map(r => r.id)), keep = new Map();
+  const own = new Set((card.requirements || []).map(r => r.id));
+  const taken = new Set([...out.card.requirements.filter(r => !r.implicit).map(r => r.id), ...reserved.filter(id => !own.has(id))]), keep = new Map();
   for (const r of out.card.requirements.filter(r => r.implicit && ids.has(reqKey(r)))) if (!taken.has(ids.get(reqKey(r)))) { taken.add(ids.get(reqKey(r))); keep.set(r, ids.get(reqKey(r))); }
   const requirements = out.card.requirements.map(r => {
     if (!r.implicit) return r;

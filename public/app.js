@@ -135,6 +135,8 @@ function renderPrompts(s) {
   const list=s.prompts||[],queued=list.filter(p=>p.status==='queued').map(p=>p.id),running=s.status==='running';
   if($('prompt-now')){$('prompt-now').textContent=running?'Adjust now':'Apply now';$('prompt-now').disabled=s.settings?.pipeline!=='v8'||!s.agents?.length||!!s.amending;}
   if($('queue-on-fail')&&document.activeElement!==$('queue-on-fail'))$('queue-on-fail').value=s.queue_on_fail||'stop';
+  // The queue's bounds: the turns left for queued prompts and the room-wide repair rounds (S9 review).
+  if($('prompts-note')&&s.queue_turns_left!=null)$('prompts-note').textContent=`v8 · ${s.queue_turns_left} turns left for queued prompts · repair rounds ${s.room_repair_rounds??0} of ${s.room_repair_cap??0}`;
   if($('queue-stopped')){$('queue-stopped').hidden=!s.queue_stopped;$('queue-stopped').innerHTML=s.queue_stopped?`${esc(s.queue_stopped)} <button type="button" class="secondary" data-queue-resume="1">Go on</button>`:'';}
   // Polling never overwrites a prompt being edited.
   if(editingPrompt&&queued.includes(editingPrompt)&&renderedPrompts!==null)return;
@@ -434,7 +436,7 @@ $('continue').addEventListener('click',()=>action('/api/continue',{budget:countS
 // v8 S9: queue a prompt, or apply it now (an adjustment while running).
 const promptInput=()=>$('prompt-text')?.value.trim()||'';
 $('prompt-queue')?.addEventListener('click',async()=>{const text=promptInput();if(!text)return showError('Write the prompt to queue.');if(await promptAction('/api/prompts',{text,budget:countSetting('budget')}))$('prompt-text').value='';});
-$('prompt-now')?.addEventListener('click',async()=>{const text=promptInput();if(!text)return showError('Write the change to apply.');if(await promptAction('/api/amend',{text,budget:countSetting('budget')}))$('prompt-text').value='';});
+$('prompt-now')?.addEventListener('click',async()=>{const text=promptInput();if(!text)return showError('Write the change to apply.');if(await promptAction('/api/amend',{text}))$('prompt-text').value='';});
 $('queue-on-fail')?.addEventListener('change',()=>promptAction('/api/prompts/policy',{queue_on_fail:$('queue-on-fail').value}));
 $('queue-stopped')?.addEventListener('click',e=>{if(e.target.closest?.('[data-queue-resume]'))promptAction('/api/prompts/policy',{resume:true});});
 $('prompts')?.addEventListener('click',e=>{
@@ -445,7 +447,7 @@ $('prompts')?.addEventListener('click',e=>{
   else if(d.promptDown)movePrompt(d.promptDown,order.indexOf(d.promptDown)+1);
   else if(d.promptEdit){editingPrompt=d.promptEdit;renderedPrompts=null;if(current)renderPrompts(current);}
   else if(d.promptCancel){editingPrompt='';renderedPrompts=null;if(current)renderPrompts(current);}
-  else if(d.promptSave){const text=$('prompt-edit-text')?.value||'';editingPrompt='';promptAction('/api/prompts/edit',{id:d.promptSave,text});}
+  else if(d.promptSave){const text=$('prompt-edit-text')?.value||'',version=(current?.prompts||[]).find(p=>p.id===d.promptSave)?.version??0;editingPrompt='';promptAction('/api/prompts/edit',{id:d.promptSave,text,version});}
   else if(d.promptSkip)promptAction('/api/prompts/skip',{id:d.promptSkip});
   else if(d.promptRemove&&confirm('Remove this queued prompt?'))promptAction('/api/prompts/remove',{id:d.promptRemove});
 });

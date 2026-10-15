@@ -14,7 +14,7 @@ import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
 import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard, dropDeliverables } from './card.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
+import { effectiveGoal, goalView, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { triggerText, RETRY, MESSAGES, BASE_LABEL } from './prompts.js';
@@ -109,7 +109,7 @@ function ownerNote(label, piece, owner='', names=[], kept=false, v8=false) {
 // (its start, marked clipped with its full length), and the rest by path
 // only, so no file is ever mistaken for whole. The goal reaches a worker
 // clipped to GOAL_FOR_WORKERS, as the limit of scope.
-const FILES_BUDGET = 24000, GOAL_FOR_WORKERS = 600;
+const FILES_BUDGET = 24000, GOAL_FOR_WORKERS = 600, SCOPE_GOAL = 1800;
 function sentFiles(files, {revision=false, budget=FILES_BUDGET}={}) {
   let left=budget;
   return files.map(f=>{
@@ -465,6 +465,8 @@ export class ControlRoom extends DurableObject {
     // v8 S9: the prompt queue (not 'queue', which is the agents' dispatch queue) and the goal's revisions.
     db.exec("CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, seq REAL NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'queued', budget INTEGER, goal_rev INTEGER, outcome TEXT NOT NULL DEFAULT '{}', created INTEGER NOT NULL, started INTEGER, finished INTEGER, edited INTEGER)");
     db.exec('CREATE TABLE IF NOT EXISTS goal_revisions (rev INTEGER PRIMARY KEY, prompt TEXT NOT NULL, text TEXT NOT NULL, effective TEXT NOT NULL, ts INTEGER NOT NULL)');
+    // S9 review: an edit carries the version it read (409 when another edit came first).
+    if (!query(db, "SELECT name FROM pragma_table_info('prompts')").some(c => c.name === 'version')) db.exec('ALTER TABLE prompts ADD COLUMN version INTEGER NOT NULL DEFAULT 0');
     // v8 S8b: the goal's links (sources, source_chunks) and the project the room starts from (base_files).
     for(const sql of INPUT_SCHEMA)db.exec(sql);
     // In-memory busy is gone on DO eviction. Repair persisted 'running' state and
@@ -483,12 +485,21 @@ export class ControlRoom extends DurableObject {
     }
     // v8 S9: a change being applied when the object restarted is lost with
     // its card writer's call: its prompt fails, and nothing waits on it.
+    // S9 review: the queue then goes on by its policy (stop: the banner and Go on; continue: the alarm).
     const amending=this.get('amend_pending');
     if (amending) {
       this.set('amend_pending','');
-      db.exec("UPDATE prompts SET status='failed',finished=?,outcome=? WHERE id=? AND status='running' AND goal_rev IS NULL",Date.now(),JSON.stringify({error:'The Durable Object restarted while the change was being applied; apply it again.'}),amending);
-      this.event('system','amend_failed','The Durable Object restarted while a change was being applied; apply it again.');
+      const why='The Durable Object restarted while the change was being applied; apply it again.';
+      if (this.promptRows("id=? AND status='running'",amending).length) this.finishPrompt(amending,'failed',{error:why});
+      this.event('system','amend_failed',why);
+      if (this.promptRows("status='queued'").length) {
+        if (this.queueOnFail()==='stop'||Number(this.get('queue_failures','0'))>=2) this.stopQueue(`${why} The queue waits: Go on resumes it.`);
+        else this.save('prompts_due',{at:Date.now()+PROMPT_ALARM_MS,force:true});
+      }
     }
+    // A queue step due before the restart keeps its alarm.
+    const due=this.read('prompts_due',null);
+    if (due?.at) Promise.resolve(this.scheduleAlarm(due.at)).catch(()=>{});
   }
   db() { return this.ctx.storage.sql; }
   live() { return this.env.MOCK_AI!=='true'; }
@@ -517,7 +528,7 @@ export class ControlRoom extends DurableObject {
   // uses, or NAME (projectFacts).
   v8Inputs(id) {
     const uses=this.plannedUses(id);
-    return {uses:useReferences(uses,this.referenceFacts(id)),left_out:Math.max(0,uses.length-USES_SHOWN),project:projectFacts(this.read('card',null),{uses:uses.filter(f=>contractKind(f)==='function')}),goal:clip(this.userGoal(),GOAL_FOR_WORKERS)};
+    return {uses:useReferences(uses,this.referenceFacts(id)),left_out:Math.max(0,uses.length-USES_SHOWN),project:projectFacts(this.read('card',null),{uses:uses.filter(f=>contractKind(f)==='function')}),goal:this.goalFor(GOAL_FOR_WORKERS)??clip(this.userGoal(),GOAL_FOR_WORKERS)};
   }
   // v8 S8b: the room's inputs beside its goal (src/room-inputs.js). The
   // fetch the goal's links and a base repo are read with: the runtime's own,
@@ -2022,7 +2033,7 @@ export class ControlRoom extends DurableObject {
       const estimate=size(sent,interfaces,paths)+(below?tokenEstimate(LINKER_BELOW):0),whole=size(own.map(p=>({path:p,content:files.get(p)})),js.filter(p=>!needs.has(p)).map(p=>surfaceText(surfaces.get(p))),js);
       this.event(builderId,'link_started',`Linking ${label}: ${own.length-excerpts.size} module(s) with imports to resolve sent in full${excerpts.size?` and ${excerpts.size} inside branches below as excerpts`:''}, ${faced.length} shown by export names only${paths.length<js.length?`, ${js.length-paths.length} inside branches below left out`:''} (about ${estimate} tokens${estimate<whole?`, ${whole} without branch boundaries`:''}).`);
       if(estimate>BUILDER_CONTEXT_BUDGET)this.event(builderId,'link_oversize',`Linker input is about ${estimate} tokens, over ${BUILDER_CONTEXT_BUDGET}; the model may truncate it.`);
-      const out=await linkComponents(this.inferenceEnv(),{goal:this.topTask(),
+      const out=await linkComponents(this.inferenceEnv(),{goal:this.goalFor(1200)??this.topTask(),
         files:sent,interfaces,allPaths:paths,diagnostic,
         known_mismatches:mismatchesBefore.map(m=>`${m.path} ${m.detail}`),scope:top?'application':'branch',below});
       if(out.parse_error)this.event(builderId,'link_unparsed',`The builder returned invalid JSON; it contributed no renames. ${clip(out.raw,300)}`);
@@ -3428,7 +3439,7 @@ export class ControlRoom extends DurableObject {
       const what=list.map(h=>h.specifier?`the reference '${h.specifier}' names no file of the project`:h.name&&h.module?`${h.module} offers no ${h.name}`:h.module?`nothing in the project is named ${h.module}`:`${h.name} is bound nowhere in the file`);
       let out;
       try {
-        out=await linkComponents(this.inferenceEnv(),{v8:true,goal:this.userGoal(),files:[{path,content:files.get(path)}],
+        out=await linkComponents(this.inferenceEnv(),{v8:true,goal:this.goalFor(1200)??this.userGoal(),files:[{path,content:files.get(path)}],
           interfaces:useReferences(fns,facts).map(u=>`${u.contract}; refer to it as: ${u.reference}`),allPaths:[...files.keys()].filter(p=>toolchainOf(p)?.id===row?.id),
           diagnostic:clip(`The project's run found, in ${path}: ${[...new Set(what)].join('; ')}.`,600),scope:'application'});
       } catch(e) {out={edits:[]};this.event(id,'link_model_error',clip(`The linker could not be asked about ${path}: ${e?.message||e}`,400));}
@@ -3484,7 +3495,7 @@ export class ControlRoom extends DurableObject {
     const gone=list.filter(a=>!card.requirements.some(r=>same(r,a))&&!told.has(anchorKey(a.id,a.says)));
     if(gone.length) {
       this.save('requirements_dropped',[...told,...gone.map(a=>anchorKey(a.id,a.says))]);
-      for(const a of gone)this.event('root','requirement_dropped',clip(`${a.id} (${a.says}) passed before and the current card leaves it out; its check is kept as it passed.`,400));
+      for(const a of gone)this.event('root','requirement_dropped',clip(`${a.id} (${a.says}) passed before and the current card leaves it out, so it is no longer checked; its id is never given to another requirement.`,400));
     }
     if(!moved.length)return card;
     const kept={...card,requirements:card.requirements.map(r=>{const a=list.find(x=>same(r,x));return a?{...r,check:a.check}:r;})};
@@ -3773,6 +3784,8 @@ export class ControlRoom extends DurableObject {
     }
     this.reopenStalled(m);
     this.routeExhausted(m);
+    // v8 S9 review (A1): a change's row reaches every child that carries what it serves.
+    if(this.v8())this.fanOutAmendments(m);
     const rows=this.problemsHeld(m);
     if(!rows.length)return this.unfixable(m);
     const ctx=await this.decisionContext(m,rows),st={exhausted:''};
@@ -3965,6 +3978,9 @@ export class ControlRoom extends DurableObject {
         if(this.moveProblem(p,{flags:{...p.flags,route_deferred:(p.flags.route_deferred||0)+1}})){this.deferProblems(m,[{p}],dec.reason||'decided on the next turn');this.wake(m);}
       } else if(kind==='builder') {
         if(this.moveProblem(p,{status:'relinking',assignee:dec.child,flags:{...p.flags,fingerprint:this.assemblyFingerprint(m)},trail:trail(p,'relink',dec.child,dec.rule)}))relink.push(p);
+      } else if(kind==='manager'&&p.stage==='amend'&&this.node(dec.child)?.phase==='decompose'&&!this.manager(dec.child)) {
+        // v8 S9 review: a change for a child still at its split waits for the split (its inbox is read only then); the split landing wakes this manager (wakeGrowWaiter).
+        if(this.moveProblem(p,{flags:{...p.flags,grow_wait:{child:dec.child}}})){this.deferProblems(m,[{p}],'its child is still splitting');this.event(m,'amend_waiting',clip(`The change waits for ${label(dec.child)}'s split before it reaches it: ${p.detail}`,600),dec.child);}
       } else if(kind==='manager') {
         // relay: the decision travels as a side, never a node below the child.
         // v7.15.6 (R5): a promise grown by relay carries the names (grow) for the branch to place.
@@ -4629,7 +4645,7 @@ export class ControlRoom extends DurableObject {
   }
   // Whether this manager may still start a repair round for these problems
   // (its own, and the run's).
-  roundsLeft(m, rows=[]) {return Number(this.get('repair_rounds_total','0'))<this.roundCap()&&this.stalledLeft(m,rows)>0;}
+  roundsLeft(m, rows=[]) {return Number(this.get('repair_rounds_total','0'))<this.roundCap()&&Number(this.get('room_repair_rounds','0'))<this.roomRoundCap()&&this.stalledLeft(m,rows)>0;}
   // Rounds without progress this manager has left for these problems: a
   // round that makes progress resets the count, and one already paid costs
   // none. The model is never asked while told 0 are left.
@@ -4656,11 +4672,14 @@ export class ControlRoom extends DurableObject {
     const rounds=Number(this.get(`repair_rounds:${m}`,'0')),total=Number(this.get('repair_rounds_total','0')),stalled=Number(this.get(`repair_stalled:${m}`,'0'));
     const cap=this.roundCap(),progress=this.waveProgress(m,wave),label=this.node(m).label;
     if(total>=cap)return `the run used all ${cap} of its repair rounds (the per-run ceiling)`;
+    // v8 S9 review: across a room's changes, never more than the room-wide ceiling (reset only by Start).
+    const roomRounds=Number(this.get('room_repair_rounds','0')),roomCap=this.roomRoundCap();
+    if(roomRounds>=roomCap)return `the run used all ${roomCap} repair rounds the room allows across its changes (the room-wide ceiling; Start resets it)`;
     if(!progress&&stalled>=MANAGER_MAX_STALLED)return `${label} made no progress in ${MANAGER_MAX_STALLED} repair rounds in a row (the per-manager limit)`;
     const left=progress?MANAGER_MAX_STALLED:MANAGER_MAX_STALLED-stalled-1;
     this.set(`repair_rounds:${m}`,rounds+1);
     this.set(`repair_stalled:${m}`,progress?0:stalled+1);
-    this.set('repair_rounds_total',total+1);
+    this.set('repair_rounds_total',total+1);this.set('room_repair_rounds',roomRounds+1);
     this.save(`repair_waves:${m}`,[...waves,wave].slice(-64));
     this.event(m,'repair_round',`Repair round ${rounds+1} (${total+1} of the run's ${cap}): ${progress?'progress (what fails changed)':'no progress (it fails as a round before it did)'}; ${left} round(s) without progress left.`);
     return '';
@@ -4767,7 +4786,7 @@ export class ControlRoom extends DurableObject {
     const entry=this.planned()?null:this.entryChild(m);
     for(const p of list) {
       // v7.15.13 (run20, R3): a child that changed a file for this failure without progress is skipped as a declined one.
-      const r=p.facts.requirement,declined=[...(p.flags.declined||[]),...(p.flags.exhausted||[])],frameOwner=path=>{const o=p.parties.find(x=>x.path===path&&x.owner)?.owner,c=o&&nextDirectChild(m,o);return c&&live.some(x=>x.id===c)?c:null;};
+      const r=p.facts.requirement,declined=[...(p.flags.declined||[]),...(p.flags.exhausted||[]),...(p.flags.others||[])],frameOwner=path=>{const o=p.parties.find(x=>x.path===path&&x.owner)?.owner,c=o&&nextDirectChild(m,o);return c&&live.some(x=>x.id===c)?c:null;};
       const view={promises,frameOwner,performer,ranks:null};
       let route=requirementRoute(r,view,declined),defer='';
       if(route.ask&&live.length) {
@@ -4860,9 +4879,10 @@ export class ControlRoom extends DurableObject {
     // and deleteTicket from all, and nobody promised update or delete): the
     // plain pick, else Clef over those pieces, beside the scope call; a miss
     // or an error deletes it from all, as before.
-    const goal=this.topTask()||n.task,env=this.inferenceEnv(),dups=duplicateNames(named,promised,elsewhere),owners=new Map();
+    // v8 S9 review: with changes, Clef reads the goal's head and its latest changes (goalView), Root's responsibility too.
+    const goal=this.goalFor(SCOPE_GOAL)??(this.topTask()||n.task),parentTask=!n.parent?this.goalFor(SCOPE_GOAL)??n.task:n.task,env=this.inferenceEnv(),dups=duplicateNames(named,promised,elsewhere),owners=new Map();
     for(const d of dups)if(d.pick!==null)owners.set(d.name,{index:d.pick,why:d.why});
-    const scoped=scopeChildren(env,goal,n.task,named);scoped.catch(()=>{});
+    const scoped=scopeChildren(env,goal,parentTask,named);scoped.catch(()=>{});
     await Promise.all(dups.filter(d=>d.pick===null).map(async d=>{
       try {
         const x=await pickPiece(env,d.item,d.holders.map(i=>named[i]));
@@ -4885,7 +4905,7 @@ export class ControlRoom extends DurableObject {
     if(inherited.length)repaired.forEach((c,i)=>{if(c&&!normalizeUses(c.uses,{v8}).length&&(c.interfaces||[]).some(f=>own.has(f.name)&&isOp(f)))repaired[i]={...c,uses:inherited};});
     const offered=planned?planUses(repaired,outer,{v8}).spawn:[],pairs=planned&&!v8?usePairs(offered,isOp,this.userGoal()):[];
     const usesAsked=pairs.length?scopeUses(env,goal,n.task,repaired,pairs).catch(e=>{this.event(id,'uses_uncertain',`Clef failed on the pieces' uses (${clip(e?.message||e,300)}); none added.`);return [];}):[];
-    const [scope,names,asked]=await Promise.all([scoped,scopeInterfaces(env,goal,n.task,repaired,promised),usesAsked]),clefP=new Map();
+    const [scope,names,asked]=await Promise.all([scoped,scopeInterfaces(env,goal,parentTask,repaired,promised),usesAsked]),clefP=new Map();
     for(const x of asked||[])if(x.p>=0.5) {
       repaired[x.i]={...repaired[x.i],uses:[...new Set([...(offered[x.i].uses||[]),...(repaired[x.i].uses||[]),x.fn.name])]};
       clefP.set(`${repaired[x.i].task}\n${x.fn.name}`,x.p);
@@ -6302,6 +6322,7 @@ export class ControlRoom extends DurableObject {
     if(checksPending)this.prewarmContainer();
     // v8 S9: Root does not finish while a change is being applied (its rows are about to open).
     const amending=v8&&!n.parent&&!!this.get('amend_pending');
+    if(amending&&checksPending)this.set('root_held_amend','1');
     const checked=checksPending&&!amending?await this.compileCard(id):null,unchecked=checksPending&&(amending||!checked?.passed);
     if(checked?.failed)return;
     const finished=allDone&&!pending&&!needsBuilder&&!unchecked;
@@ -6392,7 +6413,7 @@ export class ControlRoom extends DurableObject {
       // S8b review: Root holds the chunks the card cites (or the first of each source), at most 16.
       if(this.allRefs().length)this.save('root_refs',rootRefs(vetted.refs,this.allRefs()));
       this.save('card',vetted);
-      this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(vetted),'goal',Date.now());
+      this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,?,?,?,?) ON CONFLICT(rev) DO UPDATE SET goal_rev=excluded.goal_rev,card=excluded.card,reason=excluded.reason,ts=excluded.ts',this.goalRev(),JSON.stringify(vetted),'goal',Date.now());
       // Root's contracts are the card's deliverables (§2.4), up to 12, as the card holds them.
       this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(vetted)),id);
       this.save('card_draft',null);this.save('paused_state',null);
@@ -6460,7 +6481,7 @@ export class ControlRoom extends DurableObject {
   async agentTurn(id) {
     const n = this.node(id);
     if (!n || n.status !== 'ready') return;
-    if (!n.parent && this.get('amend_wake')) this.set('amend_wake','');
+    if (!n.parent && (this.get('amend_wake')||this.get('root_held_amend'))) {this.set('amend_wake','');this.set('root_held_amend','');}
     if(this.v8()&&!n.parent&&n.phase==='decompose'&&!this.read('card',null)&&!query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length&&!await this.cardTurn(id))return;
     const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
     // Builders and the compiler run runtime turns, never a model action.
@@ -6506,7 +6527,7 @@ export class ControlRoom extends DurableObject {
       // for the splitter. Keep it durable across retries and DO restarts.
       if(n.phase==='decompose') {
         before.split_feedback=this.read(`split_feedback:${id}`,null);
-        before.root_scope=this.topTask() || n.task;
+        before.root_scope=this.goalFor(GOAL_LIMIT) ?? (this.topTask() || n.task);
         // v7.15: a splitter sees its own promise only, never another node's.
         const promised=this.promisedOf(id);
         if(promised.length)before.your_promised_functions=promised;
@@ -6566,7 +6587,7 @@ export class ControlRoom extends DurableObject {
         const sized=!namesOnly&&before.split_feedback?.kind==='size'&&this.get(`split_yes:${id}`)==='1';
         const malformed=!namesOnly&&!sized&&this.get(`split_yes:${id}`)==='1';
         // v7.15.13 (run20): the gate hears what the piece calls; five workers whose uses named their siblings' checks were told to split and proposed those checks again.
-        const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:n.task;
+        const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:!n.parent?this.goalFor(2600)??n.task:n.task;
         // v7.15.16 (run25): the carrier of its parent's whole promise writes it with no Clef gate: its parent's split already gave its helpers away ("Subproblem" [extractLinkStatus] under "Extract link status" [extractLinkStatus] split again, into "Interface Status Analyzer" [extractLinkStatus]). So does a carrier promising only start, composed from the plan, never split. A fresh piece is gated, at a bar that rises with depth (splitBar).
         const own=this.planned()&&n.parent?this.promisedOf(id):[],above=parse(this.node(n.parent)?.interfaces,[]).map(f=>f.name).sort(),mine=own.map(f=>f.name).sort();
         const one=own.length&&(own.length===1&&own[0].name==='start'||mine.join()===above.join())?own:null,bar=this.splitBar(id);
@@ -7253,16 +7274,22 @@ export class ControlRoom extends DurableObject {
       }
       this.event(id,'turn_end',`Completed turn after ${Date.now()-started} ms.`);
       this.activeTurns.delete(id); this.turnSteps.delete(id);
+      // v8 S9 review: a change that waited for Root's split is applied once the split is admitted.
+      if(id==='root'&&this.read('amend_deferred',null)&&this.node('root')?.phase!=='decompose')
+        try {await this.applyDeferred();} catch(e) {this.event('system','amend_failed',clip(`The change that waited for Root's split could not be applied: ${e?.message||e}`,600));}
     }
   }
   async drive(budget) {
-    const cap=normalizeTurnBudget(budget);
-    this.set('budget',cap);
+    let cap=normalizeTurnBudget(budget);
+    // v8 S9 review: turns the user gave with a change (budget_added) join this run's budget, also while it runs.
+    const added=()=>{const a=Number(this.get('budget_added','0'))||0;if(a>0){cap+=a;this.set('budget_added','0');this.set('budget',cap);}};
+    this.set('budget',cap);added();
+    const prompted=query(this.db(),"SELECT id FROM prompts WHERE status='running' LIMIT 1").length>0;
     let spent=0;
     const active=new Set();
     // A manager turn that asked its model adds to spent (spentExtra); once
     // the budget is spent, managers still run but ask no model (budgetSpent).
-    const tally=()=>{spent+=this.spentExtra||0;this.spentExtra=0;this.budgetSpent=spent>=cap;};
+    const tally=()=>{added();spent+=this.spentExtra||0;this.spentExtra=0;this.budgetSpent=spent>=cap;};
     this.spentExtra=0;this.budgetSpent=false;
     try {
       // Work-conserving: replace each completed slot immediately, without
@@ -7308,7 +7335,12 @@ export class ControlRoom extends DurableObject {
       this.event('system',finished?'complete':failed?'failed':'paused',finished ? 'All strands returned complete.' :
         failed ? `Run failed: ${this.failedDescendantReason('root')}` : held ? `Paused (${held.kind}): ${held.text}` : 'Inference budget ended or strands are waiting; continue to resume.');
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
-    finally { this.busy=false;this.budgetSpent=false; }
+    finally {
+      this.busy=false;this.budgetSpent=false;
+      // v8 S9 review: what this run left of its budget, and the queue's allowance a prompt's run spends.
+      this.set('budget_left',String(Math.max(0,cap-spent)));
+      if(prompted||query(this.db(),"SELECT id FROM prompts WHERE status='running' LIMIT 1").length)this.set('queue_turns_left',String(Math.max(0,this.turnsLeft()-spent)));
+    }
     // v8 S9: the running prompt's outcome and the queue's next step (nothing in a room without prompts).
     try { await this.promptsAfterRun(); } catch(e) { this.event('system','error',clip(`The prompt queue could not go on: ${e?.message||e}`,900)); }
   }
@@ -7323,6 +7355,8 @@ export class ControlRoom extends DurableObject {
   // goal's links are read at Root's first turn (loadSources).
   async start(goal,budget,settings = {},roomId='',provided=null,{executor='',base=null,selfHosts=[]}={}) {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
+    // v8 S9 review: a change in flight would write the old project into the new run.
+    if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then Start.',status:409};
     // Refuse bad settings before the room is wiped: a refused Start must leave
     // the previous run intact (verification probe: parallel 999 erased it).
     let wanted;
@@ -7345,6 +7379,8 @@ export class ControlRoom extends DurableObject {
     for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','problems','repair_tickets','card_revisions','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
     this.db().exec("DELETE FROM prompts WHERE status!='queued'");
     if(keep.queue_on_fail)this.set('queue_on_fail',keep.queue_on_fail);
+    // v8 S9 review: the queue's turn allowance, 4x the Start budget, for every change after this run.
+    {let b;try{b=normalizeTurnBudget(budget);}catch{b=20;}this.set('start_budget',String(b));this.set('queue_turns_allowance',String(4*b));this.set('queue_turns_left',String(4*b));}
     this.queuedAt.clear();
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
@@ -7371,6 +7407,8 @@ export class ControlRoom extends DurableObject {
     this.set('goal',this.live()?task:clip(goal,GOAL_LIMIT));
     // v8 S9: the goal's first revision (each change applied later adds one).
     this.db().exec('INSERT INTO goal_revisions(rev,prompt,text,effective,ts) VALUES (1,?,?,?,?)','',this.get('goal'),this.get('goal'),Date.now());
+    // A prompt queued before a run that is not on the v8 pipeline never runs: it is skipped, saying why.
+    if(!v8)this.db().exec("UPDATE prompts SET status='skipped',finished=?,outcome=? WHERE status='queued'",Date.now(),JSON.stringify({error:'This room was started on the v7 pipeline, which takes no queued prompt.'}));
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
@@ -7392,6 +7430,7 @@ export class ControlRoom extends DurableObject {
   }
   async resume(budget,settings = {}) {
     if (this.busy) return {error:'Experiment running'};
+    if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then Continue.',status:409};
     this.set('stop_requested','');
     if (!['paused','complete','error','running','failed'].includes(this.get('status'))) return {error:'Start a session first'};
     if (this.get('status')==='complete') return {error:'All agents are done; start a new experiment'};
@@ -7515,14 +7554,22 @@ export class ControlRoom extends DurableObject {
   // The goal as the user gave it at Start, and the changes applied since, in order.
   baseGoal() { return query(this.db(),'SELECT text FROM goal_revisions WHERE rev=1')[0]?.text ?? this.userGoal(); }
   goalChanges() { return query(this.db(),'SELECT text FROM goal_revisions WHERE rev>1 ORDER BY rev').map(r=>r.text); }
+  // S9 review: the goal as a reader with a limit sees it, both ends kept
+  // (goalView); null in a room with no change, whose readers keep their own clip.
+  goalFor(limit) { const changes=this.goalChanges(); return changes.length?goalView(this.baseGoal(),changes,limit):null; }
   promptRows(where='1=1',...args) { return query(this.db(),`SELECT * FROM prompts WHERE ${where} ORDER BY seq`,...args).map(r=>({...r,outcome:parse(r.outcome,{})})); }
   queueOnFail() { return this.get('queue_on_fail','stop')==='continue'?'continue':'stop'; }
+  // The room-wide repair ceiling across changes (S9 review): reset only by Start.
+  roomRoundCap() { return Math.min(80,2*this.roundCap()); }
+  // The queue's turn allowance left (4x the Start budget, set at Start; a room without one reads it from its budget).
+  turnsLeft() { const v=this.get('queue_turns_left',''); return v===''?4*(Number(this.get('start_budget',''))||Number(this.get('budget','0'))||20):Math.max(0,Number(v)||0); }
   // What the dashboard shows of the prompts and the card's history, in the
   // snapshot and every delta alike (small: the texts are clipped).
   promptsHead() {
     const rows=this.promptRows().slice(-60);
-    return {prompts:rows.map(r=>({id:r.id,text:clip(r.text,1200),status:r.status,kind:r.kind,budget:r.budget,goal_rev:r.goal_rev,outcome:r.outcome,created:r.created,started:r.started,finished:r.finished,edited:r.edited})),
-      queue_on_fail:this.queueOnFail(),queue_stopped:this.get('queue_stopped',''),goal_rev:this.goalRev(),amending:this.get('amend_pending',''),
+    return {prompts:rows.map(r=>({id:r.id,text:clip(r.text,1200),status:r.status,kind:r.kind,budget:r.budget,goal_rev:r.goal_rev,outcome:r.outcome,created:r.created,started:r.started,finished:r.finished,edited:r.edited,version:r.version??0})),
+      queue_on_fail:this.queueOnFail(),queue_stopped:this.get('queue_stopped',''),goal_rev:this.goalRev(),amending:this.get('amend_pending','')||this.read('amend_deferred',null)?.id||'',
+      queue_turns_left:this.turnsLeft(),room_repair_rounds:Number(this.get('room_repair_rounds','0')),room_repair_cap:this.roomRoundCap(),
       card_history:query(this.db(),'SELECT rev,goal_rev,reason,delta,ts FROM card_revisions ORDER BY rev').map(r=>({rev:r.rev,goal_rev:r.goal_rev,reason:clip(r.reason||'',600),delta:parse(r.delta||'{}',{}),ts:r.ts}))};
   }
   // Where a new prompt goes: after the last one (queued), or, for one applied
@@ -7539,6 +7586,16 @@ export class ControlRoom extends DurableObject {
     if(this.read('card_provided',null))return 'A room started from a provided card (a benchmark task) takes no change.';
     return '';
   }
+  // A change is in flight (its card writer) or waits for Root's split: Start, Clear, Continue and another change wait for it.
+  changeBusy() {
+    if(this.get('amend_pending'))return 'A change is being applied to this room; wait until it is, then try again.';
+    if(this.read('amend_deferred',null))return 'A change waits for Root\'s split to be admitted; wait until it is applied, then try again.';
+    return '';
+  }
+  // The goal with these changes added, against EFFECTIVE_GOAL_LIMIT.
+  goalTooLong(texts) {
+    return !!this.node('root')&&effectiveGoal(this.baseGoal(),[...this.goalChanges(),...texts]).length>EFFECTIVE_GOAL_LIMIT;
+  }
   // POST /api/prompts: one prompt at the end of the queue. A room that has
   // finished takes it at once (by the alarm), as the queue's next prompt.
   async addPrompt(raw, budget=null) {
@@ -7547,21 +7604,26 @@ export class ControlRoom extends DurableObject {
     if(this.node('root')&&!this.v8())return {error:'Amendments and queued prompts need a room started on the v8 pipeline.'};
     const queued=this.promptRows("status='queued'");
     if(queued.length>=MAX_QUEUED)return {error:`The queue holds at most ${MAX_QUEUED} prompts.`,status:409};
-    if(this.node('root')&&effectiveGoal(this.baseGoal(),[...this.goalChanges(),...queued.map(p=>p.text),t.text]).length>EFFECTIVE_GOAL_LIMIT)
-      return {error:`The goal with every queued change would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`,status:409};
+    if(this.goalTooLong([...queued.map(p=>p.text),t.text]))return {error:`The goal with every queued change would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`,status:409};
     const id=crypto.randomUUID();
-    this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created) VALUES (?,?,?,'queued','queued',?,NULL,'{}',?)",id,this.promptSeq(true),t.text,budget,Date.now());
+    this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created,version) VALUES (?,?,?,'queued','queued',?,NULL,'{}',?,0)",id,this.promptSeq(true),t.text,budget,Date.now());
     this.event('system','prompt_queued',clip(`Queued: ${t.text}`,600));
+    // S9 review: a room that failed or holds for you never reaches the queue on its own: the banner says so.
+    if(this.v8()&&this.node('root')&&!this.busy&&this.get('status')!=='running'&&this.runFailed()&&!this.promptRows("status='running'").length)
+      this.stopQueue('The room failed, so the queued prompts wait: Continue it, apply a change now, or Go on to apply the next prompt to it.');
     await this.kickQueue();
     return {prompt:this.promptRows('id=?',id)[0],...this.promptsHead()};
   }
-  editPrompt(id, {text, budget}={}) {
+  // version: the prompt's version as its editor read it (409 when another edit came first).
+  editPrompt(id, {text, budget, version}={}) {
     const row=this.promptRows('id=?',String(id||''))[0];
     if(!row)return {error:'No such prompt',status:404};
     if(row.status!=='queued')return {error:`Only a queued prompt can be edited; this one is ${row.status}.`,status:409};
+    if(version!==undefined&&version!==null&&Number(version)!==Number(row.version??0))return {error:'This prompt was changed since you read it; reload it and edit again.',status:409};
     const t=text===undefined?{text:row.text}:promptText(text);
     if(t.error)return {error:t.error};
-    this.db().exec("UPDATE prompts SET text=?,budget=?,edited=? WHERE id=? AND status='queued'",t.text,budget===undefined?row.budget:budget,Date.now(),row.id);
+    if(this.goalTooLong(this.promptRows("status='queued'").map(p=>p.id===row.id?t.text:p.text)))return {error:`The goal with every queued change would pass ${EFFECTIVE_GOAL_LIMIT} characters; shorten the prompt.`,status:409};
+    this.db().exec("UPDATE prompts SET text=?,budget=?,edited=?,version=version+1 WHERE id=? AND status='queued'",t.text,budget===undefined?row.budget:budget,Date.now(),row.id);
     return {prompt:this.promptRows('id=?',row.id)[0],...this.promptsHead()};
   }
   reorderPrompts(order) {
@@ -7587,13 +7649,18 @@ export class ControlRoom extends DurableObject {
     this.event('system','prompt_skipped',clip(`Skipped: ${row.text}`,600));
     return this.promptsHead();
   }
-  // queue_on_fail ('stop' | 'continue'); resume: true lets a stopped queue go on.
+  // queue_on_fail ('stop' | 'continue'); resume: true lets a stopped queue go
+  // on: its next prompt applies, to a failed room too (Go on).
   async queuePolicy({queue_on_fail, resume=false}={}) {
     if(queue_on_fail!==undefined) {
       if(!QUEUE_ON_FAIL.includes(queue_on_fail))return {error:`queue_on_fail must be ${QUEUE_ON_FAIL.join(' or ')}`};
       this.set('queue_on_fail',queue_on_fail);
     }
-    if(resume&&this.get('queue_stopped')){this.set('queue_stopped','');this.event('system','queue_resumed','The prompt queue goes on.');await this.kickQueue(true);}
+    if(resume&&this.get('queue_stopped')) {
+      this.set('queue_stopped','');this.set('queue_failures','0');
+      this.event('system','queue_resumed','The prompt queue goes on.');
+      await this.kickQueue(true);
+    }
     return this.promptsHead();
   }
   // The DO alarm advances the queue, so it runs with the dashboard closed.
@@ -7605,26 +7672,35 @@ export class ControlRoom extends DurableObject {
     if(!now||now>at)await s.setAlarm(at);
     return true;
   }
-  // The queue's next prompt is due: by the alarm, or now when the room has no alarm.
-  async kickQueue(afterFailure=false) {
-    if(!this.v8()||this.busy||this.get('status')==='running'||this.get('amend_pending'))return;
-    if(!(this.get('status')==='complete'||afterFailure)||this.get('queue_stopped')||!this.promptRows("status='queued'").length)return;
+  // The queue's next prompt is due: by the alarm, or now when the room has no
+  // alarm. force: Go on, which applies it whatever the room's state.
+  async kickQueue(force=false) {
+    if(!this.v8()||this.busy||this.get('status')==='running'||this.changeBusy())return;
+    if(!(this.get('status')==='complete'||force)||this.get('queue_stopped')||!this.promptRows("status='queued'").length)return;
     const at=Date.now()+PROMPT_ALARM_MS;
-    this.save('prompts_due',{at});
+    this.save('prompts_due',{at,...force?{force:true}:{}});
     if(!await this.scheduleAlarm(at))await this.advancePrompts();
   }
-  // A prompt's end, with what the room reached.
+  // A prompt's end, with what the room reached; under continue, two failures in a row stop the queue.
   finishPrompt(id, status, extra={}) {
     const row=this.promptRows('id=?',id)[0];
     if(!row)return;
-    const outcome={...row.outcome,room_status:this.get('status','idle'),goal_rev:row.goal_rev,card_rev:this.cardRev(),passed:this.read('compile_passed',null)?.card_rev===this.cardRev(),...extra};
+    const outcome={...row.outcome,room_status:this.get('status','idle'),goal_rev:row.goal_rev,card_rev:this.cardRev(),passed:status==='done'&&this.read('compile_passed',null)?.card_rev===this.cardRev(),...extra};
     this.db().exec('UPDATE prompts SET status=?,finished=?,outcome=? WHERE id=?',status,Date.now(),JSON.stringify(outcome),id);
+    this.set('queue_failures',status==='failed'?String(Number(this.get('queue_failures','0'))+1):'0');
     this.event('system',`prompt_${status}`,clip(`${status==='done'?'Done':'Failed'}: ${row.text}${extra.error?` (${extra.error})`:''}`,700));
   }
   // Whether the room ended where only the user can go on (the queue's failure).
   runFailed() {
     const status=this.get('status','idle');
     return status==='failed'||status==='error'||FAIL_HOLDS.includes(this.read('paused_state',null)?.kind);
+  }
+  // After a failed prompt: the queue stops (stop, or a second failure in a row), or its next prompt is due.
+  async afterFailure(why) {
+    if(!this.promptRows("status='queued'").length)return;
+    if(this.queueOnFail()==='stop')return this.stopQueue(`${why}; the queue waits. Continue the room, skip or edit the next prompt, Go on, or let the queue continue on failure.`);
+    if(Number(this.get('queue_failures','0'))>=2)return this.stopQueue(`Two prompts in a row failed, so the queue waits even on continue (${why}). Go on resumes it.`);
+    await this.kickQueue(true);
   }
   // drive's end: the running prompt's outcome, then the queue's next step.
   // Complete: done, and the next queued prompt is applied by the alarm. A
@@ -7633,19 +7709,22 @@ export class ControlRoom extends DurableObject {
   // pause (the budget, a stop) leaves it running: Continue finishes it.
   async promptsAfterRun() {
     if(!query(this.db(),'SELECT id FROM prompts LIMIT 1').length)return;
-    if(this.get('amend_wake')&&this.get('status')!=='running'&&this.get('stop_requested')!=='1'&&!this.runFailed()&&this.get('status')!=='complete') {
-      // A change routed while the run was ending: the run goes on for it.
-      this.set('amend_wake','');
-      return this.runAgain(Number(this.get('budget','0'))||20);
+    const status=this.get('status','idle');
+    // S9 review: a run that ended because Root waited on a change goes on for it, with the turns it had left; never with a fresh budget.
+    if((this.get('root_held_amend')||this.get('amend_wake'))&&status==='paused'&&this.get('stop_requested')!=='1'&&!this.runFailed()&&!this.changeBusy()) {
+      const left=Number(this.get('budget_left','0'))||0;
+      this.set('root_held_amend','');this.set('amend_wake','');
+      if(left>0)return this.runAgain(left,'The run goes on for the change with the turns it had left');
     }
+    if(this.changeBusy())return;
     this.set('amend_wake','');
-    const status=this.get('status','idle'),failed=this.runFailed(),hold=this.read('paused_state',null);
+    const failed=this.runFailed(),hold=this.read('paused_state',null);
     if(status!=='complete'&&!failed)return;
     for(const p of this.promptRows("status='running'"))this.finishPrompt(p.id,failed?'failed':'done',failed?{error:clip(hold?.text||this.failedDescendantReason('root')||status,400)}:{});
     if(status==='complete')this.set('queue_stopped','');
     if(!this.promptRows("status='queued'").length)return;
-    if(failed&&this.queueOnFail()==='stop')return this.stopQueue(`The last prompt failed (${hold?.kind||status}); the queue waits. Continue the room, skip or edit the next prompt, or let the queue continue on failure.`);
-    await this.kickQueue(failed);
+    if(failed)return this.afterFailure(`the last prompt failed (${hold?.kind||status})`);
+    await this.kickQueue();
   }
   stopQueue(why) {
     this.save('prompts_due',null);
@@ -7655,9 +7734,10 @@ export class ControlRoom extends DurableObject {
   }
   // The queue's head, applied as an amendment (compare-and-set on its status).
   async advancePrompts() {
+    const due=this.read('prompts_due',null);
     this.save('prompts_due',null);
-    if(this.busy||this.get('status')==='running'||this.get('amend_pending')||this.get('queue_stopped'))return {skipped:true};
-    if(this.get('status')!=='complete'&&!(this.runFailed()&&this.queueOnFail()==='continue'))return {skipped:true};
+    if(this.busy||this.get('status')==='running'||this.changeBusy()||this.get('queue_stopped'))return {skipped:true};
+    if(this.get('status')!=='complete'&&!due?.force&&!(this.runFailed()&&this.queueOnFail()==='continue'))return {skipped:true};
     const head=this.promptRows("status='queued'")[0];
     if(!head)return {skipped:true};
     const refused=this.amendRefusal();
@@ -7666,64 +7746,96 @@ export class ControlRoom extends DurableObject {
       this.event('system','prompt_skipped',clip(`Skipped: ${head.text} (${refused})`,700));
       return {skipped:true};
     }
+    if(this.turnsLeft()<1){this.stopQueue(`The queue's turn allowance is spent (${this.get('queue_turns_allowance','0')} turns since Start); the queue waits. Apply a prompt now with a budget, or Start again.`);return {skipped:true};}
     this.event('system','prompt_started',clip(`Next queued prompt: ${head.text}`,700));
-    return this.applyPrompt(head.id,head.text,head.budget);
+    return this.applyPrompt(head.id,head.text);
   }
-  // POST /api/amend: a change applied now. A complete, failed or paused room
-  // takes it as its next goal revision and runs again; a running one takes it
-  // as an adjustment: the parts it reaches read it at their next turn. The
-  // prompt list records it (kind adjust).
+  // POST /api/amend: a change applied now. A complete or failed room takes it
+  // as its next goal revision and runs again; a paused one takes it onto the
+  // card, and its rows wait for Continue; a running one takes it as an
+  // adjustment: the parts it reaches read it at their next turn. budget: turns
+  // the user adds, on top of what the run has left (recorded on the prompt).
   async amend(raw, {budget=null}={}) {
     const t=promptText(raw);
     if(t.error)return {error:t.error};
-    const refused=this.amendRefusal();
+    const refused=this.amendRefusal()||this.changeBusy();
     if(refused)return {error:refused,status:409};
-    if(this.get('amend_pending'))return {error:'Another change is being applied; queue this one, or try again in a moment.',status:409};
     const id=crypto.randomUUID();
-    this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created) VALUES (?,?,?,'running','adjust',?,NULL,'{}',?)",id,this.promptSeq(false),t.text,budget,Date.now());
-    return this.applyPrompt(id,t.text,budget);
+    this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created,version) VALUES (?,?,?,'running','adjust',?,NULL,'{}',?,0)",id,this.promptSeq(false),t.text,budget,Date.now());
+    return this.applyPrompt(id,t.text,budget,{explicit:budget!=null});
   }
-  async applyPrompt(id, text, budget=null) {
-    const running=this.busy||this.get('status')==='running';
-    this.db().exec("UPDATE prompts SET status='running',started=? WHERE id=?",Date.now(),id);
+  async applyPrompt(id, text, budget=null, {explicit=false,deferred=false}={}) {
+    const status=this.get('status','idle'),running=this.busy||status==='running',failedRoom=!running&&this.runFailed();
+    const row=this.promptRows('id=?',id)[0],base=Number(row?.budget??this.get('start_budget','0'))||20;
+    // A run for a finished room is bounded by the queue's allowance (and grows by turns the user adds).
+    if(!running&&status!=='paused'&&!deferred&&this.turnsLeft()+(explicit?budget:0)<1) {
+      const error=`The queue's turn allowance is spent (${this.get('queue_turns_allowance','0')} turns since Start); give this change a budget of its own.`;
+      this.finishPrompt(id,'failed',{error});
+      return {error,status:409};
+    }
+    this.db().exec("UPDATE prompts SET status='running',started=COALESCE(started,?) WHERE id=?",Date.now(),id);
     this.set('amend_pending',id);
-    this.event('system','amend_received',clip(`${running?'Adjustment while running':'Change'}: ${text}`,1300));
+    if(!deferred)this.event('system','amend_received',clip(`${running?'Adjustment while running':'Change'}: ${text}`,1300));
     let applied;
     try {applied=await this.applyAmendment(text,id);}
     catch(e) {applied={error:`Applying the change failed: ${clip(e?.message||e,400)}`};}
     finally {
       this.set('amend_pending','');
-      // Root waited while the change was applied (managerTurn): it decides again, and a run that ended meanwhile goes on.
-      if(running&&this.node('root')?.status==='waiting'){this.wake('root');this.set('amend_wake','1');if(!this.busy&&this.get('status')!=='running')await this.promptsAfterRun();}
+      // Root waited while the change was applied (managerTurn): it decides again.
+      if(this.get('root_held_amend')&&this.node('root')?.status==='waiting')this.wake('root');
     }
     const idle=()=>!this.busy&&this.get('status')!=='running';
+    if(applied.stale)return {error:applied.error,status:409};
+    if(applied.deferred) {
+      this.save('amend_deferred',{id,text,budget,explicit});
+      this.event('root','amend_waiting',clip(`Root's split is not admitted yet, so the change waits for it, and Root's contracts stay as the split was written against: ${text}`,900));
+      return {status:this.get('status'),deferred:true};
+    }
     if(applied.error) {
       this.event('system','amend_failed',clip(applied.error,900));
       this.finishPrompt(id,'failed',{error:applied.error});
-      if(idle()&&this.promptRows("status='queued'").length) {
-        if(this.queueOnFail()==='stop')this.stopQueue(`A prompt could not be applied (${applied.error}); the queue waits.`);
-        else await this.kickQueue(true);
-      }
+      if(idle())await this.promptsAfterRun();
+      if(idle()&&this.promptRows("status='queued'").length&&!this.get('queue_stopped'))await this.afterFailure(`a prompt could not be applied (${applied.error})`);
       return {error:applied.error,status:409};
     }
     this.db().exec('UPDATE prompts SET goal_rev=? WHERE id=?',applied.goal_rev,id);
+    // Turns the user gave with the change: on top of what the run has left, recorded.
+    if(explicit&&budget>0) {
+      this.set('budget_added',String(Number(this.get('budget_added','0'))+budget));
+      this.set('queue_turns_left',String(this.turnsLeft()+budget));
+      this.db().exec('UPDATE prompts SET outcome=? WHERE id=?',JSON.stringify({...this.promptRows('id=?',id)[0].outcome,budget_added:budget}),id);
+    }
     if(applied.unchanged) {
       if(idle()){this.finishPrompt(id,'done',{note:applied.note});await this.kickQueue();}
       return {status:this.get('status'),goal_rev:applied.goal_rev,unchanged:true};
     }
-    const cap=normalizeTurnBudget(budget??(Number(this.get('budget','0'))||20));
-    if(this.busy){this.set('amend_wake','1');return {status:'running',goal_rev:applied.goal_rev,card_rev:this.cardRev()};}
-    if(applied.folded) {
-      const r=await this.resume(cap);
+    if(this.busy||this.get('status')==='running'){this.set('amend_wake','1');return {status:'running',goal_rev:applied.goal_rev,card_rev:this.cardRev()};}
+    // Folded: the card writer runs again with the change (Continue's path, which also lifts a card hold).
+    if(applied.folded&&(status!=='paused'||failedRoom)) {
+      const r=await this.resume(Math.max(1,Math.min(base,this.turnsLeft())));
       return r.error?r:{status:'running',goal_rev:applied.goal_rev};
     }
-    this.runAgain(cap);
+    // A paused room stays paused: the change is on the card, and its rows wait for Continue.
+    if(status==='paused'&&!failedRoom) {
+      this.event('system','amend_waiting',clip(`The room is paused, so the change waits on the card for Continue: ${text}`,900));
+      return {status:'paused',goal_rev:applied.goal_rev,card_rev:this.cardRev(),waiting:true};
+    }
+    this.runAgain(Math.max(1,Math.min(base,this.turnsLeft()-(explicit?budget:0))),'The change runs');
     return {status:'running',goal_rev:applied.goal_rev,card_rev:this.cardRev()};
   }
-  // The room runs again for a change (a finished room, or one whose run ended while it was applied).
-  runAgain(cap) {
+  // A change Root's split held back, applied once the split is admitted (or Root writes the project itself).
+  async applyDeferred() {
+    const d=this.read('amend_deferred',null);
+    if(!d)return;
+    this.save('amend_deferred',null);
+    if(!this.promptRows("id=? AND status='running'",d.id).length)return;
+    this.event('root','amend_resumed',clip(`Root's split is admitted; the change that waited for it is applied now: ${d.text}`,900));
+    await this.applyPrompt(d.id,d.text,d.budget,{explicit:!!d.explicit,deferred:true});
+  }
+  // The room runs again for a change (a finished room, or one whose run ended while Root waited on it).
+  runAgain(cap, why='The change runs') {
     this.busy=true;this.set('status','running');this.set('stop_requested','');
-    this.event('system','resume',`The change runs for up to ${cap} turns.`);
+    this.event('system','resume',`${why} for up to ${cap} turns.`);
     this.ctx.waitUntil((async()=>{
       try {await this.flushAllPending();await this.drive(cap);}
       catch(e) {this.set('status','error');this.busy=false;this.event('system','error',clip(e?.message||e,1300));}
@@ -7734,37 +7846,53 @@ export class ControlRoom extends DurableObject {
     this.set('goal',goal);
     this.db().exec('UPDATE agents SET task=? WHERE id=?',goal,'root');
   }
+  // Every requirement id the room has used: the cards' and the anchors' (S9 review: an id is never given again).
+  usedRequirementIds() {
+    const ids=new Set(Object.values(this.read('check_anchors',{})).map(a=>a?.id).filter(Boolean));
+    for(const r of query(this.db(),'SELECT card FROM card_revisions'))for(const q of parse(r.card,{})?.requirements||[])ids.add(q.id);
+    for(const q of this.read('card',null)?.requirements||[])ids.add(q.id);
+    return [...ids];
+  }
   // The change as a card delta (§7.2): the card writer gets the current card
   // and the change; mergeAmendment keeps what it leaves alone and never
   // weakens a check that has passed; Clef vets the new and changed
   // requirements against the effective goal. The goal and the card each get
   // a revision, Root's contracts follow the card (and so do the carriers of
   // a changed deliverable), the repair counters start again, and every new
-  // or changed requirement opens at Root as a problem routed the way a
-  // failed check's is: by serves and contract name, then Clef's ranks.
-  // {goal_rev} | {goal_rev, unchanged} | {goal_rev, folded} | {error}.
+  // or changed requirement (and a changed deliverable no such requirement
+  // serves) opens at Root as a problem routed the way a failed check's is:
+  // by serves and contract name, then Clef's ranks. While Root's split is
+  // not admitted the change waits (deferred): a split written against the
+  // old contracts would fail them.
+  // {goal_rev} | {goal_rev, unchanged} | {goal_rev, folded} | {deferred} | {error[, stale]}.
   async applyAmendment(text, promptId) {
+    const nonce=this.get('run_nonce'),gone=()=>this.get('run_nonce')!==nonce||!this.promptRows('id=?',promptId).length;
+    const stale={error:'The room was started again or cleared while the change was being applied; nothing of it was kept.',stale:true};
     const card=this.read('card',null),goal=effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]),goal_rev=this.goalRev()+1;
     if(goal.length>EFFECTIVE_GOAL_LIMIT)return {error:`The goal with its changes would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`};
-    if(!card) {
-      // No card yet: the change folds into the goal the card writer reads.
-      if(this.activeTurns.has('root'))return {error:'Root is writing the project card; queue the change, and it applies once the card exists.'};
+    const root=this.node('root'),rootBusy=this.activeTurns.has('root');
+    if(!card&&!rootBusy) {
+      // No card yet: the change folds into the goal the card writer reads, which writes a new card (never a draft written before it).
       this.recordGoal(goal_rev,promptId,text,goal);
+      this.save('card_draft',null);
       this.event('root','amend_folded',clip(`The card is not written yet, so the change is part of the goal it is written from: ${text}`,900));
       return {goal_rev,folded:true};
     }
-    const rows=this.installedToolchains(),base=[...this.basePaths()],packages=this.settings().packages,started=Date.now();
-    const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,base,packages,prior_card:card,change:text,base_digest:this.read('base',null)?.digest||null});
+    if(root&&!this.manager('root')&&(rootBusy||root.phase==='decompose'))return {deferred:true};
+    const rows=this.installedToolchains(),base=[...this.basePaths()],packages=this.settings().packages,started=Date.now(),reserved=this.usedRequirementIds();
+    const written=await writeCard(this.inferenceEnv('compiler'),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,installed:rows,base,packages,prior_card:card,change:text,base_digest:this.read('base',null)?.digest||null});
+    if(gone())return stale;
     if(written.card?.blocked)return {error:`The card writer could not apply the change: ${clip(written.card.blocked,400)}`};
     if(written.unsupported?.length)return {error:`The change needs ${listed(written.unsupported)}, which this deployment cannot run.`};
     if(!written.card?.deliverables?.length)return {error:clip(`The card writer gave no usable card for the change: ${(written.errors||[]).slice(0,6).join(' ')||'no deliverable.'}`,900)};
     const anchors=this.read('check_anchors',{}),anchored=r=>!!anchors[anchorKey(r.id,r.says)];
-    const merged=mergeAmendment(card,written.card,{change:text,anchored});
-    let {card:next}=revalidate(merged.card,{goal,installed:rows,base,packages});
+    const merged=mergeAmendment(card,written.card,{change:text,anchored,reserved});
+    let {card:next}=revalidate(merged.card,{goal,installed:rows,base,packages,reserved});
     let delta=cardDelta(card,next);
     // §1.4: Clef vets the new and changed requirements; p < 0.5 drops a new one and keeps a changed one as it was.
     const fresh=new Set([...delta.requirements.added,...delta.requirements.changed]);
     const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(next).filter(r=>fresh.has(r.id)&&routable(r))});
+    if(gone())return stale;
     if(failed.length)this.event('root','card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
     const low=new Map(ps.filter(x=>typeof x.p==='number'&&x.p<0.5).map(x=>[x.id,x.p])),unvetted=new Set(ps.filter(x=>x.unvetted).map(x=>x.id));
     for(const [rid,p] of low)this.event('root','card_requirement_dropped',clip(`Clef judged that the goal with its change does not state or imply ${rid} (p=${p.toFixed(3)}): ${next.requirements.find(r=>r.id===rid)?.says||''}`,600));
@@ -7774,7 +7902,7 @@ export class ControlRoom extends DurableObject {
       const was=delta.requirements.changed.includes(r.id)&&card.requirements.find(o=>o.id===r.id);
       return was?[was]:[];
     });
-    ({card:next}=revalidate({...next,requirements:[...reqs,...next.requirements.filter(r=>r.implicit||r.project)]},{goal,installed:rows,base,packages}));
+    ({card:next}=revalidate({...next,requirements:[...reqs,...next.requirements.filter(r=>r.implicit||r.project)]},{goal,installed:rows,base,packages,reserved}));
     // Vetting's marks stay, as cardTurn leaves them (unvetted); untraced is the writer's, gone after vetting.
     next={...next,requirements:next.requirements.map(({untraced:_,...r})=>unvetted.has(r.id)?{...r,unvetted:true}:r)};
     delta=cardDelta(card,next);
@@ -7799,14 +7927,21 @@ export class ControlRoom extends DurableObject {
       delta.deliverables.added.length&&`adds ${delta.deliverables.added.join(', ')}`,delta.deliverables.changed.length&&`changes ${delta.deliverables.changed.join(', ')}`,
       delta.requirements.added.length&&`new requirements ${delta.requirements.added.join(', ')}`,delta.requirements.changed.length&&`changed requirements ${delta.requirements.changed.join(', ')}`].filter(Boolean).join('; ')+'.',1200));
     // The rows: each new or changed requirement, at Root, routed as a failed check's is.
-    const routed=new Set([...delta.requirements.added,...delta.requirements.changed]),wave=`amend:${goal_rev}`;
-    const ids=next.requirements.filter(r=>routed.has(r.id)&&routable(r)).map(r=>{
+    const routed=new Set([...delta.requirements.added,...delta.requirements.changed]),wave=`amend:${goal_rev}`,flags={wave,amendment:promptId||'',goal_rev};
+    const routedReqs=next.requirements.filter(r=>routed.has(r.id)&&routable(r)),served=new Set(routedReqs.flatMap(r=>r.serves||[]));
+    const ids=routedReqs.map(r=>{
       const says=String(r.says).replace(/[.\s]+$/,'');
       return this.insertProblem({holder:'root',kind:'run',stage:'amend',source:'root',input:wave,parties:[],
         detail:clip(`${r.id} (${says}): the user's change "${text}"`,900),
-        facts:{requirement:{id:r.id,says:clip(r.says,200),text:clip(`${says} (${r.id}), from the user's change: ${text}`,600),source:r.source||'',names:[...(r.serves||[])],serves:[...(r.serves||[])],amendment:clip(text,600)}},
-        flags:{wave,amendment:promptId||'',goal_rev}});
+        facts:{requirement:{id:r.id,says:clip(r.says,200),text:clip(`${says} (${r.id}), from the user's change: ${text}`,600),source:r.source||'',names:[...(r.serves||[])],serves:[...(r.serves||[])],amendment:clip(text,600)}},flags});
     });
+    // S9 review: a changed deliverable no routed requirement serves reaches its carrier too, as its new contract.
+    for(const name of delta.deliverables.changed.filter(n=>!served.has(n))) {
+      const d=next.deliverables.find(x=>x.name===name),does=String(d?.does||'').replace(/[.\s]+$/,'');
+      ids.push(this.insertProblem({holder:'root',kind:'run',stage:'amend',source:'root',input:wave,parties:[],
+        detail:clip(`${name} (${does}): the user's change "${text}"`,900),
+        facts:{requirement:{id:'',contract:name,says:clip(does,200),text:clip(`${name}: ${does}, from the user's change: ${text}`,600),source:clip(text,160),names:[name],serves:[name],amendment:clip(text,600)}},flags}));
+    }
     if(!this.manager('root'))this.atomicAmend(ids,wave);
     else this.wake('root');
     return {goal_rev,card_rev:rev,rows:ids.length};
@@ -7827,9 +7962,10 @@ export class ControlRoom extends DurableObject {
       if(moved)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(out),n.id);
     }
   }
-  // Each change starts with fresh repair rounds and checks, and a failed
-  // part (a failed room's) is revived: a worker with files is done again,
-  // one without takes another turn, a manager decides again.
+  // Each change starts with fresh repair rounds and checks (the room-wide
+  // ceiling, room_repair_rounds, is never reset here), and a failed part (a
+  // failed room's) is revived: a worker with files is done again, one
+  // without takes another turn, a manager decides again.
   resetForAmendment() {
     this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'repair_waves:%' OR key LIKE 'rounds_exhausted:%' OR key LIKE 'manager_model_calls:%'");
     this.set('repair_exhausted','');this.save('compile_reported',null);this.save('compile_blocked',null);this.set('compile_infrastructure','');
@@ -7852,8 +7988,24 @@ export class ControlRoom extends DurableObject {
     const ticket=crypto.randomUUID(),instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
     this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,'root','root',JSON.stringify(moved.map(p=>p.id)),'reader',instructions,'',now);
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:amend','root','[build:repair] '+ticket);
-    this.event('root','amend_routed',clip(`The change goes to Root, which wrote every file itself: ${moved.map(p=>p.facts.requirement.id).join(', ')}.`,600),'root');
+    this.event('root','amend_routed',clip(`The change goes to Root, which wrote every file itself: ${moved.map(p=>p.facts.requirement.id||p.facts.requirement.contract).join(', ')}.`,600),'root');
     this.wake('root');
+  }
+  // §7.2 A1 (S9 review): a change's row that serves deliverables carried by
+  // two or more direct children goes to each of them, one row per carrier in
+  // the same wave, each naming only what that carrier holds and passing over
+  // the other carriers (they have their own rows). The row they came from closes.
+  fanOutAmendments(m) {
+    const kids=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status));
+    for(const p of this.problemsHeld(m).filter(p=>p.stage==='amend'&&!p.flags.of)) {
+      const serves=p.facts.requirement?.serves||[];
+      const carriers=kids.map(c=>({c,names:serves.filter(s=>parse(c.interfaces,[]).some(f=>f.name===s))})).filter(x=>x.names.length);
+      if(carriers.length<2)continue;
+      if(!this.moveProblem(p,{status:'closed',outcome:'fanned',trail:[...p.trail,{at:m,action:'fan',to:carriers.map(x=>x.c.id).join(','),rule:'A1',ts:Date.now()}]}))continue;
+      for(const {c,names} of carriers)this.insertProblem({holder:m,kind:'run',stage:'amend',source:p.source,input:p.source_input,parties:[],detail:clip(`${p.detail} (for ${c.label})`,900),
+        facts:{...p.facts,requirement:{...p.facts.requirement,names,serves:names}},flags:{...p.flags,of:p.id,others:carriers.filter(x=>x.c.id!==c.id).map(x=>x.c.id)}});
+      this.event(m,'amend_fanout',clip(`The change reaches each part that carries what it serves: ${carriers.map(x=>`${x.c.label} (${x.names.join(', ')})`).join(', ')}.`,600));
+    }
   }
   // A new deliverable a route gives an existing part goes on that part's
   // contracts (and its manager's, on the way down), so it places the file;
@@ -7903,6 +8055,7 @@ export class ControlRoom extends DurableObject {
   }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
+    if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then clear it.',status:409};
     for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','problems','repair_tickets','card_revisions','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
     this.queuedAt.clear();
     return this.snapshot();
@@ -7972,22 +8125,27 @@ export default {
         if (goal.length<8 || goal.length>GOAL_LIMIT) return json({error:`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
         const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,null,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)]});
-        return json(started,started.error?400:200);
+        return json(started,started.error?started.status||400:200);
       }
       if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));
       // v8 S9: a change applied now (an adjustment while running), and the prompt queue.
+      // v8 S9 review: a budget that is no turn budget is the request's error (400), not the server's.
+      const turnsOf=v=>{try{return {budget:v==null?null:normalizeTurnBudget(v)};}catch(e){return {error:String(e?.message||e)};}};
       if (url.pathname==='/api/amend' && request.method==='POST') {
-        const budget=payload.budget==null?null:normalizeTurnBudget(payload.budget);
+        const b=turnsOf(payload.budget);
+        if (b.error) return json({error:b.error},400);
+        const budget=b.budget;
         const r=await stub.amend(payload.text,{budget});
         return json(r,r.error?r.status||400:200);
       }
       if (url.pathname==='/api/prompts' || url.pathname.startsWith('/api/prompts/')) {
-        const sub=url.pathname.slice('/api/prompts'.length),budget=payload.budget==null?null:normalizeTurnBudget(payload.budget);
+        const sub=url.pathname.slice('/api/prompts'.length),b=turnsOf(payload.budget),budget=b.budget;
+        if (b.error) return json({error:b.error},400);
         let r;
         if (request.method==='GET' && !sub) r=await stub.promptsHead();
         else if (request.method!=='POST') return json({error:'Unknown API route'},404);
         else if (!sub) r=await stub.addPrompt(payload.text,budget);
-        else if (sub==='/edit') r=await stub.editPrompt(payload.id,{...(payload.text!==undefined?{text:payload.text}:{}),...(payload.budget!==undefined?{budget}:{})});
+        else if (sub==='/edit') r=await stub.editPrompt(payload.id,{...(payload.text!==undefined?{text:payload.text}:{}),...(payload.budget!==undefined?{budget}:{}),...(payload.version!==undefined?{version:payload.version}:{})});
         else if (sub==='/reorder') r=await stub.reorderPrompts(payload.order);
         else if (sub==='/remove') r=await stub.removePrompt(payload.id);
         else if (sub==='/skip') r=await stub.skipPrompt(payload.id);
@@ -7995,7 +8153,7 @@ export default {
         else return json({error:'Unknown API route'},404);
         return json(r,r?.error?r.status||400:200);
       }
-      if (url.pathname==='/api/reset' && request.method==='POST') return json(await stub.clear());
+      if (url.pathname==='/api/reset' && request.method==='POST') {const r=await stub.clear();return json(r,r?.error&&r.status?r.status:200);}
       if (url.pathname==='/api/stop' && request.method==='POST') return json(await stub.stop());
       // Getting the code out: the linked application as JSON, as a ZIP, or as a GitHub branch and pull request.
       if (['/api/app','/api/app.zip'].includes(url.pathname) && request.method==='GET') {

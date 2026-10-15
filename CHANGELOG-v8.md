@@ -86,6 +86,8 @@ A follow-up is not a fresh start. The card writer gets the current card and the 
 
 By default the queue stops when a prompt fails, and **Go on** resumes it; the room can be set to go on with the next prompt instead. Split v8 rooms now also pre-warm the Container just before the card's checks, and the Pipeline select describes v8 as it is now.
 
+The review found that a Start or Clear during a change let the old project's card and goal land in the new run, so both are now refused until the change is applied, and a change checks that its run is still the same one after every model call. A requirement that served two pieces reached only the first; it now goes to each of them. A change to a deliverable alone reached nobody; it now reaches the piece that carries it. A change made while Root was still splitting made the split fail its own contracts, so it now waits for the split. An adjustment could restart a paused room with a fresh budget; now it never adds turns you didn't give. A queue on **continue** had no ceiling, so repair rounds now count across changes (at most 80 until the next Start), queued prompts share a turn allowance of 4x the Start budget, and two failures in a row stop the queue. Long goals hid the latest changes from Clef and the workers, who see only the start of the goal; every reader now gets the head of the goal and the latest changes. Smaller fixes: a requirement id is never reused, a restart mid-change leaves the queue with a **Go on** button, a prompt queued on a failed room says why it waits, and queue edits are checked against the goal limit and a version.
+
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.

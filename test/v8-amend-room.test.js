@@ -9,9 +9,10 @@ import {liveRoom, events, fileBlocks} from './helpers/room.js';
 import {lintText, composedTexts} from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {MESSAGES} from '../src/prompts.js';
-import {mergeAmendment, cardDelta, effectiveGoal, reorderError, promptText, deltaEmpty} from '../src/amend.js';
+import {mergeAmendment, cardDelta, effectiveGoal, goalView, reorderError, promptText, deltaEmpty} from '../src/amend.js';
 // After the room helper registered the cloudflare: loader.
 const {anchorKey,default:worker}=await import('../src/index.js');
+const {ControlRoom}=await import('./helpers/room.js');
 
 const hasPython=spawnSync('python3',['--version']).status===0;
 
@@ -36,14 +37,15 @@ const scripted=answers=>{
 const wrote=(path,content)=>fileBlocks([{path,content}],{summary:`wrote ${path}`,done:true});
 const nothing=()=>fileBlocks([],{summary:'my part is not affected',done:true});
 // A room whose card writer answers the goal with `first` and each change with changes[i](current card).
-function amendRoom({first,changes=[],split=null,splitWhen=()=>false,owner,judge,vet,answers}) {
+function amendRoom({first,changes=[],split=null,splitWhen=()=>false,owner,judge,vet,answers,cardHook=null}) {
   const alarms=[];
-  const r=liveRoom({card:user=>{
+  const r=liveRoom({card:async user=>{
+      if(cardHook)await cardHook(user);
       if(!user.change)return first;
       const f=changes.find(c=>c.when.test(user.change));
       if(!f)throw new Error('no card for the change '+user.change);
       return typeof f.card==='function'?f.card(user.current_card):f.card;
-    },split:split?()=>split:null,clef:clefFor({split:splitWhen,owner,judge,vet}),leaf:scripted(answers)});
+    },split:split?(typeof split==='function'?split:()=>split):null,clef:clefFor({split:splitWhen,owner,judge,vet}),leaf:scripted(answers)});
   // The Durable Object's alarm: recorded; a test fires it with room.alarm().
   r.ctx.storage.setAlarm=at=>{alarms.push(at);r.ctx.storage.alarm=at;};
   r.ctx.storage.getAlarm=()=>r.ctx.storage.alarm??null;
@@ -451,4 +453,326 @@ test('helpers: the effective goal, prompt texts and reorders',()=>{
 test('prompt lint: the amendment texts a model reads',()=>{
   assert.deepEqual(lintText('amend_note',MESSAGES.amend_note()),[]);
   assert.deepEqual(lintText('amendment',MESSAGES.amendment({change:'sample change',id:'R1',says:'sample says'})),[]);
+});
+
+// ------------------------------------------------------------ S9 review
+const CUPS={when:/cups/,card:addReq('R3','The guide says how many cups it makes','cups','say how many cups')};
+const CUPS_TEXT='also say how many cups it makes';
+const tick=()=>new Promise(r=>setTimeout(r,20));
+
+test('review (p2, p2b): Start, Clear and Continue are refused while a change is being applied; the change lands in its own run',async()=>{
+  for(const act of ['start','clear','resume']) {
+    let release,gate=null;
+    const {room,drain}=amendRoom({first:DOC_CARD,changes:[CUPS],cardHook:async u=>{if(u.change&&gate)await gate;},
+      answers:{'Root objective':[wrote('GUIDE.md',GUIDE),wrote('GUIDE.md',GUIDE+'\nMakes 2 cups.\n')]}});
+    await room.start(DOC_GOAL,20,{pipeline:'v8'});await drain();
+    gate=new Promise(r=>release=r);
+    const p=room.amend(CUPS_TEXT);
+    await tick();
+    assert.ok(room.get('amend_pending'));
+    const r=act==='start'?await room.start('Write a short poem about autumn leaves, saved as POEM.md.',20,{pipeline:'v8'}):act==='clear'?await room.clear():await room.resume(10);
+    assert.equal(r.status,409,act);
+    assert.match(r.error,/A change is being applied to this room/);
+    release();
+    assert.equal((await p).status,'running');
+    await drain();
+    assert.equal(room.get('status'),'complete',tail(room));
+    assert.equal(room.baseGoal(),DOC_GOAL,'the old project is untouched');
+    assert.deepEqual(room.goalChanges(),[CUPS_TEXT]);
+    assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
+    // Once it landed, Start goes through and nothing of the change follows into the new run.
+    assert.equal((await room.start('Write a short poem about autumn leaves, saved as POEM.md.',20,{pipeline:'v8'})).status,'running');
+    await drain();
+    assert.deepEqual(room.goalChanges(),[]);
+    assert.equal(room.problems("stage='amend'").length,0);
+  }
+});
+
+test('review: an amendment whose run was started again or cleared is dropped (run_nonce)',async()=>{
+  let release,gate=null;
+  const {room,drain}=amendRoom({first:DOC_CARD,changes:[CUPS],cardHook:async u=>{if(u.change&&gate)await gate;},answers:{'Root objective':[wrote('GUIDE.md',GUIDE)]}});
+  await room.start(DOC_GOAL,20,{pipeline:'v8'});await drain();
+  gate=new Promise(r=>release=r);
+  const p=room.amend(CUPS_TEXT);
+  await tick();
+  // As if the run had been replaced under it (Start is refused, so the nonce is changed by hand).
+  room.set('run_nonce','another-run');
+  release();
+  const r=await p;
+  assert.match(r.error,/started again or cleared/);
+  assert.equal(room.cardRev(),1);assert.equal(room.goalRev(),1);
+  assert.equal(room.problems("stage='amend'").length,0);
+  assert.equal(room.get('amend_pending'),'');
+});
+
+test('review (p3): a restart while a queued prompt is applied fails it; stop shows the banner, continue re-arms the alarm',async()=>{
+  for(const policy of ['stop','continue']) {
+    let hang=true;
+    const {room,drain,ctx,env}=amendRoom({first:DOC_CARD,changes:[CUPS,{when:/origin/,card:addReq('R4','The guide names the origin','Japan','name the origin')}],
+      cardHook:async u=>{if(u.change&&hang)await new Promise(()=>{});},answers:{'Root objective':[wrote('GUIDE.md',GUIDE),wrote('GUIDE.md',GUIDE+'\nFrom Japan.\n')]}});
+    await room.queuePolicy({queue_on_fail:policy});
+    await room.start(DOC_GOAL,20,{pipeline:'v8'});
+    await room.addPrompt(CUPS_TEXT);await room.addPrompt('also name the origin of the tea');
+    await drain();
+    ctx.storage.alarm=null;room.alarm();
+    await tick();
+    assert.ok(room.get('amend_pending'));
+    hang=false;
+    const fresh=new ControlRoom(ctx,env);
+    await tick();
+    assert.deepEqual(fresh.promptRows().map(p=>p.status),['failed','queued']);
+    assert.match(fresh.promptRows()[0].outcome.error,/restarted while the change was being applied/);
+    assert.equal(fresh.get('amend_pending'),'');
+    if(policy==='stop') {
+      assert.match(fresh.snapshot().queue_stopped,/Go on resumes it/);
+      assert.equal(fresh.read('prompts_due',null),null);
+    } else {
+      assert.equal(fresh.snapshot().queue_stopped,'');
+      assert.ok(fresh.read('prompts_due',null)?.at,'the queue step is due');
+      assert.equal(ctx.storage.alarm,fresh.read('prompts_due',null).at,'and its alarm is set');
+      ctx.storage.alarm=null;await fresh.alarm();
+      await drain();
+      assert.deepEqual(fresh.promptRows().map(p=>p.status),['failed','done']);
+    }
+  }
+});
+
+test('review (p6): a change while Root\'s split is in flight waits for the split, then routes; the split is never rejected for it',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  for(const which of ['readme','kelvin']) {
+    let amended=null;
+    const {room,drain}=amendRoom({first:CARD,splitWhen:t=>t.startsWith(GOAL),owner,
+      split:async()=>{if(!amended){amended=room.amend(which==='readme'?README_CHANGE:KELVIN_CHANGE);await amended;}return SPLIT;},
+      changes:[{when:/README/,card:withReadme},{when:/kelvin/,card:withKelvin}],
+      answers:{'Converter':[wrote('temp.py',F_TEMP),wrote('temp.py',K_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD)],'README.md':[wrote('README.md',README_MD)]}});
+    await room.start(GOAL,40,{pipeline:'v8'});await drain();
+    assert.equal((await amended).deferred,true);
+    assert.equal(room.get('status'),'complete',tail(room));
+    assert.equal(events(room,'split_rejected').length,0,'the split was written against the contracts it got');
+    assert.equal(events(room,'problem_unroutable').length,0);
+    assert.equal(events(room,'amend_resumed').length,1);
+    assert.deepEqual(states(room).map(x=>x[1]),['done']);
+    if(which==='readme')assert.equal(events(room,'amend_grown').length,1);
+    else {
+      // The converter, still splitting when the change came, reads it as the change, not only as a failed check.
+      assert.ok(events(room,'amend_routed').some(e=>room.node(e.recipient)?.label==='Converter'));
+      assert.equal(room.problems("stage='check'").length,0,'no check had to fail first');
+    }
+  }
+});
+
+test('review (p5): a change only to a deliverable reaches its carrier as its new contract',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const CHANGE='print the result with one decimal place';
+  const D_TEMP='import sys\nc = float(sys.argv[1])\nprint(f"{c * 9 / 5 + 32:.1f}")\n';
+  const changed=card=>({...card,deliverables:card.deliverables.map(d=>d.name==='temp'?{...TEMP,does:'prints the Fahrenheit value of a Celsius temperature with one decimal place'}:d),requirements:card.requirements.filter(r=>!r.implicit)});
+  const {room,calls,drain}=amendRoom({first:CARD,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner,changes:[{when:/decimal/,card:changed}],
+    answers:{'Converter':[wrote('temp.py',F_TEMP),wrote('temp.py',D_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD)]}});
+  await room.start(GOAL,40,{pipeline:'v8'});await drain();
+  await room.amend(CHANGE);await drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  const converter=room.children('root').find(c=>c.label==='Converter');
+  assert.deepEqual(revisions(room,converter.id),[['temp.py',2]]);
+  const told=calls.leaf.filter(u=>u.your_label==='Converter').at(-1);
+  assert.ok((told.new_messages||[]).some(m=>m.body.includes(MESSAGES.amendment_contract({change:CHANGE,name:'temp',does:'prints the Fahrenheit value of a Celsius temperature with one decimal place'}))));
+  assert.deepEqual(events(room,'amend_routed').map(e=>e.recipient),[converter.id]);
+  linted(room,calls);
+});
+
+test('review (p9, A1): a requirement that serves two pieces reaches both, one row each in the same wave',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const H_TEMP='import sys\nif sys.argv[1] == "--help":\n    print("usage: temp CELSIUS")\n    sys.exit(0)\nc = float(sys.argv[1])\nprint(f"{c * 9 / 5 + 32:g}")\n';
+  const withHelp=card=>({...card,requirements:[...card.requirements.filter(r=>!r.implicit),
+    {id:'R5',says:'The command prints its usage with --help and the usage note documents --help',source:'add a --help option and document it',serves:['temp','USAGE.md'],check:{kind:'command',run:'temp --help',expect:{exit:0,stdout_has:['usage']}}}]});
+  const {room,calls,drain}=amendRoom({first:CARD,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner:()=>0.9,changes:[{when:/help/,card:withHelp}],
+    answers:{'Converter':[wrote('temp.py',F_TEMP),wrote('temp.py',H_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD),wrote('USAGE.md',USAGE_MD+'\nRun `python3 temp.py --help` for usage.\n')]}});
+  await room.start(GOAL,40,{pipeline:'v8'});await drain();
+  await room.amend('add a --help option and document it');await drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  const rows=room.problems("stage='amend'");
+  assert.deepEqual(rows.map(p=>p.outcome),['fanned','resolved','resolved']);
+  assert.equal(new Set(rows.map(p=>p.flags.wave)).size,1,'one wave');
+  assert.deepEqual(events(room,'amend_routed').map(e=>room.node(e.recipient)?.label).sort(),['Converter','Usage guide']);
+  const guide=room.children('root').find(c=>c.label==='Usage guide');
+  assert.deepEqual(revisions(room,guide.id),[['USAGE.md',2]]);
+  assert.equal(events(room,'amend_fanout').length,1);
+  linted(room,calls);
+});
+
+test('review (p4): an adjustment never grants a fresh budget: a run that spent its turns stays paused, a failed change too',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  let release,amendP=null;
+  const gate=new Promise(r=>release=r);
+  const {room,drain,calls}=amendRoom({first:CARD,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner:()=>0.9,
+    changes:[{when:/kelvin/,card:{...CARD,blocked:'cannot do that'}}],cardHook:async u=>{if(u.change)await gate;},
+    answers:{'Converter':[()=>{amendP=room.amend(KELVIN_CHANGE);return wrote('temp.py',F_TEMP);}],'Usage guide':[wrote('USAGE.md',USAGE_MD)]}});
+  await room.start(GOAL,2,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.get('status'),'paused');
+  const leaves=calls.leaf.length,step=room.get('step');
+  release();
+  assert.match((await amendP).error,/could not apply the change/);
+  await drain();
+  assert.equal(room.get('status'),'paused',tail(room));
+  assert.equal(calls.leaf.length,leaves);assert.equal(room.get('step'),step);
+  assert.equal(events(room,'resume').length,0,'no run of its own');
+});
+
+test('review: a paused room stays paused after a change; its rows wait, and turns the user gives are added and recorded',async()=>{
+  const {room,drain}=amendRoom({first:DOC_CARD,changes:[CUPS],answers:{'Root objective':[wrote('GUIDE.md',GUIDE),wrote('GUIDE.md',GUIDE+'\nMakes 2 cups.\n')]}});
+  await room.start(DOC_GOAL,20,{pipeline:'v8'});await drain();
+  room.set('status','paused');
+  const r=await room.amend(CUPS_TEXT,{budget:7});
+  assert.equal(r.status,'paused');assert.equal(r.waiting,true);
+  assert.equal(room.get('status'),'paused');
+  assert.equal(room.problems("stage='amend'").length,1);
+  assert.equal(room.promptRows()[0].outcome.budget_added,7);
+  assert.equal(room.get('budget_added'),'7');
+  // Continue runs it, the given turns on top of its own.
+  await room.resume(1);await drain();
+  assert.equal(room.get('budget'),'8','1 + 7');
+  assert.equal(room.get('status'),'complete',tail(room));
+  assert.deepEqual(states(room).map(x=>x[1]),['done']);
+});
+
+test('review (p10): the room-wide ceiling: two failed prompts in a row stop a continue queue; repair rounds and the queue\'s turns are counted across changes',async()=>{
+  const changes=[0,1,2,3].map(i=>({when:new RegExp(`variant ${i}\\b`),card:addReq(`R${10+i}`,`The guide mentions the code word number ${i}`,`ZZZ${i}`,`mention code word number ${i}`)}));
+  let k=0;
+  const {room,drain,fire}=amendRoom({first:DOC_CARD,changes,answers:{'Root objective':[()=>wrote('GUIDE.md',GUIDE+`\nrevision ${k++}\n`)]}});
+  await room.queuePolicy({queue_on_fail:'continue'});
+  await room.start(DOC_GOAL,20,{pipeline:'v8'});
+  for(let i=0;i<4;i++)await room.addPrompt(`mention code word number ${i} (variant ${i})`);
+  await drain();
+  assert.equal(room.snapshot().queue_turns_left,80,'4x the Start budget');
+  for(let i=0;i<6&&room.read('prompts_due',null);i++)await fire();
+  assert.deepEqual(states(room).map(x=>x[1]),['failed','failed','queued','queued']);
+  assert.match(room.get('queue_stopped'),/Two prompts in a row failed, so the queue waits even on continue/);
+  const head=room.snapshot();
+  assert.ok(head.queue_turns_left<80,'the prompts\' runs spent the allowance');
+  assert.ok(head.room_repair_rounds>=6,`rounds counted across the changes (${head.room_repair_rounds})`);
+  assert.equal(head.room_repair_cap,Math.min(80,2*room.roundCap()));
+  // The room-wide ceiling reached: no repair round is left, and the reason says so.
+  room.set('room_repair_rounds',String(room.roomRoundCap()));
+  assert.equal(room.roundsLeft('root',[]),false);
+  assert.match(room.countRound('root','w-test'),/the room-wide ceiling; Start resets it/);
+  // Start resets the ceiling.
+  await room.start(DOC_GOAL,20,{pipeline:'v8'});await drain();
+  assert.equal(room.get('room_repair_rounds','0'),'0');
+});
+
+test('review: a spent turn allowance stops the queue',async()=>{
+  const {room,drain,fire}=amendRoom({first:DOC_CARD,changes:[CUPS],answers:{'Root objective':[wrote('GUIDE.md',GUIDE)]}});
+  await room.start(DOC_GOAL,20,{pipeline:'v8'});
+  await room.addPrompt(CUPS_TEXT);
+  room.set('queue_turns_left','0');
+  await drain();
+  await fire();
+  assert.deepEqual(states(room).map(x=>x[1]),['queued']);
+  assert.match(room.get('queue_stopped'),/turn allowance is spent/);
+});
+
+test('review (p8): every clipped reader of the goal sees its head and the latest change',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const LONG=GOAL+'. '+Array.from({length:40},(_,i)=>`Note ${i}: the converter should stay small, readable and dependency free.`).join(' ');
+  const {room,calls,drain}=amendRoom({first:CARD,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner:q=>/README/.test(q)?0.1:0.2,changes:[{when:/README/,card:withReadme}],
+    answers:{'Converter':[wrote('temp.py',F_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD)],'README.md':[wrote('README.md',README_MD)]}});
+  await room.start(LONG,40,{pipeline:'v8'});await drain();
+  const c0=calls.clef.length,l0=calls.leaf.length;
+  await room.amend(README_CHANGE);await drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  const scope=calls.clef.slice(c0).filter(q=>q.state?.original_goal!==undefined);
+  assert.ok(scope.length>=1);
+  for(const q of scope) {
+    assert.ok(q.state.original_goal.startsWith(GOAL),'the goal\'s head');
+    assert.match(q.state.original_goal,/Change 1: add a README explaining how to run it$/);
+    assert.match(q.state.parent_responsibility,/Change 1: add a README/);
+    assert.ok(q.state.original_goal.length<=1800);
+  }
+  assert.ok(calls.leaf.slice(l0).length>=1);
+  for(const u of calls.leaf.slice(l0)){assert.match(u.goal,/Change 1: add a README/);assert.ok(u.goal.length<=600);}
+});
+
+test('review (p12): a prompt queued on a failed room says why it waits, and Go on applies it',async()=>{
+  for(const policy of ['stop','continue']) {
+    const {room,drain,fire}=amendRoom({first:DOC_CARD,changes:[CUPS],answers:{'Root objective':[wrote('GUIDE.md',GUIDE),wrote('GUIDE.md',GUIDE+'\nMakes 2 cups.\n')]}});
+    await room.queuePolicy({queue_on_fail:policy});
+    await room.start(DOC_GOAL,20,{pipeline:'v8'});await drain();
+    room.failAgent('root','stuck');room.set('status','failed');
+    await room.addPrompt(CUPS_TEXT);
+    assert.match(room.snapshot().queue_stopped,/The room failed, so the queued prompts wait/);
+    await room.queuePolicy({resume:true});
+    await fire();
+    assert.equal(room.get('status'),'complete',tail(room));
+    assert.deepEqual(states(room).map(x=>x[1]),['done']);
+  }
+});
+
+test('review: a prompt queued before a v7 Start is skipped, saying why',async()=>{
+  const {room,drain}=liveRoom({});
+  await room.addPrompt('a prompt queued before the run');
+  await room.start('Build a small issue tracker that lets someone create tickets.',1,{pipeline:'v7'});
+  await drain();
+  const [p]=room.promptRows();
+  assert.equal(p.status,'skipped');
+  assert.match(p.outcome.error,/v7 pipeline/);
+});
+
+test('review (p18): a requirement id is never given again, a dropped implicit one\'s included',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const FIRST={...CARD,requirements:[CARD.requirements[0]]};
+  const ex=card=>({...card,requirements:[...card.requirements.filter(r=>!r.implicit),{id:'R7',says:'The usage note shows an example run',source:'the usage note shows an example',serves:['USAGE.md'],check:{kind:'file',path:'USAGE.md',has:['temp.py 100']}}]});
+  const bad=card=>({...card,requirements:[...card.requirements.filter(r=>!r.implicit),{id:'R2',says:'A non-number prints an error and exits with 1',source:'errors on bad input',serves:['temp'],check:{kind:'command',run:'temp abc',expect:{exit:1}}}]});
+  const E_TEMP='import sys\ntry:\n    c = float(sys.argv[1])\nexcept ValueError:\n    print("not a number")\n    sys.exit(1)\nprint(f"{c * 9 / 5 + 32:g}")\n';
+  const {room,drain}=amendRoom({first:FIRST,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner:(q,l)=>/usage note/i.test(q)?(l==='Usage guide'?0.9:0.1):/non-number/i.test(q)?(l==='Converter'?0.9:0.1):0.2,
+    changes:[{when:/example/,card:ex},{when:/bad input/,card:bad}],
+    answers:{'Converter':[wrote('temp.py',F_TEMP),wrote('temp.py',E_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD)]}});
+  await room.start(GOAL,60,{pipeline:'v8'});await drain();
+  assert.equal(room.snapshot().card.requirements.find(r=>r.id==='R2')?.implicit,true);
+  await room.amend('the usage note shows an example');await drain();
+  await room.amend('errors on bad input');await drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  assert.deepEqual(room.snapshot().card.requirements.map(r=>r.id),['R1','R3','R4']);
+  assert.ok(!room.snapshot().requirement_status.R2,'no status under a reused id');
+  assert.match(events(room,'requirement_dropped')[0].body,/no longer checked; its id is never given to another requirement/);
+});
+
+test('review (p19): a change folded into a room held at card_failed reaches the card writer, never the old draft',async()=>{
+  let writes=0;const seen=[];
+  const {room,drain}=amendRoom({first:DOC_CARD,cardHook:async u=>{writes++;seen.push(u.goal);},answers:{'Root objective':[wrote('GUIDE.md',GUIDE)]}});
+  const started=room.start(DOC_GOAL,20,{pipeline:'v8'});room.set('stop_requested','1');await started;await drain();
+  room.db().exec('DELETE FROM card_revisions');room.save('card',null);room.save('card_draft',DOC_CARD);
+  room.db().exec("UPDATE agents SET interfaces='[]',status='waiting',phase='decompose' WHERE id='root'");
+  room.holdRoom('card_failed','Vetting or saving the card failed. Continue vets and saves the written card again.');room.set('status','paused');
+  const r=await room.amend(CUPS_TEXT);
+  assert.equal(r.status,'running');
+  await drain();
+  assert.equal(writes,1,'the card writer ran');
+  assert.match(seen[0],/Change 1: also say how many cups it makes/);
+  assert.equal(events(room,'card_draft_reused').length,0);
+  assert.equal(room.db().exec('SELECT goal_rev FROM card_revisions').toArray()[0].goal_rev,2);
+});
+
+test('review: an edit keeps the goal limit and carries its version; a budget that is no budget is a 400',async()=>{
+  const {room,drain}=amendRoom({first:DOC_CARD,answers:{'Root objective':[wrote('GUIDE.md',GUIDE)]}});
+  await room.start(DOC_GOAL,20,{pipeline:'v8'});await drain();
+  room.set('queue_stopped','held for the test');
+  const a=(await room.addPrompt('short follow-up number 0')).prompt;
+  assert.ok((await room.addPrompt('y'.repeat(3990))).prompt);
+  assert.equal(room.editPrompt(a.id,{text:'x'.repeat(4000)}).status,409,'past the effective-goal limit');
+  const e1=room.editPrompt(a.id,{text:'edited once, here',version:0});
+  assert.equal(e1.prompt.version,1);
+  assert.equal(room.editPrompt(a.id,{text:'a stale edit, here',version:0}).status,409);
+  assert.equal(room.promptRows('id=?',a.id)[0].text,'edited once, here');
+  const env={APP_TOKEN:'t',ROOMS:{getByName:()=>room}};
+  const post=(path,body)=>worker.fetch(new Request(`https://x.test${path}`,{method:'POST',headers:{authorization:'Bearer t','content-type':'application/json'},body:JSON.stringify({room:'room-12345',...body})}),env);
+  assert.equal((await post('/api/prompts',{text:'a valid prompt text',budget:1e9})).status,400);
+  assert.equal((await post('/api/prompts',{text:'a valid prompt text',budget:'abc'})).status,400);
+  assert.equal((await post('/api/amend',{text:'a valid prompt text',budget:-1})).status,400);
+});
+
+test('review: goalView keeps the goal\'s head and the latest changes within the limit',()=>{
+  const goal='G'.repeat(3000),changes=['first change','second change','third change'];
+  const v=goalView(goal,changes,600);
+  assert.ok(v.length<=600);
+  assert.ok(v.startsWith('GGG'));
+  assert.match(v,/Change 3: third change$/);
+  assert.match(v,/Change 1: first change/);
+  assert.equal(goalView('short goal',['a change'],600),effectiveGoal('short goal',['a change']));
+  const many=Array.from({length:60},(_,i)=>`change number ${i} with some words`);
+  const w=goalView(goal,many,600);
+  assert.ok(w.length<=600);assert.match(w,/earlier changes left out/);assert.match(w,/Change 60: change number 59 with some words$/);
 });

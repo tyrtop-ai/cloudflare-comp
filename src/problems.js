@@ -470,6 +470,7 @@ export function requirementText(r, {fn=null, more=[], module='', method='', thro
   // values or steps, src/checks.js workerDetail).
   if(r?.card)return MESSAGES.check_failed({id:r.id,says:String(r.says||'').replace(/[.\s]+$/,''),check:r.check,evidence:r.evidence});
   // v8 S9: an amendment's requirement reads as the user's change, never its check.
+  if(r?.amendment&&r.contract)return MESSAGES.amendment_contract({change:String(r.amendment).trim().replace(/[.\s]+$/,''),name:r.contract,does:String(r.says||'').replace(/[.\s]+$/,'')});
   if(r?.amendment)return MESSAGES.amendment({change:String(r.amendment).trim().replace(/[.\s]+$/,''),id:r.id,says:String(r.says||'').replace(/[.\s]+$/,'')});
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
   const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
