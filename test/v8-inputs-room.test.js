@@ -194,7 +194,7 @@ test('links in the goal: fetched once with the owner\'s allowlist, stored with c
   const fetch = fakeFetch({'https://docs.example.com/widget-format': () => new Response(PAGE, {headers: {'content-type': 'text/markdown; charset=utf-8'}})});
   const {room, calls, drain} = inputsRoom({card: LINKS_CARD, split: LINKS_SPLIT, splitWhen: t => t.startsWith(LINKS_GOAL), source: sourceModel, fetch, allow: 'docs.example.com',
     answers: {'Guide writer': [wrote([['GUIDE.md', '# Guide\n\n## Layout\n\nOne record per line.\n']])], 'Questions writer': [wrote([['FAQ.md', '# FAQ\n\n## Questions\n\nWhat is a record? One line.\n']])]}});
-  const started = await room.start(LINKS_GOAL, 40, {pipeline: 'v8'}, '', {selfHosts: ['control.example.com']});
+  const started = await room.start(LINKS_GOAL, 40, {pipeline: 'v8'}, '', null, {selfHosts: ['control.example.com']});
   assert.deepEqual(started, {status: 'running'});
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
@@ -262,7 +262,7 @@ test('a link that cannot be read never blocks the room: the card writer is told,
   const goal = 'Write GUIDE.md and FAQ.md from https://docs.example.com/widget-format and https://control.example.com/api/state as two short documents.';
   const {room, calls, drain} = inputsRoom({card: LINKS_CARD, fetch, allow: 'example.com',
     answers: {'Root objective': [wrote([['GUIDE.md', '# Guide\n\n## Layout\n\nOne record per line.\n'], ['FAQ.md', '# FAQ\n\n## Questions\n\nOne line each.\n']])]}});
-  await room.start(goal, 20, {pipeline: 'v8'}, '', {selfHosts: ['control.example.com']});
+  await room.start(goal, 20, {pipeline: 'v8'}, '', null, {selfHosts: ['control.example.com']});
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
   assert.deepEqual(fetch.calls, ['https://docs.example.com/widget-format'], 'the deployment\'s own host is refused before any fetch');
@@ -297,7 +297,7 @@ async function readmeOnBase(opts = {}) {
   const fetch = fakeFetch(repoRoutes());
   const r = inputsRoom({card: readmeCard, judge: readmeJudge, fetch, room_id: 'room-one-0001', ...opts,
     answers: {'Root objective': [wrote([['README.md', FIRST_README], ['src/shout.js', CHANGED_SHOUT]]), wrote([['README.md', GOOD_README]])]}});
-  const started = await r.room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-one-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
+  const started = await r.room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-one-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
   assert.deepEqual(started, {status: 'running'});
   await r.drain();
   return {...r, fetch};
@@ -341,7 +341,7 @@ test('README on a base repo: the card names README.md, Root may not change a bas
 test('README with nothing given: the card writer blocks and the room pauses asking for a project (U13)', async () => {
   const fetch = fakeFetch({});
   const {room, calls, drain} = inputsRoom({card: readmeCard, judge: readmeJudge, fetch, answers: {}});
-  await room.start(README_GOAL, 20, {pipeline: 'v8'}, '', {selfHosts: ['control.example.com']});
+  await room.start(README_GOAL, 20, {pipeline: 'v8'}, '', null, {selfHosts: ['control.example.com']});
   await drain();
   assert.equal(room.get('status'), 'paused');
   assert.equal(room.snapshot().pause.kind, 'card_blocked');
@@ -356,12 +356,12 @@ test('a base that cannot be used refuses the Start and leaves the previous run a
   assert.equal(room.get('status'), 'complete');
   const before = (await room.appFiles()).digest;
   room.env.TEST_FETCH = fakeFetch({});
-  const refused = await room.start('Add a changelog to this project.', 20, {pipeline: 'v8'}, '', {base: {repo: 'acme-example/absent'}, selfHosts: ['control.example.com']});
+  const refused = await room.start('Add a changelog to this project.', 20, {pipeline: 'v8'}, '', null, {base: {repo: 'acme-example/absent'}, selfHosts: ['control.example.com']});
   assert.match(refused.error, /The repo could not be read: base_refused: repo lookup answered 404/);
-  assert.match((await room.start('Add a changelog to this project.', 20, {pipeline: 'v7'}, '', {base: {repo: 'acme-example/widget'}})).error, /needs the v8 pipeline/);
-  assert.match((await room.start('Add a changelog to this project.', 20, {pipeline: 'v8'}, '', {base: {repo: 'not a repo'}})).error, /public GitHub repo/);
+  assert.match((await room.start('Add a changelog to this project.', 20, {pipeline: 'v7'}, '', null, {base: {repo: 'acme-example/widget'}})).error, /needs the v8 pipeline/);
+  assert.match((await room.start('Add a changelog to this project.', 20, {pipeline: 'v8'}, '', null, {base: {repo: 'not a repo'}})).error, /public GitHub repo/);
   room.env.ROOMS = {getByName: () => ({appFiles: async () => ({status: 409, error: 'No application yet: no run has started in this room.'})})};
-  assert.match((await room.start('Add a changelog to this project.', 20, {pipeline: 'v8'}, '', {base: {room: 'room-empty-0001'}})).error, /room-empty-0001 has no result to start from: No application yet/);
+  assert.match((await room.start('Add a changelog to this project.', 20, {pipeline: 'v8'}, '', null, {base: {room: 'room-empty-0001'}})).error, /room-empty-0001 has no result to start from: No application yet/);
   assert.equal(room.get('status'), 'complete');
   assert.equal((await room.appFiles()).digest, before);
 });
@@ -381,7 +381,7 @@ test('previous result: a new run in the same room starts from what the last one 
   const previous = (await room.appFiles()).files.filter(f => !f.path.startsWith('.recursive/'));
   const second = liveRoom({card: () => SECOND_CARD, clef: clefFor({judge: readmeJudge}), leaf: scripted({'Root objective': [wrote([['README.md', SECOND_README]])]})});
   room.env.AI = second.env.AI;
-  const started = await room.start(TEST_GOAL, 20, {pipeline: 'v8'}, 'room-one-0001', {base: {room: 'room-one-0001'}, selfHosts: ['control.example.com']});
+  const started = await room.start(TEST_GOAL, 20, {pipeline: 'v8'}, 'room-one-0001', null, {base: {room: 'room-one-0001'}, selfHosts: ['control.example.com']});
   assert.deepEqual(started, {status: 'running'});
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
@@ -408,7 +408,7 @@ test('previous result of another room: read through ROOMS, and the base meta nam
   const first = await readmeOnBase();
   const {room} = inputsRoom({card: () => BLOCKED, fetch: fakeFetch({}), answers: {}, room_id: 'room-two-0002'});
   room.env.ROOMS = {getByName: id => id === 'room-one-0001' ? first.room : null};
-  const started = await room.start(TEST_GOAL, 20, {pipeline: 'v8'}, '', {base: {room: 'room-one-0001'}, selfHosts: ['control.example.com']});
+  const started = await room.start(TEST_GOAL, 20, {pipeline: 'v8'}, '', null, {base: {room: 'room-one-0001'}, selfHosts: ['control.example.com']});
   assert.deepEqual(started, {status: 'running'});
   assert.deepEqual(room.db().exec('SELECT path FROM base_files ORDER BY path').toArray().map(r => r.path), ['README.md', 'bin/widget.js', 'package.json', 'src/shout.js']);
   assert.equal(room.read('base', null).source, 'room room-one-0001');
@@ -437,5 +437,5 @@ test('/api/run passes base and the request\'s host to the room', async () => {
   const res = await worker.fetch(new Request('https://control.example.com/api/run', {method: 'POST', headers: {authorization: 'Bearer fixture-token', 'content-type': 'application/json'},
     body: JSON.stringify({room: 'room-one-0001', goal: README_GOAL, settings: {pipeline: 'v8'}, base: {repo: 'acme-example/widget', ref: 'main'}})}), env);
   assert.equal(res.status, 200);
-  assert.deepEqual(seen[0].slice(3), ['room-one-0001', {base: {repo: 'acme-example/widget', ref: 'main'}, selfHosts: ['control.example.com']}]);
+  assert.deepEqual(seen[0].slice(3), ['room-one-0001', null, {base: {repo: 'acme-example/widget', ref: 'main'}, selfHosts: ['control.example.com']}]);
 });

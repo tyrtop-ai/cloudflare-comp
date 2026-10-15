@@ -193,3 +193,26 @@ input[type=range]:focus {box-shadow:none;}
 .onode-card { margin:8px 0; }
 .start-from-repo[hidden] { display:none; }
 .start-from-repo input { margin-top:6px; }
+
+/* B1: the Benchmarks panel */
+.bench-text { min-height:72px; }
+.bench-form input[type="file"] { margin-top:8px; padding:8px; }
+.bench-row { display:grid; grid-template-columns:120px 120px minmax(0,1fr); gap:12px; }
+.bench-row label { margin-top:16px; }
+.bench-head { margin-top:22px; }
+.bench-runs,.bench-results { overflow-x:auto; }
+.bench-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+.bench-table th { text-align:left; font-size:10px; letter-spacing:.1em; color:var(--muted); font-weight:700; border-bottom:thin solid var(--border); padding:6px 8px; white-space:nowrap; }
+.bench-table td { border-bottom:thin solid var(--code-bd); padding:6px 8px; vertical-align:top; }
+.bench-table td.num,.bench-table th.num { text-align:right; font-family:ui-monospace,monospace; white-space:nowrap; }
+.bench-table tr.picked td { background:var(--code-bg); }
+.bench-table .secondary { width:auto; margin:0 4px 0 0; padding:3px 8px; font-size:11px; font-weight:600; display:inline-flex; }
+.bench-summary { display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:16px; font-size:12px; }
+.bench-summary b { font-family:ui-monospace,monospace; }
+.req-chip.timeout,.req-chip.error { color:var(--bad); border-color:var(--code-bd); }
+.req-chip.running { color:var(--path); border-color:var(--path); }
+.bench-compare-bar { display:grid; grid-template-columns:auto minmax(0,1fr) minmax(0,1fr) auto; gap:8px; align-items:center; margin-top:18px; }
+.bench-compare-bar label { margin:0; }
+.bench-compare-bar .secondary { margin:0; width:auto; padding:10px 14px; }
+.bench-diff.up { color:var(--ok); } .bench-diff.down { color:var(--bad); }
+@media(max-width:700px) { .bench-row,.bench-compare-bar { grid-template-columns:1fr; } }

@@ -3,13 +3,16 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
+export { BenchRun } from './bench-run.js';
+import { benchRoute } from './bench-run.js';
+import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
-import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
+import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard } from './card.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { triggerText, RETRY, MESSAGES } from './prompts.js';
@@ -2107,7 +2110,8 @@ export class ControlRoom extends DurableObject {
     return files;
   }
   // The run's build executor (one Container per run).
-  buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
+  // B1: a benchmark room uses its run's pooled executor (executor_key), so N rooms never ask for more Containers than exist.
+  buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(this.get('executor_key')||`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
   // Speed v1: start the run's Container just before a compile the room has
   // asked for next (the top builder links, or an atomic Root writes its code),
   // so the compile does not pay its cold start. The executor stops it again
@@ -6197,6 +6201,8 @@ export class ControlRoom extends DurableObject {
   // vets and saves that card again without a new writer call. True when
   // Root goes on.
   async cardTurn(id) {
+    const given=this.read('card_provided',null);
+    if(given)return this.providedCardTurn(id,given);
     const goal=this.userGoal(),rows=this.installedToolchains(),started=Date.now();
     const hold=(kind,text,again='Continue runs the card writer again.')=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,`${text} ${again}`);return false;};
     let card=this.read('card_draft',null),calls='the card written before';
@@ -6238,6 +6244,59 @@ export class ControlRoom extends DurableObject {
       this.db().exec('DELETE FROM card_revisions');this.save('card',null);this.db().exec("UPDATE agents SET interfaces='[]' WHERE id=?",id);
       return hold('card_failed',clip(`Vetting or saving the card failed: ${e?.message||e}.`,900),'Continue vets and saves the written card again.');
     }
+  }
+  // B1: a room started with a card (a benchmark task's) validates it and
+  // takes it as revision 1: no card writer, no Clef vetting (the benchmark's
+  // checks are authoritative). A card that does not validate whole holds the
+  // room at card_failed; a language this deployment cannot run, card_blocked.
+  providedCardTurn(id, given) {
+    const hold=(kind,text)=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,text);return false;};
+    const {card,errors,unsupported}=providedCard(given,{goal:this.userGoal(),installed:this.installedToolchains(),packages:this.settings().packages});
+    if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the provided card names.`);
+    if(errors.length||!vettedUsable(card))return hold('card_failed',clip(`The provided card does not validate: ${errors.slice(0,8).join(' ')||'no deliverable or requirement.'}`,1100));
+    this.save('card',card);
+    this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(card),card.source,Date.now());
+    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(card)),id);
+    this.save('paused_state',null);
+    this.event(id,'card_provided',clip(`Project card given by the ${card.source} (validated; not written or vetted by a model): ${card.summary||'(no summary)'}. ${cardLine(card)}.`,1500));
+    return true;
+  }
+  // B1: one task room's result for the BenchRun DO: its status and hold, the
+  // card's requirement ids and results, when it started and last moved, the
+  // model tokens its spans record and its Container time. No file, prompt or
+  // check text.
+  benchSummary() {
+    const db=this.db(),card=this.read('card',null),status=this.get('status','idle');
+    const t=query(db,"SELECT COUNT(*) AS calls,COALESCE(SUM(json_extract(attrs,'$.prompt_tokens')),0) AS prompt,COALESCE(SUM(json_extract(attrs,'$.completion_tokens')),0) AS completion FROM spans WHERE kind='model'")[0];
+    const c=query(db,"SELECT COUNT(*) AS runs,COALESCE(SUM(end_ms-start_ms),0) AS ms FROM spans WHERE kind='container'")[0];
+    const e=query(db,"SELECT MIN(CASE WHEN kind='start' THEN ts END) AS started,MAX(ts) AS last FROM events")[0];
+    // Why a paused room stopped: the observer, agents stalled by three
+    // failures (platform ones if their last error says so), or the budget.
+    const errors=query(db,"SELECT actor,body FROM events WHERE kind='error' ORDER BY id").map(r=>({actor:r.actor,infra:INFRA_ERROR.test(r.body||'')}));
+    const stalled=Object.entries(this.read('failures',{})).filter(([,n])=>n>=3).map(([id])=>id);
+    const last=query(db,"SELECT kind FROM events WHERE actor='system' AND kind IN ('stopped','paused','complete','failed','error','start','resume') ORDER BY id DESC LIMIT 1")[0]?.kind;
+    return {status,busy:!!this.busy,pause:this.read('paused_state',null),card_source:card?.source||null,
+      compile_passed:!!this.read('compile_passed',null),stopped:last==='stopped',turns:query(db,"SELECT COUNT(*) AS n FROM events WHERE kind='dispatch'")[0].n,
+      infra_errors:errors.filter(x=>x.infra).length,stalled_infra:stalled.length>0&&stalled.every(id=>errors.filter(x=>x.actor===id).at(-1)?.infra),
+      requirements:(card?.requirements||[]).map(r=>r.id),requirement_status:this.read('requirement_status',{}),
+      started_at:e.started??null,last_event_at:e.last??null,
+      tokens:{calls:t.calls,prompt:t.prompt,completion:t.completion,total:t.prompt+t.completion},container_ms:c.ms,container_runs:c.runs,
+      failure:status==='failed'?clip(this.failedDescendantReason('root'),300):status==='error'?clip(query(db,"SELECT body FROM events WHERE kind='error' ORDER BY id DESC LIMIT 1")[0]?.body||'',300):''};
+  }
+  // B1: after a benchmark task is scored, its room's Artifacts repositories
+  // and its storage are deleted (BenchRun, unless the run keeps the room).
+  // Never while it runs. Answers counts only: no repository name leaves.
+  async purge() {
+    if(this.busy||this.get('status')==='running')return {error:'busy'};
+    const store=this.store(),repos=[...new Set(this.allNodes().map(n=>n.repo_name).filter(Boolean))];
+    let deleted=0,failed=0;
+    for(const name of repos) {
+      try {if(typeof store.delete!=='function')throw new Error('no delete');await store.delete(name);deleted++;}
+      catch {failed++;}
+    }
+    if(typeof this.ctx.storage.deleteAll==='function'){await this.ctx.storage.deleteAlarm?.();await this.ctx.storage.deleteAll();}
+    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','problems','repair_tickets','card_revisions','meta'])this.db().exec(`DELETE FROM ${table}`);
+    return {repos_deleted:deleted,repos_failed:failed};
   }
   async agentTurn(id) {
     const n = this.node(id);
@@ -7089,18 +7148,23 @@ export class ControlRoom extends DurableObject {
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally { this.busy=false;this.budgetSpent=false; }
   }
-  // v8 S8b: inputs.base is what the run starts from (§7.1): {repo, ref?,
-  // dir?} or {room} (a room's previous result, this room's own included);
-  // inputs.selfHosts names this deployment's host(s), which the goal's links
-  // may never reach. The base is read before the room is wiped, so a base
-  // that cannot be read refuses the Start and leaves the previous run as it
-  // was; the goal's links are read at Root's first turn (loadSources).
-  async start(goal,budget,settings = {},roomId='',{base=null,selfHosts=[]}={}) {
+  // provided: a card the runtime gives the room (a benchmark task's, B1),
+  // never one from a request body; /api/run passes none. executor: the
+  // pooled executor a benchmark room builds on (BenchRun), never a request's.
+  // v8 S8b: base is what the run starts from (§7.1): {repo, ref?, dir?} or
+  // {room} (a room's previous result, this room's own included); selfHosts
+  // names this deployment's host(s), which the goal's links may never
+  // reach. The base is read before the room is wiped, so a base that cannot
+  // be read refuses the Start and leaves the previous run as it was; the
+  // goal's links are read at Root's first turn (loadSources).
+  async start(goal,budget,settings = {},roomId='',provided=null,{executor='',base=null,selfHosts=[]}={}) {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
     // Refuse bad settings before the room is wiped: a refused Start must leave
     // the previous run intact (verification probe: parallel 999 erased it).
     let wanted;
     try { wanted=normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS); } catch(e) { return {error:clip(e?.message||e,300)}; }
+    if (provided && (!this.live() || wanted.pipeline!=='v8')) return {error:'A provided card needs a live room on the v8 pipeline'};
+    if (executor && !/^bench-pool-\d{1,3}$/.test(executor)) return {error:'Invalid executor'};
     const given=normalizeBase(base);
     if(given.error)return {error:given.error};
     if(given.base&&(wanted.pipeline!=='v8'||!this.live()))return {error:'Start from (a repo or a previous result) needs the v8 pipeline.'};
@@ -7116,6 +7180,8 @@ export class ControlRoom extends DurableObject {
     this.queuedAt.clear();
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
+    if (provided) this.save('card_provided',provided);
+    if (executor) this.set('executor_key',executor);
     this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h).slice(0,8));
     if(loaded) {
       for(const [path,content] of loaded.files)this.db().exec('INSERT INTO base_files(path,content,sha256) VALUES (?,?,?)',path,content,await sha256(content));
@@ -7319,6 +7385,8 @@ export default {
     if (!env.APP_TOKEN) return json({error:'Set APP_TOKEN with wrangler secret put APP_TOKEN'},503);
     if (!safeTokenEqual(request.headers.get('authorization') || '',`Bearer ${env.APP_TOKEN}`)) return json({error:'Invalid APP_TOKEN'},401);
     const payload=request.method==='GET'?{}:await request.json().catch(()=>({}));
+    // B1: benchmark runs (src/bench-run.js), behind the same token.
+    if (url.pathname==='/api/bench' || url.pathname.startsWith('/api/bench/')) return benchRoute(request,env,url,payload,{normalizeRoomSettings,normalizeTurnBudget});
     const room=request.method==='GET'?url.searchParams.get('room'):payload.room;
     if (!/^[a-zA-Z0-9-]{8,64}$/.test(room || '')) return json({error:'Invalid room'},400);
     const stub=env.ROOMS.getByName(room);
@@ -7335,7 +7403,7 @@ export default {
         const goal=String(payload.goal||'').trim();
         if (goal.length<8 || goal.length>GOAL_LIMIT) return json({error:`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
-        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host]});
+        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,null,{base:payload.base??null,selfHosts:[url.host]});
         return json(started,started.error?400:200);
       }
       if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));
