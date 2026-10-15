@@ -41,6 +41,7 @@ import { checkSecrets } from './checks.js';
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, cardsFor, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
+import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
 import { caseTwin } from '../container/build-path.mjs';
 import { toBase64 } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
@@ -833,6 +834,8 @@ export class ControlRoom extends DurableObject {
       ...(worker && this.v8() ? this.sourceInputs(id, 'chunks') : {}),
       // v8 S8b review: base text only quoted, labelled, beside the base clause.
       ...(worker && this.v8() ? (({digest, files}) => digest || files.length ? {base_note: MESSAGES.base_note(), ...(digest ? {existing_files: {label: BASE_LABEL, digest}} : {}), ...(files.length ? {base_files: files} : {})} : {})({digest: !n.parent ? this.read('base', null)?.digest : null, files: this.baseFilesFor(id)}) : {}),
+      // Capability boxes S5 (§5.2): the names this writer may ask the broker for, and how its labelled answers read.
+      ...(worker && this.v8() ? this.availableView(id, answered) : {}),
       new_messages: inbox
     };
   }
@@ -5752,7 +5755,7 @@ export class ControlRoom extends DurableObject {
     // check, or its last answer, wakes it.
     const own=name&&this.planned()?this.promisedOf(worker).find(f=>f.name===name):null;
     if(own) {
-      const value=`${signature(own)} is in your own contract: write it in your own module and export it by exactly this name.`;
+      const value=this.v8()?MESSAGES.own_contract({contract:contractLine(own)}):`${signature(own)} is in your own contract: write it in your own module and export it by exactly this name.`;
       this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',worker,'[route:unowned] '+JSON.stringify({id:crypto.randomUUID(),key,value}));
       this.recordAnswer(worker,{key,kind:'unowned',text:value});
       this.event(worker,'route_own',`${name} is in its own contract; answered without asking the manager.`);
@@ -5769,6 +5772,60 @@ export class ControlRoom extends DurableObject {
     if(!ok) this.db().exec('DELETE FROM route_workers WHERE request_id=?',request_id);
     else this.event(worker,'route_request',`Requested blocking external interface ${key} from manager; independently authored files are retained.`);
     return ok;
+  }
+  // Capability boxes S5 (§5): the broker, the one path from a v8 writer to
+  // anything outside its part. Its catalogue (view's available): its own
+  // contracts, the contracts it may use, the existing files granted to it
+  // (the base paths its contracts name, once the goal is found to ask for
+  // them: gateFacts' owned), and the chunks of linked pages it holds.
+  grantedBase(id) {
+    if(!this.v8())return [];
+    const base=this.basePaths();
+    return [...(this.gateFacts(id).owned||[])].filter(p=>base.has(p)).sort();
+  }
+  catalogue(id) {
+    const n=this.node(id);
+    if(!n||!this.v8()||this.manager(id)||isRuntimeNode(n))return [];
+    const titles=new Map(this.sourceRows().map(r=>[r.id,r.card?.title||r.title||r.final_url||r.url]));
+    return brokerCatalogue({own:this.promisedOf(id),uses:this.plannedUses(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
+  }
+  availableView(id, answered=[]) {
+    const cat=this.catalogue(id),labelled=answered.some(a=>a&&typeof a==='object');
+    return {...(cat.length?{available:shownCatalogue(cat),available_note:MESSAGES.available_note()}:{}),...(labelled?{answers_note:MESSAGES.answers_note()}:{})};
+  }
+  // The names and paths of every contract in the tree and on the card.
+  contractNames() {
+    const items=[...(this.read('card',null)?.deliverables||[]),...this.allNodes().flatMap(n=>parse(n.interfaces,[]))];
+    return new Set(items.flatMap(c=>[c?.name,c?.path]).filter(x=>typeof x==='string'&&x));
+  }
+  // What one ask is (broker.js classify): a contract goes on to today's
+  // routing (askManager); a chunk, an existing file, or a name outside the
+  // catalogue is answered here.
+  askKind(id, name) {
+    if(!this.v8())return {kind:'contract',name:name||''};
+    return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts:this.contractNames()});
+  }
+  // Answers one ask that needs no other part, with no manager hop (§5.3): a
+  // [route:broker] message wakes the writer, whose next turn reads the answer
+  // in answered_requests. false: a contract, for askManager.
+  brokerAnswer(id, ask) {
+    if(!this.v8())return false;
+    const cat=this.catalogue(id),c=this.askKind(id,ask.name);
+    if(c.kind==='contract')return false;
+    const req=brokerRequest({from:id,kind:c.kind,name:c.name,need:ask.question});
+    let answer=null;
+    if(c.kind==='source') {
+      const row=query(this.db(),'SELECT ref,source,text FROM source_chunks WHERE ref=?',c.name)[0],src=row&&this.sourceRows().find(r=>r.id===row.source);
+      if(row)answer=sourceAnswer({id:req.id,ref:row.ref,url:src?.final_url||src?.url||row.source,text:row.text,next:nextHeld(cat,row.ref)});
+    } else if(c.kind==='base') {
+      const row=query(this.db(),'SELECT path,content FROM base_files WHERE path=?',c.name)[0];
+      if(row)answer=baseAnswer({id:req.id,path:row.path,content:row.content,own:this.promisedOf(id).some(x=>x?.path===row.path)});
+    }
+    answer||=noneAnswer({id:req.id,name:ask.name||c.name,catalogue:cat});
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:ask.key,kind:answer.kind,status:answer.status}));
+    this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
+    this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters${answer.facts?.clipped?` of ${answer.facts.chars}`:''}, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
+    return true;
   }
   // The answers a worker got to its function requests, newest kept, one per
   // topic; later turns read them as answered_requests.
@@ -6671,9 +6728,13 @@ export class ControlRoom extends DurableObject {
       const writer=!splitting && !this.manager(id) && !isRuntimeNode(n);
       if(writer && !n.parent) {
         action.notes=[];
+        // Capability boxes S5: under v8 the broker still answers the top's
+        // asks that need no other part; the rest have nobody to go to.
+        const direct=this.v8()?action.ask.filter(a=>this.askKind(id,a.name).kind!=='contract'):[];
         if(action.ask.length) {
-          this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
-          action.ask=[];action.wait=false;
+          if(direct.length<action.ask.length)this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
+          action.ask=direct;action.wait=direct.length>0;
+          if(direct.length)action.done=false;
         } else if(action.wait && !action.done) {
           // v7.15.2: nothing answers the top, so a wait stranded it, past
           // Continue too (an atomic Root that answered its repair with wait;
@@ -7026,6 +7087,9 @@ export class ControlRoom extends DurableObject {
         if (!this.send(id,a.to,`[knowledge:${a.key}] ${a.value}`)) throw new Error('Answer recipient is not adjacent');
       }),
       ...action.ask.map(a => async () => {
+        // Capability boxes S5: the broker answers what needs no other part
+        // (a chunk, an existing file, a name outside the catalogue) itself.
+        if(this.brokerAnswer(id,a))return;
         // v7.15.1: every ask goes to the worker's manager, whatever it names;
         // the manager answers from its children or asks up (MOCK too).
         if(!this.node(id)?.parent) {

@@ -1,6 +1,7 @@
 import { validKnowledgeKey } from './knowledge.js';
 import { normalizeInterfaces, normalizeUses, requestKey, validName, pieceContracts, MAX_REQUESTS } from './interfaces.js';
 import { otherName, CONTRACT_KINDS } from './contracts.js';
+import { askName } from './broker.js';
 
 // Small coordination messages. Source code never travels inside the control JSON.
 export const clip = (v, n = 1200) => String(v ?? '').slice(0, n);
@@ -148,11 +149,13 @@ export function jsonObjects(text) {
 // MAX_REQUESTS.
 // v8 (S2, opts.v8): a request {need, name, kind?} may name a contract of
 // any kind (README.md, GET /items, a command); kind is kept when it is one.
+// Capability boxes S5: a name from the broker's catalogue too (a chunk ref
+// such as S2#3, or an existing file's path), which the room classifies.
 export function normalizeAsk(ask, {v8 = false} = {}) {
   return (Array.isArray(ask) ? ask : ask && typeof ask === 'object' || typeof ask === 'string' ? [ask] : []).map(q => {
     if (typeof q === 'string') q = { need: q, name: q };
     if (!q || typeof q !== 'object') return null;
-    const name = validName(q.name ?? q.function) || (v8 ? otherName(q.name ?? q.function) : ''), kind = v8 && CONTRACT_KINDS.includes(q.kind) ? q.kind : '';
+    const name = validName(q.name ?? q.function) || (v8 ? otherName(q.name ?? q.function) || askName(q.name ?? q.function) : ''), kind = v8 && CONTRACT_KINDS.includes(q.kind) ? q.kind : '';
     const request = (need, name) => ({ to: 'parent', key: requestKey({need, name}), question: clip(need, 300), ...(name ? {name} : {}), ...(name && kind ? {kind} : {}) });
     if (typeof q.need === 'string' && q.need.trim()) return request(q.need.trim(), name);
     if ((q.to === undefined || typeof q.to === 'string') && validKnowledgeKey(q.key) && typeof q.question === 'string' && q.question.length > 0)
