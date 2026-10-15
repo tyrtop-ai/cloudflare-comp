@@ -1,11 +1,17 @@
 // Runs only inside the isolated Cloudflare build container.
-import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat,cp} from 'node:fs/promises';
-import {createHash} from 'node:crypto';
+import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat,cp,realpath} from 'node:fs/promises';
+import {createHash,randomBytes} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {builtinModules} from 'node:module';
+import {fileURLToPath} from 'node:url';
+import {builtinModules,createRequire} from 'node:module';
 import {spawn} from 'node:child_process';
+import {request as httpRequest} from 'node:http';
+import {createServer as createNetServer} from 'node:net';
 import {buildPathError} from './build-path.mjs';
+import {stackFrames} from './stack-frames.mjs';
+
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
 // Each build subprocess is launched in its own process group so its stage
 // timeout can kill npm and all of its normal descendants. If the enclosing
@@ -379,10 +385,481 @@ export async function verifyBuild(request,{runStage=run}={}) {
     return {fingerprint:request.fingerprint,snapshot_hash:request.snapshot_hash,passed,infrastructure_issue,issues:issues.slice(0,12),checks,artifacts,preview,api_surface,log:checks.map(x=>`${x.name}: exit ${x.exit_code}\n${x.log}`).join('\n').slice(-5000)};
   } finally {await rm(folder,{recursive:true,force:true});}
 }
+// ---------------------------------------------------------------------------
+// v8 card verification (spec §4.1 step 4, §4.4-4.7): mode 'card'. One exec
+// runs the stages in order: write the files, syntax per toolchain row,
+// install (only when the plan asks), project checks, start the runs,
+// command / call / http checks, browser checks, stop the runs. Every check
+// runs even after one fails. Toolchain rows arrive as data in the request
+// (src/toolchains.js); nothing here branches on a language.
+//
+// Isolation: every command, call and project check runs in its own process
+// group, in its own copy of the bundle (fixtures beside it, never in the
+// bundle), with the stage environment (no secrets), under a timeout, and
+// without a network when the platform allows a network namespace (probed
+// once: `unshare --user --net`). A call check's pass needs the per-run nonce
+// its adapter prints (polyglot-bench §2b.2), and its expectations never
+// reach the process.
+// ---------------------------------------------------------------------------
+export const CARD_LIMITS=Object.freeze({total_ms:200_000,check_ms:20_000,step_ms:5_000});
+const CARD_CHECK_KINDS=new Set(['file','command','call','http','browser']);
+const MAX_CARD_CHECKS=64,MAX_CALL_STEPS=20,MAX_HTTP_STEPS=20,READY_MS=10_000,DETAIL_CHARS=300;
+const ADAPTER_DIR=fileURLToPath(new URL('./adapters/',import.meta.url));
+// A row names its adapter at its image path (/opt/adapters/…); outside the
+// image (the tests) the adapters sit beside this file.
+export const adapterPath=p=>String(p).startsWith('/opt/adapters/')?path.join(ADAPTER_DIR,String(p).slice(14)):String(p);
+const clamp=(v,lo,hi,d)=>Number.isFinite(Number(v))&&v!==null&&v!==''?Math.max(lo,Math.min(hi,Math.round(Number(v)))):d;
+export function cardLimits(raw) {
+  const o=raw&&typeof raw==='object'?raw:{};
+  // The total stays inside the exec's 240 s timeout, with room to report.
+  return {total_ms:clamp(o.total_ms,1000,220_000,CARD_LIMITS.total_ms),check_ms:clamp(o.check_ms,500,60_000,CARD_LIMITS.check_ms),step_ms:clamp(o.step_ms,200,30_000,CARD_LIMITS.step_ms)};
+}
+const clip=(s,n=DETAIL_CHARS)=>{const t=String(s??'');return t.length>n?t.slice(0,n-1)+'…':t;};
+const show=(v,n=60)=>{let t;try{t=JSON.stringify(v);}catch{t=String(v);}return clip(t===undefined?'undefined':t,n);};
+// The environment of a check: the stage environment, Python told not to
+// write bytecode beside the bundle, and the browser's module and browsers.
+export function checkEnvironment(extra={}) {
+  const env={...stageEnvironment(),PYTHONDONTWRITEBYTECODE:'1',PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',...extra};
+  for(const k of Object.keys(env))if(env[k]===undefined)delete env[k];
+  return env;
+}
+const browserEnvironment=()=>checkEnvironment({NODE_PATH:process.env.NODE_PATH||'/usr/local/lib/node_modules',PLAYWRIGHT_BROWSERS_PATH:process.env.PLAYWRIGHT_BROWSERS_PATH||'/ms-playwright'});
+
+// One process (group) with stdout and stderr apart. prefix: the network
+// isolation wrapper, if any.
+export function execCheck(argv,{cwd,env=checkEnvironment(),ms=20_000,stdin='',prefix=[]}={}) {
+  return new Promise(resolve=>{
+    const began=Date.now(),full=[...prefix,...argv];
+    let child;
+    try {child=spawn(full[0],full.slice(1),{cwd,env,stdio:['pipe','pipe','pipe'],detached:true});}
+    catch(e){resolve({code:-1,signal:null,stdout:'',stderr:String(e?.message||e),timedOut:false,ms:0,spawn_error:true});return;}
+    if(child.pid)activeProcessGroups.add(child.pid);
+    let stdout='',stderr='',timedOut=false,done=false;
+    const timer=setTimeout(()=>{timedOut=true;try{process.kill(-child.pid,'SIGKILL');}catch{}},ms);
+    child.stdout.on('data',c=>{if(stdout.length<1_000_000)stdout+=c.toString();});
+    child.stderr.on('data',c=>{stderr=(stderr+c.toString()).slice(-64_000);});
+    const finish=r=>{if(done)return;done=true;clearTimeout(timer);if(child.pid){try{process.kill(-child.pid,'SIGKILL');}catch{}activeProcessGroups.delete(child.pid);}resolve({...r,stdout,stderr,timedOut,ms:Date.now()-began});};
+    child.on('error',e=>{stderr+=String(e?.message||e);finish({code:-1,signal:null,spawn_error:true});});
+    child.on('close',(code,signal)=>finish({code:code??-1,signal}));
+    child.stdin.on('error',()=>{});child.stdout.on('error',()=>{});child.stderr.on('error',()=>{});
+    child.stdin.end(stdin);
+  });
+}
+// A long-lived process (a run): its group is killed by stop().
+function startProcess(argv,{cwd,env}) {
+  const child=spawn(argv[0],argv.slice(1),{cwd,env,stdio:['ignore','pipe','pipe'],detached:true});
+  if(child.pid)activeProcessGroups.add(child.pid);
+  let log='',exited=null;
+  const append=c=>{log=(log+c.toString()).slice(-16_000);};
+  child.stdout.on('data',append);child.stderr.on('data',append);
+  child.stdout.on('error',()=>{});child.stderr.on('error',()=>{});
+  child.on('error',e=>{append(String(e?.message||e));exited??={code:-1};});
+  child.on('exit',(code,signal)=>{exited={code,signal};});
+  return {child,log:()=>log,exited:()=>exited,stop(){try{process.kill(-child.pid,'SIGKILL');}catch{}if(child.pid)activeProcessGroups.delete(child.pid);}};
+}
+
+// The network-namespace wrapper this platform allows, probed once per
+// process: a user namespace mapping the current user, then a plain network
+// namespace (root), then none (checks keep the network; reported).
+let isolationProbe=null;
+export function networkIsolation({probe=execCheck}={}) {
+  isolationProbe??=(async()=>{
+    for(const prefix of [['unshare','--user','--net','--map-current-user','--'],['unshare','--net','--']]) {
+      const r=await probe(['true'],{cwd:tmpdir(),ms:3000,prefix});
+      if(r.code===0&&!r.timedOut)return prefix;
+    }
+    return [];
+  })();
+  return isolationProbe;
+}
+export const resetNetworkIsolation=()=>{isolationProbe=null;};
+
+// "a 'b c' \"d\"" → ['a','b c','d']: words, quotes and backslashes only (no
+// shell: no pipes, redirections or variables).
+export function splitWords(text) {
+  const out=[];let cur='',quote='',any=false;
+  for(let i=0;i<String(text).length;i++) {
+    const ch=String(text)[i];
+    if(quote){if(ch===quote)quote='';else if(ch==='\\'&&quote==='"'&&i+1<text.length)cur+=text[++i];else cur+=ch;continue;}
+    if(ch==='"'||ch==="'"){quote=ch;any=true;continue;}
+    if(ch==='\\'&&i+1<text.length){cur+=text[++i];any=true;continue;}
+    if(/\s/.test(ch)){if(cur||any)out.push(cur);cur='';any=false;continue;}
+    cur+=ch;
+  }
+  if(cur||any)out.push(cur);
+  return out;
+}
+const extensionOf=p=>{const b=String(p).split('/').pop(),d=b.lastIndexOf('.');return d>0?b.slice(d).toLowerCase():'';};
+const rowOfPath=(p,rows)=>rows.find(r=>(r.extensions||[]).includes(extensionOf(p)))||null;
+// A check's command line as argv: a command deliverable's name (plan.commands
+// maps it to argv), a bundle file run by its row's run_file, or an
+// executable one of the rows lists.
+export function resolveCommand(run,{files,rows,commands={}}) {
+  const words=Array.isArray(run)?run.map(String):splitWords(String(run||''));
+  if(!words.length)return {error:'an empty command'};
+  const [first,...rest]=words;
+  if(Array.isArray(commands[first])&&commands[first].length)return {argv:[...commands[first].map(String),...rest]};
+  if(Object.hasOwn(files,first)) {
+    const row=rowOfPath(first,rows);
+    if(row?.run_file)return {argv:[...row.run_file.map(x=>x==='{path}'?first:x),...rest],row};
+    return {error:`${first} is not a file this deployment can run`};
+  }
+  const row=rows.find(r=>(r.executables||[]).includes(first));
+  if(row)return {argv:words,row};
+  return {error:`${first} is neither a command deliverable, a bundle file nor an installed executable`};
+}
+
+const deepEqual=(a,b)=>{
+  if(a===b)return true;
+  if(typeof a!==typeof b||a===null||b===null||typeof a!=='object')return Number.isNaN(a)&&Number.isNaN(b);
+  if(Array.isArray(a)!==Array.isArray(b))return false;
+  if(Array.isArray(a))return a.length===b.length&&a.every((x,i)=>deepEqual(x,b[i]));
+  const ka=Object.keys(a),kb=Object.keys(b);
+  return ka.length===kb.length&&ka.every(k=>Object.hasOwn(b,k)&&deepEqual(a[k],b[k]));
+};
+// json_has: every field the expectation names, recursively; an expected
+// array's items each found in the actual array; an object expected of an
+// array is found when one of its items has it.
+export function jsonHas(actual,expected) {
+  if(expected===null||typeof expected!=='object')return deepEqual(actual,expected);
+  if(Array.isArray(expected))return Array.isArray(actual)&&expected.every(e=>actual.some(a=>jsonHas(a,e)));
+  if(Array.isArray(actual))return actual.some(a=>jsonHas(a,expected));
+  return !!actual&&typeof actual==='object'&&Object.entries(expected).every(([k,v])=>Object.hasOwn(actual,k)&&jsonHas(actual[k],v));
+}
+const SAVED_REF=/\$([A-Za-z_]\w*)((?:\.[A-Za-z0-9_]+)*)/g;
+const readSaved=(saved,name,fields)=>{let v=saved.get(name);for(const k of fields.split('.').slice(1))v=v==null?undefined:v[k];return v;};
+// An HTTP step's path and body read saved results: a whole string "$t" or
+// "$t.id" becomes the value, one inside a string ("/todos/$t.id") its text.
+function substituteSaved(value,saved) {
+  if(typeof value==='string') {
+    const whole=value.match(/^\$([A-Za-z_]\w*)((?:\.[A-Za-z0-9_]+)*)$/);
+    if(whole&&saved.has(whole[1]))return readSaved(saved,whole[1],whole[2]);
+    return value.replace(SAVED_REF,(m,name,fields)=>saved.has(name)?String(readSaved(saved,name,fields)??''):m);
+  }
+  if(Array.isArray(value))return value.map(v=>substituteSaved(v,saved));
+  if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,substituteSaved(v,saved)]));
+  return value;
+}
+function localRequest(url,{method='GET',body,ms=5000}={}) {
+  return new Promise((resolve,reject)=>{
+    const payload=body===undefined?null:Buffer.from(typeof body==='string'?body:JSON.stringify(body));
+    const req=httpRequest(url,{method,timeout:ms,headers:payload?{'content-type':typeof body==='string'?'text/plain':'application/json','content-length':payload.length}:{}},res=>{
+      const chunks=[];let size=0;
+      res.on('data',c=>{size+=c.length;if(size<=2_000_000)chunks.push(c);});
+      res.on('end',()=>resolve({status:res.statusCode,text:Buffer.concat(chunks).toString('utf8')}));
+      res.on('error',reject);
+    });
+    req.on('timeout',()=>req.destroy(new Error(`no answer within ${ms} ms`)));
+    req.on('error',reject);
+    req.end(payload||undefined);
+  });
+}
+const freePort=()=>new Promise((resolve,reject)=>{const s=createNetServer();s.unref();s.on('error',reject);s.listen(0,'127.0.0.1',()=>{const {port}=s.address();s.close(()=>resolve(port));});});
+// The line of an output a failure detail quotes: its last error headline
+// (Node's "Error [ERR_…]: …", Python's "ZeroDivisionError: …"), else its
+// last n lines, Node's version banner and warnings left out.
+const lastLines=(text,n=2)=>{
+  const lines=stripWarnings(text).split('\n').map(l=>l.trim()).filter(l=>l&&!/^Node\.js v\d/.test(l));
+  return lines.filter(l=>HEADLINE.test(l)).at(-1)||lines.slice(-n).join(' | ');
+};
+// The bundle-relative view of a check's output: its folder's absolute path
+// (and file:// URL) removed, so a failure names deliverable paths.
+const relativize=(text,dir)=>dir?String(text||'').split('file://'+dir+'/').join('').split(dir+'/').join(''):String(text||'');
+function framesOf(text,files,rows,root) {
+  const out=[];
+  for(const row of rows)for(const f of stackFrames(text,files,row,{root,innermostFirst:true}))if(out.length<8&&!out.some(x=>x.path===f.path&&x.line===f.line))out.push(f);
+  return out;
+}
+const at=frames=>frames.length?` (at ${frames[0].path}:${frames[0].line})`:'';
+
+function validateCardPlan(raw) {
+  const plan=raw&&typeof raw==='object'?raw:{};
+  const list=v=>Array.isArray(v)?v:[];
+  const checks=list(plan.checks).filter(c=>c&&typeof c==='object'&&typeof c.id==='string'&&c.id).slice(0,MAX_CARD_CHECKS);
+  const runs=list(plan.runs).filter(r=>r&&typeof r.id==='string'&&(r.static===true||typeof r.run==='string'||Array.isArray(r.run)));
+  const commands=plan.commands&&typeof plan.commands==='object'?plan.commands:{};
+  return {syntax:list(plan.syntax),install:list(plan.install),project:list(plan.project),runs,checks,commands};
+}
+
+export async function verifyCard(request,{isolation}={}) {
+  const files=Object.fromEntries(validate(request));
+  const rows=(Array.isArray(request.toolchains)?request.toolchains:[]).filter(r=>r&&typeof r.id==='string');
+  const plan=validateCardPlan(request.plan),limits=cardLimits(request.limits);
+  const began=Date.now(),deadline=began+limits.total_ms,left=()=>deadline-Date.now();
+  const base=process.env.BUILD_RUNNER_WORKDIR||'/work';
+  const folder=await realpath(await mkdtemp(path.join(base,'card-')));
+  const scratch=await realpath(await mkdtemp(path.join(base,'card-private-')));
+  const stages=[],checks=[],issues=[],runs=new Map();
+  let infrastructure_issue='';
+  const inventory={node:process.versions.node,python:null,chromium:null,playwright:null,network:'on'};
+  const env=checkEnvironment({PYTHONPYCACHEPREFIX:path.join(scratch,'pycache')});
+  const stage=async(name,fn)=>{const t=Date.now();const out=(await fn())||{};stages.push({name,passed:out.passed!==false,ms:Date.now()-t,...(out.detail?{detail:clip(out.detail,600)}:{})});};
+  const result=(c,passed,ms,detail='',extra={})=>{checks.push({id:c.id,kind:c.kind,passed,ms,detail:passed?'':clip(detail),output:'',frames:[],...extra});};
+  const notRun=c=>result(c,false,0,`not run: the verification's ${Math.round(limits.total_ms/1000)} s budget was spent`,{infrastructure:true});
+  // A fresh copy of the bundle for one process: what one check writes never
+  // reaches another.
+  const checkDir=async()=>{const d=await realpath(await mkdtemp(path.join(scratch,'check-')));await cp(folder,d,{recursive:true,verbatimSymlinks:true});return d;};
+  try {
+    await stage('write',async()=>{
+      for(const [name,content] of Object.entries(files)){const target=path.join(folder,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');}
+      return {detail:`${Object.keys(files).length} file(s)`};
+    });
+    const prefix=isolation??await networkIsolation();
+    inventory.network=prefix.length?'off':'on';
+    const py=await execCheck(['python3','--version'],{cwd:folder,env,ms:5000});
+    inventory.python=py.code===0?(py.stdout+py.stderr).trim().replace(/^Python\s+/,''):null;
+    try{inventory.playwright=createRequire(path.join(ADAPTER_DIR,'browser-check.mjs'))('playwright/package.json').version;}catch{}
+
+    // 2. Syntax: one process per row, its files in one command line. A
+    // compiler that stops at the first bad file (py_compile) is run again on
+    // the files after it, so every bad file is named.
+    for(const s of plan.syntax) {
+      const row=rows.find(r=>r.id===s?.toolchain),names=(Array.isArray(s?.files)?s.files:[]).filter(n=>Object.hasOwn(files,n));
+      if(!row?.syntax||!names.length)continue;
+      await stage('syntax:'+row.id,async()=>{
+        let rest=names,runs=0,bad=0,timedOut=false;
+        while(rest.length&&runs<12&&left()>0) {
+          runs++;
+          const r=await execCheck(row.syntax.flatMap(x=>x==='{files}'?rest:[x]),{cwd:folder,env,ms:Math.max(1000,Math.min(60_000,left()))});
+          if(r.code===0&&!r.timedOut)break;
+          timedOut||=r.timedOut;
+          const out=relativize(r.stdout+r.stderr,folder),hits=sourcePaths(out,Object.fromEntries(rest.map(n=>[n,1])));
+          for(const p of hits.length?hits:rest.slice(0,1)) {
+            const from=Math.max(0,out.indexOf(p)),next=hits.map(h=>out.indexOf(h,from+p.length)).filter(i=>i>from).sort((a,b)=>a-b)[0];
+            issues.push({path:p,kind:'source',stage:'syntax',detail:clip(`${row.id} syntax: ${out.slice(from,next??from+400).trim().replace(/\s*\n\s*/g,' | ')}`,400)});
+            bad++;
+          }
+          if(!hits.length||r.timedOut)break;
+          rest=rest.slice(Math.max(...hits.map(h=>rest.indexOf(h)))+1);
+        }
+        return bad?{passed:false,detail:timedOut?'timed out':`${bad} file(s) do not compile`}:{detail:`${names.length} file(s)${runs>1?`, ${runs} runs`:''}`};
+      });
+    }
+    // 3. Install, only when the plan carries the commands (packages allowed).
+    for(const step of plan.install) {
+      const argv=Array.isArray(step?.run)?step.run.map(String):splitWords(step?.run||'');
+      if(!argv.length)continue;
+      await stage('install',async()=>{
+        const r=await execCheck(argv,{cwd:folder,env,ms:Math.max(1000,Math.min(INSTALL_TIMEOUT_MS,left()))});
+        if(r.code===0&&!r.timedOut)return {};
+        infrastructure_issue||=classifyInstallFailure({log:r.stdout+r.stderr,timedOut:r.timedOut});
+        issues.push({path:'',kind:infrastructure_issue?'infrastructure':'source',stage:'install',detail:clip(`${argv.join(' ')} failed (exit ${r.code}): ${lastLines(r.stdout+r.stderr,3)}`,400)});
+        return {passed:false,detail:`exit ${r.code}${r.timedOut?', timed out':''}`};
+      });
+    }
+    // 4. The project's own checks: each a command that must exit 0.
+    const commandChecks=[...plan.project.map(p=>({id:String(p.id||'P'),kind:'command',run:p.run,expect:{exit:0},project:true})),
+      ...plan.checks.filter(c=>c.kind==='command')];
+    const runCommand=async c=>{
+      if(left()<=0)return notRun(c);
+      const resolved=resolveCommand(c.run,{files,rows,commands:plan.commands});
+      const label=clip(Array.isArray(c.run)?c.run.join(' '):String(c.run||''),80);
+      if(resolved.error)return result(c,false,0,resolved.error);
+      const dir=await checkDir();
+      try {
+        for(const [name,content] of Object.entries(c.files&&typeof c.files==='object'?c.files:{})) {
+          if(buildPathError(name)||typeof content!=='string')return result(c,false,0,`fixture ${clip(name,60)} is not a safe relative path`);
+          if(Object.hasOwn(files,name))return result(c,false,0,`fixture ${name} would replace the bundle's ${name}`);
+          const target=path.join(dir,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');
+        }
+        const r=await execCheck(resolved.argv,{cwd:dir,env,prefix,ms:Math.max(200,Math.min(limits.check_ms,left())),stdin:typeof c.stdin==='string'?c.stdin:''});
+        const stdout=relativize(r.stdout,dir),stderr=relativize(r.stderr,dir),output=clip(`exit ${r.code}${r.timedOut?' (timed out)':''}\n--- stdout\n${stdout.slice(-1500)}\n--- stderr\n${stderr.slice(-2000)}`,4000);
+        const frames=framesOf(r.stderr+'\n'+r.stdout,files,rows,dir),e=c.expect&&typeof c.expect==='object'?c.expect:{};
+        const fail=detail=>result(c,false,r.ms,`${label}: ${detail}${at(frames)}`,{output,frames});
+        if(r.spawn_error)return fail(`could not start: ${clip(stderr,160)}`);
+        if(r.timedOut)return fail(`timed out after ${Math.round(Math.min(limits.check_ms,r.ms)/100)/10} s`);
+        const norm=s=>String(s).replace(/\r\n/g,'\n').trimEnd();
+        // No exit named: 0, unless the check reads stderr (an error case).
+        const exit=Number.isInteger(e.exit)?e.exit:Array.isArray(e.stderr_has)&&e.stderr_has.length?null:0;
+        if(exit!==null&&r.code!==exit)return fail(`exit ${r.code}, expected ${exit}${lastLines(stderr)?`; stderr: ${clip(lastLines(stderr),160)}`:''}`);
+        if(typeof e.stdout==='string'&&norm(stdout)!==norm(e.stdout))return fail(`printed ${show(norm(stdout),80)}, expected ${show(norm(e.stdout),80)}`);
+        for(const s of Array.isArray(e.stdout_has)?e.stdout_has:[])if(!stdout.includes(String(s)))return fail(`output lacks ${show(String(s))}; printed ${show(norm(stdout),80)}`);
+        for(const s of Array.isArray(e.stderr_has)?e.stderr_has:[])if(!stderr.includes(String(s)))return fail(`stderr lacks ${show(String(s))}; stderr was ${show(norm(stderr),80)}`);
+        return result(c,true,r.ms);
+      } finally {await rm(dir,{recursive:true,force:true});}
+    };
+    if(plan.project.length)await stage('project',async()=>{const n=checks.length;for(const c of commandChecks.filter(x=>x.project))await runCommand(c);return {passed:checks.slice(n).every(x=>x.passed)};});
+
+    // 5. Start the runs the http and browser checks name.
+    const wanted=new Set(plan.checks.filter(c=>c.kind==='http'||c.kind==='browser').map(c=>c.serve));
+    const runSpecs=plan.runs.filter(r=>wanted.has(r.id));
+    if(runSpecs.length)await stage('runs',async()=>{
+      for(const spec of runSpecs)runs.set(spec.id,await startRun(spec));
+      const failed=[...runs.values()].filter(r=>r.error);
+      return {passed:!failed.length,detail:failed.map(r=>`${r.id}: ${r.error}`).join('; ')};
+    });
+    async function startRun(spec) {
+      const t=Date.now(),until=t+Math.min(READY_MS+5000,Math.max(500,left()));
+      if(spec.static===true) {
+        const p=startProcess(['node',path.join(ADAPTER_DIR,'static-server.mjs'),folder,'0'],{cwd:folder,env});
+        let port=0;
+        while(!port&&Date.now()<until&&!p.exited()){const m=p.log().match(/^\{"port":(\d+)\}/m);if(m)port=Number(m[1]);else await sleep(25);}
+        if(!port){p.stop();return {id:spec.id,error:`the static server did not start: ${clip(lastLines(p.log()),160)}`};}
+        return {id:spec.id,base_url:`http://127.0.0.1:${port}/`,process:p,dir:folder,ms:Date.now()-t};
+      }
+      const resolved=resolveCommand(spec.run,{files,rows,commands:plan.commands});
+      if(resolved.error)return {id:spec.id,error:resolved.error};
+      const port=await freePort(),dir=await checkDir(),ready=typeof spec.ready==='string'&&spec.ready.startsWith('/')?spec.ready:'/';
+      const argv=resolved.argv.map(x=>x.replaceAll('{port}',String(port)));
+      const p=startProcess(argv,{cwd:dir,env:{...env,PORT:String(port)}});
+      const base_url=`http://127.0.0.1:${port}/`,label=clip(Array.isArray(spec.run)?spec.run.join(' '):spec.run,60);
+      const readyBy=Math.min(until,t+READY_MS);
+      for(;;) {
+        if(p.exited()){const out=relativize(p.log(),dir),frames=framesOf(p.log(),files,rows,dir);p.stop();return {id:spec.id,error:`${label} exited (code ${p.exited().code}) before it answered GET ${ready}${frames.length?at(frames):''}: ${clip(lastLines(out),160)}`,log:out,frames};}
+        try{const r=await localRequest(new URL(ready,base_url).href,{ms:1000});if(r.status<500)break;}catch{}
+        if(Date.now()>=readyBy){const out=relativize(p.log(),dir);p.stop();return {id:spec.id,error:`${label} did not answer GET ${ready} within ${Math.round(READY_MS/1000)} s${lastLines(out)?`: ${clip(lastLines(out),160)}`:''}`,log:out};}
+        await sleep(200);
+      }
+      return {id:spec.id,base_url,process:p,dir,ms:Date.now()-t};
+    }
+
+    // 6. Command, call and http checks, in the card's order.
+    const ordered=plan.checks.filter(c=>c.kind!=='browser');
+    if(ordered.length)await stage('checks',async()=>{
+      const n=checks.length;
+      for(const c of ordered) {
+        if(c.kind==='judge')continue; // Clef, in the Worker (§4.3)
+        if(!CARD_CHECK_KINDS.has(c.kind)){result(c,false,0,`unknown check kind ${clip(c.kind,20)}`);continue;}
+        if(c.kind==='file')fileCheck(c);
+        else if(c.kind==='command')await runCommand(c);
+        else if(c.kind==='call')await callCheck(c);
+        else if(c.kind==='http')await httpCheck(c);
+      }
+      return {passed:checks.slice(n).every(x=>x.passed)};
+    });
+    function fileCheck(c) {
+      const p=String(c.path||''),text=files[p];
+      if(typeof text!=='string')return result(c,false,0,`${clip(p,80)} is missing`);
+      if(!text.trim())return result(c,false,0,`${p} is empty`);
+      for(const s of Array.isArray(c.has)?c.has:[])if(!text.includes(String(s)))return result(c,false,0,`${p} does not contain ${show(String(s))}`);
+      if(c.json===true){try{JSON.parse(text);}catch(e){return result(c,false,0,`${p} is not valid JSON: ${clip(e.message,120)}`);}}
+      return result(c,true,0);
+    }
+    async function callCheck(c) {
+      if(left()<=0)return notRun(c);
+      const module=String(c.module||''),row=rows.find(r=>r.id===c.adapter)||rowOfPath(module,rows);
+      const steps=(Array.isArray(c.steps)?c.steps:[]).filter(s=>s&&typeof s.call==='string').slice(0,MAX_CALL_STEPS);
+      if(!Object.hasOwn(files,module))return result(c,false,0,`${clip(module||'(no module)',80)} is not in the bundle`);
+      if(!row?.call_adapter)return result(c,false,0,`no call adapter for ${module}`);
+      if(!steps.length)return result(c,false,0,'a call check without steps');
+      const dir=await checkDir(),nonce=randomBytes(16).toString('hex'),nonceDir=await mkdtemp(path.join(scratch,'nonce-')),nonceFile=path.join(nonceDir,'nonce');
+      try {
+        await writeFile(nonceFile,nonce,{mode:0o600});
+        // The steps without their expectations: only what to call, with what, and what to save.
+        const input=JSON.stringify({module,steps:steps.map(s=>({call:s.call,args:Array.isArray(s.args)?s.args:[],...(typeof s.save==='string'?{save:s.save}:{})}))})+'\n';
+        // step_ms per step, and 5 s to start the interpreter and load the
+        // module (a cold Python on half a vCPU takes most of a second).
+        const ms=Math.max(200,Math.min(limits.check_ms,5000+steps.length*limits.step_ms,left()));
+        const r=await execCheck([...row.call_adapter.map(adapterPath),nonceFile],{cwd:dir,env,prefix,ms,stdin:input});
+        const records=r.stdout.split('\n').map(l=>{try{return JSON.parse(l);}catch{return null;}}).filter(x=>x&&x.nonce===nonce);
+        const load=records.find(x=>x.load===false),done=records.some(x=>x.done===true),byStep=new Map(records.filter(x=>Number.isInteger(x.step)).map(x=>[x.step,x]));
+        const stderr=relativize(r.stderr,dir);
+        const fail=(detail,stack='')=>{
+          const text=relativize(stack,dir),frames=framesOf(stack||r.stderr,files,rows,dir);
+          return result(c,false,r.ms,detail+at(frames),{output:clip([text&&`--- stack\n${text}`,stderr.trim()&&`--- stderr\n${stderr.slice(-1500)}`].filter(Boolean).join('\n'),4000),frames});
+        };
+        if(load)return fail(`${module} does not load: ${clip(relativize(load.error,dir),160)}`,load.stack);
+        for(const [i,s] of steps.entries()) {
+          const rec=byStep.get(i),call=`${s.call}(${(Array.isArray(s.args)?s.args:[]).map(a=>show(a,40)).join(', ')})`;
+          if(!rec) {
+            if(r.timedOut)return fail(`${call} in ${module} did not return within ${Math.round(ms/100)/10} s`);
+            return fail(`the process ended before ${call} in ${module} returned (exit ${r.code})${lastLines(stderr)?`: ${clip(lastLines(stderr),120)}`:''}`);
+          }
+          if(rec.missing)return fail(clip(relativize(rec.error,dir),200));
+          if(s.throws===true){if(rec.ok)return fail(`${call} in ${module} returned ${show(rec.value)}, expected it to raise an error`);continue;}
+          if(!rec.ok)return fail(`${call} in ${module} raised ${clip(relativize(rec.error,dir),140)}`,rec.stack);
+          if(Object.hasOwn(s,'expect')&&!deepEqual(rec.value,s.expect))return fail(`${call} in ${module} returned ${show(rec.value,80)}, expected ${show(s.expect,80)}`);
+          if(typeof s.expect_has==='string'&&!JSON.stringify(rec.value??null).includes(s.expect_has))return fail(`${call} in ${module} returned ${show(rec.value,80)}, which lacks ${show(s.expect_has)}`);
+        }
+        // Every step answered: the adapter must also have finished, which a
+        // module that exits the process itself never lets it do.
+        if(!done)return fail(`the process ended before the call adapter finished (exit ${r.code}${r.timedOut?', timed out':''})`);
+        return result(c,true,r.ms);
+      } finally {await rm(dir,{recursive:true,force:true});await rm(nonceDir,{recursive:true,force:true});}
+    }
+    async function httpCheck(c) {
+      if(left()<=0)return notRun(c);
+      const run=runs.get(c.serve),t=Date.now();
+      if(!run)return result(c,false,0,`no run named ${clip(c.serve,40)}`);
+      if(run.error)return result(c,false,0,`run ${run.id}: ${run.error}`,{output:clip(run.log||'',3000),frames:run.frames||[]});
+      const saved=new Map(),steps=(Array.isArray(c.steps)?c.steps:[]).slice(0,MAX_HTTP_STEPS),checkEnd=t+Math.min(limits.check_ms,left());
+      for(const [i,s] of steps.entries()) {
+        const method=String(s?.method||'GET').toUpperCase(),p=String(substituteSaved(String(s?.path||'/'),saved)),e=s?.expect&&typeof s.expect==='object'?s.expect:{};
+        const label=`${method} ${clip(p,60)}`;
+        const fail=(detail,body='')=>{const log=relativize(run.process?.log()||'',run.dir),frames=framesOf(run.process?.log()||'',files,rows,run.dir);
+          return result(c,false,Date.now()-t,`step ${i+1} ${label}: ${detail}${at(frames)}`,{output:clip(`${body?`--- response\n${body.slice(0,1500)}\n`:''}--- server output\n${log.slice(-2000)}`,4000),frames});};
+        if(!p.startsWith('/'))return fail('the path must start with /');
+        const ms=Math.min(limits.step_ms,checkEnd-Date.now());
+        if(ms<=0)return fail(`not reached within ${Math.round(limits.check_ms/1000)} s`);
+        let res;
+        try{res=await localRequest(new URL(p,run.base_url).href,{method,body:s.body===undefined?undefined:substituteSaved(s.body,saved),ms});}
+        catch(err){return fail(`no answer: ${clip(err?.message||err,120)}${run.process?.exited()?' (the server exited)':''}`);}
+        let json;try{json=JSON.parse(res.text);}catch{}
+        if(typeof s.save==='string'&&s.save)saved.set(s.save,json===undefined?res.text:json);
+        if(Number.isInteger(e.status)&&res.status!==e.status)return fail(`status ${res.status}, expected ${e.status}`,res.text);
+        if(!Number.isInteger(e.status)&&res.status>=500)return fail(`status ${res.status}`,res.text);
+        for(const x of Array.isArray(e.body_has)?e.body_has:[])if(!res.text.includes(String(x)))return fail(`the body lacks ${show(String(x))}; it was ${show(res.text,80)}`,res.text);
+        if(e.json_has!==undefined) {
+          if(json===undefined)return fail(`the body is not JSON: ${show(res.text,80)}`,res.text);
+          if(!jsonHas(json,e.json_has))return fail(`the JSON lacks ${show(e.json_has,80)}; it was ${show(json,80)}`,res.text);
+        }
+      }
+      return result(c,true,Date.now()-t);
+    }
+
+    // 7. Browser checks: one Chromium, a context per check.
+    const browserChecks=plan.checks.filter(c=>c.kind==='browser');
+    if(browserChecks.length)await stage('browser',async()=>{
+      const n=checks.length,ready=[];
+      for(const c of browserChecks) {
+        const run=runs.get(c.serve);
+        if(left()<=0)notRun(c);
+        else if(!run)result(c,false,0,`no run named ${clip(c.serve,40)}`);
+        else if(run.error)result(c,false,0,`run ${run.id}: ${run.error}`,{output:clip(run.log||'',3000),frames:run.frames||[]});
+        else ready.push({c,run});
+      }
+      if(ready.length) {
+        const input=JSON.stringify({step_ms:limits.step_ms,checks:ready.map(({c,run})=>({id:c.id,base_url:run.base_url,steps:Array.isArray(c.steps)?c.steps:[]}))});
+        const ms=Math.max(1000,Math.min(left(),15_000+ready.length*limits.check_ms));
+        const r=await execCheck(['node',path.join(ADAPTER_DIR,'browser-check.mjs')],{cwd:folder,env:browserEnvironment(),ms,stdin:input});
+        const lines=r.stdout.split('\n').map(l=>{try{return JSON.parse(l);}catch{return null;}}).filter(Boolean);
+        const launch=lines.find(x=>x.launch_error),inv=lines.find(x=>x.inventory);
+        if(inv){inventory.chromium=inv.inventory.chromium||null;inventory.playwright=inv.inventory.playwright||inventory.playwright;}
+        if(launch||r.code===3||r.spawn_error) {
+          infrastructure_issue||=`browser checks could not run: ${clip(launch?.launch_error||lastLines(r.stderr)||'the browser did not start',300)}`;
+          for(const {c} of ready)result(c,false,0,'not run: the browser did not start',{infrastructure:true});
+        } else for(const {c,run} of ready) {
+          const x=lines.find(l=>l.id===c.id);
+          if(!x)result(c,false,0,r.timedOut?`did not finish within ${Math.round(ms/1000)} s`:`the browser process ended early (exit ${r.code}): ${clip(lastLines(r.stderr),120)}`);
+          else if(x.passed)result(c,true,x.ms);
+          else {
+            const frames=(x.frames||[]).filter(f=>Object.hasOwn(files,f.path));
+            result(c,false,x.ms,`${x.detail||'failed'}${at(frames)}`,{output:clip([x.body_text&&`--- page text\n${x.body_text}`,x.console_errors?.length&&`--- console errors\n${x.console_errors.join('\n')}`,run.process&&run.dir!==folder&&`--- server output\n${relativize(run.process.log(),run.dir).slice(-1000)}`].filter(Boolean).join('\n'),4000),frames,
+              ...(x.failed_step?{step:x.failed_step}:{})});
+          }
+        }
+      }
+      return {passed:checks.slice(n).every(x=>x.passed)};
+    });
+    const passed=!issues.length&&!infrastructure_issue&&checks.every(c=>c.passed);
+    // Checks in the plan's order (project checks first).
+    const order=new Map([...plan.project.map(p=>String(p.id||'P')),...plan.checks.map(c=>c.id)].map((id,i)=>[id,i]));
+    checks.sort((a,b)=>(order.get(a.id)??1e9)-(order.get(b.id)??1e9));
+    return {fingerprint:request.fingerprint,snapshot_hash:request.snapshot_hash,mode:'card',passed,stages,checks,issues:issues.slice(0,12),infrastructure_issue,inventory,ms:Date.now()-began,
+      log:[...stages.map(s=>`${s.name}: ${s.passed?'ok':'FAILED'}${s.detail?` (${s.detail})`:''}`),...checks.filter(c=>!c.passed).map(c=>`${c.id} ${c.kind}: ${c.detail}`)].join('\n').slice(-5000)};
+  } finally {
+    // 8. Stop the runs.
+    for(const r of runs.values())r.process?.stop();
+    if(runs.size)stages.push({name:'stop',passed:true,ms:0});
+    await rm(folder,{recursive:true,force:true});await rm(scratch,{recursive:true,force:true});
+  }
+}
+
 async function main(){
   const chunks=[];for await(const chunk of process.stdin)chunks.push(chunk);
   const data=JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  const result=await verifyBuild(data);
+  // mode 'card' (v8): the card's checks; anything else: the v7 build, unchanged.
+  const result=data?.mode==='card'?await verifyCard(data):await verifyBuild(data);
   process.stdout.write(JSON.stringify(result)+'\n');
 }
 if(process.argv[1]===new URL(import.meta.url).pathname) main().catch(e=>{process.stderr.write(String(e.stack||e));process.exitCode=1;});
