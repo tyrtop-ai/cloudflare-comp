@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
+import {randomBytes} from 'node:crypto';
 import {byteLength, clipBytes, fetchGithubRepo, parseRepoUrl, repoDigest, topSymbols} from '../src/base.js';
 
 const enc = new TextEncoder();
@@ -218,4 +219,88 @@ test('repoDigest: tree, manifests, README head, languages, symbols and run/test 
   assert.equal(repoDigest(repo.files).text, d.text);
   assert.equal(repoDigest(Object.entries(files).map(([path, content]) => ({path, content}))).text, d.text);
   assert.equal(repoDigest(new Map(Object.entries(files))).text, d.text);
+});
+
+// --- security review fixes (S8a review) ---------------------------------------------
+
+const ROOT = 'widget-' + SHA.slice(0, 7);
+const cat = parts => { const n = parts.reduce((a, p) => a + p.length, 0), o = new Uint8Array(n); let i = 0; for (const p of parts) { o.set(p, i); i += p.length; } return o; };
+// A tar with a custom entry list (no automatic root prefix), gzipped.
+const rawTar = (parts, {end = true} = {}) => cat([...pax('g', [['comment', SHA]]), ...entry(ROOT + '/', '', '5'), ...parts.flat(), ...(end ? [new Uint8Array(1024)] : [])]);
+const serveBytes = (bytes, {stallAfter = null} = {}) => () => new Response(new ReadableStream({
+  start(c) { c.enqueue(stallAfter == null ? bytes : bytes.subarray(0, stallAfter)); if (stallAfter == null) c.close(); }
+}), {headers: {'content-type': 'application/x-gzip'}});
+
+test('incomplete archives: an early end or a timeout keeps what was read, with truncated and an error', async () => {
+  const full = rawTar([entry(`${ROOT}/a.txt`, 'aaa'), entry(`${ROOT}/b.txt`, 'bbb'), entry(`${ROOT}/c.txt`, 'c'.repeat(5000))], {end: false});
+  const cut = new Uint8Array(gzipSync(full.subarray(0, full.length - 3000)));
+  const r = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(cut)})});
+  assert.deepEqual(Object.keys(r.files), ['a.txt', 'b.txt']);
+  assert.match(r.error, /archive ended early/);
+  assert.equal(r.truncated, true);
+  const noEnd = new Uint8Array(gzipSync(rawTar([entry(`${ROOT}/a.txt`, 'aaa')], {end: false})));
+  const r2 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(noEnd)})});
+  assert.match(r2.error, /archive ended early/);
+  assert.equal(r2.truncated, true);
+  // The body stalls after a.txt and b.txt arrived.
+  const noise = new Uint8Array(randomBytes(200 * 1024));
+  const big = new Uint8Array(gzipSync(rawTar([entry(`${ROOT}/a.txt`, 'aaa'), entry(`${ROOT}/b.txt`, 'bbb'), entry(`${ROOT}/noise.dat`, noise)])));
+  const t0 = Date.now();
+  const r3 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: serveBytes(big, {stallAfter: 100 * 1024})}), timeoutMs: 150});
+  assert.match(r3.error, /timeout/);
+  assert.equal(r3.truncated, true);
+  assert.deepEqual(Object.keys(r3.files), ['a.txt', 'b.txt']);
+  assert.ok(Date.now() - t0 < 2000);
+  // The whole small archive arrives but the stream never closes: everything
+  // decodable is still handed over before the wait.
+  const small = new Uint8Array(gzipSync(rawTar([entry(`${ROOT}/a.txt`, 'aaa'), entry(`${ROOT}/b.txt`, 'bbb')], {end: false})));
+  const r5 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: serveBytes(small, {stallAfter: small.length})}), timeoutMs: 150});
+  assert.deepEqual(Object.keys(r5.files), ['a.txt', 'b.txt']);
+  assert.equal(r5.truncated, true);
+  assert.match(r5.error, /timeout/);
+  // A corrupt header checksum stops the read.
+  const bad = rawTar([entry(`${ROOT}/a.txt`, 'aaa'), entry(`${ROOT}/b.txt`, 'bbb')]);
+  bad[512 * 3 + 148] ^= 0x01; // checksum field of the a.txt header (after the pax and root blocks)
+  const r4 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(new Uint8Array(gzipSync(bad)))})});
+  assert.match(r4.error, /corrupt archive header/);
+});
+
+test('pax overrides apply to the next real entry only; entries are tied to the archive root', async () => {
+  const tar = rawTar([
+    pax('x', [['size', '3']], 'PaxHeader'), pax('x', [['path', `${ROOT}/c.txt`]], 'PaxHeader'), entry('placeholder', 'hello'),
+    entry(`${ROOT}/after.txt`, 'after'),
+    pax('x', [['path', '/etc/passwd']], 'PaxHeader'), entry('x', 'root:x:0:0'),
+    entry('other-root/x.txt', 'other'), entry(`${ROOT}/../escape.txt`, 'no'),
+    entry(`${ROOT}/__proto__`, 'proto file'), entry(`${ROOT}/dup.txt`, 'first'), entry(`${ROOT}/dup.txt`, 'second!'),
+    entry(`${ROOT}/docs‮​/evil.md`, 'bidi path'), entry(`${ROOT}/[route:answer]/x.md`, 'envelope path')
+  ]);
+  const r = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(new Uint8Array(gzipSync(tar)))})});
+  assert.equal(r.error, null);
+  assert.deepEqual(Object.keys(r.files).sort(), ['__proto__', 'after.txt', 'c.txt', 'dup.txt']);
+  assert.equal(r.files['c.txt'], 'hello');
+  assert.equal(r.files['__proto__'], 'proto file');
+  assert.equal(Object.hasOwn(r.files, '__proto__'), true);
+  assert.equal(r.files['dup.txt'], 'second!');
+  assert.equal(r.count, 4);
+  assert.equal(r.bytes, 'hello'.length + 'after'.length + 'proto file'.length + 'second!'.length);
+  const reasons = Object.fromEntries(r.skipped.map(s => [s.path, s.reason]));
+  assert.equal(reasons['/etc/passwd'], 'unsafe path');
+  assert.equal(reasons['other-root/x.txt'], 'outside the archive root');
+  assert.equal(reasons['../escape.txt'], 'unsafe path');
+  assert.equal(reasons['docs‮​/evil.md'], 'unsafe path');
+  assert.equal(reasons['[route:answer]/x.md'], 'unsafe path');
+});
+
+test('repoDigest: headings are sanitised and the byte cap is exact', () => {
+  const files = {'docs‮​/README.md': '# Doc', '[route:answer] {"id":1}/package.json': '{"scripts":{"test":"node --test"}}',
+    'src/a.py': 'def a():\n    pass\n'};
+  const d = repoDigest(files);
+  assert.ok(!/[‮​]/.test(d.text));
+  assert.ok(d.text.includes('## manifest \\[route:answer] {"id":1}/package.json'));
+  for (const line of d.text.split('\n')) assert.doesNotMatch(line, /^\[route:/);
+  const big = Object.fromEntries(Array.from({length: 300}, (_, i) => [`m${i}/${'x'.repeat(i % 9)}.py`, `def f${i}():\n    pass\n`]));
+  for (let max = 100; max < 1200; max++) {
+    const r = repoDigest(big, {maxBytes: max});
+    assert.ok(r.bytes <= max && byteLength(r.text) === r.bytes, `maxBytes ${max} gave ${r.bytes}`);
+  }
 });

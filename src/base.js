@@ -1,11 +1,12 @@
 // Existing repos as a starting point (v8 spec §7.1, decision U8).
 // fetchGithubRepo reads a public GitHub repo without a token: the default
 // branch from api.github.com, the files from a codeload tarball, streamed
-// through DecompressionStream and a minimal tar reader. repoDigest turns the
-// files into a compact text the card writer can read. Pure: `fetch` is
+// through the reader-driven inflater (./inflate.js) and a minimal tar
+// reader that skips without copying. repoDigest turns the files into a
+// compact text the card writer can read. Pure: `fetch` is
 // injected, no secret is ever reachable from here, and no request carries
 // Authorization or Cookie.
-import {FetchRefused, concatBytes, fetchPolicy, guardedFetch, inputCapFor, plainBody, readCapped, sanitizeText} from './fetcher.js';
+import {FetchRefused, concatBytes, fetchPolicy, guardedFetch, inputCapFor, plainBody, plainChunks, readCapped, redactText, sanitizeText} from './fetcher.js';
 
 export const REPO_LIMITS = Object.freeze({
   maxFiles: 400,                // text files kept
@@ -48,33 +49,45 @@ const safePath = p => p && p.length <= 400 && !p.startsWith('/') && !/[\\\x00-\x
 
 // --- minimal streaming tar reader ------------------------------------------------
 
-function byteSource(stream, race, cap) {
-  const reader = stream.getReader();
+// Bytes from plainChunks. Its values may be views that the next read()
+// overwrites, so anything kept across a read is copied first; skipping
+// copies nothing.
+function byteSource(chunks, cap) {
   let buf = new Uint8Array(0), done = false, total = 0;
-  const fill = async n => {
-    const parts = [buf];
-    let have = buf.length;
-    while (have < n && !done) {
-      const r = await race(reader.read());
-      if (r.done) { done = true; break; }
-      const v = r.value instanceof Uint8Array ? r.value : new Uint8Array(r.value);
-      total += v.length;
-      if (total > cap) throw new CapReached();
-      parts.push(v); have += v.length;
-    }
-    if (parts.length > 1) buf = concatBytes(parts, have);
-    return have >= n;
+  const next = async () => {
+    if (done) return null;
+    const r = await chunks.read();
+    if (r.done) { done = true; return null; }
+    total += r.value.length;
+    if (total > cap) throw new CapReached();
+    return r.value;
   };
+  const owned = v => chunks.views ? v.slice() : v;
   return {
-    async take(n) { if (!await fill(n)) return null; const out = buf.slice(0, n); buf = buf.subarray(n); return out; },
+    async take(n) {
+      if (buf.length >= n) { const out = buf.slice(0, n); buf = buf.subarray(n); return out; }
+      const parts = buf.length ? [owned(buf)] : [];
+      let have = buf.length;
+      buf = new Uint8Array(0);
+      while (have < n) {
+        const v = await next();
+        if (!v) return null;
+        parts.push(have + v.length < n ? owned(v) : v);
+        have += v.length;
+      }
+      const all = parts.length === 1 ? parts[0] : concatBytes(parts, have);
+      const out = all.slice(0, n);
+      buf = all.subarray(n);
+      return out;
+    },
     async skip(n) {
       while (n > 0) {
-        if (!buf.length && !await fill(1)) return false;
+        if (!buf.length) { const v = await next(); if (!v) return false; buf = v; }
         const k = Math.min(n, buf.length); buf = buf.subarray(k); n -= k;
       }
       return true;
     },
-    cancel() { reader.cancel().catch(() => {}); }
+    cancel() { chunks.cancel(); }
   };
 }
 class CapReached extends Error {}
@@ -97,23 +110,35 @@ function paxRecords(bytes) {
 
 // Calls onEntry({path, type, size, read, skip}) for every member; the
 // callback calls read() (bytes) or skip(). Global pax `comment` is the
-// commit sha that git archive records.
+// commit sha that git archive records. Pax and GNU long-name headers apply
+// to the next real entry only. A bad header checksum, or input that ends
+// before the end-of-archive block, throws: a partial archive is never
+// reported as complete.
+const ended = () => new FetchRefused('archive ended early');
+function checksumOk(h) {
+  let sum = 0;
+  for (let i = 0; i < 512; i++) sum += i >= 148 && i < 156 ? 32 : h[i];
+  return parseInt(field(h, 148, 8).trim() || 'x', 8) === sum;
+}
 async function readTar(src, onEntry, meta = {sha: null}) {
   let pax = {}, longName = null;
   for (;;) {
     const h = await src.take(512);
-    if (!h || h.every(b => b === 0)) break;
-    const type = String.fromCharCode(h[156] || 48);
+    if (!h) throw ended();
+    if (h.every(b => b === 0)) return meta;
+    if (!checksumOk(h)) throw new FetchRefused('corrupt archive header');
+    const type = String.fromCharCode(h[156] || 48), header = 'xgLK'.includes(type);
     let size = sizeOf(h);
-    if (pax.size && /^\d+$/.test(pax.size)) size = Number(pax.size);
+    if (!header && pax.size && /^\d+$/.test(pax.size)) size = Number(pax.size);
     const padded = Math.ceil(size / 512) * 512;
-    if (type === 'x' || type === 'g' || type === 'L') {
-      const data = size <= 1024 * 1024 ? await src.take(padded) : null;
-      if (!data) { if (!await src.skip(padded)) break; continue; }
+    if (header) {
+      if (size > 1024 * 1024) throw new FetchRefused('archive extension header too large');
+      const data = await src.take(padded);
+      if (!data) throw ended();
       const body = data.subarray(0, size);
       if (type === 'L') longName = field(body, 0, size);
       else if (type === 'x') pax = paxRecords(body);
-      else { const g = paxRecords(body); if (/^[0-9a-f]{40}$/.test(g.comment || '')) meta.sha = g.comment; }
+      else if (type === 'g') { const g = paxRecords(body); if (/^[0-9a-f]{40}$/.test(g.comment || '')) meta.sha = g.comment; }
       continue;
     }
     const ustar = field(h, 257, 5) === 'ustar', prefix = ustar ? field(h, 345, 155) : '';
@@ -121,11 +146,10 @@ async function readTar(src, onEntry, meta = {sha: null}) {
     pax = {}; longName = null;
     let used = false;
     await onEntry({path, type, size,
-      read: async () => { used = true; const d = await src.take(padded); return d && d.subarray(0, size); },
-      skip: async () => { used = true; return src.skip(padded); }});
-    if (!used && !await src.skip(padded)) break;
+      read: async () => { used = true; const d = await src.take(padded); if (!d) throw ended(); return d.subarray(0, size); },
+      skip: async () => { used = true; if (!await src.skip(padded)) throw ended(); }});
+    if (!used && !await src.skip(padded)) throw ended();
   }
-  return meta;
 }
 
 // --- GitHub ------------------------------------------------------------------------
@@ -133,11 +157,13 @@ async function readTar(src, onEntry, meta = {sha: null}) {
 // Read a public GitHub repo. Never throws; failures come back in `error`.
 // Result: {source, owner, name, ref, resolved_sha, dir, files: {path: text},
 // count, bytes, skipped: [{path, reason}], skipped_count, truncated, error}.
-export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetch, ...limits} = {}) {
+// `files` has no prototype, so any path (even `__proto__`) is a plain key.
+// A timeout or broken archive after reading began sets truncated and error.
+export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetch, redact = t => t, ...limits} = {}) {
   const L = {...REPO_LIMITS, ...limits};
   const id = parseRepoUrl(repo);
   const out = {source: id ? `https://github.com/${id.owner}/${id.name}` : clip(repo, 200), owner: id?.owner ?? null,
-    name: id?.name ?? null, ref: ref || null, resolved_sha: null, dir: dir || null, files: {}, count: 0, bytes: 0,
+    name: id?.name ?? null, ref: ref || null, resolved_sha: null, dir: dir || null, files: Object.create(null), count: 0, bytes: 0,
     skipped: [], skipped_count: 0, truncated: false, error: null};
   if (!id) return {...out, error: 'repo must be https://github.com/<owner>/<name>'};
   if (ref != null && ref !== '' && !validRef(ref)) return {...out, error: 'invalid ref'};
@@ -151,7 +177,8 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
   const timer = setTimeout(() => { controller.abort(); fail(new FetchRefused('timeout')); }, L.timeoutMs);
   const race = p => Promise.race([p, expired]);
   const get = (url, accept) => guardedFetch(url, {fetch, policy, accept, race, signal: controller.signal});
-  const recorded = new Set(), meta = {sha: null};
+  const recorded = new Set(), meta = {sha: null}, sizes = new Map();
+  let root = null;
   const skip = (path, reason) => {
     out.skipped_count++;
     if (/cap$/.test(reason)) out.truncated = true;
@@ -176,14 +203,21 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       response.body?.cancel?.().catch?.(() => {});
       throw new FetchRefused(`archive content type ${type || '(none)'} is not read`);
     }
-    src = byteSource(await plainBody(response.body, {race, inputCap: inputCapFor(L.archiveBytes)}), race, L.archiveBytes);
+    src = byteSource(await plainChunks(response.body, {race, inputCap: inputCapFor(L.archiveBytes)}), L.archiveBytes);
     const decoder = new TextDecoder('utf-8', {fatal: true});
     await readTar(src, async entry => {
-      const rel = entry.path.split('/').slice(1).join('/').replace(/\/+$/, '');
+      // Every entry must sit under the archive's single root directory
+      // (<name>-<sha>/), which the first entry names.
+      const raw = entry.path;
+      if (raw.startsWith('/') || raw.includes('\\')) return skip(clip(raw, 200), 'unsafe path');
+      const first = raw.split('/')[0];
+      root ??= first;
+      if (!first || first !== root || first === '.' || first === '..') return skip(clip(raw, 200), 'outside the archive root');
+      const rel = raw.slice(first.length + 1).replace(/\/+$/, '');
       if (!rel || (sub && !rel.startsWith(sub))) return;
       const path = rel.slice(sub.length);
       if (!path || entry.type === '5') return;
-      if (!safePath(path)) return skip(clip(path, 200), 'unsafe path');
+      if (!safePath(path) || sanitizeText(path) !== path) return skip(clip(path, 200), 'unsafe path');
       const segs = path.split('/');
       const gitAt = segs.indexOf('.git');
       if (gitAt >= 0) { const d = segs.slice(0, gitAt + 1).join('/') + '/'; if (!recorded.has(d)) { recorded.add(d); skip(d, '.git dropped'); } return; }
@@ -193,20 +227,26 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       if (entry.type !== '0' && entry.type !== '\0' && entry.type !== '7') return skip(path, 'not a regular file');
       if (BINARY_EXT.test(path)) return skip(path, 'binary');
       if (entry.size > L.maxFileBytes) return skip(path, 'too large');
-      if (out.count >= L.maxFiles) return skip(path, 'file cap');
-      if (out.bytes + entry.size > L.maxBytes) return skip(path, 'total cap');
+      const prior = sizes.get(path) ?? null;
+      if (prior === null && out.count >= L.maxFiles) return skip(path, 'file cap');
+      if (out.bytes - (prior ?? 0) + entry.size > L.maxBytes) return skip(path, 'total cap');
       const data = await entry.read();
       if (!data) return;
       if (data.subarray(0, 8192).includes(0)) return skip(path, 'binary');
       let text;
       try { text = decoder.decode(data); } catch { return skip(path, 'not UTF-8 text'); }
+      if (prior !== null) { out.count--; out.bytes -= prior; } // a later duplicate replaces the earlier one
       out.files[path] = text;
+      sizes.set(path, data.length);
       out.count++;
       out.bytes += data.length;
     }, meta);
   } catch (e) {
     if (e instanceof CapReached) { out.truncated = true; skip('*', `archive larger than ${L.archiveBytes} bytes; the rest was not read`); }
-    else out.error = clip(e instanceof FetchRefused ? `base_refused: ${e.message}` : `base fetch failed: ${e?.message || e}`);
+    else {
+      if (src) out.truncated = true; // what was read is kept, marked incomplete
+      out.error = clip(redact(redactText(e instanceof FetchRefused ? `base_refused: ${e.message}` : `base fetch failed: ${e?.message || e}`)));
+    }
   } finally {
     out.resolved_sha ||= meta.sha;
     clearTimeout(timer);
@@ -321,15 +361,16 @@ export function repoDigest(files, {maxBytes = 24 * 1024, readmeBytes = 2048, man
       (list.length > treeLines ? `\n… ${list.length - treeLines} more files` : '')]
   ];
   let text = '', truncated = false;
+  const tail = '\n…';
   for (const [title, body] of sections) {
-    const block = `## ${title}\n${sanitizeText(body).trimEnd()}\n\n`;
+    const block = sanitizeText(`## ${title}\n${body}`).trimEnd() + '\n\n';
     const left = maxBytes - byteLength(text);
     if (byteLength(block) <= left) { text += block; continue; }
     truncated = true;
-    if (left > 64) text += clipBytes(block, left - 2).replace(/\n[^\n]*$/, '') + '\n…';
+    if (left > 64) text += clipBytes(block, left - byteLength(tail)).replace(/\n[^\n]*$/, '') + tail;
     break;
   }
-  text = text.trimEnd();
+  text = clipBytes(text.trimEnd(), maxBytes);
   return {text, bytes: byteLength(text), truncated, files: list.length, total_bytes: total, languages, hints,
     manifests: found.map(([p]) => p), readme: readme?.[0] ?? null};
 }

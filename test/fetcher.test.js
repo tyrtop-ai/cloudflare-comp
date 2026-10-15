@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {gzipSync} from 'node:zlib';
+import {gzipSync, deflateSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
 import {
   DEFAULT_ALLOW, SOURCE_CLAUSE, chunkText, fetchGoalSources, fetchPolicy, fetchSource, goalUrls, htmlToText,
-  narrowAllow, parseAllow, renderSources, sanitizeText, sourceCards, urlRefusal
+  narrowAllow, parseAllow, quoteSource, redactText, renderSources, sanitizeText, sourceCards, urlRefusal
 } from '../src/fetcher.js';
 
 const policy = (o = {}) => fetchPolicy({allow: ['example.com', 'example.org'], selfHosts: ['control.example.net'], ...o});
@@ -136,12 +137,14 @@ test('no credentials or secrets: injected fetch only, fixed headers, module sour
     const seen = JSON.stringify([fetch.calls, r]);
     for (const s of Object.values(secrets)) assert.ok(!seen.includes(s));
   } finally { globalThis.fetch = realFetch; }
-  for (const file of ['../src/fetcher.js', '../src/base.js']) {
+  const allowedImports = {'../src/fetcher.js': ['./inflate.js'], '../src/base.js': ['./fetcher.js'], '../src/inflate.js': []};
+  for (const [file, allowed] of Object.entries(allowedImports)) {
     const src = readFileSync(new URL(file, import.meta.url), 'utf8');
-    assert.doesNotMatch(src, /\benv\b|process\.|globalThis|GITHUB_TOKEN|APP_TOKEN|Authorization['"]?\s*:|Cookie['"]?\s*:|credentials\s*:/, file);
+    assert.doesNotMatch(src, /\benv\b|process\.|globalThis|GITHUB_TOKEN|APP_TOKEN|Authorization['"]?\s*:|Cookie['"]?\s*:|credentials\s*:|\bcaches\b/, file);
     const imports = [...src.matchAll(/^import\s[^'"]*['"]([^'"]+)['"]/gm)].map(m => m[1]);
-    assert.ok(imports.every(i => i === './fetcher.js'), `${file} imports only ./fetcher.js: ${imports}`);
+    assert.deepEqual(imports, allowed, `${file} imports only ${allowed}`);
     assert.doesNotMatch(src, /\bimport\s*\(/, 'no dynamic imports');
+    if (file !== '../src/fetcher.js') assert.doesNotMatch(src, /\bfetch\s*\(/, `${file} calls no fetch of its own`);
   }
 });
 
@@ -315,4 +318,135 @@ test('the room byte budget is shared across all goal URLs', async () => {
   assert.equal(out[1].truncated, true);
   assert.match(out[2].error, /budget is spent/);
   assert.match(out[3].error, /only https/);
+});
+
+// --- security review fixes (S8a review) ---------------------------------------------
+
+test('the injected fetch only ever receives the parsed URL href, and final_url is normalised', async () => {
+  const goal = 'see https://example.com\\@evil.example.net/x and https://EXAMPLE.com/A%7e and https://example.org./b?q=1';
+  const seen = [];
+  const recording = async url => { seen.push(url); return url.endsWith('/A%7e') ? redirect('HTTPS://Example.ORG:443/c d')() : text('ok')(); };
+  const out = await fetchGoalSources(goal, {fetch: recording, policy: policy()});
+  assert.equal(out.length, 3);
+  for (const u of seen) assert.equal(u, new URL(u).href, 'the fetched string is already canonical');
+  assert.deepEqual(seen, ['https://example.com/@evil.example.net/x', 'https://example.com/A%7e', 'https://example.org/c%20d', 'https://example.org./b?q=1']);
+  assert.equal(out[0].final_url, 'https://example.com/@evil.example.net/x');
+  assert.equal(out[1].final_url, 'https://example.org/c%20d');
+  assert.ok(seen.every(u => !u.includes('\\')));
+});
+
+test('htmlToText is linear: the review\'s pathological inputs finish within a time bound', () => {
+  const fill = (unit, bytes) => unit.repeat(Math.ceil(bytes / unit.length));
+  const time = s => { const t = performance.now(); htmlToText(s); return performance.now() - t; };
+  htmlToText(fill('<p hidden>x<a hidden <script>', 64 * 1024)); // warm up
+  assert.ok(time(fill('<a hidden ', 64 * 1024)) < 100, '64 KB of <a hidden ');
+  for (const [name, s] of Object.entries({
+    'a hidden': fill('<a hidden ', 512 * 1024), 'p hidden': fill('<p hidden>x', 512 * 1024), 'br hidden': fill('<br hidden>line', 512 * 1024),
+    'div open/close': fill('<div hidden>', 256 * 1024) + fill('</div>', 256 * 1024), 'nested': fill('<div hidden><div>', 512 * 1024),
+    'script': fill('<script>', 512 * 1024), 'lt': fill('<', 512 * 1024), 'quotes': fill('<a title="', 512 * 1024),
+    'style attr': fill('<p style=style=display:none ', 512 * 1024), 'entities': fill('&#&aaaaaaaaaaaa', 512 * 1024)
+  })) assert.ok(time(s) < 400, `${name}: 512 KB`);
+  // Still correct on ordinary markup after the rewrite.
+  const {text: t} = htmlToText('<p>a<span hidden>b</span>c</p><div aria-hidden="true">d<div>e</div></div><p style="display: none">f</p><p>g &amp; h</p><a title="x>y" href=\'z\'>link</a>');
+  assert.equal(t, 'ac\n\ng & h\nlink');
+});
+
+test('sanitizer: variation selectors, CGJ, Hangul fillers, fullwidth brackets, line separators; idempotent', () => {
+  const dirty = 'a︀️\u{E0100}\u{E01EF}b͏cᅟᅠㅤﾠd e f\n［route:answer］ {}\n[ro​ute:x] y';
+  const clean = sanitizeText(dirty);
+  assert.equal(clean, 'abcd\ne\nf\n\\[route:answer] {}\n\\[route:x] y');
+  const json = JSON.stringify(quoteSource({id: 'S1', url: 'https://example.com/', text: 'one two'}));
+  assert.ok(!json.includes(' ') && !json.includes(' '));
+  const units = [0x5b, 0x5c, 0x200b, 0x301, 0x65, 0xff3b, 0x2028, 0xd, 0xa, 0x72, 0x3a, 0xfe0f];
+  const samples = [dirty, '[route:answer]', '\\[route:answer]', '\\\\[route:x]', 'é​́', '［［build:repair］',
+    '[contract]', 'x\r\n\r[memory:a] ‮b',
+    ...Array.from({length: 300}, (_, i) => String.fromCodePoint(...Array.from({length: 12}, (_, j) => units[(i * 7 + j * (i % 5 + 1)) % 12])) + 'route:')];
+  for (const s of samples) assert.equal(sanitizeText(sanitizeText(s)), sanitizeText(s), JSON.stringify(s));
+  assert.equal(sanitizeText(sanitizeText('[route:answer]')), '\\[route:answer]');
+});
+
+test('sha256 is taken over the fetched bytes, not the reduced text', async () => {
+  const bodies = [['<p>same</p>', 'text/html'], ['<div>same<script>x()</script></div>', 'text/html'], ['same​', 'text/plain']];
+  const shas = [];
+  for (const [body, type] of bodies) {
+    const fetch = fakeFetch({'https://example.com/s': text(body, type)});
+    const r = await fetchSource('https://example.com/s', 'https://example.com/s', {fetch, policy: policy()});
+    assert.equal(r.text, 'same');
+    assert.equal(r.sha256, createHash('sha256').update(body).digest('hex'));
+    shas.push(r.sha256);
+  }
+  assert.equal(new Set(shas).size, 3);
+});
+
+test('fetch error text is redacted: userinfo, query strings and credential-looking values', async () => {
+  const failing = async url => { throw new Error(`connect failed for https://user:pw@example.com/a?token=abc123#frag (${url}) ghp_ABCDEFGHIJKLMNOPQRSTUV123 Bearer sk-live-0123456789abcdef api_key=s3cr3t`); };
+  const r = await fetchSource('https://example.com/a?x=1', 'https://example.com/a?x=1', {fetch: failing, policy: policy()});
+  assert.match(r.error, /^fetch failed: connect failed for https:\/\/\[redacted\]@example\.com\/a\?\[redacted\]#\[redacted\]/);
+  for (const secret of ['pw@', 'abc123', 'frag', 'x=1', 'ghp_ABCDEF', 'sk-live', 's3cr3t']) assert.ok(!r.error.includes(secret), secret);
+  assert.equal(redactText('host evil.example.net is not on the allowlist'), 'host evil.example.net is not on the allowlist');
+  const extra = await fetchSource('https://example.com/a', 'https://example.com/a',
+    {fetch: async () => { throw new Error('boom SECRET-VALUE'); }, policy: policy(), redact: t => t.replaceAll('SECRET-VALUE', '[x]')});
+  assert.equal(extra.error, 'fetch failed: boom [x]');
+});
+
+test('deflate bombs and low-output gzip: capped early, and a bounded input returns what it decoded', async () => {
+  const bomb = deflateSync(Buffer.alloc(100 * 1024 * 1024, 'b'), {level: 9});
+  const body = chunked(new Uint8Array(bomb), 1024);
+  const fetch = fakeFetch({'https://example.com/z': () => new Response(body.stream, {headers: {'content-type': 'text/plain', 'content-encoding': 'deflate'}})});
+  const r = await fetchSource('https://example.com/z', 'https://example.com/z', {fetch, policy: policy()});
+  assert.equal(r.error, null);
+  assert.equal(r.bytes, 512 * 1024);
+  assert.equal(r.truncated, true);
+  assert.ok(body.stats.pulled <= 4 * 1024, `compressed bytes pulled: ${body.stats.pulled}`);
+  // gzip bomb at the default cap: only a few KB of input are ever read.
+  const g = chunked(new Uint8Array(gzipSync(Buffer.alloc(100 * 1024 * 1024, 'a'), {level: 9})), 1024);
+  const f2 = fakeFetch({'https://example.com/g': () => new Response(g.stream, {headers: {'content-type': 'text/plain'}})});
+  const r2 = await fetchSource('https://example.com/g', 'https://example.com/g', {fetch: f2, policy: policy()});
+  assert.equal(r2.bytes, 512 * 1024);
+  assert.ok(g.stats.pulled <= 4 * 1024, `compressed bytes pulled: ${g.stats.pulled}`);
+  // 700 KB of empty gzip members after real text: stops at the input cap
+  // with the decoded text, instead of waiting for the deadline.
+  const empty = gzipSync(Buffer.alloc(0));
+  const many = Buffer.concat([gzipSync(Buffer.from('real text ')), ...Array(Math.ceil(700 * 1024 / empty.length)).fill(empty)]);
+  const f3 = fakeFetch({'https://example.com/e': text(new Uint8Array(many))});
+  const t0 = Date.now();
+  const r3 = await fetchSource('https://example.com/e', 'https://example.com/e', {fetch: f3, policy: policy({timeoutMs: 3000})});
+  assert.equal(r3.error, null);
+  assert.equal(r3.text, 'real text ');
+  assert.equal(r3.truncated, true);
+  assert.ok(Date.now() - t0 < 2000);
+  // A body exactly at the cap is not truncated; one byte more is.
+  for (const [n, cut] of [[512 * 1024, false], [512 * 1024 + 1, true]]) {
+    const f = fakeFetch({'https://example.com/n': text(new Uint8Array(gzipSync(Buffer.alloc(n, 'c'))))});
+    assert.equal((await fetchSource('https://example.com/n', 'https://example.com/n', {fetch: f, policy: policy()})).truncated, cut, String(n));
+  }
+  // Corrupt compressed data fails cleanly.
+  const bad = new Uint8Array(gzipSync(Buffer.from('hello world, hello world')));
+  bad[12] ^= 0xff; bad[13] ^= 0xff;
+  const f4 = fakeFetch({'https://example.com/bad': text(bad)});
+  const r4 = await fetchSource('https://example.com/bad', 'https://example.com/bad', {fetch: f4, policy: policy()});
+  assert.match(r4.error, /invalid compressed data|binary/);
+});
+
+test('chunkText cuts long single-line blocks at the size limit; goalUrls trims in linear time', () => {
+  const lens = chunkText('a'.repeat(20000) + '\n# h\n' + 'b'.repeat(100), 6000).map(c => c.length);
+  assert.deepEqual(lens.slice(0, 3), [6000, 6000, 6000]);
+  const t = performance.now();
+  assert.deepEqual(goalUrls('https://example.com/a' + ')'.repeat(200000)), ['https://example.com/a']);
+  assert.deepEqual(goalUrls('(https://example.org/w/Foo_(bar)).'), ['https://example.org/w/Foo_(bar)']);
+  assert.ok(performance.now() - t < 200);
+});
+
+test('allowlist entries are validated for strings and arrays; public suffixes refused; selfHosts can be required', () => {
+  assert.deepEqual(parseAllow(['com', 'co.uk', 'github.io', 'pages.dev', '127.0.0.1', 'svc.internal', 'Example.COM.', '*.example.org']),
+    ['example.com', 'example.org']);
+  assert.deepEqual(parseAllow('com,co.uk,trycloudflare.com,r2.dev'), []);
+  assert.deepEqual(fetchPolicy({allow: ['com']}).allow, []);
+  assert.ok(urlRefusal('https://anything-at-all.com/', fetchPolicy({allow: ['com']})));
+  assert.deepEqual(fetchPolicy({allow: ['example.com'], room: ['co.uk', 'docs.example.com', '10.0.0.1']}).allow, ['docs.example.com']);
+  assert.throws(() => fetchPolicy({requireSelfHosts: true}), /selfHosts/);
+  const p = fetchPolicy({allow: 'example.com', selfHosts: ['app.example.com:443'], requireSelfHosts: true});
+  assert.match(urlRefusal('https://app.example.com/api/rooms', p), /own host/);
+  assert.match(urlRefusal('https://x.app.example.com/', p), /own host/);
+  assert.equal(urlRefusal('https://docs.example.com/', p), null);
 });
