@@ -3,13 +3,15 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
+export { BenchRun } from './bench-run.js';
+import { benchRoute } from './bench-run.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
-import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
+import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard } from './card.js';
 import { getArtifactStore } from './artifact-store.js';
 import { triggerText, RETRY, MESSAGES } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -5696,6 +5698,8 @@ export class ControlRoom extends DurableObject {
   // vets and saves that card again without a new writer call. True when
   // Root goes on.
   async cardTurn(id) {
+    const given=this.read('card_provided',null);
+    if(given)return this.providedCardTurn(id,given);
     const goal=this.userGoal(),rows=this.installedToolchains(),started=Date.now();
     const hold=(kind,text,again='Continue runs the card writer again.')=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,`${text} ${again}`);return false;};
     let card=this.read('card_draft',null),calls='the card written before';
@@ -5730,6 +5734,37 @@ export class ControlRoom extends DurableObject {
       this.db().exec('DELETE FROM card_revisions');this.save('card',null);this.db().exec("UPDATE agents SET interfaces='[]' WHERE id=?",id);
       return hold('card_failed',clip(`Vetting or saving the card failed: ${e?.message||e}.`,900),'Continue vets and saves the written card again.');
     }
+  }
+  // B1: a room started with a card (a benchmark task's) validates it and
+  // takes it as revision 1: no card writer, no Clef vetting (the benchmark's
+  // checks are authoritative). A card that does not validate whole holds the
+  // room at card_failed; a language this deployment cannot run, card_blocked.
+  providedCardTurn(id, given) {
+    const hold=(kind,text)=>{this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.holdRoom(kind,text);return false;};
+    const {card,errors,unsupported}=providedCard(given,{goal:this.userGoal(),installed:this.installedToolchains(),packages:this.settings().packages});
+    if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the provided card names.`);
+    if(errors.length||!vettedUsable(card))return hold('card_failed',clip(`The provided card does not validate: ${errors.slice(0,8).join(' ')||'no deliverable or requirement.'}`,1100));
+    this.save('card',card);
+    this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(card),card.source,Date.now());
+    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(card)),id);
+    this.save('paused_state',null);
+    this.event(id,'card_provided',clip(`Project card given by the ${card.source} (validated; not written or vetted by a model): ${card.summary||'(no summary)'}. ${cardLine(card)}.`,1500));
+    return true;
+  }
+  // B1: one task room's result for the BenchRun DO: its status and hold, the
+  // card's requirement ids and results, when it started and last moved, the
+  // model tokens its spans record and its Container time. No file, prompt or
+  // check text.
+  benchSummary() {
+    const db=this.db(),card=this.read('card',null),status=this.get('status','idle');
+    const t=query(db,"SELECT COUNT(*) AS calls,COALESCE(SUM(json_extract(attrs,'$.prompt_tokens')),0) AS prompt,COALESCE(SUM(json_extract(attrs,'$.completion_tokens')),0) AS completion FROM spans WHERE kind='model'")[0];
+    const c=query(db,"SELECT COUNT(*) AS runs,COALESCE(SUM(end_ms-start_ms),0) AS ms FROM spans WHERE kind='container'")[0];
+    const e=query(db,"SELECT MIN(CASE WHEN kind='start' THEN ts END) AS started,MAX(ts) AS last FROM events")[0];
+    return {status,busy:!!this.busy,pause:this.read('paused_state',null),card_source:card?.source||null,
+      requirements:(card?.requirements||[]).map(r=>r.id),requirement_status:this.read('requirement_status',{}),
+      started_at:e.started??null,last_event_at:e.last??null,
+      tokens:{calls:t.calls,prompt:t.prompt,completion:t.completion,total:t.prompt+t.completion},container_ms:c.ms,container_runs:c.runs,
+      failure:status==='failed'?clip(this.failedDescendantReason('root'),300):status==='error'?clip(query(db,"SELECT body FROM events WHERE kind='error' ORDER BY id DESC LIMIT 1")[0]?.body||'',300):''};
   }
   async agentTurn(id) {
     const n = this.node(id);
@@ -6577,15 +6612,19 @@ export class ControlRoom extends DurableObject {
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally { this.busy=false;this.budgetSpent=false; }
   }
-  async start(goal,budget,settings = {},roomId='') {
+  // provided: a card the runtime gives the room (a benchmark task's, B1),
+  // never one from a request body; /api/run passes none.
+  async start(goal,budget,settings = {},roomId='',provided=null) {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
     // Refuse bad settings before the room is wiped: a refused Start must leave
     // the previous run intact (verification probe: parallel 999 erased it).
     try { normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS); } catch(e) { return {error:clip(e?.message||e,300)}; }
+    if (provided && (!this.live() || normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS).pipeline!=='v8')) return {error:'A provided card needs a live room on the v8 pipeline'};
     for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','problems','repair_tickets','card_revisions','meta']) this.db().exec(`DELETE FROM ${table}`);
     this.queuedAt.clear();
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
+    if (provided) this.save('card_provided',provided);
     this.set('schema',ROOM_SCHEMA);
     // A fresh experiment must never reuse manager DO state from an older run.
     this.set('run_nonce',crypto.randomUUID());
@@ -6765,6 +6804,8 @@ export default {
     if (!env.APP_TOKEN) return json({error:'Set APP_TOKEN with wrangler secret put APP_TOKEN'},503);
     if (!safeTokenEqual(request.headers.get('authorization') || '',`Bearer ${env.APP_TOKEN}`)) return json({error:'Invalid APP_TOKEN'},401);
     const payload=request.method==='GET'?{}:await request.json().catch(()=>({}));
+    // B1: benchmark runs (src/bench-run.js), behind the same token.
+    if (url.pathname==='/api/bench' || url.pathname.startsWith('/api/bench/')) return benchRoute(request,env,url,payload,{normalizeRoomSettings,normalizeTurnBudget});
     const room=request.method==='GET'?url.searchParams.get('room'):payload.room;
     if (!/^[a-zA-Z0-9-]{8,64}$/.test(room || '')) return json({error:'Invalid room'},400);
     const stub=env.ROOMS.getByName(room);

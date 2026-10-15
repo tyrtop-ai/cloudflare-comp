@@ -463,6 +463,25 @@ export function applyVetting(card, ps, bar = 0.5) {
   return {card: withImplicit(kept), dropped};
 }
 
+// ------------------------------------------------------------ provided cards (B1)
+// A card the runtime gives a room (a benchmark task's, src/bench.js) instead
+// of the card writer's: validated like any card, never vetted by Clef (the
+// benchmark's checks are authoritative), and rejected unless it validates
+// whole, since a partly kept card would be a different benchmark. Its
+// requirements are hidden: their checks, and the examples they would give a
+// contract, never reach an agent, and a hidden requirement's failure is
+// recorded, never routed to a worker as a problem (the benchmark's tests
+// would leak through its detail). {card, errors, unsupported}.
+export function providedCard(raw, opts = {}) {
+  const {card, errors, unsupported} = validateCard(raw, opts);
+  const source = typeof raw?.source === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(raw.source) ? raw.source : 'provided';
+  const hiddenAll = source === 'benchmark', hiddenIds = new Set((raw?.requirements || []).filter(r => r?.hidden === true).map(r => r.id));
+  const requirements = card.requirements.map(({untraced, ...r}) => hiddenAll || hiddenIds.has(r.id) ? {...r, hidden: true} : r);
+  return {card: {...card, requirements, source}, errors, unsupported};
+}
+// Whether a failed requirement may be routed to an agent as a problem.
+export const routable = r => !r?.hidden;
+
 // ------------------------------------------------------------ cardContracts (§2.4)
 // The examples a deliverable's checks show: a call step with expect, and a
 // command check's line and expected output.
@@ -481,7 +500,8 @@ export function cardContracts(card) {
   const reqs = card?.requirements || [];
   return (card?.deliverables || []).map(d => {
     const mine = reqs.filter(r => r.serves.includes(d.name)), examples = [...(d.examples || [])];
-    for (const r of mine) for (const e of checkExamples(r.check, d))
+    // A hidden requirement (a benchmark's tests, B1) gives its deliverable no example.
+    for (const r of mine.filter(x => !x.hidden)) for (const e of checkExamples(r.check, d))
       if (examples.length < 4 && !examples.some(x => JSON.stringify(x) === JSON.stringify(e))) examples.push(e);
     return normalizeContract({...d, kind: kindOf(d), examples, serves: mine.map(r => r.id)}, {v8: true, serves: true});
   }).filter(Boolean);

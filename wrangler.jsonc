@@ -35,6 +35,10 @@
       {
         "name": "BUILD_EXECUTORS",
         "class_name": "BuildExecutor"
+      },
+      {
+        "name": "BENCHES",
+        "class_name": "BenchRun"
       }
     ]
   },
@@ -48,6 +52,10 @@
       "storage": "sqlite"
     },
     "BuildExecutor": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "BenchRun": {
       "type": "durable-object",
       "storage": "sqlite"
     }
