@@ -380,7 +380,7 @@ export function settleCodeLanguage(card, installed = TOOLCHAINS) {
 // denylist, the path and URL rules and base gating all still apply.
 // Pure. facts: {goal, installed, base, change}.
 // The flags only the runtime sets: a writer's copy of one is dropped.
-const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'serves_inferred', 'unattached', 'vet_p', 'doubtful', 'untested', 'check_error'];
+const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'serves_inferred', 'unattached', 'vet_p', 'vet_p_literal', 'vet_internal_p', 'doubt_reason', 'doubtful', 'untested', 'check_error'];
 const CHECK_KINDS = ['file', 'judge', 'command', 'call', 'http', 'browser'];
 // Kinds a writer names in other words ('' leaves the kind to the name).
 // 'usage': a script, program or tool is a command only when a requirement runs it (a page's script is a file).
@@ -1116,7 +1116,10 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     if (!serves.length) req.unattached = true;
     // Vetting's annotations, kept when a stored card is validated again (repairCard drops a writer's copy).
     if (typeof r.vet_p === 'number') req.vet_p = r.vet_p;
+    if (typeof r.vet_p_literal === 'number') req.vet_p_literal = r.vet_p_literal;
+    if (typeof r.vet_internal_p === 'number') req.vet_internal_p = r.vet_internal_p;
     if (r.doubtful === true) req.doubtful = true;
+    if (r.doubtful === true && typeof r.doubt_reason === 'string') req.doubt_reason = r.doubt_reason;
     if (r.unvetted === true) req.unvetted = true;
     // Rule 5: a source the goal does not show is vetted by Clef, never dropped
     // here. An inferred source is a goal sentence: untraced only when it
@@ -1179,18 +1182,26 @@ export const VET_DOUBT_BAR = 0.5;
 export const vettable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project && !existenceOnly(r));
 // Vetting applied: each requirement Clef answered for keeps vet_p, and
 // doubtful below the bar; one whose batch failed is marked unvetted. Nothing
-// is removed or reverted. ps: [{id, p}] or [{id, unvetted:true}].
-// {card, doubtful: [{id, p, says, untraced}]}.
+// is removed or reverted. ps: [{id, p, p_literal?, p_internal?}] or [{id,
+// unvetted:true}]. v8 live 3: vet_p_literal (the old question's p, for
+// comparison; it marks nothing) and vet_internal_p are kept too; a file
+// check Clef finds looks at an internal detail of the code is doubtful as
+// well. doubt_reason names why: DOUBT_REASONS.
+// {card, doubtful: [{id, p, says, untraced, reason, reasons}]}.
+export const DOUBT_REASONS = Object.freeze({goal: 'not expected from the goal', internal: 'internal detail'});
+const rounded = v => Math.round(v * 1000) / 1000;
 export function applyVetting(card, ps) {
-  const p = new Map((ps || []).filter(x => typeof x?.p === 'number').map(x => [x.id, x.p]));
+  const p = new Map((ps || []).filter(x => typeof x?.p === 'number').map(x => [x.id, x]));
   const unvetted = new Set((ps || []).filter(x => x?.unvetted).map(x => x.id)), doubtful = [];
   const requirements = (card?.requirements || []).map(r => {
     if (!p.has(r.id) && !unvetted.has(r.id)) return r;
-    const {untraced, vet_p: _p, doubtful: _d, unvetted: _u, ...rest} = r;
+    const {untraced, vet_p: _p, vet_p_literal: _l, vet_internal_p: _i, doubt_reason: _why, doubtful: _d, unvetted: _u, ...rest} = r;
     if (unvetted.has(r.id)) return {...rest, unvetted: true};
-    const v = p.get(r.id);
-    if (v < VET_DOUBT_BAR) doubtful.push({id: r.id, p: v, says: r.says, untraced: !!untraced});
-    return {...rest, vet_p: Math.round(v * 1000) / 1000, ...(v < VET_DOUBT_BAR ? {doubtful: true} : {})};
+    const x = p.get(r.id), v = x.p, internal = typeof x.p_internal === 'number' ? x.p_internal : null;
+    const reasons = [...(internal !== null && internal < VET_DOUBT_BAR ? [DOUBT_REASONS.internal] : []), ...(v < VET_DOUBT_BAR ? [DOUBT_REASONS.goal] : [])];
+    if (reasons.length) doubtful.push({id: r.id, p: v < VET_DOUBT_BAR || internal === null ? v : internal, says: r.says, untraced: !!untraced, reason: reasons.join('; '), reasons});
+    return {...rest, vet_p: rounded(v), ...(typeof x.p_literal === 'number' ? {vet_p_literal: rounded(x.p_literal)} : {}), ...(internal !== null ? {vet_internal_p: rounded(internal)} : {}),
+      ...(reasons.length ? {doubtful: true, doubt_reason: reasons.join('; ')} : {})};
   });
   return {card: {...card, requirements}, doubtful};
 }

@@ -121,6 +121,22 @@ The review of this work found that a statement, an interface fact or a failure r
 
 A requirement whose check is still refused after the writer's one revision (now asked for explicitly) stays untested. If it is about a page, command, function or route, the room no longer completes: it holds at `checks_untested`, Continue accepts the project as it is (logged as `untested_accepted`), and a follow-up prompt can change the card instead. The parser drops only a line of exactly `===` right after a header, and reads a header without its closing `===` only between files. Locators match exactly first, then a unique whole-word part; a click looks only at elements of its role; there is no only-field fallback, and several partial matches fail with the candidates named. Tolerant `has` applies only to markup files, and never inside attribute values or text.
 
+## Third live runs: wording is interface, progress is passing
+
+The third live runs passed every behaviour check: adding and removing a to-do in Chromium, `100 C` → `212.0`, and `POST /tickets` → 201. Every remaining failure was a check that wanted wording or internals no worker could know. The to-do's style sheet had to contain `todo-item {`, a class name. The CLI's R3 wanted `invalid literal` on stderr, which is Python's own error text, and the room repaired it for ten rounds because a changed message counted as progress. The tracker's page had to show "Ticket List", and its `index.html` began with a stray `=== CONTENT ===` line. Workers needed a second model call for 41 of 46 first answers.
+
+- **Values and wording.** A value is computed from a check's inputs, like 212 for 100 C, and it stays hidden. Wording is fixed text a check expects whatever the input, like "Ticket List", "invalid literal" or a class name. Wording is part of the spec, so it is now shown. An expected text counts as a value if it has a digit, equals or contains an input of the card's checks (or an input contains it), or is JSON. Any other expected text is wording. Wording is an interface fact on the deliverable it serves:
+  - `page / shows the text "Ticket List"`;
+  - `… expects exit status 1 and a message on stderr containing "invalid literal"`;
+  - `style.css contains "body {", "todo-item {"`.
+
+  A failure report names the wording it looked for. A hidden benchmark requirement keeps all its text hidden.
+- **Internals.** Clef's review asks of a file check on a code, style or script file whether it tests what a user meets or an internal detail. A NO goes back to the writer. A check that survives the revision stays, and its wording is shown.
+- **Vetting** asks "Would someone who wrote this goal expect this to be true of the result?" It reads the goal, each `says` and its check, with values shown as their kinds. A NO from the internals question also marks a requirement doubtful, with the reason "internal detail". The hold names that reason. For one release, the old question's p is kept as `vet_p_literal`, on the requirement and in the span, from the same Clef call.
+- **Progress** now means a requirement passes, or a failing one fails in a different category: did not start, timed out, wrong exit, wrong output, missing text or crashed. A change in the failure's wording is not progress. The live CLI sequence now stops after three rounds without progress.
+- **Parser.** One section label such as `=== CONTENT ===` right after a FILE header is dropped. A label anywhere else stays.
+- **Format.** The format is now one short answer of the exact shape, with the control object on one line. Before, the field list sat under the CONTROL line as `- "summary": …` lines, which a small model copied. The control block is also read when a model writes it as one field per line, with a trailing comma, or with `True`. A file left open when the model stopped by itself is kept as written; only a file cut off by the token limit is written again. On a scripted set of 13 realistic answers, second calls went from 4 to 0, files written again from 2 to 0, and answers with any fallback from 8 to 4. The JSON action still works.
+
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.

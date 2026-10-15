@@ -198,7 +198,8 @@ test('broker: a writer reads its granted file, a chunk it holds, and the neutral
   for (const r of calls.raw.filter(r => r.system === systemPrompt('worker'))) assert.ok(!r.system.includes(BASE_FILES['src/shout.js']));
   assert.equal(room.node(faq.id).status, 'done');
   // Its own contract, asked for: answered at once in contract terms, as before with no hop.
-  assert.deepEqual(turns('Questions writer')[1].answered_requests, [MESSAGES.own_contract({contract: contractLine(D.faq)})]);
+  // v8 live 3: R2's wording ("# FAQ") is interface, so the contract carries it.
+  assert.deepEqual(turns('Questions writer')[1].answered_requests, [MESSAGES.own_contract({contract: contractLine({...D.faq, interface: ['FAQ.md contains "# FAQ"']})})]);
   linted(room, calls);
 });
 

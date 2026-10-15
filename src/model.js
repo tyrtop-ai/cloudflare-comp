@@ -6,7 +6,7 @@ import { workerAction, singleFileText } from './worker-output.js';
 import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE, MESSAGES, BASE_LABEL } from './prompts.js';
 import { contractLine } from './contracts.js';
 import { validateCard, repairCard, settleCard, settleCodeLanguage, checkSummary, goalSentences, existenceOnly } from './card.js';
-import { interfaceFacts, cardScope, checkShapeForReview, unstatedWording, maskWith } from './affordances.js';
+import { interfaceFacts, cardScope, checkShapeForReview, unstatedWording, maskWith, internalFileCheck } from './affordances.js';
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { EFFECTIVE_GOAL_LIMIT } from './amend.js';
 import { SOURCE_CLAUSE } from './fetcher.js';
@@ -74,15 +74,16 @@ export function usageOf(output) {
     reasoning_tokens:n(u.completion_tokens_details?.reasoning_tokens??u.reasoning_tokens)};
   return Object.fromEntries(Object.entries(out).filter(([,v])=>v!==undefined));
 }
-export async function traced(env, record, call) {
+// after(output): more span attributes read from the answer (live 3: vetting's p of each question).
+export async function traced(env, record, call, after=null) {
   const start_ms=Date.now(),note=extra=>{try{env.TRACE?.({...record,start_ms,end_ms:Date.now(),...extra});}catch{}};
-  try {const output=await call();note(usageOf(output));return output;}
+  try {const output=await call();let more={};try{more=after?.(output)||{};}catch{}note({...usageOf(output),...more});return output;}
   catch(e) {note({error:String(e?.message||e).slice(0,300)});throw e;}
 }
 // A Clef gate (a logprob-scored yes/no): one request, traced; the request
 // itself is exactly as the caller built it.
-const clefRun = (env, name, selector, input) => traced(env, {kind:'clef', name, role:'gate', model:selector, questions:Object.keys(input?.questions||{}).length},
-  () => env.AI.run(selector, input));
+const clefRun = (env, name, selector, input, after=null) => traced(env, {kind:'clef', name, role:'gate', model:selector, questions:Object.keys(input?.questions||{}).length},
+  () => env.AI.run(selector, input), after);
 
 export async function run(env, system, user, maxTokens, {noThink=false, call='run', role='', retry=false}={}) {
   const selected=model(env);
@@ -798,7 +799,7 @@ export const CARD_MAX_TOKENS = 8192;
 // notes: what the chosen answer's repair did; raw_answers: the writer's
 // answers as written (each clipped to CARD_RAW_CHARS), for diagnosis.
 export const CARD_RAW_CHARS = 6000;
-const SUBSTANTIVE = /^(?:The goal phrase |\S+'s check may not exercise|\S+'s check may need what|\S+'s check looks for wording|\S+'s check needs a form the runtime runs|Deliverable "[^"]*" \(a \w+\) has no check|\S+'s http check expects nothing)/;
+const SUBSTANTIVE = /^(?:The goal phrase |\S+'s check may not exercise|\S+'s check looks at an internal detail|\S+'s check may need what|\S+'s check looks for wording|\S+'s check needs a form the runtime runs|Deliverable "[^"]*" \(a \w+\) has no check|\S+'s http check expects nothing)/;
 // v8 live 2 review: a statement that holds a value of the card's checks
 // reaches workers with that value masked; the note (an annotation, never a
 // revision on its own) asks for behaviour and interface instead.
@@ -825,6 +826,8 @@ function keepDraft(revised, draft) {
   for (const r of (draft.requirements || []).filter(r => !r.implicit && !r.project)) if (!ids.has(r.id) && !says.has(said(r.says))) out.requirements.push({...r});
   return out;
 }
+// v8 live 3: the vetting's comparison and reasons are the dashboard's: the writer reads the card without them.
+const withoutVetting = card => Array.isArray(card?.requirements) ? {...card, requirements: card.requirements.map(r => { if (!r || typeof r !== 'object') return r; const {vet_p_literal: _l, vet_internal_p: _i, doubt_reason: _w, ...rest} = r; return rest; })} : card;
 const runnable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project).length;
 export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[], change=''}={}) {
   const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
@@ -840,7 +843,7 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
   const fields={goal:String(goal).slice(0,amend?EFFECTIVE_GOAL_LIMIT:GOAL_LIMIT),...(amend?{change:String(change).slice(0,GOAL_LIMIT),change_note:MESSAGES.amend_note()}:{}),
     toolchains:rows.map(t=>({id:t.id,files:t.extensions,...(t.run_file?{run_file:t.run_file}:{}),...(t.test?{test:t.test}:{}),executables:t.executables||[]})),
     // v8 S8b review: the existing project's digest is quoted, labelled, beside the base clause.
-    ...(base_digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest:base_digest}}:{}),...(prior_card?{current_card:prior_card}:{}),
+    ...(base_digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest:base_digest}}:{}),...(prior_card?{current_card:withoutVetting(prior_card)}:{}),
     ...(sources?.length||sources_unavailable?.length?{sources_note:SOURCE_CLAUSE}:{}),...(sources?.length?{sources}:{}),...(sources_unavailable?.length?{sources_unavailable}:{})};
   const system=systemPrompt('card'),raw_answers=[];
   const read=async (output,draft=null)=>{
@@ -930,6 +933,8 @@ export async function reviewCard(env, {goal='', change='', card}) {
   const asks=[...phrases.map((_,i)=>({key:`covered_${i}`,text:clefText('covered',{i}),note:p=>`The goal phrase "${clip(phrases[i],160)}" may be covered by no requirement (Clef p=${p.toFixed(2)}): add a requirement whose check fails when the project ignores it.`})),
     ...reqs.map((r,i)=>({key:`exercises_${i}`,text:clefText('exercises',{i}),note:p=>`${r.id}'s check may not exercise what it states (Clef p=${p.toFixed(2)}; ${clip(summaryOf(r.check),120)}): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader's question about a document.`})),
     ...reqs.map((r,i)=>({r,i})).filter(({r})=>!r.untested&&r.check?.kind!=='judge'&&!existenceOnly(r)).map(({r,i})=>({key:`implementable_${i}`,text:clefText('implementable',{i}),note:p=>`${r.id}'s check may need what its statement and contract leave unsaid (Clef p=${p.toFixed(2)}; ${clip(shapeOf(r.check),160)}): state in says the behaviour and interface the check needs, such as the exit status or the stream a message goes to, and keep its values in the check.`})),
+    // v8 live 3: a file check inside a code, style or script file: does it test what a user meets, or an internal detail? A NO asks for a behaviour check.
+    ...reqs.map((r,i)=>({r,i})).filter(({r})=>!r.untested&&internalFileCheck(r.check)).map(({r,i})=>({key:`internal_${i}`,text:clefText('internal',{i}),note:p=>`${r.id}'s check looks at an internal detail of ${clip(r.check.path,80)} (Clef p=${p.toFixed(2)}; ${clip(shapeOf(r.check),120)}): check the behaviour a user meets instead, such as a page's text, a command's output or a function's result, and keep a file check for what the goal names in the file.`})),
     ...dels.map((d,i)=>({key:`kind_${i}`,text:clefText('kind_fits',{i}),note:p=>`Kind: deliverable "${clip(d.name,80)}" may fit another kind than ${d.kind||'function'} (Clef p=${p.toFixed(2)}).`}))];
   const groups=[];
   for(let i=0;i<asks.length;i+=12)groups.push(asks.slice(i,i+12));
@@ -991,30 +996,44 @@ export const sourceModel = env => async ({role:part, system, user}) =>
   withoutThinking(await run(env, system, user, SOURCE_CARD_TOKENS, {call: part==='source_gist'?'sourceGist':'sourceCard', role:'card', noThink:true}));
 // v8 §1.4: Clef vets the card writer's requirements against the goal, one
 // batched call per 12 (scopeChildren's grouping), the traced ones too: an
-// invented requirement costs a repair round later. Clef sees each one's
-// check in a few words beside says and source, and whether its source was
-// found in the goal. v8 S3 review: a batch Clef fails keeps its
-// requirements, unvetted. {ps:[{id, p} | {id, unvetted:true}], failed:[reasons]};
-// MOCK keeps all.
-export async function vetRequirements(env, {goal='', requirements=[]}) {
+// invented requirement costs a repair round later. v8 S3 review: a batch
+// Clef fails keeps its requirements, unvetted.
+// v8 live 3: the question is whether someone who wrote the goal would expect
+// the requirement of the result (CLEF.requirement); the literal one ("does
+// the goal state or imply it") scored every elaboration of a short goal low
+// and is asked beside it for one release (requirement_literal_<n>, p_literal,
+// in the span's attributes too), in the same call. A file check inside a
+// code, style or script file is also asked CLEF.internal (internal_<n>,
+// p_internal). Clef reads the goal, each says and its check with values as
+// their kinds and wording as it is (checkShapeForReview). card: the whole
+// card, for its scope. {ps:[{id, p, p_literal?, p_internal?} | {id,
+// unvetted:true}], failed:[reasons]}; MOCK keeps all.
+export async function vetRequirements(env, {goal='', requirements=[], card=null}) {
   if (!requirements.length) return {ps:[],failed:[]};
   if (env.MOCK_AI === 'true') return {ps:requirements.map(r=>({id:r.id,p:1})),failed:[]};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) return {ps:requirements.map(r=>({id:r.id,unvetted:true})),failed:['unsupported Clef decision model']};
-  const groups=[],failed=[];
+  const groups=[],failed=[],scope=cardScope(card?.requirements?card:{requirements},{goal});
+  const shapeOf=check=>{try{return checkShapeForReview(check,scope);}catch{return checkSummary(check);}};
+  const pOf=(output,key)=>{const p=output?.answers?.[key]?.noul;return typeof p==='number'&&Number.isFinite(p)&&p>=0&&p<=1?p:undefined;};
+  const read=(output,group,start)=>group.map((r,i)=>{
+    const n=start+i,p=pOf(output,`requirement_${n}`),literal=pOf(output,`requirement_literal_${n}`),internal=pOf(output,`internal_${n}`);
+    return {id:r.id,p,...(literal!==undefined?{p_literal:literal}:{}),...(internal!==undefined?{p_internal:internal}:{})};
+  });
   for(let start=0;start<requirements.length;start+=12)groups.push({start,group:requirements.slice(start,start+12)});
   const answered=await Promise.all(groups.map(async ({start,group})=>{
     try {
-      const questions=Object.fromEntries(group.map((_,i)=>[`requirement_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement}`}]));
+      const questions=Object.fromEntries(group.flatMap((r,i)=>[
+        [`requirement_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement}`}],
+        [`requirement_literal_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement_literal}`}],
+        ...(internalFileCheck(r.check)?[[`internal_${start+i}`,{type:'noul',instructions:clefText('internal',{i:start+i})}]]:[])]));
       const output=await clefRun(env,'vetRequirements',selector,{model:clef,
-        state:{goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),source:String(r.source).slice(0,160),
-          check:checkSummary(r.check),...(r.untraced?{source_found_in_goal:false}:{}),...(r.source_inferred?{source_inferred:true}:{})}))},questions});
-      return group.map((r,i)=>{
-        const probability=output?.answers?.[`requirement_${start+i}`]?.noul;
-        if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
-          throw new Error(`Clef returned no valid probability for requirement ${r.id}`);
-        return {id:r.id,p:probability};
+        state:{goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),check:shapeOf(r.check)}))},questions},
+        out=>({vet:read(out,group,start)}));
+      return read(output,group,start).map(x=>{
+        if(x.p===undefined)throw new Error(`Clef returned no valid probability for requirement ${x.id}`);
+        return x;
       });
     } catch(e) {
       failed.push(`${group.map(r=>r.id).join(', ')}: ${String(e?.message||e).slice(0,200)}`);

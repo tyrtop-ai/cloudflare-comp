@@ -36,10 +36,16 @@ const FENCE = /^[ \t]*```/;
 // line opens the json.
 const EXACT_FILE = /^===[ \t]*file[ \t]*:[ \t]*(\S(?:.*?\S)?)[ \t]*===[ \t]*\r?$/i;
 const EXACT_CONTROL = /^===[ \t]*control[ \t]*===[ \t]*\r?$/i;
+// v8 live 3: or a control field written as a line of its own ("- "summary": …", "done: true").
+const FIELD_LINE = /^[ \t]*(?:[-*][ \t]*)?["']?(summary|done|wait|ask|pieces|remember|messages|spawn)["']?[ \t]*:(.*)$/i;
 const JSONISH = /^[ \t]*(?:\{|```)/;
-// A header's leftover: a line of exactly === right after it (a setext
-// underline is never a file's first line). Nothing else is dropped.
-const LEFTOVER = /^===\r?$/;
+// A header's leftover, as the first line after it, and nowhere else: a line
+// of exactly === (a setext underline is never a file's first line), or
+// (live 3) a section label in capitals between === marks that is no marker
+// of the format, such as "=== CONTENT ===" or "=== BEGIN ===" (the tracker's
+// page showed one). Nothing else is dropped.
+const SECTION = /^=== ([A-Z][A-Z ]*)===\r?$/;
+const isLeftover = line => /^===\r?$/.test(line) || (m => !!m && !['FILE', 'END FILE', 'CONTROL'].includes(m[1].trim()))(SECTION.exec(line));
 export function markerOf(line, {open = true} = {}) {
   const s = String(line), m = MARKER.exec(s);
   if (m && !/===/.test(m[2])) return {kind: m[1].toLowerCase().replace(/\s+/, ' '), path: cleanPath(m[2])};
@@ -99,17 +105,73 @@ export function escapeRawControls(text) {
   return out;
 }
 const tryJson = t => { try { const o = JSON.parse(t); return o && typeof o === 'object' && !Array.isArray(o) ? o : null; } catch { return null; } };
-// The control object, read leniently: {value} or {error:true}.
+// v8 live 3: a small model's near-JSON: a comma before a closing bracket,
+// and True, False or None as its own language spells them (outside strings).
+function nearJson(text) {
+  let out = '', q = false, esc = false;
+  const s = String(text);
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) { out += c; if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') q = false; continue; }
+    if (c === '"') { q = true; out += c; continue; }
+    const word = /^(True|False|None)\b/.exec(s.slice(i, i + 6));
+    if (word && !/[\w$]/.test(s[i - 1] || '')) { out += {True: 'true', False: 'false', None: 'null'}[word[1]]; i += word[1].length - 1; continue; }
+    out += c;
+  }
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+// One field's value as written after its key: json, a bracket that spans
+// lines (read to its balanced end), true or false in any case, or text.
+function fieldValue(first, rest) {
+  const t = first.trim().replace(/,$/, '').trim();
+  if (/^[[{]/.test(t)) {
+    const all = `${t}\n${rest}`, open = all[0], close = open === '[' ? ']' : '}';
+    for (let i = 0, depth = 0, q = false, esc = false; i < all.length; i++) {
+      const c = all[i];
+      if (q) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') q = false; continue; }
+      if (c === '"') q = true; else if (c === open) depth++; else if (c === close && !--depth) {
+        const text = nearJson(all.slice(0, i + 1));
+        try { return {value: JSON.parse(text), used: all.slice(0, i + 1).split('\n').length - 1}; } catch { try { return {value: JSON.parse(escapeRawControls(text)), used: all.slice(0, i + 1).split('\n').length - 1}; } catch { return {value: undefined, used: 0}; } }
+      }
+    }
+    return {value: undefined, used: 0};
+  }
+  if (/^(?:true|false)$/i.test(t)) return {value: t.toLowerCase() === 'true', used: 0};
+  try { return {value: JSON.parse(nearJson(t)), used: 0}; } catch { return {value: t.replace(/^["']|["']$/g, ''), used: 0}; }
+}
+// The control written as one field a line (the format's field list copied as
+// it reads: - "summary": …, or summary: …), or null.
+function fieldLines(text) {
+  const lines = String(text).split('\n'), out = {};
+  for (let i = 0; i < lines.length; i++) {
+    const m = FIELD_LINE.exec(lines[i]);
+    if (!m) continue;
+    const {value, used} = fieldValue(m[2], lines.slice(i + 1).join('\n'));
+    if (value !== undefined) out[m[1].toLowerCase()] = value;
+    i += used;
+  }
+  return Object.keys(out).length ? out : null;
+}
+// The control object, read leniently: {value} or {error:true}. v8 live 3:
+// near-JSON (nearJson) and a field a line (fieldLines) are read too.
 export function readControl(text) {
-  const found = firstObject(String(text ?? '').replace(/^[ \t]*```[\w-]*[ \t]*$/gm, ''));
-  if (!found || found.cut) return {error: true};
-  const body = found.text
-    .replace(/:\s*(?:true\s*\|\s*false|false\s*\|\s*true)\b/g, ': false')
-    .replace(/:\s*(?:"\[\s*(?:\.\.\.|…)\s*\]"|\[\s*(?:\.\.\.|…)\s*\])/g, ': []');
-  const value = tryJson(body) || tryJson(escapeRawControls(body));
-  return value ? {value} : {error: true};
+  const plainText = String(text ?? '').replace(/^[ \t]*```[\w-]*[ \t]*$/gm, ''), found = firstObject(plainText);
+  if (found && !found.cut) {
+    const body = found.text
+      .replace(/:\s*(?:true\s*\|\s*false|false\s*\|\s*true)\b/g, ': false')
+      .replace(/:\s*(?:"\[\s*(?:\.\.\.|…)\s*\]"|\[\s*(?:\.\.\.|…)\s*\])/g, ': []');
+    const value = tryJson(body) || tryJson(escapeRawControls(body)) || tryJson(nearJson(body)) || tryJson(escapeRawControls(nearJson(body)));
+    if (value) return {value};
+  }
+  // Only when the text starts with a field line, so a broken object is never read in part.
+  const head = plainText.split('\n').find(l => l.trim());
+  const fields = head && FIELD_LINE.test(head) ? fieldLines(plainText) : null;
+  return fields ? {value: fields} : {error: true};
 }
 
+// Why the model stopped, as its envelope says (a chat completion's finish_reason), or ''.
+const STOPS = new Set(['stop', 'eos', 'end_turn', 'stop_sequence']);
+const finishOf = output => output?.choices?.[0]?.finish_reason ?? output?.finish_reason ?? '';
 // text: the model's answer (a string or a Workers AI envelope). opts.placed:
 // the path of the worker's one placed contract, when it carries exactly one
 // (the single-fence fallback writes there).
@@ -136,10 +198,10 @@ export function parseWorkerAnswer(output, {placed = null} = {}) {
       const end = markerOf(line, {open: false});
       if (end?.kind === 'end file' && (!end.path || end.path === open.path)) { close(); continue; }
       const header = !open.fence && EXACT_FILE.exec(line), next = lines.slice(i + 1).find(l => l.trim());
-      const ends = !open.fence && (header && !/===/.test(header[1]) || EXACT_CONTROL.test(line) && next !== undefined && JSONISH.test(next));
+      const ends = !open.fence && (header && !/===/.test(header[1]) || EXACT_CONTROL.test(line) && next !== undefined && (JSONISH.test(next) || FIELD_LINE.test(next)));
       if (ends) { implicit.push(open.path); close(); }
       else {
-        if (!open.started && LEFTOVER.test(line)) { open.started = true; continue; }
+        if (!open.started && isLeftover(line)) { open.started = true; continue; }
         open.started = true;
         open.lines.push(line);
         if (FENCE.test(line)) open.fence = !open.fence;
@@ -152,7 +214,11 @@ export function parseWorkerAnswer(output, {placed = null} = {}) {
     if (inControl) controlText += line + '\n';
   }
   // Left open when the answer ended (the token cap): never committed, written
-  // again; an earlier complete copy of the path stands.
+  // again; an earlier complete copy of the path stands. v8 live 3: an answer
+  // the model ended itself (its envelope's finish_reason is a stop, never the
+  // token cap) was not cut: its open block is the file as written, closed
+  // there and listed in implicit_end, as a block the next marker closes is.
+  if (open && STOPS.has(String(finishOf(output)).toLowerCase()) && open.lines.some(l => l.trim())) { implicit.push(open.path); close(); }
   if (open && !files.has(open.path) && !truncated.includes(open.path)) truncated.push(open.path);
   if (sawBlocks) {
     const list = [...files].map(([path, content]) => ({path, content}));
@@ -205,7 +271,7 @@ export function singleFileText(output, path) {
   if (!r.parse_error && r.truncated.length) {
     const lines = text.split('\n'), at = lines.findIndex(l => markerOf(l)?.kind === 'file');
     const rest = lines.slice(at + 1);
-    return (rest.length && LEFTOVER.test(rest[0]) ? rest.slice(1) : rest).join('\n');
+    return (rest.length && isLeftover(rest[0]) ? rest.slice(1) : rest).join('\n');
   }
   const lines = text.split('\n');
   if (DOCUMENT.test(path)) {

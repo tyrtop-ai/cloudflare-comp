@@ -3575,7 +3575,10 @@ export class ControlRoom extends DurableObject {
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
     // v8 card repair: when the repair rounds ran out (or no piece could settle a failure), the failing requirements Clef doubted come first; the person decides about them.
     const status=this.read('requirement_status',{}),doubted=['checks_exhausted','checks_failed'].includes(kind)?(this.read('card',null)?.requirements||[]).filter(r=>r.doubtful&&status[r.id]?.passed===false):[];
-    const first=doubted.length?`These requirements keep failing and Clef doubted the goal asks for them: ${doubted.map(r=>`${r.id} (p=${Number(r.vet_p).toFixed(3)})`).join(', ')}. Change or drop them with a follow-up prompt, or Continue. `:'';
+    // v8 live 3: each with the reason Clef doubted it (doubt_reason): an internal detail of the code, or not expected from the goal.
+    const why=r=>/internal detail/.test(r.doubt_reason||'')?`${r.doubt_reason}, p=${Number(r.vet_internal_p??r.vet_p).toFixed(3)}`:`p=${Number(r.vet_p).toFixed(3)}`;
+    const internal=doubted.filter(r=>/internal detail/.test(r.doubt_reason||'')),goalOnly=doubted.filter(r=>!internal.includes(r));
+    const first=doubted.length?`These requirements keep failing and Clef doubted ${internal.length&&!goalOnly.length?'them':'the goal asks for them'}: ${doubted.map(r=>`${r.id} (${why(r)})`).join(', ')}. Change or drop them with a follow-up prompt, or Continue. `:'';
     this.holdRoom(kind,`${first}${this.checksSummary(head)} ${again}`);
     return {held:true};
   }
@@ -6534,7 +6537,8 @@ export class ControlRoom extends DurableObject {
   }
   // v8 card repair: the requirements Clef doubted and vetting kept, for the dashboard only (no agent reads them).
   logDoubtful(id, doubtful=[]) {
-    for(const r of doubtful)this.event(id,'card_requirement_doubtful',clip(`Clef doubted that the goal asks for ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not found in the goal':''}); it stays on the card, marked doubtful, for the person to keep or change: ${r.says}`,600));
+    // v8 live 3: a doubt names its reason: the goal (CLEF.requirement), or a check on an internal detail of the code (CLEF.internal).
+    for(const r of doubtful)this.event(id,'card_requirement_doubtful',clip(`${(r.reasons||[]).includes('internal detail')&&!(r.reasons||[]).includes('not expected from the goal')?`Clef found that ${r.id}'s check looks at an internal detail of the code (p=${r.p.toFixed(3)})`:`Clef doubted that the goal asks for ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not found in the goal':''}${(r.reasons||[]).includes('internal detail')?'; its check looks at an internal detail of the code':''})`}; it stays on the card, marked doubtful, for the person to keep or change: ${r.says}`,600));
   }
   // v8 §1.6: Root's first act under v8. The card writer turns the goal into
   // the project card, Clef vets its requirements, and the card becomes
@@ -6579,7 +6583,8 @@ export class ControlRoom extends DurableObject {
     try {
       // §1.4 (v8 card repair): Clef reviews, it never deletes. It vets the writer's requirements, each keeps its p (vet_p),
       // and one below VET_DOUBT_BAR is marked doubtful and shown; a batch Clef fails keeps its own, unvetted.
-      const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card).filter(routable)});
+      // v8 live 3: Clef reads the goal as goalView has it, and the card for the checks' scope.
+      const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,requirements:vettable(card).filter(routable),card});
       let {card:vetted,doubtful}=applyVetting(card,ps);
       if(failed.length)this.event(id,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
       this.logDoubtful(id,doubtful);
@@ -6899,7 +6904,7 @@ export class ControlRoom extends DurableObject {
         if(raw.format_fallback)this.event(id,'format_fallback',`The answer was read as ${raw.format_fallback==='json'?'a JSON action':'one fenced file'}, not file blocks.`);
         if(raw.truncated?.length)this.event(id,'code_retry',`Cut off before its end, written again alone: ${raw.truncated.join(', ')}`);
         // v8 S6 review: a block closed by the next marker line, not its END line, is committed as written; said so.
-        if(raw.implicit_end?.length)this.event(id,'format_fallback',`No END line after ${raw.implicit_end.join(', ')}: closed by the next marker line and written as it stands.`);
+        if(raw.implicit_end?.length)this.event(id,'format_fallback',`No END line after ${raw.implicit_end.join(', ')}: closed by the next marker line, or where the answer ended, and written as it stands.`);
         if(raw.control_error)this.event(id,'format_fallback','The control block did not parse, after a retry: its complete files are written, and it is not done.');
         // v7.15.2: an atomic top's loader, package and runner's test are the
         // runtime's, written again for each run: an edit was undone and its
@@ -8126,7 +8131,7 @@ export class ControlRoom extends DurableObject {
     }
     // §1.4 (v8 card repair): Clef vets the new and changed requirements and only annotates them (vet_p, doubtful); none is dropped or reverted.
     const fresh=new Set([...delta.requirements.added,...delta.requirements.changed]);
-    const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(next).filter(r=>fresh.has(r.id)&&routable(r))});
+    const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal:goalView(this.baseGoal(),[...this.goalChanges(),text],EFFECTIVE_GOAL_LIMIT),requirements:vettable(next).filter(r=>fresh.has(r.id)&&routable(r)),card:next});
     if(gone())return stale;
     if(failed.length)this.event('root','card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
     // The source a requirement carries now is the change's; whether the writer's own was in the goal is what the log says.

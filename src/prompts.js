@@ -72,19 +72,20 @@ const SPLITTER_FIELDS = [
 // A contract's schema in brief, for the worker's pieces and the manager's retask.
 const CONTRACT_BRIEF = 'A contract is {"name", "kind", "does", "inputs", "outputs", "effects", "examples", "path"}: kind is one of "function", "file", "page", "route", "command", "doc", "data"; a file, page, doc or data contract is named by its path; inputs is a list of {"name", "is"} and examples a list of {"given", "expect"}.';
 // §3.2, with the control fields described in prose (v8 S6 review: a small
-// model copies a template's true|false or [...] as written).
+// model copies a template's true|false or [...] as written). v8 live 3: the
+// third live runs asked again for 41 of 46 first answers, and a likely
+// cause was the field list itself, laid out under the CONTROL line as
+// '- "summary": …' lines, which a small model copied as its control block.
+// The format is now one short worked answer of the exact shape, the control
+// object on one line, and the fields described in a sentence after it.
 const WORKER_FORMAT = [
-  'Write each file as a block:',
-  '=== FILE: <path> ===',
-  '<the complete text of the file>',
+  'Write each file as a block, then a control block: one json object on the line after its marker. A whole answer that writes one file:',
+  '=== FILE: notes/overview ===',
+  'Every line of the file, complete.',
   '=== END FILE ===',
-  'Close each file with its end line before the next file begins. Then end with this line and one json object holding only the fields you need:',
   '=== CONTROL ===',
-  '- "summary": what you did, in one line.',
-  '- "done": true once your files fulfil every contract you were given.',
-  '- "wait": true while an ask is unanswered.',
-  '- "ask": a list of {"need": what you need in one line, "name": the name you expect}.',
-  '- "pieces": only when your assignment is too large for one writer, a list of {"label", "task", "contracts", "uses"} as a splitter gives them.',
+  '{"summary": "Wrote notes/overview.", "done": true}',
+  'Use your own paths, text and summary, and close each file with its end line. The control object holds only the fields you need: "summary", what you did in one line; "done", true once your files fulfil every contract; "wait", true while an ask is unanswered; "ask", a list of {"need": what you need in one line, "name": the name you expect}; "pieces", only when your assignment is too large for one writer, a list of {"label", "task", "contracts", "uses"}.',
   CONTRACT_BRIEF,
   'Put files that only your piece uses under a folder named after your piece\'s label, so they meet no other piece\'s files. Write tests only when a contract asks for them, at the paths it names. A file you do not write again stays as it is. A file sent to you marked "clipped" is only its start: leave it as it is, or put your change in a new file, because a file written again from its start loses the rest.'
 ];
@@ -121,7 +122,13 @@ export const CLEF = Object.freeze({
   match: 'Does contract {j} provide what the request needs, so the requester can use it instead of making its own? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.',
   owns_need: 'Is producing this part of the assigned work? Answer NO if the assignment does not ask for it.',
   owner: 'Does child {i}\'s responsibility, as its contracts and public files show, cover what this question or failure is about?',
-  requirement: 'Does the goal state or directly imply this requirement? Answer NO if it adds something the goal does not ask for.',
+  // v8 live 3: the vetting question. On a short goal the literal one (requirement_literal) scored every
+  // elaboration low; this one asks what the goal's author expects of the result.
+  requirement: 'Would someone who wrote this goal expect this to be true of the result? Answer NO if it asks for something the goal gives no reason to expect.',
+  // Kept for one release beside the new one, in the same call, so live runs can compare the two (vet_p_literal); no agent reads it.
+  requirement_literal: 'Does the goal state or directly imply this requirement? Answer NO if it adds something the goal does not ask for.',
+  // v8 live 3: a file check on a code, style or script file may look at the code's internals instead of what a user meets.
+  internal: 'Does the check of requirement {i} test something a user of the result meets, rather than an internal detail of the code such as a class name, an import or the first line of a script? Answer NO if it looks only at such a detail.',
   judge: 'Does this file meet the requirement? Answer NO if the file is missing, meets only part of it, or contradicts it.',
   // v8 S8b review: a deliverable or a contract may name an existing file only when the goal asks to change it.
   base_change: 'Does the goal ask to change existing file {i}, directly or by clear implication? Answer NO if the goal only needs it read, or asks only for new files beside it.',

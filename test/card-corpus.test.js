@@ -584,7 +584,9 @@ test('layer 1 keeps meaning (review fixes): expectations, sources, exact re-poin
   const vet = [];
   await vetRequirements({SPLIT_MODEL: '@cf/cloudflare/clef-flash', AI: {run: async (_m, input) => { vet.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.9}]))}; }}},
     {goal, requirements: validateCard(src.card, {goal}).card.requirements.filter(r => !r.implicit)});
-  assert.deepEqual(vet[0].state.requirements.map(r => [r.source_found_in_goal ?? null, r.source_inferred ?? null]), [[false, null], [null, true]], 'Clef is told which source the runtime inferred');
+  // v8 live 3: Clef reads the goal, each says and its check (values as their kinds, wording as it is); the source is the card's.
+  assert.deepEqual(vet[0].state.requirements.map(r => Object.keys(r)), [['slot', 'says', 'check'], ['slot', 'says', 'check']]);
+  assert.deepEqual(vet[0].state.requirements.map(r => r.check), ['file clock.html contains "x"', 'file clock.html contains "y"']);
   // A command check is re-pointed only at the deliverable it names exactly.
   const cmdCard = (run, base = []) => prepareCard({card: 1, summary: 'x', languages: ['python'], deliverables: [{name: 'build', kind: 'command', path: 'build.py'}],
     requirements: [{id: 'R1', says: 'It builds', source: 'x', serves: ['build'], check: {kind: 'command', run}}]}, {goal: 'x', base});

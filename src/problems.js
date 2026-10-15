@@ -78,7 +78,11 @@ export function failureHead(output) {
 // v7.15.5, and the same piece told the same failure again is none (run9's
 // five-round chain completes, as before). failureKey is the failure alone,
 // the same across waves: the declines of one wave hold for the next.
-export const failureKey=p=>p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
+// v8 live 3: a card requirement's failure is its id and its category
+// (failureCategory in src/checks.js), never its wording: a round that only
+// changes what a failing check printed is no progress, and the same
+// requirement failing the same way is the same failure.
+export const failureKey=p=>p.facts?.requirement?.card&&p.facts.requirement.category?`${p.kind}|${p.facts.requirement.id}|${p.facts.requirement.category}`:p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
 export const progressKey=p=>p.facts?.failure?`${failureKey(p)}${p.flags?.routed_to?`|>${p.flags.routed_to}`:''}`:p.signature;
 
 // ---------- v7.15.6: a run failure is a requirement, routed by the plan ----------

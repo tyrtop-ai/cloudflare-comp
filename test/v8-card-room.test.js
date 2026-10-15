@@ -143,13 +143,16 @@ test('v8 room (v8 card repair): Clef vetting only annotates: every requirement s
   await room.start(GOAL, 40, {pipeline: 'v8'});
   await drain();
   const vet = calls.clef.find(c => Object.keys(c.questions).some(k => k.startsWith('requirement_')));
-  assert.deepEqual(Object.keys(vet.questions), ['requirement_0', 'requirement_1', 'requirement_2'], 'one batched call for all three');
-  assert.match(vet.questions.requirement_0.instructions, /Does the goal state or directly imply this requirement\?/);
+  // v8 live 3: the new question, the literal one beside it for comparison, and the internals question for a file check inside a script.
+  assert.deepEqual(Object.keys(vet.questions), ['requirement_0', 'requirement_literal_0', 'requirement_1', 'requirement_literal_1', 'requirement_2', 'requirement_literal_2', 'internal_2'], 'one batched call for all three');
+  assert.match(vet.questions.requirement_0.instructions, /Would someone who wrote this goal expect this to be true of the result\?/);
+  assert.match(vet.questions.requirement_literal_0.instructions, /Does the goal state or directly imply this requirement\?/);
   assert.equal(vet.state.goal, GOAL);
-  assert.equal(vet.state.requirements[2].source_found_in_goal, false);
+  assert.deepEqual(vet.state.requirements[2], {slot: 2, says: 'The script has a graphical window', check: 'file hello.py contains "window"'});
   assert.equal(events(room, 'card_requirement_dropped').length, 0, 'Clef never drops a requirement');
   assert.deepEqual(events(room, 'card_requirement_doubtful').map(e => e.body.slice(0, 48)), ['Clef doubted that the goal asks for R1 (p=0.300)', 'Clef doubted that the goal asks for R2 (p=0.300)', 'Clef doubted that the goal asks for R3 (p=0.010;']);
-  assert.deepEqual(room.snapshot().card.requirements.map(r => [r.id, r.vet_p, r.doubtful]), [['R1', 0.3, true], ['R2', 0.3, true], ['R3', 0.01, true]]);
+  assert.deepEqual(room.snapshot().card.requirements.map(r => [r.id, r.vet_p, r.vet_p_literal, r.doubtful, r.doubt_reason]), [['R1', 0.3, 0.3, true, 'not expected from the goal'], ['R2', 0.3, 0.3, true, 'not expected from the goal'], ['R3', 0.01, 0.01, true, 'not expected from the goal']]);
+  assert.equal(room.snapshot().card.requirements[2].vet_internal_p, 0.9);
   // R3 keeps failing (nothing draws a window); the person decides, and the hold names the doubted requirement first.
   assert.equal(room.snapshot().pause.kind, 'checks_failed');
   assert.match(room.snapshot().pause.text, /^These requirements keep failing and Clef doubted the goal asks for them: R3 \(p=0\.010\)\. Change or drop them with a follow-up prompt, or Continue\. /);

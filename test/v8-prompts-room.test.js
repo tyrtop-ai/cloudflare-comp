@@ -37,7 +37,7 @@ function promptsAreV8(calls, goal, room = null, extra = []) {
   for (const [key, q] of asked) {
     const n = Number(/_(\d+)/.exec(key)?.[1]);
     const expected = key === 'should_split' ? [CLEF.split, CLEF.split_retry] : key.startsWith('within_') ? [clefText('scope', {i: n})]
-      : key.startsWith('requirement_') ? [`About requirement ${n}: ${CLEF.requirement}`] : key.startsWith('fn_') ? [clefText('match', {j: n})]
+      : key.startsWith('requirement_literal_') ? [`About requirement ${n}: ${CLEF.requirement_literal}`] : key.startsWith('requirement_') ? [`About requirement ${n}: ${CLEF.requirement}`] : key.startsWith('internal_') ? [clefText('internal', {i: n})] : key.startsWith('fn_') ? [clefText('match', {j: n})]
       : key.startsWith('owner_') ? [clefText('owner', {i: n})] : key === 'inside' ? [CLEF.owns_need] : key.startsWith('names_') || key.startsWith('piece_') ? [null]
       // v8 card repair: the card's review (layer 3).
       : key.startsWith('covered_') ? [clefText('covered', {i: n})] : key.startsWith('exercises_') ? [clefText('exercises', {i: n})] : key.startsWith('implementable_') ? [clefText('implementable', {i: n})] : key.startsWith('kind_') ? [clefText('kind_fits', {i: n})] : key.startsWith('reference_') ? [clefText('reference', {i: n, j: Number(key.split('_')[2])})] : [];

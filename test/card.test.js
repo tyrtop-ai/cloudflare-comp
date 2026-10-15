@@ -251,7 +251,7 @@ test('applyVetting (v8 card repair): Clef reviews, it never deletes: each vetted
   assert.deepEqual(applyVetting(out, [{id: 'R3', p: 0.2}]).card.requirements.map(r => r.vet_p), [0.01, 0.49, 0.2]);
 });
 
-test('vetRequirements: one batched Clef call per 12, keyed requirement_<i>, with the goal in its state', async () => {
+test('vetRequirements: one batched Clef call per 12, keyed requirement_<i> (and requirement_literal_<i>), with the goal in its state', async () => {
   const calls = [];
   const env = {SPLIT_MODEL: '@cf/cloudflare/clef-flash', AI: {run: async (_m, input) => {
     calls.push(input);
@@ -261,13 +261,15 @@ test('vetRequirements: one batched Clef call per 12, keyed requirement_<i>, with
   const {ps, failed} = await vetRequirements(env, {goal: GOAL, requirements: reqs});
   assert.deepEqual(failed, []);
   assert.equal(calls.length, 2);
-  assert.deepEqual(Object.keys(calls[1].questions), ['requirement_12', 'requirement_13']);
+  // v8 live 3: the new question and, for one release, the literal one, in the same call.
+  assert.deepEqual(Object.keys(calls[1].questions), ['requirement_12', 'requirement_literal_12', 'requirement_13', 'requirement_literal_13']);
   assert.equal(calls[0].state.goal, GOAL);
-  // Clef sees the check in a few words, and whether the source was found in the goal.
-  assert.deepEqual(calls[0].state.requirements[0], {slot: 0, says: 'says 0', source: 'source 0', check: 'file GUIDE.md'});
-  assert.equal(calls[0].state.requirements[1].source_found_in_goal, false);
+  // Clef reads the goal, each says and its check with values as their kinds.
+  assert.deepEqual(calls[0].state.requirements[0], {slot: 0, says: 'says 0', check: 'file GUIDE.md'});
   assert.ok(calls[0].questions.requirement_0.instructions.endsWith(CLEF.requirement));
+  assert.ok(calls[0].questions.requirement_literal_0.instructions.endsWith(CLEF.requirement_literal));
   assert.equal(ps.find(x => x.id === 'R14').p, 0.1);
+  assert.equal(ps.find(x => x.id === 'R14').p_literal, 0.8);
   assert.deepEqual((await vetRequirements({MOCK_AI: 'true'}, {goal: GOAL, requirements: reqs.slice(0, 2)})).ps, [{id: 'R1', p: 1}, {id: 'R2', p: 1}]);
   // v8 S3 review: a batch Clef fails keeps its requirements, unvetted; the other batch stands.
   let n = 0;
@@ -275,7 +277,7 @@ test('vetRequirements: one batched Clef call per 12, keyed requirement_<i>, with
   assert.equal(half.failed.length, 1);
   assert.match(half.failed[0], /^R1, R2, .*R12: Clef returned no valid probability for requirement R1/);
   assert.deepEqual(half.ps.slice(0, 2), [{id: 'R1', unvetted: true}, {id: 'R2', unvetted: true}]);
-  assert.deepEqual(half.ps.slice(12), [{id: 'R13', p: 0.2}, {id: 'R14', p: 0.2}]);
+  assert.deepEqual(half.ps.slice(12), [{id: 'R13', p: 0.2, p_literal: 0.2}, {id: 'R14', p: 0.2, p_literal: 0.2}]);
   const thrown = await vetRequirements({...env, AI: {run: async () => { throw new Error('clef 503'); }}}, {goal: GOAL, requirements: reqs.slice(0, 1)});
   assert.deepEqual(thrown, {ps: [{id: 'R1', unvetted: true}], failed: ['R1: clef 503']});
   const {card: kept, doubtful} = applyVetting(v(good()).card, [{id: 'R1', unvetted: true}, {id: 'R2', p: 0.9}, {id: 'R3', p: 0.1}]);
@@ -386,16 +388,17 @@ test('writeCard: a requirement Clef finds unimplementable, or a check that looks
   assert.equal(asked.questions.implementable_3.instructions, CLEF.implementable.replace('{i}', '3'));
   assert.match(CLEF.implementable, /apart from computing values and exact wording\?/);
   // Clef reads the check with its expected values as their kinds, the statement, and each deliverable's interface facts.
-  assert.equal(asked.state.requirements[3].check, 'command convert <integer> <word> exits 1, writes <text> to stderr');
-  assert.ok(!JSON.stringify(asked.state).includes('Invalid unit'), 'no expected value reaches the implementable question');
+  // Live 3: "Invalid unit" is wording (no digit, no input): interface, so Clef reads it as workers do; the argument 100 is a value.
+  assert.equal(asked.state.requirements[3].check, 'command convert <integer> <word> exits 1, writes "Invalid unit" to stderr');
+  assert.ok(!JSON.stringify(asked.state.requirements.map(r => r.check)).includes('100'), 'no expected value or input reaches the implementable question');
   assert.deepEqual(asked.state.requirements[3].serves, ['convert']);
-  assert.ok(asked.state.deliverables.find(d => d.name === 'convert').interface.includes('R4 runs `convert <integer> <word>` and expects exit status 1 and a message on stderr'));
+  assert.ok(asked.state.deliverables.find(d => d.name === 'convert').interface.includes('R4 runs `convert <integer> <word>` and expects exit status 1 and a message on stderr containing "Invalid unit"'));
   // Judge checks are a reader's question, and a check that only finds a file has nothing to implement: neither is asked.
   assert.ok(!clefCalls.some(c => c.questions.implementable_2));
   assert.equal(calls.length, 2, 'the notes are substantive: the writer revises');
   const retry = JSON.parse(calls[1].messages[1].content.replace(/ \/no_think$/, ''));
   assert.deepEqual(retry.review_notes, [
-    'R4\'s check may need what its statement and contract leave unsaid (Clef p=0.10; command convert <integer> <word> exits 1, writes <text> to stderr): state in says the behaviour and interface the check needs, such as the exit status or the stream a message goes to, and keep its values in the check.',
+    'R4\'s check may need what its statement and contract leave unsaid (Clef p=0.10; command convert <integer> <word> exits 1, writes "Invalid unit" to stderr): state in says the behaviour and interface the check needs, such as the exit status or the stream a message goes to, and keep its values in the check.',
     'R4\'s check looks for wording the goal does not state, in an expected text: check what the goal asks instead, such as that a message appears on the stream it goes to ("stderr": true for an error message) and the exit status.']);
   const r4 = out.card.requirements.find(r => r.id === 'R4');
   assert.equal(r4.says, 'An invalid unit exits non-zero with an error on stderr');

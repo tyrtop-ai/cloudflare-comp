@@ -379,7 +379,8 @@ const SUM_SPLIT={summary:'Two pieces',pieces:[
   {label:'Readme',task:'Write README.md for the sum command',contracts:[SUM_CARD.deliverables[1]]}]};
 const LAX_SUM="let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{let t=0;for(const w of s.split(/\\s+/).filter(Boolean)){if(isNaN(Number(w))){console.error('bad input');process.exit(1);}t+=Number(w);}console.log(t);});\n";
 const STRICT_SUM="let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{let t=0;for(const w of s.split(/\\s+/).filter(Boolean)){if(isNaN(Number(w))){console.error('NaN token '+w);process.exit(1);}t+=Number(w);}console.log(t);});\n";
-const SECRETS=['zebra-quokka','NaN token','--strict-mode-flag','purple elephant',JSON.stringify(SECRET_STDIN).slice(1,-1)];
+// Live 3: "NaN token zebra-quokka" holds a line of stdin (a value); "--strict-mode-flag" is wording the README must hold (shown).
+const SECRETS=['zebra-quokka','NaN token','purple elephant',JSON.stringify(SECRET_STDIN).slice(1,-1)];
 
 test('no leaks: failure details a worker reads name what its deliverable did, never a check\'s expected values, inputs or question',async()=>{
   const {room,calls,drain}=v8Room({card:SUM_CARD,split:SUM_SPLIT,splitWhen:t=>t.startsWith(SUM_GOAL),
@@ -394,7 +395,7 @@ test('no leaks: failure details a worker reads name what its deliverable did, ne
   const toCmd=heard(calls,'Sum command'),toReadme=heard(calls,'Readme');
   assert.equal(toCmd.length,1);assert.equal(toReadme.length,1);
   assert.match(toCmd[0],/^Requirement R1 failed: Input that is not a number is reported as an error\. The check: a command check that runs `sum`\. What it observed: `sum`: exit 1; its error output \(stderr\) lacks a text the requirement looks for; stderr: "bad input"/);
-  assert.match(toReadme[0],/README\.md lacks a text the requirement looks for/);
+  assert.match(toReadme[0],/README\.md lacks "--strict-mode-flag", which the requirement looks for/,'wording is interface: the repair names it');
   assert.match(toReadme[0],/a reader judged that README\.md does not meet the requirement \(p=0\.10\)/);
   linted(room,calls);
   // What workers read after the failure: their model calls (inbox included), the tickets and the problem rows.
@@ -423,7 +424,7 @@ const ALL_CARD={card:1,summary:'Four parts',languages:['javascript','text'],
   requirements:[
     {id:'R1',says:'A code gets its label',source:'a small library',serves:['label'],check:{kind:'call',steps:[{call:'label',args:['QX-ARG-7731 ALPHA-WORD'],expect:'TOKEN-EXPECT-ALPHA'}]}},
     {id:'R2',says:'The command greets the names it reads',source:'a command',serves:['greet'],
-      check:{kind:'command',run:'greet',stdin:'STDIN-TOKEN-BRAVO\nECHO-LINE-TWO\n',files:{'data/names.txt':'FIXTURE-LINE-ONE\nFIXTURE-LINE-TWO\n'},expect:{stdout:'hello; TOKEN-CHARLIE-STDOUT'}}},
+      check:{kind:'command',run:'greet',stdin:'STDIN-TOKEN-BRAVO\nECHO-LINE-TWO\n',files:{'data/names.txt':'FIXTURE-LINE-ONE\nFIXTURE-LINE-TWO\n'},expect:{stdout:'hello 2; TOKEN-CHARLIE-STDOUT'}}},
     {id:'R3',says:'The service answers its route',source:'a service',serves:['srv'],check:{kind:'http',serve:'api',steps:[{method:'POST',path:'/notes-route',body:{text:'BODY-TOKEN-JULIET'},expect:{status:200,json_has:{saved:'JSON-TOKEN-MIKE'}}}]}},
     {id:'R4',says:'The page shows the opening hours',source:'a page',serves:['index.html'],check:{kind:'browser',serve:'site',steps:[{goto:'/'},{expect_text:'Open (Mon-Fri): HOTEL-HOURS 9-5'}]}},
     {id:'R5',says:'The benchmark test of the command passes',source:'a command',serves:['greet'],check:{kind:'command',run:'greet',stdin:'HIDDEN-STDIN-KILO\n',expect:{stdout:'HIDDEN-EXPECT-LIMA'}}}],
@@ -575,16 +576,17 @@ test('fileResult: markup in a markup file matches whatever the whitespace betwee
 test('workerDetail: built from what the check observed; expected values, inputs and the judge\'s question never reach a worker, its interface does',()=>{
   const cmd={kind:'command',run:'temp 100',argv:['temp','100'],stdin:'secret input line\nsecond SECRET-LINE\n',files:{'in.txt':'fixture body\nFIXTURE-TWO'},expect:{exit:0,stdout:'212; TOKEN-ALPHA',stdout_has:['212'],stderr_has:['bad value']}};
   // v8 live 2: a command is named by its argv shape (values as their kind); an exit status it did not expect is told with the one it expects and the streams it reads.
-  assert.equal(workerDetail(cmd,{observed:{what:'exit',exit:1,stdout:'',stderr:'ValueError: could not convert'}}),'`temp <integer>`: exit 1; the requirement expects exit status 0 and its output on stdout and a message on stderr; stderr: "ValueError: could not convert"');
+  // Live 3: "bad value" is wording (no digit, no input): the report names it; "212" is a value and stays hidden.
+  assert.equal(workerDetail(cmd,{observed:{what:'exit',exit:1,stdout:'',stderr:'ValueError: could not convert'}}),'`temp <integer>`: exit 1; the requirement expects exit status 0 and its output on stdout and a message on stderr containing "bad value"; stderr: "ValueError: could not convert"');
   // The runner's sentence (with what it expected) is never read: only the observed fields.
   assert.equal(workerDetail(cmd,{detail:'temp 100: printed "x", expected "212; TOKEN-ALPHA"',observed:{what:'stdout',exit:0,stdout:'x'}}),'`temp <integer>`: exit 0; its output is not what the requirement expects; printed "x"');
   // Partial echoes: one line of stdin, one line of an input file, one word of an expected value, case aside.
   assert.equal(workerDetail(cmd,{observed:{what:'stdout',exit:0,stdout:'got SECRET-LINE then FIXTURE-TWO and token-alpha'}}),'`temp <integer>`: exit 0; its output is not what the requirement expects; printed "got … then … and …"');
   assert.equal(workerDetail(cmd,{observed:{what:'timeout'}}),'`temp <integer>`: did not finish in time');
-  // The live CLI: exit 1 and stderr were unknowable; now they are told, and the expected wording is not.
+  // The live CLI: exit 1 and stderr were unknowable; now they are told, and (live 3) so is the wording it looks for.
   const unit={kind:'command',run:'python3 convert.py 100 X',argv:['python3','convert.py','100','X'],expect:{exit:1,stderr_has:['Invalid unit']}};
   const unitCard={requirements:[{id:'R4',serves:['convert'],check:unit}],deliverables:[{name:'convert',kind:'command',path:'convert.py',does:'converts a temperature'}]};
-  assert.equal(workerDetail(unit,{observed:{what:'exit',exit:0,stdout:'Unit must be C or F.\n',stderr:''}},unitCard),'`python3 convert.py <integer> <word>`: exit 0; the requirement expects exit status 1 and a message on stderr; printed "… must be C or F."');
+  assert.equal(workerDetail(unit,{observed:{what:'exit',exit:0,stdout:'Unit must be C or F.\n',stderr:''}},unitCard),'`python3 convert.py <integer> <word>`: exit 0; the requirement expects exit status 1 and a message on stderr containing "Invalid unit"; printed "Unit must be C or F."');
   const call={kind:'call',steps:[{call:'shout',args:['paren) CHARLIE-ARG; x | y'],expect:'DELTA-EXP'},{call:'label',args:[{a:'(KILO-NEST (x))'}],expect:'y'}]};
   assert.equal(workerDetail(call,{observed:{what:'returned',step:1,op:'shout',module:'lib.js',value:'"nope CHARLIE-ARG"'}}),'step 1: shout(…) in lib.js returned "nope …", which is not what the requirement expects');
   assert.equal(workerDetail(call,{observed:{what:'raised',step:2,op:'label',module:'lib.js',error:'Error: bad (KILO-NEST (x)) here',at:'lib.js:3'}}),'step 2: label(…) in lib.js raised Error: bad … here (at lib.js:3)','a value with unbalanced brackets is masked whole');
@@ -614,7 +616,9 @@ test('workerDetail: built from what the check observed; expected values, inputs 
   const judge={kind:'judge',path:'README.md',question:'Does it mention the purple elephant?'};
   assert.equal(workerDetail(judge,{detail:'Clef judged p=0.31: Does it mention the purple elephant?',observed:{what:'judge',p:0.31}}),'a reader judged that README.md does not meet the requirement (p=0.31)');
   const file={kind:'file',path:'README.md',has:['--strict-mode-flag']};
-  assert.equal(workerDetail(file,fileResult(file,new Map([['README.md','# r']]))),'README.md lacks a text the requirement looks for');
+  assert.equal(workerDetail(file,fileResult(file,new Map([['README.md','# r']]))),'README.md lacks "--strict-mode-flag", which the requirement looks for','wording a file must hold is named');
+  const fileValue={kind:'file',path:'README.md',has:['# r','--retries=7']};
+  assert.equal(workerDetail(fileValue,fileResult(fileValue,new Map([['README.md','# r']]))),'README.md lacks a text the requirement looks for','a value it must hold is not');
   // No observed fields: nothing of the detail is told.
   assert.equal(workerDetail(cmd,{detail:'temp 100: printed "212; TOKEN-ALPHA"'}),'`temp <integer>`: exit undefined; the check failed');
   // Masking happens before clipping: a long echo never ends in half a value.
@@ -624,7 +628,7 @@ test('workerDetail: built from what the check observed; expected values, inputs 
   // What is secret and what is interface, kind by kind.
   assert.deepEqual(checkSecrets(todo),['Sample task']);
   assert.deepEqual(checkAffordances(todo).sort(),['Add','Task','button']);
-  assert.deepEqual(checkSecrets(unit,unitCard),['["Invalid unit"]','Invalid unit','100'],'the exit status is no secret, the argument and the wording are');
+  assert.deepEqual(checkSecrets(unit,unitCard),['100'],'the exit status and the wording are no secret; the argument is');
   assert.deepEqual([...new Set(checkAffordances(unit,unitCard))].sort(),['convert','convert.py','python3']);
   assert.ok(!checkSecrets(http).includes('/notes'),'a route is no secret');
   assert.ok(checkSecrets(http).includes('remember the milk'));
@@ -642,11 +646,11 @@ test('interfaceFacts: the live cards\' interface goes into the contracts; their 
       {name:'server.js',kind:'file',path:'server.js',does:'serves the tickets'},{name:'notes',kind:'command',path:'notes.py',does:'keeps notes: add a note, or list them'}],
     run:[{id:'serve',static:true},{id:'api',run:'node server.js',argv:['node','server.js'],port:true,ready:'/'}],
     requirements:[
-      {id:'R1',says:'Tasks can be added and displayed',source:'a to-do list',serves:['index.html','script.js'],check:{kind:'browser',serve:'serve',steps:[{fill:{label:'Task',text:'VALUE-SAMPLE-TASK'}},{click:{role:'button',name:'Add'}},{expect_text:'VALUE-SAMPLE-TASK'},{click:{role:'checkbox',name:'VALUE-SAMPLE-TASK'}},{expect_count:{role:'list item',text:'VALUE-TALLY',n:1}}]}},
-      {id:'R2',says:'The CLI handles invalid unit inputs',source:'converts temperatures',serves:['convert'],check:{kind:'command',run:'python3 convert.py 100 X',argv:['python3','convert.py','100','X'],stdin:'VALUE-XYZZY-LINE',expect:{exit:1,stderr_has:['VALUE-INVALID-UNIT']}}},
-      {id:'R3',says:'Creating a ticket lists it',source:'create tickets',serves:['server.js'],check:{kind:'http',serve:'api',steps:[{method:'POST',path:'/tickets',body:{title:'VALUE-TITLE'},save:'t',expect:{status:201,json_has:{id:7}}},{method:'GET',path:'/tickets/$t',expect:{status:200,body_has:['VALUE-QWZX']}}]}},
-      {id:'R4',says:'A note is added',source:'notes',serves:['notes'],check:{kind:'command',run:'notes add "VALUE NOTE"',argv:['notes','add','VALUE NOTE'],files:{'in.txt':'VALUE-FIXTURE'},expect:{exit:0,stdout_has:['VALUE-ADDED']}}},
-      {id:'R5',says:'Notes are listed',source:'notes',serves:['notes'],check:{kind:'command',run:'notes list',argv:['notes','list'],expect:{stdout:'VALUE-LIST'}}},
+      {id:'R1',says:'Tasks can be added and displayed',source:'a to-do list',serves:['index.html','script.js'],check:{kind:'browser',serve:'serve',steps:[{fill:{label:'Task',text:'VALUE-SAMPLE-TASK'}},{click:{role:'button',name:'Add'}},{expect_text:'VALUE-SAMPLE-TASK'},{click:{role:'checkbox',name:'VALUE-SAMPLE-TASK'}},{expect_count:{role:'list item',text:'VALUE-TALLY-1',n:1}}]}},
+      {id:'R2',says:'The CLI handles invalid unit inputs',source:'converts temperatures',serves:['convert'],check:{kind:'command',run:'python3 convert.py 100 X',argv:['python3','convert.py','100','X'],stdin:'VALUE-XYZZY-LINE',expect:{exit:1,stderr_has:['VALUE-INVALID-UNIT-2']}}},
+      {id:'R3',says:'Creating a ticket lists it',source:'create tickets',serves:['server.js'],check:{kind:'http',serve:'api',steps:[{method:'POST',path:'/tickets',body:{title:'VALUE-TITLE'},save:'t',expect:{status:201,json_has:{id:7}}},{method:'GET',path:'/tickets/$t',expect:{status:200,body_has:['VALUE-QWZX-3']}}]}},
+      {id:'R4',says:'A note is added',source:'notes',serves:['notes'],check:{kind:'command',run:'notes add "VALUE NOTE"',argv:['notes','add','VALUE NOTE'],files:{'in.txt':'VALUE-FIXTURE'},expect:{exit:0,stdout_has:['VALUE-ADDED-4']}}},
+      {id:'R5',says:'Notes are listed',source:'notes',serves:['notes'],check:{kind:'command',run:'notes list',argv:['notes','list'],expect:{stdout:'VALUE-LIST-5'}}},
       {id:'R6',says:'Hidden',source:'x',serves:['notes'],hidden:true,check:{kind:'command',run:'notes secret-sub',argv:['notes','secret-sub'],expect:{exit:3}}},
       {id:'R7',says:'Kept untested',source:'x',serves:['index.html'],untested:true,check_error:'it must start with a single "/"',check:{kind:'untested',written:'{"goto":"https://VALUE.example/"}'}}]};
   const facts=interfaceFacts(card);

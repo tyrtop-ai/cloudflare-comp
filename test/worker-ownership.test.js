@@ -56,7 +56,8 @@ test('v8: the worker prompt is ROLE.worker with the file-block format, and its a
   assert.match(system,/the simplest one that works and say so in your summary/,'it owns the choices its contract leaves open');
   assert.match(system,/Refer to another part only by its contract name, written as its reference shows/);
   assert.match(system,/ask for it in your control block, and write meanwhile the files that do not depend on it/);
-  assert.match(system,/^=== FILE: <path> ===$/m);
+  // v8 live 3: one short worked answer of the exact shape, its control object on one line.
+  assert.match(system,/^=== FILE: notes\/overview ===\n.+\n=== END FILE ===\n=== CONTROL ===\n\{"summary": "[^"]+", "done": true\}$/m);
   assert.doesNotMatch(system,/LEAF CODE WRITER|Node\.js|require\(|JavaScript/);
   assert.equal(user.your_responsibility,'Format items for presentation');
   assert.deepEqual(result.files,[{path:'format.py',content:'def format_title(item):\n    return str(item["title"])'}]);
