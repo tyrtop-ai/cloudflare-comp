@@ -202,11 +202,12 @@ test('a blocked card keeps its text and needs no deliverable', () => {
 });
 
 // ------------------------------------------------------------ cardContracts
-test('cardContracts: each deliverable serves the requirements naming it, with examples from its checks', () => {
+test('cardContracts: each deliverable serves the requirements naming it, with only the examples its writer gave it', () => {
   const contracts = cardContracts(v(good()).card);
   assert.deepEqual(contracts.map(c => [c.name, c.kind, c.path, c.serves]), [['convert', 'command', 'convert.py', ['R1']], ['to_fahrenheit', undefined, 'temps.py', ['R2']], ['GUIDE.md', 'doc', 'GUIDE.md', ['R3']]]);
-  assert.deepEqual(contracts[0].examples, [{given: 'convert 100 C', expect: ['212']}]);
-  assert.deepEqual(contracts[1].examples, [{given: [0], expect: 32}, {given: [100], expect: 212}]);
+  // v8 S4b review: a check's values never become an example (S4a: a part that knows them can hard-code them).
+  assert.equal(contracts[0].examples, undefined, 'the command check shows no example');
+  assert.deepEqual(contracts[1].examples, [{given: [0], expect: 32}], 'the writer\'s own example only, not the call check\'s');
   assert.equal(contracts[2].examples, undefined, 'a judge check shows no example');
   assert.deepEqual(contracts[1].inputs, [{name: 'c', is: 'degrees Celsius'}]);
   // All 12 deliverables are kept (normalizeContracts keeps 8 for a split piece).
@@ -216,10 +217,11 @@ test('cardContracts: each deliverable serves the requirements naming it, with ex
   assert.equal(cardContracts(v(big).card).length, 12);
 });
 
-test('a stdin command check reads as its example', () => {
+test('a stdin command check never reads as an example', () => {
   const raw = good();
   raw.requirements[0].check = {kind: 'command', run: 'convert', stdin: '100 C', expect: {stdout: '212\n'}};
-  assert.deepEqual(cardContracts(v(raw).card)[0].examples, [{given: 'convert < 100 C', expect: '212\n'}]);
+  assert.equal(cardContracts(v(raw).card)[0].examples, undefined);
+  assert.ok(!JSON.stringify(cardContracts(v(raw).card)).includes('212'));
 });
 
 // ------------------------------------------------------------ vetting

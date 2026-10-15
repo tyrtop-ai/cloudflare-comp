@@ -4,13 +4,13 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
 import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine } from './card.js';
-import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
+import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { triggerText, RETRY, MESSAGES } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -32,6 +32,12 @@ import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
+// v8 S4b review: a Clef error judging a document is asked again after
+// these waits before it is infrastructure; a hold at checks_blocked runs
+// the checks again by the alarm after these, then waits for Continue.
+export const JUDGE_RETRY_MS = [500, 2000], CHECK_RETRY_MS = [30_000, 120_000, 600_000];
+// U10: an anchored requirement's key: its id and a hash of what it says.
+export const anchorKey = (id, says) => {let h=2166136261;for(const c of String(says??'')){h^=c.charCodeAt(0);h=Math.imul(h,16777619)>>>0;}return `${id}#${h.toString(16).padStart(8,'0')}`;};
 // The agent whose turn is running, for the span record: every model and Clef
 // call, git phase and Container run inside a turn is charged to its agent.
 const turnContext = new AsyncLocalStorage();
@@ -125,6 +131,8 @@ const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).m
 export const paramsIn = (s,name) => {const f=[...(s?.named||[]),...(s?.named||[]).filter(n=>n.type==='class').flatMap(n=>n.methods||[]),...(s?.default?.type==='function'?[s.default]:[]),...(s?.default?.members||[]),...(s?.default?.methods||[])].find(x=>x?.type!=='class'&&String(x?.name||'').replace(/^(?:static |get |set )/,'')===name&&Array.isArray(x.params));return f?f.params.map(String):null;};
 // One module's exports on one line, for the facts a worker hears.
 const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
+// v8 (S4b review): the same fact in contract terms, with no language syntax: the names a file provides.
+const providesLine = (p,surfaces) => `${p.split('/').pop()} provides: ${surfaces.get(p)?[...providedNames(surfaces.get(p))].join(', ')||'nothing by name':'nothing by name'}`;
 // What start() returned, as the Container describes it, holds something the
 // runner can call. An unparsed or depth-limited description is given the doubt.
 const apiCallable = d => ['function','class','unparsed'].includes(d?.type) || !!d?.members_truncated || (d?.members ? Object.values(d.members).some(apiCallable) : ['object','array'].includes(d?.type));
@@ -814,7 +822,7 @@ export class ControlRoom extends DurableObject {
       compiler: this.compilerSummary(),
       // v8 §1.3: the project card's revision (the card itself rides on the snapshot, and on a delta
       // whose card_rev differs), each requirement's last result (S4b fills it), and why a v8 room is held.
-      card_rev: this.cardRev(), requirement_status: this.read('requirement_status',{}), pause: this.read('paused_state',null)
+      card_rev: this.cardRev(), requirement_status: this.requirementStatus(), pause: this.read('paused_state',null)
     };
   }
   cardRev() { return query(this.db(),'SELECT COALESCE(MAX(rev),0) AS rev FROM card_revisions')[0].rev; }
@@ -3180,11 +3188,15 @@ export class ControlRoom extends DurableObject {
     const atomic=!this.manager(top);
     const gone=id=>{for(let x=this.node(id);x&&x.id!==top;x=x.parent?this.node(x.parent):null)if(['retired','failed'].includes(x.status))return true;return false;};
     const leaves=atomic?[n]:this.allNodes().filter(x=>x.id.startsWith(top+'.')&&!isRuntimeNode(x)&&!this.manager(x.id)&&!gone(x.id));
-    const found=[];
+    const found=[],stray=[],placedBy=new Map();
+    for(const leaf of leaves)for(const c of this.promisedOf(leaf.id))if(c.path&&!placedBy.has(c.path))placedBy.set(c.path,leaf);
     for(const leaf of leaves) {
       const own=new Set(this.promisedOf(leaf.id).map(c=>c.path).filter(Boolean));
       for(const f of deliveredFiles(this.files(leaf.id))) {
         if(buildPathError(f.path)||RUNTIME_GLUE.includes(f.path)&&!own.has(f.path))continue;
+        // v8 S4b review: a copy of a path another piece's contract places is
+        // never shipped (the gate refuses new ones; this is a file written before).
+        if(!atomic&&!own.has(f.path)&&placedBy.has(f.path)&&placedBy.get(f.path).id!==leaf.id){stray.push(`${f.path} (written by ${leaf.label}, placed by ${placedBy.get(f.path).label})`);continue;}
         const place=atomic||own.has(f.path),at=place?f.path:materializedPath(leaf.label,f.path,leaf.id);
         if(files.has(at)){found.push(`${at} (${leaf.label})`);continue;}
         files.set(at,await this.indexedContent(leaf.id,f.path));
@@ -3193,19 +3205,40 @@ export class ControlRoom extends DurableObject {
       }
     }
     if(found.length)this.event(top,'bundle_conflict',clip(`Two pieces place a file at the same path; the first is kept: ${found.join(', ')}.`,600));
+    if(stray.length)this.event(top,'bundle_stray',clip(`Left out of the project: a copy of a path another piece's contract places: ${stray.join(', ')}.`,600));
     return {files:new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),origin,placed};
   }
-  // U10: a check that has passed is never changed. The card's check of a
-  // requirement that ever passed is the one that passed (check_anchors).
+  // U10: a check that has passed is never changed. An anchor is the
+  // requirement as it passed (id, says, serves, check), keyed by its id and
+  // a hash of what it says (anchorKey): the card's check of that requirement
+  // is the one that passed. A requirement with the same id that says
+  // something else is another requirement, and an anchored one a later card
+  // leaves out is logged once as requirement_dropped.
   anchoredCard() {
     const card=this.read('card',null),anchors=this.read('check_anchors',{});
     if(!card)return null;
-    const moved=card.requirements.filter(r=>anchors[r.id]&&JSON.stringify(anchors[r.id])!==JSON.stringify(r.check));
+    const list=Object.values(anchors).filter(a=>a&&typeof a==='object'&&a.check&&typeof a.says==='string');
+    const same=(r,a)=>r.id===a.id&&r.says===a.says;
+    const moved=list.filter(a=>card.requirements.some(r=>same(r,a)&&JSON.stringify(r.check)!==JSON.stringify(a.check)));
+    const told=new Set(this.read('requirements_dropped',[]));
+    const gone=list.filter(a=>!card.requirements.some(r=>same(r,a))&&!told.has(anchorKey(a.id,a.says)));
+    if(gone.length) {
+      this.save('requirements_dropped',[...told,...gone.map(a=>anchorKey(a.id,a.says))]);
+      for(const a of gone)this.event('root','requirement_dropped',clip(`${a.id} (${a.says}) passed before and the current card leaves it out; its check is kept as it passed.`,400));
+    }
     if(!moved.length)return card;
-    const kept={...card,requirements:card.requirements.map(r=>anchors[r.id]?{...r,check:anchors[r.id]}:r)};
+    const kept={...card,requirements:card.requirements.map(r=>{const a=list.find(x=>same(r,x));return a?{...r,check:a.check}:r;})};
     this.save('card',kept);
-    this.event('root','check_anchored',clip(`A check that has passed is never changed; ${moved.map(r=>r.id).join(', ')} keep${moved.length>1?'':'s'} the check that passed.`,400));
+    this.event('root','check_anchored',clip(`A check that has passed is never changed; ${moved.map(a=>a.id).join(', ')} keep${moved.length>1?'':'s'} the check that passed.`,400));
     return kept;
+  }
+  // The requirement status as the dashboard reads it: a result older than
+  // the last change to a delivered file is marked stale.
+  requirementStatus() {
+    const st=this.read('requirement_status',{});
+    if(!Object.keys(st).length)return st;
+    const last=query(this.db(),"SELECT COALESCE(MAX(updated_at),0) AS t FROM artifact_files WHERE path NOT LIKE 'memory/%'")[0].t;
+    return Object.fromEntries(Object.entries(st).map(([k,v])=>[k,v&&last>v.ts?{...v,stale:true}:v]));
   }
   // The requirement table in a sentence, for a hold's text (the dashboard's; no worker reads it).
   checksSummary(head) {
@@ -3224,9 +3257,48 @@ export class ControlRoom extends DurableObject {
   // passes and what fails, never fails (Continue: a fresh set of rounds).
   checksExhausted(m, reason) {
     for(const p of this.problemsHeld(m))this.moveProblem(p,{status:'closed',outcome:'exhausted'});
+    // Once, with one text: a later pass while it holds only keeps Root waiting.
+    if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",m);return {held:true};}
     this.set('atomic_compile','');
     this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
     return this.holdChecks(m,'checks_exhausted',`Repair rounds ran out (${clip(reason,300)}).`,'Continue gives the repairs a fresh set of rounds.');
+  }
+  // Under v8, why a worker may not write a path: another piece's contract
+  // places it (the deepest such piece outside the writer's own line), and
+  // none of the writer's own contracts does. '' when it may.
+  placedElsewhere(id, path) {
+    if(!this.v8()||this.promisedOf(id).some(c=>c.path===path))return '';
+    const line=new Set();for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.add(x.id);
+    const owner=this.allNodes().filter(n=>!line.has(n.id)&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status)&&this.promisedOf(n.id).some(c=>c.path===path)).sort((a,b)=>b.id.length-a.id.length)[0];
+    return owner?`${path} is delivered by "${owner.label}", whose contract places it; refer to it there rather than writing a copy`:'';
+  }
+  // A hold at checks_blocked retries itself (S4b review): up to
+  // CHECK_RETRY_MS.length times, by the Durable Object's alarm, before it
+  // waits for Continue. Returns the hold's last sentence.
+  async scheduleCheckRetry() {
+    const n=Number(this.get('checks_retries','0'));
+    if(n>=CHECK_RETRY_MS.length||typeof this.ctx.storage?.setAlarm!=='function')return n?`They were retried ${n} time${n>1?'s':''} automatically; Continue retries them.`:'Continue retries them.';
+    const at=Date.now()+CHECK_RETRY_MS[n];
+    this.set('checks_retries',String(n+1));this.save('checks_retry',{at,n:n+1});
+    await this.ctx.storage.setAlarm(at);
+    const when=CHECK_RETRY_MS[n]>=60_000?`${Math.round(CHECK_RETRY_MS[n]/60_000)} min`:`${Math.round(CHECK_RETRY_MS[n]/1000)} s`;
+    this.event('root','checks_retry_scheduled',`The checks run again automatically in ${when} (retry ${n+1} of ${CHECK_RETRY_MS.length}).`);
+    return `They run again automatically in ${when} (retry ${n+1} of ${CHECK_RETRY_MS.length}); Continue retries them now.`;
+  }
+  // The alarm: a due retry of a room still held at checks_blocked is a Continue.
+  async alarm() {
+    const due=this.read('checks_retry',null),hold=this.read('paused_state',null);
+    if(!due)return;
+    if(hold?.kind!=='checks_blocked'){this.save('checks_retry',null);return;}
+    if(this.busy||this.get('status')==='running') {
+      if(typeof this.ctx.storage?.setAlarm==='function')await this.ctx.storage.setAlarm(Date.now()+30_000);
+      return;
+    }
+    this.save('checks_retry',null);
+    this.event('system','checks_retry',`Running the project card's checks again automatically (retry ${due.n} of ${CHECK_RETRY_MS.length}).`);
+    this.autoResume=true;
+    try {const cap=Number(this.get('budget','0'));await this.resume(cap>=ROOM_LIMITS.budget[0]&&cap<=ROOM_LIMITS.budget[1]?cap:20);}
+    finally {this.autoResume=false;}
   }
   // One Container exec for the card (mode 'card'): {report} or {infrastructure}.
   async runCard(id, input, files, plan, toolchains) {
@@ -3264,7 +3336,7 @@ export class ControlRoom extends DurableObject {
   async compileCard(id) {
     const card=this.anchoredCard(),rev=this.cardRev(),atomic=!this.manager(id);
     if(!card)return this.holdChecks(id,'checks_failed','The room has no project card to check.');
-    if(this.read('paused_state',null)?.kind==='checks_exhausted')return this.holdChecks(id,'checks_exhausted','Repair rounds ran out.','Continue gives the repairs a fresh set of rounds.');
+    if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     const {files,origin,placed}=await this.bundleFiles(id);
     const digest=await snapshotHash(files),input=`${digest}:card${rev}`;
     const finish=()=>{
@@ -3274,7 +3346,7 @@ export class ControlRoom extends DurableObject {
       return {passed:true};
     };
     if(this.read('compile_passed',null)?.input===input)return finish();
-    if(this.read('compile_blocked',null)?.input===input)return this.holdChecks(id,'checks_blocked','The Container could not run the checks on these unchanged files.','Continue retries them.');
+    if(this.read('compile_blocked',null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     const prior=this.read('compile_reported',null);
     if(prior?.input===input) {
       // Unchanged since its problems were reported: an atomic Root hears them
@@ -3298,9 +3370,18 @@ export class ControlRoom extends DurableObject {
     // §4.3: Clef judges each document, in parallel with the Container.
     const judging=Promise.all(card.requirements.filter(r=>r.check?.kind==='judge').map(async r=>{
       const content=files.get(r.check.path);
-      if(typeof content!=='string'||!content.trim())return [r.id,{passed:false,detail:`${r.check.path} is ${typeof content==='string'?'empty':'missing'}`}];
-      try {const j=await judgeRequirement(this.inferenceEnv(),{says:r.says,question:r.check.question,path:r.check.path,content});return [r.id,{passed:j.passed,p:j.p,detail:j.detail}];}
-      catch(e) {return [r.id,{passed:false,infrastructure:true,detail:`Clef could not judge ${r.check.path}: ${clip(e?.message||e,200)}`}];}
+      if(typeof content!=='string'||!content.trim()){const note=`${r.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [r.id,{passed:false,detail:note,observed:{what:'local',note}}];}
+      // A Clef error is retried twice, with backoff, before it is infrastructure.
+      for(let k=0;;k++) {
+        try {
+          const j=await judgeRequirement(this.inferenceEnv(),{says:r.says,question:r.check.question,path:r.check.path,content});
+          return [r.id,{passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p,...(j.over_cap?{note:`only the first ${JUDGE_PARTS*JUDGE_CHARS} characters of it were read`}:{})}}];
+        } catch(e) {
+          if(k>=JUDGE_RETRY_MS.length)return [r.id,{passed:false,infrastructure:true,detail:`Clef could not judge ${r.check.path} after ${k+1} tries: ${clip(e?.message||e,200)}`}];
+          this.event(id,'judge_retry',clip(`Clef could not judge ${r.check.path} for ${r.id} (${clip(e?.message||e,160)}); asked again in ${JUDGE_RETRY_MS[k]} ms.`,400));
+          await new Promise(done=>setTimeout(done,JUDGE_RETRY_MS[k]));
+        }
+      }
     }));
     const [judged,run]=await Promise.all([judging,container?this.runCard(id,input,files,plan,toolchains):null]);
     for(const [rid,x] of judged)results.set(rid,{id:rid,kind:'judge',frames:[],...x});
@@ -3313,11 +3394,13 @@ export class ControlRoom extends DurableObject {
     for(const r of card.requirements) {
       const res=results.get(r.id),passed=!res||res.infrastructure?null:!!res.passed;
       status[r.id]=statusEntry(passed,digest,res?.detail||'not run',passed||old[r.id]?.anchor?{anchor:true}:{});
-      if(passed&&!anchors[r.id])anchors[r.id]=r.check;
+      if(passed&&!anchors[anchorKey(r.id,r.says)])anchors[anchorKey(r.id,r.says)]={id:r.id,says:r.says,serves:r.serves,check:r.check};
     }
     this.save('requirement_status',status);this.save('check_anchors',anchors);
     const issues=report?.issues||[],failed=card.requirements.filter(r=>status[r.id].passed===false),untested=card.requirements.filter(r=>status[r.id].passed===null);
     const line=`${card.requirements.length-failed.length-untested.length} of ${card.requirements.length} requirement(s) pass`+(failed.length?`; failing: ${failed.map(r=>r.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(r=>r.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
+    const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure;
+    if(!blocked||failed.length||issues.length)this.set('checks_retries','0');
     if(!failed.length&&!untested.length&&!issues.length&&!report?.infrastructure_issue&&!run?.infrastructure) {
       const rows=query(this.db(),'SELECT goal_rev FROM card_revisions WHERE rev=?',rev)[0];
       this.save('compile_passed',{input,digest,goal_rev:rows?.goal_rev??1,card_rev:rev,ts:Date.now()});
@@ -3328,17 +3411,31 @@ export class ControlRoom extends DurableObject {
     }
     const items=checkProblems(card,results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name))});
     this.event(id,'checks_reported',clip(`The project card's checks: ${line}.`,900));
+    // Bench mode: a hidden requirement (the benchmark's own test) is never
+    // routed; when only hidden ones fail, the room ends benchmark_failed.
+    const hiddenFailed=failed.filter(r=>!routable(r));
+    if(!items.length&&hiddenFailed.length)return this.benchmarkFailed(id,hiddenFailed);
     if(!items.length) {
       // Only checks that could not run: nobody's work, the room waits for Continue.
       const why=run?.infrastructure||report?.infrastructure_issue||untested.map(r=>`${r.id}: ${status[r.id].detail}`).join('; ');
       this.set('compile_infrastructure',clip(why,950));
       this.save('compile_blocked',{node:id,input});
       this.event(id,'build_infrastructure',clip(why,950));
-      return this.holdChecks(id,'checks_blocked',`The checks could not all run: ${clip(why,300)}.`,'Continue retries them.');
+      return this.holdChecks(id,'checks_blocked',`The checks could not all run: ${clip(why,300)}.`,await this.scheduleCheckRetry());
     }
     if(atomic){this.atomicRepair(id,input,'check',items);return {reported:true};}
     this.reportChecks(id,input,items);
     return {reported:true};
+  }
+  // Bench mode: the benchmark's own tests failed and nothing visible is left
+  // to repair. Their details (test output, a nonce) reach no agent: the
+  // status keeps them, the room ends failed with benchmark_failed.
+  benchmarkFailed(id, reqs) {
+    this.set('atomic_compile','');
+    const text=`The benchmark's own tests failed (${reqs.map(r=>r.id).join(', ')}) and no requirement an agent may repair is left failing; their details stay in the requirement status and reach no agent.`;
+    this.holdRoom('benchmark_failed',text);
+    this.failAgent(id,`benchmark_failed: ${text}`);
+    return {failed:true};
   }
   // A split's failed requirements open in Root's own inbox as one report
   // wave, replacing the last run's (a decline carries over by failure, as
@@ -3699,7 +3796,7 @@ export class ControlRoom extends DurableObject {
   async boundaryView(id) {
     if(!this.manager(id)) {
       const files=await this.childModules(id),surfaces=surfacesOf(files);
-      return {exports:clip([...surfaces.keys()].map(p=>exportsLine(p,surfaces)).join(' | '),600)};
+      return {exports:clip([...surfaces.keys()].map(p=>this.v8()?providesLine(p,surfaces):exportsLine(p,surfaces)).join(' | '),600)};
     }
     let boundary=null;
     const b=this.builderOf(id);
@@ -4074,7 +4171,7 @@ export class ControlRoom extends DurableObject {
       if(!files.size)files=await this.childModules(id);
       const surfaces=surfacesOf(files),paths=[...new Set([...parties,...this.manager(id)?branchBoundary(files).exports:surfaces.keys()])].filter(p=>surfaces.has(p));
       seen.push(...surfaces.values());
-      lines.push(...paths.map(p=>exportsLine(p,surfaces)));
+      lines.push(...paths.map(p=>this.v8()?providesLine(p,surfaces):exportsLine(p,surfaces)));
     }
     lines.unshift(...fns.map(f=>promiseText(f,seen.find(s=>providedNames(s).has(f.name))||null)));
     const text=clip(lines.join(' | '),700);
@@ -5873,6 +5970,7 @@ export class ControlRoom extends DurableObject {
     // failed one comes back to Root as a problem it routes by serves.
     const checksPending=v8&&!n.parent&&allDone&&!pending&&!needsBuilder;
     const checked=checksPending?await this.compileCard(id):null,unchecked=checksPending&&!checked?.passed;
+    if(checked?.failed)return;
     const finished=allDone&&!pending&&!needsBuilder&&!unchecked;
     const staleTurn=this.wakeGeneration(id)!==seenWake;
     const shard=this.managerStub(id);
@@ -5933,7 +6031,7 @@ export class ControlRoom extends DurableObject {
     }
     try {
       // §1.4: Clef vets the writer's requirements; p < 0.5 drops one, and a batch Clef fails keeps its own, unvetted.
-      const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card)}),{card:vetted,dropped}=applyVetting(card,ps);
+      const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card).filter(routable)}),{card:vetted,dropped}=applyVetting(card,ps);
       if(failed.length)this.event(id,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
       for(const r of dropped)this.event(id,'card_requirement_dropped',clip(`Clef judged that the goal does not state or imply ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not in the goal':''}): ${r.says}`,600));
       if(!vettedUsable(vetted)){this.save('card_draft',null);return hold('card_failed','Clef dropped every requirement of the card, and no deliverable has an implicit one.');}
@@ -6183,7 +6281,8 @@ export class ControlRoom extends DurableObject {
         // (the review: a .gitignore paused the compile, a branch's
         // package.json turned its CommonJS into ES modules). Memory is
         // skipped below, as before.
-        const refused=action.files.map(f=>({f,why:f.path.startsWith('memory/')?null:writerPathError(f.path)})).filter(x=>x.why);
+        // v8 S4b review: a path another piece's contract places is that piece's: a copy is refused here, naming its owner.
+        const refused=action.files.map(f=>({f,why:f.path.startsWith('memory/')?null:writerPathError(f.path)||this.placedElsewhere(id,f.path)})).filter(x=>x.why);
         if(refused.length) {
           this.event(id,'file_refused',`Not written: ${refused.map(x=>x.why).join('; ')}`);
           action.files=action.files.filter(f=>!refused.some(x=>x.f===f));
@@ -6863,8 +6962,10 @@ export class ControlRoom extends DurableObject {
     }
     // v8 S4b: Continue on a room held at the card's checks runs them again;
     // after the repair rounds ran out, with a fresh set of rounds.
-    if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted'].includes(hold?.kind)) {
+    // A room saved under S3's v8_checks_pending hold runs the checks the same way.
+    if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted','v8_checks_pending'].includes(hold?.kind)) {
       this.save('paused_state',null);this.save('compile_reported',null);
+      if(!this.autoResume){this.set('checks_retries','0');this.save('checks_retry',null);}
       if(hold.kind==='checks_exhausted') {
         this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'rounds_exhausted:%'");
         this.set('repair_exhausted','');

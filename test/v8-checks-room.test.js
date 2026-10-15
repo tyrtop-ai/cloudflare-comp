@@ -10,7 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {liveRoom, events, twoWorkers, linkAndCompile, verifyCard, snapshotHash, fileBlocks} from './helpers/room.js';
 import {lintText, composedTexts} from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
-import {checkPlan, fileResult, workerDetail, checkSecrets, checkProblems, runNotes, callModule} from '../src/checks.js';
+import {checkPlan, fileResult, workerDetail, checkSecrets, maskSecrets, checkProblems, runNotes, callModule, routable} from '../src/checks.js';
 import {judgeRequirement, judgeParts, JUDGE_BAR} from '../src/model.js';
 import {CLEF, MESSAGES} from '../src/prompts.js';
 import {requirementText} from '../src/problems.js';
@@ -61,6 +61,11 @@ function roomData(room) {
   for(const p of room.problems('1=1'))out.push(p.facts?.requirement?.evidence,p.facts?.requirement?.check);
   return out.filter(x=>typeof x==='string'&&x);
 }
+// Every request a model got (system and user text), the card writer's,
+// Clef's vetting of the card and Clef's judging of a document aside (they
+// read the card, and a judge check's question, by design).
+const agentRequests=calls=>[...calls.raw.filter(r=>!r.system.includes('Your role: turn the goal into the project card')).map(r=>r.system+'\n'+r.text),
+  ...calls.clef.filter(c=>!Object.keys(c.questions).some(k=>k.startsWith('requirement_')||k==='judge')).map(c=>JSON.stringify(c))];
 function linted(room,calls) {
   const data=roomData(room),texts=calls.raw.flatMap(r=>composedTexts(JSON.parse(r.text.replace(/ \/no_think$/,'')),data));
   const problems=texts.flatMap((t,i)=>lintText(`composed ${i}`,t,{room:true}).map(x=>`${x}\n    in: ${t.slice(0,300)}`));
@@ -173,7 +178,7 @@ test('Python temperature CLI: a wrong output fails its command check, goes to th
   assert.match(rows[0].trail.find(t=>t.action==='assign')?.rule,/^R2[as]$/);
   const told=heard(calls,'Converter');
   assert.equal(told.length,1);
-  assert.equal(told[0],MESSAGES.requirement_repair({body:MESSAGES.check_failed({id:'R1',says:'Converting 100 degrees Celsius prints the Fahrenheit value',check:'a command check that runs temp',evidence:'temp: output lacks a text the requirement looks for; printed "100.0"'})}));
+  assert.equal(told[0],MESSAGES.requirement_repair({body:MESSAGES.check_failed({id:'R1',says:'Converting 100 degrees Celsius prints the Fahrenheit value',check:'a command check that runs temp',evidence:'temp: exit 0; its output lacks a text the requirement looks for; printed "….0"'})}),'the argument the check gave (100) is masked where the output echoes it');
   linted(room,calls);
   assert.equal(heard(calls,'Usage guide').length,0,'the guide piece is never told');
   assert.equal(calls.leaf.filter(u=>u.your_label==='Usage guide').length,1);
@@ -325,18 +330,93 @@ test('no leaks: failure details a worker reads name what its deliverable did, ne
   // Each piece heard only its own requirements.
   const toCmd=heard(calls,'Sum command'),toReadme=heard(calls,'Readme');
   assert.equal(toCmd.length,1);assert.equal(toReadme.length,1);
-  assert.match(toCmd[0],/^Requirement R1 failed: Input that is not a number is reported as an error\. The check: a command check that runs sum\. What it observed: sum: stderr lacks a text the requirement looks for; stderr was "bad input"/);
-  assert.match(toReadme[0],/README\.md does not contain a text the requirement looks for/);
+  assert.match(toCmd[0],/^Requirement R1 failed: Input that is not a number is reported as an error\. The check: a command check that runs sum\. What it observed: sum: exit 1; its error output lacks a text the requirement looks for; stderr: "bad input"/);
+  assert.match(toReadme[0],/README\.md lacks a text the requirement looks for/);
   assert.match(toReadme[0],/a reader judged that README\.md does not meet the requirement \(p=0\.10\)/);
   linted(room,calls);
   // What workers read after the failure: their model calls (inbox included), the tickets and the problem rows.
   const repairs=calls.leaf.slice(2).map(u=>JSON.stringify(u));
   assert.equal(repairs.length,2);
-  const read=[...repairs,...toCmd,...toReadme,...room.problems("stage='check'").map(p=>JSON.stringify([p.detail,p.facts,p.directive]))];
+  const read=[...repairs,...toCmd,...toReadme,...room.problems("stage='check'").map(p=>JSON.stringify([p.detail,p.facts,p.directive])),...agentRequests(calls)];
   for(const text of read)for(const secret of SECRETS)assert.ok(!text.includes(secret),`a worker could read "${secret}": ${text.slice(0,600)}`);
   // The dashboard keeps the whole detail.
   assert.match(events(room,'checks_reported')[0].body,/failing: R1, R2, R3/);
   assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
+});
+
+// ------------------------------------------------------------ no leaks, review round: every kind of check value
+// A call's arguments and expected value, a command's stdin, input file and
+// expected output, a request's path, a browser step's text, and a hidden
+// (benchmark) requirement's own values: none reaches any model request,
+// though every deliverable echoes some of them back in its first failure.
+const ALL_GOAL='A small library, a command, a page and a service, each checked by the card.';
+const ALL_CARD={card:1,summary:'Four parts',languages:['javascript','text'],
+  deliverables:[
+    {name:'label',kind:'function',path:'label.js',does:'formats a label for a code',params:['code']},
+    {name:'greet',kind:'command',path:'greet.js',does:'prints a greeting'},
+    {name:'index.html',kind:'page',path:'index.html',does:'the opening hours page'},
+    {name:'srv',kind:'command',path:'srv.js',does:'serves the routes'}],
+  run:[{id:'site',static:true},{id:'api',run:'srv',port:true,ready:'/'}],
+  requirements:[
+    {id:'R1',says:'A code gets its label',source:'a small library',serves:['label'],check:{kind:'call',steps:[{call:'label',args:['QX-ARG-7731 ALPHA-WORD'],expect:'TOKEN-EXPECT-ALPHA'}]}},
+    {id:'R2',says:'The command greets the names it reads',source:'a command',serves:['greet'],
+      check:{kind:'command',run:'greet',stdin:'STDIN-TOKEN-BRAVO\nECHO-LINE-TWO\n',files:{'data/names.txt':'FIXTURE-LINE-ONE\nFIXTURE-LINE-TWO\n'},expect:{stdout:'hello; TOKEN-CHARLIE-STDOUT'}}},
+    {id:'R3',says:'The service answers its route',source:'a service',serves:['srv'],check:{kind:'http',serve:'api',steps:[{method:'GET',path:'/secret-route-JULIET',expect:{status:200}}]}},
+    {id:'R4',says:'The page shows the opening hours',source:'a page',serves:['index.html'],check:{kind:'browser',serve:'site',steps:[{goto:'/'},{expect_text:'Open (Mon-Fri): HOTEL-HOURS 9-5'}]}},
+    {id:'R5',says:'The benchmark test of the command passes',source:'a command',serves:['greet'],check:{kind:'command',run:'greet',stdin:'HIDDEN-STDIN-KILO\n',expect:{stdout:'HIDDEN-EXPECT-LIMA'}}}],
+  decisions:[]};
+const ALL_SPLIT={summary:'Four pieces',pieces:[
+  {label:'Label',task:'Write label.js',contracts:[ALL_CARD.deliverables[0]]},{label:'Greeter',task:'Write greet.js',contracts:[ALL_CARD.deliverables[1]]},
+  {label:'Page',task:'Write index.html',contracts:[ALL_CARD.deliverables[2]]},{label:'Service',task:'Write srv.js',contracts:[ALL_CARD.deliverables[3]]}]};
+const ALL_FILES={
+  Label:['label.js',"function label(code) { throw new Error('cannot label ' + String(code).split(' ')[1]); }\nmodule.exports = { label };\n"],
+  Greeter:['greet.js',"const fs = require('fs');\nlet s = '';\nprocess.stdin.on('data', d => s += d).on('end', () => {\n  console.error('bad line: ' + s.split('\\n')[1]);\n  let first = '';\n  try { first = fs.readFileSync('data/names.txt', 'utf8').split('\\n')[0]; } catch {}\n  console.log(first + ' hello; nobody');\n});\n"],
+  Page:['index.html','<!doctype html><html><body><h1>Shop</h1><p>Hours: closed (Mon-Fri)</p></body></html>\n'],
+  Service:['srv.js',"require('http').createServer((q, r) => { if (q.url === '/') { r.end('up'); return; } r.writeHead(404); r.end('no ' + q.url); }).listen(process.env.PORT);\n"]};
+const ALL_TOKENS=['QX-ARG-7731','ALPHA-WORD','TOKEN-EXPECT-ALPHA','STDIN-TOKEN-BRAVO','ECHO-LINE-TWO','FIXTURE-LINE-ONE','FIXTURE-LINE-TWO','TOKEN-CHARLIE-STDOUT','secret-route-JULIET','HOTEL-HOURS','HIDDEN-STDIN-KILO','HIDDEN-EXPECT-LIMA'];
+
+test('no leaks (review): no call, stdin, input file, output, route, page text or hidden value reaches any model request, though the deliverables echo them',async()=>{
+  const {room,calls,drain}=v8Room({card:ALL_CARD,split:ALL_SPLIT,splitWhen:t=>t.startsWith(ALL_GOAL),
+    answers:Object.fromEntries(Object.entries(ALL_FILES).map(([label,[path,content]])=>[label,[wrote(path,content)]]))});
+  // Bench mode: R5 is the benchmark's own test (hidden), as its card source marks it.
+  const save=room.save.bind(room);
+  room.save=(key,value)=>save(key,key==='card'&&value?.requirements?{...value,requirements:value.requirements.map(r=>r.id==='R5'?{...r,hidden:true}:r)}:value);
+  await room.start(ALL_GOAL,40,{pipeline:'v8'});
+  await drain();
+  assert.ok(events(room,'checks_started').length>=1);
+  const st=room.snapshot().requirement_status;
+  assert.equal(st.R1.passed,false);assert.equal(st.R2.passed,false);assert.equal(st.R3.passed,false);assert.equal(st.R5.passed,false);
+  // Each visible failure reached its owner; the hidden one reached nobody.
+  assert.match(heard(calls,'Label')[0],/What it observed: step 1: label\(…\) in label\.js raised Error: cannot label …/);
+  assert.match(heard(calls,'Greeter')[0],/What it observed: greet: exit 0; its output is not what the requirement expects; printed "… …; nobody"; stderr: "bad …: …"/);
+  assert.match(heard(calls,'Service')[0],/What it observed: step 1 \(GET\): status 404, which is not what the requirement expects; the body was "no …"/);
+  if(!browserReady)assert.match(heard(calls,'Page')[0],/What it observed: step 2 \(expect_text\) failed; the page showed "Shop …: closed \(…\)"/);
+  assert.ok(!room.problems('1=1').some(p=>p.facts?.requirement?.id==='R5'),'a hidden requirement is never a problem');
+  // Every model request, the card writer's and its vetting aside: no token.
+  const read=[...agentRequests(calls),...room.problems('1=1').map(p=>JSON.stringify([p.detail,p.facts,p.directive,p.trail]))];
+  for(const text of read)for(const token of ALL_TOKENS)assert.ok(!text.includes(token),`a model could read "${token}": ${text.slice(Math.max(0,text.indexOf(token)-300),text.indexOf(token)+80)}`);
+  // The splitter's and workers' contracts carry no check value either.
+  assert.ok(calls.split.length>=1);
+  linted(room,calls);
+});
+
+test('bench mode: when only a hidden requirement fails, nothing is routed and the room ends failed with benchmark_failed',async()=>{
+  const card={card:1,summary:'A greeting command',languages:['javascript','text'],deliverables:[ALL_CARD.deliverables[1]],
+    requirements:[{id:'R1',says:'The command prints something',source:'a command',serves:['greet'],check:{kind:'command',run:'greet',expect:{exit:0}}},
+      {id:'R2',says:'The benchmark test passes',source:'a command',serves:['greet'],check:{kind:'command',run:'greet',stdin:'HIDDEN-STDIN-KILO\n',expect:{stdout:'HIDDEN-EXPECT-LIMA'}}}],decisions:[]};
+  const {room,calls,drain}=v8Room({card,answers:{'Root objective':[wrote('greet.js',"function main() { console.log('hi'); }\nmain();\n")]}});
+  const save=room.save.bind(room);
+  room.save=(key,value)=>save(key,key==='card'&&value?.requirements?{...value,requirements:value.requirements.map(r=>r.id==='R2'?{...r,hidden:true}:r)}:value);
+  await room.start('A command that greets.',10,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.get('status'),'failed');
+  assert.equal(room.snapshot().pause.kind,'benchmark_failed');
+  assert.match(room.snapshot().pause.text,/The benchmark's own tests failed \(R2\)/);
+  assert.deepEqual(passedOf(room),{R1:true,R2:false});
+  assert.equal(room.problems('1=1').length,0);
+  assert.equal(calls.leaf.length,1,'Root is not asked to repair a hidden test');
+  for(const text of agentRequests(calls))for(const token of ['HIDDEN-STDIN-KILO','HIDDEN-EXPECT-LIMA'])assert.ok(!text.includes(token));
+  assert.equal(routable({hidden:true}),false);assert.equal(routable({}),true);
 });
 
 // ------------------------------------------------------------ v7 is unchanged
@@ -389,28 +469,31 @@ test('checkPlan: command deliverables run by their own path, project checks apar
   assert.equal(fileResult({path:'x.json',json:true},new Map([['x.json','{']])).passed,false);
 });
 
-test('workerDetail: expected values, inputs, steps and the judge\'s question never reach a worker',()=>{
-  const cmd={kind:'command',run:'temp 100',argv:['temp','100'],stdin:'secret input line',files:{'in.txt':'fixture body'},expect:{exit:0,stdout:'212\n',stdout_has:['212'],stderr_has:['bad value']}};
-  assert.equal(workerDetail(cmd,'temp 100: exit 1, expected 0; stderr: ValueError: could not convert'),'temp: exit 1; stderr: ValueError: could not convert');
-  assert.equal(workerDetail(cmd,'temp 100: printed "100.0", expected "212"'),'temp: printed "100.0"');
-  assert.equal(workerDetail(cmd,'temp 100: output lacks "212"; printed "100.0"'),'temp: output lacks a text the requirement looks for; printed "100.0"');
-  assert.equal(workerDetail(cmd,'temp 100: stderr lacks "bad value"; stderr was ""'),'temp: stderr lacks a text the requirement looks for; stderr was ""');
-  assert.equal(workerDetail(cmd,'temp 100: exit 0, expected a failure exit (non-zero)'),'temp: exit 0');
-  const call={kind:'call',steps:[{call:'addTodo',args:['buy oat milk'],save:'t'},{call:'toggleTodo',args:['$t.id'],expect:{done:true}}]};
-  assert.equal(workerDetail(call,'toggleTodo("$t.id") in store.js returned {"done":false}, expected {"done":true} (at store.js:4)'),'toggleTodo(…) in store.js returned {"done":false} (at store.js:4)');
-  assert.equal(workerDetail(call,'addTodo("buy oat milk") in store.js raised TypeError: x is undefined'),'addTodo(…) in store.js raised TypeError: x is undefined');
-  const browser={kind:'browser',serve:'web',steps:[{goto:'/'},{fill:{label:'New task',text:'Water the plants'}},{expect_text:'Water the plants'}]};
-  assert.equal(workerDetail(browser,'step 3 (expect_text "Water the plants"): the page never showed "Water the plants" within 1500 ms'),'step 3 (expect_text): the page never showed a text the requirement looks for within 1500 ms');
-  assert.equal(workerDetail(browser,'step 2 (fill label "New task" with "Water the plants"): no element labelled New task'),'step 2 (fill): no element labelled …');
-  const http={kind:'http',serve:'api',steps:[{method:'POST',path:'/notes',body:{text:'remember the milk'},expect:{status:201,json_has:{text:'remember the milk'}}}]};
-  assert.equal(workerDetail(http,'step 1 POST /notes: status 500, expected 201'),'step 1 POST /notes: status 500');
-  assert.equal(workerDetail(http,'step 1 POST /notes: the JSON lacks {"text":"remember the milk"}; it was {}'),'step 1 POST /notes: the JSON lacks a text the requirement looks for; it was {}');
+test('workerDetail: built from what the check observed; expected values, inputs, steps and the judge\'s question never reach a worker',()=>{
+  const cmd={kind:'command',run:'temp 100',argv:['temp','100'],stdin:'secret input line\nsecond SECRET-LINE\n',files:{'in.txt':'fixture body\nFIXTURE-TWO'},expect:{exit:0,stdout:'212; TOKEN-ALPHA',stdout_has:['212'],stderr_has:['bad value']}};
+  assert.equal(workerDetail(cmd,{observed:{what:'exit',exit:1,stdout:'',stderr:'ValueError: could not convert'}}),'temp: exit 1; its exit status is not what the requirement expects; stderr: "ValueError: could not convert"');
+  // The runner's sentence (with what it expected) is never read: only the observed fields.
+  assert.equal(workerDetail(cmd,{detail:'temp 100: printed "x", expected "212; TOKEN-ALPHA"',observed:{what:'stdout',exit:0,stdout:'x'}}),'temp: exit 0; its output is not what the requirement expects; printed "x"');
+  // Partial echoes: one line of stdin, one line of an input file, one word of an expected value, case aside.
+  assert.equal(workerDetail(cmd,{observed:{what:'stdout',exit:0,stdout:'got SECRET-LINE then FIXTURE-TWO and token-alpha'}}),'temp: exit 0; its output is not what the requirement expects; printed "got … then … and …"');
+  assert.equal(workerDetail(cmd,{observed:{what:'timeout'}}),'temp: did not finish in time');
+  const call={kind:'call',steps:[{call:'shout',args:['paren) CHARLIE-ARG; x | y'],expect:'DELTA-EXP'},{call:'label',args:[{a:'(KILO-NEST (x))'}],expect:'y'}]};
+  assert.equal(workerDetail(call,{observed:{what:'returned',step:1,op:'shout',module:'lib.js',value:'"nope CHARLIE-ARG"'}}),'step 1: shout(…) in lib.js returned "nope …", which is not what the requirement expects');
+  assert.equal(workerDetail(call,{observed:{what:'raised',step:2,op:'label',module:'lib.js',error:'Error: bad (KILO-NEST (x)) here',at:'lib.js:3'}}),'step 2: label(…) in lib.js raised Error: bad … here (at lib.js:3)','a value with unbalanced brackets is masked whole');
+  const browser={kind:'browser',serve:'web',steps:[{goto:'/hours-page'},{expect_text:'Open (Mon-Fri): HOTEL-HOURS 9-5'}]};
+  assert.equal(workerDetail(browser,{detail:'step 2 (expect_text "Open (Mon-Fri): HOTEL-HOURS 9-5"): …',observed:{what:'step',step:2,op:'expect_text',page:'Closed HOTEL-HOURS soon',console:[]}}),'step 2 (expect_text) failed; the page showed "Closed … soon"');
+  assert.equal(workerDetail(browser,{observed:{what:'step',step:1,op:'goto',status:404,page:'Not found: /hours-page'}}),'step 1 (goto) failed: the page answered HTTP 404; the page showed "Not found: …"');
+  const http={kind:'http',serve:'api',steps:[{method:'POST',path:'/notes-SECRET',body:{text:'remember the milk'},expect:{status:201,json_has:{text:'remember the milk'}}}]};
+  assert.equal(workerDetail(http,{observed:{what:'status',step:1,op:'POST',status:500,body:'no /notes-SECRET for remember the milk'}}),'step 1 (POST): status 500, which is not what the requirement expects; the body was "no … for …"');
   const judge={kind:'judge',path:'README.md',question:'Does it mention the purple elephant?'};
-  assert.equal(workerDetail(judge,'Clef judged p=0.31: Does it mention the purple elephant?'),'a reader judged that README.md does not meet the requirement (p=0.31)');
+  assert.equal(workerDetail(judge,{detail:'Clef judged p=0.31: Does it mention the purple elephant?',observed:{what:'judge',p:0.31}}),'a reader judged that README.md does not meet the requirement (p=0.31)');
   const file={kind:'file',path:'README.md',has:['--strict-mode-flag']};
-  assert.equal(workerDetail(file,'README.md does not contain "--strict-mode-flag"'),'README.md does not contain a text the requirement looks for');
-  // Anything left of a check is masked.
-  assert.equal(workerDetail(cmd,'temp 100: it said fixture body and secret input line'),'temp: it said … and …');
+  assert.equal(workerDetail(file,fileResult(file,new Map([['README.md','# r']]))),'README.md lacks a text the requirement looks for');
+  // No observed fields: nothing of the detail is told.
+  assert.equal(workerDetail(cmd,{detail:'temp 100: printed "212; TOKEN-ALPHA"'}),'temp: exit undefined; the check failed');
+  // Masking happens before clipping: a long echo never ends in half a value.
+  const long=maskSecrets('x'.repeat(290)+' TOKEN-ALPHA',checkSecrets(cmd));
+  assert.ok(!long.includes('TOKEN'));
   assert.deepEqual(checkSecrets(judge),['Does it mention the purple elephant?']);
 });
 
@@ -420,7 +503,7 @@ test('checkProblems: a failed requirement is a run problem routed by serves and 
     {id:'R2',says:'The page loads',source:'a page',serves:['index.html'],check:{kind:'browser',serve:'web',steps:[{goto:'/'}]}},
     {id:'R3',says:'ok',source:'x',serves:['temp'],check:{kind:'file',path:'temp.py'}}]};
   const results=new Map([
-    ['R1',{passed:false,detail:'temp 100: output lacks "212"; printed "100.0" (at components/c-1/conv.py:3)',frames:[{path:'components/c-1/conv.py',line:3,fn:'to_f'},{path:'/usr/lib/x.py',line:1,fn:''}],output:'to_fahrenheit was called'}],
+    ['R1',{passed:false,detail:'temp 100: output lacks "212"; printed "100.0" (at components/c-1/conv.py:3)',observed:{what:'stdout_has',exit:0,stdout:'100.0',at:'components/c-1/conv.py:3'},frames:[{path:'components/c-1/conv.py',line:3,fn:'to_f'},{path:'/usr/lib/x.py',line:1,fn:''}],output:'to_fahrenheit was called'}],
     ['R2',{passed:false,infrastructure:true,detail:'not run: the browser did not start'}],
     ['R3',{passed:true}]]);
   const origin=p=>p==='components/c-1/conv.py'?{owner:'root.1.2',owner_path:'conv.py'}:null;
@@ -428,9 +511,9 @@ test('checkProblems: a failed requirement is a run problem routed by serves and 
   assert.equal(items.length,2);
   const [run,load]=items;
   assert.equal(run.kind,'run');
-  assert.equal(run.detail,'R1 (Converting 100 prints 212): temp: output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
+  assert.equal(run.detail,'R1 (Converting 100 prints 212): temp: exit 0; its output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
   assert.equal(run.facts.requirement.check,'a command check that runs temp');
-  assert.equal(run.facts.requirement.evidence,'temp: output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
+  assert.equal(run.facts.requirement.evidence,'temp: exit 0; its output lacks a text the requirement looks for; printed "100.0" (at components/c-1/conv.py:3)');
   assert.deepEqual(run.parties,[{path:'components/c-1/conv.py',owner:'root.1.2',owner_path:'conv.py',digest:'',role:'site'}]);
   assert.deepEqual(run.facts.requirement.names,['temp','to_fahrenheit']);
   assert.deepEqual(run.facts.requirement.frames,[{path:'components/c-1/conv.py',fn:'to_f',line:3}]);
@@ -446,16 +529,16 @@ test('checkProblems: a failed requirement is a run problem routed by serves and 
   assert.equal(requirementText(run.facts.requirement),said);
 });
 
-test('judgeRequirement: Clef yes/no on the file, the bar at 0.6, a long file in two parts, and an error is not a failure',async()=>{
+test('judgeRequirement: Clef yes/no on the file, the bar at 0.6, the whole document in parts of 6,000 up to 4, and an error is not a failure',async()=>{
   const asked=[];
   const env=p=>({AI:{run:async(_m,input)=>{asked.push(input);return {answers:{judge:{noul:typeof p==='function'?p(input):p}}};}}});
   assert.equal(JUDGE_BAR,0.6);
-  assert.deepEqual(await judgeRequirement(env(0.6),{says:'s',question:'Is it clear?',path:'A.md',content:'# A\n'}),{passed:true,p:0.6,detail:''});
+  assert.deepEqual(await judgeRequirement(env(0.6),{says:'s',question:'Is it clear?',path:'A.md',content:'# A\n'}),{passed:true,p:0.6,parts:1,over_cap:false,detail:''});
   assert.equal(asked[0].questions.judge.type,'noul');
   assert.equal(asked[0].questions.judge.instructions,`${CLEF.judge} Specifically: Is it clear?`);
   assert.deepEqual(asked[0].state,{requirement:'s',file:{path:'A.md',text:'# A\n'}});
-  assert.deepEqual(await judgeRequirement(env(0.31),{says:'s',question:'Is it clear?',path:'A.md',content:'x'}),{passed:false,p:0.31,detail:'Clef judged p=0.31: Is it clear?'});
-  // A long file: cut at the last heading before 6,000 characters; either part may pass.
+  assert.equal((await judgeRequirement(env(0.31),{says:'s',question:'Is it clear?',path:'A.md',content:'x'})).detail,'Clef judged p=0.31: Is it clear?');
+  // Cut at the last heading before 6,000 characters; a part may pass.
   const long=`# One\n${'a'.repeat(4000)}\n## Two\n${'b'.repeat(4000)}\n`;
   const parts=judgeParts(long);
   assert.equal(parts.length,2);
@@ -463,6 +546,14 @@ test('judgeRequirement: Clef yes/no on the file, the bar at 0.6, a long file in 
   asked.length=0;
   const r=await judgeRequirement(env(input=>input.state.file.text.startsWith('## Two')?0.8:0.2),{says:'s',question:'q',path:'L.md',content:long});
   assert.equal(r.passed,true);assert.equal(asked.length,2);
+  // The whole document up to 4 parts; past them, the detail says so.
+  const huge='# A\n'+'x'.repeat(30000);
+  assert.deepEqual(judgeParts(huge).map(x=>x.length),[6000,6000,6000,6000]);
+  assert.equal(judgeParts(huge).left,6004);
+  asked.length=0;
+  const h=await judgeRequirement(env(0.1),{says:'s',question:'q',path:'H.md',content:huge});
+  assert.equal(asked.length,4);assert.equal(h.over_cap,true);
+  assert.match(h.detail,/only its first 24000 characters \(4 parts\) were read, 6004 more were not$/);
   await assert.rejects(judgeRequirement({AI:{run:async()=>({answers:{}})}},{says:'s',question:'q',path:'A.md',content:'x'}),/no valid probability/);
 });
 
@@ -480,4 +571,117 @@ test('runNotes: how to run, the requirement table with the snapshot, and the dec
   assert.match(text,/\| R2 \| fail: Clef judged p=0\.20: q \| Guide \| judge \|/);
   assert.match(text,/\| R3 \| untested: not run \| Later \| browser \|/);
   assert.match(text,/- Celsius in, Fahrenheit out\./);
+});
+
+// ------------------------------------------------------------ S4b review: the holds, anchors, stale results, the gate, S3's hold
+test('review: a transient Clef error while judging is asked again, and the room completes',async()=>{
+  let fail=1;
+  const {room,calls,drain}=liveRoom({card:()=>README_CARD,clef:input=>{if(input.questions.judge&&fail-->0)throw new Error('Clef 503 transient');return clefFor({judge:readmeJudge})(input);},
+    leaf:scripted({'Root objective':[wrote('README.md',GOOD_README)]})});
+  await room.start(README_GOAL,10,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.get('status'),'complete',events(room).slice(-8).map(e=>`${e.kind}: ${e.body.slice(0,200)}`).join('\n'));
+  assert.equal(events(room,'judge_retry').length,1);
+  assert.match(events(room,'judge_retry')[0].body,/Clef 503 transient.*asked again in 500 ms/);
+  assert.equal(calls.leaf.length,1);
+});
+
+test('review: a checks_blocked hold retries itself by the alarm (30 s, 2 min, 10 min), then waits for Continue',async()=>{
+  const JS_CARD={...TEMP_CARD,languages:['javascript','text'],deliverables:[{...TEMP_CARD.deliverables[0],path:'temp.js'},TEMP_CARD.deliverables[1]]};
+  let down=4;
+  const executor={build:async req=>{if(down-->0)throw new Error('Container is not running');return verifyCard({...req,snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
+  const {room,ctx,drain}=v8Room({card:JS_CARD,executor,answers:{'Root objective':[blocks([
+    {path:'temp.js',content:'function main() { console.log(String(Number(process.argv[2]) * 9 / 5 + 32)); }\nmain();\n'},{path:'USAGE.md',content:'# Usage\n\nRun `node temp.js 100`.\n'}])]}});
+  const alarms=[];ctx.storage.setAlarm=at=>{alarms.push(at-Date.now());};
+  await room.start(TEMP_GOAL,10,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.snapshot().pause.kind,'checks_blocked');
+  assert.match(room.snapshot().pause.text,/They run again automatically in 30 s \(retry 1 of 3\); Continue retries them now\.$/);
+  for(const [i,ms] of [[1,30_000],[2,120_000],[3,600_000]].map(([n,ms])=>[n,ms])) {
+    assert.ok(Math.abs(alarms[i-1]-ms)<2000,`retry ${i} in ${alarms[i-1]} ms`);
+    await room.alarm();
+    await drain();
+  }
+  // Three retries spent, still down: the hold waits for Continue.
+  assert.equal(events(room,'checks_retry').length,3);
+  assert.equal(alarms.length,3);
+  assert.equal(room.snapshot().pause.kind,'checks_blocked');
+  assert.match(room.snapshot().pause.text,/They were retried 3 times automatically; Continue retries them\.$/);
+  await room.resume(10);
+  await drain();
+  assert.equal(room.get('status'),'complete');
+});
+
+test('review: when the rounds run out the hold is applied once, with one text',async()=>{
+  let n=0;
+  const {room,drain}=v8Room({card:README_CARD,judge:readmeJudge,answers:{'Root objective':[()=>wrote('README.md',`# Project ${++n}\n`)]}});
+  await room.start(README_GOAL,40,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.snapshot().pause.kind,'checks_exhausted');
+  assert.equal(events(room,'checks_exhausted').length,1);
+  assert.equal(events(room,'repair_exhausted').length,1);
+  assert.match(events(room,'checks_exhausted')[0].body,/^Repair rounds ran out \(.+\)\./);
+});
+
+test('review: anchors are keyed by id and statement: a reused id is another requirement, a dropped one is logged',async()=>{
+  const {room,drain}=v8Room({card:README_CARD,judge:readmeJudge,answers:{'Root objective':[wrote('README.md',GOOD_README)]}});
+  await room.start(README_GOAL,10,{pipeline:'v8'});
+  await drain();
+  const anchors=room.read('check_anchors',{});
+  assert.deepEqual(Object.keys(anchors).map(k=>k.split('#')[0]).sort(),['R1','R2','R3']);
+  const card=room.read('card',null);
+  // A later card drops R1 and gives R2's id to another statement with another check.
+  room.save('card',{...card,requirements:[{...card.requirements[1],says:'Something else',check:{kind:'file',path:'README.md',has:['new']}},card.requirements[2]]});
+  const k=room.anchoredCard();
+  assert.deepEqual(k.requirements.map(r=>[r.id,r.says,r.check.kind]),[['R2','Something else','file'],['R3','The README explains how to run the project','judge']]);
+  assert.deepEqual(events(room,'requirement_dropped').map(e=>e.body.split(' ')[0]),['R1','R2']);
+  room.anchoredCard();
+  assert.equal(events(room,'requirement_dropped').length,2,'logged once');
+});
+
+test('review: results from older files are stale, in the snapshot and in RUN.md',async()=>{
+  const {room,drain}=v8Room({card:README_CARD,judge:readmeJudge,answers:{'Root objective':[wrote('README.md',GOOD_README)]}});
+  await room.start(README_GOAL,10,{pipeline:'v8'});
+  await drain();
+  assert.ok(!Object.values(room.snapshot().requirement_status).some(x=>x.stale));
+  await new Promise(r=>setTimeout(r,5));
+  await room.putFile('root','README.md',GOOD_README+'\nMore.\n');
+  assert.ok(Object.values(room.snapshot().requirement_status).every(x=>x.stale));
+  const notes=(await room.appFiles()).files[0].content;
+  assert.match(notes,/\| R1 \| stale \(passed on snapshot `[0-9a-f]{16}`, before these files changed\) \|/);
+  assert.match(notes,/0 of 3 pass\./);
+  assert.match(runNotes({goal:'g',digest:'NEWDIGEST0000000000',passed:false},{requirements:[{id:'R1',says:'converts',check:{kind:'command'}}]},{R1:{passed:true,digest:'OLDDIGEST',detail:''}}),/\| R1 \| stale \(passed on snapshot `OLDDIGEST`/);
+});
+
+test('review: a piece that writes another piece\'s placed path is refused, naming the owner, and no stray copy ships',async()=>{
+  const GOAL='A notes page and a guide for it.';
+  const card={card:1,summary:'x',languages:['text'],deliverables:[{name:'GUIDE.md',kind:'doc',path:'GUIDE.md',does:'the guide'},{name:'NOTES.md',kind:'doc',path:'NOTES.md',does:'notes'}],
+    requirements:[{id:'R1',says:'The guide has a usage line',source:'a guide',serves:['GUIDE.md'],check:{kind:'file',path:'GUIDE.md',has:['Usage']}},{id:'R2',says:'The notes exist',source:'a notes page',serves:['NOTES.md'],check:{kind:'file',path:'NOTES.md'}}],decisions:[]};
+  const split={summary:'2',pieces:[{label:'Guide',task:'Write GUIDE.md',contracts:[card.deliverables[0]]},{label:'Notes',task:'Write NOTES.md',contracts:[card.deliverables[1]]}]};
+  const {room,calls,drain}=v8Room({card,split,splitWhen:t=>t.startsWith(GOAL),answers:{Guide:[wrote('GUIDE.md','# Guide\n\nUsage: open it.\n')],
+    Notes:[blocks([{path:'NOTES.md',content:'# Notes\n'},{path:'GUIDE.md',content:'# Hijacked guide\n'}])]}});
+  await room.start(GOAL,20,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.get('status'),'complete');
+  const notes=room.children('root').find(c=>c.label==='Notes');
+  assert.deepEqual(room.files(notes.id).map(f=>f.path),['NOTES.md']);
+  assert.match(events(room,'file_refused')[0].body,/GUIDE\.md is delivered by "Guide", whose contract places it/);
+  const app=await room.appFiles();
+  assert.deepEqual(app.files.map(f=>f.path),['.recursive/RUN.md','.recursive/card.json','GUIDE.md','NOTES.md']);
+  linted(room,calls);
+});
+
+test('review: a room saved under S3\'s v8_checks_pending hold runs the checks on Continue and clears the banner',async()=>{
+  const {room,drain}=v8Room({card:README_CARD,judge:readmeJudge,answers:{'Root objective':[wrote('README.md',GOOD_README)]}});
+  const real=room.compileCard.bind(room);
+  room.compileCard=async id=>{room.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);room.holdRoom('v8_checks_pending','S3 hold');return {held:true};};
+  await room.start(README_GOAL,10,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.snapshot().pause.kind,'v8_checks_pending');
+  room.compileCard=real;
+  await room.resume(10);
+  await drain();
+  assert.equal(room.get('status'),'complete');
+  assert.equal(room.snapshot().pause,null);
+  assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
 });

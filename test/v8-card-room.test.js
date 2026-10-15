@@ -70,7 +70,8 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   const promise = room.promisedOf('root');
   assert.deepEqual(promise, cardContracts(s.card));
   assert.deepEqual(promise.map(c => [c.name, c.kind, c.path, c.serves]), [['README.md', 'doc', 'README.md', ['R1']], ['hello', 'command', 'hello.py', ['R2']]]);
-  assert.deepEqual(promise[1].examples, [{given: 'python3 hello.py', expect: ['Hello']}]);
+  // v8 S4b review: a check never becomes an example (only the writer's own examples are the contract's).
+  assert.equal(promise[1].examples, undefined);
   assert.ok(!promise.some(c => c.name === 'start'));
   // The splitter heard Root's contracts (v8 S6: contracts_you_deliver, under the v8 splitter prompt); the split admitted a doc contract piece.
   assert.deepEqual(calls.split[0].contracts_you_deliver.map(c => c.name), ['README.md', 'hello']);

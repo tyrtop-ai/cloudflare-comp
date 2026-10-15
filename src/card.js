@@ -466,24 +466,19 @@ export function applyVetting(card, ps, bar = 0.5) {
 // ------------------------------------------------------------ cardContracts (§2.4)
 // The examples a deliverable's checks show: a call step with expect, and a
 // command check's line and expected output.
-function checkExamples(check, d) {
-  if (check?.kind === 'call') return check.steps.filter(s => s.call === d.name && 'expect' in s).map(s => ({given: s.args, expect: s.expect}));
-  if (check?.kind === 'command') {
-    const expect = check.expect?.stdout ?? check.expect?.stdout_has;
-    return expect === undefined ? [] : [{given: check.stdin ? `${check.run} < ${check.stdin}` : check.run, expect}];
-  }
-  return [];
-}
 // Root's contracts: each deliverable, serving the requirements that list it,
-// with the acceptance examples its checks show (the worker meets them in its
-// own contract, never the check itself). Up to 12, as the card holds them.
+// with the examples the card writer gave that deliverable and nothing else.
+// v8 S4b review: a requirement's check (its call arguments and expected
+// values, its stdin, expected output, input files and steps) never becomes
+// an example: every contract reaches the splitter and the workers, and a
+// part that knows a check's values can hard-code them (S4a). The examples a
+// writer states are the contract itself; an implicit check is built from
+// them (withImplicit), never the other way round. Up to 12, as the card holds them.
 export function cardContracts(card) {
   const reqs = card?.requirements || [];
   return (card?.deliverables || []).map(d => {
-    const mine = reqs.filter(r => r.serves.includes(d.name)), examples = [...(d.examples || [])];
-    for (const r of mine) for (const e of checkExamples(r.check, d))
-      if (examples.length < 4 && !examples.some(x => JSON.stringify(x) === JSON.stringify(e))) examples.push(e);
-    return normalizeContract({...d, kind: kindOf(d), examples, serves: mine.map(r => r.id)}, {v8: true, serves: true});
+    const mine = reqs.filter(r => r.serves.includes(d.name));
+    return normalizeContract({...d, kind: kindOf(d), examples: [...(d.examples || [])].slice(0, 4), serves: mine.map(r => r.id)}, {v8: true, serves: true});
   }).filter(Boolean);
 }
 // The card's non-text languages: those whose files a code piece delivers.

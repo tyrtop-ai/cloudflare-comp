@@ -93,7 +93,8 @@ function treeMarkup(n,index,top=false) {
 // place of Root's task, which under v8 is the goal as the user wrote it.
 const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.name}(${(i.params||[]).join(', ')})`;
 // v8 S4b: passed null is a check that could not run (infrastructure): untested.
-const requirementState=(r,status)=>{const st=status?.[r.id];return typeof st?.passed==='boolean'?st.passed?'pass':'fail':'untested';};
+// S4b review: a result from before the delivered files last changed is stale (the snapshot marks it).
+const requirementState=(r,status)=>{const st=status?.[r.id];return typeof st?.passed!=='boolean'?'untested':st.stale?'stale':st.passed?'pass':'fail';};
 function cardMarkup(card,status={}) {
   if(!card)return '<p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p>';
   const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}</li>`;
@@ -108,7 +109,7 @@ function renderCard(s) {
   const reqs=s.card?.requirements||[],count=state=>reqs.filter(r=>requirementState(r,s.requirement_status)===state).length;
   const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>`:'';
   $('card').innerHTML=held+cardMarkup(s.card,s.requirement_status);
-  if($('card-verdict'))$('card-verdict').textContent=s.card?`${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
+  if($('card-verdict'))$('card-verdict').textContent=s.card?`${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
 }
 function nodeDetail(n,index) {
   const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
