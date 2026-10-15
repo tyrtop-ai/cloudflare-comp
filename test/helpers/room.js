@@ -8,10 +8,10 @@ import {tmpdir} from 'node:os';
 process.env.BUILD_RUNNER_WORKDIR=tmpdir();
 register('../cloudflare-loader.mjs',import.meta.url);
 const {ControlRoom}=await import('../../src/index.js');
-const {verifyBuild,verifyCard}=await import('../../container/build-runner.mjs');
+const {verifyBuild}=await import('../../container/build-runner.mjs');
 const {snapshotHash}=await import('../../src/build-verification.js');
 const {materializedPath}=await import('../../src/assembly.js');
-export {ControlRoom,verifyBuild,verifyCard,snapshotHash,materializedPath};
+export {ControlRoom,verifyBuild,snapshotHash,materializedPath};
 
 export class Sql {constructor(db){this.db=db||new DatabaseSync(':memory:');}exec(s,...p){if(!p.length&&!/^\s*select/i.test(s)){this.db.exec(s);return{toArray:()=>[]};}const q=this.db.prepare(s);const rows=/^\s*select/i.test(s)?q.all(...p):(q.run(...p),[]);return{toArray:()=>rows};}}
 export class Store {constructor(){this.repos=new Map();}async create(name){this.repos.set(name,new Map());return{name,remote:'https://test/'+name,branch:'main'};}async read(name,path){return this.repos.get(name)?.get(path)??null;}async write({name,path,content}){this.repos.get(name).set(path,content);return{commit:'c'.repeat(40)};}}
@@ -77,6 +77,8 @@ const { start } = require('./index.js');
 `;
 
 // ------------------------------------------------------------------ rooms
+// v8 S4b: a card verification (mode 'card') runs the real verifyCard.
+export const {verifyCard}=await import('../../container/build-runner.mjs');
 // A live room with a scripted linker, runner and coverage check. Any other
 // model request fails the request (and so the turn, or, for a manager's
 // model, the decision: its defaults apply). leaf(user, n) answers a
