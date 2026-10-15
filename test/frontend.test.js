@@ -51,8 +51,8 @@ test('current HTML displays concurrent agent count',()=>{
 });
 
 test('HTML uses versioned JS and CSS asset URLs',()=>{
-  assert.match(html, /src="\/app\.js\?v=7\.15\.14"/);
-  assert.match(html, /href="\/styles\.css\?v=7\.15\.14"/);
+  assert.match(html, /src="\/app\.js\?v=7\.15\.14\.1"/);
+  assert.match(html, /href="\/styles\.css\?v=7\.15\.14\.1"/);
 });
 
 test('v7.13: the split threshold control defaults to 70%',()=>{
@@ -406,4 +406,56 @@ test('v7.15.14: the pieces-per-split control sits after Recursion depth, is loga
   assert.equal(context.countSetting('max-children'),2,'what Start and Continue send');
   // A room saved before v7.15.14 has no max_children: the box keeps its default.
   assert.equal(renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}}).get('max-children-value').value,'7');
+});
+
+// A limit reached flashes red: a count control at its floor or ceiling, and a
+// status cell when the run reaches a limit.
+test('a count control at its ceiling or clamped, and a status cell at a limit, flash red',()=>{
+  const elements=renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}}),{context}=elements;
+  const classes=new Map();
+  for(const el of elements.values()){const set=new Set();classes.set(el.id,set);el.classList={add:c=>set.add(c),remove:c=>set.delete(c)};}
+  const flashed=id=>classes.get(id).has('flash-limit');
+  const slider=elements.get('max-depth'),box=elements.get('max-depth-value');
+  slider.value=500;fire(slider,'input');
+  assert.ok(!flashed('max-depth-value'),'a value inside the bounds does not flash');
+  slider.value=1000;fire(slider,'input');
+  assert.ok(flashed('max-depth-value')&&flashed('max-depth'),'the ceiling flashes the box and the slider');
+  classes.get('max-depth-value').clear();
+  box.value='5000';fire(box,'change');
+  assert.ok(flashed('max-depth-value'),'a typed value clamped to the ceiling flashes');
+  classes.get('max-depth-value').clear();
+  box.value='7';fire(box,'change');
+  assert.ok(!flashed('max-depth-value'));
+  // The status strip: every slot busy, then a new limit event.
+  const base={status:'running',settings:{parallel:2,max_agents:64,max_depth:10},max_parallel:2,agents:[],files:[],events:[]};
+  context.render({...base,active_agents:['root.1']});
+  assert.ok(!flashed('active-parallel'));
+  context.render({...base,active_agents:['root.1','root.2']});
+  assert.ok(flashed('active-parallel'),'all slots busy flashes ACTIVE / LIMIT');
+  context.render({...base,active_agents:[],events:[{id:9,kind:'limit',body:'Maximum recursion depth reached; split rejected in full.'}]});
+  assert.ok(flashed('depth'),'a depth limit event flashes MAX DEPTH');
+  context.render({...base,active_agents:[],events:[{id:9,kind:'limit',body:'Maximum recursion depth reached; split rejected in full.'},{id:10,kind:'paused',body:'Inference budget ended or strands are waiting; continue to resume.'}]});
+  assert.ok(flashed('steps'),'the turn budget running out flashes TURNS');
+});
+
+// The ownership tree saves as a standalone SVG: one circle per agent (builders
+// are not drawn), the compiler above Root, filled when done, labels clipped.
+test('Save as SVG draws the ownership tree as a standalone image',()=>{
+  assert.match(html,/<button type="button" class="secondary tree-save" id="save-tree"[^>]*>Save as SVG<\/button>/);
+  const elements=renderWithPage(true),{context}=elements;
+  const agents=[{id:'root',parent:null,label:'Root objective',status:'waiting',phase:'manager'},
+    {id:'root.1',parent:'root',label:'Entry module',status:'done',phase:'implement'},
+    {id:'root.2',parent:'root',label:'Ticket operations and storage',status:'waiting',phase:'manager'},
+    {id:'root.2.1',parent:'root.2',label:'Create ticket',status:'done',phase:'implement'},
+    {id:'root.2.2',parent:'root.2',label:'Temporary builder',status:'done',phase:'implement'},
+    {id:'root.3',parent:'root',label:'Temporary builder',status:'done',phase:'implement'},
+    {id:'root.4',parent:'root',label:'Compiler',status:'waiting',phase:'implement'}];
+  const svg=context.treeSvg(agents);
+  assert.match(svg,/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+  assert.equal((svg.match(/<circle /g)||[]).length,5,'Root, two pieces, one leaf and the compiler; no builders');
+  assert.match(svg,/>Root<\/text>/);
+  assert.match(svg,/>Compiler<\/text>/);
+  assert.match(svg,/>Ticket operatio…<\/text>/,'long labels are clipped');
+  assert.match(svg,/stroke-dasharray="3 3"/,'the compiler hangs above Root on a dashed line');
+  assert.equal(context.treeSvg([]),'');
 });

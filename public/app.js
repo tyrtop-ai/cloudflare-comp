@@ -139,10 +139,49 @@ function drawPath() {
   }
   svg.innerHTML=lines;
 }
+// The ownership tree as a standalone SVG image (the cheapest format: vector,
+// a few KB, opens in any browser): circles by role, filled when done, the
+// compiler above Root, elbow connectors and short labels, in the page's colours.
+function treeSvg(agents) {
+  if(!agents?.length)return '';
+  const index=treeIndex(agents),root=agents.find(n=>!n.parent)||agents[0],X=96,Y=76,P=40,R=9;
+  const css=(k,d)=>{try{return getComputedStyle(document.documentElement).getPropertyValue(k).trim()||d;}catch{return d;}};
+  const C={bg:css('--bg','#ffffff'),fg:css('--fg','#1a1a1a'),line:css('--border','#cfcfcf'),muted:css('--muted','#6b6b6b'),manager:css('--link','#0b57c9'),worker:css('--fg','#1a1a1a'),compiler:css('--muted','#6b6b6b'),bad:css('--bad','#c4473f')};
+  const kids=n=>(index.kids.get(n.id)||[]).filter(c=>!isBuilder(c)&&!isCompiler(c)),pos=new Map();let leaf=0,deepest=0;
+  const place=(n,d)=>{const ks=kids(n);ks.forEach(k=>place(k,d+1));deepest=Math.max(deepest,d);pos.set(n.id,{x:ks.length?(pos.get(ks[0].id).x+pos.get(ks.at(-1).id).x)/2:(leaf++)*X,y:d*Y});};
+  place(root,1);
+  const comp=(index.kids.get(root.id)||[]).find(isCompiler),top=comp?0:Y,at=id=>{const p=pos.get(id);return {x:p.x+P,y:p.y-top+P};};
+  if(comp)pos.set(comp.id,{x:pos.get(root.id).x,y:0});
+  let lines='',nodes='';
+  const visit=n=>{const ks=kids(n),p=at(n.id);if(ks.length){const bar=p.y+Y/2,xs=ks.map(k=>at(k.id).x);
+    lines+=`<path d="M${p.x} ${p.y+R}V${bar}M${Math.min(...xs)} ${bar}H${Math.max(...xs)}${xs.map(x=>`M${x} ${bar}V${bar+Y/2-R}`).join('')}"/>`;}ks.forEach(visit);};
+  visit(root);
+  if(comp){const a=at(comp.id),b=at(root.id);lines+=`<path d="M${a.x} ${a.y+R}V${b.y-R}" stroke-dasharray="3 3"/>`;}
+  for(const n of agents.filter(a=>pos.has(a.id))) {
+    const role=isCompiler(n)?'compiler':index.role(n),p=at(n.id),color=n.status==='failed'?C.bad:C[role]||C.fg,done=n.status==='done'||(isCompiler(n)&&current?.compiler?.passed);
+    const label=String(n.parent?n.label:'Root').slice(0,15)+(String(n.label).length>15&&n.parent?'…':'');
+    nodes+=`<g><title>${esc(`${n.id} · ${n.label} · ${role} · ${n.status}`)}</title><circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${done?color:C.bg}" stroke="${color}" stroke-width="2"/><text x="${p.x}" y="${p.y+R+13}">${esc(label)}</text></g>`;
+  }
+  const w=Math.max(1,leaf)*X-X+2*P,h=deepest*Y-top+P+30;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"><rect width="100%" height="100%" fill="${C.bg}"/><g fill="none" stroke="${C.line}" stroke-width="1.5">${lines}</g><g font-size="10" fill="${C.muted}" text-anchor="middle">${nodes}</g></svg>`;
+}
 function showTree(agents) {
   $('hierarchy').innerHTML=renderTree(agents);
   if($('node-detail'))$('node-detail').innerHTML=renderDetail(agents);
   drawPath();
+}
+// The status cells flash once when the run reaches a limit: every slot busy,
+// the agent cap, the depth cap, or a new limit event (agent or depth cap, no
+// capacity for a split, the turn budget, repair rounds exhausted).
+let limitState=null,lastLimitEvent=null;
+const LIMIT_EVENTS=/^(?:limit|split_capacity_blocked|repair_exhausted)$/;
+function flashLimits(s) {
+  const c=s.settings||{},agents=s.agents||[],depth=Math.max(0,...agents.map(n=>n.id.split('.').length-1));
+  const now={'active-parallel':(s.active_agents?.length||0)>=(s.max_parallel||Infinity),'agent-count':!!c.max_agents&&agents.length>=c.max_agents,'depth':!!c.max_depth&&depth>=c.max_depth};
+  const events=(s.events||[]).filter(e=>LIMIT_EVENTS.test(e.kind)||e.kind==='paused'&&/budget/i.test(e.body||'')),last=events.at(-1)?.id??null;
+  if(limitState){for(const [id,on] of Object.entries(now))if(on&&!limitState[id])flashLimit($(id));
+    if(last!=null&&last!==lastLimitEvent){const e=events.at(-1);flashLimit($(/depth/i.test(e.body||'')?'depth':/agent cap|no space|capacity/i.test(e.body||'')?'agent-count':e.kind==='paused'?'steps':'status'));}}
+  limitState=now;lastLimitEvent=last;
 }
 function render(s) {
   current=s;
@@ -155,6 +194,7 @@ function render(s) {
   $('steps').textContent=s.step??0;
   $('agent-count').textContent=s.agents?.length||0;
   $('depth').textContent=Math.max(0,...(s.agents||[]).map(n=>n.id.split('.').length-1));
+  flashLimits(s);
   if($('build-verdict')) {
     const b=s.build;
     $('build-verdict').textContent=s.build_infrastructure?'EXECUTOR UNAVAILABLE':!b?'NOT RUN':b.passed?'BUILD PASSED':'BUILD FAILED';
@@ -210,6 +250,10 @@ function logValue(id,pos) {const [lo,hi]=boundsOf(id);return Math.max(lo,Math.mi
 function logPosition(id,value) {const [lo,hi]=boundsOf(id),x=Math.max(lo,Math.min(hi,Number(value)||lo));return hi>lo?Math.round(LOG_STEPS*Math.log(x/lo)/Math.log(hi/lo)):0;}
 function countSetting(id) {const [lo,hi]=boundsOf(id),v=Math.round(Number(numberOf(id)?.value));return Number.isFinite(v)&&v>0?Math.max(lo,Math.min(hi,v)):lo;}
 const setCount=(id,value)=>{const box=numberOf(id),slider=$(id);if(box)box.value=value;if(slider)slider.value=logPosition(id,value);};
+// A short red flash where a limit is reached: a count control at its floor or
+// ceiling, a status cell when the run hits one (restarted on each hit).
+function flashLimit(el) {if(!el?.classList)return;el.classList.remove('flash-limit');void el.offsetWidth;el.classList.add('flash-limit');}
+const atBound=(id,v)=>{const [lo,hi]=boundsOf(id);return v<=lo||v>=hi;};
 const ranges=['budget','parallel-limit','max-agents','max-depth','max-children','split-threshold'];
 for(const id of ranges) {
   const input=$(id), display=numberOf(id);
@@ -218,8 +262,8 @@ for(const id of ranges) {
     const sync=()=>{display.textContent=input.value+'%';};
     input.addEventListener('input',sync);sync();
   } else {
-    input.addEventListener('input',()=>{display.value=logValue(id,input.value);controlsDirty=true;});
-    display.addEventListener('change',()=>{setCount(id,countSetting(id));controlsDirty=true;});
+    input.addEventListener('input',()=>{const v=logValue(id,input.value),was=Number(display.value);display.value=v;controlsDirty=true;if(atBound(id,v)&&v!==was){flashLimit(display);flashLimit(input);}});
+    display.addEventListener('change',()=>{const typed=Math.round(Number(display.value)),v=countSetting(id);setCount(id,v);controlsDirty=true;if(typed!==v||atBound(id,v)){flashLimit(display);flashLimit(input);}});
     input.value=logPosition(id,display.value);
   }
 }
@@ -265,6 +309,11 @@ $('export').addEventListener('click',async()=>{
 // Getting the code out: the linked application as a ZIP, or as a GitHub branch
 // and pull request. The result (or error) stays under the buttons; refresh() never clears it.
 const exportNote=(html,isError=false)=>{const el=$('export-result');if(el){el.className=`${isError?'error':'helper'} export-result`;el.innerHTML=html;}};
+$('save-tree')?.addEventListener('click',()=>{
+  const svg=treeSvg(current?.agents);
+  if(!svg){showError('No agents yet: start a run to draw the tree.');return;}
+  const url=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));const a=document.createElement('a');a.href=url;a.download=`ownership-tree-${room.slice(0,8)}.svg`;a.click();URL.revokeObjectURL(url);
+});
 $('download-app')?.addEventListener('click',async()=>{
   try {
     exportNote('Packing the application…');
