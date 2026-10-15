@@ -236,8 +236,8 @@ export async function verifyBuild(request,{runStage=run}={}) {
     let pkg={};try {pkg=files['package.json']?JSON.parse(files['package.json']):{};}catch(e){issues.push({path:'package.json',detail:'Invalid package.json: '+e.message});passed=false;}
     async function check(label,cmd,args,ms=20000,stdin='') {
       if(!passed)return;
-      const r=await runStage(cmd,args,folder,ms,stdin);
-      checks.push({name:label,exit_code:r.code,timed_out:r.timedOut,log:String(r.log||'').slice(-4000)});
+      const began=Date.now(),r=await runStage(cmd,args,folder,ms,stdin);
+      checks.push({name:label,exit_code:r.code,timed_out:r.timedOut,ms:Date.now()-began,log:String(r.log||'').slice(-4000)});
       if(r.code!==0||r.timedOut){
         passed=false;
         if(label==='install') {
@@ -265,7 +265,7 @@ export async function verifyBuild(request,{runStage=run}={}) {
     if(passed && installDecision.required)
       await check('install','npm',[files['package-lock.json']?'ci':'install','--ignore-scripts','--no-audit','--no-fund','--prefer-offline',
         '--fetch-retries=0','--fetch-timeout=12000','--loglevel=http',...(files['package-lock.json']?[]:['--no-package-lock'])],INSTALL_TIMEOUT_MS);
-    else if(passed)checks.push({name:'install-skipped',exit_code:0,timed_out:false,log:installDecision.reason});
+    else if(passed)checks.push({name:'install-skipped',exit_code:0,timed_out:false,ms:0,log:installDecision.reason});
     // JS syntax does not validate imports/exports. Load Root's glue through
     // Node's actual module loader before tests or fallback checks. Deliberately
     // skip raw source when a compiler is responsible for JSX/TS/CSS imports.
@@ -289,7 +289,7 @@ export async function verifyBuild(request,{runStage=run}={}) {
     // In the absence of tests or a build script, the app must at least execute.
     if(passed && !scripts.build&&!scripts.test&&!scripts.smoke&&!runtimeLoader){
       if(scripts.start)await check('start','npm',['run','start'],10_000,'help\nexit\n');
-      else if(files['index.html'])checks.push({name:'static-html',exit_code:0,log:'HTML entrypoint available; no browser smoke check supplied'});
+      else if(files['index.html'])checks.push({name:'static-html',exit_code:0,ms:0,log:'HTML entrypoint available; no browser smoke check supplied'});
       else {passed=false;issues.push({path:'package.json',detail:'No executable build/test/smoke/start command'});}
     }
     // Allow Root to inspect the actual compiled artifact inventory, not just logs.

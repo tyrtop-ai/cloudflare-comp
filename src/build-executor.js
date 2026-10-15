@@ -13,12 +13,13 @@ function isTransientStartupFailure(error) {
 
 // exec() ordinarily waits for a starting container. A transient startup RPC
 // error can still race with start(); retry only that class of failure.
-export async function execAfterStartup(container,command,options,{delays=STARTUP_RETRY_DELAYS_MS,wait=sleep}={}) {
+export async function execAfterStartup(container,command,options,{delays=STARTUP_RETRY_DELAYS_MS,wait=sleep,onRetry=()=>{}}={}) {
   for(let attempt=0;;attempt++) {
     try {return await container.exec(command,options);}
     catch(error) {
       if(attempt>=delays.length||!isTransientStartupFailure(error))throw error;
       console.warn(`Build container exec not ready (attempt ${attempt+1}/${delays.length+1}): ${String(error?.message||error).slice(0,280)}`);
+      onRetry(attempt+1);
       await wait(delays[attempt]);
     }
   }
@@ -63,7 +64,11 @@ export class BuildExecutor extends DurableObject {
     if(!container)throw new Error('BUILD_EXECUTORS is not bound to a Cloudflare Container');
     // Wrangler uses the default Container scheduling policy, which defines the
     // image and size in wrangler.jsonc. Do not pass durable_object-only options.
-    if(!container.running)await container.start();
+    // Timing for the room's span record: a container that was not running
+    // when the build arrived was started for it (cold).
+    const began=Date.now(),cold=!container.running;
+    if(cold)await container.start();
+    const started=Date.now();
     // This method is documented on the Durable Object Container API. It is a
     // performance optimization, not a precondition for executing a build.
     if(typeof container.setInactivityTimeout==='function') {
@@ -71,7 +76,8 @@ export class BuildExecutor extends DurableObject {
       catch(error) {console.warn('Unable to configure Container inactivity timeout:',String(error?.message||error));}
     }
     const input=JSON.stringify({fingerprint,snapshot_hash,files:Object.fromEntries(entries)});
-    const process=await execAfterStartup(container,BUILD_COMMAND,{stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+    let retries=0;
+    const process=await execAfterStartup(container,BUILD_COMMAND,{stdin:'pipe',stdout:'pipe',stderr:'pipe'},{onRetry:()=>{retries++;}});
     const output=await waitForBuildOutput(process,(async()=>{
       if(!process.stdin)throw new Error('Build process stdin is unavailable');
       const writer=process.stdin.getWriter();
@@ -86,6 +92,6 @@ export class BuildExecutor extends DurableObject {
     const result=JSON.parse(decode(output.stdout));
     if(result.snapshot_hash!==snapshot_hash||result.fingerprint!==fingerprint)throw new Error('Executor attestation mismatch');
     await this.ctx.storage.put('latest',{fingerprint,snapshot_hash,passed:result.passed,ts:Date.now()});
-    return result;
+    return {...result,executor:{cold,start_ms:started-began,exec_ms:Date.now()-started,startup_retries:retries}};
   }
 }

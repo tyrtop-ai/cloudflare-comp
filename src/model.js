@@ -10,7 +10,29 @@ const HYBRID = '@cf/qwen/qwen3-30b-a3b-fp8';
 // the others take max_tokens. The Qwen3 hybrid has a soft switch instead.
 const EFFORT = Object.freeze({'@cf/qwen/qwen3.8-27b':'low','@cf/deepseek-ai/deepseek-v4-flash-0731':'none'});
 
-export async function run(env, system, user, maxTokens, {noThink=false}={}) {
+// Every Workers AI call goes through traced(): env.TRACE, when the room gives
+// one (inferenceEnv), records it as a span with its timing, the token counts
+// Workers AI returns in usage (when it does) and whether it was a retry. A
+// trace that throws never fails the call.
+export function usageOf(output) {
+  const u=output?.usage;
+  if(!u||typeof u!=='object')return {};
+  const n=x=>Number.isFinite(Number(x))&&x!==null&&x!==''?Number(x):undefined;
+  const out={prompt_tokens:n(u.prompt_tokens??u.input_tokens),completion_tokens:n(u.completion_tokens??u.output_tokens),
+    reasoning_tokens:n(u.completion_tokens_details?.reasoning_tokens??u.reasoning_tokens)};
+  return Object.fromEntries(Object.entries(out).filter(([,v])=>v!==undefined));
+}
+export async function traced(env, record, call) {
+  const start_ms=Date.now(),note=extra=>{try{env.TRACE?.({...record,start_ms,end_ms:Date.now(),...extra});}catch{}};
+  try {const output=await call();note(usageOf(output));return output;}
+  catch(e) {note({error:String(e?.message||e).slice(0,300)});throw e;}
+}
+// A Clef gate (a logprob-scored yes/no): one request, traced; the request
+// itself is exactly as the caller built it.
+const clefRun = (env, name, selector, input) => traced(env, {kind:'clef', name, role:'gate', model:selector, questions:Object.keys(input?.questions||{}).length},
+  () => env.AI.run(selector, input));
+
+export async function run(env, system, user, maxTokens, {noThink=false, call='run', role='', retry=false}={}) {
   const selected=model(env);
   // Qwen3 hybrid models' documented soft switch. Their reasoning counts
   // against max_tokens: run7's runner and coverage calls each took time in
@@ -19,7 +41,8 @@ export async function run(env, system, user, maxTokens, {noThink=false}={}) {
   const tokenParam = selected in EFFORT
     ? {max_completion_tokens:maxTokens,reasoning_effort:EFFORT[selected]}
     : {max_tokens:maxTokens};
-  return env.AI.run(selected, {messages,...tokenParam,temperature:0.2});
+  return traced(env, {kind:'model', name:call, role, model:selected, retry:!!retry, max_tokens:maxTokens, no_think:!!noThink},
+    () => env.AI.run(selected, {messages,...tokenParam,temperature:0.2}));
 }
 
 // A decision model does not generate a decomposition. It only scores the
@@ -50,7 +73,7 @@ export async function shouldSplit(env, task, mockContext) {
   const question=feedback
     ? 'A previous proposed decomposition was rejected. Based on the ASSIGNED CODE and the specific rejected partition, is there still a credible split into TWO OR MORE independent, in-scope code-writing assignments covering the whole requested code? Answer NO if the correct next step is to implement the assigned code directly rather than invent unrelated subdivisions. Answer YES if a corrected partition is feasible. Do not treat the previous YES as binding.'
     : 'Can this requested CODE be written as TWO OR MORE smaller independently authored source-code modules or functions, whose code can be linked to implement the ENTIRE assigned code? Prefer yes if the code can be divided further, even into very small functions. Answer no only if the code itself is an indivisible implementation unit. Do not split into research, design discussions, decisions, documentation, or plans.';
-  const answer=await env.AI.run(selector,{
+  const answer=await clefRun(env,'shouldSplit',selector,{
     model:clef,
     state:feedback ? {assigned_behavior:String(task).slice(0,2600),previous_split_rejection:feedback} :
       {assigned_behavior:String(task).slice(0,2600)},
@@ -86,7 +109,7 @@ export async function scopeChildren(env, originalGoal, parentTask, children) {
       type:'noul',
       instructions:`Does proposed child ${start+i} request a concrete SOURCE CODE IMPLEMENTATION of a submodule needed for BOTH the original user goal and its parent code-writing assignment? Answer NO for unrelated domains and for tasks that only describe, choose, plan, document, outline, or discuss a solution instead of writing source code. An actual executable schema/configuration module or test is code. A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code; judge its scope like any other child. Judge scope and code deliverability, not implementation quality.`
     }]));
-    const output=await env.AI.run(selector,{
+    const output=await clefRun(env,'scopeChildren',selector,{
       model:clef,
       state:{
         original_goal:String(originalGoal).slice(0,1800),
@@ -129,7 +152,7 @@ export async function scopeInterfaces(env, originalGoal, parentTask, children, p
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(({i,k,f})=>[`names_${i}_${k}`,{type:'noul',
       instructions:`Proposed child ${i} ("${String(children[i].label).slice(0,70)}") lists ${line(f)} among the functions it will export. Does child ${i}'s own responsibility write this function, rather than another proposed child's responsibility or code outside the parent's assignment? Answer NO if another proposed child's responsibility writes it, or if the parent was not asked for it. Judge only where the function belongs, not its quality or its name.`}]));
-    const output=await env.AI.run(selector,{model:clef,state,questions});
+    const output=await clefRun(env,'scopeInterfaces',selector,{model:clef,state,questions});
     return group.map(({i,k,f})=>{
       const probability=output?.answers?.[`names_${i}_${k}`]?.noul;
       if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
@@ -161,7 +184,7 @@ export async function scopeUses(env, originalGoal, parentTask, children, pairs) 
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(q=>{const {i,j,fn}=pairs[q];return [`uses_${q}`,{type:'noul',
       instructions:`Proposed child ${j} ("${String(children[j].label).slice(0,70)}") keeps the application's data and exports ${line(fn)}. Does proposed child ${i} ("${String(children[i].label).slice(0,70)}") need to call ${fn.name} in its own code to do its own job, rather than keeping a copy of the data? A piece that only reads the data never calls a function that saves, writes or replaces it: answer NO for such a function then, and NO if child ${i} neither reads nor changes that data.`}];}));
-    const output=await env.AI.run(selector,{model:clef,state,questions});
+    const output=await clefRun(env,'scopeUses',selector,{model:clef,state,questions});
     return group.map(q=>{
       const probability=output?.answers?.[`uses_${q}`]?.noul;
       if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
@@ -214,7 +237,7 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
     responsibility:String(c.task).slice(0,700), label:c.label,
     public_topics:c.known_topics.slice(0,20), public_paths:c.files.slice(0,35),
     public_previews:(c.previews||[]).slice(0,2)}))};
-  const output=await env.AI.run(selected,{model:name,state,questions});
+  const output=await clefRun(env,'routeOwner',selected,{model:name,state,questions});
   const probabilities=candidates.map((c,i)=>({id:c.id,p:output?.answers?.['owner_'+i]?.noul}));
   if(probabilities.some(x=>typeof x.p!=='number'||!Number.isFinite(x.p)||x.p<0||x.p>1))
     throw new Error('Clef returned invalid ownership probabilities');
@@ -245,7 +268,7 @@ export async function matchFunction(env, {need, name=''}, items) {
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(j=>[`fn_${j}`,{type:'noul',
       instructions:`Does function ${j} do what the request needs, so that the requester can import it instead of writing it? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.`}]));
-    const output=await env.AI.run(selector,{model:clef,state,questions});
+    const output=await clefRun(env,'matchFunction',selector,{model:clef,state,questions});
     return group.map(j=>{
       const probability=output?.answers?.[`fn_${j}`]?.noul;
       if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
@@ -277,7 +300,7 @@ export async function pickPiece(env, fn, pieces) {
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(j=>[`piece_${j}`,{type:'noul',
       instructions:`Does piece ${j} write ${signature(fn)} as part of its own responsibility, so that the other pieces import it from piece ${j}? Answer NO if another piece's responsibility writes it and piece ${j} only calls it. Judge by what each piece writes, not by the function's name.`}]));
-    const output=await env.AI.run(selector,{model:clef,state,questions});
+    const output=await clefRun(env,'pickPiece',selector,{model:clef,state,questions});
     return group.map(j=>{
       const probability=output?.answers?.[`piece_${j}`]?.noul;
       if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
@@ -296,7 +319,7 @@ export async function ownsNeed(env, {assigned_code, need, name=''}) {
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef routing decision model');
-  const output=await env.AI.run(selector,{model:clef,
+  const output=await clefRun(env,'ownsNeed',selector,{model:clef,
     state:{assigned_code:String(assigned_code).slice(0,1800),needed_function:{need:String(need).slice(0,300),expected_name:name||''}},
     questions:{inside:{type:'noul',instructions:'Is writing this function part of the assigned code? Answer NO if the assigned code does not ask for this behavior.'}}});
   const probability=output?.answers?.inside?.noul;
@@ -396,7 +419,7 @@ export async function decompose(env, context, opts = {}) {
     return {parsed,text,output,spawn,inferred,vague,bad,size,tests,over:size>cap,ok:size>=2&&size<=available,count:vague.length+bad.length};
   };
   const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
-  const first=vet(await run(env,system+uses,request,4096,{noThink:Boolean(opts.noThink)}));
+  const first=vet(await run(env,system+uses,request,4096,{noThink:Boolean(opts.noThink),call:'decompose',role:'splitter'}));
   if(first.ok && !first.count)return done(first);
   // run16: an answer with no text is reasoning with no JSON after it (Root's
   // splitter thought for 126 s and its output budget ran out). An answer the
@@ -411,7 +434,7 @@ export async function decompose(env, context, opts = {}) {
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
   // v7.15.14 (run21): Root's split had 50 direct children; a split over the bound is told to group, never truncated.
   const over=first.over?' '+tooMany(first.size,cap):'';
-  const retry=vet(await run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+over+specific+names,request,4096,{noThink:Boolean(opts.noThink)||first.malformed}));
+  const retry=vet(await run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+over+specific+names,request,4096,{noThink:Boolean(opts.noThink)||first.malformed,call:'decompose',role:'splitter',retry:true}));
   // The retry replaces the first answer only when it is not worse; a
   // malformed retry never replaces a partition that parsed (review).
   const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok || retry.malformed && !first.malformed ? first : retry;
@@ -512,11 +535,12 @@ export async function decide(env, context, {planned = false} = {}) {
   const builder = `You are a TEMPORARY BUILDER, a LINKER, not a programmer. The runtime ALREADY materialized the leaf code and published deterministic glue/index.js plus package.json. NEVER recreate imports, filenames, hashes, entrypoints, manifests or package.json. Write ONLY glue/wiring.js and (at Root) glue/smoke.js (plain CommonJS JavaScript) exporting function wire(components), where components is the object of ACTUAL module namespaces keyed by their manifest destinations such as components/foo-abc/module.js. Do NOT use import, require, or dynamic import in wiring; every collaborator is already loaded. Use the public source implementations and their actual exports from assembly_inputs to connect collaborators via parameters and minimal adapters. IMPORTANT: select ONE actual storage implementation and ONE instance/state for the application; pass that SAME storage object into every creator, reader, updater, deleter, and any handlers that need it. Never let operations accidentally use independent stores. CommonJS modules loaded by dynamic import frequently expose their value as .default; verify each actual export rather than assuming a named export. You may use components["components/..."] only with keys in deterministic_linker.component_paths. Do not write another implementation, substitute a missing worker or introduce npm packages. The loader handles JavaScript module imports mechanically; type-only TypeScript and JSX cannot be loaded. At ROOT, also write glue/smoke.js, a complete executable CommonJS behavioral test that calls require("./index.js").start(), operates ONLY through the returned application API, and uses node:assert/strict to establish that actual user-requested operations work. For an issue tracker, create a unique ticket, list and find it, update it, verify the update through list/read, delete it, and verify it is absent. No mocking, hardcoded passing results, direct component calls, or test of unrelated sample data. No imports in wiring.js; smoke.js may require ONLY Node built-ins and ./index.js. Child subtree builders write wiring.js only. Return ONLY strict JSON containing COMPLETE source for glue/wiring.js and ROOT glue/smoke.js, with done:true. Do not claim tests passed. A baseline module load is diagnostic only, and app completion requires the actual smoke test to pass in the Container.`;
   const system = shared + '\n' + (context.your_label === 'Temporary builder' ? builder : context.phase === 'manager' || context.phase === 'compose' ? manager : implementer);
   const decisionTokens = Math.min(8192, Math.max(1500, Number(env.DECISION_MAX_TOKENS) || (context.your_label === 'Temporary builder' ? 7600 : context.phase === 'implement' ? 6500 : 3072)));
-  let output = await run(env, system, JSON.stringify(context), decisionTokens);
+  const role = context.your_label === 'Temporary builder' ? 'builder' : context.phase === 'manager' || context.phase === 'compose' ? 'manager' : 'worker';
+  let output = await run(env, system, JSON.stringify(context), decisionTokens, {call:'decide', role});
   let parsed = parseObject(output);
   if (!parsed.parse_error) return parsed;
   output = await run(env, system + '\nRETRY: Strictly valid short JSON. No markdown.',
-    JSON.stringify(context).slice(0, 15000) + '\nMalformed previous output: ' + contentOf(output).slice(0, 200), Math.min(8192,decisionTokens+1024));
+    JSON.stringify(context).slice(0, 15000) + '\nMalformed previous output: ' + contentOf(output).slice(0, 200), Math.min(8192,decisionTokens+1024), {call:'decide', role, retry:true});
   parsed = parseObject(output);
   // v7.15.13 (run18): an empty answer says what its envelope held ("Bad action response: " said nothing).
   return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
@@ -532,7 +556,8 @@ export async function generateFile(env, { node, path, intent, task, files, inbox
       existing_file: files.find(f => f.path === path)?.content || null,
       own_other_files: files.filter(f => f.path !== path && (!builder || (!f.path.startsWith('components/') && !f.path.startsWith('memory/')))).slice(0,12).map(f => ({ path:f.path, content:f.content.slice(0, 3000) })),
       direct_messages: inbox, answered_requests: answers?.length ? answers : undefined, own_persisted_memory: files.filter(f => f.path.startsWith('memory/')).map(f=>({path:f.path,content:f.content.slice(0,1800)})), child_results: children.map(c => ({ label: c.label, summary: c.summary, status: c.status })),
-      direct_sibling_sources: assemblyInputs, previous_linker_rejection: builder?correction:undefined, previous_code_rejection: builder?undefined:correction }).slice(0, builder?80000:26000), builder?(path==='glue/wiring.js'?4800:3300):6500);
+      direct_sibling_sources: assemblyInputs, previous_linker_rejection: builder?correction:undefined, previous_code_rejection: builder?undefined:correction }).slice(0, builder?80000:26000), builder?(path==='glue/wiring.js'?4800:3300):6500,
+    {call:'generateFile', role:builder?'builder':'worker', retry:!!correction});
   let content = contentOf(output).trim();
   const fence = content.match(/^```[^\n]*\n([\s\S]*?)\n```\s*$/);
   if (fence) content = fence[1];
@@ -563,10 +588,10 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
     previous_attempt_error:diagnostic||undefined
   });
   const system=LINKER_SYSTEM+(below?LINKER_BELOW:'');
-  let output=await run(env,system,request,4096);
+  let output=await run(env,system,request,4096,{call:'linkComponents',role:'linker'});
   let parsed=parseObject(withoutThinking(output));
   if(parsed.parse_error) {
-    output=await run(env,system+'\nRETRY: return strictly valid JSON with edits and issues. No markdown.',request,4096);
+    output=await run(env,system+'\nRETRY: return strictly valid JSON with edits and issues. No markdown.',request,4096,{call:'linkComponents',role:'linker',retry:true});
     parsed=parseObject(withoutThinking(output));
   }
   if(parsed.parse_error)return {edits:[],issues:[],parse_error:true,raw:parsed.raw};
@@ -614,9 +639,9 @@ export async function apiCoverage(env, {goal, api}) {
   // A goal names at least one operation, so an empty list is no answer.
   // Run7's attempts each took about as long as 2048 tokens at the runner's
   // rate; 3072 leaves the answer room if reasoning comes anyway.
-  const first=read(await run(env,COVERAGE_SYSTEM,request,3072,{noThink:true}));
+  const first=read(await run(env,COVERAGE_SYSTEM,request,3072,{noThink:true,call:'apiCoverage',role:'coverage'}));
   if(first)return first;
-  return read(await run(env,COVERAGE_SYSTEM+'\nRETRY: return strictly valid JSON {"operations":[...]} with every operation the goal names. No markdown.',request,3072,{noThink:true}))||{operations:null,head};
+  return read(await run(env,COVERAGE_SYSTEM+'\nRETRY: return strictly valid JSON {"operations":[...]} with every operation the goal names. No markdown.',request,3072,{noThink:true,call:'apiCoverage',role:'coverage',retry:true}))||{operations:null,head};
 }
 
 // A manager decides who changes what when its builder or the compiler
@@ -638,10 +663,10 @@ export async function decideProblems(env, input, {onCall=()=>{}, retry=true}={})
   const request=JSON.stringify(input);
   try {
     onCall();
-    let output=await run(env,MANAGER_SYSTEM,request,2048),parsed=parseObject(withoutThinking(output));
+    let output=await run(env,MANAGER_SYSTEM,request,2048,{call:'decideProblems',role:'manager'}),parsed=parseObject(withoutThinking(output));
     if(parsed.parse_error&&retry) {
       onCall();
-      output=await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048);
+      output=await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048,{call:'decideProblems',role:'manager',retry:true});
       parsed=parseObject(withoutThinking(output));
     }
     // v7.15.15 (G4, run23): an empty answer says what its envelope held (emptyAnswer), as decompose's and decide's do: run23's M4 logged "the decision did not parse: " with nothing after it.
@@ -693,7 +718,7 @@ export async function writeRunnerTest(env, {goal, api, operations=null, methods=
   while(n>0&&g<floor){n--;g=longest(whole.length,x=>fits(n,x));}
   if(g<floor&&typeof api==='string'){const k=longest(api.length,k=>fits(0,floor,api.slice(0,k)));if(k>=0){a=api.slice(0,k);g=floor;}}
   const sent=JSON.stringify(payload(n,Math.max(0,g),a));
-  const output=await run(env,RUNNER_SYSTEM,sent,4096,{noThink:true});
+  const output=await run(env,RUNNER_SYSTEM,sent,4096,{noThink:true,call:'writeRunnerTest',role:'runner',retry:!!correction});
   const text=withoutThinking(output).trim();
   return {test:extractCode(text,RUNS_APP),head:text.slice(0,200)};
 }

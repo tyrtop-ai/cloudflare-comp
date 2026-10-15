@@ -23,7 +23,9 @@ export function normalizeBuildResult(result,fingerprint,hash){
   if(!result || result.fingerprint!==fingerprint || result.snapshot_hash!==hash || typeof result.passed!=='boolean')
     throw new Error('Build executor returned unpinned or malformed evidence');
   const issues=Array.isArray(result.issues)?result.issues.slice(0,12).map(x=>({path:String(x.path||'').slice(0,500),detail:String(x.detail||'').slice(0,950),kind:x.kind==='infrastructure'?'infrastructure':'source'})):[];
-  return {fingerprint,snapshot_hash:hash,passed:result.passed,infrastructure_issue:result.passed?'':String(result.infrastructure_issue||'').slice(0,950),issues,log:String(result.log||'').slice(-5000),artifacts:Array.isArray(result.artifacts)?result.artifacts.slice(0,80).map(x=>({path:String(x.path||'').slice(0,250),sha256:String(x.sha256||'').slice(0,64),bytes:Number(x.bytes)||0})):[],preview:String(result.preview||'').slice(0,4500),checks:Array.isArray(result.checks)?result.checks.slice(0,14):[],api_surface:String(result.api_surface||'').slice(0,6000)};
+  return {fingerprint,snapshot_hash:hash,passed:result.passed,infrastructure_issue:result.passed?'':String(result.infrastructure_issue||'').slice(0,950),issues,log:String(result.log||'').slice(-5000),artifacts:Array.isArray(result.artifacts)?result.artifacts.slice(0,80).map(x=>({path:String(x.path||'').slice(0,250),sha256:String(x.sha256||'').slice(0,64),bytes:Number(x.bytes)||0})):[],preview:String(result.preview||'').slice(0,4500),checks:Array.isArray(result.checks)?result.checks.slice(0,14):[],api_surface:String(result.api_surface||'').slice(0,6000),
+    // Timing only (the executor's cold start and exec time); never evidence of a pass.
+    executor:result.executor&&typeof result.executor==='object'?{cold:!!result.executor.cold,start_ms:Number(result.executor.start_ms)||0,exec_ms:Number(result.executor.exec_ms)||0,startup_retries:Number(result.executor.startup_retries)||0}:null};
 }
 export function sourceOwnerForPath(path,sourceRows){
   const clean=String(path||'').replace(/^\.\//,'').replace(/^\/workspace\/[^/]+\//,'').replace(/^\/?app\//,'');

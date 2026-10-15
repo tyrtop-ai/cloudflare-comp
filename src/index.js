@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
@@ -25,6 +26,17 @@ import { zipFiles } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
+// The agent whose turn is running, for the span record: every model and Clef
+// call, git phase and Container run inside a turn is charged to its agent.
+const turnContext = new AsyncLocalStorage();
+// What an export streams in pages, beside the snapshot (the rows past the
+// first page were dropped at 20,000 events before).
+export const EXPORT_PAGE = 2000;
+const EXPORT_TABLES = Object.freeze({
+  events: 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events WHERE id>? AND id<=? ORDER BY id LIMIT ?',
+  spans: 'SELECT id,ts,agent,step,kind,name,start_ms,end_ms,attrs FROM spans WHERE id>? AND id<=? ORDER BY id LIMIT ?'
+});
+const spanRow = r => ({...r, ms:r.end_ms-r.start_ms, attrs:parse(r.attrs,{})});
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
 const parse = (value, otherwise) => { try { return JSON.parse(value); } catch { return otherwise; } };
 const isAssumption = key => /^assum(?:ed|ption)[_ /:-]/i.test(key);
@@ -281,6 +293,8 @@ export class ControlRoom extends DurableObject {
     this.batching = new Set();
     this.pendingWakes = new Map();
     this.turnSteps = new Map();
+    // When each queued agent entered the queue (ready), until it is dispatched.
+    this.queuedAt = new Map();
     const db = ctx.storage.sql;
     db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     // Durable per-agent epochs prevent a concurrent manager turn from erasing a wake.
@@ -317,6 +331,10 @@ export class ControlRoom extends DurableObject {
     // One persisted batch per turn also lets interrupted spawns resume without duplicates.
     db.exec('CREATE TABLE IF NOT EXISTS spawn_batches (batch_key TEXT PRIMARY KEY, parent TEXT NOT NULL, start_index INTEGER NOT NULL, specs TEXT NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, step INTEGER NOT NULL, actor TEXT NOT NULL, kind TEXT NOT NULL, recipient TEXT NOT NULL, body TEXT NOT NULL, path TEXT NOT NULL)');
+    // Timing record: one row per model call, Clef gate, git phase, Container
+    // run and dispatch (kind: model, clef, git, container, dispatch), charged
+    // to the agent whose turn made it. attrs: JSON (role, model, tokens, ...).
+    db.exec("CREATE TABLE IF NOT EXISTS spans (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, agent TEXT NOT NULL, step INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, attrs TEXT NOT NULL DEFAULT '{}')");
     // v7.14: each manager's problem inbox. A row moves one level at a time
     // (holder); a reporter opens and supersedes its rows, a manager moves or
     // closes them by its decisions. Rows are never deleted during a run.
@@ -343,7 +361,34 @@ export class ControlRoom extends DurableObject {
   get(key, otherwise = '') { return query(this.db(), 'SELECT value FROM meta WHERE key=?', key)[0]?.value ?? otherwise; }
   set(key, value) { this.db().exec('INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value)); }
   read(key, otherwise) { return parse(this.get(key), otherwise); }
-  save(key, value) { this.set(key, JSON.stringify(value)); }
+  save(key, value) {
+    // Every path that queues an agent saves the queue: its first sighting is when it became ready.
+    if(key==='queue'&&Array.isArray(value)){const t=Date.now();for(const id of value)if(!this.queuedAt.has(id))this.queuedAt.set(id,t);}
+    this.set(key, JSON.stringify(value));
+  }
+  // The agent a span is charged to: the running turn's (turnContext), else the system.
+  spanAgent() { return turnContext.getStore()?.agent || 'system'; }
+  // One timing record. Never throws: a span must not fail a turn. attrs is
+  // timing metadata only: no repository names, remotes, tokens or prompts.
+  span(kind, name, start, end, attrs = {}, agent = this.spanAgent()) {
+    try {
+      const clean=Object.fromEntries(Object.entries(attrs||{}).filter(([,v])=>v!==undefined));
+      this.db().exec('INSERT INTO spans(ts,agent,step,kind,name,start_ms,end_ms,attrs) VALUES (?,?,?,?,?,?,?,?)',
+        Date.now(), String(agent), this.turnSteps.get(agent) ?? Number(this.get('step','0')), String(kind), String(name).slice(0,80), Math.round(start), Math.round(end), JSON.stringify(clean).slice(0,4000));
+    } catch {}
+  }
+  // Time fn and record it; the span records an error too, then rethrows.
+  async timed(kind, name, fn, attrs = {}) {
+    const start=Date.now();
+    try {const out=await fn();this.span(kind,name,start,Date.now(),typeof attrs==='function'?attrs(out):attrs);return out;}
+    catch(e) {this.span(kind,name,start,Date.now(),{...(typeof attrs==='function'?{}:attrs),error:clip(e?.message||e,300)});throw e;}
+  }
+  // A model or Clef call's record (src/model.js traced), as a span.
+  traceCall(r, envRole) {
+    const {kind,name,start_ms,end_ms,...attrs}=r||{};
+    this.span(kind||'model',name||'call',start_ms||Date.now(),end_ms||Date.now(),{...attrs,model_role:envRole});
+  }
+  spans(after=0, limit=1000) { return query(this.db(),'SELECT id,ts,agent,step,kind,name,start_ms,end_ms,attrs FROM spans WHERE id>? ORDER BY id LIMIT ?',after,limit).map(spanRow); }
   event(actor, kind, body = '', recipient = '', path = '') {
     this.db().exec('INSERT INTO events(ts,step,actor,kind,recipient,body,path) VALUES (?,?,?,?,?,?,?)',
       Date.now(), this.turnSteps.get(actor) ?? Number(this.get('step','0')), actor, kind, recipient, clip(body, 2400), path);
@@ -361,7 +406,7 @@ export class ControlRoom extends DurableObject {
   // model and keeps its one model for all three.
   inferenceEnv(role='manager') {
     const cfg=this.settings(),model=role==='worker'?cfg.worker_model:role==='compiler'?cfg.compiler_model:cfg.model;
-    return {...this.env, MODEL_NAME:model||cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold};
+    return {...this.env, MODEL_NAME:model||cfg.model, SPLIT_MODEL:cfg.split_model, SPLIT_THRESHOLD:cfg.split_threshold, TRACE:r=>this.traceCall(r,role)};
   }
   configure(raw) {
     const cfg=normalizeRoomSettings(raw, this.settings());
@@ -627,7 +672,29 @@ export class ControlRoom extends DurableObject {
     this.db().exec('INSERT INTO artifact_contents(agent,path,content) VALUES (?,?,?) ON CONFLICT(agent,path) DO UPDATE SET content=excluded.content',owner,path,content);
     return content;
   }
+  // The whole export, every event and span included (no cap). The Worker's
+  // /api/export streams the same document page by page (exportHead and
+  // exportRows), so no single RPC carries a large run's rows.
   async exportSnapshot() {
+    const head=await this.exportHead(),rows={};
+    for(const table of Object.keys(EXPORT_TABLES)) {
+      rows[table]=[];
+      for(let after=0;;) {const page=this.exportRows(table,after,head.cursors[table],EXPORT_PAGE);rows[table].push(...page);if(page.length<EXPORT_PAGE)break;after=page.at(-1).id;}
+    }
+    const {cursors,...rest}=head;
+    return {...rest,...rows};
+  }
+  // One page of an export table's rows, by id, after `after` and up to `upto`
+  // (the last id when the export began: rows a running room adds later are
+  // the next export's).
+  exportRows(table, after=0, upto=0, limit=EXPORT_PAGE) {
+    const sql=EXPORT_TABLES[table];
+    if(!sql)throw new Error('Unknown export table');
+    const rows=query(this.db(),sql,Number(after)||0,Number(upto)||0,Math.max(1,Math.min(EXPORT_PAGE,Number(limit)||EXPORT_PAGE)));
+    return table==='spans'?rows.map(spanRow):rows;
+  }
+  // Everything an export holds but the paged tables, with the last id of each.
+  async exportHead() {
     const snapshot=this.snapshot();
     // Unlike the dashboard's abbreviated /api/state manifest, exports contain
     // every registered file and alias, not just the first 240 source entries.
@@ -639,13 +706,15 @@ export class ControlRoom extends DurableObject {
       try {files.push({...f,content:await this.indexedContent(f.agent,f.path)});}
       catch(e) {files.push({...f,read_error:String(e?.message||e)});}
     }
-    // The dashboard shows the last 300 events; an export keeps the full run
-    // (bounded) so early split and capacity decisions can be diagnosed.
-    const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 20000').reverse();
+    // The dashboard shows the last 300 events; an export keeps the full run,
+    // every event and span, paged (exportRows), so early split and capacity
+    // decisions can be diagnosed.
+    const cursors=Object.fromEntries(Object.keys(EXPORT_TABLES).map(t=>[t,query(this.db(),`SELECT COALESCE(MAX(id),0) AS id FROM ${t}`)[0].id]));
     // Every problem row and ticket, and the per-manager linking and compile state.
     const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'compile_%'").map(r=>[r.key,parse(r.value,r.value)]));
-    return {...snapshot,events,exports,exported_at:new Date().toISOString(),files,
-      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state};
+    const {events:_recent,...rest}=snapshot;
+    return {...rest,exports,exported_at:new Date().toISOString(),files,
+      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors};
   }
   // The goal as the user wrote it, without the requirement the runtime appends.
   userGoal() { return stripStartRequirement(this.topTask()); }
@@ -690,7 +759,7 @@ export class ControlRoom extends DurableObject {
   async provision(id, parent, label, task, interfaces=[], uses=[]) {
     if (this.node(id)) throw new Error('Agent ID exists');
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
-    const repo = await this.store().create(name, `Recursive agent ${id}: ${label}`);
+    const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?)',
       id, parent, clip(label,70), clip(task,parent?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces)), JSON.stringify(normalizeUses(uses)));
     if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
@@ -919,6 +988,7 @@ export class ControlRoom extends DurableObject {
     if (!n || n.status === 'retired' || n.status === 'failed') return;
     this.db().exec('INSERT INTO wake_epochs(agent,generation) VALUES (?,1) ON CONFLICT(agent) DO UPDATE SET generation=generation+1',id);
     this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+    this.queuedAt.set(id,Date.now());
     this.save('queue',addFirst(this.read('queue',[]),id));
     if(this.manager(id)) {
       const shard=this.managerStub(id);
@@ -1689,7 +1759,11 @@ export class ControlRoom extends DurableObject {
     try {
       const room=this.get('room_id','test-room');
       const stub=this.env.BUILD_EXECUTORS.getByName(`${room}:${this.get('run_nonce','legacy')}:build`);
-      report=normalizeBuildResult(await stub.build({fingerprint:key,files:Object.fromEntries(snapshot)}),key,digest);
+      const start=Date.now(),kind=String(label).split(':')[0];
+      try {report=normalizeBuildResult(await stub.build({fingerprint:key,files:Object.fromEntries(snapshot)}),key,digest);}
+      catch(e) {this.span('container',kind,start,Date.now(),{node:nodeId,files:snapshot.size,error:clip(e?.message||e,300)});throw e;}
+      this.span('container',kind,start,Date.now(),{node:nodeId,files:snapshot.size,passed:report.passed,...(report.executor||{}),
+        checks:report.checks.map(c=>({name:c.name,exit_code:c.exit_code,...(Number.isFinite(c.ms)?{ms:c.ms}:{})}))});
     } catch(error) {return {infrastructure:String(error?.message||error),digest};}
     this.save('last_build_report',report);
     if(report.infrastructure_issue)return {infrastructure:report.infrastructure_issue,digest,report};
@@ -3800,8 +3874,13 @@ export class ControlRoom extends DurableObject {
   async managerRouteOwner(id, question, candidates, strict=false, keywords=true, ranked=false) {
     const shard=this.managerStub(id);
     if(!shard)return routeOwner(this.inferenceEnv(),question,candidates,{strict,keywords,ranked});
-    const cfg=this.settings();
-    return shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold});
+    const cfg=this.settings(),start=Date.now();
+    const got=await shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold,traced:true});
+    // A shard that predates traced answers the owner itself.
+    if(!got||typeof got!=='object'||!('spans' in got)||!('owner' in got))return got;
+    for(const r of Array.isArray(got.spans)?got.spans:[])this.traceCall({...r,via:'shard'},'manager');
+    this.span('shard','selectOwner',start,Date.now(),{manager:id,candidates:candidates.length,clef_calls:(got.spans||[]).length});
+    return got.owner;
   }
   // v7.15: one admission for every split, first or late, before any child
   // exists. Names first and deterministic: C0 reads what a task says it
@@ -4133,7 +4212,8 @@ export class ControlRoom extends DurableObject {
     let commit='pending';
     if(!batched) {
       // Outside a turn the Artifacts push must succeed before the coordinator claims a file.
-      commit=(await this.store().write({ name:n.repo_name, remote:n.remote, actor:id, path, content })).commit;
+      const pushed=await this.timed('git','commit',()=>this.store().write({ name:n.repo_name, remote:n.remote, actor:id, path, content }),r=>({files:1,bytes:String(content).length,batched:false,...(r?.timings?{phases:r.timings}:{})}));
+      commit=pushed.commit;
     }
     if(batched && !query(db,'SELECT path FROM staged_writes WHERE agent=? AND path=?',id,path).length) {
       const prior=existing?query(db,'SELECT f.revision AS revision,f.commit_hash AS commit_hash,f.updated_at AS updated_at,c.content AS content FROM artifact_files f LEFT JOIN artifact_contents c ON c.agent=f.agent AND c.path=f.path WHERE f.agent=? AND f.path=?',id,path)[0]:null;
@@ -4175,12 +4255,14 @@ export class ControlRoom extends DurableObject {
       if(pending.length) {
         // The store asks Artifacts whether main has history: a repair turn may
         // rewrite every file, so no SQLite row proves the repo is non-empty.
-        const store=this.store();
-        let commit;
-        if(typeof store.writeMany==='function')
-          commit=(await store.writeMany({name:n.repo_name,remote:n.remote,files:pending,actor:id})).commit;
-        else for(const f of pending)
-          commit=(await store.write({name:n.repo_name,remote:n.remote,actor:id,path:f.path,content:f.content})).commit;
+        const store=this.store(),start=Date.now(),bytes=pending.reduce((t,f)=>t+String(f.content).length,0);
+        let commit,timings=null;
+        try {
+          if(typeof store.writeMany==='function'){const r=await store.writeMany({name:n.repo_name,remote:n.remote,files:pending,actor:id});commit=r.commit;timings=r.timings||null;}
+          else for(const f of pending)
+            commit=(await store.write({name:n.repo_name,remote:n.remote,actor:id,path:f.path,content:f.content})).commit;
+        } catch(e) {this.span('git','commit',start,Date.now(),{agent:id,files:pending.length,bytes,error:clip(e?.message||e,300)});throw e;}
+        this.span('git','commit',start,Date.now(),{agent:id,files:pending.length,bytes,...(timings?{phases:timings}:{})});
         db.exec("UPDATE artifact_files SET commit_hash=? WHERE agent=? AND commit_hash='pending'",commit,id);
         db.exec('DELETE FROM staged_writes WHERE agent=?',id);
         this.event(id,'commit',`Pushed ${pending.length} file(s) in one commit ${String(commit).slice(0,12)}: ${clip(pending.map(f=>f.path).join(', '),600)}`);
@@ -5850,6 +5932,9 @@ export class ControlRoom extends DurableObject {
       else if (!picked.includes(id) && !remaining.includes(id)) remaining.push(id);
     }
     this.save('queue',remaining);
+    // Ready (queued) until dispatched: the wait for a free slot, per agent.
+    const now=Date.now(),active=this.activeTurns.size;
+    for(const id of picked){const at=this.queuedAt.get(id)??now;this.queuedAt.delete(id);this.span('dispatch','ready_to_dispatch',at,now,{active,parallel:this.settings().parallel},id);}
     return picked;
   }
   // An agent can finish its files and mistakenly wait for a message nobody
@@ -5895,7 +5980,8 @@ export class ControlRoom extends DurableObject {
     }
     return false;
   }
-  async runSelectedTurn(id, step) {
+  runSelectedTurn(id, step) { return turnContext.run({agent:id,step},()=>this.runTurnTimed(id,step)); }
+  async runTurnTimed(id, step) {
     this.activeTurns.add(id);
     const observedWake=this.wakeGeneration(id);
     this.turnSteps.set(id,step);
@@ -5975,7 +6061,8 @@ export class ControlRoom extends DurableObject {
     // Refuse bad settings before the room is wiped: a refused Start must leave
     // the previous run intact (verification probe: parallel 999 erased it).
     try { normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS); } catch(e) { return {error:clip(e?.message||e,300)}; }
-    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${table}`);
+    this.queuedAt.clear();
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
     this.set('schema',ROOM_SCHEMA);
@@ -6100,9 +6187,43 @@ export class ControlRoom extends DurableObject {
   }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
-    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','problems','repair_tickets','meta']) this.db().exec(`DELETE FROM ${name}`);
+    this.queuedAt.clear();
     return this.snapshot();
   }
+}
+
+// /api/export as one JSON document, streamed: the snapshot head, then the
+// events and spans a page (EXPORT_PAGE rows, one RPC) at a time up to the
+// last id when the export began. The head is fetched first, so its errors
+// are an ordinary JSON error response.
+export async function exportResponse(stub) {
+  const head=await stub.exportHead(),{cursors={},...rest}=head||{};
+  const encoder=new TextEncoder(),text=JSON.stringify(rest);
+  const tables=Object.keys(EXPORT_TABLES);
+  async function* parts() {
+    yield text.slice(0,-1)+(text.length>2?',':'');
+    for(const [i,table] of tables.entries()) {
+      yield `${i?',':''}${JSON.stringify(table)}:[`;
+      for(let after=0,first=true;;) {
+        const page=await stub.exportRows(table,after,cursors[table]||0,EXPORT_PAGE);
+        if(page.length){yield (first?'':',')+page.map(r=>JSON.stringify(r)).join(',');first=false;}
+        if(page.length<EXPORT_PAGE)break;
+        after=page.at(-1).id;
+      }
+      yield ']';
+    }
+    yield '}';
+  }
+  // pull: one page is read only when the client has taken the last one.
+  const source=parts();
+  const stream=new ReadableStream({
+    async pull(controller) {
+      try {const {value,done}=await source.next();if(done)controller.close();else controller.enqueue(encoder.encode(value));}
+      catch(e) {controller.error(e);}
+    }
+  });
+  return new Response(stream,{headers:{'content-type':'application/json','cache-control':'no-store'}});
 }
 
 export default {
@@ -6117,7 +6238,7 @@ export default {
     const stub=env.ROOMS.getByName(room);
     try {
       if (url.pathname==='/api/state' && request.method==='GET') return json(await stub.snapshot());
-      if (url.pathname==='/api/export' && request.method==='GET') return json(await stub.exportSnapshot());
+      if (url.pathname==='/api/export' && request.method==='GET') return exportResponse(stub);
       if (url.pathname==='/api/file' && request.method==='GET') return json(await stub.fileContent(url.searchParams.get('agent'),url.searchParams.get('path')));
       if (url.pathname==='/api/run' && request.method==='POST') {
         const goal=String(payload.goal||'').trim();

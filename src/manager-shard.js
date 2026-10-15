@@ -134,12 +134,15 @@ export class ManagerShard extends DurableObject {
   async assemblyState() {return {offered:this.get('assembly_offered'),completed:this.get('assembly_completed'),final:this.get('assembly_final')==='1',builder:this.get('assembly_builder')};}
   // Run the cheap owner-selection model inside the manager's DO, rather than
   // routing every inference through the room's coordinator isolate.
-  async selectOwner({question,candidates,strict=false,keywords=true,ranked=false,split_model='@cf/cloudflare/clef-flash',split_threshold=0.7}) {
-    if(!Array.isArray(candidates)||candidates.length===0)return ranked?{id:null,ranks:[]}:null;
-    const env={...this.env,SPLIT_MODEL:split_model,SPLIT_THRESHOLD:split_threshold};
+  // traced: also return the Clef calls made here, {owner, spans}, for the
+  // room's span record (the room cannot see inside this DO's isolate).
+  async selectOwner({question,candidates,strict=false,keywords=true,ranked=false,split_model='@cf/cloudflare/clef-flash',split_threshold=0.7,traced=false}) {
+    const spans=[],out=owner=>traced?{owner,spans}:owner;
+    if(!Array.isArray(candidates)||candidates.length===0)return out(ranked?{id:null,ranks:[]}:null);
+    const env={...this.env,SPLIT_MODEL:split_model,SPLIT_THRESHOLD:split_threshold,...(traced?{TRACE:r=>spans.push(r)}:{})};
     const owner=await routeOwner(env,question,candidates,{strict,keywords,ranked});
     this.put('owner_queries',Number(this.get('owner_queries','0'))+1);
-    return owner;
+    return out(owner);
   }
   // Lifecycle arbitration is owned by the same manager DO that tracks its
   // direct children. The room projects its decision for the dashboard.
