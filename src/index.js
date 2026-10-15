@@ -1826,15 +1826,20 @@ export class ControlRoom extends DurableObject {
   }
   // The run's build executor (one Container per run).
   buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
-  // Speed v1: start the run's Container while the top builder links, so the
-  // compile that follows does not pay its cold start. Fire and forget; an
-  // executor without warm (an older one, a test's) is left alone.
+  // Speed v1: start the run's Container just before a compile the room has
+  // asked for next (the top builder links, or an atomic Root writes its code),
+  // so the compile does not pay its cold start. The executor stops it again
+  // if no build follows within its grace (review M3). Not while the run stops,
+  // and at most once a minute. Fire and forget; an executor without warm (an
+  // older one, a test's) is left alone.
   prewarmContainer() {
-    if(!this.live()||!this.env.BUILD_EXECUTORS||this.prewarmed===this.get('run_nonce','legacy'))return;
+    if(!this.live()||!this.env.BUILD_EXECUTORS||this.get('stop_requested')==='1')return;
+    const now=Date.now();
+    if(this.prewarmedAt&&now-this.prewarmedAt<60_000)return;
     let stub;try{stub=this.buildExecutor();}catch{return;}
     if(typeof stub?.warm!=='function')return;
-    this.prewarmed=this.get('run_nonce','legacy');
-    const warming=this.timed('container','warm',()=>stub.warm(),r=>({cold:!!r?.cold})).catch(()=>{this.prewarmed=null;});
+    this.prewarmedAt=now;
+    const warming=this.timed('container','warm',()=>stub.warm(),r=>({cold:!!r?.cold})).catch(()=>{this.prewarmedAt=0;});
     if(this.ctx.waitUntil)this.ctx.waitUntil(warming);
   }
   // options (speed v1, container/build-runner.mjs buildOptions): describe_api
@@ -6175,6 +6180,9 @@ export class ControlRoom extends DurableObject {
   }
   runSelectedTurn(id, step) { return turnContext.run({agent:id,step},()=>this.runTurnTimed(id,step)); }
   async runTurnTimed(id, step) {
+    // Review (atomic Root): a top that writes the code itself compiles right after a done.
+    const top=this.node(id);
+    if(top&&!top.parent&&top.phase==='implement'&&!this.manager(id))this.prewarmContainer();
     this.activeTurns.add(id);
     const observedWake=this.wakeGeneration(id);
     this.turnSteps.set(id,step);

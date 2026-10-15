@@ -7,7 +7,7 @@ import {readFileSync} from 'node:fs';
 import {ControlRoom,Sql,Store,verifyBuild,snapshotHash,liveRoom,twoWorkers,linkAndCompile,trace,GOAL,runnerTest,repoSource,appSource} from './helpers/room.js';
 const {splitCombinedRun}=await import('../src/index.js');
 const {run,buildOptions,syntaxFlagged}=await import('../container/build-runner.mjs');
-const {BuildExecutor,INACTIVITY_TIMEOUT_MS,buildRequestOptions}=await import('../src/build-executor.js');
+const {BuildExecutor,INACTIVITY_TIMEOUT_MS,WARM_GRACE_MS,buildRequestOptions}=await import('../src/build-executor.js');
 const L=await import('../src/linker.js');
 const {GOAL_START_REQUIREMENT}=await import('../src/model.js');
 
@@ -139,7 +139,8 @@ test('a runner that ignores describe_api costs one more exec, never a second run
   assert.deepEqual([old.builds-before.builds,old.smokes-before.smokes],[2,1],'the combined exec ran the test once; the static check ran again alone for the API');
 });
 
-test('the Container is started while the top builder links, once per run, and kept warm longer',async()=>{
+const storageMap=()=>{const m=new Map(),alarms=[];return {m,alarms,async put(k,v){m.set(k,v);},async get(k){return m.get(k);},async delete(k){m.delete(k);},async setAlarm(t){alarms.push(t);}};};
+test('the Container is warmed only right before a compile the room asks for, at most once a minute, never while the run stops',async()=>{
   let warmed=0;
   const exec={warm:async()=>{warmed++;return {cold:true};},build:async({fingerprint,files})=>verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files})};
   const pending=[],r=new ControlRoom({storage:{sql:new Sql()},waitUntil:p=>pending.push(p)},{MOCK_AI:'false',TEST_ARTIFACT_STORE:new Store(),BUILD_EXECUTORS:{getByName:()=>exec}});
@@ -150,18 +151,40 @@ test('the Container is started while the top builder links, once per run, and ke
   r.db().exec("UPDATE agents SET phase='implement',status='done' WHERE id='root.1'");
   await r.scheduleAssembly('root');await r.scheduleAssembly('root');
   await Promise.all(pending);
-  assert.equal(warmed,1);
+  assert.equal(warmed,1,'once a minute');
   assert.deepEqual(r.spans().filter(s=>s.kind==='container').map(s=>[s.name,s.attrs.cold]),[['warm',true]]);
-  // The executor: warm starts a stopped Container and sets the longer idle timeout; a build passes the runner's options through.
-  let starts=0,idle=null,payload='';
-  const container={running:false,start(){starts++;this.running=true;},async setInactivityTimeout(ms){idle=ms;},
+  r.prewarmedAt=0;r.set('stop_requested','1');
+  await r.scheduleAssembly('root');await Promise.all(pending);
+  assert.equal(warmed,1,'not while the run stops');
+  // An atomic Root (it writes the code itself and compiles after its done) is warmed when its turn starts.
+  const pend2=[],atomic=new ControlRoom({storage:{sql:new Sql()},waitUntil:p=>pend2.push(p)},{MOCK_AI:'false',TEST_ARTIFACT_STORE:new Store(),BUILD_EXECUTORS:{getByName:()=>exec}});
+  atomic.set('room_id','warm-room-2');
+  await atomic.provision('root',null,'Root','Build a ticket tracker');
+  atomic.db().exec("UPDATE agents SET phase='implement' WHERE id='root'");
+  atomic.turn=async()=>{};
+  await atomic.runSelectedTurn('root',1);await Promise.all(pend2);
+  assert.equal(warmed,2);
+});
+
+test('the executor: a pre-warmed Container no build reaches within the grace is stopped; the idle timeout is 120 s; options pass through',async()=>{
+  let starts=0,stops=0,idle=null,payload='';
+  const container={running:false,start(){starts++;this.running=true;},async destroy(){stops++;this.running=false;},async setInactivityTimeout(ms){idle=ms;},
     async exec(_c,{stdin}){return {stdin:new WritableStream({write(chunk){payload+=new TextDecoder().decode(chunk);}}),
       async output(){const q=JSON.parse(payload);return {exitCode:0,stdout:new TextEncoder().encode(JSON.stringify({fingerprint:q.fingerprint,snapshot_hash:q.snapshot_hash,passed:true,checks:[],issues:[]})),stderr:new Uint8Array()};}};}};
-  const executor=new BuildExecutor({container,storage:{async put(){}}},{});
+  const storage=storageMap(),executor=new BuildExecutor({container,storage},{});
+  const before=Date.now();
   assert.deepEqual(await executor.warm(),{cold:true,running:true});
   assert.deepEqual(await executor.warm(),{cold:false,running:true});
-  assert.equal(starts,1);assert.equal(idle,INACTIVITY_TIMEOUT_MS);assert.ok(INACTIVITY_TIMEOUT_MS>120_000);
+  assert.equal(starts,1);assert.equal(idle,120_000);assert.equal(INACTIVITY_TIMEOUT_MS,120_000);
+  assert.equal(storage.alarms.length,1);assert.ok(storage.alarms[0]>=before+WARM_GRACE_MS&&WARM_GRACE_MS===60_000);
+  // No compile came: the alarm stops it.
+  await executor.alarm();
+  assert.equal(stops,1);assert.equal(container.running,false);
+  // A build after the warm keeps it: the alarm leaves it running.
+  await executor.warm();
   const result=await executor.build({fingerprint:'x',files:{'index.js':'1'},options:{describe_api:true,evil:'rm -rf'}});
+  await executor.alarm();
+  assert.equal(stops,1);assert.equal(container.running,true);
   assert.deepEqual(JSON.parse(payload).options,{describe_api:true});
   assert.equal(result.executor.cold,false);
   assert.deepEqual(buildRequestOptions({prechecked:true,describe_api:1}),{prechecked:true});
