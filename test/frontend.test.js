@@ -495,7 +495,7 @@ test('v8 S3: the Card panel lists deliverables, requirements with a pass/fail/un
   assert.equal(v7.get('card-verdict').textContent,'No card (v7 pipeline)');
   assert.match(v7.get('card').innerHTML,/class="empty"/);
 });
-test('v8 card repair: held at card_failed, the hold panel shows what the card writer said; the runtime\'s marks read on requirements',()=>{
+test('v8 card repair: held at card_failed, the hold panel shows what the card writer said; Clef\'s review reads as marks',()=>{
   const raw={call:'writeCard',answers:['{"card":1,"deliverables":[{"name":"<x>"}]}','not json'],ts:1};
   const held=renderWithPage(true,{settings:{pipeline:'v8'},status:'paused',pause:{kind:'card_failed',text:'The card writer gave no usable card after 2 calls.'},card_raw:raw});
   const panel=held.get('card').innerHTML;
@@ -504,11 +504,16 @@ test('v8 card repair: held at card_failed, the hold panel shows what the card wr
   assert.match(panel,/RETRY<\/div><pre class="card-raw-text">not json<\/pre>/);
   const other=renderWithPage(true,{settings:{pipeline:'v8'},status:'paused',pause:{kind:'checks_failed',text:'x'},card_raw:raw});
   assert.doesNotMatch(other.get('card').innerHTML,/card-raw/,'only at card_failed');
-  const marked={...CARD,requirements:[...CARD.requirements,{id:'R4',says:'README.md does what the goal asks',source:'a README',serves:['README.md'],check:{kind:'judge',path:'README.md',question:'?'},inferred:true,source_inferred:true},
-    {id:'R5',says:'It greets',source:'hello-world',serves:['hello'],check:{kind:'command',run:'hello',expect:{exit:0}},source_inferred:true}]};
+  // Clef's review shows as marks; nothing it doubts is removed.
+  const marked={...CARD,review_notes:['R5\'s check may not exercise what it states'],deliverables:[{...CARD.deliverables[0],change_doubtful:{p:0.12}},{...CARD.deliverables[1],needs_confirmation:{p:0.1}}],
+    requirements:[...CARD.requirements,{id:'R4',says:'It is fast',source:'x',serves:[],check:{kind:'command',run:'hello',expect:{exit:0}},unattached:true,vet_p:0.21,doubtful:true},
+    {id:'R5',says:'It greets',source:'hello-world',serves:['hello'],check:{kind:'command',run:'hello',expect:{exit:0}},source_inferred:true,vet_p:0.8}]};
   const card=renderWithPage(true,{settings:{pipeline:'v8'},card:marked,requirement_status:{}}).get('card').innerHTML;
-  assert.match(card,/R4<\/b> README\.md does what the goal asks <span class="faint">· judge check · README\.md · the runtime's question<\/span>/);
-  assert.match(card,/R5<\/b> It greets <span class="faint">· command check · hello · source inferred<\/span>/);
+  assert.match(card,/R4<\/b> It is fast <span class="faint">· command check · <\/span> <span class="req-chip doubtful" title="Clef doubted the goal asks for it">doubtful p=0\.21<\/span> <span class="req-chip doubtful" title="no deliverable matched what it serves">unattached<\/span>/);
+  assert.match(card,/R5<\/b> It greets <span class="faint">· command check · hello · source inferred<\/span><\/li>/);
+  assert.match(card,/README\.md<\/b> · explains how to run it <span class="req-chip doubtful" title="Clef doubted the change is about it">change doubtful p=0\.12<\/span>/);
+  assert.match(card,/hello\.py<\/span> · prints a greeting <span class="req-chip doubtful" title="an existing file the goal does not name; Continue confirms it">needs confirmation p=0\.10<\/span>/);
+  assert.match(card,/REVIEW NOTES<\/div><ul class="card-list"><li class="faint">R5&#39;s check may not exercise what it states<\/li>/);
 });
 test('v8 S3: Root\'s detail shows the card in place of its task; contracts read by kind',()=>{
   const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m=>m[1]),listeners=new Map();

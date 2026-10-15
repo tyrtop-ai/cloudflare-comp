@@ -1,16 +1,17 @@
 // v8 card repair: a corpus of realistic, sloppy card answers, the kind a
 // small card writer gives (the first live runs' among them, reconstructed
-// from their events), each read as the room reads it: parseObject, then
-// prepareCard (repairCard, validateCard, behaviourGaps). Every answer must
-// validate after repair, with sensible deliverables, and each page, command
-// and function deliverable must have a check that exercises it, or a retry
-// error that asks for one. Then the vetting the live run got wrong, with a
-// scripted Clef, and an amendment that must not rewrite what it is not about.
+// from their events), each taken through the three layers as the room takes
+// it (writeCard): layer 1 reads it leniently (repairCard), a scripted Clef
+// places what layer 1 could not match (layer 3), layer 2 keeps the safety
+// and executability rules (validateCard), and Clef's review sends the
+// writer one revision with its notes. Clef reviews; it never deletes. Then
+// the vetting the live run got wrong, and an amendment that leaves alone
+// what it is not about.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareCard, repairCard, validateCard, cardUsable, applyVetting, vettable, existenceOnly, VET_DROP_BAR } from '../src/card.js';
-import { vetRequirements, vetAmendChanges } from '../src/model.js';
-import { mergeAmendment, cardDelta, revalidate, keepDeliverables, effectiveGoal } from '../src/amend.js';
+import { prepareCard, repairCard, cardUsable, applyVetting, vettable, existenceOnly, VET_DOUBT_BAR } from '../src/card.js';
+import { writeCard, vetRequirements, vetAmendChanges } from '../src/model.js';
+import { mergeAmendment, cardDelta, revalidate, effectiveGoal } from '../src/amend.js';
 import { parseObject } from '../src/protocol.js';
 import { kindOf } from '../src/contracts.js';
 import { TOOLCHAINS } from '../src/toolchains.js';
@@ -18,12 +19,13 @@ import { CLEF } from '../src/prompts.js';
 
 const json = o => JSON.stringify(o);
 const cmd = (run, out) => ({kind: 'command', run, expect: {exit: 0, ...(out ? {stdout_has: [out]} : {})}});
-const BEHAVIOUR_ERROR = /^deliverable "([^"]+)" is a (page|command|function) and no check (uses|runs|calls) it: add a requirement serving/;
-const EXERCISES = {page: ['browser', 'http'], command: ['command', 'http', 'browser'], function: ['call', 'command', 'http', 'browser']};
+const EXERCISES = {page: ['browser', 'http'], command: ['command', 'http', 'browser'], function: ['call', 'command', 'http', 'browser'], doc: ['judge']};
 
 // Each case: a goal, the writer's answer as text, the deliverables expected
-// after repair ([name, kind, path]), and, when the answer leaves a page,
-// command or function unchecked, the deliverable the retry error names.
+// on the final card ([name, kind, path]); place: what Clef ranks first for a
+// reference layer 1 could not match ({written: deliverable}); revised: the
+// writer's answer to the review notes (else it answers as before); errors:
+// the layer-2 refusals left; check: anything else.
 const CORPUS = [
   // ---------------------------------------------------------------- live A: a Python CLI
   {name: 'live A: a command named with an underscore and no path', goal: 'A Python CLI that converts temperatures.',
@@ -34,8 +36,8 @@ const CORPUS = [
   {name: 'Python CLI: a capitalised command served by its file path', goal: 'A Python CLI that converts temperatures.',
     answer: json({card: 1, summary: 'converter', languages: ['python'], deliverables: [{name: 'Convert-Temp', kind: 'command', path: './convert_temp.py'}],
       requirements: [{id: 'R1', says: 'Converting 100 C prints 212', source: 'converts temperatures', serves: ['convert_temp.py'], check: cmd('Convert-Temp 100 C', '212')}]}),
-    deliverables: [['convert-temp', 'command', 'convert_temp.py']],
-    check: out => assert.equal(out.card.requirements[0].check.run, 'convert-temp 100 C', 'the check runs the renamed command')},
+    deliverables: [['Convert-Temp', 'command', 'convert_temp.py']],
+    check: out => { assert.equal(out.card.requirements[0].check.run, 'Convert-Temp 100 C', 'one word runs as typed: no naming rule'); assert.deepEqual(out.card.requirements[0].serves, ['Convert-Temp']); }},
   {name: 'Python CLI: a script listed as a function, run by the interpreter', goal: 'A Python CLI that converts temperatures.',
     answer: json({card: 1, summary: 'converter', languages: ['python'], deliverables: [{name: 'convert_temp.py', kind: 'function', does: 'the CLI'}],
       requirements: [{id: 'R1', says: 'Converting 100 C prints 212', source: 'converts temperatures', serves: ['convert_temp.py'], check: cmd('python3 convert_temp.py 100 C', '212')}]}),
@@ -67,8 +69,8 @@ const CORPUS = [
       requirements: [{id: 'R1', says: 'Adding a ticket prints its id', source: 'create tickets', serves: ['TICKETS'], check: cmd('tickets add "Fix login"', '1')},
         {id: 'R2', says: 'Listing shows an added ticket', source: 'view tickets', serves: ['tickets'], check: cmd('tickets list')},
         {id: 'R3', says: 'Deleting a ticket removes it', source: 'delete tickets', serves: ['Tickets'], check: cmd('tickets delete 1')}]}),
-    deliverables: [['tickets', 'command', 'tickets.py'], ['tickets.json', 'data', 'tickets.json']],
-    check: out => assert.ok(out.card.languages.includes('python'), 'the goal names the language')},
+    deliverables: [['Tickets', 'command', 'Tickets.py'], ['tickets.json', 'data', 'tickets.json']],
+    check: out => { assert.ok(out.card.languages.includes('python'), 'the goal names the language'); assert.equal(out.card.requirements[1].check.run, 'Tickets list', 'the check runs the command by its name'); }},
   {name: 'issue tracker as a library: functions by module path, serves by a shared file', goal: 'Write a JavaScript library for a small issue tracker: create, view, update and delete tickets.',
     answer: json({card: 1, summary: 'A ticket library', languages: ['javascript'], deliverables: [
       {name: 'tickets.createTicket', does: 'creates a ticket'}, {name: 'tickets.js:getTicket', does: 'reads a ticket'},
@@ -91,12 +93,13 @@ const CORPUS = [
   {name: 'a README on a base repo: no path, and only "it exists"', goal: 'Add a README to this repository that explains how to install and run the tool.', base: ['tool.py', 'LICENSE'],
     answer: json({card: 1, summary: 'A README', languages: ['text'], deliverables: [{name: 'README', kind: 'doc', does: 'explains installing and running the tool'}],
       requirements: [{id: 'R1', says: 'README.md exists', source: 'Add a README', serves: ['README'], check: {kind: 'file', path: 'README.md'}}]}),
+    revised: json({card: 1, summary: 'A README', languages: ['text'], deliverables: [{name: 'README.md', kind: 'doc', path: 'README.md', does: 'explains installing and running the tool'}],
+      requirements: [{id: 'R1', says: 'The README explains how to install and run the tool', source: 'explains how to install and run the tool', serves: ['README.md'], check: {kind: 'judge', path: 'README.md', question: 'Does it explain how to install and run the tool?'}}]}),
     deliverables: [['README.md', 'doc', 'README.md']],
     check: out => {
-      const judge = out.card.requirements.find(r => r.inferred);
-      assert.equal(judge.check.kind, 'judge');
-      assert.match(judge.check.question, /^Does README\.md do what the goal asks: Add a README to this repository that explains how to install and run the tool\?$/);
-      assert.ok(!judge.untraced, 'its source is the goal sentence it quotes');
+      assert.equal(out.attempts, 2, 'the review note on "it exists" led to a revised card');
+      assert.deepEqual(out.card.requirements.map(r => r.check.kind), ['judge']);
+      assert.equal(out.card.review_notes, undefined);
     }},
   {name: 'a markdown-only goal: a kind in other words and a missing path', goal: 'Write a short guide on brewing pour-over coffee at home.',
     answer: '```json\n' + json({card: 1, summary: 'A brewing guide', deliverables: [{name: 'brewing guide', kind: 'document', does: 'how to brew pour-over coffee'}],
@@ -107,7 +110,7 @@ const CORPUS = [
     answer: json({card: 1, summary: 'Release notes', languages: ['markdown'], deliverables: [{name: 'docs/RELEASING.md', kind: 'doc', path: 'docs/RELEASING.md'}],
       requirements: [{id: 'R1', says: 'The release process is documented', source: 'Document the release process', check: {kind: 'file', path: 'docs/releasing.md'}}]}),
     deliverables: [['docs/RELEASING.md', 'doc', 'docs/RELEASING.md']],
-    check: out => { assert.deepEqual(out.card.requirements[0].serves, ['docs/RELEASING.md']); assert.equal(out.card.requirements[0].check.path, 'docs/RELEASING.md'); assert.ok(out.card.requirements.some(r => r.inferred && r.check.kind === 'judge')); }},
+    check: out => { assert.deepEqual(out.card.requirements[0].serves, ['docs/RELEASING.md']); assert.equal(out.card.requirements[0].check.path, 'docs/RELEASING.md'); assert.match(out.card.review_notes.join(' '), /R1's check may not exercise what it states/, 'the writer kept it, so the note stays on the card'); }},
 
   // ---------------------------------------------------------------- live C: a static page
   {name: 'live C: a to-do page whose requirements have no source and only read files', goal: 'A static web page with a to-do list.',
@@ -117,8 +120,13 @@ const CORPUS = [
     requirements: [{id: 'R1', says: 'The page contains a to-do list structure', source: '', serves: ['index.html'], check: {kind: 'file', path: 'index.html', has: ['<ul']}},
       {id: 'R2', says: 'The page includes CSS styling', source: '', serves: ['style.css'], check: {kind: 'file', path: 'style.css'}},
       {id: 'R3', says: 'The page has JavaScript for task management', source: '', serves: ['script.js'], check: {kind: 'file', path: 'script.js', has: ['addEventListener']}}]}),
-    deliverables: [['index.html', 'page', 'index.html'], ['style.css', 'file', 'style.css'], ['script.js', 'file', 'script.js']], retry: 'index.html',
-    check: out => assert.ok(out.card.requirements.filter(r => !r.implicit).every(r => r.source === 'A static web page with a to-do list.' && r.source_inferred && !r.untraced))},
+    revised: json({card: 1, summary: 'A to-do page', languages: ['text', 'javascript'], run: [{id: 'site', static: true}], deliverables: [
+      {name: 'index.html', kind: 'page', path: 'index.html', does: 'the to-do page'}, {name: 'style.css', kind: 'file', path: 'style.css'},
+      {name: 'script.js', kind: 'file', path: 'script.js', examples: [{given: 'add "milk"', expect: 'milk is listed'}]}],
+    requirements: [{id: 'R1', says: 'Adding a task lists it', source: 'a to-do list', serves: ['index.html'], check: {kind: 'browser', serve: 'site', steps: [{goto: '/'}, {fill: {placeholder: 'New task', text: 'milk'}}, {press: 'Enter'}, {expect_text: 'milk'}]}},
+      {id: 'R2', says: 'A task can be marked done', source: 'a to-do list', serves: ['index.html', 'script.js'], check: {kind: 'browser', serve: 'site', steps: [{goto: '/'}, {fill: {placeholder: 'New task', text: 'milk'}}, {press: 'Enter'}, {click: {role: 'checkbox', name: 'milk'}}, {expect_count: {role: 'checkbox', n: 1}}]}}]}),
+    deliverables: [['index.html', 'page', 'index.html'], ['style.css', 'file', 'style.css'], ['script.js', 'file', 'script.js']],
+    check: out => { assert.equal(out.attempts, 2); assert.deepEqual(out.card.requirements.filter(r => !r.implicit).map(r => r.check.kind), ['browser', 'browser']); }},
   {name: 'a to-do page: a browser check and no run', goal: 'A static web page with a to-do list where I can add and remove items.',
     answer: json({card: 1, summary: 'A to-do page', languages: ['text'], deliverables: [{name: 'index.html', kind: 'page', path: 'index.html'}],
       requirements: [{id: 'R1', says: 'Adding an item shows it', source: 'add and remove items', serves: ['index'], check: {kind: 'browser', serve: 'site', steps: [{goto: '/'}, {fill: {placeholder: 'New item', text: 'milk'}}, {press: 'Enter'}, {expect_text: 'milk'}]}}]}),
@@ -129,10 +137,10 @@ const CORPUS = [
       run: [{id: 'site', static: 'true'}],
       requirements: [{id: 'R1', says: 'Picking a date shows the days left', source: 'shows a countdown to a date the visitor picks', serves: ['COUNTDOWN.HTML'], check: {kind: 'browser', serve: 'web', steps: [{goto: '/countdown.html'}, {fill: {label: 'Date', text: '2099-01-01'}}, {expect_text: 'days'}]}}]}),
     deliverables: [['countdown.html', 'page', 'countdown.html'], ['countdown.js', 'file', 'countdown.js']]},
-  {name: 'a page with only existence checks: a clear retry error', goal: 'A web page that converts between metres and feet as you type.',
+  {name: 'a page with only existence checks: the review note stays when the writer keeps it', goal: 'A web page that converts between metres and feet as you type.',
     answer: json({card: 1, summary: 'A unit page', languages: ['text'], deliverables: [{name: 'index.html', kind: 'page', path: 'index.html'}],
       requirements: [{id: 'R1', says: 'index.html exists', source: 'A web page', serves: ['index.html'], check: {kind: 'file', path: 'index.html'}}]}),
-    deliverables: [['index.html', 'page', 'index.html']], retry: 'index.html'},
+    deliverables: [['index.html', 'page', 'index.html']], check: out => assert.match(out.card.review_notes.join(' '), /R1's check may not exercise what it states/)},
   {name: 'a page whose check is wrapped in a list, with the kind missing', goal: 'A web page with a button that shows a random quote.',
     answer: json({card: 1, summary: 'A quote page', languages: ['text'], deliverables: [{name: 'quotes.html', does: 'shows a random quote'}], run: 'static',
       requirements: [{id: 'R1', says: 'Clicking the button shows a quote', source: 'a button that shows a random quote', serves: ['quotes.html'], check: [{steps: [{goto: '/quotes.html'}, {click: {role: 'button', name: 'New quote'}}, {expect_count: {role: 'blockquote', n: 1}}]}]}]}),
@@ -164,7 +172,7 @@ const CORPUS = [
   {name: 'a Python library: a function with no check and no example: a clear retry error', goal: 'A Python library that computes the mean and the median of a list of numbers.',
     answer: json({card: 1, summary: 'Statistics', languages: ['python'], deliverables: [{name: 'mean', path: 'stats.py'}, {name: 'median', path: 'stats.py'}],
       requirements: [{id: 'R1', says: 'mean([1,2,3]) is 2', source: 'computes the mean', serves: ['mean'], check: {kind: 'call', steps: [{call: 'mean', args: [[1, 2, 3]], expect: 2}]}}]}),
-    deliverables: [['mean', 'function', 'stats.py'], ['median', 'function', null]], retry: 'median'},
+    deliverables: [['mean', 'function', 'stats.py'], ['median', 'function', null]], check: out => assert.match(out.card.review_notes.join(' '), /The goal phrase "A Python library that computes the mean and the median of a list of numbers\." may be covered by no requirement/)},
   {name: 'a library whose functions have no paths and no languages', goal: 'Write a JavaScript module that formats durations like 1h 5m.',
     answer: json({card: 1, summary: 'Duration formatting', deliverables: [{name: 'formatDuration', kind: 'function', examples: [{given: [3900], expect: '1h 5m'}]}],
       requirements: [{id: 'R1', says: 'formatDuration(60) is 1m', source: 'formats durations', serves: ['formatDuration'], check: {kind: 'call', steps: [{call: 'formatDuration', args: [60], expect: '1m'}]}}]}),
@@ -199,18 +207,43 @@ const CORPUS = [
     deliverables: [['rev', 'command', 'rev.py']]},
   {name: 'flags only the runtime sets are dropped from a writer\'s answer', goal: 'A Python CLI that prints a greeting.',
     answer: json({card: 1, summary: 'Greeter', languages: ['python'], deliverables: [{name: 'greet', kind: 'command', path: 'greet.py'}],
-      requirements: [{id: 'R1', says: 'It greets', source: 'the moon landing', serves: ['greet'], check: cmd('greet', 'Hello'), implicit: true, inferred: true, source_inferred: true}]}),
+      requirements: [{id: 'R1', says: 'It greets', source: 'the moon landing', serves: ['greet'], check: cmd('greet', 'Hello'), implicit: true, source_inferred: true, vet_p: 1, unattached: false}]}),
     deliverables: [['greet', 'command', 'greet.py']],
-    check: out => { const r = out.card.requirements[0]; assert.ok(!r.implicit && !r.inferred && !r.source_inferred); assert.equal(r.untraced, true); assert.ok(vettable(out.card).includes(r), 'Clef still vets it'); }},
-  {name: 'a command with no check that runs it: a clear retry error', goal: 'A Python CLI that renames photos by the date they were taken.',
+    check: out => { const r = out.card.requirements[0]; assert.ok(!r.implicit && !r.source_inferred && r.vet_p === undefined); assert.equal(r.untraced, true); assert.ok(vettable(out.card).includes(r), 'Clef still vets it'); }},
+  {name: 'a command with no check that runs it: the review asks for one, and the revision adds it', goal: 'A Python CLI that renames photos by the date they were taken.',
     answer: json({card: 1, summary: 'Photo renamer', languages: ['python'], deliverables: [{name: 'rename_photos', kind: 'command'}, {name: 'USAGE.md', kind: 'doc'}],
       requirements: [{id: 'R1', says: 'The usage is documented', source: 'renames photos by the date', serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question: 'Does it explain how to rename photos by date?'}}]}),
-    deliverables: [['rename_photos', 'command', 'rename_photos.py'], ['USAGE.md', 'doc', 'USAGE.md']], retry: 'rename_photos'},
+    revised: json({card: 1, summary: 'Photo renamer', languages: ['python'], deliverables: [{name: 'rename_photos', kind: 'command'}, {name: 'USAGE.md', kind: 'doc'}],
+      requirements: [{id: 'R1', says: 'The usage is documented', source: 'renames photos by the date', serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question: 'Does it explain how to rename photos by date?'}},
+        {id: 'R2', says: 'A photo is renamed by its date', source: 'renames photos by the date they were taken', serves: ['rename_photos'], check: {kind: 'command', run: 'rename_photos --dry-run sample.jpg', expect: {stdout_has: ['20']}}}]}),
+    deliverables: [['rename_photos', 'command', 'rename_photos.py'], ['USAGE.md', 'doc', 'USAGE.md']], check: out => assert.equal(out.attempts, 2)},
   {name: 'a call step under "function" with "expected", and serves by stem', goal: 'A Python function that tells whether a year is a leap year.',
     answer: json({card: 1, summary: 'Leap years', languages: ['python'], deliverables: [{name: 'is_leap', path: 'leap.py'}],
       requirements: [{id: 'R1', says: '2000 is a leap year', source: 'tells whether a year is a leap year', serves: ['leap'], check: {kind: 'call', function: 'is_leap', args: [2000], expected: true}}]}),
     deliverables: [['is_leap', 'function', 'leap.py']],
     check: out => assert.deepEqual(out.card.requirements[0].check.steps, [{call: 'is_leap', args: [2000], expect: true}])},
+  // ---------------------------------------------------------------- layer 3 places a reference
+  {name: 'layer 3: serves written as a description, which Clef places on a deliverable', goal: 'A Python command-line tool that converts temperatures, and a guide to it.',
+    answer: json({card: 1, summary: 'converter', languages: ['python'], deliverables: [{name: 'convert', kind: 'command', path: 'convert.py'}, {name: 'GUIDE.md', kind: 'doc', path: 'GUIDE.md'}],
+      requirements: [{id: 'R1', says: '100 C prints 212', source: 'converts temperatures', serves: ['the converter tool'], check: cmd('convert 100 C', '212')},
+        {id: 'R2', says: 'The guide shows a conversion', source: 'a guide to it', serves: ['user documentation'], check: {kind: 'judge', path: 'docs/guide', question: 'Does it show a conversion?'}}]}),
+    place: {'the converter tool': 'convert', 'user documentation': 'GUIDE.md', 'docs/guide': 'GUIDE.md'},
+    deliverables: [['convert', 'command', 'convert.py'], ['GUIDE.md', 'doc', 'GUIDE.md']],
+    check: out => { assert.deepEqual(out.card.requirements.map(r => r.serves), [['convert'], ['GUIDE.md']]); assert.equal(out.card.requirements[1].check.path, 'GUIDE.md'); assert.ok(out.notes.some(n => /R1 serves convert \(written "the converter tool"\) \(Clef p=0\.900\)/.test(n))); }},
+  {name: 'layer 3: a call to a function written another way, which Clef places', goal: 'A JavaScript function that adds sales tax to a price.',
+    answer: json({card: 1, summary: 'tax', languages: ['javascript'], deliverables: [{name: 'addTax', path: 'tax.js'}, {name: 'roundCents', path: 'round.js'}],
+      requirements: [{id: 'R1', says: 'Tax is added', source: 'adds sales tax to a price', serves: ['addTax'], check: {kind: 'call', steps: [{call: 'withSalesTax', args: [100, 0.2], expect: 120}]}},
+        {id: 'R2', says: 'A price is rounded to cents', source: 'a price', serves: ['roundCents'], check: {kind: 'call', steps: [{call: 'roundCents', args: [1.005], expect: 1.01}]}}]}),
+    place: {withSalesTax: 'addTax'},
+    deliverables: [['addTax', 'function', 'tax.js'], ['roundCents', 'function', 'round.js']],
+    check: out => assert.equal(out.card.requirements[0].check.steps[0].call, 'addTax')},
+  {name: 'layer 3: a reference Clef places nowhere is kept, unattached', goal: 'A Python CLI that prints a calendar, and a page that shows it.',
+    answer: json({card: 1, summary: 'calendar', languages: ['python'], deliverables: [{name: 'cal', kind: 'command', path: 'cal.py'}, {name: 'index.html', kind: 'page'}], run: [{id: 'site', static: true}],
+      requirements: [{id: 'R1', says: 'It prints this month', source: 'prints a calendar', serves: ['cal'], check: cmd('cal', 'Mo')},
+        {id: 'R2', says: 'The month is readable', source: 'a page that shows it', serves: ['the month view'], check: {kind: 'browser', serve: 'site', steps: [{goto: '/'}, {expect_text: 'Mo'}]}},
+        {id: 'R3', says: 'It is accessible', source: 'a page that shows it', serves: ['accessibility'], check: {kind: 'http', serve: 'site', steps: [{method: 'GET', path: '/', expect: {status: 200}}]}}]}),
+    deliverables: [['cal', 'command', 'cal.py'], ['index.html', 'page', 'index.html']],
+    check: out => { assert.deepEqual(out.card.requirements.map(r => [r.id, r.serves, !!r.unattached]), [['R1', ['cal'], false], ['R2', ['index.html'], false], ['R3', [], true]], 'R2 by its check\'s page, R3 kept unattached'); }},
   {name: 'a runtime directory and a hidden path are still refused, the rest kept', goal: 'A Python CLI that prints the date.',
     answer: json({card: 1, summary: 'Date', languages: ['python'], deliverables: [{name: 'today', kind: 'command', path: 'today.py'}, {name: 'components/notes.md', kind: 'doc'}],
       requirements: [{id: 'R1', says: 'It prints a date', source: 'prints the date', serves: ['today'], check: cmd('today', '20')}]}),
@@ -230,33 +263,56 @@ test('the corpus holds at least 30 answers, among them the three live failures',
   assert.equal(CORPUS.filter(c => /^live [ABC]:/.test(c.name)).length, 3);
 });
 
-for (const c of CORPUS) test(`corpus: ${c.name}`, () => {
-  const parsed = parseObject(c.answer);
-  assert.ok(!parsed.parse_error, 'the answer parses');
-  const out = prepareCard(parsed, {goal: c.goal, installed: TOOLCHAINS, base: c.base || []});
-  const behaviour = out.errors.filter(e => BEHAVIOUR_ERROR.test(e)), other = out.errors.filter(e => !BEHAVIOUR_ERROR.test(e));
-  if (c.errors) { assert.equal(other.length, c.errors.length, other.join('\n')); c.errors.forEach((re, i) => assert.match(other[i], re)); }
-  else assert.deepEqual(other, [], 'nothing but a missing behavioural check is left for the retry');
+// A scripted Clef, as a reviewer: it places a reference as the case says
+// (else nowhere), says NO to a check that only finds a file and to a goal
+// phrase no requirement exercises, and yes to the rest.
+const exercisesCheck = check => !/^file \S+$/.test(check);
+export const scriptedClef = (c = {}) => (k, input) => {
+  const i = Number(k.split('_').pop());
+  if (k.startsWith('reference_')) return c.place?.[input.state.requirement.written] === input.state.deliverables[i].name ? 0.9 : 0.1;
+  if (k.startsWith('exercises_')) return exercisesCheck(input.state.requirements[i].check) ? 0.9 : 0.2;
+  // A phrase is covered when some check exercises something, and every deliverable the phrase names is in some check.
+  if (k.startsWith('covered_')) {
+    const phrase = input.state.phrases[i].text.toLowerCase(), checks = input.state.requirements.map(r => r.check).filter(exercisesCheck);
+    const named = input.state.deliverables.filter(d => String(d.name).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 3).some(w => phrase.includes(w)));
+    return checks.length && named.every(d => checks.some(ch => ch.includes(d.name))) ? 0.9 : 0.2;
+  }
+  return 0.9;
+};
+// The room's card writer call, with the case's answers and the scripted Clef.
+export async function throughLayers(c) {
+  const calls = [], clefCalls = [];
+  const env = {MODEL_NAME: '@cf/qwen/qwen3-30b-a3b-fp8', AI: {run: async (_m, input) => {
+    if (input.questions) { clefCalls.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: scriptedClef(c)(k, input)}]))}; }
+    calls.push(input);
+    return {response: calls.length > 1 && c.revised ? c.revised : c.answer};
+  }}};
+  const out = await writeCard(env, {goal: c.goal, installed: TOOLCHAINS, base: c.base || []});
+  return {...out, calls, clefCalls};
+}
+
+for (const c of CORPUS) test(`corpus: ${c.name}`, async () => {
+  assert.ok(!parseObject(c.answer).parse_error, 'the answer parses');
+  const out = await throughLayers(c);
+  if (c.errors) { assert.equal(out.errors.length, c.errors.length, out.errors.join('\n')); c.errors.forEach((re, i) => assert.match(out.errors[i], re)); }
+  else assert.deepEqual(out.errors, [], 'layer 2 refuses nothing');
   assert.deepEqual(out.unsupported, []);
   assert.ok(cardUsable(out.card), 'the card can start');
   assert.deepEqual(out.card.deliverables.map(d => [d.name, kindOf(d), d.path ?? null]), c.deliverables);
-  // Each page, command and function is exercised by a check, or the retry error names it.
-  const asked = behaviour.map(e => BEHAVIOUR_ERROR.exec(e)[1]);
+  // Each page, command, function and document is exercised by a check, or Clef's review says so on the card.
+  const notes = (out.card.review_notes || []).join(' ');
   for (const d of out.card.deliverables.filter(d => EXERCISES[kindOf(d)])) {
-    // A command a run starts is exercised by the http and browser checks on that run.
     const started = r => kindOf(d) === 'command' && ['http', 'browser'].includes(r.check.kind) && out.card.run.find(x => x.id === r.check.serve)?.argv?.[0] === d.name;
-    const exercised = out.card.requirements.some(r => r.serves.includes(d.name) && EXERCISES[kindOf(d)].includes(r.check.kind) || started(r));
-    assert.ok(exercised !== asked.includes(d.name), `${d.name}: exercised ${exercised}, asked ${asked.includes(d.name)}`);
+    const exercised = out.card.requirements.some(r => r.serves.includes(d.name) && (EXERCISES[kindOf(d)].includes(r.check.kind) || kindOf(d) === 'doc' && r.check.has) || started(r));
+    assert.ok(exercised || /may not exercise|may be covered by no requirement/.test(notes), `${d.name}: exercised, or a review note`);
   }
-  assert.deepEqual(asked, c.retry ? [c.retry] : []);
-  // Every requirement serves a deliverable and quotes a source; a repair that changed something said so.
+  // Every requirement quotes a source; one serving no deliverable says so (unattached); nothing the writer gave is dropped by Clef.
   for (const r of out.card.requirements.filter(r => !r.implicit && !r.project)) {
-    assert.ok(r.serves.length && r.serves.every(s => out.card.deliverables.some(d => d.name === s)), r.id);
+    assert.ok(r.serves.every(s => out.card.deliverables.some(d => d.name === s)), r.id);
+    assert.ok(r.serves.length || r.unattached, `${r.id} serves a deliverable or is marked unattached`);
     assert.ok(r.source, `${r.id} has a source`);
   }
-  // The repaired card is a fixed point: validating the draft a retry is shown again changes nothing but the runtime's marks.
-  const marks = card => ({...card, requirements: card.requirements.map(({source_inferred: _s, inferred: _i, untraced: _u, ...r}) => r)});
-  assert.deepEqual(marks(validateCard(out.draft, {goal: c.goal, base: c.base || []}).card), marks(out.card));
+  assert.ok(out.calls.length <= 2, 'one answer and at most one revision');
   c.check?.(out);
 });
 
@@ -283,8 +339,9 @@ test('repairs never admit a check the validator refuses: argv only, the denylist
 });
 
 test('repairCard says what it did, one note per repair', () => {
-  const {notes} = repairCard(parseObject(CORPUS[0].answer), {goal: CORPUS[0].goal});
+  const {notes, unresolved} = repairCard(parseObject(CORPUS[0].answer), {goal: CORPUS[0].goal});
   assert.deepEqual(notes, ['command convert_temp had no path; it is convert_temp.py.']);
+  assert.deepEqual(unresolved, []);
   const b = repairCard(parseObject(CORPUS.find(c => c.name.startsWith('live B')).answer), {goal: 'x'});
   assert.deepEqual(b.notes, ['"server.js" (kind function) is the file server.js.']);
   assert.deepEqual(repairCard('not a card', {}), {card: 'not a card', notes: []});
@@ -293,8 +350,8 @@ test('repairCard says what it did, one note per repair', () => {
 // ---------------------------------------------------------------- vetting, the live C numbers
 const C = CORPUS.find(c => c.name.startsWith('live C'));
 // A scripted Clef that answers each requirement with the p the live run got, by its statement.
-const LIVE_P = [[/to-do list structure/, 0.492], [/CSS styling/, 0.220], [/JavaScript for task management/, 0.261], [/does what the goal asks/, 0.453]];
-const scriptedClef = (table, calls = []) => ({SPLIT_MODEL: '@cf/cloudflare/clef-flash', AI: {run: async (_m, input) => {
+const LIVE_P = [[/to-do list structure/, 0.492], [/CSS styling/, 0.220], [/JavaScript for task management/, 0.261]];
+const scriptedVet = (table, calls = []) => ({SPLIT_MODEL: '@cf/cloudflare/clef-flash', AI: {run: async (_m, input) => {
   calls.push(input);
   return {answers: Object.fromEntries(Object.keys(input.questions).map(k => {
     const r = input.state.requirements.find(x => x.slot === Number(k.split('_').pop()));
@@ -302,70 +359,61 @@ const scriptedClef = (table, calls = []) => ({SPLIT_MODEL: '@cf/cloudflare/clef-
   }))};
 }}});
 
-test('vetting (live C): Clef-flash\'s p of 0.49, 0.22 and 0.26 no longer remove the page\'s requirements', async () => {
-  const fixed = parseObject(C.answer);
-  fixed.requirements.push({id: 'R4', says: 'Adding an item lists it', source: '', serves: ['index.html'], check: {kind: 'browser', serve: 'site', steps: [{fill: {placeholder: 'Add a task', text: 'milk'}}, {press: 'Enter'}, {expect_text: 'milk'}]}});
-  fixed.run = [{id: 'site', static: true}];
-  const {card, errors} = prepareCard(fixed, {goal: C.goal});
+test('vetting (live C): Clef-flash\'s p of 0.492, 0.220 and 0.261 remove nothing; each requirement is marked, doubtful below 0.5', async () => {
+  const {card, errors} = prepareCard(parseObject(C.answer), {goal: C.goal});
   assert.deepEqual(errors, []);
-  const calls = [], {ps, failed} = await vetRequirements(scriptedClef([...LIVE_P, [/Adding an item/, 0.3]], calls), {goal: C.goal, requirements: vettable(card)});
+  const calls = [], {ps, failed} = await vetRequirements(scriptedVet(LIVE_P, calls), {goal: C.goal, requirements: vettable(card)});
   assert.deepEqual(failed, []);
-  assert.deepEqual(calls[0].state.requirements.map(r => r.says), ['The page contains a to-do list structure', 'The page has JavaScript for task management', 'Adding an item lists it'],
-    'a check that only finds a file is never vetted');
-  const {card: vetted, dropped, doubtful} = applyVetting(card, ps);
-  assert.deepEqual(dropped, []);
-  assert.deepEqual(doubtful.map(r => [r.id, r.p]), [['R1', 0.492], ['R3', 0.261], ['R4', 0.3]]);
-  assert.deepEqual(vetted.requirements.filter(r => !r.implicit).map(r => r.id), ['R1', 'R2', 'R3', 'R4'], 'the core requirements survive');
-  // Even at p well under the bar, a requirement whose source is the goal's sentence stays.
-  const low = applyVetting(card, ps.map(x => ({...x, p: 0.01})));
-  assert.deepEqual(low.dropped, []);
-  assert.ok(VET_DROP_BAR < 0.2);
+  assert.deepEqual(calls[0].state.requirements.map(r => r.says), ['The page contains a to-do list structure', 'The page has JavaScript for task management'],
+    'a check that only finds a file has nothing to doubt, and is not vetted');
+  const {card: vetted, doubtful} = applyVetting(card, ps);
+  assert.deepEqual(vetted.requirements.filter(r => !r.implicit).map(r => [r.id, r.vet_p ?? null, r.doubtful ?? false]), [['R1', 0.492, true], ['R2', null, false], ['R3', 0.261, true]], 'all three writer requirements survive');
+  assert.deepEqual(doubtful.map(r => r.id), ['R1', 'R3']);
+  // The same requirements with style vetted too: 0.220 is marked, never removed.
+  const all = applyVetting(card, [{id: 'R1', p: 0.492}, {id: 'R2', p: 0.220}, {id: 'R3', p: 0.261}]);
+  assert.deepEqual(all.card.requirements.map(r => r.id), card.requirements.map(r => r.id));
+  assert.ok(all.card.requirements.filter(r => !r.implicit).every(r => r.doubtful));
+  assert.equal(VET_DOUBT_BAR, 0.5);
 });
 
-test('vetting: an invented requirement is still dropped, unless it is the last that exercises its deliverable', async () => {
+test('vetting: an invented requirement at p=0.01 stays on the card, marked doubtful, for the person to decide', async () => {
   const goal = 'A Python CLI that converts temperatures.';
   const raw = {card: 1, summary: 'x', languages: ['python'], deliverables: [{name: 'convert', kind: 'command', path: 'convert.py'}],
     requirements: [{id: 'R1', says: 'Converting 100 C prints 212', source: 'converts temperatures', serves: ['convert'], check: cmd('convert 100 C', '212')},
       {id: 'R2', says: 'It has a graphical window with charts', source: 'a window with charts', serves: ['convert'], check: cmd('convert --gui')}]};
   const {card} = prepareCard(raw, {goal});
-  const {ps} = await vetRequirements(scriptedClef([[/graphical/, 0.05]]), {goal, requirements: vettable(card)});
-  assert.deepEqual(applyVetting(card, ps).dropped.map(r => r.id), ['R2']);
-  const alone = prepareCard({...raw, requirements: [raw.requirements[1]]}, {goal}).card;
-  const out = applyVetting(alone, [{id: 'R2', p: 0.05}]);
-  assert.deepEqual(out.dropped, []);
-  assert.deepEqual(out.doubtful.map(r => [r.id, r.last]), [['R2', true]]);
+  const {ps} = await vetRequirements(scriptedVet([[/graphical/, 0.01]]), {goal, requirements: vettable(card)});
+  const {card: out, doubtful} = applyVetting(card, ps);
+  assert.deepEqual(out.requirements.map(r => r.id), ['R1', 'R2']);
+  assert.deepEqual(doubtful.map(r => [r.id, r.p, r.untraced]), [['R2', 0.01, true]]);
 });
 
 // ---------------------------------------------------------------- the live C follow-up
-test('amendment (live C): a readme change adds the readme and its question, and leaves script.js as it was', () => {
+test('amendment (live C): a readme change adds the readme and leaves script.js as it was', () => {
   const goal = C.goal, change = 'add a readme explaining how to run it';
   const first = parseObject(C.answer);
-  first.run = [{id: 'site', static: true}];
-  first.requirements.push({id: 'R4', says: 'Adding an item lists it', source: 'a to-do list', serves: ['index.html'], check: {kind: 'browser', serve: 'site', steps: [{fill: {placeholder: 'Add', text: 'milk'}}, {press: 'Enter'}, {expect_text: 'milk'}]}});
   const old = prepareCard(first, {goal}).card;
   // The writer's card for the change: the whole card, script.js without its examples, and three "exists" requirements.
-  const written = {card: 1, summary: 'A to-do page and a readme', languages: ['text'], run: [{id: 'site', static: true}], deliverables: [
+  const written = {card: 1, summary: 'A to-do page and a readme', languages: ['text'], deliverables: [
     {name: 'index.html', kind: 'page', path: 'index.html', does: 'the to-do page'}, {name: 'style.css', kind: 'file', path: 'style.css'}, {name: 'script.js', kind: 'file', path: 'script.js'},
     {name: 'README.md', kind: 'doc', path: 'README.md', does: 'explains how to run the page'}],
-  requirements: [...first.requirements.filter(r => r.id === 'R4'),
+  requirements: [
     {id: 'R5', says: 'README.md exists', source: 'add a readme', serves: ['README.md'], check: {kind: 'file', path: 'README.md'}},
     {id: 'R6', says: 'style.css exists', source: 'add a readme', serves: ['style.css'], check: {kind: 'file', path: 'style.css'}},
     {id: 'R7', says: 'script.js exists', source: 'add a readme', serves: ['script.js'], check: {kind: 'file', path: 'script.js'}}]};
   const full = effectiveGoal(goal, [change]);
   const prepared = prepareCard(written, {goal: full, change});
   assert.deepEqual(prepared.errors, []);
-  const judge = prepared.card.requirements.find(r => r.inferred);
-  assert.equal(judge.check.question, 'Does README.md do what the goal asks: add a readme explaining how to run it?', 'the readme\'s content is checked, from the change\'s words');
   const merged = mergeAmendment(old, prepared.card, {change});
   const next = revalidate(merged.card, {goal: full}).card, delta = cardDelta(old, next);
   assert.deepEqual(delta.deliverables, {added: ['README.md'], changed: []}, 'script.js keeps its examples: a field left out is no change');
   assert.deepEqual(next.deliverables.find(d => d.name === 'script.js').examples, old.deliverables.find(d => d.name === 'script.js').examples);
   const added = next.requirements.filter(r => delta.requirements.added.includes(r.id));
-  assert.deepEqual(added.map(r => [r.says, r.check.kind]), [['README.md exists', 'file'], [judge.says, 'judge']], 'no new "style.css exists" or "script.js exists"');
-  assert.deepEqual(vettable(next).filter(r => delta.requirements.added.includes(r.id)), [], 'neither is Clef\'s to drop');
+  assert.deepEqual(added.map(r => [r.says, r.check.kind]), [['README.md exists', 'file']], 'no new "style.css exists" or "script.js exists"');
+  assert.ok(next.requirements.some(r => r.says === 'The page includes CSS styling'), 'the old requirements stay');
 });
 
-test('amendment scope: Clef is asked about each changed deliverable, and one it refuses stays as it was', async () => {
+test('amendment scope: Clef is asked about each changed deliverable; a doubt is a mark, never a refusal', async () => {
   const goal = 'A Python CLI that converts temperatures, with a usage note.';
   const old = prepareCard({card: 1, summary: 'x', languages: ['python'], deliverables: [{name: 'convert', kind: 'command', path: 'convert.py', does: 'converts Celsius to Fahrenheit'}, {name: 'USAGE.md', kind: 'doc', does: 'how to run it'}],
     requirements: [{id: 'R1', says: '100 C prints 212', source: 'converts temperatures', serves: ['convert'], check: cmd('convert 100', '212')}]}, {goal}).card;
@@ -385,8 +433,9 @@ test('amendment scope: Clef is asked about each changed deliverable, and one it 
   assert.equal(asked[0].state.change, change);
   assert.deepEqual(asked[0].state.deliverables[1], {slot: 1, name: 'USAGE.md', kind: 'doc', path: 'USAGE.md', does: 'how to run it'});
   assert.ok(asked[0].questions.amend_change_1.instructions.startsWith(CLEF.amend_change.replace('{i}', '1').slice(0, 40)));
-  const kept = keepDeliverables(merged.card, old, ['USAGE.md'], {goal});
-  assert.deepEqual(cardDelta(old, kept).deliverables, {added: [], changed: ['convert']});
+  // The marks survive validation again.
+  const marked = {...merged.card, deliverables: merged.card.deliverables.map(d => d.name === 'USAGE.md' ? {...d, change_doubtful: {p: 0.1}} : d)};
+  assert.deepEqual(revalidate(marked, {goal}).card.deliverables.find(d => d.name === 'USAGE.md').change_doubtful, {p: 0.1});
   assert.deepEqual(await vetAmendChanges({MOCK_AI: 'true'}, {change, deliverables: [{name: 'convert'}]}), [{name: 'convert', p: 1}]);
   await assert.rejects(vetAmendChanges({...env, AI: {run: async () => ({answers: {}})}}, {change, deliverables: [{name: 'convert'}]}), /no valid probability/);
 });

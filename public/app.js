@@ -104,19 +104,22 @@ function amendedBy(history=[]) {
 const amendedMark=h=>h?` <span class="card-amended" title="${esc(h.reason)}">rev ${esc(h.rev)} · ${esc(String(h.reason||'').slice(0,60))}</span>`:'';
 function historyMarkup(history=[]) {
   const change=h=>{const d=h.delta||{},parts=[d.deliverables?.added?.length&&`adds ${d.deliverables.added.join(', ')}`,d.deliverables?.changed?.length&&`changes ${d.deliverables.changed.join(', ')}`,
-    d.requirements?.added?.length&&`new ${d.requirements.added.join(', ')}`,d.requirements?.changed?.length&&`changed ${d.requirements.changed.join(', ')}`].filter(Boolean);
+    d.requirements?.added?.length&&`new ${d.requirements.added.join(', ')}`,d.requirements?.changed?.length&&`changed ${d.requirements.changed.join(', ')}`,
+    d.doubtful_changes?.length&&`doubtful: ${d.doubtful_changes.map(x=>`${x.name} p=${Number(x.p).toFixed(2)}`).join(', ')}`].filter(Boolean);
     return `<li><b class="mono">rev ${esc(h.rev)}</b> <span class="faint">goal rev ${esc(h.goal_rev)}</span> ${h.rev>1?`“${esc(h.reason)}”`:'the goal'}${parts.length?` <span class="faint">· ${esc(parts.join('; '))}</span>`:''}</li>`;};
   return history.length>1?`<div class="card-section"><div class="eyebrow">REVISIONS</div><ul class="card-list">${history.map(change).join('')}</ul></div>`:'';
 }
 function cardMarkup(card,status={},history=[]) {
   if(!card)return '<p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p>';
   const by=amendedBy(history||[]);
-  const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}${amendedMark(by.deliverables.get(d.name))}</li>`;
+  // v8 card repair: Clef's review shows as marks; nothing it doubts is removed.
+  const pMark=(label,x,title)=>x?` <span class="req-chip doubtful"${title?` title="${esc(title)}"`:''}>${label}${typeof x.p==='number'?` p=${esc(x.p.toFixed(2))}`:''}</span>`:'';
+  const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}${pMark('needs confirmation',d.needs_confirmation,'an existing file the goal does not name; Continue confirms it')}${pMark('change doubtful',d.change_doubtful,'Clef doubted the change is about it')}${amendedMark(by.deliverables.get(d.name))}</li>`;
   const requirement=r=>{const state=requirementState(r,status),detail=status?.[r.id]?.detail;
-    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}${r.inferred?' · the runtime\'s question':''}${r.source_inferred&&!r.inferred?' · source inferred':''}</span>${amendedMark(by.requirements.get(r.id))}</li>`;};
+    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}${r.source_inferred?' · source inferred':''}${r.unvetted?' · unvetted':''}</span>${r.doubtful?pMark('doubtful',{p:r.vet_p},'Clef doubted the goal asks for it'):''}${r.unattached?' <span class="req-chip doubtful" title="no deliverable matched what it serves">unattached</span>':''}${amendedMark(by.requirements.get(r.id))}</li>`;};
   const section=(title,items)=>items.length?`<div class="card-section"><div class="eyebrow">${title}</div><ul class="card-list">${items.join('')}</ul></div>`:'';
   return `${card.summary?`<p class="card-summary">${esc(card.summary)}</p>`:''}${card.languages?.length?`<p class="faint">languages: ${esc(card.languages.join(', '))}</p>`:''}`+
-    section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`))+historyMarkup(history||[]);
+    section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`))+section('REVIEW NOTES',(card.review_notes||[]).map(n=>`<li class="faint">${esc(n)}</li>`))+historyMarkup(history||[]);
 }
 // v8 S9: the Prompts panel. Each prompt with its state (queued, running,
 // done, failed, skipped); a queued one can be edited, removed, skipped and

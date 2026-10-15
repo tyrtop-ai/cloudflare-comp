@@ -178,8 +178,9 @@ export function cardDelta(old, next) {
 export function revalidate(card, {goal = '', installed, base = [], packages = 'none', reserved = []} = {}) {
   const raw = {...card, requirements: explicit(card)};
   const out = validateCard(raw, {goal, installed, base, packages});
-  // validateCard drops a deliverable's source; the merged card keeps it, and its implicit requirements' ids.
-  const src = new Map((card.deliverables || []).filter(d => d.source).map(d => [d.name, d.source]));
+  // validateCard drops a deliverable's source and the runtime's marks on it; the merged card keeps them, and its implicit requirements' ids.
+  const MARKS = ['source', 'needs_confirmation', 'change_doubtful'];
+  const src = new Map((card.deliverables || []).map(d => [d.name, Object.fromEntries(MARKS.filter(k => d[k] !== undefined).map(k => [k, d[k]]))]));
   const ids = new Map((card.requirements || []).filter(r => r.implicit || r.project).map(r => [reqKey(r), r.id]));
   const own = new Set((card.requirements || []).map(r => r.id));
   const taken = new Set([...out.card.requirements.filter(r => !r.implicit).map(r => r.id), ...reserved.filter(id => !own.has(id))]), keep = new Map();
@@ -191,15 +192,5 @@ export function revalidate(card, {goal = '', installed, base = [], packages = 'n
     taken.add(id);
     return {...r, id};
   });
-  return {...out, card: {...out.card, requirements, deliverables: out.card.deliverables.map(d => src.has(d.name) ? {...d, source: src.get(d.name)} : d)}};
-}
-
-// v8 card repair (§5): the card with these deliverables as the old card had
-// them (an amendment's change to them was refused), and its requirements
-// validated again. names: the deliverables to keep as they were.
-export function keepDeliverables(card, old, names, opts = {}) {
-  const keep = new Set(names), was = new Map((old?.deliverables || []).map(d => [d.name, d]));
-  if (!keep.size) return card;
-  const deliverables = card.deliverables.map(d => keep.has(d.name) && was.has(d.name) ? was.get(d.name) : d);
-  return revalidate({...card, deliverables}, opts).card;
+  return {...out, card: {...out.card, requirements, deliverables: out.card.deliverables.map(d => src.has(d.name) ? {...d, ...src.get(d.name)} : d)}};
 }

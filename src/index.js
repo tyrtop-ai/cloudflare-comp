@@ -12,9 +12,9 @@ import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goal
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
-import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, vetDecisions, codeLanguages, cardLine, providedCard, dropDeliverables, VET_DROP_BAR } from './card.js';
+import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard } from './card.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, goalView, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, keepDeliverables, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
+import { effectiveGoal, goalView, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { triggerText, RETRY, MESSAGES, BASE_LABEL } from './prompts.js';
@@ -544,7 +544,7 @@ export class ControlRoom extends DurableObject {
   gateFacts(id) {
     if(!this.v8())return {};
     const base=this.basePaths(),approved=new Set(this.read('base_approved',[]));
-    return {base,owned:new Set(this.promisedOf(id).map(c=>c.path).filter(p=>p&&(!base.has(p)||approved.has(p))))};
+    return {base,owned:new Set(this.promisedOf(id).map(c=>c.path).filter(p=>p&&(!base.has(p)||approved.has(p)))),pending:new Set(this.read('base_pending',[]).map(x=>x.path))};
   }
   // v8 S8b: the folder of the pieces' unplaced files (partsRoot): components,
   // unless the base holds a components/ of its own. Fixed when the run starts.
@@ -552,14 +552,32 @@ export class ControlRoom extends DurableObject {
   // Clef's base_change question over existing files a contract names (the
   // card's deliverables, a split's new contracts): {yes, no}, the approved
   // paths kept in base_approved. A Clef failure throws.
+  // v8 card repair: Clef reviews, it never deletes. A path the goal (or a
+  // change) names literally is approved without a question; one Clef finds
+  // the goal asks to change is approved; any other waits for the person
+  // (base_pending, the base_confirm hold), and nothing that names it is
+  // removed: the file gate keeps writers off it until it is confirmed.
+  // {yes: paths, no: [{path, p}]}.
   async approveBasePaths(id, paths, goal=this.userGoal()) {
-    const approved=new Set(this.read('base_approved',[])),ask=[...new Set(paths)].filter(p=>!approved.has(p));
+    const approved=new Set(this.read('base_approved',[])),pendingNow=new Map(this.read('base_pending',[]).map(x=>[x.path,x])),ask=[...new Set(paths)].filter(p=>!approved.has(p));
     if(!ask.length)return {yes:[...new Set(paths)],no:[]};
-    const ps=await vetBaseChanges(this.inferenceEnv(),{goal,paths:ask}),no=ps.filter(x=>x.p<BASE_CHANGE_BAR);
+    const text=[goal,...this.goalChanges()].join('\n'),named=ask.filter(p=>new RegExp(`(?<![\\w./-])${p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![\\w/-])`,'i').test(text));
+    for(const p of named){approved.add(p);this.event(id,'base_change_named',clip(`The goal names ${p}, so changing it is allowed.`,300));}
+    const rest=ask.filter(p=>!named.includes(p)&&!pendingNow.has(p)),ps=rest.length?await vetBaseChanges(this.inferenceEnv(),{goal,paths:rest}):[],no=ps.filter(x=>x.p<BASE_CHANGE_BAR);
     for(const x of ps)if(x.p>=BASE_CHANGE_BAR)approved.add(x.path);
-    this.save('base_approved',[...approved]);
-    for(const x of no)this.event(id,'base_change_refused',clip(`Clef judged that the goal does not ask to change ${x.path} (p=${x.p.toFixed(3)}); no contract may change it.`,400));
-    return {yes:[...new Set(paths)].filter(p=>approved.has(p)),no:no.map(x=>x.path)};
+    for(const x of no)pendingNow.set(x.path,{path:x.path,p:Math.round(x.p*1000)/1000});
+    this.save('base_approved',[...approved]);this.save('base_pending',[...pendingNow.values()]);
+    for(const x of no)this.event(id,'base_change_doubtful',clip(`Clef doubted that the goal asks to change ${x.path} (p=${x.p.toFixed(3)}); it stays on the plan and waits for the person to confirm it (Continue), or to leave it out with a follow-up prompt.`,500));
+    return {yes:[...new Set(paths)].filter(p=>approved.has(p)),no:[...new Set(paths)].filter(p=>pendingNow.has(p)).map(p=>pendingNow.get(p))};
+  }
+  // v8 card repair: the room holds for the person at base_confirm: the
+  // existing files the plan would change that the goal does not name and
+  // Clef doubted, with their p. Root waits; Continue confirms them.
+  holdBaseConfirm(id) {
+    const pending=this.read('base_pending',[]);
+    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+    this.holdRoom('base_confirm',`The plan changes existing file${pending.length>1?'s':''} the goal does not name, and Clef doubted the goal asks for ${pending.length>1?'them':'it'}: ${pending.map(x=>`${x.path} (p=${Number(x.p).toFixed(3)})`).join(', ')}. Continue confirms ${pending.length>1?'them':'it'}; a follow-up prompt can leave ${pending.length>1?'them':'it'} out instead.`);
+    return false;
   }
   sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,card,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,card:parse(r.card,null)})); }
   // The chunk refs a node holds (polyglot-bench §2a.4): Root every stored
@@ -3525,7 +3543,10 @@ export class ControlRoom extends DurableObject {
   // paused with the requirement table (Continue runs the checks again).
   holdChecks(id, kind, head, again='Continue runs the checks again.') {
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-    this.holdRoom(kind,`${this.checksSummary(head)} ${again}`);
+    // v8 card repair: when the repair rounds ran out (or no piece could settle a failure), the failing requirements Clef doubted come first; the person decides about them.
+    const status=this.read('requirement_status',{}),doubted=['checks_exhausted','checks_failed'].includes(kind)?(this.read('card',null)?.requirements||[]).filter(r=>r.doubtful&&status[r.id]?.passed===false):[];
+    const first=doubted.length?`These requirements keep failing and Clef doubted the goal asks for them: ${doubted.map(r=>`${r.id} (p=${Number(r.vet_p).toFixed(3)})`).join(', ')}. Change or drop them with a follow-up prompt, or Continue. `:'';
+    this.holdRoom(kind,`${first}${this.checksSummary(head)} ${again}`);
     return {held:true};
   }
   // The repair rounds ran out at Root under v8: the room pauses with what
@@ -4892,8 +4913,9 @@ export class ControlRoom extends DurableObject {
         const x=await pickPiece(env,d.item,d.holders.map(i=>named[i]));
         // A tie goes to the one tied piece named for the function, else is said.
         const tied=x?.index>=0?[x.index,...(x.tied||[])]:[],by=tied.filter(j=>labelNames(named[d.holders[j]].label,d.name)),j=tied.length>1&&by.length===1?by[0]:x?.index;
-        owners.set(d.name,x?.index>=0?{index:d.holders[j],why:tied.length<2?`Clef p=${x.p.toFixed(2)}`:by.length===1?`Clef tie, label matches`:`Clef p=${x.p.toFixed(2)}, tied with ${x.tied.map(k=>`"${clip(named[d.holders[k]].label,40)}"`).join(', ')}`}:{index:-1,why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}`});
-      } catch {owners.set(d.name,{index:-1,why:'Clef failed'});}
+        // v8 card repair: Clef chooses, it never deletes: with no choice the name stays on the first piece that lists it.
+        owners.set(d.name,x?.index>=0?{index:d.holders[j],why:tied.length<2?`Clef p=${x.p.toFixed(2)}`:by.length===1?`Clef tie, label matches`:`Clef p=${x.p.toFixed(2)}, tied with ${x.tied.map(k=>`"${clip(named[d.holders[k]].label,40)}"`).join(', ')}`}:v8?{index:d.holders[0],why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}, so the first piece that lists it keeps it`}:{index:-1,why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}`});
+      } catch {owners.set(d.name,v8?{index:d.holders[0],why:'Clef failed, so the first piece that lists it keeps it'}:{index:-1,why:'Clef failed'});}
     }));
     const {spawn:repaired,removed}=repairInterfaces(named,promised,elsewhere,owners);
     if(removed.length)this.event(id,'interfaces_repaired',`Deleted ${removed.map(r=>`${r.name} from "${clip(r.label,70)}" (${r.why})`).join('; ')}; the pieces are kept.`);
@@ -4935,6 +4957,8 @@ export class ControlRoom extends DurableObject {
       if(scope[i]>=0.5)this.event(id,'scope_allowed',late?`Clef accepted late child "${label}" (p=${p}).`:`Clef accepted proposed child "${label}" (p=${p}); within Root and parent scope.`);
       else if(carries.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which carries ${carries.join(', ')} that this manager was promised; admitted (in scope by construction).`);
       else if(named.length||used.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which promises ${listed(named.length?named:used)}, which ${named.length?'the goal states start() returns':`${listed(users.map(s=>`"${clip(s.label,70)}"`))} uses`}; admitted (in scope by the plan).`);
+      // v8 card repair: Clef reviews, it never deletes: a piece it doubts is admitted, its doubt shown, and the checks and the person decide.
+      else if(v8)this.event(id,'scope_doubtful',`Clef doubted that proposed child "${label}" is within Root and parent scope (p=${p}); admitted, marked doubtful.`);
       else {
         this.event(id,'scope_rejected',late?`Clef rejected late child "${label}" (p=${p}).`:`Clef rejected proposed child "${label}" (p=${p}); outside Root and parent scope.`);
         rejectedScope++;rejectedChildren.push({label:child.label,task:clip(child.task,500),probability:scope[i]});
@@ -4943,8 +4967,10 @@ export class ControlRoom extends DurableObject {
       // A carried name takes the parent's item: the description travels down unchanged.
       let interfaces=(child.interfaces||[]).map(f=>own.has(f.name)?promised.find(p=>p.name===f.name):f);
       const no=(names[i]||[]).filter(x=>x.p<0.5),why=x=>stated.has(x.name)?'the goal states start() returns it':labelWrites(child.label,x.name)?`"${label}" names it`:usersOf(i,x.name).length?`${listed(usersOf(i,x.name).map(s=>`"${clip(s.label,70)}"`))} ${usersOf(i,x.name).length>1?'use':'uses'} it`:'';
-      const kept=no.filter(x=>why(x)),strip=no.filter(x=>!kept.includes(x));
+      const kept=no.filter(x=>why(x)),strip=v8?[]:no.filter(x=>!kept.includes(x));
       for(const x of kept)this.event(id,'interfaces_kept',`Clef doubted ${x.name} (p=${x.p.toFixed(3)}), but ${why(x)}; kept.`);
+      // v8 card repair: a contract Clef doubts stays on its piece, its doubt shown.
+      if(v8)for(const x of no.filter(x=>!kept.includes(x)))this.event(id,'interfaces_doubtful',`Clef doubted that "${label}" writes ${x.name} (p=${x.p.toFixed(3)}); kept on the piece, marked doubtful.`);
       for(const x of strip)this.event(id,'interfaces_stripped',`Clef judged ${x.name} (p=${x.p.toFixed(3)}) is not what "${label}" writes; the piece is kept without it.`);
       if(strip.length)interfaces=interfaces.filter(f=>!strip.some(x=>x.name===f.name));
       admitted.push({...child,interfaces});
@@ -4993,9 +5019,11 @@ export class ControlRoom extends DurableObject {
     if(interfaceErrors(survivors,promised).some(e=>e.check==='C5'))throw new Error(`Admission lost a function promised to ${id}; this is a runtime bug.`);
     return {spawn:v8?await this.baseContracts(id,survivors):survivors,c5:[],rejectedScope,rejectedChildren};
   }
-  // v8 S8b review: a split's contract that names an existing file stays only
-  // when Clef finds the goal asks to change that file; else the contract is
-  // taken off its piece, with an event. A Clef failure keeps no such contract.
+  // v8 S8b (v8 card repair): a split's contract that names an existing file
+  // stays on its piece. One the goal names, or Clef finds it asks to change,
+  // is approved; any other waits for the person (base_pending, shown at the
+  // base_confirm hold), and the file gate keeps writers off it until then. A
+  // Clef failure leaves it waiting too.
   async baseContracts(id, spawn) {
     const base=this.basePaths();
     if(!base.size)return spawn;
@@ -5003,10 +5031,34 @@ export class ControlRoom extends DurableObject {
     if(!paths.length)return spawn;
     let no;
     try {({no}=await this.approveBasePaths(id,paths));}
-    catch(e){no=paths.filter(p=>!new Set(this.read('base_approved',[])).has(p));this.event(id,'base_change_unvetted',clip(`Clef could not judge whether the goal asks to change ${no.join(', ')} (${e?.message||e}); no piece may change ${no.length>1?'them':'it'}.`,500));}
-    if(!no.length)return spawn;
-    const gone=new Set(no);
-    return spawn.map(c=>c&&Array.isArray(c.interfaces)&&c.interfaces.some(f=>gone.has(f.path))?{...c,interfaces:c.interfaces.filter(f=>!gone.has(f.path))}:c);
+    catch(e){
+      const approved=new Set(this.read('base_approved',[])),pend=new Map(this.read('base_pending',[]).map(x=>[x.path,x]));
+      no=[...new Set(paths)].filter(p=>!approved.has(p)).map(p=>pend.get(p)||{path:p,p:0});
+      for(const x of no)pend.set(x.path,x);
+      this.save('base_pending',[...pend.values()]);
+      this.event(id,'base_change_unvetted',clip(`Clef could not judge whether the goal asks to change ${no.map(x=>x.path).join(', ')} (${e?.message||e}); ${no.length>1?'they wait':'it waits'} for the person to confirm.`,500));
+    }
+    if(no.length&&!this.read('paused_state',null))this.holdRoom('base_confirm',`A split's contracts change existing file${no.length>1?'s':''} the goal does not name, and Clef doubted the goal asks for ${no.length>1?'them':'it'}: ${no.map(x=>`${x.path} (p=${Number(x.p).toFixed(3)})`).join(', ')}. Writers start on ${no.length>1?'them':'it'} once Continue confirms; a follow-up prompt can leave ${no.length>1?'them':'it'} out instead.`);
+    return spawn;
+  }
+  // v8 card repair: the person's confirmation (Continue at base_confirm):
+  // every waiting file is approved, the card's marks are cleared, and Root
+  // goes on.
+  confirmBase() {
+    const pending=this.read('base_pending',[]);
+    this.save('paused_state',null);
+    // A change folded the card away (applyAmendment): Root writes it again.
+    if(!pending.length){if(!this.read('card',null)&&this.node('root')?.status==='waiting'){this.event('root','card_continue','Continue runs the card writer again.');this.wake('root');}return;}
+    this.save('base_approved',[...new Set([...this.read('base_approved',[]),...pending.map(x=>x.path)])]);
+    this.save('base_pending',[]);
+    const card=this.read('card',null);
+    if(card?.deliverables?.some(d=>d.needs_confirmation)) {
+      const next={...card,deliverables:card.deliverables.map(({needs_confirmation:_,...d})=>d)};
+      this.save('card',next);
+      this.db().exec('UPDATE card_revisions SET card=? WHERE rev=?',JSON.stringify(next),this.cardRev());
+    }
+    this.event('root','base_confirmed',clip(`The person confirmed changing ${pending.map(x=>x.path).join(', ')}.`,500));
+    if(this.node('root')?.status==='waiting')this.wake('root');
   }
   // Prune on discovery: before a manager with a parent spawns an admitted
   // child, walk up from its parent. At each level Clef picks the direct child
@@ -5055,6 +5107,12 @@ export class ControlRoom extends DurableObject {
     const kept=[],rejected=[];
     children.forEach((child,i)=>{
       const {branch,level,owner,p,error}=walked[i],label=clip(child.label,70);
+      // v8 card repair: Clef ranks owners, it never deletes: a piece another strand may own is kept, the ranking shown.
+      if(owner&&this.v8()) {
+        this.event(id,'scope_owner_doubtful',`Clef ranks "${clip(owner.label,70)}" (${owner.id}) as the owner of proposed child "${label}"${p===undefined?'':` (p=${p.toFixed(3)})`}; kept in this strand, and the checks and the person decide.`);
+        kept.push(child);
+        return;
+      }
       if(owner) {
         // Decided above this strand's manager: the splitter is not told by whom.
         const near=level.id===this.node(id)?.parent,name=near?owner.label:'',why=p===undefined?'':`, Clef's best answer (p=${p.toFixed(3)}, below ${OWNER_BAR})`;
@@ -6362,7 +6420,7 @@ export class ControlRoom extends DurableObject {
   }
   // v8 card repair: the requirements Clef doubted and vetting kept, for the dashboard only (no agent reads them).
   logDoubtful(id, doubtful=[]) {
-    for(const r of doubtful)this.event(id,'card_requirement_doubtful',clip(`Clef doubted ${r.id} (p=${r.p.toFixed(3)}), and it is kept: ${r.last?'it is the last requirement that exercises what it serves':r.untraced?`p is above ${VET_DROP_BAR}`:'its source is in the goal'}. ${r.says}`,600));
+    for(const r of doubtful)this.event(id,'card_requirement_doubtful',clip(`Clef doubted that the goal asks for ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not found in the goal':''}); it stays on the card, marked doubtful, for the person to keep or change: ${r.says}`,600));
   }
   // v8 §1.6: Root's first act under v8. The card writer turns the goal into
   // the project card, Clef vets its requirements, and the card becomes
@@ -6404,24 +6462,20 @@ export class ControlRoom extends DurableObject {
       this.save('card_draft',card);
     }
     try {
-      // §1.4 (v8 card repair): Clef vets the writer's requirements; one goes only when p < VET_DROP_BAR and its source is not in the goal,
-      // never the last that exercises a deliverable; a batch Clef fails keeps its own, unvetted.
+      // §1.4 (v8 card repair): Clef reviews, it never deletes. It vets the writer's requirements, each keeps its p (vet_p),
+      // and one below VET_DOUBT_BAR is marked doubtful and shown; a batch Clef fails keeps its own, unvetted.
       const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(card).filter(routable)});
-      let {card:vetted,dropped,doubtful}=applyVetting(card,ps);
+      let {card:vetted,doubtful}=applyVetting(card,ps);
       if(failed.length)this.event(id,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
-      for(const r of dropped)this.event(id,'card_requirement_dropped',clip(`Clef judged that the goal does not state or imply ${r.id} (p=${r.p.toFixed(3)}; its source is not in the goal): ${r.says}`,600));
       this.logDoubtful(id,doubtful);
-      if(!vettedUsable(vetted)){this.save('card_draft',null);return hold('card_failed','Clef dropped every requirement of the card, and no deliverable has an implicit one.');}
-      // S8b review: a deliverable at an existing file stays only when Clef finds the goal asks to change that file (a Clef failure throws: the room holds, Continue asks again).
+      // S8b (v8 card repair): a deliverable at an existing file the goal names, or Clef finds it asks to change, is approved; any
+      // other is kept, marked needs_confirmation, and the room holds at base_confirm for the person (a Clef failure throws: Continue asks again).
       const basePaths=this.basePaths(),touched=vetted.deliverables.map(d=>d.path).filter(p=>p&&basePaths.has(p));
+      let pending=[];
       if(touched.length) {
-        const {no}=await this.approveBasePaths(id,touched,goal);
-        if(no.length) {
-          const cut=dropDeliverables(vetted,no);
-          this.event(id,'card_base_dropped',clip(`The card's deliverable(s) ${cut.dropped.join(', ')} would change existing file(s) ${no.join(', ')} that the goal does not ask to change; left out.`,600));
-          vetted=cut.card;
-          if(!vettedUsable(vetted)){this.save('card_draft',null);return hold('card_failed','Every deliverable of the card changes an existing file the goal does not ask to change.');}
-        }
+        ({no:pending}=await this.approveBasePaths(id,touched,goal));
+        const p=new Map(pending.map(x=>[x.path,x.p]));
+        if(p.size)vetted={...vetted,deliverables:vetted.deliverables.map(d=>p.has(d.path)?{...d,needs_confirmation:{p:p.get(d.path)}}:d)};
       }
       // S8b review: Root holds the chunks the card cites (or the first of each source), at most 16.
       if(this.allRefs().length)this.save('root_refs',rootRefs(vetted.refs,this.allRefs()));
@@ -6431,6 +6485,8 @@ export class ControlRoom extends DurableObject {
       this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(vetted)),id);
       this.save('card_draft',null);this.save('paused_state',null);
       this.event(id,'card_written',clip(`Project card (${calls}, ${Date.now()-started} ms): ${vetted.summary||'(no summary)'}. ${cardLine(vetted)}.${vetted.decisions.length?` Decisions: ${vetted.decisions.join(' ')}`:''}`,1500));
+      if(vetted.review_notes?.length)this.event(id,'card_review_notes',clip(`Clef's review notes the card still draws (the writer revised it once): ${vetted.review_notes.join(' ')}`,1500));
+      if(pending.length)return this.holdBaseConfirm(id);
       return true;
     } catch(e) {
       // Nothing half-saved: the next attempt starts from the kept card.
@@ -6496,6 +6552,8 @@ export class ControlRoom extends DurableObject {
     if (!n || n.status !== 'ready') return;
     if (!n.parent && (this.get('amend_wake')||this.get('root_held_amend'))) {this.set('amend_wake','');this.set('root_held_amend','');}
     if(this.v8()&&!n.parent&&n.phase==='decompose'&&!this.read('card',null)&&!query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length&&!await this.cardTurn(id))return;
+    // v8 card repair: Root splits only once the person confirmed the existing files the card waits on.
+    if(this.v8()&&!n.parent&&n.phase==='decompose'&&this.read('card',null)?.deliverables?.some(d=>d.needs_confirmation)&&this.read('base_pending',[]).length)return void this.holdBaseConfirm(id);
     const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
     // Builders and the compiler run runtime turns, never a model action.
     if(isRuntimeNode(n) && this.live()) return n.label==='Compiler'?this.compilerTurn(id):this.builderTurn(id);
@@ -7465,6 +7523,8 @@ export class ControlRoom extends DurableObject {
     for(const id of continued)this.clearFailures(id);
     // v8 S3: Continue on a room held at the card runs the card writer again.
     const hold=this.read('paused_state',null);
+    // v8 card repair: Continue at base_confirm is the person's confirmation of the files it lists.
+    if(this.v8()&&hold?.kind==='base_confirm')this.confirmBase();
     if(this.v8()&&['card_blocked','card_failed'].includes(hold?.kind)) {
       this.save('paused_state',null);
       if(this.node('root')?.status==='waiting'&&!this.read('card',null)) {
@@ -7881,9 +7941,16 @@ export class ControlRoom extends DurableObject {
   async applyAmendment(text, promptId) {
     const nonce=this.get('run_nonce'),gone=()=>this.get('run_nonce')!==nonce||!this.promptRows('id=?',promptId).length;
     const stale={error:'The room was started again or cleared while the change was being applied; nothing of it was kept.',stale:true};
-    const card=this.read('card',null),goal=effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]),goal_rev=this.goalRev()+1;
+    let card=this.read('card',null);
+    const goal=effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]),goal_rev=this.goalRev()+1;
     if(goal.length>EFFECTIVE_GOAL_LIMIT)return {error:`The goal with its changes would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`};
     const root=this.node('root'),rootBusy=this.activeTurns.has('root');
+    // v8 card repair: a change while the card waits for the person at base_confirm (Root has not split) is part of the goal the
+    // card is written again from, so the person can leave a waiting file out with a follow-up prompt.
+    if(card&&!rootBusy&&this.read('paused_state',null)?.kind==='base_confirm'&&root?.phase==='decompose'&&!this.manager('root')) {
+      this.db().exec('DELETE FROM card_revisions');this.save('card',null);this.db().exec("UPDATE agents SET interfaces='[]' WHERE id='root'");this.save('base_pending',[]);
+      card=null;
+    }
     if(!card&&!rootBusy) {
       // No card yet: the change folds into the goal the card writer reads, which writes a new card (never a draft written before it).
       this.recordGoal(goal_rev,promptId,text,goal);
@@ -7905,38 +7972,33 @@ export class ControlRoom extends DurableObject {
     const opts={goal,installed:rows,base,packages,reserved};
     let {card:next}=revalidate(merged.card,opts);
     let delta=cardDelta(card,next);
-    // v8 card repair (§5): a change may rewrite only the existing deliverables it touches; Clef asks for each changed one,
-    // and one it says the change is not about stays as it was. Added deliverables and requirements are not asked here.
+    // v8 card repair (§5): Clef reviews, it never deletes or reverts. For each existing deliverable the change rewrites, Clef
+    // answers whether the change is about it; a doubt is marked on the deliverable (change_doubtful) and in the revision's delta.
+    const doubtedChanges=[];
     if(delta.deliverables.changed.length) {
       let ps=null;
       try {ps=await vetAmendChanges(this.inferenceEnv(),{change:text,deliverables:delta.deliverables.changed.map(n=>card.deliverables.find(d=>d.name===n)).filter(Boolean).map(d=>({name:d.name,kind:contractKind(d),path:d.path||'',does:d.does||''}))});}
-      catch(e) {this.event('root','amend_change_unvetted',clip(`Clef could not judge whether the change touches ${delta.deliverables.changed.join(', ')} (${e?.message||e}); the written changes are kept.`,600));}
+      catch(e) {this.event('root','amend_change_unvetted',clip(`Clef could not judge whether the change touches ${delta.deliverables.changed.join(', ')} (${e?.message||e}); the written changes are applied, unvetted.`,600));}
       if(gone())return stale;
-      const refused=(ps||[]).filter(x=>x.p<AMEND_CHANGE_BAR);
-      for(const x of refused)this.event('root','amend_change_refused',clip(`Clef judged that the change is not about ${x.name} (p=${x.p.toFixed(3)}); it stays as it was: ${text}`,600));
-      if(refused.length){next=keepDeliverables(next,card,refused.map(x=>x.name),opts);delta=cardDelta(card,next);}
+      for(const x of (ps||[]).filter(x=>x.p<AMEND_CHANGE_BAR)) {
+        doubtedChanges.push({name:x.name,p:Math.round(x.p*1000)/1000});
+        this.event('root','amend_change_doubtful',clip(`Clef doubted that the change is about ${x.name} (p=${x.p.toFixed(3)}); the change to it is applied and marked doubtful, for the person to keep or undo with a follow-up prompt: ${text}`,600));
+      }
+      if(doubtedChanges.length){const m=new Map(doubtedChanges.map(x=>[x.name,x.p]));next={...next,deliverables:next.deliverables.map(d=>m.has(d.name)?{...d,change_doubtful:{p:m.get(d.name)}}:d)};}
     }
-    // §1.4 (v8 card repair): Clef vets the new and changed requirements; one goes only when p < VET_DROP_BAR and the writer's own
-    // source is not in the goal, never the last that exercises a deliverable: a new one is dropped, a changed one kept as it was.
+    // §1.4 (v8 card repair): Clef vets the new and changed requirements and only annotates them (vet_p, doubtful); none is dropped or reverted.
     const fresh=new Set([...delta.requirements.added,...delta.requirements.changed]);
     const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal,requirements:vettable(next).filter(r=>fresh.has(r.id)&&routable(r))});
     if(gone())return stale;
     if(failed.length)this.event('root','card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
-    // The source a requirement carries now is the change's; whether the writer's own was in the goal decides.
+    // The source a requirement carries now is the change's; whether the writer's own was in the goal is what the log says.
     const said=x=>String(x??'').trim().replace(/\s+/g,' ').toLowerCase(),untracedSays=new Set((written.card.requirements||[]).filter(r=>r.untraced).map(r=>said(r.says)));
-    const {drop:low,doubtful,unvetted}=vetDecisions(next,ps,{untraced:r=>untracedSays.has(said(r.says))});
-    for(const [rid,p] of low)this.event('root','card_requirement_dropped',clip(`Clef judged that the goal with its change does not state or imply ${rid} (p=${p.toFixed(3)}; its source is not in the goal): ${next.requirements.find(r=>r.id===rid)?.says||''}`,600));
+    let doubtful;
+    ({card:next,doubtful}=applyVetting({...next,requirements:next.requirements.map(r=>untracedSays.has(said(r.says))?{...r,untraced:true}:r)},ps));
+    next={...next,requirements:next.requirements.map(({untraced:_,...r})=>r),...(written.card.review_notes?.length?{review_notes:written.card.review_notes}:{})};
+    if(!written.card.review_notes?.length)delete next.review_notes;
     this.logDoubtful('root',doubtful);
-    const reqs=next.requirements.filter(r=>!r.implicit&&!r.project).flatMap(r=>{
-      const {untraced:_,...x}=r;
-      if(!low.has(r.id))return [unvetted.has(r.id)?{...x,unvetted:true}:x];
-      const was=delta.requirements.changed.includes(r.id)&&card.requirements.find(o=>o.id===r.id);
-      return was?[was]:[];
-    });
-    ({card:next}=revalidate({...next,requirements:[...reqs,...next.requirements.filter(r=>r.implicit||r.project)]},opts));
-    // Vetting's marks stay, as cardTurn leaves them (unvetted); untraced is the writer's, gone after vetting.
-    next={...next,requirements:next.requirements.map(({untraced:_,...r})=>unvetted.has(r.id)?{...r,unvetted:true}:r)};
-    delta=cardDelta(card,next);
+    delta={...cardDelta(card,next),...(doubtedChanges.length?{doubtful_changes:doubtedChanges}:{})};
     for(const n of merged.notes)this.event('root','amend_note',clip(n,500));
     this.recordGoal(goal_rev,promptId,text,goal);
     if(deltaEmpty(delta)) {

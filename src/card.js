@@ -5,7 +5,7 @@
 // (cardContracts). Everything here is deterministic and pure: no room, no
 // model. The card writer's call and the Clef vetting are in src/model.js.
 import { TOOLCHAINS, toolchainOf, toolchainById, toolchainNamed, manifestOf } from './toolchains.js';
-import { normalizeContract, kindOf, nameError, CONTRACT_KINDS, RUNTIME_PREFIXES, COMMAND_NAME } from './contracts.js';
+import { normalizeContract, kindOf, nameError, CONTRACT_KINDS, RUNTIME_PREFIXES, COMMAND_WORD } from './contracts.js';
 import { writerPathError } from './code-work.js';
 import { caseTwin } from '../container/build-path.mjs';
 import { isPath } from './protocol.js';
@@ -47,10 +47,12 @@ const CODE_KINDS = new Set(['function', 'route']);
 const UNSET = /^(?:none|n\/?a|null|nil|false|no|nothing|not blocked|-+|\.+)$/i;
 
 // ------------------------------------------------------------ commands (v8 S3 review)
+// Interim: replaced by check sandboxing (capability slice).
 // A check's command is one program and its arguments (argv), never a shell
 // line. This is defense in depth: the Container sandbox (S4a: its own
 // process, network off, a throwaway directory) is the real boundary.
 const SHELL = /[;|&<>`\r\n]|\$[({A-Za-z_]/;
+// Interim: replaced by check sandboxing (capability slice).
 // Names a command deliverable may not take: shells, network and file tools,
 // and every toolchain row's executables and package runners.
 export const SYSTEM_COMMANDS = Object.freeze(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh', 'busybox', 'env', 'sudo', 'su', 'doas', 'exec', 'eval', 'xargs', 'nohup', 'timeout',
@@ -58,6 +60,7 @@ export const SYSTEM_COMMANDS = Object.freeze(['sh', 'bash', 'zsh', 'dash', 'ksh'
   'curl', 'wget', 'nc', 'ncat', 'netcat', 'socat', 'ssh', 'scp', 'sftp', 'ftp', 'telnet', 'rsync', 'git', 'docker',
   'python', 'node', 'nodejs', 'deno', 'bun', 'bunx', 'perl', 'ruby', 'php', 'pip', 'pip3', 'pipx', 'uv', 'uvx', 'yarn', 'pnpm']);
 const reservedCommands = rows => new Set([...SYSTEM_COMMANDS, ...rows.flatMap(r => [...(r.executables || []), ...(r.package_runners || []).map(p => p[0])])]);
+// Interim: replaced by check sandboxing (capability slice).
 // Arguments that make an interpreter run code given inline or fetched:
 // allowed only when what they name is a deliverable's path.
 const INLINE = new Set(['-c', '-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader', '--experimental-loader']);
@@ -117,6 +120,7 @@ function commandOf(run, ctx) {
 }
 
 // ------------------------------------------------------------ paths (v8 S3 review)
+// Interim: replaced by check sandboxing (capability slice).
 // A path a check requests from the served project: one '/', then a name,
 // never another host ('//', a scheme, a backslash) or a step up ('..').
 export function urlPathError(p) {
@@ -125,6 +129,7 @@ export function urlPathError(p) {
   if (/(?:^|\/)\.\.(?:[/?#]|$)/.test(p)) return 'it must not step up with ".."';
   return '';
 }
+// Interim: replaced by check sandboxing (capability slice).
 // A deliverable's path: the path rule every worker's file meets, as a
 // placed file; no package-manager configuration or directory.
 function deliverablePathError(path, base = new Set()) {
@@ -141,6 +146,7 @@ function deliverablePathError(path, base = new Set()) {
   if (m && (m.name.endsWith('/') || /lock|shrinkwrap|rc$|rc\.yml$|\.conf$|^\.python-version$/i.test(m.name))) return `${path}: package-manager configuration is the runtime's, never a deliverable`;
   return '';
 }
+// Interim: replaced by check sandboxing (capability slice).
 // A check's input file: the path rule of a worker's file that no contract
 // places, no project or base file, and data only (a file in a code
 // language could change how the code under test loads).
@@ -345,7 +351,7 @@ export function settleCodeLanguage(card, installed = TOOLCHAINS) {
 // denylist, the path and URL rules and base gating all still apply.
 // Pure. facts: {goal, installed, base, change}.
 // The flags only the runtime sets: a writer's copy of one is dropped.
-const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'inferred'];
+const RUNTIME_FLAGS = ['implicit', 'project', 'covers', 'untraced', 'unvetted', 'hidden', 'source_inferred', 'source_unmatched', 'unattached', 'vet_p', 'doubtful'];
 const CHECK_KINDS = ['file', 'judge', 'command', 'call', 'http', 'browser'];
 // Kinds a writer names in other words ('' leaves the kind to the name).
 const KIND_ALIASES = Object.freeze({cli: 'command', script: 'command', program: 'command', executable: 'command', tool: 'command', binary: 'command',
@@ -420,6 +426,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
     if (inner) { o = inner[1]; notes.push(`The card was wrapped in "${inner[0]}"; read from inside it.`); }
   }
   o = JSON.parse(JSON.stringify(o));
+  delete o.review_notes;
   const rows = (Array.isArray(installed) ? installed : TOOLCHAINS).filter(r => r && typeof r.id === 'string'), codeRows = codeRowsOf(rows);
   const baseSet = new Set(Array.isArray(base) ? base : base instanceof Set ? [...base] : Object.keys(base || {}));
   const reserved = reservedCommands(TOOLCHAINS), scriptExtensions = new Set(codeRowsOf(TOOLCHAINS).flatMap(r => r.extensions || []));
@@ -463,7 +470,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
   };
   const commandFrom = s => {
     const name = String(s ?? '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z]+/, '').replace(/[-_]+$/, '').slice(0, 32);
-    return COMMAND_NAME.test(name) && !reserved.has(name) ? name : '';
+    return COMMAND_WORD.test(name) && !reserved.has(name) ? name : '';
   };
 
   // Deliverables.
@@ -522,11 +529,11 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
     }
     if (kind === 'command') {
       if (fileName(cleanPath(name))) { path ||= cleanPath(name); name = stemOf(cleanPath(name)); notes.push(`command "${original}" is named ${name}, at ${path}.`); }
-      if (!COMMAND_NAME.test(name) || reserved.has(name)) {
+      if (!COMMAND_WORD.test(name) || reserved.has(name)) {
         const to = commandFrom(name) || (path ? commandFrom(stemOf(path)) : '');
         if (to) { notes.push(`command "${original}" is named ${to}${to === commandFrom(name) ? '' : `, after ${path}`}.`); name = to; }
       }
-      if (!path && COMMAND_NAME.test(name) && mainExtension('command')) { path = name + mainExtension('command'); notes.push(`command ${name} had no path; it is ${path}.`); }
+      if (!path && COMMAND_WORD.test(name) && mainExtension('command')) { path = name + mainExtension('command'); notes.push(`command ${name} had no path; it is ${path}.`); }
     }
     if (['page', 'doc', 'data', 'file'].includes(kind) && !path) {
       const tail = /^(\S+?):\s+(.+)$/.exec(name);
@@ -600,7 +607,8 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
 
   // Requirements.
   const functionNames = finals.filter(f => f.kind === 'function').map(f => f.name);
-  const requirements = [];
+  // References layer 1 cannot match: Clef ranks the deliverables for each (layer 3, settleCard).
+  const requirements = [], unresolved = [];
   rawReqs.forEach((item, i) => {
     if (!plain(item)) { requirements.push(item); return; }
     const r = {...item};
@@ -661,6 +669,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
             const to = functionNames.includes(call.trim()) ? call.trim() : resolve(call, ['function']);
             step.call = to || call;
             if (to && to !== call) notes.push(`${label}: its call to "${call}" calls ${to}.`);
+            if (!to && finals.some(f => f.kind === 'function')) unresolved.push({at: requirements.length, kind: 'call', step: c.steps.indexOf(s), written: call});
           }
           if (!('expect' in step) && 'expected' in step) step.expect = step.expected;
           delete step.expected;
@@ -672,6 +681,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
         if (p && !finals.some(f => f.path === p) && !baseSet.has(p)) {
           const to = finals.find(f => f.name === resolve(p))?.path;
           if (to) notes.push(`${label}: its ${kind} check reads ${to} (written "${p}").`);
+          else if (finals.some(f => f.path)) unresolved.push({at: requirements.length, kind: 'path', written: p});
           c.path = to || p;
         } else if (p) c.path = p;
         if (kind === 'judge' && !c.question && typeof (c.ask ?? c.prompt) === 'string') c.question = c.ask ?? c.prompt;
@@ -683,24 +693,26 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
       }
     }
     r.check = c;
-    // serves: names, paths, stems or case variants of a deliverable's name;
-    // what matches nothing is left out, and a requirement left serving
-    // nothing is attached to what its check names, or the only deliverable,
-    // or the one its statement is most about.
+    // serves: names, paths, stems or case variants of a deliverable's name.
+    // A requirement that names none is attached to what its check names, or
+    // the only deliverable; one whose names match none, Clef ranks the
+    // deliverables for (layer 3), and it is never dropped.
     const listed = (Array.isArray(r.serves) ? r.serves : typeof r.serves === 'string' ? r.serves.split(/\s*,\s*/) : r.serves === undefined ? [].concat(r.deliverables ?? r.deliverable ?? []) : [])
       .filter(s => typeof s === 'string' && s.trim());
     delete r.deliverables; delete r.deliverable;
-    const serves = [];
+    const serves = [], unmatched = [];
     for (const s of listed) {
       const to = resolve(s);
-      if (!to) { notes.push(`${label} served "${String(s).slice(0, 80)}", which no deliverable is named; left out.`); continue; }
+      if (!to) { unmatched.push(String(s).trim().slice(0, 80)); continue; }
       if (to !== s.trim()) notes.push(`${label} serves ${to} (written "${String(s).slice(0, 80)}").`);
       if (!serves.includes(to)) serves.push(to);
     }
-    if (!serves.length && finals.length) {
-      const named = checkNames(c, finals, runOf, resolve), [why, pick] = named.length ? ['which its check names', named] : finals.length === 1 ? ['the only deliverable', [finals[0].name]] : ['the one its statement is most about', [mostAbout(r.says, finals, c)]];
-      serves.push(...pick);
-      notes.push(`${label} served no deliverable; it serves ${pick.join(', ')}, ${why}.`);
+    if (finals.length === 1 && !serves.length) { serves.push(finals[0].name); notes.push(`${label} serves ${finals[0].name}, the only deliverable${unmatched.length ? ` (written ${unmatched.map(x => `"${x}"`).join(', ')})` : ''}.`); }
+    else if (unmatched.length) unresolved.push({at: requirements.length, kind: 'serves', written: unmatched.join(', ')});
+    else if (!serves.length && finals.length) {
+      const named = checkNames(c, finals, runOf, resolve);
+      if (named.length) { serves.push(...named); notes.push(`${label} named no deliverable; it serves ${named.join(', ')}, which its check names.`); }
+      else unresolved.push({at: requirements.length, kind: 'serves', written: ''});
     }
     r.serves = serves;
     // A missing source: the goal sentence sharing the most words with it, marked source_inferred.
@@ -734,7 +746,7 @@ export function repairCard(raw, {goal = '', installed = TOOLCHAINS, base = [], c
     }
   }
   o.requirements = requirements;
-  return {card: o, notes};
+  return {card: o, notes, unresolved};
 }
 // The deliverables a check names: a file or judge check's path, a command's
 // program or file, a call's functions, an http check's routes or its run's
@@ -757,75 +769,76 @@ function checkNames(c, finals, runOf, resolve) {
   const seen = pages.filter(p => visited.includes(p.path)).map(p => p.name);
   return seen.length ? seen : pages.length === 1 ? [pages[0].name] : served;
 }
-// The deliverable a statement is most about: the most shared words with its
-// name, path and description, else the first whose kind the check fits.
-function mostAbout(says, finals, c) {
-  const want = new Set(aboutWords(says).flatMap(w => [w, stem(w)]));
-  const score = f => new Set(aboutWords(`${f.name} ${f.path || ''} ${f.aliases.join(' ')}`).filter(w => want.has(w) || want.has(stem(w)))).size;
-  const best = finals.map(f => ({f, n: score(f)})).sort((a, b) => b.n - a.n)[0];
-  if (best?.n > 0) return best.f.name;
-  const fits = {command: ['command'], call: ['function'], browser: ['page'], http: ['route', 'command', 'file'], judge: ['doc'], file: ['doc', 'data', 'file']}[c?.kind] || [];
-  return (finals.find(f => fits.includes(f.kind)) || finals[0]).name;
-}
-
-// ------------------------------------------------------------ behaviour (v8 card repair)
-// A check that only finds a file is no requirement: each page, command,
-// function and document needs one check that exercises what the goal asks
-// of it. A document's is written here (a reader's yes/no question about the
-// goal phrase it comes from); a page, command or function without one is an
-// error the writer's retry hears.
+// A check that only finds a file shows nothing the goal asks: such a
+// requirement is never vetted (nothing to doubt), and an amendment adds none
+// for a deliverable the card already had.
 export const existenceOnly = r => r?.check?.kind === 'file' && !r.check.has && !r.check.json;
-const EXERCISES = {page: ['browser', 'http'], command: ['command', 'http', 'browser'], function: ['call', 'command', 'http', 'browser'], doc: ['judge']};
-const exercises = (kind, check) => !!check && (EXERCISES[kind].includes(check.kind) || kind === 'doc' && check.kind === 'file' && !!(check.has || check.json));
-// prior (an amendment): the card before the change, whose deliverables keep
-// the requirements they had, so the rule holds for the change's new ones.
-export function behaviourGaps(card, {goal = '', change = '', prior = null} = {}) {
-  const add = [], errors = [], notes = [];
-  if (!card || card.blocked) return {add, errors, notes};
-  const before = new Set((prior?.deliverables || []).map(d => d.name)), runs = new Map((card.run || []).filter(r => r.argv).map(r => [r.id, r.argv]));
-  // A command a run starts is exercised by every http or browser check on that run.
-  const started = (d, check) => ['http', 'browser'].includes(check?.kind) && !!runs.get(check.serve) && (runs.get(check.serve)[0] === d.name || !!d.path && runs.get(check.serve).slice(1).includes(d.path));
-  let room = CARD_LIMITS.requirements[1] - (card.requirements || []).filter(r => !r.implicit && !r.project).length;
-  for (const d of card.deliverables || []) {
-    const kind = kindOf(d);
-    if (!EXERCISES[kind] || before.has(d.name) || (card.requirements || []).some(r => covered(r).includes(d.name) && exercises(kind, r.check) || kind === 'command' && started(d, r.check))) continue;
-    if (kind === 'doc') {
-      if (!d.path || room <= 0) continue;
-      const {phrase, score} = bestPhrase(`${d.name} ${d.does || ''}`, {goal, change}), what = score ? phrase.replace(/[.\s]+$/, '') : '';
-      add.push({says: `${d.path} does what the goal asks${what ? `: ${what}` : ''}`.slice(0, CARD_LIMITS.says), source: phrase || d.path, serves: [d.name],
-        check: {kind: 'judge', path: d.path, question: `Does ${d.path} do what the goal asks${what ? `: ${what}` : ' of it'}?`.slice(0, CARD_LIMITS.question)},
-        inferred: true, source_inferred: true, ...(score ? {} : {source_unmatched: true})});
-      room--;
-      notes.push(`${d.path} had no check of what it says; a reader's question checks what the goal asks of it.`);
-    } else if (kind === 'page') errors.push(`deliverable "${d.name}" is a page and no check uses it: add a requirement serving "${d.name}" whose check is a browser check (a run such as {"id": "site", "static": true}, then steps that do what the goal asks on the page and expect what its user would see); that the file exists is no requirement.`);
-    else if (kind === 'command') errors.push(`deliverable "${d.name}" is a command and no check runs it: add a requirement serving "${d.name}" whose check is a command check that runs "${d.name}" with arguments the goal implies and expects its output (stdout_has); that the file exists is no requirement.`);
-    else errors.push(`deliverable "${d.name}" is a function and no check calls it: add a requirement serving "${d.name}" whose check is a call check with arguments and the result it expects, or give "${d.name}" examples [{"given": [arguments], "expect": result}].`);
-  }
-  return {add, errors, notes};
-}
-// The card writer's answer repaired (repairCard), validated (validateCard)
-// and held to the behaviour rule (behaviourGaps); the runtime's document
-// questions are validated with the rest. {card, errors, unsupported, notes,
-// draft}: draft is the repaired answer a retry is shown.
-export function prepareCard(raw, opts = {}) {
-  const {card: repaired, notes} = repairCard(raw, opts);
-  let out = validateCard(repaired, opts), draft = repaired;
-  if (out.card?.deliverables?.length && !out.card.blocked) {
-    const gaps = behaviourGaps(out.card, opts);
-    if (gaps.add.length) {
-      draft = {...repaired, requirements: [...(Array.isArray(repaired.requirements) ? repaired.requirements : []), ...gaps.add]};
-      out = validateCard(draft, opts);
-      notes.push(...gaps.notes);
+
+// ------------------------------------------------------------ layer 3's answers (v8 card repair)
+// ranks[k]: {name, p} for unresolved[k], the deliverable Clef ranked first
+// at or above its bar, or null. A requirement whose serves Clef could not
+// place is attached to what its check names, else marked unattached (the
+// dashboard shows it); a call or a path Clef could not place stays as
+// written, for the validator's executability rule. Nothing is dropped.
+export function applyResolutions(card, unresolved = [], ranks = []) {
+  const notes = [];
+  if (!plain(card) || !unresolved.length) return {card, notes};
+  const o = JSON.parse(JSON.stringify(card)), ds = (Array.isArray(o.deliverables) ? o.deliverables : []).filter(d => plain(d) && typeof d.name === 'string');
+  const finals = ds.map(d => ({name: d.name, kind: CONTRACT_KINDS.includes(d.kind) ? d.kind : 'function', path: d.path || '', aliases: []}));
+  const runOf = id => (Array.isArray(o.run) ? o.run : []).find(r => plain(r) && r.id === id);
+  const exact = (v, want) => finals.find(f => f.name === v && (!want || want.includes(f.kind)))?.name || '';
+  const order = unresolved.map((u, k) => ({u, k})).sort((a, b) => (a.u.kind === 'serves') - (b.u.kind === 'serves'));
+  for (const {u, k} of order) {
+    const r = Array.isArray(o.requirements) ? o.requirements[u.at] : null;
+    if (!plain(r)) continue;
+    const label = typeof r.id === 'string' ? r.id : `requirement ${u.at + 1}`, rank = ranks[k], pick = rank?.name ? finals.find(f => f.name === rank.name) : null;
+    const p = typeof rank?.p === 'number' ? ` (Clef p=${rank.p.toFixed(3)})` : '';
+    if (u.kind === 'call' && pick?.kind === 'function' && plain(r.check?.steps?.[u.step])) { r.check.steps[u.step].call = pick.name; notes.push(`${label}: its call to "${u.written}" calls ${pick.name}${p}.`); }
+    else if (u.kind === 'path' && pick?.path && plain(r.check)) { r.check.path = pick.path; notes.push(`${label}: its ${r.check.kind} check reads ${pick.path} (written "${u.written}")${p}.`); }
+    else if (u.kind === 'serves') {
+      const serves = Array.isArray(r.serves) ? r.serves : [];
+      if (pick) { r.serves = [...new Set([...serves, pick.name])]; notes.push(`${label} serves ${pick.name}${u.written ? ` (written "${u.written}")` : ''}${p}.`); continue; }
+      if (serves.length) { notes.push(`${label}: "${u.written}" names no deliverable, and Clef placed it nowhere; it serves ${serves.join(', ')}.`); continue; }
+      const named = checkNames(r.check, finals, runOf, v => exact(v, ['function']));
+      if (named.length) { r.serves = named; notes.push(`${label} serves ${named.join(', ')}, which its check names${u.written ? ` (written "${u.written}")` : ''}.`); }
+      else { r.unattached = true; notes.push(`${label} serves no deliverable${u.written ? ` (written "${u.written}")` : ''}, and Clef placed it nowhere; it is kept, unattached.`); }
     }
-    out = {...out, errors: [...out.errors, ...gaps.errors]};
   }
-  return {...out, notes, draft: publicDraft(draft)};
+  return {card: o, notes};
+}
+// Layers 2 and 3 after layer 1: the answers applied, then validated.
+// {card, errors, unsupported, notes, draft}; draft is the repaired answer a
+// retry is shown.
+export function settleCard(repaired, {notes = [], unresolved = []} = {}, ranks = [], opts = {}) {
+  const applied = applyResolutions(repaired, unresolved, ranks);
+  return {...validateCard(applied.card, opts), notes: [...notes, ...applied.notes], draft: publicDraft(applied.card)};
+}
+// Layers 1 and 2 with no Clef: every unresolved reference falls back as when
+// Clef places it nowhere.
+export function prepareCard(raw, opts = {}, ranks = []) {
+  const read = repairCard(raw, opts);
+  return {...settleCard(read.card, read, ranks, opts), unresolved: read.unresolved || []};
 }
 // A draft as a writer reads it: without the runtime's flags.
 const publicDraft = draft => plain(draft) && Array.isArray(draft.requirements)
   ? {...draft, requirements: draft.requirements.map(r => plain(r) ? Object.fromEntries(Object.entries(r).filter(([k]) => !RUNTIME_FLAGS.includes(k))) : r)} : draft;
 
-// ------------------------------------------------------------ validateCard (§1.2)
+// ------------------------------------------------------------ validateCard (§1.2): layer 2
+// v8 card repair: the hard rules, and only these; a naming convention or a
+// judgment is layer 1's to read leniently or layer 3's (Clef) to review.
+// Executability: the card must run as written.
+//  - a deliverable has a kind the runtime places or calls, one name, and a
+//    placed kind a path (the file is written there);
+//  - a function's name is an identifier of its toolchain, which imports it
+//    by that name; a route's name is the request it answers;
+//  - each check kind has the fields it needs: a call names a function
+//    deliverable, a browser or http check a run, a file or judge check a
+//    file the card places or the project has, a command check's first word
+//    a command deliverable or an installed executable;
+//  - a language this deployment runs (else the room is blocked, U9).
+// Safety (each marked "interim: replaced by check sandboxing (capability
+// slice)"; none is added or loosened here): argv-only commands, the denylist
+// and package runners, path rules, URL and HTTP path rules, base files.
 // raw: the card writer's answer. goal: the text requirement sources trace
 // to. installed: the toolchain rows this deployment can run (default: every
 // row). base: the paths of the files the project starts from. packages: the
@@ -869,10 +882,11 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     const kind = kindOf(d), row = d.path ? toolchainOf(d.path) : null;
     // A deliverable in a language that has a row, but no installed one, is unsupported (decision U9).
     if (row && !ids.has(row.id)) { if (!unsupported.includes(row.id)) unsupported.push(row.id); errors.push(`deliverable "${d.name}" is written in ${row.id}, which this deployment does not run.`); continue; }
-    const bad = nameError(d, {rows, languages: card.languages, base: baseSet});
+    const bad = nameError(d, {rows, languages: card.languages, base: baseSet, argvCommands: true});
     if (bad) { errors.push(`deliverable ${bad}${kind === 'function' && !(plain(item) && item.kind) ? `; it has no kind, so it reads as a function: give it its kind (one of ${CONTRACT_KINDS.join(', ')}) and, unless it is a function or route, its path` : ''}.`); continue; }
     const pathBad = d.path ? deliverablePathError(d.path, baseSet) : '';
     if (pathBad) { errors.push(`deliverable "${d.name}": ${pathBad}.`); continue; }
+    // Interim: replaced by check sandboxing (capability slice).
     if (kind === 'command' && reserved.has(d.name)) { errors.push(`deliverable command "${d.name}" has the name of a system or toolchain program; name it after what it does.`); continue; }
     if (names.has(d.name)) { errors.push(`deliverable "${d.name}" is listed twice; list each once.`); continue; }
     if (d.path && paths.has(d.path)) { errors.push(`two deliverables share the path ${d.path}; give each its own.`); continue; }
@@ -911,29 +925,32 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
     if (!plain(r)) { errors.push(`${label} is not an object.`); continue; }
     const says = str(r.says, CARD_LIMITS.says), source = str(r.source, CARD_LIMITS.source);
     if (!says) { errors.push(`${label} says nothing: state one yes/no statement.`); continue; }
-    if (!source) { errors.push(`${label} has no source: quote the phrase of the goal it comes from.`); continue; }
+    // v8 card repair: a reference is no rule. serves keeps the names that are
+    // deliverables (layers 1 and 3 match the rest); a requirement serving none
+    // is kept, unattached, and a missing source leaves it untraced.
     const listed = [...new Set((Array.isArray(r.serves) ? r.serves : typeof r.serves === 'string' ? [r.serves] : []).filter(s => typeof s === 'string').map(s => s.trim()))];
-    const serves = listed.filter(s => names.has(s)), unknown = listed.filter(s => !names.has(s));
-    if (!serves.length) { errors.push(`${label} serves ${unknown.length ? unknown.map(s => `"${s.slice(0, 80)}"`).join(', ') + ', which no deliverable is named' : 'no deliverable'}; name the deliverables it is about.`); continue; }
+    const serves = listed.filter(s => names.has(s));
     const c = checkOf(r.check, ctx);
     if (c.error) { errors.push(`${label}: ${c.error}.`); continue; }
-    if (unknown.length) errors.push(`${label} serves ${unknown.map(s => `"${s.slice(0, 80)}"`).join(', ')}, which no deliverable is named; kept for ${serves.join(', ')}.`);
     const id = typeof r.id === 'string' && REQ_ID.test(r.id.trim()) && !taken.has(r.id.trim()) ? r.id.trim() : null;
     const req = {id, says, source, serves, check: c.check};
-    // v8 card repair: a source the runtime inferred (repairCard) or a
-    // question it wrote (behaviourGaps) says so; only repairCard sets these,
-    // after dropping a writer's own copy.
+    // v8 card repair: a source the runtime inferred (repairCard) says so; only
+    // repairCard sets it, after dropping a writer's own copy.
     if (r.source_inferred === true) req.source_inferred = true;
-    if (r.inferred === true) req.inferred = true;
+    if (!serves.length) req.unattached = true;
+    // Vetting's annotations, kept when a stored card is validated again (repairCard drops a writer's copy).
+    if (typeof r.vet_p === 'number') req.vet_p = r.vet_p;
+    if (r.doubtful === true) req.doubtful = true;
+    if (r.unvetted === true) req.unvetted = true;
     // Rule 5: a source the goal does not show is vetted by Clef, never dropped
     // here. An inferred source is a goal sentence: untraced only when it
     // shares no word with the requirement.
-    if (r.source_inferred === true ? r.source_unmatched === true : !traceable(source, goal)) req.untraced = true;
+    if (!source || (r.source_inferred === true ? r.source_unmatched === true : !traceable(source, goal))) req.untraced = true;
     if (id) taken.add(id);
     card.requirements.push(req);
   }
   for (const r of card.requirements) if (!r.id) { r.id = nextId(taken, 'R'); taken.add(r.id); }
-  if (!card.requirements.some(r => !r.inferred) && card.deliverables.length && !card.blocked) errors.push('no valid requirement: list at least one yes/no requirement the goal states, with its check.');
+  if (!card.requirements.length && card.deliverables.length && !card.blocked) errors.push('no valid requirement: list at least one yes/no requirement the goal states, with its check.');
 
   // Rule 7: project checks; each covers only the deliverables in its own language.
   let p = 0;
@@ -956,68 +973,40 @@ export function validateCard(raw, {goal = '', installed = TOOLCHAINS, base = [],
 }
 // A card the room can start from: not blocked, with a deliverable and a
 // requirement of the writer's own (never only the runtime's implicit or
-// project ones, v8 S3 review, nor a document question it wrote).
-export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && (card.requirements || []).some(r => !r.implicit && !r.project && !r.inferred);
+// project ones, v8 S3 review).
+export const cardUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && (card.requirements || []).some(r => !r.implicit && !r.project);
 // After Clef vetting (§1.4) a deliverable may fall back to its implicit requirement.
 export const vettedUsable = card => !!card && !card.blocked && card.deliverables?.length > 0 && card.requirements?.length > 0;
-// Clef vetting's bar (v8 card repair). The first live runs, with
-// Clef-flash vetting a small writer's card, showed p < 0.5 to be the wrong
-// bar: on "a static web page with a to-do list" Clef answered 0.492 for "the
-// page contains a to-do list structure", 0.220 for its styling and 0.261
-// for its task script, so every requirement the writer gave was dropped and
-// only "<file> exists" checks were left; on a follow-up asking for a readme
-// it answered 0.453 for "README.md exists" and about 0.15 for the existing
-// files. Clef's p is a weak signal about requirements the goal does imply,
-// so vetting drops one only when Clef is nearly sure (p < VET_DROP_BAR) and
-// its source is not found in the goal even after source inference; one kept
-// below VET_DOUBT_BAR is logged (card_requirement_doubtful) and checked.
-export const VET_DROP_BAR = 0.15, VET_DOUBT_BAR = 0.5;
-// The requirements Clef vets (§1.4): the writer's own, untraced ones always,
-// not the runtime's (implicit, project, a document question it wrote), and
-// no check that only finds a file (never dropped: the deliverable is gated
-// on its own, by the goal, the change or the base question).
-export const vettable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project && !r.inferred && !existenceOnly(r));
-// What vetting drops (drop: id -> p), what it keeps in doubt, and which
-// requirements stay unvetted (their batch failed). A requirement is dropped
-// only when p < bar and untraced(r) (its source is not in the goal), and
-// never when it is the last writer requirement that exercises one of the
-// deliverables it serves; the lowest p goes first. ps: [{id, p}] or
-// [{id, unvetted:true}].
-export function vetDecisions(card, ps, {bar = VET_DROP_BAR, untraced = r => !!r.untraced} = {}) {
+// Clef vetting (v8 card repair): Clef reviews, it never deletes. The first
+// live runs, with Clef-flash vetting a small writer's card, showed why: on "a
+// static web page with a to-do list" it answered 0.492 for "the page
+// contains a to-do list structure", 0.220 for its styling and 0.261 for its
+// task script, and the p < 0.5 rule then dropped every requirement the
+// writer gave, so only "<file> exists" checks were left; on a follow-up
+// asking for a readme it answered 0.453 for "README.md exists". Each vetted
+// requirement now keeps its p (vet_p); one below VET_DOUBT_BAR is marked
+// doubtful, logged (card_requirement_doubtful) and shown, and the person
+// decides (a follow-up prompt, or Continue), never Clef.
+export const VET_DOUBT_BAR = 0.5;
+// The requirements Clef vets (§1.4): the writer's own; never the runtime's
+// (implicit, project), and no check that only finds a file (nothing to doubt).
+export const vettable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project && !existenceOnly(r));
+// Vetting applied: each requirement Clef answered for keeps vet_p, and
+// doubtful below the bar; one whose batch failed is marked unvetted. Nothing
+// is removed or reverted. ps: [{id, p}] or [{id, unvetted:true}].
+// {card, doubtful: [{id, p, says, untraced}]}.
+export function applyVetting(card, ps) {
   const p = new Map((ps || []).filter(x => typeof x?.p === 'number').map(x => [x.id, x.p]));
-  const unvetted = new Set((ps || []).filter(x => x?.unvetted).map(x => x.id));
-  const behaviour = r => !r.implicit && !r.project && !existenceOnly(r);
-  const drop = new Map(), last = new Set();
-  let left = [...(card?.requirements || [])];
-  for (const r of vettable(card).filter(r => p.has(r.id) && p.get(r.id) < bar && untraced(r)).sort((a, b) => p.get(a.id) - p.get(b.id))) {
-    const rest = left.filter(x => x !== r);
-    if ((r.serves || []).some(n => !rest.some(x => behaviour(x) && (x.serves || []).includes(n)))) { last.add(r.id); continue; }
-    left = rest;
-    drop.set(r.id, p.get(r.id));
-  }
-  const doubtful = (card?.requirements || []).filter(r => !drop.has(r.id) && p.has(r.id) && p.get(r.id) < VET_DOUBT_BAR)
-    .map(r => ({id: r.id, p: p.get(r.id), says: r.says, untraced: !!untraced(r), last: last.has(r.id)}));
-  return {drop, doubtful, unvetted};
-}
-// Vetting applied: what vetDecisions drops goes, a requirement whose batch
-// failed is kept, marked unvetted, and a deliverable left with none gets its
-// implicit requirement. {card, dropped, doubtful}.
-export function applyVetting(card, ps, opts = {}) {
-  const {drop, doubtful, unvetted} = vetDecisions(card, ps, opts);
-  const dropped = card.requirements.filter(r => drop.has(r.id)).map(r => ({...r, p: drop.get(r.id)}));
-  const kept = {...card, requirements: card.requirements.filter(r => !drop.has(r.id)).map(({untraced, ...r}) => unvetted.has(r.id) ? {...r, unvetted: true} : r)};
-  return {card: withImplicit(kept), dropped, doubtful};
-}
-
-// v8 S8b review: the card without the deliverables at these paths (an
-// existing file the goal does not ask to change), and without the
-// requirements left serving nothing. {card, dropped: [deliverable names]}.
-export function dropDeliverables(card, paths) {
-  const gone = new Set(paths), names = new Set(card.deliverables.filter(d => gone.has(d.path)).map(d => d.name));
-  if (!names.size) return {card, dropped: []};
-  const deliverables = card.deliverables.filter(d => !names.has(d.name));
-  const requirements = card.requirements.map(r => ({...r, serves: (r.serves || []).filter(s => !names.has(s))})).filter(r => r.serves.length);
-  return {card: withImplicit({...card, deliverables, requirements}), dropped: [...names]};
+  const unvetted = new Set((ps || []).filter(x => x?.unvetted).map(x => x.id)), doubtful = [];
+  const requirements = (card?.requirements || []).map(r => {
+    if (!p.has(r.id) && !unvetted.has(r.id)) return r;
+    const {untraced, vet_p: _p, doubtful: _d, unvetted: _u, ...rest} = r;
+    if (unvetted.has(r.id)) return {...rest, unvetted: true};
+    const v = p.get(r.id);
+    if (v < VET_DOUBT_BAR) doubtful.push({id: r.id, p: v, says: r.says, untraced: !!untraced});
+    return {...rest, vet_p: Math.round(v * 1000) / 1000, ...(v < VET_DOUBT_BAR ? {doubtful: true} : {})};
+  });
+  return {card: {...card, requirements}, doubtful};
 }
 
 // ------------------------------------------------------------ provided cards (B1)

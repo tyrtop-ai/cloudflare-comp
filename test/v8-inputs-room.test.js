@@ -495,40 +495,63 @@ const SPLIT_CARD = {card: 1, summary: 'Notes, help, and a louder shout', languag
     {id: 'R1', says: 'NOTES.md has a title', source: 'Add NOTES.md', serves: ['NOTES.md'], check: {kind: 'file', path: 'NOTES.md', has: ['# ']}},
     {id: 'R2', says: 'The shout is louder', source: 'make the shout louder', serves: ['src/shout.js'], check: {kind: 'file', path: 'src/shout.js', has: ['!!']}}],
   decisions: []};
-const SPLIT_PIECES = {reason: 'Two documents', pieces: [
+const SPLIT_PIECES = {reason: 'Two documents and the shout', pieces: [
   {label: 'Notes writer', task: 'Write NOTES.md, notes on the project', contracts: [{name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'notes on the project'}]},
+  {label: 'Shout writer', task: 'Make the shout in src/shout.js louder', contracts: [{name: 'src/shout.js', kind: 'file', path: 'src/shout.js', does: 'the shout, louder'}]},
   {label: 'Help writer', task: 'Write HELP.md, and fix the command file', contracts: [{name: 'HELP.md', kind: 'doc', path: 'HELP.md', does: 'how to get help'},
     {name: 'bin/widget.js', kind: 'file', path: 'bin/widget.js', does: 'the command, changed'}]}]};
 
-test('S8b review M1: base text reaches every model quoted and labelled beside the base clause; a deliverable or a split contract at an existing file stays only when Clef finds the goal asks to change it', async () => {
+// v8 card repair: Clef reviews, it never deletes. A base file the goal does not name and Clef doubts stays on the plan, waits for the person (base_confirm), and writers start on it once Continue confirms it.
+test('S8b review M1 (v8 card repair): base text reaches every model quoted and labelled beside the base clause; a base file Clef doubts stays on the plan and waits for the person', async () => {
   const fetch = fakeFetch(repoRoutes());
   const {room, calls, drain} = inputsRoom({card: SPLIT_CARD, split: SPLIT_PIECES, splitWhen: t => t.startsWith(SPLIT_GOAL), base: () => 0.1, fetch,
     answers: {'Notes writer': [wrote([['NOTES.md', '# Notes\n\nAbout the widget.\n'], ['extra.txt', 'a note of the writer\'s own\n']])],
+      'Shout writer': [wrote([['src/shout.js', BASE_FILES['src/shout.js'].replace('!', '!!!')]])],
       'Help writer': [wrote([['HELP.md', '# Help\n'], ['bin/widget.js', 'console.log("changed");\n']])]}});
   await room.start(SPLIT_GOAL, 40, {pipeline: 'v8'}, 'room-m1m1-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
   await drain();
-  assert.equal(room.get('status'), 'complete', trace(room));
-  // The card's deliverable at src/shout.js is left out (Clef: the goal does not ask to change it), with its requirement.
-  assert.match(events(room, 'card_base_dropped')[0].body, /src\/shout\.js/);
-  assert.deepEqual(room.snapshot().card.deliverables.map(d => d.name), ['NOTES.md']);
-  assert.deepEqual(room.snapshot().card.requirements.map(r => r.id), ['R1']);
-  // The splitter read the digest quoted, beside the clause; the split's contract at bin/widget.js was taken off its piece.
+  // The card keeps src/shout.js, marked, and the room waits for the person.
+  assert.equal(room.snapshot().pause?.kind, 'base_confirm', trace(room));
+  assert.match(room.snapshot().pause.text, /src\/shout\.js \(p=0\.100\)\. Continue confirms it/);
+  assert.deepEqual(room.snapshot().card.deliverables.map(d => [d.name, d.needs_confirmation ?? null]), [['NOTES.md', null], ['src/shout.js', {p: 0.1}]]);
+  assert.deepEqual(room.snapshot().card.requirements.map(r => r.id), ['R1', 'R2']);
+  assert.deepEqual(room.read('base_pending', []), [{path: 'src/shout.js', p: 0.1}]);
+  assert.equal(calls.split.length, 0, 'Root waits for the person before it splits');
+  // Continue confirms it; the split's contract at bin/widget.js, which Clef doubts too, stays on its piece and waits.
+  await room.resume(40);
+  await drain();
+  assert.match(events(room, 'base_confirmed')[0].body, /src\/shout\.js/);
+  assert.equal(room.snapshot().card.deliverables[1].needs_confirmation, undefined);
   assert.deepEqual(calls.split[0].existing_files, {label: BASE_LABEL, digest: room.read('base', null).digest});
   assert.equal(calls.split[0].base_note, MESSAGES.base_note());
-  assert.match(events(room, 'base_change_refused').map(e => e.body).join('\n'), /bin\/widget\.js/);
+  assert.match(events(room, 'base_change_doubtful').map(e => e.body).join('\n'), /bin\/widget\.js/);
   const help = room.children('root').find(c => c.label === 'Help writer');
-  assert.deepEqual(room.promisedOf(help.id).map(c => c.path), ['HELP.md']);
-  assert.match(events(room, 'file_refused')[0].body, /bin\/widget\.js: an existing project file that none of your contracts names/);
-  assert.deepEqual(room.read('base_approved', []), []);
+  assert.deepEqual(room.promisedOf(help.id).map(c => c.path), ['HELP.md', 'bin/widget.js'], 'nothing is taken off the piece');
+  assert.match(events(room, 'file_refused')[0].body, /bin\/widget\.js: an existing project file awaiting the person's confirmation/);
+  assert.deepEqual(room.read('base_approved', []), ['src/shout.js']);
+  assert.deepEqual(room.read('base_pending', []), [{path: 'bin/widget.js', p: 0.1}]);
   // Every question Clef got about a base file named the goal and the path only.
   for (const c of calls.clef.filter(c => Object.keys(c.questions).some(k => k.startsWith('base_change_')))) assert.deepEqual(Object.keys(c.state), ['goal', 'files']);
-  // The base is unchanged in the export; the pieces' own unplaced file sits under components/ (the base has none).
+  // The unconfirmed base file is unchanged in the export, the confirmed one changed; the pieces' own unplaced file sits under components/.
   const app = await room.appFiles();
   assert.equal(app.files.find(f => f.path === 'bin/widget.js').content, BASE_FILES['bin/widget.js']);
+  assert.match(app.files.find(f => f.path === 'src/shout.js').content, /!!!/);
   const notes = room.children('root').find(c => c.label === 'Notes writer');
   assert.equal(room.partsRoot(), 'components');
   assert.ok(app.files.some(f => f.path === packagePath('Notes writer', 'extra.txt', notes.id)), app.files.map(f => f.path).join(', '));
-  linted(room, calls, ['bin/widget.js']);
+  linted(room, calls, ['bin/widget.js', 'shout.js']);
+});
+
+test('v8 card repair: a base file the goal names is approved without asking Clef', async () => {
+  const goal = 'Make the shout in src/shout.js louder.';
+  const card = {...SPLIT_CARD, deliverables: [SPLIT_CARD.deliverables[1]], requirements: [SPLIT_CARD.requirements[1]]};
+  const {room, calls, drain} = inputsRoom({card, base: () => 0.1, fetch: fakeFetch(repoRoutes()), answers: {'Root objective': [wrote([['src/shout.js', BASE_FILES['src/shout.js'].replace('!', '!!!')]])]}});
+  await room.start(goal, 20, {pipeline: 'v8'}, 'room-m1m2-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
+  await drain();
+  assert.match(events(room, 'base_change_named')[0].body, /The goal names src\/shout\.js/);
+  assert.ok(!calls.clef.some(c => Object.keys(c.questions).some(k => k.startsWith('base_change_'))));
+  assert.notEqual(room.snapshot().pause?.kind, 'base_confirm');
+  assert.deepEqual(room.read('base_approved', []), ['src/shout.js']);
 });
 
 // ------------------------------------------------------------ M2: a base with components/ of its own

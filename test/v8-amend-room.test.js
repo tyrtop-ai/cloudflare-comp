@@ -780,26 +780,27 @@ test('review: goalView keeps the goal\'s head and the latest changes within the 
 });
 
 // ------------------------------------------------------------ v8 card repair (§5, §6)
-test('v8 card repair: a change rewrites only the deliverables it is about; the repair is logged and the writer\'s answers exported',{skip:!hasPython&&'python3 is not installed'},async()=>{
-  // The writer's card for the README: USAGE.md rewritten for no reason, temp restated without its fields, the README served as "readme".
+test('v8 card repair: a change is applied whole; Clef\'s doubt about a deliverable it rewrites is a mark; the repair is logged and the writer\'s answers exported',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  // The writer's card for the README: USAGE.md rewritten for no clear reason, temp restated without its fields, the README served as "readme".
   const answer=card=>{const c=withReadme(card);return {...c,
     deliverables:c.deliverables.map(d=>d.name==='USAGE.md'?{...d,does:'a usage note rewritten for no reason'}:d.name==='temp'?{name:'temp',kind:'command',path:'temp.py'}:d),
     requirements:c.requirements.map(r=>r.id==='R3'?{...r,serves:['readme']}:r)};};
   const asked=[];
   const {room,drain}=amendRoom({first:CARD,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner,amend:(d,change)=>{asked.push([d.name,change]);return d.name==='USAGE.md'?0.1:0.9;},
     changes:[{when:/README/,card:answer}],
-    answers:{'Converter':[wrote('temp.py',F_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD)],'README.md':[wrote('README.md',README_MD)]}});
+    answers:{'Converter':[wrote('temp.py',F_TEMP)],'Usage guide':[wrote('USAGE.md',USAGE_MD),nothing],'README.md':[wrote('README.md',README_MD)]}});
   await room.start(GOAL,40,{pipeline:'v8'});await drain();
   const before=room.snapshot().card;
   await room.amend(README_CHANGE);await drain();
   assert.equal(room.get('status'),'complete',tail(room));
   assert.deepEqual(asked,[['USAGE.md',README_CHANGE]],'temp left fields out, which changes nothing, so only USAGE.md is asked about');
-  assert.match(events(room,'amend_change_refused')[0].body,/not about USAGE\.md \(p=0\.100\); it stays as it was/);
+  assert.match(events(room,'amend_change_doubtful')[0].body,/Clef doubted that the change is about USAGE\.md \(p=0\.100\); the change to it is applied and marked doubtful/);
   const card=room.snapshot().card;
-  assert.deepEqual(card.deliverables.find(d=>d.name==='USAGE.md'),before.deliverables.find(d=>d.name==='USAGE.md'));
+  assert.deepEqual(card.deliverables.find(d=>d.name==='USAGE.md'),{...before.deliverables.find(d=>d.name==='USAGE.md'),does:'a usage note rewritten for no reason',source:README_CHANGE,change_doubtful:{p:0.1}},'applied, and marked');
   assert.deepEqual(card.deliverables.find(d=>d.name==='temp'),before.deliverables.find(d=>d.name==='temp'));
   const delta=JSON.parse(room.db().exec('SELECT delta FROM card_revisions WHERE rev=2').toArray()[0].delta);
-  assert.deepEqual(delta.deliverables,{added:['README.md'],changed:[]});
+  assert.deepEqual(delta.deliverables,{added:['README.md'],changed:['USAGE.md']});
+  assert.deepEqual(delta.doubtful_changes,[{name:'USAGE.md',p:0.1}]);
   assert.match(events(room,'card_repaired').at(-1).body,/for the change was repaired before validation \(1\): R3 serves README\.md \(written "readme"\)\./);
   assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
   const exported=await room.exportSnapshot();

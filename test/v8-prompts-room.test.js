@@ -38,7 +38,9 @@ function promptsAreV8(calls, goal, room = null, extra = []) {
     const n = Number(/_(\d+)/.exec(key)?.[1]);
     const expected = key === 'should_split' ? [CLEF.split, CLEF.split_retry] : key.startsWith('within_') ? [clefText('scope', {i: n})]
       : key.startsWith('requirement_') ? [`About requirement ${n}: ${CLEF.requirement}`] : key.startsWith('fn_') ? [clefText('match', {j: n})]
-      : key.startsWith('owner_') ? [clefText('owner', {i: n})] : key === 'inside' ? [CLEF.owns_need] : key.startsWith('names_') || key.startsWith('piece_') ? [null] : [];
+      : key.startsWith('owner_') ? [clefText('owner', {i: n})] : key === 'inside' ? [CLEF.owns_need] : key.startsWith('names_') || key.startsWith('piece_') ? [null]
+      // v8 card repair: the card's review (layer 3).
+      : key.startsWith('covered_') ? [clefText('covered', {i: n})] : key.startsWith('exercises_') ? [clefText('exercises', {i: n})] : key.startsWith('kind_') ? [clefText('kind_fits', {i: n})] : key.startsWith('reference_') ? [clefText('reference', {i: n})] : [];
     // v8 S4b: a document requirement is judged with CLEF.judge and the check's own question.
     if (key === 'judge') { assert.ok(q.instructions.startsWith(CLEF.judge), q.instructions); continue; }
     if (expected[0] === null) assert.ok(q.instructions.startsWith(key.startsWith('piece_') ? `Does piece ${n}'s own task produce ` : `Piece ${n} lists the contract `), q.instructions);

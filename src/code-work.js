@@ -56,6 +56,8 @@ export function writerPathError(path, facts={}) {
   // file system reads readme.md and README.md as one file).
   const twin=caseTwin(path,facts.base);
   if (twin && twin!==path) return `${path}: the existing project file ${twin} differs from it only in letter case; ${has(facts.owned,twin)?`write ${twin} itself`:'leave it as it is'}`;
+  // v8 card repair: a base file the plan names but the person has not confirmed yet (base_confirm).
+  if (twin && !placed && has(facts.pending, twin)) return `${path}: an existing project file awaiting the person's confirmation that the goal asks to change it; write your other files now, and this one once it is confirmed`;
   if (twin && !placed) return `${path}: an existing project file that none of your contracts names; leave it as it is`;
   return null;
 }

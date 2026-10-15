@@ -31,6 +31,10 @@ export const RUNTIME_PREFIXES = Object.freeze(['components/', 'memory/', '.recur
 export const ROUTE_NAME = /^(?:GET|POST|PUT|PATCH|DELETE) \/\S*$/;
 // v8 card repair: underscores too (a script's stem, such as convert_temp, is a fine command name).
 export const COMMAND_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+// v8 card repair: what a card's command name must be to run as argv[0]: one
+// word, no whitespace or shell metacharacter, not an option. The card holds
+// commands to this only (facts.argvCommands); the convention above is the splitter's.
+export const COMMAND_WORD = /^[A-Za-z0-9_][A-Za-z0-9_.+@%-]{0,63}$/;
 // The JavaScript row's identifier rule (C1 under v7). Under v8 the caller
 // passes the toolchain rows (facts.rows); without them a function name is
 // read as JavaScript, as v7 always did.
@@ -294,7 +298,8 @@ export function nameError(c, facts = null) {
     return '';
   }
   if (kind === 'route') return ROUTE_NAME.test(name) ? '' : `"${name}" is not a route; name it as a method and a path, such as "GET /path"`;
-  if (kind === 'command' && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter`;
+  if (kind === 'command' && facts?.argvCommands && !COMMAND_WORD.test(name)) return `command "${name}": name it with one word of letters, digits and _.+@%-, starting with a letter or digit, so it runs as typed`;
+  if (kind === 'command' && !facts?.argvCommands && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter`;
   if (!c.path) return `${kind} "${name}" needs the path of ${kind === 'command' ? 'the file that implements it' : 'its file'}`;
   // v8 S8b: an existing project file is named exactly (a repo's own components/ too); a
   // path equal to one apart from case, or under the pieces' parts root, is refused.

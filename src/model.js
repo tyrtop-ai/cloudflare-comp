@@ -5,7 +5,7 @@ import { goalMethods } from './api-coverage.js';
 import { workerAction, singleFileText } from './worker-output.js';
 import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE, MESSAGES, BASE_LABEL } from './prompts.js';
 import { contractLine } from './contracts.js';
-import { validateCard, prepareCard, settleCodeLanguage, checkSummary } from './card.js';
+import { validateCard, repairCard, settleCard, settleCodeLanguage, checkSummary, goalSentences } from './card.js';
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { EFFECTIVE_GOAL_LIMIT } from './amend.js';
 import { SOURCE_CLAUSE } from './fetcher.js';
@@ -783,17 +783,26 @@ export const CARD_MAX_TOKENS = 8192;
 // prior_card (an amendment): the writer returns the whole card updated for
 // it, the goal is the effective goal (the user's goal and each change), and
 // the call is amendCard's.
-// v8 card repair: each answer is repaired before it is validated
-// (prepareCard: repairCard, validateCard, behaviourGaps), so a retry hears
-// only what no repair could fix, beside the repaired draft (previous_answer).
+// v8 card repair: each answer goes through three layers. Layer 1
+// (repairCard) reads it leniently; layer 3's ranking (rankReferences) places
+// the references layer 1 could not match; layer 2 (validateCard) keeps only
+// the rules that make a card safe and runnable. Then Clef reviews the card
+// (reviewCard): what it says NO to are notes, never edits. The retry, the
+// writer's one revision call, hears the errors left and the review notes
+// beside the repaired draft (previous_answer), and goes through the layers
+// again; the notes the final card still draws stay on it (review_notes).
 // notes: what the chosen answer's repair did; raw_answers: the writer's
 // answers as written (each clipped to CARD_RAW_CHARS), for diagnosis.
 export const CARD_RAW_CHARS = 6000;
 export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[], change=''}={}) {
   const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
   const amend=!!(change&&prior_card),call=amend?'amendCard':'writeCard';
-  const facts={goal,installed:rows,base,packages,...(amend?{change,prior:prior_card}:{})};
-  const settle=(r,extra)=>{const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};return {card:s.card,errors:r.errors,unsupported:r.unsupported,notes:r.notes||[],...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};};
+  const facts={goal,installed:rows,base,packages,...(amend?{change}:{})};
+  const settle=(r,extra,review={notes:[],failed:[]})=>{
+    const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};
+    const card=s.card&&review.notes.length?{...s.card,review_notes:review.notes}:s.card;
+    return {card,errors:r.errors,unsupported:r.unsupported,notes:r.notes||[],review_notes:review.notes,review_failed:review.failed,...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};
+  };
   // The fixed mock card is the runtime's own, so it is validated as written.
   if (env.MOCK_AI === 'true') return settle(validateCard(MOCK_CARD,facts),{raw_head:'',attempts:0,raw_answers:[]});
   const fields={goal:String(goal).slice(0,amend?EFFECTIVE_GOAL_LIMIT:GOAL_LIMIT),...(amend?{change:String(change).slice(0,GOAL_LIMIT),change_note:MESSAGES.amend_note()}:{}),
@@ -802,19 +811,77 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
     ...(base_digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest:base_digest}}:{}),...(prior_card?{current_card:prior_card}:{}),
     ...(sources?.length||sources_unavailable?.length?{sources_note:SOURCE_CLAUSE}:{}),...(sources?.length?{sources}:{}),...(sources_unavailable?.length?{sources_unavailable}:{})};
   const system=systemPrompt('card'),raw_answers=[];
-  const read=output=>{
+  const read=async output=>{
     const text=withoutThinking(output).trim(),parsed=parseObject(text);
-    raw_answers.push(clip(text||contentOf(output)||"",CARD_RAW_CHARS));
+    raw_answers.push(clip(text||contentOf(output)||'',CARD_RAW_CHARS));
     if(parsed.parse_error)return {head:text.slice(0,200),text,parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[],notes:[]};
-    return {head:text.slice(0,200),text,parsed,...prepareCard(parsed,facts)};
+    const layer1=repairCard(parsed,facts),ranks=layer1.unresolved?.length?await rankReferences(env,layer1.card,layer1.unresolved):[];
+    return {head:text.slice(0,200),text,parsed,...settleCard(layer1.card,layer1,ranks,facts)};
   };
-  const first=read(await run(env,system,JSON.stringify(fields),CARD_MAX_TOKENS,{call,role:'card'}));
-  if(!first.errors.length||first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1,raw_answers});
-  const retry={...fields,previous_errors:first.errors.slice(0,24),...(first.parsed.parse_error?{}:{previous_answer:clip(JSON.stringify(first.draft),6000)}),
-    instruction:'Your previous card, as the runtime repaired it, is previous_answer; it still had the problems listed in previous_errors. Answer again with the whole corrected card as one json object.'};
-  const second=read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call,role:'card',retry:true,noThink:true}));
+  const review=r=>r.card?.deliverables?.length&&!r.card.blocked?reviewCard(env,{goal,change:amend?change:'',card:r.card}):{notes:[],failed:[]};
+  const first=await read(await run(env,system,JSON.stringify(fields),CARD_MAX_TOKENS,{call,role:'card'}));
+  if(first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1,raw_answers});
+  const firstReview=await review(first);
+  if(!first.errors.length&&!firstReview.notes.length)return settle(first,{raw_head:first.head,attempts:1,raw_answers},firstReview);
+  const retry={...fields,...(first.errors.length?{previous_errors:first.errors.slice(0,24)}:{}),...(firstReview.notes.length?{review_notes:firstReview.notes.slice(0,24)}:{}),
+    ...(first.parsed.parse_error?{}:{previous_answer:clip(JSON.stringify(first.draft),6000)}),
+    instruction:'Your previous card, as the runtime read it, is previous_answer. Fix the problems in previous_errors, and revise the card for the reviewer\'s notes in review_notes where they are right. Answer again with the whole card as one json object.'};
+  const second=await read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call,role:'card',retry:true,noThink:true}));
   const best=second.parsed.parse_error&&!first.parsed.parse_error?first:second;
-  return settle(best,{raw_head:best.head,attempts:2,raw_answers});
+  return settle(best,{raw_head:best.head,attempts:2,raw_answers},best===first?firstReview:await review(second));
+}
+// v8 card repair (layer 3): Clef places each reference layer 1 could not
+// match, one call per reference, with the ranked-owner rule: the deliverable
+// it ranks first at OWNER_BAR or above (functions only for a call, placed
+// files only for a path). state {requirement: {says, source, check, written},
+// deliverables: [{slot, name, kind, path, does}]}. [{name, p} | {name: null,
+// p} | null]; a failed call, or none at the bar, falls back (applyResolutions).
+const summaryOf=check=>{try{return checkSummary(check)||'';}catch{return clip(JSON.stringify(check)||'',200);}};
+export async function rankReferences(env, card, unresolved=[]) {
+  if (!unresolved.length || env.MOCK_AI === 'true') return [];
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
+  if (!clef) return unresolved.map(()=>null);
+  const all=(Array.isArray(card?.deliverables)?card.deliverables:[]).filter(d=>d&&typeof d.name==='string');
+  return Promise.all(unresolved.map(async u=>{
+    const r=card.requirements?.[u.at]||{},pool=all.filter(d=>u.kind==='call'?!d.kind||d.kind==='function':u.kind==='path'?!!d.path:true).slice(0,12);
+    if(!pool.length)return null;
+    try {
+      const output=await clefRun(env,'rankReferences',selector,{model:clef,
+        state:{requirement:{says:String(r.says||'').slice(0,200),source:String(r.source||'').slice(0,160),check:summaryOf(r.check),written:String(u.written||'').slice(0,120)},
+          deliverables:pool.map((d,i)=>({slot:i,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160)}))},
+        questions:Object.fromEntries(pool.map((_,i)=>[`reference_${i}`,{type:'noul',instructions:clefText('reference',{i})}]))});
+      const ranks=pool.map((d,i)=>({name:d.name,p:output?.answers?.[`reference_${i}`]?.noul})).filter(x=>typeof x.p==='number'&&Number.isFinite(x.p)).sort((a,b)=>b.p-a.p);
+      return !ranks.length?null:ranks[0].p>=OWNER_BAR?ranks[0]:{name:null,p:ranks[0].p};
+    } catch { return null; }
+  }));
+}
+// v8 card repair (layer 3): Clef reviews the card, one batched pass (12
+// questions a call): is each goal phrase covered by some requirement, does
+// each requirement's check exercise what it states, and is each
+// deliverable's kind right for what it does. A NO (p < REVIEW_BAR) is a
+// note for the writer, never an edit. {notes, failed}.
+export const REVIEW_BAR = 0.5;
+export async function reviewCard(env, {goal='', change='', card}) {
+  if (env.MOCK_AI === 'true' || !card?.deliverables?.length) return {notes:[],failed:[]};
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
+  if (!clef) return {notes:[],failed:['unsupported Clef decision model']};
+  const phrases=goalSentences(change||goal).slice(0,12),reqs=(card.requirements||[]).filter(r=>!r.implicit&&!r.project).slice(0,24),dels=card.deliverables.slice(0,12);
+  const state={goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),phrases:phrases.map((text,slot)=>({slot,text:text.slice(0,300)})),
+    requirements:reqs.map((r,slot)=>({slot,id:r.id,says:String(r.says).slice(0,200),check:summaryOf(r.check)})),
+    deliverables:dels.map((d,slot)=>({slot,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160)}))};
+  const asks=[...phrases.map((_,i)=>({key:`covered_${i}`,text:clefText('covered',{i}),note:p=>`The goal phrase "${clip(phrases[i],160)}" may be covered by no requirement (Clef p=${p.toFixed(2)}): add a requirement whose check fails when the project ignores it.`})),
+    ...reqs.map((r,i)=>({key:`exercises_${i}`,text:clefText('exercises',{i}),note:p=>`${r.id}'s check may not exercise what it states (Clef p=${p.toFixed(2)}; ${clip(summaryOf(r.check),120)}): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader's question about a document.`})),
+    ...dels.map((d,i)=>({key:`kind_${i}`,text:clefText('kind_fits',{i}),note:p=>`Deliverable "${clip(d.name,80)}" may not be a ${d.kind||'function'} (Clef p=${p.toFixed(2)}): give it the kind that fits what it does.`}))];
+  const groups=[];
+  for(let i=0;i<asks.length;i+=12)groups.push(asks.slice(i,i+12));
+  const failed=[];
+  await Promise.all(groups.map(async group=>{
+    try {
+      const output=await clefRun(env,'reviewCard',selector,{model:clef,state,questions:Object.fromEntries(group.map(a=>[a.key,{type:'noul',instructions:a.text}]))});
+      for(const a of group){const p=output?.answers?.[a.key]?.noul;if(typeof p==='number'&&Number.isFinite(p)&&p<REVIEW_BAR)a.found=a.note(p);}
+    } catch(e) {failed.push(String(e?.message||e).slice(0,200));}
+  }));
+  return {notes:asks.filter(a=>a.found).map(a=>a.found),failed};
 }
 // v8 S8b review: Clef asks whether the goal asks to change each existing
 // file a deliverable or a contract names (CLEF.base_change), one batched
@@ -835,12 +902,12 @@ export async function vetBaseChanges(env, {goal='', paths=[]}) {
     return {path,p};
   });
 }
-// v8 card repair (§5): an amendment may change an existing deliverable only
-// when the change touches it. Clef asks, per changed deliverable
-// (CLEF.amend_change), one batched call as vetBaseChanges does: state
-// {change, deliverables: [{slot, name, kind, path, does}]} (its description
-// before the change). [{name, p}]; a Clef failure throws (the caller keeps
-// the written card, unvetted, and says so).
+// v8 card repair (§5): whether a change is about each existing deliverable
+// it rewrites. Clef reviews, it never refuses: a doubt is marked on the
+// deliverable and in the revision's delta (CLEF.amend_change), one batched
+// call as vetBaseChanges does: state {change, deliverables: [{slot, name,
+// kind, path, does}]} (its description before the change). [{name, p}]; a
+// Clef failure throws (the caller applies the change, unvetted, and says so).
 export const AMEND_CHANGE_BAR = 0.5;
 export async function vetAmendChanges(env, {change='', deliverables=[]}) {
   if (!deliverables.length) return [];

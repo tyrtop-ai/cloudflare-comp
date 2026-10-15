@@ -136,9 +136,9 @@ test('v8 room: a language this deployment does not run pauses with card_blocked'
   assert.match(room.snapshot().pause.text, /cannot run go/);
 });
 
-test('v8 room (v8 card repair): Clef vetting drops only an invented requirement it is nearly sure of; the goal\'s own stay, in doubt', async () => {
+test('v8 room (v8 card repair): Clef vetting only annotates: every requirement stays, each with its p, doubtful below 0.5', async () => {
   const invented = {...CARD, requirements: [...CARD.requirements, {id: 'R3', says: 'The script has a graphical window', source: 'a graphical window', serves: ['hello'], check: {kind: 'file', path: 'hello.py', has: ['window']}}]};
-  const {room, calls, drain} = v8Room({card: () => invented, clefOpts: {requirement: 0.1}});
+  const {room, calls, drain} = v8Room({card: () => invented, clefOpts: {requirement: r => r.says.includes('graphical') ? 0.01 : 0.3}});
   await room.start(GOAL, 40, {pipeline: 'v8'});
   await drain();
   const vet = calls.clef.find(c => Object.keys(c.questions).some(k => k.startsWith('requirement_')));
@@ -146,11 +146,12 @@ test('v8 room (v8 card repair): Clef vetting drops only an invented requirement 
   assert.match(vet.questions.requirement_0.instructions, /Does the goal state or directly imply this requirement\?/);
   assert.equal(vet.state.goal, GOAL);
   assert.equal(vet.state.requirements[2].source_found_in_goal, false);
-  // All answered p=0.1: only R3, whose source is not in the goal, is dropped; hello keeps R2.
-  assert.deepEqual(events(room, 'card_requirement_dropped').map(e => e.body.slice(0, 62)), ['Clef judged that the goal does not state or imply R3 (p=0.100;']);
-  assert.deepEqual(events(room, 'card_requirement_doubtful').map(e => e.body.slice(0, 31)), ['Clef doubted R1 (p=0.100), and ', 'Clef doubted R2 (p=0.100), and ']);
-  assert.deepEqual(room.snapshot().card.requirements.map(r => [r.id, r.check.kind]), [['R1', 'judge'], ['R2', 'command']]);
-  assert.equal(room.get('status'), 'complete');
+  assert.equal(events(room, 'card_requirement_dropped').length, 0, 'Clef never drops a requirement');
+  assert.deepEqual(events(room, 'card_requirement_doubtful').map(e => e.body.slice(0, 48)), ['Clef doubted that the goal asks for R1 (p=0.300)', 'Clef doubted that the goal asks for R2 (p=0.300)', 'Clef doubted that the goal asks for R3 (p=0.010;']);
+  assert.deepEqual(room.snapshot().card.requirements.map(r => [r.id, r.vet_p, r.doubtful]), [['R1', 0.3, true], ['R2', 0.3, true], ['R3', 0.01, true]]);
+  // R3 keeps failing (nothing draws a window); the person decides, and the hold names the doubted requirement first.
+  assert.equal(room.snapshot().pause.kind, 'checks_failed');
+  assert.match(room.snapshot().pause.text, /^These requirements keep failing and Clef doubted the goal asks for them: R3 \(p=0\.010\)\. Change or drop them with a follow-up prompt, or Continue\. /);
 });
 
 test('v7 room is unchanged: the start() requirement is appended, Root promises start, and no card is written', async () => {

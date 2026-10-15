@@ -65,7 +65,8 @@ function roomData(room) {
 // Clef's vetting of the card and Clef's judging of a document aside (they
 // read the card, and a judge check's question, by design).
 const agentRequests=calls=>[...calls.raw.filter(r=>!r.system.includes('Your role: turn the goal into the project card')).map(r=>r.system+'\n'+r.text),
-  ...calls.clef.filter(c=>!Object.keys(c.questions).some(k=>k.startsWith('requirement_')||k==='judge')).map(c=>JSON.stringify(c))];
+  // v8 card repair: the card's review and its references (layer 3) read the card, as vetting does; no agent reads them.
+  ...calls.clef.filter(c=>!Object.keys(c.questions).some(k=>/^(?:requirement|covered|exercises|kind|reference)_/.test(k)||k==='judge')).map(c=>JSON.stringify(c))];
 function linted(room,calls) {
   const data=roomData(room),texts=calls.raw.flatMap(r=>composedTexts(JSON.parse(r.text.replace(/ \/no_think$/,'')),data));
   const problems=texts.flatMap((t,i)=>lintText(`composed ${i}`,t,{room:true}).map(x=>`${x}\n    in: ${t.slice(0,300)}`));
