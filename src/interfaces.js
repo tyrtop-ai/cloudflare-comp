@@ -5,6 +5,7 @@
 // Pure: no room, no model. The runtime checks a split's names here before any
 // child exists; only a promised name without exactly one carrier rejects it.
 import { PROTECTED_NAMES, noValue } from './linker.js';
+import { assignedPiece } from './code-work.js';
 
 export const MAX_INTERFACES = 5;
 // Names that say what a function does but not what it acts on. Binding like
@@ -538,28 +539,58 @@ export function usesText(items) {
 // writes the one test against start(). Root's splitter turned "Build
 // automated tests exercising every diagnostic…" into 25 "Test …" pieces that
 // nothing imports and no promise reaches. A test piece is one whose label's
-// first word is test/tests/testing/spec/specs, or that ends "tests" or "test
-// suite", or names a test harness, or whose task writes tests (a writing verb
-// before tests, test suites, harnesses, cases or fixtures, or a clause that
-// starts with them); never one labelled Check, Validate, Verify or Assert
-// (run21's "Validate findings" and twenty "Check …" rules are production code).
+// first word (split at spaces, colons, underscores and hyphens) is
+// test/tests/testing/spec/specs; or whose label names a kind of test (unit,
+// integration, smoke, end-to-end, regression or acceptance tests, test cases,
+// a test suite or harness, a verification suite, unit or integration
+// testing); or whose label or own task writes tests (a writing verb before
+// tests, test suites, harnesses, cases or fixtures, or a clause that starts
+// with them), or says it tests every case ("Write code that tests for …",
+// run21's own form); or "X tests" where X names a sibling's subject
+// ("Interface tests" beside "Process interfaces"). Never one labelled Check,
+// Validate, Verify or Assert (run21's "Validate findings" and twenty "Check …"
+// rules are production code), unless its label or task writes tests outright.
 const TEST_FIRST = /^(?:test|tests|testing|spec|specs)$/i, NOT_TEST = /^(?:check|checks|validate|validates|verify|verifies|assert|asserts)$/i;
-const TEST_ADJ = '(?:(?:automated|unit|integration|end-to-end|e2e|regression|acceptance|comprehensive|the|a|an|some|all|its|their)\\s+)*', TEST_NOUN = '(?:tests|test suites?|test harness(?:es)?|test cases|test fixtures|fixtures|specs)\\b';
-const TEST_TASK = new RegExp(`\\b(?:write|writes|writing|add|adds|create|creates|build|builds|implement|implements|provide|provides)\\s+${TEST_ADJ}${TEST_NOUN}|(?:^|[:;.]\\s+)${TEST_ADJ}${TEST_NOUN}`, 'i');
-export function testLabel(label, task = '') {
-  const text = String(label ?? '').trim(), first = text.split(/\s+/)[0] || '';
+const TEST_ADJ = '(?:(?:automated|unit|integration|end-to-end|e2e|regression|acceptance|smoke|comprehensive|the|a|an|some|all|its|their)\\s+)*', TEST_NOUN = '(?:tests|test suites?|test harness(?:es)?|test cases|test fixtures|fixtures|specs)\\b';
+const WRITES_TESTS = new RegExp(`\\b(?:write|writes|writing|add|adds|create|creates|build|builds|implement|implements|provide|provides)\\s+${TEST_ADJ}${TEST_NOUN}|(?:^|[:;.]\\s+)${TEST_ADJ}${TEST_NOUN}`, 'i');
+const TESTS_EVERY = /\bthat\s+tests\s+(?:for|every|each|all|the)\b/i;
+const TEST_KIND = /\b(?:unit|integration|e2e|end-to-end|smoke|regression|acceptance)\s+tests?\b|\btest\s+(?:cases?|suites?|harness(?:es)?|fixtures?)\b|\b(?:verification|regression|test)\s+suite\b|\b(?:unit|integration)\s+testing\b/i;
+const testStem = w => w.toLowerCase().replace(/s$/, '');
+const subjectWords = text => String(text ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/).filter(w => w.length > 2).map(testStem);
+export function testLabel(label, task = '', {siblings = []} = {}) {
+  const text = String(label ?? '').trim(), own = String(task ?? ''), first = text.split(/[\s:_-]+/)[0] || '';
+  if (WRITES_TESTS.test(text) || WRITES_TESTS.test(own)) return true;
   if (NOT_TEST.test(first)) return false;
-  return TEST_FIRST.test(first) || /\b(?:tests|test suites?)$/i.test(text) || /\btest harness(?:es)?\b/i.test(text) || TEST_TASK.test(String(task ?? ''));
+  if (TEST_FIRST.test(first) || TEST_KIND.test(text) || TESTS_EVERY.test(own)) return true;
+  // "X tests": X names what a sibling writes (its label's or functions' words).
+  const x = text.match(/^(.*?)\s+tests?$/i)?.[1];
+  if (!x) return false;
+  const theirs = new Set((Array.isArray(siblings) ? siblings : []).flatMap(c => [...subjectWords(c?.label), ...(Array.isArray(c?.interfaces) ? c.interfaces : Array.isArray(c?.functions) ? c.functions : []).flatMap(f => subjectWords(typeof f === 'string' ? f : f?.name))]));
+  return subjectWords(x).some(w => theirs.has(w));
 }
-// The test pieces of a split: by testLabel, none of whose functions is a name
-// promised to this level (carried), a method the goal states start() returns,
-// or a name a piece that stays uses (a "Test …" piece a sibling calls is
-// production code, and what it uses stays too). [] when fewer than two pieces
-// would stay: the split is kept as it was.
-export function testPieces(spawn, {promised = [], stated = []} = {}) {
-  const list = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object'), keep = new Set([...promised, ...stated].map(f => typeof f === 'string' ? f : f?.name));
+// v7.15.14 review: a goal whose product is about tests (a test runner, an
+// exam app, A/B tests, test data, OpenAPI specs) has pieces named so. Its
+// sentences asking for tests of the application (automated or unit tests,
+// a test suite, tests exercising or covering it, tests for each case) are
+// set aside; if what remains still says test, testing, spec or fixture, no
+// piece is a test piece, and the splitter is not told to leave tests out.
+const TEST_REQUEST = [/\b(?:automated|unit|integration|end-to-end|e2e|regression|acceptance|smoke)\s+tests?\b/i, /\btest\s+suites?\b/i, /\btests?\s+(?:exercising|covering|that\s+(?:exercises?|covers?|verify|verifies|checks?|proves?))\b/i, /\b(?:write|add|build|include|provide)\s+(?:\w+\s+){0,2}?tests?\s+(?:for|of)\s+(?:the|each|every|all)\b/i];
+const sentences = text => String(text ?? '').split(/(?<=[.!?])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+export const testRequests = goal => sentences(goal).filter(s => TEST_REQUEST.some(r => r.test(s)));
+export const goalAboutTests = goal => {const asked = new Set(testRequests(goal)); return sentences(goal).some(s => !asked.has(s) && /\b(?:tests?|testing|tested|specs?|fixtures?)\b/i.test(s));};
+// The test pieces of a split: by testLabel (on the piece's own task, without
+// the code-writing wrapper and without a quoted test request of the goal),
+// none of whose functions is a name promised to this level (carried), a
+// method the goal states start() returns, or a name a piece that stays uses
+// (a "Test …" piece a sibling calls is production code, and what it uses
+// stays too). [] when the goal is about tests, or fewer than two pieces would
+// stay: the split is kept as it was.
+export function testPieces(spawn, {promised = [], stated = [], goal = ''} = {}) {
+  if (goalAboutTests(goal)) return [];
+  const list = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object'), keep = new Set([...promised, ...stated].map(f => typeof f === 'string' ? f : f?.name)), asked = testRequests(goal);
   const fns = c => (Array.isArray(c.interfaces) ? c.interfaces : Array.isArray(c.functions) ? c.functions : []).map(f => typeof f === 'string' ? f : f?.name).filter(Boolean);
-  let out = list.filter(c => testLabel(c.label, c.task) && !fns(c).some(n => keep.has(n)));
+  const own = c => asked.reduce((t, r) => t.split(r).join(' '), assignedPiece(c.task));
+  let out = list.filter(c => testLabel(c.label, own(c), {siblings: list.filter(x => x !== c)}) && !fns(c).some(n => keep.has(n)));
   for (let n = -1; n !== out.length;) {n = out.length; const used = new Set(list.filter(c => !out.includes(c)).flatMap(c => normalizeUses(c.uses))); out = out.filter(c => !fns(c).some(f => used.has(f)));}
   return list.length - out.length < 2 ? [] : out;
 }
