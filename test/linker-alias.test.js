@@ -370,3 +370,26 @@ test('room: the run6 retrieval branch applies the colliding rename as an alias, 
   assert.ok(!events.some(e=>mine(e)&&['link_edit_rejected','link_retry','sent_to_workers'].includes(e.kind)),events.filter(mine).map(e=>e.kind+': '+e.body).join('\n'));
   assert.equal(await repos.read(room.node(builder.id).repo_name,ret),source.replace('{ loadTickets }','{ getTickets: loadTickets }'));
 });
+
+// v8 (S6): the linker's prompt is PRINCIPLES + ROLE.linker + FORMAT.linker,
+// with no example names; a toolchain row's binding rules travel as data
+// (binding_rules) for that row's files only. LINKER_SYSTEM above stays v7's.
+test('prompt, v8: the linker is ROLE.linker with no example names, and the binding rules are data for the files of their row',async()=>{
+  const {linkComponents}=await import('../src/model.js');
+  const {systemPrompt}=await import('../src/prompts.js');
+  const {toolchainById}=await import('../src/toolchains.js');
+  const seen=[];
+  const env={PIPELINE:'v8',AI:{run:async(_m,args)=>{seen.push(args.messages);return {response:seen.length===1?'nope':JSON.stringify({edits:[{file:'app.js',find:"require('./addItem')",replace:"require('./add-item')"}],issues:[]})};}}};
+  const out=await linkComponents(env,{goal:'A list page',files:[{path:'app.js',content:"const { addItem } = require('./addItem');\n"}],interfaces:[],allPaths:['app.js','add-item.js'],scope:'branch'});
+  assert.equal(out.edits.length,1);
+  assert.equal(seen[0][0].content,systemPrompt('linker'));
+  assert.doesNotMatch(seen[0][0].content,/createTicket|saveTickets|inmemoryti|require\(/);
+  const user=JSON.parse(seen[0][1].content);
+  assert.deepEqual(user.binding_rules,[toolchainById('javascript').binding_rules]);
+  assert.match(user.scope_means,/one branch of a larger project/);
+  assert.deepEqual(JSON.parse(seen[1][1].content).previous_answer_problems.length,1,'the retry hears why in its user JSON');
+  // A file of a row with no binding rules gets none.
+  const other=[];
+  await linkComponents({PIPELINE:'v8',AI:{run:async(_m,args)=>{other.push(JSON.parse(args.messages[1].content));return {response:'{"edits":[],"issues":[]}'};}}},{goal:'x',files:[{path:'convert.py',content:'from to_c import to_c\n'}],interfaces:[],allPaths:['convert.py']});
+  assert.equal(other[0].binding_rules,undefined);
+});

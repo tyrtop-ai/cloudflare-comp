@@ -2,11 +2,16 @@ import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects
 import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
-import { workerAction } from './worker-output.js';
-import { systemPrompt, CLEF } from './prompts.js';
+import { workerAction, singleFileText } from './worker-output.js';
+import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE } from './prompts.js';
+import { contractLine } from './contracts.js';
 import { validateCard, settleCodeLanguage, checkSummary } from './card.js';
-import { TOOLCHAINS } from './toolchains.js';
+import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 export { NO_ANSWER };
+// v8 (S6): a call runs v8's prompts when the room's pipeline is v8. The room
+// says so in the env it passes (inferenceEnv's PIPELINE), so every call site
+// is covered without a flag of its own; decompose also reads opts.v8.
+export const pipelineV8 = (env, opts = {}) => !!opts?.v8 || env?.PIPELINE === 'v8';
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 // Speed v1: every per-model setting in one table, keyed by Workers AI model
 // id. reasoning: how the model is asked to reason or not:
@@ -113,7 +118,7 @@ export async function shouldSplit(env, task, mockContext) {
   // can propose an admissible partition. Review concrete failed proposals when
   // deciding whether to split again or route this assignment to implementation.
   const feedback=mockContext?.split_feedback || null;
-  const question=feedback
+  const question=pipelineV8(env)?(feedback?CLEF.split_retry:CLEF.split):feedback
     ? 'A previous proposed decomposition was rejected. Based on the ASSIGNED CODE and the specific rejected partition, is there still a credible split into TWO OR MORE independent, in-scope code-writing assignments covering the whole requested code? Answer NO if the correct next step is to implement the assigned code directly rather than invent unrelated subdivisions. Answer YES if a corrected partition is feasible. Do not treat the previous YES as binding.'
     : 'Can this requested CODE be written as TWO OR MORE smaller independently authored source-code modules or functions, whose code can be linked to implement the ENTIRE assigned code? Prefer yes if the code can be divided further, even into very small functions. Answer no only if the code itself is an indivisible implementation unit. Do not split into research, design discussions, decisions, documentation, or plans.';
   const answer=await clefRun(env,'shouldSplit',selector,{
@@ -148,9 +153,10 @@ export async function scopeChildren(env, originalGoal, parentTask, children) {
     groups.push({start,group});
   }
   const checked=await Promise.all(groups.map(async ({start,group})=>{
+    const v8=pipelineV8(env);
     const questions=Object.fromEntries(group.map((_, i) => [`within_${i}`,{
       type:'noul',
-      instructions:`Does proposed child ${start+i} request a concrete SOURCE CODE IMPLEMENTATION of a submodule needed for BOTH the original user goal and its parent code-writing assignment? Answer NO for unrelated domains and for tasks that only describe, choose, plan, document, outline, or discuss a solution instead of writing source code. An actual executable schema/configuration module or test is code. A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code; judge its scope like any other child. Judge scope and code deliverability, not implementation quality.`
+      instructions:v8?clefText('scope',{i:start+i}):`Does proposed child ${start+i} request a concrete SOURCE CODE IMPLEMENTATION of a submodule needed for BOTH the original user goal and its parent code-writing assignment? Answer NO for unrelated domains and for tasks that only describe, choose, plan, document, outline, or discuss a solution instead of writing source code. An actual executable schema/configuration module or test is code. A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code; judge its scope like any other child. Judge scope and code deliverability, not implementation quality.`
     }]));
     const output=await clefRun(env,'scopeChildren',selector,{
       model:clef,
@@ -186,15 +192,19 @@ export async function scopeInterfaces(env, originalGoal, parentTask, children, p
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef scope decision model');
-  const line=promiseLine;
-  const state={original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
+  // v8 (S6): the contract question (CLEF.contract), each contract by its kind (contractLine), in "contracts" keys.
+  const v8=pipelineV8(env),line=v8?contractLine:promiseLine;
+  const state=v8?{original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
+    parent_contracts:promised.map(p=>p.name),
+    proposed_children:children.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900),contracts:(c.interfaces||[]).map(line)}))}:
+    {original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
     parent_promised_functions:promised.map(p=>p.name),
     proposed_children:children.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900),functions:(c.interfaces||[]).map(line)}))};
   const groups=[];
   for(let start=0;start<asks.length;start+=12)groups.push(asks.slice(start,start+12));
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(({i,k,f})=>[`names_${i}_${k}`,{type:'noul',
-      instructions:`Proposed child ${i} ("${String(children[i].label).slice(0,70)}") lists ${line(f)} among the functions it will export. Does child ${i}'s own responsibility write this function, rather than another proposed child's responsibility or code outside the parent's assignment? Answer NO if another proposed child's responsibility writes it, or if the parent was not asked for it. Judge only where the function belongs, not its quality or its name.`}]));
+      instructions:v8?clefText('contract',{i,contract:line(f)}):`Proposed child ${i} ("${String(children[i].label).slice(0,70)}") lists ${line(f)} among the functions it will export. Does child ${i}'s own responsibility write this function, rather than another proposed child's responsibility or code outside the parent's assignment? Answer NO if another proposed child's responsibility writes it, or if the parent was not asked for it. Judge only where the function belongs, not its quality or its name.`}]));
     const output=await clefRun(env,'scopeInterfaces',selector,{model:clef,state,questions});
     return group.map(({i,k,f})=>{
       const probability=output?.answers?.[`names_${i}_${k}`]?.noul;
@@ -274,7 +284,8 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
   const selected=env.SPLIT_MODEL||'@cf/cloudflare/clef-flash';
   const name=DECISION_MODELS[selected];
   if(!name) throw new Error('Unsupported Clef routing decision model');
-  const questions=Object.fromEntries(candidates.map((c,i)=>['owner_'+i,{type:'noul',instructions:
+  const v8=pipelineV8(env);
+  const questions=Object.fromEntries(candidates.map((c,i)=>['owner_'+i,{type:'noul',instructions:v8?clefText('owner',{i}):
     `Does child ${i} own the behavior needed to answer the question? Match responsibility and PUBLIC Artifacts contents. Answer yes only when relevant.`}]));
   const state={question:String(question).slice(0,1100), children:candidates.map((c,i)=>({slot:i,
     responsibility:String(c.task).slice(0,700), label:c.label,
@@ -304,13 +315,16 @@ export async function matchFunction(env, {need, name=''}, items) {
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef routing decision model');
-  const state={request:{need:String(need).slice(0,300),expected_name:name||''},
+  // v8 (S6): the match question (CLEF.match) over contracts of any kind, each by its line.
+  const v8=pipelineV8(env);
+  const state=v8?{request:{need:String(need).slice(0,300),expected_name:name||''},contracts:items.map((f,j)=>({slot:j,piece:String(f.owner).slice(0,70),contract:contractLine(f)}))}:
+    {request:{need:String(need).slice(0,300),expected_name:name||''},
     functions:items.map((f,j)=>({slot:j,piece:String(f.owner).slice(0,70),signature:signature(f),does:f.does||'',...(f.returns?{returns:f.returns}:{}),...(f.operation?{operation:f.operation}:{})}))};
   const groups=[];
   for(let start=0;start<items.length;start+=12)groups.push(items.slice(start,start+12).map((_,k)=>start+k));
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(j=>[`fn_${j}`,{type:'noul',
-      instructions:`Does function ${j} do what the request needs, so that the requester can import it instead of writing it? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.`}]));
+      instructions:v8?clefText('match',{j}):`Does function ${j} do what the request needs, so that the requester can import it instead of writing it? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.`}]));
     const output=await clefRun(env,'matchFunction',selector,{model:clef,state,questions});
     return group.map(j=>{
       const probability=output?.answers?.[`fn_${j}`]?.noul;
@@ -337,12 +351,14 @@ export async function pickPiece(env, fn, pieces) {
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef routing decision model');
-  const state={function:{signature:signature(fn),does:fn.does||''},pieces:pieces.map((c,j)=>({slot:j,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900)}))};
+  // v8 (S6): the pick question (CLEF.pick), the contract by its line.
+  const v8=pipelineV8(env);
+  const state={...(v8?{contract:contractLine(fn)}:{function:{signature:signature(fn),does:fn.does||''}}),pieces:pieces.map((c,j)=>({slot:j,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900)}))};
   const groups=[];
   for(let start=0;start<pieces.length;start+=12)groups.push(pieces.slice(start,start+12).map((_,k)=>start+k));
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(j=>[`piece_${j}`,{type:'noul',
-      instructions:`Does piece ${j} write ${signature(fn)} as part of its own responsibility, so that the other pieces import it from piece ${j}? Answer NO if another piece's responsibility writes it and piece ${j} only calls it. Judge by what each piece writes, not by the function's name.`}]));
+      instructions:v8?clefText('pick',{j,contract:contractLine(fn)}):`Does piece ${j} write ${signature(fn)} as part of its own responsibility, so that the other pieces import it from piece ${j}? Answer NO if another piece's responsibility writes it and piece ${j} only calls it. Judge by what each piece writes, not by the function's name.`}]));
     const output=await clefRun(env,'pickPiece',selector,{model:clef,state,questions});
     return group.map(j=>{
       const probability=output?.answers?.[`piece_${j}`]?.noul;
@@ -362,9 +378,12 @@ export async function ownsNeed(env, {assigned_code, need, name=''}) {
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef routing decision model');
+  // v8 (S6): CLEF.owns_need, with the state's keys about work, not code.
+  const v8=pipelineV8(env);
   const output=await clefRun(env,'ownsNeed',selector,{model:clef,
-    state:{assigned_code:String(assigned_code).slice(0,1800),needed_function:{need:String(need).slice(0,300),expected_name:name||''}},
-    questions:{inside:{type:'noul',instructions:'Is writing this function part of the assigned code? Answer NO if the assigned code does not ask for this behavior.'}}});
+    state:v8?{assigned_work:String(assigned_code).slice(0,1800),needed:{need:String(need).slice(0,300),expected_name:name||''}}:
+      {assigned_code:String(assigned_code).slice(0,1800),needed_function:{need:String(need).slice(0,300),expected_name:name||''}},
+    questions:{inside:{type:'noul',instructions:v8?CLEF.owns_need:'Is writing this function part of the assigned code? Answer NO if the assigned code does not ask for this behavior.'}}});
   const probability=output?.answers?.inside?.noul;
   if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
     throw new Error('Clef returned no valid probability for the assignment check');
@@ -429,16 +448,24 @@ export async function decompose(env, context, opts = {}) {
   // v7.15.14 review: the room's two bounds, apart: the slots left (max_child_writers; an answer over them goes to admission's split_rejected, and Clef may go atomic, as before) and the pieces per split (max_children; an answer over it is a size failure).
   const slots=Math.max(0,Number(context.max_child_writers ?? 256)),cap=Number.isInteger(context.max_children)&&context.max_children>=2?context.max_children:Infinity,available=Math.min(slots,cap);
   const promised=Array.isArray(context.your_promised_functions)?context.your_promised_functions:[];
-  const {planned=promised.length>0,goal=stripStartRequirement(context.root_scope||'')}=opts,uses=planned?SPLIT_USES:'';
+  // v8 (S6): PRINCIPLES + ROLE.splitter + FORMAT.splitter, with no SPLIT_USES and none of v7's leaf or language rules; the bound, the contracts, the project facts and a retry's reasons go in the user JSON.
+  const v8=pipelineV8(env,opts);
+  const {planned=promised.length>0,goal=stripStartRequirement(context.root_scope||'')}=opts,uses=planned&&!v8?SPLIT_USES:'';
   // A goal whose product is about tests (a test runner, an exam app) is never told to leave tests out (goalAboutTests).
   const bound=cap<=slots?`Use at most ${cap} pieces, the room's limit on pieces per split (and at least two if splitting).`:`The runtime has ${slots} available agent slots for this split; use no more than that (and at least two if splitting).`;
   const tests=goalAboutTests(goal)?'':' Tests the goal asks for are written by the compiler\'s runner against the running application, so no piece writes tests, test suites, test harnesses or fixtures; a piece\'s own self-checks are not pieces either.';
-  const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide into the few largest independent pieces, at most ${available}; each piece is split again by its own manager if it is still large. Group related code into one piece that will itself be split further: code that only one piece calls goes inside that piece, not beside it. ${bound}${tests} Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements; do not invent filenames or a new global architecture. DO name the functions each piece exports: give each piece "functions", the few functions (at most 5) that code outside that piece calls, each {"name":"camelCaseIdentifier","does":"one line","params":["optional hint"],"returns":"what a call returns, in a few words"}. Name each function after what it does and what it acts on (createTicket, not create). Say in "returns" what a call to it gives back (the array of ticket objects, the created ticket, nothing): its callers must know the shape. Names are binding: the piece must export exactly these names and other pieces import them by these names; a later builder can only rename, so choose plain descriptive names. A piece may export more; list only what others call. your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece, the one whose task writes it. Never give a function to two pieces. List only functions your pieces write: a piece that needs a function from elsewhere asks for it when it runs, so do not create a piece for it. If a function performs one of the operations the original goal names, add "operation":"<that operation in a few words>". The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON with one spawn item per piece, for example {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that implements this piece","functions":[{"name":"functionName","does":"what it does","params":["argument"],"returns":"what it returns"}]},{"label":"short name of another piece","task":"Write code that implements another piece","functions":[{"name":"otherFunctionName","does":"what it does","params":["argument"],"returns":"what it returns"}]}]}. Every spawn item is a JSON object, never a quoted string. Do not write code yourself.`;
+  const system = v8 ? systemPrompt('splitter') : `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide into the few largest independent pieces, at most ${available}; each piece is split again by its own manager if it is still large. Group related code into one piece that will itself be split further: code that only one piece calls goes inside that piece, not beside it. ${bound}${tests} Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements; do not invent filenames or a new global architecture. DO name the functions each piece exports: give each piece "functions", the few functions (at most 5) that code outside that piece calls, each {"name":"camelCaseIdentifier","does":"one line","params":["optional hint"],"returns":"what a call returns, in a few words"}. Name each function after what it does and what it acts on (createTicket, not create). Say in "returns" what a call to it gives back (the array of ticket objects, the created ticket, nothing): its callers must know the shape. Names are binding: the piece must export exactly these names and other pieces import them by these names; a later builder can only rename, so choose plain descriptive names. A piece may export more; list only what others call. your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece, the one whose task writes it. Never give a function to two pieces. List only functions your pieces write: a piece that needs a function from elsewhere asks for it when it runs, so do not create a piece for it. If a function performs one of the operations the original goal names, add "operation":"<that operation in a few words>". The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON with one spawn item per piece, for example {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that implements this piece","functions":[{"name":"functionName","does":"what it does","params":["argument"],"returns":"what it returns"}]},{"label":"short name of another piece","task":"Write code that implements another piece","functions":[{"name":"otherFunctionName","does":"what it does","params":["argument"],"returns":"what it returns"}]}]}. Every spawn item is a JSON object, never a quoted string. Do not write code yourself.`;
   // Root's goal is a scope boundary for this splitter, never a request for
   // an agent to design the whole app. The request is built field by field
   // (a blind cut could end the JSON mid-string); only the rejection feedback
   // is clipped to the room left.
-  const fields={assigned_code:context.your_responsibility,
+  const fields=v8?{assignment:context.your_responsibility,
+    contracts_you_deliver:promised.length?promised.map(({serves:_,...c})=>c):undefined,
+    contracts_available:Array.isArray(context.contracts_available)&&context.contracts_available.length?context.contracts_available:undefined,
+    project:context.project||undefined,
+    goal_scope_boundary:context.root_scope || undefined,
+    previous_split_rejection:undefined,
+    max_pieces:available}:{assigned_code:context.your_responsibility,
     your_promised_functions:promised.length?promised:undefined,
     original_goal_scope_boundary:context.root_scope || undefined,
     previous_split_rejection:undefined,
@@ -453,7 +480,7 @@ export async function decompose(env, context, opts = {}) {
   // normalizeAction drops them. A parsed answer with no spawn items is the
   // splitter declining, not malformed (review: a child that cannot split).
   // v8 (S2): opts.v8 reads the pieces key as normalizeAction does (splitPieces), so a v8 splitter's pieces are a split.
-  const v8=!!opts.v8,shape=o=>splitShape(o,{v8});
+  const shape=o=>splitShape(o,{v8});
   const vet=(output,text=contentOf(output),parsed=parseObject(text,shape))=>{
     const items=spawnObjects(splitPieces(parsed,{v8})),pieces=items.filter(spawnPiece);
     // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
@@ -465,7 +492,8 @@ export async function decompose(env, context, opts = {}) {
     const tests=v8?[]:testPieces(spawn,{promised,stated:goalMethods(goal),goal}),size=spawn.length-tests.length;
     return {parsed,text,output,spawn,inferred,vague,bad,size,tests,over:size>cap,ok:size>=2&&size<=available,count:vague.length+bad.length};
   };
-  const done=v=>{if(!v.spawn)return v.parsed;const {pieces:_,...parsed}=v.parsed;return {...(v8?parsed:v.parsed),spawn:v.spawn,interfaces_inferred:v.inferred};};
+  // v8: FORMAT.splitter asks for a reason; it is the split's summary.
+  const done=v=>{if(!v.spawn)return v.parsed;const {pieces:_,...parsed}=v.parsed;return {...(v8?{...parsed,...(!parsed.summary&&typeof parsed.reason==='string'?{summary:parsed.reason}:{})}:v.parsed),spawn:v.spawn,interfaces_inferred:v.inferred};};
   const first=vet(await run(env,system+uses,request,4096,{noThink:Boolean(opts.noThink),call:'decompose',role:'splitter'}));
   if(first.ok && !first.count)return done(first);
   // run16: an answer with no text is reasoning with no JSON after it (Root's
@@ -481,7 +509,11 @@ export async function decompose(env, context, opts = {}) {
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
   // v7.15.14 (run21): Root's split had 50 direct children; a split over the bound is told to group, never truncated.
   const over=first.over?' '+tooMany(first.size,cap):'';
-  const retry=vet(await run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+over+specific+names,request,4096,{noThink:Boolean(opts.noThink)||first.malformed,call:'decompose',role:'splitter',retry:true}));
+  // v8: the same system text; what was wrong goes in the user JSON (§6).
+  const problems=v8?[empty?RETRY.empty:first.malformed?RETRY.malformed:'',first.over?RETRY.too_many(first.size,cap):'',first.vague?.length?RETRY.vague(first.vague.map(c=>c.label)):'',first.bad?.length?RETRY.names(first.bad.map(e=>e.text)):''].filter(Boolean):[];
+  if(v8&&!problems.length)problems.push(RETRY.count(first.size??0,available));
+  const retry=vet(await (v8?run(env,system,JSON.stringify({...JSON.parse(request),previous_answer_problems:problems}),4096,{noThink:Boolean(opts.noThink)||first.malformed,call:'decompose',role:'splitter',retry:true}):
+    run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+over+specific+names,request,4096,{noThink:Boolean(opts.noThink)||first.malformed,call:'decompose',role:'splitter',retry:true})));
   // The retry replaces the first answer only when it is not worse; a
   // malformed retry never replaces a partition that parsed (review).
   const best=retry.ok && retry.count<=(first.ok?first.count:Infinity) ? retry : first.ok || retry.malformed && !first.malformed ? first : retry;
@@ -573,8 +605,9 @@ const TOP_WRITES = 'You have no manager to ask: write every function your code n
 // A room without Root's promise (MOCK, or a v7.14 room) keeps v7.14 routing,
 // which can park a request: its workers keep v7.14's advice (slice B review).
 const ASSUME = 'You can request externally owned facts through your parent, but you should normally continue using an explicit assumption rather than wait.';
-export async function decide(env, context, {planned = false} = {}) {
+export async function decide(env, context, {planned = false, v8 = false, placed = null} = {}) {
   if (env.MOCK_AI === 'true') return mockDecision(context);
+  if (pipelineV8(env, {v8})) return decideV8(env, context, {placed});
   const asks = planned && !!context.parent;
   const shared = `You own exactly ONE strand in a recursive agent hierarchy. Once a worker is spawned, that worker owns the entire assigned behavior and all design and implementation decisions inside it. A worker is never shown sibling ownership or the wider tree; it only asks its manager for interfaces or facts owned outside its assigned responsibility. Managers retain their direct-child ownership without exposing private descendants. Artifacts repositories persist source files for implementers and public/private knowledge for all agents. Workers ask only their parent manager with a stable topic key. The runtime routes upward and across manager-owned branches and reads public Artifacts before asking a worker to do anything. Never expose hidden child IDs in public memory, messages, or interfaces. Return only a compact JSON action; empty arrays may be omitted. You cannot run code or claim tests passed.`;
   const manager = `You are PERMANENTLY a MANAGER because you delegated implementation. YOU DO NOT CODE, copy/import files, or compose source. Children own ALL implementation. Your entire job is to remember ownership, route questions and answers to the appropriate direct child, publish discovered interfaces in public Artifacts knowledge, and track progress. If public memory cannot answer, ask the responsible child; no direct access to grandchildren. You may publish child source under YOUR public interface WITHOUT COPYING using \"exports\": [{"from":"DIRECT CHILD ID","path":"child-public-file.js","as":"owner-public-file.js"}]. This writes a PRIVATE routing notebook in your Artifacts repo and exposes ONLY owner-public-file.js in the public manifest. Export files only after children publish them. A requester contacts you, never the hidden child. Code glue and assembly are exclusively the runtime-scheduled builder's work; never delegate glue to an implementation child. Managers may NEVER submit files or imports. They may not retire unfinished children, and should never retire production children. The runtime schedules on-demand builders, including early provisional integration. Managers never request or manage builder lifecycle through Qwen actions. Set done:true only when every delegated responsibility has been completed through your children and published as needed; if children are working, wait:true. Format: {"summary":"...","wait":true,"done":false,"spawn":[{"label":"...","task":"..."}],"exports":[{"from":"...","path":"...","as":"..."}],"remember":[{"visibility":"public|private","key":"...","value":"..."}],"ask":[{"to":"DIRECT CHILD OR NEIGHBOR","key":"...","question":"..."}],"answers":[{"to":"...","key":"...","value":"..."}],"messages":[{"to":"...","body":"..."}],"retire":["COMPLETED BUILDER ID"]}.`;
@@ -601,8 +634,59 @@ export async function decide(env, context, {planned = false} = {}) {
   return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
 }
 
-export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false }) {
+// v8 (S6, §3.2): a worker answers under PRINCIPLES + ROLE.worker +
+// FORMAT.worker, in the raw file-block format (workerAction, expect
+// 'blocks'); its contracts, the contracts it may use with their references
+// and the project facts come in the user JSON the room built. placed: the
+// path of its one placed contract, for the single-fence fallback. A retry
+// keeps the system text and hears what could not be read in the user JSON;
+// if it is no better, the first answer's complete files stand, not done.
+// Managers route deterministically and v8 runs no builder, so only a worker
+// comes here; any other context waits, with no model call.
+export const WORKER_TOKENS = 6500;
+async function decideV8(env, context, {placed = null} = {}) {
+  if (context.your_label === 'Temporary builder' || context.phase === 'manager' || context.phase === 'compose')
+    return {summary: 'Under v8 a manager routes without a model action, and no builder runs.', wait: true};
+  const system = systemPrompt('worker'), tokens = Math.min(8192, Math.max(1500, Number(env.DECISION_MAX_TOKENS) || WORKER_TOKENS));
+  const read = out => workerAction(out, {expect: 'blocks', placed});
+  let output = await run(env, system, JSON.stringify(context), tokens, {call: 'decide', role: 'worker'});
+  let parsed = read(output);
+  if (!parsed.parse_error && !parsed.control_error) return parsed;
+  const first = parsed, head = clip(stripReasoning(contentOf(output)).trim(), 300);
+  const why = first.control_error ? 'its control block was not one json object' : head ? 'it held no file block and no control block' : `it was empty: ${emptyAnswer(output)}`;
+  output = await run(env, system, JSON.stringify({...context, previous_answer_problems: [RETRY.worker(why)], ...(head ? {previous_answer_head: head} : {})}),
+    Math.min(8192, tokens + 1024), {call: 'decide', role: 'worker', retry: true});
+  parsed = read(output);
+  if (first.control_error && (parsed.parse_error || parsed.control_error)) return first;
+  return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
+}
+
+// v8 (S6): one file written again, under PRINCIPLES + ROLE.file +
+// FORMAT.file: a file the token cap cut, one an answer listed by intent
+// alone, or a correction (the contract check's, the code gate's). The
+// problem, the file as it stands, the worker's other files, the contracts
+// it may use and the project facts are the user JSON.
+// The other files ride within a budget, whole first; one that does not fit is marked clipped (index.js sentFiles' rule).
+const otherFiles = (files, budget = 20000) => { let left = budget; return files.map(f => { const t = String(f.content ?? ''); if (t.length <= left) { left -= t.length; return {path: f.path, content: t}; } const n = Math.max(0, Math.min(3000, left)); left -= n; return {path: f.path, content: t.slice(0, n), clipped: true, length: t.length}; }); };
+async function generateFileV8(env, {path, intent, task, files, inbox, correction = '', answers = [], project = null, uses = null, goal = ''}) {
+  const output = await run(env, systemPrompt('file'), JSON.stringify({
+    assignment: task, file: path, what_to_fix: intent, previous_rejection: correction || undefined,
+    goal: goal ? String(goal).slice(0, 600) : undefined,
+    existing_file: files.find(f => f.path === path)?.content ?? null,
+    your_other_files: otherFiles(files.filter(f => f.path !== path && !f.path.startsWith('memory/')).slice(0, 12)),
+    contracts_you_may_use: Array.isArray(uses) && uses.length ? uses : undefined,
+    answered_requests: answers?.length ? answers : undefined, new_messages: inbox?.length ? inbox : undefined,
+    project: project || undefined
+  }), WORKER_TOKENS, {call: 'generateFile', role: 'worker', retry: !!correction});
+  // v8 S6 review: read through the block parser, fences and prose around them dropped (singleFileText).
+  const content = singleFileText(output, path);
+  if (!content || content.trim().length < 2) throw new Error(`Empty generated text for ${path}`);
+  return content;
+}
+
+export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false, project=null, uses=null, goal='', v8=false }) {
   if (env.MOCK_AI === 'true') return mockFile(node.id, path);
+  if (pipelineV8(env, {v8}) && node.label !== 'Temporary builder') return generateFileV8(env, {path, intent, task, files, inbox, correction, answers, project, uses, goal});
   const builder=node.label==='Temporary builder';
   const output = await run(env,
     builder ? (path==='glue/smoke.js' ? `You are the Root linker's behavioral test writer, correcting glue/smoke.js ONLY. Return complete, executable CommonJS source, no Markdown. Require('./index.js') to call start(), then use node:assert/strict to verify actual requested application behavior THROUGH THE RETURNED API (not component modules). For a ticket CRUD application create, list/read, update, verify, delete, and verify absence, all using the same state. Any failure must cause a nonzero process exit; never swallow or log-and-ignore assertions. No other local imports. Previous rejection: ${correction}. Return code only.` : `You are the linker correcting glue/wiring.js ONLY. The runtime owns glue/index.js and package.json and imports all component files. Write ONLY ${path} as valid CommonJS, module.exports = function wire(components) { ... }. No imports, requires, file paths or packages. Accept the loaded component namespaces, indexed by their REAL materialized paths, and connect only real exports as collaborators. Choose ONE common storage instance/state and inject it into every operation, do not use multiple independent stores. CommonJS dynamic-import namespaces often hold exports in .default. Previous rejection: ${correction}. Return code only.`) :
@@ -631,10 +715,16 @@ export const LINKER_SYSTEM = `You are a LINKER for code that independent workers
 // Said only when the request shows a branch built below or a file in one.
 export const LINKER_BELOW = ` A file given as an excerpt (hunks of its imports to fix and the lines that use them) instead of content lives inside a branch built below: copy each find from one hunk, long enough to occur nowhere else in the file. other_modules_exports shows a branch built below only by the modules it offers.`;
 const withoutThinking=output=>stripReasoning(contentOf(output));
-export async function linkComponents(env, {goal, files, interfaces, allPaths, diagnostic='', known_mismatches=[], scope='application', below=false}) {
+export async function linkComponents(env, {goal, files, interfaces, allPaths, diagnostic='', known_mismatches=[], scope='application', below=false, v8=false}) {
   if (env.MOCK_AI === 'true') return {edits:[],issues:[]};
+  // v8 (S6): PRINCIPLES + ROLE.linker + FORMAT.linker; the binding rules of
+  // the files' own toolchain rows travel as data (binding_rules), never in
+  // the system text.
+  const linkV8=pipelineV8(env,{v8}),rules=linkV8?[...new Set(files.map(f=>toolchainOf(f.path)?.binding_rules).filter(Boolean))]:[];
   const request=JSON.stringify({
     scope,
+    ...(linkV8?{scope_means:LINK_SCOPE[scope]||LINK_SCOPE.application}:{}),
+    ...(rules.length?{binding_rules:rules}:{}),
     application_goal:String(goal||'').slice(0,1200),
     known_mismatches:known_mismatches.length?known_mismatches:undefined,
     your_files:files.map(f=>f.excerpt?{path:f.path,excerpt:f.excerpt}:{path:f.path,content:f.content}),
@@ -642,11 +732,12 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
     all_module_paths:allPaths,
     previous_attempt_error:diagnostic||undefined
   });
-  const system=LINKER_SYSTEM+(below?LINKER_BELOW:'');
+  const system=linkV8?systemPrompt('linker'):LINKER_SYSTEM+(below?LINKER_BELOW:'');
   let output=await run(env,system,request,4096,{call:'linkComponents',role:'linker'});
   let parsed=parseObject(withoutThinking(output));
   if(parsed.parse_error) {
-    output=await run(env,system+'\nRETRY: return strictly valid JSON with edits and issues. No markdown.',request,4096,{call:'linkComponents',role:'linker',retry:true});
+    output=await (linkV8?run(env,system,JSON.stringify({...JSON.parse(request),previous_answer_problems:[RETRY.json]}),4096,{call:'linkComponents',role:'linker',retry:true}):
+      run(env,system+'\nRETRY: return strictly valid JSON with edits and issues. No markdown.',request,4096,{call:'linkComponents',role:'linker',retry:true}));
     parsed=parseObject(withoutThinking(output));
   }
   if(parsed.parse_error)return {edits:[],issues:[],parse_error:true,raw:parsed.raw};
@@ -822,12 +913,16 @@ Return ONLY JSON {"actions":[...]}.`;
 export async function decideProblems(env, input, {onCall=()=>{}, retry=true}={}) {
   if (env.MOCK_AI === 'true') return {actions:[]};
   const request=JSON.stringify(input);
+  // v8 (S6): PRINCIPLES + ROLE.manager + FORMAT.manager; each problem's
+  // trigger says why it is asked (TRIGGERS, filled by the room).
+  const v8=pipelineV8(env),system=v8?systemPrompt('manager'):MANAGER_SYSTEM;
   try {
     onCall();
-    let output=await run(env,MANAGER_SYSTEM,request,2048,{call:'decideProblems',role:'manager'}),parsed=parseObject(withoutThinking(output));
+    let output=await run(env,system,request,2048,{call:'decideProblems',role:'manager'}),parsed=parseObject(withoutThinking(output));
     if(parsed.parse_error&&retry) {
       onCall();
-      output=await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048,{call:'decideProblems',role:'manager',retry:true});
+      output=await (v8?run(env,system,JSON.stringify({...input,previous_answer_problems:[RETRY.json]}),2048,{call:'decideProblems',role:'manager',retry:true}):
+        run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048,{call:'decideProblems',role:'manager',retry:true}));
       parsed=parseObject(withoutThinking(output));
     }
     // v7.15.15 (G4, run23): an empty answer says what its envelope held (emptyAnswer), as decompose's and decide's do: run23's M4 logged "the decision did not parse: " with nothing after it.

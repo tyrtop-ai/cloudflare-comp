@@ -11,6 +11,7 @@ const {ControlRoom}=await import('../../src/index.js');
 const {verifyBuild}=await import('../../container/build-runner.mjs');
 const {snapshotHash}=await import('../../src/build-verification.js');
 const {materializedPath}=await import('../../src/assembly.js');
+const {ROLE}=await import('../../src/prompts.js');
 export {ControlRoom,verifyBuild,snapshotHash,materializedPath};
 
 export class Sql {constructor(db){this.db=db||new DatabaseSync(':memory:');}exec(s,...p){if(!p.length&&!/^\s*select/i.test(s)){this.db.exec(s);return{toArray:()=>[]};}const q=this.db.prepare(s);const rows=/^\s*select/i.test(s)?q.all(...p):(q.run(...p),[]);return{toArray:()=>rows};}}
@@ -101,6 +102,19 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     }
     const {messages}=input,system=messages[0].content,text=messages[1].content,user=JSON.parse(text.replace(/ \/no_think$/,''));
     calls.raw.push({system,text});
+    // v8 (S6): a v8 prompt is PRINCIPLES + ROLE[role] + FORMAT[role]; its role
+    // paragraph says which fake answers. A fake's string answer is sent as
+    // written (a worker's file blocks), an object as JSON.
+    const v8role=Object.keys(ROLE).find(r=>r!=='card'&&system.includes(ROLE[r])),send=a=>({response:typeof a==='string'?a:JSON.stringify(a)});
+    if(v8role==='splitter'&&split){calls.split.push(user);return send(await split(user,calls.split.length,system));}
+    if(v8role==='worker'&&leaf){calls.leaf.push(user);return send(await leaf(user,calls.leaf.length,system));}
+    if(v8role==='file'&&file){calls.file.push(user);return send(await file(user,calls.file.length,system));}
+    if(v8role==='linker'){calls.link.push(user);return send(await link(user,calls.link.length,system));}
+    if(v8role==='manager') {
+      calls.manager.push(user);
+      if(!manager)throw new Error('no manager model in this test');
+      return send(await manager(user,calls.manager.length,system));
+    }
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push(user);const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(system.startsWith('You are a MANAGER')) {
@@ -130,6 +144,10 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
   const drain=async()=>{while(pending.length)await Promise.all(pending.splice(0));};
   return {room,store,calls,builds,sql,ctx,env,drain};
 }
+// v8 §3.2: a worker's answer in the raw file-block format, for scripted v8
+// workers. The newline before the END line is the format's, so each file's
+// text comes back exactly, its last newline included.
+export const fileBlocks=(files,control={done:true})=>[...files.map(f=>`=== FILE: ${f.path} ===\n${f.content}\n=== END FILE ===`),'=== CONTROL ===',JSON.stringify(control)].join('\n');
 export const GOAL='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
 // Workers under `parent` (a manager), each done with one file. A spec with
 // no file is a sub-manager to fill in with another call.

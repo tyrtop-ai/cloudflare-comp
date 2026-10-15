@@ -468,7 +468,8 @@ const CARD={card:1,summary:'A <guide> and a script',languages:['python','text'],
     {id:'R3',says:'hello exists',source:'',serves:['hello'],check:{kind:'file',path:'hello.py'},implicit:true}],
   decisions:['The script is hello.py.']};
 test('v8 S3: the Pipeline toggle follows the room and is sent with the settings',()=>{
-  assert.match(html,/<select id="pipeline">\s*<option value="v7">[^<]*\(default\)<\/option>\s*<option value="v8">v8 \(experimental, prompts still v7\)/,'labelled experimental until S6');
+  assert.match(html,/<select id="pipeline">\s*<option value="v7">[^<]*\(default\)<\/option>\s*<option value="v8">v8 \(experimental\) · /,'labelled experimental until S4b');
+  assert.doesNotMatch(html,/prompts still v7/,'v8 rooms use the v8 prompts since S6');
   const elements=renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10,pipeline:'v8'}});
   assert.equal(elements.get('pipeline').value,'v8');
   assert.match(script,/pipeline:\$\('pipeline'\)\?\.value\|\|'v7'/,'sent on Start and Continue');

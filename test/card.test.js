@@ -364,17 +364,8 @@ test('kindCheck: placed files by path, commands by an entry, other rows\' functi
 });
 
 // ------------------------------------------------------------ the prompt texts (§6, §8.3)
-test('the prompts name no language, framework or domain noun, and keep their bounds', () => {
-  const texts = [PRINCIPLES, ...Object.values(ROLE), ...Object.values(FORMAT), ...Object.values(CLEF)];
-  for (const t of texts) {
-    assert.doesNotMatch(t, /ticket|todo|readme|issue tracker|require\(|import \{|module\.exports|node\.js|javascript|python|typescript|react|express|start\(\)/i);
-    assert.doesNotMatch(t, /\b[A-Z]{4,}\b/, 'no all-caps word longer than 3 letters');
-    assert.doesNotMatch(t, /run\d+/);
-  }
-  // §6.1's text verbatim is 331 words, over §8.3's 260 (the spec's two numbers disagree): kept as written, bounded here.
-  assert.ok(PRINCIPLES.split(/\s+/).length <= 340);
-  for (const r of Object.values(ROLE)) assert.ok(r.split(/(?<=[.!?])\s+/).length <= 6);
-  // Its examples span unrelated domains and three check kinds.
+// v8 S6: the lint over every prompt text is test/prompt-lint.test.js.
+test('the card writer\'s examples span unrelated domains and three check kinds', () => {
   const kinds = [...FORMAT.card.matchAll(/<example>(.*?)<\/example>/g)].map(m => JSON.parse(m[1]).check.kind);
   assert.deepEqual(kinds, ['command', 'browser', 'judge']);
   assert.ok(toolchainById('python'));
