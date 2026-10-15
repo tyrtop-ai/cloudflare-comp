@@ -51,8 +51,8 @@ test('current HTML displays concurrent agent count',()=>{
 });
 
 test('HTML uses versioned JS and CSS asset URLs',()=>{
-  assert.match(html, /src="\/app\.js\?v=7\.15\.13"/);
-  assert.match(html, /href="\/styles\.css\?v=7\.15\.13"/);
+  assert.match(html, /src="\/app\.js\?v=7\.15\.14"/);
+  assert.match(html, /href="\/styles\.css\?v=7\.15\.14"/);
 });
 
 test('v7.13: the split threshold control defaults to 70%',()=>{
@@ -384,4 +384,26 @@ test('v7.15.12: count sliders are logarithmic with a number box; the box and the
   assert.equal(context.countSetting('max-depth'),1);
   box.value='250';
   assert.equal(context.countSetting('max-depth'),250,'what Start and Continue send');
+});
+
+// v7.15.14 (run21's 50 children at Root): pieces per split, a count control
+// beside Recursion depth, logarithmic from 2 to 64, sent as max_children.
+test('v7.15.14: the pieces-per-split control sits after Recursion depth, is logarithmic from 2 to 64 with a number box, follows the room and is sent as max_children',()=>{
+  assert.match(html,/data-max="1000" \/><\/div>\s*<div class="range-control"><label for="max-children">Pieces per split <input id="max-children-value" class="count" type="number" inputmode="numeric" min="2" max="64" step="1" value="7" aria-label="Pieces per split, exact value" \/><\/label>\s*<input id="max-children" type="range" min="0" max="1000" step="1" value="0" data-min="2" data-max="64" \/><\/div>/);
+  assert.ok(html.indexOf('id="max-depth"')<html.indexOf('id="max-children"'));
+  assert.match(script,/max_depth:countSetting\('max-depth'\), max_children:countSetting\('max-children'\),/);
+  const elements=renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10,max_children:12}}),{context}=elements;
+  const pos=(lo,hi,v)=>Math.round(1000*Math.log(v/lo)/Math.log(hi/lo));
+  assert.equal(elements.get('max-children-value').value,12,'the room\'s value');
+  assert.equal(elements.get('max-children').value,pos(2,64,12));
+  assert.equal(context.logValue('max-children',0),2);
+  assert.equal(context.logValue('max-children',1000),64);
+  const box=elements.get('max-children-value');
+  box.value='100';fire(box,'change');
+  assert.equal(box.value,64,'clamped to the ceiling');
+  box.value='1';fire(box,'change');
+  assert.equal(box.value,2,'clamped to the floor');
+  assert.equal(context.countSetting('max-children'),2,'what Start and Continue send');
+  // A room saved before v7.15.14 has no max_children: the box keeps its default.
+  assert.equal(renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}}).get('max-children-value').value,'7');
 });

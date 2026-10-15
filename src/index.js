@@ -3,14 +3,14 @@ import { planManagerExposure } from './manager-shard.js';
 export { ManagerShard } from './manager-shard.js';
 export { BuildExecutor } from './build-executor.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
+import { decompose, tooMany, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { codeWritingTask, contractText, assignedPiece, isCodeFile, sourceCodeError, sourceDependencyError, productionFiles, requiredCodeModule, isRuntimeLeafFile } from './code-work.js';
 import { getArtifactStore } from './artifact-store.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, sourceParseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
-import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites } from './interfaces.js';
+import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites, testPieces, testPiecesText } from './interfaces.js';
 import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
@@ -100,6 +100,8 @@ const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,br
 // v7.15 slice B: what a function request asks for, as answers and events say it.
 const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
 const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}` : xs[0]||'';
+// How many times, in words (split_oversize_admitted).
+const times = n => ['once','twice','three times'][n-1] || `${n} times`;
 // One import line per function, named after it (run8): the builder links
 // each line by the name alone, wherever the function's module lies.
 // v7.15.5 merge: in import form for a worker whose files are ES modules (esm).
@@ -155,11 +157,15 @@ const replyFn = fn => { const [f]=normalizeInterfaces(fn&&typeof fn==='object'&&
 // (v7.15.12: lifted from 256 agents, 16 deep, 64 concurrent and 500 turns at
 // the author's request; the account's Workers AI and Durable Object limits
 // are the practical ones).
+// v7.15.14 (run21): max_children bounds the pieces of one split: Root's split
+// had 50 direct children (run19's 28), one Clef step vetted them all, their
+// repositories took 86 s to create, and every routing question at Root ran
+// over dozens; a piece still large is split again by its own manager.
 export const ROOM_LIMITS = Object.freeze({
-  max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000]
+  max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000], max_children: [2, 64]
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
-  max_agents: 64, max_depth: 10, parallel: 16,
+  max_agents: 64, max_depth: 10, parallel: 16, max_children: 7,
   model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
 });
 // The agent models the dashboard offers: the Qwen3 hybrid (default), four
@@ -170,7 +176,7 @@ export const CLOUDFLARE_MODELS = new Set(['@cf/qwen/qwen3-30b-a3b-fp8', '@cf/met
 export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid settings');
   const result = {...prior};
-  for (const key of ['max_agents','max_depth','parallel']) {
+  for (const key of ['max_agents','max_depth','parallel','max_children']) {
     if (raw[key] === undefined) continue;
     const n=Number(raw[key]);
     const [min,max]=ROOM_LIMITS[key];
@@ -341,7 +347,9 @@ export class ControlRoom extends DurableObject {
       Date.now(), this.turnSteps.get(actor) ?? Number(this.get('step','0')), actor, kind, recipient, clip(body, 2400), path);
   }
   store() { return getArtifactStore(this.env); }
-  settings() { return this.read('settings', DEFAULT_ROOM_SETTINGS); }
+  // v7.15.14 review: a room saved before max_children reads its default (the snapshot shows 7, the bound it splits by); its missing worker and compiler models still fall back to its own model (inferenceEnv), not the defaults.
+  settings() { const s=this.read('settings', DEFAULT_ROOM_SETTINGS); return s.max_children===undefined?{...s,max_children:DEFAULT_ROOM_SETTINGS.max_children}:s; }
+  maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
   // runner's test). A room saved before v7.15.10 has no worker or compiler
@@ -3715,6 +3723,9 @@ export class ControlRoom extends DurableObject {
     // C0 already ran in decompose for a first split; it reports what it read.
     const read=[...(Array.isArray(earlier)?earlier:[]).filter(x=>typeof x?.label==='string'&&own.has(x?.name)),...inferred];
     for(const x of read)this.event(id,'interfaces_inferred',`"${clip(x.label,70)}" says it exports ${x.name}(); it carries ${x.name}.`);
+    // v7.15.14 (run21): the goal's tests are the compiler's (its runner writes the one test against start()), so a test piece nothing uses is not spawned, before any Clef call: Root's split proposed 25, Clef vetted them and kept 17 nobody imports, each a repository to create.
+    const tests=testPieces(named,{promised,stated:goalMethods(this.userGoal()),goal:this.userGoal()});
+    if(tests.length){named=named.filter(c=>!tests.includes(c));this.event(id,'test_pieces_dropped',testPiecesText(tests));}
     // The last attempt before a pause places what the pieces' own text shows (R6).
     if(place&&interfaceErrors(named,promised).some(e=>e.check==='C5')) {
       const placed=placePromised(named,promised);named=placed.spawn;
@@ -5135,11 +5146,13 @@ export class ControlRoom extends DurableObject {
         // run10: a malformed split answer was the splitter's error, so Clef's
         // YES stands too; asked again, Clef saw "no valid partition" and Root
         // wrote the whole application as one module.
-        const malformed=!namesOnly&&this.get(`split_yes:${id}`)==='1';
+        // v7.15.14 review: a split over max_children keeps Clef's YES too, with its size feedback, and the splitter thinks: grouping 33 pieces into 7 is the one step that needs it.
+        const sized=!namesOnly&&before.split_feedback?.kind==='size'&&this.get(`split_yes:${id}`)==='1';
+        const malformed=!namesOnly&&!sized&&this.get(`split_yes:${id}`)==='1';
         // v7.15.13 (run20): the gate hears what the piece calls; five workers whose uses named their siblings' checks were told to split and proposed those checks again.
         const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:n.task;
-        const gate=namesOnly||malformed?{split:true}:await shouldSplit(this.inferenceEnv(),gateTask,before);
-        this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
+        const gate=namesOnly||malformed||sized?{split:true}:await shouldSplit(this.inferenceEnv(),gateTask,before);
+        this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; ${Date.now()-started} ms).`);
         if (gate.split && !this.canSplit(id,2)) {
           // Clef chose to split but the room has no agent slots or depth left.
           // Do not force a weak leaf to implement work Clef would divide.
@@ -5151,7 +5164,8 @@ export class ControlRoom extends DurableObject {
         if (gate.split) {
           // run16: after a malformed turn the splitter answers without
           // thinking, as its own retry does; a thinking answer costs minutes.
-          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed});
+          // v7.15.14: the pieces of one split are at most max_children; the slots left are a separate bound (review: an answer over them goes to admission's split_rejected, as before).
+          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry});
         } else {
           // A genuine leaf can implement in the SAME turn; no extra Qwen
           // decomposition request or artificial scheduler wave. It keeps the
@@ -5191,10 +5205,14 @@ export class ControlRoom extends DurableObject {
         // the stuck problem, asks Clef afresh, so no node is pinned to the
         // splitter (review).
         if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,(this.read('failures',{})[id]||0)<2?'1':'');
+        // v7.15.14 review: a split over max_children is feedback for the next turn's splitter (its count, the bound and its labels), never for Clef.
+        if(splitting && raw.oversize)this.save(`split_feedback:${id}`,{kind:'size',reason:tooMany(raw.oversize.count,raw.oversize.bound),count:raw.oversize.count,bound:raw.oversize.bound,proposed:raw.oversize.labels});
         this.incrementFailures(id,'Bad action response');
         return;
       }
       if(splitting && this.get(`split_yes:${id}`))this.set(`split_yes:${id}`,'');
+      // v7.15.14 review: the last attempt before a pause admits a split over max_children as answered (within the slots left): a room never pauses for size alone.
+      if(splitting && raw.oversize)this.event(id,'split_oversize_admitted',`The splitter answered ${raw.oversize.count} pieces ${times((this.read('failures',{})[id]||0)+1)} against a bound of ${raw.oversize.bound} ("Pieces per split"); admitted as answered.`);
       const action = normalizeAction(raw);
       // v7.15 §5.12a, before the code gates: the top has no manager to ask
       // (an atomic Root that asked with wait failed every replay of the ask
@@ -5380,12 +5398,15 @@ export class ControlRoom extends DurableObject {
         // A worker with a promise must give every promised name to one piece (C5).
         const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2});
         action.spawn=admit.c5.length?[]:admit.spawn;rejectedScope+=admit.rejectedScope;rejectedChildren.push(...admit.rejectedChildren);
-        if(admit.c5.length || (rejectedScope && action.spawn.length<2) || action.spawn.length<2 ||
+        // v7.15.14 review: a late split is bounded by max_children too (run21's fan-out, from a worker's turn).
+        const oversize=action.spawn.length>this.maxChildren();
+        if(admit.c5.length || (rejectedScope && action.spawn.length<2) || action.spawn.length<2 || oversize ||
            action.spawn.length>this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()) {
           this.event(id,'split_rejected',admit.c5.length?`Late decomposition rejected: the proposed functions fail ${admit.c5.length} check(s): ${admit.c5.map(e=>e.text).join(' ')}`:
             'Late decomposition rejected. Preserve the assigned code-writing task for a corrected split, rather than executing an oversized leaf.');
           // The worker's next turn says why; it never sees the splitter's checks.
           if(admit.c5.length)await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:clip(`Your proposed pieces were not created: ${admit.c5.map(e=>e.text).join(' ')} Give each proposed piece "functions":[{"name","does"}].`,950)}]);
+          else if(oversize)await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:`Your ${action.spawn.length} proposed pieces were not created: a split has at most ${this.maxChildren()} pieces. Group related pieces into one piece whose task covers them, and it will be split further.`}]);
           await this.rememberOwners(id,admit.rejectedChildren);
           this.incrementFailures(id,'split_rejected');
           return;

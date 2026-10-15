@@ -210,7 +210,8 @@ test('MOCK_AI splits skip the walk',async()=>{
   await room.provision('root',null,'Root','Build an issue tracker');
   await room.spawn('root',[{label:'A · UI',task:'Implement the user-facing ticket interactions'},{label:'B · Backend',task:'Provide ticket storage and HTTP operations'}]);
   await room.turn('root.2');
-  assert.deepEqual(room.children('root.2').map(c=>c.label),['Persistence','HTTP API','Tests']);
+  // v7.15.14: the mock's "Tests" piece promises verifyTicketAPI, which nothing here promised root.2 or uses: a test piece, not spawned (testPieces).
+  assert.deepEqual(room.children('root.2').map(c=>c.label),['Persistence','HTTP API']);
   assert.equal(room.snapshot().events.filter(e=>/^scope_(?:kept|pruned|killed|walk_uncertain)$/.test(e.kind)).length,0);
 });
 

@@ -199,7 +199,7 @@ async function action(route,data={}) {
   try { $('error').textContent=''; await call(route,'POST',data);await refresh(); }
   catch(err){showError(err);}
 }
-// v7.15.12: the four count sliders run logarithmically from the setting's
+// v7.15.12: the count sliders (v7.15.14: five, with pieces per split) run logarithmically from the setting's
 // floor to its ceiling (the server's ROOM_LIMITS, on the slider's data-min and
 // data-max), in 1000 steps, with a number box for the exact value; the box is
 // what Start and Continue send. The threshold slider stays linear.
@@ -210,7 +210,7 @@ function logValue(id,pos) {const [lo,hi]=boundsOf(id);return Math.max(lo,Math.mi
 function logPosition(id,value) {const [lo,hi]=boundsOf(id),x=Math.max(lo,Math.min(hi,Number(value)||lo));return hi>lo?Math.round(LOG_STEPS*Math.log(x/lo)/Math.log(hi/lo)):0;}
 function countSetting(id) {const [lo,hi]=boundsOf(id),v=Math.round(Number(numberOf(id)?.value));return Number.isFinite(v)&&v>0?Math.max(lo,Math.min(hi,v)):lo;}
 const setCount=(id,value)=>{const box=numberOf(id),slider=$(id);if(box)box.value=value;if(slider)slider.value=logPosition(id,value);};
-const ranges=['budget','parallel-limit','max-agents','max-depth','split-threshold'];
+const ranges=['budget','parallel-limit','max-agents','max-depth','max-children','split-threshold'];
 for(const id of ranges) {
   const input=$(id), display=numberOf(id);
   if (!input || !display) continue;
@@ -225,13 +225,13 @@ for(const id of ranges) {
 }
 let controlsDirty=false;
 const settings=()=>({parallel:countSetting('parallel-limit'),
-  max_agents:countSetting('max-agents'), max_depth:countSetting('max-depth'),
+  max_agents:countSetting('max-agents'), max_depth:countSetting('max-depth'), max_children:countSetting('max-children'),
   model:$('model').value, worker_model:$('worker-model').value, compiler_model:$('compiler-model').value, split_model:$('split-model').value,
   split_threshold:Number($('split-threshold').value)/100});
 const applySnapshotSettings=s=>{
   if(controlsDirty || !s.settings) return;
   const c=s.settings;
-  for(const [id,value] of Object.entries({'parallel-limit':c.parallel,'max-agents':c.max_agents,'max-depth':c.max_depth})) if($(id) && value!=null) setCount(id,value);
+  for(const [id,value] of Object.entries({'parallel-limit':c.parallel,'max-agents':c.max_agents,'max-depth':c.max_depth,'max-children':c.max_children})) if($(id) && value!=null) setCount(id,value);
   if($('split-threshold')) {$('split-threshold').value=Math.round((c.split_threshold??0.7)*100);$('split-threshold').dispatchEvent?.(new Event('input'));}
   if(c.model) $('model').value=c.model;
   if($('worker-model')) $('worker-model').value=c.worker_model||c.model||$('worker-model').value;
