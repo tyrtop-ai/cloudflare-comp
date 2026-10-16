@@ -94,7 +94,7 @@ function validation(s, a) {
   const id = `v${s.validations.length + 1}`, v = {id, serves: names.list, check: r.check};
   s.validations.push(v);
   const all = present(s), examples = [...new Set(names.list.flatMap(n => checkExamples(r.check, all.find(c => c.name === n))))];
-  const counts = Object.fromEntries(names.list.map(n => { const c = levelContracts(s).find(x => x.name === n); return [n, c ? examplesOf(s, c).length : contractExamples(all.find(x => x.name === n), [v]).length]; }));
+  const counts = Object.fromEntries(names.list.map(n => [n, examplesOf(s, all.find(c => c.name === n)).length]));
   return {id, examples, examples_so_far: counts};
 }
 const PIECE_FIELDS = ['label', 'task', 'contracts', 'uses', 'packages', 'refs'];
