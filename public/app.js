@@ -20,31 +20,51 @@ function showError(err) { $('error').textContent=String(err?.message||err); }
 function eventMarkup(e) {
   return `<div class="event"><div class="event-time">${stamp(e.ts)}<br/>#${e.step}</div><div><div class="event-title"><b>${esc(e.actor)}</b><span class="event-type ${e.kind==='error'?'error':''}">${esc(e.kind)}</span>${e.recipient?`<span class="faint">→ ${esc(e.recipient)}</span>`:''}</div><p>${esc(e.body)}</p></div></div>`;
 }
-// Ownership tree: one colour per role. A manager is a circle; it splits in
-// half, manager | builder, while its builder links the branch, and the branch
-// turns green once every worker under it is done. The compiler sits above Root.
+// Ownership graph: every agent is a node, joined to the agent that made it,
+// laid out by forces (a settled cloud, round as it grows) and dragged, panned
+// and zoomed by hand. Colour is the role; managers and workers are circles,
+// splitters, builders and compilers squares; solid means done, a pulse
+// means running. A branch's lines turn green once every producer under it is done.
 let selectedNode='';
 // By role (v8 M3 review: a v8 builder is "Builder"); a server from before the role column sends v7's labels.
 const isBuilder=n=>n.role?n.role==='builder':n.label==='Temporary builder';
 const isCompiler=n=>n.role?n.role==='compiler':n.label==='Compiler';
+const isSplitter=n=>n.role==='splitter';
+const SQUARE=new Set(['splitter','builder','compiler']);
 // v8: siblings by their spawn's sequence (a v8 row's id says nothing of where it stands); v7 by its dotted id.
 const idOrder=(a,b)=>{if(a.seq!=null&&b.seq!=null)return a.seq-b.seq;const x=a.id.split('.').map(Number),y=b.id.split('.').map(Number);for(let i=0;i<Math.max(x.length,y.length);i++)if((x[i]??-1)!==(y[i]??-1))return (x[i]??-1)-(y[i]??-1);return 0;};
 // A row's depth: a v8 row's depth column, a v7 row's dotted id.
 const depthOf=n=>n.depth??n.id.split('.').length-1;
+// A manager's children in the order the level runs: its splitter steps, the pieces, its builder, its compiler.
+const stage=n=>isSplitter(n)?0:isBuilder(n)?2:isCompiler(n)?3:1;
 function treeIndex(agents) {
   const kids=new Map(),byId=new Map(agents.map(n=>[n.id,n]));
   for(const n of agents)if(n.parent)kids.set(n.parent,[...(kids.get(n.parent)||[]),n]);
-  for(const list of kids.values())list.sort((a,b)=>isCompiler(a)-isCompiler(b)||idOrder(a,b));
-  const producers=id=>(kids.get(id)||[]).filter(c=>!isBuilder(c)&&!isCompiler(c));
+  for(const list of kids.values())list.sort((a,b)=>stage(a)-stage(b)||idOrder(a,b));
+  const producers=id=>(kids.get(id)||[]).filter(c=>stage(c)===1);
   // A retasked sub-manager's old builder is retired with its branch; the live one is the next generation.
   const builderOf=id=>(kids.get(id)||[]).find(c=>isBuilder(c)&&c.status!=='retired')||null;
-  const role=n=>isBuilder(n)?'builder':isCompiler(n)?'compiler':(n.phase==='manager'||producers(n.id).length)?'manager':'worker';
+  const role=n=>isSplitter(n)?'splitter':isBuilder(n)?'builder':isCompiler(n)?'compiler':(n.phase==='manager'||producers(n.id).length)?'manager':'worker';
   return {kids,byId,producers,builderOf,role};
 }
+// v8: the agents the room keeps beside its rows: each splitter step (its
+// manager's, by attempt: running until it answers, done once Clef admitted
+// its pieces, waiting on Clef's review, failed when its answer was unread or
+// its pieces not admitted) and each level's compiler. Only under a manager the tree has.
+function levelNodes(s) {
+  const has=new Set((s?.agents||[]).map(n=>n.id));
+  const splitter=x=>({id:x.id,parent:x.manager,role:'splitter',level:true,seq:x.attempt,label:`Splitter · attempt ${x.attempt}`,
+    status:!x.ended_at?'running':x.verdict==='admitted'?'done':x.outcome==='read'&&!x.verdict?'waiting':'failed',
+    task:`Propose the division of its manager's level (${x.kind} attempt ${x.attempt}).`,step:x});
+  const compiler=x=>({id:x.id,parent:x.manager,role:'compiler',level:true,label:'Compiler',status:x.state,
+    task:'Verify the level\'s piece, as its builder joined it, on its exact bundle in a fresh box.',record:x});
+  return [...(s?.splitters||[]).map(splitter),...(s?.compilers||[]).map(compiler)].filter(n=>n.id&&has.has(n.parent));
+}
+function treeAgents(s) { return [...(s?.agents||[]),...levelNodes(s)]; }
 // Who a node can talk to, its inference path: its parent and its direct
-// children (a manager's builder and, at Root, the compiler included). A worker,
-// builder or compiler has no children, so it talks only up; never two levels.
-// A retired node's messages and routes are gone: it talks to no one, and no one to it.
+// children. A worker, splitter, builder or compiler has no children, so it
+// talks only up; never two levels. A retired node's messages and routes are
+// gone: it talks to no one, and no one to it.
 function pathEdges(id,index) {
   const n=index.byId.get(id),live=x=>x&&x.status!=='retired';
   if(!live(n))return [];
@@ -59,8 +79,8 @@ function branchState(n,index) {
   return index.builderOf(n.id)?.status==='done'?'linked':'ready';
 }
 const statusOf=n=>current?.active_agents?.includes(n.id)?'running':n.status;
-// The compiler's own states: running pulses, passed (on the current bundle) is
-// green, and its latest verdict a failed load, run or report is red; a newer
+// The v7 compiler's own states: running pulses, passed (on the current bundle)
+// is green, and its latest verdict a failed load, run or report is red; a newer
 // bundle sent to it clears that. Infrastructure blocks are no failure: waiting.
 const COMPILE_FAILED=new Set(['build_failed','problems_reported','runner_failed']);
 const compileVerdict=id=>[...(current?.events||[])].reverse().find(e=>e.actor===id&&(COMPILE_FAILED.has(e.kind)||['run_passed','runner_retry','compile_continue'].includes(e.kind))||e.recipient===id&&e.kind==='compile_requested');
@@ -70,27 +90,8 @@ function compilerState(n) {
   if(record?record.passed:n.status==='done')return 'passed';
   return n.status==='failed'||COMPILE_FAILED.has(compileVerdict(n.id)?.kind)?'failed':'waiting';
 }
-// Above Root: the compiler, or for a manager Root a dashed placeholder until it
-// exists; a run that ended without one (a mock run never has one) shows nothing.
-function compilerMarkup(root,index) {
-  const c=(index.kids.get(root.id)||[]).find(isCompiler);
-  if(!c)return index.role(root)==='manager'&&!['complete','failed'].includes(current?.status)?'<div class="ocompiler pending"><span class="dot role-compiler placeholder" title="Compiler · not yet" aria-label="Compiler · not yet"></span></div>':'';
-  const state=compilerState(c),tip=`${c.label} · compiler · ${state}`;
-  return `<div class="ocompiler ${state}"><button type="button" class="dot role-compiler ${state}${selectedNode===c.id?' selected':''}" data-node="${esc(c.id)}" title="${esc(tip)}" aria-label="${esc(tip)}"></button></div>`;
-}
-// Just circles: colour is the role, solid means done, a pulse means running;
-// everything else is one click away in the detail panel. A builder has no dot
-// of its own: it is its manager's right half (data-builder), so a selected
-// builder marks its manager's dot.
-function treeMarkup(n,index,top=false) {
-  const role=index.role(n),state=branchState(n,index),builder=role==='manager'?index.builderOf(n.id):null;
-  const building=!!builder&&builder.status!=='done',status=statusOf(n);
-  const children=(index.kids.get(n.id)||[]).filter(c=>!isBuilder(c)&&!(top&&isCompiler(c)));
-  const tip=`${n.label} · ${role}${building?' · builder '+statusOf(builder):''} · ${status}`;
-  const selected=selectedNode===n.id||!!builder&&selectedNode===builder.id;
-  const dot=`<button type="button" class="dot role-${role} ${esc(status)}${building?' split':''}${state==='linked'?' linked':''}${n.parent?'':' root'}${selected?' selected':''}" data-node="${esc(n.id)}"${builder?` data-builder="${esc(builder.id)}"`:''} title="${esc(tip)}" aria-label="${esc(tip)}"></button>`;
-  return `<div class="obranch ${state}">${top?compilerMarkup(n,index):''}${dot}${children.length?`<div class="ochildren">${children.map(c=>`<div class="ochild">${treeMarkup(c,index)}</div>`).join('')}</div>`:''}</div>`;
-}
+// A node's state as the graph shows it: a v8 level's compiler states its own, a v7 compiler row is read as above.
+const nodeState=(n,role)=>role==='compiler'&&!n.level?compilerState(n):statusOf(n);
 // A contract by its kind and name; a v7 function by its signature.
 const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.name}(${(i.params||[]).join(', ')})`;
 // v8: a validation's last result: passed null is a check that could not run
@@ -185,99 +186,182 @@ function renderLevels(s) {
   $('levels').querySelectorAll('button[data-agent]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.agent,btn.dataset.path)));
   if($('levels-verdict'))$('levels-verdict').textContent=!v8?'No levels (v7 pipeline)':list.length?`${list.length} validations · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:'Not stated yet';
 }
+// The last thing a v8 level's compiler did, as its manager's events say.
+const LEVEL_COMPILE=new Set(['checks_started','piece_compiling','checks_passed','piece_compiled','checks_reported','checks_failed','build_infrastructure','box_environment']);
 function nodeDetail(n,index) {
-  const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
-  const line=x=>`<p class="faint">${esc(x.repo_name)} · ${esc(x.phase||'work')} · turn ${x.turn}${x.summary?` · ${esc(String(x.summary).slice(0,400))}`:''}</p>`;
+  const role=index.role(n),state=nodeState(n,role);
+  const line=x=>x.repo_name?`<p class="faint">${esc(x.repo_name)} · ${esc(x.phase||'work')} · turn ${x.turn}${x.summary?` · ${esc(String(x.summary).slice(0,400))}`:''}</p>`:'';
   const pick=x=>`<button type="button" class="peer mono" data-node="${esc(x.id)}">${esc(x.id)}</button>`;
   const peers=pathEdges(n.id,index).map(([,id])=>index.byId.get(id));
   const talks=`<p class="onode-path${peers.length?'':' none'}">talks to ${peers.length?peers.map(p=>`${pick(p)} ${index.role(p)}`).join(', '):n.status==='retired'?'no one: retired':'no one yet'}</p>`;
-  let compile='';
-  if(role==='compiler') {
+  let more='';
+  if(role==='compiler'&&n.level) {
+    const last=[...(current?.events||[])].reverse().find(e=>e.actor===n.parent&&LEVEL_COMPILE.has(e.kind));
+    more=`<p class="faint">${esc(state)}${n.record?.box?` · last run in ${esc(n.record.box)}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
+  } else if(role==='compiler') {
     const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
-    compile=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
+    more=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
+  } else if(role==='splitter') {
+    const x=n.step;
+    more=`<p class="faint">${esc(x.ended_at?x.outcome||'ended':'running')}${x.verdict?` · ${esc(x.verdict)}`:''}${x.ended_at&&x.spawned_at?` · ${((x.ended_at-x.spawned_at)/1000).toFixed(1)} s`:''}</p>`;
   }
-  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}${holdsOf(current?.pause).filter(h=>h.agent===n.id).map(h=>` · waits on the room's hold: ${esc(h.kind)}`).join('')}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(state)}${holdsOf(current?.pause).filter(h=>h.agent===n.id).map(h=>` · waits on the room's hold: ${esc(h.kind)}`).join('')}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${more}${line(n)}</div>`;
 }
-// The selected node's edges ride on the overlay as data-edges ("from:to ...");
-// drawPath measures the dots after layout and draws them.
+// The graph's nodes, parents before children (a new node is placed beside
+// its parent), and its edges, parent to child.
+function graphModel(agents) {
+  const index=treeIndex(agents),nodes=[],seen=new Set();
+  const visit=n=>{if(seen.has(n.id))return;seen.add(n.id);nodes.push(n);for(const c of index.kids.get(n.id)||[])visit(c);};
+  for(const n of agents)if(!n.parent||!index.byId.has(n.parent))visit(n);
+  return {index,nodes,edges:nodes.filter(n=>n.parent&&index.byId.has(n.parent)).map(n=>[n.parent,n.id])};
+}
+// The layout: a position and a velocity per node, kept across refreshes so the
+// graph never jumps; the forces are the usual ones of a graph view: every pair
+// repels, an edge is a spring, and a weak pull to the centre keeps the cloud round.
+const graph={pos:new Map(),view:{x:0,y:0,k:1},alpha:0,drag:null,pan:null,moved:false,frame:0,key:'',fitted:false,model:null};
+const REPEL=8000,SPRING=0.03,CENTER=0.006,FRICTION=0.6;
+const linkLength=(index,id)=>SQUARE.has(index.role(index.byId.get(id)))?26:48;
+// The same id lands at the same angle: no randomness, so a room lays out the same way each time.
+const angleOf=id=>{let h=7;for(const ch of String(id))h=(h*31+ch.charCodeAt(0))>>>0;return h%3600/3600*2*Math.PI;};
+function placeNodes({nodes},pos) {
+  const keep=new Set(nodes.map(n=>n.id));
+  for(const id of [...pos.keys()])if(!keep.has(id))pos.delete(id);
+  let added=0;
+  for(const n of nodes)if(!pos.has(n.id)) {
+    const p=pos.get(n.parent),a=angleOf(n.id),r=p?30:0;
+    pos.set(n.id,{x:(p?.x||0)+r*Math.cos(a),y:(p?.y||0)+r*Math.sin(a),vx:0,vy:0});added++;
+  }
+  return added;
+}
+function tick({index,nodes,edges},pos,alpha) {
+  const ps=nodes.map(n=>pos.get(n.id));
+  for(let i=0;i<ps.length;i++)for(let j=i+1;j<ps.length;j++) {
+    const a=ps[i],b=ps[j];let dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy;
+    if(d2<0.01){dx=Math.cos(i*7+j);dy=Math.sin(i*7+j);d2=1;}
+    const d=Math.sqrt(d2),f=REPEL*alpha/Math.max(d2,36);
+    a.vx-=dx/d*f;a.vy-=dy/d*f;b.vx+=dx/d*f;b.vy+=dy/d*f;
+  }
+  for(const [s,t] of edges) {
+    const a=pos.get(s),b=pos.get(t),dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,f=(d-linkLength(index,t))/d*SPRING*alpha*10;
+    a.vx+=dx*f/2;a.vy+=dy*f/2;b.vx-=dx*f/2;b.vy-=dy*f/2;
+  }
+  for(const p of ps) {
+    p.vx-=p.x*CENTER*alpha;p.vy-=p.y*CENTER*alpha;
+    p.vx*=FRICTION;p.vy*=FRICTION;
+    if(p.fx!=null){p.x=p.fx;p.y=p.fy;p.vx=p.vy=0;}
+    else{p.x+=p.vx;p.y+=p.vy;}
+  }
+}
+// Settles the layout in place: the ticks a first paint can afford, cooling as it goes.
+function settle(model,pos,alpha=1) {
+  const n=Math.max(1,model.nodes.length),steps=Math.max(20,Math.min(300,Math.floor(4e6/(n*n))));
+  for(let i=0;i<steps;i++){tick(model,pos,alpha);alpha*=0.98;}
+  return alpha;
+}
+const fmt=v=>String(Math.round(v*10)/10);
+const clipLabel=(s,n=18)=>{s=String(s??'');return s.length>n?s.slice(0,n-1)+'…':s;};
+const nodeSize=(role,top)=>SQUARE.has(role)?5:role==='manager'?(top?11:8):6;
+function nodeMarkup(n,index,p) {
+  const role=index.role(n),state=nodeState(n,role),top=!n.parent,r=nodeSize(role,top),linked=branchState(n,index)==='linked';
+  const tip=`${n.label} · ${role} · ${state}`;
+  const shape=SQUARE.has(role)?`<rect x="${-r}" y="${-r}" width="${2*r}" height="${2*r}" rx="1.5"/>`:`<circle r="${r}"/>`;
+  return `<g class="gnode role-${role} ${esc(state)}${linked?' linked':''}${top?' root':''}${selectedNode===n.id?' selected':''}" data-node="${esc(n.id)}" transform="translate(${fmt(p.x)} ${fmt(p.y)})" tabindex="0" role="button" aria-label="${esc(tip)}"><title>${esc(tip)}</title>${linked?`<circle class="ring" r="${r+3}"/>`:''}${shape}<text y="${r+11}">${esc(clipLabel(n.label))}</text></g>`;
+}
+function edgeMarkup([s,t],pos,cls) {
+  const a=pos.get(s),b=pos.get(t);
+  return `<line data-edge="${esc(s)}:${esc(t)}"${cls?` class="${cls}"`:''} x1="${fmt(a.x)}" y1="${fmt(a.y)}" x2="${fmt(b.x)}" y2="${fmt(b.y)}"/>`;
+}
+// The graph: green edges under a manager whose producers are all done, the
+// selected node's inference path in orange over the rest, then the nodes.
 function renderTree(agents) {
-  if(!agents?.length)return '<p class="empty">No agents yet.</p>';
-  const index=treeIndex(agents),root=agents.find(n=>!n.parent)||agents[0];
-  const edges=selectedNode?pathEdges(selectedNode,index):[];
-  return `<div class="otree">${treeMarkup(root,index,true)}<svg class="opath" aria-hidden="true" data-edges="${esc(edges.map(e=>e.join(':')).join(' '))}"></svg></div>`;
+  if(!agents?.length){graph.model=null;return '<p class="empty">No agents yet.</p>';}
+  const model=graphModel(agents),{index,nodes,edges}=model,pos=graph.pos,fresh=!pos.size;
+  if(placeNodes(model,pos)){graph.alpha=fresh?settle(model,pos):Math.max(graph.alpha,0.5);if(fresh)graph.fitted=false;}
+  graph.model=model;
+  const path=new Set((selectedNode?pathEdges(selectedNode,index):[]).flatMap(([a,b])=>[`${a}:${b}`,`${b}:${a}`]));
+  const ready=new Set(nodes.filter(n=>['ready','linked'].includes(branchState(n,index))).map(n=>n.id));
+  const lines=edges.filter(e=>!path.has(e.join(':'))).map(e=>edgeMarkup(e,pos,ready.has(e[0])&&stage(index.byId.get(e[1]))===1?'ready':'')).join('');
+  const lit=edges.filter(e=>path.has(e.join(':'))).map(e=>edgeMarkup(e,pos,'path')).join('');
+  return `<svg class="ograph" role="group" aria-label="Agent graph: drag a node, drag the background to pan, scroll to zoom, double-click to fit" data-edges="${esc([...path].filter((_,i)=>i%2===0).join(' '))}"><g class="oview" transform="${viewTransform()}"><g class="oedges">${lines}</g><g class="oedges">${lit}</g><g class="onodes">${nodes.map(n=>nodeMarkup(n,index,pos.get(n.id))).join('')}</g></g></svg>`;
 }
 function renderDetail(agents) {
   const picked=agents?.find(n=>n.id===selectedNode);
   return picked?nodeDetail(picked,treeIndex(agents)):'<p class="helper">Select an agent to see its task.</p>';
 }
-// Orange segments along the tree's own connectors (down from the upper dot,
-// along the bar, down to the lower one); a builder lives in its manager's dot,
-// so the edge between them is an arc on the other side's half, its ends 15°
-// off the vertical so it never merges into the lines above or below the dot.
-// The SVG sits inside .otree and scrolls with it, so only a render or a resize redraws it.
-function drawPath() {
-  const tree=$('hierarchy')?.querySelector?.('.otree'),svg=tree?.querySelector('svg.opath');
-  if(!svg)return;
-  const dots=new Map(),o=tree.getBoundingClientRect();
-  for(const d of tree.querySelectorAll('[data-node]')){dots.set(d.dataset.node,d);if(d.dataset.builder)dots.set(d.dataset.builder,d);}
-  // Centre, not edges: a hovered dot is scaled. Whole pixels keep 2px lines crisp.
-  const at=d=>{const r=d.getBoundingClientRect();return {x:Math.round(r.left+r.width/2-o.left),y:Math.round(r.top+r.height/2-o.top),r:d.offsetWidth/2};};
-  let lines='';
-  for(const [from,to] of (svg.dataset.edges||'').split(' ').filter(Boolean).map(e=>e.split(':'))) {
-    const a=dots.get(from),b=dots.get(to);
-    if(!a||!b)continue;
-    const p=at(b);
-    if(a===b){const R=p.r+7,right=b.dataset.builder===to,x=(p.x+(right?R:-R)*Math.sin(Math.PI/12)).toFixed(1),dy=R*Math.cos(Math.PI/12);lines+=`<path class="arc" d="M${x} ${(p.y-dy).toFixed(1)}A${R} ${R} 0 0 ${right?1:0} ${x} ${(p.y+dy).toFixed(1)}"/>`;continue;}
-    const q=at(a),[up,low,lowDot]=q.y<p.y?[q,p,b]:[p,q,a],bar=lowDot.closest('.ochild');
-    // The compiler's line is centred on Root; a branch's lines start at the
-    // centre (left:50%) and are 1-2px wide, so they sit one pixel right.
-    if(!bar){lines+=`<path d="M${low.x} ${up.y+up.r}V${low.y-low.r}"/>`;continue;}
-    const y=Math.round(bar.getBoundingClientRect().top-o.top)+1;
-    lines+=`<path d="M${up.x+1} ${up.y+up.r}V${y}H${low.x+1}V${low.y-low.r}"/>`;
-  }
-  svg.innerHTML=lines;
+// The view: the graph's origin at the panel's centre, panned and zoomed.
+const graphSvg=()=>$('hierarchy')?.querySelector?.('svg.ograph')||null;
+function viewTransform() {
+  const r=graphSvg()?.getBoundingClientRect?.()||$('hierarchy')?.getBoundingClientRect?.(),w=r?.width||640,h=r?.height||520,v=graph.view;
+  return `translate(${fmt(w/2+v.x)} ${fmt(h/2+v.y)}) scale(${Math.round(v.k*1000)/1000})`;
 }
-// The ownership tree as a standalone SVG image (the cheapest format: vector,
-// a few KB, opens in any browser): circles by role, filled when done, the
-// compiler above Root, elbow connectors and short labels, in the page's colours.
+const applyView=()=>graphSvg()?.querySelector('g.oview')?.setAttribute('transform',viewTransform());
+// Fit: every node in the panel, never closer than 1.6x.
+function fitView() {
+  const svg=graphSvg(),r=svg?.getBoundingClientRect?.();
+  if(!r?.width||!graph.pos.size)return;
+  const ps=[...graph.pos.values()],xs=ps.map(p=>p.x),ys=ps.map(p=>p.y),pad=40;
+  const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+  const k=Math.max(0.15,Math.min(1.6,(r.width-2*pad)/Math.max(1,maxX-minX),(r.height-2*pad)/Math.max(1,maxY-minY)));
+  graph.view={k,x:-(minX+maxX)/2*k,y:-(minY+maxY)/2*k};
+  applyView();
+}
+// Each frame moves the nodes and their edges where the forces put them, until the layout cools.
+function paint() {
+  const svg=graphSvg();
+  if(!svg)return;
+  for(const el of svg.querySelectorAll('[data-node]')){const p=graph.pos.get(el.dataset.node);if(p)el.setAttribute('transform',`translate(${fmt(p.x)} ${fmt(p.y)})`);}
+  for(const el of svg.querySelectorAll('line[data-edge]')) {
+    const [s,t]=el.dataset.edge.split(':'),a=graph.pos.get(s),b=graph.pos.get(t);
+    if(a&&b){el.setAttribute('x1',fmt(a.x));el.setAttribute('y1',fmt(a.y));el.setAttribute('x2',fmt(b.x));el.setAttribute('y2',fmt(b.y));}
+  }
+}
+function animate() {
+  if(graph.frame||typeof requestAnimationFrame!=='function')return;
+  const loop=()=>{
+    graph.frame=0;
+    if(!graph.model)return;
+    if(graph.drag)graph.alpha=Math.max(graph.alpha,0.3);
+    tick(graph.model,graph.pos,graph.alpha);graph.alpha*=0.985;paint();
+    if(graph.alpha>0.005||graph.drag)graph.frame=requestAnimationFrame(loop);
+  };
+  graph.frame=requestAnimationFrame(loop);
+}
+// The ownership graph as a standalone SVG image (vector, a few KB, opens in
+// any browser): the layout as it stands on the page, every node labelled,
+// in the page's colours.
 function treeSvg(agents) {
   if(!agents?.length)return '';
-  const index=treeIndex(agents),root=agents.find(n=>!n.parent)||agents[0],X=96,Y=76,P=40,R=9;
+  const model=graphModel(agents),{index,nodes,edges}=model,pos=new Map([...graph.pos].map(([k,p])=>[k,{...p,fx:undefined,fy:undefined}]));
+  if(placeNodes(model,pos))settle(model,pos);
   const css=(k,d)=>{try{return getComputedStyle(document.documentElement).getPropertyValue(k).trim()||d;}catch{return d;}};
-  const C={bg:css('--bg','#ffffff'),fg:css('--fg','#1a1a1a'),line:css('--border','#cfcfcf'),muted:css('--muted','#6b6b6b'),manager:css('--link','#0b57c9'),worker:css('--fg','#1a1a1a'),compiler:css('--muted','#6b6b6b'),bad:css('--bad','#c4473f')};
-  const kids=n=>(index.kids.get(n.id)||[]).filter(c=>!isBuilder(c)&&!isCompiler(c)),pos=new Map();let leaf=0,deepest=0;
-  const place=(n,d)=>{const ks=kids(n);ks.forEach(k=>place(k,d+1));deepest=Math.max(deepest,d);pos.set(n.id,{x:ks.length?(pos.get(ks[0].id).x+pos.get(ks.at(-1).id).x)/2:(leaf++)*X,y:d*Y});};
-  place(root,1);
-  const comp=(index.kids.get(root.id)||[]).find(isCompiler),top=comp?0:Y,at=id=>{const p=pos.get(id);return {x:p.x+P,y:p.y-top+P};};
-  if(comp)pos.set(comp.id,{x:pos.get(root.id).x,y:0});
-  let lines='',nodes='';
-  const visit=n=>{const ks=kids(n),p=at(n.id);if(ks.length){const bar=p.y+Y/2,xs=ks.map(k=>at(k.id).x);
-    lines+=`<path d="M${p.x} ${p.y+R}V${bar}M${Math.min(...xs)} ${bar}H${Math.max(...xs)}${xs.map(x=>`M${x} ${bar}V${bar+Y/2-R}`).join('')}"/>`;}ks.forEach(visit);};
-  visit(root);
-  if(comp){const a=at(comp.id),b=at(root.id);lines+=`<path d="M${a.x} ${a.y+R}V${b.y-R}" stroke-dasharray="3 3"/>`;}
-  for(const n of agents.filter(a=>pos.has(a.id))) {
-    const role=isCompiler(n)?'compiler':index.role(n),p=at(n.id),color=n.status==='failed'?C.bad:C[role]||C.fg,done=n.status==='done'||(isCompiler(n)&&current?.compiler?.passed);
-    const label=String(n.parent?n.label:'Root').slice(0,15)+(String(n.label).length>15&&n.parent?'…':'');
-    nodes+=`<g><title>${esc(`${n.id} · ${n.label} · ${role} · ${n.status}`)}</title><circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${done?color:C.bg}" stroke="${color}" stroke-width="2"/><text x="${p.x}" y="${p.y+R+13}">${esc(label)}</text></g>`;
-    // A manager's builder: a small circle beside its manager, joined to it, filled once it joined the children's work.
-    const b=role==='manager'?index.builderOf(n.id):null;
-    if(b){const bx=p.x+R+9,bc=b.status==='failed'?C.bad:C.compiler;lines+=`<path d="M${p.x+R} ${p.y}H${bx-4}"/>`;
-      nodes+=`<g><title>${esc(`${b.id} · builder of ${n.label} · ${b.status}`)}</title><circle cx="${bx}" cy="${p.y}" r="4" fill="${b.status==='done'?bc:C.bg}" stroke="${bc}" stroke-width="1.5"/></g>`;}
-  }
-  const w=Math.max(1,leaf)*X-X+2*P,h=deepest*Y-top+P+30;
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"><rect width="100%" height="100%" fill="${C.bg}"/><g fill="none" stroke="${C.line}" stroke-width="1.5">${lines}</g><g font-size="10" fill="${C.muted}" text-anchor="middle">${nodes}</g></svg>`;
+  const C={bg:css('--bg','#ffffff'),fg:css('--fg','#1a1a1a'),line:css('--border','#cfcfcf'),muted:css('--muted','#6b6b6b'),manager:css('--link','#0b57c9'),worker:css('--fg','#1a1a1a'),
+    builder:css('--visited','#6a3fa0'),compiler:css('--muted','#6b6b6b'),splitter:css('--splitter','#0e8a7e'),bad:css('--bad','#c4473f'),ok:css('--ok','#1f883d')};
+  const ps=nodes.map(n=>pos.get(n.id)),P=40,minX=Math.min(...ps.map(p=>p.x))-P,minY=Math.min(...ps.map(p=>p.y))-P;
+  const w=Math.round(Math.max(...ps.map(p=>p.x))-minX+P),h=Math.round(Math.max(...ps.map(p=>p.y))-minY+P+14),at=id=>{const p=pos.get(id);return {x:fmt(p.x-minX),y:fmt(p.y-minY)};};
+  const lines=edges.map(([s,t])=>{const a=at(s),b=at(t);return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`;}).join('');
+  const shapes=nodes.map(n=>{
+    const role=index.role(n),state=nodeState(n,role),r=nodeSize(role,!n.parent),{x,y}=at(n.id),color=state==='failed'?C.bad:state==='passed'?C.ok:C[role]||C.fg,fill=['done','passed','retired'].includes(state)?color:C.bg;
+    const paint=`fill="${fill}" stroke="${color}" stroke-width="2"`;
+    const shape=SQUARE.has(role)?`<rect x="${fmt(x-r)}" y="${fmt(y-r)}" width="${2*r}" height="${2*r}" rx="1.5" ${paint}/>`:`<circle cx="${x}" cy="${y}" r="${r}" ${paint}/>`;
+    return `<g${state==='retired'?' opacity="0.35"':''}><title>${esc(`${n.id} · ${n.label} · ${role} · ${state}`)}</title>${shape}<text x="${x}" y="${fmt(Number(y)+r+11)}">${esc(clipLabel(n.label,16))}</text></g>`;
+  }).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"><rect width="100%" height="100%" fill="${C.bg}"/><g stroke="${C.line}" stroke-width="1.2">${lines}</g><g font-size="9" fill="${C.muted}" text-anchor="middle">${shapes}</g></svg>`;
 }
 // v7: the prompt handlers above the top, each open or ended (a v8 room has
-// none: the room creates its manager, whose splitter steps the levels panel lists).
+// none: the room creates its manager, whose splitter steps are its nodes).
 function stepsMarkup(s) {
   const hs=s?.prompt_handlers||[];
   if(!hs.length)return '';
   return `<div class="osteps">${hs.map(h=>`<div class="ostep"><span class="mono">${esc(h.id)}</span> · ${esc(h.kind)} handler · ${h.ended_at?`ended${h.root?` · handed to ${esc(h.root)}`:''}`:'open'}</div>`).join('')}</div>`;
 }
+// A refresh redraws the graph only when what it shows changed (a node, a
+// state, the selection); the positions carry over either way.
 function showTree(agents) {
-  $('hierarchy').innerHTML=stepsMarkup(current)+renderTree(agents);
+  const markup=stepsMarkup(current)+renderTree(agents),key=markup.replace(/ transform="[^"]*"| [xy][12]="[^"]*"/g,'');
+  if(key!==graph.key||!graphSvg()){graph.key=key;$('hierarchy').innerHTML=markup;}
   if($('node-detail'))$('node-detail').innerHTML=renderDetail(agents);
-  drawPath();
+  if(!graph.fitted&&graphSvg()?.getBoundingClientRect?.().width){graph.fitted=true;fitView();}
+  animate();
 }
 // The status cells flash once when the run reaches a limit: every slot busy,
 // the agent cap, the depth cap, or a new limit event (agent or depth cap, no
@@ -317,7 +401,7 @@ function render(s) {
   }
   const fileRows=[...(s.files||[]),...(s.exports||[]).map(f=>({...f,virtual:true,revision:1}))];
   $('file-count').textContent=fileRows.length;
-  showTree(s.agents);
+  showTree(treeAgents(s));
   renderLevels(s);
   renderSources(s);
   renderPrompts(s);
@@ -490,7 +574,7 @@ $('export').addEventListener('click',async()=>{
 // and pull request. The result (or error) stays under the buttons; refresh() never clears it.
 const exportNote=(html,isError=false)=>{const el=$('export-result');if(el){el.className=`${isError?'error':'helper'} export-result`;el.innerHTML=html;}};
 $('save-tree')?.addEventListener('click',()=>{
-  const svg=treeSvg(current?.agents);
+  const svg=treeSvg(treeAgents(current));
   if(!svg){showError('No agents yet: start a run to draw the tree.');return;}
   const url=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));const a=document.createElement('a');a.href=url;a.download=`ownership-tree-${room.slice(0,8)}.svg`;a.click();URL.revokeObjectURL(url);
 });
@@ -516,14 +600,44 @@ $('push-github')?.addEventListener('click',async()=>{
   }catch(err){exportNote(esc(err?.message||err),true);}
   finally{$('push-github').disabled=false;}
 });
-// Clicking a dot selects it (again: deselects); a name in the detail panel
-// selects that node, which is how a builder, inside its manager's dot, is picked.
-// A selected builder outlines its manager's dot, so clicking that dot deselects too.
-const select=id=>{selectedNode=id;if(current)showTree(current.agents);};
-$('hierarchy').addEventListener('click',e=>{const d=e.target.closest?.('[data-node]')?.dataset;if(d?.node)select(selectedNode===d.node||selectedNode&&d.builder===selectedNode?'':d.node);});
+// Clicking a node selects it (again: deselects); a name in the detail panel
+// selects that node. A press that dragged a node or panned the view is no click.
+const select=id=>{selectedNode=id;if(current)showTree(treeAgents(current));};
+$('hierarchy').addEventListener('click',e=>{if(graph.moved){graph.moved=false;return;}const id=e.target.closest?.('[data-node]')?.dataset.node;if(id)select(selectedNode===id?'':id);});
+$('hierarchy').addEventListener('keydown',e=>{const id=(e.key==='Enter'||e.key===' ')&&e.target.closest?.('[data-node]')?.dataset.node;if(id){e.preventDefault();select(selectedNode===id?'':id);}});
 $('node-detail')?.addEventListener('click',e=>{const id=e.target.closest?.('[data-node]')?.dataset.node;if(id)select(id);});
-globalThis.addEventListener?.('resize',drawPath);
-if(typeof ResizeObserver==='function')new ResizeObserver(()=>drawPath()).observe($('hierarchy'));
+// Dragging: a node follows the pointer while the others give way, and rejoins
+// the layout when let go; the background pans; the wheel zooms about the
+// pointer; a double click on the background fits the graph in the panel.
+const toGraph=e=>{const r=graphSvg().getBoundingClientRect(),v=graph.view;return {x:(e.clientX-r.left-r.width/2-v.x)/v.k,y:(e.clientY-r.top-r.height/2-v.y)/v.k};};
+$('hierarchy').addEventListener('pointerdown',e=>{
+  if(e.button!==0||!e.target.closest?.('svg.ograph'))return;
+  const id=e.target.closest('[data-node]')?.dataset.node;graph.moved=false;
+  if(id&&graph.pos.has(id))graph.drag={id,x:e.clientX,y:e.clientY};
+  else graph.pan={x:e.clientX,y:e.clientY,vx:graph.view.x,vy:graph.view.y};
+});
+globalThis.addEventListener?.('pointermove',e=>{
+  const far=d=>Math.abs(e.clientX-d.x)+Math.abs(e.clientY-d.y)>3;
+  if(graph.drag&&graphSvg()){
+    const p=graph.pos.get(graph.drag.id);if(!p)return;
+    if(!graph.moved&&!far(graph.drag))return;
+    graph.moved=true;const q=toGraph(e);p.fx=q.x;p.fy=q.y;animate();
+  } else if(graph.pan){
+    if(!graph.moved&&!far(graph.pan))return;
+    graph.moved=true;graph.view.x=graph.pan.vx+e.clientX-graph.pan.x;graph.view.y=graph.pan.vy+e.clientY-graph.pan.y;applyView();
+  }
+});
+const release=()=>{const p=graph.drag&&graph.pos.get(graph.drag.id);if(p){delete p.fx;delete p.fy;}graph.drag=graph.pan=null;};
+globalThis.addEventListener?.('pointerup',release);globalThis.addEventListener?.('pointercancel',release);
+$('hierarchy').addEventListener('wheel',e=>{
+  const svg=e.target.closest?.('svg.ograph');if(!svg)return;
+  e.preventDefault();
+  const r=svg.getBoundingClientRect(),v=graph.view,k=Math.min(4,Math.max(0.15,v.k*Math.exp(-e.deltaY*0.0015))),mx=e.clientX-r.left-r.width/2,my=e.clientY-r.top-r.height/2;
+  v.x=mx-(mx-v.x)*k/v.k;v.y=my-(my-v.y)*k/v.k;v.k=k;applyView();
+},{passive:false});
+$('hierarchy').addEventListener('dblclick',e=>{if(e.target.closest?.('svg.ograph')&&!e.target.closest('[data-node]'))fitView();});
+globalThis.addEventListener?.('resize',applyView);
+if(typeof ResizeObserver==='function')new ResizeObserver(()=>applyView()).observe($('hierarchy'));
 $('token').addEventListener('change',refresh);$('room').addEventListener('change',()=>{const id=$('room').value.trim();if(/^[a-z0-9-]{8,64}$/i.test(id)){const u=new URL(location.href);u.searchParams.set('room',id);location.assign(u.href);}});
 // B1: the Benchmarks panel. A form (a dataset URL, pasted or uploaded JSON
 // lines, the task limit, rooms at once, a label; the room settings and the

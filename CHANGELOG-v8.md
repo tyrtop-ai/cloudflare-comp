@@ -325,3 +325,10 @@ Replay of the nine steps: the CLI's attempt 2 now reaches Clef's review. Every o
 - The owner's rule of three different examples applies to contracts that are called or run: functions, commands and routes (`EXAMPLE_KINDS` in src/validations.js). Pages, files, documents and data owe none; their validations still render examples for their workers.
 - The splitter's format no longer holds filled-in validations: the live tracker copied its `docs/restore.md` example into a level. The prompt lint now fails on any filled-in validation, contract or piece in a format.
 - Replaying the nine recorded live attempts: every to-do page attempt and CLI attempts 1 and 2 now reach Clef's review; the tracker's attempts are short only of examples for its functions and its server command.
+
+## Every agent in the graph
+
+- The ownership tree is now a graph view like Obsidian's. Every agent is a node joined to the agent that made it, and a force layout settles them into a round cloud. You can drag a node and the others give way; it rejoins the layout when let go. Drag the background to pan, scroll to zoom about the pointer, and double-click to fit. Positions are kept through every refresh, and a new node starts beside its parent. There is no randomness, so a room always lays out the same way.
+- Managers and workers are circles. Splitters, builders and compilers are squares. A builder is now a node of its own instead of half of its manager's dot.
+- The room's state names each level's compiler: `compilers` in the snapshot and delta, `compiler-<hex16>` from its manager's id. Each entry gives its state (running, passed, failed, blocked or waiting) and the box its last run opened. Each splitter step carries Clef's verdict on it (`verdict`: admitted, retry fewer or different, handed down). Both are drawn under their manager, in the order a level runs: splitter steps, pieces, builder, compiler.
+- Save as SVG writes the layout as it stands, with every node labelled.

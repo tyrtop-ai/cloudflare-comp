@@ -6,7 +6,7 @@
   color-scheme: light;
   --bg:#ffffff; --fg:#1a1a1a; --muted:#6b6b6b; --link:#0b57c9; --visited:#6a3fa0;
   --border:#cfcfcf; --code-bg:#f6f8fa; --code-fg:#1a1a1a; --code-bd:#d8dde3; --mark:#ffe066;
-  --ok:#1f883d; --bad:#c4473f; --path:#dd6b00;
+  --ok:#1f883d; --bad:#c4473f; --path:#dd6b00; --splitter:#0e8a7e;
   --manager:var(--link); --builder:var(--visited); --worker:var(--fg); --compiler:var(--muted);
   font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
@@ -15,14 +15,14 @@
     color-scheme: dark;
     --bg:#0d0d0f; --fg:#e8e6e3; --muted:#8b8b88; --link:#3391ff; --visited:#ba55d3;
     --border:#2a2a2a; --code-bg:#16181c; --code-fg:#d6d6dc; --code-bd:#2a2e35; --mark:#4a4420;
-    --ok:#3fb950; --bad:#f0605a; --path:#ff9433;
+    --ok:#3fb950; --bad:#f0605a; --path:#ff9433; --splitter:#3cc8b4;
   }
 }
 :root[a="dark"] {
   color-scheme: dark;
   --bg:#0d0d0f; --fg:#e8e6e3; --muted:#8b8b88; --link:#3391ff; --visited:#ba55d3;
   --border:#2a2a2a; --code-bg:#16181c; --code-fg:#d6d6dc; --code-bd:#2a2e35; --mark:#4a4420;
-  --ok:#3fb950; --bad:#f0605a; --path:#ff9433;
+  --ok:#3fb950; --bad:#f0605a; --path:#ff9433; --splitter:#3cc8b4;
 }
 * { box-sizing:border-box; }
 html,body { background:var(--bg); }
@@ -97,70 +97,52 @@ pre { font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:10p
 @media(max-width:1080px) { .app-grid { grid-template-columns:270px minmax(0,1fr); } .two-col { grid-template-columns:1fr; } .feed-panel,.files-panel { min-height:0; } .event-list { min-height:230px; } }
 @media(max-width:750px) { .page {padding:0 16px;} .topbar{height:64px;} .app-grid{grid-template-columns:1fr;} .status-strip>div{padding:0 7px;} .status-strip strong{font-size:16px;} .eyebrow{font-size:8px;} .panel{padding:17px;} }
 
-/* Ownership tree: observer-only, never model input. Just circles: colour is
-   the role, solid means done, a manager splits manager | builder while its
-   builder links, and a branch's lines turn green once its workers are done. */
+/* Ownership graph: observer-only, never model input. Colour is the role;
+   managers and workers are circles, splitters, builders and compilers
+   squares; solid means done, a pulse means running. */
 .tree-panel { min-height:260px; }
-.hierarchy { max-height:680px; overflow:auto; }
-.role-manager { --role:var(--manager); } .role-worker { --role:var(--worker); } .role-builder { --role:var(--builder); } .role-compiler { --role:var(--compiler); }
-.osteps { display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--muted); margin:0 0 12px; }
+.hierarchy { position:relative; height:520px; overflow:hidden; border:thin solid var(--border); background:var(--bg); }
+.hierarchy > .empty { padding:25px 12px; }
+.role-manager { --role:var(--manager); } .role-worker { --role:var(--worker); } .role-builder { --role:var(--builder); } .role-compiler { --role:var(--compiler); } .role-splitter { --role:var(--splitter); }
+.osteps { display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--muted); margin:0 0 12px; padding:8px 12px 0; }
 .ostep-writer { display:block; margin-left:16px; }
 .otree-legend { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; font-size:11px; color:var(--muted); margin:-8px 0 12px; }
-.otree-legend .dot { width:11px; height:11px; margin-right:6px; vertical-align:-1px; cursor:default; }
 .swatch { display:inline-block; width:14px; height:0; margin-right:6px; vertical-align:3px; border-top:2px solid var(--ok); }
 .swatch.path { border-top-color:var(--path); }
-/* Compiler over Root, 17px tall: the negative margins give it an 11px dot's line box, so its label lines up with the others. */
-.legend-stack { display:inline-flex; flex-direction:column; align-items:center; margin:-4px 6px -2px 0; vertical-align:middle; }
-.otree-legend .legend-stack .dot { width:7px; height:7px; margin:0; }
-.legend-stack i:nth-child(2) { width:0; height:3px; border-left:1px solid var(--border); }
 .node-detail { margin-top:12px; padding-top:12px; border-top:thin solid var(--border); } .node-detail .helper { margin:0; }
-.otree { display:flex; justify-content:center; min-width:max-content; padding:10px 8px 12px; }
-.obranch { display:flex; flex-direction:column; align-items:center; }
-.ochildren { position:relative; display:flex; padding-top:12px; }
-.ochildren::before { content:""; position:absolute; top:0; left:50%; height:12px; border-left:1px solid var(--border); }
-.ochild { position:relative; display:flex; justify-content:center; padding:12px 4px 0; }
-.ochild::before { content:""; position:absolute; top:0; left:50%; height:12px; border-left:1px solid var(--border); }
-.ochild::after { content:""; position:absolute; top:0; left:0; right:0; border-top:1px solid var(--border); }
-.ochild:first-child::after { left:50%; } .ochild:last-child::after { right:50%; } .ochild:only-child::after { display:none; }
-.obranch.ready>.ochildren::before,.obranch.ready>.ochildren>.ochild::before,.obranch.ready>.ochildren>.ochild::after { border-color:var(--ok); border-width:2px; }
-.dot { display:inline-block; flex:0 0 auto; width:16px; height:16px; padding:0; border-radius:50%; border:2px solid var(--role); background:color-mix(in srgb,var(--role) 14%,var(--bg)); cursor:pointer; }
-.dot.root { width:24px; height:24px; }
-.dot.done,.dot.retired { background:var(--role); }
-.dot.retired { opacity:.35; }
-.dot.failed { border-color:var(--bad); background:color-mix(in srgb,var(--bad) 20%,var(--bg)); }
-.dot.split { border-color:transparent; background:linear-gradient(90deg,var(--manager) 0 50%,var(--bg) 50% calc(50% + 1px),var(--builder) calc(50% + 1px) 100%); }
-/* A builder linking its branch: a thin band sweeps left to right across the split circle. */
-.dot.split { position:relative; overflow:hidden; }
-.dot.split::after { content:""; position:absolute; top:0; bottom:0; left:0; width:45%; background:linear-gradient(90deg,transparent,rgb(255 255 255 / .6),transparent); transform:translateX(-110%); animation:link-sweep 1.6s linear infinite; pointer-events:none; }
-.otree-legend .dot.split::after { animation:none; display:none; }
-@keyframes link-sweep { to { transform:translateX(240%); } }
-@media (prefers-reduced-motion: reduce) { .dot.split::after,.dot.running { animation:none; } .dot.split::after { display:none; } }
-.dot.linked { box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--ok); }
-.dot.running { animation:dot-pulse 1.4s ease-in-out infinite; }
-.dot.selected { outline:2px solid var(--fg); outline-offset:3px; }
-.dot:hover { transform:scale(1.15); }
-/* The compiler sits above Root, joined to it by a line a tree row tall; until
-   it exists, while the run goes on, a manager Root shows a dashed placeholder there. */
-.ocompiler { display:flex; flex-direction:column; align-items:center; }
-.ocompiler::after { content:""; height:24px; border-left:1px solid var(--border); }
-.ocompiler.pending::after { border-left-style:dashed; }
-.dot.placeholder { border-style:dashed; background:transparent; opacity:.7; cursor:default; }
-.dot.placeholder:hover { transform:none; }
-.dot.passed { border-color:var(--ok); background:var(--ok); }
+/* The legend's marks. */
+.dot { display:inline-block; flex:0 0 auto; width:11px; height:11px; margin-right:6px; vertical-align:-1px; border-radius:50%; border:2px solid var(--role); background:color-mix(in srgb,var(--role) 14%,var(--bg)); }
+.dot.square { border-radius:2px; }
+.dot.done { background:var(--role); }
+.dot.linked { box-shadow:0 0 0 2px var(--bg),0 0 0 3px var(--ok); }
+/* The graph: drag a node, drag the background to pan, scroll to zoom. */
+.ograph { display:block; width:100%; height:100%; touch-action:none; user-select:none; -webkit-user-select:none; cursor:grab; }
+.ograph:active { cursor:grabbing; }
+.oedges line { stroke:var(--border); stroke-width:1.2; }
+.oedges line.ready { stroke:var(--ok); stroke-width:1.6; }
+.oedges line.path { stroke:var(--path); stroke-width:2.2; }
+.gnode { cursor:pointer; outline:none; }
+.gnode > circle:not(.ring),.gnode > rect { fill:color-mix(in srgb,var(--role) 14%,var(--bg)); stroke:var(--role); stroke-width:2; transition:stroke-width .12s; }
+.gnode.done > circle:not(.ring),.gnode.done > rect,.gnode.retired > circle:not(.ring),.gnode.retired > rect { fill:var(--role); }
+.gnode.retired { opacity:.35; }
+.gnode.failed > circle:not(.ring),.gnode.failed > rect { stroke:var(--bad); fill:color-mix(in srgb,var(--bad) 20%,var(--bg)); }
+.gnode.passed > circle:not(.ring),.gnode.passed > rect { stroke:var(--ok); fill:var(--ok); }
 /* Grey is the compiler's resting colour, so it runs in the text colour: a still frame still tells running from waiting. */
-.dot.role-compiler.running { --role:var(--fg); }
-/* The selected node's inference path, measured and drawn by drawPath. */
-.otree { position:relative; }
-.opath { position:absolute; inset:0; width:100%; height:100%; overflow:visible; pointer-events:none; fill:none; stroke:var(--path); stroke-width:2; }
-.opath path { shape-rendering:crispEdges; } .opath .arc { shape-rendering:auto; stroke-linecap:round; }
+.gnode.role-compiler.running { --role:var(--fg); }
+.gnode .ring { fill:none; stroke:var(--ok); stroke-width:1.5; }
+.gnode:hover > circle:not(.ring),.gnode:hover > rect,.gnode:focus-visible > circle:not(.ring),.gnode:focus-visible > rect { stroke-width:3; }
+.gnode.selected > circle:not(.ring),.gnode.selected > rect { stroke:var(--fg); stroke-width:3; }
+.gnode.running > circle:not(.ring),.gnode.running > rect { animation:node-pulse 1.4s ease-in-out infinite; }
+.gnode text { font-size:9px; fill:var(--muted); text-anchor:middle; pointer-events:none; opacity:0; transition:opacity .15s; }
+.gnode.role-manager text,.gnode:hover text,.gnode:focus-visible text,.gnode.selected text { opacity:1; }
+@keyframes node-pulse { 50% { stroke-width:5; stroke-opacity:.45; } }
+@media (prefers-reduced-motion: reduce) { .gnode.running > circle,.gnode.running > rect { animation:none; } }
 .onode-detail .onode-path:not(.none)::before { content:""; display:inline-block; width:14px; margin-right:6px; vertical-align:3px; border-top:2px solid var(--path); }
 .peer { background:none; border:0; padding:0; color:inherit; font-size:inherit; text-decoration:underline dotted; text-underline-offset:2px; }
 .peer:hover { text-decoration-style:solid; }
-@keyframes dot-pulse { 0%,100% { box-shadow:0 0 0 0 color-mix(in srgb,var(--role) 45%,transparent); } 50% { box-shadow:0 0 0 6px color-mix(in srgb,var(--role) 0%,transparent); } }
 .onode-role { font:700 9px ui-monospace,monospace; letter-spacing:.07em; text-transform:uppercase; color:var(--role); }
 .onode-detail { padding:12px 14px; border:thin solid var(--code-bd); border-left:4px solid var(--role); border-radius:6px; background:var(--code-bg); font-size:12px; }
 .onode-detail p { margin:6px 0 0; line-height:1.55; color:var(--muted); overflow-wrap:anywhere; }
-.onode-builder { margin-top:10px; padding-top:10px; border-top:1px dashed var(--code-bd); }
 
 /* Editable runtime limits */
 .control-heading {border-top:thin solid var(--border);padding-top:22px;margin-top:24px;color:var(--fg);font-size:12px;font-weight:700;display:flex;flex-wrap:wrap;gap:6px;justify-content:space-between;}

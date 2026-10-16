@@ -1185,7 +1185,27 @@ export class ControlRoom extends DurableObject {
     return {room_manager:this.roomManager(),validation_status:status,
       validations:this.validationRows().map(v=>({id:v.id,level:v.level,held:held.get(v.id)||'',serves:v.serves,kind:v.check?.kind||'',check:checkSummary(v.check),...(v.says?{says:v.says}:{}),notes:v.notes})),
       levels:this.levelFiles().map(f=>{const l=this.levelDesign(f.manager);return {...f,label:this.node(f.manager)?.label||'',children:l?.children.length||0,archived:l?.archived.length||0,contracts:l?.contracts.length||0,validations:l?.validations.length||0};}),
-      splitters:this.splitterRows()};
+      splitters:this.splitterRows().map(x=>({...x,verdict:this.read(`split_attempts:${x.manager}`,[]).findLast(a=>a.splitter===x.id)?.outcome||''})),
+      compilers:this.levelCompilers()};
+  }
+  // v8: each level's compiler, once its builder first handed it the piece: its
+  // name, its manager, its state (running, passed on the bundle it ships,
+  // failed with complaints sent down, blocked on checks that could not run, or
+  // waiting) and the box its last run opened.
+  levelCompilers() {
+    return query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'level_compiler:%' ORDER BY key").map(r=>{
+      const m=r.key.slice('level_compiler:'.length),x=parse(r.value,{});
+      const state=this.compilingNow?.has(m)?'running':this.read(`verified:${m}`,null)?'passed':this.read(`compile_blocked:${m}`,null)?'blocked':this.read(`compile_reported:${m}`,null)?'failed':'waiting';
+      return {id:x.id,manager:m,state,box:x.box||'',began:x.began||null};
+    });
+  }
+  // A level's compile, as its compiler: named on its first compile, and running until it returns.
+  async compiling(m, run) {
+    const rec=this.read(`level_compiler:${m}`,null)||{id:await rowId(m,1,'compiler')};
+    this.save(`level_compiler:${m}`,{...rec,began:Date.now()});
+    (this.compilingNow??=new Set()).add(m);
+    try {return await run();}
+    finally {this.compilingNow.delete(m);}
   }
   // v8: each manager's level file: the manager, its path in the manager's repository, the repository, the commit and the export's path for it.
   levelFiles() {
@@ -4279,6 +4299,9 @@ export class ControlRoom extends DurableObject {
       this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,
         box:{fresh:true,internet:false,start_ms:opened.start_ms,ready_ms:opened.ready_ms,cold:opened.cold===true||opened.ready_ms>BOX_COLD_MS,image:opened.image,instance:opened.instance,name:opened.name,
           ...(warm?{prewarmed:true,waited_ms:warm.waited_ms,prewarm_ms:Math.max(0,(warm.ready_at??start)-warm.began)}:{})},exec_ms:opened.exec_ms});
+      // The level's compiler names the box its run opened.
+      const named=this.read(`level_compiler:${id}`,null);
+      if(named&&opened.name)this.save(`level_compiler:${id}`,{...named,box:opened.name});
       if(report.mode!=='checks'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a report of the validations: its image predates them.'};
       // v8 live 5: a failure the box's inventory explains (its host name, a missing interpreter) is the box's, never the code's.
       const classified=classifyEnvironment(report);
@@ -8949,7 +8972,7 @@ export class ControlRoom extends DurableObject {
     if(wait())return;
     const kids=this.liveChildren(id),allDone=kids.length>0&&kids.every(c=>c.status==='done'),busy=this.problemsHeld(id).length>0;
     let result=null;
-    if(allDone&&!busy&&this.live()&&await this.schedulePiece(id))result=await this.compileLevel(id);
+    if(allDone&&!busy&&this.live()&&await this.schedulePiece(id))result=await this.compiling(id,()=>this.compileLevel(id));
     const n=this.node(id);
     // No manager is done while an escalation from its subtree is outstanding.
     if(result?.passed&&this.wakeGeneration(id)===seen&&!this.escalatedBelow(id).length) {

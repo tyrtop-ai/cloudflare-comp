@@ -119,6 +119,14 @@ test('Python temperature CLI: a wrong output fails its command validations, the 
   const m=room.roomManager(),[converter,guide]=room.children(m).filter(c=>c.role==='manager');
   assert.equal(converter.label,'Converter');
   const cw=room.children(converter.id).find(c=>c.role==='worker'),gw=room.children(guide.id).find(c=>c.role==='worker');
+  // Every agent is in the dashboard's tree: each level's compiler (named, its state, the box of its last run) and the splitter step with Clef's verdict.
+  const seen=room.snapshot();
+  assert.deepEqual(seen.compilers.map(c=>[c.manager,c.state]).sort(),[m,converter.id,guide.id].map(id=>[id,'passed']).sort());
+  for(const c of seen.compilers)assert.match(c.id,/^compiler-[0-9a-f]{16}$/);
+  assert.equal(new Set(seen.compilers.map(c=>c.id)).size,3);
+  assert.match(seen.compilers.find(c=>c.manager===converter.id).box,/^box-[0-9a-f]{16}$/,'the converter\'s checks ran in a box');
+  assert.equal(seen.compilers.find(c=>c.manager===guide.id).box,'','the guide\'s ran in the Worker');
+  assert.deepEqual(seen.splitters.map(x=>[x.manager,x.attempt,x.verdict]),[[m,1,'admitted']]);
   // One box per compile: the converter's (the failing run, then the passing one), then the room's manager's on what ships.
   const [first]=requests,last=requests.at(-1);
   assert.equal(first.mode,'checks');

@@ -110,28 +110,36 @@ function exportPage(fetch) {
   return {elements,clicked,click:id=>listeners.get(`${id}:click`)()};
 }
 
-test('v7.15.1: the compiler sits above Root, not among Root\'s children; Root\'s builder only splits Root\'s dot',()=>{
-  const elements=renderWithPage(true,{active_agents:['root.3'],agents:[
+// Every agent is a node of the graph: managers and workers circles,
+// splitters, builders and compilers squares; a v7 compiler row is Root's child like any other.
+const shapes=tree=>[...tree.matchAll(/<g class="gnode role-(\w+)[^"]*" data-node="([^"]+)"[^>]*>(?:<title>[^<]*<\/title>)?(?:<circle class="ring"[^>]*\/>)?<(circle|rect)/g)].map(m=>[m[2],m[1],m[3]]);
+test('the graph: every agent is a node; managers and workers are circles, splitters, builders and compilers squares',()=>{
+  const v7=renderWithPage(true,{active_agents:['root.3'],agents:[
     {id:'root',parent:null,label:'Root objective',phase:'manager',status:'waiting',task:'goal'},
     {id:'root.3',parent:'root',label:'Compiler',phase:'implement',status:'ready',task:'Run the linked application'},
     {id:'root.1',parent:'root',label:'Ticket store',phase:'implement',status:'done',task:'Write ticketStore.js'},
-    {id:'root.2',parent:'root',label:'Temporary builder',phase:'implement',status:'waiting',task:'Link the branch'}]});
-  const tree=elements.get('hierarchy').innerHTML;
-  assert.deepEqual([...tree.matchAll(/class="dot role-(\w+)[^"]*" data-node="([^"]+)"/g)].map(m=>[m[2],m[1]]),[['root.3','compiler'],['root','manager'],['root.1','worker']]);
-  assert.match(tree,/^<div class="otree"><div class="obranch ready"><div class="ocompiler running"><button type="button" class="dot role-compiler running" data-node="root\.3" title="Compiler · compiler · running"[^>]*><\/button><\/div><button type="button" class="dot role-manager waiting split root" data-node="root" data-builder="root\.2"/);
-  assert.doesNotMatch(tree.slice(tree.indexOf('class="ochildren"')),/root\.3/,'Root\'s children row has no compiler');
-  assert.match(html,/<span><i class="legend-stack"><i class="dot role-compiler waiting"><\/i><i><\/i><i class="dot role-manager done"><\/i><\/i>compiler, above Root<\/span>/,'the legend puts the compiler, as it looks in the tree, above Root');
-  // A manager Root without a compiler yet shows where it will be; an atomic Root shows nothing.
-  const waiting=renderWithPage(true,{agents:[{id:'root',parent:null,label:'Root objective',phase:'manager',status:'waiting',task:'goal'},
-    {id:'root.1',parent:'root',label:'Ticket store',phase:'implement',status:'ready',task:'Write ticketStore.js'}]}).get('hierarchy').innerHTML;
-  assert.match(waiting,/<div class="ocompiler pending"><span class="dot role-compiler placeholder" title="Compiler · not yet"/);
-  // A run that ended without one (a mock run never schedules it) has nothing to wait for.
-  for(const status of ['complete','failed'])
-    assert.doesNotMatch(renderWithPage(true,{status,agents:[{id:'root',parent:null,label:'Root objective',phase:'manager',status:'done',task:'goal'},
-      {id:'root.1',parent:'root',label:'Ticket store',phase:'implement',status:'done',task:'Write ticketStore.js'}]}).get('hierarchy').innerHTML,/ocompiler|role-compiler/,status);
-  const atomic=renderWithPage(true,{agents:[{id:'root',parent:null,label:'Root objective',phase:'implement',status:'done',task:'goal'}]}).get('hierarchy').innerHTML;
-  assert.doesNotMatch(atomic,/ocompiler|role-compiler/);
-  assert.match(atomic,/class="dot role-worker done root"/);
+    {id:'root.2',parent:'root',label:'Temporary builder',phase:'implement',status:'waiting',task:'Link the branch'}]}).get('hierarchy').innerHTML;
+  assert.deepEqual(shapes(v7),[['root','manager','circle'],['root.1','worker','circle'],['root.2','builder','rect'],['root.3','compiler','rect']],'parents first; a level runs its pieces, then its builder, then its compiler');
+  assert.match(v7,/<g class="gnode role-compiler running" data-node="root\.3"/);
+  assert.match(v7,/<line data-edge="root:root\.3"/,'the compiler hangs off Root like its other children');
+  // v8: the splitter steps and each level's compiler come from the room's state, under their manager.
+  const m='manager-0123456789abcdef',w='worker-1111111111111111',b='builder-2222222222222222';
+  const v8=renderWithPage(true,{settings:{pipeline:'v8'},agents:[
+    {id:m,parent:null,role:'manager',label:'A to-do page',phase:'manager',status:'waiting',task:'goal',depth:0,seq:1},
+    {id:w,parent:m,role:'',label:'A to-do page',phase:'implement',status:'done',task:'goal',depth:1,seq:1},
+    {id:b,parent:m,role:'builder',label:'Builder',phase:'implement',status:'done',task:'Join',depth:1,seq:2}],
+    splitters:[{id:'splitter-3333333333333333',manager:m,kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'read',verdict:'retry fewer'},
+      {id:'splitter-4444444444444444',manager:m,kind:'split',attempt:2,spawned_at:3,ended_at:null,outcome:null,verdict:''},
+      {id:'splitter-5555555555555555',manager:'manager-ffffffffffffffff',kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'read',verdict:'admitted'}],
+    compilers:[{id:'compiler-6666666666666666',manager:m,state:'failed',box:'box-7777777777777777',began:5}]}).get('hierarchy').innerHTML;
+  assert.deepEqual(shapes(v8),[[m,'manager','circle'],['splitter-3333333333333333','splitter','rect'],['splitter-4444444444444444','splitter','rect'],[w,'worker','circle'],[b,'builder','rect'],['compiler-6666666666666666','compiler','rect']],'a splitter under a manager the tree does not have is not drawn');
+  assert.match(v8,/<g class="gnode role-splitter failed" data-node="splitter-3333333333333333"/,'its pieces not admitted');
+  assert.match(v8,/<g class="gnode role-splitter running" data-node="splitter-4444444444444444"/);
+  assert.match(v8,/<g class="gnode role-compiler failed" data-node="compiler-6666666666666666"/);
+  assert.match(v8,/<g class="gnode role-manager waiting linked root" data-node="manager-0123456789abcdef"[^>]*><title>A to-do page · manager · waiting<\/title><circle class="ring" r="14"\/><circle r="11"\/>/,'its builder done: the manager is ringed');
+  assert.match(html,/<i class="dot square role-splitter done"><\/i>splitter<\/span><span><i class="dot square role-builder done"><\/i>builder<\/span><span><i class="dot square role-compiler done"><\/i>compiler<\/span>/,'the legend shows the squares');
+  assert.match(css,/\.dot\.square \{ border-radius:2px; \}/);
+  assert.match(renderWithPage(true,{agents:[]}).get('hierarchy').innerHTML,/No agents yet/);
 });
 
 // Root, a sub-manager with two workers and its builder, two more workers,
@@ -146,20 +154,19 @@ const team=[
   {id:'root.3',parent:'root',label:'Storage',phase:'implement',status:'done',task:'Write storage.js'},
   {id:'root.4',parent:'root',label:'Temporary builder',phase:'implement',status:'done',task:'Link the application'},
   {id:'root.5',parent:'root',label:'Compiler',phase:'implement',status:'waiting',task:'Run the linked application'}];
-function treePage(snapshot={}) {
+function treePage(snapshot={},globals={}) {
   const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m=>m[1]),listeners=new Map();
   const elements=new Map(ids.map(id=>[id,{id,value:'',textContent:'',className:'',innerHTML:'',title:'',disabled:false,
     addEventListener(type,fn){listeners.set(`${id}:${type}`,fn);},querySelectorAll(){return [];}}]));
   const context={document:{getElementById(id){return elements.get(id)||null;},querySelectorAll(){return [];}},
-    crypto:{randomUUID(){return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';}},location:{href:'https://example.com/'},history:{replaceState(){}},URL,setInterval(){}};
+    crypto:{randomUUID(){return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';}},location:{href:'https://example.com/'},history:{replaceState(){}},URL,setInterval(){},...globals};
   runInNewContext(script,context,{filename:'public/app.js'});
   const state={status:'running',busy:false,step:9,max_parallel:4,active_agents:[],files:[],events:[],agents:team,...snapshot};
   context.render(state);
-  // A dot carries its builder's id as data-builder, as the page's dot does.
-  const click=(where,id)=>{const b=where==='hierarchy'&&elements.get('hierarchy').innerHTML.match(new RegExp(`data-node="${id.replaceAll('.','\\.')}" data-builder="([^"]+)"`));
-    listeners.get(`${where}:click`)({target:{closest:()=>({dataset:{node:id,...(b?{builder:b[1]}:{})}})}});};
-  const edges=()=>elements.get('hierarchy').innerHTML.match(/<svg class="opath" aria-hidden="true" data-edges="([^"]*)"><\/svg>/)[1];
-  return {context,elements,state,click,edges,tree:()=>elements.get('hierarchy').innerHTML,detail:()=>elements.get('node-detail').innerHTML};
+  const fire=(type,e)=>listeners.get(`hierarchy:${type}`)({preventDefault(){},...e});
+  const click=(where,id)=>listeners.get(`${where}:click`)({target:{closest:()=>({dataset:{node:id}})}});
+  const edges=()=>elements.get('hierarchy').innerHTML.match(/<svg class="ograph"[^>]* data-edges="([^"]*)">/)[1];
+  return {context,elements,state,click,fire,edges,tree:()=>elements.get('hierarchy').innerHTML,detail:()=>elements.get('node-detail').innerHTML};
 }
 
 test('v7.15.1: pathEdges is what a node can talk to: its parent and its direct children, never further',()=>{
@@ -178,35 +185,35 @@ test('v7.15.1: pathEdges is what a node can talk to: its parent and its direct c
   assert.deepEqual(JSON.parse(JSON.stringify(context.pathEdges('root.1',retired))),[],'nor is a retired node anyone\'s to reach');
 });
 
-test('v7.15.1: a selected node marks its inference path on the overlay, through refreshes, until deselected',()=>{
+test('v7.15.1: a selected node marks its inference path in orange, through refreshes, until deselected',()=>{
   const page=treePage();
   assert.equal(page.edges(),'','nothing selected, nothing orange');
+  assert.doesNotMatch(page.tree(),/class="path"/);
   page.click('hierarchy','root.1.2');
   assert.equal(page.edges(),'root.1.2:root.1');
-  assert.match(page.tree(),/class="dot role-worker done selected" data-node="root\.1\.2"/);
+  assert.match(page.tree(),/<line data-edge="root\.1:root\.1\.2" class="path"/,'the edge drawn in orange');
+  assert.match(page.tree(),/class="gnode role-worker done selected" data-node="root\.1\.2"/);
   assert.match(page.detail(),/<p class="onode-path">talks to <button type="button" class="peer mono" data-node="root\.1">root\.1<\/button> manager<\/p>/);
   page.context.render(page.state);
   assert.equal(page.edges(),'root.1.2:root.1','the 3 s refresh keeps the path');
   page.click('hierarchy','root.1');
   assert.equal(page.edges(),'root.1:root root.1:root.1.1 root.1:root.1.2 root.1:root.1.3');
-  assert.match(page.tree(),/class="dot role-manager waiting linked selected" data-node="root\.1" data-builder="root\.1\.3"/);
+  assert.match(page.tree(),/class="gnode role-manager waiting linked selected" data-node="root\.1"/);
   assert.match(page.detail(),/talks to <button[^>]*>root<\/button> manager, <button[^>]*>root\.1\.1<\/button> worker, <button[^>]*>root\.1\.2<\/button> worker, <button[^>]*>root\.1\.3<\/button> builder<\/p>/);
-  // A builder has no dot of its own: its name in the detail selects it, and its manager's dot shows the selection.
+  // A builder is a node of its own: a click on it, or on its name in the detail, selects it.
   page.click('node-detail','root.1.3');
   assert.equal(page.edges(),'root.1.3:root.1');
-  assert.match(page.tree(),/data-node="root\.1" data-builder="root\.1\.3"/);
-  assert.match(page.tree(),/class="dot role-manager waiting linked selected" data-node="root\.1"/);
+  assert.match(page.tree(),/class="gnode role-builder done selected" data-node="root\.1\.3"/);
   assert.match(page.detail(),/<b class="mono">root\.1\.3<\/b> · Temporary builder · <span class="onode-role">builder<\/span>/);
-  page.click('hierarchy','root.1');
-  assert.equal(page.edges(),'','clicking the dot a selected builder outlines deselects, as for any selected dot');
+  page.click('hierarchy','root.1.3');
+  assert.equal(page.edges(),'','clicking the selected node again clears the path');
   assert.doesNotMatch(page.tree(),/selected/);
   page.click('hierarchy','root.5');
   assert.equal(page.edges(),'root.5:root');
   page.click('hierarchy','root');
   assert.equal(page.edges(),'root:root.1 root:root.2 root:root.3 root:root.4 root:root.5');
   page.click('hierarchy','root');
-  assert.equal(page.edges(),'','clicking the selected dot again clears the path');
-  assert.doesNotMatch(page.tree(),/selected/);
+  assert.equal(page.edges(),'');
   assert.match(page.detail(),/Select an agent/);
 });
 
@@ -218,67 +225,114 @@ test('v7.15.1: a retired node talks to no one, and no orange line reaches one',(
   page.click('hierarchy','root.1.1');
   page.context.render({...page.state,agents:team.map(n=>['root.1.1','root.1.2'].includes(n.id)?{...n,status:'retired'}:n)});
   assert.equal(page.edges(),'','retired while selected: no path');
-  assert.match(page.tree(),/class="dot role-worker retired selected" data-node="root\.1\.1"/);
+  assert.match(page.tree(),/class="gnode role-worker retired selected" data-node="root\.1\.1"/);
   assert.match(page.detail(),/<p class="onode-path none">talks to no one: retired<\/p>/);
 });
 
-test('v7.15.1: a retasked sub-manager splits for its live builder, not its retired old one',()=>{
+test('v7.15.1: a retasked sub-manager is linked by its live builder, not its retired old one',()=>{
   const at=(id,parent,label,status)=>({id,parent,label,phase:'implement',status,task:label});
-  const page=treePage({agents:[team[0],{...team[1]},
+  const agents=[team[0],{...team[1]},
     at('root.1.1','root.1','Old store','retired'),at('root.1.2','root.1','Old views','retired'),at('root.1.3','root.1','Temporary builder','retired'),
     at('root.1.4','root.1','Ticket store','done'),at('root.1.5','root.1','Ticket views','done'),at('root.1.6','root.1','Temporary builder','waiting'),
-    at('root.2','root','Server','done'),at('root.3','root','Temporary builder','waiting')]});
-  assert.match(page.tree(),/class="dot role-manager waiting split" data-node="root\.1" data-builder="root\.1\.6"/);
+    at('root.2','root','Server','done'),at('root.3','root','Temporary builder','waiting')];
+  const page=treePage({agents});
+  assert.match(page.tree(),/class="gnode role-manager waiting" data-node="root\.1"/,'its live builder is still linking');
+  assert.match(page.tree(),/class="gnode role-builder retired" data-node="root\.1\.3"/);
   page.click('hierarchy','root.1');
   assert.equal(page.edges(),'root.1:root root.1:root.1.4 root.1:root.1.5 root.1:root.1.6');
-  assert.match(page.detail(),/<span class="onode-role">builder<\/span> <button type="button" class="peer mono" data-node="root\.1\.6">root\.1\.6<\/button> · waiting/);
-  page.click('node-detail','root.1.6');
-  assert.equal(page.edges(),'root.1.6:root.1');
-  assert.match(page.tree(),/class="dot role-manager waiting split selected" data-node="root\.1" data-builder="root\.1\.6"/);
-  page.context.render({...page.state,agents:page.state.agents.map(n=>n.id==='root.1.6'?{...n,status:'done'}:n)});
-  assert.match(page.tree(),/class="dot role-manager waiting linked selected" data-node="root\.1" data-builder="root\.1\.6"/,'its new builder done: linked');
+  page.context.render({...page.state,agents:agents.map(n=>n.id==='root.1.6'?{...n,status:'done'}:n)});
+  assert.match(page.tree(),/class="gnode role-manager waiting linked selected" data-node="root\.1"/,'its new builder done: linked');
 });
 
-// drawPath against measured dots: a manager at (100,50), its worker at (80,90)
-// under a bar at y=70, its builder in the manager's own dot.
-test('v7.15.1: drawPath follows the connectors, and a manager-builder arc ends 15° off the vertical',()=>{
-  const page=treePage(),box=(left,top,width,height)=>({left,top,width,height});
-  const svg={dataset:{edges:''},innerHTML:''};
-  const dots=[{dataset:{node:'root.1',builder:'root.1.3'},offsetWidth:16,getBoundingClientRect:()=>box(92,42,16,16),closest:()=>null},
-    {dataset:{node:'root.1.1'},offsetWidth:16,getBoundingClientRect:()=>box(72,82,16,16),closest:()=>({getBoundingClientRect:()=>box(60,70,40,40)})}];
-  page.elements.get('hierarchy').querySelector=()=>({getBoundingClientRect:()=>box(0,0,300,200),querySelector:()=>svg,querySelectorAll:()=>dots});
-  const draw=edges=>{svg.dataset.edges=edges;page.context.drawPath();return svg.innerHTML;};
-  assert.equal(draw('root.1:root.1.3 root.1:root.1.1'),'<path class="arc" d="M103.9 35.5A15 15 0 0 1 103.9 64.5"/><path d="M101 58V71H81V82"/>','the builder\'s right half, then down the bar');
-  assert.equal(draw('root.1.3:root.1'),'<path class="arc" d="M96.1 35.5A15 15 0 0 0 96.1 64.5"/>','a selected builder: the manager\'s left half');
+// The layout: forces settle the graph into a cloud with room between nodes;
+// a refresh keeps every position, and a new node starts beside its parent.
+test('the graph lays out by forces: the same room the same way, nodes apart, positions kept through a refresh, a new node beside its parent',()=>{
+  const at=page=>new Map([...page.tree().matchAll(/data-node="([^"]+)" transform="translate\(([-\d.]+) ([-\d.]+)\)"/g)].map(m=>[m[1],[Number(m[2]),Number(m[3])]]));
+  const one=treePage(),two=treePage(),a=at(one);
+  assert.equal(a.size,team.length);
+  assert.deepEqual([...a],[...at(two)],'no randomness');
+  const ps=[...a.values()];
+  for(let i=0;i<ps.length;i++)for(let j=i+1;j<ps.length;j++)assert.ok(Math.hypot(ps[i][0]-ps[j][0],ps[i][1]-ps[j][1])>20,`nodes ${i} and ${j} apart`);
+  // Without frames (no requestAnimationFrame here) nothing moves between refreshes.
+  one.context.render({...one.state,agents:team.map(n=>n.id==='root.2'?{...n,status:'failed'}:n)});
+  assert.deepEqual([...at(one)],[...a],'a changed state moves nothing');
+  one.context.render({...one.state,agents:[...team,{id:'root.1.4',parent:'root.1',label:'Ticket search',phase:'implement',status:'ready',task:'Search'}]});
+  const b=at(one),p=b.get('root.1'),q=b.get('root.1.4');
+  assert.ok(Math.hypot(p[0]-q[0],p[1]-q[1])<=30.1,'beside its parent');
+  assert.deepEqual(b.get('root'),a.get('root'));
 });
 
-test('v7.15.1: the compiler above Root has its own states and details',()=>{
-  const state=snapshot=>treePage(snapshot).tree().match(/<div class="ocompiler (\w+)"><button type="button" class="dot role-compiler (\w+)/).slice(1);
+// Dragging a node moves it and the press is no click; it rejoins the layout when let go. The background pans.
+test('the graph: a dragged node follows the pointer and the drag selects nothing; the background pans; let go, it rejoins the layout',()=>{
+  const win=new Map(),frames=[],run=()=>frames.splice(0).forEach(f=>f());
+  const svg={getBoundingClientRect:()=>({left:0,top:0,width:640,height:520}),querySelector:()=>null,querySelectorAll:()=>[]};
+  const page=treePage({},{addEventListener:(type,fn)=>win.set(type,fn),requestAnimationFrame:fn=>frames.push(fn)});
+  page.elements.get('hierarchy').querySelector=sel=>sel==='svg.ograph'?svg:null;
+  const target=node=>({closest:sel=>sel==='svg.ograph'?svg:sel==='[data-node]'&&node?{dataset:{node}}:null});
+  // A changed state redraws the graph where the frames have put it.
+  let n=0;const redraw=()=>{page.context.render({...page.state,step:++n,agents:team.map(a=>a.id==='root.3'?{...a,status:n%2?'failed':'done'}:a)});return page.tree();};
+  const at=(tree,id)=>tree.match(new RegExp(`data-node="${id.replaceAll('.','\\.')}" transform="translate\\(([-\\d.]+) ([-\\d.]+)\\)"`)).slice(1).map(Number);
+  page.fire('pointerdown',{button:0,clientX:100,clientY:100,target:target('root.2')});
+  win.get('pointermove')({clientX:101,clientY:101});
+  win.get('pointermove')({clientX:400,clientY:300});
+  run();
+  assert.deepEqual(at(redraw(),'root.2'),[80,40],'under the pointer, from the panel\'s centre at scale 1');
+  win.get('pointerup')({});
+  page.fire('click',{target:target('root.2')});
+  assert.equal(page.edges(),'','the drag selected nothing');
+  page.fire('click',{target:target('root.2')});
+  assert.equal(page.edges(),'root.2:root','the next press is a click');
+  for(let i=0;i<5;i++)run();
+  assert.notDeepEqual(at(redraw(),'root.2'),[80,40],'let go, it rejoins the layout');
+  const view=tree=>tree.match(/<g class="oview" transform="translate\(([-\d.]+) ([-\d.]+)\) scale\(([\d.]+)\)">/).slice(1).map(Number);
+  const [x,y,k]=view(page.tree());
+  page.fire('pointerdown',{button:0,clientX:10,clientY:10,target:target(null)});
+  win.get('pointermove')({clientX:60,clientY:30});
+  win.get('pointerup')({});
+  assert.deepEqual(view(redraw()),[x+50,y+20,k],'the background pans the view');
+  page.fire('wheel',{deltaY:-200,clientX:320+x+50-320,clientY:y+20,target:target(null)});
+  const [x2,y2,k2]=view(redraw());
+  assert.ok(Math.abs(k2/k-Math.exp(0.3))<0.01,'the wheel zooms');
+  assert.ok(Math.abs(x2-(x+50))<0.2&&Math.abs(y2-(y+20))<0.2,'about the pointer: the point under it stays put');
+});
+
+test('v7.15.1: a v7 compiler and a v8 level\'s compiler have their own states and details',()=>{
+  const state=snapshot=>treePage(snapshot).tree().match(/<g class="gnode role-compiler (\w+)" data-node="root\.5"/)[1];
   const record={id:'root.5',status:'waiting',input:'0123456789abcdef',entry:'src/app.js',passed:false};
-  assert.deepEqual(state({compiler:record}),['waiting','waiting']);
-  assert.deepEqual(state({compiler:record,active_agents:['root.5']}),['running','running']);
-  assert.deepEqual(state({compiler:{...record,status:'done',passed:true},agents:team.map(n=>n.id==='root.5'?{...n,status:'done'}:n)}),['passed','passed']);
+  assert.equal(state({compiler:record}),'waiting');
+  assert.equal(state({compiler:record,active_agents:['root.5']}),'running');
+  assert.equal(state({compiler:{...record,status:'done',passed:true},agents:team.map(n=>n.id==='root.5'?{...n,status:'done'}:n)}),'passed');
   const failed={id:1,ts:1,step:5,actor:'root.5',kind:'build_failed',body:'The linked bundle failed to load or start: boom'};
-  assert.deepEqual(state({compiler:record,events:[failed]}),['failed','failed']);
-  assert.deepEqual(state({compiler:record,events:[failed,{id:2,ts:2,step:6,actor:'root.5',kind:'problems_reported',body:'1 problem(s)',recipient:'root'},{id:3,ts:3,step:6,actor:'root.5',kind:'compile_waiting',body:'Problems in this bundle are with the top manager'}]}),['failed','failed']);
-  assert.deepEqual(state({compiler:record,events:[failed,{id:2,ts:2,step:7,actor:'root',kind:'compile_requested',body:'The top builder linked a new bundle',recipient:'root.5'}]}),['waiting','waiting'],'a new bundle clears the failure');
-  assert.deepEqual(state({compiler:record,events:[{id:1,ts:1,step:5,actor:'root.5',kind:'build_infrastructure',body:'Container unavailable'}]}),['waiting','waiting'],'infrastructure is nobody\'s failure');
+  assert.equal(state({compiler:record,events:[failed]}),'failed');
+  assert.equal(state({compiler:record,events:[failed,{id:2,ts:2,step:7,actor:'root',kind:'compile_requested',body:'The top builder linked a new bundle',recipient:'root.5'}]}),'waiting','a new bundle clears the failure');
+  assert.equal(state({compiler:record,events:[{id:1,ts:1,step:5,actor:'root.5',kind:'build_infrastructure',body:'Container unavailable'}]}),'waiting','infrastructure is nobody\'s failure');
   const page=treePage({compiler:{...record,passed:true},agents:team.map(n=>n.id==='root.5'?{...n,status:'done'}:n),
     events:[{id:1,ts:1,step:8,actor:'root.5',kind:'run_passed',body:'Runner test passed against snapshot abc.'}]});
   page.click('hierarchy','root.5');
   assert.match(page.detail(),/<b class="mono">root\.5<\/b> · Compiler · <span class="onode-role">compiler<\/span> · passed<\/div>/);
   assert.match(page.detail(),/<p class="faint">entry src\/app\.js · passed · bundle 0123456789ab<\/p><p class="faint">last result: run_passed · Runner test passed against snapshot abc\.<\/p>/);
-  assert.match(page.detail(),/talks to <button type="button" class="peer mono" data-node="root">root<\/button> manager<\/p>/);
-  assert.match(page.tree(),/class="dot role-compiler passed selected" data-node="root\.5"/);
+  assert.match(page.tree(),/class="gnode role-compiler passed selected" data-node="root\.5"/);
+  // v8: a level's compiler states its own, names the box of its last run and shows its manager's last compile event.
+  const m='manager-0123456789abcdef',v8=treePage({agents:[{id:m,parent:null,role:'manager',label:'Styles',phase:'manager',status:'waiting',task:'goal',depth:0,seq:1}],
+    splitters:[{id:'splitter-3333333333333333',manager:m,kind:'split',attempt:1,spawned_at:1000,ended_at:9500,outcome:'read',verdict:'admitted'}],
+    compilers:[{id:'compiler-6666666666666666',manager:m,state:'blocked',box:'box-7777777777777777',began:5}],
+    events:[{id:1,ts:1,step:2,actor:m,kind:'checks_reported',body:'The compiler of Styles: 0 of 1 validation(s) pass; failing: V4.'},{id:2,ts:2,step:3,actor:m,kind:'escalated',body:'up'}]});
+  assert.match(v8.tree(),/class="gnode role-compiler blocked" data-node="compiler-6666666666666666"/);
+  v8.click('hierarchy','compiler-6666666666666666');
+  assert.match(v8.detail(),/<span class="onode-role">compiler<\/span> · blocked<\/div>.*<p class="faint">blocked · last run in box-7777777777777777<\/p><p class="faint">last result: checks_reported · The compiler of Styles: 0 of 1 validation\(s\) pass; failing: V4\.<\/p>/);
+  assert.match(v8.detail(),/talks to <button type="button" class="peer mono" data-node="manager-0123456789abcdef">manager-0123456789abcdef<\/button> manager<\/p>/);
+  v8.click('hierarchy','splitter-3333333333333333');
+  assert.match(v8.detail(),/<b class="mono">splitter-3333333333333333<\/b> · Splitter · attempt 1 · <span class="onode-role">splitter<\/span> · done<\/div>.*<p class="faint">read · admitted · 8\.5 s<\/p>/);
 });
 
-test('v7.15.1: the path is orange, its own token in light and dark',()=>{
+test('v7.15.1: the path is orange, its own token in light and dark; the splitter has its own colour',()=>{
   assert.equal([...css.matchAll(/--path:#[0-9a-f]{6};/g)].length,3,'light, prefers-color-scheme dark and html[a="dark"]');
-  assert.match(css,/\.opath \{[^}]*stroke:var\(--path\); stroke-width:2;/);
+  assert.equal([...css.matchAll(/--splitter:#[0-9a-f]{6};/g)].length,3);
+  assert.match(css,/\.oedges line\.path \{ stroke:var\(--path\); stroke-width:2\.2; \}/);
   assert.match(html,/<i class="swatch path"><\/i>/);
   assert.match(css,/\.onode-detail \.onode-path:not\(\.none\)::before \{/,'no orange mark when no orange line is drawn');
-  assert.match(css,/\.ocompiler::after \{ content:""; height:24px;/,'the compiler\'s stem is a tree row tall');
-  assert.match(css,/\.dot\.role-compiler\.running \{ --role:var\(--fg\); \}/,'a running compiler differs from a waiting one in a still frame');
+  assert.match(css,/\.gnode\.role-compiler\.running \{ --role:var\(--fg\); \}/,'a running compiler differs from a waiting one in a still frame');
+  assert.match(css,/\.ograph \{[^}]*touch-action:none;/,'a drag on a touch screen moves the node, not the page');
 });
 
 test('Download app (.zip) and Push to GitHub sit under Export observation JSON',()=>{
@@ -438,10 +492,9 @@ test('a count control at its ceiling or clamped, and a status cell at a limit, f
   assert.ok(flashed('steps'),'the turn budget running out flashes TURNS');
 });
 
-// The ownership tree saves as a standalone SVG: one circle per agent, a
-// manager's builder a small one beside it, the compiler above Root, filled
-// when done, labels clipped.
-test('Save as SVG draws the ownership tree as a standalone image',()=>{
+// The ownership graph saves as a standalone SVG: the layout as it stands,
+// circles and squares by role, filled when done, every node labelled, labels clipped.
+test('Save as SVG draws the ownership graph as a standalone image',()=>{
   assert.match(html,/<button type="button" class="secondary tree-save" id="save-tree"[^>]*>Save as SVG<\/button>/);
   const elements=renderWithPage(true),{context}=elements;
   const agents=[{id:'root',parent:null,label:'Root objective',status:'waiting',phase:'manager'},
@@ -450,17 +503,18 @@ test('Save as SVG draws the ownership tree as a standalone image',()=>{
     {id:'root.2.1',parent:'root.2',label:'Create ticket',status:'done',phase:'implement'},
     {id:'root.2.2',parent:'root.2',label:'Temporary builder',status:'done',phase:'implement'},
     {id:'root.3',parent:'root',label:'Temporary builder',status:'done',phase:'implement'},
-    {id:'root.4',parent:'root',label:'Compiler',status:'waiting',phase:'implement'}];
+    {id:'root.4',parent:'root',label:'Compiler',status:'waiting',phase:'implement'},
+    {id:'splitter-1',parent:'root',role:'splitter',level:true,seq:1,label:'Splitter · attempt 1',status:'failed'}];
   const svg=context.treeSvg(agents);
   assert.match(svg,/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
-  assert.equal((svg.match(/<circle /g)||[]).length,7,'Root, two pieces, one leaf, the compiler and the two managers\' builders');
-  assert.equal((svg.match(/<circle [^>]*r="4"/g)||[]).length,2,'each builder beside its manager');
-  assert.match(svg,/<title>root\.3 · builder of Root objective · done<\/title>/);
-  assert.match(svg,/<title>root\.2\.2 · builder of Ticket operations and storage · done<\/title>/);
-  assert.match(svg,/>Root<\/text>/);
+  assert.equal((svg.match(/<circle /g)||[]).length,4,'Root, two pieces, one leaf');
+  assert.equal((svg.match(/<rect [^>]*rx="1\.5"/g)||[]).length,4,'two builders, the compiler, the splitter');
+  assert.match(svg,/<title>root\.3 · Temporary builder · builder · done<\/title><rect /);
+  assert.match(svg,/<title>splitter-1 · Splitter · attempt 1 · splitter · failed<\/title><rect [^>]*stroke="#c4473f"/);
+  assert.match(svg,/>Root objective<\/text>/);
   assert.match(svg,/>Compiler<\/text>/);
   assert.match(svg,/>Ticket operatio…<\/text>/,'long labels are clipped');
-  assert.match(svg,/stroke-dasharray="3 3"/,'the compiler hangs above Root on a dashed line');
+  assert.equal((svg.match(/<line /g)||[]).length,7,'an edge from each node to the one that made it');
   assert.equal(context.treeSvg([]),'');
 });
 

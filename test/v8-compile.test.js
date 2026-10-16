@@ -106,9 +106,9 @@ test('L4: the dashboard tells a builder by its role: a v8 "Builder" is its manag
   const validations = [{id: 'V1', level: M, held: M, serves: ['shout'], kind: 'call', check: 'shout("a") → "A!"', notes: {}}];
   context.render({status: 'running', busy: false, step: 3, max_parallel: 4, active_agents: [], files: [], events: [], agents, settings: {pipeline: 'v8'}, levels, validations, validation_status: {}});
   const tree = elements.get('hierarchy').innerHTML;
-  assert.match(tree, new RegExp(`data-node="${M}" data-builder="${B}"`), 'the v8 builder is its manager\'s builder');
-  assert.match(tree, new RegExp(`class="dot role-worker[^"]*" data-node="${HELP}"`), 'the part named Builder is a worker');
-  assert.doesNotMatch(tree, new RegExp(`data-node="${B}"`), 'the builder is drawn as its manager\'s half, not as a child');
+  assert.match(tree, new RegExp(`class="gnode role-builder running" data-node="${B}"[^>]*><title>Builder · builder · running</title><rect `), 'the v8 builder is its manager\'s builder, a square of its own');
+  assert.match(tree, new RegExp(`class="gnode role-worker[^"]*" data-node="${HELP}"[^>]*><title>[^<]*</title><circle `), 'the part named Builder is a worker');
+  assert.match(tree, new RegExp(`<line data-edge="${M}:${B}"`), 'joined to its manager');
   assert.ok(tree.indexOf(SHOUT) < tree.indexOf(HELP), 'siblings in their spawn\'s order, not their ids\'');
   assert.equal(elements.get('depth').textContent, 1, 'the depth is the rows\' depth');
   // Each manager's level file, a button that opens it.

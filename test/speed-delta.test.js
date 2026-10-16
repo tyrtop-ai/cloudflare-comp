@@ -137,7 +137,7 @@ test('the dashboard: one full snapshot, then deltas merged into it, every second
   assert.match(requests[1],/^\/api\/delta\?room=room-abcdefgh&since=1&agents_since=100&files_since=100&exports=0%3A0&run=r$/);
   // The merged state: three agents (root.1 now done), both events, both files.
   assert.equal(elements.get('agent-count').textContent,3);
-  assert.match(elements.get('hierarchy').innerHTML,/data-node="root\.1"[^>]*title="root\.1 · worker · done"/);
+  assert.match(elements.get('hierarchy').innerHTML,/data-node="root\.1"[^>]*><title>root\.1 · worker · done<\/title>/);
   const events=elements.get('events').innerHTML;
   assert.ok(events.indexOf('>done<')>=0&&events.indexOf('>spawn<')>events.indexOf('>done<'),'newest first, both kept');
   assert.equal(elements.get('file-count').textContent,2);
