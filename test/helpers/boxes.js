@@ -7,7 +7,7 @@
 // on any read: a box never sees a binding or a secret.
 import {register} from 'node:module';
 register('../cloudflare-loader.mjs', import.meta.url);
-const {Box, BOX_BUILD_COMMAND} = await import('../../src/box.js');
+const {Box, BOX_RUNNER, BOX_HOSTNAME, BOX_NAME} = await import('../../src/box.js');
 
 export const FAKE_IMAGES = Object.freeze({check: 'img/check@sha256:c', browser: 'img/browser@sha256:b', fetch: 'img/fetch@sha256:f'});
 export const POISON_ENV = new Proxy({}, {get(_t, k) { if (k === 'then' || typeof k === 'symbol') return undefined; throw new Error(`a Box read env.${String(k)}`); }});
@@ -32,8 +32,11 @@ function fakeProcess(handler) {
 }
 
 export class FakeContainer {
-  constructor({run, refuse, images = FAKE_IMAGES} = {}) {
-    this.run = run; this.refuse = refuse; this.images = images;
+  // readyMs: how long the readiness command takes (a cold box waits for its
+  // image); onExec(argv, options, container): an answer {exitCode, stdout,
+  // stderr} for any other command, or undefined; ns: the namespace's counters.
+  constructor({run, refuse, images = FAKE_IMAGES, readyMs = 0, onExec, ns} = {}) {
+    this.run = run; this.refuse = refuse; this.images = images; this.readyMs = readyMs; this.onExec = onExec; this.ns = ns;
     this.running = false; this.log = []; this.starts = 0; this.destroyed = 0;
   }
   async start(options) {
@@ -42,20 +45,29 @@ export class FakeContainer {
     const no = this.refuse?.(options);
     if (no) throw new Error(no);
     this.starts++; this.running = true; this.options = options;
+    if (this.ns) { this.ns.running++; this.ns.maxRunning = Math.max(this.ns.maxRunning, this.ns.running); }
   }
   async exec(argv, options) {
     this.log.push(['exec', argv, options]);
     if (!this.running) throw new Error('exec() requires a running container.');
     if (argv.length === 1 && argv[0] === 'true') {
-      const p = fakeProcess(() => ({exitCode: 0}));
+      const p = fakeProcess(async () => { if (this.readyMs) await new Promise(r => setTimeout(r, this.readyMs)); return {exitCode: 0}; });
       if (options?.stdin !== 'pipe') await p.stdin.close();
       return p;
     }
-    if (argv.join(' ') === BOX_BUILD_COMMAND.join(' ')) return fakeProcess(async text => ({exitCode: 0, stdout: JSON.stringify(await this.run(JSON.parse(text), this))}));
+    // The runner, under the box's host name (box-<16 hex>): its request goes to run(request, this).
+    if (argv[0] === 'timeout' && argv.slice(-BOX_RUNNER.length).join(' ') === BOX_RUNNER.join(' ')) {
+      const at = argv.indexOf(BOX_HOSTNAME.at(-1));
+      if (at < 0 || !BOX_NAME.test(argv[at + 1]) || argv[at + 2] !== '--') return fakeProcess(() => ({exitCode: 2, stderr: 'the runner was not started under the box\'s host name'}));
+      this.hostname = argv[at + 1];
+      return fakeProcess(async text => ({exitCode: 0, stdout: JSON.stringify(await this.run(JSON.parse(text), this))}));
+    }
+    const answer = this.onExec?.(argv, options, this);
+    if (answer) return fakeProcess(async () => answer);
     return fakeProcess(() => ({exitCode: 127, stderr: `no such command in the fake box: ${argv[0]}`}));
   }
   async interceptOutboundHttp(addr) { this.log.push(['intercept', addr]); }
-  async destroy() { this.destroyed++; this.running = false; }
+  async destroy() { if (this.running && this.ns) this.ns.running--; this.destroyed++; this.running = false; }
 }
 
 function fakeStorage() {
@@ -65,11 +77,11 @@ function fakeStorage() {
 
 // The namespace: newUniqueId() and get(id), as a Durable Object namespace.
 // boxes lists every Box handed out: {id, box, container, storage}.
-export function fakeBoxes({run, refuse, images} = {}) {
+export function fakeBoxes({run, refuse, images, readyMs, onExec} = {}) {
   const boxes = [], byId = new Map();
   let n = 0;
   const ns = {
-    boxes, uniqueIds: 0, gets: 0,
+    boxes, uniqueIds: 0, gets: 0, running: 0, maxRunning: 0,
     newUniqueId() { ns.uniqueIds++; const id = `unique-${++n}`; return {name: undefined, id, toString: () => id}; },
     idFromName(name) { return {name, id: `name-${name}`, toString: () => `name-${name}`}; },
     getByName(name) { return ns.get(ns.idFromName(name)); },
@@ -77,8 +89,8 @@ export function fakeBoxes({run, refuse, images} = {}) {
       ns.gets++;
       const key = id.id;
       if (byId.has(key)) return byId.get(key).box;
-      const container = new FakeContainer({run, refuse, images}), storage = fakeStorage();
-      const box = new Box({container, storage, exports: {}, waitUntil() {}}, POISON_ENV);
+      const container = new FakeContainer({run, refuse, images, readyMs, onExec, ns}), storage = fakeStorage();
+      const box = new Box({id, container, storage, exports: {}, waitUntil() {}}, POISON_ENV);
       const entry = {id: key, box, container, storage};
       byId.set(key, entry); boxes.push(entry);
       return box;

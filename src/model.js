@@ -872,7 +872,7 @@ const runnable = card => (card?.requirements || []).filter(r => !r.implicit && !
 // v8 live 4: held, the packages Root's row lists (the installed set), which
 // the writer reads beside the toolchains, and Clef's review asks the card
 // to keep to (CLEF.installed).
-export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[], change='', held=[]}={}) {
+export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[], change='', held=[], onDraft=null}={}) {
   const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
   const amend=!!(change&&prior_card),call=amend?'amendCard':'writeCard';
   const facts={goal,installed:rows,base,packages,...(amend?{change}:{})};
@@ -897,6 +897,8 @@ export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest
     const layer1=repairCard(parsed,facts),card=draft?keepDraft(layer1.card,draft):layer1.card;
     const ranks=layer1.unresolved?.length?await rankReferences(env,card,layer1.unresolved):[];
     const r={head:text.slice(0,200),text,parsed,layer1:card,...settleCard(card,layer1,ranks,facts)};
+    // v8 live 5: each card as read, before Clef's review (the room prewarms the box its checks need).
+    if(onDraft&&r.card&&!r.card.blocked&&!r.unsupported?.length)try{onDraft(r.card);}catch{}
     r.review=r.card?.deliverables?.length&&!r.card.blocked&&!r.unsupported.length?await reviewCard(env,{goal,change:amend?change:'',card:r.card,installed:rows,held,packages}):{notes:[],failed:[]};
     r.all=[...new Set([...(r.runnability||[]),...r.review.notes,...markupNotes(layer1.notes),...wordingNotes(r.card,`${goal}\n${amend?change:''}`),...saysNotes(r.card,`${goal}\n${amend?change:''}`)])];
     r.substantive=r.all.filter(n=>SUBSTANTIVE.test(n));

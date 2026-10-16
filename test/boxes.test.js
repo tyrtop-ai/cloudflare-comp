@@ -10,7 +10,7 @@ import {fakeBoxes, FakeContainer, FAKE_IMAGES, POISON_ENV} from './helpers/boxes
 import {taskFromRow, taskOutcome} from '../src/bench.js';
 import {MULTIPLE_JS} from './helpers/bench-fixtures.js';
 // After the helpers registered the cloudflare:workers loader.
-const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, compileBoxSpec, BOX_PATH, BOX_LIFETIME_MS, BOX_BUILD_COMMAND, BOX_COLD_MS} = await import('../src/box.js');
+const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, compileBoxSpec, BOX_PATH, BOX_LIFETIME_MS, boxBuildCommand, boxName, BOX_COLD_MS} = await import('../src/box.js');
 
 const TEMP_GOAL = 'A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
 const JS_CARD = {card: 1, summary: 'A converter command and its usage guide', languages: ['javascript', 'text'],
@@ -117,7 +117,9 @@ test('Box.compile runs the build runner once in its own box and destroys it, als
   assert.deepEqual([r.passed, r.box.fresh, r.box.internet], [true, true, false]);
   assert.deepEqual(Object.keys(requests[0]).sort(), ['files', 'fingerprint', 'limits', 'mode', 'options', 'plan', 'snapshot_hash', 'toolchains'], 'the request BuildExecutor sends, nothing more');
   const {container} = ns.boxes[0];
-  assert.deepEqual(container.log.filter(l => l[0] === 'exec').map(l => [l[1].join(' '), JSON.stringify(l[2].env)]), [['true', JSON.stringify({PATH: BOX_PATH})], [BOX_BUILD_COMMAND.join(' '), JSON.stringify({PATH: BOX_PATH})]]);
+  assert.deepEqual(container.log.filter(l => l[0] === 'exec').map(l => [l[1].join(' '), JSON.stringify(l[2].env)]), [['true', JSON.stringify({PATH: BOX_PATH})], [boxBuildCommand(await boxName(ns.boxes[0].id)).join(' '), JSON.stringify({PATH: BOX_PATH})]]);
+  assert.match(r.box.name, /^box-[0-9a-f]{16}$/);
+  assert.equal(r.box.name, await boxName('unique-1'), 'named after its Durable Object id');
   assert.equal(container.destroyed, 1);
   assert.equal(container.running, false);
   // The runner fails: the box is destroyed all the same.
@@ -246,7 +248,7 @@ test('fail closed: no BOXES binding, an image that is not deployed, or a box tha
   // A box (a stub that misbehaves) answering with the internet on, or not fresh, is not believed.
   for (const box of [{fresh: true, internet: true}, {fresh: false, internet: false}, undefined]) {
     let closed = 0;
-    const ns = {newUniqueId: () => ({id: 'x'}), get: () => ({compile: async (_spec, req) => ({fingerprint: req.fingerprint, mode: 'card', passed: true, checks: [], ...(box ? {box} : {})}), close: async () => { closed++; }})};
+    const ns = {newUniqueId: () => ({id: 'x'}), get: () => ({open: async () => ({fresh: true, internet: false, image: 'check'}), compile: async (_spec, req) => ({fingerprint: req.fingerprint, mode: 'card', passed: true, checks: [], ...(box ? {box} : {})}), close: async () => { closed++; }})};
     const {room, drain} = tempRoom([RIGHT], {boxes: ns});
     await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
     await drain();
@@ -283,7 +285,7 @@ test('the S0 probe: off unless BOX_PROBE=1, POST only, and its report is scrubbe
   const env = {BOX_PROBE: '1', BOXES: {}, BOX_PROBES: {getByName: () => ({run: async o => { asked = o; return {items: {}}; }})}};
   assert.equal((await boxProbeRoute(req('POST'), env, {only: ['network', 'bogus'], samples: 99})).status, 200);
   assert.deepEqual(asked, {only: ['network'], samples: 10});
-  assert.deepEqual(PROBE_ITEMS, ['start', 'exec', 'network', 'caps', 'unshare', 'env', 'snapshot', 'browser', 'relay', 'fanout', 'private']);
+  assert.deepEqual(PROBE_ITEMS, ['start', 'exec', 'network', 'caps', 'unshare', 'env', 'hostname', 'snapshot', 'browser', 'relay', 'fanout', 'private']);
   const dirty = 'start failed: image registry.cloudflare.com/0123456789abcdef0123456789abcdef/boxes@sha256:aa for https://user:pw@host/x id 0123456789abcdef0123456789abcdef0123';
   assert.doesNotMatch(scrub(dirty), /0123456789abcdef|user:pw|@sha256/);
   assert.deepEqual(stats([5, 1, 3, 2, 4]), {n: 5, p50: 3, p95: 5, min: 1, max: 5});

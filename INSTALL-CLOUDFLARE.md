@@ -145,6 +145,8 @@ Under v8 every manager runs the checks it holds in its piece's own fresh box as 
 "BOX_CONCURRENCY": "4"
 ```
 
+A run opens its first compile's box early, while the card is written, so that compile doesn't wait 9 to 13 s for a cold box. That prewarmed box counts against `BOX_CONCURRENCY` too, and stops when no compile takes it ([docs/trying-v8.md](docs/trying-v8.md#63-the-prewarmed-box)).
+
 ## 6. Verify the deployment
 
 ```bash
@@ -153,6 +155,18 @@ npx wrangler containers list                            # shows the BuildExecuto
 npx wrangler artifacts repos list --namespace default   # empty until the first run
 npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave running during a run
 ```
+
+For v8, check once that a box's checks run under a valid host name. Deploy with the probe on, ask for its `hostname` item, then deploy again with the probe off:
+
+```bash
+npx wrangler deploy --var BOX_PROBE:1
+curl -sS -X POST "https://<your worker host>/api/dev/box-probe" \
+  -H "authorization: Bearer $APP_TOKEN" -H 'content-type: application/json' \
+  -d '{"only": ["hostname"]}'
+npx wrangler deploy
+```
+
+In the answer, `items.hostname.runner_named` should be `true`, and `items.hostname.runner` should show `hostname` and `getfqdn.value` both equal to `name` (`box-` and 16 hex characters). `platform` is the name the platform gave the VM. Its `labels` lists the length of each label, and a label over 63 is what breaks Python servers. If `runner_named` is `false`, `runner.status` says why (for example `unshare: EPERM`), and v8 rooms hold at `checks_blocked` saying the box's host name is the problem (see [docs/trying-v8.md](docs/trying-v8.md#62-the-boxs-host-name)). The first room's export shows the same facts in `state.toolchain_inventory` (`hostname`, `hostname_ok`, `hostname_status`, `getfqdn`).
 
 ## 7. Start a run
 
@@ -308,6 +322,7 @@ curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" 
 - **Status stays paused with a builder or the compiler `waiting`**: its problems are with its manager (`problems_reported`, then `problem_assigned` or `problem_escalated`) and nothing has changed yet, or the runner could not write a valid test (`runner_failed`). **Continue** relinks waiting builders with a fresh relink budget, runs the compiler again, and has every manager decide the problems it still holds.
 - **`repair_exhausted` and a failed run**: a manager ran out of repair rounds (6 per manager, and 8 plus 2 per manager for the run, at most 40), or a problem was closed without a fix while its reporter waited on it, for example after a worker answered it twice without changing a file. The `problem_exhausted` and `problem_escalated` events before it say which. Start a new experiment.
 - **A v8 room held at `card_blocked`, `card_failed`, `checks_failed`, `checks_blocked` or `checks_exhausted`**: the **Project card** panel says why. `card_blocked` means the goal needs something this deployment cannot do (a language that is not installed, or an edit with no repo given); start again with a different goal or a base. `checks_blocked` means the checks could not run (the Container, Chromium or Clef failed); it retries itself after 30 s, 2 minutes and 10 minutes, then waits for **Continue**. For the others, **Continue** runs the card writer or the checks again, with fresh repair rounds after `checks_exhausted`.
+- **`checks_blocked` with "The box's environment, not the code"**: a check failed because of something the box's own inventory reports, for example a host name Python can't resolve (`hostname_ok: false`) or no Python. No worker is asked to fix it. Run the probe's `hostname` item (step 6). A deploy that rebuilt the box images (`container/Dockerfile.box`) fixes the host name; **Continue** then runs the checks again in a new box.
 - **`This room was started by a version before v7.14 and is not migrated`**: **Continue** refuses rooms from earlier versions. **Start** resets the room.
 
 ## Costs and cleanup
@@ -334,6 +349,8 @@ npm run deploy
 ```
 
 The v8 release adds the `BenchRun` Durable Object class and the `BENCH_EXECUTORS` var, and a larger Container image, so its first deploy takes longer. Existing rooms keep the v7 pipeline; v8 is chosen when a room starts.
+
+v8 live 5 changes the box images (`container/Dockerfile.box` adds `/opt/box/hostname.py`), so the next `npm run deploy` rebuilds the `check` and `browser` images. Then run the probe's `hostname` item once (step 6). The v7 `BuildExecutor` image is unchanged.
 
 Start a new experiment after upgrading. A room started before v7.14 cannot be continued: **Continue** refuses it, and **Start** resets it. A room started on v7.14 can be continued, and keeps v7.14's behavior: it has no promises, so its workers do not ask for functions and its builders and compiler do not read a plan.
 

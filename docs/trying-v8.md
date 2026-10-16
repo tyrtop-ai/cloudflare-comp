@@ -43,6 +43,7 @@ Root's first turn writes the project card. The **Project card** panel then shows
 - The card should list `python`, a command deliverable and command checks.
 - If a check fails, open the worker's repair ticket in the traffic panel. It should say what the program did, never what the check expected.
 - In the export, check `state.toolchain_inventory`: it shows the Python and Node versions, and whether checks ran with the network off (`network`). The network can only be turned off where the Container allows user namespaces, and that has not been tested on a live Container yet.
+- The same inventory shows the box's host name (`hostname`, which should be `box-` and 16 hex characters) and `getfqdn`, which should be `{"ok": true, "value": "box-…"}` with the same name (section 6.2).
 
 **"A static web page with a to-do list."**
 - The card should have a page deliverable (`index.html`), a static run, and browser checks.
@@ -63,7 +64,7 @@ Press **Run benchmark**. It keeps going with the page closed. Most HumanEval tas
 
 ## 5. What to send back
 
-- **For each room:** **Export observation JSON**. It contains the card and its revisions, the requirement results, the problems and tickets, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each Container run (cold or warm, and each check's ms), and dispatch delays. Every v8 compile now opens its own fresh box (section 6), so its container span carries `box: {fresh: true, internet: false, start_ms, ready_ms, image}` instead of `cold`; `start_ms` is that compile's start cost.
+- **For each room:** **Export observation JSON**. It contains the card and its revisions, the requirement results, the problems and tickets, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each Container run (cold or warm, and each check's ms), and dispatch delays. Every v8 compile now opens its own fresh box (section 6), so its container span carries `box: {fresh: true, internet: false, start_ms, ready_ms, image, name}` instead of `cold`; `start_ms` is that compile's start cost. A run's first compile normally runs in a box opened earlier (section 6.3): its span adds `prewarmed: true`, `waited_ms` and `prewarm_ms`, and a `box` span named `prewarm` records that box's own start.
 - **For the benchmark:** the JSON from `GET /api/bench?id=<run id>` (task outcomes, times, tokens, room ids), plus the room exports of one or two failed tasks.
 
 **The room export contains your Cloudflare account id**, inside the Artifacts remote URLs. Don't commit it to this repo or post it anywhere public; send it privately. The benchmark status JSON contains no remote URLs or account ids.
@@ -74,7 +75,25 @@ A v8 room no longer shares one Container across its compiles, and benchmark room
 
 The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
 
-The first compile after a deploy is slow: each image is pulled on first use, so that box takes 10 to 15 s to become ready instead of about 1 s. The span records it with `cold: true` (any box whose `ready_ms` is over 5 s). Later compiles start warm.
+The first box of a run is slow to start: its image is pulled, so it takes 9 to 15 s to become ready instead of about 1 s. The span records it with `cold: true` (any box whose `ready_ms` is over 5 s). Later compiles start warm. Since v8 live 5 the room opens that first box early, while the card is still being written (section 6.3), so the first compile normally finds it ready.
+
+### 6.2 The box's host name
+
+The platform names each box's VM with a label longer than the 63 characters a host name label may have. On such a name Python's `socket.getfqdn` fails (`UnicodeError: encoding with 'idna' codec failed (UnicodeError: label too long)`), and so does `http.server`'s `HTTPServer`, which calls it when it binds. In the live 5 issue tracker run every Python server crashed this way, and the worker was told to fix it for five rounds.
+
+The box image now runs the build runner under `/opt/box/hostname.py`. It gives the runner, and everything it starts, the box's own name in a user namespace of its own: `box-` followed by the first 16 hex characters of the SHA-256 of the box's Durable Object id (for example `box-3f9a0c27d18e4b65`), with an `/etc/hosts` that resolves it, so `getfqdn` answers without asking DNS. It needs no root: it uses the same user namespaces the runner already uses to turn the checks' network off. The same name is in the compile's span (`box.name`), in the inventory and in the probe's report.
+
+If the box can't set its name, the runner still runs and its inventory says so: `hostname_ok: false`, `hostname_status` with the reason (for example `unshare: EPERM`) and `getfqdn` with the error. Every check that then fails in that box is the box's problem, not the code's: the room holds at `checks_blocked` with a `compile_infrastructure` text that starts with "The box's environment, not the code", logs a `box_environment` event, and gives no worker a repair. The same rule covers the other environment facts the inventory reports, for example a check that couldn't start `python3` in a box that reports no Python.
+
+After deploying, run the probe's `hostname` item once (section 6.1) and check that `runner_named` is `true`.
+
+### 6.3 The prewarmed box
+
+A run's first compile used to wait 9 to 13 s for a cold box (9 of the 33 s of the temperature CLI run). Now the room opens that box as soon as it knows which image the card's checks need: when the card writer's first card is read, before Clef's review and vetting, so the box starts while the card is finished and the first worker turn runs. A benchmark task room, whose card is given, opens it at its start.
+
+The prewarmed box is like any other box: a new Durable Object, internet off, `standard-1`, the `check` image (or `browser` when the card has browser checks), and it runs one compile. Only the first compile that needs exactly that image takes it. If the card changes and now needs the other image, or a piece's compile runs only some of the checks and needs the other image, the prewarmed box is stopped unused and the compile opens its own. The box counts against `BOX_CONCURRENCY` from the moment it opens, and the room opens none when no slot is free. A prewarmed box that no compile takes within 4 minutes, or that is still open when the run ends, stops, and a `box` span named `prewarm_unused` records why.
+
+In the export, compare the `prewarm` span with the first `card` span. The prewarm should end before or soon after the compile starts, and the compile's `box.waited_ms` should be well under its `prewarm_ms`.
 
 ### 6.1 The S0 probe: run it once after deploying
 
@@ -88,7 +107,7 @@ curl -sS -X POST "https://<your worker host>/api/dev/box-probe" \
 npx wrangler deploy                            # turn it off again (BOX_PROBE back to 0)
 ```
 
-The full probe opens about 70 boxes and takes a few minutes; keep `curl` waiting. To run part of it, pass `"only"` with any of `start`, `exec`, `network`, `caps`, `unshare`, `env`, `snapshot`, `browser`, `relay`, `fanout` and `private`, for example `{"only": ["network", "browser"]}`. `samples` (1 to 10) is the number of boxes opened per image for the start timings. An item that fails reports its error and the probe goes on.
+The full probe opens about 70 boxes and takes a few minutes; keep `curl` waiting. To run part of it, pass `"only"` with any of `start`, `exec`, `network`, `caps`, `unshare`, `env`, `hostname`, `snapshot`, `browser`, `relay`, `fanout` and `private`, for example `{"only": ["network", "browser"]}`. `samples` (1 to 10) is the number of boxes opened per image for the start timings. An item that fails reports its error and the probe goes on.
 
 **What to send back:** `box-probe.json` as it is. It contains timings, true/false results, error codes and the *names* of environment variables (never their values). The probe removes image references, ids and anything else shaped like an account id before it answers, so the file holds no secret, account id or repository name. Glance over it before sending anyway. The questions it answers, and what each answer decides:
 
@@ -99,6 +118,7 @@ The full probe opens about 70 boxes and takes a few minutes; keep `curl` waiting
 | `network` | with the internet off: TCP 1.1.1.1:53 and :443, DNS, HTTP 80/443, ICMP; plus a control box with the internet on | that `enableInternet: false` really holds |
 | `caps`, `unshare` | `CapEff` of an exec (default user, uid 10001, uid 0), and which namespaces `unshare` may create | which in-runner measures still work inside a box |
 | `env` | environment variable names of an exec and of PID 1 | that nothing secret reaches a box |
+| `hostname` | the platform's host name (scrubbed like any id, with each label's length) and Python's `getfqdn` of it; the name the runner runs under through `/opt/box/hostname.py` (`runner_named`: it is the box's name, and `getfqdn` answers it); whether uid 0 could set the platform's name itself | that the runner's checks run under a valid host name (section 6.2) |
 | `snapshot` | `snapshotContainer` time and size, and the restore start | the install box hand-over (S9) |
 | `browser` | Chromium loading `http://app.internal/` through interception, and a WebSocket back | the server box and client box split (S2) |
 | `relay` | a line relayed box A → Durable Object → box B | the bench split's call protocol (S4) |

@@ -9,17 +9,20 @@
 //   node /opt/box/probe.mjs caps       uid, gid and the capability sets of this exec
 //   node /opt/box/probe.mjs unshare    which user/network namespaces this exec may create
 //   node /opt/box/probe.mjs env        environment names of this exec and of PID 1
+//   node /opt/box/probe.mjs hostname   this exec's host name (Node os.hostname), Python's getfqdn of it, and whether uid 0 may set it
 //   node /opt/box/probe.mjs echo       echoes stdin lines (the relay probe)
 //   node /opt/box/probe.mjs app URL    a plain HTTP GET of URL (interception)
 //   node /opt/box/probe.mjs browser URL   Chromium loads URL; the page opens a WebSocket back
 import net from 'node:net';
 import dns from 'node:dns/promises';
 import {readFileSync, readdirSync} from 'node:fs';
+import {hostname} from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {createRequire} from 'node:module';
 
 const T = 4000;
+const GETFQDN = "import json,socket\ntry:\n    print(json.dumps({'ok':True,'value':socket.getfqdn('0.0.0.0')}))\nexcept Exception as e:\n    print(json.dumps({'ok':False,'error':(type(e).__name__+': '+str(e))[:200]}))";
 const out = o => process.stdout.write(JSON.stringify(o) + '\n');
 const timed = async f => { const t = Date.now(); try { const v = await f(); return {ok: true, ms: Date.now() - t, ...(v && typeof v === 'object' ? v : {})}; } catch (e) { return {ok: false, ms: Date.now() - t, error: String(e?.code || e?.name || 'error'), detail: String(e?.message || e).slice(0, 160)}; } };
 const deadline = (p, ms = T) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(Object.assign(new Error(`no answer in ${ms} ms`), {code: 'TIMEOUT'})), ms))]);
@@ -68,6 +71,16 @@ const commands = {
     try { pid1 = names(readFileSync('/proc/1/environ', 'utf8')); } catch (e) { pid1 = `unreadable: ${e.code}`; }
     for (const d of readdirSync('/proc').filter(x => /^\d+$/.test(x))) { total++; try { readFileSync(`/proc/${d}/environ`); readable++; } catch {} }
     out({exec_env_names: Object.keys(process.env).sort(), pid1_env_names: pid1, proc_environ_readable: readable, processes: total});
+  },
+  // v8 live 5: the name a check runs under. labels: each label's length (a
+  // host name label is at most 63; Python's IDNA codec fails above it).
+  async hostname() {
+    const name = hostname(), py = spawnSync('python3', ['-I', '-c', GETFQDN], {encoding: 'utf8', timeout: 8000});
+    let getfqdn;
+    try { getfqdn = JSON.parse(String(py.stdout).trim().split('\n').at(-1)); } catch { getfqdn = {ok: false, error: String(py.stderr || py.error?.code || `exit ${py.status}`).trim().slice(0, 200)}; }
+    const set = process.getuid() === 0 ? run('python3', ['-I', '-c', "import socket;socket.sethostname('box-probe')"]) : null;
+    out({uid: process.getuid(), hostname: name, labels: name.split('.').map(l => l.length), getfqdn, status: process.env.BOX_HOSTNAME_STATUS || null,
+      ...(set ? {uid0_sethostname: {ok: set.code === 0, ...set}} : {})});
   },
   async echo() {
     for await (const line of createInterface({input: process.stdin})) process.stdout.write(line + '\n');
