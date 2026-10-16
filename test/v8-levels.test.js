@@ -8,6 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {levelRoom, usualClef, rows, deliver, callCheck, events, fileBlocks, lintRequests, rowId} from './helpers/levels.js';
+import {levelCalls} from './helpers/room.js';
 
 const TRACKER = 'Build a small issue tracker: a library to create tickets and read one back by its id, and a `report` command that files a ticket and prints it as one line.';
 const STORE = `const tickets = new Map();
@@ -125,17 +126,25 @@ test('a worker\'s request is exactly its prompt, its files, its complaints and i
   assert.deepEqual(view.complaints, []);
 });
 
-test('a contract with fewer than three distinct examples is the splitter\'s defect: its next attempt reads its previous answer and only what that answer still needs, and the level is admitted once it gives three', async () => {
-  const short = {...CLI_LEVEL, validations: [convertCheck('a', '100 C', '212'), convertCheck('b', '100 C', '212')]};
-  const {room, calls} = await levelRoom({prompt: CLI, split: (_u, n) => n === 1 ? short : CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+test('a contract with fewer than three distinct examples: done says what is missing and the session goes on; the splitter adds the third and done admits the level, in one session', async () => {
+  const short = {...CLI_LEVEL, validations: [convertCheck('a', '100 C', '212'), convertCheck('b', '100 C', '212')]}, heard = [];
+  const split = (user, _n, _system, {round, results, tools}) => {
+    if (round === 1) return levelCalls(short, {user, tools});
+    heard.push(results);
+    return [{name: 'validation', arguments: {serves: ['convert'], check: CLI_LEVEL.validations[1].check}}, {name: 'validation', arguments: {serves: ['convert'], check: CLI_LEVEL.validations[2].check}}, {name: 'done', arguments: {}}];
+  };
+  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
   assert.equal(room.get('status'), 'complete', trail(room));
-  assert.equal(calls.split.length, 2);
-  assert.ok(!calls.split[0].previous_answer_problems);
-  assert.deepEqual(calls.split[1].previous_answer_problems, ['Your previous answer, in previous_answer, still needs these changes: Contract convert has 1 different example: give it validations that show 3 different examples of convert itself (command checks that run convert or convert.js, each one example). Keep the rest of it as it is, and answer with the whole corrected json object.']);
-  assert.deepEqual(calls.split[1].previous_answer, short, 'the retry corrects its own answer, so what held is kept');
-  assert.deepEqual(JSON.parse(room.db().exec("SELECT output FROM splitters ORDER BY spawned_at LIMIT 1").toArray()[0].output).answer, short, 'the splitter row keeps the answer as it was given');
-  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['defects', 'read']);
-  assert.equal(room.validationRows().length, 3, 'only the admitted attempt\'s validations are rows');
+  assert.equal(calls.split.length, 1, 'one session');
+  assert.equal(heard.length, 1);
+  // The two identical validations render one example between them; done reports the count, in the session.
+  assert.deepEqual(heard[0][1], {name: 'validation', result: {id: 'v1', examples: ['convert 100 C → it exits 0 and its output contains "212"'], examples_so_far: {convert: 1}}});
+  assert.deepEqual(heard[0][2].result.examples_so_far, {convert: 1});
+  assert.deepEqual(heard[0].at(-1), {name: 'done', result: {complete: false, missing: ['convert has 1 different example of 3: command checks that run convert or convert.js, each one example.']}});
+  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['done']);
+  const record = JSON.parse(room.db().exec('SELECT output FROM splitters').toArray()[0].output);
+  assert.deepEqual(record.calls.map(c => c.name), ['contract', 'validation', 'validation', 'done', 'validation', 'validation', 'done'], 'the splitter row keeps every call with its result');
+  assert.equal(room.validationRows().length, 4, 'every validation the session stored is a row');
 });
 
 test('a complaint reaches the worker responsible exactly as the compiler observed it, and its fix completes the room', async () => {

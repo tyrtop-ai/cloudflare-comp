@@ -173,7 +173,7 @@ document.getElementById('add').addEventListener('click', () => {
 </script></body></html>
 `;
 const added=(id,text)=>({id,serves:['index.html'],check:{kind:'browser',serve:'index.html',steps:[{goto:'/'},{fill:{label:'New task',text}},{click:{role:'button',name:'Add'}},{expect_text:text},{expect_count:{role:'listitem',n:1}}]}});
-const TODO_LEVEL={contracts:[{name:'index.html',kind:'page',path:'index.html',does:'the to-do list page'}],validations:[added('a','Water the plants'),added('b','Feed the cat'),added('c','Call home')],pieces:[]};
+const TODO_LEVEL={contracts:[{name:'index.html',kind:'page',path:'index.html',does:'the to-do list page',run:{static:true}}],validations:[added('a','Water the plants'),added('b','Feed the cat'),added('c','Call home')],pieces:[]};
 
 test('static to-do page: the browser validations run against the served page and the room completes',{skip:browserReady||false},async()=>{
   const {room,calls,builds,drain}=v8Room({level:TODO_LEVEL,answers:{'index.html':[wrote('index.html',TODO_HTML)]}});

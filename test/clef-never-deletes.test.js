@@ -55,5 +55,5 @@ test('Clef never deletes: a doubted division is retried, then admitted whole as 
   assert.equal(reviews.length, 3);
   assert.ok(reviews.every(b => /split_valid p=0\.050/.test(b)));
   assert.match(reviews.at(-1), /NO on attempt 3 of 3, so the level goes to one worker/);
-  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['read', 'read', 'read']);
+  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['done', 'done', 'done']);
 });

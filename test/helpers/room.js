@@ -124,8 +124,9 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     // v8: the splitter works through functions (src/splitter.js). Its fake
     // answers each round of the session: a list of calls [{name, arguments}],
     // a text (a reply with no call), or a level {contracts, validations,
-    // pieces}, which stands for its calls ending with done (levelCalls) and
-    // answers only the session's first round. split(user, n, system,
+    // pieces}, which stands for its calls (levelCalls): all but done in the
+    // first round, and done in the second once every call was stored; a
+    // refused call fails the test with the results. split(user, n, system,
     // {round, results, tools}): n counts sessions, results are the previous
     // round's results (parsed), tools the function names offered.
     if(v8role==='splitter'&&split&&input.tools){
@@ -136,8 +137,10 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
       const a=await split(user,calls.split.length,system,{round,results,tools});
       if(typeof a==='string')return {response:a};
       if(Array.isArray(a))return {tool_calls:a.map(c=>({name:c.name,arguments:c.arguments??{}}))};
-      if(round>1)throw new Error('the scripted splitter\'s level was not accepted: '+JSON.stringify(results).slice(0,1500));
-      return {tool_calls:levelCalls(a,{user,tools})};
+      // A level's calls go in the first round; done in the second, once every one of them was stored.
+      const refused=results.filter(r=>r.result?.error||r.result?.complete===false);
+      if(round>2||refused.length)throw new Error('the scripted splitter\'s level was not accepted: '+JSON.stringify(refused.length?refused:results).slice(0,1500));
+      return {tool_calls:round===1?levelCalls(a,{user,tools}).filter(c=>c.name!=='done'):[{name:'done',arguments:{}}]};
     }
     if(v8role==='worker'&&leaf){calls.leaf.push(user);return send(await leaf(user,calls.leaf.length,system));}
     if(v8role==='file'&&file){calls.file.push(user);return send(await file(user,calls.file.length,system));}

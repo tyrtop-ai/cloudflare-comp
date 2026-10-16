@@ -16,7 +16,7 @@ import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
 import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, rootRefs} from '../src/room-inputs.js';
-import {readLevel} from '../src/validations.js';
+import {splitterState, splitterCall} from '../src/splitter.js';
 // After helpers/room.js has registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
 
@@ -552,9 +552,10 @@ test('S8b review M2: a base holding components/ moves the pieces\' folder to rcp
   assert.deepEqual(errs([{name: 'components/Button.js', kind: 'file', path: 'components/Button.js', does: 'the button'}]), []);
   assert.match(errs([{name: 'components/button.js', kind: 'file', path: 'components/button.js', does: 'x'}])[0], /differs only in letter case from the existing file components\/Button\.js/);
   assert.match(errs([{name: 'rcp_parts/x.md', kind: 'doc', path: 'rcp_parts/x.md', does: 'x'}])[0], /keeps rcp_parts\//);
-  const stated = c => readLevel({contracts: [c], validations: [has('a', c.name, 'a'), has('b', c.name, 'b'), has('c', c.name, 'c')], pieces: []}, {base: ['README.md', 'components/Button.js']}).defects;
-  assert.deepEqual(stated({name: 'components/Button.js', kind: 'file', path: 'components/Button.js', does: 'the button'}), []);
-  assert.match(stated({name: 'readme.md', kind: 'doc', path: 'readme.md', does: 'x'}).join(' '), /differs only in letter case from the existing file README\.md/);
+  // The splitter's contract function answers the same: stored, or why not.
+  const stated = c => splitterCall(splitterState({base: ['README.md', 'components/Button.js']}), 'contract', c).result;
+  assert.deepEqual(stated({name: 'components/Button.js', kind: 'file', path: 'components/Button.js', does: 'the button'}), {stored: 'components/Button.js', kind: 'file'});
+  assert.match(stated({name: 'readme.md', kind: 'doc', path: 'readme.md', does: 'x'}).error, /differs only in letter case from the existing file README\.md/);
 });
 
 // ------------------------------------------------------------ M4: the room's manager holds at most 16 refs; no placeholder reaches a model

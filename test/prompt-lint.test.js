@@ -9,7 +9,7 @@ import { lintText, lintAll, words, sentences, negations, capsWords, STRUCTURE_WO
 
 const ROLES = ['splitter', 'worker', 'file', 'linker'];
 // Per-role caps: words of each format, and of the whole system prompt.
-const FORMAT_WORDS = {splitter: 460, worker: 180, file: 30, linker: 60};
+const FORMAT_WORDS = {splitter: 60, worker: 180, file: 30, linker: 60};
 const SYSTEM_WORDS = 640;
 
 test('every v8 prompt text passes the lint', () => {
@@ -103,6 +103,5 @@ test('Clef questions are filled by key, and run data never enters a system promp
   assert.equal(clefText('match', {j: 1}), CLEF.match.replace('{j}', '1'));
   for (const role of ROLES) assert.doesNotMatch(systemPrompt(role), /\$\{|\{i\}|\{j\}|\{contract\}/);
   assert.equal(RETRY.too_small(9, 4), 'Your previous answer, listed in rejected, had 9 pieces, and some were too small to be worth a task of their own. Use fewer, larger pieces this time, at least 2 and at most 4, each delivering whole contracts.');
-  assert.match(RETRY.rules(['Contract x has 2 different examples.']), /^Your previous answer, in previous_answer, still needs these changes: Contract x has 2 different examples\. Keep the rest of it as it is/);
   assert.equal(MESSAGES.not_written({why: 'a/b: the path holds a space'}), 'Not written: a/b: the path holds a space.');
 });

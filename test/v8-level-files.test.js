@@ -475,9 +475,9 @@ test('a level-file commit that fails leaves the level as it was: no validation, 
   const clean = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf, store: new CommitStore()});
   assert.equal(clean.room.get('status'), 'complete', trail(clean.room));
   class FailFirstLevel extends CommitStore { async write(a) { if (a.path === LEVEL_FILE && !this.failed) { this.failed = true; throw new Error('Artifacts commit timed out'); } return super.write(a); } }
-  const seen = [], r = liveRoom({store: new FailFirstLevel(), leaf: trackerLeaf, clef: usualClef(), room_id: 'levels-test', split: user => {
+  const seen = [], r = liveRoom({store: new FailFirstLevel(), leaf: trackerLeaf, clef: usualClef(), room_id: 'levels-test', split: (user, _n, _system, {round}) => {
     const room = r.room, m = room.roomManager();
-    if (!user.contracts_you_deliver && !user.validations_you_have) seen.push({request: user, validations: room.validationRows().map(v => v.id), interfaces: room.node(m).interfaces,
+    if (round === 1 && !user.contracts_you_deliver && !user.validations_you_have) seen.push({request: user, validations: room.validationRows().map(v => v.id), interfaces: room.node(m).interfaces,
       batches: room.db().exec('SELECT COUNT(*) AS n FROM spawn_batches WHERE parent=?', m).toArray()[0].n, reserved: room.read('validations_reserved', {}), level: room.levelIndex(m)});
     return trackerSplit(user);
   }});

@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, levelCalls} from './helpers/room.js';
 import {usualClef, deliver} from './helpers/levels.js';
 import {effectiveGoal, goalView, reorderError, promptText} from '../src/amend.js';
 // After the room helper registered the cloudflare: loader.
@@ -119,18 +119,25 @@ test('queue: prompts queued while the first run goes wait for it; then the alarm
   assert.equal(head.prompt_history.length, 2);
 });
 
-test('an extension that lists again a contract its level has reads it as that one, delivered where it is: no miss, a note says so, and nothing is delivered twice', {skip: !hasPython && 'python3 is not installed'}, async () => {
-  const again = {...README_LEVEL, contracts: [TEMP, README], pieces: []};
-  const split = user => user.assignment === README_CHANGE ? again : tempSplit(user);
-  const {room, calls, drain} = queueRoom({split, leaf: tempLeaf, clef: tempClef});
+// The splitter's contract function stores a contract or says why it cannot; a name the level already has is not stored again (no reading-as).
+test('an extension whose splitter declares again a contract its level has hears from the function that it is already declared; it goes on, and nothing is delivered twice', {skip: !hasPython && 'python3 is not installed'}, async () => {
+  const heard = [];
+  const split = (user, _n, _system, {round, results}) => {
+    if (user.assignment !== README_CHANGE) return tempSplit(user);
+    if (round === 1) return [{name: 'contract', arguments: TEMP}, ...levelCalls(README_LEVEL, {user}).filter(c => c.name !== 'done')];
+    heard.push(results);
+    return [{name: 'done', arguments: {}}];
+  };
+  const {room, drain} = queueRoom({split, leaf: tempLeaf, clef: tempClef});
   await room.start(GOAL, 40, {pipeline: 'v8'});
   await drain();
   await room.amend(README_CHANGE);
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
-  assert.ok(!calls.split.at(-1).previous_answer_problems, 'its first answer is admitted');
-  assert.deepEqual(room.splitterRows().map(r => [r.kind, r.outcome]), [['split', 'read'], ['extend', 'read']]);
-  assert.match(events(room, 'level_read').at(-1).body, /Contract temp is one this level has already \(contracts_you_have\): it is read as that one, delivered where it is\./);
+  assert.equal(heard.length, 1);
+  assert.deepEqual(heard[0][0], {name: 'contract', result: {error: '"temp" is already declared: it is a contract your level already has'}});
+  assert.ok(heard[0].slice(1).every(r => !r.result.error), JSON.stringify(heard[0]));
+  assert.deepEqual(room.splitterRows().map(r => [r.kind, r.outcome]), [['split', 'done'], ['extend', 'done']]);
   assert.equal(kids(room, room.roomManager()).filter(c => room.promisedOf(c.id).some(f => f.name === 'temp')).length, 1);
   assert.equal(events(room, 'bundle_conflict').length, 0);
 });
