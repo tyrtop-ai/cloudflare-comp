@@ -683,21 +683,33 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   const {room, drain} = inputsRoom({card: readmeCard, judge: readmeJudge, fetch, answers: {'Root objective': [wrote([['README.md', GOOD_README]])]}});
   await room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-m5m5-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['c.example.com']});
   await drain();
+  // v8 ship-verified (M1; this test's expectation before was 'complete' with every carried file shipped unchecked): a carried
+  // file that is text at a path the box holds (dist/bundle.js) ships in the top's bundle, so its box held it and its syntax
+  // step compiled it; the others (a dotfile path, a path with a space, a binary) the box cannot hold, so the room holds for the
+  // person with them listed, and Continue accepts them.
+  assert.equal(room.snapshot().pause?.kind, 'checks_untested', trace(room));
+  assert.match(room.snapshot().pause.text, /3 file\(s\) that ship were never compiled or never in the box[\s\S]*\.github\/workflows\/ci\.yml[\s\S]*docs\/my notes\.md[\s\S]*logo\.png \(carried untouched \(binary\), and it is not UTF-8 text\)/);
+  assert.equal(room.runFinished(), false);
+  await room.resume(20);
+  await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
   const app = await room.appFiles();
   assert.equal(app.passed, true);
-  assert.deepEqual(app.files.map(f => f.path), ['.recursive/RUN.md', '.recursive/card.json', 'README.md', 'bin/widget.js', 'package.json', 'src/shout.js',
-    '.github/workflows/ci.yml', 'dist/bundle.js', 'docs/my notes.md', 'logo.png']);
+  assert.deepEqual(app.unchecked, ['.github/workflows/ci.yml', 'docs/my notes.md', 'logo.png']);
+  assert.match(app.note, /but for 3 the person accepted shipping unchecked/);
+  assert.deepEqual(app.files.map(f => f.path), ['.recursive/RUN.md', '.recursive/card.json', 'README.md', 'bin/widget.js', 'package.json', 'src/shout.js', 'dist/bundle.js',
+    '.github/workflows/ci.yml', 'docs/my notes.md', 'logo.png']);
   const at = p => app.files.find(f => f.path === p);
-  // The digest is the checked bundle's: the carried files are appended after it.
+  assert.equal(at('dist/bundle.js').from_base, 'unchanged');
+  // The digest is the checked bundle's (the carried file it holds included); the files carried as bytes are appended after it.
   assert.equal(app.digest, await snapshotHash(new Map(app.files.filter(f => !f.passthrough && !f.path.startsWith('.recursive/')).map(f => [f.path, f.content]))));
   assert.equal(at('src/shout.js').content, BOM_SHOUT, 'the byte order mark survives');
   assert.deepEqual([at('bin/widget.js').mode, at('bin/widget.js').from_base, at('README.md').from_base], ['100755', 'unchanged', undefined]);
   assert.deepEqual([...fromBase64(at('logo.png').content_base64)], [...PNG]);
   assert.deepEqual(app.files.filter(f => f.passthrough).map(f => [f.path, f.reason]), [['.github/workflows/ci.yml', 'a path the build cannot carry'],
-    ['dist/bundle.js', 'vendored or generated directory'], ['docs/my notes.md', 'a path the build cannot carry'], ['logo.png', 'binary']]);
+    ['docs/my notes.md', 'a path the build cannot carry'], ['logo.png', 'binary']]);
   const notes = at('.recursive/RUN.md').content;
-  assert.match(notes, /Carried untouched, never built, run or checked \(4\):[\s\S]*`logo\.png` \(binary\)/);
+  assert.match(notes, /Carried untouched, never built, run or checked \(3\):[\s\S]*`logo\.png` \(binary\)/);
   assert.match(notes, /Not carried[\s\S]*`glue\/loader\.js` \(the runtime writes this path for each run\)/);
   assert.equal(room.snapshot().base.passthrough, 4);
   // The ZIP holds the bytes and the exec bit.

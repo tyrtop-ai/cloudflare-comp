@@ -6,9 +6,11 @@ export async function snapshotHash(files) {
   const entries=[...(files instanceof Map?files:new Map(Object.entries(files))).entries()].sort(([a],[b])=>a.localeCompare(b));
   return sha256(JSON.stringify(entries));
 }
+// What one build snapshot holds at most: files, and bytes in all.
+export const BUILD_LIMITS=Object.freeze({files:1600,bytes:4*1024*1024});
 export function validateBuildFiles(files) {
   const entries=files instanceof Map?[...files]:Object.entries(files||{});
-  if(!entries.length || entries.length>1600)throw new Error('Build snapshot must contain 1–1600 files');
+  if(!entries.length || entries.length>BUILD_LIMITS.files)throw new Error(`Build snapshot must contain 1–${BUILD_LIMITS.files} files`);
   let bytes=0;
   for(const [path,content] of entries) {
     // The one path rule the Container's runner and the Worker's gate share (v8 S1 review).
@@ -16,7 +18,7 @@ export function validateBuildFiles(files) {
       throw Object.assign(new Error(`Unsafe build path ${path}`),{path});
     if(typeof content!=='string')throw new Error(`Non-text build file ${path}`);
     bytes+=new TextEncoder().encode(content).length;
-    if(bytes>4*1024*1024) {
+    if(bytes>BUILD_LIMITS.bytes) {
       // The site is the largest file, so its owner hears it (v8 S1 review).
       const size=([,c])=>typeof c==='string'?c.length:0,[largest]=[...entries].sort((a,b)=>size(b)-size(a))[0];
       throw Object.assign(new Error(`Build snapshot exceeds 4 MiB; the largest file is ${largest}`),{path:largest});

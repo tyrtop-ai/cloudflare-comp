@@ -131,7 +131,9 @@ export function rowContext(files, row, {contracts = [], pieces = new Map(), part
       if (b.level - 1 > base.length) return null;
       base = base.slice(0, base.length - (b.level - 1));
       const at = join(...base, b.module ? modPath(b.module) : '');
-      if (!b.module) return files.has(`${join(at, b.name)}${ext}`) ? {path: `${join(at, b.name)}${ext}`, submodule: true} : null;
+      // `from . import name`: a module beside the reader, or (v8 ship-verified) a subpackage there, by the row's package marker.
+      if (!b.module) return files.has(`${join(at, b.name)}${ext}`) ? {path: `${join(at, b.name)}${ext}`, submodule: true}
+        : row.glue?.package_marker && files.has(`${join(at, b.name)}/${row.glue.package_marker}`) ? {path: join(at, b.name), package: true, submodule: true} : null;
       if (files.has(at + ext)) return {path: at + ext};
       if (isDir(at)) return {path: at, package: true};
       return null;
@@ -493,7 +495,8 @@ export function importClosure(entries, files, {rows = TOOLCHAINS, installed = ()
         const init = pkg(dir);
         if (!init) return false;
         queue.push(init);
-        if (b.name && b.name !== '*' && files.has(`${dir}/${b.name}${ext}`)) queue.push(`${dir}/${b.name}${ext}`);
+        // The name a binding takes from a package is its submodule, or its subpackage (whose marker runs).
+        if (b.name && b.name !== '*') for (const at of [`${dir}/${b.name}${ext}`, `${dir}/${b.name}/${marker}`]) if (files.has(at)) queue.push(at);
         return true;
       };
       for (const g of importGroups(text, row)) for (const s of g.statements) for (const b of s.bindings) {

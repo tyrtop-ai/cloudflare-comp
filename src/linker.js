@@ -17,29 +17,37 @@ const OPTIONS = {ecmaVersion:'latest', allowHashBang:true, locations:true};
 // Node decides CommonJS vs ESM per file. Accept either parse; a file that
 // parses in neither mode cannot run in Node at all. v8 M3 review 2: mode, the
 // one Node reads the file in at its path when that is known (module: an ES
-// module; script: CommonJS), is the only parse tried.
+// module; script: CommonJS), is the only parse tried. v8 ship-verified (M2):
+// classic, a browser's classic script (a page's <script> with no module
+// type): a script with no return outside a function.
+const MODES = ['module', 'script', 'classic'];
 export function parseSource(content, mode='either') {
   const text=String(content??'');
   const looksModule=/(?:^|\n)\s*(?:import\s+(?:[\w*{]|["'])|export\s+(?:default|const|let|var|function|class|async|\{|\*))/.test(text);
-  const order=mode==='module'||mode==='script'?[mode]:looksModule?['module','script']:['script','module'];
+  const order=MODES.includes(mode)?[mode]:looksModule?['module','script']:['script','module'];
   let first;
-  for(const sourceType of order) {
+  for(const m of order) {
+    const sourceType=m==='module'?'module':'script';
     try {
-      return {ast:parseJs(text,{...OPTIONS,sourceType,allowReturnOutsideFunction:sourceType==='script'}),sourceType};
+      return {ast:parseJs(text,{...OPTIONS,sourceType,allowReturnOutsideFunction:m==='script'}),sourceType};
     } catch(error) {first??=error;}
   }
   throw first;
 }
 
+// Why a JavaScript file does not parse in a mode, or null; sourceParseError
+// for a file the linker reads (.js, .mjs, .cjs), parseError for any.
 export function sourceParseError(path, content, mode='either') {
-  if(!LINKABLE.test(String(path||'')))return null;
+  return LINKABLE.test(String(path||''))?parseError(path,content,mode):null;
+}
+const READ_AS={module:' read as an ES module, as Node reads it at this path',script:' read as CommonJS, as Node reads it at this path',classic:' read as a classic script, as a page loads it'};
+export function parseError(path, content, mode='either') {
   try {parseSource(content,mode);return null;}
   catch(e) {
     const line=e.loc?.line??'?', column=e.loc?.column??'?';
     const lines=String(content).split('\n');
     const excerpt=typeof e.loc?.line==='number' ? ` Line ${line}: ${JSON.stringify(lines[e.loc.line-1]?.slice(0,160)??'')}` : '';
-    const as=mode==='module'?' read as an ES module, as Node reads it at this path':mode==='script'?' read as CommonJS, as Node reads it at this path':'';
-    return `${path}: does not parse as JavaScript${as} (${e.message.replace(/\s*\(\d+:\d+\)$/,'')} at ${line}:${column}).${excerpt}`;
+    return `${path}: does not parse as JavaScript${READ_AS[mode]||''} (${e.message.replace(/\s*\(\d+:\d+\)$/,'')} at ${line}:${column}).${excerpt}`;
   }
 }
 

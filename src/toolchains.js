@@ -18,15 +18,18 @@ export const TOOLCHAINS = Object.freeze([
     // detection). module: an ES module; script: CommonJS, whose wrapper
     // allows a return outside a function.
     parse_mode:{by_extension:{'.mjs':'module','.cjs':'script'}, scope:{manifest:'package.json', field:'type', values:{module:'module', commonjs:'script'}}, otherwise:'either'},
-    // v8 M3 review 2: what a check reaches beyond its import closure. run_config:
-    // the files (by name, at any depth) besides the manifests that change how
-    // the row's code resolves or runs; reach_whole: text that reads files or
-    // loads code by a name the closure cannot follow (the file system, a
-    // child process, a computed or dynamic import), so a check whose closure
-    // holds such a file reaches every file of the bundle.
-    run_config:[],
-    reach_whole:["\\brequire\\s*\\(\\s*['\"](?:node:)?(?:fs|fs/promises|child_process|module|worker_threads|vm|sqlite)['\"]","\\bfrom\\s*['\"](?:node:)?(?:fs|fs/promises|child_process|module|worker_threads|vm|sqlite)['\"]",
-      "\\bimport\\s*\\(","\\brequire\\s*\\(\\s*[^'\"\\s]","\\b__dirname\\b","\\b__filename\\b","\\bimport\\.meta\\b","\\bprocess\\.cwd\\s*\\("],
+    // v8 ship-verified (M2): how a page (pages: its extensions) runs this
+    // row's code: each element matching tag (its attributes in group 1, its
+    // body in group 2) whose type (attribute type, its value in groups 1-3)
+    // is one of modes.module runs as an ES module, one of modes.classic (''
+    // when it has none) as a browser's classic script (no import or export,
+    // no return outside a function, no top-level await); any other type is a
+    // data block, never run. src (its value in groups 1-3) names the file it
+    // loads, read in that mode; with no src its body runs, read in it.
+    page_scripts:{pages:['.html','.htm'], tag:'<script\\b([^>]*)>([\\s\\S]*?)</script\\s*>', type:'\\btype\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s>]+))', src:'\\bsrc\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s>]+))',
+      modes:{module:['module'], classic:['','text/javascript','application/javascript','application/ecmascript','application/x-ecmascript','application/x-javascript','text/ecmascript','text/javascript1.0','text/javascript1.1','text/javascript1.2','text/javascript1.3','text/javascript1.4','text/javascript1.5','text/jscript','text/livescript','text/x-ecmascript','text/x-javascript']}},
+    // v8 ship-verified (L1): the interpreters a #! line names that run this row's files (a file with no extension is its row's by them).
+    shebang:['node','nodejs'],
     run_file:['node','{path}'], test:['npm','test'], project_test_markers:['package.json#scripts.test'],
     identifier:'^[A-Za-z_$][A-Za-z0-9_$]{0,63}$', reserved:'await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield',
     names_look_like:'camelCase',
@@ -73,15 +76,7 @@ export const TOOLCHAINS = Object.freeze([
     line_comment:'//', block_comment:['/*','*/'], strings:['"',"'",'`'], glue:null, image:'build' }),
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
     manifests:['pyproject.toml','requirements.txt','setup.cfg','setup.py','Pipfile','Pipfile.lock','poetry.lock','tox.ini','pip.conf','.python-version','__pycache__/','.venv/','venv/'],
-    syntax:['python3','-m','py_compile','{files}'], executables:['python3','pytest'],
-    // v8 M3 review 2: as the JavaScript row's (run_config: pytest's own
-    // configuration and fixtures); stdlib_shadow_dirs: the folders on the
-    // module path ahead of the standard library (the bundle root), where a
-    // file or folder named like one of its modules (stdlib_names) is what an
-    // import of that module loads.
-    run_config:['conftest.py','pytest.ini','.pytest.ini'], stdlib_shadow_dirs:[''],
-    reach_whole:["\\bopen\\s*\\(","\\b__import__\\s*\\(","\\b__file__\\b","\\b(?:exec|eval)\\s*\\(",
-      "(?:^|\\n)\\s*(?:import\\s+(?:[\\w.]+\\s*(?:as\\s+\\w+\\s*)?,\\s*)*|from\\s+)(?:os|glob|pathlib|shutil|io|importlib|subprocess|runpy|pkgutil|fileinput|sqlite3|tempfile|zipfile|tarfile|configparser|shelve|dbm|linecache|inspect|zipimport|mmap)(?![\\w])"],
+    syntax:['python3','-m','py_compile','{files}'], executables:['python3','pytest'], shebang:['python'],
     run_file:['python3','{path}'], test:['python3','-m','pytest','-q'], project_test_markers:['test_*.py','*_test.py','tests/'],
     identifier:'^[A-Za-z_][A-Za-z0-9_]{0,63}$', reserved:'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield',
     names_look_like:'snake_case',
@@ -142,7 +137,7 @@ export const TOOLCHAINS = Object.freeze([
       'tensorflow','torch','keras','nltk','spacy','marshmallow','wtforms','flask_sqlalchemy','flask_cors','flask_restful','flask_login','rest_framework','dotenv','termcolor','prettytable','pyfiglet','emoji','markdown','simplejson','ujson','orjson','six'],
     missing_package:["No module named '(?<module>[\\w.]+)'"],
     call_adapter:['python3','-I','-X','utf8','/opt/adapters/call.py'], stack:'python', stdlib:'/opt/toolchain/python-stdlib.txt', image:'build' }),
-  Object.freeze({ id:'text', name:'text', manifests:[], aliases:['html','htm','css','markdown','md','json','yaml','yml','toml','csv','svg','txt','plain','plaintext','doc','docs','documentation'], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:'text',
+  Object.freeze({ id:'text', name:'text', manifests:[], aliases:['html','htm','css','markdown','md','json','yaml','yml','toml','csv','svg','txt','plain','plaintext','doc','docs','documentation'], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:null,
     syntax:null, executables:[], extractor:null, link:'placed', stack:null,
     // v8 S5: how a page (a file with one of reference_files' extensions) refers to
     // another file of the project (the attribute value is group 1).
@@ -151,6 +146,55 @@ export const TOOLCHAINS = Object.freeze([
 // The manifests of toolchains this deployment has no row for: a worker never
 // writes one either, since nothing here would read it as intended.
 export const OTHER_MANIFESTS = Object.freeze(['go.mod','go.sum','Cargo.toml','Cargo.lock','Gemfile','Gemfile.lock','composer.json','composer.lock','pom.xml','build.gradle','build.gradle.kts','settings.gradle','Package.swift','mix.exs','deno.json','deno.jsonc']);
+// v8 ship-verified (L1): rows for code a project may hold (the base's, most
+// often) in a language no row above writes: only what compiles it, so no
+// card names one and no worker writes one. requires: the inventory's tools
+// it needs, each at least the version given ('' for any); syntax: the box's
+// command, as a row above has it; shebang: as a row above has it. The
+// TypeScript row compiles each file as the box's Node loads it (type
+// stripping, by default from Node 22.18): its types stripped, then read
+// as an ES module or CommonJS by its extension or its package.json "type"
+// (parse_mode, as the JavaScript row's), else either way. The shell row
+// reads each script with the shell its #! line names (sh unless bash).
+const TS_SYNTAX = `
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),{stripTypeScriptTypes}=require('node:module');
+const root=process.cwd();
+const scope=file=>{
+  for(let dir=path.dirname(path.resolve(root,file));;dir=path.dirname(dir)){
+    const p=path.join(dir,'package.json');
+    if(fs.existsSync(p)){try{const t=JSON.parse(fs.readFileSync(p,'utf8')).type;return t==='module'?'module':t==='commonjs'?'script':'either';}catch{return 'invalid';}}
+    if(dir===root||!dir.startsWith(root+path.sep))return 'either';
+  }
+};
+const ESM_SYNTAX=/Cannot use import statement outside a module|Unexpected token 'export'|Cannot use 'import\\.meta' outside a module|await is only valid in async functions and the top level bodies of modules/;
+const cjs=(src,filename)=>vm.compileFunction(src,['exports','require','module','__filename','__dirname'],{filename});
+const esm=(src,filename)=>new vm.SourceTextModule(src,{identifier:filename});
+let bad=0;
+for(const name of process.argv.slice(1)){
+  const filename=path.resolve(root,name),mode=name.endsWith('.mts')?'module':name.endsWith('.cts')?'script':scope(name);
+  try{
+    if(mode==='invalid')throw new Error('the package.json of its folder does not parse');
+    const js=stripTypeScriptTypes(fs.readFileSync(filename,'utf8').replace(/^#!.*/,''));
+    if(mode==='module')esm(js,filename);
+    else if(mode==='script')cjs(js,filename);
+    else try{cjs(js,filename);}catch(e){if(!ESM_SYNTAX.test(String(e&&e.message)))throw e;esm(js,filename);}
+  }catch(e){bad++;console.log(name+': '+String(e&&e.message||e).split('\\n')[0]);}
+}
+process.exit(bad?1:0);
+`;
+const SH_SYNTAX = 'for f do case "$(head -n 1 "./$f")" in "#!"*bash*) bash -n "./$f";; *) sh -n "./$f";; esac || s=1; done; exit ${s:-0}';
+export const COMPILE_ROWS = Object.freeze([
+  Object.freeze({ id:'typescript', name:'TypeScript', extensions:['.ts','.mts','.cts'], requires:{node:'22.18.0'},
+    parse_mode:{by_extension:{'.mts':'module','.cts':'script'}, scope:{manifest:'package.json', field:'type', values:{module:'module', commonjs:'script'}}, otherwise:'either'},
+    syntax:['node','--experimental-vm-modules','--no-warnings','-e',TS_SYNTAX,'{files}'] }),
+  Object.freeze({ id:'shell', name:'shell', extensions:['.sh','.bash'], shebang:['sh','dash','bash'], requires:{sh:'',bash:''},
+    syntax:['sh','-c',SH_SYNTAX,'sh','{files}'] })
+]);
+// v8 ship-verified (L1): the extensions of code in a language no row
+// compiles: a shipped file with one of them, or with a #! line no row's
+// shebang names, is code nothing compiled.
+export const OTHER_CODE = Object.freeze(['.tsx','.jsx','.vue','.svelte','.coffee','.go','.rs','.rb','.java','.kt','.kts','.scala','.groovy','.clj','.php','.c','.h','.cc','.cpp','.cxx','.hpp','.hh','.cs','.fs','.vb','.swift','.m','.mm',
+  '.zsh','.ksh','.fish','.ps1','.bat','.cmd','.pl','.pm','.lua','.r','.dart','.ex','.exs','.erl','.hs','.ml','.jl','.nim','.zig']);
 // Stack-frame readers by a row's stack field (named groups path, line and
 // fn) and the frame reader: shared with the Container (container/stack-frames.mjs).
 export {STACKS, stackFrames} from '../container/stack-frames.mjs';
@@ -191,15 +235,85 @@ export function manifestOf(path) {
 // {node, python, ...} object (a version per tool, falsy when absent); a tool
 // counts as present under its name with or without a trailing major version
 // (python for python3). A row with no executables (text) is always installed.
-export function installed(inventory) {
-  const names = new Set();
+// v8 ship-verified: rows (TOOLCHAINS, or COMPILE_ROWS); a row's requires
+// holds only for tools the inventory reports, each at a version no lower
+// than the one given (a list of names, with no versions, meets none).
+export function installed(inventory, rows = TOOLCHAINS) {
+  const names = new Set(), versions = new Map();
   const add = n => { const s = String(n); names.add(s); names.add(s.replace(/\d+$/, '')); };
   if (Array.isArray(inventory) || inventory instanceof Set) for (const n of inventory) add(n);
-  else if (inventory && typeof inventory === 'object') for (const [k, v] of Object.entries(inventory)) if (v) add(k);
+  else if (inventory && typeof inventory === 'object') for (const [k, v] of Object.entries(inventory)) if (v) { add(k); versions.set(k, v); }
   const has = exe => names.has(exe) || names.has(exe.replace(/\d+$/, ''));
-  return TOOLCHAINS.filter(t => !t.executables.length || has(t.executables[0]));
+  const atLeast = (v, min) => { if (!min) return true; if (typeof v !== 'string') return false; const a = v.split('.').map(Number), b = min.split('.').map(Number); for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i]; return true; };
+  return rows.filter(t => t.requires ? Object.entries(t.requires).every(([n, min]) => has(n) && atLeast(versions.get(n), min)) : !t.executables.length || has(t.executables[0]));
 }
 
+// v8 ship-verified (L1): the interpreter a file's #! line names (the word
+// after env and its flags, without a trailing version: python for
+// python3.11), or ''.
+export function shebangOf(text) {
+  const line = /^#!([^\n]*)/.exec(String(text ?? ''))?.[1];
+  if (!line) return '';
+  const words = line.trim().split(/\s+/), base = w => String(w || '').split('/').pop();
+  let i = 0;
+  if (base(words[0]) === 'env') for (i = 1; i < words.length && (words[i].startsWith('-') || words[i].includes('=')); i++);
+  return base(words[i]).replace(/[\d.]+$/, '');
+}
+// v8 ship-verified (L1): the row that compiles a file, as the rows' data
+// says: by its extension, else (a file with none of a row's) by the
+// interpreter its #! line names (shebang). {row} for a row with a syntax
+// step; {row: null, why} for code no row compiles (OTHER_CODE, a #! line no
+// row's shebang names, or one its own row's shebang does not); null for a
+// file that is not code.
+export function codeRowOf(path, text, rows) {
+  const ext = extensionOf(path), interp = shebangOf(text);
+  const compiles = r => !!(r && (r.native || r.syntax?.length));
+  const byExt = ext ? rows.find(r => (r.extensions || []).includes(ext)) : null;
+  if (byExt) {
+    if (!compiles(byExt)) return null;
+    if (interp && byExt.shebang && !byExt.shebang.includes(interp)) return {row: null, why: `its #! line names ${interp}, which no toolchain row compiles`};
+    return {row: byExt};
+  }
+  if (interp) { const r = rows.find(x => compiles(x) && (x.shebang || []).includes(interp)); return r ? {row: r} : {row: null, why: `its #! line names ${interp}, which no toolchain row compiles`}; }
+  return OTHER_CODE.includes(ext) ? {row: null, why: `no toolchain row compiles ${ext} files`} : null;
+}
+// v8 ship-verified (M2): the scripts a page runs, read with a row's
+// page_scripts: [{mode, src, at, line}] for each script element of a type
+// that runs (mode: 'module' or 'classic'): src, the project path the file it
+// loads is at (null for one outside the project), else its body (body, and
+// line, the page's line it starts on).
+export function pageScripts(page, text, row) {
+  const ps = row?.page_scripts, out = [];
+  if (!ps || !(ps.pages || []).includes(extensionOf(page))) return out;
+  const value = (re, attrs) => { const m = new RegExp(re, 'i').exec(attrs); return m ? m[1] ?? m[2] ?? m[3] ?? '' : null; };
+  const src = String(text ?? '');
+  for (const m of src.matchAll(new RegExp(ps.tag, 'gi'))) {
+    const attrs = m[1] || '', type = (value(ps.type, attrs) ?? '').split(';')[0].trim().toLowerCase();
+    const mode = ps.modes.module.includes(type) ? 'module' : ps.modes.classic.includes(type) ? 'classic' : '';
+    if (!mode) continue;
+    const ref = value(ps.src, attrs);
+    if (ref !== null) { out.push({mode, src: pageTarget(page, ref)}); continue; }
+    out.push({mode, body: m[2], line: src.slice(0, m.index + m[0].indexOf('>') + 1).split('\n').length});
+  }
+  return out;
+}
+// A page's reference as a project path: relative to the page's folder, or to the root when it starts with '/'; null for a URL or one that leaves the project.
+function pageTarget(page, ref) {
+  const bare = String(ref).trim().split(/[?#]/)[0];
+  if (!bare || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(bare)) return null;
+  const out = [];
+  for (const part of (bare.startsWith('/') ? bare : `${page.split('/').slice(0, -1).join('/')}/${bare}`).split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { if (!out.length) return null; out.pop(); } else out.push(part);
+  }
+  return out.join('/') || null;
+}
+// v8 ship-verified (M2): the modes the pages among these files load each file in: Map(path → Set of 'module' | 'classic').
+export function pageModes(files, row) {
+  const out = new Map();
+  for (const [p, t] of files) for (const s of pageScripts(p, t, row)) if (s.src) { if (!out.has(s.src)) out.set(s.src, new Set()); out.get(s.src).add(s.mode); }
+  return out;
+}
 // How one part references another part's function, rendered for a name.
 // opts.browser: the project's code runs in a browser (browserProject), so a
 // row with a browser_reference uses it, with the function's file (path, else
@@ -277,44 +391,6 @@ export function unresolvedNames(text, row) {
 export function validIdentifier(row, name) {
   if (!row?.identifier) return false;
   return new RegExp(row.identifier).test(String(name)) && !String(row.reserved || '').split(' ').includes(String(name));
-}
-
-// v8 M3 review 2: the paths of a bundle that change how the reached files
-// resolve or run, read from the row of each reached file: its manifests (a
-// name ending in '/' is a folder at any depth) and run_config files, at any
-// depth, without case; a file of the row in one of its stdlib_shadow_dirs
-// whose name, or whose folder there, is a module of its standard library
-// (stdlib_names); and its glue's package marker in each folder above a
-// reached file, and its module-path script.
-export function runContext(paths, reached, rows = TOOLCHAINS) {
-  const rowOf = p => { const t = toolchainOf(p); return t ? rows.find(r => r.id === t.id) || t : null; };
-  const used = new Map();
-  for (const p of reached) { const r = rowOf(p); if (r) used.set(r.id, r); }
-  const out = new Set();
-  for (const row of used.values()) {
-    const names = [...(row.manifests || []), ...(row.run_config || [])].map(m => m.toLowerCase());
-    const std = new Set(String(row.stdlib_names || '').split(/\s+/).filter(Boolean)), exts = row.extensions || [];
-    const marker = row.glue?.package_marker || '', script = row.glue?.path_setup?.script?.path || '', above = new Set();
-    if (marker) for (const p of reached) { const dirs = p.split('/').slice(0, -1); for (let i = 1; i <= dirs.length; i++) above.add(`${dirs.slice(0, i).join('/')}/${marker}`); }
-    for (const p of paths) {
-      const parts = p.toLowerCase().split('/'), base = parts.at(-1);
-      if (names.some(n => n.endsWith('/') ? parts.slice(0, -1).includes(n.slice(0, -1)) : base === n) || p === script || above.has(p)) { out.add(p); continue; }
-      if (!std.size || !exts.includes(extensionOf(p))) continue;
-      for (const d of row.stdlib_shadow_dirs || []) {
-        const rest = !d ? p : p.startsWith(`${d}/`) ? p.slice(d.length + 1) : null;
-        if (rest === null) continue;
-        const first = rest.split('/')[0], name = rest.includes('/') ? first : first.slice(0, first.length - extensionOf(first).length);
-        if (std.has(name)) out.add(p);
-      }
-    }
-  }
-  return [...out];
-}
-
-// Whether a file reads beyond its import closure, by its row's reach_whole.
-export function readsBeyondImports(path, text, rows = TOOLCHAINS) {
-  const t = toolchainOf(path), row = t && (rows.find(r => r.id === t.id) || t);
-  return !!row && (row.reach_whole || []).some(src => new RegExp(src).test(String(text ?? '')));
 }
 
 // v8 M3 review 2: the nearest scope manifest of a file among these files (the

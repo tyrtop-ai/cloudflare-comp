@@ -696,7 +696,7 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
   const scratch=await realpath(await mkdtemp(path.join(base,'card-')));
   const stages=[],checks=[],issues=[],runs=new Map();
   let infrastructure_issue='',ns=null;
-  const inventory={node:process.versions.node,python:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null};
+  const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null};
   const env=checkEnvironment();
   const redact=(text,...dirs)=>stripAdapterFrames(redactPaths(text,[...dirs,scratch],base));
   const stage=async(name,fn)=>{const t=Date.now();const out=(await fn())||{};stages.push({name,passed:out.passed!==false,ms:Date.now()-t,...(out.detail?{detail:clip(redact(out.detail),600)}:{})});};
@@ -721,6 +721,10 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
     const checkPrefix=[...limitPrefix,...netPrefix];
     const py=await execCheck(['python3','--version'],{cwd:scratch,env,ms:5000});
     inventory.python=py.code===0?(py.stdout+py.stderr).trim().replace(/^Python\s+/,''):null;
+    // v8 ship-verified: the shells a compile row reads scripts with (sh has no version to report: its path).
+    const sh=await execCheck(['sh','-c','command -v sh'],{cwd:scratch,env,ms:5000}),bash=await execCheck(['bash','--version'],{cwd:scratch,env,ms:5000});
+    inventory.sh=sh.code===0?sh.stdout.trim()||'sh':null;
+    inventory.bash=bash.code===0?(/version\s+(\d+(?:\.\d+)*)/.exec(bash.stdout)?.[1]||'bash'):null;
     try{inventory.playwright=createRequire(path.join(ADAPTER_DIR,'browser-check.mjs'))('playwright/package.json').version;}catch{}
 
     // 2. Syntax: one process per row, its files in one command line. A
@@ -732,11 +736,11 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
       await stage('syntax:'+row.id,async()=>{
         const box=await fresh('syntax');
         try {
-          let rest=names,count=0,bad=0,timedOut=false;
+          let rest=names,count=0,bad=0,timedOut=false,read=false;
           while(rest.length&&count<12&&left()>0) {
             count++;
             const r=await execCheck(row.syntax.flatMap(x=>x==='{files}'?rest:[x]),{cwd:box.dir,env:box.env,prefix:checkPrefix,ms:Math.max(1000,Math.min(60_000,left()))});
-            if(r.code===0&&!r.timedOut)break;
+            if(r.code===0&&!r.timedOut){read=true;break;}
             timedOut||=r.timedOut;
             const out=redact(r.stdout+r.stderr,box.dir,box.root),hits=sourcePaths(out,Object.fromEntries(rest.map(n=>[n,1])));
             for(const p of hits.length?hits:rest.slice(0,1)) {
@@ -745,8 +749,10 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
               bad++;
             }
             if(!hits.length||r.timedOut)break;
-            rest=rest.slice(Math.max(...hits.map(h=>rest.indexOf(h)))+1);
+            rest=rest.slice(Math.max(...hits.map(h=>rest.indexOf(h)))+1);read=!rest.length;
           }
+          // v8 ship-verified: a step that read none of its files (the time was spent) compiled nothing: it never passes.
+          if(!bad&&!read){infrastructure_issue||=`the syntax step of ${row.id} did not run: the verification's time was spent`;return {passed:false,detail:'not run: the time was spent'};}
           return bad?{passed:false,detail:timedOut?'timed out':`${bad} file(s) do not compile`}:{detail:`${names.length} file(s)${count>1?`, ${count} runs`:''}`};
         } finally {await box.dispose();}
       });

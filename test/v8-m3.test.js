@@ -6,6 +6,11 @@
 // writer, Clef, the splitter, the workers and the linker model; the checks
 // run in the real build runner (verifyCard) in Node, inside the real Box
 // class over a fake container.
+// v8 ship-verified: a pass is for the exact bundle it ran on and is never
+// carried up: the top runs every check of the card in its own box on the
+// bundle that ships. The expectations below that counted one run per check
+// (the piece's) or no box at the top now count the top's run too; each is
+// marked "v8 ship-verified".
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
@@ -90,7 +95,9 @@ const tail = room => events(room).filter(e => !['dispatch', 'turn_start', 'turn_
 const pieceSpans = (room, name) => room.spans(0, 100000).filter(s => s.kind === 'piece' && s.name === name);
 const boxesWith = (boxes, id) => boxes.filter(b => b.ids.includes(id));
 // The files of a bundle that a row compiles and whose exact bytes no syntax step compiled.
-const uncompiled = (room, files) => [...files].filter(([p, t]) => { const s = room.syntaxOf(p); return s?.box && !room.db().exec('SELECT key FROM syntax_clean WHERE key=?', room.syntaxKey(s.row, t)).toArray().length; }).map(([p]) => p);
+const uncompiled = (room, files) => [...room.uncompiled(files)];
+// A box of a part's own piece (no file of the other part or of the notes).
+const inPart = (b, other) => !b.files.some(f => other.test(f) || /NOTES/.test(f));
 
 test('M3: every manager in a v8 split has a builder of its own, which stores its piece; each check is held by the lowest manager whose pieces serve it', {skip}, async () => {
   const {room, drain, boxes} = room3();
@@ -115,11 +122,14 @@ test('M3: every manager in a v8 split has a builder of its own, which stores its
   assert.deepEqual(held(room, at['Loud part']), ['R1', 'R2']);
   assert.deepEqual(held(room, at['Quiet part']), ['R3', 'R4']);
   assert.deepEqual(held(room, 'root'), ['R5', 'R6']);
-  // R2 spans two children of the loud part (shout and loud): it ran only there, in that part's own box, once.
-  assert.equal(boxesWith(boxes, 'R2').length, 1);
-  const loudBox = boxesWith(boxes, 'R2')[0];
+  // R2 spans two children of the loud part (shout and loud): it ran there, in that part's own box, once; and (v8
+  // ship-verified) once more in the top's box, on the bundle that ships, with every other check of the card.
+  assert.equal(boxesWith(boxes, 'R2').length, 2);
+  const [loudBox, topBox] = boxesWith(boxes, 'R2');
   assert.deepEqual(loudBox.ids.sort(), ['R1', 'R2']);
   assert.ok(!loudBox.files.some(f => /whisper|NOTES/.test(f)), 'the loud part\'s box holds only its own piece');
+  assert.deepEqual(topBox.ids.sort(), ['R1', 'R2', 'R3', 'R4']);
+  assert.deepEqual(topBox.files.sort(), [...(await room.bundleFiles('root')).files.keys()].sort(), 'the top\'s box holds the bundle that ships');
   // Hierarchical assembly: the top's builder joined its children's pieces, the loud part's from its builder's row.
   const loudPiece = room.db().exec('SELECT path FROM piece_files WHERE builder=? AND glue=0', room.builderOf(at['Loud part']).id).toArray().map(r => r.path);
   const topPiece = room.db().exec('SELECT path FROM piece_files WHERE builder=? AND glue=0', room.builderOf('root').id).toArray().map(r => r.path);
@@ -131,9 +141,9 @@ test('M3: every manager in a v8 split has a builder of its own, which stores its
   for (const name of ['piece_link', 'piece_checks']) assert.deepEqual(pieceSpans(room, name).map(s => JSON.parse(JSON.stringify(s.attrs)).manager).filter((x, i, a) => a.indexOf(x) === i).sort(), managers.sort(), name);
   assert.deepEqual(pieceSpans(room, 'piece_clef').map(s => s.attrs.manager).sort(), [at['Loud part'], at['Quiet part']].sort(), 'Clef is asked below the top only');
   // A box per part: each runs its calls and compiles its files (the rows' syntax step). v8 M3 review (M4): every file of
-  // the top's final bundle was compiled, exactly as it ships; the top's file checks ran in the Worker, and with nothing in
-  // its bundle left to compile it opened no box of its own.
-  assert.deepEqual(pieceSpans(room, 'piece_box').map(s => s.attrs.manager).sort(), [at['Loud part'], at['Quiet part']].sort());
+  // the top's final bundle was compiled, exactly as it ships; the top's file checks ran in the Worker. v8 ship-verified: the
+  // top opened one box of its own, for the card's other checks on its bundle (before: none).
+  assert.deepEqual(pieceSpans(room, 'piece_box').map(s => s.attrs.manager).sort(), [at['Loud part'], at['Quiet part'], 'root'].sort());
   assert.deepEqual(uncompiled(room, (await room.bundleFiles('root')).files), []);
   assert.ok(events(room, 'checks_placed').length >= 1);
 });
@@ -154,34 +164,43 @@ test('M3: two independent parts compile in parallel, each in its own box, before
   assert.ok(a.start < b.end && b.start < a.end, 'the two piece boxes overlap');
   const notes = room.node(ids(room).Notes), wrote = events(room, 'done').find(e => e.actor === notes.id);
   assert.ok(wrote.ts >= Math.max(a.end, b.end), 'their sibling finished after both');
-  // The top runs only its own checks (file checks, in the Worker): its bundle's files were all compiled in the parts' boxes.
-  assert.ok(!pieceSpans(room, 'piece_box').some(s => s.attrs.manager === 'root'));
+  // v8 ship-verified: the top runs every check of the card on its bundle, in one box after both parts' (before: its file checks only).
+  assert.equal(pieceSpans(room, 'piece_box').filter(s => s.attrs.manager === 'root').length, 1);
+  const top = boxes.filter(x => x.ids.length === 4);
+  assert.equal(top.length, 1);
+  assert.ok(top[0].start >= Math.max(a.end, b.end), 'after both parts\' boxes');
   assert.deepEqual(uncompiled(room, (await room.bundleFiles('root')).files), []);
 });
 
-test('M3: a check passed in a piece is not run again above while the piece\'s files are unchanged, and runs again in its piece when they change', {skip}, async () => {
+// v8 ship-verified: the title was "a check passed in a piece is not run again above while the piece's files are unchanged";
+// a pass is no longer carried up, so the top runs it on each bundle it verifies, and the piece's own box runs it only when
+// the piece's files change.
+test('M3: a check passed in a piece is not run again in its piece while the piece\'s files are unchanged, and runs again in its piece when they change', {skip}, async () => {
   // R6 fails at the top (the notes leave whispering out); the repair is the notes' and leaves the parts as they were.
   const {room, drain, boxes} = room3({answers: {Notes: [fileBlocks([{path: 'NOTES.md', content: '# Notes\n\nCall shout to shout a word.\n'}], {done: true}), fileBlocks([FILES.Notes], {done: true})]}});
   await room.start(GOAL, 60, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.equal(events(room, 'checks_reported').filter(e => e.actor === 'root').length, 1, 'the top ran R6 twice');
-  for (const r of ['R1', 'R2', 'R3', 'R4']) assert.equal(boxesWith(boxes, r).length, 1, `${r} ran once: its piece is unchanged`);
-  const rec = room.read('piece_pass:R1', null), at = ids(room);
-  assert.equal(rec.row, at['Loud part']);
-  assert.equal(rec.owned, room.ownedDigest(at['Loud part']));
-  // The shouter's file changes: R1 and R2 have no current pass, and the run is not finished.
+  for (const r of ['R1', 'R2']) assert.equal(boxesWith(boxes, r).filter(b => inPart(b, /whisper/)).length, 1, `${r} ran once in its piece: the piece is unchanged`);
+  for (const r of ['R3', 'R4']) assert.equal(boxesWith(boxes, r).filter(b => inPart(b, /shout|loud/)).length, 1, `${r} ran once in its piece: the piece is unchanged`);
+  // v8 ship-verified: and in the top's box on each bundle the top verified, before and after the notes' repair (before: never).
+  for (const r of ['R1', 'R2', 'R3', 'R4']) assert.equal(boxesWith(boxes, r).length, 3, r);
+  const at = ids(room), digestOf = async id => snapshotHash((await room.bundleFiles(id)).files);
+  assert.equal(room.read('piece_pass:R1', null).at[at['Loud part']].digest, await digestOf(at['Loud part']));
+  // The shouter's file changes: R1 and R2 have no pass on the loud part's bundle, and the run is not finished.
   await room.putFile(at.Shouter, 'shout.py', 'def shout(s):\n    return str(s).upper() + "!"  # louder\n');
-  assert.equal(room.checkPassed(CARD.requirements[0]), false);
-  assert.equal(room.checkPassed(CARD.requirements[2]), true, 'the quiet part\'s pass holds');
+  assert.equal(room.passedOn(CARD.requirements[0], await digestOf(at['Loud part'])), false);
+  assert.equal(room.passedOn(CARD.requirements[2], await digestOf(at['Quiet part'])), true, 'the quiet part\'s pass holds on its bundle');
   assert.equal(room.runFinished(), false);
-  // Its manager joins the changed piece and runs them again in the loud part's box; the quiet part's are not run.
+  // Its manager joins the changed piece and runs them again in the loud part's box; the quiet part's are not run there.
   room.wake(at['Loud part']);
   room.set('status', 'running'); room.busy = true;
   await room.drive(20);
-  assert.equal(boxesWith(boxes, 'R1').length, 2);
-  assert.equal(boxesWith(boxes, 'R3').length, 1);
-  assert.ok(!boxes.slice(-1)[0].ids.includes('R1') || boxes.slice(-1)[0].files.every(f => !/whisper/.test(f)), 'never in a box above the loud part');
+  assert.equal(boxesWith(boxes, 'R1').filter(b => inPart(b, /whisper/)).length, 2);
+  assert.equal(boxesWith(boxes, 'R3').filter(b => inPart(b, /shout|loud/)).length, 1);
+  // The top verifies the bundle that ships again, every check in one box.
+  assert.deepEqual(boxes.at(-1).ids.sort(), ['R1', 'R2', 'R3', 'R4']);
   assert.equal(room.runFinished(), true, tail(room));
 });
 
@@ -206,11 +225,11 @@ test('M3: Clef\'s NO rolls a check up to the row above, where it runs; a hard-fa
   assert.ok(asked.length >= 2);
   assert.ok(!asked.some(c => c.state.checks.some(x => x.says === CARD.requirements[3].says)), 'no Clef call for R4');
   assert.ok(asked.every(c => Object.values(c.questions).every(q => q.instructions === CLEF.piece_reach.replace('{name}', c.state.piece.name).replace('{i}', q.instructions.match(/check (\d+)/)[1]))));
-  // Both ran once, at the top, after their parts finished.
+  // Both ran once, at the top, after their parts finished (v8 ship-verified: in the top's one box, with the parts' checks).
   assert.equal(boxesWith(boxes, 'R2').length, 1);
   assert.equal(boxesWith(boxes, 'R4').length, 1);
-  assert.deepEqual(boxesWith(boxes, 'R2')[0].ids.sort(), ['R2', 'R4']);
-  assert.equal(room.read('piece_pass:R2', null).row, 'root');
+  assert.deepEqual(boxesWith(boxes, 'R2')[0].ids.sort(), ['R1', 'R2', 'R3', 'R4']);
+  assert.deepEqual(Object.keys(room.read('piece_pass:R2', null).at), ['root']);
 });
 
 test('M3: a failure about something outside the piece rolls up instead of becoming a repair; one inside the piece routes within it', {skip}, async () => {
@@ -228,14 +247,16 @@ test('M3: a failure about something outside the piece rolls up instead of becomi
   assert.ok(r1.length && r1.every(p => p.source === at['Loud part']), JSON.stringify(r1.map(p => [p.source, p.holder])));
   assert.ok(r1.some(p => p.trail.some(t => t.action === 'assign' && t.to === at.Shouter)));
   assert.ok(!room.problems("source='root'").some(p => p.facts?.requirement?.id === 'R1'));
-  assert.deepEqual(boxesWith(boxes, 'R1').map(b => b.files.some(f => /whisper|NOTES/.test(f))), [false, false], 'R1 ran twice, in the loud part\'s box only');
+  // v8 ship-verified: R1 ran twice in the loud part's box, then in the top's on the bundle that ships (before: the part's only).
+  assert.deepEqual(boxesWith(boxes, 'R1').map(b => b.files.some(f => /whisper|NOTES/.test(f))).slice(0, 2), [false, false], 'R1 ran twice in the loud part\'s box');
+  assert.ok(boxesWith(boxes, 'R1').slice(2).every(b => b.files.some(f => /whisper|NOTES/.test(f))), 'and then only in the top\'s');
   // Outside: R4's refused connection rolled up; the quiet part repaired nothing for it.
   const up = events(room, 'check_rolled_up').find(e => e.actor === at['Quiet part']);
   assert.match(up.body, /^R4: it failed on something outside the piece: it connects to a server that does not run inside the piece\./);
   assert.ok(!room.problems(`source='${at['Quiet part']}'`).some(p => p.facts?.requirement?.id === 'R4'));
   // At the top it is the top's to route, and there it became the softener's repair.
   assert.ok(room.problems("source='root'").some(p => p.facts?.requirement?.id === 'R4'));
-  assert.equal(room.read('piece_pass:R4', null).row, 'root');
+  assert.deepEqual(Object.keys(room.read('piece_pass:R4', null).at), ['root']);
 });
 
 test('M3: assembly is hierarchical: a relink made at a part stays with its piece, and the top joins it without asking the linker again', {skip}, async () => {
@@ -256,7 +277,8 @@ test('M3: assembly is hierarchical: a relink made at a part stays with its piece
   assert.equal(stored(room.builderOf('root').id), fixed, 'the top joined the loud part\'s piece as it was linked there');
   assert.deepEqual(room.read(`link_fixes:${room.builderOf('root').id}`, {}), {});
   assert.equal(room.files(at.Louder).find(f => f.path === 'loud.py').revision, 1, 'the worker\'s own file is unchanged');
-  assert.equal(boxesWith(boxes, 'R2').length, 1);
+  // v8 ship-verified: in the loud part's box and in the top's (before: once).
+  assert.equal(boxesWith(boxes, 'R2').length, 2);
   assert.equal((await room.appFiles()).files.find(f => f.path === path).content, fixed);
 });
 

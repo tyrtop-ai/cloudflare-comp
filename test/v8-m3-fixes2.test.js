@@ -4,6 +4,13 @@
 // the real build runner (verifyCard) inside the real Box class over a fake
 // container; scripted fakes stand in for the card writer, Clef, the
 // splitter, the workers and the manager's model.
+// v8 ship-verified: what a check reaches (reachOf, runContext,
+// readsBeyondImports and the rows' reach_whole and run_config) no longer
+// decides whether a pass is carried up: a pass holds only for the exact
+// bundle it ran on, and the top runs every check of the card on its own.
+// The H1 tests below keep their scenarios and read the passes and the top's
+// box instead of reachOf; the unit test of reachOf and runContext went with
+// that code (each change is marked "v8 ship-verified").
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
@@ -13,7 +20,7 @@ import {join} from 'node:path';
 import {liveRoom, events, fileBlocks, verifyCard, snapshotHash, settle} from './helpers/room.js';
 import {textHash} from '../src/glue.js';
 import {sourceParseError} from '../src/linker.js';
-import {TOOLCHAINS, parseModeOf, runContext, readsBeyondImports} from '../src/toolchains.js';
+import {TOOLCHAINS, parseModeOf} from '../src/toolchains.js';
 
 const hasPython = spawnSync('python3', ['--version']).status === 0;
 const skip = !hasPython && 'python3 is not installed';
@@ -98,8 +105,8 @@ test('H1: a command check passed in a part runs again at the top, whose bundle h
   const at = ids(room);
   // The loud part's box held no NOTES.md, so R1 passed there; it reaches the whole bundle (it starts a process).
   assert.ok(boxesWith(boxes, 'R1')[0].files.every(p => p !== 'NOTES.md'));
-  const rec = room.read('piece_pass:R1', null);
-  assert.deepEqual(rec.covers[at['Loud part']].reached, ['*']);
+  // v8 ship-verified: its pass there is for the loud part's bundle only (before: a cover that reached '*').
+  assert.equal(room.read('piece_pass:R1', null).at[at['Loud part']].digest, await snapshotHash((await room.bundleFiles(at['Loud part'])).files));
   // The top's bundle differs, so R1 ran again in the top's box, over the shipped files, and failed there.
   assert.ok(boxesWith(boxes, 'R1').some(b => b.files.includes('NOTES.md')), tail(room));
   assert.equal(passedOf(room).R1, false);
@@ -113,7 +120,8 @@ test('H1: a call check reaches the files that change how its code runs: a base p
   await start();
   await drain();
   const at = ids(room), top = await room.bundleFiles('root');
-  assert.ok(room.reachOf('root', REQ.shout, top, JS_CARD).includes('package.json'));
+  // v8 ship-verified: the top's bundle holds the base's package.json (before: reachOf at the top listed it).
+  assert.ok(top.files.has('package.json'));
   assert.equal((await room.bundleFiles(at['Loud part'])).files.has('package.json'), false);
   // R1 passed in the loud part, where Node reads shout.js as CommonJS, and ran again at the top, where it does not load.
   assert.equal(boxesWith(boxes, 'R1').length, 2, tail(room));
@@ -129,8 +137,7 @@ test('H1: a call check whose code reads files by name reaches the whole bundle',
   const {room, drain, boxes, start} = tree({card: CALL_CARD, files: {Shouter: [shout]}});
   await start();
   await drain();
-  const at = ids(room);
-  assert.deepEqual(room.reachOf(at['Loud part'], REQ.shout, await room.bundleFiles(at['Loud part']), CALL_CARD), ['*']);
+  // v8 ship-verified: R1 ran in the top's box over the whole bundle (before: because reachOf found it reads the whole bundle).
   assert.ok(boxesWith(boxes, 'R1').some(b => b.files.includes('NOTES.md')), tail(room));
   assert.equal(passedOf(room).R1, false);
   assert.notEqual(room.get('status'), 'complete', tail(room));
@@ -142,36 +149,19 @@ test('H1: a call check reaches the file a shim of the glue stands for, so a link
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   const at = ids(room), top = await room.bundleFiles('root'), path = [...top.files.keys()].find(p => p.endsWith('/shout.py'));
-  // loud reads shout through the root shim shout.py; its check reaches the shouter's file behind it.
-  assert.ok(room.reachOf('root', REQ.loud, top, CALL_CARD).includes(path));
-  assert.equal(boxesWith(boxes, 'R2').length, 1);
+  // loud reads shout through the root shim shout.py. v8 ship-verified: R2 ran in the loud part's box and in the top's (before: once).
+  assert.equal(boxesWith(boxes, 'R2').length, 2);
   const tb = room.builderOf('root');
   room.save(`link_fixes:${tb.id}`, {[path]: {base: textHash(top.link.staged.get(path)), text: 'def shout(s):\n    return str(s).upper()\n', renames: [{from: 'shout', to: 'shout'}]}});
   room.wake('root');
   await settle(room, 30);
-  assert.equal(boxesWith(boxes, 'R2').length, 2, tail(room));
+  assert.ok(boxesWith(boxes, 'R2').length >= 3, tail(room));
   assert.equal(passedOf(room).R2, false);
-  assert.equal(room.read('piece_pass:R2', null)?.row ?? at['Loud part'], at['Loud part']);
+  assert.ok(room.checksOf(at['Loud part']).some(r => r.id === 'R2'), 'the check stays its holder\'s');
   assert.notEqual(room.get('status'), 'complete');
 });
 
-test('H1: what a check reaches, from the rows\' data: a process check the whole bundle; a call check its closure, manifests, run config, root files named like standard modules and the glue', () => {
-  const py = TOOLCHAINS.find(r => r.id === 'python'), js = TOOLCHAINS.find(r => r.id === 'javascript');
-  const paths = ['a.py', 'b.py', 'json.py', 'logging/__init__.py', 'conftest.py', 'pytest.ini', 'pyproject.toml', 'glue/run.sh', 'components/__init__.py', 'components/p_x/__init__.py', 'components/p_x/c.py', 'deep/json.py', 'index.js', 'package.json', 'NOTES.md'];
-  assert.deepEqual(runContext(paths, ['a.py', 'components/p_x/c.py'], TOOLCHAINS).sort(),
-    ['components/__init__.py', 'components/p_x/__init__.py', 'conftest.py', 'glue/run.sh', 'json.py', 'logging/__init__.py', 'pyproject.toml', 'pytest.ini']);
-  assert.deepEqual(runContext(paths, ['index.js'], TOOLCHAINS), ['package.json']);
-  assert.equal(readsBeyondImports('a.py', 'with open("data.txt") as f:\n    pass\n'), true);
-  assert.equal(readsBeyondImports('a.py', 'import os\n'), true);
-  assert.equal(readsBeyondImports('a.py', 'from b import c\n'), false);
-  assert.equal(readsBeyondImports('index.js', 'const fs = require("node:fs");\n'), true);
-  assert.equal(readsBeyondImports('index.js', 'const m = await import(name);\n'), true);
-  assert.equal(readsBeyondImports('index.js', 'const {a} = require("./a");\n'), false);
-  assert.ok(py.run_config.includes('conftest.py') && js.parse_mode);
-  const {room} = tree();
-  const bundle = {files: new Map([['server.py', 'print(1)\n'], ['index.html', '<p>hi</p>\n']]), placed: new Set(), origin: new Map(), glue: new Map(), contracts: []};
-  for (const kind of ['command', 'http', 'browser']) assert.deepEqual(room.reachOf('root', {id: 'R9', check: {kind}}, bundle, CMD_CARD), ['*'], kind);
-});
+
 
 // ------------------------------------------------------------------ M1
 test('M1: a part whose problem the top gave to a piece outside it runs its checks again once that piece is done; the line ends held with a reason, and Continue moves it', {skip}, async () => {
@@ -268,7 +258,8 @@ test('L2: the verified record is for what the top\'s piece joins; a top run that
   await settle(room, 30);
   assert.equal(passedOf(room).R2, false);
   assert.equal(room.read('verified:root', null), null);
-  assert.deepEqual(Object.keys(room.read('piece_pass:R2', null).covers), [at['Loud part']]);
+  // v8 ship-verified: the top's run that failed leaves R2 no pass at the top, only the loud part's on its own bundle (before: covers).
+  assert.deepEqual(Object.keys(room.read('piece_pass:R2', null).at), [at['Loud part']]);
   assert.equal(room.allPassed(), false);
 });
 
@@ -278,8 +269,9 @@ test('held: after a completed run, waking every manager and every leaf on the sa
   await start();
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
-  // Three boxes: each part's, and the top's for R1, whose command reaches the whole bundle, which differs there.
+  // Three boxes: each part's, and the top's for every check on the bundle that ships (v8 ship-verified: before, for R1 only).
   assert.equal(boxes.length, 3);
+  assert.deepEqual(boxes.at(-1).ids.sort(), ['R1', 'R2', 'R3']);
   assert.deepEqual(boxesWith(boxes, 'R1').map(b => b.files.includes('NOTES.md')), [false, true]);
   const before = boxes.length;
   for (const n of room.allNodes().filter(n => !n.role && room.manager(n.id))) { room.db().exec("UPDATE agents SET status='waiting' WHERE id=?", n.id); room.wake(n.id); }

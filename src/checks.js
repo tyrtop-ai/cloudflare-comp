@@ -58,9 +58,11 @@ export function callModule(check, files, placed = new Set()) {
 // rows: the installed toolchain rows. placed: the bundle's placed paths.
 // paths (S5): the module path the bundle's glue needs ({VAR: [bundle
 // folders]}, linkBundle's), which every check process runs with.
-// compile (v8 M3 review): the files the syntax step compiles, when not every
-// one (a file whose exact bytes compiled before is not compiled again).
-export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), paths: glue = {}, compile = null} = {}) {
+// compile (v8 M3 review, v8 ship-verified): the files the syntax step
+// compiles, each with the row that compiles it (a Map), when not every file
+// of each row (a file whose exact bytes compiled before is not compiled
+// again). inventory: the room needs the box's inventory, so the box opens.
+export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), paths: glue = {}, compile = null, inventory = false} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], reqs = card?.requirements || [];
   const commandsOf = new Map((card?.deliverables || []).filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
   const used = new Set(card?.languages || []);
@@ -69,9 +71,13 @@ export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), p
     const word = firstWord(c);
     for (const r of all) if ((r.executables || []).includes(word)) used.add(r.id);
   }
-  const toolchains = all.filter(r => used.has(r.id));
-  const syntax = toolchains.filter(r => Array.isArray(r.syntax) && r.syntax.length)
-    .map(r => ({toolchain: r.id, files: paths.filter(p => toolchainOf(p)?.id === r.id && (!compile || compile.has(p)))})).filter(s => s.files.length);
+  const toolchains = all.filter(r => used.has(r.id)), steps = new Map();
+  if (compile) {
+    for (const [p, row] of compile) if (files.has(p) && Array.isArray(row?.syntax) && row.syntax.length) { if (!steps.has(row.id)) steps.set(row.id, {row, files: []}); steps.get(row.id).files.push(p); }
+    // A compile row (one no card names) goes to the box with the files it compiles.
+    for (const {row} of steps.values()) if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
+  } else for (const r of toolchains) if (Array.isArray(r.syntax) && r.syntax.length) steps.set(r.id, {row: r, files: paths.filter(p => toolchainOf(p)?.id === r.id)});
+  const syntax = [...steps.values()].filter(s => s.files.length).map(s => ({toolchain: s.row.id, files: s.files}));
   // A command deliverable runs by its own path, through its row's run_file (never a PATH lookup).
   const commands = {};
   for (const [name, d] of commandsOf) {
@@ -98,7 +104,7 @@ export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), p
   const runs = (card?.run || []).map(x => x.static ? {id: x.id, static: true} : {id: x.id, ...(x.argv ? {argv: x.argv} : {}), run: x.run, port: true, ready: x.ready || '/'});
   // A run whose command deliverable is missing fails the checks it serves, in the Container, as a run that did not start.
   return {plan: {syntax, project, runs, commands, checks, ...(glue && Object.keys(glue).length ? {paths: glue} : {})}, toolchains, local,
-    container: syntax.length > 0 || project.length > 0 || checks.length > 0};
+    container: inventory || syntax.length > 0 || project.length > 0 || checks.length > 0};
 }
 
 // A file check, in the Worker (§4.1 step 2): exists, non-empty, has each

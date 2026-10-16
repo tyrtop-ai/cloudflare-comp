@@ -4,6 +4,11 @@
 // the real build runner (verifyCard) inside the real Box class over a fake
 // container; scripted fakes stand in for the card writer, Clef, the
 // splitter, the workers and the linker model.
+// v8 ship-verified: a pass holds for the exact bundle it ran on and is never
+// carried up, so the top runs every check of the card in its own box; the
+// tests below that read covers, owned digests or checkPassed, or counted one
+// run per check, now read passedOn and the pass's digest and count the top's
+// run too (each such change is marked "v8 ship-verified").
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
@@ -94,7 +99,9 @@ const tail = room => events(room).filter(e => !['dispatch', 'turn_start', 'turn_
 const pieceSpans = (room, name) => room.spans(0, 100000).filter(s => s.kind === 'piece' && s.name === name);
 const boxesWith = (boxes, id) => boxes.filter(b => b.ids.includes(id));
 const shipped = async (room, name) => { const b = await room.bundleFiles('root'); return [...b.files].find(([p]) => p.endsWith(`/${name}`) || p === name)?.[1]; };
-const uncompiled = (room, files) => [...files].filter(([p, t]) => { const s = room.syntaxOf(p); return s?.box && !room.db().exec('SELECT key FROM syntax_clean WHERE key=?', room.syntaxKey(s.row, t)).toArray().length; }).map(([p]) => p);
+const uncompiled = (room, files) => [...room.uncompiled(files)];
+// v8 ship-verified: the digest of the bundle the top verified last, which every pass must name for the run to end.
+const verifiedDigest = room => room.read('verified:root', null)?.digest;
 
 // ------------------------------------------------------------------ H2
 test('H2: a leaf that writes while its piece\'s box runs leaves no pass for the new files: the check runs again on them', {skip}, async () => {
@@ -117,9 +124,12 @@ test('H2: a leaf that writes while its piece\'s box runs leaves no pass for the 
   // It failed there, was repaired, and what ships is the repaired file, on which R1 passed.
   assert.ok(room.problems("stage='check'").some(p => p.facts?.requirement?.id === 'R1' && p.source === at['Loud part']));
   assert.equal(await shipped(room, 'shout.py'), FILES.Shouter.content);
-  const rec = room.read('piece_pass:R1', null);
-  assert.equal(rec.owned, room.ownedDigest(at['Loud part']));
-  assert.ok(rec.covers.root && rec.covers[at['Loud part']]);
+  // v8 ship-verified: R1's pass at the top is on the bundle that ships, its last at the loud part on that part's
+  // (before: covers at both levels and the owned digest).
+  const rec = room.read('piece_pass:R1', null).at;
+  assert.equal(rec.root.digest, await snapshotHash((await room.bundleFiles('root')).files));
+  assert.equal(rec.root.digest, verifiedDigest(room));
+  assert.equal(rec[at['Loud part']].digest, await snapshotHash((await room.bundleFiles(at['Loud part'])).files));
 });
 
 // ------------------------------------------------------------------ H1
@@ -135,8 +145,9 @@ test('H1: a file that does not compile holds the run even when every check passe
   // Notes declined the repair (it answered done without changing a file): the files are as they were, so the top holds, as before M3.
   assert.equal(room.snapshot().pause?.kind, 'checks_failed', tail(room));
   assert.match(room.snapshot().pause.text, /helpers\.py/);
-  // R5 reaches NOTES.md only, so its pass stands; R6 too. The run is held by the file, not by a check.
-  assert.ok(room.read('piece_pass:R5', null)?.covers?.root);
+  // R5 and R6 passed on this exact bundle, at the top (v8 ship-verified: before, R5's cover at the top). The run is held by the file, not by a check.
+  const top = await snapshotHash((await room.bundleFiles('root')).files);
+  for (const r of CARD.requirements.slice(4)) assert.equal(room.passedOn(r, top), true, r.id);
 });
 
 test('H1: once the file compiles the run completes, and what ships is the compiled file', {skip}, async () => {
@@ -149,9 +160,10 @@ test('H1: once the file compiles the run completes, and what ships is the compil
   assert.deepEqual(uncompiled(room, (await room.bundleFiles('root')).files), []);
 });
 
-test('H1: a pass is not recorded when a file the check reaches does not compile', {skip}, async () => {
-  // shout.py reads a helper module that does not compile, and goes on without it: R1 passes, and it reaches that file, so
-  // its pass waits for the file to compile.
+// v8 ship-verified: before, a pass was not recorded when a file the check reached did not compile (so no level reused it);
+// a pass is now for the exact bundle it ran on, which holds the file that does not compile, so it is never one for what ships.
+test('H1: a check that passes beside a file that does not compile does not end the line: the file is repaired, and what ships passed', {skip}, async () => {
+  // shout.py reads a helper module that does not compile, and goes on without it: R1 passes on those bytes.
   const shout = {path: 'shout.py', content: 'try:\n    from shout_tools import mark\nexcept SyntaxError:\n    mark = None\n\n\ndef shout(s):\n    return str(s).upper() + "!"\n'};
   const tools = {path: 'shout_tools.py', content: 'def mark(:\n    return "!"\n'};
   const toolsOk = {path: 'shout_tools.py', content: 'def mark():\n    return "!"\n'};
@@ -160,9 +172,9 @@ test('H1: a pass is not recorded when a file the check reaches does not compile'
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   const first = eventsOf(room, 'checks_reported').find(e => e.actor === ids(room)['Loud part']);
-  // v8 M3 review 2 (H1): R2's loud reaches shout through its shim, and so the same file.
-  assert.match(first.body, /R1, R2 passed on a file that does not compile/);
+  assert.match(first.body, /2 of 2 requirement\(s\) pass; 1 file\(s\) do not compile/);
   assert.equal(await shipped(room, 'shout_tools.py'), toolsOk.content);
+  for (const r of CARD.requirements.slice(0, 2)) assert.equal(room.passedOn(r, verifiedDigest(room)), true, r.id);
 });
 
 // ------------------------------------------------------------------ M4
@@ -175,10 +187,11 @@ test('M4: the top compiles its final bundle whenever it holds bytes nothing comp
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.deepEqual(room.read('checks:root', null), []);
-  // The top's own box compiled what no part compiled (the helper and the top's glue), with no check in it.
+  // The top's own box compiled what no part compiled (the helper and the top's glue). v8 ship-verified: and ran the card's
+  // checks on its bundle, since no pass is carried up (before: with no check in it).
   const top = pieceSpans(room, 'piece_box').filter(s => s.attrs.manager === 'root');
-  assert.ok(top.length >= 2 && top.every(s => s.attrs.checks === 0 && s.attrs.compiled > 0), JSON.stringify(top.map(s => s.attrs)));
-  assert.ok(boxes.some(b => !b.ids.length && b.syntax.some(p => p.endsWith('/helpers.py'))));
+  assert.ok(top.length >= 2 && top.every(s => s.attrs.checks === 4 && s.attrs.compiled > 0), JSON.stringify(top.map(s => s.attrs)));
+  assert.ok(boxes.some(b => b.syntax.some(p => p.endsWith('/helpers.py'))));
   assert.ok(eventsOf(room, 'checks_reported').some(e => e.actor === 'root' && /helpers\.py|1 file\(s\) do not compile/.test(e.body)));
   assert.ok(room.problems("source='root'").some(p => p.assignee === ids(room).Helpers || p.trail.some(t => t.to === ids(room).Helpers)));
   // The run ended on the bundle the top verified, every byte of it compiled.
@@ -211,24 +224,29 @@ test('M2: a pass from a piece runs again at a level whose link changed the bytes
   const at = ids(room), tb = room.builderOf('root'), r2 = CARD.requirements[1];
   const linked = await room.bundleFiles('root'), path = [...linked.files.keys()].find(p => p.endsWith('/loud.py'));
   const fix = text => room.save(`link_fixes:${tb.id}`, {[path]: {base: textHash(linked.link.staged.get(path)), text, renames: [{from: 'shout', to: 'shout'}]}});
-  assert.equal(boxesWith(boxes, 'R2').length, 1);
+  const linkedDigest = await snapshotHash(linked.files);
+  // v8 ship-verified: R2 ran in the loud part's box and in the top's, on the bundle that ships (before: once, its pass carried up).
+  assert.equal(boxesWith(boxes, 'R2').length, 2);
   // A link at the top that keeps what loud does: R2 runs again in the top's box, on the top's bytes, and passes there.
   fix(linked.files.get(path) + '\n# joined at the top\n');
   room.wake('root');
   await settle(room, 20);
   assert.equal(room.get('status'), 'complete', tail(room));
-  assert.equal(boxesWith(boxes, 'R2').length, 2);
-  assert.ok(boxesWith(boxes, 'R2')[1].files.some(f => /whisper/.test(f)), 'the second run is the top\'s, over the whole bundle');
-  const rec = room.read('piece_pass:R2', null);
-  assert.equal(rec.row, at['Loud part'], 'the check stays its holder\'s');
-  assert.ok(rec.covers.root && rec.covers[at['Loud part']] && rec.covers.root.bytes !== rec.covers[at['Loud part']].bytes);
-  assert.equal(room.checkPassed(r2, {at: at['Loud part'], bundle: await room.bundleFiles(at['Loud part'])}), true, 'the piece\'s own pass still holds on the piece\'s bytes');
-  assert.equal(room.checkPassed(r2, {at: 'root', bundle: await room.bundleFiles('root')}), true, 'and the top\'s on the top\'s');
+  assert.equal(boxesWith(boxes, 'R2').length, 3);
+  assert.ok(boxesWith(boxes, 'R2')[2].files.some(f => /whisper/.test(f)), 'the third run is the top\'s, over the whole bundle');
+  assert.equal(room.checksOf(at['Loud part']).some(r => r.id === 'R2'), true, 'the check stays its holder\'s');
+  // Each run's pass is for the bundle it ran on: the top's for the top's bytes, the piece's for the piece's (v8 ship-verified:
+  // before, covers at both levels, by what the check reaches).
+  const rec = room.read('piece_pass:R2', null).at, topDigest = await snapshotHash((await room.bundleFiles('root')).files), loudDigest = await snapshotHash((await room.bundleFiles(at['Loud part'])).files);
+  assert.deepEqual([rec.root.digest, rec[at['Loud part']].digest], [topDigest, loudDigest]);
+  assert.equal(room.passedOn(r2, topDigest), true, 'the top\'s on the top\'s');
+  assert.equal(room.passedOn(r2, loudDigest), true, 'the piece\'s own pass still holds on the piece\'s bytes');
+  assert.equal(room.passedOn(r2, linkedDigest), false, 'and no pass is for the top\'s bytes before the link changed them');
   // A link at the top that changes what loud does: R2 runs at the top and fails there; the run does not complete on it.
   fix('from shout import shout\n\n\ndef loud(s):\n    return shout(s)\n');
   room.wake('root');
   await settle(room, 30);
-  assert.equal(boxesWith(boxes, 'R2').length >= 3, true);
+  assert.equal(boxesWith(boxes, 'R2').length >= 4, true);
   assert.notEqual(room.get('status'), 'complete', tail(room));
   assert.equal(passedOf(room).R2, false);
   assert.equal(room.runFinished(), false);
@@ -346,11 +364,12 @@ test('L1: a pass names the card\'s definitions its check runs by, so a revision 
   const {room, drain} = room3();
   await room.start(GOAL, 60, {pipeline: 'v8'});
   await drain();
-  const r1 = CARD.requirements[0], card = room.read('card', null);
-  assert.equal(room.checkPassed(r1), true);
-  room.save('card', {...card, deliverables: card.deliverables.map(d => d.name === 'shout' ? {...d, params: ['s', 'times']} : d)});
-  assert.equal(room.checkPassed(r1), false, 'the called function\'s signature changed');
-  assert.equal(room.checkPassed(CARD.requirements[2]), true);
+  // v8 ship-verified: passedOn, on the bundle the top verified (before: checkPassed, by the piece's owned digest).
+  const r1 = CARD.requirements[0], card = room.read('card', null), at = verifiedDigest(room);
+  assert.equal(room.passedOn(r1, at, card), true);
+  const revised = {...card, deliverables: card.deliverables.map(d => d.name === 'shout' ? {...d, params: ['s', 'times']} : d)};
+  assert.equal(room.passedOn(r1, at, revised), false, 'the called function\'s signature changed');
+  assert.equal(room.passedOn(CARD.requirements[2], at, revised), true);
   // A run or a command deliverable a check uses is part of its key.
   const web = {id: 'R9', says: 's', check: {kind: 'http', serve: 'web', steps: [{path: '/'}]}};
   const withRun = run => ({deliverables: [{name: 'serve', kind: 'command', path: 'serve.py'}], run: [{id: 'web', run, ready: '/'}]});
@@ -470,9 +489,9 @@ test('composition: a change handed to the top reaches the lowest manager whose p
   assert.equal(room.get('status'), 'complete', tail(room));
   const loud = ids(room)['Loud part'];
   assert.deepEqual(room.read(`checks:${loud}`, []), ['R1', 'R2', 'R7']);
-  assert.deepEqual(boxesWith(boxes, 'R7').map(b => b.files.some(f => /whisper|NOTES/.test(f))), [false], 'R7 ran once, in the loud part\'s box');
-  assert.equal(room.read('piece_pass:R7', null).row, loud);
-  assert.ok(room.read('piece_pass:R7', null).covers.root, 'the top verified it on its final bundle');
+  // v8 ship-verified: R7 ran in the loud part's box, then in the top's on the bundle that ships (before: once, its cover carried up).
+  assert.deepEqual(boxesWith(boxes, 'R7').map(b => b.files.some(f => /whisper|NOTES/.test(f))), [false, true], 'R7 ran in the loud part\'s box, then in the top\'s');
+  assert.equal(room.read('piece_pass:R7', null).at.root.digest, verifiedDigest(room), 'the top verified it on its final bundle');
 });
 
 test('composition: a change that comes while the goal\'s handler writes the card waits with it, goes onto the top\'s row, and its check is placed and run in its piece', {skip}, async () => {
@@ -488,7 +507,8 @@ test('composition: a change that comes while the goal\'s handler writes the card
   assert.equal(room.cardRev(), 2);
   assert.deepEqual(room.read(`checks:${ids(room)['Loud part']}`, []), ['R1', 'R2', 'R7']);
   assert.equal(passedOf(room).R7, true);
-  assert.equal(boxesWith(boxes, 'R7').length, 1);
+  // v8 ship-verified: in its piece's box, then in the top's (before: once).
+  assert.equal(boxesWith(boxes, 'R7').length, 2);
   assert.ok(room.promptHandlers().every(h => h.ended_at != null), 'every handler ended');
 });
 
@@ -519,7 +539,8 @@ for (const variant of ['live3', 'm2', 'm3']) test(`composition: an old room (${v
   assert.ok(now.every(b => b.label === (variant === 'm3' ? 'Temporary builder' : 'Builder') && b.status === 'done'));
   assert.deepEqual(room.read('checks:root.1', []), ['R1', 'R2']);
   assert.deepEqual(room.read('checks:root.2', []), ['R3', 'R4']);
-  assert.deepEqual(boxes.slice(before).map(b => b.ids.sort().join(',')).sort(), ['R1,R2', 'R3,R4']);
+  // v8 ship-verified: each part's box, and the top's for every check on the bundle that ships (before: the parts' only).
+  assert.deepEqual(boxes.slice(before).map(b => b.ids.sort().join(',')).sort(), ['R1,R2', 'R1,R2,R3,R4', 'R3,R4']);
 });
 
 test('L4: the dashboard tells a builder by its role: a v8 "Builder" is its manager\'s builder, a part a split named "Builder" is a worker', async () => {
