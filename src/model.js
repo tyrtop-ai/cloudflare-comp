@@ -652,12 +652,13 @@ export async function decide(env, context, {planned = false, v8 = false, placed 
 // path of its one placed contract, for the single-fence fallback. A retry
 // keeps the system text and hears what could not be read in the user JSON;
 // if it is no better, the first answer's complete files stand, not done.
-// Managers route deterministically and v8 runs no builder, so only a worker
-// comes here; any other context waits, with no model call.
+// A manager routes deterministically and its builder links in a runtime
+// turn (builderTurn), so a worker is the one that answers here; a manager's
+// context waits, with no model call.
 export const WORKER_TOKENS = 6500;
 async function decideV8(env, context, {placed = null} = {}) {
-  if (context.your_label === 'Temporary builder' || context.phase === 'manager' || context.phase === 'compose')
-    return {summary: 'Under v8 a manager routes without a model action, and no builder runs.', wait: true};
+  if (context.phase === 'manager' || context.phase === 'compose')
+    return {summary: 'A manager routes its children\'s work without a model action.', wait: true};
   const system = systemPrompt('worker'), tokens = Math.min(8192, Math.max(1500, Number(env.DECISION_MAX_TOKENS) || WORKER_TOKENS));
   const read = out => workerAction(out, {expect: 'blocks', placed});
   let output = await run(env, system, JSON.stringify(context), tokens, {call: 'decide', role: 'worker'});
@@ -1007,6 +1008,35 @@ export async function vetAmendChanges(env, {change='', deliverables=[]}) {
     if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${d.name}`);
     return {name:d.name,p};
   });
+}
+// v8 M3: Clef judges, per check held at a piece, whether what the check
+// reaches comes from the piece's files, the installed packages or the
+// language (CLEF.piece_reach): the reach the linker cannot see, such as a
+// route a page requests, a file read while it runs or data another piece
+// writes. One batched call per 12 checks: state {piece: {name, contracts,
+// files}, installed, checks: [{slot, says, check}]}, each check with its
+// values as their kinds. [{id, p}]; a Clef error throws (the caller rolls
+// the checks up, which only delays them).
+export const PIECE_REACH_BAR = 0.5;
+export async function pieceReach(env, {name='', contracts=[], files=[], installed=[], checks=[], card=null}) {
+  if (!checks.length) return [];
+  if (env.MOCK_AI === 'true') return checks.map(c=>({id:c.id,p:1}));
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('unsupported Clef decision model');
+  const scope=cardScope(card?.requirements?card:{requirements:checks}),shapeOf=check=>{try{return checkShapeForReview(check,scope);}catch{return checkSummary(check);}};
+  const out=[];
+  for(let start=0;start<checks.length;start+=12) {
+    const group=checks.slice(start,start+12);
+    const output=await clefRun(env,'pieceReach',selector,{model:clef,state:{piece:{name:String(name).slice(0,200),contracts:contracts.slice(0,24).map(c=>String(c).slice(0,300)),files:files.slice(0,80)},
+      installed:installed.slice(0,64),checks:group.map((r,i)=>({slot:start+i,says:String(r.says||'').slice(0,200),check:shapeOf(r.check)}))},
+      questions:Object.fromEntries(group.map((_,i)=>[`piece_reach_${start+i}`,{type:'noul',instructions:clefText('piece_reach',{name:String(name).slice(0,120),i:start+i})}]))});
+    for(const [i,r] of group.entries()) {
+      const p=output?.answers?.[`piece_reach_${start+i}`]?.noul;
+      if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${r.id}`);
+      out.push({id:r.id,p});
+    }
+  }
+  return out;
 }
 // v8 S8b: the model call src/fetcher.js sourceCards makes for each chunk's
 // gist and each source's card, on the card writer's model with role 'card'
