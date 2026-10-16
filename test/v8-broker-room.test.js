@@ -216,26 +216,20 @@ const TOP_CARD = {card: 1, summary: 'A louder shout', languages: ['text', 'javas
 
 // v8 M2: the top asks as every writer does; its parent is a handler that has ended, so nothing on its line answers a contract
 // nobody provides: it goes to the person as the room's ask_unanswered hold, and Continue leaves it to the top (Root no longer drops it).
-test('broker: the top, whose parent is a handler that has ended, still reads its granted file and hears the neutral answer; a contract ask nobody answers goes to the person', async () => {
+test('broker: the top, whose parent is a handler that has ended, still reads its granted file and hears the neutral answer; its contract ask is judged at the end of its line, here inside its own assignment', async () => {
   const {room, calls, drain} = brokerRoom({goal: 'no split', card: TOP_CARD, answers: {
     'Root objective': [asks([['src/shout.js', 'the shout as it stands'], ['package.json', 'the manifest'], ['parse_input', 'reads the input']]), wrote([['src/shout.js', LOUDER]])]}});
   assert.deepEqual(await room.start(TOP_GOAL, 30, {pipeline: 'v8'}, 'room-brkr-0001', null, {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com'], grants: ['src/shout.js']}), {status: 'running'});
   await drain();
-  assert.equal(room.get('status'), 'paused', trace(room));
-  const hold = room.snapshot().pause;
-  assert.equal(hold.kind, 'ask_unanswered');
-  assert.equal(hold.agent, 'root');
-  assert.match(hold.text, /^"Root objective" asks for parse_input \(reads the input\), which nothing in the project delivers\./);
-  assert.equal(events(room, 'ask_dropped').length, 0, 'never dropped');
-  await room.resume(30);
-  await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
+  assert.equal(events(room, 'ask_unanswered').length, 0, 'Clef found it inside the top\'s assignment');
+  assert.equal(events(room, 'ask_dropped').length, 0, 'never dropped');
   const [first, second] = calls.leaf;
   assert.deepEqual(first.available.filter(e => !e.is.startsWith('an installed package')), [{name: 'src/shout.js', is: MESSAGES.available_base()}]);
   assert.deepEqual(second.answered_requests, [
     {name: 'src/shout.js', label: BASE_LABEL, value: BASE_FILES['src/shout.js'], facts: {placed_when: 'now'}},
     {name: 'package.json', label: BROKER_LABEL.none, value: 'Nothing is available under the name package.json. Available: src/shout.js.'},
-    MESSAGES.ask_left({want: 'parse_input'})]);
+    MESSAGES.in_assignment({want: 'parse_input (reads the input)'})]);
   assert.equal(room.db().exec("SELECT COUNT(*) AS n FROM route_workers").toArray()[0].n, 0);
   linted(room, calls);
 });

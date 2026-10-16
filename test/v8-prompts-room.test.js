@@ -207,7 +207,7 @@ test('v8 prompts: the manager is ROLE.manager; each problem\'s trigger says what
   const {TRIGGERS, RETRY} = await import('../src/prompts.js');
   const seen = [];
   const env = {PIPELINE: 'v8', AI: {run: async (_m, args) => { seen.push(args.messages); return {response: seen.length === 1 ? 'not json' : JSON.stringify({actions: []})}; }}};
-  const input = {your_responsibility: 'A page', can_escalate: false, children: [], problems: [{id: 'p1', trigger: `M4: ${TRIGGERS.M4}`}]};
+  const input = {your_responsibility: 'A page', children: [], problems: [{id: 'p1', trigger: `M4: ${TRIGGERS.M4}`}]};
   assert.deepEqual(await decideProblems(env, input), {actions: []});
   assert.equal(seen[0][0].content, systemPrompt('manager'));
   assert.equal(seen[1][0].content, systemPrompt('manager'), 'the retry keeps the system text');

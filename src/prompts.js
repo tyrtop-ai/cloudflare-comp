@@ -96,7 +96,7 @@ const WORKER_FORMAT = [
 const MANAGER_FORMAT = [
   'Return one json object {"actions": a list of actions}, and nothing else. Each action is one of:',
   '- {"action": "assign", "problems": the problem ids, "child": a direct child id, "instructions": the exact names and shapes to use, "facts_from": direct child ids whose facts it needs}.',
-  '- {"action": "escalate", "problems": the problem ids, "reason": why}, only if can_escalate.',
+  '- {"action": "escalate", "problems": the problem ids, "reason": why}, to hand them up your line.',
   '- {"action": "retask", "child": a direct child id, "task": the new assignment, "problems": the problem ids, "reason": why, "contracts": its new contracts}, when the child cannot succeed or has the wrong job; it keeps its contracts unless you give new ones, which replace them.',
   '- {"action": "retire", "child": a direct child id, "reason": why}, for duplicated or out-of-scope work that nothing else uses.',
   CONTRACT_BRIEF,
@@ -246,7 +246,7 @@ export const MESSAGES = Object.freeze({
   no_request: () => 'You have no request open, so there is nothing to wait for: write your files and set done.',
   stuck_problem: ({label, last}) => `${label} stopped after three turns whose answers could not be accepted: ${last}`,
   // v8 M2: an ask nothing on the asker's line answers went to the person (ask_unanswered); their answer, as the asker reads it.
-  ask_answered: ({change}) => `The person answered your request with a change to the goal: "${change}". It reaches you with your contracts; follow it.`,
+  ask_answered: ({want, change}) => `The person answered your request for ${want}: "${change}". Follow it in your files.`,
   ask_left: ({want}) => `Nothing in the project delivers ${want}, and the person left it to you: write it in your own files.`,
   runtime_paths: ({paths, many}) => `${paths} ${many ? 'were' : 'was'} not written: the runtime keeps ${many ? 'those paths' : 'that path'} for itself. Choose another path.`,
   not_written: ({why}) => `Not written: ${why}.`,

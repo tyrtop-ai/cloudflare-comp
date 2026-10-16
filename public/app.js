@@ -205,7 +205,7 @@ function nodeDetail(n,index) {
     const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
     compile=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
   }
-  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}</div>${!n.parent&&current?.card?`<div class="onode-card">${cardMarkup(current.card,current.requirement_status,current.card_history)}</div>`:`<p>${esc(n.task)}</p>`}${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}${current?.pause?.agent===n.id?` · waits on the room's hold: ${esc(current.pause.kind)}`:''}</div>${!n.parent&&current?.card?`<div class="onode-card">${cardMarkup(current.card,current.requirement_status,current.card_history)}</div>`:`<p>${esc(n.task)}</p>`}${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
 }
 // The selected node's edges ride on the overlay as data-edges ("from:to ...");
 // drawPath measures the dots after layout and draws them.
@@ -272,8 +272,18 @@ function treeSvg(agents) {
   const w=Math.max(1,leaf)*X-X+2*P,h=deepest*Y-top+P+30;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"><rect width="100%" height="100%" fill="${C.bg}"/><g fill="none" stroke="${C.line}" stroke-width="1.5">${lines}</g><g font-size="10" fill="${C.muted}" text-anchor="middle">${nodes}</g></svg>`;
 }
+// v8 M2 review: the short-lived steps above the top: each prompt's handler
+// and the card writer steps it spawned, each open (writing, or held: the
+// room's hold names it) or ended with its outcome. A step the room's hold
+// names says so.
+function stepsMarkup(s) {
+  const hs=s?.prompt_handlers||[],ws=s?.card_writers||[],held=s?.pause;
+  if(!hs.length)return '';
+  const writer=w=>`<span class="ostep-writer"><span class="mono">${esc(w.id)}</span> · card writer${w.kind==='amend'?' (change)':''} · ${esc(w.ended_at?w.outcome||'ended':w.outcome?.startsWith('held:')?w.outcome.replace(':',' at '):'writing')}${held?.step===w.id?` · holds the room: ${esc(held.kind)}`:''}</span>`;
+  return `<div class="osteps">${hs.map(h=>`<div class="ostep"><span class="mono">${esc(h.id)}</span> · ${esc(h.kind)} handler · ${h.ended_at?`ended${h.root?` · handed to ${esc(h.root)}`:''}`:'open'}${ws.filter(w=>w.handler===h.id).map(writer).join('')}</div>`).join('')}</div>`;
+}
 function showTree(agents) {
-  $('hierarchy').innerHTML=renderTree(agents);
+  $('hierarchy').innerHTML=stepsMarkup(current)+renderTree(agents);
   if($('node-detail'))$('node-detail').innerHTML=renderDetail(agents);
   drawPath();
 }
@@ -331,7 +341,7 @@ function render(s) {
   $('start').innerHTML=running?`${s.stopping?'Stopping':'Stop'} <span class="stop-square" aria-hidden="true"></span>`:'Start <span>↗</span>';
   $('start').title=running?(s.stopping?'Stopping after the running turns finish':'Stop'):'Start';
   $('start').className=running?'primary stop':'primary';
-  $('start').disabled=Boolean(s.stopping); $('continue').disabled=Boolean(s.busy) || (s.status==='complete' || s.status==='failed') || !s.agents?.length;
+  $('start').disabled=Boolean(s.stopping); $('continue').disabled=Boolean(s.busy) || (s.status==='complete' || s.status==='failed') || !s.agents?.length&&!s.prompt_handlers?.length;
 }
 // Speed v1: after the first full snapshot the dashboard asks only for what
 // changed since its cursor (/api/delta: new events, changed agents and

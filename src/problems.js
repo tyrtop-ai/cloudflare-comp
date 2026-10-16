@@ -679,8 +679,10 @@ function decideRow(p, ctx) {
       if(first)return {rule:`R2${first.how}`,route:true,action:'assign',child:first.child,side:'site',...ctx.kindOf(first.child)==='manager'?{delegate:true}:{instructions:said+first.text,facts_text:first.facts||'',providers:first.providers||[]}};
       // v7.15.13 (run20, R3): a child that changed a file for this failure without progress is skipped as a declined one (flags.exhausted, read by the route).
       const spent=(flags.exhausted||[]).filter(id=>ctx.kindOf(id)),why=`no piece takes the requirement${declined.size?` (declined by ${names([...declined])})`:''}${spent.length?` (${names(spent)} changed a file for it without progress)`:''}: ${clip(p.facts.requirement.text,200)}`;
-      // v8 S9 (§7.2): an amendment nobody at Root takes grows the plan: Root splits off one new piece (the room's amendGrow).
-      if(!ctx.parent&&p.stage==='amend')return {rule:'A2',route:true,action:'grow',reason:why};
+      // v8 S9 (§7.2), v8 M2 review: an amendment no child takes grows the plan where it is, by one rule at every level: a
+      // manager one of whose own contracts it serves, which no piece under it carries, splits off one new piece for it
+      // (ctx.grows; the room's amendGrow); at the end of the line it grows, or no part has anything to change for it.
+      if(p.stage==='amend'&&(!ctx.parent||ctx.grows?.(p)))return {rule:'A2',route:true,action:'grow',reason:why};
       return ctx.parent?{rule:'R2',route:true,action:'escalate',declined:true,reason:why}:{rule:'R2',route:true,action:'exhausted',reason:why};
     }
     // v7.15.6 (R5): the parent asked this branch to take names on a promise (grow).
@@ -776,7 +778,7 @@ function decideParties(p, ctx, placed, flags) {
 export function validateDecision(dec, p, ctx) {
   if(!['assign','escalate','exhausted','fail','retask','defer','grow'].includes(dec?.action))return 'unknown action';
   if(dec.action==='escalate')return ctx.parent?null:'the top manager has no parent to escalate to';
-  if(dec.action==='grow')return !ctx.parent&&p.stage==='amend'?null:'only an amendment at the top grows a new piece';
+  if(dec.action==='grow')return p.stage==='amend'?null:`a new piece grows for a change's row; this row's stage is ${p.stage}`;
   if(dec.action==='exhausted'||dec.action==='defer')return null;
   const kind=ctx.kindOf(dec.child),status=ctx.statusOf?.(dec.child);
   if(!kind)return `${dec.child} is not a direct child`;

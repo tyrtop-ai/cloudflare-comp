@@ -31,10 +31,10 @@ const scripted = answers => {
     return typeof a === 'function' ? a(user, n) : a;
   };
 };
-// Clef: should_split by split(n) (n: the how-manyth gate question), every other question passes.
-const clefWith = ({split = () => false} = {}) => {
+// Clef: should_split by split(n) (n: the how-manyth gate question), whether a need is inside the asker's assignment by inside, every other question passes.
+const clefWith = ({split = () => false, inside = 0.9} = {}) => {
   let gates = 0;
-  return input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (split(++gates) ? 0.9 : 0.1) : 0.9}]))});
+  return input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (split(++gates) ? 0.9 : 0.1) : k === 'inside' ? inside : 0.9}]))});
 };
 const room8 = ({card = user => user.change ? CARD_2 : CARD, answers, split = null, clef = clefWith()} = {}) =>
   liveRoom({card, clef, split, leaf: scripted(answers)});
@@ -89,9 +89,9 @@ test('M2: a hold of the card writer is the room\'s: no agent row exists yet, the
   assert.ok(room.promptHandlers()[0].ended_at >= room.cardWriters()[0].ended_at);
 });
 
-test('M2: the top asks as every writer does; a contract nobody provides becomes the room\'s ask_unanswered hold, and a follow-up prompt answers it', async () => {
+test('M2: the top asks as every writer does; a contract no part of the goal covers becomes the room\'s ask_unanswered hold, and a follow-up prompt answers it', async () => {
   const ask = fileBlocks([], {summary: 'asking', wait: true, ask: [{need: 'formats the notes as a table', name: 'format_notes'}]});
-  const {room, calls, drain} = room8({answers: {'Root objective': [ask, blocks([{path: 'NOTES.md', content: GREETED}])]}});
+  const {room, calls, drain} = room8({clef: clefWith({inside: 0.1}), answers: {'Root objective': [ask, blocks([{path: 'NOTES.md', content: GREETED}])]}});
   await room.start(GOAL, 10, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'paused', trace(room));
@@ -102,14 +102,14 @@ test('M2: the top asks as every writer does; a contract nobody provides becomes 
   assert.equal(events(room, 'ask_unanswered').find(e => e.actor === 'room').kind, 'ask_unanswered');
   assert.equal(events(room, 'ask_dropped').length, 0, 'never dropped');
   assert.equal(room.node('root').status, 'waiting');
-  for (const t of [MESSAGES.ask_answered({change: 'x'}), MESSAGES.ask_left({want: 'x'})]) assert.deepEqual(lintText('message', t, {room: true}), []);
+  for (const t of [MESSAGES.ask_answered({want: 'x', change: 'y'}), MESSAGES.ask_left({want: 'x'})]) assert.deepEqual(lintText('message', t, {room: true}), []);
   // The person answers with a follow-up prompt: the change reaches the top, and the asker hears the answer.
   await room.amend(CHANGE);
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
   assert.deepEqual(passedOf(room), {R1: true, R2: true});
   assert.deepEqual(room.read('room_asks', []), []);
-  assert.ok(calls.leaf[1].answered_requests.includes(MESSAGES.ask_answered({change: CHANGE})));
+  assert.ok(calls.leaf[1].answered_requests.includes(MESSAGES.ask_answered({want: 'format_notes', change: CHANGE})));
 });
 
 test('M2: the top may decline to split like any manager; Clef reconsiders, it writes its files as a worker and runs its checks through the one path (compileCard by id)', async () => {

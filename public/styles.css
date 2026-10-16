@@ -103,6 +103,8 @@ pre { font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:10p
 .tree-panel { min-height:260px; }
 .hierarchy { max-height:680px; overflow:auto; }
 .role-manager { --role:var(--manager); } .role-worker { --role:var(--worker); } .role-builder { --role:var(--builder); } .role-compiler { --role:var(--compiler); }
+.osteps { display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--muted); margin:0 0 12px; }
+.ostep-writer { display:block; margin-left:16px; }
 .otree-legend { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; font-size:11px; color:var(--muted); margin:-8px 0 12px; }
 .otree-legend .dot { width:11px; height:11px; margin-right:6px; vertical-align:-1px; cursor:default; }
 .swatch { display:inline-block; width:14px; height:0; margin-right:6px; vertical-align:3px; border-top:2px solid var(--ok); }
