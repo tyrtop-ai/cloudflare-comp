@@ -48,14 +48,14 @@ function treeIndex(agents) {
   return {kids,byId,producers,builderOf,role};
 }
 // v8: the agents the room keeps beside its rows: each splitter step (its
-// manager's, by attempt: running until it answers, done once Clef admitted
-// its pieces, waiting on Clef's review, failed when its answer was unread or
-// its pieces not admitted) and each level's compiler. Only under a manager the tree has.
+// manager's, by attempt: running while its session runs, done once Clef admitted
+// its pieces, waiting on Clef's review once it called done, failed when its
+// session ended without done or its pieces were not admitted) and each level's compiler. Only under a manager the tree has.
 function levelNodes(s) {
   const has=new Set((s?.agents||[]).map(n=>n.id));
   const splitter=x=>({id:x.id,parent:x.manager,role:'splitter',level:true,seq:x.attempt,label:`Splitter · attempt ${x.attempt}`,
-    status:!x.ended_at?'running':x.verdict==='admitted'?'done':x.outcome==='read'&&!x.verdict?'waiting':'failed',
-    task:`Propose the division of its manager's level (${x.kind} attempt ${x.attempt}).`,step:x});
+    status:!x.ended_at?'running':x.verdict==='admitted'?'done':x.outcome==='done'&&!x.verdict?'waiting':'failed',
+    task:`State its manager's level through its functions (${x.kind} attempt ${x.attempt}).`,step:x});
   const compiler=x=>({id:x.id,parent:x.manager,role:'compiler',level:true,label:'Compiler',status:x.state,
     task:'Verify the level\'s piece, as its builder joined it, on its exact bundle in a fresh box.',record:x});
   return [...(s?.splitters||[]).map(splitter),...(s?.compilers||[]).map(compiler)].filter(n=>n.id&&has.has(n.parent));

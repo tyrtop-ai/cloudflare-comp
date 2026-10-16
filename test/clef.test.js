@@ -190,19 +190,18 @@ test('v8: routing a complaint or a change, the scope walk and matching ask the C
   assert.deepEqual(hit, {index: 0, p: 0.9});
 });
 
-test('v8: the splitter is ROLE.splitter + FORMAT.splitter, its data the user JSON; an answer with no level object is asked once more, without thinking', async () => {
-  const {systemPrompt, RETRY} = await import('../src/prompts.js');
-  const {splitLevel} = await import('../src/model.js');
+test('v8: the splitter is ROLE.splitter + FORMAT.splitter with its functions, its data the user JSON; a level written as text is never parsed: the reply hears the function names, and only calls store', async () => {
+  const {systemPrompt, TOOLS} = await import('../src/prompts.js');
+  const {splitLevel} = await import('../src/splitter.js');
   const calls = [];
-  const answers = ['Let me think about the pieces.', JSON.stringify({contracts: [{name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}], validations: [], pieces: []})];
-  const env = {PIPELINE: 'v8', MODEL_NAME: '@cf/qwen/qwen3-30b-a3b-fp8', AI: {run: async (_name, args) => { calls.push(args); return {response: answers[calls.length - 1]}; }}};
+  const page = {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'};
+  const answers = [{response: JSON.stringify({contracts: [page], validations: [], pieces: []})}, {tool_calls: [{name: 'contract', arguments: page}, {name: 'done', arguments: {}}]}];
+  const env = {PIPELINE: 'v8', MODEL_NAME: '@cf/qwen/qwen3-30b-a3b-fp8', AI: {run: async (_name, args) => { calls.push(JSON.parse(JSON.stringify(args))); return answers[calls.length - 1]; }}};
   const request = {assignment: 'A one-page site', box: {programs: ['node'], toolchains: [{id: 'text', extensions: ['.html']}]}, max_pieces: 4};
-  const level = await splitLevel(env, request);
-  assert.deepEqual(level.contracts.map(c => c.name), ['index.html']);
+  const out = await splitLevel(env, request);
+  assert.deepEqual(out.level.contracts.map(c => c.name), ['index.html']);
   assert.equal(calls.length, 2);
-  for (const c of calls) assert.equal(c.messages[0].content, systemPrompt('splitter'));
+  for (const c of calls) { assert.equal(c.messages[0].content, systemPrompt('splitter')); assert.deepEqual(c.tools, TOOLS.splitter); }
   assert.deepEqual(JSON.parse(calls[0].messages[1].content), request);
-  assert.deepEqual(JSON.parse(calls[1].messages[1].content.replace(/ \/no_think$/, '')).previous_answer_problems, [RETRY.json]);
-  const bad = await splitLevel({...env, AI: {run: async () => ({response: 'no json here'})}}, request);
-  assert.equal(bad.parse_error, true);
+  assert.deepEqual(calls[1].messages.at(-1), {role: 'user', content: 'No function was called. The functions are: contract, validation, piece, level, done.'});
 });

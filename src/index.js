@@ -529,7 +529,7 @@ export class ControlRoom extends DurableObject {
     db.exec("CREATE TABLE IF NOT EXISTS prompt_handlers (id TEXT PRIMARY KEY, kind TEXT NOT NULL, prompt TEXT NOT NULL, prompt_id TEXT NOT NULL DEFAULT '', root TEXT NOT NULL, created_root INTEGER NOT NULL DEFAULT 0, spawned_at INTEGER NOT NULL, ended_at INTEGER)");
     // v8: each level's validations (V<n>): the level that holds it, the contracts it serves, its check, what it says, and Clef's marks.
     db.exec("CREATE TABLE IF NOT EXISTS validations (id TEXT PRIMARY KEY, level TEXT NOT NULL, serves TEXT NOT NULL, spec TEXT NOT NULL, says TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '{}', created INTEGER NOT NULL)");
-    // v8: the splitter steps (splitter-<hex16>), each under the manager that ran it; outcome: read, defects, unreadable.
+    // v8: the splitter sessions (splitter-<hex16>), each under the manager that ran it; outcome: done, or why its session ended without done (rounds, context, mock); output: its calls with their results, and its level.
     db.exec("CREATE TABLE IF NOT EXISTS splitters (id TEXT PRIMARY KEY, manager TEXT NOT NULL, kind TEXT NOT NULL, attempt INTEGER NOT NULL, spawned_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '{}')");
     // Speed v1 review: a version per agent row (rev) and one for the alias
     // table, bumped by triggers on every write, so a dashboard delta selects
@@ -8690,7 +8690,7 @@ export class ControlRoom extends DurableObject {
     return out;
   }
   // ---------- the split step ----------
-  // One attempt per turn. A level with no design yet: Clef pre-grades it
+  // One splitter session per turn. A level with no design yet: Clef pre-grades it
   // once; a pre-grade at or below split_floor (the runtime's catch), or no
   // room for pieces, hands a level whose contracts were given to one worker
   // with no splitter call, and asks the splitter of a level with none only

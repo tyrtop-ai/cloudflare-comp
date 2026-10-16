@@ -128,9 +128,9 @@ test('the graph: every agent is a node; managers and workers are circles, splitt
     {id:m,parent:null,role:'manager',label:'A to-do page',phase:'manager',status:'waiting',task:'goal',depth:0,seq:1},
     {id:w,parent:m,role:'',label:'A to-do page',phase:'implement',status:'done',task:'goal',depth:1,seq:1},
     {id:b,parent:m,role:'builder',label:'Builder',phase:'implement',status:'done',task:'Join',depth:1,seq:2}],
-    splitters:[{id:'splitter-3333333333333333',manager:m,kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'read',verdict:'retry fewer'},
+    splitters:[{id:'splitter-3333333333333333',manager:m,kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'done',verdict:'retry fewer'},
       {id:'splitter-4444444444444444',manager:m,kind:'split',attempt:2,spawned_at:3,ended_at:null,outcome:null,verdict:''},
-      {id:'splitter-5555555555555555',manager:'manager-ffffffffffffffff',kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'read',verdict:'admitted'}],
+      {id:'splitter-5555555555555555',manager:'manager-ffffffffffffffff',kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'done',verdict:'admitted'}],
     compilers:[{id:'compiler-6666666666666666',manager:m,state:'failed',box:'box-7777777777777777',began:5}]}).get('hierarchy').innerHTML;
   assert.deepEqual(shapes(v8),[[m,'manager','circle'],['splitter-3333333333333333','splitter','rect'],['splitter-4444444444444444','splitter','rect'],[w,'worker','circle'],[b,'builder','rect'],['compiler-6666666666666666','compiler','rect']],'a splitter under a manager the tree does not have is not drawn');
   assert.match(v8,/<g class="gnode role-splitter failed" data-node="splitter-3333333333333333"/,'its pieces not admitted');
@@ -314,7 +314,7 @@ test('v7.15.1: a v7 compiler and a v8 level\'s compiler have their own states an
   assert.match(page.tree(),/class="gnode role-compiler passed selected" data-node="root\.5"/);
   // v8: a level's compiler states its own, names the box of its last run and shows its manager's last compile event.
   const m='manager-0123456789abcdef',v8=treePage({agents:[{id:m,parent:null,role:'manager',label:'Styles',phase:'manager',status:'waiting',task:'goal',depth:0,seq:1}],
-    splitters:[{id:'splitter-3333333333333333',manager:m,kind:'split',attempt:1,spawned_at:1000,ended_at:9500,outcome:'read',verdict:'admitted'}],
+    splitters:[{id:'splitter-3333333333333333',manager:m,kind:'split',attempt:1,spawned_at:1000,ended_at:9500,outcome:'done',verdict:'admitted'}],
     compilers:[{id:'compiler-6666666666666666',manager:m,state:'blocked',box:'box-7777777777777777',began:5}],
     events:[{id:1,ts:1,step:2,actor:m,kind:'checks_reported',body:'The compiler of Styles: 0 of 1 validation(s) pass; failing: V4.'},{id:2,ts:2,step:3,actor:m,kind:'escalated',body:'up'}]});
   assert.match(v8.tree(),/class="gnode role-compiler blocked" data-node="compiler-6666666666666666"/);
@@ -322,7 +322,7 @@ test('v7.15.1: a v7 compiler and a v8 level\'s compiler have their own states an
   assert.match(v8.detail(),/<span class="onode-role">compiler<\/span> · blocked<\/div>.*<p class="faint">blocked · last run in box-7777777777777777<\/p><p class="faint">last result: checks_reported · The compiler of Styles: 0 of 1 validation\(s\) pass; failing: V4\.<\/p>/);
   assert.match(v8.detail(),/talks to <button type="button" class="peer mono" data-node="manager-0123456789abcdef">manager-0123456789abcdef<\/button> manager<\/p>/);
   v8.click('hierarchy','splitter-3333333333333333');
-  assert.match(v8.detail(),/<b class="mono">splitter-3333333333333333<\/b> · Splitter · attempt 1 · <span class="onode-role">splitter<\/span> · done<\/div>.*<p class="faint">read · admitted · 8\.5 s<\/p>/);
+  assert.match(v8.detail(),/<b class="mono">splitter-3333333333333333<\/b> · Splitter · attempt 1 · <span class="onode-role">splitter<\/span> · done<\/div>.*<p class="faint">done · admitted · 8\.5 s<\/p>/);
 });
 
 test('v7.15.1: the path is orange, its own token in light and dark; the splitter has its own colour',()=>{
@@ -523,7 +523,7 @@ const LEVELS={room_manager:'root',
   validations:[{id:'V1',level:'root',held:'root.2',serves:['USAGE.md'],kind:'judge',check:'judge USAGE.md: Does it show how to run it?',notes:{exercises:0.9,implementable:0.9}},
     {id:'V2',level:'root',held:'root.1',serves:['hello'],kind:'command',check:'command hello <Ada>',notes:{exercises:0.9,implementable:0.12}},
     {id:'V3',level:'root',held:'root.1',serves:['hello'],kind:'file',check:'file hello.js contains "function greet"',notes:{exercises:0.9,implementable:0.9,internal:0.2}}],
-  splitters:[{id:'splitter-0123456789abcdef',manager:'root',kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'read'}]};
+  splitters:[{id:'splitter-0123456789abcdef',manager:'root',kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'done'}]};
 test('v8 S3: the Pipeline toggle follows the room and is sent with the settings',()=>{
   assert.match(html,/<select id="pipeline">\s*<option value="v7">[^<]*\(default\)<\/option>\s*<option value="v8">v8 \(experimental\) · /,'labelled experimental');
   assert.doesNotMatch(html,/prompts still v7/,'v8 rooms use the v8 prompts since S6');
@@ -544,7 +544,7 @@ test('v8: the Levels panel lists each validation with its result, its check, wha
   // Clef's marks below the bar are shown beside the validation; nothing it doubts is removed.
   assert.match(panel,/V2<\/b>.*<span class="req-chip doubtful" title="Clef doubted it \(implementable\)">implementable p=0\.12<\/span>/);
   assert.match(panel,/<span class="req-chip untested" title="not run: the box did not start">untested<\/span> <b class="mono">V3<\/b>.*internal p=0\.20/);
-  assert.match(panel,/<span class="mono">splitter-0123456789abcdef<\/span> <span class="faint">· root · split attempt 1 · read<\/span>/);
+  assert.match(panel,/<span class="mono">splitter-0123456789abcdef<\/span> <span class="faint">· root · split attempt 1 · done<\/span>/);
   assert.equal(elements.get('levels-verdict').textContent,'3 validations · 0 pass · 1 fail · 1 untested · 1 stale');
   const v7=renderWithPage(true,{settings:{}});
   assert.equal(v7.get('levels-verdict').textContent,'No levels (v7 pipeline)');

@@ -147,6 +147,18 @@ test('a contract with fewer than three distinct examples: done says what is miss
   assert.equal(room.validationRows().length, 4, 'every validation the session stored is a row');
 });
 
+test('a splitter session that ends without done (here: its model never calls a function) states no level: its manager escalates split_failed, a hold for the person, and no worker is made', async () => {
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => 'Here is the plan: one converter command.', leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+  assert.equal(room.get('status'), 'paused', trail(room));
+  assert.equal(calls.split.length, 1, 'one session');
+  assert.equal(calls.splitRounds.length, 100, 'up to its round limit');
+  assert.ok(calls.splitRounds.slice(1).every(r => r.results.length === 0), 'each reply with no call is answered in words, never read');
+  assert.deepEqual(room.roomHolds().map(h => h.kind), ['split_failed']);
+  assert.match(room.roomHolds()[0].text, /its splitter's session ended without done \(after 100 rounds, the session's limit\)/);
+  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['rounds']);
+  assert.equal(room.allNodes().filter(n => n.role === 'worker').length, 0);
+});
+
 test('a complaint reaches the worker responsible exactly as the compiler observed it, and its fix completes the room', async () => {
   const WRONG = "const c = Number(process.argv[2]);\nconsole.log(String(c * 2));\n";
   const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf: (_u, n) => deliver({'convert.js': n === 1 ? WRONG : CONVERT_JS}), clef: caught()});
