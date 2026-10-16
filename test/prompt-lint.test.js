@@ -4,7 +4,7 @@
 // someone else wrote, no repair that reaches anyone else; no text says card.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ROLE, FORMAT, CLEF, RETRY, LINK_SCOPE, MESSAGES, promptTexts, systemPrompt, clefText } from '../src/prompts.js';
+import { ROLE, FORMAT, CLEF, RETRY, LINK_SCOPE, MESSAGES, TOOLS, promptTexts, systemPrompt, clefText } from '../src/prompts.js';
 import { lintText, lintAll, words, sentences, negations, capsWords, STRUCTURE_WORDS } from './helpers/prompt-lint.js';
 
 const ROLES = ['splitter', 'worker', 'file', 'linker'];
@@ -96,6 +96,20 @@ test('no format carries a filled-in validation, contract or piece to copy', () =
   assert.doesNotMatch(FORMAT.splitter, /"label"\s*:\s*"/);
   assert.doesNotMatch(FORMAT.splitter, /"name"\s*:\s*"/);
   assert.doesNotMatch(FORMAT.splitter, /"serves"\s*:\s*\["/);
+});
+
+test('the splitter\'s functions are prompt texts too: each description and each parameter\'s is linted, names no other agent, and holds no filled-in value to copy', () => {
+  const texts = Object.entries(promptTexts()).filter(([k]) => k.startsWith('TOOLS.splitter.'));
+  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['contract', 'validation', 'piece', 'level', 'done']);
+  assert.ok(texts.length >= 20, 'every function and every described parameter');
+  for (const [name, text] of texts) {
+    assert.deepEqual(lintText(name, text, {generative: true}), [], name);
+    assert.doesNotMatch(text, /"\w+"\s*:\s*["\[{]/, `${name} holds a filled-in field`);
+  }
+  // The format no longer describes an answer to write: it says to call the functions.
+  assert.match(FORMAT.splitter, /^Answer by calling your functions/);
+  assert.doesNotMatch(FORMAT.splitter, /json object/i);
+  assert.ok(TOOLS.splitter.every(t => t.parameters.type === 'object'));
 });
 
 test('Clef questions are filled by key, and run data never enters a system prompt', () => {
