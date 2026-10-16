@@ -162,7 +162,6 @@ const divisionFacts = d => {
   if (d.undelivered?.length) out.delivered_by_no_piece = d.undelivered.slice(0, 24);
   if (d.delivered_by_several?.length) out.delivered_by_several_pieces = d.delivered_by_several.slice(0, 24);
   if (d.placed_by_several?.length) out.files_placed_by_several_pieces = d.placed_by_several.slice(0, 24);
-  if (d.already_delivered?.length) out.listed_again_from_what_the_level_has = d.already_delivered.slice(0, 24);
   if (d.placed_already?.length) out.files_the_level_already_has = d.placed_already.slice(0, 24);
   return Object.keys(out).length ? {division: out} : {};
 };
@@ -190,25 +189,6 @@ export async function reviewLevel(env, {assignment, contracts = [], pieces = [],
   if (Object.values(answers).some(x=>x===null)) throw new Error('Clef returned no valid review probabilities');
   return {valid:split?answers.split_valid:1,size:split?answers.split_size:1,scope:split?pieces.map((_,i)=>answers[`within_${i}`]):[],
     notes:validations.map((v,j)=>({exercises:answers[`exercises_${j}`],implementable:answers[`implementable_${j}`],...(answers[`internal_${j}`]!=null?{internal:answers[`internal_${j}`]}:{})}))};
-}
-// v8: a manager's splitter, one attempt: the model reads its assignment,
-// the contracts it delivers, what the checking box has, its packages and any
-// existing files and linked pages (request, the room's), and answers one
-// json object {contracts, validations, pieces}. An answer that holds no such
-// object is asked once more in the same call; the runtime's hard rules
-// (src/validations.js readLevel) are the attempt's, and a miss goes to the
-// next attempt. Returns the object, or {parse_error, raw}.
-export const SPLITTER_TOKENS = 8192;
-const levelShape = o => !!o && typeof o === 'object' && ['contracts', 'validations', 'pieces'].some(k => Array.isArray(o[k]));
-export async function splitLevel(env, request) {
-  const system=systemPrompt('splitter'),text=JSON.stringify(request);
-  let output=await run(env,system,text,SPLITTER_TOKENS,{call:'splitLevel',role:'splitter'});
-  let parsed=parseObject(withoutThinking(output),levelShape);
-  if(!parsed.parse_error&&levelShape(parsed))return parsed;
-  const empty=!withoutThinking(output).trim();
-  output=await run(env,system,JSON.stringify({...request,previous_answer_problems:[empty?RETRY.empty:RETRY.json]}),SPLITTER_TOKENS,{call:'splitLevel',role:'splitter',retry:true,noThink:true});
-  parsed=parseObject(withoutThinking(output),levelShape);
-  return !parsed.parse_error&&levelShape(parsed)?parsed:{parse_error:true,raw:String(parsed.raw||'').trim().slice(0,1500)||emptyAnswer(output)};
 }
 // v8: Clef's routing among a manager's live children, for a complaint
 // (CLEF.owner) or a change (CLEF.change): one question per child, over the

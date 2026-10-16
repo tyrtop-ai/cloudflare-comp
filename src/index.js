@@ -13,7 +13,7 @@ export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isRowId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, splitLevel, routeAmong, inScope, matchContracts, rewriteFile } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, routeAmong, inScope, matchContracts, rewriteFile } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
@@ -49,7 +49,8 @@ import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
 import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, externalModule, readsModule, piecePackages, packageLine, needOf } from './packages.js';
 import { caseTwin, pathError } from '../container/build-path.mjs';
-import { readLevel, contractExamples, checkSummary } from './validations.js';
+import { contractExamples, checkSummary } from './validations.js';
+import { splitLevel } from './splitter.js';
 import { toBase64 } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -308,15 +309,12 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   // split_size_bar: the bar Clef's split_size p must reach.
   split_floor: 0.1, split_valid_bar: 0.5, split_size_bar: 0.5
 });
-// v8 live 5: the first proposal and two retries.
+// v8 live 5: a level's split is reviewed by Clef up to this many times (the
+// first session and two more, each after the review's objection).
 export const SPLIT_ATTEMPTS = 3;
-// v8 live 6: a retry reads every defect its previous answer still has, up to
-// this many, beside that answer (previous_answer), at most ANSWER_CHARS of it
-// as json; a longer answer goes as its first ANSWER_CHARS characters, text.
-export const SPLIT_DEFECTS_SHOWN = 24, ANSWER_CHARS = 24000;
-export const answerOf = raw => { const s = JSON.stringify(raw ?? null); return s.length <= ANSWER_CHARS ? raw : s.slice(0, ANSWER_CHARS); };
-// A splitter row's output: the answer as given and the level as read, one json document (never cut mid-way).
-export const splitterRecord = (raw, level) => JSON.stringify({answer: answerOf(raw), contracts: level.contracts, validations: level.validations, pieces: level.pieces, defects: level.defects, notes: level.notes || [], division: level.division || {}});
+// A splitter row's output: what its session called, with each result, and the level it declared (null when it ended without done).
+export const SPLIT_CALLS_KEPT = 200;
+export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds: out.rounds, calls: out.transcript.slice(-SPLIT_CALLS_KEPT), level: out.level});
 // v8: a Clef mark below this reads as a doubt about a validation: shown
 // beside it, and first in a hold's text; the validation is never removed.
 export const VALIDATION_DOUBT_BAR = 0.5;
@@ -8520,10 +8518,10 @@ export class ControlRoom extends DurableObject {
   // its parent is the room (escalate), where it is a hold for the person.
   // Every manager is the same:
   //  - its split step: Clef pre-grades the assignment (the runtime's catch at
-  //    split_floor); its splitter (a short-lived step, table splitters)
-  //    answers {contracts, validations, pieces}, held to the hard rules
-  //    (src/validations.js readLevel) and reviewed by Clef in one batched
-  //    call (reviewLevel), up to SPLIT_ATTEMPTS attempts; the manager admits
+  //    split_floor); its splitter (a short-lived session, table splitters)
+  //    declares the level's contracts, validations and pieces through its
+  //    functions (src/splitter.js), and Clef reviews the level in one
+  //    batched call (reviewLevel), up to SPLIT_ATTEMPTS times; the manager admits
   //    the result (admitLevel): its level file (writeLevel), the
   //    validations it holds, and its children, the pieces or one worker;
   //  - it routes, with Clef: a complaint the compiler observed goes down to
@@ -8713,18 +8711,12 @@ export class ControlRoom extends DurableObject {
     if(!job&&(caught||!room)&&own.length)
       return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{why:caught?`Clef's pre-grade is at or below the floor ${cfg.floor}, so it hands its whole assignment down to one worker.`:'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.'});
     const divide=room&&!caught,tried=this.splitAttempts(id).filter(a=>a.attempt>0&&a.job===key),attempt=tried.length+1,feedback=this.read(`split_feedback:${id}`,null);
-    const out=await this.runSplitter(id,{kind,assignment:job?.text||given.prompt,own,divide,attempt,feedback});
-    const level=out.level,why=out.error?`its answer held no level (${clip(out.error,200)})`:'';
-    if(why||level.defects.length) {
-      this.recordAttempt(id,{attempt,job:key,splitter:out.sid,defects:why?1:level.defects.length,outcome:attempt>=SPLIT_ATTEMPTS?'exhausted':'retry rules',ms:Date.now()-started});
-      this.event(id,'split_defects',clip(`The splitter's attempt ${attempt} of ${SPLIT_ATTEMPTS} misses the runtime's rules: ${why||level.defects.join(' ')}`,1500));
-      // The retry converges: it reads its previous answer and only what that answer still needs, so the parts that held are kept as they were.
-      if(attempt<SPLIT_ATTEMPTS){this.save(`split_feedback:${id}`,why?{kind:'rules',reason:RETRY.json}:{kind:'rules',reason:RETRY.rules(level.defects.slice(0,SPLIT_DEFECTS_SHOWN)),answer:out.answer});this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);this.save('queue',addLast(this.read('queue',[]),id));return;}
+    const out=await this.runSplitter(id,{kind,assignment:job?.text||given.prompt,own,divide,attempt,feedback}),level=out.level;
+    // A session that ended without done (its context or its rounds ran out) states no level: the row's parent hears it, verbatim.
+    if(!level) {
+      this.recordAttempt(id,{attempt,job:key,splitter:out.sid,outcome:`ended: ${out.reason}`,ms:Date.now()-started});
       this.save(`split_feedback:${id}`,null);
-      // The last attempt missed too: given contracts go to one worker (their validations are held above); a level that has none is the parent's to settle.
-      if(own.length)return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{job,why:`Its splitter's ${SPLIT_ATTEMPTS} attempts missed the runtime's rules, so it hands its contracts down to one worker.`});
-      // A job (a change or an ask none of its children covers) stays: Continue gives its splitter fresh attempts at it.
-      return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's ${SPLIT_ATTEMPTS} attempts missed the runtime's rules (${level?.defects?.slice(0,4).join(' ')||why}).`,1100));
+      return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's session ended without done (${out.reason==='context'?'its context window was full':out.reason==='rounds'?`after ${out.rounds} rounds, the session's limit`:out.reason}).`,1100));
     }
     const pieces=divide?level.pieces:[],split=pieces.length>=2,retry=feedback?.retry||'';
     const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||given.prompt,2600),contracts:level.contracts,pieces:split?pieces:[],validations:level.validations,division:split?level.division:null,attempt,retry});
@@ -8748,9 +8740,11 @@ export class ControlRoom extends DurableObject {
     this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
     this.save('queue',addLast(this.read('queue',[]),id));
   }
-  // One splitter step (a row of splitters, splitter-<hex16>, its sequence
-  // the manager's count of splitter steps): the model's answer, read and
-  // held to the hard rules. {sid, level} or {sid, error}.
+  // One splitter session (a row of splitters, splitter-<hex16>, its sequence
+  // the manager's count of splitter steps): the model states the level
+  // through its functions (src/splitter.js), and the row keeps every call
+  // with its result. {sid, level, reason, rounds}: level is null when the
+  // session ended without done.
   async runSplitter(id, {kind, assignment, own, divide, attempt, feedback}) {
     const sid=await rowId(id,query(this.db(),'SELECT COUNT(*) AS n FROM splitters WHERE manager=?',id)[0].n+1,'splitter'),rows=this.installedToolchains(),packages=this.packageView(id),digest=this.heldDigest(id),held=this.validationRows().filter(v=>own.some(c=>(c.serves||[]).includes(v.id)));
     // A job adds to a level that has its design (its level file): the contracts it has already, apart from those the job restates.
@@ -8758,6 +8752,7 @@ export class ControlRoom extends DurableObject {
     // The names the level may call: its row's uses, and for a rebuild those the rows it replaces were handed.
     const job=kind==='split'?null:this.read(`level_job:${id}`,null),calls=[...this.callableOf(id),...this.namedContracts(id,job?.uses||[])].filter((c,i,a)=>a.findIndex(x=>x.name===c.name)===i&&!own.some(o=>o.name===c.name)&&!have.some(o=>o.name===c.name));
     this.db().exec("INSERT INTO splitters(id,manager,kind,attempt,spawned_at,ended_at,outcome,output) VALUES (?,?,?,?,?,NULL,'','{}')",sid,id,kind,attempt,Date.now());
+    const max=divide?feedback?.retry==='fewer'&&Number.isInteger(feedback.bound)?Math.min(feedback.bound,this.maxChildren()):this.maxChildren():0;
     const request={assignment:clipEnds(assignment,4000),
       ...(own.length?{contracts_you_deliver:own.map(({serves:_,...c})=>c)}:{}),
       ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),
@@ -8767,16 +8762,13 @@ export class ControlRoom extends DurableObject {
       ...(packages.length?{your_packages:packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}))}:{}),
       ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest}}:{}),
       ...this.sourceInputs(id,'summaries'),
-      max_pieces:divide?feedback?.retry==='fewer'&&Number.isInteger(feedback.bound)?Math.min(feedback.bound,this.maxChildren()):this.maxChildren():0,
-      ...(feedback?.reason?{...(feedback.answer?{previous_answer:feedback.answer}:{}),previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
-    const raw=await splitLevel(this.inferenceEnv('worker'),request);
-    if(raw.parse_error){this.db().exec("UPDATE splitters SET ended_at=?,outcome='unreadable',output=? WHERE id=?",Date.now(),JSON.stringify({raw:clip(raw.raw,1500)}),sid);return {sid,error:raw.raw||'no json object'};}
-    const level=readLevel(divide?raw:{...raw,pieces:[]},{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:this.maxChildren()});
-    // The row keeps the answer as the splitter gave it beside the level as it was read, with the reader's notes, as one json document.
-    this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),level.defects.length?'defects':'read',splitterRecord(raw,level),sid);
-    this.event(id,'splitter',clip(`${sid} answered: ${level.contracts.length} contract(s), ${level.validations.length} validation(s), ${level.pieces.length} piece(s)${level.defects.length?`; ${level.defects.length} miss(es) of the rules`:''}.`,600));
-    if(level.notes.length)this.event(id,'level_read',clip(`How ${sid}'s answer was read: ${level.notes.join(' ')}`,1500));
-    return {sid,level,answer:answerOf(raw)};
+      max_pieces:max,
+      ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
+    const out=await splitLevel(this.inferenceEnv('worker'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide});
+    this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
+    const l=out.level;
+    this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));
+    return {sid,level:l,reason:out.reason,rounds:out.rounds};
   }
   splitterRows() { return query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome FROM splitters ORDER BY spawned_at,id'); }
   // The manager admits a level: its validations (each a row, V<n>, held where

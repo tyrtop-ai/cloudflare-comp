@@ -1,33 +1,27 @@
-// v8: a level's contracts and validations, pure. Every manager's splitter
-// answers, per attempt, {contracts, validations, pieces}: what its level
-// delivers, the runnable checks of that level (each with serves, the
-// contract names it validates) and the division into pieces. This module
-// reads that answer leniently (a form a reader fixes at a glance, such as a
-// markup text a page should show, which names an element), holds it to the
-// runtime's hard rules, and renders a validation as the examples a worker
-// reads, one per step that exercises a contract. The hard rules are
-// executability only: a command is one program and its arguments that exists
-// in the box (a contract's command or an installed executable), a path lies
-// inside the bundle, a selector is one the adapter reads, a check names what
-// it runs by; and every contract has three different examples, each rendered
-// from its validations. A miss is the splitter's defect, which its next
-// attempt hears with the reason. Every other reading keeps the meaning and is
-// noted; whether a division is sound is Clef's. Nothing here is a judgement:
-// Clef annotates, and never deletes.
+// v8: a level's contracts and validations, pure. A splitter states its
+// level through functions (src/splitter.js): each contract, each validation
+// (a runnable check, with serves, the contract names it validates) and each
+// piece is one call, stored as written or refused with the exact reason.
+// This module holds what those functions check and render: whether a check
+// can run as written (executability only: a command is one program and its
+// arguments that exists in the box, a path lies inside the bundle, a
+// selector is one the adapter reads, a check names what it runs by), how a
+// contract is started, and a validation as the examples a worker reads, one
+// per step that exercises a contract. Nothing here reads a model's text
+// leniently, resolves a name written inexactly or repairs a form: a check
+// that is not one of the forms is refused, with why.
 // No room, no model.
-import { TOOLCHAINS, toolchainOf } from './toolchains.js';
-import { normalizeContract, kindOf, nameError, PLACED_KINDS, CONTRACT_KINDS, ROUTE_NAME } from './contracts.js';
+import { toolchainOf } from './toolchains.js';
+import { kindOf } from './contracts.js';
 import { isPath } from './protocol.js';
 
 export const VALIDATION_KINDS = Object.freeze(['file', 'judge', 'command', 'call', 'http', 'browser']);
 export const EXAMPLES_PER_CONTRACT = 3;
 // The owner's rule: the three examples are owed by contracts that are called or run.
 export const EXAMPLE_KINDS = new Set(['function', 'command', 'route']);
-export const LEVEL_LIMITS = Object.freeze({contracts: 24, validations: 72, steps: 20, has: 8, fixtures: 8, command: 300, argv: 40, stdin: 4000, fixture: 20000, value: 1000, question: 300, says: 200});
+export const LEVEL_LIMITS = Object.freeze({contracts: 24, validations: 72, steps: 20, has: 8, fixtures: 8, command: 300, argv: 40, stdin: 4000, fixture: 20000, value: 1000, question: 300, text: 300});
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
-const str = (v, n) => typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : '';
-const strings = (v, max, n) => (Array.isArray(v) ? v : typeof v === 'string' ? [v] : []).map(x => str(x, n)).filter(Boolean).slice(0, max);
 const json = (v, n = LEVEL_LIMITS.value) => { try { const s = JSON.stringify(v); return s !== undefined && s.length <= n ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; } };
 const SAVE = /^[A-Za-z_]\w{0,31}$/;
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -60,8 +54,6 @@ export function commandArgv(run) {
   if (argv.length > LEVEL_LIMITS.argv) return {error: `"${s.slice(0, 80)}" has more than ${LEVEL_LIMITS.argv} arguments`};
   return {argv};
 }
-const quoteWord = w => { const s = String(w); return /^[\w./:=@%+,{}-]+$/.test(s) ? s : !s.includes("'") ? `'${s}'` : `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; };
-const joinArgv = list => list.map(quoteWord).join(' ');
 
 // ------------------------------------------------------------ paths
 // A path a check requests from the served project: one '/', then a name on
@@ -74,321 +66,220 @@ export function urlPathError(p) {
 }
 // A file path inside the bundle: relative, no step up.
 export const bundlePath = p => isPath(p) && !String(p).split('/').some(x => x === '..' || x === '.');
-// A whole URL on the served project's own host, or a page name with no
-// leading "/": the path on the served site, or null.
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
-export function localPath(value) {
-  const v = typeof value === 'string' ? value.trim() : '';
-  if (!v || v.startsWith('/') && !v.startsWith('//')) return null;
-  const withScheme = /^https?:\/\//i.test(v) ? v : /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(v) ? `http://${v}` : null;
-  if (withScheme) {
-    let u;
-    try { u = new URL(withScheme); } catch { return null; }
-    return LOCAL_HOSTS.has(u.hostname.toLowerCase()) ? `${u.pathname || '/'}${u.search}${u.hash}` : null;
-  }
-  return /^[\w-][\w.-]*(?:\/[\w.-]+)*\/?(?:[?#]\S*)?$/.test(v) && !/(?:^|\/)\.\.(?:\/|$)/.test(v) ? `/${v}` : null;
-}
 
 // ------------------------------------------------------------ elements
 // An element a page has, named by a simple selector: a tag, then any of #id,
 // .class, [attribute] and [attribute=value]. The adapter's querySelectorAll
 // reads it as written.
 export const SELECTOR = /^[a-z][a-z0-9-]*(?:#[A-Za-z_][\w-]*|\.[A-Za-z_][\w-]*|\[[A-Za-z_][\w-]*(?:=(?:[\w-]+|"[^"\\]*"))?\])*$/;
-export const MARKUP = /<\/?[A-Za-z][A-Za-z0-9-]*(?=[\s>\/]|$)/;
-export const MARKUP_CHARS = 300;
-const cssIdent = s => /^[A-Za-z_][\w-]*$/.test(s);
-const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
-const ATTRIBUTE = /\s+([^\s=>\/"'<]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"'<=`]+)))?/y;
-// An expected text that is one well-formed element names it: a start tag
-// with its attributes, then optionally its text and its end tag, or a start
-// tag the text ends inside with an attribute given a value. Anything else is
-// prose and stays expected text. {selector, text?} or null.
-export function markupElement(text) {
-  const src = String(text ?? '').slice(0, MARKUP_CHARS).trim(), open = /^<([A-Za-z][A-Za-z0-9-]*)/.exec(src);
-  if (!open) return null;
-  const tag = open[1].toLowerCase(), attrs = [];
-  let at = open[0].length;
-  for (let m; (ATTRIBUTE.lastIndex = at, m = ATTRIBUTE.exec(src)); at = ATTRIBUTE.lastIndex) attrs.push({name: m[1], value: m[2] ?? m[3] ?? m[4]});
-  const rest = src.slice(at), shut = /^\s*(\/?)>/.exec(rest);
-  let inner = '';
-  if (!shut) { if (rest.trim() || !attrs.some(a => a.value !== undefined)) return null; }
-  else {
-    const after = rest.slice(shut[0].length);
-    if (shut[1] || VOID.has(tag)) { if (after.trim()) return null; }
-    else if (after.trim()) {
-      const end = new RegExp(`</${tag}\\s*>$`, 'i').exec(after.trimEnd());
-      if (!end) return null;
-      inner = after.trimEnd().slice(0, end.index);
-      if (/<[A-Za-z\/!]|&#?\w+;/.test(inner)) return null;
-      inner = inner.replace(/\s+/g, ' ').trim();
-    }
-  }
-  let sel = tag;
-  for (const {name, value} of attrs) {
-    if (!cssIdent(name) || value !== undefined && /["\\]|&#?\w+;/.test(value)) return null;
-    if (name.toLowerCase() === 'id' && value) { if (!cssIdent(value)) return null; sel += `#${value}`; }
-    else if (name.toLowerCase() === 'class' && value?.trim()) { const cs = value.trim().split(/\s+/); if (!cs.every(cssIdent)) return null; sel += cs.map(c => `.${c}`).join(''); }
-    else if (value === undefined) sel += `[${name}]`;
-    else sel += /^[\w-]+$/.test(value) ? `[${name}=${value}]` : `[${name}="${value}"]`;
-  }
-  if (!SELECTOR.test(sel) || sel.length > 200) return null;
-  return {selector: sel, ...(inner ? {text: inner.slice(0, 200)} : {})};
-}
-export const markupElements = text => { const e = markupElement(text); return e ? [e] : []; };
 
-// ------------------------------------------------------------ reading one check
-const CHECK_ALIASES = Object.freeze({cli: 'command', run: 'command', shell: 'command', exec: 'command', process: 'command',
-  exists: 'file', file_exists: 'file', content: 'file', contains: 'file', read: 'judge', review: 'judge', question: 'judge', reader: 'judge',
-  function: 'call', unit: 'call', calls: 'call', api: 'http', request: 'http', rest: 'http', ui: 'browser', page: 'browser', e2e: 'browser', web: 'browser'});
-// A browser step written as {action, target, value}, in the adapter's form.
-function browserStepOf(s) {
-  if (!plain(s)) return s;
-  if (typeof s.action !== 'string') {
-    const keys = Object.keys(s);
-    if (keys.length === 1 && /^(?:assert_text|see|should_see|expect|expect_visible|assert_visible)$/.test(keys[0]) && typeof s[keys[0]] === 'string') return {expect_text: s[keys[0]]};
-    return s;
-  }
-  const a = s.action.trim().toLowerCase().replace(/[\s-]+/g, '_'), target = s.target ?? s.selector ?? s.label ?? s.name, value = s.value ?? s.text ?? s.input;
-  if (/^(?:goto|go_to|open|visit|navigate)$/.test(a)) return {goto: String(s.url ?? s.path ?? target ?? '/')};
-  if (/^(?:fill|type|enter|input)$/.test(a) && typeof target === 'string' && value !== undefined) return {fill: {label: target, text: String(value)}};
-  if (/^(?:click|press_button|tap)$/.test(a) && typeof target === 'string') return {click: {text: target}};
-  if (a === 'press' && typeof (s.key ?? target) === 'string') return {press: String(s.key ?? target)};
-  if (/^(?:expect|expect_text|assert_text|see|check)$/.test(a) && typeof (value ?? target) === 'string') return {expect_text: String(value ?? target)};
-  if (a === 'reload') return {reload: true};
-  return s;
+// ------------------------------------------------------------ one check
+// The fields each kind of check has, and each step and expectation.
+export const CHECK_FIELDS = Object.freeze({file: ['kind', 'path', 'has', 'json'], judge: ['kind', 'path', 'question'], command: ['kind', 'run', 'stdin', 'files', 'expect'],
+  call: ['kind', 'steps'], http: ['kind', 'serve', 'steps'], browser: ['kind', 'serve', 'steps']});
+const COMMAND_EXPECT = ['exit', 'stdout', 'stdout_has', 'stderr_has', 'stderr'], CALL_STEP = ['call', 'args', 'save', 'expect', 'expect_has', 'throws'];
+const HTTP_STEP = ['method', 'path', 'body', 'save', 'expect'], HTTP_EXPECT = ['status', 'body_has', 'json_has'];
+const BROWSER_STEPS = ['goto', 'reload', 'press', 'fill', 'click', 'expect_text', 'expect_no_text', 'expect_count', 'expect_element', 'expect_no_element'];
+const quoted = xs => xs.map(x => `"${x}"`).join(', ');
+// The fields of o that are not among those allowed: '' or why.
+const extra = (o, allowed, what) => { const k = Object.keys(o).filter(x => !allowed.includes(x)); return k.length ? `${what} has the field${k.length > 1 ? 's' : ''} ${quoted(k.map(x => x.slice(0, 40)))}; its fields are ${quoted(allowed)}` : ''; };
+// A list of texts as written: {list} or {error}.
+function texts(v, max, what) {
+  if (!Array.isArray(v) || v.some(x => typeof x !== 'string' || !x)) return {error: `${what} is a list of texts`};
+  if (v.length > max) return {error: `${what} lists ${v.length} texts; at most ${max}`};
+  const long = v.find(x => x.length > LEVEL_LIMITS.text);
+  return long ? {error: `${what} has a text longer than ${LEVEL_LIMITS.text} characters`} : {list: v};
 }
-function httpExpectOf(e) {
-  if (!plain(e)) return e;
-  const x = {...e};
-  for (const k of ['status_code', 'statusCode', 'code', 'status_is']) if (x[k] !== undefined) { if (x.status === undefined) x.status = x[k]; delete x[k]; }
-  if (typeof x.status === 'string' && /^\d+$/.test(x.status)) x.status = Number(x.status);
-  for (const k of ['body_contains', 'contains', 'body_includes', 'text']) if (x[k] !== undefined) { if (x.body_has === undefined) x.body_has = x[k]; delete x[k]; }
-  if (typeof x.body_has === 'string') x.body_has = [x.body_has];
-  if (x.json !== undefined && x.json_has === undefined) { x.json_has = x.json; delete x.json; }
-  return x;
-}
-function commandExpectOf(e) {
-  if (!plain(e)) return e;
-  const x = {...e}, move = (from, to, list) => { if (x[from] !== undefined && x[to] === undefined) x[to] = list && typeof x[from] === 'string' ? [x[from]] : x[from]; if (from !== to) delete x[from]; };
-  for (const k of ['exit_code', 'code', 'status', 'returncode', 'return_code']) move(k, 'exit');
-  for (const k of ['stdout_contains', 'contains', 'output_has', 'output', 'stdout_contains_text', 'stdout_includes']) move(k, 'stdout_has', true);
-  move('stderr_contains', 'stderr_has', true);
-  if (typeof x.stderr === 'string') { if (x.stderr_has === undefined) x.stderr_has = [x.stderr]; delete x.stderr; }
-  if (typeof x.exit === 'string' && /^\d+$/.test(x.exit)) x.exit = Number(x.exit);
-  return x;
-}
-// A check written loosely, in the adapters' form: its kind from its fields
-// when the kind is missing or another word, a command line from a list, a
-// browser step from {action, target}, an expected text that is one element
-// as that element, a whole local URL as its path. Nothing here is checked;
-// readCheck holds the result to the rules.
-export function looseCheck(raw) {
-  let c = raw;
-  if (typeof c === 'string' && c.trim()) c = {kind: 'command', run: c};
-  if (Array.isArray(c)) c = c.find(plain);
-  if (!plain(c)) return c;
-  c = {...c};
-  let kind = String(c.kind ?? c.type ?? '').trim().toLowerCase();
-  if (!VALIDATION_KINDS.includes(kind)) {
-    const steps = Array.isArray(c.steps) ? c.steps.filter(plain) : null;
-    kind = CHECK_ALIASES[kind] || (c.run || c.command || c.cmd ? 'command' : c.question ? 'judge' : steps?.some(s => 'call' in s || 'function' in s) ? 'call'
-      : steps?.some(s => 'method' in s) ? 'http' : steps?.length ? 'browser' : c.path || c.file ? 'file' : kind);
-  }
-  c.kind = kind; delete c.type;
-  if (kind === 'command') {
-    if (c.run === undefined) c.run = c.command ?? c.cmd ?? c.argv;
-    delete c.command; delete c.cmd; delete c.argv;
-    if (Array.isArray(c.run)) c.run = joinArgv(c.run);
-    if (Array.isArray(c.args) && typeof c.run === 'string') c.run = `${c.run} ${joinArgv(c.args)}`;
-    delete c.args;
-    if (plain(c.expect)) c.expect = commandExpectOf(c.expect);
-  } else if (kind === 'call') {
-    if (!Array.isArray(c.steps) && (c.call || c.function)) { c.steps = [{call: c.call ?? c.function, args: c.args, ...('expect' in c ? {expect: c.expect} : 'expected' in c ? {expect: c.expected} : {})}]; for (const k of ['call', 'function', 'args', 'expect', 'expected']) delete c[k]; }
-    if (Array.isArray(c.steps)) c.steps = c.steps.map(s => { if (!plain(s)) return s; const step = {...s}; if (step.call === undefined) step.call = step.function ?? step.fn; delete step.function; delete step.fn; if (!('expect' in step) && 'expected' in step) step.expect = step.expected; delete step.expected; return step; });
-  } else if (kind === 'file' || kind === 'judge') {
-    c.path = cleanPath(c.path ?? c.file ?? '');
-    delete c.file;
-    if (kind === 'judge' && !c.question && typeof (c.ask ?? c.prompt) === 'string') c.question = c.ask ?? c.prompt;
-    if (kind === 'file') { if (c.has === undefined && c.contains !== undefined) c.has = c.contains; if (typeof c.has === 'string') c.has = [c.has]; delete c.contains; }
-  } else if (kind === 'http' || kind === 'browser') {
-    if (!Array.isArray(c.steps) && Array.isArray(c.actions)) c.steps = c.actions;
-    delete c.actions;
-    if (kind === 'browser' && Array.isArray(c.steps)) c.steps = c.steps.map(browserStepOf).map(st => {
-      const op = plain(st) ? ['expect_text', 'expect_no_text'].find(k => typeof st[k] === 'string' && st[k].length <= MARKUP_CHARS && MARKUP.test(st[k])) : null;
-      const el = op ? markupElement(st[op]) : null;
-      if (el) return {[op === 'expect_text' ? 'expect_element' : 'expect_no_element']: el};
-      const to = plain(st) && typeof st.goto === 'string' ? localPath(st.goto) : null;
-      return to ? {...st, goto: to} : st;
-    });
-    if (kind === 'http' && Array.isArray(c.steps)) c.steps = c.steps.map(s => {
-      if (!plain(s)) return s;
-      const st = {...s, ...(s.path === undefined && typeof s.url === 'string' ? {path: s.url} : {}), ...(plain(s.expect) ? {expect: httpExpectOf(s.expect)} : {})};
-      delete st.url;
-      const to = typeof st.path === 'string' ? localPath(st.path) : null;
-      return to ? {...st, path: to} : st;
-    });
-  }
-  return c;
-}
+const text = (v, n, what) => typeof v !== 'string' || !v.trim() ? {error: `${what} is a text`} : v.length > n ? {error: `${what} is longer than ${n} characters`} : {text: v};
 
 // The world a level's checks run in: ctx.paths (the paths its contracts
 // place, and the existing project's), ctx.functions (function contract
-// names), ctx.served (contract names that say how they run), ctx.commands
-// (command contract names), ctx.executables (the installed rows' programs).
-// One check held to the rules: {check} or {error}.
-export function readCheck(raw, ctx) {
-  const c = looseCheck(raw);
-  if (!plain(c)) return {error: 'its check is not an object'};
+// names), ctx.functionPaths (name → path), ctx.served (contract names that
+// state how they run), ctx.commands (command contract names), ctx.executables
+// (the installed rows' programs). One check, as written, held to what it
+// takes to run: {check} or {error}.
+export function readCheck(c, ctx) {
+  if (!plain(c)) return {error: 'the check is not an object'};
   const kind = c.kind;
+  if (!VALIDATION_KINDS.includes(kind)) return {error: `the check's kind ${JSON.stringify(kind ?? null)?.slice(0, 40)} is not one of ${quoted(VALIDATION_KINDS)}`};
+  const bad = extra(c, CHECK_FIELDS[kind], `the ${kind} check`);
+  if (bad) return {error: bad};
   if (kind === 'file' || kind === 'judge') {
-    let path = str(c.path, 512), note = '';
-    // A path named inexactly (index.html for public/index.html) reads as the one path it names.
-    if (path && !ctx.paths.has(path) && ctx.resolvePath) { const to = ctx.resolvePath(path); if (to) { note = `its ${kind} check reads "${path}", read as ${to}`; path = to; } }
-    if (!path || !ctx.paths.has(path)) return {error: `its ${kind} check reads ${path ? `"${path}", which no contract places and the project does not hold` : 'no path'}`};
+    const path = typeof c.path === 'string' ? c.path : '';
+    if (!path || !ctx.paths.has(path)) return {error: `the ${kind} check reads ${path ? `"${path.slice(0, 200)}", which no declared contract places and the project does not hold` : 'no path'}`};
     if (kind === 'judge') {
-      const question = str(c.question, LEVEL_LIMITS.question);
-      return question ? {check: {kind, path, question}, ...(note ? {note} : {})} : {error: 'its judge check asks no question'};
+      const q = text(c.question, LEVEL_LIMITS.question, 'its question');
+      return q.error ? {error: `the judge check: ${q.error}`} : {check: {kind, path, question: q.text}};
     }
-    const has = strings(c.has, LEVEL_LIMITS.has, 300);
-    return {check: {kind, path, ...(has.length ? {has} : {}), ...(c.json === true ? {json: true} : {})}, ...(note ? {note} : {})};
+    let has = [];
+    if (c.has !== undefined) { const t = texts(c.has, LEVEL_LIMITS.has, 'has'); if (t.error) return {error: `the file check: ${t.error}`}; has = t.list; }
+    if (c.json !== undefined && typeof c.json !== 'boolean') return {error: 'the file check: json is true or false'};
+    return {check: {kind, path, ...(has.length ? {has} : {}), ...(c.json === true ? {json: true} : {})}};
   }
   if (kind === 'command') {
-    const run = str(c.run, LEVEL_LIMITS.command);
-    if (!run) return {error: 'its command check runs nothing'};
-    const parsed = commandArgv(run);
-    if (parsed.error) return {error: `its command check: ${parsed.error}`};
+    const r = text(c.run, LEVEL_LIMITS.command, 'its run');
+    if (r.error) return {error: `the command check: ${r.error}`};
+    const parsed = commandArgv(r.text);
+    if (parsed.error) return {error: `the command check: ${parsed.error}`};
     const [first] = parsed.argv;
-    if (!ctx.commands.has(first) && !ctx.executables.has(first)) return {error: `its command check runs "${first}", which is neither a command contract of this level nor a program the box has (${[...ctx.executables].join(', ') || 'none'})`};
-    const files = {};
-    for (const [p, t] of Object.entries(plain(c.files) ? c.files : {}).slice(0, LEVEL_LIMITS.fixtures)) {
-      if (!bundlePath(p) || typeof t !== 'string') return {error: `its command check has an input file "${String(p).slice(0, 80)}" that is not a path inside the project with text content`};
-      files[p] = t.slice(0, LEVEL_LIMITS.fixture);
+    if (!ctx.commands.has(first) && !ctx.executables.has(first)) return {error: `the command check runs "${first.slice(0, 80)}", which is neither a command contract declared so far nor a program the box has (${[...ctx.executables].join(', ') || 'none'})`};
+    if (c.stdin !== undefined && (typeof c.stdin !== 'string' || c.stdin.length > LEVEL_LIMITS.stdin)) return {error: `the command check: stdin is a text of at most ${LEVEL_LIMITS.stdin} characters`};
+    let files = null;
+    if (c.files !== undefined) {
+      if (!plain(c.files)) return {error: 'the command check: files maps each input file\'s path to its text'};
+      const entries = Object.entries(c.files);
+      if (entries.length > LEVEL_LIMITS.fixtures) return {error: `the command check has ${entries.length} input files; at most ${LEVEL_LIMITS.fixtures}`};
+      for (const [p, t] of entries) if (!bundlePath(p) || typeof t !== 'string' || t.length > LEVEL_LIMITS.fixture) return {error: `the command check has an input file "${String(p).slice(0, 80)}" that is not a path inside the project with a text of at most ${LEVEL_LIMITS.fixture} characters`};
+      files = c.files;
     }
-    const e = plain(c.expect) ? c.expect : {}, expect = {};
-    if (Number.isInteger(e.exit) && e.exit >= 0 && e.exit <= 255) expect.exit = e.exit;
-    if (typeof e.stdout === 'string') expect.stdout = e.stdout.slice(0, LEVEL_LIMITS.stdin);
-    if (e.stderr === true) expect.stderr = true;
-    for (const k of ['stdout_has', 'stderr_has']) { const list = (Array.isArray(e[k]) ? e[k] : typeof e[k] === 'string' ? [e[k]] : []).filter(x => typeof x === 'string' && x).map(x => x.slice(0, 300)).slice(0, LEVEL_LIMITS.has); if (list.length) expect[k] = list; }
+    const expect = {};
+    if (c.expect !== undefined) {
+      const e = c.expect;
+      if (!plain(e)) return {error: `the command check: expect is an object with any of ${quoted(COMMAND_EXPECT)}`};
+      const ex = extra(e, COMMAND_EXPECT, 'its expect');
+      if (ex) return {error: `the command check: ${ex}`};
+      if (e.exit !== undefined) { if (!Number.isInteger(e.exit) || e.exit < 0 || e.exit > 255) return {error: 'the command check: exit is a whole number from 0 to 255'}; expect.exit = e.exit; }
+      if (e.stdout !== undefined) { if (typeof e.stdout !== 'string' || e.stdout.length > LEVEL_LIMITS.stdin) return {error: `the command check: stdout is a text of at most ${LEVEL_LIMITS.stdin} characters`}; expect.stdout = e.stdout; }
+      if (e.stderr !== undefined) { if (e.stderr !== true) return {error: 'the command check: stderr is true when it writes to its error output'}; expect.stderr = true; }
+      for (const k of ['stdout_has', 'stderr_has']) if (e[k] !== undefined) { const t = texts(e[k], LEVEL_LIMITS.has, k); if (t.error) return {error: `the command check: ${t.error}`}; expect[k] = t.list; }
+    }
+    // A command check that states nothing it observes observes that it exits 0.
     if (!Object.keys(expect).length) expect.exit = 0;
-    const stdin = typeof c.stdin === 'string' ? c.stdin.slice(0, LEVEL_LIMITS.stdin) : '';
-    return {check: {kind, run, argv: parsed.argv, ...(stdin ? {stdin} : {}), ...(Object.keys(files).length ? {files} : {}), expect}};
+    return {check: {kind, run: r.text, argv: parsed.argv, ...(c.stdin ? {stdin: c.stdin} : {}), ...(files && Object.keys(files).length ? {files} : {}), expect}};
   }
   if (kind === 'call') {
-    const steps = [], said = [];
-    for (const s of (Array.isArray(c.steps) ? c.steps : []).slice(0, LEVEL_LIMITS.steps)) {
-      const name = str(s?.call, 64);
-      if (!plain(s) || !ctx.functions.has(name)) return {error: `its call check calls "${name}", which is not a function contract of this level`};
-      const args = json(Array.isArray(s.args) ? s.args : s.args === undefined ? [] : [s.args]);
-      if (!args.ok) return {error: `its call to ${name} has arguments that are not small json values`};
+    if (!Array.isArray(c.steps) || !c.steps.length) return {error: 'the call check has no steps'};
+    if (c.steps.length > LEVEL_LIMITS.steps) return {error: `the call check has ${c.steps.length} steps; at most ${LEVEL_LIMITS.steps}`};
+    const steps = [];
+    for (const [i, s] of c.steps.entries()) {
+      const at = `step ${i + 1} of the call check`;
+      if (!plain(s)) return {error: `${at} is not an object`};
+      const ex = extra(s, CALL_STEP, at);
+      if (ex) return {error: ex};
+      const name = typeof s.call === 'string' ? s.call : '';
+      if (!ctx.functions.has(name)) return {error: `${at} calls ${JSON.stringify(s.call ?? null)?.slice(0, 80)}, which is not a function contract declared so far${ctx.functions.size ? ` (${[...ctx.functions].join(', ')})` : ''}`};
+      if (s.args !== undefined && !Array.isArray(s.args)) return {error: `${at}: args is the list of arguments`};
+      const args = json(s.args ?? []);
+      if (!args.ok) return {error: `${at}: its arguments are not small json values`};
       const step = {call: name, args: args.v};
-      if (typeof s.save === 'string' && SAVE.test(s.save)) step.save = s.save;
-      // v8 live 8: "expect": {"throws": true} is the throws form, written inside expect.
-      const thrown = plain(s.expect) && s.expect.throws === true && Object.keys(s.expect).length === 1;
-      if (thrown) { step.throws = true; said.push(`its call to ${name} expects {"throws": true}, read as: the call throws`); }
-      else if ('expect' in s) { const x = json(s.expect); if (!x.ok) return {error: `its call to ${name} expects a value that is not a small json value`}; step.expect = x.v; }
-      if (typeof s.expect_has === 'string' && s.expect_has) step.expect_has = s.expect_has.slice(0, 300);
-      if (s.throws === true) step.throws = true;
+      if (s.save !== undefined) { if (typeof s.save !== 'string' || !SAVE.test(s.save)) return {error: `${at}: save is a name of letters, digits and _`}; step.save = s.save; }
+      if ('expect' in s) { const x = json(s.expect); if (!x.ok) return {error: `${at} expects a value that is not a small json value`}; step.expect = x.v; }
+      if (s.expect_has !== undefined) { const t = text(s.expect_has, LEVEL_LIMITS.text, 'expect_has'); if (t.error) return {error: `${at}: ${t.error}`}; step.expect_has = t.text; }
+      if (s.throws !== undefined) { if (typeof s.throws !== 'boolean') return {error: `${at}: throws is true or false`}; if (s.throws) step.throws = true; }
       steps.push(step);
     }
     // One call check runs in one process over the one file that defines its functions.
     const files = [...new Set(steps.map(st => ctx.functionPaths?.get(st.call)).filter(Boolean))];
-    if (files.length > 1) return {error: `its call check calls functions of different files (${files.join(', ')}); one call check runs the functions of one file`};
-    return steps.length ? {check: {kind, steps}, ...(said.length ? {note: said.join('; ')} : {})} : {error: 'its call check has no steps'};
+    if (files.length > 1) return {error: `the call check calls functions of different files (${files.join(', ')}); one call check runs the functions of one file`};
+    return {check: {kind, steps}};
   }
-  if (kind === 'http' || kind === 'browser') {
-    let serve = str(c.serve, 200), note = '';
-    // A served contract named inexactly, or not named when the level runs exactly one, reads as that one.
-    if (!ctx.served.has(serve) && ctx.resolveServe) { const to = ctx.resolveServe(serve); if (to) { note = serve ? `its ${kind} check serves "${serve}", read as ${to}` : `its ${kind} check names nothing to serve, read as ${to}, the one contract this level runs`; serve = to; } }
-    if (!ctx.served.has(serve)) return {error: `its ${kind} check serves "${serve}", which is not a contract of this level that says how it runs${ctx.served.size ? ` (${[...ctx.served].join(', ')})` : ''}`};
-    const steps = [];
-    // v8 live 8: a browser step holding several actions ({"goto": …, "expect_text": …}) is those steps, in the order written.
-    const written = (Array.isArray(c.steps) ? c.steps : []).flatMap(s => kind === 'browser' && plain(s) && Object.keys(s).length > 1 ? Object.entries(s).map(([k, v]) => ({[k]: v})) : [s]);
-    if (written.length > (Array.isArray(c.steps) ? c.steps.length : 0)) note = [note, `its ${kind} check has steps that hold several actions, read as one step each`].filter(Boolean).join('; ');
-    for (const s of written.slice(0, LEVEL_LIMITS.steps)) {
-      const step = kind === 'http' ? httpStep(s) : browserStep(s);
-      if (step?.error) return {error: `its ${kind} check requests ${JSON.stringify(step.path).slice(0, 80)}: ${step.error}`};
-      if (!step) return {error: `its ${kind} check has a step that is not one of the ${kind} step forms: ${JSON.stringify(s)?.slice(0, 120)}`};
-      steps.push(step);
-    }
-    return steps.length ? {check: {kind, serve, steps}, ...(note ? {note} : {})} : {error: `its ${kind} check has no steps`};
+  // http or browser
+  const serve = typeof c.serve === 'string' ? c.serve : '';
+  if (!ctx.served.has(serve)) return {error: `the ${kind} check serves ${JSON.stringify(c.serve ?? null)?.slice(0, 80)}, which is not a declared contract that states how it runs${ctx.served.size ? ` (${[...ctx.served].join(', ')})` : ' (none states one yet)'}`};
+  if (!Array.isArray(c.steps) || !c.steps.length) return {error: `the ${kind} check has no steps`};
+  if (c.steps.length > LEVEL_LIMITS.steps) return {error: `the ${kind} check has ${c.steps.length} steps; at most ${LEVEL_LIMITS.steps}`};
+  const steps = [];
+  for (const [i, s] of c.steps.entries()) {
+    const step = kind === 'http' ? httpStep(s) : browserStep(s);
+    if (step.error) return {error: `step ${i + 1} of the ${kind} check: ${step.error}`};
+    steps.push(step.step);
   }
-  return {error: `its check kind "${kind}" is not one of ${VALIDATION_KINDS.join(', ')}`};
+  return {check: {kind, serve, steps}};
 }
 function httpStep(s) {
-  if (!plain(s)) return null;
-  const method = String(s.method || 'GET').toUpperCase(), path = typeof s.path === 'string' ? s.path.trim() : '';
-  if (!METHODS.has(method)) return null;
-  const bad = urlPathError(path);
-  if (bad) return {error: bad, path};
-  const e = plain(s.expect) ? s.expect : {}, expect = {};
-  if (Number.isInteger(e.status) && e.status >= 100 && e.status <= 599) expect.status = e.status;
-  const has = strings(e.body_has, LEVEL_LIMITS.has, 300);
-  if (has.length) expect.body_has = has;
-  if ('json_has' in e) { const x = json(e.json_has); if (!x.ok) return null; expect.json_has = x.v; }
-  const step = {method, path, expect};
-  if ('body' in s) { const x = json(s.body); if (!x.ok) return null; step.body = x.v; }
-  if (typeof s.save === 'string' && SAVE.test(s.save)) step.save = s.save;
-  return step;
+  if (!plain(s)) return {error: 'it is not an object'};
+  const ex = extra(s, HTTP_STEP, 'it');
+  if (ex) return {error: ex};
+  const method = s.method === undefined ? 'GET' : s.method;
+  if (!METHODS.has(method)) return {error: `its method ${JSON.stringify(method)?.slice(0, 40)} is not one of ${quoted([...METHODS])}`};
+  if (typeof s.path !== 'string') return {error: 'it requests no path'};
+  const bad = urlPathError(s.path);
+  if (bad) return {error: `its path "${s.path.slice(0, 80)}": ${bad}`};
+  const expect = {};
+  if (s.expect !== undefined) {
+    const e = s.expect;
+    if (!plain(e)) return {error: `its expect is an object with any of ${quoted(HTTP_EXPECT)}`};
+    const x = extra(e, HTTP_EXPECT, 'its expect');
+    if (x) return {error: x};
+    if (e.status !== undefined) { if (!Number.isInteger(e.status) || e.status < 100 || e.status > 599) return {error: 'its status is a whole number from 100 to 599'}; expect.status = e.status; }
+    if (e.body_has !== undefined) { const t = texts(e.body_has, LEVEL_LIMITS.has, 'body_has'); if (t.error) return {error: t.error}; expect.body_has = t.list; }
+    if ('json_has' in e) { const j = json(e.json_has); if (!j.ok) return {error: 'its json_has is not a small json value'}; expect.json_has = j.v; }
+  }
+  const step = {method, path: s.path, expect};
+  if ('body' in s) { const j = json(s.body); if (!j.ok) return {error: 'its body is not a small json value'}; step.body = j.v; }
+  if (s.save !== undefined) { if (typeof s.save !== 'string' || !SAVE.test(s.save)) return {error: 'save is a name of letters, digits and _'}; step.save = s.save; }
+  return {step};
 }
 const LOCATOR = ['label', 'placeholder', 'role', 'name', 'text'];
-const locator = (o, keys) => Object.fromEntries(keys.filter(k => typeof o[k] === 'string' && o[k]).map(k => [k, o[k].slice(0, 200)]));
+// A locator object as written: its fields among those allowed, each a text.
+function locator(v, keys, what) {
+  if (!plain(v)) return {error: `${what} is an object with any of ${quoted(keys)}`};
+  const x = extra(v, keys, what);
+  if (x) return {error: x};
+  for (const [k, t] of Object.entries(v)) if (k !== 'n' && (typeof t !== 'string' || !t || t.length > LEVEL_LIMITS.value)) return {error: `${what}: ${k} is a text`};
+  return {ok: true};
+}
 function browserStep(s) {
-  if (!plain(s)) return null;
+  if (!plain(s)) return {error: 'it is not an object'};
   const keys = Object.keys(s);
-  if (keys.length !== 1) return null;
+  if (keys.length !== 1 || !BROWSER_STEPS.includes(keys[0])) return {error: `a browser step is an object with exactly one of ${quoted(BROWSER_STEPS)}; this one has ${keys.length ? quoted(keys.map(k => k.slice(0, 40))) : 'none'}`};
   const [k] = keys, v = s[k];
-  if (k === 'goto') { if (typeof v !== 'string') return null; const bad = urlPathError(v.trim()); return bad ? {error: bad, path: v} : {goto: v.trim()}; }
-  if (k === 'reload') return v === true ? {reload: true} : null;
-  if (k === 'press') return typeof v === 'string' && v ? {press: v.slice(0, 40)} : null;
-  if (k === 'expect_text' || k === 'expect_no_text') return typeof v === 'string' && v ? {[k]: v.slice(0, 300)} : null;
-  if (k === 'fill') { if (!plain(v) || typeof v.text !== 'string') return null; const l = locator(v, LOCATOR.filter(x => x !== 'text')); return Object.keys(l).length ? {fill: {...l, text: v.text.slice(0, 1000)}} : null; }
-  if (k === 'click') { if (!plain(v)) return null; const l = locator(v, ['role', 'name', 'text', 'label']); return Object.keys(l).length ? {click: l} : null; }
-  if (k === 'expect_count') { if (!plain(v) || !Number.isInteger(v.n) || v.n < 0) return null; const l = locator(v, ['role', 'text']); return Object.keys(l).length ? {expect_count: {...l, n: v.n}} : null; }
-  if (k === 'expect_element' || k === 'expect_no_element') {
-    const sel = plain(v) ? v.selector : v;
-    if (typeof sel !== 'string' || sel.length > 200 || !SELECTOR.test(sel.trim())) return null;
-    const text = plain(v) && typeof v.text === 'string' && v.text.trim() ? {text: v.text.trim().slice(0, 200)} : {};
-    return {[k]: {selector: sel.trim(), ...text}};
+  if (k === 'goto') { if (typeof v !== 'string') return {error: 'goto is a path'}; const bad = urlPathError(v); return bad ? {error: `goto "${v.slice(0, 80)}": ${bad}`} : {step: {goto: v}}; }
+  if (k === 'reload') return v === true ? {step: {reload: true}} : {error: 'reload is true'};
+  if (k === 'press') return typeof v === 'string' && v && v.length <= 40 ? {step: {press: v}} : {error: 'press is a key name of at most 40 characters'};
+  if (k === 'expect_text' || k === 'expect_no_text') { const t = text(v, LEVEL_LIMITS.text, k); return t.error ? {error: t.error} : {step: {[k]: v}}; }
+  if (k === 'fill') {
+    const l = locator(v, [...LOCATOR.filter(x => x !== 'text'), 'text'], 'fill');
+    if (l.error) return l;
+    if (typeof v.text !== 'string') return {error: 'fill has the text to enter in text'};
+    return Object.keys(v).length > 1 ? {step: {fill: v}} : {error: 'fill names its field by label, placeholder, role and name, or name'};
   }
-  return null;
+  if (k === 'click') { const l = locator(v, ['role', 'name', 'text', 'label'], 'click'); return l.error ? l : Object.keys(v).length ? {step: {click: v}} : {error: 'click names what it clicks'}; }
+  if (k === 'expect_count') {
+    if (!plain(v) || !Number.isInteger(v.n) || v.n < 0) return {error: 'expect_count has n, a whole number, and role or text'};
+    const l = locator(v, ['role', 'text', 'n'], 'expect_count');
+    return l.error ? l : Object.keys(v).length > 1 ? {step: {expect_count: v}} : {error: 'expect_count names role or text'};
+  }
+  // expect_element, expect_no_element
+  if (!plain(v) || typeof v.selector !== 'string') return {error: `${k} is an object with selector and, optionally, text`};
+  const x = extra(v, ['selector', 'text'], k);
+  if (x) return {error: x};
+  if (v.selector.length > 200 || !SELECTOR.test(v.selector)) return {error: `${k}: "${v.selector.slice(0, 80)}" is not a simple selector (a tag, then any of #id, .class, [attribute] and [attribute=value])`};
+  if (v.text !== undefined && (typeof v.text !== 'string' || !v.text || v.text.length > 200)) return {error: `${k}: text is a text of at most 200 characters`};
+  return {step: {[k]: v}};
 }
 
 // ------------------------------------------------------------ how a contract runs
-// Only a page, a route or a command is started. A page is served as it is
-// unless it says a command; a route says how it is served; a command runs by
-// its own file (its toolchain's run_file), and its run, when it states one,
-// is that command line. A function, a file, a document or a data file is
-// never started: a run written on one is not read. A run is {static: true}
-// or {run, argv}; it serves on the port the box gives it ({port: true,
-// ready}) only when something serves it (servedRun): a route always, a page
-// or a command once a level's http or browser check serves it. ready is the
-// path the run said it answers at once it is up, for then. {run, ready?} |
-// {error} | {note} | {}.
+// Only a page, a route or a command is started, and only by the run its
+// contract states: {static: true} serves its files as they are; {run,
+// ready?} is a command line (a command contract or a program the box has,
+// with its arguments) and the path it answers at once it is up. A contract
+// that states no run has none. It serves on the port the box gives it
+// ({port: true, ready}) only when something serves it (servedRun): a route
+// always, a page or a command once a level's http or browser check serves
+// it. world: {commands, executables}. {run} | {error}.
 export const RUN_KINDS = new Set(['page', 'route', 'command']);
-const emptyRun = raw => raw === undefined || raw === null || raw === '' || raw === false || plain(raw) && !Object.keys(raw).length;
-export function runOf(raw, contract, ctx) {
+export function runOf(raw, contract, world) {
   const kind = kindOf(contract);
-  if (!RUN_KINDS.has(kind)) return emptyRun(raw) ? {} : {note: `${contract.name} is a ${kind} contract, which is not started, so its run is not read`};
-  if (emptyRun(raw)) return kind === 'page' ? {run: {static: true}} : {};
-  if (raw === true || raw === 'static' || plain(raw) && raw.static === true) return {run: {static: true}};
-  const line = typeof raw === 'string' ? raw : plain(raw) ? Array.isArray(raw.run) ? joinArgv(raw.run) : Array.isArray(raw.argv) && typeof raw.run !== 'string' ? joinArgv(raw.argv) : raw.run ?? raw.command : '';
-  const run = str(line, LEVEL_LIMITS.command);
-  if (!run) return {error: 'its run says neither {"static": true} nor a command'};
-  const parsed = commandArgv(run);
+  if (!RUN_KINDS.has(kind)) return {error: `a ${kind} contract is not started, so it states no run`};
+  if (!plain(raw)) return {error: 'run is an object: static true, or run (a command line) with ready (a path)'};
+  if ('static' in raw) return raw.static === true && Object.keys(raw).length === 1 ? {run: {static: true}} : {error: 'a static run is static true and nothing else'};
+  const x = extra(raw, ['run', 'ready'], 'run');
+  if (x) return {error: x};
+  if (typeof raw.run !== 'string' || !raw.run.trim()) return {error: 'run states static true, or a command line in run'};
+  if (raw.run.length > LEVEL_LIMITS.command) return {error: `its command line is longer than ${LEVEL_LIMITS.command} characters`};
+  const parsed = commandArgv(raw.run);
   if (parsed.error) return {error: `its run: ${parsed.error}`};
   const [first] = parsed.argv;
-  if (!ctx.commands.has(first) && !ctx.executables.has(first)) return {error: `its run starts "${first}", which is neither a command contract of this level nor a program the box has`};
-  // The path it answers at once it is up, kept for when something serves it; a bare name reads as its path.
-  const said = plain(raw) && typeof raw.ready === 'string' && raw.ready.trim() ? raw.ready.trim() : '';
-  const ready = said ? localPath(said) || said : '';
-  return {run: {run, argv: parsed.argv}, ...(ready ? {ready} : {})};
+  if (!world.commands.has(first) && !world.executables.has(first)) return {error: `its run starts "${first.slice(0, 80)}", which is neither a command contract declared so far nor a program the box has (${[...world.executables].join(', ') || 'none'})`};
+  if (raw.ready !== undefined) { const bad = typeof raw.ready === 'string' ? urlPathError(raw.ready) : 'it is a path'; if (bad) return {error: `its ready path: ${bad}`}; }
+  return {run: {run: raw.run, argv: parsed.argv, ...(raw.ready !== undefined ? {ready: raw.ready} : {})}};
 }
 // A run something serves: it listens on the port the box gives it, ready
-// when its ready path (by default "/") answers. {run} | {error}.
-export function servedRun(run, ready = '') {
-  if (!run || run.static) return {run};
-  const at = ready || run.ready || '/', bad = urlPathError(at);
-  return bad ? {error: `its run's ready path: ${bad}`} : {run: {run: run.run, argv: run.argv, port: true, ready: at}};
+// when its ready path (by default "/") answers.
+export function servedRun(run) {
+  if (!run || run.static) return run;
+  return {run: run.run, argv: run.argv, port: true, ready: run.ready || '/'};
 }
 // The runs a level's checks may serve, by contract name (checks.js reads
 // them): a static one, or one that listens on its port. A command's own
@@ -521,7 +412,7 @@ export function contractExamples(contract, validations) {
 }
 
 // How a contract is exercised itself, in words a splitter reads.
-function exerciseWords(c) {
+export function exerciseWords(c) {
   const kind = kindOf(c);
   if (kind === 'function') return `calls of ${c.name}, each call one example`;
   if (kind === 'command') return `command checks that run ${c.name}${c.path && c.path !== c.name ? ` or ${c.path}` : ''}, each one example${c.run?.port ? `, or http requests to it and browser checks that serve it, each request and scenario one example` : ''}`;
@@ -531,254 +422,11 @@ function exerciseWords(c) {
   return c.path ? `file or judge checks of ${c.path}, each text it holds and each question one example${runs}` : `checks of ${c.name}`;
 }
 
-// ------------------------------------------------------------ reading a level
-// What a contract with no kind (or a kind that is none of the seven) is, by
-// its shape: what a call returns, or inputs with nothing that starts it, is a
-// function; a method and a path is a route; then by its path: a page, a
-// document, a data file, or else a file. A name with no path and no other
-// sign stays what the stored form reads it as, a function.
-const DOC_EXT = /\.(?:md|markdown|txt|rst|adoc)$/i, DATA_EXT = /\.(?:json|csv|tsv|ya?ml|toml|xml)$/i, PAGE_EXT = /\.html?$/i;
-export function inferKind(item) {
-  const k = typeof item?.kind === 'string' ? item.kind.trim().toLowerCase() : '';
-  if (CONTRACT_KINDS.includes(k)) return k;
-  const name = typeof item?.name === 'string' ? item.name.trim() : '', path = typeof item?.path === 'string' && item.path.trim() ? item.path.trim() : /\.[A-Za-z0-9]+$/.test(name) ? name : '';
-  const said = v => typeof v === 'string' ? !!v.trim() : Array.isArray(v) ? v.length > 0 : false;
-  if (said(item?.returns) || (said(item?.params) || said(item?.inputs)) && emptyRun(item?.run)) return 'function';
-  if (ROUTE_NAME.test(name)) return 'route';
-  if (!path) return 'function';
-  if (PAGE_EXT.test(path)) return 'page';
-  if (DOC_EXT.test(path)) return 'doc';
-  if (DATA_EXT.test(path)) return 'data';
-  return 'file';
-}
-const GENERIC = new Set(['file', 'doc', 'data']);
-const baseName = p => String(p ?? '').split('/').pop();
-const nameText = v => cleanPath(v).replace(/^\/+/, '');
-// The names a level's contract names (a piece's contracts and uses, a
-// validation's serves, a check's served contract and path) read, leniently:
-// the exact name; a name a merged contract had; the name without quotes or a
-// leading "./" or "/"; the path of a contract (a placed contract's, else every
-// function the file defines); the one path it ends (index.html for
-// public/index.html), or that ends it; the one path with its base name.
-// resolve(text) → {names, how} (how: '' when exact), or {names: []}.
-function resolver(contracts, aliases) {
-  const byName = new Map(contracts.map(c => [c.name, c]));
-  const atPath = p => {
-    const all = contracts.filter(c => c.path === p), placed = all.filter(c => PLACED_KINDS.has(kindOf(c)));
-    return (placed.length ? placed.slice(0, 1) : all).map(c => c.name);
-  };
-  const onePath = list => { const paths = [...new Set(list.map(c => c.path))]; return paths.length === 1 ? atPath(paths[0]) : []; };
-  return text => {
-    const raw = typeof text === 'string' ? text.trim() : '';
-    if (!raw) return {names: []};
-    if (byName.has(raw)) return {names: [raw], how: ''};
-    if (aliases.has(raw)) return {names: [aliases.get(raw)], how: 'the contract it was merged into'};
-    const n = nameText(raw);
-    if (byName.has(n)) return {names: [n], how: 'its name'};
-    if (aliases.has(n)) return {names: [aliases.get(n)], how: 'the contract it was merged into'};
-    const exact = atPath(n);
-    if (exact.length) return {names: exact, how: 'its path'};
-    const pathed = contracts.filter(c => c.path);
-    const suffix = onePath(pathed.filter(c => c.path.endsWith(`/${n}`) || n.endsWith(`/${c.path}`)));
-    if (suffix.length) return {names: suffix, how: 'the one path it names'};
-    const base = /\.[A-Za-z0-9]+$/.test(n) ? onePath(pathed.filter(c => baseName(c.path) === baseName(n))) : [];
-    if (base.length) return {names: base, how: 'the one path with its file name'};
-    // A request ("PUT /tickets/1") names the one route whose path it matches.
-    const [method, at] = raw.split(/\s+/);
-    const routed = at?.startsWith('/') ? contracts.filter(c => kindOf(c) === 'route' && routeMatches(c.name, method, at)) : [];
-    if (routed.length === 1) return {names: [routed[0].name], how: 'the route its request matches'};
-    return {names: []};
-  };
-}
-const shown = xs => xs.map(x => `"${String(x).slice(0, 80)}"`).join(', ');
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-
-// A splitter's answer for one attempt, read leniently and held to the hard
-// rules. raw: {contracts, validations, pieces}. own: the manager's contracts
-// (its parent's splitter gave them; each is in the level by its name, so the
-// validations above it still run). held: the validations already serving own
-// contracts ({id, serves, check}). have: the level's contracts already
-// delivered, when a job adds to it. calls: the contracts it may call. rows:
-// the installed toolchain rows. base: the existing project's paths.
-// maxPieces: the room's bound.
-// The hard rules are executability only: the answer is a json object; a
-// placed contract's path lies inside the project, in a language the box
-// runs, under a name it can be called or run by; a run is a well-formed
-// command the box can start, or static; a route has a way to be served; a
-// validation is a check that can run; and the owner's rule, three different
-// examples per contract. A miss is a defect, which the next attempt hears.
-// Everything else reads leniently, keeping the meaning, and each reading is a
-// note: a contract listed twice, a given contract left out, a name written
-// inexactly, a run on a contract that is not started. Whether the pieces
-// divide the level soundly (each contract delivered once, each file placed
-// by one piece, contracts the level already has) is Clef's to judge: the
-// facts are returned in division, for its review. A contract the level
-// already has (contracts_you_have), listed again, is read as that one: it
-// stays delivered where it is, and a piece that lists it uses it.
-// Returns {contracts, validations, pieces, defects, notes, division}.
-export function readLevel(raw, {own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7} = {}) {
-  const o = plain(raw) ? raw : {}, defects = [], notes = [];
-  if (!plain(raw)) defects.push('The answer is not a json object with "contracts", "validations" and "pieces".');
-  const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
-  const executables = new Set(installed.flatMap(r => r.executables || [])), ids = new Set(installed.map(r => r.id));
-  const baseSet = new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []);
-  const written = (Array.isArray(o.contracts) ? o.contracts : []).slice(0, LEVEL_LIMITS.contracts);
-  const facts = {rows: installed, languages: [...new Set([...own, ...written].map(c => plain(c) && typeof c.path === 'string' ? toolchainOf(c.path)?.id : null).filter(Boolean))], argvCommands: true, base: baseSet};
-  // Contracts: own first (a refinement keeps its name, kind and path), then those the answer adds.
-  const pending = [];
-  for (const mine of own) {
-    const w = written.find(x => plain(x) && x.name === mine.name);
-    if (!w) notes.push(`Contract ${mine.name}, given to this level, is not in the answer's contracts: it is carried into the level as it was given.`);
-    pending.push({item: w ? {...mine, ...w, name: mine.name, kind: mine.kind, ...(mine.path ? {path: mine.path} : {})} : mine, own: true, serves: mine.serves || []});
-  }
-  // A contract the level already has (a job adds to it), listed again, is that one: it stays delivered where it is.
-  const hadNames = new Set(have.map(c => c?.name).filter(Boolean)), relisted = [];
-  for (const w of written) {
-    if (plain(w) && own.some(m => m.name === w.name)) continue;
-    const name = plain(w) && typeof w.name === 'string' ? w.name.trim() : '';
-    if (name && hadNames.has(name) && !own.some(m => m.name === name)) {
-      if (!relisted.includes(name)) { relisted.push(name); notes.push(`Contract ${name.slice(0, 80)} is one this level has already (contracts_you_have): it is read as that one, delivered where it is.`); }
-      continue;
-    }
-    pending.push({item: w, own: false, serves: []});
-  }
-  const entries = [], aliases = new Map();
-  for (const {item, own: mine, serves} of pending) {
-    // A contract with a path and no name is named by its path.
-    const named = plain(item) && typeof item.name !== 'string' && typeof item.path === 'string' && item.path.trim() ? {...item, name: item.path.trim()} : item;
-    const kind = mine ? kindOf(named) : inferKind(named), said = plain(named) && named.kind !== undefined ? String(named.kind).trim().toLowerCase().slice(0, 40) : '';
-    if (!mine && plain(named) && typeof named.name === 'string' && !CONTRACT_KINDS.includes(said) && (said || kind !== 'function'))
-      notes.push(`Contract ${named.name.slice(0, 80)} ${said ? `has the kind "${said}", which is none of the seven` : 'says no kind'}, so it is read as a ${kind}, by its shape.`);
-    const c = normalizeContract(plain(named) ? {...named, kind} : named, {v8: true});
-    if (!c) { defects.push(`A contract has no name: ${JSON.stringify(item)?.slice(0, 120)}.`); continue; }
-    delete c.run;
-    const prior = entries.find(e => e.c.name === c.name);
-    if (prior) {
-      if (same(prior.c, c) && same(prior.item?.run ?? null, named?.run ?? null)) notes.push(`Contract ${c.name} is listed twice, the same both times: it is read once.`);
-      else notes.push(`Contract ${c.name} is listed twice, differently: the first is read.`);
-      continue;
-    }
-    const bad = mine ? '' : nameError(c, facts);
-    if (bad) { defects.push(`Contract ${String(named?.name ?? c.name).slice(0, 80)}: ${bad}.`); continue; }
-    if (PLACED_KINDS.has(kind) && !bundlePath(c.path)) { defects.push(`Contract ${c.name} needs a path inside the project for its file.`); continue; }
-    const row = c.path ? toolchainOf(c.path) : null;
-    if (row && row.id !== 'text' && !ids.has(row.id)) { defects.push(`Contract ${c.name} is written in ${row.id}, which the box does not run (it runs ${[...ids].join(', ')}).`); continue; }
-    // One file, one contract that places it: a second contract at a path the level places is that file, under another name.
-    const twin = c.path && PLACED_KINDS.has(kind) ? entries.find(e => e.c.path === c.path && PLACED_KINDS.has(kindOf(e.c))) : null;
-    if (twin) {
-      if (!mine && !twin.own && GENERIC.has(kindOf(twin.c)) && !GENERIC.has(kind)) {
-        entries[entries.indexOf(twin)] = {c, item: named, own: mine, serves};
-        aliases.set(twin.c.name, c.name);
-        for (const [k, v] of aliases) if (v === twin.c.name) aliases.set(k, c.name);
-        notes.push(`Contracts ${twin.c.name} and ${c.name} place the same file ${c.path}: it is one contract, ${c.name}, and ${twin.c.name} names it.`);
-      } else {
-        aliases.set(c.name, twin.c.name);
-        notes.push(`Contracts ${twin.c.name} and ${c.name} place the same file ${c.path}: it is one contract, ${twin.c.name}, and ${c.name} names it.`);
-      }
-      continue;
-    }
-    entries.push({c, item: named, own: mine, serves});
-  }
-  const contracts = entries.map(e => ({...e.c, ...(e.serves.length ? {serves: e.serves} : {})}));
-  // What the level's checks can run by: its contracts, and those it has already (a job adds to them);
-  // then how each page, route and command runs (a level's http and browser checks reach it so).
-  const present = [...contracts, ...have.filter(h => h?.name && !contracts.some(c => c.name === h.name))];
-  const commands = new Set(present.filter(c => kindOf(c) === 'command').map(c => c.name));
-  const world = {commands, executables}, readyAt = new Map();
-  // v8 live 8: a command or a route that states no run runs by its own file (its toolchain's run_file), as a command check runs a command.
-  const fileRun = c => { const row = ['command', 'route'].includes(kindOf(c)) && !c.run && c.path ? toolchainOf(c.path) : null, argv = row?.run_file && ids.has(row.id) ? row.run_file.map(x => x === '{path}' ? c.path : x) : null; return argv ? {run: argv.join(' '), argv} : null; };
-  contracts.forEach((c, i) => {
-    const r = runOf(plain(entries[i].item) ? entries[i].item.run : undefined, c, world);
-    if (r.error) defects.push(`Contract ${c.name}: ${r.error}.`);
-    else if (r.note) notes.push(`Contract ${r.note}.`);
-    else if (r.run) { c.run = r.run; if (r.ready) readyAt.set(c.name, r.ready); }
-    if (kindOf(c) === 'route' && !c.run && !r.error) {
-      // v8 live 8: a route that states no run is served by its own file, as a command is.
-      const own = fileRun(c);
-      if (own) { c.run = own; notes.push(`Contract ${c.name} states no run; it is served by its own file: ${own.run}.`); }
-      else defects.push(`Contract ${c.name} is a route: give it "run": {"run": "<the command that serves it>", "ready": "<a path>"}.`);
-    }
-  });
-  const resolve = resolver(contracts, aliases), resolveHad = resolver(have.filter(h => h?.name), new Map());
-  // Validations.
-  // What a check can serve: a contract of this level with a run, or one the level has whose run is served already (its level file holds it as it is).
-  const served = new Set([...contracts.filter(c => c.run || fileRun(c)), ...runsOf(present.filter(c => !contracts.includes(c))).map(r => ({name: r.id}))].map(c => c.name));
-  const ctx = {paths: new Set([...present.map(c => c.path).filter(Boolean), ...baseSet]), functions: new Set(present.filter(c => kindOf(c) === 'function').map(c => c.name)),
-    functionPaths: new Map(present.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served, commands, executables,
-    resolvePath: p => { const n = resolve(p).names.map(x => contracts.find(c => c.name === x)?.path).filter(Boolean); return new Set(n).size === 1 ? n[0] : ''; },
-    resolveServe: s => { if (!s) return served.size === 1 ? [...served][0] : ''; const n = resolve(s).names.filter(x => served.has(x)); return n.length === 1 ? n[0] : ''; }};
-  const validations = [], taken = new Set(), validationIds = new Set();
-  for (const [i, v] of (Array.isArray(o.validations) ? o.validations : []).slice(0, LEVEL_LIMITS.validations).entries()) {
-    const label = plain(v) && typeof v.id === 'string' && v.id.trim() ? v.id.trim().slice(0, 64) : `validation ${i + 1}`;
-    if (plain(v) && typeof v.id === 'string' && v.id.trim()) validationIds.add(v.id.trim());
-    if (!plain(v)) { defects.push(`${label} is not an object.`); continue; }
-    const said = [...new Set((Array.isArray(v.serves) ? v.serves : typeof v.serves === 'string' ? [v.serves] : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim()))];
-    let serves = [];
-    for (const s of said) {
-      // A contract the level has already is one a validation of this level may serve.
-      const mine = resolve(s), r = mine.names.length ? mine : resolveHad(s);
-      if (!r.names.length) notes.push(`${label} serves ${s.slice(0, 80)}, which names no contract of this level: it is left out of its serves.`);
-      else if (r.how) notes.push(`${label} serves ${s.slice(0, 80)}, read as ${r.names.join(', ')} (${r.how}).`);
-      serves.push(...r.names);
-    }
-    serves = [...new Set(serves)];
-    const c = readCheck(v.check ?? v, ctx);
-    if (c.error) { defects.push(`${label}: ${c.error}.`); continue; }
-    if (c.note) notes.push(`${label}: ${c.note}.`);
-    if (!serves.length) {
-      serves = contracts.filter(k => exercises(c.check, k)).map(k => k.name);
-      if (!serves.length) { notes.push(`${label} serves no contract of this level, and its check exercises none: it is not read.`); continue; }
-      notes.push(`${label} names no contract of this level it serves, so it serves what its check exercises: ${serves.join(', ')}.`);
-    }
-    const id = !taken.has(label) ? label : `${label}.${i + 1}`;
-    taken.add(id);
-    validations.push({id, serves, check: c.check, ...(str(v.says, LEVEL_LIMITS.says) ? {says: str(v.says, LEVEL_LIMITS.says)} : {})});
-  }
-  // A page or a command something serves listens on the port its box gives it; a route always does.
-  const servedBy = new Set(validations.map(v => v.check.serve).filter(Boolean));
-  for (const c of contracts) if (servedBy.has(c.name) && fileRun(c)) { c.run = fileRun(c); notes.push(`Contract ${c.name} states no run; it is served by its own file: ${c.run.run}.`); }
-  for (const c of contracts) if (c.run && !c.run.static && (kindOf(c) === 'route' || servedBy.has(c.name))) {
-    const r = servedRun(c.run, readyAt.get(c.name));
-    if (r.error) defects.push(`Contract ${c.name}: ${r.error}.`);
-    else c.run = r.run;
-  }
-  // Three different examples per contract that is called or run, from its validations here and those that already serve it.
-  for (const c of contracts.filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
-    const mine = [...held.filter(h => (c.serves || []).includes(h.id)), ...validations.filter(v => v.serves.includes(c.name))];
-    const n = contractExamples(c, mine).length;
-    if (n < EXAMPLES_PER_CONTRACT) defects.push(`Contract ${c.name} has ${n} different example${n === 1 ? '' : 's'}: give it validations that show ${EXAMPLES_PER_CONTRACT} different examples of ${c.name} itself (${exerciseWords(c)}).`);
-  }
-  // Pieces: each delivers contracts of this level, by its names read leniently.
-  const had = new Map(have.filter(c => c?.name).map(c => [c.name, c])), callable = new Set([...had.keys(), ...calls.map(c => c?.name)].filter(Boolean));
-  const pieces = [];
-  for (const [i, p] of (Array.isArray(o.pieces) ? o.pieces : []).entries()) {
-    if (!plain(p) || !str(p.label, 70) || !str(p.task, 2000)) { defects.push(`Piece ${i + 1} needs a "label" and a "task".`); continue; }
-    const label = str(p.label, 70), delivers = [], uses = [];
-    for (const n of [...new Set(strings(p.contracts, 32, 200))]) {
-      const r = resolve(n);
-      if (r.names.length) { if (r.how) notes.push(`Piece "${label}" delivers ${n.slice(0, 80)}, read as ${r.names.join(', ')} (${r.how}).`); delivers.push(...r.names); }
-      else if (resolveHad(n).names.length) { notes.push(`Piece "${label}" delivers ${n.slice(0, 80)}, which this level has already: it is read as a contract the piece uses.`); uses.push(...resolveHad(n).names); }
-      else if (validationIds.has(n)) notes.push(`Piece "${label}" lists ${n.slice(0, 80)}, a validation, among the contracts it delivers: a piece delivers contracts, so it is left out.`);
-      else notes.push(`Piece "${label}" delivers ${n.slice(0, 80)}, which names no contract of this level: it is left out.`);
-    }
-    for (const n of [...new Set(strings(p.uses, 16, 200))]) {
-      const r = resolve(n), named = r.names.length ? r.names : callable.has(n.trim()) ? [n.trim()] : [];
-      if (!named.length) { notes.push(`Piece "${label}" uses ${n.slice(0, 80)}, which names no contract it may use: it is left out.`); continue; }
-      if (r.how) notes.push(`Piece "${label}" uses ${n.slice(0, 80)}, read as ${named.join(', ')} (${r.how}).`);
-      uses.push(...named);
-    }
-    const mine = [...new Set(delivers)];
-    pieces.push({label, task: str(p.task, 2000), contracts: mine, uses: [...new Set(uses)].filter(n => !mine.includes(n)),
-      ...(Array.isArray(p.refs) ? {refs: strings(p.refs, 16, 40)} : {}), ...(p.packages !== undefined ? {packages: strings(p.packages, 16, 80)} : {})});
-  }
-  if (pieces.length > maxPieces) defects.push(`The answer has ${pieces.length} pieces; use at most ${maxPieces}, grouping related pieces into one piece whose task covers them.`);
-  return {contracts, validations, pieces, defects, notes, division: divisionOf(contracts, pieces, have, relisted)};
-}
 // The facts of a division Clef's review reads: the paths each piece places,
 // the contracts no piece delivers and those several deliver, the paths
-// several pieces place, and the contracts the level already has that the
-// answer lists again or whose files it places again.
-export function divisionOf(contracts, pieces, have = [], listed = []) {
+// several pieces place, and the files of contracts the level already has
+// that a contract of this division places again.
+export function divisionOf(contracts, pieces, have = []) {
   const byName = new Map(contracts.map(c => [c.name, c])), places = pieces.map(p => [...new Set(p.contracts.map(n => byName.get(n)?.path).filter(Boolean))]);
   const out = {places};
   if (pieces.length) {
@@ -791,12 +439,12 @@ export function divisionOf(contracts, pieces, have = [], listed = []) {
     if (several.length) out.delivered_by_several = several;
     if (shared.length) out.placed_by_several = shared;
   }
-  const had = have.filter(c => c?.name), relisted = [...new Set([...listed, ...contracts.filter(c => had.some(h => h.name === c.name)).map(c => c.name)])];
-  const replaced = contracts.filter(c => c.path && !relisted.includes(c.name)).flatMap(c => had.filter(h => h.path === c.path).map(h => ({contract: c.name, path: c.path, has: h.name})));
-  if (relisted.length) out.already_delivered = relisted;
+  const had = have.filter(c => c?.name);
+  const replaced = contracts.filter(c => c.path).flatMap(c => had.filter(h => h.path === c.path).map(h => ({contract: c.name, path: c.path, has: h.name})));
   if (replaced.length) out.placed_already = replaced;
   return out;
 }
+
 
 // A file check that looks for texts inside a file of a code row: Clef is
 // asked whether it tests what a user meets rather than an internal detail.

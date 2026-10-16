@@ -79,6 +79,18 @@ const { start } = require('./index.js');
 `;
 
 // ------------------------------------------------------------------ rooms
+// v8: a level {contracts, validations, pieces} as the splitter's calls, in
+// order, ending with done: each contract not among those its request gives
+// (contracts_you_deliver), each validation's serves and check, and each
+// piece when piece is offered.
+export function levelCalls(level,{user={},tools=['contract','validation','piece','level','done']}={}) {
+  const given=new Set((user.contracts_you_deliver||[]).map(c=>c.name)),out=[];
+  for(const c of level.contracts||[])if(!given.has(c.name))out.push({name:'contract',arguments:c});
+  for(const v of level.validations||[])out.push({name:'validation',arguments:{serves:v.serves,check:v.check}});
+  if(tools.includes('piece'))for(const p of level.pieces||[])out.push({name:'piece',arguments:p});
+  out.push({name:'done',arguments:{}});
+  return out;
+}
 // v8: a level's validations (mode 'checks') run in the real verifyChecks.
 export const {verifyChecks}=await import('../../container/build-runner.mjs');
 // A live room with a scripted linker, runner and coverage check. Any other
@@ -95,7 +107,7 @@ export const {verifyChecks}=await import('../../container/build-runner.mjs');
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
 export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test',store:given=null}={}) {
-  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],source:[],raw:[]};
+  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],clef:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
@@ -109,7 +121,24 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     // which fake answers. A fake's string answer is sent as written (a
     // worker's file blocks), an object as JSON.
     const v8role=Object.keys(ROLE).find(r=>system.includes(ROLE[r])),send=a=>({response:typeof a==='string'?a:JSON.stringify(a)});
-    if(v8role==='splitter'&&split){calls.split.push(user);return send(await split(user,calls.split.length,system));}
+    // v8: the splitter works through functions (src/splitter.js). Its fake
+    // answers each round of the session: a list of calls [{name, arguments}],
+    // a text (a reply with no call), or a level {contracts, validations,
+    // pieces}, which stands for its calls ending with done (levelCalls) and
+    // answers only the session's first round. split(user, n, system,
+    // {round, results, tools}): n counts sessions, results are the previous
+    // round's results (parsed), tools the function names offered.
+    if(v8role==='splitter'&&split&&input.tools){
+      const round=messages.filter(m=>m.role==='assistant').length+1,last=messages.map(m=>m.role).lastIndexOf('assistant');
+      const results=round>1?messages.slice(last+1).filter(m=>m.role==='tool').map(m=>({name:m.name,result:JSON.parse(m.content)})):[],tools=input.tools.map(t=>t.name);
+      if(round===1)calls.split.push(user);
+      calls.splitRounds.push({session:calls.split.length,round,results});
+      const a=await split(user,calls.split.length,system,{round,results,tools});
+      if(typeof a==='string')return {response:a};
+      if(Array.isArray(a))return {tool_calls:a.map(c=>({name:c.name,arguments:c.arguments??{}}))};
+      if(round>1)throw new Error('the scripted splitter\'s level was not accepted: '+JSON.stringify(results).slice(0,1500));
+      return {tool_calls:levelCalls(a,{user,tools})};
+    }
     if(v8role==='worker'&&leaf){calls.leaf.push(user);return send(await leaf(user,calls.leaf.length,system));}
     if(v8role==='file'&&file){calls.file.push(user);return send(await file(user,calls.file.length,system));}
     if(v8role==='linker'){calls.link.push(user);return send(await link(user,calls.link.length,system));}

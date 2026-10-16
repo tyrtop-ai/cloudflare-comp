@@ -13,21 +13,12 @@
 
 // §6.3: one paragraph per role, at most six sentences each.
 export const ROLE = Object.freeze({
-  splitter: 'Your role: state what your assignment delivers and how each delivery is checked, and divide the assignment into pieces that can each be made at the same time from its own task alone. You receive your assignment, your contracts (none when you state them), what your level already has, what the checking box runs, your packages, and any existing files and linked pages, quoted as reference. List the contracts of this level: each of yours by its name, and any that one piece delivers for another to use. Give every contract validations, runnable checks that each show different inputs or steps and what follows from them, at least three per contract, because a contract is known by its validations alone. Then give the fewest pieces that each fit one task, with every contract delivered by exactly one of them, or no pieces when the assignment is one piece of work.',
+  splitter: 'Your role: state what your assignment delivers and how each delivery is checked, and divide the assignment into pieces that can each be made at the same time from its own task alone. You receive your assignment, your contracts (none when you state them), what your level already has, what the checking box runs, your packages, and any existing files and linked pages, quoted as reference. You work by calling your functions: declare the contracts of this level, each of yours by its name and any that one piece delivers for another to use, then their validations, runnable checks that each show different inputs or steps and what follows from them. Every function, command and route contract needs three different examples, because a contract is known by its validations alone. When piece is among your functions, declare the fewest pieces that each fit one task, every contract delivered by one of them, or none when the assignment is one piece of work. Call done when the level is complete.',
   worker: 'Your role: write the files that deliver what your prompt asks. You receive your prompt (your task, what to deliver under which names and paths with examples of each, and the names you may call with how to refer to each), your files as they stand, complaints about them, and what is available to you by name. Deliver each item under exactly its name and at its path, so that each of its examples holds, since that is how your files are run. Refer to a name you may call exactly as its reference shows. A complaint says what was observed when your files ran: fix its cause in your files. If you need something your prompt and what is available do not give, ask for it in your control block and write meanwhile the files that are independent of it.',
   file: 'Your role: write one file again so that it fixes the complaint described. Keep the names and paths it delivers and everything that already works. Return only the complete text of the file.',
   linker: 'Your role: make files that were written apart refer to each other correctly, by changing only names and reference paths. You receive the files that must change, the contracts they deliver and call, and the unresolved references a run reported. Change a reference only to a contract that does what the reference expects. Anything a rename cannot fix, report as an issue against the file that must change.'
 });
 
-// A contract's fields, described once for the splitter; no filled-in contract to copy.
-const CONTRACT_FIELDS = '- "contracts": each {"name", "kind", "does", "inputs", "outputs", "effects", "path"}. kind is one of "function", "file", "page", "route", "command", "doc", "data". A file, page, doc or data contract is named by its path; a command by the one word that runs it, with the path of its file; a route as a request method in capitals, a space and a path; a function as its language names functions, after what it does and what it acts on. "does" is one line; "inputs" lists up to 6 {"name", "is"}; "outputs" says in one line what a call returns, a command prints, a route answers or a file holds; "effects" is "none", or what it changes. A page or a route also has "run", how it is reached: {"static": true} serves the files as they are, and {"run": "<a command contract or a program the box has, with its arguments>", "ready": "<a path that answers once it is up>"} serves on the port its environment gives.';
-const SPLITTER_FIELDS = [
-  'Return one json object with these fields, and nothing else:',
-  CONTRACT_FIELDS,
-  '- "validations": each {"id", "serves": [the names of the contracts it checks], "check"}. A check is one of: {"kind": "file", "path", "has": [texts the file contains], "json": true when it must parse}; {"kind": "judge", "path", "question": a yes/no question a reader answers from the file alone}; {"kind": "command", "run": a command contract or a program the box has, with its arguments, "stdin", "files": {path: content of an input file}, "expect": {"exit", "stdout", "stdout_has", "stderr_has", "stderr": true}}; {"kind": "call", "steps": [{"call": a function contract, "args": [...], "save": a name later arguments read as "$name", "expect", "expect_has", "throws": true}]}; {"kind": "http", "serve": a contract with a run, "steps": [{"method", "path", "body", "save", "expect": {"status", "body_has", "json_has"}}]}; {"kind": "browser", "serve": a contract with a run, "steps": [each one of {"goto"}, {"reload": true}, {"press"}, {"fill": {"label" or "placeholder" or "role" and "name", "text"}}, {"click": {"role" and "name", or "text", or "label"}}, {"expect_text"}, {"expect_no_text"}, {"expect_count": {"role" or "text", "n"}}, {"expect_element": {"selector", "text"}}]}.',
-  '- Check a page by browser steps, a command by running it, a function by calling it, a route by requesting it, a document by a reader\'s question. Every function, command and route contract has three different examples: each call, request and run of a command is one.',
-  '- "pieces": each {"label": a few words naming what it produces, "task": what it must produce, in full sentences, "contracts": the names it delivers, "uses": the names of the contracts it relies on, of this level or ones you may call, "refs": outline refs of the linked pages it must read, "packages": names from your_packages it needs}, or an empty list.'
-];
 // §3.2, with the control fields described in prose: a small model copies a
 // template's true|false or [...] as written, so the format is one short
 // worked answer of the exact shape, the control object on one line, and the
@@ -43,11 +34,51 @@ const WORKER_FORMAT = [
   'Write tests only when your prompt asks for them, at the paths it names. A file you do not write again stays as it is. A file sent to you marked "clipped" is only its start: leave it as it is, or put your change in a new file, because a file written again from its start loses the rest.'
 ];
 export const FORMAT = Object.freeze({
-  splitter: SPLITTER_FIELDS.join('\n'),
+  splitter: 'Answer by calling your functions, one or several at a time. Each result says what was stored, or exactly why nothing was: a call that stored nothing can be made again as its result describes. Names match exactly as declared, and level shows everything declared so far.',
   worker: WORKER_FORMAT.join('\n'),
   file: 'Answer with the complete text of the file and nothing else, because the answer is saved as the file exactly as you write it.',
   linker: 'Return one json object {"edits": [{"file", "find", "replace"}], "issues": [{"file", "problem"}]}, and nothing else. "find" is text copied exactly from the file, short but found only once; "replace" is the same text with only names or reference paths changed, and every occurrence is replaced. An issue names the file that must change and what is wrong.'
 });
+
+// The splitter's functions (Workers AI tools): what each does and takes, in
+// the same terms as its role, with no filled-in value to copy. The runtime
+// runs them (src/splitter.js); a result is all the feedback there is.
+const KIND_LIST = ['function', 'file', 'page', 'route', 'command', 'doc', 'data'];
+const names = desc => ({type: 'array', items: {type: 'string'}, description: desc});
+export const TOOLS = Object.freeze({
+  splitter: Object.freeze([
+    {name: 'contract', description: 'Declares one contract of this level, stored exactly as given. The result says it is stored, or why it is not: a kind outside the seven, a path outside the files\' root, a language the box does not run, or a name already declared.',
+      parameters: {type: 'object', properties: {
+        name: {type: 'string', description: 'A function by a name its language accepts; a command by the one word that runs it; a route as a request method in capitals, a space and a path; a file, page, doc or data contract by its path.'},
+        kind: {type: 'string', enum: KIND_LIST, description: 'What the contract is.'},
+        path: {type: 'string', description: 'The relative path of its file. A file, page, doc, data or command contract has one; a function may.'},
+        does: {type: 'string', description: 'What it does, in one line.'},
+        inputs: {type: 'array', items: {type: 'object', properties: {name: {type: 'string'}, is: {type: 'string'}}, required: ['name']}, description: 'Up to 6 inputs, each with its name and what it is.'},
+        outputs: {type: 'string', description: 'In one line, what a call returns, a command prints, a route answers or a file holds.'},
+        effects: {type: 'string', description: 'What it changes, or none.'},
+        run: {type: 'object', properties: {static: {type: 'boolean'}, run: {type: 'string'}, ready: {type: 'string'}}, description: 'Only for a page, route or command: how it is started. static true serves its files as they are. run is a command line that starts with a command contract or a program the box has, and ready a path that answers once it is up; it serves on the port its environment gives. A contract that states no run is not started.'}
+      }, required: ['name', 'kind', 'does']}},
+    {name: 'validation', description: 'Declares one validation: a check that runs as written against the contracts it serves. Check a page by browser steps, a command by running it, a function by calling it, a route by requesting it, and a document by a reader\'s question; each call, each request and each run of a command is one example. The result gives the validation\'s id, the examples it renders and how many different examples each contract it serves has so far, or why it cannot run.',
+      parameters: {type: 'object', properties: {
+        serves: names('The declared contracts it checks, by their names exactly as declared.'),
+        check: {type: 'object', description: 'One of these forms, by its kind. file: path, has (texts the file contains), json (true when it must parse). judge: path, question (a yes or no question a reader answers from the file alone). command: run (a command contract or a program the box has, with its arguments), stdin, files (each input file\'s path and text), expect (exit, stdout, stdout_has, stderr_has, stderr true); with no expect it observes an exit of 0. call: steps, each with call (a declared function contract), args (a list), save (a name later arguments read as $name), expect, expect_has, throws (true). http: serve (a declared contract with a run), steps, each with method, path, body, save, expect (status, body_has, json_has). browser: serve (a declared contract with a run), steps, each exactly one of goto, reload (true), press, fill (label, placeholder, role and name, or name, with text), click (role and name, text, or label), expect_text, expect_no_text, expect_count (role or text, with n), expect_element and expect_no_element (selector, with text).'}
+      }, required: ['serves', 'check']}},
+    {name: 'piece', description: 'Declares one piece of the division: a task that can be made from its own words alone, and the declared contracts it delivers.',
+      parameters: {type: 'object', properties: {
+        label: {type: 'string', description: 'A few words naming what it produces.'},
+        task: {type: 'string', description: 'What it must produce, in full sentences.'},
+        contracts: names('The declared contracts it delivers, by their names exactly as declared.'),
+        uses: names('The contracts it relies on: declared ones, ones your level already has, or ones you may call.'),
+        packages: names('Names from your_packages it needs.'),
+        refs: names('Outline refs of the linked pages it must read.')
+      }, required: ['label', 'task', 'contracts']}},
+    {name: 'level', description: 'Shows everything declared so far: the contracts, the validations with their examples, and the pieces.', parameters: {type: 'object', properties: {}, required: []}},
+    {name: 'done', description: 'Completes the level. When something is still missing, the result lists it and the level stays open: three different examples for every function, command and route contract, and each contract delivered by at most one piece.', parameters: {type: 'object', properties: {}, required: []}}
+  ])
+});
+// The texts of a role's functions, by name, for the lint.
+const toolTexts = (role, list) => Object.fromEntries(list.flatMap(t => [[`TOOLS.${role}.${t.name}`, t.description],
+  ...Object.entries(t.parameters.properties).filter(([, p]) => p.description).map(([k, p]) => [`TOOLS.${role}.${t.name}.${k}`, p.description])]));
 
 // §6.4: the Clef questions, all typed noul. {i}, {j} and {contract} are
 // filled by clefText; a key's state object travels beside it.
@@ -78,11 +109,9 @@ export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, 
 // What a retry hears about its previous answer, in the user JSON
 // (previous_answer_problems), never in the system text.
 export const RETRY = Object.freeze({
-  empty: 'Your previous answer held no json object: it was reasoning only, or the output budget ran out. Answer with the json object alone.',
   worker: why => `Your previous answer could not be read (${why}). Answer again in the format your role describes, with every file complete and the control block last.`,
   json: 'Your previous answer was not one json object. Answer again with the json object alone.',
-  // A splitter's retry, by what its last attempt missed: the hard rules, or the review's objection.
-  rules: list => `Your previous answer, in previous_answer, still needs these changes: ${list.join(' ')} Keep the rest of it as it is, and answer with the whole corrected json object.`,
+  // A splitter's new session after Clef's review objected to its division.
   too_small: (count, bound) => `Your previous answer, listed in rejected, had ${count} pieces, and some were too small to be worth a task of their own. Use fewer, larger pieces this time, at least 2 and at most ${bound}, each delivering whole contracts.`,
   different: 'Your previous division, listed in rejected, was not one whose pieces could be made at the same time. Divide the assignment another way, along its contracts, so that each piece delivers contracts of its own and together the pieces deliver all of them.'
 });
@@ -143,10 +172,11 @@ export function promptTexts() {
   for (const [k, v] of Object.entries(FORMAT)) out[`FORMAT.${k}`] = v;
   for (const [k, v] of Object.entries(CLEF)) out[`CLEF.${k}`] = v;
   for (const [k, v] of Object.entries(LINK_SCOPE)) out[`LINK_SCOPE.${k}`] = v;
+  for (const [role, list] of Object.entries(TOOLS)) Object.assign(out, toolTexts(role, list));
   // Each message with every field filled by a sample (a plural where it has one).
   const filled = new Proxy({}, {get: (_, k) => k === 'many' ? true : `sample ${String(k)}`});
   for (const [k, f] of Object.entries(MESSAGES)) out[`MESSAGES.${k}`] = f(filled);
-  const sample = {too_small: f => f(5, 4), rules: f => f(['Contract x has 2 different examples.']), worker: f => f('a reason')};
+  const sample = {too_small: f => f(5, 4), worker: f => f('a reason')};
   for (const [k, v] of Object.entries(RETRY)) out[`RETRY.${k}`] = typeof v === 'function' ? sample[k](v) : v;
   return out;
 }
