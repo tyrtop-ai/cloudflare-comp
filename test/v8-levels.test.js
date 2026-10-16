@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {levelRoom, usualClef, rows, deliver, callCheck, events, fileBlocks, lintRequests, rowId} from './helpers/levels.js';
-import {levelCalls} from './helpers/room.js';
+import {levelCalls, checkCall} from './helpers/room.js';
 
 const TRACKER = 'Build a small issue tracker: a library to create tickets and read one back by its id, and a `report` command that files a ticket and prints it as one line.';
 const STORE = `const tickets = new Map();
@@ -131,19 +131,19 @@ test('a contract with fewer than three distinct examples: done says what is miss
   const split = (user, _n, _system, {round, results, tools}) => {
     if (round === 1) return levelCalls(short, {user, tools});
     heard.push(results);
-    return [{name: 'validation', arguments: {serves: ['convert'], check: CLI_LEVEL.validations[1].check}}, {name: 'validation', arguments: {serves: ['convert'], check: CLI_LEVEL.validations[2].check}}, {name: 'done', arguments: {}}];
+    return [checkCall({serves: ['convert'], check: CLI_LEVEL.validations[1].check}), checkCall({serves: ['convert'], check: CLI_LEVEL.validations[2].check}), {name: 'done', arguments: {}}];
   };
   const {room, calls} = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
   assert.equal(room.get('status'), 'complete', trail(room));
   assert.equal(calls.split.length, 1, 'one session');
   assert.equal(heard.length, 1);
   // The two identical validations render one example between them; done reports the count, in the session.
-  assert.deepEqual(heard[0][1], {name: 'validation', result: {id: 'v1', examples: ['convert 100 C → it exits 0 and its output contains "212"'], examples_so_far: {convert: 1}}});
+  assert.deepEqual(heard[0][1], {name: 'command_check', result: {id: 'v1', examples: ['convert 100 C → it exits 0 and its output contains "212"'], examples_so_far: {convert: 1}}});
   assert.deepEqual(heard[0][2].result.examples_so_far, {convert: 1});
   assert.deepEqual(heard[0].at(-1), {name: 'done', result: {complete: false, missing: ['convert has 1 different example of 3: command checks that run convert or convert.js, each one example.']}});
   assert.deepEqual(room.splitterRows().map(r => r.outcome), ['done']);
   const record = JSON.parse(room.db().exec('SELECT output FROM splitters').toArray()[0].output);
-  assert.deepEqual(record.calls.map(c => c.name), ['contract', 'validation', 'validation', 'done', 'validation', 'validation', 'done'], 'the splitter row keeps every call with its result');
+  assert.deepEqual(record.calls.map(c => c.name), ['contract', 'command_check', 'command_check', 'done', 'command_check', 'command_check', 'done'], 'the splitter row keeps every call with its result');
   assert.equal(room.validationRows().length, 4, 'every validation the session stored is a row');
 });
 

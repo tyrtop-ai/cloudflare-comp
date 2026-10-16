@@ -299,7 +299,15 @@ test('checkPlan: command contracts run by their own path, call checks load the f
   assert.deepEqual(plan.checks.map(c=>c.id),['V1','V2']);
   assert.deepEqual(plan.checks[1],{id:'V2',kind:'call',module:'conv.py',adapter:'python',steps:[{call:'to_f',args:[0],expect:32}]});
   assert.equal(local.get('V5').detail,'gone.py, the file of the command gone, is missing');
-  assert.equal(local.get('V6').detail,'no file defines missing_fn');
+  assert.equal(local.get('V6').detail,'no file gives missing_fn to a call','no function contract places missing_fn');
+  // A function no file gives: its observation says why, in the words of how a call reaches it.
+  const unreached=checkPlan({contracts:[{name:'gone_fn',kind:'function',path:'gone.py'},{name:'shout',kind:'function',path:'words.js'},{name:'whisper',kind:'function',path:'soft.py'}],
+    validations:[{id:'U1',check:{kind:'call',steps:[{call:'gone_fn'}]}},{id:'U2',check:{kind:'call',steps:[{call:'shout',args:['a']}]}},{id:'U3',check:{kind:'call',steps:[{call:'whisper',args:['a']}]}}]},
+    new Map([['words.js','function shout(s) { return s; }\nmodule.exports = {};\n'],['soft.py','def other(s):\n    return s\n']]),{rows:TOOLCHAINS}).local;
+  assert.deepEqual(['U1','U2','U3'].map(id=>[unreached.get(id).passed,unreached.get(id).detail,unreached.get(id).observed]),[
+    [false,'gone.py, the file of gone_fn, is missing',{what:'local',note:'gone.py, the file of gone_fn, is missing'}],
+    [false,'words.js does not export shout: a call reaches a function by the name its file exports',{what:'local',note:'words.js does not export shout: a call reaches a function by the name its file exports'}],
+    [false,'soft.py defines no whisper a call reaches',{what:'local',note:'soft.py defines no whisper a call reaches'}]]);
   assert.deepEqual(toolchains.map(r=>r.id),['python','text']);
   // A placed file first; else by path.
   assert.equal(callModule({steps:[{call:'to_f'}]},files,new Set()).module,'components/x-1/conv.py');

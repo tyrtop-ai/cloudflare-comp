@@ -1,5 +1,7 @@
 // src/splitter.js: the splitter states its level through functions:
-// contract, validation, piece, level and done. Each call stores exactly what
+// contract, one function per check kind (file_check, judge_check,
+// command_check, call_check, http_check, browser_check), piece, level and
+// done. Each call stores exactly what
 // it was given, or says exactly why it cannot; done ends the session once
 // the owner's rules hold, or says what is still missing. No name is
 // resolved, no kind or run inferred, no form repaired.
@@ -12,13 +14,15 @@ import {TOOLCHAINS} from '../src/toolchains.js';
 
 const CONVERT = {name: 'convert', kind: 'command', path: 'convert.py', does: 'converts a Celsius temperature', inputs: [{name: 'celsius', is: 'a number'}], outputs: 'the Fahrenheit value'};
 const TO_F = {name: 'to_f', kind: 'function', path: 'conv.py', does: 'converts Celsius to Fahrenheit', inputs: [{name: 'c', is: 'degrees'}], outputs: 'degrees F'};
-const run = (c, f) => ({serves: ['convert'], check: {kind: 'command', run: `convert ${c}`, expect: {stdout_has: [f]}}});
-const callOf = (n, out) => ({serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [n], expect: out}]}});
+// A validation as the call of its kind's function: [name, arguments].
+const run = (c, f) => ['command_check', {serves: ['convert'], run: `convert ${c}`, expect: {stdout_has: [f]}}];
+const callOf = (n, out) => ['call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [n], expect: out}]}];
+const CHECKS = ['file_check', 'judge_check', 'command_check', 'call_check', 'http_check', 'browser_check'];
 // Calls in order; the results.
 const calls = (s, list) => list.map(([fn, args = {}]) => splitterCall(s, fn, args).result);
 
-test('the splitter\'s functions are contract, validation, piece, level and done, each with an object schema; piece is offered only when the level may divide', () => {
-  assert.deepEqual(TOOLS.splitter.map(t => t.name), ['contract', 'validation', 'piece', 'level', 'done']);
+test('the splitter\'s functions are contract, the six check functions, piece, level and done, each with an object schema; piece is offered only when the level may divide', () => {
+  assert.deepEqual(TOOLS.splitter.map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'done']);
   for (const t of TOOLS.splitter) {
     assert.equal(t.parameters.type, 'object', t.name);
     assert.ok(typeof t.description === 'string' && t.description.length > 20, t.name);
@@ -26,8 +30,8 @@ test('the splitter\'s functions are contract, validation, piece, level and done,
   }
   assert.deepEqual(TOOLS.splitter[0].parameters.required, ['name', 'kind', 'does']);
   assert.deepEqual(TOOLS.splitter[0].parameters.properties.kind.enum, ['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
-  assert.deepEqual(splitterTools(true).map(t => t.name), ['contract', 'validation', 'piece', 'level', 'done']);
-  assert.deepEqual(splitterTools(false).map(t => t.name), ['contract', 'validation', 'level', 'done']);
+  assert.deepEqual(splitterTools(true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'done']);
+  assert.deepEqual(splitterTools(false).map(t => t.name), ['contract', ...CHECKS, 'level', 'done']);
   assert.deepEqual(splitterCall(splitterState({divide: false}), 'piece', {label: 'A', task: 'x', contracts: []}).result, {error: 'There is no function "piece".'});
 });
 
@@ -58,22 +62,55 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   assert.deepEqual([runs['GET /items'], runs['GET /other'], runs['index.html']], [{run: 'python3 server.py', argv: ['python3', 'server.py'], port: true, ready: '/health'}, null, null]);
 });
 
-test('validation: serves names declared contracts exactly (the error lists them verbatim) and the check runs as written; the result is its id, the examples it renders and each served contract\'s count so far', () => {
+test('a check function: serves names declared contracts exactly (the error lists them verbatim) and the check runs as written; the result is its id, the examples it renders and each served contract\'s count so far', () => {
   const s = splitterState({have: [{name: 'had', kind: 'function', path: 'had.py', does: 'had'}]});
   calls(s, [['contract', CONVERT], ['contract', TO_F]]);
-  assert.deepEqual(splitterCall(s, 'validation', run('100 C', '212')).result, {id: 'v1', examples: ['convert 100 C → its output contains "212"'], examples_so_far: {convert: 1}});
-  assert.deepEqual(splitterCall(s, 'validation', run('100 C', '212')).result, {id: 'v2', examples: ['convert 100 C → its output contains "212"'], examples_so_far: {convert: 1}}, 'the same example counts once');
-  const why = args => splitterCall(s, 'validation', args).result.error;
-  assert.equal(why({serves: ['./convert.py'], check: run('1 C', '33.8').check}), 'serves names "./convert.py", which is not declared. Declared: convert, to_f, had', 'no path or alias resolution');
-  assert.equal(why({serves: [], check: run('1 C', '33.8').check}), 'serves names no contract');
-  assert.equal(why({serves: 'convert', check: run('1 C', '33.8').check}), 'serves is a list of names');
-  assert.equal(why({serves: ['convert'], check: {kind: 'command', run: 'ruby x.rb'}}), 'the command check runs "ruby", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
-  assert.equal(why({serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_c', args: [1]}]}}), 'step 1 of the call check calls "to_c", which is not a function contract declared so far (to_f, had)');
-  assert.equal(why({serves: ['convert'], check: run('1 C', '33.8').check, id: 'mine'}), 'validation has no field "id"; its fields are serves, check');
+  assert.deepEqual(splitterCall(s, ...run('100 C', '212')).result, {id: 'v1', examples: ['convert 100 C → its output contains "212"'], examples_so_far: {convert: 1}});
+  assert.deepEqual(splitterCall(s, ...run('100 C', '212')).result, {id: 'v2', examples: ['convert 100 C → its output contains "212"'], examples_so_far: {convert: 1}}, 'the same example counts once');
+  const why = (fn, args) => splitterCall(s, fn, args).result.error;
+  const [, one] = run('1 C', '33.8');
+  assert.equal(why('command_check', {...one, serves: ['./convert.py']}), 'serves names "./convert.py", which is not declared. Declared: convert, to_f, had', 'no path or alias resolution');
+  assert.equal(why('command_check', {...one, serves: []}), 'serves names no contract');
+  assert.equal(why('command_check', {...one, serves: 'convert'}), 'serves is a list of names');
+  assert.equal(why('command_check', {serves: ['convert'], run: 'ruby x.rb'}), 'the command check runs "ruby", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
+  assert.equal(why('call_check', {serves: ['to_f'], steps: [{call: 'to_c', args: [1]}]}), 'step 1 of the call check calls "to_c", which is not a function contract declared so far (to_f, had)');
+  assert.equal(why('command_check', {...one, id: 'mine'}), 'command_check has no field "id"; its fields are serves, run, stdin, files, expect');
   // A contract the level already has may be served; the check serves only what it names.
-  assert.deepEqual(splitterCall(s, 'validation', {serves: ['had'], check: {kind: 'call', steps: [{call: 'had', args: [1], expect: 1}]}}).result.examples_so_far, {had: 1});
-  assert.deepEqual(splitterCall(s, 'validation', {serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [0], expect: 32}, {call: 'to_f', args: [100], expect: 212}]}}).result,
+  assert.deepEqual(splitterCall(s, 'call_check', {serves: ['had'], steps: [{call: 'had', args: [1], expect: 1}]}).result.examples_so_far, {had: 1});
+  assert.deepEqual(splitterCall(s, 'call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [0], expect: 32}, {call: 'to_f', args: [100], expect: 212}]}).result,
     {id: 'v4', examples: ['to_f(0) → 32', 'to_f(0) → 32; to_f(100) → 212'], examples_so_far: {to_f: 2}});
+});
+
+test('each check function stores a validation of its own kind from its fields at the top level; a field it does not take (a kind, a check wrapper) is refused with its own fields, and there is no validation function', () => {
+  const s = splitterState({});
+  calls(s, [['contract', {name: 'data.json', kind: 'data', path: 'data.json', does: 'the data'}], ['contract', {name: 'README.md', kind: 'doc', path: 'README.md', does: 'how to run it'}],
+    ['contract', CONVERT], ['contract', TO_F], ['contract', {name: 'GET /items', kind: 'route', path: 'server.py', does: 'lists items', run: {run: 'python3 server.py', ready: '/health'}}],
+    ['contract', {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page', run: {static: true}}]]);
+  const given = [
+    ['file_check', {serves: ['data.json'], path: 'data.json', has: ['"items"'], json: true}],
+    ['judge_check', {serves: ['README.md'], path: 'README.md', question: 'Does it say how to run convert?'}],
+    ['command_check', {serves: ['convert'], run: 'convert 100 C', expect: {stdout_has: ['212']}}],
+    ['call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [0], expect: 32}]}],
+    ['http_check', {serves: ['GET /items'], serve: 'GET /items', steps: [{path: '/items', expect: {status: 200}}]}],
+    ['browser_check', {serves: ['index.html'], serve: 'index.html', steps: [{goto: '/'}, {expect_text: 'Items'}]}]];
+  assert.deepEqual(given.map(([fn]) => fn), CHECKS);
+  assert.deepEqual(calls(s, given).map(r => r.id), ['v1', 'v2', 'v3', 'v4', 'v5', 'v6']);
+  assert.deepEqual(levelView(s).validations, [
+    {id: 'v1', serves: ['data.json'], check: {kind: 'file', path: 'data.json', has: ['"items"'], json: true}},
+    {id: 'v2', serves: ['README.md'], check: {kind: 'judge', path: 'README.md', question: 'Does it say how to run convert?'}},
+    {id: 'v3', serves: ['convert'], check: {kind: 'command', run: 'convert 100 C', argv: ['convert', '100', 'C'], expect: {stdout_has: ['212']}}},
+    {id: 'v4', serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [0], expect: 32}]}},
+    {id: 'v5', serves: ['GET /items'], check: {kind: 'http', serve: 'GET /items', steps: [{method: 'GET', path: '/items', expect: {status: 200}}]}},
+    {id: 'v6', serves: ['index.html'], check: {kind: 'browser', serve: 'index.html', steps: [{goto: '/'}, {expect_text: 'Items'}]}}]);
+  const why = (fn, args) => splitterCall(s, fn, args).result.error;
+  assert.equal(why('file_check', {kind: 'file', serves: ['data.json'], path: 'data.json'}), 'file_check has no field "kind"; its fields are serves, path, has, json');
+  assert.equal(why('judge_check', {kind: 'judge', serves: ['README.md'], path: 'README.md', question: 'x?'}), 'judge_check has no field "kind"; its fields are serves, path, question');
+  assert.equal(why('command_check', {serves: ['convert'], check: {kind: 'command', run: 'convert 0 C'}}), 'command_check has no field "check"; its fields are serves, run, stdin, files, expect');
+  assert.equal(why('call_check', {serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [1]}]}}), 'call_check has no field "check"; its fields are serves, steps');
+  assert.equal(why('http_check', {kind: 'http', serves: ['GET /items'], serve: 'GET /items', steps: [{path: '/items'}]}), 'http_check has no field "kind"; its fields are serves, serve, steps');
+  assert.equal(why('browser_check', {serves: ['index.html'], check: {kind: 'browser', serve: 'index.html', steps: [{goto: '/'}]}}), 'browser_check has no field "check"; its fields are serves, serve, steps');
+  assert.equal(why('validation', {serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [1]}]}}), 'There is no function "validation".');
+  assert.equal(levelView(s).validations.length, 6, 'a refused call stores nothing');
 });
 
 test('piece: delivers declared contracts of this level and uses what is declared or callable, by their names exactly; at most the room\'s bound', () => {
@@ -93,9 +130,9 @@ test('piece: delivers declared contracts of this level and uses what is declared
 });
 
 test('level shows everything declared so far; done reports what the owner\'s rules still need and keeps the session open, or completes it with the level', () => {
-  const own = {...TO_F, serves: ['V7']}, held = [{id: 'V7', serves: ['to_f'], check: callOf(1, 33.8).check}];
+  const own = {...TO_F, serves: ['V7']}, held = [{id: 'V7', serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [1], expect: 33.8}]}}];
   const s = splitterState({own: [own], held});
-  calls(s, [['contract', CONVERT], ['validation', run('100 C', '212')], ['validation', run('0 C', '32')], ['contract', {name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'notes'}]]);
+  calls(s, [['contract', CONVERT], run('100 C', '212'), run('0 C', '32'), ['contract', {name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'notes'}]]);
   const view = levelView(s);
   assert.deepEqual(view.contracts.map(c => [c.name, c.kind || 'function', c.path]), [['to_f', 'function', 'conv.py'], ['convert', 'command', 'convert.py'], ['NOTES.md', 'doc', 'NOTES.md']]);
   assert.ok(view.contracts.every(c => !('serves' in c)), 'level shows contracts, not the ids of validations held above');
@@ -106,12 +143,12 @@ test('level shows everything declared so far; done reports what the owner\'s rul
   assert.deepEqual(splitterCall(s, 'done', {}), {result: {complete: false, missing: [
     'to_f has 1 different example of 3: calls of to_f, each call one example.',
     'convert has 2 different examples of 3: command checks that run convert or convert.py, each one example.']}});
-  calls(s, [['validation', run('-40 C', '-40')], ['validation', callOf(0, 32)], ['validation', callOf(100, 212)],
+  calls(s, [run('-40 C', '-40'), callOf(0, 32), callOf(100, 212),
     ['piece', {label: 'A', task: 'Write to_f.', contracts: ['to_f', 'convert']}], ['piece', {label: 'B', task: 'Write convert.', contracts: ['convert', 'NOTES.md']}]]);
   assert.deepEqual(missingOf(s), ['convert is delivered by 2 pieces ("A", "B"); each contract is delivered by at most one.']);
   assert.equal(s.done, false);
   const t = splitterState({own: [own], held});
-  calls(t, [['contract', CONVERT], ...['100 C', '0 C', '-40 C'].map(c => ['validation', run(c, 'x')]), ['validation', callOf(0, 32)], ['validation', callOf(100, 212)]]);
+  calls(t, [['contract', CONVERT], ...['100 C', '0 C', '-40 C'].map(c => run(c, 'x')), callOf(0, 32), callOf(100, 212)]);
   const done = splitterCall(t, 'done', {});
   assert.deepEqual(done.result, {complete: true});
   assert.deepEqual(done.end.contracts.map(c => c.name), ['to_f', 'convert']);
@@ -135,21 +172,21 @@ test('a splitter session: the system text and the request go first with the func
   const seen = [];
   const m = model((k, results) => {
     seen.push(results);
-    if (k === 1) return [['contract', {...CONVERT, kind: 'cli'}], ['validation', run('100 C', '212')]];
+    if (k === 1) return [['contract', {...CONVERT, kind: 'cli'}], run('100 C', '212')];
     if (k === 2) return 'I have declared the converter.';
-    if (k === 3) return [['contract', CONVERT], ['validation', run('100 C', '212')], ['validation', run('0 C', '32')], ['validation', run('-40 C', '-40')], ['done']];
+    if (k === 3) return [['contract', CONVERT], run('100 C', '212'), run('0 C', '32'), run('-40 C', '-40'), ['done']];
     throw new Error('the session should have ended');
   });
   const out = await splitLevel(m.env, {assignment: 'Write the converter.'}, {divide: false});
   assert.equal(m.requests[0].messages[0].content, systemPrompt('splitter'));
   assert.deepEqual(JSON.parse(m.requests[0].messages[1].content), {assignment: 'Write the converter.'});
-  assert.deepEqual(m.requests[0].tools.map(t => t.name), ['contract', 'validation', 'level', 'done']);
+  assert.deepEqual(m.requests[0].tools.map(t => t.name), ['contract', ...CHECKS, 'level', 'done']);
   assert.deepEqual(seen[1], [{error: 'kind "cli" is not one of function, file, page, route, command, doc, data'}, {error: 'serves names "convert", which is not declared. Declared: none'}]);
-  assert.deepEqual(seen[2], ['No function was called. The functions are: contract, validation, level, done.']);
+  assert.deepEqual(seen[2], ['No function was called. The functions are: contract, file_check, judge_check, command_check, call_check, http_check, browser_check, level, done.']);
   assert.deepEqual([out.ended, out.reason, out.rounds], [true, 'ended', 3]);
   assert.deepEqual(out.level.contracts.map(c => c.name), ['convert']);
   assert.deepEqual(out.level.validations.map(v => v.id), ['v1', 'v2', 'v3']);
-  assert.deepEqual(out.transcript.map(t => t.name), ['contract', 'validation', 'contract', 'validation', 'validation', 'validation', 'done']);
+  assert.deepEqual(out.transcript.map(t => t.name), ['contract', 'command_check', 'contract', 'command_check', 'command_check', 'command_check', 'done']);
 });
 
 test('a splitter session that never completes ends at the round limit with no level', async () => {

@@ -4,8 +4,8 @@
 // recorded it then. The splitter no longer answers a flat level that a
 // reader reinterprets: it calls functions (src/splitter.js), and each call is
 // stored as written or answered with exactly why not. Each recorded level is
-// replayed here as the calls that state it (its contracts, validations and
-// pieces, then done), and the test reads what each function answers: what
+// replayed here as the calls that state it (its contracts, each validation
+// as the call of its kind's function, its pieces, then done), and the test reads what each function answers: what
 // the old reader read past silently (a run on a function, a file or a
 // document; a name that is not declared; a piece that delivers nothing) is a
 // result inside the session, and done says what the owner's rules still need.
@@ -13,6 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {splitterState, splitterCall} from '../src/splitter.js';
+import {checkCall} from './helpers/room.js';
 
 const FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/v8-live6-splitters.json', import.meta.url), 'utf8'));
 // A recorded contract as the contract function's arguments: its stored fields under the function's names.
@@ -24,7 +25,7 @@ const replay = name => FIXTURE.exports[name].attempts.map(a => {
   const s = splitterState({maxPieces: FIXTURE.exports[name].max_children}), out = [];
   const call = (fn, label, args) => out.push({call: fn, name: label, result: splitterCall(s, fn, args).result});
   for (const c of a.output.contracts || []) call('contract', c.name, contractArgs(c));
-  for (const v of a.output.validations || []) call('validation', v.id, {serves: v.serves, check: (({argv: _, ...c}) => c)(v.check)});
+  for (const v of a.output.validations || []) { const c = checkCall(v); call(c.name, v.id, c.arguments); }
   for (const p of a.output.pieces || []) call('piece', p.label, p);
   call('done', 'done', {});
   return out;
@@ -35,14 +36,14 @@ const refused = calls => calls.filter(c => c.result.error).map(c => [c.call, c.n
 test('replay, to-do page: a level with a page, files and a document stores whole and done completes it (nothing there is called or run); a run on a file or a document is refused, and so is every call that names what was refused', () => {
   const [one, two] = replay('todo');
   assert.deepEqual(refused(one), []);
-  assert.deepEqual(result(one, 'validation', 'css_styling'), {id: 'v2', examples: ['styles.css contains ".task-list"', 'styles.css contains "input[type=\'text\']"', 'styles.css contains "button"'], examples_so_far: {'styles.css': 3}});
+  assert.deepEqual(result(one, 'file_check', 'css_styling'), {id: 'v2', examples: ['styles.css contains ".task-list"', 'styles.css contains "input[type=\'text\']"', 'styles.css contains "button"'], examples_so_far: {'styles.css': 3}});
   assert.deepEqual(result(one, 'done', 'done'), {complete: true});
   // Attempt 2: the runs on styles.css, script.js and README.md are refused with why; what names them is not declared.
   assert.deepEqual(refused(two).slice(0, 4), [
     ['contract', 'styles.css', 'a file contract is not started, so it states no run'], ['contract', 'script.js', 'a file contract is not started, so it states no run'],
-    ['contract', 'README.md', 'a doc contract is not started, so it states no run'], ['validation', 'styles_css_check', 'serves names "styles.css", which is not declared. Declared: index.html']]);
+    ['contract', 'README.md', 'a doc contract is not started, so it states no run'], ['file_check', 'styles_css_check', 'serves names "styles.css", which is not declared. Declared: index.html']]);
   assert.equal(result(two, 'piece', 'Styling').error, 'contracts names "styles.css", which is not declared at this level. Declared: index.html');
-  assert.deepEqual(result(two, 'validation', 'index_add_task').examples_so_far, {'index.html': 2});
+  assert.deepEqual(result(two, 'browser_check', 'index_add_task').examples_so_far, {'index.html': 2});
 });
 
 test('replay, issue tracker: done lists each function short of three different examples, with how its examples count; a piece that names nothing it delivers is refused; a run on a function is refused', () => {
@@ -62,8 +63,8 @@ test('replay, issue tracker: done lists each function short of three different e
 test('replay, temperature CLI: a use that names nothing declared or callable is refused with what is; three different runs complete a command; done names the one command still short', () => {
   const [one, two, three] = replay('cli');
   assert.equal(result(one, 'piece', 'CLI Implementation').error, 'uses names "convert_temperature", which is neither declared nor one you may call. Declared or callable: temperature_cli');
-  assert.deepEqual(result(one, 'validation', 'cli_invalid_unit').examples_so_far, {temperature_cli: 3});
-  assert.deepEqual(result(two, 'validation', 'convert_k_to_c'), {id: 'v3', examples: ['convert_temperature(273.15, "K", "C") → {"value":0}'], examples_so_far: {convert_temperature: 3}});
+  assert.deepEqual(result(one, 'command_check', 'cli_invalid_unit').examples_so_far, {temperature_cli: 3});
+  assert.deepEqual(result(two, 'call_check', 'convert_k_to_c'), {id: 'v3', examples: ['convert_temperature(273.15, "K", "C") → {"value":0}'], examples_so_far: {convert_temperature: 3}});
   assert.deepEqual(result(two, 'done', 'done'), {complete: true});
   assert.deepEqual(refused(three), []);
   assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['test_conversions has 1 different example of 3: command checks that run test_conversions or test_conversions.py, each one example.']});

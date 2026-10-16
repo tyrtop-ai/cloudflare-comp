@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import {readCheck, contractExamples, exercises, routeMatches} from '../src/validations.js';
 import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 import {fileResult} from '../src/checks.js';
+import {checkCall} from './helpers/room.js';
 
 const FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/v8-live8-splitters.json', import.meta.url), 'utf8'));
 // Calls in order through one splitter's functions: their results, and the state.
@@ -40,7 +41,7 @@ test('a route\'s path is a pattern for its examples: requests to /tickets/1, /2 
   assert.equal(routeMatches('GET /tickets', 'GET', '/tickets'), true);
   const route = {name: 'PUT /tickets/:id', kind: 'route', path: 'src/server.js'};
   assert.equal(exercises({kind: 'http', serve: 'server', steps: [{method: 'PUT', path: '/tickets/2', expect: {status: 200}}]}, route), true);
-  const put = (i, serves) => ['validation', {serves, check: {kind: 'http', serve: 'PUT /tickets/:id', steps: [{method: 'PUT', path: `/tickets/${i}`, body: {status: 'closed'}, expect: {status: 200}}]}}];
+  const put = (i, serves) => ['http_check', {serves, serve: 'PUT /tickets/:id', steps: [{method: 'PUT', path: `/tickets/${i}`, body: {status: 'closed'}, expect: {status: 200}}]}];
   const {s, results} = calls([['contract', {...route, does: 'closes a ticket', run: {run: 'node src/server.js'}}], put(1, ['PUT /tickets/1']), put(1, [route.name]), put(2, [route.name]), put(3, [route.name]), ['done', {}]]);
   assert.deepEqual(results[1], {error: 'serves names "PUT /tickets/1", which is not declared. Declared: PUT /tickets/:id'});
   assert.deepEqual(results.slice(2, 5).map(r => r.examples_so_far), [{[route.name]: 1}, {[route.name]: 2}, {[route.name]: 3}]);
@@ -54,7 +55,7 @@ test('a route or a command that states no run is stored without one: nothing inf
   const {s, results} = calls([
     ['contract', {name: 'GET /tickets', kind: 'route', path: 'src/server.js', does: 'lists the tickets'}],
     ['contract', {name: 'start-server', kind: 'command', path: 'src/server.js', does: 'serves the tickets'}],
-    ['validation', {serves: ['GET /tickets'], check: {kind: 'http', serve: 'start-server', steps: [{method: 'GET', path: '/tickets', expect: {status: 200}}]}}]]);
+    ['http_check', {serves: ['GET /tickets'], serve: 'start-server', steps: [{method: 'GET', path: '/tickets', expect: {status: 200}}]}]]);
   assert.deepEqual(results.slice(0, 2), [{stored: 'GET /tickets', kind: 'route', examples_needed: 3}, {stored: 'start-server', kind: 'command', examples_needed: 3}]);
   assert.equal(results[2].error, 'the http check serves "start-server", which is not a declared contract that states how it runs (none states one yet)');
   assert.deepEqual(levelOf(s).contracts.map(c => c.run), [undefined, undefined]);
@@ -70,7 +71,7 @@ test('a browser step holding several actions is refused with the step form; a ca
 
 test('replay, CLI "Invalid Unit Tests": its answer as calls; the stored form\'s fields and a file named apart from its path are refused with why, and so is every call that names them', () => {
   const answer = FIXTURE.cli_invalid_units.answer, s = splitterState();
-  const out = [...answer.contracts.map(c => splitterCall(s, 'contract', c).result), ...answer.validations.map(v => splitterCall(s, 'validation', {serves: v.serves, check: v.check}).result)];
+  const out = [...answer.contracts.map(c => splitterCall(s, 'contract', c).result), ...answer.validations.map(v => { const c = checkCall(v); return splitterCall(s, c.name, c.arguments).result; })];
   assert.deepEqual(out.slice(0, 2), [{error: 'contract has no field "params", "returns"; its fields are name, kind, path, does, inputs, outputs, effects, run'},
     {error: 'file "test_invalid_units.py" must be named by its path tests/test_invalid_units.py'}]);
   assert.ok(out.slice(2).every(r => r.error === 'serves names "test_conversion_function", which is not declared. Declared: none'));
@@ -79,7 +80,7 @@ test('replay, CLI "Invalid Unit Tests": its answer as calls; the stored form\'s 
 test('replay, issue tracker: its answers as calls, in order; each mistake is a result in the session (a run naming a command not declared yet, a route not declared, a text for a list, a check serving what states no run), and done lists what is still short', () => {
   const replay = a => { const s = splitterState({maxPieces: FIXTURE.tracker.max_children}), r = {};
     for (const c of a.contracts) r[`contract ${c.name}`] = splitterCall(s, 'contract', c).result;
-    for (const v of a.validations) r[`validation ${v.id}`] = splitterCall(s, 'validation', {serves: v.serves, check: v.check}).result;
+    for (const v of a.validations) { const c = checkCall(v); r[`validation ${v.id}`] = splitterCall(s, c.name, c.arguments).result; }
     for (const p of a.pieces) r[`piece ${p.label}`] = splitterCall(s, 'piece', p).result;
     r.done = splitterCall(s, 'done', {}).result;
     return r; };

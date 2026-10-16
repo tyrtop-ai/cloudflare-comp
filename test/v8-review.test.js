@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, at, tail, statusOf, exported, call, CONTRACTS, VALIDATIONS, PARTS, FILES, GOAL, skip} from './helpers/toolkit.js';
-import {Sql, Store, ControlRoom, levelCalls} from './helpers/room.js';
+import {Sql, Store, ControlRoom, levelCalls, checkCall} from './helpers/room.js';
 import {contractExamples, exercises} from '../src/validations.js';
 import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 // A level stated through the splitter's functions (each call's result, then the level): every call must store.
@@ -181,7 +181,7 @@ test('F8: the worker of shout reads only shout\'s own examples, never a sibling\
     if (user.contracts_you_deliver) return splitFor()(user);
     if (round === 1) return levelCalls(splitFor({validations: two})(user), {user, tools});
     heard.push(results);
-    return [{name: 'validation', arguments: {serves: s3.serves, check: s3.check}}, {name: 'done', arguments: {}}];
+    return [checkCall(s3), {name: 'done', arguments: {}}];
   };
   const r = await toolkit({split});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
