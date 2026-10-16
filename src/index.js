@@ -16,7 +16,7 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject } from './toolchains.js';
+import { toolchainById, toolchainOf, TOOLCHAINS, installed as installedRows, projectFacts, browserProject, runContext, readsBeyondImports, parseModeOf, scopeManifestOf } from './toolchains.js';
 import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard, namedInGoal } from './card.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, clipEnds, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
@@ -149,8 +149,11 @@ const RUNNER_REWRITES = 2;
 const ASSEMBLE_TRIES = 6;
 // v8 M3 review (M4): the Worker's own syntax step for a row whose native
 // parser runs here (a row's native field names it; the box's syntax command
-// is the row's syntax field).
-const NATIVE_SYNTAX = Object.freeze({acorn: (path, text) => sourceParseError(path, text)});
+// is the row's syntax field). v8 M3 review 2: in the mode the row's runtime
+// reads the file in at its path (parseModeOf).
+const NATIVE_SYNTAX = Object.freeze({acorn: (path, text, mode) => sourceParseError(path, text, mode)});
+// v8 M3 review 2 (H1): the checks that start a process (a command, a run they request or open), which may read any file of the bundle.
+const PROCESS_CHECKS = Object.freeze(['command', 'http', 'browser']);
 // A room started before v7.14 (no schema mark) is reset, not migrated.
 const ROOM_SCHEMA = '7.14';
 // Problem rows hold JSON in these columns.
@@ -3793,11 +3796,12 @@ export class ControlRoom extends DurableObject {
   }
   // What a manager's builder joins, as one fingerprint: each child's owned
   // digest (a worker) or stored piece digest (a manager), the contracts the
-  // links read, the builder's kept fixes and the base.
+  // links read, the builder's kept fixes and the base. v8 M3 review 2: a
+  // worker's, the fixes kept for its own bundle (link_fixes:<worker>).
   pieceInput(m) {
     const kids=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)),b=this.builderOf(m);
     return textHash(JSON.stringify([kids.map(c=>this.manager(c.id)?[c.id,'piece',this.read(`piece:${this.builderOf(c.id)?.id}`,null)?.digest||'']:[c.id,'files',this.ownedDigest(c.id),this.promisedOf(c.id).map(x=>`${x.name}|${x.path||''}`)]),
-      b?this.read(`link_fixes:${b.id}`,{}):{},this.heldDigest(m)]));
+      b?this.read(`link_fixes:${b.id}`,{}):this.manager(m)?{}:this.read(`link_fixes:${m}`,{}),this.heldDigest(m)]));
   }
   // v8 M3: a manager whose children are all done hands them to its builder,
   // an agent row of its own at every level (spawned the first time). True
@@ -3987,34 +3991,59 @@ export class ControlRoom extends DurableObject {
     if(!Array.isArray(paths)||!paths.length||paths.some(p=>!files.has(p)))return '';
     return textHash(JSON.stringify(paths.map(p=>[p,textHash(String(files.get(p)??''))])));
   }
+  // v8 M3 review 2 (H1): what a check reaches in a level's bundle, worked out
+  // in that bundle itself: a check that starts a process (a command, a run it
+  // requests or opens) may read any file of it, so all of them ('*'); a call
+  // or a file check, its entries' import closure there and the files that
+  // change how those resolve or run (runContext: the rows' manifests and
+  // run_config files, a file that shadows the standard library, the glue's
+  // package markers and module-path script); all of them when a file of that
+  // closure reads beyond its imports (readsBeyondImports; the glue's own
+  // shims the closure follows), or no entry of it is known.
+  reachOf(id, r, bundle, card=this.anchoredCard()) {
+    if(PROCESS_CHECKS.includes(r.check?.kind))return ['*'];
+    const {entries}=checkEntries(r,card,bundle.files,{placed:bundle.placed});
+    if(!entries.length)return ['*'];
+    const rows=this.installedToolchains(),reached=this.closureOf(id,entries,bundle).reached;
+    if(reached.some(p=>!bundle.glue?.has(p)&&readsBeyondImports(p,bundle.files.get(p),rows)))return ['*'];
+    return [...new Set([...reached,...runContext([...bundle.files.keys()],reached,rows)])].sort();
+  }
   // v8 M3 review (M2): the level whose run a pass covers in these files: a
   // level (covers) whose reached files hold here the bytes it passed on.
-  coverOf(rec, files) {
-    for(const [at,c] of Object.entries(rec?.covers||{}))if(c?.bytes&&this.reachedBytes(c.reached,files)===c.bytes)return {at,...c};
+  // v8 M3 review 2 (H1): reach, what the check reaches in these files
+  // (reachOf): a level's run covers them only when it reached the same
+  // paths and they hold the same bytes, so a pass of a check that reaches
+  // the whole bundle holds only where the bundle is byte for byte the same.
+  coverOf(rec, reach, files) {
+    const bytes=this.reachedBytes(reach,files),key=JSON.stringify(reach);
+    if(!bytes)return null;
+    for(const [at,c] of Object.entries(rec?.covers||{}))if(c?.bytes===bytes&&JSON.stringify(c.reached)===key)return {at,...c};
     return null;
   }
   // v8 M3: a check has a current pass when the piece it passed on
   // (piece_pass:<id>) still owns the same files and the check's scope stayed
   // inside that piece (every row that serves it is in its subtree). v8 M3
-  // review (M2): at a level whose linked bundle is given (files), only when
-  // the files it reaches hold there the exact bytes a run passed on; owned,
-  // the owned digests a compile took with its bundle (H2).
-  checkPassed(r, {files=null, owned=null, card}={}) {
+  // review (M2): at a level whose linked bundle is given (at, bundle), only
+  // when what it reaches there (reach, else reachOf) holds the exact bytes a
+  // run passed on; owned, the owned digests a compile took with its bundle (H2).
+  checkPassed(r, {at=null, bundle=null, reach=null, owned=null, card}={}) {
     const rec=this.read(`piece_pass:${r.id}`,null);
     if(!rec||rec.check!==this.checkKey(r,card)||!this.node(rec.row)||(owned?.[rec.row]??this.ownedDigest(rec.row))!==rec.owned)return false;
     const inside=new Set(this.subtree(rec.row)),above=new Set();
     for(let x=this.node(rec.row);x;x=x.parent?this.node(x.parent):null)above.add(x.id);
     if(!this.allNodes().filter(n=>!isRuntimeNode(n)&&n.status!=='retired'&&this.promisedOf(n.id).some(c=>(c.serves||[]).includes(r.id))).every(n=>inside.has(n.id)||above.has(n.id)))return false;
-    return !files||!!this.coverOf(rec,files);
+    return !bundle||!!this.coverOf(rec,reach||this.reachOf(at,r,bundle,card||undefined),bundle.files);
   }
   // Run finished's other half: every check of the card has a current pass
   // (a requirement kept untested has no check to run). v8 M3 review (M4):
   // a pass the top verified on its final bundle (covers at the top), and the
   // top's own record (verified:<top>) of that bundle's compile is for the
-  // files its subtree owns now.
+  // files its subtree owns now, and (v8 M3 review 2, L2) for what its piece
+  // joins now (pieceInput: the children's pieces, the kept link fixes, the
+  // base).
   allPassed(card=this.anchoredCard()) {
     const top=this.topId(),seen=top?this.read(`verified:${top}`,null):null;
-    if(!card||!seen||seen.owned!==this.ownedDigest(top))return false;
+    if(!card||!seen||seen.owned!==this.ownedDigest(top)||seen.input!==this.pieceInput(top))return false;
     return (card.requirements||[]).every(r=>r.untested||this.checkPassed(r,{card})&&!!this.read(`piece_pass:${r.id}`,null)?.covers?.[top]);
   }
   // The room's record of a run whose every check passed: the top's bundle
@@ -4386,44 +4415,64 @@ export class ControlRoom extends DurableObject {
   }
   // M2, M4: a current pass whose reached files hold exactly the bytes it
   // passed on in this level's bundle is this level's too (its covers), so
-  // the top records that it verified the run on its final bundle.
-  recordCovers(at, reqs, files, owned, card) {
+  // the top records that it verified the run on its final bundle. v8 M3
+  // fixes2 (H1): what it reaches at this level (reach), worked out in this
+  // level's bundle.
+  recordCovers(at, reqs, bundle, owned, card, reach) {
     for(const r of reqs) {
-      const rec=this.read(`piece_pass:${r.id}`,null),c=rec&&this.checkPassed(r,{owned,card})?this.coverOf(rec,files):null;
+      const rec=this.read(`piece_pass:${r.id}`,null),c=rec&&this.checkPassed(r,{owned,card})?this.coverOf(rec,reach(r),bundle.files):null;
       if(!c||rec.covers?.[at]?.bytes===c.bytes&&JSON.stringify(rec.covers[at].reached)===JSON.stringify(c.reached))continue;
       this.save(`piece_pass:${r.id}`,{...rec,covers:{...rec.covers,[at]:{reached:c.reached,bytes:c.bytes}}});
     }
   }
+  // v8 M3 review 2 (L2): a run that reports or holds is no verified compile:
+  // the row's record of its last one (verified:<id>) goes, and at the top
+  // every pass's cover there but those this run recorded (keep).
+  unverify(id, keep=[]) {
+    this.save(`verified:${id}`,null);
+    if(this.agentAbove(id))return;
+    for(const r of query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'piece_pass:%'")) {
+      const rec=parse(r.value,null);
+      if(!rec?.covers?.[id]||keep.includes(r.key.slice('piece_pass:'.length)))continue;
+      const {[id]:gone,...covers}=rec.covers;
+      this.save(r.key,{...rec,covers});
+    }
+  }
   // A row's syntax step for a file, as data: the box's command (syntax) or
   // the Worker's own parser (native, NATIVE_SYNTAX); null when it has none.
-  syntaxOf(path) {
+  // v8 M3 review 2 (M2): mode, the one the row's runtime reads the file in at
+  // its path in these files (parseModeOf; '' for a row with no parse_mode).
+  syntaxOf(path, files) {
     const t=toolchainOf(path),row=t&&this.installedToolchains().find(r=>r.id===t.id);
     if(!row)return null;
-    return row.syntax?.length?{row,box:true}:NATIVE_SYNTAX[row.native]?{row,box:false,parse:NATIVE_SYNTAX[row.native]}:null;
+    const mode=parseModeOf(path,files,row);
+    return row.syntax?.length?{row,box:true,mode}:NATIVE_SYNTAX[row.native]?{row,box:false,mode,parse:NATIVE_SYNTAX[row.native]}:null;
   }
-  syntaxKey(row, text) { return `${row.id}:${textHash(JSON.stringify(row.syntax||row.native))}:${textHash(String(text??''))}`; }
+  syntaxKey(row, text, mode='') { return `${row.id}:${textHash(JSON.stringify(row.syntax||row.native))}:${mode?`${mode}:`:''}${textHash(String(text??''))}`; }
   // M4: the files of a bundle whose exact bytes no syntax step compiled
-  // (syntax_clean, by row and digest): a file of a row the box compiles,
-  // whoever wrote it (a piece, the glue, the base), and a piece's own file
-  // of a row the Worker parses (origin).
-  uncompiled(files, origin) {
+  // (syntax_clean, by row, mode and digest): a file of a row with a syntax
+  // step, whoever wrote it (a piece, the glue, the base). v8 M3 review 2 (L1):
+  // the Worker's parser too reads the base's own files.
+  uncompiled(files) {
     const out=new Set();
     for(const [p,t] of files) {
-      const s=this.syntaxOf(p);
-      if(!s||!s.box&&!origin.has(p))continue;
-      if(!query(this.db(),'SELECT key FROM syntax_clean WHERE key=?',this.syntaxKey(s.row,t)).length)out.add(p);
+      const s=this.syntaxOf(p,files);
+      if(s&&!query(this.db(),'SELECT key FROM syntax_clean WHERE key=?',this.syntaxKey(s.row,t,s.mode)).length)out.add(p);
     }
     return out;
   }
   // The Worker's own parser over the files it has not compiled: {issues, clean: [keys]}.
+  // v8 M3 review 2 (M2): in the mode the row's runtime reads each in; a file
+  // whose scope manifest does not parse is that manifest's issue.
   localSyntax(files, fresh) {
     const issues=[],clean=[];
     for(const p of fresh) {
-      const s=this.syntaxOf(p);
+      const s=this.syntaxOf(p,files);
       if(!s||s.box)continue;
-      const error=s.parse(p,files.get(p));
+      if(s.mode==='invalid'){const at=scopeManifestOf(p,files,s.row);issues.push({path:at,kind:'source',stage:'syntax',detail:clip(`${s.row.id} syntax: ${at} does not parse as JSON, so ${s.row.name} cannot tell how to read ${p}.`,400)});continue;}
+      const error=s.parse(p,files.get(p),s.mode);
       if(error)issues.push({path:p,kind:'source',stage:'syntax',detail:clip(`${s.row.id} syntax: ${error}`,400)});
-      else clean.push(this.syntaxKey(s.row,files.get(p)));
+      else clean.push(this.syntaxKey(s.row,files.get(p),s.mode));
     }
     return {issues,clean};
   }
@@ -4432,7 +4481,7 @@ export class ControlRoom extends DurableObject {
     const keys=[...clean];
     for(const s of syntax||[]) {
       const row=this.installedToolchains().find(r=>r.id===s.toolchain);
-      if(row&&(stages||[]).some(x=>x.name===`syntax:${s.toolchain}`&&x.passed))for(const p of s.files)if(files.has(p))keys.push(this.syntaxKey(row,files.get(p)));
+      if(row&&(stages||[]).some(x=>x.name===`syntax:${s.toolchain}`&&x.passed))for(const p of s.files)if(files.has(p))keys.push(this.syntaxKey(row,files.get(p),parseModeOf(p,files,row)));
     }
     for(const k of keys)this.db().exec('INSERT OR IGNORE INTO syntax_clean(key) VALUES (?)',k);
   }
@@ -4480,13 +4529,14 @@ export class ControlRoom extends DurableObject {
     const whole=this.anchoredCard(),rev=this.cardRev(),atomic=!this.manager(id),above=this.agentAbove(id),depth=id.split('.').length-1;
     if(!whole)return this.holdChecks(id,'checks_failed','The room has no project card to check.');
     if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
-    const owned=taken||this.ownedSnapshot(id);
+    // v8 M3 review 2 (L2): with them, what its piece joins (pieceInput), which a finished compile records.
+    const owned=taken||this.ownedSnapshot(id),joins=this.pieceInput(id);
     const bundle=await this.bundleFiles(id),{files,origin,placed}=bundle;
     const digest=await snapshotHash(files);
     const span=(outcome,extra={})=>this.span('piece','piece_checks',begun,Date.now(),{manager:id,depth,held:this.checksOf(id,whole).length,outcome,...extra},id);
-    // The files it owns changed after they were taken: it runs again on what it owns now.
+    // The files it owns, or what its piece joins, changed after they were taken: it runs again on them as they are now.
     const moved=extra=>{
-      if(this.ownedDigest(id)===owned[id])return null;
+      if(this.ownedDigest(id)===owned[id]&&this.pieceInput(id)===joins)return null;
       this.event(id,'checks_moved',`${this.node(id)?.label||id}'s files changed while they were checked; the checks run again on the files as they are now.`);
       this.wake(id);span('moved',extra);
       return {moved:true};
@@ -4495,7 +4545,7 @@ export class ControlRoom extends DurableObject {
       const again=moved(extra);
       if(again)return again;
       this.set(`checks_due:${id}`,'');
-      this.save(`verified:${id}`,{digest,owned:owned[id],ts:Date.now()});
+      this.save(`verified:${id}`,{digest,owned:owned[id],input:joins,ts:Date.now()});
       const hold=this.read('paused_state',null);
       if(hold?.kind?.startsWith('checks_')&&(!hold.agent||hold.agent===id))this.save('paused_state',null);
       if(atomic){this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);this.event(id,'done','Completed owned strand without transferring ownership to children.');}
@@ -4505,40 +4555,48 @@ export class ControlRoom extends DurableObject {
     };
     // The checks it holds that have no current pass on these files; of those, the ones this row runs (below the top: what its
     // piece can run itself); and the checks held below it whose reached files hold other bytes here than any run passed on.
+    // v8 M3 review 2 (H1): what each check reaches is worked out in this bundle (reachOf), once per run.
     const held=this.checksOf(id,whole),heldIds=new Set(held.map(r=>r.id)),below=this.belowChecks(id,whole).filter(r=>!heldIds.has(r.id)&&!r.untested);
-    const current=r=>this.checkPassed(r,{files,owned,card:whole});
+    const reaches=new Map(),reach=r=>{if(!reaches.has(r.id))reaches.set(r.id,this.reachOf(id,r,bundle,whole));return reaches.get(r.id);};
+    const current=r=>this.checkPassed(r,{at:id,bundle,reach:reach(r),owned,card:whole});
     let mine,again;
     if(scoped)({mine,again}=scoped);
     else {
       mine=await this.pieceScope(id,held.filter(r=>r.untested||!current(r)),bundle,whole,digest);
       again=below.filter(r=>!current(r));
       // A pass that holds on these exact bytes is this level's too.
-      this.recordCovers(id,[...held,...below].filter(r=>!r.untested&&![...mine,...again].some(x=>x.id===r.id)),files,owned,whole);
+      this.recordCovers(id,[...held,...below].filter(r=>!r.untested&&![...mine,...again].some(x=>x.id===r.id)),bundle,owned,whole,reach);
     }
     const runs=[...mine,...again.filter(r=>!mine.some(x=>x.id===r.id))],card={...whole,requirements:runs};
     // M4: what of the piece no syntax step compiled, and the files whose issues stand; a link issue is found on every join.
-    const standing=this.read(`compile_issues:${id}`,null),fresh=this.uncompiled(files,origin);
+    const standing=this.read(`compile_issues:${id}`,null),fresh=this.uncompiled(files);
     if(standing?.owned===owned[id])for(const p of standing.paths||[])if(files.has(p))fresh.add(p);
     const linkIssues=bundle.link?.issues||[];
     if(!runs.length&&!fresh.size&&!linkIssues.length)return finish({ran:0});
     // The run's input: the files and the checks this row holds (a pass recorded since leaves it the same).
     const input=`${digest}:card${rev}:${held.map(r=>r.id).join(',')}`;
     if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
-    const prior=this.read(`compile_reported:${id}`,null);
-    if(prior?.input===input) {
+    const prior=this.read(`compile_reported:${id}`,null),open=prior?.input===input?(prior.problems||[]).map(pid=>this.problems('id=?',pid)[0]).filter(Boolean):[];
+    // v8 M3 review 2 (M1): a problem of its report that went up the line moves
+    // while it is open or relinking there, or assigned to a row that is not
+    // done; once every one of them sits with an assignee that is done, the
+    // checks run again (a new report supersedes them, and the routing goes
+    // on past the pieces that declined or tried it).
+    const up=above&&!atomic?open.filter(p=>p.status!=='closed'&&p.holder!==id):[],rerun=up.length>0&&!up.some(p=>this.problemMoves(p));
+    if(rerun)this.event(id,'checks_rerun',clip(`The pieces given ${up.length>1?'the problems':'the problem'} of ${this.node(id)?.label||id}'s report finished (${[...new Set(up.map(p=>this.node(p.assignee)?.label||p.assignee))].join(', ')}); its checks run again.`,600));
+    if(prior?.input===input&&!rerun) {
       // Unchanged since its problems were reported: a worker hears them
       // again (a round); a split's repairs left the files as they were, so
       // the room holds with the table. v8 M3 review (one rule ends every
       // line): a problem of its report that went up the line is the line's
-      // above while it is open there, so a row below the top waits for it
+      // above while it moves there (M1), so a row below the top waits for it
       // rather than hold the room before the line has ended.
-      const open=(prior.problems||[]).map(pid=>this.problems('id=?',pid)[0]).filter(Boolean);
       if(atomic&&open.length) {
         this.event(id,'compile_unchanged',`${this.node(id)?.label||id}'s files are unchanged since their problems were reported; they go back without another run.`);
         this.ownRepair(id,input,'check',open.map(p=>({kind:p.kind,path:p.parties[0]?.path||'',parties:p.parties,detail:p.detail,facts:p.facts,evidence:p.evidence})));
         return {reported:true};
       }
-      if(above&&open.some(p=>p.status!=='closed'&&p.holder!==id)){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);span('waiting');return {held:true};}
+      if(up.length){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);span('waiting');return {held:true};}
       const settled=open.filter(p=>p.status==='closed'&&p.outcome==='exhausted').map(p=>`${p.facts?.requirement?.id||p.parties[0]?.path||p.kind}: ${p.trail.at(-1)?.reason||'no piece could fix it'}`);
       return this.holdChecks(id,'checks_failed',settled.length?clip(`No piece could settle what failed (${settled.join('; ')}).`,500):'The repairs left the project\'s files as they were when the checks last failed.');
     }
@@ -4585,7 +4643,7 @@ export class ControlRoom extends DurableObject {
     if(report?.inventory)this.save('toolchain_inventory',report.inventory);
     for(const c of report?.checks||[])results.set(c.id,c);
     // What the syntax steps compiled cleanly is known by its bytes from now on.
-    if(report&&!run?.infrastructure)this.markCompiled(files,plan.syntax,report.stages,parsed.clean);
+    if(!run?.infrastructure)this.markCompiled(files,plan.syntax,report?.stages,parsed.clean);
     // S5 (§5.2 b): a name or module the run could not resolve is renamed in
     // its reader's linked copy when a rename joins it (in the builder's piece,
     // which it joins again), and the checks run again. v8 M3 review (M5):
@@ -4615,10 +4673,8 @@ export class ControlRoom extends DurableObject {
       if(!passed)continue;
       // v8 M3 review (H1, H2, M2): a pass is recorded, against the owned digest taken with the bundle, for the linked bytes of the
       // files it reached here, and only when every one of them compiles.
-      // What it reached: a check that starts a process (a command, a run it requests or opens) may read any file of the bundle
-      // it ran in, so all of them; a call or a file check, its entries and their import closure; with no entry known, all ('*').
-      const {entries}=checkEntries(r,whole,files,{placed}),process=['command','http','browser'].includes(r.check?.kind);
-      const reached=process?[...files.keys()].sort():entries.length?this.closureOf(id,entries,bundle).reached.sort():['*'];
+      // What it reached (v8 M3 review 2, H1): what it reaches in the bundle it ran in (reachOf), as a level above works it out in its own.
+      const reached=reach(r);
       if(reached.includes('*')?bad.size>0:reached.some(p=>bad.has(p))){unproven.push(r.id);continue;}
       this.savePass(r,heldIds.has(r.id)?id:this.holderOf(r.id)||id,id,{owned,reached,files,card:whole,digest,rev});
       passes.push(r.id);
@@ -4660,6 +4716,8 @@ export class ControlRoom extends DurableObject {
       return finish({ran:card.requirements.length,passed:passes.length,rolled:rolled.size});
     }
     // v8 live 4: a run that needed a package outside the project is missing_module, answered from its writer's line.
+    // v8 M3 review 2 (L2): this run is not a verified compile.
+    this.unverify(id,passes);
     const missing=(r,res)=>{if(!this.v8())return '';const m=missingModule(`${res?.detail||''}\n${res?.output||''}`,this.installedToolchains());return m&&(this.externalHit({module:m.module},bundle)||this.missingPackage(m.module,bundle))?m.module:'';};
     const items=checkProblems({...card,requirements:here},results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name)),goal:this.userGoal(),missing});
     this.answerMissingModules(id,items,bundle);
@@ -5690,6 +5748,23 @@ export class ControlRoom extends DurableObject {
         this.event(m,ticketed?'route_declined':'problem_reopened',ticketed?`${w.label} answered the problem as done without changing a file: it declines it, and the manager routes it elsewhere.`:`${w.label} finished its new task without changing its files; the problem is open again.`,w.id);
         if(p.stage==='amend'&&ticketed)this.event(m,'amend_declined',clip(`${w.label} has nothing to change for it: ${p.detail}`,600),w.id);
       }
+    }
+  }
+  // v8 M3 review 2 (M1): whether a problem can still move where it is: open
+  // or relinking, or assigned to a row that is not done.
+  problemMoves(p) { return p.status!=='closed'&&(p.status!=='assigned'||!['done','retired','failed'].includes(this.node(p.assignee)?.status||'retired')); }
+  // A source below whose last report's problems held here no longer move
+  // (each closed, or with an assignee that is done) is woken once for that
+  // state: it runs its checks again, or holds (compileCard).
+  wakeSources(m) {
+    for(const {source} of query(this.db(),'SELECT DISTINCT source FROM problems WHERE holder=? AND source!=?',m,m)) {
+      const s=this.node(source),ids=s&&s.status==='waiting'&&this.manager(s.id)?this.read(`compile_reported:${s.id}`,null)?.problems||[]:[];
+      const rows=ids.map(pid=>this.problems('id=?',pid)[0]).filter(Boolean);
+      if(!rows.some(p=>p.holder===m)||rows.some(p=>this.problemMoves(p)))continue;
+      const state=JSON.stringify(rows.map(p=>[p.id,p.status,p.assignee]));
+      if(this.get(`source_woken:${s.id}`)===state)continue;
+      this.set(`source_woken:${s.id}`,state);
+      this.wake(s.id);
     }
   }
   // v7.15.13 (run20, R3): a child that was assigned this failure in this
@@ -7444,6 +7519,7 @@ export class ControlRoom extends DurableObject {
       if(!v8&&isTop(n))await this.compileStatic(id);
       await this.solveProblems(id);
       if(this.node(id)?.status==='failed')return;
+      if(v8)this.wakeSources(id);
     }
     const candidates=await this.childIndex(id);
     // Publish the most recent partial integration while children still work.

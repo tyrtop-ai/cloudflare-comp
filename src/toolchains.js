@@ -11,6 +11,22 @@ export const TOOLCHAINS = Object.freeze([
     // The project manifest, lock files and package-manager config: the runtime's (v8 S1 review).
     manifests:['package.json','package-lock.json','npm-shrinkwrap.json','yarn.lock','pnpm-lock.yaml','pnpm-workspace.yaml','.npmrc','.yarnrc','.yarnrc.yml','bun.lockb','node_modules/'],
     syntax:null /* Acorn in the Worker */, executables:['node','npm','npx'],
+    // v8 M3 review 2: how Node reads a file's syntax at its path (parse_mode):
+    // by its extension, else by the field of the nearest scope manifest in
+    // its folder or a folder above (values), and otherwise (that manifest
+    // has none of them, or there is none) either way (Node's module
+    // detection). module: an ES module; script: CommonJS, whose wrapper
+    // allows a return outside a function.
+    parse_mode:{by_extension:{'.mjs':'module','.cjs':'script'}, scope:{manifest:'package.json', field:'type', values:{module:'module', commonjs:'script'}}, otherwise:'either'},
+    // v8 M3 review 2: what a check reaches beyond its import closure. run_config:
+    // the files (by name, at any depth) besides the manifests that change how
+    // the row's code resolves or runs; reach_whole: text that reads files or
+    // loads code by a name the closure cannot follow (the file system, a
+    // child process, a computed or dynamic import), so a check whose closure
+    // holds such a file reaches every file of the bundle.
+    run_config:[],
+    reach_whole:["\\brequire\\s*\\(\\s*['\"](?:node:)?(?:fs|fs/promises|child_process|module|worker_threads|vm|sqlite)['\"]","\\bfrom\\s*['\"](?:node:)?(?:fs|fs/promises|child_process|module|worker_threads|vm|sqlite)['\"]",
+      "\\bimport\\s*\\(","\\brequire\\s*\\(\\s*[^'\"\\s]","\\b__dirname\\b","\\b__filename\\b","\\bimport\\.meta\\b","\\bprocess\\.cwd\\s*\\("],
     run_file:['node','{path}'], test:['npm','test'], project_test_markers:['package.json#scripts.test'],
     identifier:'^[A-Za-z_$][A-Za-z0-9_$]{0,63}$', reserved:'await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield',
     names_look_like:'camelCase',
@@ -58,6 +74,14 @@ export const TOOLCHAINS = Object.freeze([
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
     manifests:['pyproject.toml','requirements.txt','setup.cfg','setup.py','Pipfile','Pipfile.lock','poetry.lock','tox.ini','pip.conf','.python-version','__pycache__/','.venv/','venv/'],
     syntax:['python3','-m','py_compile','{files}'], executables:['python3','pytest'],
+    // v8 M3 review 2: as the JavaScript row's (run_config: pytest's own
+    // configuration and fixtures); stdlib_shadow_dirs: the folders on the
+    // module path ahead of the standard library (the bundle root), where a
+    // file or folder named like one of its modules (stdlib_names) is what an
+    // import of that module loads.
+    run_config:['conftest.py','pytest.ini','.pytest.ini'], stdlib_shadow_dirs:[''],
+    reach_whole:["\\bopen\\s*\\(","\\b__import__\\s*\\(","\\b__file__\\b","\\b(?:exec|eval)\\s*\\(",
+      "(?:^|\\n)\\s*(?:import\\s+(?:[\\w.]+\\s*(?:as\\s+\\w+\\s*)?,\\s*)*|from\\s+)(?:os|glob|pathlib|shutil|io|importlib|subprocess|runpy|pkgutil|fileinput|sqlite3|tempfile|zipfile|tarfile|configparser|shelve|dbm|linecache|inspect|zipimport|mmap)(?![\\w])"],
     run_file:['python3','{path}'], test:['python3','-m','pytest','-q'], project_test_markers:['test_*.py','*_test.py','tests/'],
     identifier:'^[A-Za-z_][A-Za-z0-9_]{0,63}$', reserved:'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield',
     names_look_like:'snake_case',
@@ -253,4 +277,68 @@ export function unresolvedNames(text, row) {
 export function validIdentifier(row, name) {
   if (!row?.identifier) return false;
   return new RegExp(row.identifier).test(String(name)) && !String(row.reserved || '').split(' ').includes(String(name));
+}
+
+// v8 M3 review 2: the paths of a bundle that change how the reached files
+// resolve or run, read from the row of each reached file: its manifests (a
+// name ending in '/' is a folder at any depth) and run_config files, at any
+// depth, without case; a file of the row in one of its stdlib_shadow_dirs
+// whose name, or whose folder there, is a module of its standard library
+// (stdlib_names); and its glue's package marker in each folder above a
+// reached file, and its module-path script.
+export function runContext(paths, reached, rows = TOOLCHAINS) {
+  const rowOf = p => { const t = toolchainOf(p); return t ? rows.find(r => r.id === t.id) || t : null; };
+  const used = new Map();
+  for (const p of reached) { const r = rowOf(p); if (r) used.set(r.id, r); }
+  const out = new Set();
+  for (const row of used.values()) {
+    const names = [...(row.manifests || []), ...(row.run_config || [])].map(m => m.toLowerCase());
+    const std = new Set(String(row.stdlib_names || '').split(/\s+/).filter(Boolean)), exts = row.extensions || [];
+    const marker = row.glue?.package_marker || '', script = row.glue?.path_setup?.script?.path || '', above = new Set();
+    if (marker) for (const p of reached) { const dirs = p.split('/').slice(0, -1); for (let i = 1; i <= dirs.length; i++) above.add(`${dirs.slice(0, i).join('/')}/${marker}`); }
+    for (const p of paths) {
+      const parts = p.toLowerCase().split('/'), base = parts.at(-1);
+      if (names.some(n => n.endsWith('/') ? parts.slice(0, -1).includes(n.slice(0, -1)) : base === n) || p === script || above.has(p)) { out.add(p); continue; }
+      if (!std.size || !exts.includes(extensionOf(p))) continue;
+      for (const d of row.stdlib_shadow_dirs || []) {
+        const rest = !d ? p : p.startsWith(`${d}/`) ? p.slice(d.length + 1) : null;
+        if (rest === null) continue;
+        const first = rest.split('/')[0], name = rest.includes('/') ? first : first.slice(0, first.length - extensionOf(first).length);
+        if (std.has(name)) out.add(p);
+      }
+    }
+  }
+  return [...out];
+}
+
+// Whether a file reads beyond its import closure, by its row's reach_whole.
+export function readsBeyondImports(path, text, rows = TOOLCHAINS) {
+  const t = toolchainOf(path), row = t && (rows.find(r => r.id === t.id) || t);
+  return !!row && (row.reach_whole || []).some(src => new RegExp(src).test(String(text ?? '')));
+}
+
+// v8 M3 review 2: the nearest scope manifest of a file among these files (the
+// row's parse_mode.scope: its folder first, then each folder above), or ''.
+export function scopeManifestOf(path, files, row) {
+  const s = row?.parse_mode?.scope, dirs = String(path).split('/').slice(0, -1);
+  if (s) for (let i = dirs.length; i >= 0; i--) { const at = [...dirs.slice(0, i), s.manifest].join('/'); if (files?.has(at)) return at; }
+  return '';
+}
+
+// v8 M3 review 2: the mode a row's runtime reads a file's syntax in at its
+// path, from the row's parse_mode: by its extension, else by the field of
+// its nearest scope manifest (scopeManifestOf), else the row's otherwise;
+// 'invalid' when that manifest does not parse; '' for a row with no
+// parse_mode.
+export function parseModeOf(path, files, row) {
+  const pm = row?.parse_mode;
+  if (!pm) return '';
+  const ext = extensionOf(path);
+  if (pm.by_extension && Object.hasOwn(pm.by_extension, ext)) return pm.by_extension[ext];
+  const at = scopeManifestOf(path, files, row);
+  if (!at) return pm.otherwise || '';
+  let doc;
+  try { doc = JSON.parse(String(files.get(at))); } catch { return 'invalid'; }
+  const v = doc && typeof doc === 'object' ? doc[pm.scope.field] : undefined;
+  return typeof v === 'string' && Object.hasOwn(pm.scope.values, v) ? pm.scope.values[v] : pm.otherwise || '';
 }

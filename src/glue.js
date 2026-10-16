@@ -232,6 +232,18 @@ export function renameReferences(text, ctx, reader, {force = []} = {}) {
   }
   return {text: t, ...out};
 }
+// v8 M3 review 2 (H1): the bundle path a shim of the row's glue stands for,
+// read back from the template that wrote it ({path}); '' for any other text.
+export function glueTarget(row, text) {
+  for (const t of [row?.glue?.shim, row?.glue?.module_shim]) {
+    if (!t?.text) continue;
+    let seen = false;
+    const re = new RegExp(`^${t.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\{(name|module|path)\\\}/g, (_, k) => k !== 'path' ? '[^\\n]*?' : seen ? '\\k<path>' : (seen = true, '(?<path>[^\\n]+?)'))}$`);
+    const m = re.exec(String(text ?? ''));
+    if (m?.groups?.path) return m.groups.path;
+  }
+  return '';
+}
 // The references of a reader that still resolve nowhere: [{module, names}].
 export function unresolvedReferences(text, ctx, reader) {
   return importGroups(text, ctx.row).flatMap(g => g.statements.flatMap(s => s.bindings))
@@ -472,6 +484,9 @@ export function importClosure(entries, files, {rows = TOOLCHAINS, installed = ()
       // package_marker in it, and reading a package runs its marker first
       // (and a submodule a binding names): both are reached. A folder
       // without one is no module of the project.
+      // v8 M3 review 2 (H1): a shim the glue wrote reaches the file it stands for.
+      const target = glueTarget(row, text);
+      if (target && files.has(target)) queue.push(target);
       const ctx = ctxOf(row), marker = row.glue.package_marker || '', ext = row.extensions?.[0] || '';
       const pkg = dir => marker && files.has(`${dir}/${marker}`) ? `${dir}/${marker}` : '';
       const enter = (dir, b) => {

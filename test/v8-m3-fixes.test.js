@@ -160,7 +160,8 @@ test('H1: a pass is not recorded when a file the check reaches does not compile'
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   const first = eventsOf(room, 'checks_reported').find(e => e.actor === ids(room)['Loud part']);
-  assert.match(first.body, /R1 passed on a file that does not compile/);
+  // v8 M3 review 2 (H1): R2's loud reaches shout through its shim, and so the same file.
+  assert.match(first.body, /R1, R2 passed on a file that does not compile/);
   assert.equal(await shipped(room, 'shout_tools.py'), toolsOk.content);
 });
 
@@ -221,7 +222,8 @@ test('M2: a pass from a piece runs again at a level whose link changed the bytes
   const rec = room.read('piece_pass:R2', null);
   assert.equal(rec.row, at['Loud part'], 'the check stays its holder\'s');
   assert.ok(rec.covers.root && rec.covers[at['Loud part']] && rec.covers.root.bytes !== rec.covers[at['Loud part']].bytes);
-  assert.equal(room.checkPassed(r2, {files: (await room.bundleFiles(at['Loud part'])).files}), true, 'the piece\'s own pass still holds on the piece\'s bytes');
+  assert.equal(room.checkPassed(r2, {at: at['Loud part'], bundle: await room.bundleFiles(at['Loud part'])}), true, 'the piece\'s own pass still holds on the piece\'s bytes');
+  assert.equal(room.checkPassed(r2, {at: 'root', bundle: await room.bundleFiles('root')}), true, 'and the top\'s on the top\'s');
   // A link at the top that changes what loud does: R2 runs at the top and fails there; the run does not complete on it.
   fix('from shout import shout\n\n\ndef loud(s):\n    return shout(s)\n');
   room.wake('root');

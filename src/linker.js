@@ -15,11 +15,13 @@ export const LINKABLE = /\.(?:js|mjs|cjs)$/i;
 const OPTIONS = {ecmaVersion:'latest', allowHashBang:true, locations:true};
 
 // Node decides CommonJS vs ESM per file. Accept either parse; a file that
-// parses in neither mode cannot run in Node at all.
-export function parseSource(content) {
+// parses in neither mode cannot run in Node at all. v8 M3 review 2: mode, the
+// one Node reads the file in at its path when that is known (module: an ES
+// module; script: CommonJS), is the only parse tried.
+export function parseSource(content, mode='either') {
   const text=String(content??'');
   const looksModule=/(?:^|\n)\s*(?:import\s+(?:[\w*{]|["'])|export\s+(?:default|const|let|var|function|class|async|\{|\*))/.test(text);
-  const order=looksModule?['module','script']:['script','module'];
+  const order=mode==='module'||mode==='script'?[mode]:looksModule?['module','script']:['script','module'];
   let first;
   for(const sourceType of order) {
     try {
@@ -29,14 +31,15 @@ export function parseSource(content) {
   throw first;
 }
 
-export function sourceParseError(path, content) {
+export function sourceParseError(path, content, mode='either') {
   if(!LINKABLE.test(String(path||'')))return null;
-  try {parseSource(content);return null;}
+  try {parseSource(content,mode);return null;}
   catch(e) {
     const line=e.loc?.line??'?', column=e.loc?.column??'?';
     const lines=String(content).split('\n');
     const excerpt=typeof e.loc?.line==='number' ? ` Line ${line}: ${JSON.stringify(lines[e.loc.line-1]?.slice(0,160)??'')}` : '';
-    return `${path}: does not parse as JavaScript (${e.message.replace(/\s*\(\d+:\d+\)$/,'')} at ${line}:${column}).${excerpt}`;
+    const as=mode==='module'?' read as an ES module, as Node reads it at this path':mode==='script'?' read as CommonJS, as Node reads it at this path':'';
+    return `${path}: does not parse as JavaScript${as} (${e.message.replace(/\s*\(\d+:\d+\)$/,'')} at ${line}:${column}).${excerpt}`;
   }
 }
 
