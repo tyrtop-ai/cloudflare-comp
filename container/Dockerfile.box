@@ -5,6 +5,10 @@
 # build runner (/opt/build-runner.mjs) runs unchanged inside a box (Level A),
 # with its in-runner isolation (util-linux: prlimit, unshare, nsenter).
 # iputils-ping is here for the S0 probe's ICMP question only.
+# v8 live 5: the runner runs under /opt/box/hostname.py, which gives it the
+# box's own short host name (box-<16 hex>) in a user namespace of its own:
+# the platform's name has a label over 63 characters, on which Python's
+# socket.getfqdn (http.server) fails. See box/hostname.py.
 FROM node:lts-bookworm-slim
 ARG BOX_BROWSER=0
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest ca-certificates iputils-ping \
@@ -16,8 +20,8 @@ RUN if [ "$BOX_BROWSER" = "1" ]; then npm install -g playwright && playwright in
 RUN command -v timeout && command -v unshare && command -v nsenter && command -v prlimit && useradd --create-home --uid 10001 builder
 COPY build-runner.mjs build-path.mjs stack-frames.mjs /opt/
 COPY adapters/ /opt/adapters/
-COPY box/probe.mjs /opt/box/probe.mjs
-RUN chmod 0444 /opt/build-runner.mjs /opt/build-path.mjs /opt/stack-frames.mjs /opt/box/probe.mjs && chmod -R a+rX /opt/adapters /opt/box /opt/toolchain /ms-playwright \
+COPY box/probe.mjs box/hostname.py /opt/box/
+RUN chmod 0444 /opt/build-runner.mjs /opt/build-path.mjs /opt/stack-frames.mjs /opt/box/probe.mjs /opt/box/hostname.py && chmod -R a+rX /opt/adapters /opt/box /opt/toolchain /ms-playwright \
  && mkdir -p /work && chown builder:builder /work
 USER builder
 WORKDIR /work

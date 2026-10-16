@@ -7,7 +7,8 @@ export { BuildExecutor } from './build-executor.js';
 export { Box } from './box.js';
 export { BoxProbe, BoxProbePeer } from './box-probe.js';
 import { boxProbeRoute } from './box-probe.js';
-import { freshBox, compileBoxSpec, BOX_COLD_MS } from './box.js';
+import { freshBox, compileBoxSpec, BOX_COLD_MS, classifyEnvironment } from './box.js';
+import { BoxPrewarm, cardBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
@@ -4065,11 +4066,30 @@ export class ControlRoom extends DurableObject {
   }
   // v8 M3: one setting bounds how many boxes this room has open at once
   // (BOX_CONCURRENCY, default 4): the top's checks and every piece's share it.
+  boxCap() {const n=Number(this.env.BOX_CONCURRENCY);return Number.isInteger(n)&&n>=1&&n<=64?n:4;}
   async boxSlot() {
-    const n=Number(this.env.BOX_CONCURRENCY),cap=Number.isInteger(n)&&n>=1&&n<=64?n:4;
-    while(this.boxesOpen>=cap)await new Promise(done=>this.boxWaiters.push(done));
+    while(this.boxesOpen>=this.boxCap())await new Promise(done=>this.boxWaiters.push(done));
     this.boxesOpen++;
     return ()=>{this.boxesOpen--;this.boxWaiters.shift()?.();};
+  }
+  // v8 live 5: a slot now or none (a prewarm never waits for one).
+  tryBoxSlot() {
+    if(this.boxesOpen>=this.boxCap())return null;
+    this.boxesOpen++;
+    return ()=>{this.boxesOpen--;this.boxWaiters.shift()?.();};
+  }
+  // v8 live 5 (src/box-prewarm.js): the box the run's first compile will
+  // use, opened as soon as the card says which image its checks need; it
+  // counts against BOX_CONCURRENCY like any open box.
+  boxPrewarm() {
+    if(!this.v8()||!this.env.BOXES)return null;
+    this.prewarm??=new BoxPrewarm({namespace:this.env.BOXES,slot:()=>this.tryBoxSlot(),span:(k,n,a,b,attrs)=>this.span(k,n,a,b,attrs,'system'),waitUntil:p=>this.ctx.waitUntil?.(p)});
+    this.prewarm.namespace=this.env.BOXES;
+    return this.prewarm;
+  }
+  prewarmBox(card) {
+    try {const p=this.boxPrewarm();if(p&&this.get('status')==='running')p.start(cardBoxSpec(card));}
+    catch(e) {console.warn('Box prewarm failed:',clip(e?.message||e,200));}
   }
   // v8 M3: of the due checks a row holds, those it runs itself, the others
   // rolled up to the row above: (a) the hard fact (reachFact), then (b)
@@ -4363,31 +4383,42 @@ export class ControlRoom extends DurableObject {
   // v8 M3: a box opens only while the room has a slot for it (boxSlot).
   async runCard(id, input, files, plan, toolchains) {
     if(!this.env.BOXES)return {infrastructure:'BOXES binding unavailable: the card\'s checks run only in a fresh box with the internet off.'};
-    const release=await this.boxSlot();
-    try {return await this.runCardBox(id,input,files,plan,toolchains);}
+    // v8 live 5: the prewarmed box when it was opened for exactly this compile's spec.
+    const warm=await this.boxPrewarm()?.take(compileBoxSpec(plan))??null;
+    if(warm?.error) {
+      this.span('container','card',warm.began,Date.now(),{node:id,files:files.size,box:{fresh:true,internet:false,prewarmed:true},error:clip(warm.error,300)});
+      return {infrastructure:warm.error};
+    }
+    const release=warm?.release||await this.boxSlot();
+    try {return await this.runCardBox(id,input,files,plan,toolchains,warm);}
     finally {release();}
   }
-  async runCardBox(id, input, files, plan, toolchains) {
+  async runCardBox(id, input, files, plan, toolchains, warm=null) {
     if(!this.env.BOXES)return {infrastructure:'BOXES binding unavailable: the card\'s checks run only in a fresh box with the internet off.'};
     let snapshot;
     try {snapshot=validateBuildFiles(files);}
     catch(error) {
+      if(warm){const closing=Promise.resolve().then(()=>warm.box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
       if(!error?.path)return {infrastructure:String(error?.message||error)};
       return {report:{mode:'card',passed:false,checks:[],issues:[{path:error.path,stage:'snapshot',detail:`${error.message}: the build cannot carry this file. Write it under a path of letters, digits, '_', '-' and '.', and keep each file small.`}],inventory:null}};
     }
     const key=await sha256(`card:${input}`),start=Date.now(),spec=compileBoxSpec(plan);
     let box=null;
     try {
-      box=freshBox(this.env.BOXES);
+      box=warm?.box||freshBox(this.env.BOXES);
       const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'card',plan,toolchains,limits:CHECK_LIMITS})||{};
       if(opened?.fresh!==true||opened?.internet!==false) {
         this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,error:'box not confirmed fresh with the internet off'});
         return {infrastructure:'The box did not confirm a fresh start with the internet off; the checks were not run in it.'};
       }
       this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,
-        box:{fresh:true,internet:false,start_ms:opened.start_ms,ready_ms:opened.ready_ms,cold:opened.cold===true||opened.ready_ms>BOX_COLD_MS,image:opened.image,instance:opened.instance},exec_ms:opened.exec_ms});
+        box:{fresh:true,internet:false,start_ms:opened.start_ms,ready_ms:opened.ready_ms,cold:opened.cold===true||opened.ready_ms>BOX_COLD_MS,image:opened.image,instance:opened.instance,name:opened.name,
+          ...(warm?{prewarmed:true,waited_ms:warm.waited_ms,prewarm_ms:Math.max(0,(warm.ready_at??start)-warm.began)}:{})},exec_ms:opened.exec_ms});
       if(report.mode!=='card'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a card report: its image predates card verification.'};
-      return {report};
+      // v8 live 5: a failure the box's inventory explains (its host name, a missing interpreter) is the box's, never the code's.
+      const classified=classifyEnvironment(report);
+      if(classified!==report)this.event(id,'box_environment',clip(classified.infrastructure_issue,900));
+      return {report:classified};
     } catch(e) {
       // The box closes itself (compile's finally, and its alarm); this is the backstop for an RPC that broke first.
       if(box&&typeof box.close==='function'){const closing=Promise.resolve().then(()=>box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
@@ -7690,7 +7721,9 @@ export class ControlRoom extends DurableObject {
       const base=this.read('base',null),srcs=this.sourceRows();
       const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,held:this.installedSet(),
         base_digest:base?.digest||null,base:[...this.basePaths()],prior_card:this.read('prior_card',null),
-        sources:cardsFor(srcs,this.allRefs()),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error}))});
+        sources:cardsFor(srcs,this.allRefs()),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error})),
+        // v8 live 5: the writer's first card already says which box the first compile needs.
+        onDraft:draft=>this.prewarmBox(draft)});
       const {errors,unsupported}=written;
       card=written.card;calls=`${written.attempts} call${written.attempts===1?'':'s'}`;
       // v8 card repair: the writer's answers as written (the export has them; the snapshot only while the room is held at card_failed), and one event for what the repair fixed.
@@ -7723,6 +7756,7 @@ export class ControlRoom extends DurableObject {
         if(p.size)vetted={...vetted,deliverables:vetted.deliverables.map(d=>p.has(d.path)?{...d,needs_confirmation:{p:p.get(d.path).p,named:p.get(d.path).named}}:d)};
       }
       this.save('card',vetted);
+      this.prewarmBox(vetted);
       this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,?,?,?,?) ON CONFLICT(rev) DO UPDATE SET goal_rev=excluded.goal_rev,card=excluded.card,reason=excluded.reason,ts=excluded.ts',this.goalRev(),JSON.stringify(vetted),'goal',Date.now());
       this.save('card_draft',null);this.save('paused_state',null);
       this.event(id,'card_written',clip(`Project card (${calls}, ${Date.now()-started} ms): ${vetted.summary||'(no summary)'}. ${cardLine(vetted)}.${vetted.decisions.length?` Decisions: ${vetted.decisions.join(' ')}`:''}`,1500));
@@ -7744,6 +7778,7 @@ export class ControlRoom extends DurableObject {
     if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the provided card names.`);
     if(errors.length||!vettedUsable(card))return hold('card_failed',clip(`The provided card does not validate: ${errors.slice(0,8).join(' ')||'no deliverable or requirement.'}`,1100));
     this.save('card',card);
+    this.prewarmBox(card);
     this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(card),card.source,Date.now());
     this.save('paused_state',null);
     this.event(id,'card_provided',clip(`Project card given by the ${card.source} (validated; not written or vetted by a model): ${card.summary||'(no summary)'}. ${cardLine(card)}.`,1500));
@@ -8692,6 +8727,8 @@ export class ControlRoom extends DurableObject {
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally {
       this.busy=false;this.budgetSpent=false;
+      // v8 live 5: a prewarmed box no compile of this run took is stopped.
+      this.prewarm?.discard('the run ended before a compile took it');
       // v8 S9 review: what this run left of its budget, and the queue's allowance a prompt's run spends.
       this.set('budget_left',String(Math.max(0,cap-spent)));
       if(prompted||query(this.db(),"SELECT id FROM prompts WHERE status='running' LIMIT 1").length)this.set('queue_turns_left',String(Math.max(0,this.turnsLeft()-spent)));

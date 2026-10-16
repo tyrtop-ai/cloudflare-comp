@@ -10,9 +10,9 @@
 // scrub() removes anything shaped like an id or a registry path from error
 // texts before the report leaves.
 import {DurableObject, WorkerEntrypoint} from 'cloudflare:workers';
-import {freshBox} from './box.js';
+import {freshBox, BOX_HOSTNAME} from './box.js';
 
-export const PROBE_ITEMS = Object.freeze(['start', 'exec', 'network', 'caps', 'unshare', 'env', 'snapshot', 'browser', 'relay', 'fanout', 'private']);
+export const PROBE_ITEMS = Object.freeze(['start', 'exec', 'network', 'caps', 'unshare', 'env', 'hostname', 'snapshot', 'browser', 'relay', 'fanout', 'private']);
 export const PROBE_LIMITS = Object.freeze({samples: [1, 10], defaultSamples: 5, fanout: 30, relayRounds: 20, execRounds: 20});
 const PROBE = ['node', '/opt/box/probe.mjs'];
 const SECRET_NAME = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE|APP_|GITHUB|CLOUDFLARE|CF_|AWS_/i;
@@ -129,6 +129,20 @@ export class BoxProbe extends DurableObject {
       const r = parseLine(await box.run([...PROBE, 'env']));
       const names = [...(r.exec_env_names || []), ...(Array.isArray(r.pid1_env_names) ? r.pid1_env_names : [])];
       return {...r, secret_like_names: [...new Set(names.filter(n => SECRET_NAME.test(n)))]};
+    });
+  }
+  // v8 live 5: the host name a box's exec gets from the platform, the one
+  // the runner runs under (the box's name, through /opt/box/hostname.py),
+  // and, last, whether uid 0 could have set the platform's name itself. Each
+  // with Python's getfqdn of it; the platform's name is scrubbed like any id,
+  // and its label lengths stay.
+  async probe_hostname() {
+    return this.withBox({image: 'check', instance: 'standard-1', internet: false}, async (box, o) => {
+      const platform = parseLine(await box.run([...PROBE, 'hostname']));
+      const runner = parseLine(await box.run([...BOX_HOSTNAME, o.name, '--', ...PROBE, 'hostname'], {ms: 20_000}));
+      let uid_0;
+      try { uid_0 = parseLine(await box.run([...PROBE, 'hostname'], {user: '0:0'})); } catch (e) { uid_0 = errorOf(e); }
+      return {name: o.name, platform, runner, runner_named: runner?.hostname === o.name && runner?.getfqdn?.value === o.name, uid_0};
     });
   }
   // snapshotContainer, then a new box restored from it with the internet off.

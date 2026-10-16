@@ -1,7 +1,7 @@
 // Runs only inside the isolated Cloudflare build container.
 import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat,cp,realpath} from 'node:fs/promises';
 import {createHash,randomBytes} from 'node:crypto';
-import {tmpdir} from 'node:os';
+import {tmpdir,hostname as osHostname} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {builtinModules,createRequire} from 'node:module';
@@ -454,6 +454,30 @@ const valueText=v=>{let t;try{t=JSON.stringify(v);}catch{t=String(v);}return t==
 export {jsonHas};
 // The environment of a check: the stage environment, Python told not to
 // write bytecode beside the bundle, and the browser's module and browsers.
+// v8 live 5: the host name the checks run under, and what Python's
+// socket.getfqdn makes of it (http.server's HTTPServer calls it when it
+// binds; a label over 63 characters fails it in the IDNA codec). In a box
+// the runner runs under /opt/box/hostname.py, which sets the box's name
+// (box-<16 hex>) and says how in BOX_HOSTNAME_STATUS.
+export function hostnameOk(name) {
+  const t=String(name??'');
+  return t.length>0&&t.length<=253&&t.split('.').every(l=>/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(l));
+}
+export const GETFQDN_SCRIPT=`import json,socket
+try:
+    print(json.dumps({'ok':True,'value':socket.getfqdn('0.0.0.0')}))
+except Exception as e:
+    print(json.dumps({'ok':False,'error':(type(e).__name__+': '+str(e))[:240]}))`;
+export async function hostnameInventory({prefix=[],cwd=tmpdir(),env=checkEnvironment(),python=true,probe=execCheck,name=osHostname()}={}) {
+  const labels=String(name).split('.');
+  const out={hostname:String(name).slice(0,253),hostname_ok:hostnameOk(name),hostname_longest_label:Math.max(...labels.map(l=>l.length)),hostname_status:process.env.BOX_HOSTNAME_STATUS||null,getfqdn:null};
+  if(!python)return out;
+  const r=await probe(['python3','-I','-c',GETFQDN_SCRIPT],{cwd,env,ms:8000,prefix});
+  let x=null;try{x=JSON.parse(String(r.stdout||'').trim().split('\n').at(-1));}catch{}
+  out.getfqdn=x&&typeof x.ok==='boolean'?{ok:x.ok,...(x.ok?{value:String(x.value).slice(0,253)}:{error:String(x.error||'').slice(0,240)}),ms:r.ms}
+    :{ok:false,error:r.timedOut?`no answer within ${seconds(r.ms)}`:clip(lastLines(r.stderr)||`exit ${r.code}`,240),ms:r.ms};
+  return out;
+}
 export function checkEnvironment(extra={}) {
   const env={...stageEnvironment(),PYTHONDONTWRITEBYTECODE:'1',PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',...extra};
   for(const k of Object.keys(env))if(env[k]===undefined)delete env[k];
@@ -696,7 +720,7 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
   const scratch=await realpath(await mkdtemp(path.join(base,'card-')));
   const stages=[],checks=[],issues=[],runs=new Map();
   let infrastructure_issue='',ns=null;
-  const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null};
+  const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null,hostname:null,hostname_ok:null,hostname_longest_label:null,hostname_status:null,getfqdn:null};
   const env=checkEnvironment();
   const redact=(text,...dirs)=>stripAdapterFrames(redactPaths(text,[...dirs,scratch],base));
   const stage=async(name,fn)=>{const t=Date.now();const out=(await fn())||{};stages.push({name,passed:out.passed!==false,ms:Date.now()-t,...(out.detail?{detail:clip(redact(out.detail),600)}:{})});};
@@ -726,6 +750,8 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
     inventory.sh=sh.code===0?sh.stdout.trim()||'sh':null;
     inventory.bash=bash.code===0?(/version\s+(\d+(?:\.\d+)*)/.exec(bash.stdout)?.[1]||'bash'):null;
     try{inventory.playwright=createRequire(path.join(ADAPTER_DIR,'browser-check.mjs'))('playwright/package.json').version;}catch{}
+    // v8 live 5: the host name, as a check sees it (with the checks' wrappers).
+    Object.assign(inventory,await hostnameInventory({prefix:checkPrefix,cwd:scratch,env,python:!!inventory.python}));
 
     // 2. Syntax: one process per row, its files in one command line. A
     // compiler that stops at the first bad file (py_compile) is run again on

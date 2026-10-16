@@ -41,10 +41,85 @@ export const BOX_COLD_MS = 5000;
 export const BOX_PEERS = Object.freeze({probe: 'BoxProbePeer'});
 // The whole runner in one exec (Level A, §3.3): today's build-runner, as
 // BuildExecutor runs it, with the same GNU timeout around it.
-export const BOX_BUILD_COMMAND = Object.freeze(['timeout', '--signal=TERM', '--kill-after=5s', '240s', 'node', '/opt/build-runner.mjs']);
+export const BOX_RUNNER = Object.freeze(['node', '/opt/build-runner.mjs']);
+// v8 live 5: the runner runs under the box's own host name. The platform
+// names a box's VM with a label over 63 characters, on which Python's
+// socket.getfqdn (http.server's bind) fails, so no stdlib server could start.
+// /opt/box/hostname.py (container/box) gives the runner and everything it
+// starts the name box-<16 hex> in a user namespace of its own, with an
+// /etc/hosts that resolves it; the runner's inventory reports what it got.
+export const BOX_HOSTNAME = Object.freeze(['python3', '-I', '/opt/box/hostname.py']);
+export const BOX_NAME = /^box-[0-9a-f]{16}$/;
+export const boxBuildCommand = name => {
+  if (!BOX_NAME.test(String(name))) throw new BoxError('bad_name', 'A box is named box-<16 hex>.');
+  return Object.freeze(['timeout', '--signal=TERM', '--kill-after=5s', '240s', ...BOX_HOSTNAME, name, '--', ...BOX_RUNNER]);
+};
+// A box's name, from its Durable Object id: box-<the first 16 hex of its
+// SHA-256>. The same id always gives the same name (a replay, the spans,
+// the inventory and the probe agree on it).
+export async function boxName(id) {
+  const text = String(id ?? '');
+  if (!text) throw new BoxError('bad_name', 'A box is named after its Durable Object id.');
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+  return 'box-' + [...digest.slice(0, 8)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
 // What one compile opens (S1): the check image, or the browser image when
 // the plan has browser checks; standard-1 as BuildExecutor; internet off.
 export const compileBoxSpec = plan => ({image: (plan?.checks || []).some(c => c?.kind === 'browser') ? 'browser' : 'check', instance: 'standard-1', internet: false});
+
+// ---------------------------------------------------------------------------
+// v8 live 5: what the box's inventory says about its environment classifies
+// the results it ran. A failure an environment fact the inventory reports
+// explains is the box's (infrastructure: compile_infrastructure, shown to
+// the person, retried in a new box), never a problem routed to the code's
+// writer. In the issue tracker run every box had a host name with a label
+// over 63 characters, Python's http.server failed to bind on it, and the
+// worker was told to fix its server for five rounds.
+//
+// Each fact: when the inventory shows it (shows), and which failures it
+// explains (explains: every failure in the box when it is box-wide, or the
+// failures whose text carries its signature).
+const HOST_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+export const hostnameOk = name => { const t = String(name ?? ''); return t.length > 0 && t.length <= 253 && t.split('.').every(l => HOST_LABEL.test(l)); };
+export const ENVIRONMENT_FACTS = Object.freeze([
+  {fact: 'hostname', box_wide: true, signature: /'idna' codec|label too long|getfqdn/i,
+    shows: inv => (typeof inv.hostname === 'string' && inv.hostname_ok !== true && !hostnameOk(inv.hostname)) || inv.hostname_ok === false || inv.getfqdn?.ok === false,
+    text: inv => `the box's host name is not one a check can run under (${inv.getfqdn?.ok === false ? `Python's socket.getfqdn failed on it: ${clip(inv.getfqdn.error, 160)}` : `a label of ${inv.hostname_longest_label ?? Math.max(...String(inv.hostname).split('.').map(l => l.length))} characters, over the 63 a host name label may have`}${inv.hostname_status && inv.hostname_status !== 'set' ? `; the box could not set its own name: ${clip(inv.hostname_status, 120)}` : ''}), so a server built on Python's http.server cannot start in it`},
+  {fact: 'python', box_wide: false, signature: /\bpython3?\b[^\n]{0,80}(?:not found|No such file or directory|ENOENT)|spawn python3? ENOENT/i,
+    shows: inv => Object.hasOwn(inv, 'python') && inv.python === null,
+    text: () => 'the box reports no Python, and the check needed it'}
+]);
+// The facts an inventory shows: [{fact, box_wide, signature, text}].
+export function environmentFaults(inventory) {
+  if (!inventory || typeof inventory !== 'object') return [];
+  return ENVIRONMENT_FACTS.filter(f => { try { return f.shows(inventory); } catch { return false; } }).map(f => ({fact: f.fact, box_wide: f.box_wide, signature: f.signature, text: f.text(inventory)}));
+}
+// A card report with its failures classified by the box's inventory: a
+// failed check a fact explains is infrastructure (with environment: fact),
+// an issue it explains moves to infrastructure_issue, and the report says
+// what of the box's environment it was. A report no fact explains is
+// returned as it is.
+export function classifyEnvironment(report) {
+  const faults = environmentFaults(report?.inventory);
+  if (!faults.length || !report || typeof report !== 'object') return report;
+  const explained = text => faults.find(f => f.signature.test(text)) || null;
+  const used = new Set();
+  const checks = (Array.isArray(report.checks) ? report.checks : []).map(c => {
+    if (!c || c.passed || c.infrastructure) return c;
+    const f = faults.find(x => x.box_wide) || explained(`${c.detail || ''}\n${c.output || ''}`);
+    if (!f) return c;
+    used.add(f);
+    return {...c, infrastructure: true, environment: f.fact, detail: clip(`not run in a working box: ${f.text}. What the check saw: ${c.detail || 'it failed'}`, 600)};
+  });
+  const issues = [];
+  for (const i of Array.isArray(report.issues) ? report.issues : []) {
+    const f = explained(String(i?.detail || ''));
+    if (f) used.add(f); else issues.push(i);
+  }
+  if (!used.size) return report;
+  const why = `The box's environment, not the code: ${[...used].map(f => f.text).join('; ')}.`;
+  return {...report, passed: false, checks, issues, environment: [...used].map(f => f.fact), infrastructure_issue: report.infrastructure_issue ? `${report.infrastructure_issue}; ${why}` : why};
+}
 
 const decode = bytes => new TextDecoder().decode(bytes || new Uint8Array());
 const clip = (v, n) => String(v ?? '').slice(0, n);
@@ -123,15 +198,28 @@ export class Box extends DurableObject {
     if (!c) throw new BoxError('unbound', 'The Box Durable Object has no Container attached.');
     return c;
   }
+  // This box's name (boxName of its Durable Object id).
+  async name() {
+    this.boxName ??= this.ctx.id ? await boxName(this.ctx.id) : 'box-' + crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+    return this.boxName;
+  }
   // Start this box's VM once. Throws when the box was opened before, when its
   // Container already runs (not fresh), when the image is not deployed, or
   // when the platform refuses the options (enableInternet:false included).
-  async open(raw) {
+  // v8 live 5: a prewarmed box is opened by the room before its compile
+  // (open), and its compile then runs in it (compile); open's promise is
+  // kept so a compile that arrives while it starts waits for it.
+  open(raw) {
+    if (this.opening) return Promise.reject(new BoxError('used', 'A box is single-use: this one was opened before.'));
+    this.opening = this.boot(raw);
+    return this.opening;
+  }
+  async boot(raw) {
     const c = this.container(), spec = boxSpec(raw);
     if (this.opened || await this.ctx.storage.get('opened_at')) throw new BoxError('used', 'A box is single-use: this one was opened before.');
     if (c.running) throw new BoxError('not_fresh', 'A new box found its Container already running.');
     const options = boxStartOptions(spec, c.images);
-    const began = Date.now();
+    const began = Date.now(), name = await this.name();
     this.opened = {spec, began};
     await this.ctx.storage.put('opened_at', began);
     if (typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(began + BOX_LIFETIME_MS);
@@ -147,10 +235,29 @@ export class Box extends DurableObject {
     const code = await waitForBuildOutput(ready, ready.exitCode, {timeoutMs: 60_000});
     if (code !== 0) throw new BoxError('not_ready', `The box's readiness command exited ${code}.`);
     const ready_ms = Date.now() - began;
-    const opened = {fresh: true, internet: options.enableInternet, image: spec.snapshot ? 'snapshot' : spec.image, instance: spec.instance,
+    const opened = {fresh: true, internet: options.enableInternet, image: spec.snapshot ? 'snapshot' : spec.image, instance: spec.instance, name,
       start_ms: started - began, ready_ms, cold: ready_ms > BOX_COLD_MS, startup_retries: retries};
     this.opened.result = opened;
+    await this.ctx.storage.put('opened', {spec, result: opened});
     return opened;
+  }
+  // The box a compile runs in: this one, opened now, or opened before by a
+  // prewarm with exactly this spec and never compiled in. A box compiles once.
+  async compileBox(raw) {
+    const spec = boxSpec(raw);
+    if (this.compiling || await this.ctx.storage.get('compiled_at')) throw new BoxError('used', 'A box is single-use: it compiled once already.');
+    this.compiling = true;
+    await this.ctx.storage.put('compiled_at', Date.now());
+    if (!this.opening && !await this.ctx.storage.get('opened_at')) return {...await this.open(spec), prewarmed: false};
+    let kept;
+    if (this.opening) { const result = await this.opening; kept = {spec: this.opened?.spec, result}; }
+    else kept = await this.ctx.storage.get('opened');
+    if (this.closed || !kept?.result || !this.container().running) throw new BoxError('closed', 'The prewarmed box is no longer open.');
+    if (JSON.stringify(boxSpec(kept.spec)) !== JSON.stringify(spec)) throw new BoxError('mismatch', 'A prewarmed box runs only the compile it was opened for (its image, instance and internet).');
+    this.opened ??= {spec, began: Date.now(), result: kept.result};
+    // Its backstop runs from the compile's start.
+    if (typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(Date.now() + BOX_LIFETIME_MS);
+    return {...kept.result, prewarmed: true};
   }
   // One command; {code, stdout, stderr, ms, timed_out}. No shell, no env but PATH.
   async run(argv, {stdin = '', ms = 30_000, user, max = 64_000} = {}) {
@@ -172,13 +279,13 @@ export class Box extends DurableObject {
   // it, close it. The request has the shape BuildExecutor.build takes.
   async compile(raw, {fingerprint, files, options, ...card} = {}) {
     try {
-      const opened = await this.open(raw);
+      const opened = await this.compileBox(raw);
       if (typeof fingerprint !== 'string' || fingerprint.length > 240) throw new BoxError('bad_request', 'Invalid build fingerprint');
       const entries = validateBuildFiles(files);
       const snapshot_hash = await snapshotHash(entries);
       const input = JSON.stringify({fingerprint, snapshot_hash, files: Object.fromEntries(entries), options: buildRequestOptions(options), ...cardRequestFields(card)});
       const c = this.container(), began = Date.now();
-      const process = await c.exec([...BOX_BUILD_COMMAND], boxExecOptions({stdin: true}));
+      const process = await c.exec([...boxBuildCommand(opened.name)], boxExecOptions({stdin: true}));
       const output = await waitForBuildOutput(process, (async () => { await writeAll(process, input); return process.output(); })());
       if (output.exitCode !== 0) throw new BoxError('exit', `The box's build runner exited ${output.exitCode}: ${clip(decode(output.stderr).slice(-800) || decode(output.stdout).slice(-800), 800)}`);
       const result = JSON.parse(decode(output.stdout));
