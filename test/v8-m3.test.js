@@ -89,6 +89,8 @@ const passedOf = room => Object.fromEntries(Object.entries(room.snapshot().requi
 const tail = room => events(room).filter(e => !['dispatch', 'turn_start', 'turn_end', 'write', 'revision', 'spawn'].includes(e.kind)).slice(-20).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 const pieceSpans = (room, name) => room.spans(0, 100000).filter(s => s.kind === 'piece' && s.name === name);
 const boxesWith = (boxes, id) => boxes.filter(b => b.ids.includes(id));
+// The files of a bundle that a row compiles and whose exact bytes no syntax step compiled.
+const uncompiled = (room, files) => [...files].filter(([p, t]) => { const s = room.syntaxOf(p); return s?.box && !room.db().exec('SELECT key FROM syntax_clean WHERE key=?', room.syntaxKey(s.row, t)).toArray().length; }).map(([p]) => p);
 
 test('M3: every manager in a v8 split has a builder of its own, which stores its piece; each check is held by the lowest manager whose pieces serve it', {skip}, async () => {
   const {room, drain, boxes} = room3();
@@ -104,9 +106,11 @@ test('M3: every manager in a v8 split has a builder of its own, which stores its
     assert.ok(room.read(`piece:${b.id}`, null)?.digest, `${m}'s piece is stored with its digest`);
     assert.ok(room.db().exec('SELECT COUNT(*) AS n FROM piece_files WHERE builder=?', b.id).toArray()[0].n > 0);
   }
-  // A worker has no builder; no compiler under v8.
-  for (const l of ['Shouter', 'Louder', 'Notes']) assert.equal(room.builderOf(at[l]), null);
-  assert.ok(!room.allNodes().some(n => n.label === 'Compiler'));
+  // Each worker's files reach the level above through its manager's piece: the builder of the row above it stored them.
+  for (const l of ['Shouter', 'Louder', 'Notes']) {
+    const w = room.node(at[l]), b = room.builderOf(w.parent);
+    assert.ok(room.db().exec('SELECT COUNT(*) AS n FROM piece_files WHERE builder=? AND owner=?', b.id, w.id).toArray()[0].n > 0, `${l}'s files are in ${w.parent}'s piece`);
+  }
   // Scope by lowest common manager: each part's checks are its own, the ones that span parts the top's.
   assert.deepEqual(held(room, at['Loud part']), ['R1', 'R2']);
   assert.deepEqual(held(room, at['Quiet part']), ['R3', 'R4']);
@@ -126,9 +130,11 @@ test('M3: every manager in a v8 split has a builder of its own, which stores its
   // Spans per manager show when each piece was linked, judged and compiled.
   for (const name of ['piece_link', 'piece_checks']) assert.deepEqual(pieceSpans(room, name).map(s => JSON.parse(JSON.stringify(s.attrs)).manager).filter((x, i, a) => a.indexOf(x) === i).sort(), managers.sort(), name);
   assert.deepEqual(pieceSpans(room, 'piece_clef').map(s => s.attrs.manager).sort(), [at['Loud part'], at['Quiet part']].sort(), 'Clef is asked below the top only');
-  // A box per manager: each part's runs its calls; the top's compiles every file (the rows' syntax step), its file checks run in the Worker.
-  assert.deepEqual(pieceSpans(room, 'piece_box').map(s => s.attrs.manager).sort(), managers.sort());
-  assert.deepEqual(boxes.find(b => !b.ids.length)?.files.filter(f => f.startsWith('components/') && f.endsWith('.py') && !f.endsWith('__init__.py')).length, 4, 'the top\'s box compiles the four modules');
+  // A box per part: each runs its calls and compiles its files (the rows' syntax step). v8 M3 review (M4): every file of
+  // the top's final bundle was compiled, exactly as it ships; the top's file checks ran in the Worker, and with nothing in
+  // its bundle left to compile it opened no box of its own.
+  assert.deepEqual(pieceSpans(room, 'piece_box').map(s => s.attrs.manager).sort(), [at['Loud part'], at['Quiet part']].sort());
+  assert.deepEqual(uncompiled(room, (await room.bundleFiles('root')).files), []);
   assert.ok(events(room, 'checks_placed').length >= 1);
 });
 
@@ -148,7 +154,9 @@ test('M3: two independent parts compile in parallel, each in its own box, before
   assert.ok(a.start < b.end && b.start < a.end, 'the two piece boxes overlap');
   const notes = room.node(ids(room).Notes), wrote = events(room, 'done').find(e => e.actor === notes.id);
   assert.ok(wrote.ts >= Math.max(a.end, b.end), 'their sibling finished after both');
-  assert.equal(boxes.at(-1).ids.length, 0, 'the top runs only its own checks (file checks, in the Worker)');
+  // The top runs only its own checks (file checks, in the Worker): its bundle's files were all compiled in the parts' boxes.
+  assert.ok(!pieceSpans(room, 'piece_box').some(s => s.attrs.manager === 'root'));
+  assert.deepEqual(uncompiled(room, (await room.bundleFiles('root')).files), []);
 });
 
 test('M3: a check passed in a piece is not run again above while the piece\'s files are unchanged, and runs again in its piece when they change', {skip}, async () => {

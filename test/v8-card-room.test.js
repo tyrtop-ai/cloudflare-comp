@@ -99,7 +99,9 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.deepEqual(managers.map(n => n.id), ['root']);
   for (const m of managers) assert.equal(room.builderOf(m.id)?.status, 'done', `${m.id} has a builder of its own`);
   assert.ok(room.read(`piece:${room.builderOf('root').id}`, null)?.digest, 'its piece is stored on the builder\'s row with a digest');
-  assert.ok(!room.allNodes().some(n => n.label === 'Compiler'));
+  // The checks ran in Root's own box, over its piece, and the run finished on the bundle Root verified.
+  assert.ok(room.spans(0, 100000).some(s => s.kind === 'piece' && s.name === 'piece_box' && s.attrs.manager === 'root'));
+  assert.equal(room.read('verified:root', null)?.owned, room.ownedDigest('root'));
   assert.equal(room.get('status'), 'complete');
   assert.equal(room.snapshot().pause, null);
   assert.equal(events(room, 'checks_passed').length, 1);

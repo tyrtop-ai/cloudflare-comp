@@ -1027,17 +1027,22 @@ export async function pieceReach(env, {name='', contracts=[], files=[], installe
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('unsupported Clef decision model');
   const scope=cardScope(card?.requirements?card:{requirements:checks}),shapeOf=check=>{try{return checkShapeForReview(check,scope);}catch{return checkSummary(check);}};
+  // v8 M3 review (L7): each answer is its own check's: one that is not a
+  // probability is asked once more, alone with the others like it, and one
+  // still invalid (or a call that fails twice) is that check's error
+  // ({id, error}), never its batch's.
+  const ask=async group=>{
+    const output=await clefRun(env,'pieceReach',selector,{model:clef,state:{piece:{name:String(name).slice(0,200),contracts:contracts.slice(0,24).map(c=>String(c).slice(0,300)),files:files.slice(0,80)},
+      installed:installed.slice(0,64),checks:group.map((r,i)=>({slot:i,says:String(r.says||'').slice(0,200),check:shapeOf(r.check)}))},
+      questions:Object.fromEntries(group.map((_,i)=>[`piece_reach_${i}`,{type:'noul',instructions:clefText('piece_reach',{name:String(name).slice(0,120),i})}]))});
+    return group.map((r,i)=>{const p=output?.answers?.[`piece_reach_${i}`]?.noul;return typeof p==='number'&&Number.isFinite(p)&&p>=0&&p<=1?{id:r.id,p}:{id:r.id,error:`Clef returned no valid probability for ${r.id}`};});
+  };
+  const once=async group=>{try{return await ask(group);}catch(e){return group.map(r=>({id:r.id,error:String(e?.message||e)}));}};
   const out=[];
   for(let start=0;start<checks.length;start+=12) {
-    const group=checks.slice(start,start+12);
-    const output=await clefRun(env,'pieceReach',selector,{model:clef,state:{piece:{name:String(name).slice(0,200),contracts:contracts.slice(0,24).map(c=>String(c).slice(0,300)),files:files.slice(0,80)},
-      installed:installed.slice(0,64),checks:group.map((r,i)=>({slot:start+i,says:String(r.says||'').slice(0,200),check:shapeOf(r.check)}))},
-      questions:Object.fromEntries(group.map((_,i)=>[`piece_reach_${start+i}`,{type:'noul',instructions:clefText('piece_reach',{name:String(name).slice(0,120),i:start+i})}]))});
-    for(const [i,r] of group.entries()) {
-      const p=output?.answers?.[`piece_reach_${start+i}`]?.noul;
-      if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${r.id}`);
-      out.push({id:r.id,p});
-    }
+    const first=await once(checks.slice(start,start+12)),again=checks.filter(r=>first.some(x=>x.id===r.id&&x.error));
+    const second=again.length?await once(again):[];
+    out.push(...first.map(x=>x.error?second.find(y=>y.id===x.id)||x:x));
   }
   return out;
 }

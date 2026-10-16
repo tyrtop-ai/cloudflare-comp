@@ -58,7 +58,9 @@ export function callModule(check, files, placed = new Set()) {
 // rows: the installed toolchain rows. placed: the bundle's placed paths.
 // paths (S5): the module path the bundle's glue needs ({VAR: [bundle
 // folders]}, linkBundle's), which every check process runs with.
-export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), paths: glue = {}} = {}) {
+// compile (v8 M3 review): the files the syntax step compiles, when not every
+// one (a file whose exact bytes compiled before is not compiled again).
+export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), paths: glue = {}, compile = null} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], reqs = card?.requirements || [];
   const commandsOf = new Map((card?.deliverables || []).filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
   const used = new Set(card?.languages || []);
@@ -69,7 +71,7 @@ export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), p
   }
   const toolchains = all.filter(r => used.has(r.id));
   const syntax = toolchains.filter(r => Array.isArray(r.syntax) && r.syntax.length)
-    .map(r => ({toolchain: r.id, files: paths.filter(p => toolchainOf(p)?.id === r.id)})).filter(s => s.files.length);
+    .map(r => ({toolchain: r.id, files: paths.filter(p => toolchainOf(p)?.id === r.id && (!compile || compile.has(p)))})).filter(s => s.files.length);
   // A command deliverable runs by its own path, through its row's run_file (never a PATH lookup).
   const commands = {};
   for (const [name, d] of commandsOf) {

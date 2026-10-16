@@ -3,7 +3,7 @@ import { cardScope, maskWith } from '../../src/affordances.js';
 // test and the scripted v8 rooms share. A prompt states general principles
 // with their reasons: it names no product domain, no language, framework or
 // tool (those reach a model only as project facts and contract data in the
-// user JSON), no past run or version, no build step a v8 room does not run,
+// user JSON), no past run or version, none of v7's own words,
 // shouts nothing, and is not a list of prohibitions. The card writer's §6
 // examples are the one place concrete data may appear (lintText strips
 // <example> blocks before every check but the goal words of the old default).
@@ -27,8 +27,9 @@ export const SYNTAX = new RegExp([
 // File extensions of every row and of other languages, and manifest names.
 const EXTENSIONS = [...new Set([...TOOLCHAINS.flatMap(t => t.extensions || []), '.go', '.rs', '.rb', '.java', '.kt', '.php', '.c', '.cc', '.cpp', '.h', '.cs', '.sh', '.sql', '.swift', '.ts', '.tsx', '.jsx', '.vue', '.scss'])];
 export const EXTENSION = new RegExp(`\\w(?:${EXTENSIONS.map(e => e.replace('.', '\\.')).join('|')})\\b|\\b(?:${[...OTHER_MANIFESTS, 'package.json', 'requirements.txt', 'pyproject.toml', 'Dockerfile', 'Makefile'].map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'i');
-// What a v8 room does not run before its checks, and v7's own words.
-export const V7_WORDS = /\bbuilders?\b|\bcontainer\b|named exports?|\bmodules?\b|\bqwen\b|\bclef\b|\bllama\b|\bdeepseek\b|code-writing|\bstrands?\b|\blinker\b|\bcompiler\b|\bentry module\b/i;
+// v7's own words and the runtime's internals a v8 prompt never names (a
+// v8 room's builders, linker and compiler are real parts of it: a prompt may say what they do).
+export const V7_WORDS = /\bcontainer\b|named exports?|\bmodules?\b|\bqwen\b|\bclef\b|\bllama\b|\bdeepseek\b|code-writing|\bstrands?\b|\bentry module\b/i;
 export const RUN_REFERENCES = /\brun ?\d+\b|\bv\d+(?:\.\d+)*\b|\bslice S\d+\b/i;
 // The copyable placeholder names v7's prompts gave (C2's list).
 export const PLACEHOLDER_NAMES = /\b(?:functionName|otherFunctionName|fnName|listedName|camelCaseIdentifier|createTicket|theirModule)\b/;

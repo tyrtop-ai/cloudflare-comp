@@ -106,7 +106,7 @@ export function rowContext(files, row, {contracts = [], pieces = new Map(), part
     const home = homeOf(reader);
     if (home) {
       if (files.has(`${home}/${m}${ext}`) && `${home}/${m}${ext}` !== reader) return {kind: 'own', path: `${home}/${m}${ext}`, home};
-      if (isDir(`${home}/${m}`) && files.has(`${home}/${m}/${row.glue?.package_marker || '__init__.py'}`)) return {kind: 'own', path: `${home}/${m}`, home, package: true};
+      if (row.glue?.package_marker && isDir(`${home}/${m}`) && files.has(`${home}/${m}/${row.glue.package_marker}`)) return {kind: 'own', path: `${home}/${m}`, home, package: true};
     }
     if (has(m + ext)) return {kind: 'real', path: m + ext};
     if (isDir(m)) return {kind: 'package'};
@@ -460,20 +460,41 @@ export function importClosure(entries, files, {rows = TOOLCHAINS, installed = ()
     reached.add(p);
     const text = String(files.get(p) ?? ''), row = rowOf(p);
     if (!row) continue;
-    if (LINKABLE.test(p)) {
+    // v8 M3 review (L6): the branch is the row's way of linking (its link field), never a file name pattern.
+    if (row.link === 'js-path-rewrite') {
       for (const spec of moduleSpecifiers(text)) {
         const r = resolveLocal(p, spec, files);
         if (r.path) queue.push(r.path);
         else if (!r.external || !installed(spec, row)) miss(p, spec);
       }
     } else if (row.glue) {
-      const ctx = ctxOf(row), marker = row.glue.package_marker || '__init__.py';
+      // v8 M3 review (L2): a folder is a package only by the row's
+      // package_marker in it, and reading a package runs its marker first
+      // (and a submodule a binding names): both are reached. A folder
+      // without one is no module of the project.
+      const ctx = ctxOf(row), marker = row.glue.package_marker || '', ext = row.extensions?.[0] || '';
+      const pkg = dir => marker && files.has(`${dir}/${marker}`) ? `${dir}/${marker}` : '';
+      const enter = (dir, b) => {
+        const init = pkg(dir);
+        if (!init) return false;
+        queue.push(init);
+        if (b.name && b.name !== '*' && files.has(`${dir}/${b.name}${ext}`)) queue.push(`${dir}/${b.name}${ext}`);
+        return true;
+      };
       for (const g of importGroups(text, row)) for (const s of g.statements) for (const b of s.bindings) {
+        // The packages a dotted module sits in run before it.
+        if (!b.level) { const parts = String(b.module || '').split('.'); for (let i = 1; i < parts.length; i++) { const init = pkg(parts.slice(0, i).join('/')); if (init) queue.push(init); } }
         const f = ctx.fileOf(b, p);
-        if (f) { const at = f.package ? `${f.path}/${marker}` : f.path; if (files.has(at)) queue.push(at); continue; }
+        if (f) {
+          if (!f.package) { if (files.has(f.path)) queue.push(f.path); continue; }
+          if (enter(f.path, b)) continue;
+          miss(p, bindingText(b));
+          continue;
+        }
         const top = b.level ? '' : String(b.module || '').split('.')[0], r = top ? ctx.resolve(top, p) : null;
         if (r?.path && files.has(r.path)) { queue.push(r.path); continue; }
-        if (r?.kind === 'stdlib' || r?.kind === 'package' || r?.kind === 'own' || top && installed(b.module, row)) continue;
+        if ((r?.kind === 'package' || r?.package) && enter(r.path || top, b)) continue;
+        if (r?.kind === 'stdlib' || r?.kind === 'own' && !r.package || top && installed(b.module, row)) continue;
         miss(p, bindingText(b));
       }
     } else if (row.imports?.length && page(row, p)) {
