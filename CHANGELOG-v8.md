@@ -319,3 +319,9 @@ Replay of the nine steps: the CLI's attempt 2 now reaches Clef's review. Every o
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.
+
+## Three examples for what is called or run
+
+- The owner's rule of three different examples applies to contracts that are called or run: functions, commands and routes (`EXAMPLE_KINDS` in src/validations.js). Pages, files, documents and data owe none; their validations still render examples for their workers.
+- The splitter's format no longer holds filled-in validations: the live tracker copied its `docs/restore.md` example into a level. The prompt lint now fails on any filled-in validation, contract or piece in a format.
+- Replaying the nine recorded live attempts: every to-do page attempt and CLI attempts 1 and 2 now reach Clef's review; the tracker's attempts are short only of examples for its functions and its server command.

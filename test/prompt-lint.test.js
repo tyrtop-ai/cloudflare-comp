@@ -90,16 +90,12 @@ test('emphasis and prohibitions stay within the allowance across all prompts', (
   assert.equal(texts.reduce((n, t) => n + capsWords(t).length, 0), 0, 'no all-caps emphasis at all today');
 });
 
-test('examples appear only in the splitter\'s format: three validations from three domains and three check kinds', () => {
-  for (const [name, text] of Object.entries(promptTexts())) if (name !== 'FORMAT.splitter') assert.doesNotMatch(text, /<example>/, name);
-  const examples = [...FORMAT.splitter.matchAll(/<example>(.*?)<\/example>/g)].map(m => JSON.parse(m[1]));
-  assert.equal(examples.length, 3);
-  assert.deepEqual(examples.map(e => e.check.kind), ['command', 'browser', 'judge']);
-  assert.deepEqual(examples.map(e => e.serves[0]), ['convert', 'index.html', 'docs/restore.md']);
-  // The schema has no filled-in contract or piece to copy.
-  const schema = FORMAT.splitter.replace(/<example>[\s\S]*?<\/example>/g, '');
-  assert.doesNotMatch(schema, /"label"\s*:\s*"/);
-  assert.doesNotMatch(schema, /"name"\s*:\s*"/);
+test('no format carries a filled-in validation, contract or piece to copy', () => {
+  // v8 live 6: the splitter copied its format's example (docs/restore.md) into a level; no format holds one.
+  for (const [name, text] of Object.entries(promptTexts())) if (name !== 'FORMAT.worker') assert.doesNotMatch(text, /<example>/, name);
+  assert.doesNotMatch(FORMAT.splitter, /"label"\s*:\s*"/);
+  assert.doesNotMatch(FORMAT.splitter, /"name"\s*:\s*"/);
+  assert.doesNotMatch(FORMAT.splitter, /"serves"\s*:\s*\["/);
 });
 
 test('Clef questions are filled by key, and run data never enters a system prompt', () => {

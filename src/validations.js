@@ -21,6 +21,8 @@ import { isPath } from './protocol.js';
 
 export const VALIDATION_KINDS = Object.freeze(['file', 'judge', 'command', 'call', 'http', 'browser']);
 export const EXAMPLES_PER_CONTRACT = 3;
+// The owner's rule: the three examples are owed by contracts that are called or run.
+export const EXAMPLE_KINDS = new Set(['function', 'command', 'route']);
 export const LEVEL_LIMITS = Object.freeze({contracts: 24, validations: 72, steps: 20, has: 8, fixtures: 8, command: 300, argv: 40, stdin: 4000, fixture: 20000, value: 1000, question: 300, says: 200});
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -717,8 +719,8 @@ export function readLevel(raw, {own = [], held = [], have = [], calls = [], rows
     if (r.error) defects.push(`Contract ${c.name}: ${r.error}.`);
     else c.run = r.run;
   }
-  // Three different examples per contract, from its validations here and those that already serve it.
-  for (const c of contracts) {
+  // Three different examples per contract that is called or run, from its validations here and those that already serve it.
+  for (const c of contracts.filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const mine = [...held.filter(h => (c.serves || []).includes(h.id)), ...validations.filter(v => v.serves.includes(c.name))];
     const n = contractExamples(c, mine).length;
     if (n < EXAMPLES_PER_CONTRACT) defects.push(`Contract ${c.name} has ${n} different example${n === 1 ? '' : 's'}: give it validations that show ${EXAMPLES_PER_CONTRACT} different examples of ${c.name} itself (${exerciseWords(c)}).`);
