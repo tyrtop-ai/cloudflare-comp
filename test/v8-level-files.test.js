@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {levelRoom, usualClef, deliver, callCheck, events, fileBlocks, rowId, LEVEL_FILE, LEVELS_DIR} from './helpers/levels.js';
+import {levelRoom, again, crashAt, reopen, usualClef, deliver, callCheck, events, fileBlocks, rowId, LEVEL_FILE, LEVELS_DIR} from './helpers/levels.js';
 import {liveRoom, Store} from './helpers/room.js';
 import {packagePath} from '../src/assembly.js';
 
@@ -322,8 +322,8 @@ test('a worker\'s prompt is the one its manager\'s level file holds for it, neve
     assert.deepEqual(room.workerView(w.id).prompt, view.prompt);
   }
   // The file changes: the prompt follows it.
-  const w = workers[0], level = room.levelDesign(w.parent);
-  await room.writeLevel(w.parent, {...level, children: level.children.map(c => c.id === w.id ? {...c, prompt: 'Keep tickets in a map.'} : c)});
+  const w = workers[0];
+  await room.updateLevel(w.parent, level => ({...level, children: level.children.map(c => c.id === w.id ? {...c, prompt: 'Keep tickets in a map.'} : c)}));
   assert.equal(room.workerView(w.id).prompt.task, 'Keep tickets in a map.');
 });
 
@@ -340,9 +340,8 @@ test('the builder places each file where its manager\'s level file says, not whe
   assert.ok(!(await bundle()).has('lib/store.js'));
   // The file places it elsewhere while the row says store.js: its store.js is no placed file now, and goes under its piece's folder, by the file's label.
   room.db().exec('UPDATE agents SET interfaces=? WHERE id=?', row, w.id);
-  const level = room.levelDesign(m);
-  await room.writeLevel(m, {...level, contracts: level.contracts.map(c => c.path === 'store.js' ? {...c, path: 'lib/store.js'} : c),
-    children: level.children.map(c => c.id === w.id ? {...c, label: 'Tickets'} : c)});
+  await room.updateLevel(m, level => ({...level, contracts: level.contracts.map(c => c.path === 'store.js' ? {...c, path: 'lib/store.js'} : c),
+    children: level.children.map(c => c.id === w.id ? {...c, label: 'Tickets'} : c)}));
   const files = await bundle();
   assert.ok(!files.has('store.js'));
   assert.equal(files.get(packagePath('Tickets', 'store.js', w.id)), STORE);
@@ -372,7 +371,7 @@ test('the export ships every manager\'s level file under .recursive/levels/, as 
   const shown = room.snapshot().levels;
   assert.deepEqual(shown.map(l => [l.manager, l.children, l.contracts, l.validations]), managers.map(m => [m, levelOf(room, m).children.length, levelOf(room, m).contracts.length, levelOf(room, m).validations.length]));
   // A level file is no delivered file: writing one leaves the validations' results as they were.
-  await room.writeLevel(managers[0], room.levelDesign(managers[0]));
+  await room.updateLevel(managers[0], level => ({...level, children: level.children.map(c => ({...c, prompt: `${c.prompt} `}))}));
   assert.ok(Object.values(room.validationStatus()).every(s => !s.stale));
 });
 
@@ -398,4 +397,218 @@ test('a v8 room made before level files (its levels row data, no record of the f
   assert.deepEqual(await r.room.resume(10), {error: EARLIER_ROOM, status: 409});
   assert.equal((await r.room.amend('also print the unit')).error, EARLIER_ROOM);
   assert.ok((await r.room.appFiles()).files.some(f => f.path === 'convert.js'), 'its result still exports');
+});
+
+// ------------------------------------------------------------ one change at a time, and the commit first
+// A store whose level-file commits take a while once slow is set, so changes from overlapping turns meet.
+class SlowStore extends CommitStore {
+  async write(a) { if (this.slow && a.path === LEVEL_FILE) await new Promise(r => setTimeout(r, 20)); return super.write(a); }
+}
+const byId = (a, b) => a.id < b.id ? -1 : 1;
+// Every row a manager has is in its level file: its live children among the children, its archived ones among the archived.
+const rowsListed = (room, m) => {
+  const file = levelOf(room, m), kids = room.children(m).filter(c => !['builder', 'compiler'].includes(c.role));
+  assert.deepEqual(file.children.map(c => c.id).sort(), kids.filter(c => c.status !== 'archived').map(c => c.id).sort(), 'the live rows are the file\'s children');
+  assert.deepEqual(file.archived.map(c => c.id).sort(), kids.filter(c => c.status === 'archived').map(c => c.id).sort(), 'the archived rows are the file\'s archived');
+  for (const c of kids) assert.ok(room.designOf(c.id).label, `${c.id} reads its entry`);
+};
+// Each row is checked against its manager's level file as it is created: no row exists without its entry.
+const entryAtBirth = room => {
+  const provision = room.provision;
+  room.provision = async function (id, parent, ...rest) {
+    const made = await provision.call(this, id, parent, ...rest);
+    if (parent && this.levelIndex(parent)) assert.ok(levelOf(this, parent).children.some(c => c.id === id), `${id} was created with its entry in ${parent}'s level file`);
+    return made;
+  };
+};
+
+test('two changes to one level file at once both land: two sibling archives from overlapping turns leave both archived in the file, and two calls added to one entry at once are both there', async () => {
+  const store = new SlowStore(), {room} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf, store});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  const m = room.roomManager(), before = levelOf(room, m), kids = room.liveChildren(m), [storePiece, reportPiece] = kids;
+  room.set('status', 'paused');
+  store.slow = true;
+  // Two calls added to the report piece's entry at once (two answered asks).
+  await Promise.all(['getTicket', 'listTickets'].map(name => room.amendEntry(reportPiece.id, e => ({calls: [...new Set([...e.calls, name])]}))));
+  assert.deepEqual(levelOf(room, m).children.find(c => c.id === reportPiece.id).calls, ['createTicket', 'getTicket', 'listTickets']);
+  const amended = levelOf(room, m).children;
+  // Both siblings archived at once, as two parallel worker turns would (askUp, then archive).
+  await Promise.all(kids.map(k => room.archive(k.id, 'out of scope at every manager')));
+  const after = levelOf(room, m);
+  assert.deepEqual(after.children, []);
+  assert.deepEqual(after.archived.map(({why: _, ...e}) => e).sort(byId), [...amended].sort(byId), 'each as its entry stood');
+  assert.deepEqual([after.contracts, after.validations], [before.contracts, before.validations]);
+  assert.deepEqual(room.levelDesign(m), after);
+  assert.equal(room.levelIndex(m).commit, store.log.filter(l => l.name === room.node(m).repo_name && l.path === LEVEL_FILE).at(-1).commit, 'the row keeps the last commit');
+  assert.deepEqual([storePiece, reportPiece].map(k => room.node(k.id).status), ['archived', 'archived']);
+  rowsListed(room, m);
+});
+
+test('an extension admitted while another turn amends an entry of the same level file keeps both: the amended prompt and the new worker\'s entry, at every overlap; no row exists without its entry', async () => {
+  const LIST = {name: 'listTickets', kind: 'function', does: 'lists every ticket', outputs: 'the tickets', path: 'list.js'};
+  const AMENDED = 'Keep tickets in memory: create them and read them back by id. Each keeps the time it was created.';
+  for (const delay of [0, 5, 10, 15, 30]) {
+    const store = new SlowStore(), {room} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf, store});
+    assert.equal(room.get('status'), 'complete', trail(room));
+    const m = room.roomManager(), [storePiece] = room.liveChildren(m);
+    room.set('status', 'paused');
+    store.slow = true;
+    entryAtBirth(room);
+    const job = {kind: 'extend', key: `list-${delay}`, text: 'List every ticket.', label: 'Ticket list', own: []};
+    room.save(`level_job:${m}`, job);
+    await Promise.all([
+      room.admitLevel(m, {contracts: [LIST], validations: [], pieces: []}, {job}),
+      new Promise(r => setTimeout(r, delay)).then(() => room.amendEntry(storePiece.id, () => ({prompt: AMENDED})))
+    ]);
+    const file = levelOf(room, m), list = room.liveChildren(m).find(c => c.label === 'Ticket list');
+    assert.equal(file.children.find(c => c.id === storePiece.id).prompt, AMENDED, `the amendment (overlap ${delay} ms)`);
+    assert.deepEqual(file.children.find(c => c.id === list?.id)?.delivers, ['listTickets'], `the extension's worker (overlap ${delay} ms)`);
+    assert.deepEqual(file.contracts.map(c => c.name), ['createTicket', 'getTicket', 'report', 'listTickets']);
+    assert.equal(room.designOf(list.id).prompt, 'List every ticket.');
+    assert.equal(room.designOf(storePiece.id).prompt, AMENDED);
+    assert.equal(room.read(`level_job:${m}`, null), null, 'the job is done');
+    rowsListed(room, m);
+  }
+});
+
+test('a level-file commit that fails leaves the level as it was: no validation, no reservation, the manager\'s contracts untouched; the retry admits the same split, ids and validations as a run that never failed', async () => {
+  const clean = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf, store: new CommitStore()});
+  assert.equal(clean.room.get('status'), 'complete', trail(clean.room));
+  class FailFirstLevel extends CommitStore { async write(a) { if (a.path === LEVEL_FILE && !this.failed) { this.failed = true; throw new Error('Artifacts commit timed out'); } return super.write(a); } }
+  const seen = [], r = liveRoom({store: new FailFirstLevel(), leaf: trackerLeaf, clef: usualClef(), room_id: 'levels-test', split: user => {
+    const room = r.room, m = room.roomManager();
+    if (!user.contracts_you_deliver && !user.validations_you_have) seen.push({request: user, validations: room.validationRows().map(v => v.id), interfaces: room.node(m).interfaces,
+      batches: room.db().exec('SELECT COUNT(*) AS n FROM spawn_batches WHERE parent=?', m).toArray()[0].n, reserved: room.read('validations_reserved', {}), level: room.levelIndex(m)});
+    return trackerSplit(user);
+  }});
+  await r.room.start(TRACKER, 80, {pipeline: 'v8'}, 'levels-test');
+  await r.drain();
+  const room = r.room, m = room.roomManager();
+  assert.equal(room.get('status'), 'complete', trail(room));
+  assert.ok(events(room, 'error').some(e => e.actor === m && /Artifacts commit timed out/.test(e.body)));
+  // The splitter's second attempt at the level saw it as it was before the first: nothing of the failed admission is left.
+  assert.equal(seen.length, 2);
+  const state = ({request: _, ...rest}) => rest;
+  assert.deepEqual(state(seen[1]), state(seen[0]));
+  assert.deepEqual(state(seen[1]), {validations: [], interfaces: '[]', batches: 0, reserved: {}, level: null});
+  assert.deepEqual(seen[1].request, seen[0].request, 'the same request: the level is stated again, with no contracts or validations given');
+  // The same tree, the same validations held where they were, the same level files as the run that never failed.
+  assert.deepEqual(tree(room), tree(clean.room));
+  const held = x => x.validationRows().map(v => [v.id, v.level, v.serves, x.allNodes().find(n => x.read(`checks:${n.id}`, []).includes(v.id))?.id]);
+  assert.deepEqual(held(room), held(clean.room));
+  assert.equal(room.validationRows().length, validations.length);
+  for (const x of room.levelManagers()) assert.deepEqual(levelOf(room, x), levelOf(clean.room, x));
+  assert.deepEqual(room.node(m).interfaces, clean.room.node(m).interfaces);
+});
+
+test('a manager is one by its role: one whose level file is committed before its children\'s rows exist (Artifacts refuses its worker\'s repository) keeps the file as its own, out of the bundle and the export\'s pieces; once Artifacts is back, Continue ships the workers\' files and the level files under .recursive/levels/', async () => {
+  class NoWorkerRepo extends CommitStore { async create(name) { if (this.down && /-worker-/.test(name)) throw new Error('Artifacts create unavailable'); return super.create(name); } }
+  const store = new NoWorkerRepo();
+  store.down = true;
+  const r = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf, store, budget: 30});
+  const room = r.room, m = room.roomManager(), pieces = room.children(m).filter(c => c.role === 'manager');
+  assert.equal(pieces.length, 2);
+  for (const p of pieces) {
+    assert.deepEqual([room.manager(p.id), room.children(p.id).length, room.files(p.id).map(f => f.path)], [true, 0, [LEVEL_FILE]], p.label);
+    assert.deepEqual(room.pieceLeaves(p.id), [], 'a manager is no working leaf');
+  }
+  assert.deepEqual(room.pieceLeaves(m), []);
+  assert.deepEqual([...(await room.bundleFiles(m)).files.keys()], [], 'nothing is delivered yet');
+  assert.match((await room.appFiles()).error, /no piece has delivered a file yet/);
+  store.down = false;
+  await again(r, 60);
+  assert.equal(room.get('status'), 'complete', trail(room));
+  const clean = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf});
+  const paths = async x => (await x.appFiles()).files.map(f => f.path).sort();
+  assert.deepEqual(await paths(room), await paths(clean.room));
+  assert.deepEqual((await paths(room)).filter(p => !p.startsWith('.recursive/')), ['report.js', 'store.js']);
+  assert.deepEqual((await paths(room)).filter(p => p.startsWith(`${LEVELS_DIR}/`)), room.levelManagers().map(x => `${LEVELS_DIR}/${x}.json`).sort());
+});
+
+test('a rebuilt worker\'s contracts keep the validations that serve them: its prompt carries the same three examples as the worker it replaces', async () => {
+  const ask = fileBlocks([], {summary: 'needs a database', wait: true, ask: [{need: 'a database server to keep the readings', name: 'readingsDatabase'}]});
+  const split = user => user.validations_you_have ? {contracts: [CONVERT], validations: [], pieces: []} : CLI_LEVEL;
+  const prompts = [];
+  const leaf = (u, n) => { prompts.push(u.prompt); return n === 1 ? ask : deliver({'convert.js': CONVERT_JS}); };
+  const {room} = await levelRoom({prompt: CLI, split, leaf, clef: caught({'^inside$': 0.1})});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  const m = room.roomManager(), [first, rebuilt] = room.allNodes().filter(n => n.role === 'worker');
+  assert.equal(room.node(first.id).status, 'archived');
+  assert.deepEqual(levelOf(room, m).contracts.map(c => [c.name, c.serves]), [['convert', ['V1', 'V2', 'V3']]]);
+  assert.deepEqual(room.designOf(rebuilt.id).contracts.map(c => c.serves), [['V1', 'V2', 'V3']]);
+  const examples = p => p.deliver.map(d => d.examples);
+  assert.equal(examples(prompts[0])[0].length, 3);
+  assert.deepEqual(examples(prompts.at(-1)), examples(prompts[0]));
+  assert.match(examples(prompts.at(-1))[0].join('\n'), /convert 100 C .*212[^]*convert 0 C .*32[^]*convert -40 C .*-40/);
+});
+
+// ------------------------------------------------------------ an admission a restart interrupts
+const FORMAT = {name: 'formatTicket', kind: 'function', does: 'formats a ticket as one line', inputs: [{name: 'ticket', is: 'a ticket {id, title, status}'}], outputs: 'the line #<id> <title> [<status>]', path: 'format.js'};
+const FORMAT_JS = "function formatTicket(t) { return '#' + t.id + ' ' + t.title + ' [' + t.status + ']'; }\nmodule.exports = {formatTicket};\n";
+const FORMAT_LEVEL = {contracts: [FORMAT], pieces: [], validations: [
+  callCheck('f1', ['formatTicket'], [['formatTicket', [{id: 1, title: 'A', status: 'open'}], '#1 A [open]']]),
+  callCheck('f2', ['formatTicket'], [['formatTicket', [{id: 7, title: 'Printer jam', status: 'open'}], '#7 Printer jam [open]']]),
+  callCheck('f3', ['formatTicket'], [['formatTicket', [{id: 2, title: 'Coffee', status: 'closed'}], '#2 Coffee [closed]']])]};
+for (const [where, method, when] of [
+  ['after its level file is committed, before the base-file confirmation and its children\'s rows', 'baseContracts', function (id) { return this.read(`level_job:${id}`, null)?.kind === 'extend'; }],
+  ['after its children\'s rows, before the ask that started it is answered', 'answerAsk', () => true]
+]) test(`an extension for an ask, interrupted by a restart ${where}: the turn after the restart finishes what the admission owes; the asker is answered once, the level is not split again, and the room completes`, async () => {
+  let asked = false;
+  const leaf = user => {
+    if (user.prompt.deliver.some(c => c.name === 'formatTicket')) return deliver({'format.js': FORMAT_JS});
+    if (user.prompt.deliver.some(c => c.name === 'report') && !asked) { asked = true; return fileBlocks([], {summary: 'needs to print a ticket as one line', wait: true, ask: [{need: 'format a ticket as one line', name: 'formatTicket'}]}); }
+    return trackerLeaf(user);
+  };
+  const r = liveRoom({split: user => user.contracts_you_have ? FORMAT_LEVEL : trackerSplit(user), leaf, clef: usualClef(), room_id: 'levels-test'});
+  const gone = crashAt(r.room, method, when);
+  await r.room.start(TRACKER, 80, {pipeline: 'v8', parallel: 1}, 'levels-test');
+  assert.equal(await Promise.race([r.drain().then(() => false), gone]), true, 'the restart came');
+  const s = reopen(r), room = s.room, m = room.roomManager();
+  const rp = room.children(m).find(c => c.label === 'Ticket report'), asker = room.children(rp.id).find(c => c.role === 'worker');
+  assert.equal(room.get('status'), 'paused');
+  assert.ok(events(room, 'recovered').length);
+  assert.ok(room.read(`level_job:${rp.id}`, null)?.admitted, 'what the admission owes is still on its job');
+  await room.resume(80);
+  await s.drain();
+  assert.equal(room.get('status'), 'complete', trail(room));
+  assert.equal(r.calls.split.filter(u => u.contracts_you_have).length, 1, 'the level was split once');
+  const provided = () => room.db().exec("SELECT COUNT(*) AS n FROM messages WHERE recipient=? AND body LIKE '[route:provided]%'", asker.id).toArray()[0].n;
+  assert.equal(provided(), 1, 'the asker is answered once');
+  assert.deepEqual(room.read(`fn_answers:${asker.id}`, []).map(a => a.kind), ['provided']);
+  assert.equal(room.read(`level_job:${rp.id}`, null), null);
+  const file = levelOf(room, rp.id), added = room.liveChildren(rp.id).find(c => c.id !== asker.id);
+  assert.deepEqual(file.children.map(c => [c.id, c.delivers]), [[asker.id, ['report']], [added.id, ['formatTicket']]]);
+  assert.deepEqual(file.children[0].calls, ['createTicket', 'formatTicket']);
+  rowsListed(room, rp.id);
+  // Its steps run again change nothing: no new row, no second answer.
+  const rows = room.allNodes().length;
+  room.save(`level_job:${rp.id}`, {kind: 'extend', admitted: {contracts: file.contracts}, ask: {worker: asker.id, key: 'k', name: 'formatTicket'}});
+  await room.finishLevel(rp.id);
+  assert.equal(room.allNodes().length, rows);
+  assert.equal(provided(), 1);
+  assert.equal(room.read(`level_job:${rp.id}`, null), null);
+});
+
+// ------------------------------------------------------------ rooms made before hex ids
+test('a v8 room made before hex row ids (root, root.1; no depth or sequence): the dashboard opens its rows\' files, and its failure names the deepest failed row', async () => {
+  const {room} = liveRoom({room_id: 'old-room'});
+  room.configure({pipeline: 'v8'});
+  room.set('run_nonce', 'n1');
+  await room.provision('root', null, 'Top', 'the goal', [], [], [], 'manager');
+  await room.provision('root.1', 'root', 'Worker', 'write it', [{name: 'convert', kind: 'command', path: 'convert.js'}], [], [], 'worker');
+  room.db().exec('UPDATE agents SET depth=NULL, seq=NULL');
+  room.set('room_manager', 'root');
+  await room.putFile('root.1', 'convert.js', 'console.log(212)\n');
+  room.set('status', 'paused');
+  assert.equal(room.earlierRoom(), true);
+  assert.equal((await room.fileContent('root.1', 'convert.js')).content, 'console.log(212)\n');
+  assert.deepEqual([room.depthOf('root'), room.depthOf('root.1')], [0, 1], 'counted up the parent column');
+  room.db().exec("UPDATE agents SET status='failed' WHERE id IN ('root','root.1')");
+  room.set('failure_reason:root.1', 'the worker broke');
+  assert.equal(room.failedDescendantReason('root'), 'root.1 (Worker): the worker broke');
+  // A room of this version names its rows by hex ids only.
+  const {room: now} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+  const w = now.allNodes().find(n => n.role === 'worker');
+  assert.equal((await now.fileContent(w.id, 'convert.js')).content, CONVERT_JS);
+  await assert.rejects(now.fileContent('root.1', 'convert.js'), /Invalid agent or file path/);
 });

@@ -3,7 +3,7 @@
 // whose models are scripted by role. The splitter answers levels, workers
 // answer file blocks, and Clef answers every question by its key (p(key,
 // state) → a probability), so a test states only what it decides.
-import {liveRoom, fileBlocks, events, rowId, LEVEL_FILE, LEVELS_DIR} from './room.js';
+import {liveRoom, fileBlocks, events, rowId, LEVEL_FILE, LEVELS_DIR, ControlRoom} from './room.js';
 import {lintText, composedTexts} from './prompt-lint.js';
 import {contractLine} from '../../src/contracts.js';
 import {contractExamples, checkSummary} from '../../src/validations.js';
@@ -33,6 +33,19 @@ export async function again(r, budget = 60, options = {}) {
   const out = await r.room.resume(budget, {}, options);
   await r.drain();
   return out;
+}
+// The Durable Object restarts at the first call of `method` that when() picks: that call never returns
+// (the instance is gone with it). reopen(r) opens the same storage and repositories in a fresh instance.
+export function crashAt(room, method, when = () => true) {
+  const own = room[method];
+  let crashed;
+  const gone = new Promise(res => { crashed = res; });
+  room[method] = function (...a) { if (!when.apply(this, a)) return own.apply(this, a); crashed(true); return new Promise(() => {}); };
+  return gone;
+}
+export function reopen(r) {
+  const pending = [], room = new ControlRoom({storage: r.ctx.storage, waitUntil: p => pending.push(p)}, r.env);
+  return {room, drain: async () => { while (pending.length) await Promise.all(pending.splice(0)); }};
 }
 // Every row of the room by role.
 export const rows = (room, role) => room.allNodes().filter(n => !role || n.role === role);

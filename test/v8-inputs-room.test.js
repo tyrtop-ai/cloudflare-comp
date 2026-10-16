@@ -12,7 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
 import {liveRoom, events, fileBlocks} from './helpers/room.js';
-import {lintRequests} from './helpers/levels.js';
+import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
 import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, rootRefs} from '../src/room-inputs.js';
@@ -383,9 +383,9 @@ test('a worker reads a base file its contract names, quoted in base_files, once 
   const {room} = await readmeOnBase();
   const w = theWorker(room).id;
   // A contract naming a base path gives nothing until the path is granted, and the worker waits for it. Its manager's level file is what places it.
-  const m = room.agentAbove(w), level = room.levelDesign(m);
-  await room.writeLevel(m, {...level, contracts: [...level.contracts, {name: 'widget', kind: 'command', path: 'bin/widget.js', does: 'shouts what it is given', serves: []}],
-    children: level.children.map(c => c.id === w ? {...c, delivers: [...c.delivers, 'widget']} : c)});
+  const m = room.agentAbove(w);
+  await room.updateLevel(m, level => ({...level, contracts: [...level.contracts, {name: 'widget', kind: 'command', path: 'bin/widget.js', does: 'shouts what it is given', serves: []}],
+    children: level.children.map(c => c.id === w ? {...c, delivers: [...c.delivers, 'widget']} : c)}));
   assert.deepEqual(room.baseFilesFor(w), []);
   // Clef's yes is a review; the path waits for the person.
   assert.deepEqual(await room.approveBasePaths(w, ['bin/widget.js']), {yes: [], no: [{path: 'bin/widget.js', p: 0.9, named: false}]});
@@ -504,6 +504,28 @@ test('a base file the prompt names still waits for the person, shown as named; g
   assert.deepEqual(room.snapshot().base_pending, [{path: 'src/shout.js', p: 0.9, named: true}, {path: 'bin/widget.js', p: 0.9, named: false}], 'named, except where the prompt says to leave it alone');
   assert.deepEqual(room.read('base_approved', []), []);
   await room.resume(20, {}, {grants: ['src/shout.js']});
+  assert.deepEqual(room.read('base_approved', []), ['src/shout.js']);
+  assert.deepEqual(room.snapshot().pause.paths, ['bin/widget.js']);
+});
+
+test('a restart after the level file is committed and before the base-file confirmation: the turn after it asks the person all the same, and the worker waits for the grant', async () => {
+  const goal = 'Make the shout in src/shout.js louder, and do not touch bin/widget.js.';
+  const level = {contracts: [SHOUT, {...WIDGET, does: 'the command'}], validations: [...SPLIT_LEVEL.validations.slice(3, 6), has('w1', 'bin/widget.js', 'console'), has('w2', 'bin/widget.js', 'shout'), has('w3', 'bin/widget.js', 'require')], pieces: []};
+  const r = inputsRoom({level, base: () => 0.9, fetch: fakeFetch(repoRoutes()), answers: {'src/shout.js,bin/widget.js': [wrote([['src/shout.js', BASE_FILES['src/shout.js'].replace('!', '!!!')]])]}});
+  const gone = crashAt(r.room, 'baseContracts');
+  await r.room.start(goal, 20, {pipeline: 'v8'}, 'room-m1m2-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
+  assert.equal(await Promise.race([r.drain().then(() => false), gone]), true, 'the restart came');
+  const s = reopen(r), room = s.room;
+  assert.deepEqual(room.read('base_pending', []), [], 'the person was not asked before the restart');
+  await room.resume(20);
+  await s.drain();
+  assert.equal(room.snapshot().pause?.kind, 'base_confirm', trace(room));
+  assert.deepEqual(room.snapshot().base_pending, [{path: 'src/shout.js', p: 0.9, named: true}, {path: 'bin/widget.js', p: 0.9, named: false}]);
+  assert.deepEqual(room.read('base_approved', []), []);
+  assert.equal(room.node(theWorker(room).id).status, 'waiting');
+  assert.equal(room.read(`level_job:${room.roomManager()}`, null), null, 'the admission is finished');
+  await room.resume(20, {}, {grants: ['src/shout.js']});
+  await s.drain();
   assert.deepEqual(room.read('base_approved', []), ['src/shout.js']);
   assert.deepEqual(room.snapshot().pause.paths, ['bin/widget.js']);
 });

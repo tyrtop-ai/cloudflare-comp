@@ -493,6 +493,8 @@ export class ControlRoom extends DurableObject {
     this.turnSteps = new Map();
     // When each queued agent entered the queue (ready), until it is dispatched.
     this.queuedAt = new Map();
+    // v8: each manager's level-file changes, one after another (updateLevel): the tail of its chain.
+    this.levelChains = new Map();
     // v8 M3: the boxes this room has open, and the turns waiting for one (boxSlot).
     this.boxesOpen = 0;
     this.boxWaiters = [];
@@ -888,10 +890,15 @@ export class ControlRoom extends DurableObject {
   node(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE id=?`, id)[0] ?? null; }
   children(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE parent=? ORDER BY seq,id`, id); }
   // A row's depth (the room's manager is 0): a v8 row's depth column, set
-  // from its parent's when it is created; v7 reads it from its dotted id.
+  // from its parent's when it is created, else (a row made before the
+  // column) the hops up its parent column; v7 reads it from its dotted id.
   depthOf(id) {
     if(!this.v8())return String(id).split('.').length-1;
-    return query(this.db(),'SELECT depth FROM agents WHERE id=?',id)[0]?.depth;
+    const depth=query(this.db(),'SELECT depth FROM agents WHERE id=?',id)[0]?.depth;
+    if(depth!==null&&depth!==undefined)return depth;
+    let hops=0;
+    for(let x=this.node(id)?.parent;x&&this.node(x);x=this.node(x).parent)hops++;
+    return hops;
   }
   // Whether row id is row anc or below it, by walking id's parents.
   within(id, anc) {
@@ -907,7 +914,10 @@ export class ControlRoom extends DurableObject {
       .map(f => ({path:f.path,revision:1}));
     return [...direct.filter(f=>!aliases.some(a=>a.path===f.path)),...aliases];
   }
-  manager(id) { return isManager(this.node(id),this.children(id)); }
+  // Whether a row is a manager. v8: its role, fixed when the row is created,
+  // so a manager is one before its level's children exist; v7 reads its
+  // phase and its children.
+  manager(id) { const n=this.node(id);return this.v8()?n?.role==='manager':isManager(n,this.children(id)); }
   failAgent(id, reason) {
     const message=clip(reason,1200);
     this.db().exec("UPDATE agents SET status='failed',summary=? WHERE id=?",message,id);
@@ -966,7 +976,8 @@ export class ControlRoom extends DurableObject {
     return this.grantedBase(id).filter(p=>!written.has(p)).flatMap(p=>query(this.db(),'SELECT path,content FROM base_files WHERE path=?',p)).map(r=>({path:r.path,label:BASE_LABEL,content:r.content}));
   }
   async fileContent(id, path) {
-    if (!(this.v8()?isRowId(id):isId(id)) || !isPath(path)) throw new Error('Invalid agent or file path');
+    // A v8 room made before hex row ids (earlierRoom) keeps its root and dotted ids; the row lookup decides.
+    if (!(this.v8()?isRowId(id)||this.earlierRoom()&&isId(id):isId(id)) || !isPath(path)) throw new Error('Invalid agent or file path');
     const n = this.node(id);
     if (!n) throw new Error('Unknown artifact owner');
     // Authenticated dashboard observers may inspect private notebooks of a
@@ -3924,11 +3935,10 @@ export class ControlRoom extends DurableObject {
   // level is admitted or extended and a row is archived, and a move is logged.
   placeChecks() {
     if(!this.v8())return;
-    // One read of the tree: a row is a manager as isManager reads it (its phase, or a child that is not retired).
-    const nodes=this.allNodes(),kids=new Map(),gone=new Set();
-    for(const n of nodes)if(n.parent)kids.set(n.parent,[...(kids.get(n.parent)||[]),n]);
+    // One read of the tree: a row is a manager by its role.
+    const nodes=this.allNodes(),gone=new Set();
     for(const n of nodes)if(['archived','retired'].includes(n.status))for(const x of this.subtree(n.id))gone.add(x);
-    const rows=nodes.filter(n=>!isRuntimeNode(n)&&!gone.has(n.id)).map(n=>({id:n.id,parent:n.parent,manager:n.role==='manager'||isManager(n,kids.get(n.id)||[]),serves:[...new Set(parse(n.interfaces,[]).flatMap(c=>c.serves||[]))]}));
+    const rows=nodes.filter(n=>!isRuntimeNode(n)&&!gone.has(n.id)).map(n=>({id:n.id,parent:n.parent,manager:n.role==='manager',serves:[...new Set(parse(n.interfaces,[]).flatMap(c=>c.serves||[]))]}));
     const rolled=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'rolled:%'").map(r=>[r.key.slice('rolled:'.length),parse(r.value,[])]));
     const place=placeChecks(this.validationRows(),rows,{rolled}),by=new Map();
     for(const [vid,at] of place)by.set(at,[...(by.get(at)||[]),vid]);
@@ -7833,13 +7843,26 @@ export class ControlRoom extends DurableObject {
   // v8 M3: a builder's turn joins pieces without a model action (the link
   // model only for a relink), so like a manager's it spends no turn of the budget.
   runtimeTurn(n) { return this.v8()&&isRuntimeNode(n); }
+  // Whether a row's turn spends a turn of the run's budget: one whose answer
+  // a generative model writes. v7: every row but a manager. v8: a worker,
+  // and a manager's split step (its splitter answers: before its level is
+  // admitted, or for a job not admitted yet); a manager's routing and the
+  // runtime's rows spend none.
+  spendsTurn(id) {
+    const n=this.node(id);
+    if(!n||this.runtimeTurn(n))return false;
+    if(!this.v8())return !this.manager(id);
+    if(!this.manager(id))return true;
+    const job=this.read(`level_job:${id}`,null);
+    return !this.levelIndex(id)||!!job&&!job.admitted;
+  }
   takeReadyBatch(count, managersOnly=false) {
     const nodes = new Map(this.allNodes().map(n=>[n.id,n]));
     const picked = [], remaining = [];
     for (const id of this.read('queue',[])) {
       if (!nodes.has(id)) continue;
       if (picked.length < count && nodes.get(id).status === 'ready' &&
-          (!managersOnly || this.manager(id) || this.runtimeTurn(nodes.get(id))) &&
+          (!managersOnly || !this.spendsTurn(id)) &&
           !this.activeTurns.has(id) && !picked.includes(id)) picked.push(id);
       else if (!picked.includes(id) && !remaining.includes(id)) remaining.push(id);
     }
@@ -7940,7 +7963,7 @@ export class ControlRoom extends DurableObject {
       // v8: the turns in a row that called no model, by row (FREE_TURNS_PER_ROW).
       const v8=this.v8(),free=new Map();
       let spinning=false,calls=this.generated;
-      while (tally(), active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>(this.manager(id)||this.runtimeTurn(this.node(id)))&&this.node(id)?.status==='ready'))) {
+      while (tally(), active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>!this.spendsTurn(id)&&this.node(id)?.status==='ready'))) {
         while (!stopping() && active.size<this.settings().parallel) {
           tally();
           let [id]=this.takeReadyBatch(1,spent>=cap);
@@ -7953,7 +7976,7 @@ export class ControlRoom extends DurableObject {
           this.set('step',step);
           // Manager routing is local bookkeeping + optional cheap Clef. Do not
           // spend a generative inference turn or block a finished hierarchy.
-          if(!this.manager(id)&&!this.runtimeTurn(this.node(id))){spent++;this.budgetSpent=spent>=cap;}
+          if(this.spendsTurn(id)){spent++;this.budgetSpent=spent>=cap;}
           else if(v8) {
             if(this.generated!==calls){calls=this.generated;free.clear();}
             free.set(id,(free.get(id)||0)+1);
@@ -8526,9 +8549,27 @@ export class ControlRoom extends DurableObject {
     this.save(`level:${id}`,{commit:file.commit_hash,cache:{commit:file.commit_hash,level}});
     return level;
   }
+  // Every change to a manager's level file, one at a time per manager: when
+  // its turn comes, the change reads the level as the file holds it then
+  // (null before the first) and returns the level to commit, or null for no
+  // change. The commit lands, is indexed, and then committed(level) runs in
+  // the same step. Resolves to the level the file holds after it.
+  updateLevel(id, change, committed=null) {
+    const run=(this.levelChains.get(id)||Promise.resolve()).then(async()=>{
+      const cur=this.levelDesign(id),next=await change(cur);
+      if(!next||cur&&JSON.stringify(next)===JSON.stringify(cur))return cur;
+      await this.writeLevel(id,next,committed);
+      return next;
+    });
+    const tail=run.then(()=>{},()=>{});
+    this.levelChains.set(id,tail);
+    tail.then(()=>{if(this.levelChains.get(id)===tail)this.levelChains.delete(id);});
+    return run;
+  }
   // The manager commits its level file (one commit, in its own repository),
   // indexes it as the repository holds it, and keeps the commit and the copy.
-  async writeLevel(id, level) {
+  // Only updateLevel calls it.
+  async writeLevel(id, level, committed=null) {
     const n=this.node(id),db=this.db(),content=JSON.stringify(level,null,2)+'\n';
     const pushed=await this.timed('git','commit',()=>this.store().write({name:n.repo_name,remote:n.remote,actor:id,path:LEVEL_FILE,content}),r=>({files:1,bytes:content.length,batched:false,...(r?.timings?{phases:r.timings}:{})}));
     const revision=(query(db,'SELECT revision FROM artifact_files WHERE agent=? AND path=?',id,LEVEL_FILE)[0]?.revision||0)+1;
@@ -8536,6 +8577,7 @@ export class ControlRoom extends DurableObject {
     db.exec('INSERT INTO artifact_contents(agent,path,content) VALUES (?,?,?) ON CONFLICT(agent,path) DO UPDATE SET content=excluded.content',id,LEVEL_FILE,content);
     this.save(`level:${id}`,{commit:pushed.commit,cache:{commit:pushed.commit,level:JSON.parse(content)}});
     this.event(id,'level_written',`${n.repo_name}/${LEVEL_FILE}: revision ${revision}; commit ${String(pushed.commit).slice(0,12)} (${level.children.length} children, ${level.contracts.length} contracts, ${level.validations.length} validations${level.archived.length?`, ${level.archived.length} archived`:''}).`,'',`${id}/${LEVEL_FILE}`);
+    committed?.(level);
   }
   // A row as its manager's level file describes it: its label, its prompt,
   // the level's contracts it delivers and the names it may call. The room's
@@ -8553,12 +8595,15 @@ export class ControlRoom extends DurableObject {
     return n?{label:n.label,prompt:n.task,contracts:this.promisedOf(id),calls:normalizeUses(parse(n.uses,[]),{v8:this.v8()})}:{label:'',prompt:'',contracts:[],calls:[]};
   }
   // A change to one child's entry in its manager's level file (its prompt,
-  // the names it may call): the manager writes its file again.
-  async amendEntry(id, patch) {
-    const up=this.agentAbove(id),level=up?this.levelDesign(up):null;
-    if(!level?.children.some(c=>c.id===id))return;
-    const next={...level,children:level.children.map(c=>c.id===id?{...c,...patch}:c)};
-    if(JSON.stringify(next)!==JSON.stringify(level))await this.writeLevel(up,next);
+  // the names it may call): change(entry) gives the fields that change, read
+  // from the entry as the file holds it when the manager writes it again.
+  async amendEntry(id, change) {
+    const up=this.agentAbove(id);
+    if(!up||!this.levelIndex(up))return;
+    await this.updateLevel(up,level=>{
+      const entry=level?.children.find(c=>c.id===id);
+      return entry?{...level,children:level.children.map(c=>c===entry?{...c,...change(c)}:c)}:null;
+    });
   }
   // The managers whose level files the room holds, in the order of the tree.
   levelManagers() { return this.allNodes().filter(n=>this.levelIndex(n.id)).map(n=>n.id); }
@@ -8576,7 +8621,19 @@ export class ControlRoom extends DurableObject {
       .map(r=>({id:r.id,level:r.level,serves:parse(r.serves,[]),check:parse(r.spec,{}),...(r.says?{says:r.says}:{}),notes:parse(r.notes,{})}));
   }
   validationsById() { return new Map(this.validationRows().map(v=>[v.id,v])); }
-  nextValidationId() { return `V${Number(query(this.db(),'SELECT COALESCE(MAX(CAST(SUBSTR(id,2) AS INTEGER)),0) AS n FROM validations')[0].n)+1}`; }
+  // The next validation id after every row and every reservation an admission holds until its level file lands (validations_reserved: {manager: [first, last]}).
+  nextValidationId() {
+    const rows=Number(query(this.db(),'SELECT COALESCE(MAX(CAST(SUBSTR(id,2) AS INTEGER)),0) AS n FROM validations')[0].n);
+    return `V${Math.max(rows,...Object.values(this.read('validations_reserved',{})).map(r=>r[1]))+1}`;
+  }
+  // Releases manager id's reservation of validation ids, then reserves count of them; the first one's number.
+  reserveValidations(id, count) {
+    const {[id]:_,...others}=this.read('validations_reserved',{});
+    this.save('validations_reserved',others);
+    const first=Number(this.nextValidationId().slice(1));
+    if(count>0)this.save('validations_reserved',{...others,[id]:[first,first+count-1]});
+    return first;
+  }
   // The validations a row holds (checks:<id>), and those held in its live subtree.
   checksOf(id) { const ids=new Set(this.read(`checks:${id}`,[])); return ids.size?this.validationRows().filter(v=>ids.has(v.id)):[]; }
   subtreeValidations(id) { const ids=new Set(this.liveSubtree(id).flatMap(x=>this.read(`checks:${x}`,[]))); return ids.size?this.validationRows().filter(v=>ids.has(v.id)):[]; }
@@ -8687,17 +8744,23 @@ export class ControlRoom extends DurableObject {
   // its contracts meet: placeChecks), its contracts with the ids of the
   // validations serving each, and its children: the pieces, each a manager,
   // or one worker with the level's contracts. It reserves its children's
-  // spawn (their ids follow from it), commits its level file with them
-  // (writeLevel), then creates their rows. A job's level adds to the file,
-  // which stays as it was otherwise; a job for an ask answers its asker with
-  // the contract it named.
+  // spawn and its validations' ids (their ids follow from them), and commits
+  // its level file with them (updateLevel). Only once the commit lands, in
+  // the same step, are the validations' rows written and its own contracts
+  // refined, and what the admission still owes is recorded on its job
+  // (level_job:<id>.admitted) for finishLevel. A failed commit leaves the
+  // level as it was. A job's level adds to the file, which stays as it was
+  // otherwise; a job for an ask answers its asker with the contract it named.
   async admitLevel(id, level, {why='', scope=null, job=null}={}) {
     const n=this.node(id),given=this.designOf(id),own=job?job.own||[]:given.contracts,prior=this.levelDesign(id);
-    // A reservation its level file never listed (its write did not land) is released: this admission takes its place.
-    const listed=new Set([...(prior?.children||[]),...(prior?.archived||[])].map(c=>c.id));
+    // What its level file does not list never landed: a reservation of children, validations and their ids are released, and this admission takes their place.
+    const listed=new Set([...(prior?.children||[]),...(prior?.archived||[])].map(c=>c.id)),held=new Set((prior?.validations||[]).map(v=>v.id));
     for(const b of this.levelBatches(id))if(!(await this.batchIds(id,b)).some(x=>listed.has(x)))this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',b.batch_key);
+    const unlisted=this.validationRows('level=?',id).filter(v=>!held.has(v.id));
+    for(const v of unlisted)this.db().exec('DELETE FROM validations WHERE id=?',v.id);
+    if(unlisted.length)this.placeChecks();
     // From here to the reservation nothing waits: the validations' ids and the children's sequence are taken together.
-    const first=Number(this.nextValidationId().slice(1)),ids=new Map(level.validations.map((v,i)=>[v.id,`V${first+i}`]));
+    const first=this.reserveValidations(id,level.validations.length),ids=new Map(level.validations.map((v,i)=>[v.id,`V${first+i}`]));
     const contracts=level.contracts.map(c=>({...c,serves:[...new Set([...(c.serves||[]),...level.validations.filter(v=>v.serves.includes(c.name)).map(v=>ids.get(v.id))])]}));
     const pieces=(level.pieces||[]).length>=2?level.pieces:[],stated=!job&&!own.length;
     const mine=name=>contracts.find(c=>c.name===name);
@@ -8709,24 +8772,47 @@ export class ControlRoom extends DurableObject {
     const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(pieceUses(p).length?{uses:pieceUses(p)}:{}),role:'manager',...(p.refs?{refs:p.refs}:handed?.refs.length?{refs:handed.refs}:{}),...(p.packages||handed?.packages.length?{packages:[...new Set([...(p.packages||[]),...(handed?.packages||[])])]}:{})})):[worker]);
     const key=`level:${id}:${this.levelBatches(id).length}`,batch=this.reserveSpawn(id,specs,key);
     // No room for its children (the room's agent or depth limit): nothing is admitted, and Continue tries the level again.
-    if(!batch)return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);
-    for(const v of level.validations)
-      this.db().exec('INSERT INTO validations(id,level,serves,spec,says,notes,created) VALUES (?,?,?,?,?,?,?)',ids.get(v.id),id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',JSON.stringify(v.notes||{}),Date.now());
-    // The manager's own contracts take the level's refined form (by name); a level that stated its own contracts holds them all.
-    if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>mine(c.name)||c)),id);
-    // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, and those archived before.
+    if(!batch){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
+    // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, added to the file as it stands when it is written.
     const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
     const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:clip(s.label,70),prompt:clip(s.task,2000),delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
-    await this.writeLevel(id,{format:LEVELS_FORMAT,manager:id,contracts:[...(prior?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)),...added],children:[...(prior?.children||[]),...specs.map(entry)],
-      validations:[...(prior?.validations||[]),...level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{}),notes:v.notes||{}}))],archived:prior?.archived||[]});
-    this.save(`split_feedback:${id}`,null);this.save(`level_job:${id}`,null);
-    // The first level a room admits says which box its first compile needs.
-    if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
-    if(scope)this.event(id,'scope_ps',`Clef's scope for each piece: ${pieces.map((p,i)=>`"${clip(p.label,60)}" p=${Number(scope[i]).toFixed(3)}`).join(', ')}; each is admitted, a doubt shown.`);
+    const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{}),notes:v.notes||{}}));
+    // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
+    let landed=false;
+    const release=e=>{if(!landed){this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',key);this.reserveValidations(id,0);}throw e;};
+    await this.updateLevel(id,cur=>({format:LEVELS_FORMAT,manager:id,contracts:[...(cur?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)),...added],children:[...(cur?.children||[]),...entries],
+      validations:[...(cur?.validations||[]),...written],archived:cur?.archived||[]}),()=>{
+      landed=true;
+      for(const v of written)
+        this.db().exec('INSERT INTO validations(id,level,serves,spec,says,notes,created) VALUES (?,?,?,?,?,?,?)',v.id,id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',JSON.stringify(v.notes),Date.now());
+      this.reserveValidations(id,0);
+      // The manager's own contracts take the level's refined form (by name); a level that stated its own contracts holds them all.
+      if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>mine(c.name)||c)),id);
+      this.save(`split_feedback:${id}`,null);
+      this.save(`level_job:${id}`,{...(job||{kind:'split'}),admitted:{contracts}});
+      // The first level a room admits says which box its first compile needs.
+      if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
+      if(scope)this.event(id,'scope_ps',`Clef's scope for each piece: ${pieces.map((p,i)=>`"${clip(p.label,60)}" p=${Number(scope[i]).toFixed(3)}`).join(', ')}; each is admitted, a doubt shown.`);
+      this.event(id,pieces.length?'split_admitted':'hand_down',clip(pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`,1200));
+    }).catch(release);
+    await this.finishLevel(id);
+  }
+  // What an admitted level still owes, each step safe to run again, so the
+  // turn after a restart runs what is left: the person's confirmation for
+  // the existing files its contracts change, its children's rows, and the
+  // answer to the ask that started it (once: an asker that no longer waits
+  // for it is not answered again). Its job is cleared, and the manager
+  // waits, when all of it is done.
+  async finishLevel(id) {
+    const job=this.read(`level_job:${id}`,null);
+    if(!job?.admitted)return;
+    const {contracts}=job.admitted;
     await this.baseContracts(id,[{interfaces:contracts}]);
-    this.event(id,pieces.length?'split_admitted':'hand_down',clip(pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`,1200));
     await this.spawnLevel(id);
-    if(job?.ask)await this.answerAsk(job.ask,contracts.find(c=>c.name===job.ask.name)||contracts[0]);
+    if(job.ask&&query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',job.ask.worker,job.ask.key).length)
+      await this.answerAsk(job.ask,contracts.find(c=>c.name===job.ask.name)||contracts[0]);
+    this.save(`level_job:${id}`,null);
+    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
   }
   // The batches a manager's levels reserved (level:<id>:<n>), in order, and the ids a batch's children have.
   levelBatches(id) { return query(this.db(),'SELECT batch_key,parent,start_index,specs FROM spawn_batches WHERE parent=? AND batch_key LIKE ? ORDER BY start_index',id,`level:${id}:%`); }
@@ -8735,10 +8821,12 @@ export class ControlRoom extends DurableObject {
   unspawned(id) { return this.levelBatches(id).some(b=>parse(b.specs,[]).some((_,i)=>!this.spawnedAt(id,b.start_index+i))); }
   // The children of its levels not created yet: spawn replays each batch,
   // with the ids its level file lists; then each validation is held where
-  // its contracts meet among the rows there are.
+  // its contracts meet among the rows there are. The manager stays ready
+  // until its turn has done what it owes (its caller sets it waiting), so a
+  // restart before then runs its turn again.
   async spawnLevel(id) {
     for(const b of this.levelBatches(id))await this.spawn(id,parse(b.specs,[]),b.batch_key);
-    this.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",id);
+    this.db().exec("UPDATE agents SET phase='manager' WHERE id=?",id);
     this.placeChecks();
   }
   // ---------- a turn ----------
@@ -8838,7 +8926,9 @@ export class ControlRoom extends DurableObject {
     const wait=()=>{if(!this.escalatedRow(id))return false;this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return true;};
     if(wait())return;
     if(!this.levelIndex(id))return this.splitStep(id);
-    if(this.unspawned(id))return this.spawnLevel(id);
+    // An admission a restart interrupted: what it still owes.
+    if(job?.admitted)return this.finishLevel(id);
+    if(this.unspawned(id)){await this.spawnLevel(id);return void this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);}
     if(job)return this.splitStep(id,job);
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const inbox=this.receive(id);
@@ -9022,7 +9112,7 @@ export class ControlRoom extends DurableObject {
         const uses=normalizeUses(parse(this.node(x)?.uses,[]),{v8:true});
         if(uses.includes(c.name))continue;
         this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...uses,c.name]),x);
-        await this.amendEntry(x,{calls:[...new Set([...this.designOf(x).calls,c.name])]});
+        await this.amendEntry(x,e=>({calls:[...new Set([...e.calls,c.name])]}));
       }
     }
     const value=text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)});
@@ -9046,8 +9136,10 @@ export class ControlRoom extends DurableObject {
     }
     this.save('queue',this.read('queue',[]).filter(q=>!this.subtree(id).includes(q)));
     this.event(id,'archived',clip(`"${n.label}" is archived with its subtree: ${why}. Its files stay as they are; its manager rebuilds what it delivered.`,700),n.parent||'');
-    const level=n.parent?this.levelDesign(n.parent):null,entry=level?.children.find(c=>c.id===id);
-    if(entry)await this.writeLevel(n.parent,{...level,children:level.children.filter(c=>c!==entry),archived:[...level.archived,{...entry,why:clip(why,600)}]});
+    if(n.parent&&this.levelIndex(n.parent))await this.updateLevel(n.parent,level=>{
+      const entry=level?.children.find(c=>c.id===id);
+      return entry?{...level,children:level.children.filter(c=>c!==entry),archived:[...level.archived,{...entry,why:clip(why,600)}]}:null;
+    });
     this.placeChecks();
     if(n.parent)this.wake(n.parent);
   }
@@ -9087,7 +9179,7 @@ export class ControlRoom extends DurableObject {
   async routeChange(m, text, flags={}) {
     const n=this.node(m);
     // Before its level: the change joins its assignment, on its row and in its entry of its manager's level file.
-    if(!this.levelIndex(m)){const task=clip(`${n.task}\n\n${text}`,8000);this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,{prompt:task});this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
+    if(!this.levelIndex(m)){const task=clip(`${n.task}\n\n${text}`,8000);this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,()=>({prompt:this.node(m).task}));this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
     const kids=this.liveChildren(m);
     const r=await this.askClef(m,'which children the change concerns',()=>routeAmong(this.inferenceEnv(),{key:'change',text,children:kids.map(c=>({task:c.task,contracts:this.promisedOf(c.id)}))}));
     if(r.error)return void this.clefBlocked(m,'which of its children the change concerns',r.error,{kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags});
