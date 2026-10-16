@@ -146,11 +146,27 @@ export async function shouldSplit(env, task, mockContext, contracts = []) {
 // it tests what a user meets rather than an internal detail (CLEF.internal).
 // Clef annotates: nothing here removes a piece or a validation. The state is
 // the assignment, the level's contracts (one line each), the pieces with the
-// names of the contracts each delivers, and the validations, each with the
-// contracts it serves and its check in a few words. {valid, size, scope: [p
-// per piece], notes: [{exercises, implementable, internal?} per validation]}.
+// names of the contracts each delivers and the paths it places, the facts of
+// the division the reader found (division: contracts no piece delivers or
+// several do, paths several pieces place, contracts the level already has
+// that the answer lists again or places again; src/validations.js
+// divisionOf), and the validations, each with the contracts it serves and
+// its check in a few words. Whether the division is sound with those facts is
+// Clef's to judge (split_valid): the runtime rejects none of them. {valid,
+// size, scope: [p per piece], notes: [{exercises, implementable, internal?}
+// per validation]}.
 export const REVIEW_QUESTIONS = 96;
-export async function reviewLevel(env, {assignment, contracts = [], pieces = [], validations = [], attempt = 1, retry = ''}) {
+// The division's facts, as Clef's state holds them: only those there are.
+const divisionFacts = d => {
+  const out = {};
+  if (d.undelivered?.length) out.delivered_by_no_piece = d.undelivered.slice(0, 24);
+  if (d.delivered_by_several?.length) out.delivered_by_several_pieces = d.delivered_by_several.slice(0, 24);
+  if (d.placed_by_several?.length) out.files_placed_by_several_pieces = d.placed_by_several.slice(0, 24);
+  if (d.already_delivered?.length) out.listed_again_from_what_the_level_has = d.already_delivered.slice(0, 24);
+  if (d.placed_already?.length) out.files_the_level_already_has = d.placed_already.slice(0, 24);
+  return Object.keys(out).length ? {division: out} : {};
+};
+export async function reviewLevel(env, {assignment, contracts = [], pieces = [], validations = [], division = null, attempt = 1, retry = ''}) {
   const split = pieces.length >= 2;
   if (env.MOCK_AI === 'true') return {valid:1, size:1, scope:pieces.map(() => 1), notes:validations.map(() => ({exercises:1, implementable:1}))};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
@@ -158,7 +174,8 @@ export async function reviewLevel(env, {assignment, contracts = [], pieces = [],
   if (!clef) throw new Error('Unsupported Clef split review model');
   const lines=new Map(contracts.map(c=>[c.name,contractLine(c)]));
   const state={assignment:String(assignment||'').slice(0,2600),contracts:contracts.map(c=>lines.get(c.name)).filter(Boolean).slice(0,24),
-    ...(split?{pieces:pieces.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),task:String(c.task).slice(0,900),contracts:c.contracts||[]}))}:{}),
+    ...(split?{pieces:pieces.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),task:String(c.task).slice(0,900),contracts:c.contracts||[],...(division?.places?.[i]?{places:division.places[i]}:{})}))}:{}),
+    ...(split&&division?divisionFacts(division):{}),
     validations:validations.map((v,j)=>({slot:j,serves:(v.serves||[]).map(n=>lines.get(n)||n),check:checkSummary(v.check),...(v.says?{says:String(v.says).slice(0,200)}:{})}))};
   const keys=[...(split?[['split_valid',CLEF.split_valid],['split_size',CLEF.split_size],...pieces.map((_,i)=>[`within_${i}`,clefText('scope',{i})])]:[]),
     ...validations.flatMap((v,j)=>[[`exercises_${j}`,clefText('exercises',{i:j})],[`implementable_${j}`,clefText('implementable',{i:j})],...(internalCandidate(v.check)?[[`internal_${j}`,clefText('internal',{i:j})]]:[])])];

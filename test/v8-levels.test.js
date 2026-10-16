@@ -125,13 +125,15 @@ test('a worker\'s request is exactly its prompt, its files, its complaints and i
   assert.deepEqual(view.complaints, []);
 });
 
-test('a contract with fewer than three distinct examples is the splitter\'s defect: its next attempt hears why, and the level is admitted once it gives three', async () => {
+test('a contract with fewer than three distinct examples is the splitter\'s defect: its next attempt reads its previous answer and only what that answer still needs, and the level is admitted once it gives three', async () => {
   const short = {...CLI_LEVEL, validations: [convertCheck('a', '100 C', '212'), convertCheck('b', '100 C', '212')]};
   const {room, calls} = await levelRoom({prompt: CLI, split: (_u, n) => n === 1 ? short : CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
   assert.equal(room.get('status'), 'complete', trail(room));
   assert.equal(calls.split.length, 2);
   assert.ok(!calls.split[0].previous_answer_problems);
-  assert.match(calls.split[1].previous_answer_problems.join(' '), /Contract convert has 1 different example: give it validations that exercise convert itself \(a command check that runs convert or convert\.js\) and show 3 different examples/);
+  assert.deepEqual(calls.split[1].previous_answer_problems, ['Your previous answer, in previous_answer, still needs these changes: Contract convert has 1 different example: give it validations that show 3 different examples of convert itself (command checks that run convert or convert.js, each one example). Keep the rest of it as it is, and answer with the whole corrected json object.']);
+  assert.deepEqual(calls.split[1].previous_answer, short, 'the retry corrects its own answer, so what held is kept');
+  assert.deepEqual(JSON.parse(room.db().exec("SELECT output FROM splitters ORDER BY spawned_at LIMIT 1").toArray()[0].output).answer, short, 'the splitter row keeps the answer as it was given');
   assert.deepEqual(room.splitterRows().map(r => r.outcome), ['defects', 'read']);
   assert.equal(room.validationRows().length, 3, 'only the admitted attempt\'s validations are rows');
 });

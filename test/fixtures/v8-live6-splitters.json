@@ -1,0 +1,2774 @@
+{
+ "note": "v8 live 6 evidence: each splitter step of three live runs that stopped at split_failed. \"output\" is what the room recorded, which is the level as the old reader read it (not the raw answer: what that reader dropped is absent); \"defects\" are the old reader's.",
+ "exports": {
+  "todo": {
+   "file": "72256cde-recursive-control-plane-c96b7b9a.json",
+   "goal": "A static web page with a to-do list.",
+   "max_children": 7,
+   "attempts": [
+    {
+     "attempt": 1,
+     "splitter": "splitter-941a81c116ba1f49",
+     "output": {
+      "contracts": [
+       {
+        "name": "index.html",
+        "kind": "page",
+        "does": "Serves a static to-do list web page",
+        "params": [
+         "task"
+        ],
+        "outputs": "HTML with form, task list, and styling",
+        "inputs": [
+         {
+          "name": "task",
+          "is": "text to add to the list"
+         }
+        ],
+        "effects": "None",
+        "path": "index.html",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "styles.css",
+        "kind": "file",
+        "does": "Styles the to-do list interface",
+        "params": [
+         "theme"
+        ],
+        "outputs": "Stylized HTML with task input, list, and buttons",
+        "inputs": [
+         {
+          "name": "theme",
+          "is": "color scheme or layout preferences"
+         }
+        ],
+        "effects": "None",
+        "path": "styles.css"
+       },
+       {
+        "name": "script.js",
+        "kind": "file",
+        "does": "Adds interactivity to the to-do list",
+        "params": [
+         "task",
+         "completion"
+        ],
+        "outputs": "Dynamic task management (add, complete, delete)",
+        "inputs": [
+         {
+          "name": "task",
+          "is": "text to add"
+         },
+         {
+          "name": "completion",
+          "is": "boolean for task completion"
+         }
+        ],
+        "effects": "None",
+        "path": "script.js"
+       },
+       {
+        "name": "README.md",
+        "kind": "doc",
+        "does": "Explains the to-do list project",
+        "params": [
+         "setup"
+        ],
+        "outputs": "Documentation for usage and contribution",
+        "inputs": [
+         {
+          "name": "setup",
+          "is": "instructions for developers"
+         }
+        ],
+        "effects": "None",
+        "path": "README.md"
+       }
+      ],
+      "validations": [
+       {
+        "id": "html_structure",
+        "serves": [
+         "index.html"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "index.html",
+         "has": [
+          "<form>",
+          "<input type='text'>",
+          "<ul>"
+         ]
+        }
+       },
+       {
+        "id": "css_styling",
+        "serves": [
+         "styles.css"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "styles.css",
+         "has": [
+          ".task-list",
+          "input[type='text']",
+          "button"
+         ]
+        }
+       },
+       {
+        "id": "js_functionality",
+        "serves": [
+         "script.js"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "script.js",
+         "has": [
+          "document.querySelector",
+          "addEventListener",
+          "localStorage"
+         ]
+        }
+       },
+       {
+        "id": "browser_interactivity",
+        "serves": [
+         "index.html"
+        ],
+        "check": {
+         "kind": "browser",
+         "serve": "index.html",
+         "steps": [
+          {
+           "fill": {
+            "label": "New task",
+            "text": "Test task"
+           }
+          },
+          {
+           "click": {
+            "role": "button",
+            "name": "Add"
+           }
+          },
+          {
+           "expect_text": "Test task"
+          }
+         ]
+        }
+       },
+       {
+        "id": "readme_content",
+        "serves": [
+         "README.md"
+        ],
+        "check": {
+         "kind": "judge",
+         "path": "README.md",
+         "question": "Does the README explain how to add tasks and persist them?"
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "HTML Structure",
+        "task": "Create the basic HTML layout for the to-do list with form and task list elements",
+        "contracts": [
+         "index.html"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Styling",
+        "task": "Design and implement CSS for the to-do list interface",
+        "contracts": [
+         "styles.css"
+        ],
+        "uses": [
+         "index.html"
+        ],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Interactivity",
+        "task": "Implement JavaScript functionality for task management",
+        "contracts": [
+         "script.js"
+        ],
+        "uses": [
+         "index.html"
+        ],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Documentation",
+        "task": "Write README.md explaining the project setup and usage",
+        "contracts": [
+         "README.md"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       }
+      ]
+     },
+     "defects": [
+      "Contract styles.css: its run says neither {\"static\": true} nor a command.",
+      "Contract script.js: its run says neither {\"static\": true} nor a command.",
+      "Contract README.md: its run says neither {\"static\": true} nor a command.",
+      "Contract index.html has 2 different examples: give it validations that exercise index.html itself (a browser check that serves or opens index.html) and show 3 different examples (different inputs or steps).",
+      "Contract styles.css has 1 different example: give it validations that exercise styles.css itself (a file or judge check of styles.css) and show 3 different examples (different inputs or steps).",
+      "Contract script.js has 1 different example: give it validations that exercise script.js itself (a file or judge check of script.js) and show 3 different examples (different inputs or steps).",
+      "Contract README.md has 1 different example: give it validations that exercise README.md itself (a file or judge check of README.md) and show 3 different examples (different inputs or steps)."
+     ]
+    },
+    {
+     "attempt": 2,
+     "splitter": "splitter-c69306f5bd9eb2bf",
+     "output": {
+      "contracts": [
+       {
+        "name": "index.html",
+        "kind": "page",
+        "does": "Serves the to-do list web page",
+        "params": [
+         "user"
+        ],
+        "outputs": "HTML content with to-do list UI",
+        "inputs": [
+         {
+          "name": "user",
+          "is": "a user interacting with the page"
+         }
+        ],
+        "effects": "none",
+        "path": "index.html",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "styles.css",
+        "kind": "file",
+        "does": "Provides styling for the to-do list",
+        "params": [
+         "style"
+        ],
+        "outputs": "Stylized HTML elements",
+        "inputs": [
+         {
+          "name": "style",
+          "is": "CSS rules"
+         }
+        ],
+        "effects": "none",
+        "path": "styles.css",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "script.js",
+        "kind": "file",
+        "does": "Adds interactivity to the to-do list",
+        "params": [
+         "interaction"
+        ],
+        "outputs": "Dynamic updates to the DOM",
+        "inputs": [
+         {
+          "name": "interaction",
+          "is": "user actions like adding tasks"
+         }
+        ],
+        "effects": "none",
+        "path": "script.js",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "README.md",
+        "kind": "doc",
+        "does": "Explains the project setup and features",
+        "params": [
+         "reader"
+        ],
+        "outputs": "Understanding of the project structure",
+        "inputs": [
+         {
+          "name": "reader",
+          "is": "a developer reading the document"
+         }
+        ],
+        "effects": "none",
+        "path": "README.md",
+        "run": {
+         "static": true
+        }
+       }
+      ],
+      "validations": [
+       {
+        "id": "index_html_load",
+        "serves": [
+         "index.html"
+        ],
+        "check": {
+         "kind": "browser",
+         "serve": "index.html",
+         "steps": [
+          {
+           "goto": "/index.html"
+          },
+          {
+           "expect_text": "To-Do List"
+          }
+         ]
+        }
+       },
+       {
+        "id": "index_add_task",
+        "serves": [
+         "index.html"
+        ],
+        "check": {
+         "kind": "browser",
+         "serve": "index.html",
+         "steps": [
+          {
+           "fill": {
+            "label": "New Task",
+            "text": "Buy groceries"
+           }
+          },
+          {
+           "click": {
+            "role": "button",
+            "name": "Add"
+           }
+          },
+          {
+           "expect_text": "Buy groceries"
+          }
+         ]
+        }
+       },
+       {
+        "id": "index_complete_task",
+        "serves": [
+         "index.html"
+        ],
+        "check": {
+         "kind": "browser",
+         "serve": "index.html",
+         "steps": [
+          {
+           "fill": {
+            "label": "New Task",
+            "text": "Walk the dog"
+           }
+          },
+          {
+           "click": {
+            "role": "button",
+            "name": "Add"
+           }
+          },
+          {
+           "click": {
+            "role": "checkbox",
+            "name": "Walk the dog"
+           }
+          },
+          {
+           "expect_text": "Strikethrough applied"
+          }
+         ]
+        }
+       },
+       {
+        "id": "styles_css_check",
+        "serves": [
+         "styles.css"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "styles.css",
+         "has": [
+          ".todo-item { color: blue; }",
+          "body { font-family: sans-serif; }"
+         ]
+        }
+       },
+       {
+        "id": "script_js_function",
+        "serves": [
+         "script.js"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "script.js",
+         "has": [
+          "function addTask()",
+          "document.getElementById('taskInput')"
+         ]
+        }
+       },
+       {
+        "id": "readme_content",
+        "serves": [
+         "README.md"
+        ],
+        "check": {
+         "kind": "judge",
+         "path": "README.md",
+         "question": "Does this document explain how to add a task to the to-do list?"
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "HTML Page",
+        "task": "Create the static HTML structure for the to-do list",
+        "contracts": [
+         "index.html"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Styling",
+        "task": "Design and implement CSS for the to-do list interface",
+        "contracts": [
+         "styles.css"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Interactivity",
+        "task": "Add JavaScript functionality for task management",
+        "contracts": [
+         "script.js"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Documentation",
+        "task": "Write the README.md file explaining the project",
+        "contracts": [
+         "README.md"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       }
+      ]
+     },
+     "defects": [
+      "Contract styles.css has 1 different example: give it validations that exercise styles.css itself (a file or judge check of styles.css) and show 3 different examples (different inputs or steps).",
+      "Contract script.js has 1 different example: give it validations that exercise script.js itself (a file or judge check of script.js) and show 3 different examples (different inputs or steps).",
+      "Contract README.md has 1 different example: give it validations that exercise README.md itself (a file or judge check of README.md) and show 3 different examples (different inputs or steps)."
+     ]
+    },
+    {
+     "attempt": 3,
+     "splitter": "splitter-c416efdd26a38d71",
+     "output": {
+      "contracts": [
+       {
+        "name": "index.html",
+        "kind": "file",
+        "does": "Serves the to-do list web page",
+        "params": [
+         "user_input",
+         "task_index",
+         "action"
+        ],
+        "outputs": "HTML content with updated to-do list",
+        "inputs": [
+         {
+          "name": "user_input",
+          "is": "text to add as a task"
+         },
+         {
+          "name": "task_index",
+          "is": "index of task to modify"
+         },
+         {
+          "name": "action",
+          "is": "action to perform (mark, delete)"
+         }
+        ],
+        "effects": "Updates task list in the DOM",
+        "path": "index.html",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "styles.css",
+        "kind": "file",
+        "does": "Styles the to-do list interface",
+        "params": [
+         "theme",
+         "font_size"
+        ],
+        "outputs": "Stylized HTML elements",
+        "inputs": [
+         {
+          "name": "theme",
+          "is": "color scheme (light/dark)"
+         },
+         {
+          "name": "font_size",
+          "is": "text size in pixels"
+         }
+        ],
+        "effects": "Changes visual appearance of tasks",
+        "path": "styles.css",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "script.js",
+        "kind": "file",
+        "does": "Adds interactivity to the to-do list",
+        "params": [
+         "tasks",
+         "action",
+         "index"
+        ],
+        "outputs": "Updated task list state",
+        "inputs": [
+         {
+          "name": "tasks",
+          "is": "array of task objects"
+         },
+         {
+          "name": "action",
+          "is": "operation to perform (add, toggle, delete)"
+         },
+         {
+          "name": "index",
+          "is": "position in tasks array"
+         }
+        ],
+        "effects": "Modifies task data and DOM",
+        "path": "script.js",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "README.md",
+        "kind": "file",
+        "does": "Documents the project setup and usage",
+        "params": [
+         "features",
+         "dependencies"
+        ],
+        "outputs": "Project documentation content",
+        "inputs": [
+         {
+          "name": "features",
+          "is": "list of application features"
+         },
+         {
+          "name": "dependencies",
+          "is": "required software packages"
+         }
+        ],
+        "effects": "Updates project description",
+        "path": "README.md",
+        "run": {
+         "static": true
+        }
+       }
+      ],
+      "validations": [
+       {
+        "id": "styles.css.1",
+        "serves": [
+         "styles.css"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "styles.css",
+         "has": [
+          ".todo-list {",
+          "background-color: #f0f0f0;"
+         ]
+        }
+       },
+       {
+        "id": "styles.css.2",
+        "serves": [
+         "styles.css"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "styles.css",
+         "has": [
+          ".task-item {",
+          "font-size: 16px;"
+         ]
+        }
+       },
+       {
+        "id": "styles.css.3",
+        "serves": [
+         "styles.css"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "styles.css",
+         "has": [
+          ".completed {",
+          "text-decoration: line-through;"
+         ]
+        }
+       },
+       {
+        "id": "README.md.1",
+        "serves": [
+         "README.md"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "README.md",
+         "has": [
+          "# To-Do List App"
+         ]
+        }
+       },
+       {
+        "id": "README.md.2",
+        "serves": [
+         "README.md"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "README.md",
+         "has": [
+          "## Features"
+         ]
+        }
+       },
+       {
+        "id": "README.md.3",
+        "serves": [
+         "README.md"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "README.md",
+         "has": [
+          "## Dependencies"
+         ]
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "HTML Structure",
+        "task": "Create the basic HTML framework for the to-do list application",
+        "contracts": [
+         "index.html"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Styling",
+        "task": "Implement visual design elements for the to-do list interface",
+        "contracts": [
+         "styles.css"
+        ],
+        "uses": [
+         "index.html"
+        ],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Functionality",
+        "task": "Add interactive features to manage tasks dynamically",
+        "contracts": [
+         "script.js"
+        ],
+        "uses": [
+         "index.html",
+         "styles.css"
+        ],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Documentation",
+        "task": "Create project documentation with setup instructions and features",
+        "contracts": [
+         "README.md"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       }
+      ]
+     },
+     "defects": [
+      "script.js.1: its call check calls \"addTask\", which is not a function contract of this level.",
+      "script.js.2: its call check calls \"toggleTask\", which is not a function contract of this level.",
+      "script.js.3: its call check calls \"deleteTask\", which is not a function contract of this level.",
+      "Contract index.html has 0 different examples: give it validations that exercise index.html itself (a file or judge check of index.html) and show 3 different examples (different inputs or steps).",
+      "Contract script.js has 0 different examples: give it validations that exercise script.js itself (a file or judge check of script.js) and show 3 different examples (different inputs or steps)."
+     ]
+    }
+   ]
+  },
+  "tracker": {
+   "file": "0aca60c2-recursive-control-plane-7b6cb022.json",
+   "goal": "Build a small issue tracker that lets someone create, view, update, and delete tickets.",
+   "max_children": 7,
+   "attempts": [
+    {
+     "attempt": 1,
+     "splitter": "splitter-ba038e0ff24f1771",
+     "output": {
+      "contracts": [
+       {
+        "name": "create_ticket",
+        "does": "Creates a new ticket with the given details",
+        "params": [
+         "title",
+         "description",
+         "priority",
+         "status"
+        ],
+        "returns": "the created ticket object",
+        "inputs": [
+         {
+          "name": "title",
+          "is": "string"
+         },
+         {
+          "name": "description",
+          "is": "string"
+         },
+         {
+          "name": "priority",
+          "is": "string"
+         },
+         {
+          "name": "status",
+          "is": "string"
+         }
+        ],
+        "effects": "Adds a new ticket to the database",
+        "path": "src/ticket.js"
+       },
+       {
+        "name": "view_tickets",
+        "does": "Retrieves all tickets from the database",
+        "params": [],
+        "returns": "a list of all tickets",
+        "effects": "None",
+        "path": "src/ticket.js"
+       },
+       {
+        "name": "update_ticket",
+        "does": "Updates an existing ticket with the given ID",
+        "params": [
+         "id",
+         "title",
+         "description",
+         "priority",
+         "status"
+        ],
+        "returns": "the updated ticket object",
+        "inputs": [
+         {
+          "name": "id",
+          "is": "string"
+         },
+         {
+          "name": "title",
+          "is": "string"
+         },
+         {
+          "name": "description",
+          "is": "string"
+         },
+         {
+          "name": "priority",
+          "is": "string"
+         },
+         {
+          "name": "status",
+          "is": "string"
+         }
+        ],
+        "effects": "Modifies the ticket in the database",
+        "path": "src/ticket.js"
+       },
+       {
+        "name": "delete_ticket",
+        "does": "Deletes a ticket with the given ID",
+        "params": [
+         "id"
+        ],
+        "returns": "a confirmation message",
+        "inputs": [
+         {
+          "name": "id",
+          "is": "string"
+         }
+        ],
+        "effects": "Removes the ticket from the database",
+        "path": "src/ticket.js"
+       },
+       {
+        "name": "public/index.html",
+        "kind": "page",
+        "does": "The main page of the issue tracker",
+        "params": [],
+        "outputs": "Displays the issue tracker interface",
+        "effects": "None",
+        "path": "public/index.html",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "public/tickets.js",
+        "kind": "file",
+        "does": "Handles the client-side logic for the issue tracker",
+        "params": [],
+        "outputs": "JavaScript code for the issue tracker",
+        "effects": "None",
+        "path": "public/tickets.js",
+        "run": {
+         "static": true
+        }
+       }
+      ],
+      "validations": [
+       {
+        "id": "create_ticket_validation",
+        "serves": [
+         "create_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Ticket",
+            "This is a test ticket.",
+            "High",
+            "Open"
+           ],
+           "expect": {
+            "title": "Test Ticket",
+            "description": "This is a test ticket.",
+            "priority": "High",
+            "status": "Open"
+           }
+          },
+          {
+           "call": "create_ticket",
+           "args": [
+            "",
+            "This is a test ticket.",
+            "High",
+            "Open"
+           ],
+           "throws": true
+          },
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Ticket",
+            "This is a test ticket.",
+            "Invalid",
+            "Open"
+           ],
+           "throws": true
+          }
+         ]
+        }
+       },
+       {
+        "id": "view_tickets_validation",
+        "serves": [
+         "view_tickets"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "view_tickets",
+           "args": [],
+           "expect": "[]"
+          },
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Ticket",
+            "This is a test ticket.",
+            "High",
+            "Open"
+           ],
+           "expect": {
+            "title": "Test Ticket",
+            "description": "This is a test ticket.",
+            "priority": "High",
+            "status": "Open"
+           }
+          },
+          {
+           "call": "view_tickets",
+           "args": [],
+           "expect": "[{title: 'Test Ticket', description: 'This is a test ticket.', priority: 'High', status: 'Open'}]"
+          }
+         ]
+        }
+       },
+       {
+        "id": "update_ticket_validation",
+        "serves": [
+         "update_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Ticket",
+            "This is a test ticket.",
+            "High",
+            "Open"
+           ],
+           "expect": {
+            "title": "Test Ticket",
+            "description": "This is a test ticket.",
+            "priority": "High",
+            "status": "Open"
+           }
+          },
+          {
+           "call": "update_ticket",
+           "args": [
+            "1",
+            "Updated Ticket",
+            "Updated description.",
+            "Medium",
+            "In Progress"
+           ],
+           "expect": {
+            "title": "Updated Ticket",
+            "description": "Updated description.",
+            "priority": "Medium",
+            "status": "In Progress"
+           }
+          },
+          {
+           "call": "view_tickets",
+           "args": [],
+           "expect": "[{title: 'Updated Ticket', description: 'Updated description.', priority: 'Medium', status: 'In Progress'}]"
+          }
+         ]
+        }
+       },
+       {
+        "id": "delete_ticket_validation",
+        "serves": [
+         "delete_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Ticket",
+            "This is a test ticket.",
+            "High",
+            "Open"
+           ],
+           "expect": {
+            "title": "Test Ticket",
+            "description": "This is a test ticket.",
+            "priority": "High",
+            "status": "Open"
+           }
+          },
+          {
+           "call": "delete_ticket",
+           "args": [
+            "1"
+           ],
+           "expect": "Ticket deleted successfully."
+          },
+          {
+           "call": "view_tickets",
+           "args": [],
+           "expect": "[]"
+          }
+         ]
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "Ticket Creation Function",
+        "task": "Implement the function to create a new ticket with the given details.",
+        "contracts": [
+         "create_ticket"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Ticket Viewing Function",
+        "task": "Implement the function to retrieve all tickets from the database.",
+        "contracts": [
+         "view_tickets"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Ticket Update Function",
+        "task": "Implement the function to update an existing ticket with the given ID.",
+        "contracts": [
+         "update_ticket"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Ticket Deletion Function",
+        "task": "Implement the function to delete a ticket with the given ID.",
+        "contracts": [
+         "delete_ticket"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Main Page",
+        "task": "Create the main page of the issue tracker that displays the interface.",
+        "contracts": [],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Client-Side Logic",
+        "task": "Write the JavaScript code for the client-side logic of the issue tracker.",
+        "contracts": [],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "API Endpoint",
+        "task": "Set up the API endpoint for managing tickets.",
+        "contracts": [],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       }
+      ]
+     },
+     "defects": [
+      "Contract api/tickets: \"api/tickets\" is not a route; name it as a method and a path, such as \"GET /path\".",
+      "Contract create_ticket: its run starts \"function\", which is neither a command contract of this level nor a program the box has.",
+      "Contract view_tickets: its run starts \"function\", which is neither a command contract of this level nor a program the box has.",
+      "Contract update_ticket: its run starts \"function\", which is neither a command contract of this level nor a program the box has.",
+      "Contract delete_ticket: its run starts \"function\", which is neither a command contract of this level nor a program the box has.",
+      "index_page_validation serves index.html: serves names the contracts of this level it validates (create_ticket, view_tickets, update_ticket, delete_ticket, public/index.html, public/tickets.js).",
+      "api_tickets_route_valida serves api/tickets: serves names the contracts of this level it validates (create_ticket, view_tickets, update_ticket, delete_ticket, public/index.html, public/tickets.js).",
+      "Contract create_ticket has 1 different example: give it validations that exercise create_ticket itself (a call check that calls create_ticket) and show 3 different examples (different inputs or steps).",
+      "Contract view_tickets has 1 different example: give it validations that exercise view_tickets itself (a call check that calls view_tickets) and show 3 different examples (different inputs or steps).",
+      "Contract update_ticket has 1 different example: give it validations that exercise update_ticket itself (a call check that calls update_ticket) and show 3 different examples (different inputs or steps).",
+      "Contract delete_ticket has 1 different example: give it validations that exercise delete_ticket itself (a call check that calls delete_ticket) and show 3 different examples (different inputs or steps).",
+      "Contract public/index.html has 0 different examples: give it validations that exercise public/index.html itself (a browser check that serves or opens public/index.html) and show 3 different examples (different inputs or steps).",
+      "Contract public/tickets.js has 0 different examples: give it validations that exercise public/tickets.js itself (a file or judge check of public/tickets.js) and show 3 different examples (different inputs or steps).",
+      "Piece \"Main Page\" delivers index.html, which is not in contracts.",
+      "Piece \"Client-Side Logic\" delivers tickets.js, which is not in contracts.",
+      "Piece \"API Endpoint\" delivers api/tickets, which is not in contracts.",
+      "Contract public/index.html is delivered by no piece: give it to exactly one piece.",
+      "Contract public/tickets.js is delivered by no piece: give it to exactly one piece.",
+      "Two pieces place src/ticket.js (\"Ticket Creation Function\" and \"Ticket Viewing Function\" and \"Ticket Update Function\" and \"Ticket Deletion Function\"): a file has one owner, so give the contracts of each piece paths of their own, or give the contracts at src/ticket.js to one piece."
+     ]
+    },
+    {
+     "attempt": 2,
+     "splitter": "splitter-93991a0c4c14f2cf",
+     "output": {
+      "contracts": [
+       {
+        "name": "create_ticket",
+        "does": "Create a new ticket with a title, description, and status",
+        "params": [
+         "title",
+         "description",
+         "status"
+        ],
+        "returns": "the created ticket object",
+        "inputs": [
+         {
+          "name": "title",
+          "is": "string"
+         },
+         {
+          "name": "description",
+          "is": "string"
+         },
+         {
+          "name": "status",
+          "is": "string"
+         }
+        ],
+        "effects": "Adds a new ticket to the database",
+        "path": "src/tickets.js"
+       },
+       {
+        "name": "view_tickets",
+        "does": "Retrieve all tickets from the database",
+        "params": [],
+        "returns": "an array of all tickets",
+        "effects": "None",
+        "path": "src/tickets.js"
+       },
+       {
+        "name": "update_ticket",
+        "does": "Update a ticket's title, description, or status by ID",
+        "params": [
+         "id",
+         "title",
+         "description",
+         "status"
+        ],
+        "returns": "the updated ticket object",
+        "inputs": [
+         {
+          "name": "id",
+          "is": "string"
+         },
+         {
+          "name": "title",
+          "is": "string"
+         },
+         {
+          "name": "description",
+          "is": "string"
+         },
+         {
+          "name": "status",
+          "is": "string"
+         }
+        ],
+        "effects": "Modifies the ticket in the database",
+        "path": "src/tickets.js"
+       },
+       {
+        "name": "delete_ticket",
+        "does": "Delete a ticket by ID",
+        "params": [
+         "id"
+        ],
+        "returns": "a confirmation message",
+        "inputs": [
+         {
+          "name": "id",
+          "is": "string"
+         }
+        ],
+        "effects": "Removes the ticket from the database",
+        "path": "src/tickets.js"
+       },
+       {
+        "name": "public/index.html",
+        "kind": "page",
+        "does": "The main page of the issue tracker",
+        "params": [],
+        "outputs": "Displays the list of tickets and options to create, view, update, or delete tickets",
+        "effects": "None",
+        "path": "public/index.html",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "src/tickets.js",
+        "kind": "file",
+        "does": "Contains the JavaScript logic for managing tickets",
+        "params": [],
+        "outputs": "Exports functions to create, view, update, and delete tickets",
+        "effects": "None",
+        "path": "src/tickets.js"
+       },
+       {
+        "name": "server.js",
+        "kind": "file",
+        "does": "Starts the server and sets up the routes for the issue tracker",
+        "params": [],
+        "outputs": "Runs the server and listens for HTTP requests",
+        "effects": "Starts the server on the specified port",
+        "path": "server.js"
+       }
+      ],
+      "validations": [
+       {
+        "id": "create_ticket_validation",
+        "serves": [
+         "create_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Ticket",
+            "This is a test ticket.",
+            "open"
+           ],
+           "expect": {
+            "title": "Test Ticket",
+            "description": "This is a test ticket.",
+            "status": "open"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "view_tickets_validation",
+        "serves": [
+         "view_tickets"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "view_tickets",
+           "args": [],
+           "expect": "[]"
+          }
+         ]
+        }
+       },
+       {
+        "id": "update_ticket_validation",
+        "serves": [
+         "update_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Ticket",
+            "This is a test ticket.",
+            "open"
+           ],
+           "save": "ticket"
+          },
+          {
+           "call": "update_ticket",
+           "args": [
+            "$ticket.id",
+            "Updated Title",
+            "Updated description.",
+            "closed"
+           ],
+           "expect": {
+            "title": "Updated Title",
+            "description": "Updated description.",
+            "status": "closed"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "delete_ticket_validation",
+        "serves": [
+         "delete_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Ticket",
+            "This is a test ticket.",
+            "open"
+           ],
+           "save": "ticket"
+          },
+          {
+           "call": "delete_ticket",
+           "args": [
+            "$ticket.id"
+           ],
+           "expect": "Ticket deleted successfully."
+          }
+         ]
+        }
+       },
+       {
+        "id": "server_start_validation",
+        "serves": [
+         "server.js"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "node server.js",
+         "argv": [
+          "node",
+          "server.js"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "Server is running on port 3000"
+          ]
+         }
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "Create Ticket Function",
+        "task": "Implement the function to create a new ticket with a title, description, and status.",
+        "contracts": [
+         "create_ticket"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "View Tickets Function",
+        "task": "Implement the function to retrieve all tickets from the database.",
+        "contracts": [
+         "view_tickets"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Update Ticket Function",
+        "task": "Implement the function to update a ticket's title, description, or status by ID.",
+        "contracts": [
+         "update_ticket"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Delete Ticket Function",
+        "task": "Implement the function to delete a ticket by ID.",
+        "contracts": [
+         "delete_ticket"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Main Page",
+        "task": "Create the main page that displays the list of tickets and provides options to create, view, update, or delete tickets.",
+        "contracts": [],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Ticket Logic File",
+        "task": "Create the file that contains the JavaScript logic for managing tickets.",
+        "contracts": [],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Server Setup",
+        "task": "Set up the server and routes for the issue tracker.",
+        "contracts": [
+         "server.js"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       }
+      ]
+     },
+     "defects": [
+      "Contract create_ticket: its run starts \"function\", which is neither a command contract of this level nor a program the box has.",
+      "Contract view_tickets: its run starts \"function\", which is neither a command contract of this level nor a program the box has.",
+      "Contract update_ticket: its run starts \"function\", which is neither a command contract of this level nor a program the box has.",
+      "Contract delete_ticket: its run starts \"function\", which is neither a command contract of this level nor a program the box has.",
+      "Contract src/tickets.js: its run says neither {\"static\": true} nor a command.",
+      "Contract server.js: its run's ready path: it must start with a single \"/\".",
+      "index_page_validation serves index.html: serves names the contracts of this level it validates (create_ticket, view_tickets, update_ticket, delete_ticket, public/index.html, src/tickets.js, server.js).",
+      "Contract create_ticket has 1 different example: give it validations that exercise create_ticket itself (a call check that calls create_ticket) and show 3 different examples (different inputs or steps).",
+      "Contract view_tickets has 1 different example: give it validations that exercise view_tickets itself (a call check that calls view_tickets) and show 3 different examples (different inputs or steps).",
+      "Contract update_ticket has 1 different example: give it validations that exercise update_ticket itself (a call check that calls update_ticket) and show 3 different examples (different inputs or steps).",
+      "Contract delete_ticket has 1 different example: give it validations that exercise delete_ticket itself (a call check that calls delete_ticket) and show 3 different examples (different inputs or steps).",
+      "Contract public/index.html has 0 different examples: give it validations that exercise public/index.html itself (a browser check that serves or opens public/index.html) and show 3 different examples (different inputs or steps).",
+      "Contract src/tickets.js has 0 different examples: give it validations that exercise src/tickets.js itself (a file or judge check of src/tickets.js) and show 3 different examples (different inputs or steps).",
+      "Contract server.js has 1 different example: give it validations that exercise server.js itself (a file or judge check of server.js) and show 3 different examples (different inputs or steps).",
+      "Piece \"Main Page\" delivers index.html, which is not in contracts.",
+      "Piece \"Ticket Logic File\" delivers tickets.js, which is not in contracts.",
+      "Contract public/index.html is delivered by no piece: give it to exactly one piece.",
+      "Contract src/tickets.js is delivered by no piece: give it to exactly one piece.",
+      "Two pieces place src/tickets.js (\"Create Ticket Function\" and \"View Tickets Function\" and \"Update Ticket Function\" and \"Delete Ticket Function\"): a file has one owner, so give the contracts of each piece paths of their own, or give the contracts at src/tickets.js to one piece."
+     ]
+    },
+    {
+     "attempt": 3,
+     "splitter": "splitter-80c243ce55e4f0b0",
+     "output": {
+      "contracts": [
+       {
+        "name": "create_ticket",
+        "does": "Creates a new ticket with given details",
+        "params": [
+         "title",
+         "description",
+         "priority"
+        ],
+        "returns": "created ticket object",
+        "inputs": [
+         {
+          "name": "title",
+          "is": "string"
+         },
+         {
+          "name": "description",
+          "is": "string"
+         },
+         {
+          "name": "priority",
+          "is": "string"
+         }
+        ],
+        "effects": "Adds ticket to storage",
+        "path": "src/tickets.js",
+        "run": {
+         "run": "node src/tickets.js",
+         "argv": [
+          "node",
+          "src/tickets.js"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "view_tickets",
+        "does": "Retrieves all tickets",
+        "params": [],
+        "returns": "list of tickets",
+        "effects": "None",
+        "path": "src/tickets.js",
+        "run": {
+         "run": "node src/tickets.js",
+         "argv": [
+          "node",
+          "src/tickets.js"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "update_ticket",
+        "does": "Modifies an existing ticket",
+        "params": [
+         "id",
+         "updates"
+        ],
+        "returns": "updated ticket object",
+        "inputs": [
+         {
+          "name": "id",
+          "is": "string"
+         },
+         {
+          "name": "updates",
+          "is": "object"
+         }
+        ],
+        "effects": "Modifies ticket in storage",
+        "path": "src/tickets.js",
+        "run": {
+         "run": "node src/tickets.js",
+         "argv": [
+          "node",
+          "src/tickets.js"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "delete_ticket",
+        "does": "Removes a ticket by ID",
+        "params": [
+         "id"
+        ],
+        "returns": "confirmation of deletion",
+        "inputs": [
+         {
+          "name": "id",
+          "is": "string"
+         }
+        ],
+        "effects": "Deletes ticket from storage",
+        "path": "src/tickets.js",
+        "run": {
+         "run": "node src/tickets.js",
+         "argv": [
+          "node",
+          "src/tickets.js"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "server.js",
+        "kind": "command",
+        "does": "Starts the issue tracker server",
+        "params": [],
+        "outputs": "Runs HTTP server on port",
+        "effects": "Listens for incoming requests",
+        "path": "server.js",
+        "run": {
+         "run": "node server.js",
+         "argv": [
+          "node",
+          "server.js"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "public/index.html",
+        "kind": "page",
+        "does": "Serves the main interface",
+        "params": [],
+        "outputs": "HTML content for ticket management",
+        "effects": "None",
+        "path": "public/index.html",
+        "run": {
+         "static": true
+        }
+       },
+       {
+        "name": "docs/restore.md",
+        "kind": "doc",
+        "does": "Explains backup restoration process",
+        "params": [],
+        "outputs": "Instructions for restoring backups",
+        "effects": "None",
+        "path": "docs/restore.md",
+        "run": {
+         "static": true
+        }
+       }
+      ],
+      "validations": [
+       {
+        "id": "create_ticket_1",
+        "serves": [
+         "create_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Test Title",
+            "Test Description",
+            "High"
+           ],
+           "expect": {
+            "id": "1",
+            "title": "Test Title"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "create_ticket_2",
+        "serves": [
+         "create_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Another Ticket",
+            "More details",
+            "Medium"
+           ],
+           "expect": {
+            "id": "2",
+            "title": "Another Ticket"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "create_ticket_3",
+        "serves": [
+         "create_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "create_ticket",
+           "args": [
+            "Low Priority",
+            "Just testing",
+            "Low"
+           ],
+           "expect": {
+            "id": "3",
+            "title": "Low Priority"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "view_tickets_1",
+        "serves": [
+         "view_tickets"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "view_tickets",
+           "args": [],
+           "expect": {
+            "length": 3
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "view_tickets_2",
+        "serves": [
+         "view_tickets"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "view_tickets",
+           "args": [],
+           "expect": {
+            "0": {
+             "title": "Test Title"
+            }
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "view_tickets_3",
+        "serves": [
+         "view_tickets"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "view_tickets",
+           "args": [],
+           "expect": {
+            "2": {
+             "title": "Low Priority"
+            }
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "update_ticket_1",
+        "serves": [
+         "update_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "update_ticket",
+           "args": [
+            "1",
+            {
+             "title": "Updated Title"
+            }
+           ],
+           "expect": {
+            "title": "Updated Title"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "update_ticket_2",
+        "serves": [
+         "update_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "update_ticket",
+           "args": [
+            "2",
+            {
+             "description": "Updated description"
+            }
+           ],
+           "expect": {
+            "description": "Updated description"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "update_ticket_3",
+        "serves": [
+         "update_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "update_ticket",
+           "args": [
+            "3",
+            {
+             "priority": "Urgent"
+            }
+           ],
+           "expect": {
+            "priority": "Urgent"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "delete_ticket_1",
+        "serves": [
+         "delete_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "delete_ticket",
+           "args": [
+            "1"
+           ],
+           "expect": {
+            "deleted": "1"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "delete_ticket_2",
+        "serves": [
+         "delete_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "delete_ticket",
+           "args": [
+            "2"
+           ],
+           "expect": {
+            "deleted": "2"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "delete_ticket_3",
+        "serves": [
+         "delete_ticket"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "delete_ticket",
+           "args": [
+            "3"
+           ],
+           "expect": {
+            "deleted": "3"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "index_page_validation",
+        "serves": [
+         "public/index.html"
+        ],
+        "check": {
+         "kind": "browser",
+         "serve": "public/index.html",
+         "steps": [
+          {
+           "goto": "/"
+          },
+          {
+           "fill": {
+            "label": "Title",
+            "text": "Test Ticket"
+           }
+          },
+          {
+           "click": {
+            "role": "button",
+            "name": "Create"
+           }
+          },
+          {
+           "expect_text": "Test Ticket"
+          }
+         ]
+        }
+       },
+       {
+        "id": "server_start",
+        "serves": [
+         "server.js"
+        ],
+        "check": {
+         "kind": "http",
+         "serve": "server.js",
+         "steps": [
+          {
+           "method": "GET",
+           "path": "/",
+           "expect": {
+            "status": 200
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "Server Setup",
+        "task": "Create and configure the server to handle HTTP requests",
+        "contracts": [
+         "server.js"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": [
+         "node"
+        ]
+       },
+       {
+        "label": "Ticket Functions",
+        "task": "Implement CRUD operations for tickets",
+        "contracts": [
+         "create_ticket",
+         "view_tickets",
+         "update_ticket",
+         "delete_ticket"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": [
+         "node"
+        ]
+       },
+       {
+        "label": "Frontend Interface",
+        "task": "Build the HTML page for user interaction",
+        "contracts": [
+         "public/index.html"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Validation Tests",
+        "task": "Create tests to verify all functions and page behavior",
+        "contracts": [],
+        "uses": [
+         "create_ticket",
+         "view_tickets",
+         "update_ticket",
+         "delete_ticket",
+         "public/index.html",
+         "server.js"
+        ],
+        "refs": [],
+        "packages": [
+         "pytest"
+        ]
+       }
+      ]
+     },
+     "defects": [
+      "Contract server.js has 1 different example: give it validations that exercise server.js itself (a command check that runs server.js or server.js) and show 3 different examples (different inputs or steps).",
+      "Contract public/index.html has 1 different example: give it validations that exercise public/index.html itself (a browser check that serves or opens public/index.html) and show 3 different examples (different inputs or steps).",
+      "Contract docs/restore.md has 0 different examples: give it validations that exercise docs/restore.md itself (a file or judge check of docs/restore.md) and show 3 different examples (different inputs or steps).",
+      "Piece \"Validation Tests\" delivers create_ticket_1, create_ticket_2, create_ticket_3, view_tickets_1, view_tickets_2, view_tickets_3, update_ticket_1, update_ticket_2, update_ticket_3, delete_ticket_1, delete_ticket_2, delete_ticket_3, index_page_validation, server_start, which are not in contracts.",
+      "Contract docs/restore.md is delivered by no piece: give it to exactly one piece."
+     ]
+    }
+   ]
+  },
+  "cli": {
+   "file": "bdf80430-recursive-control-plane-897b9d21.json",
+   "goal": "A Python CLI that converts temperatures.",
+   "max_children": 7,
+   "attempts": [
+    {
+     "attempt": 1,
+     "splitter": "splitter-819fc0878e5e38a1",
+     "output": {
+      "contracts": [
+       {
+        "name": "convert_temperature",
+        "does": "Converts temperature between Celsius and Fahrenheit",
+        "params": [
+         "value",
+         "unit"
+        ],
+        "returns": "float (converted temperature)",
+        "inputs": [
+         {
+          "name": "value",
+          "is": "float"
+         },
+         {
+          "name": "unit",
+          "is": "str (C or F)"
+         }
+        ],
+        "effects": "none",
+        "path": "temperature_converter.py",
+        "run": {
+         "run": "python3 temperature_converter.py",
+         "argv": [
+          "python3",
+          "temperature_converter.py"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "temperature_cli",
+        "kind": "command",
+        "does": "Command-line interface for temperature conversion",
+        "params": [
+         "value",
+         "unit"
+        ],
+        "outputs": "stdout with converted temperature",
+        "inputs": [
+         {
+          "name": "value",
+          "is": "float"
+         },
+         {
+          "name": "unit",
+          "is": "str (C or F)"
+         }
+        ],
+        "effects": "none",
+        "path": "cli.py",
+        "run": {
+         "run": "python3 cli.py",
+         "argv": [
+          "python3",
+          "cli.py"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "tests/test_converter.py",
+        "kind": "file",
+        "does": "Tests temperature conversion logic",
+        "params": [],
+        "outputs": "pytest test results",
+        "effects": "none",
+        "path": "tests/test_converter.py",
+        "run": {
+         "run": "pytest",
+         "argv": [
+          "pytest"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       }
+      ],
+      "validations": [
+       {
+        "id": "cli_c_to_f",
+        "serves": [
+         "temperature_cli"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "temperature_cli 100 C",
+         "argv": [
+          "temperature_cli",
+          "100",
+          "C"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "212.0"
+          ]
+         }
+        }
+       },
+       {
+        "id": "cli_f_to_c",
+        "serves": [
+         "temperature_cli"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "temperature_cli 212 F",
+         "argv": [
+          "temperature_cli",
+          "212",
+          "F"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "100.0"
+          ]
+         }
+        }
+       },
+       {
+        "id": "cli_invalid_unit",
+        "serves": [
+         "temperature_cli"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "temperature_cli 37 X",
+         "argv": [
+          "temperature_cli",
+          "37",
+          "X"
+         ],
+         "expect": {
+          "exit": 1,
+          "stderr_has": [
+           "Invalid unit"
+          ]
+         }
+        }
+       },
+       {
+        "id": "function_c_to_f",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "convert_temperature",
+           "args": [
+            100,
+            "C"
+           ],
+           "expect": 212
+          }
+         ]
+        }
+       },
+       {
+        "id": "function_f_to_c",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "convert_temperature",
+           "args": [
+            212,
+            "F"
+           ],
+           "expect": 100
+          }
+         ]
+        }
+       },
+       {
+        "id": "function_invalid_unit",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "convert_temperature",
+           "args": [
+            37,
+            "X"
+           ],
+           "throws": true
+          }
+         ]
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "CLI Implementation",
+        "task": "Create a Python command-line interface for temperature conversion",
+        "contracts": [
+         "temperature_cli"
+        ],
+        "uses": [
+         "convert_temperature"
+        ],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Conversion Logic",
+        "task": "Implement temperature conversion functions",
+        "contracts": [
+         "convert_temperature"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Test Suite",
+        "task": "Write pytest tests for temperature conversion",
+        "contracts": [],
+        "uses": [
+         "convert_temperature"
+        ],
+        "refs": [],
+        "packages": [
+         "pytest"
+        ]
+       }
+      ]
+     },
+     "defects": [
+      "test_file_exists serves test_conversions: serves names the contracts of this level it validates (convert_temperature, temperature_cli, tests/test_converter.py).",
+      "Contract tests/test_converter.py has 0 different examples: give it validations that exercise tests/test_converter.py itself (a file or judge check of tests/test_converter.py) and show 3 different examples (different inputs or steps).",
+      "Piece \"Test Suite\" delivers test_conversions, which is not in contracts.",
+      "Contract tests/test_converter.py is delivered by no piece: give it to exactly one piece."
+     ]
+    },
+    {
+     "attempt": 2,
+     "splitter": "splitter-7e3ab4b5561b713d",
+     "output": {
+      "contracts": [
+       {
+        "name": "convert_temperature",
+        "does": "Converts a temperature value between units",
+        "params": [
+         "value",
+         "from_unit",
+         "to_unit"
+        ],
+        "returns": "a float in the target unit",
+        "inputs": [
+         {
+          "name": "value",
+          "is": "a float"
+         },
+         {
+          "name": "from_unit",
+          "is": "a string (C, F, K)"
+         },
+         {
+          "name": "to_unit",
+          "is": "a string (C, F, K)"
+         }
+        ],
+        "effects": "none",
+        "path": "converter.py"
+       },
+       {
+        "name": "temperature_cli",
+        "kind": "command",
+        "does": "Runs the temperature conversion CLI",
+        "params": [
+         "args"
+        ],
+        "outputs": "exits with status code 0 on success",
+        "inputs": [
+         {
+          "name": "args",
+          "is": "command line arguments"
+         }
+        ],
+        "effects": "prints converted value to stdout",
+        "path": "temperature_cli.py",
+        "run": {
+         "run": "python3 temperature_cli.py",
+         "argv": [
+          "python3",
+          "temperature_cli.py"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "tests/test_converter.py",
+        "kind": "file",
+        "does": "Contains unit tests for the converter",
+        "params": [],
+        "outputs": "pytest test results",
+        "effects": "none",
+        "path": "tests/test_converter.py",
+        "run": {
+         "run": "pytest tests/test_converter.py",
+         "argv": [
+          "pytest",
+          "tests/test_converter.py"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       }
+      ],
+      "validations": [
+       {
+        "id": "convert_c_to_f",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "convert_temperature",
+           "args": [
+            100,
+            "C",
+            "F"
+           ],
+           "expect": {
+            "value": 212
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "convert_f_to_c",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "convert_temperature",
+           "args": [
+            212,
+            "F",
+            "C"
+           ],
+           "expect": {
+            "value": 100
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "convert_k_to_c",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "call",
+         "steps": [
+          {
+           "call": "convert_temperature",
+           "args": [
+            273.15,
+            "K",
+            "C"
+           ],
+           "expect": {
+            "value": 0
+           }
+          }
+         ]
+        }
+       },
+       {
+        "id": "cli_c_to_f",
+        "serves": [
+         "temperature_cli"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "python3 temperature_cli.py 100 C F",
+         "argv": [
+          "python3",
+          "temperature_cli.py",
+          "100",
+          "C",
+          "F"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "212.0"
+          ]
+         }
+        }
+       },
+       {
+        "id": "cli_f_to_c",
+        "serves": [
+         "temperature_cli"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "python3 temperature_cli.py 212 F C",
+         "argv": [
+          "python3",
+          "temperature_cli.py",
+          "212",
+          "F",
+          "C"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "100.0"
+          ]
+         }
+        }
+       },
+       {
+        "id": "cli_k_to_c",
+        "serves": [
+         "temperature_cli"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "python3 temperature_cli.py 273.15 K C",
+         "argv": [
+          "python3",
+          "temperature_cli.py",
+          "273.15",
+          "K",
+          "C"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "0.0"
+          ]
+         }
+        }
+       },
+       {
+        "id": "test_file_exists",
+        "serves": [
+         "tests/test_converter.py"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "tests/test_converter.py",
+         "has": [
+          "import pytest",
+          "def test_conversion()"
+         ]
+        }
+       },
+       {
+        "id": "test_conversions",
+        "serves": [
+         "tests/test_converter.py"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "pytest tests/test_converter.py -k test_conversion",
+         "argv": [
+          "pytest",
+          "tests/test_converter.py",
+          "-k",
+          "test_conversion"
+         ],
+         "expect": {
+          "exit": 0
+         }
+        }
+       },
+       {
+        "id": "test_cli_output",
+        "serves": [
+         "tests/test_converter.py"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "pytest tests/test_converter.py -k test_cli_output",
+         "argv": [
+          "pytest",
+          "tests/test_converter.py",
+          "-k",
+          "test_cli_output"
+         ],
+         "expect": {
+          "exit": 0
+         }
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "Core Conversion Logic",
+        "task": "Implement the temperature conversion function",
+        "contracts": [
+         "convert_temperature"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "CLI Interface",
+        "task": "Create the command line interface for temperature conversion",
+        "contracts": [
+         "temperature_cli"
+        ],
+        "uses": [
+         "convert_temperature"
+        ],
+        "refs": [],
+        "packages": []
+       },
+       {
+        "label": "Test Suite",
+        "task": "Write and validate tests for the temperature conversion system",
+        "contracts": [
+         "tests/test_converter.py"
+        ],
+        "uses": [
+         "convert_temperature",
+         "temperature_cli"
+        ],
+        "refs": [],
+        "packages": [
+         "pytest"
+        ]
+       }
+      ]
+     },
+     "defects": [
+      "Contract convert_temperature: its run starts \"def\", which is neither a command contract of this level nor a program the box has."
+     ]
+    },
+    {
+     "attempt": 3,
+     "splitter": "splitter-912ee73f7a4d33e2",
+     "output": {
+      "contracts": [
+       {
+        "name": "convert_temperature",
+        "kind": "command",
+        "does": "Converts temperatures between Celsius, Fahrenheit, and Kelvin",
+        "params": [
+         "value",
+         "from_unit",
+         "to_unit"
+        ],
+        "outputs": "the converted temperature value",
+        "inputs": [
+         {
+          "name": "value",
+          "is": "a numeric temperature value"
+         },
+         {
+          "name": "from_unit",
+          "is": "the original unit (C/F/K)"
+         },
+         {
+          "name": "to_unit",
+          "is": "the target unit (C/F/K)"
+         }
+        ],
+        "effects": "none",
+        "path": "convert.py",
+        "run": {
+         "run": "python3 convert.py",
+         "argv": [
+          "python3",
+          "convert.py"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "test_conversions",
+        "kind": "command",
+        "does": "Runs unit tests for temperature conversions",
+        "params": [],
+        "outputs": "Test results showing pass/fail status",
+        "effects": "none",
+        "path": "test_conversions.py",
+        "run": {
+         "run": "pytest test_conversions.py",
+         "argv": [
+          "pytest",
+          "test_conversions.py"
+         ],
+         "port": true,
+         "ready": "/"
+        }
+       },
+       {
+        "name": "README.md",
+        "kind": "doc",
+        "does": "Documents how to use the temperature converter",
+        "params": [],
+        "outputs": "User instructions and examples",
+        "effects": "none",
+        "path": "README.md"
+       }
+      ],
+      "validations": [
+       {
+        "id": "convert_c_to_f",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "convert_temperature 100 C F",
+         "argv": [
+          "convert_temperature",
+          "100",
+          "C",
+          "F"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "212"
+          ]
+         }
+        }
+       },
+       {
+        "id": "convert_c_to_k",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "convert_temperature 0 C K",
+         "argv": [
+          "convert_temperature",
+          "0",
+          "C",
+          "K"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "273.15"
+          ]
+         }
+        }
+       },
+       {
+        "id": "convert_f_to_c",
+        "serves": [
+         "convert_temperature"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "convert_temperature 32 F C",
+         "argv": [
+          "convert_temperature",
+          "32",
+          "F",
+          "C"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "0"
+          ]
+         }
+        }
+       },
+       {
+        "id": "test_cli_functionality",
+        "serves": [
+         "test_conversions"
+        ],
+        "check": {
+         "kind": "command",
+         "run": "test_conversions",
+         "argv": [
+          "test_conversions"
+         ],
+         "expect": {
+          "exit": 0,
+          "stdout_has": [
+           "collected",
+           "passed"
+          ]
+         }
+        }
+       },
+       {
+        "id": "readme_exists",
+        "serves": [
+         "README.md"
+        ],
+        "check": {
+         "kind": "file",
+         "path": "README.md",
+         "has": [
+          "Temperature Converter CLI"
+         ]
+        }
+       }
+      ],
+      "pieces": [
+       {
+        "label": "CLI Implementation",
+        "task": "Create the temperature conversion CLI tool with core functionality",
+        "contracts": [
+         "convert_temperature"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": [
+         "pytest"
+        ]
+       },
+       {
+        "label": "Testing",
+        "task": "Implement and execute tests for temperature conversion logic",
+        "contracts": [
+         "test_conversions"
+        ],
+        "uses": [
+         "convert_temperature"
+        ],
+        "refs": [],
+        "packages": [
+         "pytest"
+        ]
+       },
+       {
+        "label": "Documentation",
+        "task": "Create user documentation for the temperature converter",
+        "contracts": [
+         "README.md"
+        ],
+        "uses": [],
+        "refs": [],
+        "packages": []
+       }
+      ]
+     },
+     "defects": [
+      "Two contracts place convert.py: give each its own path.",
+      "Two contracts place test_conversions.py: give each its own path.",
+      "Contract README.md: its run says neither {\"static\": true} nor a command.",
+      "Contract test_conversions has 1 different example: give it validations that exercise test_conversions itself (a command check that runs test_conversions or test_conversions.py) and show 3 different examples (different inputs or steps).",
+      "Contract README.md has 1 different example: give it validations that exercise README.md itself (a file or judge check of README.md) and show 3 different examples (different inputs or steps).",
+      "Piece \"CLI Implementation\" delivers convert.py, which is not in contracts.",
+      "Piece \"Testing\" delivers test_conversions.py, which is not in contracts."
+     ]
+    }
+   ]
+  }
+ }
+}

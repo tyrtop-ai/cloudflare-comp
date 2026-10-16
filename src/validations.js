@@ -4,17 +4,19 @@
 // contract names it validates) and the division into pieces. This module
 // reads that answer leniently (a form a reader fixes at a glance, such as a
 // markup text a page should show, which names an element), holds it to the
-// runtime's hard rules, and renders a validation as the example a worker
-// reads. The hard rules are executability only: a command is one program
-// and its arguments that exists in the box (a contract's command or an
-// installed executable), a path lies inside the bundle, a selector is one
-// the adapter reads, a check names what it runs by; and every contract has
-// three different examples, each rendered from one of its validations. A
-// miss is the splitter's defect, which its next attempt hears with the
-// reason. Nothing here is a judgement: Clef annotates, and never deletes.
+// runtime's hard rules, and renders a validation as the examples a worker
+// reads, one per step that exercises a contract. The hard rules are
+// executability only: a command is one program and its arguments that exists
+// in the box (a contract's command or an installed executable), a path lies
+// inside the bundle, a selector is one the adapter reads, a check names what
+// it runs by; and every contract has three different examples, each rendered
+// from its validations. A miss is the splitter's defect, which its next
+// attempt hears with the reason. Every other reading keeps the meaning and is
+// noted; whether a division is sound is Clef's. Nothing here is a judgement:
+// Clef annotates, and never deletes.
 // No room, no model.
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
-import { normalizeContract, kindOf, nameError, PLACED_KINDS } from './contracts.js';
+import { normalizeContract, kindOf, nameError, PLACED_KINDS, CONTRACT_KINDS, ROUTE_NAME } from './contracts.js';
 import { isPath } from './protocol.js';
 
 export const VALIDATION_KINDS = Object.freeze(['file', 'judge', 'command', 'call', 'http', 'browser']);
@@ -237,14 +239,16 @@ export function readCheck(raw, ctx) {
   if (!plain(c)) return {error: 'its check is not an object'};
   const kind = c.kind;
   if (kind === 'file' || kind === 'judge') {
-    const path = str(c.path, 512);
+    let path = str(c.path, 512), note = '';
+    // A path named inexactly (index.html for public/index.html) reads as the one path it names.
+    if (path && !ctx.paths.has(path) && ctx.resolvePath) { const to = ctx.resolvePath(path); if (to) { note = `its ${kind} check reads "${path}", read as ${to}`; path = to; } }
     if (!path || !ctx.paths.has(path)) return {error: `its ${kind} check reads ${path ? `"${path}", which no contract places and the project does not hold` : 'no path'}`};
     if (kind === 'judge') {
       const question = str(c.question, LEVEL_LIMITS.question);
-      return question ? {check: {kind, path, question}} : {error: 'its judge check asks no question'};
+      return question ? {check: {kind, path, question}, ...(note ? {note} : {})} : {error: 'its judge check asks no question'};
     }
     const has = strings(c.has, LEVEL_LIMITS.has, 300);
-    return {check: {kind, path, ...(has.length ? {has} : {}), ...(c.json === true ? {json: true} : {})}};
+    return {check: {kind, path, ...(has.length ? {has} : {}), ...(c.json === true ? {json: true} : {})}, ...(note ? {note} : {})};
   }
   if (kind === 'command') {
     const run = str(c.run, LEVEL_LIMITS.command);
@@ -287,7 +291,9 @@ export function readCheck(raw, ctx) {
     return steps.length ? {check: {kind, steps}} : {error: 'its call check has no steps'};
   }
   if (kind === 'http' || kind === 'browser') {
-    const serve = str(c.serve, 200);
+    let serve = str(c.serve, 200), note = '';
+    // A served contract named inexactly, or not named when the level runs exactly one, reads as that one.
+    if (!ctx.served.has(serve) && ctx.resolveServe) { const to = ctx.resolveServe(serve); if (to) { note = serve ? `its ${kind} check serves "${serve}", read as ${to}` : `its ${kind} check names nothing to serve, read as ${to}, the one contract this level runs`; serve = to; } }
     if (!ctx.served.has(serve)) return {error: `its ${kind} check serves "${serve}", which is not a contract of this level that says how it runs${ctx.served.size ? ` (${[...ctx.served].join(', ')})` : ''}`};
     const steps = [];
     for (const s of (Array.isArray(c.steps) ? c.steps : []).slice(0, LEVEL_LIMITS.steps)) {
@@ -296,7 +302,7 @@ export function readCheck(raw, ctx) {
       if (!step) return {error: `its ${kind} check has a step that is not one of the ${kind} step forms: ${JSON.stringify(s)?.slice(0, 120)}`};
       steps.push(step);
     }
-    return steps.length ? {check: {kind, serve, steps}} : {error: `its ${kind} check has no steps`};
+    return steps.length ? {check: {kind, serve, steps}, ...(note ? {note} : {})} : {error: `its ${kind} check has no steps`};
   }
   return {error: `its check kind "${kind}" is not one of ${VALIDATION_KINDS.join(', ')}`};
 }
@@ -340,32 +346,49 @@ function browserStep(s) {
 }
 
 // ------------------------------------------------------------ how a contract runs
-// A page, route or command contract says how it runs, as a level's http and
-// browser checks reach it: {static: true} (its files served as they are) or
-// {run, argv, port: true, ready} (a command that serves on the port the box
-// gives it, ready when ready answers). A page with no run is served as it
-// is. A command contract runs by its own file. {run} | {error} | {}.
+// Only a page, a route or a command is started. A page is served as it is
+// unless it says a command; a route says how it is served; a command runs by
+// its own file (its toolchain's run_file), and its run, when it states one,
+// is that command line. A function, a file, a document or a data file is
+// never started: a run written on one is not read. A run is {static: true}
+// or {run, argv}; it serves on the port the box gives it ({port: true,
+// ready}) only when something serves it (servedRun): a route always, a page
+// or a command once a level's http or browser check serves it. ready is the
+// path the run said it answers at once it is up, for then. {run, ready?} |
+// {error} | {note} | {}.
+export const RUN_KINDS = new Set(['page', 'route', 'command']);
+const emptyRun = raw => raw === undefined || raw === null || raw === '' || raw === false || plain(raw) && !Object.keys(raw).length;
 export function runOf(raw, contract, ctx) {
   const kind = kindOf(contract);
-  if (raw === undefined || raw === null || raw === '' || raw === false) return kind === 'page' ? {run: {static: true}} : {};
+  if (!RUN_KINDS.has(kind)) return emptyRun(raw) ? {} : {note: `${contract.name} is a ${kind} contract, which is not started, so its run is not read`};
+  if (emptyRun(raw)) return kind === 'page' ? {run: {static: true}} : {};
   if (raw === true || raw === 'static' || plain(raw) && raw.static === true) return {run: {static: true}};
-  const line = typeof raw === 'string' ? raw : plain(raw) ? Array.isArray(raw.run) ? joinArgv(raw.run) : raw.run ?? raw.command : '';
+  const line = typeof raw === 'string' ? raw : plain(raw) ? Array.isArray(raw.run) ? joinArgv(raw.run) : Array.isArray(raw.argv) && typeof raw.run !== 'string' ? joinArgv(raw.argv) : raw.run ?? raw.command : '';
   const run = str(line, LEVEL_LIMITS.command);
   if (!run) return {error: 'its run says neither {"static": true} nor a command'};
   const parsed = commandArgv(run);
   if (parsed.error) return {error: `its run: ${parsed.error}`};
   const [first] = parsed.argv;
   if (!ctx.commands.has(first) && !ctx.executables.has(first)) return {error: `its run starts "${first}", which is neither a command contract of this level nor a program the box has`};
-  const ready = plain(raw) && typeof raw.ready === 'string' && raw.ready.trim() ? raw.ready.trim() : '/';
-  const bad = urlPathError(ready);
-  if (bad) return {error: `its run's ready path: ${bad}`};
-  return {run: {run, argv: parsed.argv, port: true, ready}};
+  // The path it answers at once it is up, kept for when something serves it; a bare name reads as its path.
+  const said = plain(raw) && typeof raw.ready === 'string' && raw.ready.trim() ? raw.ready.trim() : '';
+  const ready = said ? localPath(said) || said : '';
+  return {run: {run, argv: parsed.argv}, ...(ready ? {ready} : {})};
 }
-// The runs a level's checks may serve, by contract name (checks.js reads them).
-export const runsOf = contracts => (contracts || []).filter(c => c?.run).map(c => c.run.static ? {id: c.name, static: true} : {id: c.name, run: c.run.run, argv: c.run.argv, port: true, ready: c.run.ready || '/'});
+// A run something serves: it listens on the port the box gives it, ready
+// when its ready path (by default "/") answers. {run} | {error}.
+export function servedRun(run, ready = '') {
+  if (!run || run.static) return {run};
+  const at = ready || run.ready || '/', bad = urlPathError(at);
+  return bad ? {error: `its run's ready path: ${bad}`} : {run: {run: run.run, argv: run.argv, port: true, ready: at}};
+}
+// The runs a level's checks may serve, by contract name (checks.js reads
+// them): a static one, or one that listens on its port. A command's own
+// command line, which nothing serves, is not one.
+export const runsOf = contracts => (contracts || []).filter(c => c?.run && (c.run.static || c.run.port)).map(c => c.run.static ? {id: c.name, static: true} : {id: c.name, run: c.run.run, argv: c.run.argv, port: true, ready: c.run.ready || '/'});
 
 // ------------------------------------------------------------ examples
-// A validation as the example a worker reads: its input and what it
+// A validation as the examples a worker reads: its input and what it
 // observes, rendered deterministically from the check alone. A worker never
 // reads the check itself.
 const q = v => JSON.stringify(String(v ?? ''));
@@ -407,6 +430,13 @@ function commandOutcome(e = {}) {
   if (e.stderr === true) out.push('it writes a message to its error output');
   return list(out);
 }
+const callStep = s => `${s.save ? `$${s.save} = ` : ''}${s.call}(${(s.args || []).map(val).join(', ')}) → ${s.throws ? 'it raises an error' : 'expect' in s ? val(s.expect) : s.expect_has ? `a result containing ${q(s.expect_has)}` : 'it returns'}`;
+const requestStep = s => {
+  const e = s.expect || {}, seen = [Number.isInteger(e.status) ? `status ${e.status}` : '', ...(e.body_has || []).map(t => `the body contains ${q(t)}`), e.json_has !== undefined ? `the JSON holds ${val(e.json_has)}` : ''].filter(Boolean);
+  return `${s.save ? `$${s.save} = ` : ''}${s.method || 'GET'} ${s.path}${s.body !== undefined ? ` with ${val(s.body)}` : ''} → ${list(seen) || 'an answer'}`;
+};
+const fileItem = (c, t) => `${c.path} contains ${q(t)}${c.json ? ' and parses as JSON' : ''}`;
+// The whole check in words (Clef's summary, the event log).
 export function renderExample(check) {
   const c = check || {};
   if (c.kind === 'file') return `${c.path} ${c.has?.length ? `contains ${list(c.has.map(q))}` : 'exists'}${c.json ? ' and parses as JSON' : ''}`;
@@ -415,13 +445,20 @@ export function renderExample(check) {
     const with_ = [c.stdin ? `the input ${q(c.stdin)}` : '', c.files ? `the file${Object.keys(c.files).length > 1 ? 's' : ''} ${list(Object.entries(c.files).map(([p, t]) => `${p} holding ${q(String(t).slice(0, 120))}`))}` : ''].filter(Boolean);
     return `${c.run}${with_.length ? ` with ${list(with_)}` : ''} → ${commandOutcome(c.expect) || 'it runs'}`;
   }
-  if (c.kind === 'call') return (c.steps || []).map(s => `${s.save ? `$${s.save} = ` : ''}${s.call}(${(s.args || []).map(val).join(', ')}) → ${s.throws ? 'it raises an error' : 'expect' in s ? val(s.expect) : s.expect_has ? `a result containing ${q(s.expect_has)}` : 'it returns'}`).join('; ');
-  if (c.kind === 'http') return (c.steps || []).map(s => {
-    const e = s.expect || {}, seen = [Number.isInteger(e.status) ? `status ${e.status}` : '', ...(e.body_has || []).map(t => `the body contains ${q(t)}`), e.json_has !== undefined ? `the JSON holds ${val(e.json_has)}` : ''].filter(Boolean);
-    return `${s.save ? `$${s.save} = ` : ''}${s.method || 'GET'} ${s.path}${s.body !== undefined ? ` with ${val(s.body)}` : ''} → ${list(seen) || 'an answer'}`;
-  }).join('; ');
+  if (c.kind === 'call') return (c.steps || []).map(callStep).join('; ');
+  if (c.kind === 'http') return (c.steps || []).map(requestStep).join('; ');
   if (c.kind === 'browser') return browserExample(c.steps);
   return '';
+}
+// Whether one step of a call or http check exercises the contract itself:
+// a call of the function; a request to the server it serves, or for a route
+// the request it names.
+function stepExercises(c, s, contract) {
+  const name = contract?.name;
+  if (c.kind === 'call') return s?.call === name;
+  if (c.serve === name) return true;
+  if (kindOf(contract || {}) === 'route') { const [method, at] = String(name).split(/\s+/); return !!s?.path && String(s.path).split('?')[0] === at && (s.method || 'GET') === String(method).toUpperCase(); }
+  return false;
 }
 // Whether a check exercises the contract itself, by its own name, path,
 // command, route or page: a call of the function, a command that runs the
@@ -432,26 +469,40 @@ export function renderExample(check) {
 export function exercises(check, contract) {
   const c = check || {}, name = contract?.name, path = contract?.path, kind = kindOf(contract || {});
   if (!name) return false;
-  if (c.kind === 'call') return (c.steps || []).some(s => s?.call === name);
+  if (c.kind === 'call') return (c.steps || []).some(s => stepExercises(c, s, contract));
   if (c.kind === 'command') { const argv = Array.isArray(c.argv) ? c.argv : commandArgv(c.run).argv || []; return argv[0] === name || !!path && argv.some(a => cleanPath(a) === path); }
   if (c.kind === 'file' || c.kind === 'judge') return !!path && c.path === path;
-  if (c.kind === 'http' || c.kind === 'browser') {
-    if (c.serve === name) return true;
-    if (kind === 'route') { const [method, at] = String(name).split(/\s+/); return (c.steps || []).some(s => s?.path && String(s.path).split('?')[0] === at && (s.method || 'GET') === method.toUpperCase()); }
-    if (kind === 'page' && path) return (c.steps || []).some(s => typeof s?.goto === 'string' && s.goto.split(/[?#]/)[0] === `/${path}`);
-  }
+  if (c.kind === 'http') return (c.steps || []).some(s => stepExercises(c, s, contract));
+  if (c.kind === 'browser') return c.serve === name || kind === 'page' && !!path && (c.steps || []).some(s => typeof s?.goto === 'string' && s.goto.split(/[?#]/)[0] === `/${path}`);
   return false;
 }
-// A contract's examples: the distinct renderings of the validations that
-// serve it and exercise it itself, in order, the first EXAMPLES_PER_CONTRACT of them.
-export function contractExamples(contract, validations) {
+// The examples one check gives a contract it exercises: one per step that
+// exercises it. Each call of a call check and each request of an http check
+// is one, after the steps that run before it in the same process (the
+// state it starts from); a command check, a browser scenario and a judge
+// question is one; each text a file check looks for is one.
+export function checkExamples(check, contract) {
+  const c = check || {};
+  if (!exercises(c, contract)) return [];
+  if (c.kind === 'call' || c.kind === 'http') {
+    const steps = c.steps || [], show = c.kind === 'call' ? callStep : requestStep;
+    return steps.map((s, i) => stepExercises(c, s, contract) ? steps.slice(0, i + 1).map(show).join('; ') : '').filter(Boolean);
+  }
+  if (c.kind === 'file' && c.has?.length) return c.has.map(t => fileItem(c, t));
+  const one = renderExample(c);
+  return one ? [one] : [];
+}
+// A contract's examples: the distinct examples of the validations that
+// serve it and exercise it itself, in order, the first EXAMPLES_PER_CONTRACT
+// of them (all of them with all = true).
+export function contractExamples(contract, validations, {all = false} = {}) {
   const out = [];
   for (const v of validations || []) {
     if (!(v?.serves || []).includes(contract?.name) && !(contract?.serves || []).includes(v?.id)) continue;
-    if (!exercises(v.check, contract)) continue;
-    const e = renderExample(v.check);
-    if (e && !out.includes(e)) out.push(e);
-    if (out.length >= EXAMPLES_PER_CONTRACT) break;
+    for (const e of checkExamples(v.check, contract)) {
+      if (!out.includes(e)) out.push(e);
+      if (!all && out.length >= EXAMPLES_PER_CONTRACT) return out;
+    }
   }
   return out;
 }
@@ -459,113 +510,267 @@ export function contractExamples(contract, validations) {
 // How a contract is exercised itself, in words a splitter reads.
 function exerciseWords(c) {
   const kind = kindOf(c);
-  if (kind === 'function') return `a call check that calls ${c.name}`;
-  if (kind === 'command') return `a command check that runs ${c.name}${c.path ? ` or ${c.path}` : ''}`;
-  if (kind === 'route') return `an http check that serves or requests ${c.name}`;
-  if (kind === 'page') return `a browser check that serves or opens ${c.name}`;
-  return c.path ? `a file or judge check of ${c.path}` : `a check of ${c.name}`;
+  if (kind === 'function') return `calls of ${c.name}, each call one example`;
+  if (kind === 'command') return `command checks that run ${c.name}${c.path && c.path !== c.name ? ` or ${c.path}` : ''}, each one example${c.run?.port ? `, or http requests to it and browser checks that serve it, each request and scenario one example` : ''}`;
+  if (kind === 'route') return `http requests to ${c.name}, each request one example`;
+  if (kind === 'page') return `browser checks that serve or open ${c.name}, each scenario one example`;
+  const runs = c.path && toolchainOf(c.path)?.run_file ? `, or command checks that run ${c.path}, each one example` : '';
+  return c.path ? `file or judge checks of ${c.path}, each text it holds and each question one example${runs}` : `checks of ${c.name}`;
 }
 
 // ------------------------------------------------------------ reading a level
-// A splitter's answer for one attempt, read and held to the hard rules.
-// raw: {contracts, validations, pieces}. own: the manager's contracts (its
-// parent's splitter gave them; each appears in contracts by its name, so the
+// What a contract with no kind (or a kind that is none of the seven) is, by
+// its shape: what a call returns, or inputs with nothing that starts it, is a
+// function; a method and a path is a route; then by its path: a page, a
+// document, a data file, or else a file. A name with no path and no other
+// sign stays what the stored form reads it as, a function.
+const DOC_EXT = /\.(?:md|markdown|txt|rst|adoc)$/i, DATA_EXT = /\.(?:json|csv|tsv|ya?ml|toml|xml)$/i, PAGE_EXT = /\.html?$/i;
+export function inferKind(item) {
+  const k = typeof item?.kind === 'string' ? item.kind.trim().toLowerCase() : '';
+  if (CONTRACT_KINDS.includes(k)) return k;
+  const name = typeof item?.name === 'string' ? item.name.trim() : '', path = typeof item?.path === 'string' && item.path.trim() ? item.path.trim() : /\.[A-Za-z0-9]+$/.test(name) ? name : '';
+  const said = v => typeof v === 'string' ? !!v.trim() : Array.isArray(v) ? v.length > 0 : false;
+  if (said(item?.returns) || (said(item?.params) || said(item?.inputs)) && emptyRun(item?.run)) return 'function';
+  if (ROUTE_NAME.test(name)) return 'route';
+  if (!path) return 'function';
+  if (PAGE_EXT.test(path)) return 'page';
+  if (DOC_EXT.test(path)) return 'doc';
+  if (DATA_EXT.test(path)) return 'data';
+  return 'file';
+}
+const GENERIC = new Set(['file', 'doc', 'data']);
+const baseName = p => String(p ?? '').split('/').pop();
+const nameText = v => cleanPath(v).replace(/^\/+/, '');
+// The names a level's contract names (a piece's contracts and uses, a
+// validation's serves, a check's served contract and path) read, leniently:
+// the exact name; a name a merged contract had; the name without quotes or a
+// leading "./" or "/"; the path of a contract (a placed contract's, else every
+// function the file defines); the one path it ends (index.html for
+// public/index.html), or that ends it; the one path with its base name.
+// resolve(text) → {names, how} (how: '' when exact), or {names: []}.
+function resolver(contracts, aliases) {
+  const byName = new Map(contracts.map(c => [c.name, c]));
+  const atPath = p => {
+    const all = contracts.filter(c => c.path === p), placed = all.filter(c => PLACED_KINDS.has(kindOf(c)));
+    return (placed.length ? placed.slice(0, 1) : all).map(c => c.name);
+  };
+  const onePath = list => { const paths = [...new Set(list.map(c => c.path))]; return paths.length === 1 ? atPath(paths[0]) : []; };
+  return text => {
+    const raw = typeof text === 'string' ? text.trim() : '';
+    if (!raw) return {names: []};
+    if (byName.has(raw)) return {names: [raw], how: ''};
+    if (aliases.has(raw)) return {names: [aliases.get(raw)], how: 'the contract it was merged into'};
+    const n = nameText(raw);
+    if (byName.has(n)) return {names: [n], how: 'its name'};
+    if (aliases.has(n)) return {names: [aliases.get(n)], how: 'the contract it was merged into'};
+    const exact = atPath(n);
+    if (exact.length) return {names: exact, how: 'its path'};
+    const pathed = contracts.filter(c => c.path);
+    const suffix = onePath(pathed.filter(c => c.path.endsWith(`/${n}`) || n.endsWith(`/${c.path}`)));
+    if (suffix.length) return {names: suffix, how: 'the one path it names'};
+    const base = /\.[A-Za-z0-9]+$/.test(n) ? onePath(pathed.filter(c => baseName(c.path) === baseName(n))) : [];
+    if (base.length) return {names: base, how: 'the one path with its file name'};
+    return {names: []};
+  };
+}
+const shown = xs => xs.map(x => `"${String(x).slice(0, 80)}"`).join(', ');
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// A splitter's answer for one attempt, read leniently and held to the hard
+// rules. raw: {contracts, validations, pieces}. own: the manager's contracts
+// (its parent's splitter gave them; each is in the level by its name, so the
 // validations above it still run). held: the validations already serving own
-// contracts ({id, serves, check}). rows: the installed toolchain rows. base:
-// the existing project's paths. maxPieces: the room's bound. Returns
-// {contracts, validations, pieces, defects}: the cleaned level and each rule
-// it misses, in words its next attempt reads.
+// contracts ({id, serves, check}). have: the level's contracts already
+// delivered, when a job adds to it. calls: the contracts it may call. rows:
+// the installed toolchain rows. base: the existing project's paths.
+// maxPieces: the room's bound.
+// The hard rules are executability only: the answer is a json object; a
+// placed contract's path lies inside the project, in a language the box
+// runs, under a name it can be called or run by; a run is a well-formed
+// command the box can start, or static; a route has a way to be served; a
+// validation is a check that can run; and the owner's rule, three different
+// examples per contract. A miss is a defect, which the next attempt hears.
+// Everything else reads leniently, keeping the meaning, and each reading is a
+// note: a contract listed twice, a given contract left out, a name written
+// inexactly, a run on a contract that is not started. Whether the pieces
+// divide the level soundly (each contract delivered once, each file placed
+// by one piece, contracts the level already has) is Clef's to judge: the
+// facts are returned in division, for its review. A contract the level
+// already has (contracts_you_have), listed again, is read as that one: it
+// stays delivered where it is, and a piece that lists it uses it.
+// Returns {contracts, validations, pieces, defects, notes, division}.
 export function readLevel(raw, {own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7} = {}) {
-  const o = plain(raw) ? raw : {}, defects = [];
+  const o = plain(raw) ? raw : {}, defects = [], notes = [];
   if (!plain(raw)) defects.push('The answer is not a json object with "contracts", "validations" and "pieces".');
   const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
   const executables = new Set(installed.flatMap(r => r.executables || [])), ids = new Set(installed.map(r => r.id));
   const baseSet = new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []);
-  // Contracts: own first (a refinement keeps its name), then those the answer adds.
-  const contracts = [], names = new Set(), paths = new Set(), placed = new Set();
-  // The level's contracts already delivered (a job adds to them): each name and placed file stays theirs.
-  const had = new Set(have.map(c => c?.name)), hadPaths = new Set(have.filter(c => c?.path && PLACED_KINDS.has(kindOf(c))).map(c => c.path));
   const written = (Array.isArray(o.contracts) ? o.contracts : []).slice(0, LEVEL_LIMITS.contracts);
   const facts = {rows: installed, languages: [...new Set([...own, ...written].map(c => plain(c) && typeof c.path === 'string' ? toolchainOf(c.path)?.id : null).filter(Boolean))], argvCommands: true, base: baseSet};
+  // Contracts: own first (a refinement keeps its name, kind and path), then those the answer adds.
   const pending = [];
   for (const mine of own) {
     const w = written.find(x => plain(x) && x.name === mine.name);
-    if (!w) defects.push(`Your contract ${mine.name} is not in contracts: list each of your contracts by its name.`);
-    pending.push({raw: w ? {...mine, ...w, name: mine.name, kind: mine.kind, ...(mine.path ? {path: mine.path} : {})} : mine, own: true, serves: mine.serves || []});
+    if (!w) notes.push(`Contract ${mine.name}, given to this level, is not in the answer's contracts: it is carried into the level as it was given.`);
+    pending.push({item: w ? {...mine, ...w, name: mine.name, kind: mine.kind, ...(mine.path ? {path: mine.path} : {})} : mine, own: true, serves: mine.serves || []});
   }
-  for (const w of written) if (!(plain(w) && own.some(m => m.name === w.name))) pending.push({raw: w, own: false, serves: []});
-  for (const {raw: item, own: mine, serves} of pending) {
-    const label = String(plain(item) ? item.name ?? '' : '').slice(0, 80);
-    const c = normalizeContract(item, {v8: true});
+  // A contract the level already has (a job adds to it), listed again, is that one: it stays delivered where it is.
+  const hadNames = new Set(have.map(c => c?.name).filter(Boolean)), relisted = [];
+  for (const w of written) {
+    if (plain(w) && own.some(m => m.name === w.name)) continue;
+    const name = plain(w) && typeof w.name === 'string' ? w.name.trim() : '';
+    if (name && hadNames.has(name) && !own.some(m => m.name === name)) {
+      if (!relisted.includes(name)) { relisted.push(name); notes.push(`Contract ${name.slice(0, 80)} is one this level has already (contracts_you_have): it is read as that one, delivered where it is.`); }
+      continue;
+    }
+    pending.push({item: w, own: false, serves: []});
+  }
+  const entries = [], aliases = new Map();
+  for (const {item, own: mine, serves} of pending) {
+    // A contract with a path and no name is named by its path.
+    const named = plain(item) && typeof item.name !== 'string' && typeof item.path === 'string' && item.path.trim() ? {...item, name: item.path.trim()} : item;
+    const kind = mine ? kindOf(named) : inferKind(named), said = plain(named) && named.kind !== undefined ? String(named.kind).trim().toLowerCase().slice(0, 40) : '';
+    if (!mine && plain(named) && typeof named.name === 'string' && !CONTRACT_KINDS.includes(said) && (said || kind !== 'function'))
+      notes.push(`Contract ${named.name.slice(0, 80)} ${said ? `has the kind "${said}", which is none of the seven` : 'says no kind'}, so it is read as a ${kind}, by its shape.`);
+    const c = normalizeContract(plain(named) ? {...named, kind} : named, {v8: true});
     if (!c) { defects.push(`A contract has no name: ${JSON.stringify(item)?.slice(0, 120)}.`); continue; }
-    const kind = kindOf(c);
-    if (names.has(c.name)) { defects.push(`Contract ${c.name} is listed twice: list each once.`); continue; }
-    if (!mine && had.has(c.name)) { defects.push(`Contract ${c.name} is in contracts_you_have, delivered already: list the contracts this assignment adds, each under a name of its own.`); continue; }
+    delete c.run;
+    const prior = entries.find(e => e.c.name === c.name);
+    if (prior) {
+      if (same(prior.c, c) && same(prior.item?.run ?? null, named?.run ?? null)) notes.push(`Contract ${c.name} is listed twice, the same both times: it is read once.`);
+      else notes.push(`Contract ${c.name} is listed twice, differently: the first is read.`);
+      continue;
+    }
     const bad = mine ? '' : nameError(c, facts);
-    if (bad) { defects.push(`Contract ${label || c.name}: ${bad}.`); continue; }
+    if (bad) { defects.push(`Contract ${String(named?.name ?? c.name).slice(0, 80)}: ${bad}.`); continue; }
     if (PLACED_KINDS.has(kind) && !bundlePath(c.path)) { defects.push(`Contract ${c.name} needs a path inside the project for its file.`); continue; }
     const row = c.path ? toolchainOf(c.path) : null;
     if (row && row.id !== 'text' && !ids.has(row.id)) { defects.push(`Contract ${c.name} is written in ${row.id}, which the box does not run (it runs ${[...ids].join(', ')}).`); continue; }
-    // A file a contract is (a page, a document, a command's script) is that contract's alone; functions may share the file that defines them.
-    if (c.path && PLACED_KINDS.has(kind) && (placed.has(c.path) || hadPaths.has(c.path))) { defects.push(`Two contracts place ${c.path}: give each its own path.`); continue; }
-    names.add(c.name); if (c.path) paths.add(c.path); if (c.path && PLACED_KINDS.has(kind)) placed.add(c.path);
-    contracts.push({...c, ...(serves.length ? {serves} : {}), __raw: item});
+    // One file, one contract that places it: a second contract at a path the level places is that file, under another name.
+    const twin = c.path && PLACED_KINDS.has(kind) ? entries.find(e => e.c.path === c.path && PLACED_KINDS.has(kindOf(e.c))) : null;
+    if (twin) {
+      if (!mine && !twin.own && GENERIC.has(kindOf(twin.c)) && !GENERIC.has(kind)) {
+        entries[entries.indexOf(twin)] = {c, item: named, own: mine, serves};
+        aliases.set(twin.c.name, c.name);
+        for (const [k, v] of aliases) if (v === twin.c.name) aliases.set(k, c.name);
+        notes.push(`Contracts ${twin.c.name} and ${c.name} place the same file ${c.path}: it is one contract, ${c.name}, and ${twin.c.name} names it.`);
+      } else {
+        aliases.set(c.name, twin.c.name);
+        notes.push(`Contracts ${twin.c.name} and ${c.name} place the same file ${c.path}: it is one contract, ${twin.c.name}, and ${c.name} names it.`);
+      }
+      continue;
+    }
+    entries.push({c, item: named, own: mine, serves});
   }
-  // How each page, route and command runs (a level's http and browser checks reach it so).
-  const commands = new Set(contracts.filter(c => kindOf(c) === 'command').map(c => c.name));
-  const world = {commands, executables};
-  for (const c of contracts) {
-    const r = runOf(plain(c.__raw) ? c.__raw.run : undefined, c, world);
-    delete c.__raw;
+  const contracts = entries.map(e => ({...e.c, ...(e.serves.length ? {serves: e.serves} : {})}));
+  // What the level's checks can run by: its contracts, and those it has already (a job adds to them);
+  // then how each page, route and command runs (a level's http and browser checks reach it so).
+  const present = [...contracts, ...have.filter(h => h?.name && !contracts.some(c => c.name === h.name))];
+  const commands = new Set(present.filter(c => kindOf(c) === 'command').map(c => c.name));
+  const world = {commands, executables}, readyAt = new Map();
+  contracts.forEach((c, i) => {
+    const r = runOf(plain(entries[i].item) ? entries[i].item.run : undefined, c, world);
     if (r.error) defects.push(`Contract ${c.name}: ${r.error}.`);
-    else if (r.run) c.run = r.run;
-    if (kindOf(c) === 'route' && !c.run) defects.push(`Contract ${c.name} is a route and says no run: give it "run": {"run": "<the command that serves it>", "ready": "<a path>"}.`);
-  }
+    else if (r.note) notes.push(`Contract ${r.note}.`);
+    else if (r.run) { c.run = r.run; if (r.ready) readyAt.set(c.name, r.ready); }
+    if (kindOf(c) === 'route' && !c.run && !r.error) defects.push(`Contract ${c.name} is a route: give it "run": {"run": "<the command that serves it>", "ready": "<a path>"}.`);
+  });
+  const resolve = resolver(contracts, aliases), resolveHad = resolver(have.filter(h => h?.name), new Map());
   // Validations.
-  const ctx = {paths: new Set([...paths, ...baseSet]), functions: new Set(contracts.filter(c => kindOf(c) === 'function').map(c => c.name)),
-    functionPaths: new Map(contracts.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])),
-    served: new Set(contracts.filter(c => c.run).map(c => c.name)), commands, executables};
-  const validations = [], taken = new Set();
+  // What a check can serve: a contract of this level with a run, or one the level has whose run is served already (its level file holds it as it is).
+  const served = new Set([...contracts.filter(c => c.run), ...runsOf(present.filter(c => !contracts.includes(c))).map(r => ({name: r.id}))].map(c => c.name));
+  const ctx = {paths: new Set([...present.map(c => c.path).filter(Boolean), ...baseSet]), functions: new Set(present.filter(c => kindOf(c) === 'function').map(c => c.name)),
+    functionPaths: new Map(present.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served, commands, executables,
+    resolvePath: p => { const n = resolve(p).names.map(x => contracts.find(c => c.name === x)?.path).filter(Boolean); return new Set(n).size === 1 ? n[0] : ''; },
+    resolveServe: s => { if (!s) return served.size === 1 ? [...served][0] : ''; const n = resolve(s).names.filter(x => served.has(x)); return n.length === 1 ? n[0] : ''; }};
+  const validations = [], taken = new Set(), validationIds = new Set();
   for (const [i, v] of (Array.isArray(o.validations) ? o.validations : []).slice(0, LEVEL_LIMITS.validations).entries()) {
     const label = plain(v) && typeof v.id === 'string' && v.id.trim() ? v.id.trim().slice(0, 24) : `validation ${i + 1}`;
+    if (plain(v) && typeof v.id === 'string' && v.id.trim()) validationIds.add(v.id.trim());
     if (!plain(v)) { defects.push(`${label} is not an object.`); continue; }
-    const serves = [...new Set((Array.isArray(v.serves) ? v.serves : typeof v.serves === 'string' ? [v.serves] : []).filter(s => typeof s === 'string').map(s => s.trim()))];
-    const unknown = serves.filter(s => !names.has(s));
-    if (!serves.length || unknown.length) { defects.push(`${label} serves ${unknown.length ? unknown.join(', ') : 'nothing'}: serves names the contracts of this level it validates (${[...names].join(', ') || 'none'}).`); continue; }
+    const said = [...new Set((Array.isArray(v.serves) ? v.serves : typeof v.serves === 'string' ? [v.serves] : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim()))];
+    let serves = [];
+    for (const s of said) {
+      // A contract the level has already is one a validation of this level may serve.
+      const mine = resolve(s), r = mine.names.length ? mine : resolveHad(s);
+      if (!r.names.length) notes.push(`${label} serves ${s.slice(0, 80)}, which names no contract of this level: it is left out of its serves.`);
+      else if (r.how) notes.push(`${label} serves ${s.slice(0, 80)}, read as ${r.names.join(', ')} (${r.how}).`);
+      serves.push(...r.names);
+    }
+    serves = [...new Set(serves)];
     const c = readCheck(v.check ?? v, ctx);
     if (c.error) { defects.push(`${label}: ${c.error}.`); continue; }
+    if (c.note) notes.push(`${label}: ${c.note}.`);
+    if (!serves.length) {
+      serves = contracts.filter(k => exercises(c.check, k)).map(k => k.name);
+      if (!serves.length) { notes.push(`${label} serves no contract of this level, and its check exercises none: it is not read.`); continue; }
+      notes.push(`${label} names no contract of this level it serves, so it serves what its check exercises: ${serves.join(', ')}.`);
+    }
     const id = !taken.has(label) ? label : `${label}.${i + 1}`;
     taken.add(id);
     validations.push({id, serves, check: c.check, ...(str(v.says, LEVEL_LIMITS.says) ? {says: str(v.says, LEVEL_LIMITS.says)} : {})});
+  }
+  // A page or a command something serves listens on the port its box gives it; a route always does.
+  const servedBy = new Set(validations.map(v => v.check.serve).filter(Boolean));
+  for (const c of contracts) if (c.run && !c.run.static && (kindOf(c) === 'route' || servedBy.has(c.name))) {
+    const r = servedRun(c.run, readyAt.get(c.name));
+    if (r.error) defects.push(`Contract ${c.name}: ${r.error}.`);
+    else c.run = r.run;
   }
   // Three different examples per contract, from its validations here and those that already serve it.
   for (const c of contracts) {
     const mine = [...held.filter(h => (c.serves || []).includes(h.id)), ...validations.filter(v => v.serves.includes(c.name))];
     const n = contractExamples(c, mine).length;
-    if (n < EXAMPLES_PER_CONTRACT) defects.push(`Contract ${c.name} has ${n} different example${n === 1 ? '' : 's'}: give it validations that exercise ${c.name} itself (${exerciseWords(c)}) and show ${EXAMPLES_PER_CONTRACT} different examples (different inputs or steps).`);
+    if (n < EXAMPLES_PER_CONTRACT) defects.push(`Contract ${c.name} has ${n} different example${n === 1 ? '' : 's'}: give it validations that show ${EXAMPLES_PER_CONTRACT} different examples of ${c.name} itself (${exerciseWords(c)}).`);
   }
-  // Pieces: each delivers contracts of this level; together, every one exactly once.
-  const pieces = [], callable = new Set([...names, ...had, ...calls.map(c => c?.name)].filter(Boolean));
+  // Pieces: each delivers contracts of this level, by its names read leniently.
+  const had = new Map(have.filter(c => c?.name).map(c => [c.name, c])), callable = new Set([...had.keys(), ...calls.map(c => c?.name)].filter(Boolean));
+  const pieces = [];
   for (const [i, p] of (Array.isArray(o.pieces) ? o.pieces : []).entries()) {
     if (!plain(p) || !str(p.label, 70) || !str(p.task, 2000)) { defects.push(`Piece ${i + 1} needs a "label" and a "task".`); continue; }
-    const delivers = [...new Set(strings(p.contracts, 32, 200))], unknown = delivers.filter(n => !names.has(n));
-    if (unknown.length) defects.push(`Piece "${str(p.label, 70)}" delivers ${unknown.join(', ')}, which ${unknown.length > 1 ? 'are' : 'is'} not in contracts.`);
-    pieces.push({label: str(p.label, 70), task: str(p.task, 2000), contracts: delivers.filter(n => names.has(n)), uses: [...new Set(strings(p.uses, 16, 200))].filter(n => callable.has(n) && !delivers.includes(n)),
+    const label = str(p.label, 70), delivers = [], uses = [];
+    for (const n of [...new Set(strings(p.contracts, 32, 200))]) {
+      const r = resolve(n);
+      if (r.names.length) { if (r.how) notes.push(`Piece "${label}" delivers ${n.slice(0, 80)}, read as ${r.names.join(', ')} (${r.how}).`); delivers.push(...r.names); }
+      else if (resolveHad(n).names.length) { notes.push(`Piece "${label}" delivers ${n.slice(0, 80)}, which this level has already: it is read as a contract the piece uses.`); uses.push(...resolveHad(n).names); }
+      else if (validationIds.has(n)) notes.push(`Piece "${label}" lists ${n.slice(0, 80)}, a validation, among the contracts it delivers: a piece delivers contracts, so it is left out.`);
+      else notes.push(`Piece "${label}" delivers ${n.slice(0, 80)}, which names no contract of this level: it is left out.`);
+    }
+    for (const n of [...new Set(strings(p.uses, 16, 200))]) {
+      const r = resolve(n), named = r.names.length ? r.names : callable.has(n.trim()) ? [n.trim()] : [];
+      if (!named.length) { notes.push(`Piece "${label}" uses ${n.slice(0, 80)}, which names no contract it may use: it is left out.`); continue; }
+      if (r.how) notes.push(`Piece "${label}" uses ${n.slice(0, 80)}, read as ${named.join(', ')} (${r.how}).`);
+      uses.push(...named);
+    }
+    const mine = [...new Set(delivers)];
+    pieces.push({label, task: str(p.task, 2000), contracts: mine, uses: [...new Set(uses)].filter(n => !mine.includes(n)),
       ...(Array.isArray(p.refs) ? {refs: strings(p.refs, 16, 40)} : {}), ...(p.packages !== undefined ? {packages: strings(p.packages, 16, 80)} : {})});
   }
   if (pieces.length > maxPieces) defects.push(`The answer has ${pieces.length} pieces; use at most ${maxPieces}, grouping related pieces into one piece whose task covers them.`);
-  if (pieces.length) for (const c of contracts) {
-    const by = pieces.filter(p => p.contracts.includes(c.name));
-    if (by.length !== 1) defects.push(`Contract ${c.name} is delivered by ${by.length ? by.map(p => `"${p.label}"`).join(' and ') : 'no piece'}: give it to exactly one piece.`);
+  return {contracts, validations, pieces, defects, notes, division: divisionOf(contracts, pieces, have, relisted)};
+}
+// The facts of a division Clef's review reads: the paths each piece places,
+// the contracts no piece delivers and those several deliver, the paths
+// several pieces place, and the contracts the level already has that the
+// answer lists again or whose files it places again.
+export function divisionOf(contracts, pieces, have = [], listed = []) {
+  const byName = new Map(contracts.map(c => [c.name, c])), places = pieces.map(p => [...new Set(p.contracts.map(n => byName.get(n)?.path).filter(Boolean))]);
+  const out = {places};
+  if (pieces.length) {
+    const undelivered = contracts.filter(c => !pieces.some(p => p.contracts.includes(c.name))).map(c => c.name);
+    const several = contracts.map(c => ({contract: c.name, pieces: pieces.filter(p => p.contracts.includes(c.name)).map(p => p.label)})).filter(x => x.pieces.length > 1);
+    const paths = new Map();
+    pieces.forEach((p, i) => { for (const at of places[i]) paths.set(at, [...(paths.get(at) || []), p.label]); });
+    const shared = [...paths].filter(([, by]) => by.length > 1).map(([path, by]) => ({path, pieces: by}));
+    if (undelivered.length) out.undelivered = undelivered;
+    if (several.length) out.delivered_by_several = several;
+    if (shared.length) out.placed_by_several = shared;
   }
-  // One path, one owner: a file is written by one piece, so the contracts of
-  // two pieces never name one path, nor one a contract the level has names.
-  const byPath = new Map();
-  for (const p of pieces) for (const n of p.contracts) { const at = contracts.find(c => c.name === n)?.path; if (at) byPath.set(at, [...new Set([...(byPath.get(at) || []), p.label])]); }
-  for (const [at, owners] of byPath) if (owners.length > 1) defects.push(`Two pieces place ${at} (${owners.map(l => `"${l}"`).join(' and ')}): a file has one owner, so give the contracts of each piece paths of their own, or give the contracts at ${at} to one piece.`);
-  const hadAt = new Map(have.filter(c => c?.path).map(c => [c.path, c.name]));
-  for (const c of contracts) if (c.path && !own.some(o => o.name === c.name) && hadAt.has(c.path)) defects.push(`Contract ${c.name} places ${c.path}, which ${hadAt.get(c.path)} of contracts_you_have places: a file has one owner, so give ${c.name} a path of its own.`);
-  return {contracts, validations, pieces, defects};
+  const had = have.filter(c => c?.name), relisted = [...new Set([...listed, ...contracts.filter(c => had.some(h => h.name === c.name)).map(c => c.name)])];
+  const replaced = contracts.filter(c => c.path && !relisted.includes(c.name)).flatMap(c => had.filter(h => h.path === c.path).map(h => ({contract: c.name, path: c.path, has: h.name})));
+  if (relisted.length) out.already_delivered = relisted;
+  if (replaced.length) out.placed_already = replaced;
+  return out;
 }
 
 // A file check that looks for texts inside a file of a code row: Clef is

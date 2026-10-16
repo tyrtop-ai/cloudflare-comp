@@ -310,6 +310,13 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
 });
 // v8 live 5: the first proposal and two retries.
 export const SPLIT_ATTEMPTS = 3;
+// v8 live 6: a retry reads every defect its previous answer still has, up to
+// this many, beside that answer (previous_answer), at most ANSWER_CHARS of it
+// as json; a longer answer goes as its first ANSWER_CHARS characters, text.
+export const SPLIT_DEFECTS_SHOWN = 24, ANSWER_CHARS = 24000;
+export const answerOf = raw => { const s = JSON.stringify(raw ?? null); return s.length <= ANSWER_CHARS ? raw : s.slice(0, ANSWER_CHARS); };
+// A splitter row's output: the answer as given and the level as read, one json document (never cut mid-way).
+export const splitterRecord = (raw, level) => JSON.stringify({answer: answerOf(raw), contracts: level.contracts, validations: level.validations, pieces: level.pieces, defects: level.defects, notes: level.notes || [], division: level.division || {}});
 // v8: a Clef mark below this reads as a doubt about a validation: shown
 // beside it, and first in a hold's text; the validation is never removed.
 export const VALIDATION_DOUBT_BAR = 0.5;
@@ -8680,9 +8687,9 @@ export class ControlRoom extends DurableObject {
     const level=out.level,why=out.error?`its answer held no level (${clip(out.error,200)})`:'';
     if(why||level.defects.length) {
       this.recordAttempt(id,{attempt,job:key,splitter:out.sid,defects:why?1:level.defects.length,outcome:attempt>=SPLIT_ATTEMPTS?'exhausted':'retry rules',ms:Date.now()-started});
-      const list=why?[RETRY.json]:level.defects.slice(0,12);
       this.event(id,'split_defects',clip(`The splitter's attempt ${attempt} of ${SPLIT_ATTEMPTS} misses the runtime's rules: ${why||level.defects.join(' ')}`,1500));
-      if(attempt<SPLIT_ATTEMPTS){this.save(`split_feedback:${id}`,{kind:'rules',reason:RETRY.rules(list)});this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);this.save('queue',addLast(this.read('queue',[]),id));return;}
+      // The retry converges: it reads its previous answer and only what that answer still needs, so the parts that held are kept as they were.
+      if(attempt<SPLIT_ATTEMPTS){this.save(`split_feedback:${id}`,why?{kind:'rules',reason:RETRY.json}:{kind:'rules',reason:RETRY.rules(level.defects.slice(0,SPLIT_DEFECTS_SHOWN)),answer:out.answer});this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);this.save('queue',addLast(this.read('queue',[]),id));return;}
       this.save(`split_feedback:${id}`,null);
       // The last attempt missed too: given contracts go to one worker (their validations are held above); a level that has none is the parent's to settle.
       if(own.length)return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{job,why:`Its splitter's ${SPLIT_ATTEMPTS} attempts missed the runtime's rules, so it hands its contracts down to one worker.`});
@@ -8690,7 +8697,7 @@ export class ControlRoom extends DurableObject {
       return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's ${SPLIT_ATTEMPTS} attempts missed the runtime's rules (${level?.defects?.slice(0,4).join(' ')||why}).`,1100));
     }
     const pieces=divide?level.pieces:[],split=pieces.length>=2,retry=feedback?.retry||'';
-    const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||given.prompt,2600),contracts:level.contracts,pieces:split?pieces:[],validations:level.validations,attempt,retry});
+    const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||given.prompt,2600),contracts:level.contracts,pieces:split?pieces:[],validations:level.validations,division:split?level.division:null,attempt,retry});
     level.validations=level.validations.map((v,j)=>({...v,notes:review.notes[j]||{}}));
     const doubted=level.validations.filter(v=>Object.values(v.notes).some(p=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR));
     if(doubted.length)this.event(id,'validations_doubtful',clip(`Clef doubts ${doubted.map(v=>`${v.id} (${Object.entries(v.notes).filter(([,p])=>p<VALIDATION_DOUBT_BAR).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}; each is kept, marked.`,900));
@@ -8731,13 +8738,15 @@ export class ControlRoom extends DurableObject {
       ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest}}:{}),
       ...this.sourceInputs(id,'summaries'),
       max_pieces:divide?feedback?.retry==='fewer'&&Number.isInteger(feedback.bound)?Math.min(feedback.bound,this.maxChildren()):this.maxChildren():0,
-      ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
+      ...(feedback?.reason?{...(feedback.answer?{previous_answer:feedback.answer}:{}),previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
     const raw=await splitLevel(this.inferenceEnv('worker'),request);
     if(raw.parse_error){this.db().exec("UPDATE splitters SET ended_at=?,outcome='unreadable',output=? WHERE id=?",Date.now(),JSON.stringify({raw:clip(raw.raw,1500)}),sid);return {sid,error:raw.raw||'no json object'};}
     const level=readLevel(divide?raw:{...raw,pieces:[]},{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:this.maxChildren()});
-    this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),level.defects.length?'defects':'read',clip(JSON.stringify({contracts:level.contracts,validations:level.validations,pieces:level.pieces,defects:level.defects}),20000),sid);
+    // The row keeps the answer as the splitter gave it beside the level as it was read, with the reader's notes, as one json document.
+    this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),level.defects.length?'defects':'read',splitterRecord(raw,level),sid);
     this.event(id,'splitter',clip(`${sid} answered: ${level.contracts.length} contract(s), ${level.validations.length} validation(s), ${level.pieces.length} piece(s)${level.defects.length?`; ${level.defects.length} miss(es) of the rules`:''}.`,600));
-    return {sid,level};
+    if(level.notes.length)this.event(id,'level_read',clip(`How ${sid}'s answer was read: ${level.notes.join(' ')}`,1500));
+    return {sid,level,answer:answerOf(raw)};
   }
   splitterRows() { return query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome FROM splitters ORDER BY spawned_at,id'); }
   // The manager admits a level: its validations (each a row, V<n>, held where
@@ -9204,7 +9213,8 @@ export class ControlRoom extends DurableObject {
   // The prompt is the one its manager's level file holds for it (designOf).
   workerView(id, inbox=[], ownFiles=[]) {
     const design=this.designOf(id),byId=this.validationsById(),facts=this.referenceFacts(id),callable=this.callableOf(id),refs=useReferences(callable,facts);
-    const runText=c=>!c.run?'':c.run.static?'its files are served as they are':`${c.run.run} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`;
+    // How it is reached when something serves it: its files as they are, or its command listening on the port in PORT. A command's own command line, which nothing serves, is its file's.
+    const runText=c=>!c.run?'':c.run.static?'its files are served as they are':c.run.port?`${c.run.run} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`:'';
     const deliver=design.contracts.map(c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
       ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{}),...(runText(c)?{runs:runText(c)}:{}),
       examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));

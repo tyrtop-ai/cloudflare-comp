@@ -119,18 +119,18 @@ test('queue: prompts queued while the first run goes wait for it; then the alarm
   assert.equal(head.prompt_history.length, 2);
 });
 
-test('an extension that names a contract its level has is a defect of the splitter\'s answer: its next attempt hears why, and nothing is delivered twice', {skip: !hasPython && 'python3 is not installed'}, async () => {
+test('an extension that lists again a contract its level has reads it as that one, delivered where it is: no miss, a note says so, and nothing is delivered twice', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const again = {...README_LEVEL, contracts: [TEMP, README], pieces: []};
-  let n = 0;
-  const split = user => user.assignment === README_CHANGE ? (n++ ? README_LEVEL : again) : tempSplit(user);
+  const split = user => user.assignment === README_CHANGE ? again : tempSplit(user);
   const {room, calls, drain} = queueRoom({split, leaf: tempLeaf, clef: tempClef});
   await room.start(GOAL, 40, {pipeline: 'v8'});
   await drain();
   await room.amend(README_CHANGE);
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
-  assert.match(calls.split.at(-1).previous_answer_problems.join(' '), /Contract temp is in contracts_you_have, delivered already/);
-  assert.deepEqual(room.splitterRows().map(r => [r.kind, r.outcome]), [['split', 'read'], ['extend', 'defects'], ['extend', 'read']]);
+  assert.ok(!calls.split.at(-1).previous_answer_problems, 'its first answer is admitted');
+  assert.deepEqual(room.splitterRows().map(r => [r.kind, r.outcome]), [['split', 'read'], ['extend', 'read']]);
+  assert.match(events(room, 'level_read').at(-1).body, /Contract temp is one this level has already \(contracts_you_have\): it is read as that one, delivered where it is\./);
   assert.equal(kids(room, room.roomManager()).filter(c => room.promisedOf(c.id).some(f => f.name === 'temp')).length, 1);
   assert.equal(events(room, 'bundle_conflict').length, 0);
 });
