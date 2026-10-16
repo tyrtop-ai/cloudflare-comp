@@ -185,6 +185,27 @@ Every manager is the same; the top is a manager whose parent is a prompt handler
 - **The top asks and escalates like anyone.** A contract nobody on its line provides goes to the person as the room hold `ask_unanswered`; a follow-up prompt answers it, Continue leaves it to the asker. A package ask is answered with what is installed, as before. `can_escalate` is true for every manager; one with no agent above escalates to the room.
 - **No extra rules for the top.** It may decline to split; an unsplit agent anywhere is a worker; any row that holds checks runs them through one path (`compileCard(id)`) over its own bundle when its work is done. v7 keeps its own paths.
 
+## M3: piece compiles
+
+Every manager hands its finished children to a builder of its own, and compiling starts in each piece's own box as soon as that piece's subtree is done, so the top no longer does all of it.
+
+- **A builder at every level, always.** When a manager's children are all done it hands them to its builder, an agent row (`builder:<id>`) that joins their assembled pieces: a worker's files, or a child manager's piece as that child's builder stored it on its row (`piece_files`, `piece:<builder>` with its digest). Assembly is hierarchical: a rename made lower down stays with its piece, and the top's builder joins only the top's direct children. The builder runs the rename-only linker and the toolchain glue, and asks the link model only for a reference the runtime's renames do not join that a check held there reaches (every one at the top), telling it when the piece is one branch of a larger project. Its fixes are its own (`link_fixes:<builder>`).
+- **Each check is held where its pieces meet.** A card check is held by exactly one row: the lowest manager whose subtree serves everything its requirement serves; a check no row serves is the top's. Checks move as a split admits pieces, as a child is retasked or retired and as a change adds checks (`checks_placed`); none is ever dropped.
+- **The piece's own box.** After assembly a manager runs the checks it holds that have no current pass. Below the top a check runs there only when (a) the import closure of the files it exercises lies inside the piece, in an installed package or in the language, which the linker knows from each file's references, and (b) Clef finds that nothing it reaches comes from another piece (`CLEF.piece_reach`, below). The others roll up to the manager above, which holds them from then on (`check_rolled_up`). "Compiled" is each file through its toolchain row's syntax step; "run" is each check exercising a contract by its kind. One setting, `BOX_CONCURRENCY` (default 4), bounds the boxes a room has open, the top's included.
+- **Failures in a piece's box.** One about something outside the piece (an unresolved name or module by the rows' `unresolved` patterns, a missing package, a refused connection, a 404 on a route no contract of the piece serves) rolls up instead of becoming a repair; any other routes down by serves inside the piece, as the top's always did.
+- **Passes per check.** A pass is recorded with the digest of the piece's owned files before linking (`piece_pass:<id>`); while that piece owns the same files and the check's scope stays inside it, the check is not run again anywhere above. Run finished: the top is done and every card check has a current pass.
+- **Every check state is the row's:** `compile_reported:<id>`, `compile_blocked:<id>`, `checks_retries:<id>`, `compile_infrastructure:<id>`, `link_noted:<id>`, `glue_files:<id>`, `link_tried:<id>`.
+- **Spans** `piece_link`, `piece_clef`, `piece_box` and `piece_checks`, per manager, show in the export when each piece was joined, judged and compiled.
+- The dashboard's saved tree draws each manager's builder beside it; the live tree already showed it as the manager's right half. A manager's model no longer lists its builder among the children a problem may go to: the builder relinks when it joins and after a run.
+
+Clef's question, asked per check for the reach the linker cannot see:
+
+> Piece {name} delivers the contracts listed and is made of the files listed. When check {i} exercises it as described, does everything it reaches come from these files, the installed packages or the language? Answer NO if it reaches what another piece provides, such as a route a page requests, a file read while it runs, or another part's function.
+
+It never asks whether something builds, compiles, runs on its own or is a program or an application: those words score a library NO and a command-line tool YES. A wrong NO only delays a check, which then runs a level up; a Clef error rolls the checks up too.
+
+On the scripted two-level split in `test/v8-m3.test.js` (a root with two parts of two workers each and a notes worker), the run opens 3 boxes (one per part, running its two calls, and the top's, which compiles every file and runs no call because its two checks are file checks), makes 2 Clef `pieceReach` calls (one per part, two questions each) and no link model call; the two parts' boxes overlap and finish before the top's builder starts.
+
 ## Not done yet
 
 - **S7**: making v8 the default and deleting the v7 paths. It waits for live runs.
