@@ -15,11 +15,14 @@ import { existsSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { liveRoom, events } from './helpers/room.js';
+import { liveRoom, events, rowId } from './helpers/room.js';
 import { installedPackages, installedLine, stdlibHints, heldForNeed, heldByName, packageLanguage, languageAnswer, missingModule, externalModule, piecePackages } from '../src/packages.js';
 import { catalogue } from '../src/broker.js';
 import { MESSAGES, BROKER_LABEL } from '../src/prompts.js';
 import { TOOLCHAINS } from '../src/toolchains.js';
+const TOP = await rowId('v714-test', 1, 'manager');
+const BACKEND = await rowId(TOP, 1, 'manager');
+const SERVER = await rowId(BACKEND, 1, 'worker');
 
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH && existsSync('/opt/pw-browsers')) process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
 if (!process.env.NODE_PATH && existsSync('/opt/node-tools/node_modules/playwright')) process.env.NODE_PATH = '/opt/node-tools/node_modules';
@@ -143,33 +146,33 @@ test('2: an ask by a package\'s name goes up its line: a row that holds it grant
   const {room} = liveRoom({});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   const pytest = {name: 'pytest', language: 'python', provides: 'tests'}, requests = {name: 'requests', language: 'python', provides: 'HTTP client'};
-  await room.provision('root', null, 'Root objective', TRACKER_GOAL, [], [], [pytest, requests]);
-  await room.provision('root.1', 'root', 'Backend', 'the backend', [], [], [pytest]);
-  await room.provision('root.1.1', 'root.1', 'Server', 'the server', [], [], []);
+  await room.provision(TOP, null, 'Root objective', TRACKER_GOAL, [], [], [pytest, requests], 'manager', {seq: 1});
+  await room.provision(BACKEND, TOP, 'Backend', 'the backend', [], [], [pytest], 'manager', {seq: 1});
+  await room.provision(SERVER, BACKEND, 'Server', 'the server', [], [], [], 'worker', {seq: 1});
   // Granted by its manager, which holds it.
-  const own = room.packageAsk('root.1.1', {name: 'pytest'});
+  const own = room.packageAsk(SERVER, {name: 'pytest'});
   assert.equal(own.how, 'granted');
-  assert.deepEqual(room.packagesOf('root.1.1').map(p => p.name), ['pytest']);
+  assert.deepEqual(room.packagesOf(SERVER).map(p => p.name), ['pytest']);
   assert.match(events(room, 'package_granted').at(-1).body, /^"Backend" granted pytest to "Server" for pytest\.$/);
   // httpx stands for an HTTP client: the manager holds none; Root's requests provides one, granted down the line.
-  const http = room.packageAsk('root.1.1', {name: 'httpx', need: 'fetch a page'});
+  const http = room.packageAsk(SERVER, {name: 'httpx', need: 'fetch a page'});
   assert.equal(http.how, 'granted');
   assert.equal(http.text, MESSAGES.package_granted({need: 'HTTP client', names: 'requests (HTTP client)', many: false}));
-  assert.ok(room.packagesOf('root.1').some(p => p.name === 'requests'), 'every row between holds it too');
-  assert.ok(room.packagesOf('root.1.1').some(p => p.name === 'requests'));
+  assert.ok(room.packagesOf(BACKEND).some(p => p.name === 'requests'), 'every row between holds it too');
+  assert.ok(room.packagesOf(SERVER).some(p => p.name === 'requests'));
   assert.match(events(room, 'package_relayed').at(-1).body, /^"Backend" asked for httpx, beyond its own packages; asked "Root objective"\.$/);
   // Its own row's: pointed to.
-  assert.equal(room.packageAsk('root.1.1', {name: 'pytest'}).how, 'yours');
+  assert.equal(room.packageAsk(SERVER, {name: 'pytest'}).how, 'yours');
   // The language's standard library: named as part of it, never granted.
-  const socket = room.packageAsk('root.1.1', {name: 'socket', need: 'raw TCP'});
+  const socket = room.packageAsk(SERVER, {name: 'socket', need: 'raw TCP'});
   assert.deepEqual([socket.how, socket.text], ['language', MESSAGES.package_stdlib({name: 'socket'})]);
-  assert.ok(!room.packagesOf('root.1.1').some(p => p.name === 'socket'));
+  assert.ok(!room.packagesOf(SERVER).some(p => p.name === 'socket'));
   // A name no row holds and no language answers: no package answer, so the ask goes on as a contract ask.
-  assert.equal(room.packageAsk('root.1.1', {name: 'matplotlib', need: 'draw charts'}), null);
-  assert.equal(room.askKind('root.1.1', 'matplotlib', 'draw charts').kind, 'contract');
+  assert.equal(room.packageAsk(SERVER, {name: 'matplotlib', need: 'draw charts'}), null);
+  assert.equal(room.askKind(SERVER, 'matplotlib', 'draw charts').kind, 'contract');
   // A worker's control-block ask is answered as a labelled broker answer, never dropped.
-  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1.1'");
-  assert.equal(room.askKind('root.1.1', 'flask', 'the web framework').kind, 'package');
-  assert.equal(room.brokerAnswer('root.1.1', {key: 'fn flask', name: 'flask', question: 'the web framework'}), true);
-  assert.equal(room.read('fn_answers:root.1.1', []).at(-1).text.label, BROKER_LABEL.package);
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", SERVER);
+  assert.equal(room.askKind(SERVER, 'flask', 'the web framework').kind, 'package');
+  assert.equal(room.brokerAnswer(SERVER, {key: 'fn flask', name: 'flask', question: 'the web framework'}), true);
+  assert.equal(room.read(`fn_answers:${SERVER}`, []).at(-1).text.label, BROKER_LABEL.package);
 });

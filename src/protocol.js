@@ -9,6 +9,8 @@ export const isPath = v => typeof v === 'string' && v.length > 0 && v.length <= 
   !v.startsWith('/') && !v.includes('\\') &&
   !v.split('/').some(p => !p || p.length > 255 || p === '.' || p === '..' || p.toLowerCase() === '.git');
 export const isId = v => typeof v === 'string' && /^root(?:\.\d+)*$/.test(v);
+// v8: a row's id, <role>-<hex16> (src/index.js rowId).
+export const isRowId = v => typeof v === 'string' && /^(?:manager|worker|builder|splitter)-[0-9a-f]{16}$/.test(v);
 
 export function contentOf(output) {
   if (typeof output === 'string') return output;

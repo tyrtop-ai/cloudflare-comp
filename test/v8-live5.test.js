@@ -71,8 +71,8 @@ async function room5({pre = topOnly(0.6), review, pieces, answers, settings = {}
 }
 const passed = room => Object.values(room.read('validation_status', {})).filter(s => s.passed === true).length;
 const tail = room => events(room).filter(e => !['dispatch', 'turn_start', 'turn_end', 'write', 'revision', 'commit', 'expose'].includes(e.kind)).slice(-20).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 200)}`).join('\n');
-const kids = (room, id = 'root') => room.children(id).filter(c => !['builder', 'compiler'].includes(c.role));
-const attemptsOf = (room, id = 'root') => room.splitAttempts(id).map(({task: _, ms: __, ...a}) => a);
+const kids = (room, id = room.roomManager()) => room.children(id).filter(c => !['builder', 'compiler'].includes(c.role));
+const attemptsOf = (room, id = room.roomManager()) => room.splitAttempts(id).map(({task: _, ms: __, ...a}) => a);
 
 // ------------------------------------------------------------ the gate's state
 test('live 5: the pre-grade reads the assignment and the row\'s contracts, one line each, at the room\'s manager and at a lower manager', async () => {
@@ -90,7 +90,7 @@ test('live 5: the pre-grade reads the assignment and the row\'s contracts, one l
   for (const s of seen.pre) for (const line of s.state.contracts) assert.doesNotMatch(line, /contains|e\.g\./);
   assert.equal(gateLine({name: 'app.py', kind: 'file', path: 'app.py', does: 'Runs the issue tracker server', serves: ['V1', 'V2', 'V3', 'V4'], examples: [{given: 'GET /tickets', expect: 'a list'}]}),
     'file app.py (app.py): Runs the issue tracker server; serves V1, V2, V3, V4');
-  assert.ok((await room.exportHead()).split_attempts.root.some(a => a.attempt === 1 && a.outcome === 'admitted'));
+  assert.ok((await room.exportHead()).split_attempts[room.roomManager()].some(a => a.attempt === 1 && a.outcome === 'admitted'));
   assert.equal(passed(room), 9);
 });
 
@@ -197,14 +197,16 @@ test('live 5: the floor and both bars come from the room\'s settings; the valid 
   // A floor of 0.2 catches a p of 0.15: the room's manager states its level with no pieces.
   const caught = await room5({pre: () => 0.15, settings: {split_floor: 0.2}});
   assert.equal(caught.calls.split[0].max_pieces, 0);
-  assert.equal(caught.room.splitAttempts('root')[0].floor, 0.2);
+  assert.equal(caught.room.splitAttempts(caught.room.roomManager())[0].floor, 0.2);
   assert.deepEqual(kids(caught.room).map(c => c.role), ['worker']);
   // Bars of 0.85 and 0.3: valid 0.8 is a NO, size 0.35 a YES.
   const barred = await room5({review: [{valid: 0.8, size: 0.35}, {valid: 0.9, size: 0.35}], pieces: (_u, n) => n === 1 ? THREE : TWO, settings: {split_valid_bar: 0.85, split_size_bar: 0.3}});
-  assert.deepEqual(barred.room.splitAttempts('root').filter(a => a.attempt > 0).map(a => [a.valid_bar, a.size_bar, a.outcome]), [[0.85, 0.3, 'retry different'], [0.85, 0.3, 'admitted']]);
+  assert.deepEqual(barred.room.splitAttempts(barred.room.roomManager()).filter(a => a.attempt > 0).map(a => [a.valid_bar, a.size_bar, a.outcome]), [[0.85, 0.3, 'retry different'], [0.85, 0.3, 'admitted']]);
   // The valid bar rises with depth: the room's manager's children keep it, a level below rises.
-  assert.equal(barred.room.splitBar('root.1', 0.5), 0.5);
-  assert.equal(barred.room.splitBar('root.1.1', 0.5), 0.545);
+  const [child] = kids(barred.room), [grandchild] = kids(barred.room, child.id);
+  assert.deepEqual([barred.room.depthOf(child.id), barred.room.depthOf(grandchild.id)], [1, 2]);
+  assert.equal(barred.room.splitBar(child.id, 0.5), 0.5);
+  assert.equal(barred.room.splitBar(grandchild.id, 0.5), 0.545);
 });
 
 // ------------------------------------------------------------ a file check matches modulo whitespace runs

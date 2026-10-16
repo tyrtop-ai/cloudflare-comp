@@ -288,7 +288,7 @@ test('a browser page with two scripts importing each other: the page\'s script p
 test('runUnresolved: a run\'s unresolved names per reader, by its frame or by the one file that imports the module', () => {
   const {room} = liveRoom();
   const files = new Map([['cli.py', 'from tally import x\nprint(zebraName)\n'], ['other.py', 'import os\n']]);
-  const bundle = {files, origin: new Map([['cli.py', {owner: 'root.1', owner_path: 'cli.py'}], ['other.py', {owner: 'root.2', owner_path: 'other.py'}]])};
+  const bundle = {files, origin: new Map([['cli.py', {owner: 'worker-1111111111111111', owner_path: 'cli.py'}], ['other.py', {owner: 'worker-2222222222222222', owner_path: 'other.py'}]])};
   const results = new Map([
     ['V1', {passed: false, detail: 'exit 1', output: "NameError: name 'zebraName' is not defined", frames: [{path: 'cli.py', line: 2}]}],
     ['V2', {passed: false, detail: 'exit 1', output: "ModuleNotFoundError: No module named 'tally'", frames: []}],

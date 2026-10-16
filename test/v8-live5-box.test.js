@@ -171,7 +171,7 @@ test('a v8 room whose box has a bad host name holds at checks_blocked for the pe
   const pause = r.room.snapshot().pause;
   assert.equal(pause?.kind, 'checks_blocked', JSON.stringify(pause));
   assert.match(pause.text, /The box's environment, not the code: the box's host name/);
-  assert.match(r.room.get('compile_infrastructure:root'), /host name is not one a check can run under/);
+  assert.match(r.room.get(`compile_infrastructure:${r.room.roomManager()}`), /host name is not one a check can run under/);
   assert.equal(r.room.problems('1=1').length, 0, 'nothing is routed');
   assert.equal(r.calls.leaf.length, 1, 'the worker was never asked to repair it');
   assert.equal(r.room.read('validation_status', {}).V1.passed, null, 'V1 untested, not failed');

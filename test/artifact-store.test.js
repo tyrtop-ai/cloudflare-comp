@@ -90,3 +90,13 @@ test('failures name the failing phase and never expose the write token',async()=
     if(phase==='refs')assert.deepEqual(git.names(),['getRemoteInfo2'],'nothing is written when the remote state is unknown');
   }
 });
+
+test('v8: a name Artifacts already holds (a create whose answer never reached the room, replayed) is that repository; any other refusal stands',async()=>{
+  const refused=new Error('repository already exists');
+  const holding=info=>({create:async()=>{throw refused;},get:async()=>({info:async()=>info})});
+  assert.deepEqual(await new CloudflareArtifactStore(holding({name:'repo',remote:REMOTE,defaultBranch:'main'})).create('repo','d'),{name:'repo',remote:REMOTE,branch:'main'});
+  await assert.rejects(new CloudflareArtifactStore(holding({name:'repo'})).create('repo','d'),refused,'no remote: not a repository the room can write');
+  await assert.rejects(new CloudflareArtifactStore({create:async()=>{throw refused;},get:async()=>{throw new Error('NOT_FOUND');}}).create('repo','d'),refused);
+  const made=await new CloudflareArtifactStore({create:async name=>({name,remote:REMOTE,defaultBranch:'main'})}).create('repo','d');
+  assert.deepEqual(made,{name:'repo',remote:REMOTE,branch:'main'});
+});

@@ -85,6 +85,11 @@ test('queue: prompts queued while the first run goes wait for it; then the alarm
   const grown = kids(room, m).find(c => room.promisedOf(c.id).some(f => f.name === 'README.md'));
   assert.ok(grown, 'a new child of the room\'s manager');
   assert.deepEqual(room.levelDesign(m).contracts.map(c => c.name), ['temp', 'USAGE.md', 'README.md']);
+  // The extension is a change to the level: the room's manager commits its level file again, with the new child; its row keeps that commit.
+  const held = room.db().exec("SELECT revision,commit_hash,c.content AS content FROM artifact_files f JOIN artifact_contents c USING(agent,path) WHERE agent=? AND path='level.json'", m).toArray()[0];
+  assert.deepEqual(JSON.parse(held.content).children.map(c => c.id), [converter.id, guide.id, grown.id]);
+  assert.equal(held.revision, 2);
+  assert.equal(room.levelIndex(m).commit, held.commit_hash);
   assert.equal(room.validationRows().length, 9);
   assert.ok(passing(room));
   assert.equal(room.read('compile_passed', null).goal_rev, 2);

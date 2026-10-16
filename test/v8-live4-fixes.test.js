@@ -12,7 +12,7 @@ import { existsSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { liveRoom, events } from './helpers/room.js';
+import { liveRoom, events, rowId } from './helpers/room.js';
 import { lintText } from './helpers/prompt-lint.js';
 import { normalizePackages, needWords, readsModule, piecePackages, PACKAGES_MAX, installedPackages, stdlibHints } from '../src/packages.js';
 import { MESSAGES } from '../src/prompts.js';
@@ -64,13 +64,17 @@ test('M4 + M5: in Chromium, input[type=text] matches an input with no type; hidd
 
 // ------------------------------------------------------------ packages
 const PYTEST = {name: 'pytest', language: 'python', provides: 'tests'};
+const TOP = await rowId('v714-test', 1, 'manager');
+const BACKEND = await rowId(TOP, 1, 'manager');
+const SERVER = await rowId(BACKEND, 1, 'worker');
+const JSON_PIECE = await rowId(TOP, 2, 'manager');
 async function line(rootPackages = [PYTEST], {packages = 'none'} = {}) {
   const {room} = liveRoom({});
   room.save('settings', {...room.settings(), pipeline: 'v8', packages});
-  await room.provision('root', null, 'Root objective', 'a tracker', [], [], rootPackages);
-  await room.provision('root.1', 'root', 'Backend', 'the backend', [{name: 'addTodo', kind: 'function', path: 'todo.py', does: 'adds a to-do'}], [], [PYTEST]);
-  await room.provision('root.1.1', 'root.1', 'Server', 'the server', [{name: 'app.py', kind: 'file', path: 'app.py', does: 'the server'}], [], []);
-  room.db().exec("UPDATE agents SET phase='implement' WHERE id='root.1.1'");
+  await room.provision(TOP, null, 'Root objective', 'a tracker', [], [], rootPackages, 'manager', {seq: 1});
+  await room.provision(BACKEND, TOP, 'Backend', 'the backend', [{name: 'addTodo', kind: 'function', path: 'todo.py', does: 'adds a to-do'}], [], [PYTEST], 'manager', {seq: 1});
+  await room.provision(SERVER, BACKEND, 'Server', 'the server', [{name: 'app.py', kind: 'file', path: 'app.py', does: 'the server'}], [], [], 'worker', {seq: 1});
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", SERVER);
   return room;
 }
 
@@ -78,27 +82,27 @@ test('H2: an ask is a package\'s by its name alone; the review\'s probe asks, wo
   const room = await line();
   for (const a of [{name: 'formatDate', need: 'a helper from the shared utilities package that formats dates for display'}, {name: 'saveTodos', need: 'the storage dependency that persists the list'},
     {name: '', need: 'which framework should the page use for routing'}, {name: 'Store', need: 'the class another piece will install into the app'}, {name: 'addTodo', need: 'the to-do library'}])
-    assert.equal(room.askKind('root.1.1', a.name, a.need).kind, 'contract', JSON.stringify(a));
+    assert.equal(room.askKind(SERVER, a.name, a.need).kind, 'contract', JSON.stringify(a));
   // brokerAnswer leaves a contract ask to askManager, and no package answer is recorded for it.
-  assert.equal(room.brokerAnswer('root.1.1', {key: 'fn saveTodos', name: 'saveTodos', question: 'the storage dependency that persists the list'}), false);
+  assert.equal(room.brokerAnswer(SERVER, {key: 'fn saveTodos', name: 'saveTodos', question: 'the storage dependency that persists the list'}), false);
   assert.equal(events(room, 'package_answer').length, 0);
   // A name the rows know as a package's is one, whatever its need says.
-  assert.equal(room.askKind('root.1.1', 'pytest', 'the class another piece writes').kind, 'package');
-  assert.equal(room.askKind('root.1.1', 'flask', '').kind, 'package');
+  assert.equal(room.askKind(SERVER, 'pytest', 'the class another piece writes').kind, 'package');
+  assert.equal(room.askKind(SERVER, 'flask', '').kind, 'package');
   // A contract of that name is the contract's.
-  await room.provision('root.2', 'root', 'Json', 'the json piece', [{name: 'json', kind: 'function', path: 'json_tools.py', does: 'reads json'}], [], []);
-  assert.equal(room.askKind('root.1.1', 'json', 'parse').kind, 'contract');
+  await room.provision(JSON_PIECE, TOP, 'Json', 'the json piece', [{name: 'json', kind: 'function', path: 'json_tools.py', does: 'reads json'}], [], [], 'manager', {seq: 2});
+  assert.equal(room.askKind(SERVER, 'json', 'parse').kind, 'contract');
 });
 
 test('M1: a module of the language\'s standard library is part of the language: answered as such, never granted, listed or logged for the person', async () => {
   const room = await line();
   for (const name of ['socket', 'asyncio', 'typing', 'wsgiref', 'http.client', 'itertools']) {
-    assert.equal(room.askKind('root.1.1', name, 'raw TCP').kind, 'package', name);
-    assert.equal(room.brokerAnswer('root.1.1', {key: `fn ${name}`, name, question: 'raw TCP'}), true);
-    assert.deepEqual(room.read('fn_answers:root.1.1', []).at(-1).text.value, MESSAGES.package_stdlib({name}));
+    assert.equal(room.askKind(SERVER, name, 'raw TCP').kind, 'package', name);
+    assert.equal(room.brokerAnswer(SERVER, {key: `fn ${name}`, name, question: 'raw TCP'}), true);
+    assert.deepEqual(room.read(`fn_answers:${SERVER}`, []).at(-1).text.value, MESSAGES.package_stdlib({name}));
   }
-  assert.deepEqual(room.packagesOf('root.1.1'), [], 'never granted');
-  assert.ok(!room.catalogue('root.1.1').some(e => e.kind === 'package'));
+  assert.deepEqual(room.packagesOf(SERVER), [], 'never granted');
+  assert.ok(!room.catalogue(SERVER).some(e => e.kind === 'package'));
   assert.equal(room.read('package_requests', null), null, 'nothing waits for the person');
   assert.ok(!('package_requests' in room.snapshot()));
   // The installed set and the rows' packages hold no standard library module; its modules are row data (stdlib_provides).

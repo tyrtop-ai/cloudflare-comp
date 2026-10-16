@@ -12,7 +12,7 @@ import { BoxPrewarm, levelBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
-import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
+import { clip, isId, isRowId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, splitLevel, routeAmong, inScope, matchContracts, rewriteFile } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
@@ -62,7 +62,7 @@ export const JUDGE_RETRY_MS = [500, 2000], CHECK_RETRY_MS = [30_000, 120_000, 60
 // a room held at one of these ended where only the user can go on (the queue's failure).
 export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_exhausted', 'checks_failed', 'split_failed'];
 // What a v8 room made before levels says to Continue, a change and a queued prompt.
-export const EARLIER_ROOM = 'This room was made by an earlier version, before levels, and does not run under this one. Its result can still be exported: start a new room, from this room\'s result if you like.';
+export const EARLIER_ROOM = 'This room was made by an earlier version, before level files, and does not run under this one. Its result can still be exported: start a new room, from this room\'s result if you like.';
 // U10: an anchored requirement's key: its id and a hash of what it says.
 export const anchorKey = (id, says) => {let h=2166136261;for(const c of String(says??'')){h^=c.charCodeAt(0);h=Math.imul(h,16777619)>>>0;}return `${id}#${h.toString(16).padStart(8,'0')}`;};
 // The agent whose turn is running, for the span record: every model and Clef
@@ -210,6 +210,8 @@ async function assumptionTopic(slug, childKey) {
   return `${full.slice(0,87)}_${hash}`; // exactly 100 characters, 48-bit suffix
 }
 const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role';
+// The rows in order: a v8 row by its depth and its spawn's sequence, a v7 row (NULLs there) by its id.
+const NODE_ORDER = 'depth,seq,LENGTH(id),id';
 // v7's prompt handler. A short-lived step above Root: it takes the
 // person's prompt, creates Root's row as every parent creates a child's,
 // sets Root's parent to its own id, hands the prompt over and ends. It
@@ -321,8 +323,18 @@ export const MAX_LEVEL_ROUNDS = 6, MAX_REBUILDS = 3;
 export const FREE_TURNS_PER_ROW = 8, FREE_TURNS_BASE = 40;
 // One room hold per row it names (a grant has one of its own).
 const holdKey = h => h.kind === 'base_confirm' ? 'base_confirm' : h.agent ? `agent:${h.agent}` : `kind:${h.kind}`;
-// v8: a short-lived step's id suffix, 16 hex digits.
-const hex16 = () => [...crypto.getRandomValues(new Uint8Array(8))].map(b=>b.toString(16).padStart(2,'0')).join('');
+// v8: every row's id is <role>-<hex16>: the first 16 hex digits of the
+// SHA-256 of [parent, the spawn's sequence within that parent, role] (the
+// room's manager has the room's id as its parent), so a replay of a spawn
+// gives the id it gave before. Where a row stands comes from its parent
+// column only, never from its id.
+const hex16 = async parts => (await sha256(JSON.stringify(parts))).slice(0,16);
+export const rowId = async (parent, seq, role) => `${role}-${await hex16([parent,seq,role])}`;
+// v8: the file a manager keeps its level in, in its own repository (writeLevel), and the folder the export ships every level file under.
+export const LEVEL_FILE = 'level.json', LEVELS_DIR = '.recursive/levels';
+const levelShape = l => !!l && typeof l === 'object' && ['contracts','children','validations','archived'].every(k => Array.isArray(l[k]));
+// v8: what a room records at its opening, so a room made before level files is told apart (earlierRoom).
+const LEVELS_FORMAT = 'level/1';
 // v8: the code languages of contracts: the toolchain rows of the paths they place.
 const contractLanguages = contracts => [...new Set((contracts||[]).map(c=>c?.path?toolchainOf(c.path):null).filter(r=>r&&r.id!=='text'&&(r.executables||[]).length).map(r=>r.id))];
 // The agent models the dashboard offers: the Qwen3 hybrid (default), four
@@ -517,6 +529,9 @@ export class ControlRoom extends DurableObject {
     // only the agents changed since its cursor and knows when the export list
     // changed. A room whose SQLite refuses the triggers falls back to digests.
     if (!cols.includes('rev')) db.exec('ALTER TABLE agents ADD COLUMN rev INTEGER NOT NULL DEFAULT 0');
+    // v8: a row's depth below the room's manager (0) and its spawn's sequence within its parent; NULL on a v7 row, whose order is its id's.
+    if (!cols.includes('depth')) db.exec('ALTER TABLE agents ADD COLUMN depth INTEGER');
+    if (!cols.includes('seq')) db.exec('ALTER TABLE agents ADD COLUMN seq INTEGER');
     db.exec('CREATE TABLE IF NOT EXISTS state_versions (name TEXT PRIMARY KEY, n INTEGER NOT NULL)');
     db.exec("INSERT OR IGNORE INTO state_versions(name,n) VALUES ('agents',0),('exports',0)");
     db.exec('CREATE TABLE IF NOT EXISTS artifact_files (agent TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL, commit_hash TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(agent,path))');
@@ -721,7 +736,7 @@ export class ControlRoom extends DurableObject {
   // How a worker refers to a name: v7's import line, or under v8 its row's (a contract it names, else a function of the levels' languages).
   referenceLine(name, c=null, reader=null) { return this.v8()?useReferences([c||{name}],this.referenceFacts(reader))[0]?.reference||name:`const { ${name} } = require('./${name}');`; }
   // The path of an agent's one placed contract, for the single-fence fallback (§3.2), or null.
-  placedPath(id) {const p=this.promisedOf(id).filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
+  placedPath(id) {const p=this.designOf(id).contracts.filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
   // The toolchain rows this deployment runs: the Container's last inventory
   // (meta toolchain_inventory, recorded by the verification step from S4),
   // else every row of the phase-1 image (src/toolchains.js).
@@ -833,7 +848,7 @@ export class ControlRoom extends DurableObject {
   // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95: threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10) (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10, 0.95 below). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
   // v7.15.16 review: over a fixed horizon, min(max_depth, 10) levels, so raising max_depth (what split_capacity_blocked advises) never flattens it.
   // v8 live 5: the same rise over split_valid_bar for Clef's split_valid p (t).
-  splitBar(id, t=this.settings().split_threshold) {const {max_depth:m}=this.settings(),d=String(id).split('.').length-1,h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
+  splitBar(id, t=this.settings().split_threshold) {const {max_depth:m}=this.settings(),d=this.depthOf(id),h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
   // runner's test). A room saved before v7.15.10 has no worker or compiler
@@ -853,7 +868,7 @@ export class ControlRoom extends DurableObject {
     this.save('settings',cfg);
     return cfg;
   }
-  allNodes() { return query(this.db(), `SELECT ${nodeSelect} FROM agents ORDER BY LENGTH(id),id`); }
+  allNodes() { return query(this.db(), `SELECT ${nodeSelect} FROM agents ORDER BY ${NODE_ORDER}`); }
   // The room's lookup of the top of the agents' tree (v7's Root; under v8 the
   // manager the room created), for its status, export and dashboard: the row
   // whose parent is a handler, else the one with no parent. Behaviour never
@@ -871,7 +886,18 @@ export class ControlRoom extends DurableObject {
     return !!this.top()&&allFinished(nodes);
   }
   node(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE id=?`, id)[0] ?? null; }
-  children(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE parent=? ORDER BY id`, id); }
+  children(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE parent=? ORDER BY seq,id`, id); }
+  // A row's depth (the room's manager is 0): a v8 row's depth column, set
+  // from its parent's when it is created; v7 reads it from its dotted id.
+  depthOf(id) {
+    if(!this.v8())return String(id).split('.').length-1;
+    return query(this.db(),'SELECT depth FROM agents WHERE id=?',id)[0]?.depth;
+  }
+  // Whether row id is row anc or below it, by walking id's parents.
+  within(id, anc) {
+    for(let x=id;x;x=this.node(x)?.parent||null)if(x===anc)return true;
+    return false;
+  }
   siblings(node) { return node.parent === null ? [] : this.children(node.parent).filter(s => s.id !== node.id); }
   visibleManifest(id) {
     const direct = this.files(id).filter(f => !isPrivatePath(f.path)).map(f => ({path:f.path,revision:f.revision}));
@@ -893,9 +919,10 @@ export class ControlRoom extends DurableObject {
     return this.get(`failure_reason:${id}`) || node?.summary || 'Agent failed without a recorded cause';
   }
   failedDescendantReason(id) {
-    const candidates=this.allNodes().filter(n=>n.status==='failed' && (n.id===id || n.id.startsWith(id+'.')));
+    const under=new Set(id?this.subtree(id):[]),candidates=this.allNodes().filter(n=>n.status==='failed' && under.has(n.id));
     // Prefer the actual failing leaf/builder to a manager's propagated status.
-    candidates.sort((a,b)=>b.id.split('.').length-a.id.split('.').length);
+    const depth=new Map(candidates.map(n=>[n.id,this.depthOf(n.id)]));
+    candidates.sort((a,b)=>depth.get(b.id)-depth.get(a.id));
     const failing=candidates[0];
     return failing ? `${failing.id} (${failing.label}): ${this.failureReason(failing.id)}` : 'Unspecified failure';
   }
@@ -930,7 +957,7 @@ export class ControlRoom extends DurableObject {
   // yet, as it reads them: quoted and labelled, apart from its own files.
   grantedBase(id) {
     const base=this.basePaths(),approved=new Set(this.read('base_approved',[]));
-    return [...new Set(this.promisedOf(id).map(c=>c.path).filter(p=>p&&base.has(p)&&approved.has(p)))].sort();
+    return [...new Set(this.designOf(id).contracts.map(c=>c.path).filter(p=>p&&base.has(p)&&approved.has(p)))].sort();
   }
   baseFilesFor(id) {
     const n=this.node(id);
@@ -939,7 +966,7 @@ export class ControlRoom extends DurableObject {
     return this.grantedBase(id).filter(p=>!written.has(p)).flatMap(p=>query(this.db(),'SELECT path,content FROM base_files WHERE path=?',p)).map(r=>({path:r.path,label:BASE_LABEL,content:r.content}));
   }
   async fileContent(id, path) {
-    if (!isId(id) || !isPath(path)) throw new Error('Invalid agent or file path');
+    if (!(this.v8()?isRowId(id):isId(id)) || !isPath(path)) throw new Error('Invalid agent or file path');
     const n = this.node(id);
     if (!n) throw new Error('Unknown artifact owner');
     // Authenticated dashboard observers may inspect private notebooks of a
@@ -1133,19 +1160,27 @@ export class ControlRoom extends DurableObject {
   // v8: what the dashboard shows of the levels: each validation with what it
   // serves, its check in a few words, Clef's marks, the row that holds it and
   // its last result (a result older than the last change to a delivered file
-  // is marked stale); the manager the room created; each splitter step.
+  // is marked stale); the manager the room created; each manager's level
+  // file (what it holds, in counts); each splitter step.
   levelsHead() {
     const status=this.validationStatus(),held=new Map(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'checks:%'").flatMap(r=>parse(r.value,[]).map(v=>[v,r.key.slice('checks:'.length)])));
     return {room_manager:this.roomManager(),validation_status:status,
       validations:this.validationRows().map(v=>({id:v.id,level:v.level,held:held.get(v.id)||'',serves:v.serves,kind:v.check?.kind||'',check:checkSummary(v.check),...(v.says?{says:v.says}:{}),notes:v.notes})),
+      levels:this.levelFiles().map(f=>{const l=this.levelDesign(f.manager);return {...f,label:this.node(f.manager)?.label||'',children:l?.children.length||0,archived:l?.archived.length||0,contracts:l?.contracts.length||0,validations:l?.validations.length||0};}),
       splitters:this.splitterRows()};
+  }
+  // v8: each manager's level file: the manager, its path in the manager's repository, the repository, the commit and the export's path for it.
+  levelFiles() {
+    return this.levelManagers().map(id=>{const n=this.node(id),f=query(this.db(),'SELECT commit_hash,revision FROM artifact_files WHERE agent=? AND path=?',id,LEVEL_FILE)[0];
+      return {manager:id,path:LEVEL_FILE,repo:n.repo_name,commit:f?.commit_hash||'',revision:f?.revision||0,export_path:`${LEVELS_DIR}/${id}.json`};});
   }
   // The validation status as the dashboard reads it: a result older than the
   // last change to a delivered file is marked stale.
   validationStatus() {
     const st=this.read('validation_status',{});
     if(!Object.keys(st).length)return st;
-    const last=query(this.db(),"SELECT COALESCE(MAX(updated_at),0) AS t FROM artifact_files WHERE path NOT LIKE 'memory/%'")[0].t;
+    // A manager's level file is no delivered file.
+    const last=query(this.db(),"SELECT COALESCE(MAX(updated_at),0) AS t FROM artifact_files WHERE path NOT LIKE 'memory/%' AND NOT (path=? AND agent IN (SELECT id FROM agents WHERE role='manager'))",LEVEL_FILE)[0].t;
     return Object.fromEntries(Object.entries(st).map(([k,v])=>[k,v&&last>v.ts?{...v,stale:true}:v]));
   }
   inputsHead() {
@@ -1177,8 +1212,10 @@ export class ControlRoom extends DurableObject {
   // first saw it as it is now. A Durable Object restart stamps every agent
   // anew, so every dashboard hears all of them once.
   // The dashboard's agent rows; since: only those whose rev is newer.
+  // v8: each row with its depth and its spawn's sequence, by which the dashboard draws the tree.
   agentRows(since=null) {
-    const rows=since===null?this.allNodes():query(this.db(),`SELECT ${nodeSelect} FROM agents WHERE rev>? ORDER BY LENGTH(id),id`,since);
+    const cols=this.v8()?`${nodeSelect},depth,seq`:nodeSelect;
+    const rows=since===null?query(this.db(),`SELECT ${cols} FROM agents ORDER BY ${NODE_ORDER}`):query(this.db(),`SELECT ${cols} FROM agents WHERE rev>? ORDER BY ${NODE_ORDER}`,since);
     return rows.map(n=>({...n,interfaces:parse(n.interfaces,[]),uses:parse(n.uses,[]),packages:parse(n.packages,[])}));
   }
   stampAgents(at) {
@@ -1288,8 +1325,8 @@ export class ControlRoom extends DurableObject {
     const {events:_recent,cursor:_cursor,...rest}=snapshot;
     return {...rest,exports,exported_at:new Date().toISOString(),files,
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors,split_attempts,
-      // v8: every level's design (its contracts, the ids of its validations, its pieces and its batches of children) and every splitter step with what it answered.
-      ...(this.v8()?{designs:Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'design:%'").map(r=>[r.key.slice('design:'.length),parse(r.value,null)])),
+      // v8: every manager's level file (where it is, the commit, and the level it holds) and every splitter step with what it answered.
+      ...(this.v8()?{levels:this.levelFiles().map(f=>({...f,level:this.levelDesign(f.manager)})),
         splitter_steps:query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome,output FROM splitters ORDER BY spawned_at,id').map(r=>({...r,output:parse(r.output,{})}))}:{}),
       // v8 S9: the prompt's revisions and every prompt, with its outcome.
       goal_revisions:query(this.db(),'SELECT rev,prompt,text,effective,ts FROM goal_revisions ORDER BY rev'),prompt_history:this.promptRows(),
@@ -1378,20 +1415,28 @@ export class ControlRoom extends DurableObject {
       const b=baseRows.get(path);
       own.push({path,content,...(b?{from_base:b.sha256===await sha256(content)?'unchanged':'changed',...(gitMode(b.mode)==='100755'?{mode:'100755'}:{})}:{})});
     }
-    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,spec,status)+baseNotes(meta,pass)},{path:'.recursive/validations.json',content:JSON.stringify({contracts:spec.contracts,validations:spec.validations.map(({notes:_,...v})=>v)},null,2)+'\n'}];
+    // Each manager's level file ships as it is, under LEVELS_DIR, named by its manager; the export lists them.
+    const levels=[];
+    for(const f of this.levelFiles())levels.push({...f,content:await this.indexedContent(f.manager,LEVEL_FILE)});
+    app.levels=levels.map(({content:_,...f})=>f);
+    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,spec,status)+baseNotes(meta,pass)},{path:'.recursive/validations.json',content:JSON.stringify({contracts:spec.contracts,validations:spec.validations.map(({notes:_,...v})=>v)},null,2)+'\n'},
+      ...levels.map(f=>({path:f.export_path,content:f.content}))];
     const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
     return {...app,files:[...notes,...own,...carried]};
   }
   // v8 live 4: packages, the installed modules the row lists, given by the
   // parent as its contracts are (Root's: the installed set).
   // v8 M3 review (L4): role, the runtime's own rows' ('builder', 'compiler'), from the spec that only the runtime writes.
-  async provision(id, parent, label, task, interfaces=[], uses=[], packages=[], role='') {
+  // v8: seq, the spawn's sequence within its parent (the row's id is made
+  // from it); the repository is named by the room's hex and the row's id
+  // (repoName), so a replayed spawn names the repository it named before.
+  async provision(id, parent, label, task, interfaces=[], uses=[], packages=[], role='', {seq=null}={}) {
     if (this.node(id)) throw new Error('Agent ID exists');
-    const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
+    const v8=this.v8(),name = v8?await this.repoName(id):`rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
-    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?,?)',
-      id, parent, clip(label,70), clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8:this.v8()})),
-      JSON.stringify(this.v8()?normalizePackages(packages):[]),role);
+    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role,depth,seq) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?,?,?,?)',
+      id, parent, clip(label,70), clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8})),
+      JSON.stringify(v8?normalizePackages(packages):[]),role,v8?(parent?this.depthOf(parent)+1:0):null,v8?seq:null);
     if (role && role!=='manager') this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
@@ -1404,11 +1449,17 @@ export class ControlRoom extends DurableObject {
       const specs=parse(batch.specs,[]);
       let pending=0;
       for(let i=0;i<specs.length;i++) {
-        if(!this.node(`${batch.parent}.${batch.start_index+i}`) && !isRuntimeNode(specs[i])) pending++;
+        if(!this.spawnedAt(batch.parent,batch.start_index+i) && !isRuntimeNode(specs[i])) pending++;
       }
       return total+pending;
     },0);
   }
+  // The row a parent's spawn made at sequence seq: under v8 by its seq column, under v7 by its dotted id.
+  spawnedAt(parent, seq) { return this.v8()?query(this.db(),`SELECT ${nodeSelect} FROM agents WHERE parent=? AND seq=?`,parent,seq)[0]??null:this.node(`${parent}.${seq}`); }
+  // v8: a repository's name, the room's hex and the row's id. The room's hex
+  // is the first 16 hex digits of the SHA-256 of its id and its run's nonce,
+  // so each run of a room names repositories of its own.
+  async repoName(id) { return `${await hex16([this.get('room_id',''),this.get('run_nonce','')])}-${id}`; }
   productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)&&n.status!=='retired').length;}
   // v7.15: a node's promise, the only accessor.
   promisedOf(id) {const n=this.node(id);return n?parse(n.interfaces,[]):[];}
@@ -1423,7 +1474,7 @@ export class ControlRoom extends DurableObject {
   recordAttempt(id, entry) {this.save(`split_attempts:${id}`,[...this.read(`split_attempts:${id}`,[]),{...entry,task:taskKey(this.node(id)?.task)}].slice(-24));}
   // v8 live 5: room for count pieces, each a manager that hands down to at least one worker of its own.
   canSplitPieces(id, count=2) {
-    return String(id).split('.').length+1 <= this.settings().max_depth &&
+    return this.depthOf(id)+2 <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + 2*count <= this.settings().max_agents;
   }
   // v8 live 5: what every manager's split gate reads beside its assignment:
@@ -1567,7 +1618,7 @@ export class ControlRoom extends DurableObject {
   withContract(task, n) {
     const own=[contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')})),usesText(this.plannedUses(n.id))].filter(Boolean).join(' ');return own?`${task}\n\n${own}`:task;}
   canSplit(parentId, count=2) {
-    return parentId.split('.').length <= this.settings().max_depth &&
+    return this.depthOf(parentId)+1 <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + count <= this.settings().max_agents;
   }
   async spawn(parentId, specs, batchKey=crypto.randomUUID()) {
@@ -1586,32 +1637,17 @@ export class ControlRoom extends DurableObject {
       this.event(parentId,'blocked','The compiler can only be scheduled internally, once, under the top manager.');
       return [];
     }
-    let batch=query(this.db(),'SELECT parent,start_index,specs FROM spawn_batches WHERE batch_key=?',batchKey)[0];
-    if (!batch) {
-      if(parentId.split('.').length > this.settings().max_depth) {
-        this.event(parentId,'limit','Maximum recursion depth reached; split rejected in full.');
-        return [];
-      }
-      // Do not create one child out of three. Inference turns overlap, so
-      // reservations must be synchronous and include other pending batches.
-      if (this.productionNodeCount() + this.reservedSpawnSlots() + specs.filter(s=>!isRuntimeNode(s)).length > this.settings().max_agents) {
-        this.event(parentId,'limit',`Agent cap: cannot reserve all ${specs.length} children; split rejected in full.`);
-        return [];
-      }
-      const startIndex=this.children(parentId).length+1;
-      this.db().exec('INSERT INTO spawn_batches(batch_key,parent,start_index,specs) VALUES (?,?,?,?)',
-        batchKey,parentId,startIndex,JSON.stringify(specs));
-      batch={parent:parentId,start_index:startIndex,specs:JSON.stringify(specs)};
-    }
+    const batch=this.reserveSpawn(parentId,specs,batchKey);
+    if(!batch)return [];
     const planned=parse(batch.specs,[]);
     if(batch.parent!==parentId || JSON.stringify(planned)!==JSON.stringify(specs))
       throw new Error('Spawn replay does not match its reserved batch');
     const made=[];
     for(let i=0;i<planned.length;i++) {
-      const id=`${parentId}.${batch.start_index+i}`;
-      let child=this.node(id);
+      const seq=batch.start_index+i,role=roleOf(planned[i])||(this.v8()?'manager':''),id=this.v8()?await rowId(parentId,seq,role):`${parentId}.${seq}`;
+      let child=this.spawnedAt(parentId,seq);
       // v7.15.5: answers a spec carries (composeStart) are there before the child can run.
-      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[],roleOf(planned[i])||(this.v8()?'manager':''));this.assignRefs(id,parentId,planned[i].refs);
+      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[],role,{seq});this.assignRefs(id,parentId,planned[i].refs);
         // v8 live 5: the worker a manager hands its whole assignment to reads the existing project's digest its manager held.
         if(typeof planned[i].base_digest==='string')this.save(`base_digest:${id}`,planned[i].base_digest);
         // v8 live 4: a package the split named that its parent's row does not list is the piece's ask, as a worker's would be.
@@ -1619,6 +1655,28 @@ export class ControlRoom extends DurableObject {
       made.push(child);
     }
     return made;
+  }
+  // A batch of children reserved in one synchronous step: the batch its key
+  // reserved before (a replay), else a new one, whose sequence numbers come
+  // after every one reserved under the parent so far (v7: after its
+  // children); null when the depth or the agent cap refuses it whole.
+  reserveSpawn(parentId, specs, batchKey) {
+    const kept=query(this.db(),'SELECT parent,start_index,specs FROM spawn_batches WHERE batch_key=?',batchKey)[0];
+    if(kept)return kept;
+    if(this.depthOf(parentId)+1 > this.settings().max_depth) {
+      this.event(parentId,'limit','Maximum recursion depth reached; split rejected in full.');
+      return null;
+    }
+    // Do not create one child out of three. Inference turns overlap, so
+    // reservations must be synchronous and include other pending batches.
+    if (this.productionNodeCount() + this.reservedSpawnSlots() + specs.filter(s=>!isRuntimeNode(s)).length > this.settings().max_agents) {
+      this.event(parentId,'limit',`Agent cap: cannot reserve all ${specs.length} children; split rejected in full.`);
+      return null;
+    }
+    const taken=this.v8()?query(this.db(),'SELECT start_index,specs FROM spawn_batches WHERE parent=?',parentId).reduce((n,b)=>Math.max(n,b.start_index+parse(b.specs,[]).length-1),0):0;
+    const startIndex=Math.max(this.children(parentId).length,taken)+1;
+    this.db().exec('INSERT INTO spawn_batches(batch_key,parent,start_index,specs) VALUES (?,?,?,?)',batchKey,parentId,startIndex,JSON.stringify(specs));
+    return {parent:parentId,start_index:startIndex,specs:JSON.stringify(specs)};
   }
   send(from, to, body, {wake=true}={}) {
     const sender = this.node(from);
@@ -3653,8 +3711,9 @@ export class ControlRoom extends DurableObject {
   // (bundleFiles' shape) with raw, the files before linking.
   async joinPiece(m, bid=this.builderOf(m)?.id||null) {
     const files=new Map(),origin=new Map(),placed=new Set(),found=[],stray=[];
-    const leaves=this.pieceLeaves(m),placedBy=new Map();
-    for(const leaf of leaves)for(const c of this.promisedOf(leaf.id))if(c.path&&!placedBy.has(c.path))placedBy.set(c.path,leaf);
+    // Which child delivers which contract, and the path each places, as the level files say (designOf).
+    const leaves=this.pieceLeaves(m),placedBy=new Map(),design=new Map(leaves.map(l=>[l.id,this.designOf(l.id)]));
+    for(const leaf of leaves)for(const c of design.get(leaf.id).contracts)if(c.path&&!placedBy.has(c.path))placedBy.set(c.path,leaf);
     const take=(at,content,o,isPlaced)=>{
       if(files.has(at)){found.push(`${at} (${this.node(o?.owner)?.label||'the existing project'})`);return;}
       files.set(at,content);if(o)origin.set(at,o);if(isPlaced)placed.add(at);
@@ -3674,14 +3733,14 @@ export class ControlRoom extends DurableObject {
         for(const [at,content] of inner.raw)take(at,content,inner.origin.get(at)||null,inner.placed.has(at));
         continue;
       }
-      const own=new Set(this.promisedOf(c.id).map(x=>x.path).filter(Boolean));
+      const placing=design.get(c.id)||this.designOf(c.id),own=new Set(placing.contracts.map(x=>x.path).filter(Boolean));
       for(const f of deliveredFiles(this.files(c.id))) {
         // A file the box cannot hold still joins: the compile lists it as never in the box (boxHeld).
         if(pathError(f.path,{own:true})||RUNTIME_GLUE.includes(f.path)&&!own.has(f.path))continue;
         // v8 S4b review: a copy of a path another piece's contract places is
         // never shipped (the gate refuses new ones; this is a file written before).
         if(!own.has(f.path)&&placedBy.has(f.path)&&placedBy.get(f.path).id!==c.id){stray.push(`${f.path} (written by ${c.label}, placed by ${placedBy.get(f.path).label})`);continue;}
-        const place=own.has(f.path),at=place?f.path:packagePath(c.label,f.path,c.id,this.partsRoot());
+        const place=own.has(f.path),at=place?f.path:packagePath(placing.label,f.path,c.id,this.partsRoot());
         take(at,await this.indexedContent(c.id,f.path),{owner:c.id,owner_path:f.path},place);
       }
     }
@@ -3689,7 +3748,7 @@ export class ControlRoom extends DurableObject {
     if(found.length)this.noteOnce(actor,'bundle_conflict',`Two pieces place a file at the same path; the first is kept: ${found.join(', ')}.`);
     if(stray.length)this.noteOnce(actor,'bundle_stray',`Left out of the project: a copy of a path another piece's contract places: ${stray.join(', ')}.`);
     this.addBase(m,files,origin,placed);
-    const contracts=leaves.flatMap(l=>this.promisedOf(l.id).filter(c=>contractKind(c)==='function').map(c=>({name:c.name,kind:'function',owner:l.id})));
+    const contracts=leaves.flatMap(l=>design.get(l.id).contracts.filter(c=>contractKind(c)==='function').map(c=>({name:c.name,kind:'function',owner:l.id})));
     return this.linkPiece(m,files,origin,placed,contracts,{fixes:bid?this.read(`link_fixes:${bid}`,{}):{}});
   }
   // The row a check held here rolls up to: the agent above, or null when
@@ -3712,7 +3771,7 @@ export class ControlRoom extends DurableObject {
   // worker's, the fixes kept for its own bundle (link_fixes:<worker>).
   pieceInput(m) {
     const kids=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed','archived'].includes(c.status)),b=this.builderOf(m);
-    return textHash(JSON.stringify([kids.map(c=>this.manager(c.id)?[c.id,'piece',this.read(`piece:${this.builderOf(c.id)?.id}`,null)?.digest||'']:[c.id,'files',this.ownedDigest(c.id),this.promisedOf(c.id).map(x=>`${x.name}|${x.path||''}`)]),
+    return textHash(JSON.stringify([kids.map(c=>this.manager(c.id)?[c.id,'piece',this.read(`piece:${this.builderOf(c.id)?.id}`,null)?.digest||'']:[c.id,'files',this.ownedDigest(c.id),this.designOf(c.id).contracts.map(x=>`${x.name}|${x.path||''}`)]),
       b?this.read(`link_fixes:${b.id}`,{}):this.manager(m)?{}:this.read(`link_fixes:${m}`,{}),this.heldDigest(m)]));
   }
   // v8 M3: a manager whose children are all done hands them to its builder,
@@ -3782,7 +3841,7 @@ export class ControlRoom extends DurableObject {
       const digest=await snapshotHash(piece.files);
       if(this.pieceInput(m)!==input||this.ownedDigest(m)!==owned)continue;
       this.storePiece(bid,piece,{input,owned,digest});
-      this.span('piece','piece_link',start,Date.now(),{manager:m,builder:bid,depth:m.split('.').length-1,files:piece.raw.size,glue:piece.glue.size,renamed:(piece.link?.edits||[]).length,relinks,...(tries?{joins:tries+1}:{})},m);
+      this.span('piece','piece_link',start,Date.now(),{manager:m,builder:bid,depth:this.depthOf(m),files:piece.raw.size,glue:piece.glue.size,renamed:(piece.link?.edits||[]).length,relinks,...(tries?{joins:tries+1}:{})},m);
       return piece;
     }
     this.event(bid,'piece_moving',`The work of ${this.node(m)?.label||m}'s children changed each time it was joined (${ASSEMBLE_TRIES} times); the builder joins it again on its next turn.`);
@@ -3815,11 +3874,11 @@ export class ControlRoom extends DurableObject {
   // their contract names that no leaf inside also has, their route
   // contracts, the paths their contracts place, and their files' stems.
   outsideOf(m) {
-    const leaves=this.pieceLeaves(m),inside=new Set(leaves.map(l=>l.id)),mine=new Set(leaves.flatMap(l=>this.promisedOf(l.id).map(c=>c.name)));
+    const leaves=this.pieceLeaves(m),inside=new Set(leaves.map(l=>l.id)),mine=new Set(leaves.flatMap(l=>this.designOf(l.id).contracts.map(c=>c.name)));
     const names=new Set(),routes=[],paths=new Set(),stems=new Set(),stem=p=>String(p).split('/').pop().replace(/\.[^.]+$/,'');
     for(const l of this.treeLeaves()) {
       if(inside.has(l.id))continue;
-      for(const c of this.promisedOf(l.id)){if(!mine.has(c.name))names.add(c.name);if(contractKind(c)==='route')routes.push(c.name);if(c.path){paths.add(c.path);stems.add(stem(c.path));}}
+      for(const c of this.designOf(l.id).contracts){if(!mine.has(c.name))names.add(c.name);if(contractKind(c)==='route')routes.push(c.name);if(c.path){paths.add(c.path);stems.add(stem(c.path));}}
       for(const f of deliveredFiles(this.files(l.id)))stems.add(stem(f.path));
     }
     return {names,routes,paths,stems};
@@ -5555,10 +5614,10 @@ export class ControlRoom extends DurableObject {
     if(no.length)this.holdBaseConfirm();
     return spawn;
   }
-  // The paths a node's contracts name that wait for the person's grant.
+  // The paths a row places, as its manager's level file says, that wait for the person's grant.
   waitingPaths(id) {
     const pending=new Set(this.read('base_pending',[]).map(x=>x.path));
-    return pending.size?this.promisedOf(id).map(c=>c.path).filter(p=>p&&pending.has(p)):[];
+    return pending.size?this.designOf(id).contracts.map(c=>c.path).filter(p=>p&&pending.has(p)):[];
   }
   // The person's grant (Continue at base_confirm): the paths the hold listed,
   // or those the person selected (grants), are approved; the pieces that
@@ -6356,7 +6415,7 @@ export class ControlRoom extends DurableObject {
     const n=this.node(id);
     if(!n||!this.v8()||this.manager(id)||isRuntimeNode(n))return [];
     const titles=new Map(this.sourceRows().map(r=>[r.id,r.summary?.title||r.title||r.final_url||r.url]));
-    return brokerCatalogue({own:this.promisedOf(id),uses:this.callableOf(id),packages:this.packageView(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
+    return brokerCatalogue({own:this.designOf(id).contracts,uses:this.callableOf(id),packages:this.packageView(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
   }
   availableView(id, answered=[]) {
     const cat=this.catalogue(id),labelled=answered.some(a=>a&&typeof a==='object');
@@ -6393,7 +6452,7 @@ export class ControlRoom extends DurableObject {
       if(row)answer=sourceAnswer({id:req.id,ref:row.ref,url:src?.final_url||src?.url||row.source,text:row.text,next:nextHeld(cat,row.ref)});
     } else if(c.kind==='base') {
       const row=query(this.db(),'SELECT path,content FROM base_files WHERE path=?',c.name)[0];
-      if(row)answer=baseAnswer({id:req.id,path:row.path,content:row.content,own:this.promisedOf(id).some(x=>x?.path===row.path)});
+      if(row)answer=baseAnswer({id:req.id,path:row.path,content:row.content,own:this.designOf(id).contracts.some(x=>x?.path===row.path)});
     }
     answer||=noneAnswer({id:req.id,name:ask.name||c.name,catalogue:cat});
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:ask.key,kind:answer.kind,status:answer.status}));
@@ -8405,7 +8464,7 @@ export class ControlRoom extends DurableObject {
   //    answers {contracts, validations, pieces}, held to the hard rules
   //    (src/validations.js readLevel) and reviewed by Clef in one batched
   //    call (reviewLevel), up to SPLIT_ATTEMPTS attempts; the manager admits
-  //    the result (admitLevel): its level's design (design:<id>), the
+  //    the result (admitLevel): its level file (writeLevel), the
   //    validations it holds, and its children, the pieces or one worker;
   //  - it routes, with Clef: a complaint the compiler observed goes down to
   //    the worker responsible for it, verbatim; a change to the child whose
@@ -8420,24 +8479,90 @@ export class ControlRoom extends DurableObject {
   // scope nowhere up to the room is archived with its subtree, and its
   // manager's splitter rebuilds what it delivered (rebuildOrphans).
   roomManager() { return this.get('room_manager','')||null; }
-  // A v8 room made by an earlier version, before levels (its tree came from a
-  // card through a prompt handler, and the room created no manager): it does
-  // not run under this one. Its result exports from its top row's bundle.
-  earlierRoom() { return this.v8()&&!this.roomManager()&&!!this.topId(); }
-  // The room starts: it creates the manager the prompt goes to, with the
-  // installed packages, the linked pages' chunks and the existing files it starts from.
+  // A v8 room made by an earlier version, before level files (its tree came
+  // from a card through a prompt handler, or its levels were row data under
+  // dotted ids): it does not run under this one. Its result exports from its
+  // top row's bundle.
+  earlierRoom() { return this.v8()&&!!this.topId()&&this.get('levels_format','')!==LEVELS_FORMAT; }
+  // The room starts: it creates the manager the prompt goes to (the room's
+  // id is that manager's parent in its id), with the installed packages, the
+  // linked pages' chunks and the existing files it starts from, and keeps
+  // its own record of which manager it created.
   async openRoom(prompt) {
     await this.loadSources();
     const all=this.allRefs(),base=this.read('base',null),label=clip(String(prompt).split(/(?<=[.!?])\s|\n/)[0],60)||'Prompt';
-    const m=await this.provision('root',null,label,prompt,[],[],this.installedSet(),'manager');
-    this.set('room_manager',m.id);
+    const m=await this.provision(await rowId(this.get('room_id',''),1,'manager'),null,label,prompt,[],[],this.installedSet(),'manager',{seq:1});
+    this.set('room_manager',m.id);this.set('levels_format',LEVELS_FORMAT);
     if(all.length)this.save(`source_refs:${m.id}`,rootRefs(null,all));
     if(base)this.save(`base_digest:${m.id}`,base.digest||'');
     this.event('room','room_opened',`The room created "${m.label}" from the prompt (${this.installedSet().length} packages); it is done when that manager's compiler has every validation of its subtree passing on its exact bundle.`,m.id);
     return m;
   }
+  // ---------- the level file ----------
+  // A manager's level is a file in its own repository (LEVEL_FILE): the
+  // design its splitter answered, as the manager admitted it, with every
+  // change to the level since (an extension, a rebuild, an amendment, an
+  // archive). Its form:
+  //   {format, manager,
+  //    contracts: [the level's contracts, each with the ids of the validations that serve it],
+  //    children: [{id, role, label, prompt, delivers: [contract names], calls: [names]}],
+  //    validations: [{id, serves, check, says?, notes}],
+  //    archived: [the children archived, each as its entry stood, with why]}
+  // The row's index of it (level:<id>) holds only the commit the manager
+  // wrote it at and a copy parsed from it, keyed by that commit. The file is
+  // the source: a copy whose commit is not the file's is read again from the
+  // file. A worker's prompt, and where the builder places each file, are
+  // read from it; the manager writes it and routes without reading it.
+  levelIndex(id) { return this.read(`level:${id}`,null); }
+  levelDesign(id) {
+    const index=this.levelIndex(id);
+    if(!index)return null;
+    const file=query(this.db(),'SELECT f.commit_hash AS commit_hash,c.content AS content FROM artifact_files f LEFT JOIN artifact_contents c ON c.agent=f.agent AND c.path=f.path WHERE f.agent=? AND f.path=?',id,LEVEL_FILE)[0];
+    if(!file)return null;
+    const cache=index.cache;
+    if(index.commit===file.commit_hash&&cache?.commit===file.commit_hash&&levelShape(cache.level))return cache.level;
+    const level=parse(file.content,null);
+    if(!levelShape(level))return null;
+    this.save(`level:${id}`,{commit:file.commit_hash,cache:{commit:file.commit_hash,level}});
+    return level;
+  }
+  // The manager commits its level file (one commit, in its own repository),
+  // indexes it as the repository holds it, and keeps the commit and the copy.
+  async writeLevel(id, level) {
+    const n=this.node(id),db=this.db(),content=JSON.stringify(level,null,2)+'\n';
+    const pushed=await this.timed('git','commit',()=>this.store().write({name:n.repo_name,remote:n.remote,actor:id,path:LEVEL_FILE,content}),r=>({files:1,bytes:content.length,batched:false,...(r?.timings?{phases:r.timings}:{})}));
+    const revision=(query(db,'SELECT revision FROM artifact_files WHERE agent=? AND path=?',id,LEVEL_FILE)[0]?.revision||0)+1;
+    db.exec('INSERT INTO artifact_files(agent,path,revision,commit_hash,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(agent,path) DO UPDATE SET revision=excluded.revision,commit_hash=excluded.commit_hash,updated_at=excluded.updated_at',id,LEVEL_FILE,revision,pushed.commit,Date.now());
+    db.exec('INSERT INTO artifact_contents(agent,path,content) VALUES (?,?,?) ON CONFLICT(agent,path) DO UPDATE SET content=excluded.content',id,LEVEL_FILE,content);
+    this.save(`level:${id}`,{commit:pushed.commit,cache:{commit:pushed.commit,level:JSON.parse(content)}});
+    this.event(id,'level_written',`${n.repo_name}/${LEVEL_FILE}: revision ${revision}; commit ${String(pushed.commit).slice(0,12)} (${level.children.length} children, ${level.contracts.length} contracts, ${level.validations.length} validations${level.archived.length?`, ${level.archived.length} archived`:''}).`,'',`${id}/${LEVEL_FILE}`);
+  }
+  // A row as its manager's level file describes it: its label, its prompt,
+  // the level's contracts it delivers and the names it may call. The room's
+  // manager, whose parent is the room, as the room's record of it (its row)
+  // says; so does a row of a room made before level files (no level file
+  // above it). Every child an admitted level created has its entry there.
+  designOf(id) {
+    const up=this.agentAbove(id);
+    if(up&&this.levelIndex(up)) {
+      const level=this.levelDesign(up),entry=level&&[...level.children,...level.archived].find(c=>c.id===id);
+      if(!entry)throw new Error(`${id} has no entry in the level file of ${up}${level?'':' (the file does not read as a level)'}`);
+      return {label:entry.label,prompt:entry.prompt,contracts:entry.delivers.map(name=>level.contracts.find(c=>c.name===name)).filter(Boolean),calls:entry.calls};
+    }
+    const n=this.node(id);
+    return n?{label:n.label,prompt:n.task,contracts:this.promisedOf(id),calls:normalizeUses(parse(n.uses,[]),{v8:this.v8()})}:{label:'',prompt:'',contracts:[],calls:[]};
+  }
+  // A change to one child's entry in its manager's level file (its prompt,
+  // the names it may call): the manager writes its file again.
+  async amendEntry(id, patch) {
+    const up=this.agentAbove(id),level=up?this.levelDesign(up):null;
+    if(!level?.children.some(c=>c.id===id))return;
+    const next={...level,children:level.children.map(c=>c.id===id?{...c,...patch}:c)};
+    if(JSON.stringify(next)!==JSON.stringify(level))await this.writeLevel(up,next);
+  }
+  // The managers whose level files the room holds, in the order of the tree.
+  levelManagers() { return this.allNodes().filter(n=>this.levelIndex(n.id)).map(n=>n.id); }
   // ---------- the rows of a level ----------
-  levelDesign(id) { return this.read(`design:${id}`,null); }
   liveChildren(id) { return this.children(id).filter(c=>!isRuntimeNode(c)&&!['archived','retired','failed'].includes(c.status)); }
   // The live rows of a subtree (an archived row and what is below it are left out), the row itself first.
   liveSubtree(id) {
@@ -8455,17 +8580,17 @@ export class ControlRoom extends DurableObject {
   // The validations a row holds (checks:<id>), and those held in its live subtree.
   checksOf(id) { const ids=new Set(this.read(`checks:${id}`,[])); return ids.size?this.validationRows().filter(v=>ids.has(v.id)):[]; }
   subtreeValidations(id) { const ids=new Set(this.liveSubtree(id).flatMap(x=>this.read(`checks:${x}`,[]))); return ids.size?this.validationRows().filter(v=>ids.has(v.id)):[]; }
-  // What validations run by: the contracts of each level that wrote one of them.
+  // What validations run by: the contracts of each level that wrote one of them, as its level file states them.
   specOf(validations) {
     const contracts=[],seen=new Set();
     for(const level of [...new Set(validations.map(v=>v.level))])for(const c of this.levelDesign(level)?.contracts||[])if(!seen.has(c.name)){seen.add(c.name);contracts.push(c);}
     return {contracts,validations};
   }
   // Every contract of the tree's levels, for the facts reading names and languages.
-  treeContracts() { return query(this.db(),"SELECT value FROM meta WHERE key LIKE 'design:%'").flatMap(r=>parse(r.value,{})?.contracts||[]); }
-  // The names a row may call (its uses), each as the nearest level above it defines it.
-  callableOf(id) { return this.namedContracts(this.agentAbove(id),normalizeUses(parse(this.node(id)?.uses,[]),{v8:true})); }
-  // Each name as the nearest level from row `from` up defines it.
+  treeContracts() { return this.levelManagers().flatMap(id=>this.levelDesign(id)?.contracts||[]); }
+  // The names a row may call (its entry's calls), each as the nearest level above it defines it.
+  callableOf(id) { return this.namedContracts(this.agentAbove(id),this.designOf(id).calls); }
+  // Each name as the nearest level file from row `from` up defines it.
   namedContracts(from, names) {
     const out=[];
     for(const name of names)
@@ -8482,10 +8607,10 @@ export class ControlRoom extends DurableObject {
   // change or an ask none of its children covers) is an attempt of the same
   // kind on a level that has its design.
   async splitStep(id, job=null) {
-    const n=this.node(id),own=job?job.own||[]:this.promisedOf(id),cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
+    const n=this.node(id),given=this.designOf(id),own=job?job.own||[]:given.contracts,cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     if(!job&&!this.splitAttempts(id).some(a=>a.attempt===0)) {
-      const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:cfg.floor,SPLIT_FLOOR:cfg.floor},clipEnds(n.task,2600),null,this.gateContracts(id)),caught=pre.probability<=cfg.floor;
+      const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:cfg.floor,SPLIT_FLOOR:cfg.floor},clipEnds(given.prompt,2600),null,this.gateContracts(id)),caught=pre.probability<=cfg.floor;
       this.recordAttempt(id,{attempt:0,p:r3(pre.probability),floor:cfg.floor,caught,ms:Date.now()-started});
       this.event(id,'split_gate',caught?`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${cfg.floor}: no division is tried (${Date.now()-started} ms).`:`Clef's pre-grade p=${pre.probability.toFixed(3)} is above the floor ${cfg.floor}: the splitter proposes and Clef reviews (${Date.now()-started} ms).`);
     }
@@ -8494,7 +8619,7 @@ export class ControlRoom extends DurableObject {
     if(!job&&(caught||!room)&&own.length)
       return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{why:caught?`Clef's pre-grade is at or below the floor ${cfg.floor}, so it hands its whole assignment down to one worker.`:'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.'});
     const divide=room&&!caught,tried=this.splitAttempts(id).filter(a=>a.attempt>0&&a.job===key),attempt=tried.length+1,feedback=this.read(`split_feedback:${id}`,null);
-    const out=await this.runSplitter(id,{kind,assignment:job?.text||n.task,own,divide,attempt,feedback});
+    const out=await this.runSplitter(id,{kind,assignment:job?.text||given.prompt,own,divide,attempt,feedback});
     const level=out.level,why=out.error?`its answer held no level (${clip(out.error,200)})`:'';
     if(why||level.defects.length) {
       this.recordAttempt(id,{attempt,job:key,splitter:out.sid,defects:why?1:level.defects.length,outcome:attempt>=SPLIT_ATTEMPTS?'exhausted':'retry rules',ms:Date.now()-started});
@@ -8508,7 +8633,7 @@ export class ControlRoom extends DurableObject {
       return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's ${SPLIT_ATTEMPTS} attempts missed the runtime's rules (${level?.defects?.slice(0,4).join(' ')||why}).`,1100));
     }
     const pieces=divide?level.pieces:[],split=pieces.length>=2,retry=feedback?.retry||'';
-    const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||n.task,2600),contracts:level.contracts,pieces:split?pieces:[],validations:level.validations,attempt,retry});
+    const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||given.prompt,2600),contracts:level.contracts,pieces:split?pieces:[],validations:level.validations,attempt,retry});
     level.validations=level.validations.map((v,j)=>({...v,notes:review.notes[j]||{}}));
     const doubted=level.validations.filter(v=>Object.values(v.notes).some(p=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR));
     if(doubted.length)this.event(id,'validations_doubtful',clip(`Clef doubts ${doubted.map(v=>`${v.id} (${Object.entries(v.notes).filter(([,p])=>p<VALIDATION_DOUBT_BAR).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}; each is kept, marked.`,900));
@@ -8529,11 +8654,12 @@ export class ControlRoom extends DurableObject {
     this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
     this.save('queue',addLast(this.read('queue',[]),id));
   }
-  // One splitter step (a row of splitters, splitter-<hex16>): the model's
-  // answer, read and held to the hard rules. {sid, level} or {sid, error}.
+  // One splitter step (a row of splitters, splitter-<hex16>, its sequence
+  // the manager's count of splitter steps): the model's answer, read and
+  // held to the hard rules. {sid, level} or {sid, error}.
   async runSplitter(id, {kind, assignment, own, divide, attempt, feedback}) {
-    const sid=`splitter-${hex16()}`,rows=this.installedToolchains(),packages=this.packageView(id),digest=this.heldDigest(id),held=this.validationRows().filter(v=>own.some(c=>(c.serves||[]).includes(v.id)));
-    // A job adds to a level that has its design: the contracts it has already, apart from those the job restates.
+    const sid=await rowId(id,query(this.db(),'SELECT COUNT(*) AS n FROM splitters WHERE manager=?',id)[0].n+1,'splitter'),rows=this.installedToolchains(),packages=this.packageView(id),digest=this.heldDigest(id),held=this.validationRows().filter(v=>own.some(c=>(c.serves||[]).includes(v.id)));
+    // A job adds to a level that has its design (its level file): the contracts it has already, apart from those the job restates.
     const have=kind==='split'?[]:(this.levelDesign(id)?.contracts||[]).filter(c=>!own.some(o=>o.name===c.name));
     // The names the level may call: its row's uses, and for a rebuild those the rows it replaces were handed.
     const job=kind==='split'?null:this.read(`level_job:${id}`,null),calls=[...this.callableOf(id),...this.namedContracts(id,job?.uses||[])].filter((c,i,a)=>a.findIndex(x=>x.name===c.name)===i&&!own.some(o=>o.name===c.name)&&!have.some(o=>o.name===c.name));
@@ -8559,54 +8685,61 @@ export class ControlRoom extends DurableObject {
   splitterRows() { return query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome FROM splitters ORDER BY spawned_at,id'); }
   // The manager admits a level: its validations (each a row, V<n>, held where
   // its contracts meet: placeChecks), its contracts with the ids of the
-  // validations serving each, its design (row data: the contracts, the
-  // validations' ids and the pieces), and its children: the pieces, each a
-  // manager, or one worker with the level's contracts. A job's level adds
-  // to the design, which stays as it was otherwise; a job for an ask
-  // answers its asker with the contract it named.
+  // validations serving each, and its children: the pieces, each a manager,
+  // or one worker with the level's contracts. It reserves its children's
+  // spawn (their ids follow from it), commits its level file with them
+  // (writeLevel), then creates their rows. A job's level adds to the file,
+  // which stays as it was otherwise; a job for an ask answers its asker with
+  // the contract it named.
   async admitLevel(id, level, {why='', scope=null, job=null}={}) {
-    const n=this.node(id),own=job?job.own||[]:this.promisedOf(id),ids=new Map();
-    for(const v of level.validations) {
-      const vid=this.nextValidationId();ids.set(v.id,vid);
-      this.db().exec('INSERT INTO validations(id,level,serves,spec,says,notes,created) VALUES (?,?,?,?,?,?,?)',vid,id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',JSON.stringify(v.notes||{}),Date.now());
-    }
+    const n=this.node(id),given=this.designOf(id),own=job?job.own||[]:given.contracts,prior=this.levelDesign(id);
+    // A reservation its level file never listed (its write did not land) is released: this admission takes its place.
+    const listed=new Set([...(prior?.children||[]),...(prior?.archived||[])].map(c=>c.id));
+    for(const b of this.levelBatches(id))if(!(await this.batchIds(id,b)).some(x=>listed.has(x)))this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',b.batch_key);
+    // From here to the reservation nothing waits: the validations' ids and the children's sequence are taken together.
+    const first=Number(this.nextValidationId().slice(1)),ids=new Map(level.validations.map((v,i)=>[v.id,`V${first+i}`]));
     const contracts=level.contracts.map(c=>({...c,serves:[...new Set([...(c.serves||[]),...level.validations.filter(v=>v.serves.includes(c.name)).map(v=>ids.get(v.id))])]}));
-    const pieces=(level.pieces||[]).length>=2?level.pieces:[];
-    const prior=this.levelDesign(id),stated=!job&&!own.length;
-    // The manager's own contracts take the level's refined form (by name); a level that stated its own contracts holds them all.
-    if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>contracts.find(x=>x.name===c.name)||c)),id);
+    const pieces=(level.pieces||[]).length>=2?level.pieces:[],stated=!job&&!own.length;
     const mine=name=>contracts.find(c=>c.name===name);
     // A rebuild hands down what the rows it replaces were handed: their uses, packages and refs.
     const handed=job?.kind==='rebuild'?{uses:job.uses||[],packages:job.packages||[],refs:job.refs||[]}:null,refs=handed?handed.refs:this.sourceRefs(id);
-    const worker={label:job?.label||n.label,task:job?.text||n.task,interfaces:job||stated?contracts:own.map(c=>mine(c.name)||c),uses:handed?handed.uses:job?[]:normalizeUses(parse(n.uses,[]),{v8:true}),role:'worker',
+    const worker={label:job?.label||given.label,task:job?.text||given.prompt,interfaces:job||stated?contracts:own.map(c=>mine(c.name)||c),uses:handed?handed.uses:job?[]:given.calls,role:'worker',
       ...(refs.length?{refs}:{}),...(handed?.packages.length?{packages:handed.packages}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
     const pieceUses=p=>[...new Set([...(p.uses||[]),...(handed?.uses||[])])].filter(x=>!p.contracts.includes(x));
     const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(pieceUses(p).length?{uses:pieceUses(p)}:{}),role:'manager',...(p.refs?{refs:p.refs}:handed?.refs.length?{refs:handed.refs}:{}),...(p.packages||handed?.packages.length?{packages:[...new Set([...(p.packages||[]),...(handed?.packages||[])])]}:{})})):[worker]);
-    const batch=`level:${id}:${(prior?.batches||[]).length}`;
-    const design={contracts:[...(prior?.contracts||[]).filter(c=>!contracts.some(x=>x.name===c.name)),...contracts],validations:[...(prior?.validations||[]),...ids.values()],
-      pieces:[...(prior?.pieces||[]),...pieces.map(p=>({label:p.label,contracts:p.contracts,uses:p.uses||[]}))],batches:[...(prior?.batches||[]),{key:batch,specs,spawned:false,...(job?{job:job.kind}:{})}],ts:Date.now()};
-    this.save(`design:${id}`,design);
+    const key=`level:${id}:${this.levelBatches(id).length}`,batch=this.reserveSpawn(id,specs,key);
+    // No room for its children (the room's agent or depth limit): nothing is admitted, and Continue tries the level again.
+    if(!batch)return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);
+    for(const v of level.validations)
+      this.db().exec('INSERT INTO validations(id,level,serves,spec,says,notes,created) VALUES (?,?,?,?,?,?,?)',ids.get(v.id),id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',JSON.stringify(v.notes||{}),Date.now());
+    // The manager's own contracts take the level's refined form (by name); a level that stated its own contracts holds them all.
+    if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>mine(c.name)||c)),id);
+    // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, and those archived before.
+    const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
+    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:clip(s.label,70),prompt:clip(s.task,2000),delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
+    await this.writeLevel(id,{format:LEVELS_FORMAT,manager:id,contracts:[...(prior?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)),...added],children:[...(prior?.children||[]),...specs.map(entry)],
+      validations:[...(prior?.validations||[]),...level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{}),notes:v.notes||{}}))],archived:prior?.archived||[]});
     this.save(`split_feedback:${id}`,null);this.save(`level_job:${id}`,null);
+    // The first level a room admits says which box its first compile needs.
+    if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
     if(scope)this.event(id,'scope_ps',`Clef's scope for each piece: ${pieces.map((p,i)=>`"${clip(p.label,60)}" p=${Number(scope[i]).toFixed(3)}`).join(', ')}; each is admitted, a doubt shown.`);
     await this.baseContracts(id,[{interfaces:contracts}]);
     this.event(id,pieces.length?'split_admitted':'hand_down',clip(pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`,1200));
-    // The first level a room admits says which box its first compile needs.
-    if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
     await this.spawnLevel(id);
-    this.placeChecks();
-    if(job?.ask)this.answerAsk(job.ask,contracts.find(c=>c.name===job.ask.name)||contracts[0]);
+    if(job?.ask)await this.answerAsk(job.ask,contracts.find(c=>c.name===job.ask.name)||contracts[0]);
   }
-  // The children of a design's batches not yet spawned (a turn interrupted mid-spawn spawns the rest: spawn replays its batch).
+  // The batches a manager's levels reserved (level:<id>:<n>), in order, and the ids a batch's children have.
+  levelBatches(id) { return query(this.db(),'SELECT batch_key,parent,start_index,specs FROM spawn_batches WHERE parent=? AND batch_key LIKE ? ORDER BY start_index',id,`level:${id}:%`); }
+  batchIds(id, b) { return Promise.all(parse(b.specs,[]).map((s,i)=>rowId(id,b.start_index+i,roleOf(s)||'manager'))); }
+  // Whether a child its level file lists has no row yet (a turn interrupted mid-spawn).
+  unspawned(id) { return this.levelBatches(id).some(b=>parse(b.specs,[]).some((_,i)=>!this.spawnedAt(id,b.start_index+i))); }
+  // The children of its levels not created yet: spawn replays each batch,
+  // with the ids its level file lists; then each validation is held where
+  // its contracts meet among the rows there are.
   async spawnLevel(id) {
-    const design=this.levelDesign(id);
-    if(!design)return;
-    for(const b of design.batches.filter(b=>!b.spawned)) {
-      const made=await this.spawn(id,b.specs,b.key);
-      if(made.length<b.specs.length){this.escalate(id,'split_capacity',`"${this.node(id)?.label||id}" could not create its ${b.specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);return;}
-      b.spawned=true;
-    }
-    this.save(`design:${id}`,design);
+    for(const b of this.levelBatches(id))await this.spawn(id,parse(b.specs,[]),b.batch_key);
     this.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",id);
+    this.placeChecks();
   }
   // ---------- a turn ----------
   // A row's turn by its role: a builder joins its manager's piece, a worker
@@ -8704,8 +8837,8 @@ export class ControlRoom extends DurableObject {
     // A row whose escalation is outstanding waits for Continue.
     const wait=()=>{if(!this.escalatedRow(id))return false;this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return true;};
     if(wait())return;
-    if(!this.levelDesign(id))return this.splitStep(id);
-    if(this.levelDesign(id).batches.some(b=>!b.spawned))return this.spawnLevel(id);
+    if(!this.levelIndex(id))return this.splitStep(id);
+    if(this.unspawned(id))return this.spawnLevel(id);
     if(job)return this.splitStep(id,job);
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const inbox=this.receive(id);
@@ -8742,6 +8875,8 @@ export class ControlRoom extends DurableObject {
     }
   }
   // ---------- complaints ----------
+  // The contracts m's children deliver (an archived child's too), as their rows hold them: what m routes by.
+  levelContracts(m) { return [...new Map(this.children(m).filter(c=>!isRuntimeNode(c)).flatMap(c=>this.promisedOf(c.id)).map(c=>[c.name,c])).values()]; }
   // What a compiler observed (or the grader of a benchmark run), routed down
   // to the worker responsible for it, as it was observed: to the child whose
   // subtree wrote a file it names, else to the child whose contracts it
@@ -8751,9 +8886,9 @@ export class ControlRoom extends DurableObject {
   async routeComplaint(m, item, flags={}) {
     const kids=this.liveChildren(m),serves=item.facts?.validation?.serves||[];
     const owners=[...new Set((item.parties||[]).map(x=>x.owner).filter(Boolean))];
-    let to=kids.filter(c=>owners.some(o=>o===c.id||o.startsWith(c.id+'.')));
+    let to=kids.filter(c=>owners.some(o=>this.within(o,c.id)));
     if(!to.length)to=kids.filter(c=>this.promisedOf(c.id).some(f=>serves.includes(f.name)));
-    if(!to.length&&serves.length&&this.levelDesign(m)?.contracts?.some(c=>serves.includes(c.name))){this.set(`orphans:${m}`,JSON.stringify(serves));this.wake(m);return;}
+    if(!to.length&&serves.length&&this.levelContracts(m).some(c=>serves.includes(c.name))){this.set(`orphans:${m}`,JSON.stringify(serves));this.wake(m);return;}
     if(!to.length)to=kids;
     if(!to.length)return void this.escalate(m,'checks_failed',clip(`"${this.node(m)?.label||m}" has no live part for what was observed: ${item.detail}`,900));
     if(to.length>1) {
@@ -8832,7 +8967,7 @@ export class ControlRoom extends DurableObject {
     if(from)this.db().exec('DELETE FROM route_workers WHERE worker=? AND topic=?',worker,a.key);
     if(!from&&this.brokerAnswer(worker,a))return;
     const own=a.name?this.promisedOf(worker).find(f=>f.name===a.name):null;
-    if(own)return void this.answerAsk({worker,key:a.key,request_id:''},own,MESSAGES.own_contract({contract:contractLine(own)}));
+    if(own)return void await this.answerAsk({worker,key:a.key,request_id:''},own,MESSAGES.own_contract({contract:contractLine(own)}));
     if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',worker,a.key).length)return;
     const want=a.name?`${a.name} (${clip(a.question,200)})`:`"${clip(a.question,200)}"`,env=this.inferenceEnv();
     for(let x=from||this.agentAbove(worker);x;x=this.agentAbove(x)) {
@@ -8851,7 +8986,7 @@ export class ControlRoom extends DurableObject {
       this.insertProblem({holder:x,kind:'ask',stage:'ask',source:worker,input:request_id,parties:[],detail:clip(`${this.node(worker)?.label||worker} asks for ${want}.`,900),facts:{worker,key:a.key,need:a.question,name:a.name||'',request_id}});
       return void this.wake(x);
     }
-    this.archive(worker,`${want} is in scope at no manager up to the room`);
+    await this.archive(worker,`${want} is in scope at no manager up to the room`);
   }
   // At the manager whose assignment holds the need: the contract of its
   // level a live child other than the asker's line delivers (by name, else
@@ -8859,30 +8994,35 @@ export class ControlRoom extends DurableObject {
   async resolveAsk(m, ask) {
     const asker=this.node(ask.worker);
     if(!asker||['archived','retired','failed'].includes(asker.status))return;
-    const kids=this.liveChildren(m),line=kids.find(k=>ask.worker===k.id||ask.worker.startsWith(k.id+'.'));
-    const offers=(this.levelDesign(m)?.contracts||[]).filter(c=>kids.some(k=>k!==line&&this.promisedOf(k.id).some(f=>f.name===c.name)));
+    const kids=this.liveChildren(m),line=kids.find(k=>this.within(ask.worker,k.id));
+    const offers=[...new Map(kids.filter(k=>k!==line).flatMap(k=>this.promisedOf(k.id)).map(c=>[c.name,c])).values()];
     let hit=ask.name?offers.find(c=>c.name===ask.name):null;
     if(!hit&&offers.length) {
       const r=await this.askClef(m,`which contract gives ${ask.name||ask.need}`,()=>matchContracts(this.inferenceEnv(),{need:ask.need,name:ask.name},offers));
       if(r.error)return void this.clefBlocked(m,`which contract of its level gives ${ask.name||ask.need}`,r.error,{kind:'ask',stage:'ask',source:ask.worker,input:ask.request_id||'',parties:[],detail:clip(`${asker.label} asks for ${ask.name||ask.need}.`,900),facts:ask});
       if(r.value)hit=offers[r.value.index];
     }
-    if(hit)return this.answerAsk(ask,hit);
+    if(hit)return await this.answerAsk(ask,hit);
     this.save(`level_job:${m}`,{kind:'extend',key:ask.key,text:ask.need,label:clip(ask.name||ask.need,60),own:[],ask});
     this.event(m,'level_extend',clip(`No contract of "${this.node(m)?.label||m}"'s level gives ${ask.name||ask.need}; its splitter extends the level.`,500),ask.worker);
     this.wake(m);
   }
-  // The asker hears the contract that gives what it asked for, and may call it by name from now on.
-  answerAsk(ask, c, text=null) {
+  // The asker hears the contract that gives what it asked for, and may call
+  // it by name from now on: its entry in its manager's level file, and those
+  // of the managers between it and the level whose children deliver it,
+  // name it among their calls.
+  async answerAsk(ask, c, text=null) {
     const n=this.node(ask.worker);
     if(!n||!c)return;
     if(!text&&!this.promisedOf(n.id).some(f=>f.name===c.name)) {
-      const uses=normalizeUses(parse(n.uses,[]),{v8:true});
-      if(!uses.includes(c.name))this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...uses,c.name]),n.id);
+      const callers=[n.id];
       // Its manager calls it too, so the levels between them link it.
-      for(let x=this.agentAbove(n.id);x&&!this.levelDesign(x)?.contracts?.some(f=>f.name===c.name);x=this.agentAbove(x)) {
-        const up=normalizeUses(parse(this.node(x)?.uses,[]),{v8:true});
-        if(!up.includes(c.name))this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...up,c.name]),x);
+      for(let x=this.agentAbove(n.id);x&&!this.levelContracts(x).some(f=>f.name===c.name);x=this.agentAbove(x))callers.push(x);
+      for(const x of callers) {
+        const uses=normalizeUses(parse(this.node(x)?.uses,[]),{v8:true});
+        if(uses.includes(c.name))continue;
+        this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...uses,c.name]),x);
+        await this.amendEntry(x,{calls:[...new Set([...this.designOf(x).calls,c.name])]});
       }
     }
     const value=text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)});
@@ -8895,7 +9035,8 @@ export class ControlRoom extends DurableObject {
   // ---------- archive, and the rebuild ----------
   // An agent archived with its subtree: its row and its files stay as they
   // are, and nothing it holds moves; the builder leaves it out of its join.
-  archive(id, why) {
+  // Its manager's level file lists it among the archived, as its entry stood.
+  async archive(id, why) {
     const n=this.node(id);
     if(!n)return;
     for(const x of this.subtree(id)) {
@@ -8905,6 +9046,8 @@ export class ControlRoom extends DurableObject {
     }
     this.save('queue',this.read('queue',[]).filter(q=>!this.subtree(id).includes(q)));
     this.event(id,'archived',clip(`"${n.label}" is archived with its subtree: ${why}. Its files stay as they are; its manager rebuilds what it delivered.`,700),n.parent||'');
+    const level=n.parent?this.levelDesign(n.parent):null,entry=level?.children.find(c=>c.id===id);
+    if(entry)await this.writeLevel(n.parent,{...level,children:level.children.filter(c=>c!==entry),archived:[...level.archived,{...entry,why:clip(why,600)}]});
     this.placeChecks();
     if(n.parent)this.wake(n.parent);
   }
@@ -8914,11 +9057,10 @@ export class ControlRoom extends DurableObject {
   // rebuild is under way; past MAX_REBUILDS, m escalates once and waits
   // (false: nothing is under way, and nothing queues it again).
   async rebuildOrphans(m) {
-    const design=this.levelDesign(m);
-    if(!design)return false;
+    if(!this.levelIndex(m))return false;
     const live=this.liveChildren(m),carried=name=>live.some(k=>this.promisedOf(k.id).some(f=>f.name===name));
     const gone=this.children(m).filter(c=>c.status==='archived'&&!isRuntimeNode(c)),named=new Set(parse(this.get(`orphans:${m}`,'[]'),[]));
-    const orphans=[...new Map([...gone.flatMap(k=>this.promisedOf(k.id)),...design.contracts.filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()];
+    const orphans=[...new Map([...gone.flatMap(k=>this.promisedOf(k.id)),...this.levelContracts(m).filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()];
     this.set(`orphans:${m}`,'[]');
     if(!orphans.length)return false;
     const n=Number(this.get(`rebuilds:${m}`,'0'));
@@ -8934,7 +9076,7 @@ export class ControlRoom extends DurableObject {
     const from=tasks.length?tasks:[this.node(m)],names=new Set(orphans.map(c=>c.name));
     const uses=[...new Set(from.flatMap(k=>normalizeUses(parse(k.uses,[]),{v8:true})))].filter(x=>!names.has(x));
     const packages=[...new Set(from.flatMap(k=>this.packagesOf(k.id).map(p=>p.name)))],refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
-    this.save(`level_job:${m}`,{kind:'rebuild',key:`${n+1}`,text:tasks.map(k=>k.task).join('\n\n')||this.node(m).task,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
+    this.save(`level_job:${m}`,{kind:'rebuild',key:`${n+1}`,text:tasks.map(k=>this.designOf(k.id).prompt).join('\n\n')||this.designOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
     this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'} (rebuild ${n+1} of ${MAX_REBUILDS}).`,600));
     return true;
   }
@@ -8944,7 +9086,8 @@ export class ControlRoom extends DurableObject {
   // (CLEF.change), verbatim, and m's splitter extends the level when it concerns none.
   async routeChange(m, text, flags={}) {
     const n=this.node(m);
-    if(!this.levelDesign(m)){this.db().exec('UPDATE agents SET task=? WHERE id=?',clip(`${n.task}\n\n${text}`,8000),m);this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
+    // Before its level: the change joins its assignment, on its row and in its entry of its manager's level file.
+    if(!this.levelIndex(m)){const task=clip(`${n.task}\n\n${text}`,8000);this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,{prompt:task});this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
     const kids=this.liveChildren(m);
     const r=await this.askClef(m,'which children the change concerns',()=>routeAmong(this.inferenceEnv(),{key:'change',text,children:kids.map(c=>({task:c.task,contracts:this.promisedOf(c.id)}))}));
     if(r.error)return void this.clefBlocked(m,'which of its children the change concerns',r.error,{kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags});
@@ -8966,13 +9109,14 @@ export class ControlRoom extends DurableObject {
   // files, the complaints routed to it and what its runtime notes say of its
   // last answer, and its world: what it can ask for by name and the answers
   // it has, the chunks of linked pages and the existing files it holds.
+  // The prompt is the one its manager's level file holds for it (designOf).
   workerView(id, inbox=[], ownFiles=[]) {
-    const n=this.node(id),byId=this.validationsById(),facts=this.referenceFacts(id),callable=this.callableOf(id),refs=useReferences(callable,facts);
+    const design=this.designOf(id),byId=this.validationsById(),facts=this.referenceFacts(id),callable=this.callableOf(id),refs=useReferences(callable,facts);
     const runText=c=>!c.run?'':c.run.static?'its files are served as they are':`${c.run.run} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`;
-    const deliver=this.promisedOf(id).map(c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
+    const deliver=design.contracts.map(c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
       ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{}),...(runText(c)?{runs:runText(c)}:{}),
       examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
-    const prompt={task:n.task,deliver,...(callable.length?{call:callable.map((c,i)=>({name:c.name,contract:contractLine(c),reference:refs[i]?.reference||c.name}))}:{})};
+    const prompt={task:design.prompt,deliver,...(callable.length?{call:callable.map((c,i)=>({name:c.name,contract:contractLine(c),reference:refs[i]?.reference||c.name}))}:{})};
     const named=new Set(this.problems("assignee=? AND status!='closed'",id).flatMap(p=>p.parties.map(x=>x.owner_path||x.path)));
     const files=sentFiles(ownFiles.filter(f=>!f.path.startsWith('memory/')).sort((a,b)=>named.has(b.path)-named.has(a.path)),{revision:true});
     const complaints=[...inbox.filter(m=>/^\[complaint\] /.test(m.body)).map(m=>m.body.slice(12)),...this.read(`turn_notes:${id}`,[])];
@@ -9119,7 +9263,7 @@ export class ControlRoom extends DurableObject {
   // relinks counts the runs this call already redid after the link fixed a
   // reference (at most two); owned, the digest it took first.
   async compileLevel(id, {relinks=0, begun=Date.now(), owned:taken=null}={}) {
-    const above=this.agentAbove(id),depth=id.split('.').length-1;
+    const above=this.agentAbove(id),depth=this.depthOf(id);
     // A level with an escalation outstanding in its subtree waits for Continue.
     if(this.escalatedBelow(id).length){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     const owned=taken??this.ownedDigest(id),joins=this.pieceInput(id);
@@ -9232,7 +9376,7 @@ export class ControlRoom extends DurableObject {
     // A failure of a validation held here with evidence of a cause outside the piece is held by the level above from now on.
     const outside=[];
     if(above) {
-      const contracts=this.pieceLeaves(id).flatMap(l=>this.promisedOf(l.id)),routes=routeNames(contracts),names=new Set(contracts.map(c=>c.name)),out=this.outsideOf(id),rows=this.installedToolchains();
+      const contracts=this.pieceLeaves(id).flatMap(l=>this.designOf(l.id).contracts),routes=routeNames(contracts),names=new Set(contracts.map(c=>c.name)),out=this.outsideOf(id),rows=this.installedToolchains();
       for(const v of runs.filter(v=>here.has(v.id)&&status[v.id]?.passed===false)) {
         const why=outsideFailure(results.get(v.id),v.check,{routes,names,files,outside:out,rows});
         if(why)outside.push({id:v.id,why:`it failed on something outside the piece: ${why}`});

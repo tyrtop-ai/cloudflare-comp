@@ -111,3 +111,19 @@ test('grep gate: v7\'s request machinery and its answer texts are reached only f
   assert.deepEqual(texts.map(l => `src/index.js:${l.line} ${l.method}`), []);
   assert.match(lines.find(l => /^  planned\(\)/.test(l.code)).code, /!this\.v8\(\)&&/, 'planned() is false under v8');
 });
+
+// v8 phase B: a v8 row's id says nothing of where it stands. Every row is
+// <role>-<hex16>, and where it stands is its parent column (and the depth
+// column made from it). What reads a position from an id (a dotted prefix,
+// a dot count, a dotted id composed) or names v7's top ('root') stands only
+// in a method only v7 runs, or on a line v7 gates.
+const ID_POSITION = /startsWith\([^)]*\+\s*'\.'\)|split\('\.'\)\.length|'root'|\$\{[\w.]*[pP]arent[\w.]*\}\.\$\{|\+\s*'\.%'/;
+const V7_ID_METHODS = new Set([...V7_ONLY, 'promisedDeep', 'carriersOf', 'planOf', 'planIndex', 'modulesOf', 'linkSnapshot', 'factsFrom', 'handPrompt',
+  'nextDirectChild', 'validateManagerActions', 'mockDecomposition', 'mockDecision']);
+test('grep gate: no v8 path reads where a row stands from its id, or names root; v7 keeps its dotted ids', () => {
+  const all = FILES.flatMap(file => methodLines(file).filter(l => !/^\s*\/\//.test(l.text) && ID_POSITION.test(l.text)).map(l => ({...l, file})));
+  const out = all.filter(l => !(V7_ID_METHODS.has(l.method) || V7_GATE.test(l.text) || /if\(!this\.v8\(\)\)return/.test(l.text)));
+  assert.deepEqual(out.map(l => `${l.file}:${l.line} ${l.method}: ${l.text.trim().slice(0, 140)}`), []);
+  // The patterns find v7's own (its dotted ids, its Root), so the gate reads what it should.
+  assert.ok(all.filter(l => V7_ID_METHODS.has(l.method)).length >= 10);
+});

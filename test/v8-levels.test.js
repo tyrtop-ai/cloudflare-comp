@@ -7,7 +7,7 @@
 // build runner behind fake boxes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {levelRoom, usualClef, rows, deliver, callCheck, events, fileBlocks, lintRequests} from './helpers/levels.js';
+import {levelRoom, usualClef, rows, deliver, callCheck, events, fileBlocks, lintRequests, rowId} from './helpers/levels.js';
 
 const TRACKER = 'Build a small issue tracker: a library to create tickets and read one back by its id, and a `report` command that files a ticket and prints it as one line.';
 const STORE = `const tickets = new Map();
@@ -50,7 +50,9 @@ test('an issue tracker splits: room → manager → splitter → pieces → work
   const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf});
   assert.equal(room.get('status'), 'complete', events(room).slice(-12).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 200)}`).join('\n'));
   const m = room.roomManager();
-  assert.equal(m, 'root');
+  // The room's manager is manager-<hex16>: the room's id is its parent in its id, and the room records it.
+  assert.match(m, /^manager-[0-9a-f]{16}$/);
+  assert.equal(m, await rowId('levels-test', 1, 'manager'));
   assert.equal(room.node(m).role, 'manager');
   // The room's manager divided: two piece managers, each handing its level to one worker.
   const kids = room.children(m).filter(c => c.role === 'manager');

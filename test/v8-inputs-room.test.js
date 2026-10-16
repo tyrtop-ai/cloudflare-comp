@@ -382,8 +382,10 @@ test('previous result of another room: read through ROOMS, and the base meta nam
 test('a worker reads a base file its contract names, quoted in base_files, once the person grants it; then its file at that path is the one that ships', async () => {
   const {room} = await readmeOnBase();
   const w = theWorker(room).id;
-  // A contract naming a base path gives nothing until the path is granted, and the worker waits for it.
-  room.db().exec("UPDATE agents SET interfaces=? WHERE id=?", JSON.stringify([...room.promisedOf(w), {name: 'widget', kind: 'command', path: 'bin/widget.js', does: 'shouts what it is given'}]), w);
+  // A contract naming a base path gives nothing until the path is granted, and the worker waits for it. Its manager's level file is what places it.
+  const m = room.agentAbove(w), level = room.levelDesign(m);
+  await room.writeLevel(m, {...level, contracts: [...level.contracts, {name: 'widget', kind: 'command', path: 'bin/widget.js', does: 'shouts what it is given', serves: []}],
+    children: level.children.map(c => c.id === w ? {...c, delivers: [...c.delivers, 'widget']} : c)});
   assert.deepEqual(room.baseFilesFor(w), []);
   // Clef's yes is a review; the path waits for the person.
   assert.deepEqual(await room.approveBasePaths(w, ['bin/widget.js']), {yes: [], no: [{path: 'bin/widget.js', p: 0.9, named: false}]});

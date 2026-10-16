@@ -27,7 +27,10 @@ let selectedNode='';
 // By role (v8 M3 review: a v8 builder is "Builder"); a server from before the role column sends v7's labels.
 const isBuilder=n=>n.role?n.role==='builder':n.label==='Temporary builder';
 const isCompiler=n=>n.role?n.role==='compiler':n.label==='Compiler';
-const idOrder=(a,b)=>{const x=a.id.split('.').map(Number),y=b.id.split('.').map(Number);for(let i=0;i<Math.max(x.length,y.length);i++)if((x[i]??-1)!==(y[i]??-1))return (x[i]??-1)-(y[i]??-1);return 0;};
+// v8: siblings by their spawn's sequence (a v8 row's id says nothing of where it stands); v7 by its dotted id.
+const idOrder=(a,b)=>{if(a.seq!=null&&b.seq!=null)return a.seq-b.seq;const x=a.id.split('.').map(Number),y=b.id.split('.').map(Number);for(let i=0;i<Math.max(x.length,y.length);i++)if((x[i]??-1)!==(y[i]??-1))return (x[i]??-1)-(y[i]??-1);return 0;};
+// A row's depth: a v8 row's depth column, a v7 row's dotted id.
+const depthOf=n=>n.depth??n.id.split('.').length-1;
 function treeIndex(agents) {
   const kids=new Map(),byId=new Map(agents.map(n=>[n.id,n]));
   for(const n of agents)if(n.parent)kids.set(n.parent,[...(kids.get(n.parent)||[]),n]);
@@ -98,7 +101,8 @@ const validationState=(v,status)=>{const st=status?.[v.id];return typeof st?.pas
 const DOUBT_BAR=0.5;
 // v8: the levels: each validation with its last result, its check in a few
 // words, the contracts it serves, the manager that holds it and Clef's
-// marks; then each splitter step with its manager, attempt and outcome.
+// marks; each manager's level file (open it to read it); then each splitter
+// step with its manager, attempt and outcome.
 function levelsMarkup(s) {
   const list=s.validations||[];
   if(!list.length)return '<p class="empty">A v8 room\'s manager states its level first: its contracts, and the validations that check each.</p>';
@@ -106,8 +110,9 @@ function levelsMarkup(s) {
   const row=v=>{const state=validationState(v,s.validation_status),detail=s.validation_status?.[v.id]?.detail;
     return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(v.id)}</b> ${esc(v.check)} <span class="faint">· serves ${esc((v.serves||[]).join(', '))}${v.held?` · held by ${esc(v.held)}`:''}</span>${marks(v)}</li>`;};
   const step=x=>`<li><span class="mono">${esc(x.id)}</span> <span class="faint">· ${esc(x.manager)} · ${esc(x.kind)} attempt ${esc(x.attempt)} · ${esc(x.ended_at?x.outcome||'ended':'running')}</span></li>`;
+  const level=f=>`<li><button type="button" class="file-row" data-agent="${esc(f.manager)}" data-path="${esc(f.path)}"><span class="mono">${esc(f.manager)}/${esc(f.path)}</span><small>r${esc(f.revision)} · ${esc(String(f.commit||'').slice(0,12))}</small></button> <span class="faint">${esc(f.label||'')} · ${esc(f.children)} children${f.archived?` · ${esc(f.archived)} archived`:''} · ${esc(f.contracts)} contracts · ${esc(f.validations)} validations</span></li>`;
   const section=(title,items)=>items.length?`<div class="panel-section"><div class="eyebrow">${title}</div><ul class="panel-list">${items.join('')}</ul></div>`:'';
-  return section('VALIDATIONS',list.map(row))+section('SPLITTER STEPS',(s.splitters||[]).map(step));
+  return section('VALIDATIONS',list.map(row))+section('LEVEL FILES',(s.levels||[]).map(level))+section('SPLITTER STEPS',(s.splitters||[]).map(step));
 }
 // v8 S9: the Prompts panel. Each prompt with its state (queued, running,
 // done, failed, skipped); a queued one can be edited, removed, skipped and
@@ -177,6 +182,7 @@ function renderLevels(s) {
   const v8=s.settings?.pipeline==='v8',list=s.validations||[],count=state=>list.filter(v=>validationState(v,s.validation_status)===state).length;
   const held=s.pause&&s.status!=='running'?`${holdsOf(s.pause).map(h=>`<p class="hold-note"><span class="event-type">${esc(h.kind)}</span> ${esc(h.text)}</p>`).join('')}${baseConfirmMarkup(s)}`:'';
   $('levels').innerHTML=held+(v8?levelsMarkup(s):'<p class="empty">No levels (v7 pipeline).</p>');
+  $('levels').querySelectorAll('button[data-agent]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.agent,btn.dataset.path)));
   if($('levels-verdict'))$('levels-verdict').textContent=!v8?'No levels (v7 pipeline)':list.length?`${list.length} validations · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:'Not stated yet';
 }
 function nodeDetail(n,index) {
@@ -279,7 +285,7 @@ function showTree(agents) {
 let limitState=null,lastLimitEvent=null;
 const LIMIT_EVENTS=/^(?:limit|split_capacity_blocked|repair_exhausted)$/;
 function flashLimits(s) {
-  const c=s.settings||{},agents=s.agents||[],depth=Math.max(0,...agents.map(n=>n.id.split('.').length-1));
+  const c=s.settings||{},agents=s.agents||[],depth=Math.max(0,...agents.map(depthOf));
   const now={'active-parallel':(s.active_agents?.length||0)>=(s.max_parallel||Infinity),'agent-count':!!c.max_agents&&agents.length>=c.max_agents,'depth':!!c.max_depth&&depth>=c.max_depth};
   const events=(s.events||[]).filter(e=>LIMIT_EVENTS.test(e.kind)||e.kind==='paused'&&/budget/i.test(e.body||'')),last=events.at(-1)?.id??null;
   if(limitState){for(const [id,on] of Object.entries(now))if(on&&!limitState[id])flashLimit($(id));
@@ -297,7 +303,7 @@ function render(s) {
   if (parallelCounter) parallelCounter.textContent=`${s.active_agents?.length||0} / ${s.max_parallel||16}`;
   $('steps').textContent=s.step??0;
   $('agent-count').textContent=s.agents?.length||0;
-  $('depth').textContent=Math.max(0,...(s.agents||[]).map(n=>n.id.split('.').length-1));
+  $('depth').textContent=Math.max(0,...(s.agents||[]).map(depthOf));
   flashLimits(s);
   if($('build-verdict')) {
     const b=s.build;

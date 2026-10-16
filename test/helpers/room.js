@@ -7,13 +7,13 @@ import {DatabaseSync} from 'node:sqlite';
 import {tmpdir} from 'node:os';
 process.env.BUILD_RUNNER_WORKDIR=tmpdir();
 register('../cloudflare-loader.mjs',import.meta.url);
-const {ControlRoom}=await import('../../src/index.js');
+const {ControlRoom,rowId,LEVEL_FILE,LEVELS_DIR}=await import('../../src/index.js');
 const {verifyBuild}=await import('../../container/build-runner.mjs');
 const {snapshotHash}=await import('../../src/build-verification.js');
 const {materializedPath}=await import('../../src/assembly.js');
 const {ROLE}=await import('../../src/prompts.js');
 const {fakeBoxes}=await import('./boxes.js');
-export {ControlRoom,verifyBuild,snapshotHash,materializedPath};
+export {ControlRoom,verifyBuild,snapshotHash,materializedPath,rowId,LEVEL_FILE,LEVELS_DIR};
 
 export class Sql {constructor(db){this.db=db||new DatabaseSync(':memory:');}exec(s,...p){if(!p.length&&!/^\s*select/i.test(s)){this.db.exec(s);return{toArray:()=>[]};}const q=this.db.prepare(s);const rows=/^\s*select/i.test(s)?q.all(...p):(q.run(...p),[]);return{toArray:()=>rows};}}
 export class Store {constructor(){this.repos=new Map();}async create(name){this.repos.set(name,new Map());return{name,remote:'https://test/'+name,branch:'main'};}async read(name,path){return this.repos.get(name)?.get(path)??null;}async write({name,path,content}){this.repos.get(name).set(path,content);return{commit:'c'.repeat(40)};}}
@@ -94,7 +94,7 @@ export const {verifyChecks}=await import('../../container/build-runner.mjs');
 // fails open, as these rooms predate it (v7.13.3). raw holds every
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test'}={}) {
+export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test',store:given=null}={}) {
   const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
@@ -132,7 +132,7 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
   // with the network kept (isolation []: the tests' sandbox may refuse namespaces).
   const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits})=>{builds.push(files);
     return mode==='checks'?verifyChecks({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
-  const pending=[],store=new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
+  const pending=[],store=given||new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
   // Capability boxes S1: a v8 compile opens a fresh Box (the real class over
   // a fake Container) whose runner request goes to the same executor.
   const BOXES=boxes||fakeBoxes({run:req=>exec.build(req)});

@@ -95,16 +95,28 @@ test('L4: the dashboard tells a builder by its role: a v8 "Builder" is its manag
   const elements = new Map(ids.map(id => [id, {id, value: '', textContent: '', className: '', innerHTML: '', title: '', disabled: false, addEventListener() {}, querySelectorAll() { return []; }}]));
   const context = {document: {getElementById(id) { return elements.get(id) || null; }, querySelectorAll() { return []; }}, crypto: {randomUUID() { return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'; }}, location: {href: 'https://example.com/'}, history: {replaceState() {}}, URL, setInterval() {}};
   runInNewContext(script, context, {filename: 'public/app.js'});
+  // v8 rows: ids that say nothing of where a row stands; its depth and its spawn's sequence do.
+  const M = 'manager-f000000000000000', SHOUT = 'worker-e000000000000000', HELP = 'worker-1000000000000000', B = 'builder-0000000000000000';
   const agents = [
-    {id: 'root', parent: null, label: 'Root objective', role: '', phase: 'manager', status: 'waiting', task: 'goal'},
-    {id: 'root.1', parent: 'root', label: 'Shouter', role: '', phase: 'implement', status: 'done', task: 'Write shout'},
-    {id: 'root.2', parent: 'root', label: 'Builder', role: '', phase: 'implement', status: 'done', task: 'Write the building helpers'},
-    {id: 'root.3', parent: 'root', label: 'Builder', role: 'builder', phase: 'implement', status: 'running', task: 'Join the work'}];
-  context.render({status: 'running', busy: false, step: 3, max_parallel: 4, active_agents: [], files: [], events: [], agents});
+    {id: M, parent: null, label: 'Room manager', role: 'manager', phase: 'manager', status: 'waiting', task: 'goal', depth: 0, seq: 1},
+    {id: SHOUT, parent: M, label: 'Shouter', role: 'worker', phase: 'implement', status: 'done', task: 'Write shout', depth: 1, seq: 1},
+    {id: HELP, parent: M, label: 'Builder', role: 'worker', phase: 'implement', status: 'done', task: 'Write the building helpers', depth: 1, seq: 2},
+    {id: B, parent: M, label: 'Builder', role: 'builder', phase: 'implement', status: 'running', task: 'Join the work', depth: 1, seq: 3}];
+  const levels = [{manager: M, path: 'level.json', repo: `abcdef0123456789-${M}`, commit: 'c'.repeat(40), revision: 2, export_path: `.recursive/levels/${M}.json`, label: 'Room manager', children: 2, archived: 0, contracts: 2, validations: 1}];
+  const validations = [{id: 'V1', level: M, held: M, serves: ['shout'], kind: 'call', check: 'shout("a") → "A!"', notes: {}}];
+  context.render({status: 'running', busy: false, step: 3, max_parallel: 4, active_agents: [], files: [], events: [], agents, settings: {pipeline: 'v8'}, levels, validations, validation_status: {}});
   const tree = elements.get('hierarchy').innerHTML;
-  assert.match(tree, /data-node="root" data-builder="root\.3"/, 'the v8 builder is Root\'s builder');
-  assert.match(tree, /class="dot role-worker[^"]*" data-node="root\.2"/, 'the part named Builder is a worker');
-  assert.doesNotMatch(tree, /data-node="root\.3"/, 'the builder is drawn as its manager\'s half, not as a child');
+  assert.match(tree, new RegExp(`data-node="${M}" data-builder="${B}"`), 'the v8 builder is its manager\'s builder');
+  assert.match(tree, new RegExp(`class="dot role-worker[^"]*" data-node="${HELP}"`), 'the part named Builder is a worker');
+  assert.doesNotMatch(tree, new RegExp(`data-node="${B}"`), 'the builder is drawn as its manager\'s half, not as a child');
+  assert.ok(tree.indexOf(SHOUT) < tree.indexOf(HELP), 'siblings in their spawn\'s order, not their ids\'');
+  assert.equal(elements.get('depth').textContent, 1, 'the depth is the rows\' depth');
+  // Each manager's level file, a button that opens it.
+  const panel = elements.get('levels').innerHTML;
+  assert.match(panel, /LEVEL FILES/);
+  assert.match(panel, new RegExp(`data-agent="${M}" data-path="level.json"`));
+  assert.match(panel, /r2 · cccccccccccc/);
+  assert.match(panel, /2 children · 2 contracts · 1 validations/);
 });
 
 

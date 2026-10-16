@@ -14,6 +14,8 @@ import {judgeRequirement, judgeParts, JUDGE_BAR} from '../src/model.js';
 import {CLEF} from '../src/prompts.js';
 import {TOOLCHAINS} from '../src/toolchains.js';
 import {packagePath} from '../src/assembly.js';
+// The export's notes: RUN.md, validations.json and each manager's level file, under .recursive/levels/.
+const notesOf=room=>['.recursive/RUN.md','.recursive/validations.json',...room.levelManagers().map(m=>`.recursive/levels/${m}.json`)];
 
 if(!process.env.PLAYWRIGHT_BROWSERS_PATH&&existsSync('/opt/pw-browsers'))process.env.PLAYWRIGHT_BROWSERS_PATH='/opt/pw-browsers';
 if(!process.env.NODE_PATH&&existsSync('/opt/node-tools/node_modules/playwright'))process.env.NODE_PATH='/opt/node-tools/node_modules';
@@ -84,7 +86,7 @@ test('README prompt: one worker writes it, Clef judges it, a failed judgement go
   // The export: the project at its own paths, the runtime's notes under .recursive/, no README of the runtime's.
   const app=await room.appFiles();
   assert.equal(app.passed,true);
-  assert.deepEqual(app.files.map(f=>f.path),['.recursive/RUN.md','.recursive/validations.json','README.md']);
+  assert.deepEqual(app.files.map(f=>f.path),[...notesOf(room),'README.md']);
   assert.equal(app.files.find(f=>f.path==='README.md').content,GOOD_README,'the project\'s README is never written by the runtime');
   const notes=app.files[0].content;
   assert.match(notes,/^# How to run this project/);
@@ -144,7 +146,7 @@ test('Python temperature CLI: a wrong output fails its command validations, the 
   assert.equal(room.spans().filter(s=>s.kind==='container'&&s.name==='checks').length,requests.length);
   // The bundle keeps placed files at their own paths; a file no contract places goes under its piece's folder.
   const app=await room.appFiles();
-  assert.deepEqual(app.files.map(f=>f.path),['.recursive/RUN.md','.recursive/validations.json','USAGE.md',notes,'temp.py']);
+  assert.deepEqual(app.files.map(f=>f.path),[...notesOf(room),'USAGE.md',notes,'temp.py']);
   assert.match(app.files[0].content,/- `temp`: `python3 temp\.py`: prints the Fahrenheit value/);
   assert.deepEqual(lintRequests(room,calls),[]);
 });
@@ -265,7 +267,7 @@ test('a worker\'s copy of a path another piece\'s contract places stays in its o
   assert.deepEqual(room.files(w.id).map(f=>f.path).sort(),['GUIDE.md','NOTES.md']);
   const app=await room.appFiles(),at=p=>app.files.find(f=>f.path===p)?.content;
   assert.equal(at('GUIDE.md'),'# Guide\n\nUsage: open it.\n');
-  assert.deepEqual(app.files.map(f=>f.path),['.recursive/RUN.md','.recursive/validations.json','GUIDE.md','NOTES.md']);
+  assert.deepEqual(app.files.map(f=>f.path),[...notesOf(room),'GUIDE.md','NOTES.md']);
   assert.match(events(room,'bundle_stray')[0].body,/a copy of a path another piece's contract places: GUIDE\.md \(written by Notes, placed by Guide\)/);
   assert.deepEqual(lintRequests(room,calls),[]);
 });
@@ -311,13 +313,13 @@ test('checkProblems: a failed validation is a run problem with its observation a
     ['V1',{passed:false,detail,frames:[{path:'components/c-1/conv.py',line:3,fn:'to_f'},{path:'/usr/lib/x.py',line:1,fn:''}],output:'to_fahrenheit was called'}],
     ['V2',{passed:false,infrastructure:true,detail:'not run: the browser did not start'}],
     ['V3',{passed:true}]]);
-  const origin=p=>p==='components/c-1/conv.py'?{owner:'root.1.2',owner_path:'conv.py'}:null;
+  const origin=p=>p==='components/c-1/conv.py'?{owner:'worker-0123456789abcdef',owner_path:'conv.py'}:null;
   const items=checkProblems(spec,results,[{path:'temp.py',stage:'syntax',detail:'python syntax: temp.py line 2 | invalid syntax'}],{origin});
   assert.equal(items.length,2);
   const [run,load]=items;
   assert.equal(run.kind,'run');
   assert.equal(run.detail,detail,'the observation, as it is');
-  assert.deepEqual(run.parties,[{path:'components/c-1/conv.py',owner:'root.1.2',owner_path:'conv.py',digest:'',role:'site'}]);
+  assert.deepEqual(run.parties,[{path:'components/c-1/conv.py',owner:'worker-0123456789abcdef',owner_path:'conv.py',digest:'',role:'site'}]);
   assert.deepEqual(run.facts.validation,{id:'V1',serves:['temp'],check_kind:'command',frames:[{path:'components/c-1/conv.py',fn:'to_f',line:3}]});
   assert.equal(load.kind,'load');assert.equal(load.path,'temp.py');
   assert.equal(load.detail,'python syntax: temp.py line 2 | invalid syntax');

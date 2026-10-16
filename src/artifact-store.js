@@ -15,9 +15,27 @@ export class CloudflareArtifactStore {
     this.git = git;
     this.http = http;
   }
+  // v8 names a repository by its room and row (the same name on a replayed
+  // spawn): a name Artifacts already holds, because a create went through
+  // before its answer reached the room, is that repository.
   async create(name, description) {
-    const created = await this.artifacts.create(name, { description, readOnly: false, setDefaultBranch: 'main' });
-    return { name: created.name, remote: created.remote, branch: created.defaultBranch || 'main' };
+    try {
+      const created = await this.artifacts.create(name, { description, readOnly: false, setDefaultBranch: 'main' });
+      return { name: created.name, remote: created.remote, branch: created.defaultBranch || 'main' };
+    } catch (err) {
+      const held = await this.held(name);
+      if (held) return held;
+      throw err;
+    }
+  }
+  // The repository a name holds, as its info gives it; null when there is none (or it gives no remote).
+  async held(name) {
+    let repo;
+    try { repo = await this.artifacts.get(name); } catch { return null; }
+    try {
+      const info = await repo?.info?.();
+      return info?.remote ? { name: info.name || name, remote: info.remote, branch: info.defaultBranch || 'main' } : null;
+    } catch { return null; } finally { await release(repo); }
   }
   // B1: a scored benchmark room's repositories are deleted (BenchRun).
   async delete(name) {

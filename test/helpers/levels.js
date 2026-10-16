@@ -3,11 +3,11 @@
 // whose models are scripted by role. The splitter answers levels, workers
 // answer file blocks, and Clef answers every question by its key (p(key,
 // state) → a probability), so a test states only what it decides.
-import {liveRoom, fileBlocks, events} from './room.js';
+import {liveRoom, fileBlocks, events, rowId, LEVEL_FILE, LEVELS_DIR} from './room.js';
 import {lintText, composedTexts} from './prompt-lint.js';
 import {contractLine} from '../../src/contracts.js';
 import {contractExamples, checkSummary} from '../../src/validations.js';
-export {fileBlocks, events};
+export {fileBlocks, events, rowId, LEVEL_FILE, LEVELS_DIR};
 
 // Clef's answer to a request: every question asked, each with p(key, state).
 export const clefBy = p => input => ({answers: Object.fromEntries(Object.keys(input.questions || {}).map(k => [k, {noul: p(k, input.state || {}, input)}]))});
@@ -21,8 +21,8 @@ export const usualClef = (overrides = {}) => clefBy((key, state, input) => {
 });
 
 // A room started from the prompt on the v8 pipeline, run until it settles.
-export async function levelRoom({prompt, split, leaf, clef = usualClef(), link, file, budget = 80, settings = {}, room_id = 'levels-test', boxes, executor} = {}) {
-  const r = liveRoom({split, leaf, clef, link, file, boxes, executor, room_id});
+export async function levelRoom({prompt, split, leaf, clef = usualClef(), link, file, budget = 80, settings = {}, room_id = 'levels-test', boxes, executor, store} = {}) {
+  const r = liveRoom({split, leaf, clef, link, file, boxes, executor, room_id, store});
   const started = await r.room.start(prompt, budget, {pipeline: 'v8', ...settings}, room_id);
   if (started?.error) throw new Error(started.error);
   await r.drain();
