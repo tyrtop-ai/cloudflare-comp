@@ -129,9 +129,16 @@ function sentFiles(files, {revision=false, budget=FILES_BUDGET}={}) {
   });
 }
 // Builders and the compiler are runtime nodes: one builder per manager links
-// its direct children, one compiler under the top manager runs the bundle.
-const RUNTIME_LABELS = ['Temporary builder','Compiler'];
-const isRuntimeNode = n => !!n && RUNTIME_LABELS.includes(n.label);
+// its direct children, one compiler under the top manager runs the bundle
+// (v7). A row's role says which (agents.role: 'builder', 'compiler', or ''
+// for a part); a row from before the column has its role from v7's labels,
+// which v7 keeps. v8 M3 review (L4): under v8 a builder is "Builder", at
+// every level for the whole run; every reader tells it by its role.
+const V7_BUILDER_LABEL = 'Temporary builder', BUILDER_LABEL = 'Builder', COMPILER_LABEL = 'Compiler';
+const roleOf = n => n?.role || (n?.label === V7_BUILDER_LABEL ? 'builder' : n?.label === COMPILER_LABEL ? 'compiler' : '');
+const isRuntimeNode = n => !!n && !!roleOf(n);
+const isBuilderNode = n => roleOf(n) === 'builder';
+const isCompilerNode = n => roleOf(n) === 'compiler';
 // What the compiler's pipeline writes: the loader, the package and the
 // runner's test. An atomic top holds them among its own files (v7.15.2).
 const RUNTIME_GLUE = ['glue/index.js','package.json','glue/smoke.js'];
@@ -178,7 +185,7 @@ async function assumptionTopic(slug, childKey) {
   const hash=Array.from(bytes.slice(0,6),b=>b.toString(16).padStart(2,'0')).join('');
   return `${full.slice(0,87)}_${hash}`; // exactly 100 characters, 48-bit suffix
 }
-const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages';
+const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role';
 // v8 live 4: the prompt handler. A short-lived step above Root: it takes the
 // person's prompt, creates Root's row as every parent creates a child's
 // (its packages the installed set), sets Root's parent to its own id, hands
@@ -448,6 +455,11 @@ export class ControlRoom extends DurableObject {
     // v8 live 4: a node's packages, the installed modules its row lists beside
     // its contracts (src/packages.js). '[]' under v7, which never reads it.
     if (!cols.includes('packages')) db.exec("ALTER TABLE agents ADD COLUMN packages TEXT NOT NULL DEFAULT '[]'");
+    // v8 M3 review (L4): a row's role ('builder', 'compiler', or '' for a part); a row from before it has the role v7's label gave it.
+    if (!cols.includes('role')) {
+      db.exec("ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT ''");
+      db.exec(`UPDATE agents SET role='builder' WHERE label='${V7_BUILDER_LABEL}'`);db.exec(`UPDATE agents SET role='compiler' WHERE label='${COMPILER_LABEL}'`);
+    }
     // v8 live 4: the prompt handlers (handPrompt), each spawned and ended at once.
     db.exec("CREATE TABLE IF NOT EXISTS prompt_handlers (id TEXT PRIMARY KEY, kind TEXT NOT NULL, prompt TEXT NOT NULL, prompt_id TEXT NOT NULL DEFAULT '', root TEXT NOT NULL, created_root INTEGER NOT NULL DEFAULT 0, spawned_at INTEGER NOT NULL, ended_at INTEGER)");
     // v8 M2: the card writer steps (cardWriter), each under the handler that spawned it; outcome: written, held:<kind>, unchanged, folded, error.
@@ -1068,7 +1080,7 @@ export class ControlRoom extends DurableObject {
     const n = this.node(id);
     if (!n) throw new Error(`Unknown agent: ${id}`);
     const parent = n.parent ? this.node(n.parent) : null;
-    const builderMode=n.label==='Temporary builder';
+    const builderMode=isBuilderNode(n);
     const describe = x => ({ id: x.id, label: x.label, responsibility: clip(x.task, 520), status: x.status,
       exposed_files: builderMode ? this.assembledSurface(x).slice(0,12).map(f=>({path:f.path,revision:f.revision})) : this.visibleManifest(x.id) });
     const isolatedWorker=n.phase==='implement' && !builderMode && !this.manager(id);
@@ -1127,7 +1139,7 @@ export class ControlRoom extends DurableObject {
       const facts = await this.readKnowledge(owner);
       // A builder needs provisional contracts from peer managers, not only
       // their last three unrelated status notes.
-      const assumed = n.label==='Temporary builder' ? Object.entries(facts).filter(([key])=>isAssumption(key)).slice(-12) : [];
+      const assumed = isBuilderNode(n) ? Object.entries(facts).filter(([key])=>isAssumption(key)).slice(-12) : [];
       const latest = Object.entries(facts).slice(-3);
       return { owner, known_topics: Object.keys(facts).slice(-40),
         recent_facts: Object.fromEntries([...assumed,...latest].map(([k,v])=>[k,clip(v,750)])) };
@@ -1135,7 +1147,7 @@ export class ControlRoom extends DurableObject {
     const recent = facts => Object.fromEntries(Object.entries(facts).slice(-8).map(([k,v])=>[k,clip(v,950)]));
     return { your_memory: {public: recent(local[0]), private: recent(local[1])},
       your_memory_topics: {public: Object.keys(local[0]),private: Object.keys(local[1])},
-      adjacent_public_memory: n.phase==='implement' && n.label!=='Temporary builder' && !this.manager(id) ? [] : neighbors };
+      adjacent_public_memory: n.phase==='implement' && !isBuilderNode(n) && !this.manager(id) ? [] : neighbors };
   }
   // Prevent a public notebook or direct message from naming existing agents
   // that the recipient is not permitted to see. This supplements, not replaces,
@@ -1481,14 +1493,15 @@ export class ControlRoom extends DurableObject {
   }
   // v8 live 4: packages, the installed modules the row lists, given by the
   // parent as its contracts are (Root's: the installed set).
-  async provision(id, parent, label, task, interfaces=[], uses=[], packages=[]) {
+  // v8 M3 review (L4): role, the runtime's own rows' ('builder', 'compiler'), from the spec that only the runtime writes.
+  async provision(id, parent, label, task, interfaces=[], uses=[], packages=[], role='') {
     if (this.node(id)) throw new Error('Agent ID exists');
     const name = `rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
-    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?)',
+    this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?,?)',
       id, parent, clip(label,70), clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8:this.v8()})),
-      JSON.stringify(this.v8()?normalizePackages(packages):[]));
-    if (RUNTIME_LABELS.includes(label)) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
+      JSON.stringify(this.v8()?normalizePackages(packages):[]),role);
+    if (role) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
     return this.node(id);
@@ -1500,7 +1513,7 @@ export class ControlRoom extends DurableObject {
       const specs=parse(batch.specs,[]);
       let pending=0;
       for(let i=0;i<specs.length;i++) {
-        if(!this.node(`${batch.parent}.${batch.start_index+i}`) && !RUNTIME_LABELS.includes(specs[i].label)) pending++;
+        if(!this.node(`${batch.parent}.${batch.start_index+i}`) && !isRuntimeNode(specs[i])) pending++;
       }
       return total+pending;
     },0);
@@ -1540,8 +1553,8 @@ export class ControlRoom extends DurableObject {
   // The promises of one level's live direct children, minus the branch a
   // walk or request came from. Nothing else is read (author decision 2).
   offeredFunctions(level, exclude='') {
-    return query(this.db(),"SELECT id,label,interfaces FROM agents WHERE parent=? AND id<>? AND status NOT IN ('retired','failed') AND interfaces<>'[]' ORDER BY LENGTH(id),id",level,exclude)
-      .filter(c=>!RUNTIME_LABELS.includes(c.label)).map(c=>({id:c.id,label:c.label,items:parse(c.interfaces,[])})).filter(c=>c.items.length);
+    return query(this.db(),"SELECT id,label,role,interfaces FROM agents WHERE parent=? AND id<>? AND status NOT IN ('retired','failed') AND interfaces<>'[]' ORDER BY LENGTH(id),id",level,exclude)
+      .filter(c=>!isRuntimeNode(c)).map(c=>({id:c.id,label:c.label,items:parse(c.interfaces,[])})).filter(c=>c.items.length);
   }
   // Walk up from id: the nearest level where exactly one other direct child
   // promises name. Two there is ambiguous; a name in a promise on the path
@@ -1560,13 +1573,13 @@ export class ControlRoom extends DurableObject {
   // down, was promised again under root.3 68 s later).
   promisedDeep(name, id) {
     return query(this.db(),"SELECT id,label,interfaces FROM agents WHERE status NOT IN ('retired','failed') AND interfaces LIKE ?",`%"${name}"%`)
-      .filter(n=>!RUNTIME_LABELS.includes(n.label)&&n.id!==id&&!id.startsWith(n.id+'.')&&!n.id.startsWith(id+'.')).map(n=>({label:n.label,f:parse(n.interfaces,[]).find(f=>f.name===name)})).filter(x=>x.f);
+      .filter(n=>!isRuntimeNode(n)&&n.id!==id&&!id.startsWith(n.id+'.')&&!n.id.startsWith(id+'.')).map(n=>({label:n.label,f:parse(n.interfaces,[]).find(f=>f.name===name)})).filter(x=>x.f);
   }
   // v7.15 slice C: the deepest live nodes at or under `under` whose promise
   // holds name. Runtime only (linker, branch check, entry): no prompt shows it.
   carriersOf(name, under) {
     const live=query(this.db(),"SELECT id,label,interfaces FROM agents WHERE (id=? OR id LIKE ?) AND status NOT IN ('retired','failed') AND interfaces<>'[]' ORDER BY LENGTH(id),id",under,under+'.%')
-      .filter(n=>!RUNTIME_LABELS.includes(n.label)&&parse(n.interfaces,[]).some(f=>f.name===name));
+      .filter(n=>!isRuntimeNode(n)&&parse(n.interfaces,[]).some(f=>f.name===name));
     return live.filter(n=>!live.some(x=>x.id.startsWith(n.id+'.'))).map(({id,label})=>({id,label}));
   }
   // The plan as builder builderId reads it: the plan's names, each module's
@@ -1598,7 +1611,7 @@ export class ControlRoom extends DurableObject {
   }
   // Every name the plan gives a live piece, with its deepest carriers.
   planIndex() {
-    const rows=query(this.db(),"SELECT id,label,interfaces FROM agents WHERE status NOT IN ('retired','failed') AND interfaces<>'[]'").filter(n=>!RUNTIME_LABELS.includes(n.label)),by=new Map();
+    const rows=query(this.db(),"SELECT id,label,role,interfaces FROM agents WHERE status NOT IN ('retired','failed') AND interfaces<>'[]'").filter(n=>!isRuntimeNode(n)),by=new Map();
     for(const n of rows)for(const f of parse(n.interfaces,[]))by.set(f.name,[...(by.get(f.name)||[]),n.id]);
     return new Map([...by].map(([name,ids])=>[name,new Set(ids.filter(id=>!ids.some(x=>x.startsWith(id+'.'))))]));
   }
@@ -1660,13 +1673,13 @@ export class ControlRoom extends DurableObject {
     if(!parent) throw new Error('Unknown owner');
     if(!specs.length) return [];
     // Generation 0 keeps builder:<id>; a retasked manager's fresh builder is builder:<id>:<gen>.
-    if(specs.some(s=>s.label==='Temporary builder') &&
+    if(specs.some(s=>isBuilderNode(s)) &&
       !(new RegExp(`^builder:${parentId.replaceAll('.','\\.')}(?::\\d+)?$`).test(batchKey) && this.children(parentId).length>0 &&
         this.children(parentId).some(c=>!isRuntimeNode(c)) && this.manager(parentId))) {
       this.event(parentId,'blocked','Temporary builders can only be scheduled internally by their owning manager.');
       return [];
     }
-    if(specs.some(s=>s.label==='Compiler') &&
+    if(specs.some(s=>isCompilerNode(s)) &&
       !(batchKey===`compiler:${parentId}` && specs.length===1 && !parent.parent && this.manager(parentId))) {
       this.event(parentId,'blocked','The compiler can only be scheduled internally, once, under the top manager.');
       return [];
@@ -1679,7 +1692,7 @@ export class ControlRoom extends DurableObject {
       }
       // Do not create one child out of three. Inference turns overlap, so
       // reservations must be synchronous and include other pending batches.
-      if (this.productionNodeCount() + this.reservedSpawnSlots() + specs.filter(s=>!RUNTIME_LABELS.includes(s.label)).length > this.settings().max_agents) {
+      if (this.productionNodeCount() + this.reservedSpawnSlots() + specs.filter(s=>!isRuntimeNode(s)).length > this.settings().max_agents) {
         this.event(parentId,'limit',`Agent cap: cannot reserve all ${specs.length} children; split rejected in full.`);
         return [];
       }
@@ -1696,7 +1709,7 @@ export class ControlRoom extends DurableObject {
       const id=`${parentId}.${batch.start_index+i}`;
       let child=this.node(id);
       // v7.15.5: answers a spec carries (composeStart) are there before the child can run.
-      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[]);this.assignRefs(id,parentId,planned[i].refs);
+      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[],roleOf(planned[i]));this.assignRefs(id,parentId,planned[i].refs);
         // v8 live 4: a package the split named that its parent's row does not list is the piece's ask, as a worker's would be.
         for(const name of planned[i].package_asks||[])this.answerPackageAsk(id,{name,need:'',key:requestKey({name})});}
       made.push(child);
@@ -1784,7 +1797,7 @@ export class ControlRoom extends DurableObject {
         return {child,files,delegated:true};
       }
       if(this.get(`builder_delegated:${child.id}`)==='1') {
-        const builder=this.children(child.id).find(x=>x.label==='Temporary builder');
+        const builder=this.children(child.id).find(x=>isBuilderNode(x));
         // Prefer the integrated entrypoint for inference, but retain all real
         // source bytes in the bundle. Until the delegated builder publishes,
         // don't silently substitute its unfinished raw subtree as final output.
@@ -1820,7 +1833,7 @@ export class ControlRoom extends DurableObject {
   publishedBy(child, owner) {
     if(owner===child.id)return true;
     const o=this.node(owner);
-    return o?.label==='Temporary builder'&&o.parent===child.id;
+    return isBuilderNode(o)&&o.parent===child.id;
   }
   // The gate on every copy into a builder: its sibling, and a file that sibling publishes.
   builderReads(builder, child, f) {
@@ -1886,7 +1899,7 @@ export class ControlRoom extends DurableObject {
   // through collectLinkSources, under the same check.
   async materializeBuilder(builderId) {
     const builder=this.node(builderId);
-    if(builder?.label!=='Temporary builder' || !builder.parent)throw new Error('Only a temporary builder can materialize children');
+    if(!isBuilderNode(builder) || !builder.parent)throw new Error('Only a temporary builder can materialize children');
     const sources=[],failures=[];
     for(const {child,files} of this.assemblySources(builder.parent)) {
       for(const f of files) {
@@ -1985,8 +1998,8 @@ export class ControlRoom extends DurableObject {
   builderCurrent(manager, fingerprint=this.assemblyFingerprint(manager)) {
     return this.get(`linked:${manager}`)===fingerprint;
   }
-  builderOf(manager) {return this.children(manager).find(c=>c.label==='Temporary builder'&&c.status!=='retired')||null;}
-  compilerOf(top) {return this.children(top).find(c=>c.label==='Compiler')||null;}
+  builderOf(manager) {return this.children(manager).find(c=>isBuilderNode(c)&&c.status!=='retired')||null;}
+  compilerOf(top) {return this.children(top).find(c=>isCompilerNode(c))||null;}
   // Every production agent under this manager is finished, no repair
   // request is still in flight to any of them, and no manager below holds an
   // open problem. Builders and the compiler are excluded.
@@ -2001,7 +2014,7 @@ export class ControlRoom extends DurableObject {
   }
   async legacyScheduleAssembly(id) {
     if(!this.integrationEnabled(id))return null;
-    const children=this.children(id).filter(c=>c.label!=='Temporary builder');
+    const children=this.children(id).filter(c=>!isBuilderNode(c));
     if(!children.length)return null;
     const budget=await this.ensureBuilderBudget(id);
     const sources=this.assemblySources(id);
@@ -2014,7 +2027,7 @@ export class ControlRoom extends DurableObject {
     const offered=shard ? await shard.offerAssembly({fingerprint,final}) :
       {changed:this.get(`assembly_offered:${id}`)!==fingerprint};
     if(!shard)this.set(`assembly_offered:${id}`,fingerprint);
-    let builder=this.children(id).find(c=>c.label==='Temporary builder');
+    let builder=this.children(id).find(c=>isBuilderNode(c));
     if(!builder) {
       const task='LINK ONLY published worker source into a composable output for: '+clip(this.node(id).task,700)+
         '. Work with current context up to two-thirds of model capacity. The runtime copies original source, and splits integration across owned subtrees only when needed. Never reimplement source; write ONLY thin imports, exports, adapters, entrypoints and configuration. An initial provisional assembly is allowed; finalize once producers finish or when a concrete diagnostic requires correction.';
@@ -2043,17 +2056,17 @@ export class ControlRoom extends DurableObject {
     let blocked=this.read('build_blocked:root',null);const top=this.topId();
     if(!blocked && top && this.get('build_infrastructure:root')) {
       // Migration for runs created by v6.5 before the retry bookmark existed.
-      const builder=this.children(top).find(c=>c.label==='Temporary builder');
+      const builder=this.children(top).find(c=>isBuilderNode(c));
       if(builder)blocked={builder:builder.id,fingerprint:this.assemblyFingerprint(top)};
     }
     if(!blocked)return false;
     const builder=this.node(blocked.builder);
-    if(!builder || builder.label!=='Temporary builder' || !builder.parent)return false;
+    if(!builder || !isBuilderNode(builder) || !builder.parent)return false;
     const current=this.assemblyFingerprint(builder.parent);
     if(blocked.fingerprint!==current) {
       this.save('build_blocked:root',null);
       this.set('build_infrastructure:root','');
-      if(this.children(builder.parent).filter(c=>c.label!=='Temporary builder').every(c=>c.status==='done'||c.status==='retired'))this.wake(builder.id); // Final source needs integration.
+      if(this.children(builder.parent).filter(c=>!isBuilderNode(c)).every(c=>c.status==='done'||c.status==='retired'))this.wake(builder.id); // Final source needs integration.
       return false;
     }
     try {
@@ -2087,7 +2100,7 @@ export class ControlRoom extends DurableObject {
       if(!row)return null;
       const n=this.node(row.child);
       if(!n)return null;
-      if(n.label!=='Temporary builder')return {owner:n.id,path:row.source_path,digest:row.digest};
+      if(!isBuilderNode(n))return {owner:n.id,path:row.source_path,digest:row.digest};
       currentBuilder=n.id;currentPath=row.source_path;
     }
     return null;
@@ -2099,7 +2112,7 @@ export class ControlRoom extends DurableObject {
     let builder=from,current=String(path||'').replace(/^\.\//,'');
     for(let depth=0;depth<=this.settings().max_depth+2&&builder!==to;depth++) {
       const row=query(this.db(),'SELECT child,source_path FROM builder_sources WHERE builder=? AND destination=?',builder,current)[0];
-      if(!row||this.node(row.child)?.label!=='Temporary builder')return null;
+      if(!row||!isBuilderNode(this.node(row.child)))return null;
       builder=row.child;current=row.source_path;
     }
     return builder===to?current:null;
@@ -2159,7 +2172,7 @@ export class ControlRoom extends DurableObject {
     const expected=this.assemblyFingerprint(id);
     const shard=this.managerStub(id);
     const completed=shard?(await shard.assemblyState()).completed:this.get(`assembly_completed:${id}`);
-    const builder=this.children(id).find(c=>c.label==='Temporary builder');
+    const builder=this.children(id).find(c=>isBuilderNode(c));
     if(!builder||builder.status!=='done'||expected!==completed)return false;
     return true;
   }
@@ -2742,7 +2755,7 @@ export class ControlRoom extends DurableObject {
   composeStart(m, spawn) {
     const at=this.planned()?spawn.findIndex(c=>(c?.interfaces||[]).some(f=>f.name==='start')):-1;
     if(at<0)return spawn;
-    const siblings=spawn.flatMap((c,i)=>i===at||RUNTIME_LABELS.includes(c.label)?[]:(c.interfaces||[]).map(f=>({...f,owner:c.label})));
+    const siblings=spawn.flatMap((c,i)=>i===at||isRuntimeNode(c)?[]:(c.interfaces||[]).map(f=>({...f,owner:c.label})));
     const plan=this.startPlan(spawn[at].interfaces.filter(f=>f.name!=='start'),[siblings,...this.planWalk(m)]),{mine,theirs,left,written,stated}=plan;
     if(stated.length?!mine.length&&!theirs.length&&!written.length:!theirs.length)return spawn;
     if(stated.length)return this.composeStated(m,spawn,at,siblings,plan);
@@ -2845,7 +2858,7 @@ export class ControlRoom extends DurableObject {
       const declined=prior.find(p=>p.flags.declined?.length&&failureKey(p)===failureKey(row))?.flags.declined;
       return this.insertProblem({...row,flags:{wave,...declined?{declined}:{}}});
     });
-    if(this.node(source)?.label==='Compiler')this.save('compile_reported',{input,fingerprint:this.assemblyFingerprint(manager),stage,problems:ids,ts:Date.now()});
+    if(isCompilerNode(this.node(source)))this.save('compile_reported',{input,fingerprint:this.assemblyFingerprint(manager),stage,problems:ids,ts:Date.now()});
     else this.save(`link_reported:${manager}`,{fingerprint:input,stage,problems:ids,ts:Date.now()});
     db.exec("UPDATE agents SET status='waiting' WHERE id=?",source);
     this.event(source,'problems_reported',`${ids.length} problem(s) that renaming cannot fix go to the manager, which decides who changes what: `+
@@ -3339,7 +3352,7 @@ export class ControlRoom extends DurableObject {
     return [...files.keys()].some(p=>p!==except&&LINKABLE.test(p)&&providedNames(surfaces?.get(p)||exportSurface(p,files.get(p))).has(name));
   }
   async compileRun(id, input, files, surfaces, entry, entryIssue) {
-    const linked=this.node(id)?.label==='Compiler';
+    const linked=isCompilerNode(this.node(id));
     this.event(id,'compile_entry',`Application entry: ${entry}.`);
     const loader=entryLoader(entry);
     await this.putFile(id,'glue/index.js',loader,{runtimeGlue:true});
@@ -3785,8 +3798,10 @@ export class ControlRoom extends DurableObject {
     let b=this.builderOf(m);
     if(b&&b.status==='done'&&this.read(`piece:${b.id}`,null)?.input===input)return true;
     if(!b) {
-      const gen=Number(this.get(`builder_gen:${m}`,'0'));
-      [b]=await this.spawn(m,[{label:'Temporary builder',task:`Join the work of ${n.label}'s direct children into one piece: rename references so they resolve, write the toolchain glue, and store the piece for the level above.`}],gen?`builder:${m}:${gen}`:`builder:${m}`);
+      const gen=Number(this.get(`builder_gen:${m}`,'0')),key=gen?`builder:${m}:${gen}`:`builder:${m}`;
+      // A batch reserved before (a room from before the builder's label was "Builder") is replayed as it was written.
+      const kept=query(this.db(),'SELECT specs FROM spawn_batches WHERE batch_key=?',key)[0];
+      [b]=await this.spawn(m,kept?parse(kept.specs,[]):[{label:BUILDER_LABEL,role:'builder',task:`Join the work of ${n.label}'s direct children into one piece: rename references so they resolve, write the toolchain glue, and store the piece for the level above.`}],key);
       if(!b){this.event(m,'integration_capacity','No builder slot available.');return false;}
       this.event(m,'piece_handed',`Every child of ${n.label} is done; its builder joins their work.`,b.id);
       return false;
@@ -4534,7 +4549,7 @@ export class ControlRoom extends DurableObject {
     // A child still at its split is a branch: its split request reads no
     // inbox, so a ticket would never reach it, and a stuck one (C5 three
     // times) is retasked, retired or escalated, never assigned.
-    const kindOf=id=>{const c=children.get(id);return !c?null:c.label==='Temporary builder'?'builder':c.label==='Compiler'?'compiler':this.manager(c.id)||c.phase==='decompose'?'manager':'worker';};
+    const kindOf=id=>{const c=children.get(id);return !c?null:isBuilderNode(c)?'builder':isCompilerNode(c)?'compiler':this.manager(c.id)||c.phase==='decompose'?'manager':'worker';};
     const builder=this.builderOf(m),fingerprint=this.assemblyFingerprint(m),state=this.read(`link_state:${m}`,null);
     const relinked=new Set(this.problems("holder=? AND status='closed' AND outcome='relinked'",m).filter(p=>p.flags.fingerprint===fingerprint).map(p=>p.signature));
     const depth=Math.max(1,...this.allNodes().map(x=>x.id.split('.').length-1));
@@ -5346,7 +5361,7 @@ export class ControlRoom extends DurableObject {
   // finish its branch (spec 3.10), as when its repair rounds run out.
   unfixable(m) {
     for(const r of [this.builderOf(m),this.compilerOf(m)].filter(Boolean)) {
-      const report=this.read(r.label==='Compiler'?'compile_reported':`link_reported:${m}`,null);
+      const report=this.read(isCompilerNode(r)?'compile_reported':`link_reported:${m}`,null);
       if(r.status!=='waiting'||!report?.problems?.length||report.fingerprint!==this.assemblyFingerprint(m))continue;
       const dead=report.problems.map(id=>this.problems('id=?',id)[0]).find(p=>p?.status==='closed'&&p.outcome==='exhausted');
       if(!dead||this.problems("source=? AND status!='closed'",r.id).length||!this.subtreeQuiescent(m))continue;
@@ -5919,7 +5934,7 @@ export class ControlRoom extends DurableObject {
       throw new Error('Cannot overwrite a public export alias');
     // The compiler writes only the runtime loader and package, the runner's
     // test and its own manifest; never a module.
-    if(n.label==='Compiler' && this.env.MOCK_AI!=='true' &&
+    if(isCompilerNode(n) && this.env.MOCK_AI!=='true' &&
        !(runtimeGlue?RUNTIME_GLUE.includes(path):materialized?path===COMPILE_MANIFEST:path==='glue/smoke.js'))
       throw new Error('The compiler writes only glue/index.js, package.json, glue/smoke.js and '+COMPILE_MANIFEST+': '+path);
     // runtimeGlue: an atomic top's package.json, which its compile writes.
@@ -5934,7 +5949,7 @@ export class ControlRoom extends DurableObject {
       const bad=worker?writerPathError(path,this.gateFacts(id)):materialized?null:buildPathError(path);
       if(bad)throw new Error((worker?'Workers cannot write this path: ':'Unsafe runtime path: ')+bad);
     }
-    if(n.label==='Temporary builder' && this.env.MOCK_AI!=='true') {
+    if(isBuilderNode(n) && this.env.MOCK_AI!=='true') {
       if(!materialized && !runtimeGlue && ![PUBLIC_KNOWLEDGE,PRIVATE_KNOWLEDGE].includes(path) && !['glue/wiring.js','glue/smoke.js'].includes(path))
         throw new Error('Only glue/wiring.js and glue/smoke.js may be authored by a builder; glue/index.js and package.json belong to runtime');
       if(runtimeGlue && !['glue/index.js','package.json'].includes(path))
@@ -5944,7 +5959,7 @@ export class ControlRoom extends DurableObject {
       if(!materialized && !isBuilderGluePath(path) && ![PUBLIC_KNOWLEDGE,PRIVATE_KNOWLEDGE].includes(path))
         throw new Error('Builders cannot publish implementation files; memory must use remember');
     }
-    if(n.label==='Temporary builder' && isBuilderGluePath(path) && this.env.MOCK_AI!=='true') {
+    if(isBuilderNode(n) && isBuilderGluePath(path) && this.env.MOCK_AI!=='true') {
       const repoFiles=new Map();
       for(const file of this.files(id))repoFiles.set(file.path,await this.indexedContent(id,file.path));
       const errors=verifyBuilderCandidate(path,content,repoFiles);
@@ -5956,7 +5971,7 @@ export class ControlRoom extends DurableObject {
     }
     const db = this.db();
     const existing = query(db,'SELECT revision FROM artifact_files WHERE agent=? AND path=?',id,path)[0];
-    if(existing && n.label==='Temporary builder' && isBuilderGluePath(path) &&
+    if(existing && isBuilderNode(n) && isBuilderGluePath(path) &&
        await this.indexedContent(id,path)===content) {
       this.event(id,'glue_unchanged',`Skipped unchanged linker source ${path}.`);
       return;
@@ -6104,7 +6119,7 @@ export class ControlRoom extends DurableObject {
       this.event(owner, 'blocked', `Cannot retire ${clip(childId,70)}: not an active direct child.`);
       return false;
     }
-    if (!this.manager(owner) || child.status !== 'done' || child.label !== 'Temporary builder' ||
+    if (!this.manager(owner) || child.status !== 'done' || !isBuilderNode(child) ||
         this.children(childId).some(c=>c.status!=='done' && c.status!=='retired')) {
       this.event(owner,'blocked',`Cannot retire ${childId}: only a finished temporary builder may be retired.`);
       return false;
@@ -6469,7 +6484,7 @@ export class ControlRoom extends DurableObject {
   // transitive references remain inspectable, but parent builders prefer the
   // integrated bundle rather than serializing descendant aliases.
   async exposeAssembly(id) {
-    const builder=this.children(id).find(c=>c.label==='Temporary builder');
+    const builder=this.children(id).find(c=>isBuilderNode(c));
     if(!builder)return;
     // v7.11: a parent builder reads its child builder's components directly.
     if(this.env.MOCK_AI!=='true')return;
@@ -7474,9 +7489,9 @@ export class ControlRoom extends DurableObject {
       this.holdBaseConfirm();
       return;
     }
-    const seenBuilderWake=n.label==='Temporary builder'?this.wakeGeneration(id):null;
+    const seenBuilderWake=isBuilderNode(n)?this.wakeGeneration(id):null;
     // Builders and the compiler run runtime turns, never a model action.
-    if(isRuntimeNode(n) && this.live()) return n.label==='Compiler'?this.compilerTurn(id):this.builderTurn(id);
+    if(isRuntimeNode(n) && this.live()) return isCompilerNode(n)?this.compilerTurn(id):this.builderTurn(id);
     // v8 M2: so does a worker whose checks are due again (a run that stopped
     // mid-way, Continue at a checks hold) with nothing to read and no action
     // to finish; a manager's turn runs them when its work allows (managerTurn).
@@ -7546,8 +7561,8 @@ export class ControlRoom extends DurableObject {
           if(uses)before.your_responsibility=`${before.your_responsibility}\n\n${uses}`;
         }
       }
-      const observedAssembly=n.label==='Temporary builder'?this.assemblyFingerprint(n.parent):null;
-      if(n.label==='Temporary builder') {
+      const observedAssembly=isBuilderNode(n)?this.assemblyFingerprint(n.parent):null;
+      if(isBuilderNode(n)) {
         before.assembly_inputs=await this.builderContext(n.parent);
         before.assembly_manifest='assembly.manifest.json (all copied source paths and provenance)';
         before.assembly_revision=observedAssembly;
@@ -7699,7 +7714,7 @@ export class ControlRoom extends DurableObject {
       // "Write executable source code" wrapper): a piece may deliver any file.
       // Leaves publish their own files; builders author only narrow wiring
       // and smoke tests. Runtime alone owns package/entrypoint generation.
-      if(this.env.MOCK_AI!=='true' && !splitting && !this.manager(id) && n.label!=='Temporary builder') {
+      if(this.env.MOCK_AI!=='true' && !splitting && !this.manager(id) && !isBuilderNode(n)) {
         // v8 §3.2: an answer in the file-block format; a file the token cap
         // cut is written again alone (the code_retry path below).
         if(raw.format_fallback)this.event(id,'format_fallback',`The answer was read as ${raw.format_fallback==='json'?'a JSON action':'one fenced file'}, not file blocks.`);
@@ -7854,7 +7869,7 @@ export class ControlRoom extends DurableObject {
           action.ask=[];
         }
       }
-      if(!this.manager(id) && this.node(id)?.label!=='Temporary builder' && action.imports.length) {
+      if(!this.manager(id) && !isBuilderNode(this.node(id)) && action.imports.length) {
         this.event(id,'blocked','Only the temporary builder imports sibling Artifacts; workers ask their manager for interfaces.');
         action.imports=[];
       }
@@ -8071,7 +8086,7 @@ export class ControlRoom extends DurableObject {
             this.event(id,'done_deferred',`Waiting for answers to ${open.join(', ')} before finishing.`);
             return;
           }
-          if(this.env.MOCK_AI!=='true' && !this.manager(id) && n.label!=='Temporary builder' &&
+          if(this.env.MOCK_AI!=='true' && !this.manager(id) && !isBuilderNode(n) &&
               (!deliveredFiles(this.files(id)).length||codeRequired(this.promisedOf(id))&&!codeFiles(this.files(id),this.languages()).length)) {
             throw new Error(`Leaf cannot finish without delivering ${deliveredFiles(this.files(id)).length?'code in this project\'s language':'any file'} for its assignment`);
           }
@@ -8088,7 +8103,7 @@ export class ControlRoom extends DurableObject {
           if(!this.v8()&&isTop(n)&&!this.manager(id)&&this.env.MOCK_AI!=='true')return this.compileAtomic(id);
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Completed owned strand without transferring ownership to children.');
-          if(this.node(id)?.label==='Temporary builder') {
+          if(isBuilderNode(this.node(id))) {
             if(this.env.MOCK_AI==='true')await this.markBuilderComplete(id,assemblyFingerprint||this.assemblyFingerprint(n.parent));
             // Root may have observed the publication while the builder was
             // still status=ready. Wake again AFTER committing status=done.
@@ -8297,7 +8312,7 @@ export class ControlRoom extends DurableObject {
       catch(e) {this.event(id,'commit_failed',`Artifacts push failed; files stay staged and are retried: ${clip(e?.message||e,600)}`);}
       if(isRuntimeNode(this.node(id)) && this.wakeGeneration(id)!==observedWake &&
          !['retired','failed'].includes(this.node(id)?.status)) {
-        this.event(id,'builder_wake_recovered',`${this.node(id).label==='Compiler'?'Compiler':'Builder'} was woken while its turn was running; queuing another turn.`);
+        this.event(id,'builder_wake_recovered',`${isCompilerNode(this.node(id))?'Compiler':'Builder'} was woken while its turn was running; queuing another turn.`);
         this.wake(id);
       }
       this.event(id,'turn_end',`Completed turn after ${Date.now()-started} ms.`);
@@ -8539,7 +8554,7 @@ export class ControlRoom extends DurableObject {
     // code producers are done. The ordinary idle nudge intentionally excludes
     // builders, to avoid uncontrolled model inference on every source revision.
     // v8 M3: a builder waits only while its manager's subtree works; its manager hands it the work again.
-    for(const builder of this.allNodes().filter(n=>n.label==='Temporary builder' && n.parent && n.status==='waiting' && this.env.MOCK_AI!=='true' && !this.v8())) {
+    for(const builder of this.allNodes().filter(n=>isBuilderNode(n) && n.parent && n.status==='waiting' && this.env.MOCK_AI!=='true' && !this.v8())) {
       // Continue relinks the current source with a fresh relink budget, at
       // every level, even if its problems were already reported and no
       // worker changed anything; they are reported again.
@@ -8575,8 +8590,8 @@ export class ControlRoom extends DurableObject {
       // Every manager decides the problems it still holds.
       for(const {holder} of query(this.db(),"SELECT DISTINCT holder FROM problems WHERE status='open'"))this.wake(holder);
     }
-    for(const builder of this.allNodes().filter(n=>n.label==='Temporary builder' && n.parent && n.status==='waiting' && this.env.MOCK_AI==='true')) {
-      const producers=this.children(builder.parent).filter(c=>c.label!=='Temporary builder');
+    for(const builder of this.allNodes().filter(n=>isBuilderNode(n) && n.parent && n.status==='waiting' && this.env.MOCK_AI==='true')) {
+      const producers=this.children(builder.parent).filter(c=>!isBuilderNode(c));
       const fingerprint=this.assemblyFingerprint(builder.parent);
       const blocked=this.read('build_blocked:root',null);
       if(!producers.length || !producers.every(c=>['done','retired'].includes(c.status)) ||

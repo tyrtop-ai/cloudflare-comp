@@ -24,8 +24,9 @@ function eventMarkup(e) {
 // half, manager | builder, while its builder links the branch, and the branch
 // turns green once every worker under it is done. The compiler sits above Root.
 let selectedNode='';
-const isBuilder=n=>n.label==='Temporary builder';
-const isCompiler=n=>n.label==='Compiler';
+// By role (v8 M3 review: a v8 builder is "Builder"); a server from before the role column sends v7's labels.
+const isBuilder=n=>n.role?n.role==='builder':n.label==='Temporary builder';
+const isCompiler=n=>n.role?n.role==='compiler':n.label==='Compiler';
 const idOrder=(a,b)=>{const x=a.id.split('.').map(Number),y=b.id.split('.').map(Number);for(let i=0;i<Math.max(x.length,y.length);i++)if((x[i]??-1)!==(y[i]??-1))return (x[i]??-1)-(y[i]??-1);return 0;};
 function treeIndex(agents) {
   const kids=new Map(),byId=new Map(agents.map(n=>[n.id,n]));

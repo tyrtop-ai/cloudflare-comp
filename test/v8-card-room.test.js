@@ -82,7 +82,7 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   const data = [GOAL, ...PIECES.pieces.flatMap(p => [p.task, p.label]), ...CARD.deliverables.flatMap(d => [contractLine(d), d.name, d.path, d.does]), ...room.promisedOf('root').map(contractLine), ...saysData(room.snapshot().card, GOAL)];
   for (const r of calls.raw) for (const t of composedTexts(JSON.parse(r.text.replace(/ \/no_think$/, '')), data)) assert.deepEqual(lintText('composed', t, {room: true}), [], t);
   const kids = room.children('root').map(c => ({...c, interfaces: JSON.parse(c.interfaces)}));
-  assert.deepEqual(kids.map(c => c.label), ['Run guide', 'Hello script', 'Temporary builder']);
+  assert.deepEqual(kids.map(c => c.label), ['Run guide', 'Hello script', 'Builder']);
   assert.deepEqual(kids[0].interfaces.map(c => [c.name, c.kind, c.path, c.serves]), [['README.md', 'doc', 'README.md', ['R1']]]);
   // The workers wrote their files and finished under the per-kind done rule.
   assert.deepEqual(room.files('root.1').map(f => f.path), ['README.md']);
@@ -95,7 +95,7 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.match(calls.leaf.find(u => u.your_label === 'Run guide').your_responsibility, /doc README\.md: explains how to run/);
   // v8 M3: every manager hands its finished children to a builder of its own, which joined their
   // work into Root's piece; the card's checks ran over that piece and the room completed.
-  const managers = room.allNodes().filter(n => room.manager(n.id) && n.label !== 'Temporary builder');
+  const managers = room.allNodes().filter(n => room.manager(n.id) && n.role !== 'builder');
   assert.deepEqual(managers.map(n => n.id), ['root']);
   for (const m of managers) assert.equal(room.builderOf(m.id)?.status, 'done', `${m.id} has a builder of its own`);
   assert.ok(room.read(`piece:${room.builderOf('root').id}`, null)?.digest, 'its piece is stored on the builder\'s row with a digest');

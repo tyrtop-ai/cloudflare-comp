@@ -96,7 +96,7 @@ test('M3: every manager in a v8 split has a builder of its own, which stores its
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.deepEqual(passedOf(room), {R1: true, R2: true, R3: true, R4: true, R5: true, R6: true});
-  const at = ids(room), managers = room.allNodes().filter(n => n.label !== 'Temporary builder' && room.manager(n.id)).map(n => n.id);
+  const at = ids(room), managers = room.allNodes().filter(n => n.role !== 'builder' && room.manager(n.id)).map(n => n.id);
   assert.deepEqual(managers.sort(), ['root', at['Loud part'], at['Quiet part']].sort());
   for (const m of managers) {
     const b = room.builderOf(m);
