@@ -1,0 +1,1747 @@
+{
+ "note": "v8 live 8: the issue tracker's three splitter answers (export 3d16749c) and the CLI's \"Invalid Unit Tests\" answer (export 3e7fa227), as each splitter gave it.",
+ "tracker": {
+  "max_children": 7,
+  "answers": [
+   {
+    "contracts": [
+     {
+      "name": "tickets.json",
+      "kind": "data",
+      "does": "Stores all tickets in JSON format",
+      "inputs": [
+       {
+        "name": "tickets",
+        "is": "array of ticket objects"
+       }
+      ],
+      "outputs": "JSON array of tickets",
+      "effects": "Persistently stores ticket data",
+      "path": "tickets.json"
+     },
+     {
+      "name": "createTicket",
+      "kind": "function",
+      "does": "Adds a new ticket to the database",
+      "inputs": [
+       {
+        "name": "title",
+        "is": "string"
+       },
+       {
+        "name": "description",
+        "is": "string"
+       },
+       {
+        "name": "status",
+        "is": "string"
+       }
+      ],
+      "outputs": "Created ticket object with ID",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "getTickets",
+      "kind": "function",
+      "does": "Retrieves all tickets from the database",
+      "inputs": [],
+      "outputs": "Array of all tickets",
+      "effects": "Reads from tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "updateTicket",
+      "kind": "function",
+      "does": "Modifies an existing ticket",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       },
+       {
+        "name": "updates",
+        "is": "object"
+       }
+      ],
+      "outputs": "Updated ticket object",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "deleteTicket",
+      "kind": "function",
+      "does": "Removes a ticket by ID",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       }
+      ],
+      "outputs": "Confirmation of deletion",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "POST /tickets",
+      "kind": "route",
+      "does": "Endpoint for creating tickets",
+      "inputs": [
+       {
+        "name": "title",
+        "is": "string"
+       },
+       {
+        "name": "description",
+        "is": "string"
+       },
+       {
+        "name": "status",
+        "is": "string"
+       }
+      ],
+      "outputs": "201 Created with ticket data",
+      "effects": "Updates tickets.json",
+      "path": "src/server.js"
+     },
+     {
+      "name": "GET /tickets",
+      "kind": "route",
+      "does": "Endpoint for retrieving all tickets",
+      "inputs": [],
+      "outputs": "200 OK with ticket list",
+      "effects": "Reads from tickets.json",
+      "path": "src/server.js"
+     },
+     {
+      "name": "PUT /tickets/:id",
+      "kind": "route",
+      "does": "Endpoint for updating tickets",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       },
+       {
+        "name": "updates",
+        "is": "object"
+       }
+      ],
+      "outputs": "200 OK with updated data",
+      "effects": "Updates tickets.json",
+      "path": "src/server.js"
+     },
+     {
+      "name": "DELETE /tickets/:id",
+      "kind": "route",
+      "does": "Endpoint for deleting tickets",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       }
+      ],
+      "outputs": "200 OK with deletion confirmation",
+      "effects": "Modifies tickets.json",
+      "path": "src/server.js"
+     },
+     {
+      "name": "start-server",
+      "kind": "command",
+      "does": "Starts the issue tracker server",
+      "inputs": [],
+      "outputs": "Server listening on port 3000",
+      "effects": "Runs the application",
+      "path": "src/server.js"
+     },
+     {
+      "name": "package.json",
+      "kind": "data",
+      "does": "Project configuration file",
+      "inputs": [
+       {
+        "name": "dependencies",
+        "is": "object"
+       }
+      ],
+      "outputs": "Project metadata and scripts",
+      "effects": "None",
+      "path": "package.json"
+     }
+    ],
+    "validations": [
+     {
+      "id": "ticket-storage-validation",
+      "serves": [
+       "tickets.json"
+      ],
+      "check": {
+       "kind": "file",
+       "path": "tickets.json",
+       "has": [
+        "{\"id\":\"1\",\"title\":\"Test\",\"description\":\"Test\",\"status\":\"open\"}"
+       ]
+      }
+     },
+     {
+      "id": "create-ticket-validation",
+      "serves": [
+       "createTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "createTicket",
+         "args": [
+          "Test Ticket",
+          "This is a test",
+          "open"
+         ],
+         "expect": {
+          "id": "1",
+          "title": "Test Ticket",
+          "description": "This is a test",
+          "status": "open"
+         }
+        },
+        {
+         "call": "createTicket",
+         "args": [
+          "Another Ticket",
+          "Another description",
+          "in progress"
+         ],
+         "expect": {
+          "id": "2",
+          "title": "Another Ticket",
+          "description": "Another description",
+          "status": "in progress"
+         }
+        },
+        {
+         "call": "createTicket",
+         "args": [
+          "Closed Ticket",
+          "Test",
+          "closed"
+         ],
+         "expect": {
+          "id": "3",
+          "title": "Closed Ticket",
+          "description": "Test",
+          "status": "closed"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "api-endpoint-validation",
+      "serves": [
+       "POST /tickets",
+       "GET /tickets",
+       "PUT /tickets/1",
+       "DELETE /tickets/1"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "start-server",
+       "steps": [
+        {
+         "method": "POST",
+         "path": "/tickets",
+         "body": "{\"title\":\"API Test\",\"description\":\"API Test\",\"status\":\"open\"}",
+         "expect": {
+          "status": 201
+         }
+        },
+        {
+         "method": "GET",
+         "path": "/tickets",
+         "expect": {
+          "status": 200,
+          "body_has": "API Test"
+         }
+        },
+        {
+         "method": "PUT",
+         "path": "/tickets/1",
+         "body": "{\"status\":\"in progress\"}",
+         "expect": {
+          "status": 200,
+          "body_has": "in progress"
+         }
+        },
+        {
+         "method": "DELETE",
+         "path": "/tickets/1",
+         "expect": {
+          "status": 200
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "pieces": [
+     {
+      "label": "Database Setup",
+      "task": "Create the tickets.json file to store all ticket data",
+      "contracts": [
+       "tickets.json"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "CRUD Functions",
+      "task": "Implement functions to create, read, update, and delete tickets",
+      "contracts": [
+       "createTicket",
+       "getTickets",
+       "updateTicket",
+       "deleteTicket"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "API Routes",
+      "task": "Set up HTTP endpoints for ticket operations",
+      "contracts": [
+       "POST /tickets",
+       "GET /tickets",
+       "PUT /tickets/:id",
+       "DELETE /tickets/:id"
+      ],
+      "uses": [
+       "createTicket",
+       "getTickets",
+       "updateTicket",
+       "deleteTicket"
+      ],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "Server Configuration",
+      "task": "Create the server file with route handlers and start command",
+      "contracts": [
+       "start-server"
+      ],
+      "uses": [
+       "POST /tickets",
+       "GET /tickets",
+       "PUT /tickets/:id",
+       "DELETE /tickets/:id"
+      ],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "Project Metadata",
+      "task": "Set up package.json with project configuration",
+      "contracts": [
+       "package.json"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     }
+    ]
+   },
+   {
+    "contracts": [
+     {
+      "name": "tickets.json",
+      "kind": "data",
+      "does": "Stores all tickets in JSON format",
+      "inputs": [
+       {
+        "name": "tickets",
+        "is": "array of ticket objects"
+       }
+      ],
+      "outputs": "JSON array of tickets",
+      "effects": "Persistently stores ticket data",
+      "path": "tickets.json"
+     },
+     {
+      "name": "createTicket",
+      "kind": "function",
+      "does": "Adds a new ticket to the database",
+      "inputs": [
+       {
+        "name": "title",
+        "is": "string"
+       },
+       {
+        "name": "description",
+        "is": "string"
+       },
+       {
+        "name": "status",
+        "is": "string"
+       }
+      ],
+      "outputs": "Created ticket object with ID",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "getTickets",
+      "kind": "function",
+      "does": "Retrieves all tickets from the database",
+      "inputs": [],
+      "outputs": "Array of all tickets",
+      "effects": "Reads from tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "updateTicket",
+      "kind": "function",
+      "does": "Modifies an existing ticket",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       },
+       {
+        "name": "updates",
+        "is": "object"
+       }
+      ],
+      "outputs": "Updated ticket object",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "deleteTicket",
+      "kind": "function",
+      "does": "Removes a ticket by ID",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       }
+      ],
+      "outputs": "Confirmation of deletion",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "POST /tickets",
+      "kind": "route",
+      "does": "Endpoint for creating tickets",
+      "inputs": [
+       {
+        "name": "title",
+        "is": "string"
+       },
+       {
+        "name": "description",
+        "is": "string"
+       },
+       {
+        "name": "status",
+        "is": "string"
+       }
+      ],
+      "outputs": "201 Created with ticket data",
+      "effects": "Updates tickets.json",
+      "path": "src/server.js",
+      "run": {
+       "run": "start-server",
+       "ready": "/tickets"
+      }
+     },
+     {
+      "name": "GET /tickets",
+      "kind": "route",
+      "does": "Endpoint for retrieving all tickets",
+      "inputs": [],
+      "outputs": "200 OK with ticket list",
+      "effects": "Reads from tickets.json",
+      "path": "src/server.js",
+      "run": {
+       "run": "start-server",
+       "ready": "/tickets"
+      }
+     },
+     {
+      "name": "PUT /tickets/:id",
+      "kind": "route",
+      "does": "Endpoint for updating tickets",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       },
+       {
+        "name": "updates",
+        "is": "object"
+       }
+      ],
+      "outputs": "200 OK with updated data",
+      "effects": "Updates tickets.json",
+      "path": "src/server.js",
+      "run": {
+       "run": "start-server",
+       "ready": "/tickets"
+      }
+     },
+     {
+      "name": "DELETE /tickets/:id",
+      "kind": "route",
+      "does": "Endpoint for deleting tickets",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       }
+      ],
+      "outputs": "200 OK with deletion confirmation",
+      "effects": "Modifies tickets.json",
+      "path": "src/server.js",
+      "run": {
+       "run": "start-server",
+       "ready": "/tickets"
+      }
+     },
+     {
+      "name": "start-server",
+      "kind": "command",
+      "does": "Starts the issue tracker server",
+      "inputs": [],
+      "outputs": "Server listening on port 3000",
+      "effects": "Runs the application",
+      "path": "src/server.js"
+     },
+     {
+      "name": "package.json",
+      "kind": "data",
+      "does": "Project configuration file",
+      "inputs": [
+       {
+        "name": "dependencies",
+        "is": "object"
+       }
+      ],
+      "outputs": "Project metadata and scripts",
+      "effects": "None",
+      "path": "package.json"
+     }
+    ],
+    "validations": [
+     {
+      "id": "ticket-storage-validation",
+      "serves": [
+       "tickets.json"
+      ],
+      "check": {
+       "kind": "file",
+       "path": "tickets.json",
+       "has": [
+        "{\"id\":\"1\",\"title\":\"Test\",\"description\":\"Test\",\"status\":\"open\"}"
+       ]
+      }
+     },
+     {
+      "id": "create-ticket-validation",
+      "serves": [
+       "createTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "createTicket",
+         "args": [
+          "Test Ticket",
+          "This is a test",
+          "open"
+         ],
+         "expect": {
+          "id": "1",
+          "title": "Test Ticket",
+          "description": "This is a test",
+          "status": "open"
+         }
+        },
+        {
+         "call": "createTicket",
+         "args": [
+          "Another Ticket",
+          "Another description",
+          "in progress"
+         ],
+         "expect": {
+          "id": "2",
+          "title": "Another Ticket",
+          "description": "Another description",
+          "status": "in progress"
+         }
+        },
+        {
+         "call": "createTicket",
+         "args": [
+          "Closed Ticket",
+          "Test",
+          "closed"
+         ],
+         "expect": {
+          "id": "3",
+          "title": "Closed Ticket",
+          "description": "Test",
+          "status": "closed"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "get-tickets-validation-1",
+      "serves": [
+       "getTickets"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "getTickets",
+         "expect": [
+          {
+           "id": "1",
+           "title": "Test Ticket",
+           "description": "This is a test",
+           "status": "open"
+          }
+         ]
+        }
+       ]
+      }
+     },
+     {
+      "id": "get-tickets-validation-2",
+      "serves": [
+       "getTickets"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "getTickets",
+         "expect": [
+          {
+           "id": "1",
+           "title": "Test Ticket",
+           "description": "This is a test",
+           "status": "open"
+          },
+          {
+           "id": "2",
+           "title": "Another Ticket",
+           "description": "Another description",
+           "status": "in progress"
+          }
+         ]
+        }
+       ]
+      }
+     },
+     {
+      "id": "get-tickets-validation-3",
+      "serves": [
+       "getTickets"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "getTickets",
+         "expect": [
+          {
+           "id": "1",
+           "title": "Test Ticket",
+           "description": "This is a test",
+           "status": "open"
+          },
+          {
+           "id": "2",
+           "title": "Another Ticket",
+           "description": "Another description",
+           "status": "in progress"
+          },
+          {
+           "id": "3",
+           "title": "Closed Ticket",
+           "description": "Test",
+           "status": "closed"
+          }
+         ]
+        }
+       ]
+      }
+     },
+     {
+      "id": "update-ticket-validation-1",
+      "serves": [
+       "updateTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "updateTicket",
+         "args": [
+          "1",
+          {
+           "status": "in progress"
+          }
+         ],
+         "expect": {
+          "id": "1",
+          "title": "Test Ticket",
+          "description": "This is a test",
+          "status": "in progress"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "update-ticket-validation-2",
+      "serves": [
+       "updateTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "updateTicket",
+         "args": [
+          "2",
+          {
+           "description": "Updated description"
+          }
+         ],
+         "expect": {
+          "id": "2",
+          "title": "Another Ticket",
+          "description": "Updated description",
+          "status": "in progress"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "update-ticket-validation-3",
+      "serves": [
+       "updateTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "updateTicket",
+         "args": [
+          "3",
+          {
+           "status": "closed"
+          }
+         ],
+         "expect": {
+          "id": "3",
+          "title": "Closed Ticket",
+          "description": "Test",
+          "status": "closed"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "delete-ticket-validation-1",
+      "serves": [
+       "deleteTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "deleteTicket",
+         "args": [
+          "1"
+         ],
+         "expect": {
+          "id": "1",
+          "title": "Test Ticket",
+          "description": "This is a test",
+          "status": "open"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "delete-ticket-validation-2",
+      "serves": [
+       "deleteTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "deleteTicket",
+         "args": [
+          "2"
+         ],
+         "expect": {
+          "id": "2",
+          "title": "Another Ticket",
+          "description": "Another description",
+          "status": "in progress"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "delete-ticket-validation-3",
+      "serves": [
+       "deleteTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "deleteTicket",
+         "args": [
+          "3"
+         ],
+         "expect": {
+          "id": "3",
+          "title": "Closed Ticket",
+          "description": "Test",
+          "status": "closed"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "api-endpoint-validation-post",
+      "serves": [
+       "POST /tickets"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "start-server",
+       "steps": [
+        {
+         "method": "POST",
+         "path": "/tickets",
+         "body": "{\"title\":\"API Test\",\"description\":\"API Test\",\"status\":\"open\"}",
+         "expect": {
+          "status": 201,
+          "body_has": "API Test"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "api-endpoint-validation-get",
+      "serves": [
+       "GET /tickets"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "start-server",
+       "steps": [
+        {
+         "method": "GET",
+         "path": "/tickets",
+         "expect": {
+          "status": 200,
+          "body_has": "API Test"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "api-endpoint-validation-put",
+      "serves": [
+       "PUT /tickets/:id"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "start-server",
+       "steps": [
+        {
+         "method": "PUT",
+         "path": "/tickets/1",
+         "body": "{\"status\":\"in progress\"}",
+         "expect": {
+          "status": 200,
+          "body_has": "in progress"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "api-endpoint-validation-delete",
+      "serves": [
+       "DELETE /tickets/:id"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "start-server",
+       "steps": [
+        {
+         "method": "DELETE",
+         "path": "/tickets/1",
+         "expect": {
+          "status": 200
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "start-server-validation-1",
+      "serves": [
+       "start-server"
+      ],
+      "check": {
+       "kind": "command",
+       "run": "start-server",
+       "expect": {
+        "exit": 0,
+        "stdout_has": "Server listening on port 3000"
+       }
+      }
+     },
+     {
+      "id": "start-server-validation-2",
+      "serves": [
+       "start-server"
+      ],
+      "check": {
+       "kind": "browser",
+       "serve": "start-server",
+       "steps": [
+        {
+         "goto": "http://localhost:3000/tickets",
+         "expect_text": "API Test"
+        }
+       ]
+      }
+     },
+     {
+      "id": "start-server-validation-3",
+      "serves": [
+       "start-server"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "start-server",
+       "steps": [
+        {
+         "method": "GET",
+         "path": "/tickets",
+         "expect": {
+          "status": 200
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "pieces": [
+     {
+      "label": "Database Setup",
+      "task": "Create the tickets.json file to store all ticket data",
+      "contracts": [
+       "tickets.json"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "CRUD Functions",
+      "task": "Implement functions to create, read, update, and delete tickets",
+      "contracts": [
+       "createTicket",
+       "getTickets",
+       "updateTicket",
+       "deleteTicket"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "API Routes",
+      "task": "Set up HTTP endpoints for ticket operations",
+      "contracts": [
+       "POST /tickets",
+       "GET /tickets",
+       "PUT /tickets/:id",
+       "DELETE /tickets/:id"
+      ],
+      "uses": [
+       "createTicket",
+       "getTickets",
+       "updateTicket",
+       "deleteTicket"
+      ],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "Server Configuration",
+      "task": "Create the server file with route handlers and start command",
+      "contracts": [
+       "start-server"
+      ],
+      "uses": [
+       "POST /tickets",
+       "GET /tickets",
+       "PUT /tickets/:id",
+       "DELETE /tickets/:id"
+      ],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "Project Metadata",
+      "task": "Set up package.json with project configuration",
+      "contracts": [
+       "package.json"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     }
+    ]
+   },
+   {
+    "contracts": [
+     {
+      "name": "tickets.json",
+      "kind": "data",
+      "does": "Stores all tickets in JSON format",
+      "inputs": [
+       {
+        "name": "tickets",
+        "is": "array of ticket objects"
+       }
+      ],
+      "outputs": "JSON array of tickets",
+      "effects": "Persistently stores ticket data",
+      "path": "tickets.json"
+     },
+     {
+      "name": "createTicket",
+      "kind": "function",
+      "does": "Adds a new ticket to the database",
+      "inputs": [
+       {
+        "name": "title",
+        "is": "string"
+       },
+       {
+        "name": "description",
+        "is": "string"
+       },
+       {
+        "name": "status",
+        "is": "string"
+       }
+      ],
+      "outputs": "Created ticket object with ID",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "getTickets",
+      "kind": "function",
+      "does": "Retrieves all tickets from the database",
+      "inputs": [],
+      "outputs": "Array of all tickets",
+      "effects": "Reads from tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "updateTicket",
+      "kind": "function",
+      "does": "Modifies an existing ticket",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       },
+       {
+        "name": "updates",
+        "is": "object"
+       }
+      ],
+      "outputs": "Updated ticket object",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "deleteTicket",
+      "kind": "function",
+      "does": "Removes a ticket by ID",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       }
+      ],
+      "outputs": "Confirmation of deletion",
+      "effects": "Modifies tickets.json",
+      "path": "src/ticketFunctions.js"
+     },
+     {
+      "name": "POST /tickets",
+      "kind": "route",
+      "does": "Endpoint for creating tickets",
+      "inputs": [
+       {
+        "name": "title",
+        "is": "string"
+       },
+       {
+        "name": "description",
+        "is": "string"
+       },
+       {
+        "name": "status",
+        "is": "string"
+       }
+      ],
+      "outputs": "201 Created with ticket data",
+      "effects": "Updates tickets.json",
+      "path": "src/server.js",
+      "run": {
+       "run": "start-server",
+       "ready": "/tickets"
+      }
+     },
+     {
+      "name": "GET /tickets",
+      "kind": "route",
+      "does": "Endpoint for retrieving all tickets",
+      "inputs": [],
+      "outputs": "200 OK with ticket list",
+      "effects": "Reads from tickets.json",
+      "path": "src/server.js",
+      "run": {
+       "run": "start-server",
+       "ready": "/tickets"
+      }
+     },
+     {
+      "name": "PUT /tickets/:id",
+      "kind": "route",
+      "does": "Endpoint for updating tickets",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       },
+       {
+        "name": "updates",
+        "is": "object"
+       }
+      ],
+      "outputs": "200 OK with updated data",
+      "effects": "Updates tickets.json",
+      "path": "src/server.js",
+      "run": {
+       "run": "start-server",
+       "ready": "/tickets"
+      }
+     },
+     {
+      "name": "DELETE /tickets/:id",
+      "kind": "route",
+      "does": "Endpoint for deleting tickets",
+      "inputs": [
+       {
+        "name": "id",
+        "is": "string"
+       }
+      ],
+      "outputs": "200 OK with deletion confirmation",
+      "effects": "Modifies tickets.json",
+      "path": "src/server.js",
+      "run": {
+       "run": "start-server",
+       "ready": "/tickets"
+      }
+     },
+     {
+      "name": "start-server",
+      "kind": "command",
+      "does": "Starts the issue tracker server",
+      "inputs": [],
+      "outputs": "Server listening on port 3000",
+      "effects": "Runs the application",
+      "path": "src/server.js"
+     },
+     {
+      "name": "package.json",
+      "kind": "data",
+      "does": "Project configuration file",
+      "inputs": [
+       {
+        "name": "dependencies",
+        "is": "object"
+       }
+      ],
+      "outputs": "Project metadata and scripts",
+      "effects": "None",
+      "path": "package.json"
+     }
+    ],
+    "validations": [
+     {
+      "id": "ticket-storage-validation",
+      "serves": [
+       "tickets.json"
+      ],
+      "check": {
+       "kind": "file",
+       "path": "tickets.json",
+       "has": [
+        "{\"id\":\"1\",\"title\":\"Test\",\"description\":\"Test\",\"status\":\"open\"}"
+       ]
+      }
+     },
+     {
+      "id": "create-ticket-validation-1",
+      "serves": [
+       "createTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "createTicket",
+         "args": [
+          "Test Ticket",
+          "This is a test",
+          "open"
+         ],
+         "expect": {
+          "id": "1",
+          "title": "Test Ticket",
+          "description": "This is a test",
+          "status": "open"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "create-ticket-validation-2",
+      "serves": [
+       "createTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "createTicket",
+         "args": [
+          "Another Ticket",
+          "Another description",
+          "in progress"
+         ],
+         "expect": {
+          "id": "2",
+          "title": "Another Ticket",
+          "description": "Another description",
+          "status": "in progress"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "create-ticket-validation-3",
+      "serves": [
+       "createTicket"
+      ],
+      "check": {
+       "kind": "call",
+       "steps": [
+        {
+         "call": "createTicket",
+         "args": [
+          "Closed Ticket",
+          "Test",
+          "closed"
+         ],
+         "expect": {
+          "id": "3",
+          "title": "Closed Ticket",
+          "description": "Test",
+          "status": "closed"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "get-tickets-validation-1",
+      "serves": [
+       "GET /tickets"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "GET /tickets",
+       "steps": [
+        {
+         "method": "GET",
+         "path": "/tickets",
+         "expect": {
+          "status": 200,
+          "body_has": "Test Ticket"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "get-tickets-validation-2",
+      "serves": [
+       "GET /tickets"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "GET /tickets",
+       "steps": [
+        {
+         "method": "GET",
+         "path": "/tickets",
+         "expect": {
+          "status": 200,
+          "body_has": "Another Ticket"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "get-tickets-validation-3",
+      "serves": [
+       "GET /tickets"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "GET /tickets",
+       "steps": [
+        {
+         "method": "GET",
+         "path": "/tickets",
+         "expect": {
+          "status": 200,
+          "body_has": "Closed Ticket"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "update-ticket-validation-1",
+      "serves": [
+       "PUT /tickets/:id"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "PUT /tickets/:id",
+       "steps": [
+        {
+         "method": "PUT",
+         "path": "/tickets/1",
+         "body": "{\"status\":\"in progress\"}",
+         "expect": {
+          "status": 200,
+          "body_has": "in progress"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "update-ticket-validation-2",
+      "serves": [
+       "PUT /tickets/:id"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "PUT /tickets/:id",
+       "steps": [
+        {
+         "method": "PUT",
+         "path": "/tickets/2",
+         "body": "{\"description\":\"Updated description\"}",
+         "expect": {
+          "status": 200,
+          "body_has": "Updated description"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "update-ticket-validation-3",
+      "serves": [
+       "PUT /tickets/:id"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "PUT /tickets/:id",
+       "steps": [
+        {
+         "method": "PUT",
+         "path": "/tickets/3",
+         "body": "{\"status\":\"closed\"}",
+         "expect": {
+          "status": 200,
+          "body_has": "closed"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "delete-ticket-validation-1",
+      "serves": [
+       "DELETE /tickets/:id"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "DELETE /tickets/:id",
+       "steps": [
+        {
+         "method": "DELETE",
+         "path": "/tickets/1",
+         "expect": {
+          "status": 200
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "delete-ticket-validation-2",
+      "serves": [
+       "DELETE /tickets/:id"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "DELETE /tickets/:id",
+       "steps": [
+        {
+         "method": "DELETE",
+         "path": "/tickets/2",
+         "expect": {
+          "status": 200
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "delete-ticket-validation-3",
+      "serves": [
+       "DELETE /tickets/:id"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "DELETE /tickets/:id",
+       "steps": [
+        {
+         "method": "DELETE",
+         "path": "/tickets/3",
+         "expect": {
+          "status": 200
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "start-server-validation-1",
+      "serves": [
+       "start-server"
+      ],
+      "check": {
+       "kind": "command",
+       "run": "start-server",
+       "expect": {
+        "exit": 0,
+        "stdout_has": "Server listening on port 3000"
+       }
+      }
+     },
+     {
+      "id": "start-server-validation-2",
+      "serves": [
+       "start-server"
+      ],
+      "check": {
+       "kind": "http",
+       "serve": "start-server",
+       "steps": [
+        {
+         "method": "GET",
+         "path": "/tickets",
+         "expect": {
+          "status": 200
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "start-server-validation-3",
+      "serves": [
+       "start-server"
+      ],
+      "check": {
+       "kind": "browser",
+       "serve": "start-server",
+       "steps": [
+        {
+         "goto": "http://localhost:3000/tickets",
+         "expect_text": "Test Ticket"
+        }
+       ]
+      }
+     }
+    ],
+    "pieces": [
+     {
+      "label": "Database Setup",
+      "task": "Create the tickets.json file to store all ticket data",
+      "contracts": [
+       "tickets.json"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "CRUD Functions",
+      "task": "Implement functions to create, read, update, and delete tickets",
+      "contracts": [
+       "createTicket",
+       "getTickets",
+       "updateTicket",
+       "deleteTicket"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "API Routes",
+      "task": "Set up HTTP endpoints for ticket operations",
+      "contracts": [
+       "POST /tickets",
+       "GET /tickets",
+       "PUT /tickets/:id",
+       "DELETE /tickets/:id"
+      ],
+      "uses": [
+       "createTicket",
+       "getTickets",
+       "updateTicket",
+       "deleteTicket"
+      ],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "Server Configuration",
+      "task": "Create the server file with route handlers and start command",
+      "contracts": [
+       "start-server"
+      ],
+      "uses": [
+       "POST /tickets",
+       "GET /tickets",
+       "PUT /tickets/:id",
+       "DELETE /tickets/:id"
+      ],
+      "refs": [],
+      "packages": []
+     },
+     {
+      "label": "Project Metadata",
+      "task": "Set up package.json with project configuration",
+      "contracts": [
+       "package.json"
+      ],
+      "uses": [],
+      "refs": [],
+      "packages": []
+     }
+    ]
+   }
+  ]
+ },
+ "cli_invalid_units": {
+  "answer": {
+   "contracts": [
+    {
+     "name": "test_conversion_function",
+     "kind": "function",
+     "does": "Verify the core conversion logic",
+     "params": [
+      "value",
+      "from_unit",
+      "to_unit"
+     ],
+     "returns": "float",
+     "inputs": [
+      {
+       "name": "value",
+       "is": "float"
+      },
+      {
+       "name": "from_unit",
+       "is": "str"
+      },
+      {
+       "name": "to_unit",
+       "is": "str"
+      }
+     ],
+     "effects": "none",
+     "path": "temperature_converter/convert.py"
+    },
+    {
+     "name": "test_invalid_units.py",
+     "kind": "file",
+     "does": "Test error handling for invalid temperature units",
+     "inputs": [
+      {
+       "name": "value",
+       "is": "float"
+      },
+      {
+       "name": "from_unit",
+       "is": "str"
+      },
+      {
+       "name": "to_unit",
+       "is": "str"
+      }
+     ],
+     "outputs": "Test results indicating success or failure",
+     "effects": "Writes test output files",
+     "path": "tests/test_invalid_units.py"
+    }
+   ],
+   "validations": [
+    {
+     "id": "invalid_from_unit",
+     "serves": [
+      "test_conversion_function"
+     ],
+     "check": {
+      "kind": "call",
+      "steps": [
+       {
+        "call": "test_conversion_function",
+        "args": [
+         25,
+         "invalid",
+         "C"
+        ],
+        "expect": {
+         "throws": true
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": "invalid_to_unit",
+     "serves": [
+      "test_conversion_function"
+     ],
+     "check": {
+      "kind": "call",
+      "steps": [
+       {
+        "call": "test_conversion_function",
+        "args": [
+         25,
+         "F",
+         "invalid"
+        ],
+        "expect": {
+         "throws": true
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": "non_string_unit",
+     "serves": [
+      "test_conversion_function"
+     ],
+     "check": {
+      "kind": "call",
+      "steps": [
+       {
+        "call": "test_conversion_function",
+        "args": [
+         25,
+         2.5,
+         "C"
+        ],
+        "expect": {
+         "throws": true
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "pieces": [
+    {
+     "label": "Invalid Unit Tests",
+     "task": "Create test cases that verify error handling for invalid temperature units in the conversion function",
+     "contracts": [
+      "test_invalid_units.py"
+     ],
+     "uses": [
+      "test_conversion_function"
+     ],
+     "refs": [],
+     "packages": [
+      "pytest"
+     ]
+    }
+   ]
+  }
+ }
+}

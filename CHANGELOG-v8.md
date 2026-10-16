@@ -332,3 +332,17 @@ Replay of the nine steps: the CLI's attempt 2 now reaches Clef's review. Every o
 - Managers and workers are circles. Splitters, builders and compilers are squares. A builder is now a node of its own instead of half of its manager's dot.
 - The room's state names each level's compiler: `compilers` in the snapshot and delta, `compiler-<hex16>` from its manager's id. Each entry gives its state (running, passed, failed, blocked or waiting) and the box its last run opened. Each splitter step carries Clef's verdict on it (`verdict`: admitted, retry fewer or different, handed down). Both are drawn under their manager, in the order a level runs: splitter steps, pieces, builder, compiler.
 - Save as SVG writes the layout as it stands, with every node labelled.
+
+## Live 8: three runs, five stops
+
+- **The to-do page** stopped because a file check wanted the exact text `<form>` and the page had `<form id="todo-form">`. The worker was told only that the text was missing, so it sent the same page back twice and the room held. A failed file check now says what the compiler saw: `index.html does not contain "<form>" as exact text; the nearest it holds is line 4: "<form id=\"todo-form\">"`. The check itself is unchanged.
+- **The issue tracker's** three splitter answers were refused partly by the reader:
+  - A route or a command that states no run is now served by its own file (`node src/server.js`), as a command check already ran it.
+  - A route's path is a pattern, so `PUT /tickets/1` is a request to `PUT /tickets/:id`. It counts as that route's example, and a validation serving `PUT /tickets/1` serves that route.
+  - A browser step holding several actions is now read as those steps, in the order written.
+  - Validation labels in messages are now 64 characters, so four validations no longer all print as `api-endpoint-validation-`.
+  - Replayed, every attempt is now short only of your three examples for what is called or run.
+- **The temperature CLI:**
+  - A call step whose expect is just `{"throws": true}` now means the call throws, as the splitter meant.
+  - A prewarmed box whose Container the platform stopped before its compile took it now says so; the room runs those checks in a fresh box instead of leaving six validations untested.
+  - Its other hold is by design: Clef doubted the test-runner validations (they want pytest's output to contain `pytest test_converter.py`), and they stay, held for the person.

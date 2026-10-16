@@ -4292,6 +4292,13 @@ export class ControlRoom extends DurableObject {
     try {
       box=warm?.box||freshBox(this.env.BOXES);
       const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'checks',plan,toolchains,limits:CHECK_LIMITS})||{};
+      // v8 live 8: the prewarmed box's Container had stopped before this compile took it: the checks run in a fresh box.
+      if(warm&&report.prewarm_closed) {
+        this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,box:{prewarmed:true},error:'the prewarmed box had stopped'});
+        this.event(id,'box_reopened','The box opened for these checks had stopped before they ran; they run in a fresh box.');
+        box=null;
+        return this.runChecksBox(id,input,files,plan,toolchains,null);
+      }
       if(opened?.fresh!==true||opened?.internet!==false) {
         this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,error:'box not confirmed fresh with the internet off'});
         return {infrastructure:'The box did not confirm a fresh start with the internet off; the checks were not run in it.'};

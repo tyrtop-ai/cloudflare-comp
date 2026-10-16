@@ -366,3 +366,28 @@ test('the S0 probe reports the platform\'s host name, the name the runner runs u
   assert.equal(h.uid_0.uid, 0);
   assert.ok(ns.boxes.every(b => !b.container.running));
 });
+
+// v8 live 8: the platform stopped a prewarmed box's Container before its compile took it ("The prewarmed box is no
+// longer open", six validations untested). The box reports it, and the room runs the checks in a fresh box.
+test('Box: a prewarmed box whose Container stopped before the compile says so, and compiles nothing', async () => {
+  const ns = fakeBoxes({run: async () => { throw new Error('must not run'); }}), box = freshBox(ns);
+  await box.open(SPEC);
+  await ns.boxes[0].container.destroy();
+  assert.deepEqual(await box.compile(SPEC, {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}}), {prewarm_closed: true});
+  assert.equal(ns.boxes[0].container.log.filter(l => l[0] === 'exec').length, 1, 'only its readiness ran');
+});
+test('a room whose prewarmed box stopped before its compile runs the checks in a fresh box, and completes', async () => {
+  let n = 0;
+  const boxes = fakeBoxes({readyMs: 5, run: req => verifyChecks({...req}, {isolation: []})});
+  const r = liveRoom({boxes, clef, split: async () => LEVEL,
+    leaf: async () => { await sleep(80); if (!n++) await boxes.boxes[0].container.destroy(); return fileBlocks([{path: 'temp.js', content: RIGHT}, USAGE], {summary: 'wrote the converter', done: true}); }});
+  await r.room.start(GOAL, 10, {pipeline: 'v8'});
+  await r.drain();
+  assert.equal(r.room.get('status'), 'complete', events(r.room).slice(-6).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).join('\n'));
+  assert.equal(events(r.room, 'box_reopened').length, 1);
+  assert.equal(events(r.room, 'build_infrastructure').length, 0, 'no check went untested');
+  const compiles = spansOf(r.room, 'container', 'checks');
+  assert.deepEqual(compiles.map(s => [!!s.attrs.box.prewarmed, s.attrs.error || 'ran']), [[true, 'the prewarmed box had stopped'], [false, 'ran']]);
+  assert.equal(boxes.boxes.length, 2);
+  assert.equal(r.room.boxesOpen, 0, 'every slot is back');
+});

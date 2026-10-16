@@ -165,13 +165,26 @@ export function hasText(text, wanted, path = '') {
   if (MARKUP_FILE.test(path) && TAG_START.test(w) && canonicalMarkup(t).includes(canonicalMarkup(w.trim()))) return true;
   return runs(t).includes(runs(w).trim());
 }
+// v8 live 8: what a file holds nearest a text it lacks, as the compiler saw it:
+// the line holding the longest start of that text (at least 4 characters, or
+// all but its last). A to-do page's "<form id=\"todo-form\">" for "<form>".
+function nearest(text, wanted) {
+  const w = wanted.trim(), least = Math.min(4, w.length - 1);
+  for (let n = w.length - 1; n >= least && n > 0; n--) {
+    const at = text.indexOf(w.slice(0, n));
+    if (at < 0) continue;
+    const start = text.lastIndexOf('\n', at) + 1, end = text.indexOf('\n', at);
+    return {line: text.slice(0, at).split('\n').length, text: clip(text.slice(start, end < 0 ? undefined : end).trim(), 160)};
+  }
+  return null;
+}
 export function fileResult(check, files) {
   const p = String(check?.path || ''), text = files.get(p);
   if (typeof text !== 'string') return {passed: false, detail: `${p} is missing`, observed: {what: 'missing'}};
   if (!text.trim()) return {passed: false, detail: `${p} is empty`, observed: {what: 'empty'}};
   // Live 3 review: how many of the texts it holds (met), so a file that holds one more each round makes progress.
   const lacking = (check.has || []).map((s, index) => ({s, index})).filter(({s}) => !hasText(text, s, p));
-  if (lacking.length) return {passed: false, detail: `${p} does not contain ${show(String(lacking[0].s))}`, observed: {what: 'lacks', index: lacking[0].index, met: (check.has || []).length - lacking.length}};
+  if (lacking.length) { const near = nearest(text, String(lacking[0].s)); return {passed: false, detail: `${p} does not contain ${show(String(lacking[0].s))}${near ? ` as exact text; the nearest it holds is line ${near.line}: ${show(near.text)}` : ''}`, observed: {what: 'lacks', index: lacking[0].index, met: (check.has || []).length - lacking.length, ...(near ? {near} : {})}}; }
   if (check.json === true) { try { JSON.parse(text); } catch (e) { return {passed: false, detail: `${p} is not valid JSON: ${clip(e.message, 120)}`, observed: {what: 'json', error: clip(e.message, 120)}}; } }
   return {passed: true, detail: ''};
 }

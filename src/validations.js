@@ -274,7 +274,7 @@ export function readCheck(raw, ctx) {
     return {check: {kind, run, argv: parsed.argv, ...(stdin ? {stdin} : {}), ...(Object.keys(files).length ? {files} : {}), expect}};
   }
   if (kind === 'call') {
-    const steps = [];
+    const steps = [], said = [];
     for (const s of (Array.isArray(c.steps) ? c.steps : []).slice(0, LEVEL_LIMITS.steps)) {
       const name = str(s?.call, 64);
       if (!plain(s) || !ctx.functions.has(name)) return {error: `its call check calls "${name}", which is not a function contract of this level`};
@@ -282,7 +282,10 @@ export function readCheck(raw, ctx) {
       if (!args.ok) return {error: `its call to ${name} has arguments that are not small json values`};
       const step = {call: name, args: args.v};
       if (typeof s.save === 'string' && SAVE.test(s.save)) step.save = s.save;
-      if ('expect' in s) { const x = json(s.expect); if (!x.ok) return {error: `its call to ${name} expects a value that is not a small json value`}; step.expect = x.v; }
+      // v8 live 8: "expect": {"throws": true} is the throws form, written inside expect.
+      const thrown = plain(s.expect) && s.expect.throws === true && Object.keys(s.expect).length === 1;
+      if (thrown) { step.throws = true; said.push(`its call to ${name} expects {"throws": true}, read as: the call throws`); }
+      else if ('expect' in s) { const x = json(s.expect); if (!x.ok) return {error: `its call to ${name} expects a value that is not a small json value`}; step.expect = x.v; }
       if (typeof s.expect_has === 'string' && s.expect_has) step.expect_has = s.expect_has.slice(0, 300);
       if (s.throws === true) step.throws = true;
       steps.push(step);
@@ -290,7 +293,7 @@ export function readCheck(raw, ctx) {
     // One call check runs in one process over the one file that defines its functions.
     const files = [...new Set(steps.map(st => ctx.functionPaths?.get(st.call)).filter(Boolean))];
     if (files.length > 1) return {error: `its call check calls functions of different files (${files.join(', ')}); one call check runs the functions of one file`};
-    return steps.length ? {check: {kind, steps}} : {error: 'its call check has no steps'};
+    return steps.length ? {check: {kind, steps}, ...(said.length ? {note: said.join('; ')} : {})} : {error: 'its call check has no steps'};
   }
   if (kind === 'http' || kind === 'browser') {
     let serve = str(c.serve, 200), note = '';
@@ -298,7 +301,10 @@ export function readCheck(raw, ctx) {
     if (!ctx.served.has(serve) && ctx.resolveServe) { const to = ctx.resolveServe(serve); if (to) { note = serve ? `its ${kind} check serves "${serve}", read as ${to}` : `its ${kind} check names nothing to serve, read as ${to}, the one contract this level runs`; serve = to; } }
     if (!ctx.served.has(serve)) return {error: `its ${kind} check serves "${serve}", which is not a contract of this level that says how it runs${ctx.served.size ? ` (${[...ctx.served].join(', ')})` : ''}`};
     const steps = [];
-    for (const s of (Array.isArray(c.steps) ? c.steps : []).slice(0, LEVEL_LIMITS.steps)) {
+    // v8 live 8: a browser step holding several actions ({"goto": …, "expect_text": …}) is those steps, in the order written.
+    const written = (Array.isArray(c.steps) ? c.steps : []).flatMap(s => kind === 'browser' && plain(s) && Object.keys(s).length > 1 ? Object.entries(s).map(([k, v]) => ({[k]: v})) : [s]);
+    if (written.length > (Array.isArray(c.steps) ? c.steps.length : 0)) note = [note, `its ${kind} check has steps that hold several actions, read as one step each`].filter(Boolean).join('; ');
+    for (const s of written.slice(0, LEVEL_LIMITS.steps)) {
       const step = kind === 'http' ? httpStep(s) : browserStep(s);
       if (step?.error) return {error: `its ${kind} check requests ${JSON.stringify(step.path).slice(0, 80)}: ${step.error}`};
       if (!step) return {error: `its ${kind} check has a step that is not one of the ${kind} step forms: ${JSON.stringify(s)?.slice(0, 120)}`};
@@ -455,11 +461,18 @@ export function renderExample(check) {
 // Whether one step of a call or http check exercises the contract itself:
 // a call of the function; a request to the server it serves, or for a route
 // the request it names.
+// A route's path as a pattern: each :name, {name} or <name> segment stands for any one segment.
+export function routeMatches(route, method, path) {
+  const [m, at] = String(route).trim().split(/\s+/);
+  if (!at || String(method || 'GET').toUpperCase() !== String(m).toUpperCase()) return false;
+  const want = at.split('/'), got = String(path || '').split(/[?#]/)[0].split('/');
+  return want.length === got.length && want.every((w, i) => w === got[i] || /^(?::\w+|\{\w+\}|<\w+>)$/.test(w) && got[i] !== '');
+}
 function stepExercises(c, s, contract) {
   const name = contract?.name;
   if (c.kind === 'call') return s?.call === name;
   if (c.serve === name) return true;
-  if (kindOf(contract || {}) === 'route') { const [method, at] = String(name).split(/\s+/); return !!s?.path && String(s.path).split('?')[0] === at && (s.method || 'GET') === String(method).toUpperCase(); }
+  if (kindOf(contract || {}) === 'route') return !!s?.path && routeMatches(name, s.method, s.path);
   return false;
 }
 // Whether a check exercises the contract itself, by its own name, path,
@@ -572,6 +585,10 @@ function resolver(contracts, aliases) {
     if (suffix.length) return {names: suffix, how: 'the one path it names'};
     const base = /\.[A-Za-z0-9]+$/.test(n) ? onePath(pathed.filter(c => baseName(c.path) === baseName(n))) : [];
     if (base.length) return {names: base, how: 'the one path with its file name'};
+    // A request ("PUT /tickets/1") names the one route whose path it matches.
+    const [method, at] = raw.split(/\s+/);
+    const routed = at?.startsWith('/') ? contracts.filter(c => kindOf(c) === 'route' && routeMatches(c.name, method, at)) : [];
+    if (routed.length === 1) return {names: [routed[0].name], how: 'the route its request matches'};
     return {names: []};
   };
 }
@@ -670,24 +687,31 @@ export function readLevel(raw, {own = [], held = [], have = [], calls = [], rows
   const present = [...contracts, ...have.filter(h => h?.name && !contracts.some(c => c.name === h.name))];
   const commands = new Set(present.filter(c => kindOf(c) === 'command').map(c => c.name));
   const world = {commands, executables}, readyAt = new Map();
+  // v8 live 8: a command or a route that states no run runs by its own file (its toolchain's run_file), as a command check runs a command.
+  const fileRun = c => { const row = ['command', 'route'].includes(kindOf(c)) && !c.run && c.path ? toolchainOf(c.path) : null, argv = row?.run_file && ids.has(row.id) ? row.run_file.map(x => x === '{path}' ? c.path : x) : null; return argv ? {run: argv.join(' '), argv} : null; };
   contracts.forEach((c, i) => {
     const r = runOf(plain(entries[i].item) ? entries[i].item.run : undefined, c, world);
     if (r.error) defects.push(`Contract ${c.name}: ${r.error}.`);
     else if (r.note) notes.push(`Contract ${r.note}.`);
     else if (r.run) { c.run = r.run; if (r.ready) readyAt.set(c.name, r.ready); }
-    if (kindOf(c) === 'route' && !c.run && !r.error) defects.push(`Contract ${c.name} is a route: give it "run": {"run": "<the command that serves it>", "ready": "<a path>"}.`);
+    if (kindOf(c) === 'route' && !c.run && !r.error) {
+      // v8 live 8: a route that states no run is served by its own file, as a command is.
+      const own = fileRun(c);
+      if (own) { c.run = own; notes.push(`Contract ${c.name} states no run; it is served by its own file: ${own.run}.`); }
+      else defects.push(`Contract ${c.name} is a route: give it "run": {"run": "<the command that serves it>", "ready": "<a path>"}.`);
+    }
   });
   const resolve = resolver(contracts, aliases), resolveHad = resolver(have.filter(h => h?.name), new Map());
   // Validations.
   // What a check can serve: a contract of this level with a run, or one the level has whose run is served already (its level file holds it as it is).
-  const served = new Set([...contracts.filter(c => c.run), ...runsOf(present.filter(c => !contracts.includes(c))).map(r => ({name: r.id}))].map(c => c.name));
+  const served = new Set([...contracts.filter(c => c.run || fileRun(c)), ...runsOf(present.filter(c => !contracts.includes(c))).map(r => ({name: r.id}))].map(c => c.name));
   const ctx = {paths: new Set([...present.map(c => c.path).filter(Boolean), ...baseSet]), functions: new Set(present.filter(c => kindOf(c) === 'function').map(c => c.name)),
     functionPaths: new Map(present.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served, commands, executables,
     resolvePath: p => { const n = resolve(p).names.map(x => contracts.find(c => c.name === x)?.path).filter(Boolean); return new Set(n).size === 1 ? n[0] : ''; },
     resolveServe: s => { if (!s) return served.size === 1 ? [...served][0] : ''; const n = resolve(s).names.filter(x => served.has(x)); return n.length === 1 ? n[0] : ''; }};
   const validations = [], taken = new Set(), validationIds = new Set();
   for (const [i, v] of (Array.isArray(o.validations) ? o.validations : []).slice(0, LEVEL_LIMITS.validations).entries()) {
-    const label = plain(v) && typeof v.id === 'string' && v.id.trim() ? v.id.trim().slice(0, 24) : `validation ${i + 1}`;
+    const label = plain(v) && typeof v.id === 'string' && v.id.trim() ? v.id.trim().slice(0, 64) : `validation ${i + 1}`;
     if (plain(v) && typeof v.id === 'string' && v.id.trim()) validationIds.add(v.id.trim());
     if (!plain(v)) { defects.push(`${label} is not an object.`); continue; }
     const said = [...new Set((Array.isArray(v.serves) ? v.serves : typeof v.serves === 'string' ? [v.serves] : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim()))];
@@ -714,6 +738,7 @@ export function readLevel(raw, {own = [], held = [], have = [], calls = [], rows
   }
   // A page or a command something serves listens on the port its box gives it; a route always does.
   const servedBy = new Set(validations.map(v => v.check.serve).filter(Boolean));
+  for (const c of contracts) if (servedBy.has(c.name) && fileRun(c)) { c.run = fileRun(c); notes.push(`Contract ${c.name} states no run; it is served by its own file: ${c.run.run}.`); }
   for (const c of contracts) if (c.run && !c.run.static && (kindOf(c) === 'route' || servedBy.has(c.name))) {
     const r = servedRun(c.run, readyAt.get(c.name));
     if (r.error) defects.push(`Contract ${c.name}: ${r.error}.`);

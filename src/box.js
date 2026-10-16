@@ -252,7 +252,9 @@ export class Box extends DurableObject {
     let kept;
     if (this.opening) { const result = await this.opening; kept = {spec: this.opened?.spec, result}; }
     else kept = await this.ctx.storage.get('opened');
-    if (this.closed || !kept?.result || !this.container().running) throw new BoxError('closed', 'The prewarmed box is no longer open.');
+    if (this.closed || !kept?.result) throw new BoxError('closed', 'The prewarmed box is no longer open.');
+    // v8 live 8: its Container stopped before the compile took it (the platform stopped it while it waited); it never compiled.
+    if (!this.container().running) return {gone: true};
     if (JSON.stringify(boxSpec(kept.spec)) !== JSON.stringify(spec)) throw new BoxError('mismatch', 'A prewarmed box runs only the compile it was opened for (its image, instance and internet).');
     this.opened ??= {spec, began: Date.now(), result: kept.result};
     // Its backstop runs from the compile's start.
@@ -280,6 +282,7 @@ export class Box extends DurableObject {
   async compile(raw, {fingerprint, files, options, ...checks} = {}) {
     try {
       const opened = await this.compileBox(raw);
+      if (opened.gone) return {prewarm_closed: true};
       if (typeof fingerprint !== 'string' || fingerprint.length > 240) throw new BoxError('bad_request', 'Invalid build fingerprint');
       const entries = validateBuildFiles(files);
       const snapshot_hash = await snapshotHash(entries);
