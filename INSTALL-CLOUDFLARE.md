@@ -137,6 +137,14 @@ A benchmark run starts one room per task, a few at a time. Each compile of a tas
 
 To run more benchmark rooms at once, raise it, then deploy. Each running box is billed while it runs; boxes count toward your account's Container limits.
 
+### Optional: how many boxes a room opens at once
+
+Under v8 every manager runs the checks it holds in its piece's own fresh box as soon as its subtree is done, so a room can have several boxes open at the same time. `BOX_CONCURRENCY` in `vars` bounds them (4 by default, at most 64); the top's checks and every piece's share this one setting:
+
+```jsonc
+"BOX_CONCURRENCY": "4"
+```
+
 ## 6. Verify the deployment
 
 ```bash

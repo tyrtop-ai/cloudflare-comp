@@ -268,6 +268,10 @@ function treeSvg(agents) {
     const role=isCompiler(n)?'compiler':index.role(n),p=at(n.id),color=n.status==='failed'?C.bad:C[role]||C.fg,done=n.status==='done'||(isCompiler(n)&&current?.compiler?.passed);
     const label=String(n.parent?n.label:'Root').slice(0,15)+(String(n.label).length>15&&n.parent?'…':'');
     nodes+=`<g><title>${esc(`${n.id} · ${n.label} · ${role} · ${n.status}`)}</title><circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${done?color:C.bg}" stroke="${color}" stroke-width="2"/><text x="${p.x}" y="${p.y+R+13}">${esc(label)}</text></g>`;
+    // A manager's builder: a small circle beside its manager, joined to it, filled once it joined the children's work.
+    const b=role==='manager'?index.builderOf(n.id):null;
+    if(b){const bx=p.x+R+9,bc=b.status==='failed'?C.bad:C.compiler;lines+=`<path d="M${p.x+R} ${p.y}H${bx-4}"/>`;
+      nodes+=`<g><title>${esc(`${b.id} · builder of ${n.label} · ${b.status}`)}</title><circle cx="${bx}" cy="${p.y}" r="4" fill="${b.status==='done'?bc:C.bg}" stroke="${bc}" stroke-width="1.5"/></g>`;}
   }
   const w=Math.max(1,leaf)*X-X+2*P,h=deepest*Y-top+P+30;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"><rect width="100%" height="100%" fill="${C.bg}"/><g fill="none" stroke="${C.line}" stroke-width="1.5">${lines}</g><g font-size="10" fill="${C.muted}" text-anchor="middle">${nodes}</g></svg>`;

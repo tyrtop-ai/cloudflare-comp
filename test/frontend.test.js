@@ -438,8 +438,9 @@ test('a count control at its ceiling or clamped, and a status cell at a limit, f
   assert.ok(flashed('steps'),'the turn budget running out flashes TURNS');
 });
 
-// The ownership tree saves as a standalone SVG: one circle per agent (builders
-// are not drawn), the compiler above Root, filled when done, labels clipped.
+// The ownership tree saves as a standalone SVG: one circle per agent, a
+// manager's builder a small one beside it, the compiler above Root, filled
+// when done, labels clipped.
 test('Save as SVG draws the ownership tree as a standalone image',()=>{
   assert.match(html,/<button type="button" class="secondary tree-save" id="save-tree"[^>]*>Save as SVG<\/button>/);
   const elements=renderWithPage(true),{context}=elements;
@@ -452,7 +453,10 @@ test('Save as SVG draws the ownership tree as a standalone image',()=>{
     {id:'root.4',parent:'root',label:'Compiler',status:'waiting',phase:'implement'}];
   const svg=context.treeSvg(agents);
   assert.match(svg,/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
-  assert.equal((svg.match(/<circle /g)||[]).length,5,'Root, two pieces, one leaf and the compiler; no builders');
+  assert.equal((svg.match(/<circle /g)||[]).length,7,'Root, two pieces, one leaf, the compiler and the two managers\' builders');
+  assert.equal((svg.match(/<circle [^>]*r="4"/g)||[]).length,2,'each builder beside its manager');
+  assert.match(svg,/<title>root\.3 · builder of Root objective · done<\/title>/);
+  assert.match(svg,/<title>root\.2\.2 · builder of Ticket operations and storage · done<\/title>/);
   assert.match(svg,/>Root<\/text>/);
   assert.match(svg,/>Compiler<\/text>/);
   assert.match(svg,/>Ticket operatio…<\/text>/,'long labels are clipped');

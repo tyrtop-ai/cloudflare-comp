@@ -80,6 +80,7 @@
     "MODEL_NAME": "@cf/qwen/qwen3-30b-a3b-fp8",
     "MOCK_AI": "false",
     "BENCH_EXECUTORS": "4",
+    "BOX_CONCURRENCY": "4",
     "BOX_PROBE": "0"
   },
   "containers": [

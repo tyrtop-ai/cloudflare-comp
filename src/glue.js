@@ -438,3 +438,52 @@ export function knownNames(files, contracts = [], row = null) {
   }
   return out;
 }
+
+// ------------------------------------------------------------ reach (v8 M3)
+// What a check's entry files reach, read the way the linker reads each
+// file's references: a JavaScript file's module specifiers, a row with glue's
+// import bindings (its shims and package folders included), a page's
+// references. Each reference leads to one of these files, to a module
+// installed(module, row) knows (an installed package or the language's own),
+// or outside: to none of them. {reached: [paths], outside: [{path,
+// reference}]}; an entry these files lack is outside too.
+export function importClosure(entries, files, {rows = TOOLCHAINS, installed = () => false, contracts = [], pieces = new Map(), parts = 'components', held = new Set()} = {}) {
+  const reached = new Set(), outside = [], queue = [], ctxs = new Map();
+  const miss = (path, reference) => { if (!outside.some(o => o.path === path && o.reference === reference)) outside.push({path, reference}); };
+  for (const e of entries) if (files.has(e)) queue.push(e); else miss(e, e);
+  const rowOf = p => { const t = toolchainOf(p); return t ? rows.find(r => r.id === t.id) || t : null; };
+  const ctxOf = row => { if (!ctxs.has(row.id)) ctxs.set(row.id, rowContext(files, row, {contracts: contracts.filter(c => (c.kind || 'function') === 'function'), pieces, parts, held})); return ctxs.get(row.id); };
+  const page = (row, p) => (row.reference_files || []).some(e => p.toLowerCase().endsWith(e));
+  while (queue.length) {
+    const p = queue.shift();
+    if (reached.has(p)) continue;
+    reached.add(p);
+    const text = String(files.get(p) ?? ''), row = rowOf(p);
+    if (!row) continue;
+    if (LINKABLE.test(p)) {
+      for (const spec of moduleSpecifiers(text)) {
+        const r = resolveLocal(p, spec, files);
+        if (r.path) queue.push(r.path);
+        else if (!r.external || !installed(spec, row)) miss(p, spec);
+      }
+    } else if (row.glue) {
+      const ctx = ctxOf(row), marker = row.glue.package_marker || '__init__.py';
+      for (const g of importGroups(text, row)) for (const s of g.statements) for (const b of s.bindings) {
+        const f = ctx.fileOf(b, p);
+        if (f) { const at = f.package ? `${f.path}/${marker}` : f.path; if (files.has(at)) queue.push(at); continue; }
+        const top = b.level ? '' : String(b.module || '').split('.')[0], r = top ? ctx.resolve(top, p) : null;
+        if (r?.path && files.has(r.path)) { queue.push(r.path); continue; }
+        if (r?.kind === 'stdlib' || r?.kind === 'package' || r?.kind === 'own' || top && installed(b.module, row)) continue;
+        miss(p, bindingText(b));
+      }
+    } else if (row.imports?.length && page(row, p)) {
+      for (const src of row.imports) for (const m of text.matchAll(new RegExp(src, 'gi'))) {
+        const v = m[1];
+        if (!v || OUTSIDE.test(v)) continue;
+        const t = refTarget(p, v);
+        if (t && files.has(t)) queue.push(t); else miss(p, v);
+      }
+    }
+  }
+  return {reached: [...reached], outside};
+}

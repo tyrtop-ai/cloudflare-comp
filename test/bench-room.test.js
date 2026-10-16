@@ -158,7 +158,7 @@ test('provided card, a split Root: the splitter and both workers hear the contra
   assert.equal(r.calls.card.length, 0);
   assert.equal(r.calls.split.length, 1, 'Root split');
   assert.deepEqual(r.calls.split[0].contracts_you_deliver.map(c => [c.name, c.examples]), [['total', undefined]]);
-  assert.deepEqual(r.room.children('root').map(c => c.label), ['Adder', 'Total']);
+  assert.deepEqual(r.room.children('root').filter(c => c.label !== 'Temporary builder').map(c => c.label), ['Adder', 'Total']);
   assert.ok(r.calls.leaf.length >= 2, 'both workers wrote');
   const sent = r.calls.raw.map(x => x.system + '\n' + x.text).join('\n');
   for (const h of hiddenTexts(task)) assert.ok(!sent.includes(h), `a model request carries hidden text: ${h}`);
