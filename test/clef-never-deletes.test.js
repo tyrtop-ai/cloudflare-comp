@@ -59,7 +59,7 @@ test('Clef never deletes: with NO to every review and gating question, no requir
   assert.ok(card.review_notes.length > 0, 'the review\'s NO answers are notes on the card');
   assert.equal(calls.card.length, 2, 'the writer revised its card once for the notes, and nothing more');
   // The split: both pieces admitted, each with the contract it proposed.
-  const kids = room.children('root');
+  const kids = room.children('root').filter(c => c.label !== 'Temporary builder');
   assert.deepEqual(kids.map(k => k.label), ['Run guide', 'Hello script', 'Changelog'], 'a piece Clef doubts is admitted');
   assert.deepEqual(kids.map(k => room.promisedOf(k.id).map(c => c.name)), [['README.md'], ['hello', 'greeting'], ['CHANGELOG.md']]);
   assert.match(events(room, 'scope_doubtful')[0].body, /Clef doubted that proposed child "Changelog" is within Root and parent scope \(p=0\.050\); admitted, marked doubtful/);

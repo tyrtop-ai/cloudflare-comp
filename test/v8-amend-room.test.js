@@ -198,7 +198,7 @@ test('an existing part Clef ranks takes a new deliverable with the change: it ca
   assert.deepEqual(JSON.parse(guide.interfaces).map(c=>c.name),['USAGE.md','README.md']);
   assert.equal(events(room,'amend_carried').length,1);
   assert.equal(events(room,'amend_grown').length,0);
-  assert.equal(room.children('root').length,2,'no new piece');
+  assert.equal(room.children('root').filter(c => c.label !== 'Temporary builder').length,2,'no new piece');
   const app=await room.appFiles();
   assert.ok(app.files.some(f=>f.path==='README.md'),'placed at its own path');
   assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});

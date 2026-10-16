@@ -97,7 +97,8 @@ test('A4: a split Python project whose pieces import each other completes; the r
   assert.equal(bundle['wordfreq.py'],WORDFREQ,'a worker file ships as written');
   assert.equal(bundle[`components/${D1}/counter.py`],COUNTER.content.replace('from textutil import words','from .textutil import words'),'the piece\'s own helper, relatively');
   assert.equal(bundle['top_words.py'],`# Runtime-owned: top_words is defined in components/${D2}/ranking.py.\nfrom components.${D2}.ranking import top_words  # noqa: F401\n`);
-  assert.deepEqual(room.read('glue_files',[]).sort(),['count_words.py','top_words.py',...Object.keys(bundle).filter(p=>p.endsWith('__init__.py'))].sort());
+  // v8 M3: the glue is Root's builder's, recorded on its row.
+  assert.deepEqual(room.read(`glue_files:${room.builderOf('root').id}`,[]).sort(),['count_words.py','top_words.py',...Object.keys(bundle).filter(p=>p.endsWith('__init__.py'))].sort());
   assert.match(events(room,'link_glue')[0].body,/The runtime wrote 5 glue file\(s\)/);
   // The export: the project, the glue where it is needed to run, and how to run it.
   const app=await room.appFiles();

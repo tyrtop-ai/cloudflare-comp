@@ -96,7 +96,7 @@ test('v8 prompts: a command-line tool, split into pieces with contracts, written
   assert.equal(split.goal_scope_boundary, CLI_GOAL);
   assert.ok(Number.isInteger(split.max_pieces) && split.max_pieces >= 2);
   // The split is admitted with C5 satisfied: each card contract on exactly one piece.
-  const kids = room.children('root').map(c => ({label: c.label, names: JSON.parse(c.interfaces).map(f => f.name), uses: JSON.parse(c.uses || '[]')}));
+  const kids = room.children('root').filter(c => c.label !== 'Temporary builder').map(c => ({label: c.label, names: JSON.parse(c.interfaces).map(f => f.name), uses: JSON.parse(c.uses || '[]')}));
   assert.deepEqual(kids, [{label: 'Temperature formulas', names: ['to_fahrenheit', 'to_celsius'], uses: []}, {label: 'Command line', names: ['convert'], uses: ['to_fahrenheit', 'to_celsius']}]);
   // The command-line worker reads its contract by kind, the functions it uses with the exact reference its row renders, and the facts.
   const cli = calls.leaf.find(u => u.your_label === 'Command line');
@@ -115,7 +115,7 @@ test('v8 prompts: a command-line tool, split into pieces with contracts, written
   assert.deepEqual(room.files('root.1').map(f => f.path), ['temperature.py']);
   assert.deepEqual(room.files('root.2').map(f => f.path), ['convert.py']);
   assert.equal((await room.ownFiles('root.2')).find(f => f.path === 'convert.py').content, CLI_FILES['Command line'][0].content);
-  assert.deepEqual(room.children('root').map(c => c.status), ['done', 'done']);
+  assert.deepEqual(room.children('root').filter(c => c.label !== 'Temporary builder').map(c => c.status), ['done', 'done']);
   for (const kind of ['format_fallback', 'contract_returned', 'missing_code', 'code_retry']) assert.equal(events(room, kind).length, 0, kind);
   promptsAreV8(calls, CLI_GOAL, room, [...CLI_PIECES.pieces, ...ASK_PIECES.pieces].map(p => p.task));
   // The language reaches the models only in the user JSON (the project facts), never in a system text.
@@ -165,7 +165,7 @@ test('v8 prompts: a static page of .html, .css and .js files, split by contract 
   assert.ok(checked(room), events(room).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).slice(-12).join('\n'));
   assert.deepEqual(calls.split[0].contracts_you_deliver.map(c => c.name), ['index.html', 'styles.css', 'app.js']);
   assert.deepEqual(calls.split[0].project.conventions.map(c => c.language), ['javascript', 'text']);
-  assert.deepEqual(room.children('root').map(c => [c.label, JSON.parse(c.interfaces).map(f => f.name)]), [['List page', ['index.html']], ['Page styles', ['styles.css']], ['List behaviour', ['app.js']]]);
+  assert.deepEqual(room.children('root').filter(c => c.label !== 'Temporary builder').map(c => [c.label, JSON.parse(c.interfaces).map(f => f.name)]), [['List page', ['index.html']], ['Page styles', ['styles.css']], ['List behaviour', ['app.js']]]);
   // The page's writer hears the files it links by their project paths.
   const page = calls.leaf.find(u => u.your_label === 'List page');
   // A page loads its script as a module (the javascript row's browser_script), and links a stylesheet by its path.
@@ -177,7 +177,7 @@ test('v8 prompts: a static page of .html, .css and .js files, split by contract 
   assert.match(page.your_responsibility, /page index\.html: the list page/);
   // Each file at its exact project path, never under components/.
   assert.deepEqual(['root.1', 'root.2', 'root.3'].map(id => room.files(id).map(f => f.path)), [['index.html'], ['styles.css'], ['app.js']]);
-  assert.deepEqual(room.children('root').map(c => c.status), ['done', 'done', 'done']);
+  assert.deepEqual(room.children('root').filter(c => c.label !== 'Temporary builder').map(c => c.status), ['done', 'done', 'done']);
   for (const kind of ['format_fallback', 'contract_returned', 'missing_code', 'code_retry']) assert.equal(events(room, kind).length, 0, kind+'\n'+events(room).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 300)}`).join('\n'));
   promptsAreV8(calls, PAGE_GOAL, room, PAGE_PIECES.pieces.map(p => p.task));
 });
