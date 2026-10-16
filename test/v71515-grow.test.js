@@ -66,7 +66,7 @@ const ASK={need:'Function to retrieve ticket data by id',name:'viewTicket'};
 // placement 0.9 for the piece pick names, 0.2 for the others.
 const clef23=(pick,inside=0.112)=>input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>{
   const c=k.startsWith('owner_')?input.state.children?.[Number(k.split('_')[1])]:null;
-  return [k,{noul:c?pick(c.label,input.state.question||'')?0.9:0.2:k==='inside'?inside:k==='should_split'?(/handles ticket data operations/.test(String(input.state?.assigned_behavior||''))?0.736:0.2):/^(?:within|names|uses)/.test(k)?0.9:0.1}];}))});
+  return [k,{noul:c?pick(c.label,input.state.question||'')?0.9:0.2:k==='inside'?inside:k==='should_split'?(/handles ticket data operations/.test(String((input.state?.assigned_behavior??input.state?.assignment)||''))?0.736:0.2):/^(?:within|names|uses)/.test(k)?0.9:0.1}];}))});
 const viewPick=(label,q)=>/^viewTicket\(/.test(q)&&['Ticket management','Data storage'].includes(label);
 const dbEvents=(room,kind)=>room.db().exec('SELECT actor,body,recipient FROM events WHERE kind=? ORDER BY id',kind).toArray();
 const rounds=room=>dbEvents(room,'repair_round').map(e=>`${e.actor}: ${e.body.match(/^Repair round (\d+) \((\d+) of/).slice(1).join('/')} ${e.body.match(/: (no progress|progress) /)[1]}`);

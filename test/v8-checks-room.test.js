@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {liveRoom, events, twoWorkers, linkAndCompile, verifyCard, snapshotHash, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, twoWorkers, linkAndCompile, verifyCard, snapshotHash, fileBlocks, workerOf} from './helpers/room.js';
 import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences, normalizeContract} from '../src/contracts.js';
 import {cardContracts} from '../src/card.js';
@@ -31,7 +31,7 @@ const browserReady=(()=>{
 // does not); judge(file, instructions) answers a document requirement; every
 // other question (vetting, scope, routing) passes.
 const clefFor=({split=()=>false,judge=()=>0.9}={})=>input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:
-  k==='should_split'?(split(String(input.state.assigned_behavior))?0.9:0.1):k==='judge'?judge(input.state.file,input.questions.judge.instructions,input.state.requirement):0.9}]))});
+  k==='should_split'?(split(String((input.state.assigned_behavior??input.state.assignment)))?0.9:0.1):k==='judge'?judge(input.state.file,input.questions.judge.instructions,input.state.requirement):0.9}]))});
 // Workers by label: the n-th turn of a label gets its n-th answer (the last one repeats).
 const scripted=answers=>{
   const seen=new Map();
@@ -48,7 +48,8 @@ const blocks=(files,summary='wrote the files')=>fileBlocks(files,{summary,done:t
 const wrote=(path,content)=>blocks([{path,content}],`wrote ${path}`);
 const v8Room=({card,split=null,splitWhen=()=>false,judge,answers,executor})=>liveRoom({card:()=>card,split:split?()=>split:null,clef:clefFor({split:splitWhen,judge}),leaf:scripted(answers),executor});
 const passedOf=room=>Object.fromEntries(Object.entries(room.snapshot().requirement_status).map(([id,x])=>[id,x.passed]));
-const revisions=(room,id)=>room.files(id).map(f=>[f.path,f.revision]);
+// v8 live 5: a part's files are the worker's its manager handed the work to.
+const revisions=(room,id)=>room.files(workerOf(room,id)).map(f=>[f.path,f.revision]);
 // The repair messages a worker read in its turns (its model calls' new_messages).
 const heard=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).flatMap(u=>(u.new_messages||[]).map(m=>m.body)).filter(b=>/Requirement R\d+ failed:/.test(b));
 // v8 S6: every text the room composed in a model request passes the prompt
@@ -161,12 +162,14 @@ test('Python temperature CLI: a wrong output fails its command check, goes to th
   assert.deepEqual(passedOf(room),{R1:true,R2:true});
   const [converter,guide]=room.children('root');
   assert.equal(converter.label,'Converter');
-  // One Container exec per compile: the failing run and the passing one, with the command deliverable's argv.
-  assert.equal(requests.length,2);
-  const [first]=requests;
+  // One Container exec per compile: v8 live 5: the converter's manager holds R1 and runs it in its box (the failing run, then the
+  // passing one), and the top runs it again on what ships; each with the command deliverable's argv.
+  assert.equal(requests.length,3);
+  const [first]=requests,last=requests.at(-1);
   assert.equal(first.mode,'card');
-  const notes=`components/${packageDirectory('Usage guide',guide.id)}/notes.txt`;
-  assert.deepEqual(Object.keys(first.files).sort(),['USAGE.md',notes,'temp.py'].sort());
+  const notes=`components/${packageDirectory('Usage guide',workerOf(room,guide.id))}/notes.txt`;
+  assert.deepEqual(Object.keys(first.files),['temp.py']);
+  assert.deepEqual(Object.keys(last.files).sort(),['USAGE.md',notes,'temp.py'].sort());
   assert.deepEqual(first.plan.commands,{temp:['python3','temp.py']});
   assert.deepEqual(first.plan.syntax,[{toolchain:'python',files:['temp.py']}]);
   assert.deepEqual(first.plan.checks,[{id:'R1',kind:'command',argv:['temp','100'],run:'temp 100',expect:{exit:0,stdout_has:['212']}}],'the judge runs in the Worker');
@@ -177,7 +180,7 @@ test('Python temperature CLI: a wrong output fails its command check, goes to th
   assert.equal(rows[0].kind,'run');
   assert.equal(rows[0].facts.requirement.id,'R1');
   assert.deepEqual(rows[0].facts.requirement.serves,['temp']);
-  assert.equal(rows[0].trail.find(t=>t.action==='assign')?.to,converter.id);
+  assert.equal(rows[0].trail.find(t=>t.action==='assign')?.to,workerOf(room,converter.id));
   assert.match(rows[0].trail.find(t=>t.action==='assign')?.rule,/^R2[as]$/);
   const told=heard(calls,'Converter');
   assert.equal(told.length,1);
@@ -191,7 +194,7 @@ test('Python temperature CLI: a wrong output fails its command check, goes to th
   assert.ok(inv?.python&&inv.node,JSON.stringify(inv));
   assert.ok(room.installedToolchains().some(r=>r.id==='python'));
   // A span per Container card run.
-  assert.equal(room.spans().filter(s=>s.kind==='container'&&s.name==='card').length,2);
+  assert.equal(room.spans().filter(s=>s.kind==='container'&&s.name==='card').length,3);
   // The bundle keeps placed files at their own paths; a file no contract places goes under components/<package directory>/ (S5).
   const app=await room.appFiles();
   assert.deepEqual(app.files.map(f=>f.path),['.recursive/RUN.md','.recursive/card.json','USAGE.md',notes,'temp.py']);
@@ -270,10 +273,11 @@ test('a split whose pieces cannot settle a requirement pauses with checks_failed
   assert.match(pause.text,/^No piece could settle what failed \(R1: no piece takes the requirement \(declined by Converter, Usage guide\): .*\)\. 1 of 2 requirements pass; failing: R1 \(Converting 100 degrees Celsius prints the Fahrenheit value\): temp 100: output lacks "212"; printed "100"\. Continue runs the checks again\.$/);
   assert.deepEqual(passedOf(room),{R1:false,R2:true});
   // Continue runs the checks again (the files are as they were: the same failure, routed again).
+  const ran=events(room,'checks_started').length;
   await room.resume(10);
   await drain();
   assert.equal(events(room,'checks_continue').length,1);
-  assert.equal(events(room,'checks_started').length,2);
+  assert.ok(events(room,'checks_started').length>ran,'the checks ran again');
   linted(room,calls);
 });
 
@@ -404,7 +408,9 @@ test('no leaks: failure details a worker reads name what its deliverable did, ne
   const read=[...repairs,...toCmd,...toReadme,...room.problems("stage='check'").map(p=>JSON.stringify([p.detail,p.facts,p.directive])),...agentRequests(calls)];
   for(const text of read)for(const secret of SECRETS)assert.ok(!text.includes(secret),`a worker could read "${secret}": ${text.slice(0,600)}`);
   // The dashboard keeps the whole detail.
-  assert.match(events(room,'checks_reported')[0].body,/failing: R1, R2, R3/);
+  // v8 live 5: each piece's manager runs the checks it holds: the command's R1, the readme's R2 and R3.
+  const reported=events(room,'checks_reported').map(e=>e.body).join('\n');
+  assert.match(reported,/failing: R1\b/);assert.match(reported,/failing: R2, R3/);
   assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
 });
 
@@ -461,7 +467,9 @@ test('no leaks (review): no call, stdin, input file, output, route, page text or
   assert.match(first('Service'),/Checks written from the goal test these requirements of your contracts: R3: The service answers its route\./);
   assert.match(first('Greeter'),/its checks use: R2 runs `greet` with input on stdin and an input file and expects its output on stdout/);
   assert.doesNotMatch(first('Greeter'),/The benchmark test of the command passes/,'a hidden requirement\'s statement is never told');
-  if(!browserReady)assert.match(heard(calls,'Page')[0],/What it observed: step 2 \(expect_text\) failed; the page showed "Shop …: closed \(…\)"/);
+  // v8 live 5: the page's manager holds R4 and gives it to its worker first; its ticket may batch the other parts' failures the top routed on.
+  const r4=room.problems('1=1').find(p=>p.facts?.requirement?.id==='R4');
+  if(!browserReady){assert.equal(r4.trail[0].to,workerOf(room,'root.3'));assert.match(r4.detail,/step 2 \(expect_text\) failed; the page showed "Shop …: closed \(…\)"/);}
   assert.ok(!room.problems('1=1').some(p=>p.facts?.requirement?.id==='R5'),'a hidden requirement is never a problem');
   // Every model request, the card writer's and its vetting aside: no token.
   const read=[...agentRequests(calls),...room.problems('1=1').map(p=>JSON.stringify([p.detail,p.facts,p.directive,p.trail]))];
@@ -541,7 +549,8 @@ test('checkPlan: command deliverables run by their own path, project checks apar
 });
 
 // v8 live 2: the to-do page's R3 wanted <link rel="stylesheet" href="styles.css"> and the file had <link rel="stylesheet" href="styles.css" />.
-test('fileResult: markup in a markup file matches whatever the whitespace between tags and attributes, the quote style and a void element\'s "/"; values and text stay exact; code exactly apart from trailing whitespace',()=>{
+// v8 live 5: and any text matches modulo whitespace runs, on both sides.
+test('fileResult: markup in a markup file matches whatever the whitespace between tags and attributes, the quote style and a void element\'s "/"; values and text stay exact apart from whitespace runs',()=>{
   const files=new Map([['index.html','<head>\n  <link rel="stylesheet" href="styles.css" />\n  <meta  charset="utf-8">\n</head>\n<ul>\n  <li>a</li>\n</ul>'],['NOTES.md','Run the   tool, then "stop" it.\nNext line'],
     ['app.py','if x:   \n    y()\nz()\n'],['page.vue','<template><div class="x"/></template>']]);
   const has=(path,...texts)=>fileResult({path,has:texts},files).passed;
@@ -560,15 +569,15 @@ test('fileResult: markup in a markup file matches whatever the whitespace betwee
   assert.equal(probe('<p>x == y</p>','<p>x==y</p>'),false);
   assert.equal(probe('<a href=/>','<a href=>'),false,'an unquoted "/" is the value');
   assert.equal(probe('<div class="x"/><p>in</p>','<div class="x"><p>in</p>'),false,'only a void element\'s "/" is dropped');
-  assert.equal(probe('<pre>a    b</pre>','<pre>a b</pre>'),false);
+  assert.equal(probe('<pre>a    b</pre>','<pre>a b</pre>'),true,'v8 live 5: a whitespace run is one space, in any file');
   assert.equal(probe('<script>s.replace(/a/ >0)</script>','<script>s.replace(/a>0)</script>'),false);
-  // Code: exactly apart from trailing whitespace; newlines and indentation count.
+  // v8 live 5: code and other text match modulo whitespace runs, on both sides: spaces, tabs and line breaks are one space.
   assert.equal(has('app.py','if x:\n    y()'),true);
-  assert.equal(has('app.py','if x: y() z()'),false);
-  assert.equal(has('app.py','if x:\ny()'),false);
-  // Other text: spaces and tabs within a line; newlines count.
+  assert.equal(has('app.py','if x: y() z()'),true);
+  assert.equal(has('app.py','if x:\ny()'),true);
+  assert.equal(has('app.py','if x:y()'),false,'a run is one space, never none');
   assert.equal(has('NOTES.md','Run the tool, then "stop" it.'),true,'spaces within a line');
-  assert.equal(has('NOTES.md','it. Next line'),false,'a newline is no space');
+  assert.equal(has('NOTES.md','it. Next line'),true,'a line break is a run too');
   assert.equal(has('NOTES.md',"then 'stop' it"),false,'plain text keeps its quotes');
   assert.equal(has('NOTES.md','run the tool'),false,'plain text keeps its case');
 });
@@ -823,7 +832,7 @@ test('review: results from older files are stale, in the snapshot and in RUN.md'
   await drain();
   assert.ok(!Object.values(room.snapshot().requirement_status).some(x=>x.stale));
   await new Promise(r=>setTimeout(r,5));
-  await room.putFile('root','README.md',GOOD_README+'\nMore.\n');
+  await room.putFile(workerOf(room,'root'),'README.md',GOOD_README+'\nMore.\n');
   assert.ok(Object.values(room.snapshot().requirement_status).every(x=>x.stale));
   const notes=(await room.appFiles()).files[0].content;
   assert.match(notes,/\| R1 \| stale \(passed on snapshot `[0-9a-f]{16}`, before these files changed\) \|/);
@@ -842,7 +851,7 @@ test('review: a piece that writes another piece\'s placed path is refused, namin
   await drain();
   assert.equal(room.get('status'),'complete');
   const notes=room.children('root').find(c=>c.label==='Notes');
-  assert.deepEqual(room.files(notes.id).map(f=>f.path),['NOTES.md']);
+  assert.deepEqual(room.files(workerOf(room,notes.id)).map(f=>f.path),['NOTES.md']);
   assert.match(events(room,'file_refused')[0].body,/GUIDE\.md is delivered by "Guide", whose contract places it/);
   const app=await room.appFiles();
   assert.deepEqual(app.files.map(f=>f.path),['.recursive/RUN.md','.recursive/card.json','GUIDE.md','NOTES.md']);

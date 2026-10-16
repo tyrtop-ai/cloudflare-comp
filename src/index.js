@@ -12,7 +12,7 @@ export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, vetAmendChanges, AMEND_CHANGE_BAR, pieceReach, PIECE_REACH_BAR } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, reviewSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, vetAmendChanges, AMEND_CHANGE_BAR, pieceReach, PIECE_REACH_BAR } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
@@ -36,7 +36,7 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
-import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, useReferences, USES_SHOWN, PLACED_KINDS, functionRows } from './contracts.js';
+import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, gateLine, useReferences, USES_SHOWN, PLACED_KINDS, functionRows } from './contracts.js';
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 // v8 S5: the polyglot linker (bundle links, runtime glue, rename-only repair).
 import { linkBundle, renameFromRun, editChecks, textHash, stdlibNames, importClosure } from './glue.js';
@@ -61,7 +61,7 @@ const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
 export const JUDGE_RETRY_MS = [500, 2000], CHECK_RETRY_MS = [30_000, 120_000, 600_000];
 // v8 S9: the queue's next prompt is applied by the alarm this long after the room finished;
 // a room held at one of these ended where only the user can go on (the queue's failure).
-export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_exhausted', 'checks_failed', 'card_blocked', 'card_failed', 'benchmark_failed'];
+export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_exhausted', 'checks_failed', 'checks_doubtful', 'card_blocked', 'card_failed', 'benchmark_failed'];
 // U10: an anchored requirement's key: its id and a hash of what it says.
 export const anchorKey = (id, says) => {let h=2166136261;for(const c of String(says??'')){h^=c.charCodeAt(0);h=Math.imul(h,16777619)>>>0;}return `${id}#${h.toString(16).padStart(8,'0')}`;};
 // The agent whose turn is running, for the span record: every model and Clef
@@ -136,7 +136,11 @@ function sentFiles(files, {revision=false, budget=FILES_BUDGET}={}) {
 // every level for the whole run; every reader tells it by its role.
 const V7_BUILDER_LABEL = 'Temporary builder', BUILDER_LABEL = 'Builder', COMPILER_LABEL = 'Compiler';
 const roleOf = n => n?.role || (n?.label === V7_BUILDER_LABEL ? 'builder' : n?.label === COMPILER_LABEL ? 'compiler' : '');
-const isRuntimeNode = n => !!n && !!roleOf(n);
+// v8 live 5: a part's row says 'manager' or 'worker' (fixed when it is created); only builders and the compiler are runtime nodes.
+const RUNTIME_ROLES = new Set(['builder','compiler']);
+const isRuntimeNode = n => !!n && RUNTIME_ROLES.has(roleOf(n));
+// v8 live 5: a short key of a row's task, so a retask starts its split attempts afresh.
+const taskKey = t => {let h=0;for(const c of String(t??''))h=(h*31+c.charCodeAt(0))|0;return (h>>>0).toString(36);};
 const isBuilderNode = n => roleOf(n) === 'builder';
 const isCompilerNode = n => roleOf(n) === 'compiler';
 // What the compiler's pipeline writes: the loader, the package and the
@@ -311,8 +315,16 @@ export const ROOM_LIMITS = Object.freeze({
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   packages: 'none', pipeline: 'v7',
   max_agents: 64, max_depth: 10, parallel: 16, max_children: 7,
-  model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7
+  model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7,
+  // v8 live 5: the split's three tunable numbers. split_floor: a pre-grade p at
+  // or below it means Clef is very certain no split is needed, and the manager
+  // writes its assignment with no splitter call. split_valid_bar: the bar
+  // Clef's split_valid p must reach (rising with depth, as splitBar does).
+  // split_size_bar: the bar Clef's split_size p must reach.
+  split_floor: 0.1, split_valid_bar: 0.5, split_size_bar: 0.5
 });
+// v8 live 5: the first proposal and two retries.
+export const SPLIT_ATTEMPTS = 3;
 // The agent models the dashboard offers: the Qwen3 hybrid (default), four
 // that answer without reasoning (Llama 4 Scout, Qwen2.5 Coder, DeepSeek V4
 // Flash with its reasoning off, Mistral Small 3.1), and two comparisons.
@@ -351,6 +363,13 @@ export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
     const p=Number(raw.split_threshold);
     if (!Number.isFinite(p) || p<0.2 || p>0.8) throw new Error('Invalid split threshold: expected 0.2–0.8');
     result.split_threshold=p;
+  }
+  // v8 live 5: the split's floor and bars, each a probability.
+  for (const [key,[min,max]] of Object.entries({split_floor:[0,0.5],split_valid_bar:[0.05,0.95],split_size_bar:[0.05,0.95]})) {
+    if (raw[key] === undefined) continue;
+    const p=Number(raw[key]);
+    if (!Number.isFinite(p) || p<min || p>max) throw new Error(`Invalid ${key}: expected ${min}–${max}`);
+    result[key]=p;
   }
   // v8 S1 (decision U4): third-party packages. 'none' keeps each toolchain's
   // stdlib rule (the JavaScript row's ban on npm packages); 'allowed' lifts it.
@@ -807,7 +826,7 @@ export class ControlRoom extends DurableObject {
     // v8 live 4 review (L1): the handler says it created the row only once provision returned; a failed one stays open, and the next run tries again.
     let top=waiting;
     if(waiting)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(interfaces),waiting.id);
-    else try {top=await this.provision('root',hid,'Root objective',task,interfaces,[],packages);}
+    else try {top=await this.provision('root',hid,'Root objective',task,interfaces,[],packages,this.v8()?'manager':'');}
     catch(e) {this.event(hid,'prompt_handed',clip(`${hid} could not create the top's row (${e?.message||e}); it stays open, and the next run creates it.`,600));throw e;}
     if(refs)this.save(`source_refs:${top.id}`,refs);
     if(digest!==null)this.save(`base_digest:${top.id}`,digest);
@@ -927,7 +946,9 @@ export class ControlRoom extends DurableObject {
       return;
     }
     this.save('paused_state',{kind,text:clip(text,1200),ts:Date.now(),...extra});
-    if(prior?.kind!==kind||prior?.text!==clip(text,1200))this.event('room',kind,clip(text,1200));
+    // v8 live 5: the same hold of the same row, its summary brought up to date (a sibling's checks passed since), is one hold: logged once.
+    const same=prior?.kind===kind&&(prior?.agent??null)===(extra.agent??null)&&String(prior?.text||'').split('. ')[0]===clip(text,1200).split('. ')[0];
+    if(!same&&(prior?.kind!==kind||prior?.text!==clip(text,1200)))this.event('room',kind,clip(text,1200));
   }
   get(key, otherwise = '') { return query(this.db(), 'SELECT value FROM meta WHERE key=?', key)[0]?.value ?? otherwise; }
   set(key, value) { this.db().exec('INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value)); }
@@ -970,7 +991,8 @@ export class ControlRoom extends DurableObject {
   maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
   // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95: threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10) (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10, 0.95 below). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
   // v7.15.16 review: over a fixed horizon, min(max_depth, 10) levels, so raising max_depth (what split_capacity_blocked advises) never flattens it.
-  splitBar(id) {const {split_threshold:t,max_depth:m}=this.settings(),d=String(id).split('.').length-1,h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
+  // v8 live 5: the same rise over split_valid_bar for Clef's split_valid p (t).
+  splitBar(id, t=this.settings().split_threshold) {const {max_depth:m}=this.settings(),d=String(id).split('.').length-1,h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
   // runner's test). A room saved before v7.15.10 has no worker or compiler
@@ -1430,10 +1452,12 @@ export class ControlRoom extends DurableObject {
     // decisions can be diagnosed.
     const cursors=Object.fromEntries(Object.keys(EXPORT_TABLES).map(t=>[t,query(this.db(),`SELECT COALESCE(MAX(id),0) AS id FROM ${t}`)[0].id]));
     // Every problem row and ticket, and the per-manager linking and compile state.
+    // v8 live 5: every manager's split attempts, by row (splitAttempts), to tune the split's floor and bars from live runs.
+    const split_attempts=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'split_attempts:%'").map(r=>[r.key.slice('split_attempts:'.length),parse(r.value,[])]));
     const state=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'linked:%' OR key LIKE 'link_state:%' OR key LIKE 'link_reported:%' OR key LIKE 'bundle:%' OR key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'compile_%' OR key IN ('check_anchors','toolchain_inventory')").map(r=>[r.key,parse(r.value,r.value)]));
     const {events:_recent,cursor:_cursor,...rest}=snapshot;
     return {...rest,exports,exported_at:new Date().toISOString(),files,
-      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors,
+      problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors,split_attempts,
       // v8 card repair: the card writer's last answers as written, each clipped (diagnosis).
       card_raw:this.read('card_raw',null),
       card_revisions:query(this.db(),'SELECT rev,goal_rev,card,reason,ts,delta FROM card_revisions ORDER BY rev').map(r=>({...r,card:parse(r.card,null),delta:parse(r.delta||'{}',{})})),
@@ -1534,7 +1558,7 @@ export class ControlRoom extends DurableObject {
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?,?)',
       id, parent, clip(label,70), clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8:this.v8()})),
       JSON.stringify(this.v8()?normalizePackages(packages):[]),role);
-    if (role) this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
+    if (role && role!=='manager') this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
     this.event(id, 'spawn', `Assigned ${label}. Artifact: ${repo.name}`, parent || '', '');
     return this.node(id);
@@ -1554,6 +1578,73 @@ export class ControlRoom extends DurableObject {
   productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)&&n.status!=='retired').length;}
   // v7.15: a node's promise, the only accessor.
   promisedOf(id) {const n=this.node(id);return n?parse(n.interfaces,[]):[];}
+  // v8 live 5: the split's floor and bars (room settings, each with its default).
+  splitConfig() {const s=this.settings(),d=DEFAULT_ROOM_SETTINGS;return {floor:s.split_floor??d.split_floor,valid_bar:s.split_valid_bar??d.split_valid_bar,size_bar:s.split_size_bar??d.split_size_bar};}
+  // v8 live 5: what Clef graded of a manager's splits, in order (split_attempts:<id>):
+  // attempt 0, the pre-grade (p, the floor, whether the catch fired); attempt n,
+  // the nth proposal's review (its piece count, the valid, size and scope ps,
+  // the bars, the retry parameter it was made with, and its outcome). Only
+  // the attempts made for the row's current task count.
+  splitAttempts(id) {const key=taskKey(this.node(id)?.task);return this.read(`split_attempts:${id}`,[]).filter(a=>a.task===key);}
+  recordAttempt(id, entry) {this.save(`split_attempts:${id}`,[...this.read(`split_attempts:${id}`,[]),{...entry,task:taskKey(this.node(id)?.task)}].slice(-24));}
+  // v8 live 5: room for count pieces, each a manager that hands down to at least one worker of its own.
+  canSplitPieces(id, count=2) {
+    return String(id).split('.').length+1 <= this.settings().max_depth &&
+      this.productionNodeCount() + this.reservedSpawnSlots() + 2*count <= this.settings().max_agents;
+  }
+  // v8 live 5: Clef reviews a proposed split in one call (reviewSplit): a
+  // valid division (split_valid, at the bar that rises with depth from
+  // split_valid_bar) whose pieces are each worth a writer (split_size, at
+  // split_size_bar), with each piece's scope. YES admits the pieces (their
+  // scope ps go to admission, which marks a doubted one and deletes none).
+  // A NO is retried with the parameter its objection calls for: too small,
+  // fewer and larger pieces (the count it had, less one, at least two); not a
+  // valid division, another division along the contracts, the pieces shown
+  // as rejected; both, too small. The third NO, or too small at two pieces,
+  // hands the assignment down to one worker ({down}). A retry waits for the
+  // row's next turn ({ok:false}).
+  async reviewProposal(id, n, proposed, feedback=null) {
+    const {spawn:pieces}=normalizeSpawn(proposed,this.promisedOf(id),{v8:true});
+    const cfg=this.splitConfig(),attempt=this.splitAttempts(id).filter(a=>a.attempt>0).length+1;
+    const retry=attempt>1&&['fewer','different'].includes(feedback?.retry)?feedback.retry:'';
+    const validBar=this.splitBar(id,cfg.valid_bar),sizeBar=cfg.size_bar,started=Date.now();
+    const r=await reviewSplit(this.inferenceEnv(),{goal:this.goalFor(SCOPE_GOAL)??(this.topTask()||n.task),assignment:clipEnds(n.task,2600),contracts:this.gateContracts(id),pieces,attempt,retry});
+    const ok=r.valid>=validBar&&r.size>=sizeBar,next=ok?'':r.size<sizeBar?'fewer':'different',bound=pieces.length-1;
+    const stop=ok?'':attempt>=SPLIT_ATTEMPTS?`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`:next==='fewer'&&bound<2?`with pieces too small at ${pieces.length}, and fewer than two is no division`:'';
+    const r3=x=>Math.round(x*1000)/1000;
+    this.recordAttempt(id,{attempt,pieces:pieces.length,valid_p:r3(r.valid),size_p:r3(r.size),scope_ps:r.scope.map(r3),valid_bar:validBar,size_bar:sizeBar,
+      ...(retry?{retry}:{}),outcome:ok?'admitted':stop?'handed down':`retry ${next}`,ms:Date.now()-started});
+    const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='fewer'?'fewer pieces':'a different division'}`:''}): split_valid p=${r.valid.toFixed(3)} (bar ${validBar}), split_size p=${r.size.toFixed(3)} (bar ${sizeBar})`;
+    if(ok){this.event(id,'split_review',`${said}: YES, the pieces go to admission.`);return {ok:true,scope:r.scope};}
+    if(stop)return {ok:false,down:`${said}: NO ${stop}, so it hands its whole assignment down to one worker.`};
+    const shown=pieces.map(c=>({label:c.label,task:clip(c.task,300),contracts:(c.interfaces||[]).map(f=>f.name)}));
+    this.save(`split_feedback:${id}`,next==='fewer'?{kind:'too_small',retry:'fewer',reason:RETRY.too_small(pieces.length,bound),count:pieces.length,bound,proposed:shown,accepted:[],rejected:[]}
+      :{kind:'invalid',retry:'different',reason:RETRY.different,accepted:[],rejected:shown});
+    this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='fewer'?`fewer, larger pieces (at most ${bound})`:'a different division along its contracts'}.`);
+    this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+    this.save('queue',addLast(this.read('queue',[]),id));
+    return {ok:false};
+  }
+  // v8 live 5: a manager that does not split hands its whole assignment down
+  // to one worker, spawned as split pieces are (spawn, the plan's ops): its
+  // task, all its contracts (the manager keeps them, as it keeps a split's),
+  // its uses, its packages (planPackages) and its source refs. The worker
+  // never splits; the manager keeps its builder and its checks.
+  handDownPlan(id, n, inbox, why, assemblyFingerprint, rejected=[]) {
+    const uses=parse(n.uses,[]),refs=this.sourceRefs(id),digest=this.heldDigest(id);
+    const [spec]=this.planPackages(id,[{label:n.label,task:n.task,interfaces:this.promisedOf(id),role:'worker',...(uses.length?{uses}:{}),...(refs.length?{refs}:{}),...(typeof digest==='string'?{base_digest:digest}:{})}]);
+    this.set(`split_feedback:${id}`,'');this.set(`split_yes:${id}`,'');
+    this.event(id,'hand_down',why);
+    const owned=ownerNotes(rejected.filter(x=>x?.owner),true),action={...normalizeAction({summary:`Handed its whole assignment down to one worker: ${why}`},{v8:true}),spawn:[spec],wait:true};
+    if(owned)action.remember.push({visibility:'public',key:'owned_elsewhere',value:owned});
+    return {action,inbox,nextPhase:null,assemblyFingerprint,owned};
+  }
+  // v8 live 5: what every manager's split gate reads beside its assignment:
+  // its own row's contracts, one line each (gateLine), each with the ids of
+  // the requirements it serves, as the row holds them (no card field is read).
+  gateContracts(id) {
+    return this.promisedOf(id).map(c=>gateLine(c)).filter(Boolean).slice(0,16);
+  }
   // A room whose Root promises start (live, started under v7.15) answers
   // function requests from promises; MOCK and v7.14 rooms route as v7.14.
   planned() {return this.promisedOf(this.topId()).length>0;}
@@ -1742,7 +1833,9 @@ export class ControlRoom extends DurableObject {
       const id=`${parentId}.${batch.start_index+i}`;
       let child=this.node(id);
       // v7.15.5: answers a spec carries (composeStart) are there before the child can run.
-      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[],roleOf(planned[i]));this.assignRefs(id,parentId,planned[i].refs);
+      if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[],roleOf(planned[i])||(this.v8()?'manager':''));this.assignRefs(id,parentId,planned[i].refs);
+        // v8 live 5: the worker a manager hands its whole assignment to reads the existing project's digest its manager held.
+        if(typeof planned[i].base_digest==='string')this.save(`base_digest:${id}`,planned[i].base_digest);
         // v8 live 4: a package the split named that its parent's row does not list is the piece's ask, as a worker's would be.
         for(const name of planned[i].package_asks||[])this.answerPackageAsk(id,{name,need:'',key:requestKey({name})});}
       made.push(child);
@@ -4756,6 +4849,23 @@ export class ControlRoom extends DurableObject {
   // failure, as reportProblems does): it routes each by the plan, one level
   // at a time.
   reportChecks(m, input, items) {
+    // v8 live 5: a requirement Clef doubted (doubtful, with its reason) that fails again exactly as it did after a repair
+    // round was spent on it is the person's to keep or change: the room holds (checks_doubtful) with the reason, and no
+    // further round is spent on it until Continue keeps it. Nothing is deleted: it stays on the card, failing.
+    if(this.v8()) {
+      const card=this.read('card',null),kept=new Set(this.read('doubt_kept',[])),doubted=new Map((card?.requirements||[]).filter(r=>r.doubtful&&!kept.has(r.id)).map(r=>[r.id,r]));
+      const spent=doubted.size?this.problems("source=? AND stage='check'",m).filter(p=>p.trail.some(t=>t.action==='assign')):[];
+      const again=items.filter(x=>{const r=doubted.get(x.facts?.requirement?.id);return r&&spent.some(p=>p.facts?.requirement?.id===r.id&&failureKey(p)===failureKey({kind:x.kind,detail:x.detail,facts:x.facts||{}}));});
+      if(again.length) {
+        const why=r=>/internal detail/.test(r.doubt_reason||'')?`${r.doubt_reason}, p=${Number(r.vet_internal_p??r.vet_p).toFixed(3)}`:`${r.doubt_reason||'not expected from the goal'}, p=${Number(r.vet_p).toFixed(3)}`;
+        const reqs=[...new Set(again.map(x=>x.facts.requirement.id))].map(id=>doubted.get(id));
+        this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),m);
+        this.save('doubt_pending',reqs.map(r=>r.id));
+        this.event(m,'checks_doubtful',clip(`${reqs.map(r=>r.id).join(', ')} failed again as before a repair round, and Clef doubted ${reqs.length>1?'them':'it'}: the person decides.`,600));
+        return this.holdChecks(m,'checks_doubtful',`${reqs.map(r=>`${r.id} (${clip(r.says,80)})`).join('; ')} ${reqs.length>1?'keep':'keeps'} failing the same way after a repair round, and Clef doubted ${reqs.length>1?'them':'it'} (${reqs.map(r=>`${r.id}: ${why(r)}`).join('; ')}).`,
+          `Continue keeps ${reqs.length>1?'them':'it'} and runs the repairs again; a follow-up prompt can change or drop ${reqs.length>1?'them':'it'}.`);
+      }
+    }
     const prior=this.problems("source=? AND status!='closed'",m),wave=crypto.randomUUID();
     this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),m);
     const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
@@ -4857,7 +4967,7 @@ export class ControlRoom extends DurableObject {
     // v7.15.6 (R5): a promise grows only at the lowest common manager (or for names its parent relayed down), so the children above are asked once the walk reaches them.
     // v7.15.7 (T3): and, at the top, a run requirement naming a method of start()'s object (app.x is not a function), which may name one no piece promises.
     const adds=await this.promiseAdds(m,rows.filter(p=>p.directive?.grow&&p.directive.by===n.parent||lowestCommon(placeParties(m,p.parties),kindOf,p.flags).lcm||!this.v8()&&isTop(n)&&p.kind==='run'&&p.facts?.requirement?.names?.includes('start')),kindOf),routes=await this.routeRequirements(m,rows,kindOf);
-    return {holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,taskOf:id=>children.get(id)?.task,labelOf:id=>children.get(id)?.label||id,grows:p=>this.amendItems(m,[p]).length>0,
+    return {holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,taskOf:id=>children.get(id)?.task,labelOf:id=>children.get(id)?.label||this.node(id)?.label||id,grows:p=>this.amendItems(m,[p]).length>0,
       builder:builder?.id||null,maxHops:MAX_HOPS(depth),
       canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),causedHere:p=>caused.has(p.id),
       plainJsDone:id=>plain.has(id),uniqueProvider:p=>unique.get(p.id)||null,promiseAdd:p=>adds.get(p.id)||null,route:p=>routes.get(p.id)||null,
@@ -5782,7 +5892,11 @@ export class ControlRoom extends DurableObject {
   // another problem on it is no try at this one) and this wave makes no
   // progress. At Root with every candidate declined or exhausted: the
   // model once, then the requirement closes, as before.
+  // v8 live 5: a manager whose one part is the worker it handed its work to
+  // has nowhere else to route: its worker is asked again, and the per-manager
+  // limit of rounds without progress ends the repairs, as for any manager.
   routeExhausted(m) {
+    if(this.v8()&&this.children(m).filter(c=>!isRuntimeNode(c)&&c.status!=='retired').length===1)return;
     const waves=this.read(`repair_waves:${m}`,[]);
     for(const p of this.problemsHeld(m).filter(p=>p.facts?.requirement&&p.facts.failure)) {
       const prev=waves.filter(w=>w!==p.flags.wave).at(-1);
@@ -5875,7 +5989,7 @@ export class ControlRoom extends DurableObject {
   // lost its entry module at p=0.448). Then the walk by name, and the Clef
   // walk for the non-carriers left.
   // v8 (S2): v8 reads the pieces' contracts and uses of any kind (S3 passes it from the room's pipeline setting).
-  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[],place=false,v8=false,promise=null}={}) {
+  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[],place=false,v8=false,promise=null,scope:reviewed=null}={}) {
     // v8 S9: Root's growth for an amendment admits one piece for the deliverables no part carries (promise), not Root's whole promise.
     const promised=promise||this.promisedOf(id),own=new Set(promised.map(p=>p.name));
     let {spawn:named,inferred}=normalizeSpawn(spawn,promised,{v8});
@@ -5917,7 +6031,8 @@ export class ControlRoom extends DurableObject {
     // v8 M2: the parent's task is its row's (the handler keeps the top's as the goal's view).
     const goal=this.goalFor(SCOPE_GOAL)??(this.topTask()||n.task),parentTask=this.v8()?clipEnds(n.task,SCOPE_GOAL):isTop(n)?this.goalFor(SCOPE_GOAL)??n.task:n.task,env=this.inferenceEnv(),dups=duplicateNames(named,promised,elsewhere),owners=new Map();
     for(const d of dups)if(d.pick!==null)owners.set(d.name,{index:d.pick,why:d.why});
-    const scoped=scopeChildren(env,goal,parentTask,named);scoped.catch(()=>{});
+    // v8 live 5: a proposal Clef reviewed carries each piece's scope p from that one call (reviewSplit).
+    const scoped=Array.isArray(reviewed)&&reviewed.length===named.length?Promise.resolve(reviewed):scopeChildren(env,goal,parentTask,named);scoped.catch(()=>{});
     await Promise.all(dups.filter(d=>d.pick===null).map(async d=>{
       try {
         const x=await pickPiece(env,d.item,d.holders.map(i=>named[i]));
@@ -7824,7 +7939,8 @@ export class ControlRoom extends DurableObject {
       plan = parse(saved.payload,null);
       if (!plan) throw new Error('Invalid persisted action for ' + id);
       this.event(id, 'retry', `Resuming an interrupted action at operation ${saved.cursor}.`);
-    } else {
+    // v8 live 5: a manager that hands its assignment down leaves this block with its plan (break compute).
+    } else compute: {
       // A repair ticket reads as its manager's decision and the problems in
       // the worker's own paths; one whose problems all closed since says so.
       const inbox = this.receive(id).map(message=>{
@@ -7916,52 +8032,95 @@ export class ControlRoom extends DurableObject {
         // v7.15.16 (run25): the carrier of its parent's whole promise writes it with no Clef gate: its parent's split already gave its helpers away ("Subproblem" [extractLinkStatus] under "Extract link status" [extractLinkStatus] split again, into "Interface Status Analyzer" [extractLinkStatus]). So does a carrier promising only start, composed from the plan, never split. A fresh piece is gated, at a bar that rises with depth (splitBar).
         const own=this.planned()&&n.parent?this.promisedOf(id):[],above=parse(this.node(n.parent)?.interfaces,[]).map(f=>f.name).sort(),mine=own.map(f=>f.name).sort();
         const one=own.length&&(own.length===1&&own[0].name==='start'||mine.join()===above.join())?own:null,bar=this.splitBar(id);
-        const gate=one?{split:false}:namesOnly||malformed||sized?{split:true}:await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},gateTask,before);
-        // v7.15.16 (run25): an answer whose labels were still placeholders ("Subproblem") after the splitter's retry is answered again as a malformed one is.
-        const labels=before.split_feedback?.kind==='labels'?before.split_feedback.proposed||[]:[];
-        if(!one)this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed&&labels.length?`Clef's YES stands: the last split answer still had placeholder labels (${labels.map(l=>JSON.stringify(l)).join(', ')}), so the splitter answers again.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)}; ${Date.now()-started} ms).`);
-        if (gate.split && !this.canSplit(id,2)) {
-          // Clef chose to split but the room has no agent slots or depth left.
-          // Do not force a weak leaf to implement work Clef would divide.
-          this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-          this.set(`capacity_blocked:${id}`,'1');
-          this.event(id,'split_capacity_blocked','Clef chose to split, but there is no space or depth left. Raise the room agent/depth limit and Continue; no code was silently substituted.');
-          return;
-        }
-        if (gate.split) {
-          // run16: after a malformed turn the splitter answers without
-          // thinking, as its own retry does; a thinking answer costs minutes.
-          // v7.15.14: the pieces of one split are at most max_children; the slots left are a separate bound (review: an answer over them goes to admission's split_rejected, as before).
-          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry,v8:this.v8(),facts:this.v8()?this.contractFacts():null});
+        // v8 live 5: every manager tries to split, the top included, and Clef
+        // reviews what its splitter proposes (reviewProposal). Before the
+        // splitter runs, Clef grades the assignment with its row's contracts
+        // once (CLEF.split, the pre-grade); a p at or below the room's
+        // split_floor means Clef is very certain no split is needed, and the
+        // runtime saves the splitter's turn. A manager never writes the code
+        // that fulfils its contracts: when nothing splits (that catch, the
+        // splitter proposing no pieces, Clef's last NO, no room for pieces, or
+        // a carrier of its parent's whole promise), it hands its whole
+        // assignment down to one worker (handDownPlan).
+        if(this.v8()) {
+          let down=one?`It carries its parent's whole promise (${listed(one.map(f=>f.name))}), so it hands it down to one worker with no Clef call.`:'';
+          const attempts=this.splitAttempts(id),floor=this.splitConfig().floor;
+          if(!down&&!this.canSplitPieces(id,2))down='There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.';
+          if(!down&&!attempts.some(a=>a.attempt===0)) {
+            const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:floor,SPLIT_FLOOR:floor},gateTask,before,this.gateContracts(id)),caught=pre.probability<=floor;
+            this.recordAttempt(id,{attempt:0,p:Math.round(pre.probability*1000)/1000,floor,caught,ms:Date.now()-started});
+            this.event(id,'split_gate',caught?`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${floor}: no split is needed, so no splitter runs (${Date.now()-started} ms).`:`Clef's pre-grade p=${pre.probability.toFixed(3)} is above the floor ${floor}: the splitter proposes pieces and Clef reviews them (${Date.now()-started} ms).`);
+            if(caught)down=`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${floor}, so it hands its whole assignment down to one worker.`;
+          }
+          if(!down) {
+            const feedback=before.split_feedback,fewer=feedback?.kind==='too_small'&&Number.isInteger(feedback.bound)?feedback.bound:null;
+            raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:fewer?Math.min(this.maxChildren(),fewer):this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry,v8:true,facts:this.contractFacts()});
+            if(!raw.parse_error) {
+              const proposed=normalizeAction(raw,{v8:true}).spawn;
+              if(proposed.length<2)down=`Its splitter proposed ${proposed.length?'one piece':'no pieces'}, so it hands its whole assignment down to one worker.`;
+              else {
+                const review=await this.reviewProposal(id,n,proposed,feedback);
+                if(review.down)down=review.down;
+                else if(!review.ok)return;
+                else raw.split_review=review.scope;
+              }
+            }
+          }
+          if(down) {
+            plan=this.handDownPlan(id,n,inbox,down,observedAssembly,before.split_feedback?.rejected||[]);
+            this.db().exec('INSERT INTO pending_turns(agent,payload,cursor) VALUES (?,?,0)',id,JSON.stringify(plan));
+            this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
+            saved={cursor:0};
+            break compute;
+          }
         } else {
-          // A genuine leaf can implement in the SAME turn; no extra Qwen
-          // decomposition request or artificial scheduler wave. It keeps the
-          // owners of the rejected split's pruned pieces.
-          owners=await this.rememberOwners(id,before.split_feedback?.rejected||[]);
-          if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
-          this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
-          n.phase='implement';splitting=false;
-          this.wakeGrowWaiter(id);
-          // From here it is an isolated worker, as on its later turns: its own
-          // contract, and no parent, sibling or neighbour memory (decision 2; a
-          // sibling's prune note named getTickets to the create worker).
-          // v8 S8b: a writer reads its cited chunks (the view), never the splitter's cards or digest.
-          delete before.sources;delete before.sources_note;delete before.existing_files;delete before.base_note;
-          Object.assign(before,this.view(id,before.new_messages,ownFiles),{turn:before.turn,adjacent_public_memory:[]});
-          const reclassified=Boolean(before.split_feedback);
-          this.event(id,'atomic',one?`It carries its parent's whole promise (${listed(one.map(f=>f.name))}): implemented directly, with no Clef gate.`:reclassified
-            ? 'Clef reviewed the rejected partition and routed this assignment to direct code implementation.'
-            : 'Clef classified this as an indivisible behavior; implementing directly.');
-          // An implementation leaf needs only its own code assignment. Root's
-          // global scope and the rejected split remain router-only context.
-          delete before.root_scope;
-          delete before.split_feedback;
-          delete before.your_promised_functions;
-          delete before.contracts_available;delete before.contracts_left_out;delete before.your_packages;
-          // v8 live 4: implementing directly, it reads its catalogue (its packages among it) as any writer does.
-          if(this.v8())Object.assign(before,this.availableView(id,this.read(`fn_answers:${id}`,[]).map(a=>a.text)));
-          raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
-          this.set(`split_feedback:${id}`,'');
+          const gate=one?{split:false}:namesOnly||malformed||sized?{split:true}:await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},gateTask,before,this.v8()?this.gateContracts(id):[]);
+          // v7.15.16 (run25): an answer whose labels were still placeholders ("Subproblem") after the splitter's retry is answered again as a malformed one is.
+          const labels=before.split_feedback?.kind==='labels'?before.split_feedback.proposed||[]:[];
+          if(!one)this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed&&labels.length?`Clef's YES stands: the last split answer still had placeholder labels (${labels.map(l=>JSON.stringify(l)).join(', ')}), so the splitter answers again.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)}; ${Date.now()-started} ms).`);
+          if (gate.split && !this.canSplit(id,2)) {
+            // Clef chose to split but the room has no agent slots or depth left.
+            // Do not force a weak leaf to implement work Clef would divide.
+            this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+            this.set(`capacity_blocked:${id}`,'1');
+            this.event(id,'split_capacity_blocked','Clef chose to split, but there is no space or depth left. Raise the room agent/depth limit and Continue; no code was silently substituted.');
+            return;
+          }
+          if (gate.split) {
+            // run16: after a malformed turn the splitter answers without
+            // thinking, as its own retry does; a thinking answer costs minutes.
+            // v7.15.14: the pieces of one split are at most max_children; the slots left are a separate bound (review: an answer over them goes to admission's split_rejected, as before).
+            raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry,v8:this.v8(),facts:this.v8()?this.contractFacts():null});
+          } else {
+            // A genuine leaf can implement in the SAME turn; no extra Qwen
+            // decomposition request or artificial scheduler wave. It keeps the
+            // owners of the rejected split's pruned pieces.
+            owners=await this.rememberOwners(id,before.split_feedback?.rejected||[]);
+            if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
+            this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
+            n.phase='implement';splitting=false;
+            this.wakeGrowWaiter(id);
+            // From here it is an isolated worker, as on its later turns: its own
+            // contract, and no parent, sibling or neighbour memory (decision 2; a
+            // sibling's prune note named getTickets to the create worker).
+            // v8 S8b: a writer reads its cited chunks (the view), never the splitter's cards or digest.
+            delete before.sources;delete before.sources_note;delete before.existing_files;delete before.base_note;
+            Object.assign(before,this.view(id,before.new_messages,ownFiles),{turn:before.turn,adjacent_public_memory:[]});
+            const reclassified=Boolean(before.split_feedback);
+            this.event(id,'atomic',one?`It carries its parent's whole promise (${listed(one.map(f=>f.name))}): implemented directly, with no Clef gate.`:reclassified
+              ? 'Clef reviewed the rejected partition and routed this assignment to direct code implementation.'
+              : 'Clef classified this as an indivisible behavior; implementing directly.');
+            // An implementation leaf needs only its own code assignment. Root's
+            // global scope and the rejected split remain router-only context.
+            delete before.root_scope;
+            delete before.split_feedback;
+            delete before.your_promised_functions;
+            delete before.contracts_available;delete before.contracts_left_out;delete before.your_packages;
+            // v8 live 4: implementing directly, it reads its catalogue (its packages among it) as any writer does.
+            if(this.v8())Object.assign(before,this.availableView(id,this.read(`fn_answers:${id}`,[]).map(a=>a.text)));
+            raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
+            this.set(`split_feedback:${id}`,'');
+          }
         }
       } else raw=await decide(this.inferenceEnv(!this.manager(id)&&!isRuntimeNode(n)?'worker':'manager'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
       // v7: at the top, a split answer with no pieces (none, or code in their
@@ -8105,7 +8264,7 @@ export class ControlRoom extends DurableObject {
         // child repository is created. Keep Root's goal as an immutable scope
         // anchor so an ambiguous parent cannot drift over generations.
         if(action.spawn.length) {
-          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2,v8:this.v8()});
+          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2,v8:this.v8(),scope:raw.split_review||null});
           // v7.15.16 (run25): no progress is a partition's failure, so Clef reconsiders with it (it may implement the assignment directly).
           if(admit.degenerate) {
             const reason=this.v8()?MESSAGES.split_no_progress({label:clip(admit.degenerate.label,70),names:listed(admit.degenerate.names)}):noProgress(admit.degenerate);
@@ -8191,6 +8350,12 @@ export class ControlRoom extends DurableObject {
       }
       // The implementation action protocol can also propose late children.
       // Apply the SAME scope gate: no Qwen-proposed child is admitted unchecked.
+      // v8 live 5: a worker writes; its manager's split flow already chose
+      // whether the work divides, and the format offers a worker no pieces.
+      if (this.v8() && !splitting && !this.manager(id) && !isRuntimeNode(n) && action.spawn.length) {
+        this.event(id,'pieces_ignored',`A worker's answer listed ${action.spawn.length} pieces; its files are written and the pieces are not created, as its manager's split flow decides divisions.`);
+        action.spawn=[];
+      }
       if (!splitting && !this.manager(id) && action.spawn.length) {
         if(this.env.MOCK_AI==='true' && !this.v8() && isTop(n)) {
           const assembly=action.spawn.filter(x=>this.isFinalAssemblySpec(x));
@@ -8207,7 +8372,7 @@ export class ControlRoom extends DurableObject {
         // v7.15.16 review (p6): a late split is gated as a first split is, at its depth's bar, and needs room below it: a carrier, never gated, late-split into a new carrier and one helper, eight times, to max_depth, and stuck there waiting.
         if(this.env.MOCK_AI!=='true') {
           const room=this.canSplit(id,Math.max(2,action.spawn.length)),bar=this.splitBar(id),calls=this.planned()?parse(n.uses,[]):[],tail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'';
-          const gate=room?await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},tail?String(n.task).slice(0,2600-tail.length)+tail:n.task,{}):null;
+          const gate=room?await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},tail?String(n.task).slice(0,2600-tail.length)+tail:this.v8()?clipEnds(n.task,2600):n.task,{},this.v8()?this.gateContracts(id):[]):null;
           if(!gate?.split) {
             this.event(id,'split_rejected',`Late decomposition rejected: ${gate?`Clef decision NO (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)})`:'no space or depth left'}. The worker writes its assignment.`);
             await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:`Your ${action.spawn.length} proposed pieces were not created: ${gate?'your assignment is one piece of code at this depth':'the room has no space or depth left for them'}. Write it yourself.`}]);
@@ -8627,8 +8792,9 @@ export class ControlRoom extends DurableObject {
       }
       this.event(id,'turn_end',`Completed turn after ${Date.now()-started} ms.`);
       this.activeTurns.delete(id); this.turnSteps.delete(id);
-      // v8 S9 review, v8 M2: a change that waited for its row's split (amend_deferred.to) is applied once the split is admitted.
-      if(this.deferredTo(this.read('amend_deferred',null))===id&&this.node(id)?.phase!=='decompose')
+      // v8 S9 review, v8 M2: a change that waited for its row's split (amend_deferred.to) is applied once the split is admitted
+      // (v8 live 5: a row with children has admitted its pieces or its worker, whatever its phase says).
+      if(this.deferredTo(this.read('amend_deferred',null))===id&&(this.node(id)?.phase!=='decompose'||this.manager(id)))
         try {await this.applyDeferred();} catch(e) {this.event('system','amend_failed',clip(`The change that waited for a split could not be applied: ${e?.message||e}`,600));}
     }
   }
@@ -8839,7 +9005,12 @@ export class ControlRoom extends DurableObject {
       if(accept){this.set('untested_accepted',accept);this.save('untested_pending','');this.event('room','untested_accepted',clip(`The person accepted the project with ${String(accept).split(':')[1]||'its untested requirements'} untested (card revision ${String(accept).split(':')[0]}).`,400));}
       if(files){this.set('unchecked_accepted',files);this.save('unchecked_pending','');this.event('room','unchecked_accepted',clip(`The person accepted the project with the files that ship unchecked, as the hold listed them: ${hold.text||''}`,900));}
     }
-    if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted','v8_checks_pending','checks_untested'].includes(hold?.kind)) {
+    // v8 live 5: Continue at checks_doubtful is the person keeping the doubted requirements: they are repaired as any other from now on.
+    if(this.v8()&&hold?.kind==='checks_doubtful') {
+      const keep=this.read('doubt_pending',[]);
+      if(keep.length){this.save('doubt_kept',[...new Set([...this.read('doubt_kept',[]),...keep])]);this.save('doubt_pending',[]);this.event('room','doubt_kept',clip(`The person kept ${keep.join(', ')}, which Clef doubted; the repairs go on.`,400));}
+    }
+    if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted','v8_checks_pending','checks_untested','checks_doubtful'].includes(hold?.kind)) {
       // v8 M3: every row's check state is its own; Continue clears each row's.
       this.save('paused_state',null);this.db().exec("DELETE FROM meta WHERE key LIKE 'compile_reported:%'");
       if(!this.autoResume){this.db().exec("DELETE FROM meta WHERE key LIKE 'checks_retries:%'");this.save('checks_retry',null);}

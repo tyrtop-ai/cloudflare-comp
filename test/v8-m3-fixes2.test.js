@@ -17,7 +17,7 @@ import {spawnSync} from 'node:child_process';
 import {mkdtempSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {liveRoom, events, fileBlocks, verifyCard, snapshotHash, settle} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, verifyCard, snapshotHash, settle, workerOf} from './helpers/room.js';
 import {textHash} from '../src/glue.js';
 import {sourceParseError} from '../src/linker.js';
 import {TOOLCHAINS, parseModeOf} from '../src/toolchains.js';
@@ -59,7 +59,7 @@ const splitFor = card => {
   return {root: ROOT, split: user => { const n = (user.contracts_you_deliver || []).map(c => c.name); return n.includes('loud') && !n.includes('soft') ? LOUD : n.includes('soft') && !n.includes('loud') ? QUIET : ROOT; }};
 };
 const SPLITS = ['A small text toolkit', 'Write the loud part', 'Write the quiet part'];
-const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (SPLITS.some(s => String(input.state.assigned_behavior).startsWith(s)) ? 0.9 : 0.1) : 0.9}]))});
+const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (SPLITS.some(s => String((input.state.assigned_behavior??input.state.assignment)).startsWith(s)) ? 0.9 : 0.1) : 0.9}]))});
 const SHOUT = {path: 'shout.py', content: 'def shout(s):\n    return str(s).upper() + "!"\n'};
 const CLI = {path: 'shoutcli.py', content: 'import sys\nprint(sys.argv[1].upper() + "!")\n'};
 // The CLI reads whether the notes are there, a file another piece (Notes) places.
@@ -105,8 +105,8 @@ test('H1: a command check passed in a part runs again at the top, whose bundle h
   const at = ids(room);
   // The loud part's box held no NOTES.md, so R1 passed there; it reaches the whole bundle (it starts a process).
   assert.ok(boxesWith(boxes, 'R1')[0].files.every(p => p !== 'NOTES.md'));
-  // v8 ship-verified: its pass there is for the loud part's bundle only (before: a cover that reached '*').
-  assert.equal(room.read('piece_pass:R1', null).at[at['Loud part']].digest, await snapshotHash((await room.bundleFiles(at['Loud part'])).files));
+  // v8 ship-verified: its pass there is for the shouter's bundle only (v8 live 5: the shouter's manager holds R1; before: a cover that reached '*').
+  assert.equal(room.read('piece_pass:R1', null).at[at.Shouter].digest, await snapshotHash((await room.bundleFiles(at.Shouter)).files));
   // The top's bundle differs, so R1 ran again in the top's box, over the shipped files, and failed there.
   assert.ok(boxesWith(boxes, 'R1').some(b => b.files.includes('NOTES.md')), tail(room));
   assert.equal(passedOf(room).R1, false);
@@ -181,13 +181,17 @@ test('M1: a part whose problem the top gave to a piece outside it runs its check
   await drain();
   const at = ids(room);
   assert.ok(notes >= 2, 'Notes was given the problems');
-  assert.ok(eventsOf(room, 'checks_rerun').some(e => e.actor === at['Loud part']), tail(room));
+  // v8 live 5: R1 is held by the shouter's manager.
+  assert.ok(eventsOf(room, 'checks_rerun').some(e => e.actor === at.Shouter), tail(room));
+  // v8 live 5: Notes is a manager now, with its own limit of rounds without progress for what it was given; once spent, its
+  // line cannot finish and the run ends failed with its rounds spent (a stop with a reason), and Continue has nothing to move.
+  if (room.get('status') === 'failed') { assert.match(room.get('failure') || JSON.stringify(eventsOf(room, 'failed')), /Repair rounds exhausted: Notes cannot finish its branch/); return; }
   assert.equal(room.get('status'), 'paused');
   const pause = room.snapshot().pause;
   assert.equal(pause?.kind, 'checks_failed', tail(room));
   assert.match(pause.text, /No piece could settle what failed \(R1/);
   // Every problem of the loud part's last report is settled; none waits on a row that is done.
-  const last = room.read(`compile_reported:${at['Loud part']}`, null).problems.map(id => room.problems('id=?', id)[0]);
+  const last = room.read(`compile_reported:${at.Shouter}`, null).problems.map(id => room.problems('id=?', id)[0]);
   assert.deepEqual(last.map(p => [p.status, p.outcome]), last.map(() => ['closed', 'exhausted']));
   // Continue runs the checks again, and the line ends held again, with its reason.
   const before = boxesWith(boxes, 'R1').length;
@@ -269,26 +273,29 @@ test('held: after a completed run, waking every manager and every leaf on the sa
   await start();
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
-  // Three boxes: each part's, and the top's for every check on the bundle that ships (v8 ship-verified: before, for R1 only).
-  assert.equal(boxes.length, 3);
+  // Seven boxes: each piece's manager's but the notes' (a file check needs none), and the top's for every check on the bundle
+  // that ships (v8 ship-verified; v8 live 5: every piece is a manager with a box of its own).
+  assert.equal(boxes.length, 7);
   assert.deepEqual(boxes.at(-1).ids.sort(), ['R1', 'R2', 'R3']);
   assert.deepEqual(boxesWith(boxes, 'R1').map(b => b.files.includes('NOTES.md')), [false, true]);
   const before = boxes.length;
-  for (const n of room.allNodes().filter(n => !n.role && room.manager(n.id))) { room.db().exec("UPDATE agents SET status='waiting' WHERE id=?", n.id); room.wake(n.id); }
+  for (const n of room.allNodes().filter(n => n.role === 'manager')) { room.db().exec("UPDATE agents SET status='waiting' WHERE id=?", n.id); room.wake(n.id); }
   await settle(room, 40);
-  for (const n of room.allNodes().filter(n => !n.role)) room.wake(n.id);
+  for (const n of room.allNodes().filter(n => n.role !== 'builder')) room.wake(n.id);
   await settle(room, 40);
   assert.equal(boxes.length, before);
   assert.equal(room.runFinished(), true);
 });
 
-test('held: a split piece that carries a role field is a worker: its row\'s role is the runtime\'s, never the split\'s', {skip}, async () => {
+// v8 live 5: every piece a split creates is a manager (it hands its work to one worker when it does not split).
+test('held: a split piece that carries a role field is a manager: its row\'s role is the runtime\'s, never the split\'s', {skip}, async () => {
   const {root, split} = splitFor(CMD_CARD), ROOT = {...root, pieces: root.pieces.map(p => p.label === 'Notes' ? {...p, role: 'worker'} : p)};
   const {room, drain, start} = tree({files: {Shouter: [SHOUT, CLI]}, split: user => split(user) === root ? ROOT : split(user)});
   await start();
   await drain();
   const n = room.allNodes().find(x => x.label === 'Notes');
-  assert.deepEqual([n.role, n.phase, n.status], ['', 'implement', 'done']);
-  assert.deepEqual(room.children('root').map(c => [c.label, c.role]), [['Loud part', ''], ['Quiet part', ''], ['Notes', ''], ['Builder', 'builder']]);
+  assert.deepEqual([n.role, n.phase, n.status], ['manager', 'manager', 'done']);
+  assert.deepEqual(room.children(n.id).map(c => [c.label, c.role]), [['Notes', 'worker'], ['Builder', 'builder']]);
+  assert.deepEqual(room.children('root').map(c => [c.label, c.role]), [['Loud part', 'manager'], ['Quiet part', 'manager'], ['Notes', 'manager'], ['Builder', 'builder']]);
   assert.equal(room.get('status'), 'complete', tail(room));
 });

@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, workerOf} from './helpers/room.js';
 import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {MESSAGES} from '../src/prompts.js';
@@ -19,7 +19,7 @@ const hasPython=spawnSync('python3',['--version']).status===0;
 // Clef: should_split by the assigned text, judge by the file, owner (routing) by question and child label; the rest pass.
 const clefFor=({split=()=>false,judge=()=>0.9,owner=()=>0.9,vet=()=>0.9,amend=()=>0.9}={})=>input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>{
   const i=Number(k.split('_').pop());
-  const p=k==='should_split'?(split(String(input.state.assigned_behavior))?0.9:0.1):k==='judge'?judge(input.state.file,input.questions.judge.instructions):
+  const p=k==='should_split'?(split(String((input.state.assigned_behavior??input.state.assignment)))?0.9:0.1):k==='judge'?judge(input.state.file,input.questions.judge.instructions):
     k.startsWith('amend_change_')?amend(input.state.deliverables[i],input.state.change):
     k.startsWith('owner_')?owner(String(input.state.question),input.state.children[i]?.label):k.startsWith('requirement_')?vet(input.state.requirements.find(r=>r.slot===i)):0.9;
   return [k,{noul:p}];
@@ -53,7 +53,8 @@ function amendRoom({first,changes=[],split=null,splitWhen=()=>false,owner,judge,
   return {...r,alarms,fire:async()=>{r.ctx.storage.alarm=null;await r.room.alarm();await r.drain();}};
 }
 const passedOf=room=>Object.fromEntries(Object.entries(room.snapshot().requirement_status).map(([id,x])=>[id,x.passed]));
-const revisions=(room,id)=>room.files(id).map(f=>[f.path,f.revision]);
+// v8 live 5: a part's files are its worker's (the manager hands its work down to one worker).
+const revisions=(room,id)=>room.files(workerOf(room,id)).map(f=>[f.path,f.revision]);
 const tail=room=>events(room).slice(-18).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,220)}`).join('\n');
 const states=room=>room.snapshot().prompts.map(p=>[p.text,p.status]);
 // v8 S6: every text the room composed in a model request passes the prompt
@@ -160,7 +161,8 @@ test('queue: after the room completes, the queued README prompt runs by the alar
   assert.deepEqual(room.snapshot().card_history[2].delta.deliverables,{added:[],changed:['temp']});
   assert.deepEqual(room.snapshot().card_history[2].delta.requirements.added,['R4'],'a fresh id, whatever the writer called it');
   const routed=events(room,'amend_routed').filter(e=>/R4/.test(e.body));
-  assert.deepEqual(routed.map(e=>e.recipient),[converter.id]);
+  // v8 live 5: through the converter's manager to the worker it handed its work to.
+  assert.deepEqual(routed.map(e=>e.recipient),[converter.id,workerOf(room,converter.id)]);
   // The converter carries the changed contract and heard the change; nobody else was asked.
   assert.equal(JSON.parse(room.node(converter.id).interfaces)[0].does,KELVIN_TEMP.does);
   const heard=calls.leaf.filter(u=>u.your_label==='Converter').at(-1);
@@ -196,7 +198,8 @@ test('an existing part Clef ranks takes a new deliverable with the change: it ca
   assert.equal(room.get('status'),'complete',tail(room));
   const guide=room.children('root').find(c=>c.label==='Usage guide');
   assert.deepEqual(JSON.parse(guide.interfaces).map(c=>c.name),['USAGE.md','README.md']);
-  assert.equal(events(room,'amend_carried').length,1);
+  // v8 live 5: the guide's manager carries it, and so does the worker it hands its work to.
+  assert.deepEqual(events(room,'amend_carried').map(e=>e.recipient),[guide.id,workerOf(room,guide.id)]);
   assert.equal(events(room,'amend_grown').length,0);
   assert.equal(room.children('root').filter(c => c.role !== 'builder').length,2,'no new piece');
   const app=await room.appFiles();
@@ -216,12 +219,17 @@ test('a part that changes nothing declines the change: the row moves on, and wit
   await room.amend(README_CHANGE);
   await drain();
   assert.equal(room.get('status'),'complete',tail(room));
+  // v8 live 5: the guide's worker declines it; the guide's manager, which now carries README.md and has no piece under it
+  // that does, grows one new piece for it under itself (A2, one rule at every level), so the change never goes back up.
   const declined=events(room,'amend_declined');
-  assert.equal(declined.length,2,tail(room));
-  assert.deepEqual(declined.map(e=>room.node(e.recipient)?.label),['Usage guide','Converter']);
+  assert.equal(declined.length,1,tail(room));
+  assert.equal(declined[0].recipient,workerOf(room,'root.2'));
   assert.equal(events(room,'amend_grown').length,1);
-  // A part that declined gave the contract back.
-  for(const c of room.children('root').filter(c=>c.label!=='README.md'))assert.ok(!JSON.parse(c.interfaces).some(f=>f.name==='README.md'),c.label);
+  const grown=room.allNodes().find(n=>n.label==='README.md'&&n.role==='manager');
+  assert.equal(grown.parent,'root.2');
+  // The worker that declined gave the contract back.
+  assert.ok(!JSON.parse(room.node(workerOf(room,'root.2')).interfaces).some(f=>f.name==='README.md'));
+  assert.ok(!JSON.parse(room.node('root.1').interfaces).some(f=>f.name==='README.md'));
   assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
   linted(room,calls);
 });
@@ -236,7 +244,7 @@ test('adjustment while running: a part mid-turn reads the change on its next tur
   assert.equal(room.get('status'),'complete',tail(room));
   assert.match(events(room,'amend_received')[0].body,/^Adjustment while running: also support kelvin/);
   const converter=room.children('root').find(c=>c.label==='Converter');
-  assert.deepEqual(events(room,'amend_routed').map(e=>e.recipient),[converter.id]);
+  assert.deepEqual(events(room,'amend_routed').map(e=>e.recipient),[converter.id,workerOf(room,converter.id)]);
   const turns=calls.leaf.filter(u=>u.your_label==='Converter');
   assert.equal(turns.length,2);
   assert.ok(!JSON.stringify(turns[0].new_messages||[]).includes('kelvin'),'the turn in flight never saw it');
@@ -574,7 +582,7 @@ test('review (p5): a change only to a deliverable reaches its carrier as its new
   assert.deepEqual(revisions(room,converter.id),[['temp.py',2]]);
   const told=calls.leaf.filter(u=>u.your_label==='Converter').at(-1);
   assert.ok((told.new_messages||[]).some(m=>m.body.includes(MESSAGES.amendment_contract({change:CHANGE,name:'temp',does:'prints the Fahrenheit value of a Celsius temperature with one decimal place'}))));
-  assert.deepEqual(events(room,'amend_routed').map(e=>e.recipient),[converter.id]);
+  assert.deepEqual(events(room,'amend_routed').map(e=>e.recipient),[converter.id,workerOf(room,converter.id)]);
   linted(room,calls);
 });
 
@@ -590,7 +598,8 @@ test('review (p9, A1): a requirement that serves two pieces reaches both, one ro
   const rows=room.problems("stage='amend'");
   assert.deepEqual(rows.map(p=>p.outcome),['fanned','resolved','resolved']);
   assert.equal(new Set(rows.map(p=>p.flags.wave)).size,1,'one wave');
-  assert.deepEqual(events(room,'amend_routed').map(e=>room.node(e.recipient)?.label).sort(),['Converter','Usage guide']);
+  // v8 live 5: each part's manager, then the worker it handed its work to (which carries its label).
+  assert.deepEqual(events(room,'amend_routed').map(e=>room.node(e.recipient)?.label).sort(),['Converter','Converter','Usage guide','Usage guide']);
   const guide=room.children('root').find(c=>c.label==='Usage guide');
   assert.deepEqual(revisions(room,guide.id),[['USAGE.md',2]]);
   assert.equal(events(room,'amend_fanout').length,1);
@@ -603,9 +612,11 @@ test('review (p4): an adjustment never grants a fresh budget: a run that spent i
   const {room,drain,calls}=amendRoom({first:CARD,split:SPLIT,splitWhen:t=>t.startsWith(GOAL),owner:()=>0.9,
     changes:[{when:/kelvin/,card:{...CARD,blocked:'cannot do that'}}],cardHook:async u=>{if(u.change)await gate;},
     answers:{'Converter':[()=>{amendP=room.amend(KELVIN_CHANGE);return wrote('temp.py',F_TEMP);}],'Usage guide':[wrote('USAGE.md',USAGE_MD)]}});
-  await room.start(GOAL,2,{pipeline:'v8'});
+  // v8 live 5: four turns: Root's split, each piece's hand-down, then the converter's worker, whose turn makes the change.
+  await room.start(GOAL,4,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'paused');
+  assert.ok(amendP,'the change was made in the run');
   const leaves=calls.leaf.length,step=room.get('step');
   release();
   assert.match((await amendP).error,/could not apply the change/);
@@ -646,7 +657,8 @@ test('review (p10): the room-wide ceiling: two failed prompts in a row stop a co
   assert.match(room.get('queue_stopped'),/Two prompts in a row failed, so the queue waits even on continue/);
   const head=room.snapshot();
   assert.ok(head.queue_turns_left<80,'the prompts\' runs spent the allowance');
-  assert.ok(head.room_repair_rounds>=6,`rounds counted across the changes (${head.room_repair_rounds})`);
+  // v8 live 5: the top routes each repair to its worker, so its rounds are a manager's: more than one prompt's three without progress.
+  assert.ok(head.room_repair_rounds>3,`rounds counted across the changes (${head.room_repair_rounds})`);
   assert.equal(head.room_repair_cap,Math.min(80,2*room.roundCap()));
   // The room-wide ceiling reached: no repair round is left, and the reason says so.
   room.set('room_repair_rounds',String(room.roomRoundCap()));

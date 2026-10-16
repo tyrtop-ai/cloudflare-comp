@@ -86,7 +86,7 @@ const WORKER_FORMAT = [
   '=== END FILE ===',
   '=== CONTROL ===',
   '{"summary": "Wrote notes/overview.", "done": true}',
-  'Use your own paths, text and summary, and close each file with its end line. The control object holds only the fields you need: "summary", what you did in one line; "done", true once your files fulfil every contract; "wait", true while an ask is unanswered; "ask", a list of {"need": what you need in one line, "name": the name you expect}; "pieces", only when your assignment is too large for one writer, a list of {"label", "task", "contracts", "uses"}.',
+  'Use your own paths, text and summary, and close each file with its end line. The control object holds only the fields you need: "summary", what you did in one line; "done", true once your files fulfil every contract; "wait", true while an ask is unanswered; "ask", a list of {"need": what you need in one line, "name": the name you expect}.',
   CONTRACT_BRIEF,
   'Put files that only your piece uses under a folder named after your piece\'s label, so they meet no other piece\'s files. Write tests only when a contract asks for them, at the paths it names. A file you do not write again stays as it is. A file sent to you marked "clipped" is only its start: leave it as it is, or put your change in a new file, because a file written again from its start loses the rest.'
 ];
@@ -115,8 +115,11 @@ export const FORMAT = Object.freeze({
 // §6.4: the Clef questions, all typed noul. {i}, {j} and {contract} are
 // filled by clefText; a key's state object travels beside it.
 export const CLEF = Object.freeze({
-  split: 'Can this assignment be done as two or more pieces that different writers could produce at the same time, each against a contract agreed in advance, so that together they deliver the whole assignment? Answer NO if it is one indivisible piece of work, or if dividing it would only create steps that one writer must take in order.',
-  split_retry: 'A previous division of this assignment was rejected for the reason given. Is there still a division into two or more pieces that together deliver the whole assignment? Answer NO if doing the assignment directly is the better next step.',
+  // v8 live 5: the gate reads the assignment and its row's contracts (gateLine), so it judges a division against contracts that exist.
+  split: 'The contracts listed are agreed in advance. Can different writers produce this assignment as two or more pieces at the same time, each delivering some of these contracts, so that together they deliver the whole assignment? Answer NO if it is one indivisible piece of work, or if dividing it would only create steps one writer must take in order.',
+  // v8 live 5: Clef reviews each proposed split in one call: split_valid, split_size and each piece's scope; the room's bars apply to the ps.
+  split_valid: 'Is this a valid division of the original: do the pieces together deliver all of it, each one something a different writer can produce at the same time against the contracts listed? Answer NO if a piece repeats another, only plans or discusses, or must wait for another piece to be written first.',
+  split_size: 'Is every piece large enough to be worth a writer of its own? Answer NO if a piece is only a single small function, a constant, or a few lines that belong with another piece.',
   scope: 'Does proposed piece {i} produce part of what both the original goal and its parent\'s assignment ask for? Answer NO if it belongs to a different goal, or if it produces only discussion, plans or decisions instead of part of a deliverable.',
   contract: 'Piece {i} lists the contract {contract}. Is producing it part of piece {i}\'s own task, rather than another piece\'s task or something outside the parent\'s assignment?',
   pick: 'Does piece {j}\'s own task produce {contract}, so that the other pieces use it from piece {j}? Judge by what each piece produces, not by names.',
@@ -174,7 +177,10 @@ export const RETRY = Object.freeze({
   count: (count, bound) => `Your previous answer had ${count} pieces; a division needs at least two and at most ${bound} that together deliver the whole assignment, or no pieces when one writer can do it all.`,
   names: texts => `Your previous answer's contracts failed these checks: ${texts.join(' ')} Correct them.`,
   worker: why => `Your previous answer could not be read (${why}). Answer again in the format your role describes, with every file complete and the control block last.`,
-  json: 'Your previous answer was not one json object. Answer again with the json object alone.'
+  json: 'Your previous answer was not one json object. Answer again with the json object alone.',
+  // v8 live 5: a split's retry, by what the review objected to: pieces too small (fewer, larger ones), or not a valid division (another one along the contracts).
+  too_small: (count, bound) => `Your previous answer had ${count} pieces, and some were too small to be worth a writer of their own. Use fewer, larger pieces this time, at least 2 and at most ${bound}, each delivering whole contracts.`,
+  different: 'Your previous division, listed in rejected, was not one that different writers could produce at the same time. Divide the assignment another way, along its contracts, so that each piece delivers contracts of its own and together the pieces deliver all of them.'
 });
 
 // What the linker's scope field means (v8 linker, user JSON).
@@ -297,7 +303,7 @@ export function promptTexts() {
   // Each message with every field filled by a sample (a plural where it has one).
   const filled = new Proxy({}, {get: (_, k) => k === 'many' ? true : `sample ${String(k)}`});
   for (const [k, f] of Object.entries(MESSAGES)) out[`MESSAGES.${k}`] = f(filled);
-  const sample = {too_many: f => f(7, 5), count: f => f(1, 5), vague: f => f(['a label']), names: f => f(['"a label": a reason.']), worker: f => f('a reason')};
+  const sample = {too_many: f => f(7, 5), too_small: f => f(5, 4), count: f => f(1, 5), vague: f => f(['a label']), names: f => f(['"a label": a reason.']), worker: f => f('a reason')};
   for (const [k, v] of Object.entries(RETRY)) out[`RETRY.${k}`] = typeof v === 'function' ? sample[k](v) : v;
   return out;
 }

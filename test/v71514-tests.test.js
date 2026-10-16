@@ -85,7 +85,7 @@ const labels=(room,parent)=>room.children(parent).sort((a,b)=>Number(a.id.split(
 const clefScript=({gate=task=>/^Build a complete/.test(task)?0.85:0.2,within=()=>0.9,names=()=>0.9}={})=>input=>{
   const keys=Object.keys(input.questions||{}),kids=input.state?.proposed_children||[];
   return {answers:Object.fromEntries(keys.map(k=>{
-    if(k==='should_split')return [k,{noul:gate(String(input.state?.assigned_behavior||''))}];
+    if(k==='should_split')return [k,{noul:gate(String((input.state?.assigned_behavior??input.state?.assignment)||''))}];
     if(k.startsWith('within_'))return [k,{noul:within(kids[Number(k.slice(7))]?.label)}];
     if(k.startsWith('names_')){const [,i,j]=k.split('_'),f=String(kids[Number(i)]?.functions?.[Number(j)]||'');return [k,{noul:names(kids[Number(i)]?.label,f.replace(/\(.*$/,''))}];}
     return [k,{noul:0.1}];

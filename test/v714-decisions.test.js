@@ -201,7 +201,7 @@ const NEW_TASK='Write the ticket storage branch again: an in-memory repository w
 test('v7.14 (5d): retasking a sub-manager retires its whole branch; it splits again through the Clef gate and gets a new builder generation',async()=>{
   const clef=input=>{
     const q=Object.keys(input.questions)[0];
-    if(q==='should_split')return {answers:{should_split:{noul:input.state.assigned_behavior.includes('storage branch again')?0.9:0.1}}};
+    if(q==='should_split')return {answers:{should_split:{noul:(input.state.assigned_behavior??input.state.assignment).includes('storage branch again')?0.9:0.1}}};
     if(q.startsWith('within_'))return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.9}]))};
     return {answers:Object.fromEntries(input.state.children.map((c,i)=>['owner_'+i,{noul:c.label==='Storage'?0.9:0.1}]))};
   };
@@ -236,7 +236,7 @@ test('v7.14 (5d): retasking a sub-manager retires its whole branch; it splits ag
   // It splits again as a new child; its new workers write; a fresh builder links.
   await settle(room,40);
   assert.equal(room.get('status'),'complete',trace(room));
-  const gate=calls.clef.filter(c=>c.questions.should_split).map(c=>c.state.assigned_behavior.includes('storage branch again')?'YES':'NO');
+  const gate=calls.clef.filter(c=>c.questions.should_split).map(c=>(c.state.assigned_behavior??c.state.assignment).includes('storage branch again')?'YES':'NO');
   assert.deepEqual(gate,['YES','NO','NO']);
   assert.equal(calls.split.length,1);
   assert.ok(calls.clef.some(c=>Object.keys(c.questions)[0]==='owner_0'),'the prune walk ran for the new children');

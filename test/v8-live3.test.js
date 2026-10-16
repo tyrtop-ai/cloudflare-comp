@@ -16,7 +16,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, workerOf} from './helpers/room.js';
 import {isValueText, cardInputs, cardScope, interfaceFacts, checkShapeForReview, internalFileCheck} from '../src/affordances.js';
 import {workerDetail, checkProblems, fileResult, failureCategory, FAILURE_CATEGORIES} from '../src/checks.js';
 import {reportProgress, failureKey, MANAGER_MAX_STALLED} from '../src/problems.js';
@@ -81,11 +81,11 @@ test('A: the live cards: values stay hidden; wording is an interface fact on the
   assert.deepEqual(cli.secrets, ['#!/usr/bin/env python3', '212.0', '100', 'abc']);
   assert.deepEqual([...cli.wording], ['import sys', 'invalid literal']);
   assert.deepEqual(interfaceFacts(CLI_CARD, {goal: CLI_GOAL}).get('convert.py'), [
-    'convert.py contains "import sys"',
+    'convert.py contains "import sys", where any run of spaces and line breaks matches any other',
     'R2 runs `python3 convert.py <integer> C` and expects exit status 0 and its output on stdout',
     'R3 runs `python3 convert.py <word> C` and expects exit status 1 and a message on stderr containing "invalid literal"']);
   const todo = interfaceFacts(TODO_CARD, {goal: TODO_GOAL});
-  assert.deepEqual(todo.get('style.css'), ['style.css contains "body {", "todo-item {"']);
+  assert.deepEqual(todo.get('style.css'), ['style.css contains "body {", "todo-item {", where any run of spaces and line breaks matches any other']);
   assert.deepEqual(todo.get('index.html'), ['page /index.html has the field with placeholder "Add a task", the button "Add", the button "Remove"; shows the text "To-Do List"']);
   assert.ok(!JSON.stringify([...todo]).includes('Test task'), 'the typed text is a value');
   const tracker = interfaceFacts(TRACKER_CARD, {goal: TRACKER_GOAL});
@@ -162,7 +162,7 @@ test('B: a substantive internals note goes back to the writer; a check that surv
   // The writer kept it: Clef never deletes, and its wording is interface.
   const r2 = out.card.requirements.find(r => r.id === 'R2');
   assert.deepEqual(r2.check.has, ['body {', 'todo-item {']);
-  assert.deepEqual(cardContracts(out.card, {goal: TODO_GOAL}).find(c => c.name === 'style.css').interface, ['style.css contains "body {", "todo-item {"']);
+  assert.deepEqual(cardContracts(out.card, {goal: TODO_GOAL}).find(c => c.name === 'style.css').interface, ['style.css contains "body {", "todo-item {", where any run of spaces and line breaks matches any other']);
 });
 
 // ------------------------------------------------------------ the vetting question

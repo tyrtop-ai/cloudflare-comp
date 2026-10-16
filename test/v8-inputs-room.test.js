@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, workerOf} from './helpers/room.js';
 import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
@@ -75,7 +75,7 @@ const repoRoutes = (files = BASE_FILES, sha = SHA) => ({
 // Clef: should_split by the assigned text, judge by the file, everything else passes.
 // base(path): Clef's answer to whether the goal asks to change an existing file.
 const clefFor = ({split = () => false, judge = () => 0.9, base = () => 0.9} = {}) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (split(String(input.state.assigned_behavior)) ? 0.9 : 0.1) : k === 'judge' ? judge(input.state.file, input.questions.judge.instructions) :
+  k === 'should_split' ? (split(String((input.state.assigned_behavior??input.state.assignment))) ? 0.9 : 0.1) : k === 'judge' ? judge(input.state.file, input.questions.judge.instructions) :
   k.startsWith('base_change_') ? base(input.state.files[Number(k.split('_').pop())].path) : 0.9}]))});
 const scripted = answers => {
   const seen = new Map();
@@ -447,25 +447,28 @@ test('previous result of another room: read through ROOMS, and the base meta nam
 
 test('a writer reads a base file its contract names, quoted in base_files, once the person grants it; the gate lets only it change the file', async () => {
   const {room} = await readmeOnBase();
+  // v8 live 5: the writer is the worker the top handed its work to.
+  const w = workerOf(room, 'root');
+  assert.equal(room.node(w).role, 'worker');
   // A contract naming a base path does nothing until the path is approved.
-  room.db().exec("UPDATE agents SET interfaces=? WHERE id='root'", JSON.stringify([...room.promisedOf('root'), {name: 'src/shout.js', kind: 'file', path: 'src/shout.js', does: 'the shout function'}]));
-  assert.deepEqual(room.baseFilesFor('root'), []);
-  await assert.rejects(room.putFile('root', 'src/shout.js', CHANGED_SHOUT), /an existing project file that none of your contracts names/);
+  room.db().exec("UPDATE agents SET interfaces=? WHERE id=?", JSON.stringify([...room.promisedOf(w), {name: 'src/shout.js', kind: 'file', path: 'src/shout.js', does: 'the shout function'}]), w);
+  assert.deepEqual(room.baseFilesFor(w), []);
+  await assert.rejects(room.putFile(w, 'src/shout.js', CHANGED_SHOUT), /an existing project file that none of your contracts names/);
   // v8 card repair: Clef's yes is a review; the path waits for the person, and the gate says so.
-  assert.deepEqual(await room.approveBasePaths('root', ['src/shout.js']), {yes: [], no: [{path: 'src/shout.js', p: 0.9, named: false}]});
-  assert.deepEqual(room.baseFilesFor('root'), []);
-  await assert.rejects(room.putFile('root', 'src/shout.js', CHANGED_SHOUT), /an existing project file awaiting the person's confirmation/);
+  assert.deepEqual(await room.approveBasePaths(w, ['src/shout.js']), {yes: [], no: [{path: 'src/shout.js', p: 0.9, named: false}]});
+  assert.deepEqual(room.baseFilesFor(w), []);
+  await assert.rejects(room.putFile(w, 'src/shout.js', CHANGED_SHOUT), /an existing project file awaiting the person's confirmation/);
   room.holdBaseConfirm();
   assert.equal(room.snapshot().pause.kind, 'base_confirm');
   assert.deepEqual(room.snapshot().base_pending, [{path: 'src/shout.js', p: 0.9, named: false}]);
   assert.equal(room.confirmBase(), true, 'Continue grants it');
   assert.deepEqual(room.read('base_approved', []), ['src/shout.js']);
-  assert.deepEqual(room.baseFilesFor('root'), [{path: 'src/shout.js', label: BASE_LABEL, content: BASE_FILES['src/shout.js']}]);
-  assert.deepEqual((await room.ownFiles('root')).map(f => f.path), ['README.md'], 'never among its own files');
+  assert.deepEqual(room.baseFilesFor(w), [{path: 'src/shout.js', label: BASE_LABEL, content: BASE_FILES['src/shout.js']}]);
+  assert.deepEqual((await room.ownFiles(w)).map(f => f.path), ['README.md'], 'never among its own files');
   // ...and the gate now lets it change that file, and still refuses one it does not name.
-  await room.putFile('root', 'src/shout.js', CHANGED_SHOUT);
-  assert.deepEqual(room.baseFilesFor('root'), []);
-  await assert.rejects(room.putFile('root', 'bin/widget.js', 'console.log(1);\n'), /an existing project file that none of your contracts names/);
+  await room.putFile(w, 'src/shout.js', CHANGED_SHOUT);
+  assert.deepEqual(room.baseFilesFor(w), []);
+  await assert.rejects(room.putFile(w, 'bin/widget.js', 'console.log(1);\n'), /an existing project file that none of your contracts names/);
   const {files} = await room.bundleFiles('root');
   assert.equal(files.get('src/shout.js'), CHANGED_SHOUT);
   assert.equal(files.get('bin/widget.js'), BASE_FILES['bin/widget.js']);
@@ -559,7 +562,8 @@ test('S8b review M1 (v8 card repair): base text reaches every model quoted and l
   const app = await room.appFiles();
   assert.equal(app.files.find(f => f.path === 'bin/widget.js').content, 'const message = "changed";\nconsole.log(message);\n');
   assert.match(app.files.find(f => f.path === 'src/shout.js').content, /!!!/);
-  const notes = room.children('root').find(c => c.label === 'Notes writer');
+  // v8 live 5: the notes are written by the worker its manager handed the work to.
+  const notes = room.node(workerOf(room, room.children('root').find(c => c.label === 'Notes writer').id));
   assert.equal(room.partsRoot(), 'components');
   assert.ok(app.files.some(f => f.path === packagePath('Notes writer', 'extra.txt', notes.id)), app.files.map(f => f.path).join(', '));
   linted(room, calls, ['bin/widget.js', 'shout.js']);

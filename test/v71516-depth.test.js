@@ -93,7 +93,7 @@ const gates=c=>c.asked.filter(a=>a.kind==='gate').length;
 const MALFORMED25=[piece('Handle malformed telemetry','Write code that handles malformed telemetry',['handleMalformed'],['logError','recoverData','skipFile']),piece('Log telemetry errors','Write code that logs telemetry errors',['logError']),
   piece('Recover partial data','Write code that attempts to salvage usable data from malformed files',['recoverData']),piece('Skip invalid files','Write code that skips invalid files',['skipFile']),piece('Validate file structure','Write code that validates file structure',['validateFile'])];
 test('v7.15.16 (D1, run25): an orchestrator beside helpers is a split; its carrier, holding its parent\'s whole promise, writes it with no Clef gate, where run25 split it again; a fresh one-function helper is gated',async()=>{
-  const c=clefFor({gate:state=>/^Write code that handle malformed files/.test(state.assigned_behavior)?0.66:0.3});
+  const c=clefFor({gate:state=>/^Write code that handle malformed files/.test((state.assigned_behavior??state.assignment))?0.66:0.3});
   const {room,calls}=await planted({clef:c.clef,ready:null,split:()=>({summary:'Split',spawn:MALFORMED25})});
   const at=await chain(room,'root.2',[['Handle malformed files',['handleMalformed']]]);
   await room.turn(at);
@@ -397,7 +397,7 @@ const OPS24=[p24('Create ticket','Write code that creates a new ticket',[T.creat
 test('v7.15.16: run24\'s two-level tree is unchanged: the same gates on the same live answers (bar 0.70 at depth 1, 0.725 at depth 2), the same splits; only the entry, carrying Root\'s start, is no longer gated',async()=>{
   const P={'Entry Module':0.096,'Data Management':0.755,'Ticket Operations':0.781,'GUI Module':0.604,'Read tickets':0.647,'Save tickets':0.622,'Create ticket':0.221,'View ticket':0.119,'Update ticket':0.257,'Delete ticket':0.316};
   const all=[...ROOT24,...DATA24,...OPS24.slice(0,4)];
-  const gate=state=>{const t=String(state.assigned_behavior);return t.startsWith('Build')?0.867:P[all.find(r=>t.startsWith(r.task))?.label]??0.05;};
+  const gate=state=>{const t=String((state.assigned_behavior??state.assignment));return t.startsWith('Build')?0.867:P[all.find(r=>t.startsWith(r.task))?.label]??0.05;};
   const c=clefFor({gate});
   let R=null;
   const {room,calls,drain}=liveRoom({clef:c.clef,split:u=>({summary:'Split',spawn:/^Build/.test(u.assigned_code)?ROOT24:/reading and saving/.test(u.assigned_code)?DATA24:OPS24}),leaf:u=>writes(R)(u)});R=room;

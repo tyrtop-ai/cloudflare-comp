@@ -17,7 +17,7 @@ test('Clef-flash receives typed YES/NO question without code, Artifacts, or long
   assert.equal(called.name,'@cf/cloudflare/clef-flash');
   assert.equal(called.input.model,'clef-flash');
   assert.equal(called.input.questions.should_split.type,'noul');
-  assert.equal(called.input.state.assigned_behavior,minimal.your_responsibility);
+  assert.equal((called.input.state.assigned_behavior??called.input.state.assignment),minimal.your_responsibility);
   assert.equal(called.input.messages,undefined);
 });
 
@@ -124,19 +124,39 @@ test('v7.15.9: the model picker and the settings agree, and each model is called
 // ------------------------------------------------------------------ v8 (S6)
 // Under v8 (the room's env says PIPELINE 'v8') every Clef question is a
 // CLEF text from src/prompts.js (§6.4), with state keys about work, not code.
-test('v8: the split gate asks CLEF.split, and CLEF.split_retry after a rejected division',async()=>{
+// v8 live 5: the pre-grade reads the assignment and the row's contracts, one line each; it is asked once, before any splitter call, so no feedback reaches it.
+test('v8 live 5: the pre-grade asks CLEF.split over {assignment, contracts}, with no rejection in its state',async()=>{
   const {CLEF}=await import('../src/prompts.js');
   const asked=[];
-  const env={PIPELINE:'v8',AI:{run:async(_name,input)=>{asked.push(input);return {answers:{should_split:{noul:0.8}}};}}};
-  assert.equal((await shouldSplit(env,'A page and its styles',{})).split,true);
+  const env={PIPELINE:'v8',AI:{run:async(_name,input)=>{asked.push(input);return {answers:{should_split:{noul:0.598}}};}}};
+  const contracts=['file app.py (app.py): Runs the issue tracker server; serves R1, R2, R3, R4','page index.html (index.html): Displays list of tickets; serves R2, R4'];
+  const r=await shouldSplit(env,'A page and its styles',{split_feedback:{reason:'both pieces wrote the page'}},contracts);
+  assert.equal(r.probability,0.598);
   assert.equal(asked[0].questions.should_split.instructions,CLEF.split);
   assert.equal(asked[0].questions.should_split.type,'noul');
-  await shouldSplit(env,'A page and its styles',{split_feedback:{reason:'both pieces wrote the page'}});
-  assert.equal(asked[1].questions.should_split.instructions,CLEF.split_retry);
-  assert.deepEqual(asked[1].state.previous_split_rejection,{reason:'both pieces wrote the page'});
-  // A v7 room keeps its question, byte for byte.
+  assert.deepEqual(asked[0].state,{assignment:'A page and its styles',contracts});
+  // A v7 room keeps its question and state, byte for byte.
   await shouldSplit({AI:env.AI},'x',{});
-  assert.match(asked[2].questions.should_split.instructions,/^Can this requested CODE be written/);
+  assert.match(asked[1].questions.should_split.instructions,/^Can this requested CODE be written/);
+  assert.deepEqual(asked[1].state,{assigned_behavior:'x'});
+});
+
+test('v8 live 5: Clef reviews a proposed split in one call: split_valid, split_size and each piece\'s scope, over the original and the pieces',async()=>{
+  const {reviewSplit}=await import('../src/model.js'),{CLEF,clefText}=await import('../src/prompts.js');
+  const asked=[],spans=[];
+  const env={PIPELINE:'v8',TRACE:r=>spans.push(r),AI:{run:async(_name,input)=>{asked.push(input);return {answers:{split_valid:{noul:0.81},split_size:{noul:0.42},within_0:{noul:0.9},within_1:{noul:0.3}}};}}};
+  const pieces=[{label:'Pages',task:'Write the pages.',interfaces:[{name:'index.html',kind:'page'}]},{label:'Server',task:'Write the server.',interfaces:[{name:'app.py',kind:'file'}]}];
+  const r=await reviewSplit(env,{goal:'The goal',assignment:'The goal',contracts:['page index.html (index.html): lists; serves R1'],pieces,attempt:2,retry:'different'});
+  assert.deepEqual(r,{valid:0.81,size:0.42,scope:[0.9,0.3]});
+  assert.equal(asked.length,1,'one batched call');
+  assert.deepEqual(asked[0].state,{goal:'The goal',original:{assignment:'The goal',contracts:['page index.html (index.html): lists; serves R1']},
+    pieces:[{slot:0,label:'Pages',task:'Write the pages.',contracts:['index.html']},{slot:1,label:'Server',task:'Write the server.',contracts:['app.py']}]});
+  assert.equal(asked[0].questions.split_valid.instructions,CLEF.split_valid);
+  assert.equal(asked[0].questions.split_size.instructions,CLEF.split_size);
+  assert.equal(asked[0].questions.within_1.instructions,clefText('scope',{i:1}));
+  // The span records the attempt for tuning.
+  assert.deepEqual((({attempt,pieces:n,retry,valid_p,size_p,scope_ps})=>({attempt,n,retry,valid_p,size_p,scope_ps}))(spans[0]),{attempt:2,n:2,retry:'different',valid_p:0.81,size_p:0.42,scope_ps:[0.9,0.3]});
+  await assert.rejects(reviewSplit({PIPELINE:'v8',AI:{run:async()=>({answers:{split_valid:{noul:0.5}}})}},{pieces}),/no valid split review/);
 });
 
 test('v8: routing, matching, picking and the assignment check ask the CLEF questions over contracts of any kind',async()=>{

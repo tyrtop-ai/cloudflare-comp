@@ -8,7 +8,7 @@
 // before handlers (Root's parent NULL, no handler rows) still runs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {liveRoom, events, trace, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, trace, fileBlocks, workerOf} from './helpers/room.js';
 import {MESSAGES} from '../src/prompts.js';
 import {cardContracts} from '../src/card.js';
 import {lintText} from './helpers/prompt-lint.js';
@@ -89,6 +89,7 @@ test('M2: a hold of the card writer is the room\'s: no agent row exists yet, the
   assert.ok(room.promptHandlers()[0].ended_at >= room.cardWriters()[0].ended_at);
 });
 
+// v8 live 5: the top hands its work to one worker, which asks up its line: its manager, then the room.
 test('M2: the top asks as every writer does; a contract no part of the goal covers becomes the room\'s ask_unanswered hold, and a follow-up prompt answers it', async () => {
   const ask = fileBlocks([], {summary: 'asking', wait: true, ask: [{need: 'formats the notes as a table', name: 'format_notes'}]});
   const {room, calls, drain} = room8({clef: clefWith({inside: 0.1}), answers: {'Root objective': [ask, blocks([{path: 'NOTES.md', content: GREETED}])]}});
@@ -97,11 +98,11 @@ test('M2: the top asks as every writer does; a contract no part of the goal cove
   assert.equal(room.get('status'), 'paused', trace(room));
   const hold = room.snapshot().pause;
   assert.equal(hold.kind, 'ask_unanswered');
-  assert.equal(hold.agent, 'root');
+  assert.equal(hold.agent, workerOf(room, 'root'));
   assert.deepEqual(hold.asks, ['format_notes (formats the notes as a table)']);
   assert.equal(events(room, 'ask_unanswered').find(e => e.actor === 'room').kind, 'ask_unanswered');
   assert.equal(events(room, 'ask_dropped').length, 0, 'never dropped');
-  assert.equal(room.node('root').status, 'waiting');
+  assert.equal(room.node(workerOf(room, 'root')).status, 'waiting');
   for (const t of [MESSAGES.ask_answered({want: 'x', change: 'y'}), MESSAGES.ask_left({want: 'x'})]) assert.deepEqual(lintText('message', t, {room: true}), []);
   // The person answers with a follow-up prompt: the change reaches the top, and the asker hears the answer.
   await room.amend(CHANGE);
@@ -112,7 +113,8 @@ test('M2: the top asks as every writer does; a contract no part of the goal cove
   assert.ok(calls.leaf[1].answered_requests.includes(MESSAGES.ask_answered({want: 'format_notes', change: CHANGE})));
 });
 
-test('M2: the top may decline to split like any manager; Clef reconsiders, it writes its files as a worker and runs its checks through the one path (compileCard by id)', async () => {
+// v8 live 5: a manager never writes its contracts' code: a splitter that proposes no pieces hands the whole assignment down to one worker.
+test('M2: the top may decline to split like any manager; it hands its work down to one worker, and runs its checks through the one path (compileCard by id)', async () => {
   const ran = [];
   const {room, calls, drain} = room8({split: () => ({summary: 'one piece is enough', pieces: []}), clef: clefWith({split: n => n === 1}),
     answers: {'Root objective': [blocks([{path: 'NOTES.md', content: NOTES}])]}});
@@ -121,10 +123,12 @@ test('M2: the top may decline to split like any manager; Clef reconsiders, it wr
   await room.start(GOAL, 10, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
-  assert.ok(calls.split.length >= 1, 'the splitter answered with no pieces');
+  assert.ok(calls.split.length >= 1, 'the splitter answered with no pieces (asked once more to confirm it, as RETRY.count does)');
   assert.ok(!events(room, 'error').some(e => /no pieces/.test(e.body)), 'a decline is no malformed answer');
-  assert.match(events(room, 'split_rejected')[0].body, /Clef will reconsider/);
-  assert.match(events(room, 'atomic')[0].body, /Clef reviewed the rejected partition/);
+  assert.match(events(room, 'hand_down')[0].body, /^Its splitter proposed no pieces, so it hands its whole assignment down to one worker\.$/);
+  assert.equal(events(room, 'atomic').length, 0, 'the top never writes its contracts\' code');
+  assert.deepEqual([room.node('root').role, room.node('root.1').role], ['manager', 'worker']);
+  assert.deepEqual(room.files('root.1').map(f => f.path), ['NOTES.md']);
   assert.deepEqual(ran, ['root']);
   assert.equal(events(room, 'checks_passed')[0].actor, 'root');
   assert.equal(room.node('root').status, 'done');
@@ -145,8 +149,10 @@ test('M2: an amendment reaches the top as a change on its row, through a new han
   assert.match(room.node('root').task, /Change 1: Add a greeting line to the notes\.$/);
   assert.deepEqual(meta(room, 'checks:root'), ['R1', 'R2']);
   const rows = room.problems("stage='amend'");
-  assert.deepEqual(rows.map(p => [p.holder, p.source, p.trail[0]?.at]), [['root', 'root', 'prompt:2']]);
-  assert.deepEqual(events(room, 'amend_routed').map(e => [e.actor, e.recipient]), [['prompt:2', 'root']]);
+  // v8 live 5: the row is the top's to route (a manager's), so its trail starts at the top.
+  assert.deepEqual(rows.map(p => [p.holder, p.source, p.trail[0]?.at]), [['root', 'root', 'root']]);
+  // v8 live 5: the top routes it on to the worker it handed its work to.
+  assert.deepEqual(events(room, 'amend_routed').map(e => [e.actor, e.recipient]), [['root', 'root.1']]);
   assert.match(events(room, 'prompt_handed')[1].body, /^prompt:2 handed the change to "Root objective" and ended\.$/);
   assert.deepEqual(passedOf(room), {R1: true, R2: true});
 });
@@ -156,11 +162,12 @@ test('M2: a check hold is the room\'s, naming the row that waits on it; Continue
   await room.start(GOAL, 10, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'paused', trace(room));
+  // v8 live 5: the top's worker answers the repair without changing its file, so no piece settles it: checks_failed, the top's.
   const hold = room.snapshot().pause;
-  assert.equal(hold.kind, 'checks_exhausted');
+  assert.equal(hold.kind, 'checks_failed');
   assert.equal(hold.agent, 'root');
-  assert.equal(events(room, 'checks_exhausted')[0].actor, 'room');
-  assert.match(events(room, 'paused').at(-1).body, /^Paused \(checks_exhausted\)/);
+  assert.equal(events(room, 'checks_failed')[0].actor, 'room');
+  assert.match(events(room, 'paused').at(-1).body, /^Paused \(checks_failed\)/);
   await room.resume(2);
   assert.equal(events(room, 'checks_continue').at(-1).recipient, 'root');
 });

@@ -203,7 +203,7 @@ const labels=(room,parent)=>room.children(parent).sort((a,b)=>Number(a.id.split(
 const clefScript=({gate=task=>/^Build a complete/.test(task)?0.85:0.2,within=()=>0.9,names=()=>0.9,owner=()=>0.1}={})=>input=>{
   const keys=Object.keys(input.questions||{}),kids=input.state?.proposed_children||[];
   return {answers:Object.fromEntries(keys.map(k=>{
-    if(k==='should_split')return [k,{noul:gate(String(input.state?.assigned_behavior||''))}];
+    if(k==='should_split')return [k,{noul:gate(String((input.state?.assigned_behavior??input.state?.assignment)||''))}];
     if(k.startsWith('within_'))return [k,{noul:within(kids[Number(k.slice(7))]?.label)}];
     if(k.startsWith('names_')){const [,i,j]=k.split('_'),f=String(kids[Number(i)]?.functions?.[Number(j)]||'');return [k,{noul:names(kids[Number(i)]?.label,f.replace(/\(.*$/,''))}];}
     if(k.startsWith('owner_'))return [k,{noul:owner(String(input.state?.question||''),input.state.children[Number(k.slice(6))]?.label)}];
@@ -336,8 +336,8 @@ test('v7.15.13 room 3 (run20\'s sub-split): "Check errors" is not pruned by "Che
   assert.deepEqual(walked.map(c=>[c.state.question.split(': ')[0].replace(/^.*\? /,''),c.state.children.map(x=>x.label).sort()]),[['Check errors',top.map(p=>p.label).sort()]],'one Clef walk, for the one piece no name settles, over Root\'s children');
   // S9: the gate heard the piece's uses.
   const gate=calls.clef.find(c=>c.questions?.should_split);
-  assert.equal(gate.state.assigned_behavior,pi.task+' It calls checkAdminDown, checkFlaps, checkSpeed and checkUtilization, which other pieces write.');
-  assert.ok(gate.state.assigned_behavior.length<=2600);
+  assert.equal((gate.state.assigned_behavior??gate.state.assignment),pi.task+' It calls checkAdminDown, checkFlaps, checkSpeed and checkUtilization, which other pieces write.');
+  assert.ok((gate.state.assigned_behavior??gate.state.assignment).length<=2600);
   assert.deepEqual(dbEvents(room,'uses_planned').map(e=>e.body),['"Process interfaces" uses checkAdminDown, checkFlaps, checkErrors, checkSpeed, checkUtilization.'],'the use of the kept piece is planned beside the uncles\'');
 });
 

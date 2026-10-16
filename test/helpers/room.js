@@ -235,5 +235,9 @@ export async function settle(room,budget=60) {
   room.set('status','running');room.busy=true;
   await room.drive(budget);
 }
-export const events=(room,kind)=>room.snapshot().events.filter(e=>!kind||e.kind===kind);
+// Every event of the run (the snapshot keeps the last 300; v8 live 5's deeper trees write more).
+export const events=(room,kind)=>room.db().exec('SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id').toArray().filter(e=>!kind||e.kind===kind);
 export const trace=room=>room.snapshot().events.filter(e=>!['dispatch','turn_start','turn_end','expose','manager_shard','write','revision','source_copied'].includes(e.kind)).slice(-25).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,160)}`).join('\n');
+// v8 live 5: a manager that did not split hands its assignment down to one
+// worker (handDownPlan): that worker's row, else the row itself.
+export const workerOf=(room,id)=>room.children(id).find(c=>c.role==='worker')?.id||id;

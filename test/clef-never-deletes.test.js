@@ -41,7 +41,7 @@ const FILES = {
 // Clef: yes only to Root's split question and the judge; NO to everything that reviews.
 const REVIEWS = /^(?:requirement|covered|exercises|kind|reference|within|names|owner|piece|base_change|amend_change)_/;
 const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(GOAL) ? 0.9 : 0.1) : k === 'judge' ? 0.9 : REVIEWS.test(k) ? 0.05 : 0.5}]))});
+  k === 'should_split' ? (String((input.state.assigned_behavior??input.state.assignment)).startsWith(GOAL) ? 0.9 : 0.1) : k === 'judge' ? 0.9 : REVIEWS.test(k) ? 0.05 : 0.5}]))});
 
 test('Clef never deletes: with NO to every review and gating question, no requirement, deliverable, contract or file is removed', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const {room, calls, drain} = liveRoom({card: user => user.change ? CHANGED : CARD, split: () => PIECES, clef,

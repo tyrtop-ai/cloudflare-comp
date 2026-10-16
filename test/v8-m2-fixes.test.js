@@ -12,7 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
-import {liveRoom, events, trace, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, trace, fileBlocks, workerOf} from './helpers/room.js';
 import {MESSAGES, systemPrompt} from '../src/prompts.js';
 import {deterministicDecision, validateDecision} from '../src/problems.js';
 import {lintText} from './helpers/prompt-lint.js';
@@ -130,7 +130,7 @@ const SPLIT = {reason: 'two docs', pieces: [{label: 'Notes writer', task: 'Write
 const lineRoom = ({split, inside, card = () => split ? SPLIT_CARD : CARD}) => {
   const asker = split ? 'Notes writer' : 'Root objective';
   const r = liveRoom({card, split: split ? () => SPLIT : null,
-    clef: input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (split && String(input.state.assigned_behavior).startsWith(GOAL) ? 0.9 : 0.1) : k === 'inside' ? inside : k.startsWith('fn_') || /owner|rank|covers/.test(k) ? 0.1 : 0.9}]))}),
+    clef: input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (split && String((input.state.assigned_behavior??input.state.assignment)).startsWith(GOAL) ? 0.9 : 0.1) : k === 'inside' ? inside : k.startsWith('fn_') || /owner|rank|covers/.test(k) ? 0.1 : 0.9}]))}),
     leaf: scripted({[asker]: [asking, blocks([{path: 'NOTES.md', content: NOTES}])], 'Helper': [blocks([{path: 'HELP.md', content: '# Help\n'}])]})});
   return {...r, asker};
 };
@@ -378,7 +378,8 @@ test('LOW 10: a worker top stuck at the gate goes up its line, to the room: a ho
   await drain();
   const hold = room.snapshot().pause;
   assert.equal(hold?.kind, 'agent_stuck', trace(room));
-  assert.equal(hold.agent, 'root');
+  // v8 live 5: the writer is the worker the top handed its work to; the hold names it.
+  assert.equal(hold.agent, workerOf(room, 'root'));
   assert.match(hold.text, /Continue gives "Root objective" another turn; a follow-up prompt can change the card\.$/);
   await room.resume(10);
   await drain();

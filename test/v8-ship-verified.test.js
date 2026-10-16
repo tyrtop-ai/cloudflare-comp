@@ -18,7 +18,7 @@ import {spawnSync} from 'node:child_process';
 import {mkdtempSync, writeFileSync, mkdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, dirname} from 'node:path';
-import {liveRoom, events, fileBlocks, verifyCard, snapshotHash, settle} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, verifyCard, snapshotHash, settle, workerOf} from './helpers/room.js';
 import {checkPlan, fileResult} from '../src/checks.js';
 import {TOOLCHAINS, COMPILE_ROWS, installed, codeRowOf, shebangOf, pageScripts} from '../src/toolchains.js';
 import {textHash} from '../src/glue.js';
@@ -61,7 +61,7 @@ const splitFor = card => {
   return user => { const n = (user.contracts_you_deliver || []).map(c => c.name); return n.includes('loud') && !n.includes('soft') ? LOUD : n.includes('soft') && !n.includes('loud') ? QUIET : ROOT; };
 };
 const SPLITS = ['A small text toolkit', 'Write the loud part', 'Write the quiet part'];
-const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (SPLITS.some(s => String(input.state.assigned_behavior).startsWith(s)) ? 0.9 : 0.1) : 0.9}]))});
+const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (SPLITS.some(s => String((input.state.assigned_behavior??input.state.assignment)).startsWith(s)) ? 0.9 : 0.1) : 0.9}]))});
 const FILES = {
   Shouter: [{path: 'shout.py', content: 'def shout(s):\n    return str(s).upper() + "!"\n'}],
   Louder: [{path: 'loud.py', content: 'from shout import shout\n\n\ndef loud(s):\n    return shout(s) + shout(s)\n'}],
@@ -94,6 +94,8 @@ const passedOf = room => Object.fromEntries(Object.entries(room.snapshot().requi
 const tail = room => events(room).filter(e => !['dispatch', 'turn_start', 'turn_end', 'write', 'revision', 'spawn'].includes(e.kind)).slice(-24).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 const boxesWith = (boxes, id) => boxes.filter(b => b.ids.includes(id));
 const spansOf = (room, id) => room.spans(0, 100000).filter(s => s.name === 'piece_checks' && s.attrs.manager === id).map(s => s.attrs.outcome);
+// v8 live 5: the loud line's check runs, at Loud part (R2) and at Shouter (R1), a manager now that each piece hands its work to a worker.
+const loudRuns = (room, at) => [at['Loud part'], at['Shouter']].flatMap(id => spansOf(room, id));
 const sameFiles = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify([...b].sort());
 // The card's checks run directly on a bundle, in the real build runner (file checks as the Worker runs them).
 async function runOn(room, card, reqs, bundle) {
@@ -443,12 +445,12 @@ for (const [name, to] of [['crosswait: the top gives each part\'s problem to the
   await drain();
   const at = ids(room);
   assertStop(room, 'end');
-  let runs = spansOf(room, at['Loud part']).filter(o => o === 'reported').length;
+  let runs = loudRuns(room, at).filter(o => o === 'reported').length;
   for (let i = 0; i < 2; i++) {
     await room.resume(30);
     await drain();
     assertStop(room, `after continue ${i}`);
-    const now = spansOf(room, at['Loud part']).filter(o => o === 'reported').length;
+    const now = loudRuns(room, at).filter(o => o === 'reported').length;
     assert.ok(now > runs, `after continue ${i}: the loud part ran its checks again`);
     runs = now;
   }
@@ -468,13 +470,15 @@ test('held (waitprobe2): a part waits on a problem its top gave to a piece outsi
   const at = ids(room);
   assert.ok(notes >= 2, 'Notes was given the problems');
   assertStop(room, 'end');
-  let runs = spansOf(room, at['Loud part']).length;
+  let runs = loudRuns(room, at).length;
   for (let i = 0; i < 2; i++) {
     await room.resume(30);
     await drain();
     assertStop(room, `after continue ${i}`);
-    assert.ok(spansOf(room, at['Loud part']).length > runs, `after continue ${i}: the loud part ran again`);
-    runs = spansOf(room, at['Loud part']).length;
+    // v8 live 5: Notes is a manager now, with its own limit of rounds without progress: once it is spent the run has ended failed, a stop assertStop accepts.
+    if (room.get('status') === 'failed') break;
+    assert.ok(loudRuns(room, at).length > runs, `after continue ${i}: the loud part ran again`);
+    runs = loudRuns(room, at).length;
   }
   assert.ok(boxes.length <= 16, `bounded: ${boxes.length} boxes`);
 });
@@ -532,7 +536,7 @@ test('property: whenever a run is finished, every card check passes on the shipp
     const files = t => t.list.map(n => ({path: PATHS[WORKER[n]], content: VARIANTS[WORKER[n]][want[WORKER[n]]]}));
     const find = (t, list) => JSON.stringify(t.list) === JSON.stringify(list) ? t : (t.kids || []).map(c => find(c, list)).find(Boolean);
     const split = user => { const t = find(root, (user.contracts_you_deliver || []).map(c => c.name).sort((a, b) => names.indexOf(a) - names.indexOf(b))) || root; return {summary: 'Pieces', pieces: t.kids.map(c => ({label: c.label, task: c.task, contracts: c.list.map(n => PROP_CARD.deliverables.find(d => d.name === n))}))}; };
-    const splits = input => { const b = String(input.state.assigned_behavior); return b.startsWith(GOAL) || [...tasks.values()].some(t => t.split && b.startsWith(t.task)); };
+    const splits = input => { const b = String((input.state.assigned_behavior??input.state.assignment)); return b.startsWith(GOAL) || [...tasks.values()].some(t => t.split && b.startsWith(t.task)); };
     const clefR = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(q => [q, {noul: q === 'should_split' ? (splits(input) ? 0.9 : 0.1) : 0.9}]))});
     // A worker writes what is wanted of it now; from its second turn on (a repair) it heals what it writes, at random.
     const turns = new Map();

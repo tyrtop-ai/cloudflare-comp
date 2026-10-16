@@ -257,7 +257,7 @@ const dbEvents=(room,kind)=>room.db().exec('SELECT actor,kind,body,recipient FRO
 // draft); the builders, the compiler and the Container are real. Each worker
 // first publishes the revision run13's round fixed, then the fix.
 const PLAN13_SPLIT=PLAN13.map(p=>({label:p.label,task:p.task,functions:p.interfaces,...(p.uses?{uses:p.uses}:{})})),STORAGE13_SPLIT=STORAGE13.map(p=>({label:p.label,task:p.task,functions:p.interfaces}));
-const clef13=input=>{const task=String(input.state?.assigned_behavior||'');
+const clef13=input=>{const task=String((input.state?.assigned_behavior??input.state?.assignment)||'');
   return {answers:Object.fromEntries(Object.keys(input.questions||{}).map(k=>[k,{noul:k==='should_split'?(/^Build|reading and saving tickets/.test(task)?0.85:0.2):k.startsWith('within')?0.8:k.startsWith('names')?0.9:0.05}]))};};
 const ANSWERS13={'Entry module':[[['entry.js',SRC.entry]]],'Read tickets from storage':[[['module.js',SRC.read1]],[['module.js',SRC.read]]],'Save tickets to storage':[[['saveTickets.js',SRC.save]]],
   'Create ticket':[[['createTicket.js',SRC.create1]],[['createTicket.js',SRC.create]]],'View ticket':[[['viewTicket.js',SRC.view]],[['viewTicket.js',SRC.viewFix]]],'Update ticket':[[['updateTicket.js',SRC.update]]],'Delete ticket':[[['module.js',SRC.del]]]};

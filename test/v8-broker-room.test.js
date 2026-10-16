@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, workerOf } from './helpers/room.js';
 import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {chunkText} from '../src/fetcher.js';
@@ -65,7 +65,7 @@ const sourceModel = (user, system) => system.startsWith('Summarise') ? `Gist of 
   {title: /guide/.test(JSON.stringify(user)) ? 'Widget guide' : 'Widget format', summary: 'How the widget is laid out and used.'};
 // Clef: Root's goal splits and nothing else does; FAQ.md is the one contract matching an ask for it; every other question passes.
 const clefFor = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(goal) ? 0.9 : 0.1)
+  k === 'should_split' ? (String((input.state.assigned_behavior??input.state.assignment)).startsWith(goal) ? 0.9 : 0.1)
   : k.startsWith('fn_') ? (/FAQ\.md/.test(input.state.contracts?.[Number(k.slice(3))]?.contract || '') ? 0.9 : 0.1) : 0.9}]))});
 // A scripted writer per label: its answers in order, the last repeated.
 const scripted = answers => {
@@ -141,7 +141,8 @@ test('broker: a writer reads its granted file, a chunk it holds, and the neutral
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
   assert.ok(fetch.calls.includes(GUIDE_URL) && fetch.calls.includes(FORMAT_URL));
-  const [shout, notes, faq] = room.children('root');
+  // v8 live 5: each piece's writer is the worker its manager handed its work to.
+  const [shout, notes, faq] = room.children('root').slice(0, 3).map(c => room.node(workerOf(room, c.id)));
   const turns = label => calls.leaf.filter(u => u.your_label === label);
 
   // ---- the catalogue: only what exists for each writer
@@ -204,7 +205,7 @@ test('broker: a writer reads its granted file, a chunk it holds, and the neutral
   assert.equal(room.node(faq.id).status, 'done');
   // Its own contract, asked for: answered at once in contract terms, as before with no hop.
   // v8 live 3: R2's wording ("# FAQ") is interface, so the contract carries it.
-  assert.deepEqual(turns('Questions writer')[1].answered_requests, [MESSAGES.own_contract({contract: contractLine({...D.faq, interface: ['FAQ.md contains "# FAQ"']})})]);
+  assert.deepEqual(turns('Questions writer')[1].answered_requests, [MESSAGES.own_contract({contract: contractLine({...D.faq, interface: ['FAQ.md contains "# FAQ", where any run of spaces and line breaks matches any other']})})]);
   linted(room, calls);
 });
 

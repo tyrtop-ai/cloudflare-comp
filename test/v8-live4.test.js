@@ -85,7 +85,7 @@ const clefWith = ({split = () => false, low = () => false} = {}) => {
   let reviews = 0;
   return input => {
     if (input.questions.installed) reviews++;
-    return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (split(String(input.state.assigned_behavior)) ? 0.9 : 0.1) : low(k, reviews) ? 0.1 : 0.9}]))};
+    return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (split(String((input.state.assigned_behavior??input.state.assignment))) ? 0.9 : 0.1) : low(k, reviews) ? 0.1 : 0.9}]))};
   };
 };
 const passedOf = room => Object.fromEntries(Object.entries(room.snapshot().requirement_status).map(([id, x]) => [id, x.passed]));

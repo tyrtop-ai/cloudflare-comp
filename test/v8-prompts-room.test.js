@@ -7,7 +7,7 @@
 // static page in another; both reach the card's checks (S4b).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liveRoom, events, fileBlocks } from './helpers/room.js';
+import { liveRoom, events, fileBlocks, workerOf } from './helpers/room.js';
 import { lintText, LANGUAGE_WORDS, composedTexts, saysData } from './helpers/prompt-lint.js';
 import { contractLine, useReferences } from '../src/contracts.js';
 import { cardContracts } from '../src/card.js';
@@ -16,7 +16,7 @@ import { systemPrompt, CLEF, clefText, MESSAGES } from '../src/prompts.js';
 const ROLES = ['card', 'splitter', 'worker', 'file', 'manager', 'linker'];
 // Clef: Root's goal splits, a piece does not; every other question passes.
 const clef = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(goal) ? 0.9 : 0.1) : 0.9}]))});
+  k === 'should_split' ? (String((input.state.assigned_behavior??input.state.assignment)).startsWith(goal) ? 0.9 : 0.1) : 0.9}]))});
 // v8 S4b: the tree finished and the project card's checks ran (the room
 // completed, or holds at the checks with the requirement table); never failed.
 const checked = room => events(room, 'checks_started').length > 0 && !room.allNodes().some(n => n.status === 'failed') &&
@@ -36,13 +36,15 @@ function promptsAreV8(calls, goal, room = null, extra = []) {
   assert.ok(asked.length > 0);
   for (const [key, q] of asked) {
     const n = Number(/_(\d+)/.exec(key)?.[1]);
-    const expected = key === 'should_split' ? [CLEF.split, CLEF.split_retry] : key.startsWith('within_') ? [clefText('scope', {i: n})]
+    const expected = key === 'should_split' ? [CLEF.split] : key === 'split_valid' ? [CLEF.split_valid] : key === 'split_size' ? [CLEF.split_size] : key.startsWith('within_') ? [clefText('scope', {i: n})]
       : key.startsWith('requirement_literal_') ? [`About requirement ${n}: ${CLEF.requirement_literal}`] : key.startsWith('requirement_') ? [`About requirement ${n}: ${CLEF.requirement}`] : key.startsWith('internal_') ? [clefText('internal', {i: n})] : key.startsWith('fn_') ? [clefText('match', {j: n})]
       : key.startsWith('owner_') ? [clefText('owner', {i: n})] : key === 'inside' ? [CLEF.owns_need] : key.startsWith('names_') || key.startsWith('piece_') ? [null]
       // v8 card repair: the card's review (layer 3).
       : key.startsWith('covered_') ? [clefText('covered', {i: n})] : key.startsWith('exercises_') ? [clefText('exercises', {i: n})] : key.startsWith('implementable_') ? [clefText('implementable', {i: n})] : key.startsWith('kind_') ? [clefText('kind_fits', {i: n})] : key === 'installed' ? [CLEF.installed] : key.startsWith('reference_') ? [clefText('reference', {i: n, j: Number(key.split('_')[2])})] : [];
     // v8 S4b: a document requirement is judged with CLEF.judge and the check's own question.
     if (key === 'judge') { assert.ok(q.instructions.startsWith(CLEF.judge), q.instructions); continue; }
+    // v8 live 5: each piece is a manager that holds its own checks, so Clef is asked what a check held there reaches.
+    if (key.startsWith('piece_reach_')) { assert.equal(q.instructions, clefText('piece_reach', {name: /^Piece (.*) delivers the contracts listed/.exec(q.instructions)?.[1], i: n})); continue; }
     if (expected[0] === null) assert.ok(q.instructions.startsWith(key.startsWith('piece_') ? `Does piece ${n}'s own task produce ` : `Piece ${n} lists the contract `), q.instructions);
     else assert.ok(expected.includes(q.instructions), `${key}: ${q.instructions}`);
   }
@@ -112,9 +114,11 @@ test('v8 prompts: a command-line tool, split into pieces with contracts, written
   assert.equal(cli.project.conventions.find(c => c.language === 'python').reference_another_part, 'from to_fahrenheit import to_fahrenheit');
   assert.ok(!/require\(/.test(cli.your_responsibility), 'no JavaScript reference line for a Python project');
   // The files sit at their project paths, every worker is done, and no answer fell back.
-  assert.deepEqual(room.files('root.1').map(f => f.path), ['temperature.py']);
-  assert.deepEqual(room.files('root.2').map(f => f.path), ['convert.py']);
-  assert.equal((await room.ownFiles('root.2')).find(f => f.path === 'convert.py').content, CLI_FILES['Command line'][0].content);
+  // v8 live 5: each piece is a manager that handed its work down to one worker, which writes the files.
+  assert.deepEqual(room.files(workerOf(room, 'root.1')).map(f => f.path), ['temperature.py']);
+  assert.deepEqual(room.files(workerOf(room, 'root.2')).map(f => f.path), ['convert.py']);
+  assert.equal(workerOf(room, 'root.2'), 'root.2.1');
+  assert.equal((await room.ownFiles('root.2.1')).find(f => f.path === 'convert.py').content, CLI_FILES['Command line'][0].content);
   assert.deepEqual(room.children('root').filter(c => c.role !== 'builder').map(c => c.status), ['done', 'done']);
   for (const kind of ['format_fallback', 'contract_returned', 'missing_code', 'code_retry']) assert.equal(events(room, kind).length, 0, kind);
   promptsAreV8(calls, CLI_GOAL, room, [...CLI_PIECES.pieces, ...ASK_PIECES.pieces].map(p => p.task));
@@ -176,7 +180,7 @@ test('v8 prompts: a static page of .html, .css and .js files, split by contract 
   assert.ok(calls.raw.every(r => !/require\(/.test(r.text)), 'no require anywhere in a browser project');
   assert.match(page.your_responsibility, /page index\.html: the list page/);
   // Each file at its exact project path, never under components/.
-  assert.deepEqual(['root.1', 'root.2', 'root.3'].map(id => room.files(id).map(f => f.path)), [['index.html'], ['styles.css'], ['app.js']]);
+  assert.deepEqual(['root.1', 'root.2', 'root.3'].map(id => room.files(workerOf(room, id)).map(f => f.path)), [['index.html'], ['styles.css'], ['app.js']]);
   assert.deepEqual(room.children('root').filter(c => c.role !== 'builder').map(c => c.status), ['done', 'done', 'done']);
   for (const kind of ['format_fallback', 'contract_returned', 'missing_code', 'code_retry']) assert.equal(events(room, kind).length, 0, kind+'\n'+events(room).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 300)}`).join('\n'));
   promptsAreV8(calls, PAGE_GOAL, room, PAGE_PIECES.pieces.map(p => p.task));
@@ -238,7 +242,7 @@ const NEEDS = ['converts degrees Fahrenheit to Celsius', 'parses the value and u
 const FORMULAS = 'def to_fahrenheit(c):\n    return c * 9 / 5 + 32\n\n\ndef to_celsius(f):\n    return (f - 32) * 5 / 9\n';
 const askClef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => {
   let p = 0.9;
-  if (k === 'should_split') p = String(input.state.assigned_behavior).startsWith(CLI_GOAL) ? 0.9 : 0.1;
+  if (k === 'should_split') p = String((input.state.assigned_behavior??input.state.assignment)).startsWith(CLI_GOAL) ? 0.9 : 0.1;
   if (k === 'inside') p = /kelvin/i.test(JSON.stringify(input.state)) ? 0.1 : 0.9;
   if (k.startsWith('fn_')) p = 0.1;
   return [k, {noul: p}];
@@ -286,9 +290,10 @@ test('v8 prompts: an ask, a growth, the done rule and a repair speak in MESSAGES
   assert.ok(cmd.answered_requests.includes(MESSAGES.in_assignment({want: `parse_args (${NEEDS[1]})`})));
   assert.ok(cmd.answered_requests.some(a => a.startsWith('function to_kelvin()') && a.includes('It is delivered by "Temperature formulas"')));
   // The growth's task, the send-back and the repair in MESSAGES' words, with no head that claims a build ran.
-  assert.match(room.node('root.1').task, /Keep what you already deliver and add to_kelvin\(\) \(converts degrees Celsius to Kelvin\): Command line uses it from you\.$/);
+  assert.match(room.node(workerOf(room, 'root.1')).task, /Keep what you already deliver and add to_kelvin\(\) \(converts degrees Celsius to Kelvin\): Command line uses it from you\.$/);
   assert.match(said, /\[contract\] Your contracts: .*to_kelvin is not defined in temperature\.py\. Write each file you change again, complete\./);
-  assert.match(said, /A problem was found between your part and another part, and your manager decided what changes\. Decided: Your contracts include to_kelvin, needed by Command line/);
+  // v8 live 5: the formulas are written by the worker under the "Temperature formulas" manager, for which Command line is outside its line.
+  assert.match(said, /A problem was found between your part and another part, and your manager decided what changes\. Decided: Your contracts include to_kelvin, needed by other parts/);
   // v8 S4b: what a failed card check observed is the deliverable's own output (here an import the S5 glue will resolve), not the room's words.
   const observed = room.problems("stage='check'").map(p => p.facts?.requirement?.evidence).filter(Boolean).map(e => JSON.stringify(e).slice(1, -1));
   assert.doesNotMatch(observed.reduce((t, e) => t.split(e).join('«observed»'), said), /CONTAINER|builder|named export|module|Publish the FULL/i);

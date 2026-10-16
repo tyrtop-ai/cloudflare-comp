@@ -655,7 +655,7 @@ export function deterministicDecision(p, ctx) {
   return {rule:'D9',action:'exhausted',answered:{write:true},reason:`no piece takes ${p.facts.names?.[0]||'it'} (${dec.rule})`};
 }
 function decideRow(p, ctx) {
-  const flags=p.flags||{},placed=placeParties(ctx.holder,p.parties),declined=new Set(flags.declined||[]),names=ids=>ids.map(id=>ctx.labelOf?.(id)||id).join(', ');
+  const flags=p.flags||{},placed=placeParties(ctx.holder,p.parties),declined=new Set(flags.declined||[]),names=ids=>[...new Set(ids.map(id=>ctx.labelOf?.(id)||id))].join(', ');
   // Review: a route's declines are no hops (run13 with every child declining
   // closed at root.2 at 6 with Create and Update untried), and below Root
   // the bound sends the problem up, declined as a branch, for Root to decide.

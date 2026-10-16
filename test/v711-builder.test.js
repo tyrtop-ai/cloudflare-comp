@@ -670,7 +670,7 @@ test('end to end: split, blind workers, rename-only builder, separate runner, Ro
   const calls={split:0,leaf:0,link:0,runner:0};
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/issue tracker/i.test(behavior(params.state.assigned_behavior))&&!/repository|application entry module/i.test(behavior(params.state.assigned_behavior))?0.95:0.05}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/issue tracker/i.test(behavior((params.state.assigned_behavior??params.state.assignment)))&&!/repository|application entry module/i.test(behavior((params.state.assigned_behavior??params.state.assignment)))?0.95:0.05}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content;
@@ -722,7 +722,7 @@ test('end to end: a failed run goes back through a manager to a nested worker, w
   const AI={run:async(_model,params)=>{
     if(params.questions) {
       if(params.questions.should_split) {
-        const b=behavior(params.state.assigned_behavior);
+        const b=behavior((params.state.assigned_behavior??params.state.assignment));
         return {answers:{should_split:{noul:/repository|application entry module|ticket model/i.test(b)?0.05:0.95}}};
       }
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
@@ -830,7 +830,7 @@ test('end to end: each manager gets its own builder; the branch links inside its
   const entrySource="const svc = require('./ticketService');\nfunction start(){ return { createTicket: d => svc.add(d), getTicket: id => svc.find(id), listTickets: () => svc.all(), updateTicket: (id,p) => svc.change(id,p), deleteTicket: id => svc.remove(id) }; }\nmodule.exports = { start };\n";
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|service module|application entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|service module|application entry module/i.test(behavior((params.state.assigned_behavior??params.state.assignment)))?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content, user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));
@@ -890,7 +890,7 @@ test('one commit per agent turn: every agent pushes at most once per turn, and m
   const pending=[];
   const AI={run:async(_model,params)=>{
     if(params.questions) {
-      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|application entry module/i.test(behavior(params.state.assigned_behavior))?0.05:0.95}}};
+      if(params.questions.should_split)return {answers:{should_split:{noul:/repository class|application entry module/i.test(behavior((params.state.assigned_behavior??params.state.assignment)))?0.05:0.95}}};
       return {answers:Object.fromEntries(Object.keys(params.questions).map(k=>[k,{noul:0.95}]))};
     }
     const system=params.messages[0].content,user=JSON.parse(params.messages[1].content.replace(/ \/no_think$/,''));

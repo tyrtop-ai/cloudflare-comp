@@ -117,11 +117,9 @@ export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), p
 //    tag read as its name and attributes, so the whitespace between tags and
 //    attributes, the quotes around an attribute value and a void element's
 //    self-closing "/" do not count; attribute values and text stay exact;
-//  - code: exactly, apart from trailing whitespace on each line;
-//  - any other text: apart from runs of spaces and tabs within a line and
-//    trailing whitespace; newlines and leading indentation count.
+//  - any text (v8 live 5): modulo whitespace runs, on both sides: each run
+//    of spaces, tabs and line breaks reads as one space.
 const MARKUP_FILE = /\.(?:html?|xml|svg|vue)$/i;
-const CODE_FILE = /\.(?:[cm]?js|jsx|tsx?|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|cs|php|sh|bash|css|scss|less|sql|json|ya?ml|toml|lua|pl|r)$/i;
 const TAG_START = /<[A-Za-z!/?]/;
 const VOID = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '));
 // One tag at s[at] ('<'), canonical, or null when it does not close.
@@ -168,14 +166,15 @@ function canonicalMarkup(t) {
   }
   return out;
 }
-const trailing = t => String(t).split('\n').map(l => l.replace(/[ \t\r]+$/, '')).join('\n');
-const inLine = t => String(t).split('\n').map(l => { const ind = /^[ \t]*/.exec(l)[0]; return ind + l.slice(ind.length).replace(/[ \t]+/g, ' ').replace(/[ \t\r]+$/, ''); }).join('\n');
+// v8 live 5: a file check's text matches modulo whitespace runs, on both sides: every run of spaces, tabs and line
+// breaks reads as one space (the to-do card's "#todo-list { list-style: none; }" is the same rule written across lines).
+// The check's interface says so (WHITESPACE_NOTE).
+const runs = t => String(t).replace(/\s+/g, ' ');
 export function hasText(text, wanted, path = '') {
   const w = String(wanted), t = String(text);
   if (t.includes(w)) return true;
-  if (MARKUP_FILE.test(path) && TAG_START.test(w)) return canonicalMarkup(t).includes(canonicalMarkup(w.trim()));
-  if (CODE_FILE.test(path) || MARKUP_FILE.test(path)) return trailing(t).includes(trailing(w));
-  return inLine(t).includes(inLine(w).trim());
+  if (MARKUP_FILE.test(path) && TAG_START.test(w) && canonicalMarkup(t).includes(canonicalMarkup(w.trim()))) return true;
+  return runs(t).includes(runs(w).trim());
 }
 export function fileResult(check, files) {
   const p = String(check?.path || ''), text = files.get(p);

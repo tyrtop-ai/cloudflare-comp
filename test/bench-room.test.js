@@ -149,7 +149,7 @@ test('provided card, a split Root: the splitter and both workers hear the contra
   const files = {Adder: {path: 'adder.py', content: 'def add_up(xs):\n    return sum(xs)\n'}, Total: {path: 'solution.py', content: 'from adder import add_up\n\ndef total(xs):\n    return add_up(xs)\n'}};
   const r = liveRoom({
     card: () => { throw new Error('no card writer'); },
-    clef: input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(task.prompt.slice(0, 40)) ? 0.9 : 0.1) : 0.9}]))}),
+    clef: input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (String((input.state.assigned_behavior??input.state.assignment)).startsWith(task.prompt.slice(0, 40)) ? 0.9 : 0.1) : 0.9}]))}),
     split: () => pieces,
     leaf: user => { const f = files[user.your_label]; return fileBlocks(f ? [f] : [], {summary: 'wrote it', done: !!f}); }
   });

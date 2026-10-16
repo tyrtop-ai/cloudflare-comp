@@ -191,7 +191,7 @@ const ANSWERS14={'Ticket storage':[[['ticketStorage.js',SRC.storage]]],
 // A leaf that answers each label from its script of revisions (the last repeats), counting its turns and keeping what it was shown.
 const scriptedLeaf=answers=>{const turns={},inputs=[];return {turns,inputs,leaf:u=>{const n=(turns[u.your_label]=(turns[u.your_label]||0)+1),list=answers[u.your_label]||[],files=list[Math.min(n,list.length)-1]||[];inputs.push(u);return {summary:'implemented source',done:true,files:files.map(([path,content])=>({path,content}))};}};};
 // Clef at the split: yes at Root, no below; every scope, name and use accepted.
-const clefSplit=top=>input=>{const task=String(input.state?.assigned_behavior||'');return {answers:Object.fromEntries(Object.keys(input.questions||{}).map(k=>[k,{noul:k==='should_split'?(top.test(task)?0.85:0.2):/^(?:within|names|uses)/.test(k)?0.9:0.05}]))};};
+const clefSplit=top=>input=>{const task=String((input.state?.assigned_behavior??input.state?.assignment)||'');return {answers:Object.fromEntries(Object.keys(input.questions||{}).map(k=>[k,{noul:k==='should_split'?(top.test(task)?0.85:0.2):/^(?:within|names|uses)/.test(k)?0.9:0.05}]))};};
 async function replayFromSplit({answers,split,clef,runner,coverage=COVERAGE14}) {
   const s=scriptedLeaf(answers),r=liveRoom({clef,split,leaf:s.leaf,coverage:()=>coverage,runner:()=>runner});
   await r.room.start(GOAL,160);await r.drain();

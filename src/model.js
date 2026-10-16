@@ -109,7 +109,9 @@ export function splitProbability(output) {
     throw new Error('Clef returned no valid should_split.noul probability');
   return probability;
 }
-export async function shouldSplit(env, task, mockContext) {
+// v8 live 5: contracts, the row's contracts one line each (gateLine), travel
+// beside the assignment, at every manager alike.
+export async function shouldSplit(env, task, mockContext, contracts = []) {
   if (env.MOCK_AI === 'true') {
     const result=mockDecomposition(mockContext);
     return {split:Array.isArray(result.spawn),probability:Array.isArray(result.spawn)?1:0};
@@ -122,17 +124,43 @@ export async function shouldSplit(env, task, mockContext) {
   // can propose an admissible partition. Review concrete failed proposals when
   // deciding whether to split again or route this assignment to implementation.
   const feedback=mockContext?.split_feedback || null;
-  const question=pipelineV8(env)?(feedback?CLEF.split_retry:CLEF.split):feedback
+  // v8 live 5: a pre-grade, asked once before the splitter runs, so no feedback is read.
+  const question=pipelineV8(env)?CLEF.split:feedback
     ? 'A previous proposed decomposition was rejected. Based on the ASSIGNED CODE and the specific rejected partition, is there still a credible split into TWO OR MORE independent, in-scope code-writing assignments covering the whole requested code? Answer NO if the correct next step is to implement the assigned code directly rather than invent unrelated subdivisions. Answer YES if a corrected partition is feasible. Do not treat the previous YES as binding.'
     : 'Can this requested CODE be written as TWO OR MORE smaller independently authored source-code modules or functions, whose code can be linked to implement the ENTIRE assigned code? Prefer yes if the code can be divided further, even into very small functions. Answer no only if the code itself is an indivisible implementation unit. Do not split into research, design discussions, decisions, documentation, or plans.';
   const answer=await clefRun(env,'shouldSplit',selector,{
     model:clef,
-    state:feedback ? {assigned_behavior:String(task).slice(0,2600),previous_split_rejection:feedback} :
+    state:pipelineV8(env)?{assignment:String(task).slice(0,2600),contracts:(Array.isArray(contracts)?contracts:[]).map(String).filter(Boolean)}:
+      feedback ? {assigned_behavior:String(task).slice(0,2600),previous_split_rejection:feedback} :
       {assigned_behavior:String(task).slice(0,2600)},
     questions:{should_split:{type:'noul',instructions:question}}
-  });
+  },pipelineV8(env)?output=>{const p=output?.answers?.should_split?.noul;return {attempt:0,p,...(Number.isFinite(Number(env.SPLIT_FLOOR))?{floor:Number(env.SPLIT_FLOOR),caught:p<=Number(env.SPLIT_FLOOR)}:{})};}:null);
   const probability=splitProbability(answer);
   return {split:probability >= (Number(env.SPLIT_THRESHOLD)||0.7),probability};
+}
+
+// v8 live 5: every manager's splitter proposes; Clef grades the proposal in
+// one call: whether it is a valid division of the original (CLEF.split_valid),
+// whether every piece is worth a writer of its own (CLEF.split_size), and
+// each piece's scope (CLEF.scope, as scopeChildren asks it). The state is the
+// original (its assignment and its row's contracts, one line each: gateLine),
+// the goal the scope question reads, and one entry per piece with the names
+// of the contracts it delivers. {valid, size, scope: [p per piece]}.
+export async function reviewSplit(env, {goal, assignment, contracts = [], pieces = [], attempt = 1, retry = ''}) {
+  if (env.MOCK_AI === 'true') return {valid:1, size:1, scope:pieces.map(() => 1)};
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
+  const clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef split review model');
+  const state={goal:String(goal||'').slice(0,1800),original:{assignment:String(assignment||'').slice(0,2600),contracts:contracts.map(String).filter(Boolean)},
+    pieces:pieces.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),task:String(c.task).slice(0,900),contracts:(c.interfaces||[]).map(f=>f.name)}))};
+  const questions={split_valid:{type:'noul',instructions:CLEF.split_valid},split_size:{type:'noul',instructions:CLEF.split_size},
+    ...Object.fromEntries(pieces.map((_,i)=>[`within_${i}`,{type:'noul',instructions:clefText('scope',{i})}]))};
+  const p=(o,k)=>{const v=o?.answers?.[k]?.noul;return typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1?v:null;};
+  const output=await clefRun(env,'reviewSplit',selector,{model:clef,state,questions},
+    o=>({attempt,pieces:pieces.length,...(retry?{retry}:{}),valid_p:p(o,'split_valid'),size_p:p(o,'split_size'),scope_ps:pieces.map((_,i)=>p(o,`within_${i}`))}));
+  const valid=p(output,'split_valid'),size=p(output,'split_size'),scope=pieces.map((_,i)=>p(output,`within_${i}`));
+  if (valid===null||size===null||scope.some(x=>x===null)) throw new Error('Clef returned no valid split review probabilities');
+  return {valid, size, scope};
 }
 
 // After Qwen proposes children, ONE Clef request vets the whole proposed

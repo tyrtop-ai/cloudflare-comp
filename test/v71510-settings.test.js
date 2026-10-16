@@ -85,7 +85,7 @@ const leaf={summary:'Implements the piece',files:[{path:'module.js',content:'fun
 function fakeAI() {
   const calls=[];
   return {calls,run:async(model,input)=>{
-    if(input.questions?.should_split){calls.push({model,kind:'gate'});return {answers:{should_split:{noul:input.state.assigned_behavior.startsWith(goal)?0.9:0.1}}};}
+    if(input.questions?.should_split){calls.push({model,kind:'gate'});return {answers:{should_split:{noul:(input.state.assigned_behavior??input.state.assignment).startsWith(goal)?0.9:0.1}}};}
     if(input.questions){calls.push({model,kind:'clef'});return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.9}]))};}
     const system=input.messages?.[0]?.content||'';
     if(system.includes('CODE SPLITTER')){calls.push({model,kind:'split'});return {response:JSON.stringify(goodSplit)};}

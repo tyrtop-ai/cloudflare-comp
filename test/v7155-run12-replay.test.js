@@ -67,7 +67,7 @@ async function replay(edit=W=>W) {
   const split=(_u,n)=>({summary:'Split the issue tracker into modular components for each operation and data management.',spawn:n<=2?run12:corrected});
   const answerClef=input=>{
     const keys=Object.keys(input.questions||{});clef.push(...keys.map(k=>k.replace(/_\d+(?:_\d+)?$/,'')));
-    return {answers:Object.fromEntries(keys.map(k=>[k,{noul:k==='should_split'?(String(input.state?.assigned_behavior||'').startsWith('Build')?0.847:0.2):k.startsWith('within')?0.8:k.startsWith('names')?0.9:0.05}]))};
+    return {answers:Object.fromEntries(keys.map(k=>[k,{noul:k==='should_split'?(String((input.state?.assigned_behavior??input.state?.assignment)||'').startsWith('Build')?0.847:0.2):k.startsWith('within')?0.8:k.startsWith('names')?0.9:0.05}]))};
   };
   // The coverage model maps create and delete only, as run12's did.
   const coverage=u=>{const ms=members(u),pick=v=>ms.find(m=>m.toLowerCase().startsWith(v))||(v==='create'?ms[0]:ms.at(-1));return {operations:[{operation:'create a ticket',method:pick('create')},{operation:'delete a ticket',method:pick('delete')}]};};

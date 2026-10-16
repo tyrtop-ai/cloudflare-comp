@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, workerOf} from './helpers/room.js';
 import {lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import {contractLine, useReferences} from '../src/contracts.js';
 import {packageDirectory} from '../src/assembly.js';
@@ -22,7 +22,7 @@ const browserReady=(()=>{
 })();
 const py=toolchainById('python');
 
-const clefFor=({split=()=>false}={})=>input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:k==='should_split'?(split(String(input.state.assigned_behavior))?0.9:0.1):0.9}]))});
+const clefFor=({split=()=>false}={})=>input=>({answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:k==='should_split'?(split(String((input.state.assigned_behavior??input.state.assignment)))?0.9:0.1):0.9}]))});
 const scripted=answers=>{
   const seen=new Map();
   return user=>{
@@ -38,6 +38,10 @@ const v8Room=({card,split,goal,answers,link})=>liveRoom({card:()=>card,split:spl
 const passedOf=room=>Object.fromEntries(Object.entries(room.snapshot().requirement_status).map(([id,x])=>[id,x.passed]));
 const tail=room=>events(room).slice(-14).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,260)}`).join('\n');
 const turnsOf=(calls,label)=>calls.leaf.filter(u=>u.your_label===label).length;
+// v8 live 5: the top's pieces as their writers: each piece's manager hands its work to one worker, whose files these are.
+const writers=room=>room.children('root').filter(c=>c.role==='manager').map(c=>room.node(workerOf(room,c.id)));
+// The top's bundle: the last box opened (each piece's manager runs the checks it holds in its own box first).
+const topBuild=builds=>builds.at(-1);
 // Every text the room composed for a model passes the prompt lint, its data aside
 // (as the S4b/S6 rooms check), the files a linker request carries among the data.
 function linted(room,calls,extra=[]) {
@@ -87,11 +91,11 @@ test('A4: a split Python project whose pieces import each other completes; the r
   await drain();
   assert.equal(room.get('status'),'complete',tail(room));
   assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
-  assert.equal(builds.length,1,'one Container exec: nothing failed');
+  assert.equal(builds.length,4,'one box per piece\'s manager and one at the top: nothing failed');
   for(const label of ['Counter','Ranker','Command'])assert.equal(turnsOf(calls,label),1,`${label} wrote once`);
-  const [counter,ranker]=room.children('root');
+  const [counter,ranker]=writers(room);
   const D1=packageDirectory('Counter',counter.id),D2=packageDirectory('Ranker',ranker.id);
-  const bundle=builds[0];
+  const bundle=topBuild(builds);
   assert.deepEqual(Object.keys(bundle).sort(),[`components/${D1}/__init__.py`,`components/${D1}/counter.py`,`components/${D1}/textutil.py`,`components/${D2}/__init__.py`,`components/${D2}/ranking.py`,
     'components/__init__.py','count_words.py','top_words.py','wordfreq.py'].sort());
   assert.equal(bundle['wordfreq.py'],WORDFREQ,'a worker file ships as written');
@@ -99,7 +103,7 @@ test('A4: a split Python project whose pieces import each other completes; the r
   assert.equal(bundle['top_words.py'],`# Runtime-owned: top_words is defined in components/${D2}/ranking.py.\nfrom components.${D2}.ranking import top_words  # noqa: F401\n`);
   // v8 M3: the glue is Root's builder's, recorded on its row.
   assert.deepEqual(room.read(`glue_files:${room.builderOf('root').id}`,[]).sort(),['count_words.py','top_words.py',...Object.keys(bundle).filter(p=>p.endsWith('__init__.py'))].sort());
-  assert.match(events(room,'link_glue')[0].body,/The runtime wrote 5 glue file\(s\)/);
+  assert.ok(events(room,'link_glue').some(e=>/The runtime wrote 5 glue file\(s\)/.test(e.body)),'the top\'s builder wrote the project\'s glue');
   // The export: the project, the glue where it is needed to run, and how to run it.
   const app=await room.appFiles();
   assert.equal(app.passed,true);
@@ -116,12 +120,13 @@ test('A4 repair variant: a worker writes from count_word import count_words; the
   await drain();
   assert.equal(room.get('status'),'complete',tail(room));
   assert.deepEqual(passedOf(room),{R1:true,R2:true,R3:true});
-  const ranker=room.children('root')[1],at=`components/${packageDirectory('Ranker',ranker.id)}/ranking.py`;
-  assert.equal(builds[0][at],RANKING,'the linked copy reads the contract by its reference');
+  const ranker=writers(room)[1],at=`components/${packageDirectory('Ranker',ranker.id)}/ranking.py`;
+  assert.equal(topBuild(builds)[at],RANKING,'the linked copy reads the contract by its reference');
   assert.equal(room.files(ranker.id).find(f=>f.path==='ranking.py').revision,1);
   assert.equal(turnsOf(calls,'Ranker'),1,'no repair turn');
-  assert.match(events(room,'link_auto')[0].body,new RegExp(`${at}: from count_word import count_words → from count_words import count_words`));
-  assert.equal(calls.link.length,0,'no linker model call');
+  assert.ok(events(room,'link_auto').some(e=>new RegExp(`${at}: from count_word import count_words → from count_words import count_words`).test(e.body)));
+  // v8 live 5: the Ranker piece's own builder, which sees no count_word in its piece, may ask the link model once; the top joins it by a rename.
+  assert.ok(calls.link.length<=1,'no linker model call at the top');
 });
 
 test('A4 from the run\'s errors: a name bound nowhere (NameError) is renamed in the reader\'s linked copy and the checks run again',{skip:!hasPython&&'python3 is not installed'},async()=>{
@@ -130,9 +135,10 @@ test('A4 from the run\'s errors: a name bound nowhere (NameError) is renamed in 
   await room.start(WF_GOAL,40,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'complete',tail(room));
-  assert.equal(builds.length,2,'the failing run and the relinked one');
-  assert.equal(builds[0]['wordfreq.py'],wrong);
-  assert.equal(builds[1]['wordfreq.py'],WORDFREQ);
+  // v8 live 5: each piece's box opens first (R1 and R3 roll up to the top, as they reach other pieces); the top's failing run and its relinked one come last.
+  assert.equal(builds.length,5,'three piece boxes, the failing run and the relinked one');
+  assert.equal(builds.at(-2)['wordfreq.py'],wrong);
+  assert.equal(builds.at(-1)['wordfreq.py'],WORDFREQ);
   assert.match(events(room,'link_renamed')[0].body,/^wordfreq\.py: topWords → top_words \(topWords is bound nowhere in the file\) \(renamed by the runtime; the piece's own file is unchanged\)\.$/);
   assert.equal(events(room,'checks_relinked').length,1);
   assert.equal(turnsOf(calls,'Command'),1,'no repair turn');
@@ -152,14 +158,14 @@ test('A4 with the linker model: a reference no rename of the runtime\'s joins go
   await good.room.start(WF_GOAL,40,{pipeline:'v8'});
   await good.drain();
   assert.equal(good.room.get('status'),'complete',tail(good.room));
-  assert.equal(good.calls.link.length,1);
+  // v8 live 5: the Command piece's builder joins it first and asks the linker; the top's builder asks again over the whole project.
+  assert.ok(good.calls.link.length>=1);
   assert.deepEqual(seen.your_files,[{path:'wordfreq.py',content:odd}]);
   assert.match(seen.previous_attempt_error,/in wordfreq\.py: nothing in the project is named tally/);
   assert.ok(seen.other_modules_exports.some(x=>/top_words/.test(x)&&/refer to it as: from top_words import top_words/.test(x)));
-  assert.equal(good.builds.length,1,'linked before the Container ran');
-  assert.equal(good.builds[0]['wordfreq.py'],odd.replace('from tally import most_common','from top_words import top_words as most_common'));
+  assert.equal(topBuild(good.builds)['wordfreq.py'],odd.replace('from tally import most_common','from top_words import top_words as most_common'),'linked before the top\'s box ran');
   assert.equal(turnsOf(good.calls,'Command'),1);
-  linted(good.room,good.calls,[odd,...Object.keys(good.builds[0])]);
+  linted(good.room,good.calls,[odd,...good.builds.flatMap(b=>Object.keys(b))]);
   // Second room: the linker changes logic too; the edit is refused, the run
   // fails, and the failure goes to the reader's piece, which repairs it.
   const bad=v8Room({card:WF_CARD,split:WF_SPLIT,goal:WF_GOAL,answers:wfAnswers({wordfreq:odd,wordfreqFixed:WORDFREQ}),
@@ -170,8 +176,8 @@ test('A4 with the linker model: a reference no rename of the runtime\'s joins go
   assert.match(events(bad.room,'link_edit_rejected')[0].body,/edit changes more than names at line 6/);
   const p=bad.room.problems("stage='check'");
   assert.ok(p.length>=1);
-  const command=bad.room.children('root')[2];
-  assert.ok(p.every(x=>x.trail.find(t=>t.action==='assign')?.to===command.id),'routed to the reader\'s owner: '+JSON.stringify(p.map(x=>x.trail)));
+  const command=bad.room.children('root')[2],line=[command.id,workerOf(bad.room,command.id)];
+  assert.ok(p.every(x=>line.includes(x.trail.find(t=>t.action==='assign')?.to)),'routed to the reader\'s owner: '+JSON.stringify(p.map(x=>x.trail)));
   assert.equal(turnsOf(bad.calls,'Command'),2,'the Command piece repaired its reference');
   assert.equal(turnsOf(bad.calls,'Ranker'),1);assert.equal(turnsOf(bad.calls,'Counter'),1);
 });
@@ -203,10 +209,10 @@ test('S4b\'s Python CLI room: a command that imports another piece\'s function n
   const st=room.snapshot().requirement_status;
   assert.ok(Object.values(st).every(x=>x.passed===true),JSON.stringify(st));
   assert.ok(Object.keys(st).length>=3,'R1, R2 and the implicit example check of to_fahrenheit');
-  assert.equal(builds.length,1);
+  assert.equal(builds.length,3,'the converter\'s and the formula\'s managers, then the top (the guide\'s check is a file check)');
   assert.ok(!JSON.stringify(events(room)).includes('ModuleNotFoundError'));
-  const formula=room.children('root')[1];
-  assert.match(builds[0]['to_fahrenheit.py'],new RegExp(`from components\\.${packageDirectory('Formula',formula.id)}\\.formula import to_fahrenheit`));
+  const formula=writers(room)[1];
+  assert.match(topBuild(builds)['to_fahrenheit.py'],new RegExp(`from components\\.${packageDirectory('Formula',formula.id)}\\.formula import to_fahrenheit`));
   for(const label of ['Converter','Formula','Usage guide'])assert.equal(turnsOf(calls,label),1);
   linted(room,calls);
 });
@@ -238,15 +244,15 @@ test('A3 (JavaScript): a library whose entry requires the other pieces\' functio
   await drain();
   assert.equal(room.get('status'),'complete',tail(room));
   assert.deepEqual(passedOf(room),{R1:true,R2:true});
-  const [,to,from]=room.children('root');
-  const linked=builds[0]['index.js'];
+  const [,to,from]=writers(room);
+  const linked=topBuild(builds)['index.js'];
   assert.equal(linked,`const { toRoman } = require('./components/${packageDirectory('To roman',to.id)}/roman-out.js');\nconst { fromRoman } = require('./components/${packageDirectory('From roman',from.id)}/roman-in.js');\nmodule.exports = { toRoman, fromRoman };\n`);
   // Only the reference paths changed (string tokens on reference lines).
   const js=toolchainById('javascript'),a=textTokens(ENTRY,js),b=textTokens(linked,js);
   assert.equal(a.length,b.length);
   assert.deepEqual(a.map((t,i)=>t.value===b[i].value?null:t.type).filter(Boolean),['string','string']);
-  assert.ok(!Object.keys(builds[0]).some(p=>p.startsWith('glue/')),'JavaScript needs no glue');
-  assert.equal(room.files(room.children('root')[0].id)[0].revision,1,'the entry piece\'s own file is unchanged');
+  assert.ok(!Object.keys(topBuild(builds)).some(p=>p.startsWith('glue/')),'JavaScript needs no glue');
+  assert.equal(room.files(writers(room)[0].id)[0].revision,1,'the entry piece\'s own file is unchanged');
   assert.match(events(room,'link_auto')[0].body,/index\.js: '\.\/toRoman' → '\.\/components\/p_to_roman_[0-9a-f]{8}\/roman-out\.js'/);
   linted(room,calls);
 });
@@ -283,11 +289,11 @@ test('a browser page with two scripts importing each other: the page\'s script p
   const st=passedOf(room);
   assert.equal(st.R2,true,tail(room));
   if(!browserReady){assert.equal(st.R1,true,tail(room));assert.equal(room.get('status'),'complete',tail(room));}
-  const store=room.children('root')[1],D=packageDirectory('Store',store.id),bundle=builds[0];
+  const store=writers(room)[1],D=packageDirectory('Store',store.id),bundle=topBuild(builds);
   assert.equal(bundle['index.html'],TODO_HTML.replace('src="scripts/app.js"','src="app.js"'));
   assert.equal(bundle['app.js'],APP_JS.replace("'./addTodo.js'",`'./components/${D}/store.js'`));
   assert.equal(bundle[`components/${D}/store.js`],STORE_JS.replace("'./ids'","'./ids.js'"),'an ES module path names its file');
-  assert.equal(room.files(room.children('root')[0].id).find(f=>f.path==='index.html').revision,1);
+  assert.equal(room.files(writers(room)[0].id).find(f=>f.path==='index.html').revision,1);
   linted(room,calls);
 });
 
@@ -304,15 +310,19 @@ test('runUnresolved: a run\'s unresolved names per reader by its frame or its re
   assert.deepEqual(room.runUnresolved(new Map([results.get('R1')].map(r=>['R9',r])),bundle,card),[{path:'cli.py',row:'python',name:'zebraName'}]);
 });
 
-test('a Python file that would sit at the project root under a standard name (json.py) is refused at the gate, naming why; the project completes without it',{skip:!hasPython&&'python3 is not installed'},async()=>{
+// v8 live 5: the top hands its work to one worker, a piece below it, whose file no contract places sits under its package folder:
+// there json.py hides nothing, so the gate keeps it (the refusal at the project root is shadowsStandard's, tested below).
+test('a Python file under a standard name (json.py) that no contract places sits under its piece\'s folder, where it hides no standard module; the project completes',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const card={card:1,summary:'A greeting command',languages:['python'],deliverables:[{name:'greet',kind:'command',path:'greet.py',does:'prints a greeting'}],
     requirements:[{id:'R1',says:'It greets',source:'a command that greets',serves:['greet'],check:{kind:'command',run:'greet',expect:{exit:0,stdout_has:['hello']}}}],decisions:[]};
   const {room,calls,drain}=v8Room({card,goal:'A command that greets.',answers:{'Root objective':[blocks([{path:'greet.py',content:'print("hello")\n'},{path:'json.py',content:'def dumps(x):\n    return str(x)\n'}])]}});
   await room.start('A command that greets.',10,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'complete',tail(room));
-  assert.match(events(room,'file_refused')[0].body,/json\.py would take the name of the standard library's json at the project root and hide it from the whole project; give the file another name, such as json_tools\.py/);
-  assert.deepEqual(room.files('root').map(f=>f.path),['greet.py']);
+  assert.equal(events(room,'file_refused').length,0);
+  assert.deepEqual(room.files(workerOf(room,'root')).map(f=>f.path),['greet.py','json.py']);
+  const shipped=(await room.appFiles()).files.map(f=>f.path);
+  assert.ok(!shipped.includes('json.py')&&shipped.some(p=>/^components\/p_root_objective_[0-9a-f]{8}\/json\.py$/.test(p)),shipped.join(', '));
   linted(room,calls);
 });
 

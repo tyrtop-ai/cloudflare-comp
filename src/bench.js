@@ -388,7 +388,7 @@ export async function loadDataset(dataset, {fetch, policy, limit = BENCH_LIMITS.
 // outages. ControlRoom.benchSummary counts the room's error events that match.
 export const INFRA_ERROR = /AiError|InferenceUpstream|\b(?:3040|3043|429|500|502|503|504)\b|capacity|rate.?limit|overloaded|unavailable|temporarily|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|fetch failed|network|socket hang up|Artifacts \w+ failed|BUILD_EXECUTORS|Container|executor/i;
 const HOLD_ERROR = new Set(['card_failed', 'card_blocked', 'checks_blocked']);
-const HOLD_FAIL = new Set(['checks_failed', 'checks_exhausted', 'benchmark_failed']);
+const HOLD_FAIL = new Set(['checks_failed', 'checks_exhausted', 'checks_doubtful', 'benchmark_failed']);
 // One task room's outcome from its summary (ControlRoom.benchSummary), or
 // null while it is still going:
 //  - pass: every card requirement passed; fail: one failed (S4b records

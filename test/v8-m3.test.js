@@ -14,7 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {liveRoom, events, fileBlocks, verifyCard, snapshotHash, twoWorkers, linkAndCompile} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, verifyCard, snapshotHash, twoWorkers, linkAndCompile, workerOf} from './helpers/room.js';
 import {placeChecks} from '../src/piece.js';
 import {CLEF} from '../src/prompts.js';
 import {packageDirectory} from '../src/assembly.js';
@@ -64,7 +64,7 @@ const FILES = {
 };
 // Clef: the root and the two parts split; reach(says) answers piece_reach for a check (default yes).
 const clefWith = ({reach = () => 0.9} = {}) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (SPLITS.some(s => String(input.state.assigned_behavior).startsWith(s)) ? 0.9 : 0.1)
+  k === 'should_split' ? (SPLITS.some(s => String((input.state.assigned_behavior??input.state.assignment)).startsWith(s)) ? 0.9 : 0.1)
   : k.startsWith('piece_reach_') ? reach(input.state.checks.find(c => c.slot === Number(k.split('_').pop()))?.says, input.state.piece) : 0.9}]))});
 const scripted = (answers = {}) => {
   const seen = new Map();
@@ -106,7 +106,10 @@ test('M3: every manager in a v8 split has a builder of its own, which stores its
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.deepEqual(passedOf(room), {R1: true, R2: true, R3: true, R4: true, R5: true, R6: true});
   const at = ids(room), managers = room.allNodes().filter(n => n.role !== 'builder' && room.manager(n.id)).map(n => n.id);
-  assert.deepEqual(managers.sort(), ['root', at['Loud part'], at['Quiet part']].sort());
+  // v8 live 5: every piece is a manager; a piece that did not split handed its work down to one worker.
+  const leaves = ['Shouter', 'Louder', 'Whisperer', 'Softener', 'Notes'];
+  assert.deepEqual(managers.sort(), ['root', at['Loud part'], at['Quiet part'], ...leaves.map(l => at[l])].sort());
+  for (const l of leaves) assert.equal(room.node(workerOf(room, at[l])).role, 'worker', l);
   for (const m of managers) {
     const b = room.builderOf(m);
     assert.equal(b?.status, 'done', `${m} has a builder`);
@@ -115,18 +118,22 @@ test('M3: every manager in a v8 split has a builder of its own, which stores its
   }
   // Each worker's files reach the level above through its manager's piece: the builder of the row above it stored them.
   for (const l of ['Shouter', 'Louder', 'Notes']) {
-    const w = room.node(at[l]), b = room.builderOf(w.parent);
+    const w = room.node(workerOf(room, at[l])), b = room.builderOf(w.parent);
     assert.ok(room.db().exec('SELECT COUNT(*) AS n FROM piece_files WHERE builder=? AND owner=?', b.id, w.id).toArray()[0].n > 0, `${l}'s files are in ${w.parent}'s piece`);
   }
   // Scope by lowest common manager: each part's checks are its own, the ones that span parts the top's.
-  assert.deepEqual(held(room, at['Loud part']), ['R1', 'R2']);
-  assert.deepEqual(held(room, at['Quiet part']), ['R3', 'R4']);
-  assert.deepEqual(held(room, 'root'), ['R5', 'R6']);
+  // v8 live 5: R1 is the shouter's alone, R3 the whisperer's, R5 the notes': each held by that piece's manager.
+  assert.deepEqual(held(room, at['Loud part']), ['R2']);
+  assert.deepEqual(held(room, at.Shouter), ['R1']);
+  assert.deepEqual(held(room, at['Quiet part']), ['R4']);
+  assert.deepEqual(held(room, at.Whisperer), ['R3']);
+  assert.deepEqual(held(room, at.Notes), ['R5']);
+  assert.deepEqual(held(room, 'root'), ['R6']);
   // R2 spans two children of the loud part (shout and loud): it ran there, in that part's own box, once; and (v8
   // ship-verified) once more in the top's box, on the bundle that ships, with every other check of the card.
   assert.equal(boxesWith(boxes, 'R2').length, 2);
   const [loudBox, topBox] = boxesWith(boxes, 'R2');
-  assert.deepEqual(loudBox.ids.sort(), ['R1', 'R2']);
+  assert.deepEqual(loudBox.ids.sort(), ['R2']);
   assert.ok(!loudBox.files.some(f => /whisper|NOTES/.test(f)), 'the loud part\'s box holds only its own piece');
   assert.deepEqual(topBox.ids.sort(), ['R1', 'R2', 'R3', 'R4']);
   assert.deepEqual(topBox.files.sort(), [...(await room.bundleFiles('root')).files.keys()].sort(), 'the top\'s box holds the bundle that ships');
@@ -139,11 +146,12 @@ test('M3: every manager in a v8 split has a builder of its own, which stores its
   assert.equal(app.passed, true);
   // Spans per manager show when each piece was linked, judged and compiled.
   for (const name of ['piece_link', 'piece_checks']) assert.deepEqual(pieceSpans(room, name).map(s => JSON.parse(JSON.stringify(s.attrs)).manager).filter((x, i, a) => a.indexOf(x) === i).sort(), managers.sort(), name);
-  assert.deepEqual(pieceSpans(room, 'piece_clef').map(s => s.attrs.manager).sort(), [at['Loud part'], at['Quiet part']].sort(), 'Clef is asked below the top only');
+  assert.deepEqual(pieceSpans(room, 'piece_clef').map(s => s.attrs.manager).sort(), [at['Loud part'], at['Quiet part'], at.Shouter, at.Whisperer, at.Notes].sort(), 'Clef is asked below the top only, where a check is held');
   // A box per part: each runs its calls and compiles its files (the rows' syntax step). v8 M3 review (M4): every file of
   // the top's final bundle was compiled, exactly as it ships; the top's file checks ran in the Worker. v8 ship-verified: the
   // top opened one box of its own, for the card's other checks on its bundle (before: none).
-  assert.deepEqual(pieceSpans(room, 'piece_box').map(s => s.attrs.manager).sort(), [at['Loud part'], at['Quiet part'], 'root'].sort());
+  // v8 live 5: a box per piece's manager, the leaf pieces' too (Louder's and Softener's hold no check: they compile their files).
+  assert.deepEqual(pieceSpans(room, 'piece_box').map(s => s.attrs.manager).sort(), managers.filter(m => m !== at.Notes).sort());
   assert.deepEqual(uncompiled(room, (await room.bundleFiles('root')).files), []);
   assert.ok(events(room, 'checks_placed').length >= 1);
 });
@@ -187,14 +195,15 @@ test('M3: a check passed in a piece is not run again in its piece while the piec
   // v8 ship-verified: and in the top's box on each bundle the top verified, before and after the notes' repair (before: never).
   for (const r of ['R1', 'R2', 'R3', 'R4']) assert.equal(boxesWith(boxes, r).length, 3, r);
   const at = ids(room), digestOf = async id => snapshotHash((await room.bundleFiles(id)).files);
-  assert.equal(room.read('piece_pass:R1', null).at[at['Loud part']].digest, await digestOf(at['Loud part']));
-  // The shouter's file changes: R1 and R2 have no pass on the loud part's bundle, and the run is not finished.
-  await room.putFile(at.Shouter, 'shout.py', 'def shout(s):\n    return str(s).upper() + "!"  # louder\n');
-  assert.equal(room.passedOn(CARD.requirements[0], await digestOf(at['Loud part'])), false);
-  assert.equal(room.passedOn(CARD.requirements[2], await digestOf(at['Quiet part'])), true, 'the quiet part\'s pass holds on its bundle');
+  // v8 live 5: R1 is the shouter's piece's own check (its manager holds it).
+  assert.equal(room.read('piece_pass:R1', null).at[at.Shouter].digest, await digestOf(at.Shouter));
+  // The shouter's worker's file changes: R1 has no pass on the shouter's bundle, and the run is not finished.
+  await room.putFile(workerOf(room, at.Shouter), 'shout.py', 'def shout(s):\n    return str(s).upper() + "!"  # louder\n');
+  assert.equal(room.passedOn(CARD.requirements[0], await digestOf(at.Shouter)), false);
+  assert.equal(room.passedOn(CARD.requirements[2], await digestOf(at.Whisperer)), true, 'the whisperer\'s pass holds on its bundle');
   assert.equal(room.runFinished(), false);
-  // Its manager joins the changed piece and runs them again in the loud part's box; the quiet part's are not run there.
-  room.wake(at['Loud part']);
+  // Its manager joins the changed piece and runs R1 again in its box; the quiet part's are not run there.
+  room.wake(at.Shouter);
   room.set('status', 'running'); room.busy = true;
   await room.drive(20);
   assert.equal(boxesWith(boxes, 'R1').filter(b => inPart(b, /whisper/)).length, 2);
@@ -212,9 +221,12 @@ test('M3: Clef\'s NO rolls a check up to the row above, where it runs; a hard-fa
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   const at = ids(room);
-  assert.deepEqual(held(room, at['Loud part']), ['R1']);
-  assert.deepEqual(held(room, at['Quiet part']), ['R3']);
-  assert.deepEqual(held(room, 'root').sort(), ['R2', 'R4', 'R5', 'R6']);
+  // v8 live 5: R1, R3 and R5 are held by the shouter's, the whisperer's and the notes' managers.
+  assert.deepEqual(held(room, at['Loud part']), []);
+  assert.deepEqual(held(room, at.Shouter), ['R1']);
+  assert.deepEqual(held(room, at['Quiet part']), []);
+  assert.deepEqual(held(room, at.Whisperer), ['R3']);
+  assert.deepEqual(held(room, 'root').sort(), ['R2', 'R4', 'R6']);
   assert.deepEqual(room.read(`rolled:${at['Loud part']}`, []), ['R2']);
   assert.deepEqual(room.read(`rolled:${at['Quiet part']}`, []), ['R4']);
   const rolled = events(room, 'check_rolled_up');
@@ -242,13 +254,13 @@ test('M3: a failure about something outside the piece rolls up instead of becomi
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   const at = ids(room);
-  // Inside: R1 failed in the loud part's box, and the loud part routed it to its shouter, which repaired it; nothing about R1 reached the top.
+  // Inside: R1 failed in the shouter's box (v8 live 5: its manager holds it), which routed it to its worker, which repaired it; nothing about R1 reached the top.
   const r1 = room.problems("stage='check'").filter(p => p.facts?.requirement?.id === 'R1');
-  assert.ok(r1.length && r1.every(p => p.source === at['Loud part']), JSON.stringify(r1.map(p => [p.source, p.holder])));
-  assert.ok(r1.some(p => p.trail.some(t => t.action === 'assign' && t.to === at.Shouter)));
+  assert.ok(r1.length && r1.every(p => p.source === at.Shouter), JSON.stringify(r1.map(p => [p.source, p.holder])));
+  assert.ok(r1.some(p => p.trail.some(t => t.action === 'assign' && t.to === workerOf(room, at.Shouter))));
   assert.ok(!room.problems("source='root'").some(p => p.facts?.requirement?.id === 'R1'));
   // v8 ship-verified: R1 ran twice in the loud part's box, then in the top's on the bundle that ships (before: the part's only).
-  assert.deepEqual(boxesWith(boxes, 'R1').map(b => b.files.some(f => /whisper|NOTES/.test(f))).slice(0, 2), [false, false], 'R1 ran twice in the loud part\'s box');
+  assert.deepEqual(boxesWith(boxes, 'R1').map(b => b.files.some(f => /whisper|NOTES/.test(f))).slice(0, 2), [false, false], 'R1 ran twice in the shouter\'s box');
   assert.ok(boxesWith(boxes, 'R1').slice(2).every(b => b.files.some(f => /whisper|NOTES/.test(f))), 'and then only in the top\'s');
   // Outside: R4's refused connection rolled up; the quiet part repaired nothing for it.
   const up = events(room, 'check_rolled_up').find(e => e.actor === at['Quiet part']);
@@ -267,7 +279,7 @@ test('M3: assembly is hierarchical: a relink made at a part stays with its piece
   await room.start(GOAL, 60, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
-  const at = ids(room), lb = room.builderOf(at['Loud part']), path = `components/${packageDirectory('Louder', at.Louder)}/loud.py`;
+  const at = ids(room), lb = room.builderOf(at['Loud part']), louder = workerOf(room, at.Louder), path = `components/${packageDirectory('Louder', louder)}/loud.py`;
   assert.equal(asked.length, 1, 'one link model call, at the loud part');
   assert.match(JSON.stringify(asked[0]), /You see one branch of a larger project/);
   assert.ok(room.read(`link_fixes:${lb.id}`, {})[path], 'the fix is kept on the loud part\'s builder');
@@ -276,7 +288,7 @@ test('M3: assembly is hierarchical: a relink made at a part stays with its piece
   assert.equal(stored(lb.id), fixed);
   assert.equal(stored(room.builderOf('root').id), fixed, 'the top joined the loud part\'s piece as it was linked there');
   assert.deepEqual(room.read(`link_fixes:${room.builderOf('root').id}`, {}), {});
-  assert.equal(room.files(at.Louder).find(f => f.path === 'loud.py').revision, 1, 'the worker\'s own file is unchanged');
+  assert.equal(room.files(louder).find(f => f.path === 'loud.py').revision, 1, 'the worker\'s own file is unchanged');
   // v8 ship-verified: in the loud part's box and in the top's (before: once).
   assert.equal(boxesWith(boxes, 'R2').length, 2);
   assert.equal((await room.appFiles()).files.find(f => f.path === path).content, fixed);

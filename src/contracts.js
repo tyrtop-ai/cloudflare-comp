@@ -235,6 +235,19 @@ export function contractLine(c) {
   return `${kind === 'function' ? 'function ' : ''}${contractHead(c)}${body ? ': ' + body : ''}`;
 }
 
+// v8 live 5: a contract as the split gate reads it, one line: its kind, name,
+// path, what it does and the requirements it serves:
+//   file app.py (app.py): Runs the server; serves R1, R2
+// The interface its checks use and its examples are left out: they are check
+// wording, and say nothing of whether the work divides. served: the ids that
+// may be shown (a hidden requirement's id stays out); null shows them all.
+export function gateLine(c, served = null) {
+  if (!c || typeof c.name !== 'string') return '';
+  const ids = (Array.isArray(c.serves) ? c.serves : []).filter(s => !served || served.has(s));
+  const does = c.does ? stop(String(c.does)) : '';
+  return `${kindOf(c)} ${c.name}${c.path ? ` (${c.path})` : ''}${does ? ': ' + does : ''}${ids.length ? `; serves ${ids.join(', ')}` : ''}`;
+}
+
 // v8 (S6, ROLE.worker): the contracts of other parts a piece may use, as
 // data, each with the exact reference its writer writes: a function by the
 // import_line of the toolchain row it is written in (its path's row, else the

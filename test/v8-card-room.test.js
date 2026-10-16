@@ -3,7 +3,7 @@
 // workers; everything else is the real ControlRoom.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liveRoom, events, fileBlocks } from './helpers/room.js';
+import { liveRoom, events, fileBlocks, workerOf } from './helpers/room.js';
 import { systemPrompt } from '../src/prompts.js';
 import { lintText, composedTexts, saysData } from './helpers/prompt-lint.js';
 import { contractLine } from '../src/contracts.js';
@@ -35,7 +35,7 @@ const FILES = {
 };
 // Clef: Root's goal splits, a piece does not; every scope and vetting question passes.
 const clef = (p = {}) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(GOAL) ? 0.9 : 0.1) : k.startsWith('requirement_') ? (typeof p.requirement === 'function' ? p.requirement(input.state.requirements.find(r => r.slot === Number(k.split('_').pop()))) : p.requirement ?? 0.9) : 0.9}]))});
+  k === 'should_split' ? (String((input.state.assigned_behavior??input.state.assignment)).startsWith(GOAL) ? 0.9 : 0.1) : k.startsWith('requirement_') ? (typeof p.requirement === 'function' ? p.requirement(input.state.requirements.find(r => r.slot === Number(k.split('_').pop()))) : p.requirement ?? 0.9) : 0.9}]))});
 const v8Room = ({card = () => CARD, split = () => PIECES, clefOpts} = {}) => liveRoom({
   card, split, clef: clef(clefOpts),
   // v8 S6: workers answer in the raw file-block format (§3.2).
@@ -85,10 +85,13 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.deepEqual(kids.map(c => c.label), ['Run guide', 'Hello script', 'Builder']);
   assert.deepEqual(kids[0].interfaces.map(c => [c.name, c.kind, c.path, c.serves]), [['README.md', 'doc', 'README.md', ['R1']]]);
   // The workers wrote their files and finished under the per-kind done rule.
-  assert.deepEqual(room.files('root.1').map(f => f.path), ['README.md']);
-  assert.deepEqual(room.files('root.2').map(f => f.path), ['hello.py']);
+  // v8 live 5: each piece is a manager that handed its work down to one worker.
+  assert.deepEqual(room.files(workerOf(room, 'root.1')).map(f => f.path), ['README.md']);
+  assert.deepEqual(room.files(workerOf(room, 'root.2')).map(f => f.path), ['hello.py']);
+  assert.deepEqual(['root.1', 'root.2'].map(id => [room.node(id).role, room.node(workerOf(room, id)).role]), [['manager', 'worker'], ['manager', 'worker']]);
   assert.equal(room.node('root.1').status, 'done');
   assert.equal(room.node('root.2').status, 'done');
+  assert.equal(room.node('root.1.1').status, 'done');
   assert.equal(events(room, 'contract_returned').length, 0, events(room, 'contract_returned').map(e => e.body).join('\n'));
   assert.equal(events(room, 'missing_code').length, 0);
   // The worker heard its contract by kind, not as an exported function.
@@ -96,7 +99,7 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   // v8 M3: every manager hands its finished children to a builder of its own, which joined their
   // work into Root's piece; the card's checks ran over that piece and the room completed.
   const managers = room.allNodes().filter(n => room.manager(n.id) && n.role !== 'builder');
-  assert.deepEqual(managers.map(n => n.id), ['root']);
+  assert.deepEqual(managers.map(n => n.id), ['root', 'root.1', 'root.2']);
   for (const m of managers) assert.equal(room.builderOf(m.id)?.status, 'done', `${m.id} has a builder of its own`);
   assert.ok(room.read(`piece:${room.builderOf('root').id}`, null)?.digest, 'its piece is stored on the builder\'s row with a digest');
   // The checks ran in Root's own box, over its piece, and the run finished on the bundle Root verified.
@@ -104,7 +107,8 @@ test('v8 room: the card comes first, Root promises its deliverables, and a doc p
   assert.equal(room.read('verified:root', null)?.owned, room.ownedDigest('root'));
   assert.equal(room.get('status'), 'complete');
   assert.equal(room.snapshot().pause, null);
-  assert.equal(events(room, 'checks_passed').length, 1);
+  // v8 live 5: each piece's manager runs the checks it holds, and the top runs them again on what ships.
+  assert.deepEqual(events(room, 'checks_passed').map(e => e.actor).sort(), ['root', 'root.1', 'root.2']);
   assert.equal(room.node('root').status, 'done');
   // The dashboard: the snapshot carries the card; a delta only when its card revision differs.
   const c = room.snapshot().cursor, delta = rev => room.stateDelta({since: c.events, agents_since: c.agents, files_since: c.files, exports: c.exports, run: c.run, card_rev: rev});
@@ -190,7 +194,7 @@ test('the pipeline is fixed when a room starts: Continue keeps it', async () => 
 
 // ------------------------------------------------------------ v8 S3 review
 test('review: Clef failing to vet keeps the card, unvetted, with no second writer call', async () => {
-  const failing = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, k.startsWith('requirement_') ? {} : {noul: k === 'should_split' ? (String(input.state.assigned_behavior).startsWith(GOAL) ? 0.9 : 0.1) : 0.9}]))});
+  const failing = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, k.startsWith('requirement_') ? {} : {noul: k === 'should_split' ? (String((input.state.assigned_behavior??input.state.assignment)).startsWith(GOAL) ? 0.9 : 0.1) : 0.9}]))});
   const {room, calls, drain} = liveRoom({card: () => CARD, split: () => PIECES, clef: failing,
     leaf: user => {const f = FILES[user.your_label]; return f ? {summary: 'w', files: [f], done: true} : {summary: 'n', done: false};}});
   await room.start(GOAL, 40, {pipeline: 'v8'});

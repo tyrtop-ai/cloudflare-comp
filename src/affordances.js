@@ -257,8 +257,13 @@ export function cardScope(card, {goal = ''} = {}) {
   for (const a of affordances) if (!isValue(a)) { shown.add(a); keep.add(a); }
   for (const p of paths) keep.add(p);
   for (const d of dels) if (d?.name) keep.add(d.name);
+  // v8 live 5: a text shown as wording is shown whole: another check's value that shares a word with it masks only itself
+  // (the to-do card's R1 read <… type='text' id='…'>, as R2's "#todo-input { padding: 8px; }" is a value); a hidden
+  // requirement's words stay masked everywhere.
+  const hiddenTokens = new Set([...hiddenValues].flatMap(tokensOf).map(w => w.toLowerCase()));
+  const shownWords = [...new Set([...wording].flatMap(tokensOf))].filter(w => !hiddenTokens.has(w.toLowerCase()));
   return {secrets: [...secrets].filter(s => s.trim().length >= 3).sort((a, b) => b.length - a.length),
-    whole: [...whole], keep: [...keep].filter(k => !isValue(k)), literal, shown, isValue, wording,
+    whole: [...whole], keep: [...keep].filter(k => !isValue(k)), shownWords, literal, shown, isValue, wording,
     isWording: (s, check) => typeof s === 'string' && (check ? !!wordingBy.get(checkKey(check))?.has(s) : wording.has(s))};
 }
 
@@ -288,7 +293,7 @@ export function maskSecrets(text, secrets, keep = [], whole = []) {
   return t;
 }
 // A text a worker reads, masked with a card's scope.
-export const maskWith = (text, scope) => maskSecrets(text, scope.secrets, scope.keep, scope.whole);
+export const maskWith = (text, scope) => maskSecrets(text, scope.secrets, [...scope.keep, ...(scope.shownWords || [])], scope.whole);
 
 // ------------------------------------------------------------ shapes
 // The argv a check runs, each value replaced by its kind: the command,
@@ -410,9 +415,12 @@ function checkFacts(r, scope, pages, routes, texts = new Map()) {
   }
   if (c.kind === 'file' && c.json) own.push(`${r.id} reads ${c.path} as JSON`);
   // Live 3: the wording a file check looks for is part of the spec.
-  if (c.kind === 'file' && listOf(c.has).some(w)) own.push(`${c.path} contains ${listOf(c.has).filter(w).map(q).join(', ')}`);
+  // v8 live 5: matched modulo whitespace runs (checks.js hasText), which the fact says.
+  if (c.kind === 'file' && listOf(c.has).some(w)) own.push(`${c.path} contains ${listOf(c.has).filter(w).map(q).join(', ')}${WHITESPACE_NOTE}`);
   return {own};
 }
+// v8 live 5: how a file check reads whitespace, as the interface says it.
+export const WHITESPACE_NOTE = ', where any run of spaces and line breaks matches any other';
 // Each served deliverable's interface facts: Map name → [fact], each masked
 // with the card's scope as a last pass. Only the requirements an agent may
 // read (not hidden, with a check that runs) give facts; every check's values
@@ -420,7 +428,7 @@ function checkFacts(r, scope, pages, routes, texts = new Map()) {
 export function interfaceFacts(card, {goal = '', scope = cardScope(card, {goal})} = {}) {
   const out = new Map(), pages = new Map(), texts = new Map(), routes = new Map(), pageServes = new Map(), routeServes = new Map();
   // The facts' own words (their fixed phrasing) are never a value's: only the names put into them can be.
-  const clean = fact => maskSecrets(fact, scope.secrets, [...scope.keep, ...FACT_WORDS], scope.whole).slice(0, FACT_CHARS);
+  const clean = fact => maskSecrets(fact, scope.secrets, [...scope.keep, ...(scope.shownWords || []), ...FACT_WORDS], scope.whole).slice(0, FACT_CHARS);
   const push = (name, fact) => { const list = out.get(name) || [], f = clean(fact); if (!list.includes(f) && list.length < FACTS) list.push(f); out.set(name, list); };
   for (const r of card?.requirements || []) {
     if (!r?.check || r.hidden || r.untested || r.check.kind === 'untested') continue;
