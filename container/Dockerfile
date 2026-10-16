@@ -2,7 +2,7 @@ FROM node:lts-bookworm-slim
 # v8 S4a: Python (with pytest, for project checks) and Playwright's Chromium
 # headless shell (browser checks); util-linux gives the checks prlimit, unshare
 # and nsenter. Channels only (the base is the Node LTS channel, decision
-# U12), no versions pinned: every card verification records the versions it
+# U12), no versions pinned: every verification records the versions it
 # ran (the report's inventory).
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest ca-certificates \
  && rm -rf /var/lib/apt/lists/*

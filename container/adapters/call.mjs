@@ -1,6 +1,6 @@
 // JavaScript call adapter (v8 §4.6): calls named functions of one bundle
 // module in ONE process, step after step, keeping saved results, and reports
-// each step as a JSON line. The runner (build-runner.mjs verifyCard) owns the
+// each step as a JSON line. The runner (build-runner.mjs verifyChecks) owns the
 // comparison: steps arrive without their expectations.
 //
 // argv[2]: a file holding this run's nonce. It is read and deleted before the

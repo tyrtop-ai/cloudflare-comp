@@ -19,7 +19,7 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // GNU `timeout` sends SIGTERM to this runner, clean up those detached groups
 // before exiting; GNU timeout cannot signal them by group membership alone.
 const activeProcessGroups=new Set();
-// v8 card checks: the CHECK_TAG of every live check process tree.
+// v8 validations: the CHECK_TAG of every live check process tree.
 const liveTags=new Set();
 const INSTALL_TIMEOUT_MS=85_000;
 const NPM_CACHE_DIR=path.join(process.env.BUILD_RUNNER_WORKDIR||'/work','npm-cache');
@@ -389,7 +389,7 @@ export async function verifyBuild(request,{runStage=run}={}) {
   } finally {await rm(folder,{recursive:true,force:true});}
 }
 // ---------------------------------------------------------------------------
-// v8 card verification (spec §4.1 step 4, §4.4-4.7): mode 'card'. One exec
+// v8 verification of a level's validations (spec §4.1 step 4, §4.4-4.7): mode 'checks'. One exec
 // runs the stages in order: syntax per toolchain row, install (refused for
 // now: packages are 'none'), project checks, start the runs, command / call /
 // http checks, browser checks, stop the runs. Every check runs even after one
@@ -416,23 +416,23 @@ export async function verifyBuild(request,{runStage=run}={}) {
 // the expected values can still return them; that is why the room must
 // never show a requirement's check to the workers (S4b).
 // ---------------------------------------------------------------------------
-export const CARD_LIMITS=Object.freeze({total_ms:200_000,check_ms:20_000,step_ms:5_000});
+export const CHECK_LIMITS=Object.freeze({total_ms:200_000,check_ms:20_000,step_ms:5_000});
 // Per check process: RLIMIT_NPROC counts every thread of the user (a Node
 // process alone has about 11), RLIMIT_DATA bounds the heap and private
 // mappings (RLIMIT_AS would break WebAssembly's large reservations).
 export const CHECK_RLIMITS=Object.freeze({nproc:64,fsize:64*1024*1024,data:1024*1024*1024});
-const CARD_CHECK_KINDS=new Set(['file','command','call','http','browser']);
-const MAX_CARD_CHECKS=64,MAX_CALL_STEPS=20,READY_MS=10_000,DETAIL_CHARS=300;
+const CHECK_KINDS=new Set(['file','command','call','http','browser']);
+const MAX_CHECKS=64,MAX_CALL_STEPS=20,READY_MS=10_000,DETAIL_CHARS=300;
 const ADAPTER_DIR=fileURLToPath(new URL('./adapters/',import.meta.url));
 const HTTP_CHECK=path.join(ADAPTER_DIR,'http-check.mjs');
 // A row names its adapter at its image path (/opt/adapters/…); outside the
 // image (the tests) the adapters sit beside this file.
 export const adapterPath=p=>String(p).startsWith('/opt/adapters/')?path.join(ADAPTER_DIR,String(p).slice(14)):String(p);
 const clamp=(v,lo,hi,d)=>Number.isFinite(Number(v))&&v!==null&&v!==''?Math.max(lo,Math.min(hi,Math.round(Number(v)))):d;
-export function cardLimits(raw) {
+export function checkLimits(raw) {
   const o=raw&&typeof raw==='object'?raw:{};
   // The total stays inside the exec's 240 s timeout, with room to report.
-  return {total_ms:clamp(o.total_ms,1000,220_000,CARD_LIMITS.total_ms),check_ms:clamp(o.check_ms,500,60_000,CARD_LIMITS.check_ms),step_ms:clamp(o.step_ms,200,30_000,CARD_LIMITS.step_ms)};
+  return {total_ms:clamp(o.total_ms,1000,220_000,CHECK_LIMITS.total_ms),check_ms:clamp(o.check_ms,500,60_000,CHECK_LIMITS.check_ms),step_ms:clamp(o.step_ms,200,30_000,CHECK_LIMITS.step_ms)};
 }
 const clip=(s,n=DETAIL_CHARS)=>{const t=String(s??'');return t.length>n?t.slice(0,n-1)+'…':t;};
 const show=(v,n=60)=>{let t;try{t=JSON.stringify(v);}catch{t=String(v);}return clip(t===undefined?'undefined':t,n);};
@@ -619,7 +619,7 @@ export function splitWords(text) {
 }
 const extensionOf=p=>{const b=String(p).split('/').pop(),d=b.lastIndexOf('.');return d>0?b.slice(d).toLowerCase():'';};
 const rowOfPath=(p,rows)=>rows.find(r=>(r.extensions||[]).includes(extensionOf(p)))||null;
-// A check's command line as argv (the card's argv, or its run text split
+// A check's command line as argv (the check's argv, or its run text split
 // without a shell): a command deliverable's name (plan.commands maps it to
 // argv), a bundle file run by its row's run_file (never looked up on PATH),
 // or an executable one of the rows lists.
@@ -655,12 +655,12 @@ const lastLines=(text,n=2)=>{
 const escapeRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 // The runner's own paths never reach a detail or an output: each folder
 // (with or without a trailing slash, or as a file:// URL) becomes the
-// bundle-relative path or '.', and any other card folder '<work>'.
+// bundle-relative path or '.', and any other checks folder '<work>'.
 export function redactPaths(text,dirs,base) {
   let out=String(text??'');
   for(const d of [...new Set(dirs.filter(Boolean))].sort((a,b)=>b.length-a.length))
     out=out.split('file://'+d+'/').join('').split(d+'/').join('').split(d).join('.');
-  if(base)out=out.replace(new RegExp(escapeRe(base.replace(/\/+$/,''))+'/card-[A-Za-z0-9._-]*','g'),'<work>');
+  if(base)out=out.replace(new RegExp(escapeRe(base.replace(/\/+$/,''))+'/checks-[A-Za-z0-9._-]*','g'),'<work>');
   return out;
 }
 // A stack's frames in the adapters (and the loaders they call: Node's
@@ -687,10 +687,10 @@ function framesOf(text,files,rows,root) {
 }
 const at=frames=>frames.length?` (at ${frames[0].path}:${frames[0].line})`:'';
 
-function validateCardPlan(raw) {
+function validateCheckPlan(raw) {
   const plan=raw&&typeof raw==='object'?raw:{};
   const list=v=>Array.isArray(v)?v:[];
-  const checks=list(plan.checks).filter(c=>c&&typeof c==='object'&&typeof c.id==='string'&&c.id).slice(0,MAX_CARD_CHECKS);
+  const checks=list(plan.checks).filter(c=>c&&typeof c==='object'&&typeof c.id==='string'&&c.id).slice(0,MAX_CHECKS);
   const runs=list(plan.runs).filter(r=>r&&typeof r.id==='string'&&(r.static===true||typeof r.run==='string'||Array.isArray(r.run)||Array.isArray(r.argv)));
   const commands=plan.commands&&typeof plan.commands==='object'?plan.commands:{};
   // v8 S5: the module path the bundle's runtime glue needs: a *PATH variable
@@ -708,16 +708,16 @@ async function writeTree(dir,files) {
 
 // options: isolation (the network prefix, e.g. [] to keep the network),
 // limits (the prlimit prefix), runNamespace (false: runs keep the network).
-export async function verifyCard(request,{isolation,limits:limitOption,runNamespace=true}={}) {
+export async function verifyChecks(request,{isolation,limits:limitOption,runNamespace=true}={}) {
   // The pristine bundle: in memory only, never re-read from disk.
   const files=Object.freeze(Object.fromEntries(validate(request)));
   const rows=(Array.isArray(request.toolchains)?request.toolchains:[]).filter(r=>r&&typeof r.id==='string');
-  const plan=validateCardPlan(request.plan),limits=cardLimits(request.limits);
+  const plan=validateCheckPlan(request.plan),limits=checkLimits(request.limits);
   // S5: only a variable a row's glue names as its module path (never a loader's).
   const glueVars=new Set(rows.map(r=>r.glue?.path_setup?.env).filter(v=>typeof v==='string'&&!/^LD_|^DYLD_/.test(v)));
   const began=Date.now(),deadline=began+limits.total_ms,left=()=>deadline-Date.now();
   const base=process.env.BUILD_RUNNER_WORKDIR||'/work';
-  const scratch=await realpath(await mkdtemp(path.join(base,'card-')));
+  const scratch=await realpath(await mkdtemp(path.join(base,'checks-')));
   const stages=[],checks=[],issues=[],runs=new Map();
   let infrastructure_issue='',ns=null;
   const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null,hostname:null,hostname_ok:null,hostname_longest_label:null,hostname_status:null,getfqdn:null};
@@ -786,7 +786,7 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
     // 3. Install: packages are 'none' (decision U4). An installed tree could
     // not be copied fresh from memory into each check, so it is refused.
     if(plan.install.length)await stage('install',async()=>{
-      infrastructure_issue||='package installs are not supported by card verification yet (packages: none); the checks ran on the standard library only';
+      infrastructure_issue||='package installs are not run when the validations run (packages: none); the checks ran on the standard library only';
       return {passed:false,detail:'refused: packages are none'};
     });
     // 4. The project's own checks: each a command that must exit 0.
@@ -811,7 +811,7 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
         if(r.timedOut)return fail(`timed out after ${seconds(r.ms)}`,'timeout');
         const norm=s=>String(s).replace(/\r\n/g,'\n').trimEnd();
         // No exit named: 0, or any non-zero exit when the check reads
-        // stderr (an error case); the card names exit:0 when it means it.
+        // stderr (an error case); a check names exit:0 when it means it.
         const errorCase=Array.isArray(e.stderr_has)&&e.stderr_has.length>0||e.stderr===true;
         if(Number.isInteger(e.exit)){if(r.code!==e.exit)return fail(`exit ${r.code}, expected ${e.exit}${lastLines(stderr)?`; stderr: ${clip(lastLines(stderr),160)}`:''}`,'exit');}
         else if(errorCase){if(r.code===0)return fail('exit 0, expected a failure exit (non-zero)','exit');}
@@ -890,13 +890,13 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
       return {id:spec.id,base_url,process:p,box,ms:Date.now()-t};
     }
 
-    // 6. Command, call and http checks, in the card's order.
+    // 6. Command, call and http checks, in the plan's order.
     const ordered=plan.checks.filter(c=>c.kind!=='browser');
     if(ordered.length)await stage('checks',async()=>{
       const n=checks.length;
       for(const c of ordered) {
         if(c.kind==='judge')continue; // Clef, in the Worker (§4.3)
-        if(!CARD_CHECK_KINDS.has(c.kind)){result(c,false,0,`unknown check kind ${clip(c.kind,20)}`);continue;}
+        if(!CHECK_KINDS.has(c.kind)){result(c,false,0,`unknown check kind ${clip(c.kind,20)}`);continue;}
         if(c.kind==='file')fileCheck(c);
         else if(c.kind==='command')await runCommand(c);
         else if(c.kind==='call')await callCheck(c);
@@ -1031,7 +1031,7 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
     // Checks in the plan's order (project checks first).
     const order=new Map([...plan.project.map(p=>String(p.id||'P')),...plan.checks.map(c=>c.id)].map((id,i)=>[id,i]));
     checks.sort((a,b)=>(order.get(a.id)??1e9)-(order.get(b.id)??1e9));
-    return {fingerprint:request.fingerprint,snapshot_hash:request.snapshot_hash,mode:'card',passed,stages,checks,issues:issues.slice(0,12),infrastructure_issue,inventory,ms:Date.now()-began,
+    return {fingerprint:request.fingerprint,snapshot_hash:request.snapshot_hash,mode:'checks',passed,stages,checks,issues:issues.slice(0,12),infrastructure_issue,inventory,ms:Date.now()-began,
       log:[...stages.map(s=>`${s.name}: ${s.passed?'ok':'FAILED'}${s.detail?` (${s.detail})`:''}`),...checks.filter(c=>!c.passed).map(c=>`${c.id} ${c.kind}: ${c.detail}`)].join('\n').slice(-5000)};
   } finally {
     // 8. Stop the runs, their namespace and anything a check left behind.
@@ -1045,8 +1045,8 @@ export async function verifyCard(request,{isolation,limits:limitOption,runNamesp
 async function main(){
   const chunks=[];for await(const chunk of process.stdin)chunks.push(chunk);
   const data=JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  // mode 'card' (v8): the card's checks; anything else: the v7 build, unchanged.
-  const result=data?.mode==='card'?await verifyCard(data):await verifyBuild(data);
+  // mode 'checks' (v8): a level's validations; anything else: the v7 build, unchanged.
+  const result=data?.mode==='checks'?await verifyChecks(data):await verifyBuild(data);
   process.stdout.write(JSON.stringify(result)+'\n');
 }
 if(process.argv[1]===new URL(import.meta.url).pathname) main().catch(e=>{process.stderr.write(String(e.stack||e));process.exitCode=1;});

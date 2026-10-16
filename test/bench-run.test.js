@@ -1,53 +1,71 @@
 // B1: the BenchRun Durable Object (src/bench-run.js) and /api/bench.
 // Scheduling with fake task rooms: concurrency, alarms, stop and resume,
-// timeouts, results and aggregates, the index, and the API's auth.
+// timeouts, results and aggregates, the index, and the API's auth. The
+// grader runs on what a completed room ships, in the real build runner
+// behind fake boxes: feedback 'once' scores that grading, 'until_done'
+// sends a failed one back to the room as a complaint and grades again.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Sql } from './helpers/room.js';
-const { BenchRun, taskRoom, RUN_ID } = await import('../src/bench-run.js');
+import { fakeBoxes } from './helpers/boxes.js';
+const { BenchRun, taskRoom, RUN_ID, MAX_GRADE_ROUNDS } = await import('../src/bench-run.js');
+const { verifyChecks } = await import('../container/build-runner.mjs');
 const worker = (await import('../src/index.js')).default;
 
 const ROW = i => ({id: `t${i}`, prompt: `Write a function f${i}(n) that returns n plus ${i}.`, language: 'python', entry: `f${i}`, tests: `assert f${i}(1) == ${1 + i}\n`});
 const DATA = n => Array.from({length: n}, (_, i) => JSON.stringify(ROW(i))).join('\n');
 const ID = 'abcdef012345';
+// What a room ships for task i: a solution that passes its tests, or one that does not.
+const RIGHT = i => `def f${i}(n):\n    return n + ${i}\n`, WRONG = i => `def f${i}(n):\n    return n - 1\n`;
+const taskOf = name => Number(String(name).split('-')[2]);
 
-// A fake task room: start/stop/benchSummary/purge, its state set by the test.
-// gate: a promise start() waits on (a slow start, for the Stop race).
+// A fake task room: start/stop/benchSummary/appFiles/graderComplaint/purge,
+// its state set by the test. gate: a promise start() waits on (a slow
+// start, for the Stop race).
 function fakeRooms() {
   const rooms = new Map(), log = [], executors = new Map();
   let live = 0, peak = 0, gate = null;
   const room = name => {
-    if (!rooms.has(name)) rooms.set(name, {name, state: null, started: null, stopped: 0});
+    if (!rooms.has(name)) rooms.set(name, {name, state: null, started: null, stopped: 0, solution: null, complaints: []});
     return rooms.get(name);
   };
   const ns = {
     getByName: name => {
       const r = room(name);
       return {
-        start: async (goal, budget, settings, roomId, card, opts) => {
+        start: async (...args) => {
+          const [goal, budget, settings, roomId, opts] = args;
           if (gate) await gate;
           if (r.refuse) return {error: r.refuse};
-          r.started = {goal, budget, settings, roomId, card, opts};
+          r.started = {goal, budget, settings, roomId, opts, args: args.length};
           executors.set(name, opts?.executor);
-          r.state = {status: 'running', busy: true, requirements: card.requirements.map(x => x.id), requirement_status: {}, started_at: 1000, last_event_at: 1000, tokens: {calls: 0, prompt: 0, completion: 0, total: 0}, container_ms: 0};
+          r.state = {status: 'running', busy: true, validations: [], validation_status: {}, started_at: 1000, last_event_at: 1000, tokens: {calls: 0, prompt: 0, completion: 0, total: 0}, container_ms: 0};
           live++; peak = Math.max(peak, live); log.push(['start', name]);
           return {status: 'running'};
         },
         stop: async () => { r.stopped++; log.push(['stop', name]); if (r.state?.status === 'running') { r.state = {...r.state, status: 'paused', busy: false}; live--; } return {status: 'stopping'}; },
         benchSummary: async () => { if (r.broken) throw new Error('room unreachable'); return r.state; },
+        appFiles: async () => r.solution === null ? {status: 409, error: 'No application yet'} : {kind: 'levels', files: [{path: 'solution.py', content: r.solution}, {path: '.recursive/RUN.md', content: 'notes'}]},
+        graderComplaint: async (text, budget) => { r.complaints.push(text); log.push(['complaint', name]); r.state = {...r.state, status: 'running', busy: true}; live++; return {status: 'running'}; },
         purge: async () => { if (r.state?.busy || r.purgeBusy) return {error: 'busy'}; r.purged = (r.purged || 0) + 1; log.push(['purge', name]); return {repos_deleted: 1, repos_failed: 0}; }
       };
     }
   };
-  // End a running room the way S4b's completion leaves it.
-  const end = (name, patch) => { const r = room(name); if (r.state?.status === 'running') live--; r.state = {...r.state, busy: false, ...patch}; };
+  // End a running room: its state, and what it ships (pass: a right solution; fail: a wrong one).
+  const end = (name, patch) => {
+    const r = room(name), {ships, ...state} = patch;
+    if (r.state?.status === 'running') live--;
+    r.state = {...r.state, busy: false, ...state};
+    if (ships) r.solution = ships === 'right' ? RIGHT(taskOf(name)) : WRONG(taskOf(name));
+  };
   // The executors of the rooms running now.
   const inUse = () => [...rooms.values()].filter(r => r.state?.status === 'running').map(r => executors.get(r.name));
   return {ns, rooms, log, end, executors, inUse, peak: () => peak, live: () => live, gate: g => { gate = g; }};
 }
 function benchEnv(extra = {}) {
   const rooms = fakeRooms(), instances = new Map();
-  const env = {ROOMS: rooms.ns, ...extra};
+  const boxes = fakeBoxes({run: req => verifyChecks({...req}, {isolation: []})});
+  const env = {ROOMS: rooms.ns, BOXES: boxes, ...extra};
   env.BENCHES = {getByName: name => {
     if (!instances.has(name)) {
       const storage = {sql: new Sql(), alarm: null, setAlarm(t) { this.alarm = t; }, deleteAlarm() { this.alarm = null; }, getAlarm() { return this.alarm; },
@@ -58,12 +76,13 @@ function benchEnv(extra = {}) {
     }
     return instances.get(name);
   }};
-  return {env, rooms, run: (id = ID) => env.BENCHES.getByName(`run-${id}`), index: () => env.BENCHES.getByName('index')};
+  return {env, rooms, boxes, run: (id = ID) => env.BENCHES.getByName(`run-${id}`), index: () => env.BENCHES.getByName('index')};
 }
 const SETTINGS = {pipeline: 'v8', model: 'm', worker_model: 'w'};
 const begin = (b, extra = {}) => b.begin({id: ID, label: 'toy', dataset: {text: DATA(5)}, limit: 5, settings: SETTINGS, concurrency: 2, budget: 30, selfHosts: ['cp.test'], ...extra});
-const pass = {status: 'complete', requirement_status: {R1: {passed: true}}};
-const fail = {status: 'paused', requirement_status: {R1: {passed: false, detail: 'exit 1'}}};
+const pass = {status: 'complete', ships: 'right'};
+const fail = {status: 'complete', ships: 'wrong'};
+
 
 test('a run queues its tasks, starts at most `concurrency` rooms per tick, and keeps the alarm set until every task ends', async () => {
   const {rooms, run} = benchEnv(), b = run();
@@ -72,17 +91,18 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   assert.equal(s0.tasks.length, 5);
   assert.ok(s0.tasks.every(t => t.status === 'queued'));
   assert.equal(b.ctx.storage.alarm !== null, true, 'the first alarm is set');
-  assert.ok(!('card' in s0.tasks[0]) && !JSON.stringify(s0).includes('assert f0'), 'the status never carries a task\'s card or tests');
+  assert.ok(!('grader' in s0.tasks[0]) && !JSON.stringify(s0).includes('assert f0'), 'the status never carries a task\'s grader or tests');
   await b.alarm();
   assert.deepEqual(rooms.log.map(l => l[1]), [taskRoom(ID, 0, 0), taskRoom(ID, 1, 0)]);
-  // The room starts through the same call /api/run makes, with the task's card given by the runtime.
+  // The room starts through the same call /api/run makes, from the task's prompt alone: the grader stays outside it.
   const started = rooms.rooms.get(taskRoom(ID, 0, 0)).started;
   assert.equal(started.goal, b.rows()[0].goal);
   assert.equal(started.budget, 30);
   assert.deepEqual(started.settings, SETTINGS);
   assert.equal(started.roomId, taskRoom(ID, 0, 0));
-  assert.equal(started.card.source, 'benchmark');
-  assert.equal(started.card.requirements[0].check.files['bench_tests.txt'], 'assert f0(1) == 1\n');
+  assert.equal(started.args, 4);
+  assert.ok(!JSON.stringify(started).includes('assert f0'));
+  assert.equal(JSON.parse(b.rows()[0].grader).check.files['bench_tests.txt'], 'assert f0(1) == 1\n');
   // Nothing ended: no new room.
   await b.alarm();
   const starts = () => rooms.log.filter(l => l[0] === 'start');
@@ -93,7 +113,7 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   rooms.end(taskRoom(ID, 1, 0), fail);
   rooms.end(taskRoom(ID, 2, 0), {...pass, tokens: {calls: 3, prompt: 300, completion: 100, total: 400}, container_ms: 2500, last_event_at: 4000});
   await b.alarm();
-  rooms.end(taskRoom(ID, 3, 0), {status: 'paused', pause: {kind: 'v8_checks_pending', text: 'checks pending'}});
+  rooms.end(taskRoom(ID, 3, 0), {status: 'paused', pause: {kind: 'checks_exhausted', text: 'repair rounds ran out'}});
   rooms.end(taskRoom(ID, 4, 0), pass);
   const done = await b.alarm().then(() => b.status());
   assert.equal(rooms.peak(), 2, 'never more than two rooms at once');
@@ -102,11 +122,14 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   // keep_rooms 'failed' (the default): the passed rooms are deleted, the others kept for inspection.
   assert.deepEqual(rooms.log.filter(l => l[0] === 'purge').map(l => l[1]).sort(), [taskRoom(ID, 0, 0), taskRoom(ID, 2, 0), taskRoom(ID, 4, 0)].sort());
   assert.deepEqual(done.tasks.map(t => t.room_deleted), [true, false, true, false, true]);
-  assert.deepEqual(done.tasks.map(t => t.outcome), ['pass', 'fail', 'pass', 'unverified', 'pass']);
-  assert.deepEqual(done.tasks[1].requirements, [{id: 'R1', passed: false, detail: 'exit 1'}]);
+  assert.deepEqual(done.tasks.map(t => t.outcome), ['pass', 'fail', 'pass', 'fail', 'pass']);
+  assert.match(done.tasks[1].detail, /exit|BenchHarnessError|failed/i, 'the grader\'s observation');
+  assert.match(done.tasks[3].detail, /checks_exhausted/);
+  assert.deepEqual(done.tasks.map(t => t.rounds), [1, 1, 1, 0, 1]);
   assert.deepEqual([done.tasks[2].tokens, done.tasks[2].prompt_tokens, done.tasks[2].completion_tokens, done.tasks[2].model_calls, done.tasks[2].container_ms, done.tasks[2].wall_ms], [400, 300, 100, 3, 2500, 3000]);
-  assert.equal(done.aggregate.pass_at_1, 3 / 4);
-  assert.equal(done.aggregate.unverified, 1);
+  assert.equal(done.aggregate.pass_at_1, 3 / 5);
+  assert.equal(done.aggregate.feedback, 'once');
+  assert.ok(!('until_done' in done.aggregate));
   assert.equal(done.aggregate.tokens, 400);
   assert.equal(done.aggregate.container_s, 2.5);
   assert.ok(done.finished_at > 0);
@@ -273,16 +296,15 @@ test('/api/bench: start (settings checked, pipeline v8 forced), status, list, co
   assert.equal(none.status, 503);
 });
 
-test('/api/run never takes a card from the request body: only the runtime provides one', async () => {
+test('/api/run starts a room from the prompt and the run\'s inputs: start(goal, budget, settings, room, inputs), nothing else from the body', async () => {
   const seen = [], stub = {start: async (...args) => { seen.push(args); return {status: 'running'}; }};
   const env = {APP_TOKEN, ROOMS: {getByName: () => stub}, ASSETS: {fetch: () => new Response('asset')}};
-  const card = {card: 1, summary: 'x', languages: ['python'], deliverables: [{name: 'f', path: 'solution.py'}], requirements: []};
-  const res = await call(env, '/api/run', {method: 'POST', body: {room: 'room-0000000001', goal: 'Write a function f that returns one.', budget: 5, settings: {pipeline: 'v8'}, card}});
+  const extra = {grader: {check: {kind: 'command', run: 'python3 x', files: {'solution.py': 'x'}}}};
+  const res = await call(env, '/api/run', {method: 'POST', body: {room: 'room-0000000001', goal: 'Write a function f that returns one.', budget: 5, settings: {pipeline: 'v8'}, ...extra}});
   assert.equal(res.status, 200);
   assert.equal(seen.length, 1);
-  // v8 S8b: the fifth argument (a provided card) is always null from a request; the sixth carries base and the host.
-  assert.equal(seen[0][4], null, 'start(goal, budget, settings, room, null, inputs): no card argument');
-  assert.deepEqual(Object.keys(seen[0][5]), ['base', 'selfHosts']);
+  assert.equal(seen[0].length, 5);
+  assert.deepEqual(Object.keys(seen[0][4]), ['base', 'selfHosts']);
   assert.ok(!JSON.stringify(seen[0]).includes('solution.py'));
 });
 
@@ -295,7 +317,7 @@ test('Stop wins over a tick in flight: a room started after Stop is stopped at o
   let release;
   rooms.gate(new Promise(r => { release = r; }));
   const tick = b.alarm();                       // records task 0, then waits in task 1's start()
-  await new Promise(r => setTimeout(r, 5));
+  for (let i = 0; i < 400 && b.row(1)?.status !== 'running'; i++) await new Promise(r => setTimeout(r, 5)); // task 0 graded, task 1's start() in flight
   const stopped = await b.stop();               // the observer presses Stop meanwhile
   assert.equal(stopped.status, 'stopped');
   release(); rooms.gate(null);
@@ -390,4 +412,66 @@ test('wrangler.jsonc: BENCHES is bound to BenchRun (a sqlite export) and BENCH_E
   assert.ok(config.durable_objects.bindings.some(b => b.name === 'BENCHES' && b.class_name === 'BenchRun'));
   assert.deepEqual(config.exports.BenchRun, {type: 'durable-object', storage: 'sqlite'});
   assert.equal(Number(config.vars.BENCH_EXECUTORS), config.containers[0].max_instances);
+});
+
+// ------------------------------------------------------------------ feedback
+test('feedback "once": the grader runs once on what the completed room ships, in a fresh box with the internet off, and that grading is the task\'s pass@1', async () => {
+  const {rooms, boxes, run} = benchEnv(), b = run();
+  await begin(b, {concurrency: 2, limit: 2, dataset: {text: DATA(2)}});
+  await b.alarm();
+  rooms.end(taskRoom(ID, 0, 0), pass); rooms.end(taskRoom(ID, 1, 0), fail);
+  const s = await b.alarm().then(() => b.status());
+  assert.equal(s.feedback, 'once');
+  assert.deepEqual(s.tasks.map(t => [t.outcome, t.once, t.rounds]), [['pass', 'pass', 1], ['fail', 'fail', 1]]);
+  assert.equal(rooms.log.filter(l => l[0] === 'complaint').length, 0, 'once never sends the grader\'s failure back');
+  assert.equal(s.aggregate.pass_at_1, 0.5);
+  // Each grading opened a box of its own, with the internet off.
+  assert.equal(boxes.boxes.length, 2);
+  assert.ok(boxes.boxes.every(x => x.container.options?.enableInternet === false));
+});
+
+test('feedback "until_done": a failed grading goes back to the room\'s manager as a complaint, the room runs again, and the task records its first grading (pass@1) and the rounds it took to pass', async () => {
+  const {rooms, run} = benchEnv(), b = run();
+  await begin(b, {concurrency: 2, limit: 2, dataset: {text: DATA(2)}, feedback: 'until_done'});
+  await b.alarm();
+  rooms.end(taskRoom(ID, 0, 0), fail); rooms.end(taskRoom(ID, 1, 0), pass);
+  await b.alarm();
+  let s = b.status();
+  assert.equal(s.feedback, 'until_done');
+  assert.deepEqual(s.tasks.map(t => [t.status, t.once, t.rounds]), [['running', 'fail', 1], ['done', 'pass', 1]]);
+  const r0 = rooms.rooms.get(taskRoom(ID, 0, 0));
+  assert.equal(r0.complaints.length, 1);
+  assert.match(r0.complaints[0], /BenchHarnessError|AssertionError|exit/, 'the grader\'s observation, verbatim');
+  assert.ok(!r0.complaints[0].includes('bench_nonce'), 'never the grader\'s input files');
+  // The room fixes it and completes again: graded again, and it passes.
+  rooms.end(taskRoom(ID, 0, 0), pass);
+  s = await b.alarm().then(() => b.status());
+  assert.equal(s.status, 'done');
+  assert.deepEqual(s.tasks.map(t => [t.outcome, t.once, t.rounds]), [['pass', 'fail', 2], ['pass', 'pass', 1]]);
+  // Both reported, labelled: pass@1 from the first gradings, and the pass rate with feedback and its rounds.
+  assert.equal(s.aggregate.pass_at_1, 0.5);
+  assert.deepEqual(s.aggregate.until_done, {scored: 2, pass: 2, pass_rate: 1, mean_rounds_to_done: 1.5});
+});
+
+test('feedback "until_done" stops at MAX_GRADE_ROUNDS gradings: the task fails with the last observation', async () => {
+  const {rooms, run} = benchEnv(), b = run();
+  await begin(b, {concurrency: 1, limit: 1, dataset: {text: DATA(1)}, feedback: 'until_done'});
+  await b.alarm();
+  for (let i = 0; i < MAX_GRADE_ROUNDS; i++) { rooms.end(taskRoom(ID, 0, 0), fail); await b.alarm(); }
+  const s = b.status();
+  assert.deepEqual([s.tasks[0].outcome, s.tasks[0].once, s.tasks[0].rounds], ['fail', 'fail', MAX_GRADE_ROUNDS]);
+  assert.equal(rooms.rooms.get(taskRoom(ID, 0, 0)).complaints.length, MAX_GRADE_ROUNDS - 1);
+  assert.deepEqual(s.aggregate.until_done, {scored: 1, pass: 0, pass_rate: 0, mean_rounds_to_done: null});
+});
+
+test('/api/bench takes feedback once or until_done, and refuses anything else', async () => {
+  const {env} = benchEnv({APP_TOKEN, ASSETS: {fetch: () => new Response('asset')}});
+  let res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), feedback: 'twice'}});
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Invalid feedback: expected once or until_done/);
+  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), feedback: 'until_done'}});
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).feedback, 'until_done');
+  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1)}});
+  assert.equal((await res.json()).feedback, 'once');
 });

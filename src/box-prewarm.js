@@ -2,18 +2,18 @@
 //
 // Every first compile of the live runs waited 9 to 13 s for a cold box (the
 // temperature CLI: 9 of its 33 s). The room now opens that box as soon as it
-// knows which image the card's checks need (the card writer's first card, so
-// in parallel with the writer's revision, Clef's vetting and the first worker
-// turn), and the first compile that needs exactly that box takes it. Every
+// knows which image the first level's validations need (the first splitter's
+// admitted answer, so in parallel with the first worker turns), and the first
+// compile that needs exactly that box takes it. Every
 // box property stays:
 //   - fresh and single-use: a prewarmed box is a new Durable Object (a new
 //     unique id) that ran nothing but its readiness command; one compile runs
 //     in it (Box.compileBox), and it is destroyed after that compile;
-//   - internet off, standard-1, the image the card's checks need (check, or
+//   - internet off, standard-1, the image the validations need (check, or
 //     browser for browser checks), decided by compileBoxSpec as for any box;
 //   - a box opened for one spec runs only a compile of that spec: a compile
-//     that needs another image (the card changed, or a piece runs only part
-//     of the checks) discards it and opens its own;
+//     that needs another image (a level added validations, or a piece runs
+//     only part of them) discards it and opens its own;
 //   - it holds one of the room's BOX_CONCURRENCY slots from its open until
 //     its compile ends or it is discarded; with no slot free, no prewarm;
 //   - nobody's box for long: one no compile took within PREWARM_IDLE_MS, or
@@ -30,11 +30,12 @@ const NO_CODE = new Set(['doc', 'data', 'file']);
 const sameSpec = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const clip = (v, n) => String(v ?? '').slice(0, n);
 
-// The box a card's first compile needs (compileBoxSpec of its runnable
-// checks), or null when the card runs nothing in a box (documents only).
-export function cardBoxSpec(card) {
-  const checks = (Array.isArray(card?.requirements) ? card.requirements : []).filter(r => r && !r.untested && BOX_CHECKS.has(r.check?.kind)).map(r => r.check);
-  const code = (Array.isArray(card?.deliverables) ? card.deliverables : []).some(d => d && typeof d.kind === 'string' && !NO_CODE.has(d.kind));
+// The box a level's first compile needs (compileBoxSpec of its runnable
+// validations), or null when it runs nothing in a box (documents only).
+// spec: {contracts, validations}, a splitter's admitted level.
+export function levelBoxSpec(spec) {
+  const checks = (Array.isArray(spec?.validations) ? spec.validations : []).filter(v => v && BOX_CHECKS.has(v.check?.kind)).map(v => v.check);
+  const code = (Array.isArray(spec?.contracts) ? spec.contracts : []).some(d => d && !NO_CODE.has(typeof d.kind === 'string' ? d.kind : 'function'));
   return checks.length || code ? compileBoxSpec({checks}) : null;
 }
 
@@ -53,9 +54,9 @@ export class BoxPrewarm {
   // another spec is discarded first. Returns true when a box for spec is open
   // or opening.
   start(spec) {
-    if (!spec) { this.discard('the card runs nothing in a box'); return false; }
+    if (!spec) { this.discard('the validations run nothing in a box'); return false; }
     if (this.entry && sameSpec(this.entry.spec, spec)) return true;
-    if (this.entry) this.discard(`the card now needs the ${spec.image} image`);
+    if (this.entry) this.discard(`the validations now need the ${spec.image} image`);
     const release = this.slot?.();
     if (!release) return false;
     let box;

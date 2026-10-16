@@ -13,12 +13,12 @@ import {MESSAGES, BASE_LABEL, BROKER_LABEL, promptTexts} from '../src/prompts.js
 import {normalizeAsk} from '../src/protocol.js';
 import {lintText, composedTexts} from './helpers/prompt-lint.js';
 
-// One writer's world: it delivers NOTES.md and src/shout.js (an existing
-// file it was granted), may use FAQ.md from "Questions writer", and holds
-// three chunks of S2 and one of S1.
+// One worker's world: it delivers NOTES.md and src/shout.js (an existing
+// file it was granted), may call FAQ.md, and holds three chunks of S2 and
+// one of S1.
 const CAT = catalogue({
   own: [{name: 'NOTES.md', kind: 'doc', path: 'NOTES.md'}, {name: 'src/shout.js', kind: 'file', path: 'src/shout.js'}],
-  uses: [{name: 'FAQ.md', kind: 'doc', path: 'FAQ.md', owner: 'Questions writer'}, {name: 'NOTES.md', owner: 'twice'}],
+  uses: [{name: 'FAQ.md', kind: 'doc', path: 'FAQ.md'}, {name: 'NOTES.md'}],
   base: ['src/shout.js'],
   sources: [{ref: 'S2#1', title: 'Widget guide'}, {ref: 'S2#2', title: 'Widget guide'}, {ref: 'S2#3', title: 'Widget guide'}, {ref: 'S1#2', title: 'Widget format'}, {ref: 'S9', title: 'no part'}]
 });
@@ -34,10 +34,10 @@ const REFUSAL = /\b(?:refus\w*|not allowed|forbidden|denied|permission|may not|c
 test('the catalogue: own contracts, uses, granted files and held chunks, each name once, a granted file as a file', () => {
   assert.deepEqual(CAT.map(e => [e.name, e.kind]), [['NOTES.md', 'contract'], ['FAQ.md', 'contract'], ['src/shout.js', 'base'],
     ['S2#1', 'source'], ['S2#2', 'source'], ['S2#3', 'source'], ['S1#2', 'source']]);
-  assert.deepEqual(CAT.map(e => e.is), [MESSAGES.available_own(), MESSAGES.available_use({owner: 'Questions writer'}), MESSAGES.available_base(),
+  assert.deepEqual(CAT.map(e => e.is), [MESSAGES.available_own(), MESSAGES.available_use(), MESSAGES.available_base(),
     'part 1 of the linked page "Widget guide"', 'part 2 of the linked page "Widget guide"', 'part 3 of the linked page "Widget guide"', 'part 2 of the linked page "Widget format"']);
-  assert.deepEqual(shown(CAT)[1], {name: 'FAQ.md', is: 'a contract that "Questions writer" delivers'});
-  assert.equal(MESSAGES.available_use({owner: ''}), 'a contract another part delivers');
+  // A name it may call is only that: never who delivers it.
+  assert.deepEqual(shown(CAT)[1], {name: 'FAQ.md', is: 'a name you may call'});
   assert.deepEqual(catalogue(), []);
   // The kinds this slice answers; url, run and package wait for their boxes, so no catalogue entry names them.
   assert.deepEqual(LIVE_KINDS, ['contract', 'source', 'base']);
@@ -105,8 +105,8 @@ test('none: one wording for absence, which names only catalogue entries, the ask
   assert.equal(noneText('S1#1', CAT), 'Nothing is available under the name S1#1. Available: S2#1, S2#2, S2#3, S1#2, NOTES.md, FAQ.md.');
   // An existing file outside the catalogue and a path that never existed read the same.
   assert.equal(noneText('docs/secret-plan.md', CAT).replace('docs/secret-plan.md', 'X'), noneText('docs/old-plan.md', CAT).replace('docs/old-plan.md', 'X'));
-  // With an empty catalogue, the path forward is the writer's own files.
-  assert.equal(noneText('package.json', []), 'Nothing is available under the name package.json. Write what you need in your own files.');
+  // With an empty catalogue, it says only that.
+  assert.equal(noneText('package.json', []), 'Nothing is available under the name package.json.');
 });
 
 test('every broker text lints clean and states a path, with no prohibition', () => {
@@ -118,7 +118,7 @@ test('every broker text lints clean and states a path, with no prohibition', () 
     assert.deepEqual(lintText(k, t), [], t);
     assert.doesNotMatch(t, REFUSAL, k);
   }
-  for (const t of [...CAT.map(e => e.is), MESSAGES.broker_none({name: 'x', names: ''}), MESSAGES.available_use({owner: ''}), MESSAGES.own_contract({contract: 'NOTES.md (doc): notes'})]) {
+  for (const t of [...CAT.map(e => e.is), MESSAGES.broker_none({name: 'x', names: ''}), MESSAGES.available_use(), MESSAGES.own_contract({contract: 'NOTES.md (doc): notes'})]) {
     assert.deepEqual(lintText('broker', bare(t, ['NOTES.md', 'Widget guide', 'Widget format', 'Questions writer'])), [], t);
     assert.doesNotMatch(t, REFUSAL, t);
   }

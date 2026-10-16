@@ -3,13 +3,10 @@ import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
 import { workerAction, singleFileText } from './worker-output.js';
-import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE, MESSAGES, BASE_LABEL } from './prompts.js';
+import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE } from './prompts.js';
 import { contractLine } from './contracts.js';
-import { validateCard, repairCard, settleCard, settleCodeLanguage, checkSummary, goalSentences, existenceOnly } from './card.js';
-import { interfaceFacts, cardScope, checkShapeForReview, unstatedWording, maskWith, internalFileCheck } from './affordances.js';
-import { TOOLCHAINS, toolchainOf } from './toolchains.js';
-import { EFFECTIVE_GOAL_LIMIT } from './amend.js';
-import { SOURCE_CLAUSE } from './fetcher.js';
+import { checkSummary, internalCandidate } from './validations.js';
+import { toolchainOf } from './toolchains.js';
 export { NO_ANSWER };
 // v8 (S6): a call runs v8's prompts when the room's pipeline is v8. The room
 // says so in the env it passes (inferenceEnv's PIPELINE), so every call site
@@ -139,28 +136,109 @@ export async function shouldSplit(env, task, mockContext, contracts = []) {
   return {split:probability >= (Number(env.SPLIT_THRESHOLD)||0.7),probability};
 }
 
-// v8 live 5: every manager's splitter proposes; Clef grades the proposal in
-// one call: whether it is a valid division of the original (CLEF.split_valid),
-// whether every piece is worth a writer of its own (CLEF.split_size), and
-// each piece's scope (CLEF.scope, as scopeChildren asks it). The state is the
-// original (its assignment and its row's contracts, one line each: gateLine),
-// the goal the scope question reads, and one entry per piece with the names
-// of the contracts it delivers. {valid, size, scope: [p per piece]}.
-export async function reviewSplit(env, {goal, assignment, contracts = [], pieces = [], attempt = 1, retry = ''}) {
-  if (env.MOCK_AI === 'true') return {valid:1, size:1, scope:pieces.map(() => 1)};
+// v8: each attempt of a manager's splitter is reviewed by Clef in one
+// batched call. With two or more pieces: whether it is a valid division of
+// the assignment (CLEF.split_valid), whether every piece is worth a maker of
+// its own (CLEF.split_size), and each piece's scope (CLEF.scope). For every
+// validation: whether it exercises what its contracts state (CLEF.exercises),
+// whether it is implementable from those contracts alone
+// (CLEF.implementable), and, for a file check that looks for texts, whether
+// it tests what a user meets rather than an internal detail (CLEF.internal).
+// Clef annotates: nothing here removes a piece or a validation. The state is
+// the assignment, the level's contracts (one line each), the pieces with the
+// names of the contracts each delivers, and the validations, each with the
+// contracts it serves and its check in a few words. {valid, size, scope: [p
+// per piece], notes: [{exercises, implementable, internal?} per validation]}.
+export const REVIEW_QUESTIONS = 96;
+export async function reviewLevel(env, {assignment, contracts = [], pieces = [], validations = [], attempt = 1, retry = ''}) {
+  const split = pieces.length >= 2;
+  if (env.MOCK_AI === 'true') return {valid:1, size:1, scope:pieces.map(() => 1), notes:validations.map(() => ({exercises:1, implementable:1}))};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef split review model');
-  const state={goal:String(goal||'').slice(0,1800),original:{assignment:String(assignment||'').slice(0,2600),contracts:contracts.map(String).filter(Boolean)},
-    pieces:pieces.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),task:String(c.task).slice(0,900),contracts:(c.interfaces||[]).map(f=>f.name)}))};
-  const questions={split_valid:{type:'noul',instructions:CLEF.split_valid},split_size:{type:'noul',instructions:CLEF.split_size},
-    ...Object.fromEntries(pieces.map((_,i)=>[`within_${i}`,{type:'noul',instructions:clefText('scope',{i})}]))};
+  const lines=new Map(contracts.map(c=>[c.name,contractLine(c)]));
+  const state={assignment:String(assignment||'').slice(0,2600),contracts:contracts.map(c=>lines.get(c.name)).filter(Boolean).slice(0,24),
+    ...(split?{pieces:pieces.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),task:String(c.task).slice(0,900),contracts:c.contracts||[]}))}:{}),
+    validations:validations.map((v,j)=>({slot:j,serves:(v.serves||[]).map(n=>lines.get(n)||n),check:checkSummary(v.check),...(v.says?{says:String(v.says).slice(0,200)}:{})}))};
+  const keys=[...(split?[['split_valid',CLEF.split_valid],['split_size',CLEF.split_size],...pieces.map((_,i)=>[`within_${i}`,clefText('scope',{i})])]:[]),
+    ...validations.flatMap((v,j)=>[[`exercises_${j}`,clefText('exercises',{i:j})],[`implementable_${j}`,clefText('implementable',{i:j})],...(internalCandidate(v.check)?[[`internal_${j}`,clefText('internal',{i:j})]]:[])])];
   const p=(o,k)=>{const v=o?.answers?.[k]?.noul;return typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1?v:null;};
-  const output=await clefRun(env,'reviewSplit',selector,{model:clef,state,questions},
-    o=>({attempt,pieces:pieces.length,...(retry?{retry}:{}),valid_p:p(o,'split_valid'),size_p:p(o,'split_size'),scope_ps:pieces.map((_,i)=>p(o,`within_${i}`))}));
-  const valid=p(output,'split_valid'),size=p(output,'split_size'),scope=pieces.map((_,i)=>p(output,`within_${i}`));
-  if (valid===null||size===null||scope.some(x=>x===null)) throw new Error('Clef returned no valid split review probabilities');
-  return {valid, size, scope};
+  const answers={};
+  for(let start=0;start<keys.length;start+=REVIEW_QUESTIONS) {
+    const group=keys.slice(start,start+REVIEW_QUESTIONS);
+    const output=await clefRun(env,'reviewLevel',selector,{model:clef,state,questions:Object.fromEntries(group.map(([k,t])=>[k,{type:'noul',instructions:t}]))},
+      o=>({attempt,pieces:pieces.length,validations:validations.length,...(retry?{retry}:{}),...(split&&!start?{valid_p:p(o,'split_valid'),size_p:p(o,'split_size'),scope_ps:pieces.map((_,i)=>p(o,`within_${i}`))}:{})}));
+    for(const [k] of group)answers[k]=p(output,k);
+  }
+  if (Object.values(answers).some(x=>x===null)) throw new Error('Clef returned no valid review probabilities');
+  return {valid:split?answers.split_valid:1,size:split?answers.split_size:1,scope:split?pieces.map((_,i)=>answers[`within_${i}`]):[],
+    notes:validations.map((v,j)=>({exercises:answers[`exercises_${j}`],implementable:answers[`implementable_${j}`],...(answers[`internal_${j}`]!=null?{internal:answers[`internal_${j}`]}:{})}))};
+}
+// v8: a manager's splitter, one attempt: the model reads its assignment,
+// the contracts it delivers, what the checking box has, its packages and any
+// existing files and linked pages (request, the room's), and answers one
+// json object {contracts, validations, pieces}. An answer that holds no such
+// object is asked once more in the same call; the runtime's hard rules
+// (src/validations.js readLevel) are the attempt's, and a miss goes to the
+// next attempt. Returns the object, or {parse_error, raw}.
+export const SPLITTER_TOKENS = 8192;
+const levelShape = o => !!o && typeof o === 'object' && ['contracts', 'validations', 'pieces'].some(k => Array.isArray(o[k]));
+export async function splitLevel(env, request) {
+  const system=systemPrompt('splitter'),text=JSON.stringify(request);
+  let output=await run(env,system,text,SPLITTER_TOKENS,{call:'splitLevel',role:'splitter'});
+  let parsed=parseObject(withoutThinking(output),levelShape);
+  if(!parsed.parse_error&&levelShape(parsed))return parsed;
+  const empty=!withoutThinking(output).trim();
+  output=await run(env,system,JSON.stringify({...request,previous_answer_problems:[empty?RETRY.empty:RETRY.json]}),SPLITTER_TOKENS,{call:'splitLevel',role:'splitter',retry:true,noThink:true});
+  parsed=parseObject(withoutThinking(output),levelShape);
+  return !parsed.parse_error&&levelShape(parsed)?parsed:{parse_error:true,raw:String(parsed.raw||'').trim().slice(0,1500)||emptyAnswer(output)};
+}
+// v8: Clef's routing among a manager's live children, for a complaint
+// (CLEF.owner) or a change (CLEF.change): one question per child, over the
+// child's contracts one line each. [p per child].
+export async function routeAmong(env, {key='owner', text='', children=[]}) {
+  if (!children.length) return [];
+  if (env.MOCK_AI === 'true') return children.map(() => 1);
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef routing decision model');
+  const state={[key==='change'?'change':'question']:String(text).slice(0,1800),children:children.map((c,i)=>({slot:i,responsibility:String(c.task||'').slice(0,700),contracts:(c.contracts||[]).map(contractLine).slice(0,16)}))};
+  const output=await clefRun(env,'routeAmong',selector,{model:clef,state,questions:Object.fromEntries(children.map((_,i)=>[`${key}_${i}`,{type:'noul',instructions:clefText(key,{i})}]))});
+  return children.map((_,i)=>{
+    const v=output?.answers?.[`${key}_${i}`]?.noul;
+    if(typeof v!=='number'||!Number.isFinite(v)||v<0||v>1)throw new Error(`Clef returned no valid probability for child ${i}`);
+    return v;
+  });
+}
+// v8: the scope walk's question at one manager: is producing the need part
+// of its assignment (CLEF.owns_need), read with the manager's contracts.
+export async function inScope(env, {assignment='', contracts=[], need='', name=''}) {
+  if (env.MOCK_AI === 'true') return 1;
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef routing decision model');
+  const output=await clefRun(env,'inScope',selector,{model:clef,state:{assigned_work:String(assignment).slice(0,1800),contracts:contracts.map(contractLine).slice(0,16),needed:{need:String(need).slice(0,300),expected_name:name||''}},
+    questions:{inside:{type:'noul',instructions:CLEF.owns_need}}});
+  const v=output?.answers?.inside?.noul;
+  if(typeof v!=='number'||!Number.isFinite(v)||v<0||v>1)throw new Error('Clef returned no valid probability for the scope question');
+  return v;
+}
+// v8: which contract of a manager's level gives what an ask needs
+// (CLEF.match), each contract by its line. {index, p} of the best at or
+// above FUNCTION_MATCH_THRESHOLD, or null.
+export async function matchContracts(env, {need='', name=''}, contracts=[]) {
+  if (!contracts.length) return null;
+  if (env.MOCK_AI === 'true') return null;
+  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
+  if (!clef) throw new Error('Unsupported Clef routing decision model');
+  const list=contracts.slice(0,24);
+  const output=await clefRun(env,'matchContracts',selector,{model:clef,state:{request:{need:String(need).slice(0,300),expected_name:name||''},contracts:list.map((c,j)=>({slot:j,contract:contractLine(c)}))},
+    questions:Object.fromEntries(list.map((_,j)=>[`match_${j}`,{type:'noul',instructions:clefText('match',{j})}]))});
+  let best=null;
+  list.forEach((_,j)=>{
+    const v=output?.answers?.[`match_${j}`]?.noul;
+    if(typeof v!=='number'||!Number.isFinite(v)||v<0||v>1)throw new Error(`Clef returned no valid probability for contract ${j}`);
+    if(v>=FUNCTION_MATCH_THRESHOLD&&(!best||v>best.p))best={index:j,p:v};
+  });
+  return best;
 }
 
 // After Qwen proposes children, ONE Clef request vets the whole proposed
@@ -185,10 +263,9 @@ export async function scopeChildren(env, originalGoal, parentTask, children) {
     groups.push({start,group});
   }
   const checked=await Promise.all(groups.map(async ({start,group})=>{
-    const v8=pipelineV8(env);
     const questions=Object.fromEntries(group.map((_, i) => [`within_${i}`,{
       type:'noul',
-      instructions:v8?clefText('scope',{i:start+i}):`Does proposed child ${start+i} request a concrete SOURCE CODE IMPLEMENTATION of a submodule needed for BOTH the original user goal and its parent code-writing assignment? Answer NO for unrelated domains and for tasks that only describe, choose, plan, document, outline, or discuss a solution instead of writing source code. An actual executable schema/configuration module or test is code. A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code; judge its scope like any other child. Judge scope and code deliverability, not implementation quality.`
+      instructions:`Does proposed child ${start+i} request a concrete SOURCE CODE IMPLEMENTATION of a submodule needed for BOTH the original user goal and its parent code-writing assignment? Answer NO for unrelated domains and for tasks that only describe, choose, plan, document, outline, or discuss a solution instead of writing source code. An actual executable schema/configuration module or test is code. A module that composes other pieces by importing them and exporting functions built from them (such as an application entry module that exports start()) is source code; judge its scope like any other child. Judge scope and code deliverability, not implementation quality.`
     }]));
     const output=await clefRun(env,'scopeChildren',selector,{
       model:clef,
@@ -224,19 +301,15 @@ export async function scopeInterfaces(env, originalGoal, parentTask, children, p
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef scope decision model');
-  // v8 (S6): the contract question (CLEF.contract), each contract by its kind (contractLine), in "contracts" keys.
-  const v8=pipelineV8(env),line=v8?contractLine:promiseLine;
-  const state=v8?{original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
-    parent_contracts:promised.map(p=>p.name),
-    proposed_children:children.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900),contracts:(c.interfaces||[]).map(line)}))}:
-    {original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
+  const line=promiseLine;
+  const state={original_goal:String(originalGoal).slice(0,1800),parent_responsibility:String(parentTask).slice(0,1800),
     parent_promised_functions:promised.map(p=>p.name),
     proposed_children:children.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900),functions:(c.interfaces||[]).map(line)}))};
   const groups=[];
   for(let start=0;start<asks.length;start+=12)groups.push(asks.slice(start,start+12));
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(({i,k,f})=>[`names_${i}_${k}`,{type:'noul',
-      instructions:v8?clefText('contract',{i,contract:line(f)}):`Proposed child ${i} ("${String(children[i].label).slice(0,70)}") lists ${line(f)} among the functions it will export. Does child ${i}'s own responsibility write this function, rather than another proposed child's responsibility or code outside the parent's assignment? Answer NO if another proposed child's responsibility writes it, or if the parent was not asked for it. Judge only where the function belongs, not its quality or its name.`}]));
+      instructions:`Proposed child ${i} ("${String(children[i].label).slice(0,70)}") lists ${line(f)} among the functions it will export. Does child ${i}'s own responsibility write this function, rather than another proposed child's responsibility or code outside the parent's assignment? Answer NO if another proposed child's responsibility writes it, or if the parent was not asked for it. Judge only where the function belongs, not its quality or its name.`}]));
     const output=await clefRun(env,'scopeInterfaces',selector,{model:clef,state,questions});
     return group.map(({i,k,f})=>{
       const probability=output?.answers?.[`names_${i}_${k}`]?.noul;
@@ -316,8 +389,7 @@ export async function routeOwner(env, question, candidates, {strict=false,keywor
   const selected=env.SPLIT_MODEL||'@cf/cloudflare/clef-flash';
   const name=DECISION_MODELS[selected];
   if(!name) throw new Error('Unsupported Clef routing decision model');
-  const v8=pipelineV8(env);
-  const questions=Object.fromEntries(candidates.map((c,i)=>['owner_'+i,{type:'noul',instructions:v8?clefText('owner',{i}):
+  const questions=Object.fromEntries(candidates.map((c,i)=>['owner_'+i,{type:'noul',instructions:
     `Does child ${i} own the behavior needed to answer the question? Match responsibility and PUBLIC Artifacts contents. Answer yes only when relevant.`}]));
   const state={question:String(question).slice(0,1100), children:candidates.map((c,i)=>({slot:i,
     responsibility:String(c.task).slice(0,700), label:c.label,
@@ -347,16 +419,13 @@ export async function matchFunction(env, {need, name=''}, items) {
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef routing decision model');
-  // v8 (S6): the match question (CLEF.match) over contracts of any kind, each by its line.
-  const v8=pipelineV8(env);
-  const state=v8?{request:{need:String(need).slice(0,300),expected_name:name||''},contracts:items.map((f,j)=>({slot:j,piece:String(f.owner).slice(0,70),contract:contractLine(f)}))}:
-    {request:{need:String(need).slice(0,300),expected_name:name||''},
+  const state={request:{need:String(need).slice(0,300),expected_name:name||''},
     functions:items.map((f,j)=>({slot:j,piece:String(f.owner).slice(0,70),signature:signature(f),does:f.does||'',...(f.returns?{returns:f.returns}:{}),...(f.operation?{operation:f.operation}:{})}))};
   const groups=[];
   for(let start=0;start<items.length;start+=12)groups.push(items.slice(start,start+12).map((_,k)=>start+k));
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(j=>[`fn_${j}`,{type:'noul',
-      instructions:v8?clefText('match',{j}):`Does function ${j} do what the request needs, so that the requester can import it instead of writing it? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.`}]));
+      instructions:`Does function ${j} do what the request needs, so that the requester can import it instead of writing it? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.`}]));
     const output=await clefRun(env,'matchFunction',selector,{model:clef,state,questions});
     return group.map(j=>{
       const probability=output?.answers?.[`fn_${j}`]?.noul;
@@ -383,14 +452,12 @@ export async function pickPiece(env, fn, pieces) {
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef routing decision model');
-  // v8 (S6): the pick question (CLEF.pick), the contract by its line.
-  const v8=pipelineV8(env);
-  const state={...(v8?{contract:contractLine(fn)}:{function:{signature:signature(fn),does:fn.does||''}}),pieces:pieces.map((c,j)=>({slot:j,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900)}))};
+  const state={function:{signature:signature(fn),does:fn.does||''},pieces:pieces.map((c,j)=>({slot:j,label:String(c.label).slice(0,70),responsibility:String(c.task).slice(0,900)}))};
   const groups=[];
   for(let start=0;start<pieces.length;start+=12)groups.push(pieces.slice(start,start+12).map((_,k)=>start+k));
   const answered=await Promise.all(groups.map(async group=>{
     const questions=Object.fromEntries(group.map(j=>[`piece_${j}`,{type:'noul',
-      instructions:v8?clefText('pick',{j,contract:contractLine(fn)}):`Does piece ${j} write ${signature(fn)} as part of its own responsibility, so that the other pieces import it from piece ${j}? Answer NO if another piece's responsibility writes it and piece ${j} only calls it. Judge by what each piece writes, not by the function's name.`}]));
+      instructions:`Does piece ${j} write ${signature(fn)} as part of its own responsibility, so that the other pieces import it from piece ${j}? Answer NO if another piece's responsibility writes it and piece ${j} only calls it. Judge by what each piece writes, not by the function's name.`}]));
     const output=await clefRun(env,'pickPiece',selector,{model:clef,state,questions});
     return group.map(j=>{
       const probability=output?.answers?.[`piece_${j}`]?.noul;
@@ -410,12 +477,9 @@ export async function ownsNeed(env, {assigned_code, need, name=''}) {
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef routing decision model');
-  // v8 (S6): CLEF.owns_need, with the state's keys about work, not code.
-  const v8=pipelineV8(env);
   const output=await clefRun(env,'ownsNeed',selector,{model:clef,
-    state:v8?{assigned_work:String(assigned_code).slice(0,1800),needed:{need:String(need).slice(0,300),expected_name:name||''}}:
-      {assigned_code:String(assigned_code).slice(0,1800),needed_function:{need:String(need).slice(0,300),expected_name:name||''}},
-    questions:{inside:{type:'noul',instructions:v8?CLEF.owns_need:'Is writing this function part of the assigned code? Answer NO if the assigned code does not ask for this behavior.'}}});
+    state:{assigned_code:String(assigned_code).slice(0,1800),needed_function:{need:String(need).slice(0,300),expected_name:name||''}},
+    questions:{inside:{type:'noul',instructions:'Is writing this function part of the assigned code? Answer NO if the assigned code does not ask for this behavior.'}}});
   const probability=output?.answers?.inside?.noul;
   if(typeof probability!=='number'||!Number.isFinite(probability)||probability<0||probability>1)
     throw new Error('Clef returned no valid probability for the assignment check');
@@ -480,31 +544,16 @@ export async function decompose(env, context, opts = {}) {
   // v7.15.14 review: the room's two bounds, apart: the slots left (max_child_writers; an answer over them goes to admission's split_rejected, and Clef may go atomic, as before) and the pieces per split (max_children; an answer over it is a size failure).
   const slots=Math.max(0,Number(context.max_child_writers ?? 256)),cap=Number.isInteger(context.max_children)&&context.max_children>=2?context.max_children:Infinity,available=Math.min(slots,cap);
   const promised=Array.isArray(context.your_promised_functions)?context.your_promised_functions:[];
-  // v8 (S6): PRINCIPLES + ROLE.splitter + FORMAT.splitter, with no SPLIT_USES and none of v7's leaf or language rules; the bound, the contracts, the project facts and a retry's reasons go in the user JSON.
-  const v8=pipelineV8(env,opts);
-  const {planned=promised.length>0,goal=stripStartRequirement(context.root_scope||'')}=opts,uses=planned&&!v8?SPLIT_USES:'';
+  const {planned=promised.length>0,goal=stripStartRequirement(context.root_scope||'')}=opts,uses=planned?SPLIT_USES:'';
   // A goal whose product is about tests (a test runner, an exam app) is never told to leave tests out (goalAboutTests).
   const bound=cap<=slots?`Use at most ${cap} pieces, the room's limit on pieces per split (and at least two if splitting).`:`The runtime has ${slots} available agent slots for this split; use no more than that (and at least two if splitting).`;
   const tests=goalAboutTests(goal)?'':' Tests the goal asks for are written by the compiler\'s runner against the running application, so no piece writes tests, test suites, test harnesses or fixtures; a piece\'s own self-checks are not pieces either.';
-  const system = v8 ? systemPrompt('splitter') : `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide into the few largest independent pieces, at most ${available}; each piece is split again by its own manager if it is still large. Group related code into one piece that will itself be split further: code that only one piece calls goes inside that piece, not beside it. ${bound}${tests} Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements; do not invent filenames or a new global architecture. DO name the functions each piece exports: give each piece "functions", the few functions (at most 5) that code outside that piece calls, each {"name":"camelCaseIdentifier","does":"one line","params":["optional hint"],"returns":"what a call returns, in a few words"}. Name each function after what it does and what it acts on (createTicket, not create). Say in "returns" what a call to it gives back (the array of ticket objects, the created ticket, nothing): its callers must know the shape. Names are binding: the piece must export exactly these names and other pieces import them by these names; a later builder can only rename, so choose plain descriptive names. A piece may export more; list only what others call. your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece, the one whose task writes it. Never give a function to two pieces. List only functions your pieces write: a piece that needs a function from elsewhere asks for it when it runs, so do not create a piece for it. If a function performs one of the operations the original goal names, add "operation":"<that operation in a few words>". The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON with one spawn item per piece, for example {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that implements this piece","functions":[{"name":"functionName","does":"what it does","params":["argument"],"returns":"what it returns"}]},{"label":"short name of another piece","task":"Write code that implements another piece","functions":[{"name":"otherFunctionName","does":"what it does","params":["argument"],"returns":"what it returns"}]}]}. Every spawn item is a JSON object, never a quoted string. Do not write code yourself.`;
+  const system = `You are a CODE SPLITTER, not an implementer, planner, or builder. Divide the assigned CODE-WRITING job into INDEPENDENT pieces of code that can be authored without knowing the whole application. Every child must be asked to WRITE REAL SOURCE CODE that contributes to the parent's full requested implementation; do not create children for descriptions, documentation, planning, design choices, or coordination. Divide into the few largest independent pieces, at most ${available}; each piece is split again by its own manager if it is still large. Group related code into one piece that will itself be split further: code that only one piece calls goes inside that piece, not beside it. ${bound}${tests} Together the pieces must implement the entire assigned code, without overlapping work. Use original_goal_scope_boundary ONLY to exclude unrelated code; do not broaden the assignment to the whole app. If previous_split_rejection exists, correct the specific rejected proposals; do not repeat them or pad the split with unrelated work. Preserve explicit parent requirements; do not invent filenames or a new global architecture. DO name the functions each piece exports: give each piece "functions", the few functions (at most 5) that code outside that piece calls, each {"name":"camelCaseIdentifier","does":"one line","params":["optional hint"],"returns":"what a call returns, in a few words"}. Name each function after what it does and what it acts on (createTicket, not create). Say in "returns" what a call to it gives back (the array of ticket objects, the created ticket, nothing): its callers must know the shape. Names are binding: the piece must export exactly these names and other pieces import them by these names; a later builder can only rename, so choose plain descriptive names. A piece may export more; list only what others call. your_promised_functions, when present, are functions your parent already promised on behalf of your code: give each one, with its name unchanged, to exactly one piece, the one whose task writes it. Never give a function to two pieces. List only functions your pieces write: a piece that needs a function from elsewhere asks for it when it runs, so do not create a piece for it. If a function performs one of the operations the original goal names, add "operation":"<that operation in a few words>". The application is plain Node.js JavaScript using built-in modules only: no task may ask for TypeScript, interfaces or .ts files, UI frameworks or JSX (React etc.), or, unless the goal explicitly asks for them, web servers, web frameworks (Express etc.), databases or drivers. Workers write plain .js with Node built-ins only, so a child given such work cannot succeed. A separate builder only renames import paths and identifiers between finished modules; it never writes code. Return ONLY JSON with one spawn item per piece, for example {"summary":"...","spawn":[{"label":"short name of what this piece does","task":"Write code that implements this piece","functions":[{"name":"functionName","does":"what it does","params":["argument"],"returns":"what it returns"}]},{"label":"short name of another piece","task":"Write code that implements another piece","functions":[{"name":"otherFunctionName","does":"what it does","params":["argument"],"returns":"what it returns"}]}]}. Every spawn item is a JSON object, never a quoted string. Do not write code yourself.`;
   // Root's goal is a scope boundary for this splitter, never a request for
   // an agent to design the whole app. The request is built field by field
   // (a blind cut could end the JSON mid-string); only the rejection feedback
   // is clipped to the room left.
-  const fields=v8?{assignment:context.your_responsibility,
-    contracts_you_deliver:promised.length?promised.map(({serves:_,...c})=>c):undefined,
-    contracts_available:Array.isArray(context.contracts_available)&&context.contracts_available.length?context.contracts_available:undefined,
-    // v8 live 4: the packages its row lists, which its pieces get a part of.
-    your_packages:Array.isArray(context.your_packages)&&context.your_packages.length?context.your_packages:undefined,
-    project:context.project||undefined,
-    goal_scope_boundary:context.root_scope || undefined,
-    // v8 S8b: the existing project's digest, and the source cards of the refs this splitter holds (quoted, beside SOURCE_CLAUSE).
-    base_note:context.existing_files ? MESSAGES.base_note() : undefined,
-    existing_files:context.existing_files || undefined,
-    sources_note:context.sources?.length ? SOURCE_CLAUSE : undefined,
-    sources:context.sources?.length ? context.sources : undefined,
-    previous_split_rejection:undefined,
-    max_pieces:available}:{assigned_code:context.your_responsibility,
+  const fields={assigned_code:context.your_responsibility,
     your_promised_functions:promised.length?promised:undefined,
     original_goal_scope_boundary:context.root_scope || undefined,
     previous_split_rejection:undefined,
@@ -518,21 +567,17 @@ export async function decompose(env, context, opts = {}) {
   // splitter's error to retry. Stray items beside two pieces are dropped, as
   // normalizeAction drops them. A parsed answer with no spawn items is the
   // splitter declining, not malformed (review: a child that cannot split).
-  // v8 (S2): opts.v8 reads the pieces key as normalizeAction does (splitPieces), so a v8 splitter's pieces are a split.
-  const shape=o=>splitShape(o,{v8});
+  const shape=o=>splitShape(o);
   const vet=(output,text=contentOf(output),parsed=parseObject(text,shape))=>{
-    const items=spawnObjects(splitPieces(parsed,{v8})),pieces=items.filter(spawnPiece);
+    const items=spawnObjects(splitPieces(parsed)),pieces=items.filter(spawnPiece);
     // Example copies with a bare "..." task are not pieces; they still get the placeholder hint.
     if(parsed.parse_error||items.length>pieces.length&&pieces.length<2)return {parsed,text,output,ok:false,malformed:true,count:Infinity,vague:placeholderChildren(items.filter(s=>typeof s?.task==='string'))};
-    // v8 (S3): C7 and C8 are v7's (deleted in v8, §2.2), and names follow the toolchain rows (opts.facts).
-    const {spawn,inferred}=normalizeSpawn(pieces,promised,{v8}),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal,facts:v8?opts.facts||null:null}).filter(e=>planned&&!v8||!['C7','C8'].includes(e.check));
+    const {spawn,inferred}=normalizeSpawn(pieces,promised),vague=placeholderChildren(spawn),bad=interfaceErrors(spawn,promised,{goal,facts:null}).filter(e=>planned||!['C7','C8'].includes(e.check));
     // v7.15.14 (run21): the pieces counted are those the admission spawns, test pieces aside (testPieces); more than max_children is a size failure.
-    // v8: a test piece is a deliverable like any other (the card lists one when the goal asks for tests).
-    const tests=v8?[]:testPieces(spawn,{promised,stated:goalMethods(goal),goal}),size=spawn.length-tests.length;
+    const tests=testPieces(spawn,{promised,stated:goalMethods(goal),goal}),size=spawn.length-tests.length;
     return {parsed,text,output,spawn,inferred,vague,bad,size,tests,over:size>cap,ok:size>=2&&size<=available,count:vague.length+bad.length};
   };
-  // v8: FORMAT.splitter asks for a reason; it is the split's summary.
-  const done=v=>{if(!v.spawn)return v.parsed;const {pieces:_,...parsed}=v.parsed;return {...(v8?{...parsed,...(!parsed.summary&&typeof parsed.reason==='string'?{summary:parsed.reason}:{})}:v.parsed),spawn:v.spawn,interfaces_inferred:v.inferred};};
+  const done=v=>v.spawn?{...v.parsed,spawn:v.spawn,interfaces_inferred:v.inferred}:v.parsed;
   const first=vet(await run(env,system+uses,request,4096,{noThink:Boolean(opts.noThink),call:'decompose',role:'splitter'}));
   if(first.ok && !first.count)return done(first);
   // run16: an answer with no text is reasoning with no JSON after it (Root's
@@ -548,10 +593,7 @@ export async function decompose(env, context, opts = {}) {
     (first.spawn.some(c=>(c?.interfaces||[]).some(f=>GENERIC_NAMES.has(f.name)))?' Name functions after what they do and what they act on (createTicket, not create).':''):'';
   // v7.15.14 (run21): Root's split had 50 direct children; a split over the bound is told to group, never truncated.
   const over=first.over?' '+tooMany(first.size,cap):'';
-  // v8: the same system text; what was wrong goes in the user JSON (§6).
-  const problems=v8?[empty?RETRY.empty:first.malformed?RETRY.malformed:'',first.over?RETRY.too_many(first.size,cap):'',first.vague?.length?RETRY.vague(first.vague.map(c=>c.label)):'',first.bad?.length?RETRY.names(first.bad.map(e=>e.text)):''].filter(Boolean):[];
-  if(v8&&!problems.length)problems.push(RETRY.count(first.size??0,available));
-  const retry=vet(await (v8?run(env,system,JSON.stringify({...JSON.parse(request),previous_answer_problems:problems}),4096,{noThink:Boolean(opts.noThink)||first.malformed,call:'decompose',role:'splitter',retry:true}):
+  const retry=vet(await (
     run(env,system+uses+'\nRETRY: return a complete, non-overlapping set of code-writing children within the supplied available child slots; ONLY JSON.'+malformed+over+specific+names,request,4096,{noThink:Boolean(opts.noThink)||first.malformed,call:'decompose',role:'splitter',retry:true})));
   // The retry replaces the first answer only when it is not worse; a
   // malformed retry never replaces a partition that parsed (review).
@@ -673,20 +715,14 @@ export async function decide(env, context, {planned = false, v8 = false, placed 
   return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
 }
 
-// v8 (S6, §3.2): a worker answers under PRINCIPLES + ROLE.worker +
-// FORMAT.worker, in the raw file-block format (workerAction, expect
-// 'blocks'); its contracts, the contracts it may use with their references
-// and the project facts come in the user JSON the room built. placed: the
+// v8 (S6, §3.2): a worker answers under ROLE.worker + FORMAT.worker, in the
+// raw file-block format (workerAction, expect 'blocks'); its prompt, files,
+// complaints and world come in the user JSON the room built. placed: the
 // path of its one placed contract, for the single-fence fallback. A retry
 // keeps the system text and hears what could not be read in the user JSON;
 // if it is no better, the first answer's complete files stand, not done.
-// A manager routes deterministically and its builder links in a runtime
-// turn (builderTurn), so a worker is the one that answers here; a manager's
-// context waits, with no model call.
 export const WORKER_TOKENS = 6500;
 async function decideV8(env, context, {placed = null} = {}) {
-  if (context.phase === 'manager' || context.phase === 'compose')
-    return {summary: 'A manager routes its children\'s work without a model action.', wait: true};
   const system = systemPrompt('worker'), tokens = Math.min(8192, Math.max(1500, Number(env.DECISION_MAX_TOKENS) || WORKER_TOKENS));
   const read = out => workerAction(out, {expect: 'blocks', placed});
   let output = await run(env, system, JSON.stringify(context), tokens, {call: 'decide', role: 'worker'});
@@ -701,24 +737,18 @@ async function decideV8(env, context, {placed = null} = {}) {
   return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
 }
 
-// v8 (S6): one file written again, under PRINCIPLES + ROLE.file +
-// FORMAT.file: a file the token cap cut, one an answer listed by intent
-// alone, or a correction (the contract check's, the code gate's). The
-// problem, the file as it stands, the worker's other files, the contracts
-// it may use and the project facts are the user JSON.
+// v8 (S6): one file written again, under ROLE.file + FORMAT.file: a file
+// the token cap cut, or one an answer listed by intent alone. The worker's
+// prompt, the file as it stands, its other files and its complaints are the
+// user JSON, as its own turn reads them.
 // The other files ride within a budget, whole first; one that does not fit is marked clipped (index.js sentFiles' rule).
 const otherFiles = (files, budget = 20000) => { let left = budget; return files.map(f => { const t = String(f.content ?? ''); if (t.length <= left) { left -= t.length; return {path: f.path, content: t}; } const n = Math.max(0, Math.min(3000, left)); left -= n; return {path: f.path, content: t.slice(0, n), clipped: true, length: t.length}; }); };
-async function generateFileV8(env, {path, intent, task, files, inbox, correction = '', answers = [], project = null, uses = null, goal = '', base_files = null}) {
+export async function rewriteFile(env, {path, intent, prompt, files, complaints = [], correction = ''}) {
   const output = await run(env, systemPrompt('file'), JSON.stringify({
-    assignment: task, file: path, what_to_fix: intent, previous_rejection: correction || undefined,
-    goal: goal ? String(goal).slice(0, 600) : undefined,
+    prompt, file: path, what_to_fix: intent, previous_rejection: correction || undefined,
     existing_file: files.find(f => f.path === path)?.content ?? null,
     your_other_files: otherFiles(files.filter(f => f.path !== path && !f.path.startsWith('memory/')).slice(0, 12)),
-    contracts_you_may_use: Array.isArray(uses) && uses.length ? uses : undefined,
-    answered_requests: answers?.length ? answers : undefined, new_messages: inbox?.length ? inbox : undefined,
-    project: project || undefined,
-    // v8 S8b review: the existing files the writer's contracts name, quoted and labelled.
-    ...(base_files?.length ? {base_note: MESSAGES.base_note(), base_files} : {})
+    complaints: complaints.length ? complaints : undefined
   }), WORKER_TOKENS, {call: 'generateFile', role: 'worker', retry: !!correction});
   // v8 S6 review: read through the block parser, fences and prose around them dropped (singleFileText).
   const content = singleFileText(output, path);
@@ -726,9 +756,8 @@ async function generateFileV8(env, {path, intent, task, files, inbox, correction
   return content;
 }
 
-export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false, project=null, uses=null, goal='', v8=false, base_files=null }) {
+export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false }) {
   if (env.MOCK_AI === 'true') return mockFile(node.id, path);
-  if (pipelineV8(env, {v8}) && node.label !== 'Temporary builder') return generateFileV8(env, {path, intent, task, files, inbox, correction, answers, project, uses, goal, base_files});
   const builder=node.label==='Temporary builder';
   const output = await run(env,
     builder ? (path==='glue/smoke.js' ? `You are the Root linker's behavioral test writer, correcting glue/smoke.js ONLY. Return complete, executable CommonJS source, no Markdown. Require('./index.js') to call start(), then use node:assert/strict to verify actual requested application behavior THROUGH THE RETURNED API (not component modules). For a ticket CRUD application create, list/read, update, verify, delete, and verify absence, all using the same state. Any failure must cause a nonzero process exit; never swallow or log-and-ignore assertions. No other local imports. Previous rejection: ${correction}. Return code only.` : `You are the linker correcting glue/wiring.js ONLY. The runtime owns glue/index.js and package.json and imports all component files. Write ONLY ${path} as valid CommonJS, module.exports = function wire(components) { ... }. No imports, requires, file paths or packages. Accept the loaded component namespaces, indexed by their REAL materialized paths, and connect only real exports as collaborators. Choose ONE common storage instance/state and inject it into every operation, do not use multiple independent stores. CommonJS dynamic-import namespaces often hold exports in .default. Previous rejection: ${correction}. Return code only.`) :
@@ -759,7 +788,7 @@ export const LINKER_BELOW = ` A file given as an excerpt (hunks of its imports t
 const withoutThinking=output=>stripReasoning(contentOf(output));
 export async function linkComponents(env, {goal, files, interfaces, allPaths, diagnostic='', known_mismatches=[], scope='application', below=false, v8=false}) {
   if (env.MOCK_AI === 'true') return {edits:[],issues:[]};
-  // v8 (S6): PRINCIPLES + ROLE.linker + FORMAT.linker; the binding rules of
+  // v8 (S6): ROLE.linker + FORMAT.linker; the binding rules of
   // the files' own toolchain rows travel as data (binding_rules), never in
   // the system text.
   const linkV8=pipelineV8(env,{v8}),rules=linkV8?[...new Set(files.map(f=>toolchainOf(f.path)?.binding_rules).filter(Boolean))]:[];
@@ -767,7 +796,7 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
     scope,
     ...(linkV8?{scope_means:LINK_SCOPE[scope]||LINK_SCOPE.application}:{}),
     ...(rules.length?{binding_rules:rules}:{}),
-    application_goal:String(goal||'').slice(0,1200),
+    ...(linkV8?{}:{application_goal:String(goal||'').slice(0,1200)}),
     known_mismatches:known_mismatches.length?known_mismatches:undefined,
     your_files:files.map(f=>f.excerpt?{path:f.path,excerpt:f.excerpt}:{path:f.path,content:f.content}),
     other_modules_exports:interfaces,
@@ -790,229 +819,18 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
   return {edits,issues};
 }
 
-// v8 §1.5: the card writer, Root's first call under v8. It runs on the
-// room's compiler model (the card is the compiler's specification), with
-// the system prompt PRINCIPLES + ROLE.card + FORMAT.card and the run's data
-// in the user JSON. One retry, in the same call, hears the validation
-// errors (decompose's pattern); a retry that does not parse never replaces
-// a first answer that did. Under MOCK_AI a fixed, neutral card.
-export const MOCK_CARD = Object.freeze({card:1,summary:'Notes on the goal',languages:['text'],
-  deliverables:[{name:'NOTES.md',kind:'doc',path:'NOTES.md',does:'notes on the goal'}],
-  requirements:[{id:'R1',says:'The notes exist',source:'notes',serves:['NOTES.md'],check:{kind:'file',path:'NOTES.md'}}],decisions:[]});
-// v8 S3 review: reasoning and a full card (24 requirements, 12
-// deliverables) share the budget on a thinking model; modelRequest clamps
-// it to the model's context (MODEL_SETTINGS), as for every call. The retry
-// hears the validation errors (an unsupported language among them) in its
-// user JSON, never the system text (§6), and runs without thinking, as
-// decompose's malformed retry does. Only a blocked card is not retried.
-// After the retry, a function or route deliverable with no code language
-// takes the single installed one (settleCodeLanguage), else the result
-// carries language_error.
-export const CARD_MAX_TOKENS = 8192;
-// v8 S8b: sources are the goal's links as source cards (quoted, beside
-// SOURCE_CLAUSE), sources_unavailable the links that could not be read and
-// why; existing_files is the base's digest (repoDigest).
-// v8 S9 (§7.2): change is a follow-up the user gave for the project in
-// prior_card (an amendment): the writer returns the whole card updated for
-// it, the goal is the effective goal (the user's goal and each change), and
-// the call is amendCard's.
-// v8 card repair: each answer goes through three layers. Layer 1
-// (repairCard) reads it leniently; layer 3's ranking (rankReferences) places
-// the serves layer 1 could not match; layer 2 (validateCard) keeps only the
-// rules that make a card safe and runnable. Then Clef reviews the card
-// (reviewCard): its NO answers are notes, never edits. The writer gets one
-// revision call only for substantive notes (a goal phrase no requirement
-// covers, a check that does not exercise its behaviour, a card that cannot
-// be checked: runnability) or errors left; a kind note only annotates. A
-// revision never loses work: what the draft had and the revision leaves
-// out is kept, and a revision that validates worse (more errors, fewer
-// runnable checks) is discarded, the draft kept with the notes on it.
-// notes: what the chosen answer's repair did; raw_answers: the writer's
-// answers as written (each clipped to CARD_RAW_CHARS), for diagnosis.
-export const CARD_RAW_CHARS = 6000;
-// What the review note names of the installed set: per language, its packages.
-const installedSummary = held => [...new Set(held.map(p => p.language))].map(l => held.filter(p => p.language === l).map(p => p.name).join(', ')).join('; ');
-const SUBSTANTIVE = /^(?:Installed: |The goal phrase |\S+'s check may not exercise|\S+'s check looks at an internal detail|\S+'s check may need what|\S+'s check looks for wording|\S+'s check needs a form the runtime runs|Deliverable "[^"]*" \(a \w+\) has no check|\S+'s http check expects nothing)/;
-// v8 live 2 review: a statement that holds a value of the card's checks
-// reaches workers with that value masked; the note (an annotation, never a
-// revision on its own) asks for behaviour and interface instead.
-const saysNotes = (card, goal) => {
-  if (!card?.requirements?.length) return [];
-  const scope = cardScope(card, {goal});
-  return card.requirements.filter(r => !r.implicit && !r.project && typeof r.says === 'string' && maskWith(r.says, scope) !== r.says)
-    .map(r => `Statement: ${r.id}'s says holds a value of the card's checks, which workers read masked: state the behaviour and interface it checks instead.`);
-};
-// v8 live 2 review: a check that looks for wording the goal does not state is
-// a note for the writer: check the presence, stream and status instead.
-const wordingNotes = (card, goal) => (card?.requirements || []).filter(r => !r.implicit && !r.project && !r.untested).flatMap(r => {
-  const texts = unstatedWording(r.check, goal);
-  return texts.length ? [`${r.id}'s check looks for wording the goal does not state, in ${texts.length > 1 ? `${texts.length} of its expected texts` : 'an expected text'}: check what the goal asks instead, such as that a message appears on the stream it goes to ("stderr": true for an error message) and the exit status.`] : [];
-});
-// v8 live 4 (the to-do card's R1): an expected text written as markup
-// became an element step in layer 1; the review notes say so, as what a
-// check of an element looks like, so the writer learns it. An annotation:
-// it rides along with a revision (LEARN), never asks for one.
-const MARKUP_NOTE = /^(\S+): a page's visible text holds no tags, so its step for (.*)$/;
-const markupNotes = notes => (notes || []).flatMap(n => { const m = MARKUP_NOTE.exec(n); return m ? [`${m[1]}'s check names the page's elements with expect_element {"selector", "text"}, since a page's visible text holds no tags: its step for ${m[2]}`] : []; });
-const LEARN = /^\S+'s check names the page's elements with expect_element/;
-const said = s => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-// The draft's deliverables and requirements a revision left out, added back to it (layer 1's output, before ranking).
-function keepDraft(revised, draft) {
-  if (!revised || !draft?.deliverables) return revised;
-  const out = {...revised, deliverables: [...(Array.isArray(revised.deliverables) ? revised.deliverables : [])], requirements: [...(Array.isArray(revised.requirements) ? revised.requirements : [])]};
-  const names = new Set(out.deliverables.filter(d => d && typeof d.name === 'string').map(d => d.name.toLowerCase()));
-  for (const d of draft.deliverables) if (!names.has(d.name.toLowerCase())) out.deliverables.push(d);
-  const ids = new Set(out.requirements.map(r => r?.id)), says = new Set(out.requirements.map(r => said(r?.says)));
-  for (const r of (draft.requirements || []).filter(r => !r.implicit && !r.project)) if (!ids.has(r.id) && !says.has(said(r.says))) out.requirements.push({...r});
-  return out;
-}
-// v8 live 3: the vetting's comparison and reasons are the dashboard's: the writer reads the card without them.
-const withoutVetting = card => Array.isArray(card?.requirements) ? {...card, requirements: card.requirements.map(r => { if (!r || typeof r !== 'object') return r; const {vet_p_literal: _l, vet_internal_p: _i, doubt_reason: _w, ...rest} = r; return rest; })} : card;
-const runnable = card => (card?.requirements || []).filter(r => !r.implicit && !r.project).length;
-// v8 live 4: held, the packages Root's row lists (the installed set), which
-// the writer reads beside the toolchains, and Clef's review asks the card
-// to keep to (CLEF.installed).
-export async function writeCard(env, {goal='', installed=TOOLCHAINS, base_digest=null, prior_card=null, base=[], packages='none', sources=[], sources_unavailable=[], change='', held=[], onDraft=null}={}) {
-  const rows=Array.isArray(installed)&&installed.length?installed:TOOLCHAINS;
-  const amend=!!(change&&prior_card),call=amend?'amendCard':'writeCard';
-  const facts={goal,installed:rows,base,packages,...(amend?{change}:{})};
-  const settle=(r,extra,notes=[])=>{
-    const s=r.card?settleCodeLanguage(r.card,rows):{card:r.card};
-    const card=s.card&&notes.length?{...s.card,review_notes:notes}:s.card;
-    return {card,errors:r.errors,unsupported:r.unsupported,notes:r.notes||[],review_notes:notes,review_failed:r.review?.failed||[],...(s.inferred?{inferred_language:s.inferred}:{}),...(s.error?{language_error:s.error}:{}),...extra};
-  };
-  // The fixed mock card is the runtime's own, so it is validated as written.
-  if (env.MOCK_AI === 'true') return settle(validateCard(MOCK_CARD,facts),{raw_head:'',attempts:0,raw_answers:[]});
-  const fields={goal:String(goal).slice(0,amend?EFFECTIVE_GOAL_LIMIT:GOAL_LIMIT),...(amend?{change:String(change).slice(0,GOAL_LIMIT),change_note:MESSAGES.amend_note()}:{}),
-    toolchains:rows.map(t=>({id:t.id,files:t.extensions,...(t.run_file?{run_file:t.run_file}:{}),...(t.test?{test:t.test}:{}),executables:t.executables||[]})),
-    ...(held?.length?{installed_packages:held.map(p=>({name:p.name,language:p.language,...(p.provides?{provides:p.provides}:{})}))}:{}),
-    // v8 S8b review: the existing project's digest is quoted, labelled, beside the base clause.
-    ...(base_digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest:base_digest}}:{}),...(prior_card?{current_card:withoutVetting(prior_card)}:{}),
-    ...(sources?.length||sources_unavailable?.length?{sources_note:SOURCE_CLAUSE}:{}),...(sources?.length?{sources}:{}),...(sources_unavailable?.length?{sources_unavailable}:{})};
-  const system=systemPrompt('card'),raw_answers=[];
-  const read=async (output,draft=null)=>{
-    const text=withoutThinking(output).trim(),parsed=parseObject(text);
-    raw_answers.push(clip(text||contentOf(output)||'',CARD_RAW_CHARS));
-    if(parsed.parse_error)return {head:text.slice(0,200),text,parsed,card:null,errors:[`The answer was not one json object${text?`: ${clip(text,160)}`:` (${emptyAnswer(output)})`}.`],unsupported:[],notes:[],runnability:[],all:[],substantive:[]};
-    const layer1=repairCard(parsed,facts),card=draft?keepDraft(layer1.card,draft):layer1.card;
-    const ranks=layer1.unresolved?.length?await rankReferences(env,card,layer1.unresolved):[];
-    const r={head:text.slice(0,200),text,parsed,layer1:card,...settleCard(card,layer1,ranks,facts)};
-    // v8 live 5: each card as read, before Clef's review (the room prewarms the box its checks need).
-    if(onDraft&&r.card&&!r.card.blocked&&!r.unsupported?.length)try{onDraft(r.card);}catch{}
-    r.review=r.card?.deliverables?.length&&!r.card.blocked&&!r.unsupported.length?await reviewCard(env,{goal,change:amend?change:'',card:r.card,installed:rows,held,packages}):{notes:[],failed:[]};
-    r.all=[...new Set([...(r.runnability||[]),...r.review.notes,...markupNotes(layer1.notes),...wordingNotes(r.card,`${goal}\n${amend?change:''}`),...saysNotes(r.card,`${goal}\n${amend?change:''}`)])];
-    r.substantive=r.all.filter(n=>SUBSTANTIVE.test(n));
-    r.learn=r.all.filter(n=>LEARN.test(n));
-    return r;
-  };
-  const first=await read(await run(env,system,JSON.stringify(fields),CARD_MAX_TOKENS,{call,role:'card'}));
-  if(first.card?.blocked)return settle(first,{raw_head:first.head,attempts:1,raw_answers},first.all||[]);
-  if(!first.errors.length&&!first.substantive.length)return settle(first,{raw_head:first.head,attempts:1,raw_answers},first.all);
-  const retry={...fields,...(first.errors.length?{previous_errors:first.errors.slice(0,24)}:{}),...(first.substantive.length?{review_notes:[...first.substantive,...(first.learn||[])].slice(0,24)}:{}),
-    ...(first.parsed.parse_error?{}:{previous_answer:clip(JSON.stringify(first.draft),6000)}),
-    instruction:'Your previous card, as the runtime read it, is previous_answer. Fix the problems in previous_errors, and revise the card for the reviewer\'s notes in review_notes where they are right. Answer again with the whole card as one json object.'};
-  const second=await read(await run(env,system,JSON.stringify(retry),CARD_MAX_TOKENS,{call,role:'card',retry:true,noThink:true}),first.parsed.parse_error?null:first.layer1);
-  // A revision that validates worse is discarded: the draft stays, with the notes on it.
-  const worse=!first.parsed.parse_error&&(second.parsed.parse_error||second.errors.length>first.errors.length||runnable(second.card)<runnable(first.card));
-  const best=worse?first:second;
-  return settle(best,{raw_head:best.head,attempts:2,raw_answers,...(worse&&!second.parsed.parse_error?{revision_discarded:true}:{})},best.all);
-}
-// v8 card repair (layer 3): Clef places each serves reference layer 1
-// could not match, with the ranked-owner rule: the deliverable it ranks
-// first at OWNER_BAR or above. Each written name is asked once; the
-// references go in one batched call (REFERENCE_BATCH of them, at most
-// REFERENCE_QUESTIONS questions), and a second batch only for those the
-// first could not hold. state {requirements: [{slot, says, source, check,
-// written}], deliverables: [{slot, name, kind, path, does}]}, question
-// reference_<requirement>_<deliverable>. [{name, p} | {name: null, p} |
-// null] per unresolved entry; a failed call, or none at the bar, falls back
-// (applyResolutions). Clef sets serves only, never a check's target.
-export const REFERENCE_BATCH = 24, REFERENCE_QUESTIONS = 96;
-const summaryOf=check=>{try{return checkSummary(check)||'';}catch{return clip(JSON.stringify(check)||'',200);}};
-export async function rankReferences(env, card, unresolved=[]) {
-  if (!unresolved.length || env.MOCK_AI === 'true') return [];
-  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
-  if (!clef) return unresolved.map(()=>null);
-  const pool=(Array.isArray(card?.deliverables)?card.deliverables:[]).filter(d=>d&&typeof d.name==='string').slice(0,12);
-  if(!pool.length)return unresolved.map(()=>null);
-  // One question set per distinct (written name, requirement statement) pair: the same name in several steps is asked once.
-  const keyOf=u=>{const r=card.requirements?.[u.at]||{};return `${u.written}\n${u.written?'':said(r.says)}`;};
-  const unique=[...new Map(unresolved.map(u=>[keyOf(u),u])).values()];
-  const per=Math.max(1,Math.min(REFERENCE_BATCH,Math.floor(REFERENCE_QUESTIONS/pool.length))),found=new Map();
-  for(let start=0;start<unique.length&&start<per*2;start+=per) {
-    const batch=unique.slice(start,start+per);
-    try {
-      const output=await clefRun(env,'rankReferences',selector,{model:clef,
-        state:{requirements:batch.map((u,i)=>{const r=card.requirements?.[u.at]||{};return {slot:i,says:String(r.says||'').slice(0,200),source:String(r.source||'').slice(0,160),check:summaryOf(r.check),written:String(u.written||'').slice(0,120)};}),
-          deliverables:pool.map((d,j)=>({slot:j,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160)}))},
-        questions:Object.fromEntries(batch.flatMap((_,i)=>pool.map((_,j)=>[`reference_${i}_${j}`,{type:'noul',instructions:clefText('reference',{i,j})}])))});
-      batch.forEach((u,i)=>{
-        const ranks=pool.map((d,j)=>({name:d.name,p:output?.answers?.[`reference_${i}_${j}`]?.noul})).filter(x=>typeof x.p==='number'&&Number.isFinite(x.p)).sort((a,b)=>b.p-a.p);
-        found.set(keyOf(u),!ranks.length?null:ranks[0].p>=OWNER_BAR?ranks[0]:{name:null,p:ranks[0].p});
-      });
-    } catch { /* this batch falls back */ }
-    // The first batch placed every reference it held, and nothing is left: done.
-    if(start+per>=unique.length)break;
-  }
-  return unresolved.map(u=>found.get(keyOf(u))??null);
-}
-// v8 card repair (layer 3): Clef reviews the card, one batched pass (12
-// questions a call): is each goal phrase covered by some requirement, does
-// each requirement's check exercise what it states, and is each
-// deliverable's kind right for what it does. A NO (p < REVIEW_BAR) is a
-// note, never an edit; only the first two lead to a revision. {notes, failed}.
-// v8 live 2: and is each requirement implementable (CLEF.implementable):
-// could someone who knows only its statement and its deliverables' contracts,
-// with the interface their checks use (interfaceFacts), pass its check apart
-// from computing the right values? A NO is substantive: the writer states in
-// says what the check needs (the exit status, the stream, an exact text).
-export const REVIEW_BAR = 0.5;
-// v8 live 4 review (M3): under packages 'allowed' the person allows third
-// parties' packages, so the installed question is not asked (as before live 4).
-export async function reviewCard(env, {goal='', change='', card, installed=[], held=[], packages='none'}) {
-  if (env.MOCK_AI === 'true' || !card?.deliverables?.length) return {notes:[],failed:[]};
-  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
-  if (!clef) return {notes:[],failed:['unsupported Clef decision model']};
-  const phrases=goalSentences(change||goal).slice(0,12),reqs=(card.requirements||[]).filter(r=>!r.implicit&&!r.project).slice(0,24),dels=card.deliverables.slice(0,12),scope=cardScope(card,{goal:`${goal}\n${change}`}),facts=interfaceFacts(card,{scope});
-  // Live 2 review: Clef reads each check with its expected values as their kinds, so the implementable question is never about values or wording.
-  const shapeOf=check=>{try{return checkShapeForReview(check,scope);}catch{return summaryOf(check);}};
-  const asksInstalled=packages!=='allowed'&&(installed||[]).length>0;
-  const state={goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),phrases:phrases.map((text,slot)=>({slot,text:text.slice(0,300)})),
-    requirements:reqs.map((r,slot)=>({slot,id:r.id,says:String(r.says).slice(0,200),check:shapeOf(r.check),serves:(r.serves||[]).slice(0,6)})),
-    deliverables:dels.map((d,slot)=>({slot,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,160),...(facts.get(d.name)?.length?{interface:facts.get(d.name)}:{})})),
-    // v8 live 4: what is installed (the toolchains, each with its language's standard library, and Root's packages), and the card's plan and decisions, for CLEF.installed.
-    ...(asksInstalled?{installed:{toolchains:(installed||[]).map(t=>t.id),packages:held.map(p=>p.name)},run:(card.run||[]).map(r=>r.static?'serve the files as they are':String(r.run||'')).slice(0,4),decisions:(card.decisions||[]).slice(0,8).map(d=>String(d).slice(0,240))}:{})};
-  const asks=[...phrases.map((_,i)=>({key:`covered_${i}`,text:clefText('covered',{i}),note:p=>`The goal phrase "${clip(phrases[i],160)}" may be covered by no requirement (Clef p=${p.toFixed(2)}): add a requirement whose check fails when the project ignores it.`})),
-    ...reqs.map((r,i)=>({key:`exercises_${i}`,text:clefText('exercises',{i}),note:p=>`${r.id}'s check may not exercise what it states (Clef p=${p.toFixed(2)}; ${clip(summaryOf(r.check),120)}): check it the way its user meets it, such as browser steps on a page, running a command, calling a function, or a reader's question about a document.`})),
-    ...reqs.map((r,i)=>({r,i})).filter(({r})=>!r.untested&&r.check?.kind!=='judge'&&!existenceOnly(r)).map(({r,i})=>({key:`implementable_${i}`,text:clefText('implementable',{i}),note:p=>`${r.id}'s check may need what its statement and contract leave unsaid (Clef p=${p.toFixed(2)}; ${clip(shapeOf(r.check),160)}): state in says the behaviour and interface the check needs, such as the exit status or the stream a message goes to, and keep its values in the check.`})),
-    // v8 live 3: a file check inside a code, style or script file: does it test what a user meets, or an internal detail? A NO asks for a behaviour check.
-    ...reqs.map((r,i)=>({r,i})).filter(({r})=>!r.untested&&internalFileCheck(r.check)).map(({r,i})=>({key:`internal_${i}`,text:clefText('internal',{i}),note:p=>`${r.id}'s check looks at an internal detail of ${clip(r.check.path,80)} (Clef p=${p.toFixed(2)}; ${clip(shapeOf(r.check),120)}): check the behaviour a user meets instead, such as a page's text, a command's output or a function's result, and keep a file check for what the goal names in the file.`})),
-    ...dels.map((d,i)=>({key:`kind_${i}`,text:clefText('kind_fits',{i}),note:p=>`Kind: deliverable "${clip(d.name,80)}" may fit another kind than ${d.kind||'function'} (Clef p=${p.toFixed(2)}).`})),
-    // v8 live 4 (the tracker card chose a web framework the project does not have): does the plan keep to what is installed? A NO is substantive.
-    ...(asksInstalled?[{key:'installed',text:clefText('installed'),note:p=>`Installed: the card's plan or decisions may rely on something beyond what is installed (Clef p=${p.toFixed(2)}): use each language's standard library${(own=>own.length?` and the installed packages: ${clip(installedSummary(own),400)}`:'')(held.filter(p=>!(card.languages||[]).length||(card.languages||[]).includes(p.language)))}.`}]:[])];
-  const groups=[];
-  for(let i=0;i<asks.length;i+=12)groups.push(asks.slice(i,i+12));
-  const failed=[];
-  await Promise.all(groups.map(async group=>{
-    try {
-      const output=await clefRun(env,'reviewCard',selector,{model:clef,state,questions:Object.fromEntries(group.map(a=>[a.key,{type:'noul',instructions:a.text}]))});
-      for(const a of group){const p=output?.answers?.[a.key]?.noul;if(typeof p==='number'&&Number.isFinite(p)&&p<REVIEW_BAR)a.found=a.note(p);}
-    } catch(e) {failed.push(String(e?.message||e).slice(0,200));}
-  }));
-  return {notes:asks.filter(a=>a.found).map(a=>a.found),failed};
-}
-// v8 S8b review: Clef asks whether the goal asks to change each existing
-// file a deliverable or a contract names (CLEF.base_change), one batched
-// call: state {goal, files: [{slot, path}]}. [{path, p}]; a Clef failure
-// throws (the caller holds the room rather than give a file away unvetted).
+// v8 S8b review: Clef asks whether an assignment asks to change each existing
+// file a contract names (CLEF.base_change), one batched call: state
+// {assignment, files: [{slot, path}]}. [{path, p}]; a Clef failure throws
+// (the caller holds the room rather than give a file away unvetted).
 export const BASE_CHANGE_BAR = 0.5;
-export async function vetBaseChanges(env, {goal='', paths=[]}) {
+export async function vetBaseChanges(env, {assignment='', paths=[]}) {
   if (!paths.length) return [];
   if (env.MOCK_AI === 'true') return paths.map(path=>({path,p:1}));
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('unsupported Clef decision model');
   const list=paths.slice(0,24);
-  const output=await clefRun(env,'vetBaseChanges',selector,{model:clef,state:{goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),files:list.map((path,i)=>({slot:i,path}))},
+  const output=await clefRun(env,'vetBaseChanges',selector,{model:clef,state:{assignment:String(assignment).slice(0,8000),files:list.map((path,i)=>({slot:i,path}))},
     questions:Object.fromEntries(list.map((_,i)=>[`base_change_${i}`,{type:'noul',instructions:clefText('base_change',{i})}]))});
   return list.map((path,i)=>{
     const p=output?.answers?.[`base_change_${i}`]?.noul;
@@ -1020,43 +838,20 @@ export async function vetBaseChanges(env, {goal='', paths=[]}) {
     return {path,p};
   });
 }
-// v8 card repair (§5): whether a change is about each existing deliverable
-// it rewrites. Clef reviews, it never refuses: a doubt is marked on the
-// deliverable and in the revision's delta (CLEF.amend_change), one batched
-// call as vetBaseChanges does: state {change, deliverables: [{slot, name,
-// kind, path, does}]} (its description before the change). [{name, p}]; a
-// Clef failure throws (the caller applies the change, unvetted, and says so).
-export const AMEND_CHANGE_BAR = 0.5;
-export async function vetAmendChanges(env, {change='', deliverables=[]}) {
-  if (!deliverables.length) return [];
-  if (env.MOCK_AI === 'true') return deliverables.map(d=>({name:d.name,p:1}));
-  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
-  if (!clef) throw new Error('unsupported Clef decision model');
-  const list=deliverables.slice(0,12);
-  const output=await clefRun(env,'vetAmendChanges',selector,{model:clef,state:{change:String(change).slice(0,GOAL_LIMIT),
-    deliverables:list.map((d,i)=>({slot:i,name:String(d.name).slice(0,200),kind:d.kind||'function',...(d.path?{path:d.path}:{}),does:String(d.does||'').slice(0,200)}))},
-    questions:Object.fromEntries(list.map((_,i)=>[`amend_change_${i}`,{type:'noul',instructions:clefText('amend_change',{i})}]))});
-  return list.map((d,i)=>{
-    const p=output?.answers?.[`amend_change_${i}`]?.noul;
-    if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${d.name}`);
-    return {name:d.name,p};
-  });
-}
 // v8 M3: Clef judges, per check held at a piece, whether what the check
 // reaches comes from the piece's files, the installed packages or the
 // language (CLEF.piece_reach): the reach the linker cannot see, such as a
 // route a page requests, a file read while it runs or data another piece
 // writes. One batched call per 12 checks: state {piece: {name, contracts,
-// files}, installed, checks: [{slot, says, check}]}, each check with its
-// values as their kinds. [{id, p}]; a Clef error throws (the caller rolls
+// files}, installed, checks: [{slot, says, check}]}. [{id, p}]; a Clef error throws (the caller rolls
 // the checks up, which only delays them).
 export const PIECE_REACH_BAR = 0.5;
-export async function pieceReach(env, {name='', contracts=[], files=[], installed=[], checks=[], card=null}) {
+export async function pieceReach(env, {name='', contracts=[], files=[], installed=[], checks=[]}) {
   if (!checks.length) return [];
   if (env.MOCK_AI === 'true') return checks.map(c=>({id:c.id,p:1}));
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('unsupported Clef decision model');
-  const scope=cardScope(card?.requirements?card:{requirements:checks}),shapeOf=check=>{try{return checkShapeForReview(check,scope);}catch{return checkSummary(check);}};
+  const shapeOf=check=>checkSummary(check);
   // v8 M3 review (L7): each answer is its own check's: one that is not a
   // probability is asked once more, alone with the others like it, and one
   // still invalid (or a call that fails twice) is that check's error
@@ -1076,60 +871,12 @@ export async function pieceReach(env, {name='', contracts=[], files=[], installe
   }
   return out;
 }
-// v8 S8b: the model call src/fetcher.js sourceCards makes for each chunk's
-// gist and each source's card, on the card writer's model with role 'card'
-// (a span per call); the quoted text travels in the user JSON only.
-export const SOURCE_CARD_TOKENS = 700;
+// v8 S8b: the model call src/fetcher.js sourceSummaries makes for each
+// chunk's gist and each source's summary, on the compiler's model with role
+// 'source' (a span per call); the quoted text travels in the user JSON only.
+export const SOURCE_SUMMARY_TOKENS = 700;
 export const sourceModel = env => async ({role:part, system, user}) =>
-  withoutThinking(await run(env, system, user, SOURCE_CARD_TOKENS, {call: part==='source_gist'?'sourceGist':'sourceCard', role:'card', noThink:true}));
-// v8 §1.4: Clef vets the card writer's requirements against the goal, one
-// batched call per 12 (scopeChildren's grouping), the traced ones too: an
-// invented requirement costs a repair round later. v8 S3 review: a batch
-// Clef fails keeps its requirements, unvetted.
-// v8 live 3: the question is whether someone who wrote the goal would expect
-// the requirement of the result (CLEF.requirement); the literal one ("does
-// the goal state or imply it") scored every elaboration of a short goal low
-// and is asked beside it for one release (requirement_literal_<n>, p_literal,
-// in the span's attributes too), in the same call. A file check inside a
-// code, style or script file is also asked CLEF.internal (internal_<n>,
-// p_internal). Clef reads the goal, each says and its check with values as
-// their kinds and wording as it is (checkShapeForReview). card: the whole
-// card, for its scope. {ps:[{id, p, p_literal?, p_internal?} | {id,
-// unvetted:true}], failed:[reasons]}; MOCK keeps all.
-export async function vetRequirements(env, {goal='', requirements=[], card=null}) {
-  if (!requirements.length) return {ps:[],failed:[]};
-  if (env.MOCK_AI === 'true') return {ps:requirements.map(r=>({id:r.id,p:1})),failed:[]};
-  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
-  const clef=DECISION_MODELS[selector];
-  if (!clef) return {ps:requirements.map(r=>({id:r.id,unvetted:true})),failed:['unsupported Clef decision model']};
-  const groups=[],failed=[],scope=cardScope(card?.requirements?card:{requirements},{goal});
-  const shapeOf=check=>{try{return checkShapeForReview(check,scope);}catch{return checkSummary(check);}};
-  const pOf=(output,key)=>{const p=output?.answers?.[key]?.noul;return typeof p==='number'&&Number.isFinite(p)&&p>=0&&p<=1?p:undefined;};
-  const read=(output,group,start)=>group.map((r,i)=>{
-    const n=start+i,p=pOf(output,`requirement_${n}`),literal=pOf(output,`requirement_literal_${n}`),internal=pOf(output,`internal_${n}`);
-    return {id:r.id,p,...(literal!==undefined?{p_literal:literal}:{}),...(internal!==undefined?{p_internal:internal}:{})};
-  });
-  for(let start=0;start<requirements.length;start+=12)groups.push({start,group:requirements.slice(start,start+12)});
-  const answered=await Promise.all(groups.map(async ({start,group})=>{
-    try {
-      const questions=Object.fromEntries(group.flatMap((r,i)=>[
-        [`requirement_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement}`}],
-        [`requirement_literal_${start+i}`,{type:'noul',instructions:`About requirement ${start+i}: ${CLEF.requirement_literal}`}],
-        ...(internalFileCheck(r.check)?[[`internal_${start+i}`,{type:'noul',instructions:clefText('internal',{i:start+i})}]]:[])]));
-      const output=await clefRun(env,'vetRequirements',selector,{model:clef,
-        state:{goal:String(goal).slice(0,EFFECTIVE_GOAL_LIMIT),requirements:group.map((r,i)=>({slot:start+i,says:String(r.says).slice(0,200),check:shapeOf(r.check)}))},questions},
-        out=>({vet:read(out,group,start)}));
-      return read(output,group,start).map(x=>{
-        if(x.p===undefined)throw new Error(`Clef returned no valid probability for requirement ${x.id}`);
-        return x;
-      });
-    } catch(e) {
-      failed.push(`${group.map(r=>r.id).join(', ')}: ${String(e?.message||e).slice(0,200)}`);
-      return group.map(r=>({id:r.id,unvetted:true}));
-    }
-  }));
-  return {ps:answered.flat(),failed};
-}
+  withoutThinking(await run(env, system, user, SOURCE_SUMMARY_TOKENS, {call: part==='source_gist'?'sourceGist':'sourceSummary', role:'source', noThink:true}));
 // v8 §4.3 (S4b): Clef judges a document requirement, yes or no, from the
 // file alone: state {requirement, file:{path, text}}, the question CLEF.judge
 // with the check's own question appended. The whole document is read, in
@@ -1231,16 +978,13 @@ Return ONLY JSON {"actions":[...]}.`;
 export async function decideProblems(env, input, {onCall=()=>{}, retry=true}={}) {
   if (env.MOCK_AI === 'true') return {actions:[]};
   const request=JSON.stringify(input);
-  // v8 (S6): PRINCIPLES + ROLE.manager + FORMAT.manager; each problem's
-  // trigger says why it is asked (TRIGGERS, filled by the room).
-  const v8=pipelineV8(env),system=v8?systemPrompt('manager'):MANAGER_SYSTEM;
+  const system=MANAGER_SYSTEM;
   try {
     onCall();
     let output=await run(env,system,request,2048,{call:'decideProblems',role:'manager'}),parsed=parseObject(withoutThinking(output));
     if(parsed.parse_error&&retry) {
       onCall();
-      output=await (v8?run(env,system,JSON.stringify({...input,previous_answer_problems:[RETRY.json]}),2048,{call:'decideProblems',role:'manager',retry:true}):
-        run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048,{call:'decideProblems',role:'manager',retry:true}));
+      output=await run(env,MANAGER_SYSTEM+'\nRETRY: return strictly valid JSON {"actions":[...]}. No markdown.',request,2048,{call:'decideProblems',role:'manager',retry:true});
       parsed=parseObject(withoutThinking(output));
     }
     // v7.15.15 (G4, run23): an empty answer says what its envelope held (emptyAnswer), as decompose's and decide's do: run23's M4 logged "the decision did not parse: " with nothing after it.

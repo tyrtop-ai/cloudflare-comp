@@ -141,63 +141,68 @@ test('v8 live 5: the pre-grade asks CLEF.split over {assignment, contracts}, wit
   assert.deepEqual(asked[1].state,{assigned_behavior:'x'});
 });
 
-test('v8 live 5: Clef reviews a proposed split in one call: split_valid, split_size and each piece\'s scope, over the original and the pieces',async()=>{
-  const {reviewSplit}=await import('../src/model.js'),{CLEF,clefText}=await import('../src/prompts.js');
-  const asked=[],spans=[];
-  const env={PIPELINE:'v8',TRACE:r=>spans.push(r),AI:{run:async(_name,input)=>{asked.push(input);return {answers:{split_valid:{noul:0.81},split_size:{noul:0.42},within_0:{noul:0.9},within_1:{noul:0.3}}};}}};
-  const pieces=[{label:'Pages',task:'Write the pages.',interfaces:[{name:'index.html',kind:'page'}]},{label:'Server',task:'Write the server.',interfaces:[{name:'app.py',kind:'file'}]}];
-  const r=await reviewSplit(env,{goal:'The goal',assignment:'The goal',contracts:['page index.html (index.html): lists; serves R1'],pieces,attempt:2,retry:'different'});
-  assert.deepEqual(r,{valid:0.81,size:0.42,scope:[0.9,0.3]});
-  assert.equal(asked.length,1,'one batched call');
-  assert.deepEqual(asked[0].state,{goal:'The goal',original:{assignment:'The goal',contracts:['page index.html (index.html): lists; serves R1']},
-    pieces:[{slot:0,label:'Pages',task:'Write the pages.',contracts:['index.html']},{slot:1,label:'Server',task:'Write the server.',contracts:['app.py']}]});
-  assert.equal(asked[0].questions.split_valid.instructions,CLEF.split_valid);
-  assert.equal(asked[0].questions.split_size.instructions,CLEF.split_size);
-  assert.equal(asked[0].questions.within_1.instructions,clefText('scope',{i:1}));
-  // The span records the attempt for tuning.
-  assert.deepEqual((({attempt,pieces:n,retry,valid_p,size_p,scope_ps})=>({attempt,n,retry,valid_p,size_p,scope_ps}))(spans[0]),{attempt:2,n:2,retry:'different',valid_p:0.81,size_p:0.42,scope_ps:[0.9,0.3]});
-  await assert.rejects(reviewSplit({PIPELINE:'v8',AI:{run:async()=>({answers:{split_valid:{noul:0.5}}})}},{pieces}),/no valid split review/);
+test('v8: Clef reviews a splitter\'s attempt in one batched call: split_valid, split_size, each piece\'s scope, and each validation\'s marks; it annotates, never removes', async () => {
+  const {reviewLevel} = await import('../src/model.js'), {CLEF, clefText} = await import('../src/prompts.js');
+  const asked = [], spans = [];
+  const env = {PIPELINE: 'v8', TRACE: r => spans.push(r), AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'split_size' ? 0.42 : k.startsWith('internal') ? 0.2 : 0.8}]))}; }}};
+  const contracts = [{name: 'index.html', kind: 'page', path: 'index.html', does: 'lists the items'}, {name: 'GET /items', kind: 'route', does: 'answers the items'}];
+  const pieces = [{label: 'Page', task: 'Write the page.', contracts: ['index.html']}, {label: 'Server', task: 'Write the server.', contracts: ['GET /items']}];
+  const validations = [{id: 'V1', serves: ['index.html'], check: {kind: 'file', path: 'list.js', has: ['class ItemList']}},
+    {id: 'V2', serves: ['GET /items'], check: {kind: 'http', serve: 'GET /items', steps: [{method: 'GET', path: '/items', expect: {status: 200}}]}}];
+  const r = await reviewLevel(env, {assignment: 'A list of items', contracts, pieces, validations, attempt: 2, retry: 'different'});
+  assert.equal(asked.length, 1, 'one batched call');
+  assert.deepEqual([r.valid, r.size, r.scope], [0.8, 0.42, [0.8, 0.8]]);
+  assert.deepEqual(r.notes, [{exercises: 0.8, implementable: 0.8, internal: 0.2}, {exercises: 0.8, implementable: 0.8}]);
+  assert.equal(asked[0].questions.split_valid.instructions, CLEF.split_valid);
+  assert.equal(asked[0].questions.within_1.instructions, clefText('scope', {i: 1}));
+  assert.equal(asked[0].questions.exercises_0.instructions, clefText('exercises', {i: 0}));
+  assert.equal(asked[0].questions.implementable_1.instructions, clefText('implementable', {i: 1}));
+  assert.equal(asked[0].questions.internal_0.instructions, clefText('internal', {i: 0}));
+  assert.ok(!('internal_1' in asked[0].questions), 'only a file check that looks for texts in code is asked whether it is internal');
+  assert.deepEqual(asked[0].state.pieces.map(p => p.contracts), [['index.html'], ['GET /items']]);
+  assert.deepEqual(asked[0].state.validations.map(v => v.slot), [0, 1]);
+  assert.deepEqual((({attempt, pieces: n, retry, valid_p, size_p}) => ({attempt, n, retry, valid_p, size_p}))(spans[0]), {attempt: 2, n: 2, retry: 'different', valid_p: 0.8, size_p: 0.42});
+  // A level with no pieces asks only about its validations.
+  const one = await reviewLevel(env, {assignment: 'A list of items', contracts, pieces: [], validations});
+  assert.ok(!('split_valid' in asked[1].questions));
+  assert.deepEqual([one.valid, one.size, one.scope], [1, 1, []]);
+  await assert.rejects(reviewLevel({PIPELINE: 'v8', AI: {run: async () => ({answers: {split_valid: {noul: 0.5}}})}}, {pieces, validations}), /no valid review/);
 });
 
-test('v8: routing, matching, picking and the assignment check ask the CLEF questions over contracts of any kind',async()=>{
-  const {CLEF,clefText}=await import('../src/prompts.js');
-  const {routeOwner,matchFunction,pickPiece,ownsNeed}=await import('../src/model.js');
-  const asked=[];
-  const env={PIPELINE:'v8',AI:{run:async(_name,input)=>{asked.push(input);return {answers:Object.fromEntries(Object.keys(input.questions).map(k=>[k,{noul:0.9}]))};}}};
-  const kids=[{id:'root.1',label:'Page',task:'Write index.html',known_topics:[],files:['index.html']},{id:'root.2',label:'Styles',task:'Write styles.css',known_topics:[],files:['styles.css']}];
-  await routeOwner(env,'Who links the stylesheet?',kids,{keywords:false});
-  assert.deepEqual(Object.values(asked[0].questions).map(q=>q.instructions),[clefText('owner',{i:0}),clefText('owner',{i:1})]);
-  const items=[{name:'styles.css',kind:'file',path:'styles.css',does:'the page styles',owner:'Styles'},{name:'GET /items',kind:'route',does:'lists the items',owner:'Server'}];
-  await matchFunction(env,{need:'the page styles',name:'styles.css'},items);
-  assert.equal(asked[1].questions.fn_0.instructions,clefText('match',{j:0}));
-  assert.deepEqual(asked[1].state.contracts.map(c=>c.contract),['file styles.css: the page styles','route GET /items: lists the items']);
-  assert.equal(asked[1].state.functions,undefined);
-  await pickPiece(env,items[0],[{label:'Page',task:'Write index.html'},{label:'Styles',task:'Write styles.css'}]);
-  assert.equal(asked[2].questions.piece_1.instructions,clefText('pick',{j:1,contract:'file styles.css: the page styles'}));
-  assert.equal(asked[2].state.contract,'file styles.css: the page styles');
-  await ownsNeed(env,{assigned_code:'Write the page',need:'a stylesheet',name:'styles.css'});
-  assert.equal(asked[3].questions.inside.instructions,CLEF.owns_need);
-  assert.deepEqual(asked[3].state,{assigned_work:'Write the page',needed:{need:'a stylesheet',expected_name:'styles.css'}});
+test('v8: routing a complaint or a change, the scope walk and matching ask the CLEF questions over contracts of any kind', async () => {
+  const {CLEF, clefText} = await import('../src/prompts.js');
+  const {routeAmong, inScope, matchContracts} = await import('../src/model.js');
+  const asked = [];
+  const env = {PIPELINE: 'v8', AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map((k, i) => [k, {noul: i ? 0.3 : 0.9}]))}; }}};
+  const children = [{task: 'Write the page', contracts: [{name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}]}, {task: 'Write the styles', contracts: [{name: 'styles.css', kind: 'file', path: 'styles.css', does: 'the page styles'}]}];
+  assert.deepEqual(await routeAmong(env, {key: 'owner', text: 'the list is unstyled', children}), [0.9, 0.3]);
+  assert.deepEqual(Object.values(asked[0].questions).map(q => q.instructions), [clefText('owner', {i: 0}), clefText('owner', {i: 1})]);
+  assert.equal(asked[0].state.question, 'the list is unstyled');
+  assert.deepEqual(asked[0].state.children[1].contracts, ['file styles.css: the page styles']);
+  await routeAmong(env, {key: 'change', text: 'Make the list dark', children});
+  assert.equal(asked[1].questions.change_0.instructions, clefText('change', {i: 0}));
+  assert.equal(asked[1].state.change, 'Make the list dark');
+  assert.equal(await inScope(env, {assignment: 'Write the page', contracts: children[0].contracts, need: 'a stylesheet', name: 'styles.css'}), 0.9);
+  assert.equal(asked[2].questions.inside.instructions, CLEF.owns_need);
+  assert.deepEqual(asked[2].state, {assigned_work: 'Write the page', contracts: ['page index.html: the page'], needed: {need: 'a stylesheet', expected_name: 'styles.css'}});
+  const hit = await matchContracts(env, {need: 'the page styles', name: 'theme'}, children.flatMap(c => c.contracts));
+  assert.equal(asked[3].questions.match_0.instructions, clefText('match', {j: 0}));
+  assert.deepEqual(hit, {index: 0, p: 0.9});
 });
 
-test('v8: the splitter is PRINCIPLES + ROLE.splitter + FORMAT.splitter, never with SPLIT_USES, and its data is the user JSON',async()=>{
-  const {systemPrompt}=await import('../src/prompts.js');
-  const {SPLIT_USES}=await import('../src/model.js');
-  let called;
-  const env={PIPELINE:'v8',MODEL_NAME:'@cf/qwen/qwen3-30b-a3b-fp8',AI:{run:async(_name,args)=>{called=args;return {response:JSON.stringify({reason:'Page and styles apart',pieces:[
-    {label:'Page',task:'Write index.html',contracts:[{name:'index.html',kind:'page',path:'index.html',does:'the page'}],uses:['styles.css']},
-    {label:'Styles',task:'Write styles.css',contracts:[{name:'styles.css',kind:'file',path:'styles.css',does:'the styles'}]}]})};}}};
-  const promised=[{name:'index.html',kind:'page',path:'index.html',does:'the page',serves:['R1']}];
-  const project={languages:['text'],conventions:[{language:'text',files:'.html .css'}],run:[],decisions:[]};
-  const split=await decompose(env,{your_id:'root',your_responsibility:'A one-page site',root_scope:'A one-page site',max_child_writers:8,max_children:4,
-    your_promised_functions:promised,contracts_available:[{contract:'file logo.svg',reference:'logo.svg'}],project},{planned:true,facts:{rows:[],languages:['text']}});
-  assert.equal(called.messages[0].content,systemPrompt('splitter'));
-  assert.ok(!called.messages[0].content.includes(SPLIT_USES.trim().slice(0,40)));
-  const user=JSON.parse(called.messages[1].content);
-  assert.deepEqual(Object.keys(user),['assignment','contracts_you_deliver','contracts_available','project','goal_scope_boundary','max_pieces']);
-  assert.deepEqual(user.contracts_you_deliver,[{name:'index.html',kind:'page',path:'index.html',does:'the page'}]);
-  assert.equal(user.max_pieces,4);
-  assert.deepEqual(user.project,project);
-  assert.deepEqual(split.spawn.map(c=>[c.label,c.interfaces.map(f=>f.name),c.uses||[]]),[['Page',['index.html'],['styles.css']],['Styles',['styles.css'],[]]]);
-  assert.equal(split.summary,'Page and styles apart');
+test('v8: the splitter is ROLE.splitter + FORMAT.splitter, its data the user JSON; an answer with no level object is asked once more, without thinking', async () => {
+  const {systemPrompt, RETRY} = await import('../src/prompts.js');
+  const {splitLevel} = await import('../src/model.js');
+  const calls = [];
+  const answers = ['Let me think about the pieces.', JSON.stringify({contracts: [{name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}], validations: [], pieces: []})];
+  const env = {PIPELINE: 'v8', MODEL_NAME: '@cf/qwen/qwen3-30b-a3b-fp8', AI: {run: async (_name, args) => { calls.push(args); return {response: answers[calls.length - 1]}; }}};
+  const request = {assignment: 'A one-page site', box: {programs: ['node'], toolchains: [{id: 'text', extensions: ['.html']}]}, max_pieces: 4};
+  const level = await splitLevel(env, request);
+  assert.deepEqual(level.contracts.map(c => c.name), ['index.html']);
+  assert.equal(calls.length, 2);
+  for (const c of calls) assert.equal(c.messages[0].content, systemPrompt('splitter'));
+  assert.deepEqual(JSON.parse(calls[0].messages[1].content), request);
+  assert.deepEqual(JSON.parse(calls[1].messages[1].content.replace(/ \/no_think$/, '')).previous_answer_problems, [RETRY.json]);
+  const bad = await splitLevel({...env, AI: {run: async () => ({response: 'no json here'})}}, request);
+  assert.equal(bad.parse_error, true);
 });

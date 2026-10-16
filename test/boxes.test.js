@@ -5,30 +5,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {liveRoom, events, fileBlocks, verifyCard, snapshotHash} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, verifyChecks, snapshotHash} from './helpers/room.js';
 import {fakeBoxes, FakeContainer, FAKE_IMAGES, POISON_ENV} from './helpers/boxes.js';
-import {taskFromRow, taskOutcome} from '../src/bench.js';
+import {taskFromRow, roomOutcome} from '../src/bench.js';
 import {MULTIPLE_JS} from './helpers/bench-fixtures.js';
 // After the helpers registered the cloudflare:workers loader.
 const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, compileBoxSpec, BOX_PATH, BOX_LIFETIME_MS, boxBuildCommand, boxName, BOX_COLD_MS} = await import('../src/box.js');
 
 const TEMP_GOAL = 'A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
-const JS_CARD = {card: 1, summary: 'A converter command and its usage guide', languages: ['javascript', 'text'],
-  deliverables: [
+// The level the converter's splitter states: the command and its guide, three examples each.
+const command = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', run: `temp ${c}`, expect: {exit: 0, stdout_has: [f]}}});
+const judge = (id, question) => ({id, serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question}});
+const TEMP_LEVEL = {
+  contracts: [
     {name: 'temp', kind: 'command', path: 'temp.js', does: 'prints the Fahrenheit value of a Celsius temperature', inputs: [{name: 'celsius', is: 'a number'}]},
     {name: 'USAGE.md', kind: 'doc', path: 'USAGE.md', does: 'how to use the converter'}],
-  requirements: [
-    {id: 'R1', says: 'Converting 100 degrees Celsius prints the Fahrenheit value', source: 'converts a temperature from Celsius to Fahrenheit', serves: ['temp'], check: {kind: 'command', run: 'temp 100', expect: {exit: 0, stdout_has: ['212']}}},
-    {id: 'R2', says: 'The guide explains how to run the converter', source: 'a short usage guide', serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question: 'Does it show how to run the converter?'}}],
-  decisions: []};
+  validations: [command('a', '100', '212'), command('b', '0', '32'), command('c', '-40', '-40'),
+    judge('d', 'Does it show how to run the converter?'), judge('e', 'Does it say what the converter prints?'), judge('f', 'Does it name the unit the input is in?')],
+  pieces: []};
 const RIGHT = 'function main() { console.log(String(Number(process.argv[2]) * 9 / 5 + 32)); }\nmain();\n';
 const WRONG = 'function main() { console.log(String(Number(process.argv[2]))); }\nmain();\n';
 const USAGE = {path: 'USAGE.md', content: '# Usage\n\nRun `node temp.js 100`.\n'};
 const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.1 : 0.9}]))});
-// Root writes the converter: the n-th turn gets the n-th answer (the last one repeats).
+// One worker writes the converter: the n-th turn gets the n-th answer (the last one repeats).
 const tempRoom = (answers = [RIGHT], opts = {}) => {
   let n = 0;
-  return liveRoom({card: () => JS_CARD, clef, leaf: () => fileBlocks([{path: 'temp.js', content: answers[Math.min(n++, answers.length - 1)]}, USAGE], {summary: 'wrote the converter', done: true}), ...opts});
+  return liveRoom({split: () => TEMP_LEVEL, clef, leaf: () => fileBlocks([{path: 'temp.js', content: answers[Math.min(n++, answers.length - 1)]}, USAGE], {summary: 'wrote the converter', done: true}), ...opts});
 };
 // BUILD_EXECUTORS, watched: a v8 compile must never reach it.
 const watchExecutors = env => {
@@ -36,7 +38,7 @@ const watchExecutors = env => {
   env.BUILD_EXECUTORS = {getByName: () => { seen.gets++; return {build: async () => { seen.builds++; throw new Error('the shared executor was used'); }, warm: async () => { seen.gets++; return {}; }}; }};
   return seen;
 };
-const boxSpans = room => room.spans().filter(s => s.kind === 'container' && s.name === 'card');
+const boxSpans = room => room.spans().filter(s => s.kind === 'container' && s.name === 'checks');
 
 // ------------------------------------------------------------ the invariant helpers
 test('boxStartOptions: image reference, instance and enableInternet only; the internet is off unless exactly true', () => {
@@ -111,9 +113,9 @@ test('a box whose ready_ms is over 5 s is recorded cold', async () => {
 
 test('Box.compile runs the build runner once in its own box and destroys it, also when the runner fails; the alarm is the backstop', async () => {
   const requests = [];
-  const ns = fakeBoxes({run: async req => { requests.push(req); return {fingerprint: req.fingerprint, snapshot_hash: req.snapshot_hash, mode: 'card', passed: true, checks: []}; }});
+  const ns = fakeBoxes({run: async req => { requests.push(req); return {fingerprint: req.fingerprint, snapshot_hash: req.snapshot_hash, mode: 'checks', passed: true, checks: []}; }});
   const box = freshBox(ns);
-  const r = await box.compile(compileBoxSpec({checks: []}), {fingerprint: 'f1', files: {'a.js': '1;\n'}, mode: 'card', plan: {checks: []}, toolchains: [], limits: {a: 1}, secret: 'never'});
+  const r = await box.compile(compileBoxSpec({checks: []}), {fingerprint: 'f1', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}, toolchains: [], limits: {a: 1}, secret: 'never'});
   assert.deepEqual([r.passed, r.box.fresh, r.box.internet], [true, true, false]);
   assert.deepEqual(Object.keys(requests[0]).sort(), ['files', 'fingerprint', 'limits', 'mode', 'options', 'plan', 'snapshot_hash', 'toolchains'], 'the request BuildExecutor sends, nothing more');
   const {container} = ns.boxes[0];
@@ -127,7 +129,7 @@ test('Box.compile runs the build runner once in its own box and destroys it, als
   await assert.rejects(freshBox(bad).compile({image: 'check'}, {fingerprint: 'f', files: {'a.js': '1;\n'}}), /Container is not running/);
   assert.equal(bad.boxes[0].container.destroyed, 1);
   // A forged attestation is refused.
-  const forged = fakeBoxes({run: async () => ({fingerprint: 'other', snapshot_hash: 'x', mode: 'card', checks: []})});
+  const forged = fakeBoxes({run: async () => ({fingerprint: 'other', snapshot_hash: 'x', mode: 'checks', checks: []})});
   await assert.rejects(freshBox(forged).compile({image: 'check'}, {fingerprint: 'f', files: {'a.js': '1;\n'}}), /attestation/);
   // The alarm destroys a box its caller never closed.
   const left = fakeBoxes({run: async () => ({})}), lone = freshBox(left);
@@ -137,7 +139,7 @@ test('Box.compile runs the build runner once in its own box and destroys it, als
 });
 
 // ------------------------------------------------------------ the room: a fresh box per compile
-test('v8 runCard: every compile opens its own fresh box (a new unique id), internet off, and the span records it', async () => {
+test('v8 runChecks: every compile opens its own fresh box (a new unique id), internet off, and the span records it', async () => {
   const {room, drain, boxes, env, builds} = tempRoom([WRONG, RIGHT]);
   const seen = watchExecutors(env);
   await room.start(TEMP_GOAL, 20, {pipeline: 'v8'});
@@ -170,7 +172,7 @@ test('v8 runCard: every compile opens its own fresh box (a new unique id), inter
 });
 
 test('no reuse across rooms: two rooms on one namespace, compiling at once, get disjoint boxes', async () => {
-  const ns = fakeBoxes({run: req => verifyCard({...req}, {isolation: []})});
+  const ns = fakeBoxes({run: req => verifyChecks({...req}, {isolation: []})});
   const a = tempRoom([RIGHT], {boxes: ns, room_id: 'room-a-0001'}), b = tempRoom([RIGHT], {boxes: ns, room_id: 'room-b-0002'});
   await Promise.all([a.room.start(TEMP_GOAL, 10, {pipeline: 'v8'}), b.room.start(TEMP_GOAL, 10, {pipeline: 'v8'})]);
   await Promise.all([a.drain(), b.drain()]);
@@ -182,17 +184,20 @@ test('no reuse across rooms: two rooms on one namespace, compiling at once, get 
 });
 
 test('no reuse across bench tasks: each task room compiles in its own box; a room takes no pooled executor', async () => {
-  const ns = fakeBoxes({run: req => verifyCard({...req, snapshot_hash: req.snapshot_hash}, {isolation: []})});
+  const ns = fakeBoxes({run: req => verifyChecks({...req, snapshot_hash: req.snapshot_hash}, {isolation: []})});
   const task = taskFromRow(MULTIPLE_JS[0]);
   const sol = 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n';
-  const rooms = ['bench-abcdef012345-0-0', 'bench-abcdef012345-1-0'].map(room_id => liveRoom({room_id, boxes: ns, clef,
-    card: () => { throw new Error('no card writer for a provided card'); },
+  const call = (id, a, b, sum) => ({id, serves: ['add_two'], check: {kind: 'call', steps: [{call: 'add_two', args: [a, b], expect: sum}]}});
+  const level = {contracts: [{name: 'add_two', kind: 'function', path: 'solution.js', does: 'adds two numbers', inputs: [{name: 'a', is: 'a number'}, {name: 'b', is: 'a number'}], outputs: 'their sum'}],
+    validations: [call('a', 1, 2, 3), call('b', -1, 1, 0), call('c', 40, 2, 42)], pieces: []};
+  const rooms = ['bench-abcdef012345-0-0', 'bench-abcdef012345-1-0'].map(room_id => liveRoom({room_id, boxes: ns, clef, split: () => level,
     leaf: () => fileBlocks([{path: 'solution.js', content: sol}], {summary: 'wrote solution.js', done: true})}));
   for (const r of rooms) watchExecutors(r.env);
-  await Promise.all(rooms.map(r => r.room.start(task.prompt, 20, {pipeline: 'v8'}, r.room.get('room_id'), task.card)));
+  // A task room starts from the task's prompt alone: the grader stays with the run.
+  await Promise.all(rooms.map(r => r.room.start(task.prompt, 20, {pipeline: 'v8'}, r.room.get('room_id'))));
   await Promise.all(rooms.map(r => r.drain()));
   for (const r of rooms) {
-    assert.equal(taskOutcome(r.room.benchSummary()).outcome, 'pass', JSON.stringify(r.room.snapshot().pause));
+    assert.equal(roomOutcome(r.room.benchSummary()).outcome, 'complete', JSON.stringify(r.room.snapshot().pause));
     assert.ok(!r.room.get('executor_key'), 'no pooled executor');
   }
   assert.equal(ns.boxes.length, 2, 'one box per task compile');
@@ -219,7 +224,7 @@ test('fail closed: the platform refusing enableInternet:false holds checks_block
   assert.equal(ns.boxes.length, 1);
   assert.equal(ns.boxes[0].container.starts, 0);
   assert.deepEqual(ns.boxes[0].container.log.map(l => l[0]), ['start'], 'nothing was exec\'d');
-  assert.equal(room.read('requirement_status', {}).R1.passed, null);
+  assert.equal(room.read('validation_status', {}).V1.passed, null);
   assert.equal(boxSpans(room)[0].attrs.error.includes('enableInternet'), true);
 });
 
@@ -248,7 +253,7 @@ test('fail closed: no BOXES binding, an image that is not deployed, or a box tha
   // A box (a stub that misbehaves) answering with the internet on, or not fresh, is not believed.
   for (const box of [{fresh: true, internet: true}, {fresh: false, internet: false}, undefined]) {
     let closed = 0;
-    const ns = {newUniqueId: () => ({id: 'x'}), get: () => ({open: async () => ({fresh: true, internet: false, image: 'check'}), compile: async (_spec, req) => ({fingerprint: req.fingerprint, mode: 'card', passed: true, checks: [], ...(box ? {box} : {})}), close: async () => { closed++; }})};
+    const ns = {newUniqueId: () => ({id: 'x'}), get: () => ({open: async () => ({fresh: true, internet: false, image: 'check'}), compile: async (_spec, req) => ({fingerprint: req.fingerprint, mode: 'checks', passed: true, checks: [], ...(box ? {box} : {})}), close: async () => { closed++; }})};
     const {room, drain} = tempRoom([RIGHT], {boxes: ns});
     await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
     await drain();
@@ -260,7 +265,7 @@ test('fail closed: no BOXES binding, an image that is not deployed, or a box tha
 
 test('a box that cannot start once is retried by the checks_blocked alarm in a NEW box, and passes', async () => {
   let refuse = 1;
-  const ns = fakeBoxes({run: req => verifyCard({...req}, {isolation: []}), refuse: () => refuse-- > 0 ? 'no capacity' : null});
+  const ns = fakeBoxes({run: req => verifyChecks({...req}, {isolation: []}), refuse: () => refuse-- > 0 ? 'no capacity' : null});
   const {room, drain, ctx} = tempRoom([RIGHT], {boxes: ns});
   ctx.storage.setAlarm = () => {};
   await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});

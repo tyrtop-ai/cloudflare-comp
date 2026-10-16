@@ -1,5 +1,5 @@
 // Stack-frame readers (v8 §4.5), shared by the Worker (src/toolchains.js
-// re-exports them) and the Container's card verification, which reads the
+// re-exports them) and the Container's verification of the validations, which reads the
 // frames of a failed check. Pure: no imports, so the Container image copies
 // it beside build-runner.mjs and the Worker bundles it from here.
 //

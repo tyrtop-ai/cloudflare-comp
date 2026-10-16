@@ -181,22 +181,18 @@ input[type=range]:focus {box-shadow:none;}
 .github-export .secondary { width:auto; flex:0 0 auto; margin-top:0; white-space:nowrap; }
 .export-result:empty { display:none; }
 .export-result a { overflow-wrap:anywhere; }
-/* v8 S3: the project card. Requirement chips: pass green, fail red, untested muted. */
-.card-view p { margin:0 0 10px; font-size:12px; }
-.card-summary { font-weight:600; }
-.card-section { margin-top:16px; }
-.card-list { list-style:none; margin:8px 0 0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:12px; }
-.card-list .event-type { margin-right:4px; }
+/* v8: the levels and the sources. Validation chips: pass green, fail red, untested muted. */
+.panel-view p { margin:0 0 10px; font-size:12px; }
+.panel-summary { font-weight:600; }
+.panel-section { margin-top:16px; }
+.panel-list { list-style:none; margin:8px 0 0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:12px; }
+.panel-list .event-type { margin-right:4px; }
 .req-chip { display:inline-block; min-width:62px; text-align:center; padding:1px 6px; border-radius:3px; font-size:9px; font-family:ui-monospace,monospace; letter-spacing:.035em; text-transform:uppercase; border:thin solid var(--code-bd); background:var(--code-bg); color:var(--muted); }
 .req-chip.pass { color:var(--ok); border-color:var(--ok); }
 .req-chip.fail { color:var(--bad); border-color:var(--bad); }
 .req-chip.stale { opacity:.6; border-style:dashed; }
-.card-hold { padding:8px 10px; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
-.card-raw { margin:6px 0 10px; }
+.hold-note { padding:8px 10px; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
 .req-chip.doubtful { color:var(--bad); border-color:var(--bad); }
-.card-raw summary { cursor:pointer; color:var(--muted); }
-.card-raw-text { min-height:0; white-space:pre-wrap; word-break:break-word; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
-.onode-card { margin:8px 0; }
 .start-from-repo[hidden] { display:none; }
 .start-from-repo input { margin-top:6px; }
 
@@ -223,7 +219,7 @@ input[type=range]:focus {box-shadow:none;}
 .bench-diff.up { color:var(--ok); } .bench-diff.down { color:var(--bad); }
 @media(max-width:700px) { .bench-row,.bench-compare-bar { grid-template-columns:1fr; } }
 
-/* v8 S9: the Prompts panel (the queue) and the card's revisions. */
+/* v8 S9: the Prompts panel (the queue). */
 .prompt-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .prompt-actions .secondary { margin-top:8px; }
 .queue-stopped { margin-top:10px; font-size:11px; }
@@ -243,4 +239,3 @@ input[type=range]:focus {box-shadow:none;}
 .req-chip.done { color:var(--ok); border-color:var(--ok); }
 .req-chip.failed { color:var(--bad); border-color:var(--bad); }
 .req-chip.skipped { opacity:.6; border-style:dashed; }
-.card-amended { color:var(--path); font-size:10px; }

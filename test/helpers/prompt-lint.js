@@ -1,12 +1,17 @@
-import { cardScope, maskWith } from '../../src/affordances.js';
 // v8 §8.3: the rules every v8 prompt text keeps, as one function the lint
 // test and the scripted v8 rooms share. A prompt states general principles
 // with their reasons: it names no product domain, no language, framework or
 // tool (those reach a model only as project facts and contract data in the
 // user JSON), no past run or version, none of v7's own words,
-// shouts nothing, and is not a list of prohibitions. The card writer's §6
+// shouts nothing, and is not a list of prohibitions. The splitter's
 // examples are the one place concrete data may appear (lintText strips
 // <example> blocks before every check but the goal words of the old default).
+// A generative role's text (ROLE, FORMAT, RETRY, the room's MESSAGES, the
+// linker's scope and the broker's labels) says only that role's own job and
+// world: it names no other agent, no part or piece beside its own, no
+// project, goal, sibling, parent or manager, no check someone else wrote and
+// no repair that reaches anyone else (STRUCTURE_WORDS). No v8 text says
+// card.
 import { TOOLCHAINS, OTHER_MANIFESTS } from '../../src/toolchains.js';
 
 // The old default goal's words: never, not even in an example.
@@ -33,6 +38,9 @@ export const V7_WORDS = /\bcontainer\b|named exports?|\bmodules?\b|\bqwen\b|\bcl
 export const RUN_REFERENCES = /\brun ?\d+\b|\bv\d+(?:\.\d+)*\b|\bslice S\d+\b/i;
 // The copyable placeholder names v7's prompts gave (C2's list).
 export const PLACEHOLDER_NAMES = /\b(?:functionName|otherFunctionName|fnName|listedName|camelCaseIdentifier|createTicket|theirModule)\b/;
+// The structure around a role: other agents, other parts, the project and its goal, the tree.
+export const STRUCTURE_WORDS = /\bagents?\b|\b(?:other|another|sibling|neighbou?ring|each other's) (?:parts?|pieces?|workers?|makers?|agents?|levels?)\b|\bprojects?\b|\bgoals?\b|\bsiblings?\b|\bneighbou?rs?\b|\bparents?\b|\bchild(?:ren)?\b|\bmanagers?\b|\bmakers?\b|\bteam\b|\bthe room\b|\bwritten by (?:others|another|someone)\b|\bsomeone else\b/i;
+export const CARD_WORDS = /\bcards?\b/i;
 export const NEGATIONS = /\b(?:never|do not|don't|must not|should not|cannot|can't|avoid)\b/gi;
 // Allowances: all-caps words of 4 or more letters outside the format's own
 // block markers (=== FILE: … ===), and never/do-not phrases per text.
@@ -47,7 +55,8 @@ export const negations = t => String(t).match(NEGATIONS) || [];
 
 // The problems with one text, as strings; [] when it passes. opts.room: a
 // text the room composed (looser on negations, which its notes need).
-export function lintText(name, text, {room = false} = {}) {
+// opts.generative: a text a generative role reads (STRUCTURE_WORDS apply).
+export function lintText(name, text, {room = false, generative = false} = {}) {
   const t = String(text), bare = withoutExamples(t), out = [];
   const hit = (re, s) => { const m = new RegExp(re.source, re.flags.replace('g', '')).exec(s); return m ? m[0] : null; };
   let m;
@@ -59,14 +68,17 @@ export function lintText(name, text, {room = false} = {}) {
   if ((m = hit(V7_WORDS, bare))) out.push(`${name}: a v7 word "${m}"`);
   if ((m = hit(RUN_REFERENCES, t))) out.push(`${name}: a run or version reference "${m}"`);
   if ((m = hit(PLACEHOLDER_NAMES, t))) out.push(`${name}: a copyable placeholder name "${m}"`);
+  if ((m = hit(CARD_WORDS, t))) out.push(`${name}: the word "${m}"`);
+  if (generative && (m = hit(STRUCTURE_WORDS, bare))) out.push(`${name}: names the structure around its role: "${m}"`);
   const caps = capsWords(t);
   if (caps.length > CAPS_ALLOWED) out.push(`${name}: ${caps.length} all-caps words (${caps.join(', ')}), over ${CAPS_ALLOWED}`);
   const no = negations(t);
   if (no.length > (room ? 4 : NEGATIONS_ALLOWED)) out.push(`${name}: ${no.length} never/do-not phrases, over ${room ? 4 : NEGATIONS_ALLOWED}`);
   return out;
 }
-// Every text of a map {name: text}.
-export const lintAll = texts => Object.entries(texts).flatMap(([name, text]) => lintText(name, text));
+// Every text of a map {name: text}; every text but Clef's questions (Clef classifies, it does not write) is a generative role's.
+export const generativeText = name => !/^CLEF\./.test(name);
+export const lintAll = texts => Object.entries(texts).flatMap(([name, text]) => lintText(name, text, {generative: generativeText(name)}));
 
 // v8 S6 review: the text the room composed in a model request, with the
 // injected data taken out. data: strings that are facts or contract data
@@ -78,10 +90,10 @@ const DATA_KEYS = new Set(['project', 'toolchains', 'contracts_you_may_use', 'co
   'parent', 'your_private_children', 'file', 'your_label', 'your_id', 'label', 'id', 'key', 'fn', 'contracts', 'functions', 'your_progress', 'summary', 'requested_by', 'previous_answer_head',
   // Capability boxes S5: a broker answer ({name, label, value}) quotes data under answered_requests.
   'answered_requests',
-  // v8 live 2: the card writer's retry quotes its own previous card, as the runtime read it, as data.
-  'previous_answer',
-  // v8 live 4: the installed packages a card writer and a splitter read ({name, language, provides}), data as a whole.
-  'installed_packages', 'your_packages']);
+  // v8 live 4: the installed packages a splitter reads ({name, language, provides}), data as a whole.
+  'installed_packages', 'your_packages',
+  // v8: a worker's prompt and world quote its task, contract data and examples; a complaint is what was observed, as data.
+  'task', 'deliver', 'call', 'examples', 'complaints', 'files', 'assignment', 'validations_you_have', 'box', 'rejected']);
 // Capability boxes S5: answered_requests holds the room's own answers to
 // contract asks too, as strings composed from MESSAGES; those stay linted.
 // Its labelled objects are the broker's answers, data as a whole.
@@ -106,17 +118,4 @@ export function composedTexts(user, data = []) {
   walk(user, '');
   const pieces = [...new Set(data.filter(d => typeof d === 'string' && d.length >= 3))].sort((a, b) => b.length - a.length);
   return out.map(t => pieces.reduce((s, d) => s.split(d).join('«data»'), t)).filter(t => /[a-z]{3}/i.test(t.replace(/«data»/g, '')));
-}
-
-// v8 live 2 review: a requirement's statement reaches a worker masked with
-// every check's values (src/affordances.js cardScope): the statement, its
-// source and their masked forms are data, with and without the final stop.
-export function saysData(card, goal = '') {
-  const scope = card ? cardScope(card, {goal}) : null, out = [];
-  for (const r of card?.requirements || []) {
-    if (typeof r?.says !== 'string') continue;
-    const masked = maskWith(r.says, scope);
-    out.push(r.says, r.says.replace(/[.\s]+$/, ''), masked, masked.replace(/[.\s]+$/, ''), r.source);
-  }
-  return out.filter(x => typeof x === 'string' && x);
 }

@@ -106,13 +106,13 @@ test('a file placed outside the root gets the module path and a one-line script;
   const out = linkBundle(new Map(Object.entries(files)), {pieces, contracts: CONTRACTS});
   assert.deepEqual(out.paths, {PYTHONPATH: ['.']});
   assert.equal(out.glue.get('glue/run.sh'), py.glue.path_setup.script.text);
-  const card = {languages: ['python'], deliverables: [{name: 'wordfreq', kind: 'command', path: 'bin/wordfreq.py', does: 'prints the words'}], requirements: []};
-  assert.match(runNotes({goal: 'g', paths: out.paths}, card, {}), /- `wordfreq`: `sh glue\/run\.sh python3 bin\/wordfreq\.py`: prints the words/);
-  assert.match(runNotes({goal: 'g'}, card, {}), /- `wordfreq`: `python3 bin\/wordfreq\.py`/, 'the plain command when no module path is needed');
+  const spec = {contracts: [{name: 'wordfreq', kind: 'command', path: 'bin/wordfreq.py', does: 'prints the words'}], validations: []};
+  assert.match(runNotes({goal: 'g', paths: out.paths}, spec, {}), /- `wordfreq`: `sh glue\/run\.sh python3 bin\/wordfreq\.py`: prints the words/);
+  assert.match(runNotes({goal: 'g'}, spec, {}), /- `wordfreq`: `python3 bin\/wordfreq\.py`/, 'the plain command when no module path is needed');
   const all = new Map([...out.files, ['s.txt', 'b a b\n']]);
   const r = runBundle(all, ['sh', 'glue/run.sh', 'python3', 'bin/wordfreq.py', 's.txt', '1']);
   assert.equal(r.stdout, 'b 2\n', r.stderr);
-  assert.equal(checkPlan(card, out.files, {paths: out.paths}).plan.paths.PYTHONPATH[0], '.');
+  assert.equal(checkPlan(spec, out.files, {paths: out.paths}).plan.paths.PYTHONPATH[0], '.');
 });
 
 test('rename-only fixes point a reference at what it means and keep the reader\'s own name by an alias; the body is untouched', () => {
@@ -387,13 +387,13 @@ test('a page whose module script reaches a CommonJS file: an issue for that file
 
 test('checkPlan: a call loads the file that defines the function, never a shim; no module path for a project at the root', () => {
   const out = link(SOURCES);
-  const card = {languages: ['python'], deliverables: [{name: 'wordfreq', kind: 'command', path: 'wordfreq.py', does: 'prints the most frequent words'}, {name: 'count_words', kind: 'function'}],
-    requirements: [{id: 'R1', says: 'It counts', serves: ['count_words'], check: {kind: 'call', steps: [{call: 'count_words', args: ['a a'], expect: {a: 2}}]}}]};
-  const {plan} = checkPlan(card, out.files, {paths: out.paths});
+  const spec = {contracts: [{name: 'wordfreq', kind: 'command', path: 'wordfreq.py', does: 'prints the most frequent words'}, {name: 'count_words', kind: 'function'}],
+    validations: [{id: 'V1', serves: ['count_words'], check: {kind: 'call', steps: [{call: 'count_words', args: ['a a'], expect: {a: 2}}]}}]};
+  const {plan} = checkPlan(spec, out.files, {paths: out.paths});
   assert.equal(plan.paths, undefined);
   assert.equal(plan.checks[0].module, COUNTER);
   assert.ok(plan.syntax[0].files.includes('count_words.py'));
-  assert.match(runNotes({goal: 'g', paths: out.paths}, card, {}), /- `wordfreq`: `python3 wordfreq\.py`: prints the most frequent words/);
+  assert.match(runNotes({goal: 'g', paths: out.paths}, spec, {}), /- `wordfreq`: `python3 wordfreq\.py`: prints the most frequent words/);
   assert.equal(py.call_adapter.slice(0, 2).join(' '), 'python3 -I', 'the adapter\'s supervisor starts isolated');
 });
 

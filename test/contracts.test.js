@@ -214,18 +214,12 @@ test('S2: the v8 keys are read only in v8 mode: pieces win over spawn, an empty 
   assert.deepEqual([splitShape(split),splitShape(split,{v8:true}),splitPieces(split).length,splitPieces(split,{v8:true}).length],[false,true,0,2]);
 });
 
-test('S2: decompose (v8) reads a splitter answer keyed pieces as a split, through the same helper normalizeAction reads; v7 reads it as no split',async()=>{
+test('S2: v7\'s decompose reads an answer keyed pieces as no split, and asks its splitter again',async()=>{
   const {decompose}=await import('../src/model.js');
-  const pieces=[{label:'Validation',task:'Write code to validate ticket titles',contracts:[{name:'validateTitle'}]},{label:'Guide',task:'Write the guide to creating tickets',contracts:[{name:'docs/guide.md',kind:'doc',serves:['R1']}]}];
+  const pieces=[{label:'Validation',task:'Write code to validate ticket titles',contracts:[{name:'validateTitle'}]},{label:'Guide',task:'Write the guide to creating tickets',contracts:[{name:'docs/guide.md',kind:'doc'}]}];
   let calls=0;
   const env={AI:{run:async()=>{calls++;return {response:JSON.stringify({summary:'Split',pieces})};}}};
   const ctx={your_responsibility:'Write code to create validated ticket records',neighbor_owners:[]};
-  const data=await decompose(env,ctx,{v8:true});
-  assert.equal(calls,1,'a split at the first answer: no retry');
-  assert.deepEqual(normalizeAction(data,{v8:true}).spawn,[
-    {label:'Validation',task:'Write code to validate ticket titles',interfaces:[{name:'validateTitle',does:'',params:[]}]},
-    {label:'Guide',task:'Write the guide to creating tickets',interfaces:[{name:'docs/guide.md',kind:'doc',does:'',params:[],path:'docs/guide.md'}]}]);
-  calls=0;
   const v7=await decompose(env,ctx);
   assert.equal(calls,2,'v7: no spawn, the splitter is asked again');
   assert.deepEqual(normalizeAction(v7).spawn,[]);

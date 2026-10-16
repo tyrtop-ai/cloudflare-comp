@@ -386,7 +386,8 @@ test('prompt, v8: the linker is ROLE.linker with no example names, and the bindi
   assert.doesNotMatch(seen[0][0].content,/createTicket|saveTickets|inmemoryti|require\(/);
   const user=JSON.parse(seen[0][1].content);
   assert.deepEqual(user.binding_rules,[toolchainById('javascript').binding_rules]);
-  assert.match(user.scope_means,/one branch of a larger project/);
+  assert.match(user.scope_means,/joined again later with more files/);
+  assert.ok(!('application_goal' in user),'the linker reads its files, not a goal');
   assert.deepEqual(JSON.parse(seen[1][1].content).previous_answer_problems.length,1,'the retry hears why in its user JSON');
   // A file of a row with no binding rules gets none.
   const other=[];

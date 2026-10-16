@@ -47,7 +47,7 @@ const entries = (rows, field, inventory) => rows.flatMap(row => (row?.[field] ||
 export const installedPackages = (rows = TOOLCHAINS, inventory = null) => normalizePackages(entries(rows, 'packages', inventory));
 // The standard library modules the rows name by what they provide (stdlib_provides).
 export const stdlibHints = (rows = TOOLCHAINS, inventory = null) => normalizePackages(entries(rows, 'stdlib_provides', inventory));
-// Packages in one line per language, for a person or a card writer: "Python 3.11.2: pytest".
+// Packages in one line per language, for a person or a model to read: "Python 3.11.2: pytest".
 export function installedLine(packages, inventory = null) {
   const by = new Map();
   for (const p of packages) by.set(p.language || '', [...(by.get(p.language || '') || []), p.name]);

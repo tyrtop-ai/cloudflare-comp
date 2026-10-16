@@ -464,77 +464,58 @@ test('Save as SVG draws the ownership tree as a standalone image',()=>{
   assert.equal(context.treeSvg([]),'');
 });
 
-// v8 S3: the Pipeline toggle and the Card panel (§1.3).
-const CARD={card:1,summary:'A <guide> and a script',languages:['python','text'],
-  deliverables:[{name:'README.md',kind:'doc',path:'README.md',does:'explains how to run it'},{name:'hello',kind:'command',path:'hello.py',does:'prints a greeting'}],
-  requirements:[{id:'R1',says:'The guide explains how to run it',source:'a README',serves:['README.md'],check:{kind:'judge',path:'README.md',question:'?'}},
-    {id:'R2',says:'It prints a greeting',source:'hello-world',serves:['hello'],check:{kind:'command',run:'python3 hello.py',expect:{exit:0}}},
-    {id:'R3',says:'hello exists',source:'',serves:['hello'],check:{kind:'file',path:'hello.py'},implicit:true}],
-  decisions:['The script is hello.py.']};
+// v8: the Pipeline toggle and the Levels panel.
+const LEVELS={room_manager:'root',
+  validations:[{id:'V1',level:'root',held:'root.2',serves:['USAGE.md'],kind:'judge',check:'judge USAGE.md: Does it show how to run it?',notes:{exercises:0.9,implementable:0.9}},
+    {id:'V2',level:'root',held:'root.1',serves:['hello'],kind:'command',check:'command hello <Ada>',notes:{exercises:0.9,implementable:0.12}},
+    {id:'V3',level:'root',held:'root.1',serves:['hello'],kind:'file',check:'file hello.js contains "function greet"',notes:{exercises:0.9,implementable:0.9,internal:0.2}}],
+  splitters:[{id:'splitter-0123456789abcdef',manager:'root',kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'read'}]};
 test('v8 S3: the Pipeline toggle follows the room and is sent with the settings',()=>{
-  assert.match(html,/<select id="pipeline">\s*<option value="v7">[^<]*\(default\)<\/option>\s*<option value="v8">v8 \(experimental\) · /,'labelled experimental until S4b');
+  assert.match(html,/<select id="pipeline">\s*<option value="v7">[^<]*\(default\)<\/option>\s*<option value="v8">v8 \(experimental\) · /,'labelled experimental');
   assert.doesNotMatch(html,/prompts still v7/,'v8 rooms use the v8 prompts since S6');
   const elements=renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10,pipeline:'v8'}});
   assert.equal(elements.get('pipeline').value,'v8');
   assert.match(script,/pipeline:\$\('pipeline'\)\?\.value\|\|'v7'/,'sent on Start and Continue');
   assert.equal(renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}}).get('pipeline').value,'v7','a room saved before the setting is v7');
 });
-test('v8 S3: the Card panel lists deliverables, requirements with a pass/fail/untested chip, and decisions',()=>{
-  // v8 S4b: a check that could not run (passed null) reads as untested.
-  const elements=renderWithPage(true,{settings:{pipeline:'v8'},card:CARD,requirement_status:{R2:{passed:false,detail:'exit 1'},R3:{passed:null,detail:'not run: the browser did not start'}},
-    pause:{kind:'checks_failed',text:'Every piece finished.'}});
-  const panel=elements.get('card').innerHTML;
-  assert.match(panel,/A &lt;guide&gt; and a script/,'escaped');
-  assert.ok(panel.indexOf('DELIVERABLES')<panel.indexOf('REQUIREMENTS')&&panel.indexOf('REQUIREMENTS')<panel.indexOf('DECISIONS'));
-  assert.match(panel,/<span class="event-type">doc<\/span> <b class="mono">README\.md<\/b> · explains how to run it/);
-  assert.match(panel,/<b class="mono">hello<\/b> <span class="faint mono">hello\.py<\/span>/);
-  assert.match(panel,/<span class="req-chip untested">untested<\/span> <b class="mono">R1<\/b>/);
-  assert.match(panel,/<span class="req-chip fail" title="exit 1">fail<\/span> <b class="mono">R2<\/b>/);
-  assert.match(panel,/R3<\/b> hello exists <span class="faint">· file check · hello · implicit/);
-  assert.match(panel,/<li>The script is hello\.py\.<\/li>/);
-  assert.match(panel,/<span class="event-type">checks_failed<\/span> Every piece finished\./);
-  assert.match(panel,/<span class="req-chip untested" title="not run: the browser did not start">untested<\/span> <b class="mono">R3<\/b>/);
-  assert.equal(elements.get('card-verdict').textContent,'3 requirements · 0 pass · 1 fail · 2 untested');
+test('v8: the Levels panel lists each validation with its result, its check, what it serves, where it is held and Clef\'s marks; then the splitter steps',()=>{
+  // A check that could not run (passed null) reads as untested; one from before the files changed is stale.
+  const elements=renderWithPage(true,{settings:{pipeline:'v8'},...LEVELS,validation_status:{V2:{passed:false,detail:'exit 1'},V3:{passed:null,detail:'not run: the box did not start'},V1:{passed:true,stale:true}},
+    pause:{kind:'checks_failed',text:'The complaints left the files as they were.'},status:'paused'});
+  const panel=elements.get('levels').innerHTML;
+  assert.ok(panel.indexOf('VALIDATIONS')<panel.indexOf('SPLITTER STEPS'));
+  assert.match(panel,/<span class="event-type">checks_failed<\/span> The complaints left the files as they were\./);
+  assert.match(panel,/<span class="req-chip stale">stale<\/span> <b class="mono">V1<\/b> judge USAGE\.md: Does it show how to run it\? <span class="faint">· serves USAGE\.md · held by root\.2<\/span><\/li>/);
+  assert.match(panel,/<span class="req-chip fail" title="exit 1">fail<\/span> <b class="mono">V2<\/b> command hello &lt;Ada&gt;/,'escaped');
+  // Clef's marks below the bar are shown beside the validation; nothing it doubts is removed.
+  assert.match(panel,/V2<\/b>.*<span class="req-chip doubtful" title="Clef doubted it \(implementable\)">implementable p=0\.12<\/span>/);
+  assert.match(panel,/<span class="req-chip untested" title="not run: the box did not start">untested<\/span> <b class="mono">V3<\/b>.*internal p=0\.20/);
+  assert.match(panel,/<span class="mono">splitter-0123456789abcdef<\/span> <span class="faint">· root · split attempt 1 · read<\/span>/);
+  assert.equal(elements.get('levels-verdict').textContent,'3 validations · 0 pass · 1 fail · 1 untested · 1 stale');
   const v7=renderWithPage(true,{settings:{}});
-  assert.equal(v7.get('card-verdict').textContent,'No card (v7 pipeline)');
-  assert.match(v7.get('card').innerHTML,/class="empty"/);
+  assert.equal(v7.get('levels-verdict').textContent,'No levels (v7 pipeline)');
+  assert.match(v7.get('levels').innerHTML,/class="empty"/);
+  assert.equal(renderWithPage(true,{settings:{pipeline:'v8'}}).get('levels-verdict').textContent,'Not stated yet');
 });
-test('v8 card repair: held at card_failed, the hold panel shows what the card writer said; Clef\'s review reads as marks',()=>{
-  const raw={call:'writeCard',answers:['{"card":1,"deliverables":[{"name":"<x>"}]}','not json'],ts:1};
-  const held=renderWithPage(true,{settings:{pipeline:'v8'},status:'paused',pause:{kind:'card_failed',text:'The card writer gave no usable card after 2 calls.'},card_raw:raw});
-  const panel=held.get('card').innerHTML;
-  assert.match(panel,/<details class="card-raw"><summary>what the card writer said<\/summary>/);
-  assert.match(panel,/FIRST ANSWER<\/div><pre class="card-raw-text">\{&quot;card&quot;:1,&quot;deliverables&quot;:\[\{&quot;name&quot;:&quot;&lt;x&gt;&quot;\}\]\}<\/pre>/,'escaped');
-  assert.match(panel,/RETRY<\/div><pre class="card-raw-text">not json<\/pre>/);
-  const other=renderWithPage(true,{settings:{pipeline:'v8'},status:'paused',pause:{kind:'checks_failed',text:'x'},card_raw:raw});
-  assert.doesNotMatch(other.get('card').innerHTML,/card-raw/,'only at card_failed');
-  // Clef's review shows as marks; nothing it doubts is removed.
-  const marked={...CARD,review_notes:['R5\'s check may not exercise what it states'],deliverables:[{...CARD.deliverables[0],change_doubtful:{p:0.12}},{...CARD.deliverables[1],needs_confirmation:{p:0.1}}],
-    requirements:[...CARD.requirements,{id:'R4',says:'It is fast',source:'x',serves:[],check:{kind:'command',run:'hello',expect:{exit:0}},unattached:true,vet_p:0.21,doubtful:true},
-    {id:'R5',says:'It greets',source:'hello-world',serves:['hello'],check:{kind:'command',run:'hello',expect:{exit:0}},source_inferred:true,vet_p:0.8}]};
-  const card=renderWithPage(true,{settings:{pipeline:'v8'},card:marked,requirement_status:{}}).get('card').innerHTML;
-  assert.match(card,/R4<\/b> It is fast <span class="faint">· command check · <\/span> <span class="req-chip doubtful" title="Clef doubted the goal asks for it">doubtful p=0\.21<\/span> <span class="req-chip doubtful" title="no deliverable matched what it serves">unattached<\/span>/);
-  assert.match(card,/R5<\/b> It greets <span class="faint">· command check · hello · source inferred<\/span><\/li>/);
-  assert.match(card,/README\.md<\/b> · explains how to run it <span class="req-chip doubtful" title="Clef doubted the change is about it">change doubtful p=0\.12<\/span>/);
-  assert.match(card,/hello\.py<\/span> · prints a greeting <span class="req-chip doubtful" title="an existing file the goal does not name; Continue confirms it">needs confirmation p=0\.10<\/span>/);
-  assert.match(card,/REVIEW NOTES<\/div><ul class="card-list"><li class="faint">R5&#39;s check may not exercise what it states<\/li>/);
+test('v8: at base_confirm the hold panel lists each existing file with Clef\'s p and whether the prompt names it',()=>{
+  const held=renderWithPage(true,{settings:{pipeline:'v8'},status:'paused',pause:{kind:'base_confirm',text:'Grant changing README.md?'},base_pending:[{path:'README.md',named:true,p:0.81}]});
+  assert.match(held.get('levels').innerHTML,/<input type="checkbox" data-grant="README\.md" checked> <b class="mono">README\.md<\/b> <span class="faint">· named in the prompt · Clef p=0\.81<\/span>/);
 });
-test('v8 S3: Root\'s detail shows the card in place of its task; contracts read by kind',()=>{
+test('v8: a manager\'s detail shows its task; contracts read by kind',()=>{
   const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m=>m[1]),listeners=new Map();
   const elements=new Map(ids.map(id=>[id,{id,value:'',textContent:'',className:'',innerHTML:'',title:'',disabled:false,
     addEventListener(type,fn){listeners.set(`${id}:${type}`,fn);},querySelectorAll(){return [];}}]));
   const context={document:{getElementById(id){return elements.get(id)||null;},querySelectorAll(){return [];}},
     crypto:{randomUUID(){return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';}},location:{href:'https://example.com/'},history:{replaceState(){}},URL,setInterval(){}};
   runInNewContext(script,context,{filename:'public/app.js'});
-  context.render({status:'paused',busy:false,step:1,max_parallel:4,active_agents:[],files:[],events:[],card:CARD,requirement_status:{},agents:[
-    {id:'root',parent:null,label:'Root objective',phase:'manager',status:'waiting',task:'the goal as written',interfaces:[{name:'README.md',kind:'doc',path:'README.md',params:[]},{name:'hello',kind:'command',path:'hello.py',params:[]}]},
-    {id:'root.1',parent:'root',label:'Run guide',phase:'implement',status:'done',task:'Write README.md',interfaces:[{name:'README.md',kind:'doc',path:'README.md',params:[]}]}]});
+  context.render({status:'paused',busy:false,step:1,max_parallel:4,active_agents:[],files:[],events:[],settings:{pipeline:'v8'},...LEVELS,validation_status:{},agents:[
+    {id:'root',parent:null,label:'Prompt',phase:'manager',status:'waiting',task:'the prompt as written',interfaces:[{name:'USAGE.md',kind:'doc',path:'USAGE.md',params:[]},{name:'hello',kind:'command',path:'hello.js',params:[]}]},
+    {id:'root.1',parent:'root',label:'Greeting command',phase:'implement',status:'done',task:'Write the hello command',interfaces:[{name:'hello',kind:'command',path:'hello.js',params:[]}]}]});
   const pick=id=>{listeners.get('hierarchy:click')({target:{closest:()=>({dataset:{node:id}})}});return elements.get('node-detail').innerHTML;};
   const root=pick('root');
-  assert.match(root,/<div class="onode-card">/);
-  assert.doesNotMatch(root,/the goal as written/);
-  assert.match(root,/promises: doc README\.md, command hello/);
-  assert.match(pick('root.1'),/<p>Write README\.md<\/p>/);
+  assert.match(root,/<p>the prompt as written<\/p>/);
+  assert.match(root,/promises: doc USAGE\.md, command hello/);
+  assert.match(pick('root.1'),/<p>Write the hello command<\/p>/);
 });
 
 // v8 S8b: the Start-from field and the Sources panel.
@@ -584,9 +565,9 @@ test('v8 S8b review: the Sources panel marks an unverified previous result and c
   assert.match(panel,/<span class="req-chip fail" title="base_unverified: that result had not passed its checks">unverified<\/span>/);
 });
 
-// v8 S9: the Prompts panel beside the goal box and the card's revisions.
+// v8 S9: the Prompts panel beside the goal box.
 test('v8 S9: the Prompts panel lists each prompt with its state; only queued ones can be edited, moved, skipped or removed',()=>{
-  assert.match(html,/<option value="v8">v8 \(experimental\) · project card, checks, any language<\/option>/);
+  assert.match(html,/<option value="v8">v8 \(experimental\) · levels, validations, any language<\/option>/);
   assert.ok(html.indexOf('id="goal"')<html.indexOf('id="prompts-box"')&&html.indexOf('id="prompts-box"')<html.indexOf('id="start-from"'),'beside the goal box');
   const prompts=[{id:'a',text:'add a <README>',status:'done',kind:'queued',goal_rev:2,outcome:{passed:true}},{id:'b',text:'also support kelvin',status:'running',kind:'adjust',goal_rev:3,outcome:{}},
     {id:'c',text:'queued one',status:'queued',kind:'queued',outcome:{}},{id:'d',text:'queued two',status:'queued',kind:'queued',outcome:{}},{id:'e',text:'skipped one',status:'skipped',kind:'queued',outcome:{}}];
@@ -609,17 +590,4 @@ test('v8 S9: the Prompts panel lists each prompt with its state; only queued one
   assert.equal(done.get('queue-stopped').hidden,false);
   assert.match(done.get('queue-stopped').innerHTML,/The last prompt failed; the queue waits\. <button type="button" class="secondary" data-queue-resume="1">Go on<\/button>/);
   assert.equal(renderWithPage(true,{settings:{pipeline:'v7'},agents:[{id:'root',label:'Root',status:'done',interfaces:[]}]}).get('prompt-now').disabled,true,'a v7 room takes no change');
-});
-test('v8 S9: the Card panel shows each revision with the change that caused it, and marks what it added or changed',()=>{
-  const card={card:1,summary:'A converter',languages:['python','text'],deliverables:[{name:'temp',kind:'command',path:'temp.py',does:'converts'},{name:'README.md',kind:'doc',path:'README.md',does:'how to run it'}],
-    requirements:[{id:'R1',says:'It converts',serves:['temp'],check:{kind:'command'}},{id:'R3',says:'The README explains it',serves:['README.md'],check:{kind:'judge'}}],decisions:[]};
-  const history=[{rev:1,goal_rev:1,reason:'goal',delta:{}},{rev:2,goal_rev:2,reason:'add a README explaining how to run it',delta:{deliverables:{added:['README.md'],changed:[]},requirements:{added:['R3'],changed:[]}}}];
-  const elements=renderWithPage(true,{settings:{pipeline:'v8'},card,card_rev:2,card_history:history,requirement_status:{}});
-  const panel=elements.get('card').innerHTML;
-  assert.match(panel,/REVISIONS/);
-  assert.match(panel,/<b class="mono">rev 2<\/b> <span class="faint">goal rev 2<\/span> “add a README explaining how to run it” <span class="faint">· adds README\.md; new R3<\/span>/);
-  assert.match(panel,/README\.md<\/b> · how to run it <span class="card-amended" title="add a README explaining how to run it">rev 2 · add a README/);
-  assert.match(panel,/R3<\/b> The README explains it .*card-amended/);
-  assert.doesNotMatch(panel.split('R1</b>')[1].split('</li>')[0],/card-amended/,'R1 came with the goal');
-  assert.match(elements.get('card-verdict').textContent,/^rev 2 · 2 requirements/);
 });

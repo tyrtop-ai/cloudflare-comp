@@ -4,7 +4,7 @@
 import { sourceParseError } from './linker.js';
 import { toolchainOf, toolchainById, manifestOf } from './toolchains.js';
 import { isAssemblyMetadata } from './assembly.js';
-import { pathError, caseTwin } from '../container/build-path.mjs';
+import { pathError } from '../container/build-path.mjs';
 
 // v7.15: a worker's contract, appended to its task where a model reads it:
 // its OWN promised functions only (author decision 2), each with the one-line
@@ -26,8 +26,7 @@ export function contractText(own) {
 export const assignedPiece = task => String(task||'').replace(/ Deliver working source files, not prose, plans, or design documents\.$/,'')
   .replace(/^Write executable source code to implement the following specific piece: ([\s\S]*)\.$/,'$1');
 
-// Paths only the runtime writes (v8 §4.7): its notes and card under
-// .recursive/, and the loader and generated glue under glue/. Compared
+// Paths only the runtime writes (v8 §4.7): its notes under .recursive/, and the loader and generated glue under glue/. Compared
 // without case: GLUE/index.js beside glue/index.js collides on a
 // case-insensitive checkout (v8 S1 review).
 export const runtimeOwned = path => /^(?:\.recursive|glue)(?:\/|$)/i.test(String(path||''));
@@ -35,44 +34,31 @@ export const runtimeOwned = path => /^(?:\.recursive|glue)(?:\/|$)/i.test(String
 // model wrote, and the build snapshot holds 4 MiB in all.
 export const MAX_FILE_BYTES = 256*1024;
 export const MAX_WRITER_PATH = 400;
-const has=(set,p)=>set instanceof Set?set.has(p):Array.isArray(set)&&set.includes(p);
 
 // Whether a writer may write this path at all, before its content is read:
 // the one path rule the build shares (container/build-path.mjs), then what
 // only the runtime writes, memory, the files the bundle never carries and
 // the toolchain manifests. facts as fileGateError's. The reason, or null.
 export function writerPathError(path, facts={}) {
-  const placed=has(facts.owned,path);
-  const bad=pathError(path,{runtime:!!facts.runtime,placed});
+  const bad=pathError(path,{runtime:!!facts.runtime});
   if (bad) return bad;
   // Room for the builder's components/<branch>/ prefix within the 512 a path may hold.
   if (!facts.runtime && path.length>MAX_WRITER_PATH) return `${path.slice(0,60)}…: a path longer than ${MAX_WRITER_PATH} characters; use a shorter one`;
   if (runtimeOwned(path) && !facts.runtime) return `${path}: the runtime writes this path; write your own files`;
   if (/^memory(?:\/|$)/i.test(path)) return `${path}: memory is written with remember, not as a file`;
   if (isAssemblyMetadata(path) || /(?:^|\/)memory\//i.test(path)) return `${path}: the runtime keeps this path for itself and never builds or exports it; choose another name`;
-  const manifest=!facts.runtime&&!placed&&manifestOf(path);
+  const manifest=!facts.runtime&&manifestOf(path);
   if (manifest) return `${path}: the runtime owns the project manifest and package configuration (${manifest.name}); write your own source and documents, and say in your summary what the project needs`;
-  // v8 S8b: base files compared apart from letter case (a case-insensitive
-  // file system reads readme.md and README.md as one file).
-  const twin=caseTwin(path,facts.base);
-  if (twin && twin!==path) return `${path}: the existing project file ${twin} differs from it only in letter case; ${has(facts.owned,twin)?`write ${twin} itself`:'leave it as it is'}`;
-  // v8 card repair: a base file the plan names but the person has not granted yet (base_confirm).
-  // Interim: replaced by broker grants (capability S10).
-  if (twin && !placed && has(facts.pending, twin)) return `${path}: an existing project file awaiting the person's confirmation that the goal asks to change it; write your other files now, and this one once it is confirmed`;
-  if (twin && !placed) return `${path}: an existing project file that none of your contracts names; leave it as it is`;
   return null;
 }
 
 // The one gate every file a worker writes passes before it is committed
 // (v8 §3.3). Any non-empty text file can be a deliverable: a placeholder is
-// caught by the contract check (and, under v8, the card's checks), never by
-// guessing from prose. Returns the reason the file is refused, or null.
-// facts: packages ('none', the default, keeps the stdlib rule; 'allowed'
-// lifts it); base, the paths of an existing project's files; owned, the
-// paths the writer's contracts name (only those base files are its to
-// change, and a manifest or .gitignore only at such a path); runtime, true
-// when the writer is the runtime's own node (a builder writing its glue),
-// the one writer of runtime-owned paths.
+// caught by the contract check, never by guessing from prose. Returns the
+// reason the file is refused, or null. facts: packages ('none', the
+// default, keeps the stdlib rule; 'allowed' lifts it); runtime, true when
+// the writer is the runtime's own node (a builder writing its glue), the
+// one writer of runtime-owned paths.
 export function fileGateError(path, content, facts={}) {
   const bad=writerPathError(path,facts);
   if (bad) return bad;
@@ -113,7 +99,7 @@ export function deliveredFiles(files) {
 // until the v7 pipeline is deleted (S7).
 export const productionFiles = deliveredFiles;
 // The languages the v7 pipeline links and runs (toolchain row ids). Under
-// v8 they are the card's (project facts).
+// v8 they are those of the levels' contracts.
 export const V7_LANGUAGES = Object.freeze(['javascript']);
 // The delivered files in the project's languages: what a piece that must
 // write code has to deliver (v8 S1 review).

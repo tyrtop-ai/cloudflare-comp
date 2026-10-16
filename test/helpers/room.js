@@ -79,23 +79,23 @@ const { start } = require('./index.js');
 `;
 
 // ------------------------------------------------------------------ rooms
-// v8 S4b: a card verification (mode 'card') runs the real verifyCard.
-export const {verifyCard}=await import('../../container/build-runner.mjs');
+// v8: a level's validations (mode 'checks') run in the real verifyChecks.
+export const {verifyChecks}=await import('../../container/build-runner.mjs');
 // A live room with a scripted linker, runner and coverage check. Any other
 // model request fails the request (and so the turn, or, for a manager's
 // model, the decision: its defaults apply). leaf(user, n) answers a
 // worker's turn (a repair) when a test drives the room with drive();
 // file(user, n) a worker's single-file correction; manager(user, n) a
-// manager's decision (an object, or raw text); split(user, n) the splitter;
-// clef(input, n) a Clef gate, scope or routing question (v7.15.6: a failed
+// manager's decision (an object, or raw text); split(user, n) the splitter
+// (v7's, or v8's level splitter); clef(input, n) a Clef gate, review, scope or routing question (v7.15.6: a failed
 // run with no frame is routed by Clef's ranks over the children, never by
 // a triage model). Every manager request is recorded. coverage(user, n)
 // answers the API coverage gate; by default with no mapping, so the gate
 // fails open, as these rooms predate it (v7.13.3). raw holds every
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,card=null,source=null,executor,boxes,room_id='v714-test'}={}) {
-  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],card:[],source:[],raw:[]};
+export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test'}={}) {
+  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],clef:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
@@ -103,21 +103,16 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     }
     const {messages}=input,system=messages[0].content,text=messages[1].content,user=JSON.parse(text.replace(/ \/no_think$/,''));
     calls.raw.push({system,text});
-    // v8 S8b: the source cards' gist and card calls (src/fetcher.js sourceCards), by their system text.
-    if(/^(?:Summarise the quoted chunk|Write a source card)/.test(system)){calls.source.push(user);if(!source)throw new Error('no source model in this test');const a=await source(user,system);return {response:typeof a==='string'?a:JSON.stringify(a)};}
-    // v8 (S6): a v8 prompt is PRINCIPLES + ROLE[role] + FORMAT[role]; its role
-    // paragraph says which fake answers. A fake's string answer is sent as
-    // written (a worker's file blocks), an object as JSON.
-    const v8role=Object.keys(ROLE).find(r=>r!=='card'&&system.includes(ROLE[r])),send=a=>({response:typeof a==='string'?a:JSON.stringify(a)});
+    // v8 S8b: a linked page's gist and summary calls (src/fetcher.js sourceSummaries), by their system text.
+    if(/^(?:Summarise the quoted chunk|Summarise one quoted document)/.test(system)){calls.source.push(user);if(!source)throw new Error('no source model in this test');const a=await source(user,system);return {response:typeof a==='string'?a:JSON.stringify(a)};}
+    // v8: a v8 prompt is ROLE[role] + FORMAT[role]; its role paragraph says
+    // which fake answers. A fake's string answer is sent as written (a
+    // worker's file blocks), an object as JSON.
+    const v8role=Object.keys(ROLE).find(r=>system.includes(ROLE[r])),send=a=>({response:typeof a==='string'?a:JSON.stringify(a)});
     if(v8role==='splitter'&&split){calls.split.push(user);return send(await split(user,calls.split.length,system));}
     if(v8role==='worker'&&leaf){calls.leaf.push(user);return send(await leaf(user,calls.leaf.length,system));}
     if(v8role==='file'&&file){calls.file.push(user);return send(await file(user,calls.file.length,system));}
     if(v8role==='linker'){calls.link.push(user);return send(await link(user,calls.link.length,system));}
-    if(v8role==='manager') {
-      calls.manager.push(user);
-      if(!manager)throw new Error('no manager model in this test');
-      return send(await manager(user,calls.manager.length,system));
-    }
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push(user);const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(system.startsWith('You are a MANAGER')) {
@@ -126,8 +121,6 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
       const answer=await manager(user,calls.manager.length);
       return {response:typeof answer==='string'?answer:JSON.stringify(answer)};
     }
-    // v8 S3: the card writer (src/prompts.js ROLE.card), by its role paragraph.
-    if(card&&system.includes('Your role: turn the goal into the project card')){calls.card.push(user);const a=await card(user,calls.card.length,system);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(split&&system.startsWith('You are a CODE SPLITTER')){calls.split.push(user);return {response:JSON.stringify(split(user,calls.split.length))};}
     if(file&&system.includes('building ONE file')){calls.file.push(user);return {response:file(user,calls.file.length)};}
     if(leaf&&system.includes('LEAF CODE WRITER')){calls.leaf.push(user);return {response:JSON.stringify(leaf(user,calls.leaf.length))};}
@@ -135,10 +128,10 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
   const builds=[];
-  // v8 S4b: a card verification (mode 'card') runs the real verifyCard, with
-  // the network kept (isolation []: the tests' sandbox may refuse namespaces).
+  // v8: a level's validations (mode 'checks') run in the real verifyChecks,
+  // with the network kept (isolation []: the tests' sandbox may refuse namespaces).
   const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits})=>{builds.push(files);
-    return mode==='card'?verifyCard({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
+    return mode==='checks'?verifyChecks({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
   const pending=[],store=new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
   // Capability boxes S1: a v8 compile opens a fresh Box (the real class over
   // a fake Container) whose runner request goes to the same executor.
@@ -238,6 +231,5 @@ export async function settle(room,budget=60) {
 // Every event of the run (the snapshot keeps the last 300; v8 live 5's deeper trees write more).
 export const events=(room,kind)=>room.db().exec('SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id').toArray().filter(e=>!kind||e.kind===kind);
 export const trace=room=>room.snapshot().events.filter(e=>!['dispatch','turn_start','turn_end','expose','manager_shard','write','revision','source_copied'].includes(e.kind)).slice(-25).map(e=>`${e.actor} ${e.kind}: ${e.body.slice(0,160)}`).join('\n');
-// v8 live 5: a manager that did not split hands its assignment down to one
-// worker (handDownPlan): that worker's row, else the row itself.
+// v8: a manager whose level goes to one worker: that worker's row, else the row itself.
 export const workerOf=(room,id)=>room.children(id).find(c=>c.role==='worker')?.id||id;

@@ -1,6 +1,6 @@
 # Python call adapter (v8 §4.6): calls named functions of one bundle module
 # in ONE process, step after step, keeping saved results, and reports each
-# step as a JSON line. The runner (build-runner.mjs verifyCard) owns the
+# step as a JSON line. The runner (build-runner.mjs verifyChecks) owns the
 # comparison: steps arrive without their expectations.
 #
 # Two processes. The SUPERVISOR (this file run as `call.py <nonce-file>`)

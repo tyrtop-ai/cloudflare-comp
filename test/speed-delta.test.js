@@ -111,8 +111,7 @@ test('the Worker routes /api/delta with the cursor; /api/state stays the full sn
   const env={APP_TOKEN:'t',ROOMS:{getByName:()=>stub}};
   const res=await worker.fetch(new Request('https://cp.test/api/delta?room=delta-room-0001&since=5&agents_since=10&files_since=11&exports=0:0&run=run-1',{headers:{authorization:'Bearer t'}}),env);
   assert.equal(res.status,200);
-  // v8 S3: card_rev, the card revision the dashboard holds ('' when none).
-  assert.deepEqual(got,[{since:'5',agents_since:'10',files_since:'11',exports:'0:0',run:'run-1',card_rev:''}]);
+  assert.deepEqual(got,[{since:'5',agents_since:'10',files_since:'11',exports:'0:0',run:'run-1'}]);
   assert.deepEqual(await (await worker.fetch(new Request('https://cp.test/api/state?room=delta-room-0001',{headers:{authorization:'Bearer t'}}),env)).json(),{full:'snapshot'});
 });
 
@@ -135,7 +134,7 @@ test('the dashboard: one full snapshot, then deltas merged into it, every second
   await context.refresh();
   assert.equal(elements.get('error').textContent,'',String(requests));
   assert.match(requests[0],/^\/api\/state\?room=room-abcdefgh$/);
-  assert.match(requests[1],/^\/api\/delta\?room=room-abcdefgh&since=1&agents_since=100&files_since=100&exports=0%3A0&run=r&card_rev=$/);
+  assert.match(requests[1],/^\/api\/delta\?room=room-abcdefgh&since=1&agents_since=100&files_since=100&exports=0%3A0&run=r$/);
   // The merged state: three agents (root.1 now done), both events, both files.
   assert.equal(elements.get('agent-count').textContent,3);
   assert.match(elements.get('hierarchy').innerHTML,/data-node="root\.1"[^>]*title="root\.1 · worker · done"/);

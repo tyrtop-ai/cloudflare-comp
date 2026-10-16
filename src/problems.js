@@ -13,7 +13,6 @@ import {ENTRY_CONTRACT} from './model.js';
 import {clip} from './protocol.js';
 import {normalizeInterfaces, repairInterfaces, signature, GENERIC_NAMES} from './interfaces.js';
 import {kindOf, textNames} from './contracts.js';
-import {MESSAGES} from './prompts.js';
 
 // ---------- limits ----------
 export const MAX_RELINKS=2;                 // per (manager, fingerprint): the builder's own relinks and those its manager asks for
@@ -78,12 +77,7 @@ export function failureHead(output) {
 // v7.15.5, and the same piece told the same failure again is none (run9's
 // five-round chain completes, as before). failureKey is the failure alone,
 // the same across waves: the declines of one wave hold for the next.
-// v8 live 3: a card requirement's failure is its id and its category
-// (failureCategory in src/checks.js), never its wording: a round that only
-// changes what a failing check printed is no progress, and the same
-// requirement failing the same way is the same failure.
-// v8 live 3 review: and the point it reached (a later step or more expectations met is another failure), as route exhaustion reads it too.
-export const failureKey=p=>p.facts?.requirement?.card&&p.facts.requirement.category?`${p.kind}|${p.facts.requirement.id}|${p.facts.requirement.category}|${Number(p.facts.requirement.reach?.point)||0}`:p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
+export const failureKey=p=>p.facts?.failure?`${p.kind}|${ownersOf(p.parties)}|${p.facts.failure}`:p.signature;
 export const progressKey=p=>p.facts?.failure?`${failureKey(p)}${p.flags?.routed_to?`|>${p.flags.routed_to}`:''}`:p.signature;
 
 // ---------- v7.15.6: a run failure is a requirement, routed by the plan ----------
@@ -470,14 +464,6 @@ function madeBy(does, needs, member) {
 // an array of findings. Test line 101: …".
 const article=s=>/^(?:a|an|the|its|their|this|that|one|some|each|every|all|no|nothing|undefined|null|void|true|false|whether|either|promise)\b/i.test(s)||!/^[a-z]/i.test(s)?s:`${/^[aeiou]/i.test(s)?'an':'a'} ${s}`;
 export function requirementText(r, {fn=null, more=[], module='', method='', thrown=false, relied=null, performer=false, caller=false, callee=null}={}) {
-  // v8 S4b: a failed card check reads the same to whoever takes it: the
-  // requirement, the kind of check and what it observed (never its expected
-  // values or steps, src/checks.js workerDetail).
-  // v8 live 4: a run that missed a package carries its line's answer (answer: what exists for the need).
-  if(r?.card)return MESSAGES.check_failed({id:r.id,says:String(r.says||'').replace(/[.\s]+$/,''),check:r.check,evidence:r.evidence,answer:r.answer||''});
-  // v8 S9: an amendment's requirement reads as the user's change, never its check.
-  if(r?.amendment&&r.contract)return MESSAGES.amendment_contract({change:String(r.amendment).trim().replace(/[.\s]+$/,''),name:r.contract,does:String(r.says||'').replace(/[.\s]+$/,'')});
-  if(r?.amendment)return MESSAGES.amendment({change:String(r.amendment).trim().replace(/[.\s]+$/,''),id:r.id,says:String(r.says||'').replace(/[.\s]+$/,'')});
   const need=clip(String(r?.text||'').trim().replace(/[.\s]+$/,''),400),verb=r?.error?'must not fail with':'must satisfy',does=fn?.does?` ("${String(fn.does).replace(/[.\s]+$/,'')}")`:'';
   const rest=more.length?` (with your ${more.join(', ')})`:'',on=relied?`, which ${signature(relied)} relies on,`:method&&method!==fn?.name?`, which start() returns as ${method},`:'';
   const rd=fn&&r?.read&&(fn.name===r.method||performer)?r.read:null,ret=rd&&fn.returns&&!noValue(fn.returns)?String(fn.returns).replace(/[.\s]+$/,''):'';
@@ -557,61 +543,19 @@ export function requirementRoute(r, {promises=[], frameOwner=()=>null, performer
 // real bug per round and failed on a flat six-round count while converging.
 // rows: the source's problem rows in report order; counted: the waves the
 // manager paid a round for (all, when not given).
-// v8 live 3 review: a card requirement's rows (cardRow) are read apart, by
-// the best each one reached across every round the manager paid for, never
-// a lookback that a cycle can outrun: a round is progress when a
-// requirement that failed passes for the first time, or a failing one
-// reaches what it never reached before: a category it never failed with, a
-// further point in one it did (a later step, more expectations met), or, at
-// its furthest point, output nearer to what it expects (cardProgress).
-// Every other row keeps the rule above.
 export function reportProgress(rows, wave, counted=null) {
   const inWave=w=>rows.filter(p=>p.flags?.wave===w);
   if(!inWave(wave).length)return false;
   const waves=[...new Set(rows.map(p=>p.flags?.wave).filter(Boolean))];
   const earlier=waves.slice(0,waves.indexOf(wave)).filter(w=>!counted||counted.includes(w));
   if(!earlier.length)return true;
-  if(cardProgress(earlier.map(w=>inWave(w).filter(cardRow)),inWave(wave).filter(cardRow)))return true;
   // Review: the route target joins the key once this wave has one (countRound, after the decision); before it (roundsLeft), the failure alone is compared.
   const key=rows.some(p=>p.flags?.wave===wave&&p.flags?.routed_to)?progressKey:failureKey;
-  const keys=w=>new Set(inWave(w).filter(p=>!cardRow(p)).map(key)),now=keys(wave);
+  const keys=w=>new Set(inWave(w).map(key)),now=keys(wave);
   const before=earlier.slice(-PROGRESS_LOOKBACK).map(keys);
   const same=(a,b)=>a.size===b.size&&[...a].every(k=>b.has(k));
   return [...before.at(-1)].some(k=>!now.has(k))&&!before.some(b=>same(b,now));
 }
-// A card requirement's row (src/checks.js checkProblems), read by cardProgress.
-export const cardRow=p=>!!(p?.facts?.requirement?.card&&p.facts.requirement.category);
-// The nearness that breaks a tie at a requirement's furthest point must grow by this much.
-export const NEARER=0.05;
-// before: the card rows of each earlier counted round, in order; now: this round's.
-export function cardProgress(before, now) {
-  const best=new Map(),failedOnce=new Set(),passedSince=new Set();
-  const idOf=p=>p.facts.requirement.id;
-  for(const rows of before) {
-    const ids=new Set(rows.map(idOf));
-    for(const id of failedOnce)if(!ids.has(id))passedSince.add(id);
-    for(const p of rows) {
-      const id=idOf(p),{category}=p.facts.requirement,reach=p.facts.requirement.reach||{},b=best.get(id)||new Map();
-      failedOnce.add(id);
-      const at=b.get(category);
-      const point=Number(reach.point)||0,near=Number(reach.near)||0;
-      if(!at||point>at.point)b.set(category,{point,near});
-      else if(point===at.point&&near>at.near)at.near=near;
-      best.set(id,b);
-    }
-  }
-  const ids=new Set(now.map(idOf));
-  // A requirement that failed before passes now, for the first time since it first failed.
-  if([...failedOnce].some(id=>!ids.has(id)&&!passedSince.has(id)))return true;
-  return now.some(p=>{
-    const id=idOf(p),b=best.get(id);
-    if(!b)return false;
-    const {category}=p.facts.requirement,reach=p.facts.requirement.reach||{},at=b.get(category);
-    const point=Number(reach.point)||0,near=Number(reach.near)||0;
-    return !at||point>at.point||point===at.point&&near>=at.near+NEARER;
-  });
-}
-
 // Where each party of a problem held by `holder` lies: under one of its direct
 // children (child), elsewhere in the tree (outside), or nowhere known.
 export function placeParties(holder, parties) {
@@ -679,10 +623,6 @@ function decideRow(p, ctx) {
       if(first)return {rule:`R2${first.how}`,route:true,action:'assign',child:first.child,side:'site',...ctx.kindOf(first.child)==='manager'?{delegate:true}:{instructions:said+first.text,facts_text:first.facts||'',providers:first.providers||[]}};
       // v7.15.13 (run20, R3): a child that changed a file for this failure without progress is skipped as a declined one (flags.exhausted, read by the route).
       const spent=(flags.exhausted||[]).filter(id=>ctx.kindOf(id)),why=`no piece takes the requirement${declined.size?` (declined by ${names([...declined])})`:''}${spent.length?` (${names(spent)} changed a file for it without progress)`:''}: ${clip(p.facts.requirement.text,200)}`;
-      // v8 S9 (§7.2), v8 M2 review: an amendment no child takes grows the plan where it is, by one rule at every level: a
-      // manager one of whose own contracts it serves, which no piece under it carries, splits off one new piece for it
-      // (ctx.grows; the room's amendGrow); at the end of the line it grows, or no part has anything to change for it.
-      if(p.stage==='amend'&&(!ctx.parent||ctx.grows?.(p)))return {rule:'A2',route:true,action:'grow',reason:why};
       return ctx.parent?{rule:'R2',route:true,action:'escalate',declined:true,reason:why}:{rule:'R2',route:true,action:'exhausted',reason:why};
     }
     // v7.15.6 (R5): the parent asked this branch to take names on a promise (grow).
@@ -776,9 +716,8 @@ function decideParties(p, ctx, placed, flags) {
 // The deterministic subset of the validator: an action names only a direct
 // child that can take it. Returns the reason it is refused, or null.
 export function validateDecision(dec, p, ctx) {
-  if(!['assign','escalate','exhausted','fail','retask','defer','grow'].includes(dec?.action))return 'unknown action';
+  if(!['assign','escalate','exhausted','fail','retask','defer'].includes(dec?.action))return 'unknown action';
   if(dec.action==='escalate')return ctx.parent?null:'the top manager has no parent to escalate to';
-  if(dec.action==='grow')return p.stage==='amend'?null:`a new piece grows for a change's row; this row's stage is ${p.stage}`;
   if(dec.action==='exhausted'||dec.action==='defer')return null;
   const kind=ctx.kindOf(dec.child),status=ctx.statusOf?.(dec.child);
   if(!kind)return `${dec.child} is not a direct child`;
@@ -804,7 +743,7 @@ export function validateDecision(dec, p, ctx) {
 // here; M8 an unanchored disagreement between two children.
 export function modelTrigger(p, dec, ctx) {
   const f=p.facts||{},flags=p.flags||{};
-  if(dec.rule==='hops'||dec.action==='grow')return null;
+  if(dec.rule==='hops')return null;
   // v7.15.6 (R4): the same requirement routed to the same child a third time
   // is the model's as any recurrence is (M4; review: a worker revising its
   // file every round was never shown to the model); one nobody takes, or a
@@ -890,10 +829,9 @@ export function validateManagerActions(actions, call, ctx) {
     if(unknown.length){refuse(a,`problem(s) ${unknown.join(', ')} are not in this decision`);continue;}
     const open=ids.filter(id=>!covered.has(id));
     if(kind==='escalate') {
-      // v8 M2: a manager with no agent above escalates to the room: the problem closes, and the card's checks hold for the person.
-      if(!ctx.parent&&!ctx.v8){refuse(a,'the top manager has no parent to escalate to');continue;}
+      if(!ctx.parent){refuse(a,'the top manager has no parent to escalate to');continue;}
       if(!open.length){refuse(a,'no undecided problem listed');continue;}
-      for(const id of open)covered.set(id,ctx.parent?{rule:'model',action:'escalate',reason:clip(a.reason||'',300)}:{rule:'model',action:'exhausted',reason:clip(`escalated to the room: ${a.reason||'no child can settle it'}`,300)});
+      for(const id of open)covered.set(id,{rule:'model',action:'escalate',reason:clip(a.reason||'',300)});
       continue;
     }
     const child=String(a.child||''),k=ctx.kindOf(child),status=ctx.statusOf?.(child);
@@ -916,21 +854,17 @@ export function validateManagerActions(actions, call, ctx) {
       // v7.15.5 review: the model reads the problems' linked paths; its new task reaches the worker as written.
       const task=typeof a.task==='string'?ownPaths(a.task.trim()):'',p=ctx.scope?.(a);
       if(task.length<8||task.length>1700){refuse(a,'a retask needs a task of 8 to 1700 characters');continue;}
-      // v8 card repair: Clef reviews, it never vetoes: under v8 a retask Clef doubts (or could not judge) is applied, marked doubtful.
-      if(!(p>=0.5)&&!ctx.v8){refuse(a,`the new task is outside the goal or this manager's responsibility (p=${Number(p||0).toFixed(3)})`);continue;}
-      const doubtful=!(p>=0.5)?{p:typeof p==='number'?Math.round(p*1000)/1000:null}:null;
+      if(!(p>=0.5)){refuse(a,`the new task is outside the goal or this manager's responsibility (p=${Number(p||0).toFixed(3)})`);continue;}
       // v7.15 §10.1: a retask keeps the child's promise; interfaces replace
       // it, cleaned and repaired as a split's (R1-R4), a function this
       // manager promised taking its item (the description travels down).
       let interfaces;
-      // v8 (S6): FORMAT.manager names a retask's new contracts "contracts".
-      const given=a.interfaces!==undefined?a.interfaces:ctx.v8?a.contracts:undefined;
+      const given=a.interfaces;
       if(given!==undefined&&ctx.promise) {
-        // v8 (S2): ctx.v8 reads contract fields; a model's serves never stays (a carried item keeps its own).
-        const items=normalizeInterfaces(Array.isArray(given)?given:[given],{v8:!!ctx.v8}),own=ctx.promise?.items||[];
+        const items=normalizeInterfaces(Array.isArray(given)?given:[given]),own=ctx.promise?.items||[];
         interfaces=repairInterfaces([{label:child,interfaces:items}],own).spawn[0].interfaces.map(f=>own.find(x=>x.name===f.name)||f);
       }
-      gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300),...interfaces?{interfaces}:{},...doubtful?{doubtful}:{}});actionOf.set(retask.at(-1),a);
+      gone.set(child,'retasked');retask.push({child,task,reason:clip(a.reason||'',300),...interfaces?{interfaces}:{}});actionOf.set(retask.at(-1),a);
       for(const id of open)covered.set(id,{rule:'model',action:'close',outcome:'retasked',child});
       continue;
     }
@@ -1053,14 +987,10 @@ export const ownPaths=(text,piece=null)=>{
 export const OWN_ENTRY_CONTRACT='You wrote the whole application: your entry module exports start(); start() takes no arguments and returns an object with one method per operation the goal names, each named after that operation (create, view, update and delete for a goal that names those) and each performing it, not a single generic handler or dispatcher. It does no work at module load: importing it must not read process.argv, start a server or prompt for input.';
 // What the deciding manager tells the side that changes, by kind. own: an
 // atomic top's own repair.
-// v8 (S6 review): opts.v8 words each kind from MESSAGES (src/prompts.js),
-// with opts.reference(name) the toolchain row's reference for a name; a v8
-// room files only contract, stuck and request rows before S4b's checks.
-export function instructionsFor(p, side, own=false, opts={}) {
+export function instructionsFor(p, side, own=false) {
   const f=p.facts||{},provider=(p.parties||[]).find(x=>x.role==='provider');
   // v7.15.6 (R4): the words a problem was decided with hold for that side only; the next party, after a decline, hears its own.
   if(p.directive?.instructions&&(!p.directive.side||p.directive.side===side))return p.directive.instructions;
-  if(opts.v8)return v8Instructions(p,side,opts);
   // run11: the caller reorders its call; the function it calls stays.
   if(f.argorder&&side!=='provider')return `Change your call ${f.argorder.call} to pass its arguments in the order ${f.argorder.name} takes them, (${(f.argorder.params||[]).join(', ')}); ${f.argorder.name} itself stays as it is.`;
   // v7.15.6 (R3): a run failure is the requirement it states, whoever takes it (a route names the promise).
@@ -1091,22 +1021,6 @@ export function instructionsFor(p, side, own=false, opts={}) {
   }
 }
 
-// v8: a problem's instructions in contract terms (MESSAGES), never naming a
-// build step, a linker or a language's export form.
-function v8Instructions(p, side, {reference=n=>n}={}) {
-  const f=p.facts||{},many=xs=>(xs||[]).length>1;
-  if(p.kind==='stuck')return MESSAGES.stuck();
-  // v8 S4b: a failed card check, also to an atomic Root.
-  if(p.kind==='run'&&f.requirement?.card)return requirementText(f.requirement);
-  if(p.kind==='contract') {
-    const by=(f.requested_by||[]).filter(Boolean).slice(0,8);
-    const written=f.written?.length?MESSAGES.written_elsewhere({names:list(f.written),references:f.written.slice(0,8).map(reference).join('; '),many:many(f.written)}):'';
-    if(!f.names?.length&&written)return written;
-    return MESSAGES.owed({names:list(f.names),by:by.length?by.join(', '):'other parts',many:many(f.names)})+(written?' '+written:'');
-  }
-  return side==='provider'?MESSAGES.fix_provider():MESSAGES.fix_reader();
-}
-
 // What a branch hears when another child of its manager exports what it lacks (M6 settled).
 export function importInstructions(p, u) {
   return `${base(u.path)}, outside your branch, exports ${list(p.facts?.names)}: import each on its own line with its name as the path, and the builder above links it: ${oneLines(p.facts?.names,{},4,p.facts?.esm)} Nothing in your branch provides them.`;
@@ -1135,17 +1049,7 @@ const PROVIDER='Other modules call yours as described below; change your exports
 // most; review: the tail is kept, the facts give way first, down to 160).
 // v7.15.7 review: text cut to n at the last ' | ' or '; ' boundary before n, else the last word boundary; whole when it fits.
 const cutAt=(s,n)=>{s=String(s||'');if(s.length<=n)return s;const h=s.slice(0,Math.max(n,0)),at=Math.max(h.lastIndexOf(' | '),h.lastIndexOf('; '));return (at>0?h.slice(0,at):h.replace(/\s+\S*$/,'')).trimEnd();};
-export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false,operation=false,v8=false}) {
-  // v8 (S6 review): no head claiming a build ran (a v8 room runs none before its checks); the decision, the other side's facts and the problems.
-  if(v8) {
-    if(requirement) {
-      const body=clip(ownPaths(instructions,piece),facts?700:860),cut=facts?cutAt(ownPaths(facts,piece),860-body.length):'';
-      return MESSAGES.requirement_repair({body,facts:cut});
-    }
-    const decided=instructions?ownPaths(instructions,piece).slice(0,900):'',shown=problems.map(x=>`${ownPaths(x.path,piece)||'(project)'}: ${ownPaths(x.detail,piece)}`).join('; ');
-    const room=Math.max(0,2400-decided.length-Math.min(shown.length,1100)-200);
-    return MESSAGES.repair({own,decided,facts:facts&&room>40?ownPaths(facts,piece).slice(0,Math.min(700,room)):'',problems:shown}).slice(0,2400);
-  }
+export function repairText({role='reader',instructions='',facts='',problems=[],kinds=[],own=false,written=false,piece=null,requirement=false,operation=false}) {
   if(requirement) {
     // v7.15.7 review (run14): the facts get the room the body leaves (at least 160, as before), cut at a ' | ' or '; ' boundary and never mid-word: a flat 300 cut the plan's returns first and mid-word once a worker had a third use, while most of the 900 went unused.
     const tail=' Publish the FULL updated file.',room=900-tail.length,lead=' What the other side provides: ';

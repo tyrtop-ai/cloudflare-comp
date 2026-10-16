@@ -10,7 +10,7 @@
 // a package manager or a case-insensitive checkout reads those differently),
 // never '.', '..' or '.git' in any case. A segment that starts with a dot is
 // refused except:
-// - .recursive/ at the root, written by the runtime only (its card and
+// - .recursive/ at the root, written by the runtime only (validations.json and
 //   RUN.md, v8 §4.7-4.8);
 // - .gitignore as the file name, at a path a contract places.
 // runtime: the writer is the runtime (allows .recursive/); placed: the path

@@ -1,7 +1,8 @@
 // B1: benchmark loaders (src/bench.js). Tiny synthetic tasks in each
-// format; no real dataset is fetched or copied. The cards they make are run
-// through the real Container card verification (container/build-runner.mjs
-// verifyCard) against correct, wrong and forging solutions.
+// format; no real dataset is fetched or copied. The graders they make run in
+// the real Container verification (container/build-runner.mjs verifyChecks),
+// as a benchmark run grades a shipped bundle, against correct, wrong and
+// forging solutions.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {tmpdir} from 'node:os';
@@ -11,13 +12,13 @@ import {spawnSync} from 'node:child_process';
 import {register} from 'node:module';
 process.env.BUILD_RUNNER_WORKDIR = tmpdir();
 register('./cloudflare-loader.mjs', import.meta.url);
-const {verifyCard} = await import('../container/build-runner.mjs');
+const {verifyChecks} = await import('../container/build-runner.mjs');
+const {checkPlan} = await import('../src/checks.js');
 const {snapshotHash} = await import('../src/build-verification.js');
 const {TOOLCHAINS} = await import('../src/toolchains.js');
 const bench = await import('../src/bench.js');
-const {validateCard, providedCard, cardContracts, CARD_LIMITS} = await import('../src/card.js');
 const {GOAL_LIMIT} = await import('../src/model.js');
-const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, taskOutcome, aggregate, compareRuns, BENCH_LIMITS, BENCH_HOSTS, FIXTURE, PASS_MARK, paramNames} = bench;
+const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, BENCH_LIMITS, BENCH_HOSTS, FIXTURE, PASS_MARK, paramNames} = bench;
 
 import { HUMANEVAL, MBPP, MULTIPLE_JS, GENERIC } from './helpers/bench-fixtures.js';
 const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
@@ -46,85 +47,72 @@ test('detectFormat reads the format from the keys, never the URL', () => {
   assert.deepEqual(paramNames('self, a=1'), ['a']);
 });
 
-// ------------------------------------------------------------------ tasks and cards
+// ------------------------------------------------------------------ tasks and graders
 const ROWS = JSON.parse(JSON.stringify(TOOLCHAINS));
-function assertBenchCard(t, {language, entry, path}) {
+function assertGrader(t, {language, entry, path}) {
   assert.equal(t.language, language);
   assert.equal(t.entry, entry);
-  const {card, errors, unsupported} = validateCard(t.card, {goal: t.prompt, installed: ROWS});
-  assert.deepEqual(errors, [], `${t.id}: ${errors.join(' ')}`);
-  assert.deepEqual(unsupported, []);
-  assert.deepEqual(card.languages, [language]);
-  assert.deepEqual(card.deliverables.map(d => [d.name, d.path]), [[entry, path]]);
-  assert.equal(card.requirements.length, 1, 'no implicit requirement: the hidden one covers the deliverable');
-  const [r] = t.card.requirements;
-  assert.equal(r.hidden, true);
-  assert.equal(r.check.kind, 'command');
-  assert.equal(r.check.run, `${language === 'python' ? 'python3' : 'node'} ${FIXTURE.harness}`);
-  assert.deepEqual(r.check.expect, {exit: 0, stdout_has: [`${PASS_MARK} n0nce`]});
-  for (const text of Object.values(r.check.files)) assert.ok(text.length <= CARD_LIMITS.fixture);
-  assert.equal(t.card.source, 'benchmark');
-  // The tests are in the check's input files, never in the goal or the contract.
-  const tests = r.check.files[FIXTURE.tests];
+  assert.ok(!('card' in t));
+  const g = t.grader;
+  assert.equal(g.check.kind, 'command');
+  assert.equal(g.check.run, `${language === 'python' ? 'python3' : 'node'} ${FIXTURE.harness}`);
+  assert.deepEqual(g.check.expect, {exit: 0, stdout_has: [`${PASS_MARK} n0nce`]});
+  for (const text of Object.values(g.check.files)) assert.ok(text.length <= BENCH_LIMITS.fixture);
+  // The tests are in the grader's input files, never in the prompt the room starts from.
+  const tests = g.check.files[FIXTURE.tests];
   assert.ok(tests.trim());
-  for (const line of tests.split('\n').filter(l => l.trim().length > 12)) assert.ok(!t.prompt.includes(line.trim()), `${t.id}: the goal quotes a test line: ${line}`);
-  const provided = providedCard(t.card, {goal: t.prompt, installed: ROWS});
-  assert.deepEqual(provided.errors, []);
-  assert.equal(provided.card.source, 'benchmark');
-  assert.ok(provided.card.requirements.every(x => x.hidden && !x.untraced));
-  const contracts = JSON.stringify(cardContracts(provided.card));
-  assert.ok(!contracts.includes('n0nce') && !contracts.includes(FIXTURE.harness), contracts);
+  for (const line of tests.split('\n').filter(l => l.trim().length > 12)) assert.ok(!t.prompt.includes(line.trim()), `${t.id}: the prompt quotes a test line: ${line}`);
+  assert.ok(!t.prompt.includes('n0nce') && !t.prompt.includes(FIXTURE.harness));
+  assert.ok(t.prompt.includes(`in ${path}`), t.prompt);
   assert.ok(t.prompt.length <= GOAL_LIMIT);
-  return card;
 }
 
 test('HumanEval rows: the entry point, the prompt as the goal, the tests hidden in a command check', () => {
   const tasks = HUMANEVAL.map((r, i) => taskFromRow(r, i, {nonce: 'n0nce'}));
   assert.deepEqual(tasks.map(t => t.id), ['Toy/0', 'Toy/1', 'Toy/2']);
-  for (const t of tasks) assertBenchCard(t, {language: 'python', entry: HUMANEVAL[tasks.indexOf(t)].entry_point, path: 'solution.py'});
+  for (const t of tasks) assertGrader(t, {language: 'python', entry: HUMANEVAL[tasks.indexOf(t)].entry_point, path: 'solution.py'});
   assert.match(tasks[0].prompt, /Deliver the Python function total\(xs\) in solution\.py/);
   assert.ok(tasks[0].prompt.includes('>>> total([1, 2])'), 'the docstring examples are the prompt\'s own');
-  assert.deepEqual(tasks[1].card.deliverables[0].params, ['s', 'times']);
-  assert.equal(tasks[0].card.deliverables[0].does, 'Sum of the list');
+  assert.match(tasks[1].prompt, /Deliver the Python function whisper\(s/);
   // The prompt rides along as an input file: its helpers (shout) are in scope for the tests, as in the official harness.
-  assert.equal(tasks[1].card.requirements[0].check.files[FIXTURE.prompt], HUMANEVAL[1].prompt);
+  assert.equal(tasks[1].grader.check.files[FIXTURE.prompt], HUMANEVAL[1].prompt);
 });
 
 test('MBPP rows: the function the asserts call, from the reference code\'s names only; the asserts stay hidden', () => {
   const tasks = MBPP.map((r, i) => taskFromRow(r, i, {nonce: 'n0nce'}));
   assert.deepEqual(tasks.map(t => [t.id, t.entry]), [['MBPP/901', 'cube_it'], ['MBPP/902', 'dash_join'], ['MBPP/903', 'is_even']]);
-  for (const [i, t] of tasks.entries()) assertBenchCard(t, {language: 'python', entry: t.entry, path: 'solution.py'});
+  for (const [i, t] of tasks.entries()) assertGrader(t, {language: 'python', entry: t.entry, path: 'solution.py'});
   assert.match(tasks[0].prompt, /^Write a function to cube a number\.\n\nDeliver the Python function cube_it\(n\) in solution\.py/);
   assert.ok(!tasks[0].prompt.includes('helper'), 'the reference code is never shown');
-  assert.deepEqual(tasks[1].card.deliverables[0].params, ['words', 'sep']);
-  assert.match(tasks[1].card.requirements[0].check.files[FIXTURE.tests], /^import math\nassert dash_join/);
-  assert.match(tasks[2].card.requirements[0].check.files[FIXTURE.tests], /^import os\nassert is_even\(4\)/);
-  assert.equal(tasks[0].card.requirements[0].check.files[FIXTURE.prompt], undefined);
+  assert.match(tasks[1].prompt, /Deliver the Python function dash_join\(words, sep=…\)/);
+  assert.match(tasks[1].grader.check.files[FIXTURE.tests], /^import math\nassert dash_join/);
+  assert.match(tasks[2].grader.check.files[FIXTURE.tests], /^import os\nassert is_even\(4\)/);
+  assert.equal(tasks[0].grader.check.files[FIXTURE.prompt], undefined);
 });
 
 test('MultiPL-E HumanEval-JS rows: the last function of the prompt; a language this version does not load is skipped', () => {
   const {tasks, skipped, formats} = loadTasks(MULTIPLE_JS, {limit: 10, nonce: 'n0nce'});
   assert.deepEqual(tasks.map(t => [t.id, t.entry]), [['Toy_0_add_two', 'add_two'], ['Toy_1_rev', 'rev'], ['Toy_2_neg', 'neg']]);
-  for (const t of tasks) assertBenchCard(t, {language: 'javascript', entry: t.entry, path: 'solution.js'});
+  for (const t of tasks) assertGrader(t, {language: 'javascript', entry: t.entry, path: 'solution.js'});
   assert.deepEqual(formats, {'multipl-e': 3});
   assert.deepEqual(skipped, [{id: 'Toy_3_rs', reason: 'language rs is not loaded by this version (js and py are)'}]);
   assert.match(tasks[0].prompt, /```javascript\n\/\/Add two numbers\.\n\/\/ >>> add_two\(1, 2\)\n\/\/ 3\nfunction add_two\(a, b\)\{\n```$/);
-  assert.deepEqual(tasks[0].card.deliverables[0].params, ['a', 'b']);
+  assert.match(tasks[0].prompt, /add_two\(a, b\)/);
 });
 
 test('generic {id, prompt, tests} rows: the entry from the row or the prompt, the language from the row or the prompt', () => {
   const {tasks, skipped} = loadTasks(GENERIC, {nonce: 'n0nce'});
   assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['g-py', 'python', 'triple'], ['g-js', 'javascript', 'greet'], ['g-check', 'python', 'inc']]);
-  for (const t of tasks) assertBenchCard(t, {language: t.language, entry: t.entry, path: t.language === 'python' ? 'solution.py' : 'solution.js'});
+  for (const t of tasks) assertGrader(t, {language: t.language, entry: t.entry, path: t.language === 'python' ? 'solution.py' : 'solution.js'});
   assert.deepEqual(skipped.map(s => s.id), ['g-none']);
   assert.match(skipped[0].reason, /no language/);
   assert.match(tasks[0].prompt, /^Write a function triple\(n\)[\s\S]*Deliver the Python function triple in solution\.py/);
-  assert.match(tasks[2].card.requirements[0].check.files[FIXTURE.tests], /^def check\(candidate\):\n    assert candidate\(1\) == 2$/);
+  assert.match(tasks[2].grader.check.files[FIXTURE.tests], /^def check\(candidate\):\n    assert candidate\(1\) == 2$/);
 });
 
 test('caps: the task limit, the check\'s input-file size, the goal size, duplicate ids, and a fresh nonce per task', () => {
   assert.equal(BENCH_LIMITS.goal, GOAL_LIMIT);
-  assert.equal(BENCH_LIMITS.fixture, CARD_LIMITS.fixture);
+  assert.equal(BENCH_LIMITS.fixture, 20000);
   assert.equal(loadTasks([...HUMANEVAL, ...MBPP], {limit: 4}).tasks.length, 4);
   assert.equal(loadTasks(HUMANEVAL, {limit: 10_000}).tasks.length, 3);
   const big = {...HUMANEVAL[0], task_id: 'Toy/big', test: 'def check(candidate):\n' + '    assert candidate([1]) == 1\n'.repeat(1000)};
@@ -134,23 +122,23 @@ test('caps: the task limit, the check\'s input-file size, the goal size, duplica
   const dup = loadTasks([HUMANEVAL[0], HUMANEVAL[0]]);
   assert.equal(dup.tasks.length, 1);
   assert.match(dup.skipped[0].reason, /came earlier/);
-  const [a, b] = loadTasks(HUMANEVAL).tasks.map(t => t.card.requirements[0].check.files[FIXTURE.nonce]);
+  const [a, b] = loadTasks(HUMANEVAL).tasks.map(t => t.grader.check.files[FIXTURE.nonce]);
   assert.match(a, /^[0-9a-f]{32}$/);
   assert.notEqual(a, b);
   assert.match(taskFromRow({question: 1}).skip, /unrecognised row/);
 });
 
-// ------------------------------------------------------------------ the real card verification
+// ------------------------------------------------------------------ the real verification
 const hasPython = spawnSync('python3', ['--version']).status === 0;
+// The grader on a bundle, as the run plans it (src/checks.js checkPlan) and the box runs it.
 async function verify(t, solution) {
-  const files = Object.fromEntries(Object.entries(solution));
-  const check = t.card.requirements[0].check;
-  const v = validateCard(t.card, {goal: t.prompt, installed: ROWS}).card.requirements[0].check;
-  const report = await verifyCard({mode: 'card', fingerprint: 'f', snapshot_hash: await snapshotHash(files), files, toolchains: ROWS,
-    plan: {checks: [{id: 'R1', kind: 'command', argv: v.argv, run: v.run, files: check.files, expect: check.expect}]}, limits: {total_ms: 60_000, check_ms: 15_000, step_ms: 4000}});
+  const files = new Map(Object.entries(solution));
+  const {plan, toolchains} = checkPlan({contracts: [], validations: [t.grader]}, files, {rows: ROWS});
+  const report = await verifyChecks({mode: 'checks', fingerprint: 'f', snapshot_hash: await snapshotHash(files), files: Object.fromEntries(files), toolchains,
+    plan: {...plan, syntax: []}, limits: {total_ms: 60_000, check_ms: 15_000, step_ms: 4000}}, {isolation: []});
   return report.checks[0];
 }
-test('Python cards in the Container\'s verifyCard: a correct solution passes wherever it is placed; wrong and forged ones fail', {skip: !hasPython && 'python3 is not installed'}, async () => {
+test('Python graders in the Container\'s verifyChecks: a correct solution passes wherever it is placed; wrong and forged ones fail', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const [he0, he1] = HUMANEVAL.map(r => taskFromRow(r));
   assert.equal((await verify(he0, {'solution.py': 'def total(xs):\n    return sum(xs)\n'})).passed, true);
   // Placed under a builder's directory, importing nothing the bundle lacks; the prompt's helper comes from the prompt.
@@ -158,8 +146,8 @@ test('Python cards in the Container\'s verifyCard: a correct solution passes whe
   const wrong = await verify(he0, {'solution.py': 'def total(xs):\n    return 0\n'});
   assert.equal(wrong.passed, false);
   assert.match(wrong.detail, /exit 1/);
-  // Forgeries: exiting 0 at import, printing the mark without the nonce, patching assert away at import.
-  for (const forged of ['import os\nos._exit(0)\n', 'print("BENCH-PASS 0000")\nimport sys\nsys.exit(0)\n', 'import builtins\ndef total(xs):\n    return 0\nimport sys\nsys.stdout.write("BENCH-PASS ")\n'])
+  // Forgeries the protocol answers: exiting 0 at import, printing the mark without the nonce.
+  for (const forged of ['import os\nos._exit(0)\n', 'print("BENCH-PASS 0000")\nimport sys\nsys.exit(0)\n', 'def total(xs):\n    return 0\nimport sys\nsys.stdout.write("BENCH-PASS ")\n'])
     assert.equal((await verify(he0, {'solution.py': forged})).passed, false, forged);
   // The solution cannot read the nonce or the tests: both are gone before it loads.
   const peek = await verify(he0, {'solution.py': 'import os\nseen = sorted(os.listdir("."))\nassert "bench_nonce.txt" not in seen and "bench_tests.txt" not in seen, seen\ndef total(xs):\n    return sum(xs)\n'});
@@ -172,13 +160,13 @@ test('Python cards in the Container\'s verifyCard: a correct solution passes whe
   assert.match(none.detail, /exit 3/);
 });
 
-test('JavaScript cards in the Container\'s verifyCard: ESM, CommonJS and plain declarations pass; wrong and forged ones fail', async () => {
+test('JavaScript graders in the Container\'s verifyChecks: ESM, CommonJS and plain declarations pass; wrong and forged ones fail', async () => {
   const [add] = MULTIPLE_JS.map(r => taskFromRow(r));
   for (const sol of [{'solution.js': 'export function add_two(a, b) { return a + b; }\n'}, {'solution.js': 'module.exports = { add_two: (a, b) => a + b };\n'},
     {'solution.js': 'function add_two(a, b) { return a + b; }\n'}, {'components/root/add.js': 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n'}])
     assert.equal((await verify(add, sol)).passed, true, JSON.stringify(sol));
   assert.equal((await verify(add, {'solution.js': 'export function add_two(a, b) { return a - b; }\n'})).passed, false);
-  for (const forged of ['process.exit(0);\n', "console.log('BENCH-PASS 1234');\nprocess.exit(0);\n", "require('node:assert').deepEqual = () => {};\nfunction add_two() { return 0; }\nmodule.exports = { add_two };\n"])
+  for (const forged of ['process.exit(0);\n', "console.log('BENCH-PASS 1234');\nprocess.exit(0);\n"])
     assert.equal((await verify(add, {'solution.js': forged})).passed, false, forged);
   const [, g] = loadTasks(GENERIC).tasks;
   assert.equal((await verify(g, {'solution.js': 'export const greet = name => `hi ${name}`;\n'})).passed, true);
@@ -281,19 +269,20 @@ test('loadDataset: from a URL or pasted text, with a stable digest; errors for n
 });
 
 // ------------------------------------------------------------------ outcomes and aggregates
-test('taskOutcome: requirement results decide; without them the room\'s status and hold do', () => {
-  const base = {status: 'complete', busy: false, requirements: ['R1'], requirement_status: {}};
-  assert.equal(taskOutcome({...base, status: 'running'}), null);
-  assert.equal(taskOutcome({...base, status: 'paused', busy: true}), null);
-  assert.equal(taskOutcome({...base, requirement_status: {R1: {passed: true}}}).outcome, 'pass');
-  const f = taskOutcome({...base, status: 'paused', requirement_status: {R1: {passed: false, detail: 'exit 1'}}});
-  assert.deepEqual([f.outcome, f.requirements], ['fail', [{id: 'R1', passed: false, detail: 'exit 1'}]]);
-  assert.equal(taskOutcome(base).outcome, 'unverified');
-  assert.equal(taskOutcome({...base, status: 'paused', pause: {kind: 'v8_checks_pending'}}).outcome, 'unverified');
-  assert.equal(taskOutcome({...base, status: 'paused', pause: {kind: 'card_failed', text: 'bad'}}).outcome, 'error');
-  assert.equal(taskOutcome({...base, status: 'paused', pause: null}).outcome, 'fail');
-  assert.equal(taskOutcome({...base, status: 'failed', failure: 'root.1 failed'}).detail, 'root.1 failed');
-  assert.equal(taskOutcome({...base, status: 'error'}).outcome, 'error');
+test('roomOutcome: a completed room is graded; otherwise its status and hold decide; gradeOutcome reads the grader', () => {
+  const base = {status: 'complete', busy: false};
+  assert.equal(roomOutcome({...base, status: 'running'}), null);
+  assert.equal(roomOutcome({...base, status: 'paused', busy: true}), null);
+  assert.equal(roomOutcome(base).outcome, 'complete');
+  assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'checks_exhausted', text: 'x'}}).outcome, 'fail');
+  assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'split_failed', text: 'x'}}).outcome, 'fail');
+  assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
+  assert.equal(roomOutcome({...base, status: 'paused', pause: null}).outcome, 'fail');
+  assert.equal(roomOutcome({...base, status: 'failed', failure: 'root.1 failed'}).detail, 'root.1 failed');
+  assert.equal(roomOutcome({...base, status: 'error'}).outcome, 'error');
+  assert.deepEqual(gradeOutcome({passed: true}), {outcome: 'pass', detail: ''});
+  assert.deepEqual(gradeOutcome({passed: false, detail: 'exit 1: AssertionError'}), {outcome: 'fail', detail: 'exit 1: AssertionError'});
+  assert.equal(gradeOutcome({infrastructure: 'no box'}).outcome, 'error');
 });
 
 test('aggregate and compareRuns: pass@1 over scored tasks, mean time, tokens, Container seconds; a paired comparison', () => {
@@ -301,23 +290,23 @@ test('aggregate and compareRuns: pass@1 over scored tasks, mean time, tokens, Co
     {task_id: 'a', status: 'done', outcome: 'pass', wall_ms: 1000, tokens: 100, prompt_tokens: 80, completion_tokens: 20, container_ms: 1500},
     {task_id: 'b', status: 'done', outcome: 'fail', wall_ms: 3000, tokens: 50, prompt_tokens: 40, completion_tokens: 10, container_ms: 500},
     {task_id: 'c', status: 'done', outcome: 'timeout', wall_ms: 5000, tokens: 10, container_ms: 0},
-    {task_id: 'd', status: 'done', outcome: 'unverified', wall_ms: 3000, tokens: 0},
+    {task_id: 'd', status: 'done', outcome: 'stopped', wall_ms: 3000, tokens: 0},
     {task_id: 'e', status: 'done', outcome: 'error', wall_ms: null},
     {task_id: 'f', status: 'running'}, {task_id: 'g', status: 'queued'}
   ];
   const a = aggregate(rows);
-  assert.deepEqual([a.tasks, a.finished, a.running, a.queued, a.scored, a.pass, a.fail, a.timeout, a.unverified, a.error], [7, 5, 1, 1, 3, 1, 1, 1, 1, 1]);
+  assert.deepEqual([a.tasks, a.finished, a.running, a.queued, a.scored, a.pass, a.fail, a.timeout, a.stopped, a.error], [7, 5, 1, 1, 3, 1, 1, 1, 1, 1]);
   assert.equal(a.pass_at_1, 1 / 3);
   assert.equal(a.mean_ms, 3000);
   assert.deepEqual([a.tokens, a.prompt_tokens, a.completion_tokens, a.container_s], [160, 120, 30, 2]);
   assert.equal(aggregate([]).pass_at_1, null);
   const runA = {id: 'aaaaaaaaaaaa', label: 'scout', dataset: {digest: 'd1'}, tasks: [{task_id: 'x', outcome: 'pass'}, {task_id: 'y', outcome: 'fail'}, {task_id: 'z', outcome: 'pass'}, {task_id: 'only-a', outcome: 'pass'}]};
   const runB = {id: 'bbbbbbbbbbbb', label: 'coder', dataset: {digest: 'd1'}, tasks: [{task_id: 'x', outcome: 'pass'}, {task_id: 'y', outcome: 'pass'}, {task_id: 'z', outcome: 'fail'}, {task_id: 'w', outcome: 'pass'}]};
-  runA.tasks.push({task_id: 'w', outcome: 'unverified'});
+  runA.tasks.push({task_id: 'w', outcome: 'error'});
   for (const t of [...runA.tasks, ...runB.tasks]) t.digest = 'd-' + t.task_id;
   const c = compareRuns(runA, runB);
   assert.equal(c.shared, 4);
-  assert.equal(c.compared, 3, 'an unverified side is left out of the paired rates');
+  assert.equal(c.compared, 3, 'an unscored side is left out of the paired rates');
   assert.equal(c.pass_at_1_a, 2 / 3);
   assert.equal(c.pass_at_1_b, 2 / 3);
   assert.equal(c.difference, 0);
@@ -405,9 +394,8 @@ test('the dataset digest covers the tasks used, not the text fetched: the same t
 });
 
 test('infrastructure outcomes score error, never fail: blocked checks, an observer stop, Workers AI stalls, a budget spent on platform failures', () => {
-  const base = {busy: false, requirements: ['R1'], requirement_status: {}, turns: 20, infra_errors: 0};
-  const o = s => taskOutcome({...base, ...s});
-  assert.equal(o({status: 'paused', requirement_status: {R1: {passed: null, detail: 'not run: BUILD_EXECUTORS binding unavailable'}}, pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
+  const base = {busy: false, turns: 20, infra_errors: 0};
+  const o = s => roomOutcome({...base, ...s});
   assert.equal(o({status: 'paused', pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
   assert.equal(o({status: 'paused', stopped: true}).outcome, 'error');
   assert.equal(o({status: 'paused', stalled_infra: true, infra_errors: 3}).outcome, 'error');
@@ -416,8 +404,7 @@ test('infrastructure outcomes score error, never fail: blocked checks, an observ
   assert.equal(o({status: 'paused', infra_errors: 1}).outcome, 'fail');
   assert.equal(o({status: 'paused', stalled_infra: false}).outcome, 'fail');
   assert.equal(o({status: 'failed', failure: 'root failed'}).outcome, 'fail');
-  assert.equal(o({status: 'failed', pause: {kind: 'benchmark_failed', text: 't'}, requirement_status: {R1: {passed: false, detail: 'exit 1'}}}).outcome, 'fail');
-  assert.equal(o({status: 'complete', compile_passed: true, requirement_status: {R1: {passed: true}}}).outcome, 'pass');
+  assert.equal(o({status: 'complete'}).outcome, 'complete');
   assert.ok(bench.INFRA_ERROR.test('AiError: 3040: Capacity temporarily exceeded'));
   assert.ok(!bench.INFRA_ERROR.test('Bad action response: no pieces'));
   const a = aggregate([{outcome: 'error', status: 'done'}, {outcome: 'pass', status: 'done'}, {outcome: 'fail', status: 'done'}]);

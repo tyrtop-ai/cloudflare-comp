@@ -35,7 +35,7 @@
               <option value="stop">Stop the queue (default)</option>
               <option value="continue">Go on with the next prompt</option>
             </select>
-            <p class="card-hold queue-stopped" id="queue-stopped" hidden></p>
+            <p class="hold-note queue-stopped" id="queue-stopped" hidden></p>
             <ol id="prompts" class="prompt-list" aria-label="Prompts"><li class="empty">No prompts yet. Start a v8 room, then queue follow-ups here.</li></ol>
           </div>
           <label for="start-from">Start from (v8 pipeline)</label>
@@ -97,7 +97,7 @@
           <label for="pipeline">Pipeline (fixed when a room starts)</label>
           <select id="pipeline">
             <option value="v7">v7 · runtime start() contract and runner test (default)</option>
-            <option value="v8">v8 (experimental) · project card, checks, any language</option>
+            <option value="v8">v8 (experimental) · levels, validations, any language</option>
           </select>
           <div class="range-control"><label for="split-threshold">Minimum YES probability <output id="split-threshold-value" for="split-threshold">70%</output></label>
             <input id="split-threshold" type="range" min="20" max="80" step="5" value="70" /></div>
@@ -130,13 +130,13 @@
           <div class="section-head"><h2>Container build</h2><span class="right-note" id="build-verdict">Not run</span></div>
           <pre id="build-evidence" class="build-evidence">Root assembly has not been verified yet.</pre>
         </section>
-        <section class="panel card-panel" id="card-panel">
-          <div class="section-head"><h2>Project card</h2><span class="right-note" id="card-verdict">No card</span></div>
-          <div id="card" class="card-view"><p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p></div>
+        <section class="panel levels-panel" id="levels-panel">
+          <div class="section-head"><h2>Levels</h2><span class="right-note" id="levels-verdict">Not stated yet</span></div>
+          <div id="levels" class="panel-view"><p class="empty">A v8 room's manager states its level first: its contracts, and the validations that check each.</p></div>
         </section>
         <section class="panel sources-panel" id="sources-panel">
           <div class="section-head"><h2>Sources and base</h2><span class="right-note" id="sources-verdict">None</span></div>
-          <div id="sources" class="card-view"><p class="empty">Links written in the goal are read once, at the start, and a run can start from a public GitHub repo or this room's previous result.</p></div>
+          <div id="sources" class="panel-view"><p class="empty">Links written in the goal are read once, at the start, and a run can start from a public GitHub repo or this room's previous result.</p></div>
         </section>
         <section class="panel tree-panel">
           <div class="section-head"><span class="counter">03</span><h2>Ownership tree</h2><span class="right-note">Observer sees the tree. Individual models don't.</span><button type="button" class="secondary tree-save" id="save-tree" title="Save the ownership tree as an SVG image">Save as SVG</button></div>
@@ -177,9 +177,14 @@
               <option value="all">Keep every room</option>
               <option value="none">Delete every room once it is scored</option>
             </select>
+            <label for="bench-feedback">Grading</label>
+            <select id="bench-feedback">
+              <option value="once">Once: grade what each room ships when it completes (pass@1)</option>
+              <option value="until_done">Until done: send the grader's failures back to the room, and grade again</option>
+            </select>
             <p class="helper" id="bench-slots">Rooms at once is capped by the deployment's Container slots: each room builds on one executor of the run's pool.</p>
             <button class="primary" id="bench-start" title="Run the benchmark">Run benchmark <span>↗</span></button>
-            <p class="helper">Each task gets its own room, with a project card fixed by the benchmark: the function, and the benchmark's tests as a hidden check no agent sees. The run goes on with this page closed. The turn budget is the one above.</p>
+            <p class="helper">Each task gets its own room, started from the task's prompt. When a room completes, the run grades what it ships with the benchmark's tests, in a box of its own: no agent sees them. The run goes on with this page closed. The turn budget is the one above.</p>
           </div>
           <div class="bench-head"><span class="eyebrow">RUNS</span></div>
           <div id="bench-runs" class="bench-runs"><p class="empty">No benchmark runs yet.</p></div>

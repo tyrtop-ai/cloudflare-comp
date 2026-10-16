@@ -1,32 +1,24 @@
-// v8 S4b (§4.1, §4.8): the room's side of the project card's checks, pure:
-// no room, no model, no Container. compileCard (src/index.js) bundles the
-// deliverable files, asks checkPlan what the one Container exec runs, runs
-// the file checks itself (fileResult), has Clef judge the documents, and
-// turns every failed requirement into a problem (checkProblems), routed by
-// serves like any requirement. Workers never see a check's values: a failure
-// reaches them as what the deliverable did (workerDetail), never its expected
-// values or inputs (S4a: a module that knows them could hard-code them). v8
-// live 2: the interface a check exercises (src/affordances.js) is part of the
-// contract, and a failure names it.
+// v8: the room's side of a level's validations, pure: no room, no model,
+// no Container. compileLevel (src/index.js) bundles a manager's piece, asks
+// checkPlan what the one box exec runs, runs the file checks itself
+// (fileResult), has Clef judge the documents, and turns every failed
+// validation into an item (checkProblems) whose detail is what the compiler
+// observed, as it observed it: the complaint a worker reads.
 import { TOOLCHAINS, toolchainOf, extractSurface } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
-import { cardScope, commandShape, stepTarget, routeShape, roleOf, maskSecrets, maskWith, commandExpects, elementWords } from './affordances.js';
-export { maskSecrets, maskWith };
+import { runsOf } from './validations.js';
 
-// The time a card verification may take (container/build-runner.mjs
-// CARD_LIMITS, which also clamps what it is sent): all checks, one check, one step.
+// The time a verification may take (container/build-runner.mjs
+// CHECK_LIMITS, which also clamps what it is sent): all checks, one check, one step.
 export const CHECK_LIMITS = Object.freeze({total_ms: 200_000, check_ms: 20_000, step_ms: 5_000});
 // The checks the Worker runs itself (file) or has Clef answer (judge); the
-// Container runs every other kind.
+// box runs every other kind.
 export const WORKER_CHECKS = Object.freeze(['file', 'judge']);
-// Bench mode: a hidden requirement (the benchmark's own test) is recorded,
-// never routed to an agent and never quoted in a model request.
-export const routable = r => !r?.hidden;
-// What a requirement's status holds: passed (true, false, or null when the
+// What a validation's status holds: passed (true, false, or null when the
 // check could not run: infrastructure), the bundle digest it ran on, when,
-// and the failure's detail (the dashboard's; a worker hears workerDetail).
+// and the failure's detail.
 export const statusEntry = (passed, digest, detail = '', extra = {}) => ({passed, digest, ts: Date.now(), detail: passed ? '' : clip(detail, 300), ...extra});
 
 const show = v => { try { return JSON.stringify(v); } catch { return String(v); } };
@@ -52,64 +44,61 @@ export function callModule(check, files, placed = new Set()) {
   return hits[0] ? {module: hits[0].path, adapter: hits[0].row.id} : null;
 }
 
-// What the Container is asked to run for this card on these files
-// (§4.1 step 4), and the results the Worker already knows (local: a
-// command deliverable whose file is missing, a call no file defines).
-// rows: the installed toolchain rows. placed: the bundle's placed paths.
-// paths (S5): the module path the bundle's glue needs ({VAR: [bundle
-// folders]}, linkBundle's), which every check process runs with.
-// compile (v8 M3 review, v8 ship-verified): the files the syntax step
-// compiles, each with the row that compiles it (a Map), when not every file
-// of each row (a file whose exact bytes compiled before is not compiled
-// again). inventory: the room needs the box's inventory, so the box opens.
-export function checkPlan(card, files, {rows = TOOLCHAINS, placed = new Set(), paths: glue = {}, compile = null, inventory = false} = {}) {
-  const all = rowsOf(rows), paths = [...files.keys()], reqs = card?.requirements || [];
-  const commandsOf = new Map((card?.deliverables || []).filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
-  const used = new Set(card?.languages || []);
+// What the box is asked to run for these validations on these files, and
+// the results the Worker already knows (local: a command contract whose file
+// is missing, a call no file defines). spec: {contracts (what the
+// validations run by: the command contracts' files, how a page or route
+// runs), validations: [{id, check}]}. rows: the installed toolchain rows.
+// placed: the bundle's placed paths. paths (S5): the module path the
+// bundle's glue needs ({VAR: [bundle folders]}, linkBundle's), which every
+// check process runs with. compile: the files the syntax step compiles, each
+// with the row that compiles it (a Map), when not every file of each row (a
+// file whose exact bytes compiled before is not compiled again). inventory:
+// the room needs the box's inventory, so the box opens.
+export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), paths: glue = {}, compile = null, inventory = false} = {}) {
+  const all = rowsOf(rows), paths = [...files.keys()], list = spec?.validations || [], contracts = spec?.contracts || [];
+  const commandsOf = new Map(contracts.filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
+  const served = new Set(list.map(v => v.check?.serve).filter(Boolean)), runs = runsOf(contracts).filter(r => served.has(r.id));
+  const used = new Set();
   for (const p of paths) { const r = toolchainOf(p); if (r) used.add(r.id); }
-  for (const c of [...reqs.map(r => r.check), ...(card?.run || [])]) {
+  for (const c of [...list.map(v => v.check), ...runs]) {
     const word = firstWord(c);
     for (const r of all) if ((r.executables || []).includes(word)) used.add(r.id);
   }
   const toolchains = all.filter(r => used.has(r.id)), steps = new Map();
   if (compile) {
     for (const [p, row] of compile) if (files.has(p) && Array.isArray(row?.syntax) && row.syntax.length) { if (!steps.has(row.id)) steps.set(row.id, {row, files: []}); steps.get(row.id).files.push(p); }
-    // A compile row (one no card names) goes to the box with the files it compiles.
+    // A compile row (one no contract names) goes to the box with the files it compiles.
     for (const {row} of steps.values()) if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
   } else for (const r of toolchains) if (Array.isArray(r.syntax) && r.syntax.length) steps.set(r.id, {row: r, files: paths.filter(p => toolchainOf(p)?.id === r.id)});
   const syntax = [...steps.values()].filter(s => s.files.length).map(s => ({toolchain: s.row.id, files: s.files}));
-  // A command deliverable runs by its own path, through its row's run_file (never a PATH lookup).
+  // A command contract runs by its own path, through its row's run_file (never a PATH lookup).
   const commands = {};
   for (const [name, d] of commandsOf) {
     const row = toolchainOf(d.path);
     if (files.has(d.path) && row?.run_file) commands[name] = row.run_file.map(x => x === '{path}' ? d.path : x);
   }
-  const local = new Map(), checks = [], project = [];
+  const local = new Map(), checks = [];
   const missingCommand = c => { const d = commandsOf.get(firstWord(c)); return d && !files.has(d.path) ? `${d.path}, the file of the command ${d.name}, is missing` : ''; };
-  for (const r of reqs) {
-    const c = r.check;
-    // v8 live 2: a requirement kept untested (its check refused as written) is never run.
-    if (!c || r.untested || c.kind === 'untested' || WORKER_CHECKS.includes(c.kind)) continue;
+  for (const v of list) {
+    const c = v.check;
+    if (!c || WORKER_CHECKS.includes(c.kind)) continue;
     if (c.kind === 'command') {
       const missing = missingCommand(c);
-      if (missing) { local.set(r.id, {id: r.id, kind: c.kind, passed: false, detail: missing, frames: [], observed: {what: 'local', note: missing}}); continue; }
-      if (r.project) { project.push({id: r.id, ...(c.argv ? {argv: c.argv} : {}), run: c.run}); continue; }
-      checks.push({id: r.id, kind: 'command', ...(c.argv ? {argv: c.argv} : {}), run: c.run, ...(c.stdin ? {stdin: c.stdin} : {}), ...(c.files ? {files: c.files} : {}), expect: c.expect || {}});
+      if (missing) { local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: missing, frames: [], observed: {what: 'local', note: missing}}); continue; }
+      checks.push({id: v.id, kind: 'command', ...(c.argv ? {argv: c.argv} : {}), run: c.run, ...(c.stdin ? {stdin: c.stdin} : {}), ...(c.files ? {files: c.files} : {}), expect: c.expect || {}});
     } else if (c.kind === 'call') {
       const at = callModule(c, files, placed);
-      if (!at) { const note = `no file of the project defines ${c.steps?.[0]?.call || 'the function'}`; local.set(r.id, {id: r.id, kind: c.kind, passed: false, detail: note, frames: [], observed: {what: 'local', note}}); continue; }
-      checks.push({id: r.id, kind: 'call', ...at, steps: c.steps});
-    } else checks.push({id: r.id, kind: c.kind, serve: c.serve, steps: c.steps});
+      if (!at) { const note = `no file defines ${c.steps?.[0]?.call || 'the function'}`; local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: note, frames: [], observed: {what: 'local', note}}); continue; }
+      checks.push({id: v.id, kind: 'call', ...at, steps: c.steps});
+    } else checks.push({id: v.id, kind: c.kind, serve: c.serve, steps: c.steps});
   }
-  const runs = (card?.run || []).map(x => x.static ? {id: x.id, static: true} : {id: x.id, ...(x.argv ? {argv: x.argv} : {}), run: x.run, port: true, ready: x.ready || '/'});
-  // A run whose command deliverable is missing fails the checks it serves, in the Container, as a run that did not start.
-  return {plan: {syntax, project, runs, commands, checks, ...(glue && Object.keys(glue).length ? {paths: glue} : {})}, toolchains, local,
-    container: inventory || syntax.length > 0 || project.length > 0 || checks.length > 0};
+  return {plan: {syntax, project: [], runs, commands, checks, ...(glue && Object.keys(glue).length ? {paths: glue} : {})}, toolchains, local,
+    container: inventory || syntax.length > 0 || checks.length > 0};
 }
 
 // A file check, in the Worker (§4.1 step 2): exists, non-empty, has each
-// text, parses as json. detail: the dashboard's (the runner's wording);
-// observed: what a worker may hear (never the texts it looks for).
+// text, parses as json. detail: what it observed, the complaint's words.
 // v8 live 2: has ['<link rel="stylesheet" href="styles.css">'] failed on
 // <link rel="stylesheet" href="styles.css" />. A has text matches exactly,
 // or, by the file's kind (review: never across what differs in meaning):
@@ -167,7 +156,7 @@ function canonicalMarkup(t) {
   return out;
 }
 // v8 live 5: a file check's text matches modulo whitespace runs, on both sides: every run of spaces, tabs and line
-// breaks reads as one space (the to-do card's "#todo-list { list-style: none; }" is the same rule written across lines).
+// breaks reads as one space (a to-do page's "#todo-list { list-style: none; }" is the same rule written across lines).
 // The check's interface says so (WHITESPACE_NOTE).
 const runs = t => String(t).replace(/\s+/g, ' ');
 export function hasText(text, wanted, path = '') {
@@ -188,211 +177,22 @@ export function fileResult(check, files) {
 }
 
 // What a worker must never read (live 2 review): every expected value and
-// every input of every check of the card, collected once (cardScope in
-// src/affordances.js). A check's interface is no secret: the labels and
-// button names no check uses as a value, the pages and routes and argv
-// words a contract or the goal states, the exit status and streams.
-// scopeOf: a card's scope ({secrets, whole, keep, literal}), from a scope,
-// a card, or, alone, the one check.
-export const scopeOf = (check, ctx = null, goal = '') => ctx?.secrets ? ctx : cardScope(ctx?.requirements ? ctx : {requirements: [{id: 'R', check}]}, {goal});
-// The texts a check's values hold (with the card: every check's), longest first.
-export function checkSecrets(check, card = null, goal = '') {
-  const s = scopeOf(check, card, goal);
-  return [...new Set([...s.secrets, ...s.whole])].sort((a, b) => b.length - a.length);
-}
-// The interface names a report may show (their words are never masked as a part of a value).
-export const checkAffordances = (check, card = null, goal = '') => scopeOf(check, card, goal).keep;
-const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const q = s => `"${s}"`;
-// A browser step as a worker reads it: its kind, and for a fill or a click
-// the affordance it looks for, never a text it types or looks for; a page by its shape.
-export function stepWords(step, scope = null, check = null) {
-  const [op, v] = Object.entries(step || {})[0] || ['step', ''];
-  if (op === 'fill' || op === 'click') return `${op} ${stepTarget(op, v, scope) || 'an element'}`;
-  if (op === 'goto') return `goto ${routeShape(typeof v === 'string' ? v : '/', scope?.literal)}`;
-  if (op === 'press') return `press ${typeof v === 'string' ? v : 'a key'}`;
-  if (op === 'expect_count' && v && typeof v === 'object' && v.role) return `expect_count of ${roleOf(v.role)} elements`;
-  // v8 live 4: an element step names the element, as a worker's facts do.
-  if (op === 'expect_element' || op === 'expect_no_element') return `${op} ${clip(elementWords(v, scope), 120)}`;
-  // Live 3: wording a step looks for is interface, and is named.
-  if ((op === 'expect_text' || op === 'expect_no_text') && scope?.isWording?.(v, check)) return `${op} ${q(clip(scope.secrets ? maskWith(v, scope) : v, 80))}`;
-  return op;
-}
-const missWords = (step, scope) => {
-  const [op, v] = Object.entries(step || {})[0] || [];
-  return op === 'fill' || op === 'click' ? `no ${String(stepTarget(op, v, scope)).replace(/^the /, '')} on the page` : op === 'expect_element' ? `no ${clip(elementWords(v, scope), 120).replace(/^an? /, '')} on the page` : op === 'expect_no_element' ? `the page still has ${clip(elementWords(v, scope), 120)}` : 'nothing it looks for on the page';
-};
-// What a page offered when a step found nothing: its fields and its buttons and links.
-const offeredWords = (o, m) => {
-  if (!o || typeof o !== 'object') return '';
-  const fields = (o.fields || []).map(f => [f?.label && `label ${q(m(f.label, 60))}`, f?.placeholder && `placeholder ${q(m(f.placeholder, 60))}`, f?.name && `name ${q(m(f.name, 60))}`].filter(Boolean).join(' ') || 'an unlabelled field');
-  const buttons = (o.buttons || []).map(b => q(m(b?.text, 60)));
-  // v8 live 4: an element step's miss names the elements of its tag the page has.
-  const elements = Array.isArray(o.elements) ? `; ${o.elements.length ? `elements of that kind found: ${o.elements.map(e => m(e, 80)).join(', ')}` : 'no element of that kind'}` : '';
-  return `${elements}; fields found: ${fields.length ? fields.join(', ') : 'none'}; buttons and links found: ${buttons.length ? buttons.join(', ') : 'none'}`;
-};
-// A command as a worker reads it: its argv shape (values as their kind).
-export const commandWords = (c, scope = null) => commandShape(c, scope) || firstWord(c) || 'the command';
-// The exit status a command check expects, the streams it reads and the wording it looks for there, as its contract states them.
-const commandExpectation = (c, scope) => `the requirement expects ${commandExpects(c, scope).join(' and ')}`;
-// Live 3: the wording among a check's expected texts, quoted, for a report; '' when they are all values.
-const wordingOf = (texts, scope, check) => { const list = (Array.isArray(texts) ? texts : texts === undefined ? [] : [texts]).filter(t => scope?.isWording?.(t, check)); return list.length ? `; it looks for ${list.map(t => q(clip(maskWith(t, scope), 80))).join(' and ')}` : ''; };
-// A failure as a worker may hear it (S4a handoff, S4b review): built only
-// from what the check observed (res.observed: the runner's, the Worker's
-// file and judge checks'), the check's kind and its interface, never from
-// the runner's sentence, which names what it expected. Every observed text
-// is masked with the card's scope first, then clipped (live 2 review: every
-// check's values, not this check's alone). The interface is named: a
-// command by its argv shape and, when its exit differs, the exit status and
-// streams it expects; a request by its route's shape; a browser step by the
-// field or button it looks for and, when nothing matched, what the page
-// offers. ctx: the card's scope, or the card (else this check alone).
-export function workerDetail(check, res = {}, ctx = null) {
-  const c = check || {}, o = res?.observed || {}, scope = scopeOf(c, ctx);
-  const m = (v, n = 300) => clip(maskWith(v, scope).replace(/\s+/g, ' ').trim(), n);
-  const at = o.at ? ` (at ${m(o.at, 120)})` : '';
-  const out = [];
-  if (o.what === 'setup' || o.what === 'run' || o.what === 'local') out.push(m(o.note, 300));
-  else if (c.kind === 'file') {
-    const lacking = Number.isInteger(o.index) ? c.has?.[o.index] : undefined;
-    out.push(o.what === 'missing' ? `${c.path} is missing` : o.what === 'empty' ? `${c.path} is empty` : o.what === 'json' ? `${c.path} is not valid JSON: ${m(o.error, 120)}`
-      : scope.isWording?.(lacking, c) ? `${c.path} lacks ${q(clip(maskWith(lacking, scope), 80))}, which the requirement looks for` : `${c.path} lacks a text the requirement looks for`);
-  }
-  else if (c.kind === 'judge') out.push(`a reader judged that ${c.path} does not meet the requirement (p=${Number(o.p ?? 0).toFixed(2)})${o.note ? `; ${m(o.note, 160)}` : ''}`);
-  else if (c.kind === 'command') {
-    const name = commandWords(c, scope);
-    if (o.what === 'start') out.push(`${name}: could not start${o.stderr ? `: ${m(o.stderr, 160)}` : ''}`);
-    else if (o.what === 'timeout') out.push(`${name}: did not finish in time`);
-    else {
-      // v8 live 2: an exit status the requirement did not expect is told with the one it expects, and the streams it reads (interface, never a value).
-      const e = c.expect || {}, why = {exit: Number.isInteger(e.exit) ? commandExpectation(c, scope) : 'its exit status is not what the requirement expects', stdout: `its output is not what the requirement expects${wordingOf(e.stdout, scope, c).replace('it looks for', 'it expects exactly')}`, stdout_has: `its output lacks a text the requirement looks for${wordingOf(e.stdout_has, scope, c)}`, stderr_has: `its error output (stderr) lacks a text the requirement looks for${wordingOf(e.stderr_has, scope, c)}`, stderr: 'it wrote nothing to stderr, where the requirement expects a message'}[o.what] || 'the check failed';
-      out.push(`${name}: exit ${o.exit}; ${why}${o.stdout ? `; printed ${q(m(o.stdout, 200))}` : ''}${o.stderr ? `; stderr: ${q(m(o.stderr, 200))}` : ''}`);
-    }
-  } else if (c.kind === 'call') {
-    const step = o.step ? `step ${o.step}: ${o.op}(…)` : '', where = o.module ? ` in ${o.module}` : '';
-    if (o.what === 'load') out.push(`${o.module} does not load: ${m(o.error, 200)}`);
-    else if (o.what === 'timeout') out.push(`${step}${where} did not return in time`);
-    else if (o.what === 'ended') out.push(`the process ended${step ? ` before ${step}${where} returned` : ' before the check finished'} (exit ${o.exit})${o.stderr ? `: ${m(o.stderr, 160)}` : ''}`);
-    else if (o.what === 'missing') out.push(`${step}${where}: ${m(o.error, 200)}`);
-    else if (o.what === 'raised') out.push(`${step}${where} raised ${m(o.error, 200)}`);
-    else if (o.what === 'returned') out.push(`${step}${where} returned ${m(o.value, 200)}, which is not what the requirement expects`);
-    else out.push('the check failed');
-  } else if (c.kind === 'http') {
-    const st = (c.steps || [])[(o.step || 1) - 1], route = st ? `${String(st.method || 'GET').toUpperCase()} ${routeShape(st.path, scope.literal)}` : o.op || 'request';
-    out.push(`step ${o.step || '?'} (${route}): ${Number.isInteger(o.status) ? `status ${o.status}` : 'no answer'}${o.what === 'status' ? `, which is not what the requirement expects${Number.isInteger(st?.expect?.status) ? ` (it expects ${st.expect.status})` : ''}` : o.what === 'body' || o.what === 'json' ? `; the response is not what the requirement expects${o.what === 'body' ? wordingOf(st?.expect?.body_has, scope, c) : ''}` : ''}${o.body ? `; the body was ${q(m(o.body, 160))}` : ''}${o.server_exited ? ' (the server exited)' : ''}`);
-  } else if (c.kind === 'browser') {
-    const st = (c.steps || [])[(o.step || 1) - 1];
-    const several = Array.isArray(o.ambiguous) && o.ambiguous.length ? `: several elements hold it only in part: ${o.ambiguous.map(x => m(x, 80)).join(', ')}` : '';
-    out.push(`step ${o.step || '?'} (${st ? stepWords(st, scope, c) : o.op || 'step'}) failed${o.miss && st ? `${several || `: ${missWords(st, scope)}`}${offeredWords(o.offers, m)}` : ''}${Number.isInteger(o.status) ? `: the page answered HTTP ${o.status}` : ''}${o.page ? `; the page showed ${q(m(o.page, 200))}` : ''}${o.console?.length ? `; console errors: ${m(o.console.join(' | '), 200)}` : ''}`);
-  } else out.push('the check failed');
-  return `${out.join('')}${at}`.replace(/\s+/g, ' ').trim();
-}
 
-// v8 live 3: what kind of failure a requirement's check had, from what it
-// observed: progress is a change in passing requirements or in these
-// categories, never in a failure's wording (the live CLI looped ten rounds
-// on stderr texts that changed and never matched). A stack trace in the
-// output of a command that ran is a crash.
-// v8 live 4: missing_module, a run that needed a package the project's
-// installed packages leave out (src/packages.js missingModule): the failure
-// goes up the worker's line as a package ask, and the answer rides with it.
-export const FAILURE_CATEGORIES = Object.freeze(['did not start', 'timed out', 'wrong exit', 'wrong output', 'missing text', 'crashed', 'missing_module']);
-const CRASH = /Traceback \(most recent call last\)|^\s+at .+:\d+(?::\d+)?\)?$|\bpanicked at\b|Segmentation fault|core dumped|Uncaught \w*Error|Unhandled\w* (?:promise )?rejection/im;
-export function failureCategory(check, res = {}) {
-  const c = check || {}, o = res?.observed || {}, what = o.what;
-  if (what === 'setup' || what === 'run' || what === 'local' || what === 'start' || what === 'load' || what === 'missing' || what === 'empty') return 'did not start';
-  if (what === 'timeout') return 'timed out';
-  if (c.kind === 'command') {
-    if (CRASH.test(String(o.stderr || ''))) return 'crashed';
-    return what === 'exit' ? 'wrong exit' : what === 'stdout' ? 'wrong output' : 'missing text';
-  }
-  if (c.kind === 'call') return what === 'raised' || what === 'ended' ? 'crashed' : 'wrong output';
-  if (c.kind === 'http') return o.server_exited ? 'crashed' : !Number.isInteger(o.status) ? 'did not start' : what === 'status' ? 'wrong exit' : what === 'body' ? 'missing text' : 'wrong output';
-  if (c.kind === 'browser') {
-    if (Number.isInteger(o.status) && o.status >= 400) return 'did not start';
-    if (o.console?.length && !o.miss) return 'crashed';
-    return o.op === 'expect_count' ? 'wrong output' : 'missing text';
-  }
-  if (c.kind === 'file') return what === 'json' ? 'wrong output' : 'missing text';
-  return 'wrong output';
-}
-
-// v8 live 3 review: how far a failing check got, beside its category: the
-// failing step of a browser, http or call check, the expectations a file or
-// command check met (texts held, the exit status, each text of its output),
-// and, only to break a tie, how near its output came to what it expects
-// (1 - edit distance / length, stdout only). A round that gets further is progress
-// (src/problems.js reportProgress). The nearness is never told: it is for
-// the progress rule alone. {point, near}.
-const nearness = (a, b) => {
-  const x = String(a ?? '').replace(/\s+/g, ' ').trim().slice(0, 300), y = String(b ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
-  if (!x && !y) return 1;
-  let prev = Array.from({length: y.length + 1}, (_, j) => j);
-  for (let i = 1; i <= x.length; i++) { const cur = [i]; for (let j = 1; j <= y.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1)); prev = cur; }
-  return 1 - prev[y.length] / Math.max(x.length, y.length);
-};
-export function failureReach(check, res = {}) {
-  const c = check || {}, o = res?.observed || {}, round = v => Math.round(v * 100) / 100;
-  if (['browser', 'http', 'call'].includes(c.kind)) return {point: Number.isInteger(o.step) ? o.step : 0, near: 0};
-  if (c.kind === 'file') return {point: o.what === 'lacks' ? Number(o.met ?? o.index) || 0 : o.what === 'json' ? (c.has || []).length + 1 : 0, near: 0};
-  if (c.kind !== 'command' || ['start', 'timeout', 'setup', 'local', 'run'].includes(o.what)) return {point: 0, near: 0};
-  const e = c.expect || {}, out = String(o.stdout ?? ''), err = String(o.stderr ?? ''), list = v => Array.isArray(v) ? v : v === undefined ? [] : [v];
-  const failing = list(e.stderr_has).length > 0 || e.stderr === true;
-  const exitMet = Number.isInteger(o.exit) && (Number.isInteger(e.exit) ? o.exit === e.exit : failing ? o.exit !== 0 : o.exit === 0);
-  const norm = s => String(s).replace(/\r\n/g, '\n').trimEnd();
-  const texts = [...(typeof e.stdout === 'string' ? [[norm(out) === norm(e.stdout), e.stdout, true]] : []), ...list(e.stdout_has).map(t => [out.includes(String(t)), t, true]),
-    ...list(e.stderr_has).map(t => [err.includes(String(t)), t, false]), ...(e.stderr === true ? [[!!err.trim(), '', false]] : [])];
-  // The nearness reads stdout only: a computed output getting closer, never a message's wording (the live CLI changed its stderr every round).
-  const unmet = texts.filter(([ok]) => !ok), nearOut = unmet.filter(([, , stdout]) => stdout);
-  return {point: (exitMet ? 1 : 0) + texts.length - unmet.length, near: nearOut.length ? round(Math.max(...nearOut.map(([, t]) => nearness(out, t)))) : 0};
-}
-
-// What kind of check a requirement has, as its owner may read it: the kind
-// and the interface it exercises, never its inputs or expected values.
-export function checkLabel(check, ctx = null) {
-  const c = check || {}, scope = scopeOf(c, ctx);
-  if (c.kind === 'file') return `a file check of ${c.path}`;
-  if (c.kind === 'judge') return `a reader's judgement of ${c.path}`;
-  if (c.kind === 'command') return `a command check that runs ${commandWords(c, scope)}`;
-  if (c.kind === 'call') return `a call check of ${[...new Set((c.steps || []).map(s => s.call))].join(', ')}`;
-  if (c.kind === 'http') return `a request check of ${[...new Set((c.steps || []).map(s => `${String(s.method || 'GET').toUpperCase()} ${routeShape(s.path, scope.literal)}`))].join(', ')} on the served project (${c.serve})`;
-  if (c.kind === 'browser') return `a browser check against the served project (${c.serve})`;
-  return 'a check';
-}
-// The contract names a failure's output mentions, as whole words (§4.1:
-// names = serves ∪ the contract names in the output); 4 characters or more.
-export function namedContracts(text, names) {
-  const s = String(text || '');
-  return [...new Set(names)].filter(n => typeof n === 'string' && n.length >= 4 && new RegExp(`(?<![\\w$.])${escapeRe(n)}(?![\\w$])`).test(s));
-}
-
-// §4.1 step 5: the problems a card run files. results: Map id → {passed,
-// detail, frames, output, infrastructure}; issues: the syntax stage's
-// [{path, detail}]. origin(path) → {owner, owner_path} of a bundle path.
-// contractNames: every contract name in the tree. A failed requirement is a
-// 'run' problem whose facts carry the requirement (routed by serves, its
-// frames and the contracts it names); its detail and text are workerDetail
-// only, and its statement is masked with the card's scope (live 2 review:
-// a statement never carries a check's value to a worker). goal: the
-// effective goal, whose words count as stated.
-// missing(r, res): the package a failed run needed and the project lacks
-// ('' when none); such a failure's category is missing_module (v8 live 4).
-export function checkProblems(card, results, issues = [], {origin = () => null, contractNames = [], goal = '', missing = () => ''} = {}) {
+// The items a run files: each failed validation, its detail what the check
+// observed (the complaint as the compiler states it), its parties the frames
+// in the project's files; each file that did not compile, with the syntax
+// step's own words. results: Map id -> {passed, detail, frames, output,
+// infrastructure}; issues: [{path, detail}]. origin(path) -> {owner,
+// owner_path} of a bundle path.
+export function checkProblems(spec, results, issues = [], {origin = () => null} = {}) {
   const party = (path, role) => { const o = origin(path); return {path, owner: o?.owner || '', owner_path: o?.owner_path || '', digest: '', role}; };
-  const items = [], scope = cardScope(card, {goal});
-  for (const r of card?.requirements || []) {
-    const res = results.get(r.id);
-    if (!res || res.passed || res.infrastructure || !routable(r)) continue;
-    const said = workerDetail(r.check, res, scope), says = maskWith(String(r.says), scope).replace(/[.\s]+$/, '');
-    const frames = (res.frames || []).filter(f => f?.path && origin(f.path)).slice(0, 8);
-    const names = [...new Set([...(r.serves || []), ...namedContracts(maskWith(`${said}\n${res.output || ''}`, scope), contractNames)])], module = missing(r, res) || '';
-    items.push({kind: 'run', path: '', sites: [...new Set(frames.map(f => f.path))],
-      parties: [...new Set(frames.map(f => f.path))].map(p => party(p, 'site')),
-      detail: clip(`${r.id} (${says}): ${said}`, 900),
-      facts: {requirement: {id: r.id, says: clip(says, 200), check: checkLabel(r.check, scope), evidence: clip(said, 600),
-        text: clip(`${says} (${r.id}): ${said}`, 600), source: r.source || '', names, serves: r.serves || [],
-        frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0})), card: true, check_kind: r.check?.kind || '', category: module ? 'missing_module' : failureCategory(r.check, res), reach: failureReach(r.check, res), ...(module ? {module} : {})},
-      failure: failureHead(`${r.id} ${said}`)}});
+  const items = [];
+  for (const v of spec?.validations || []) {
+    const res = results.get(v.id);
+    if (!res || res.passed || res.infrastructure) continue;
+    const frames = (res.frames || []).filter(f => f?.path && origin(f.path)).slice(0, 8), paths = [...new Set(frames.map(f => f.path))];
+    items.push({kind: 'run', path: '', sites: paths, parties: paths.map(p => party(p, 'site')), detail: clip(String(res.detail || 'the check failed'), 900),
+      facts: {validation: {id: v.id, serves: v.serves || [], check_kind: v.check?.kind || '', frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0}))}, failure: failureHead(String(res.detail || ''))}});
   }
   for (const x of issues || []) {
     if (!x?.path) continue;
@@ -401,32 +201,30 @@ export function checkProblems(card, results, issues = [], {origin = () => null, 
   return items;
 }
 
-// §4.8: .recursive/RUN.md, the export's run notes: the goal, the card's
-// summary, how to run each part (card.run, the command deliverables by
-// their toolchain's run_file), the requirement table with the snapshot it
-// ran on, and the decisions. app: {goal, room, digest, passed}.
-export function runNotes(app, card, status = {}) {
+// .recursive/RUN.md, the export's run notes: the prompt, how to run each
+// part (each page and route by how it runs, the command contracts by their
+// toolchain's run_file), and the validation table with the snapshot it ran
+// on. app: {goal, room, digest, passed, paths}. spec: {contracts,
+// validations}.
+export function runNotes(app, spec, status = {}) {
   const lines = ['# How to run this project', '', `Generated by the recursive control plane${app?.room ? ` in room \`${app.room}\`` : ''}. The project's own files are as the agents wrote them; this folder holds the runtime's notes.`, '',
-    '## Goal', '', String(app?.goal || '(no goal recorded)'), ''];
-  if (card?.summary) lines.push('## What it is', '', card.summary, '');
-  const run = [];
-  for (const r of card?.run || []) run.push(r.static ? `- \`${r.id}\`: serve this folder with any static file server and open \`/\` in a browser.` : `- \`${r.id}\`: \`${r.run}\` (it reads the port from \`PORT\`; ready at \`${r.ready || '/'}\`).`);
+    '## Prompt', '', String(app?.goal || '(no prompt recorded)'), ''];
+  const run = [], contracts = spec?.contracts || [];
+  for (const r of runsOf(contracts)) run.push(r.static ? `- \`${r.id}\`: serve this folder with any static file server and open \`/\` in a browser.` : `- \`${r.id}\`: \`${r.run}\` (it reads the port from \`PORT\`; ready at \`${r.ready || '/'}\`).`);
   // S5: a row whose glue needs a module path (a file placed outside the root) runs through its script; otherwise the plain command.
   const setup = row => { const s = row?.glue?.path_setup, dirs = s && app?.paths?.[s.env]; return !dirs?.length ? '' : s.script ? `sh ${s.script.path} ` : `${s.env}=${dirs.join(s.separator || ':')} `; };
-  for (const d of (card?.deliverables || []).filter(d => kindOf(d) === 'command' && d.path)) {
+  for (const d of contracts.filter(d => kindOf(d) === 'command' && d.path)) {
     const row = toolchainOf(d.path);
     if (row?.run_file) run.push(`- \`${d.name}\`: \`${setup(row)}${row.run_file.map(x => x === '{path}' ? d.path : x).join(' ')}\`${d.does ? `: ${d.does}` : ''}`);
   }
-  for (const d of (card?.deliverables || []).filter(d => ['doc', 'page', 'file', 'data'].includes(kindOf(d)) && d.path)) run.push(`- \`${d.path}\` (${kindOf(d)})${d.does ? `: ${d.does}` : ''}`);
-  for (const p of card?.project_checks || []) run.push(`- the project's own check: \`${setup(TOOLCHAINS.find(r => (r.executables || []).includes(String(p).trim().split(/\s+/)[0])))}${p}\``);
+  for (const d of contracts.filter(d => ['doc', 'page', 'file', 'data'].includes(kindOf(d)) && d.path)) run.push(`- \`${d.path}\` (${kindOf(d)})${d.does ? `: ${d.does}` : ''}`);
   if (app?.paths && Object.keys(app.paths).length) run.push(`- The runtime's script under \`glue/\` puts the project folder on the module path for files that sit in a folder of their own.`);
   lines.push('## How to run', '', ...(run.length ? run : ['- See the files.']), '');
   // A result from another snapshot than these files is stale, never shown as current.
-  const reqs = card?.requirements || [], state = r => { const s = status?.[r.id]; return !s || typeof s.passed !== 'boolean' ? 'untested' : s.digest && app?.digest && s.digest !== app.digest ? 'stale' : s.passed ? 'pass' : 'fail'; };
+  const list = spec?.validations || [], state = v => { const s = status?.[v.id]; return !s || typeof s.passed !== 'boolean' ? 'untested' : s.digest && app?.digest && s.digest !== app.digest ? 'stale' : s.passed ? 'pass' : 'fail'; };
   const cell = s => String(s ?? '').replace(/\|/g, '\\|').replace(/\s+/g, ' ');
-  lines.push('## Requirements', '', `${reqs.filter(r => state(r) === 'pass').length} of ${reqs.length} pass. ${app?.passed ? `Every check passed on exactly these files (snapshot \`${String(app.digest || '').slice(0, 16)}\`).` : app?.digest ? `These files (snapshot \`${String(app.digest).slice(0, 16)}\`) have not passed every check as exported.` : ''}`.trim(), '',
-    '| Requirement | Status | Says | Check |', '|---|---|---|---|',
-    ...reqs.map(r => `| ${r.id} | ${state(r) === 'stale' ? `stale (${status[r.id].passed ? 'passed' : 'failed'} on snapshot \`${String(status[r.id].digest).slice(0, 16)}\`, before these files changed)` : state(r)}${status?.[r.id]?.detail && ['fail', 'untested'].includes(state(r)) ? `: ${cell(clip(status[r.id].detail, 160))}` : ''} | ${cell(r.says)} | ${cell(r.check?.kind)} |`), '');
-  if (card?.decisions?.length) lines.push('## Decisions', '', ...card.decisions.map(d => `- ${d}`), '');
+  lines.push('## Validations', '', `${list.filter(v => state(v) === 'pass').length} of ${list.length} pass. ${app?.passed ? `Every validation passed on exactly these files (snapshot \`${String(app.digest || '').slice(0, 16)}\`).` : app?.digest ? `These files (snapshot \`${String(app.digest).slice(0, 16)}\`) have not passed every validation as exported.` : ''}`.trim(), '',
+    '| Validation | Status | Serves | Check |', '|---|---|---|---|',
+    ...list.map(v => `| ${v.id} | ${state(v) === 'stale' ? `stale (${status[v.id].passed ? 'passed' : 'failed'} on snapshot \`${String(status[v.id].digest).slice(0, 16)}\`, before these files changed)` : state(v)}${status?.[v.id]?.detail && ['fail', 'untested'].includes(state(v)) ? `: ${cell(clip(status[v.id].detail, 160))}` : ''} | ${cell((v.serves || []).join(', '))} | ${cell(v.check?.kind)} |`), '');
   return lines.join('\n');
 }

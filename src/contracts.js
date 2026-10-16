@@ -29,11 +29,11 @@ const KEEP = 8, MAX_INPUTS = 6, MAX_EXAMPLES = 4, MAX_SERVES = 32;
 // Paths the runtime owns or keeps for itself; no contract places a file there.
 export const RUNTIME_PREFIXES = Object.freeze(['components/', 'memory/', '.recursive/', 'glue/']);
 export const ROUTE_NAME = /^(?:GET|POST|PUT|PATCH|DELETE) \/\S*$/;
-// v8 card repair: underscores too (a script's stem, such as convert_temp, is a fine command name).
+// Underscores too (a script's stem, such as convert_temp, is a fine command name).
 export const COMMAND_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
-// v8 card repair: what a card's command name must be to run as argv[0]: one
-// word, no whitespace or shell metacharacter, not an option. The card holds
-// commands to this only (facts.argvCommands); the convention above is the splitter's.
+// What a v8 command name must be to run as argv[0]: one word, no whitespace
+// or shell metacharacter, not an option. A level holds commands to this only
+// (facts.argvCommands); the convention above is v7's.
 export const COMMAND_WORD = /^[A-Za-z0-9_][A-Za-z0-9_.+@%-]{0,63}$/;
 // The JavaScript row's identifier rule (C1 under v7). Under v8 the caller
 // passes the toolchain rows (facts.rows); without them a function name is
@@ -78,10 +78,13 @@ function examplesOf(raw) {
   return out;
 }
 const servesOf = raw => [...new Set((Array.isArray(raw) ? raw : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim().slice(0, 40)))].slice(0, MAX_SERVES);
-// v8 live 2: the interface the card's checks exercise (src/affordances.js
-// interfaceFacts): kept, like serves, only on rows the runtime built.
-const MAX_INTERFACE = 8;
-const interfaceOf = raw => [...new Set((Array.isArray(raw) ? raw : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim().slice(0, 240)))].slice(0, MAX_INTERFACE);
+// How a page, route or command runs, in the form src/validations.js runOf
+// reads it: {static: true} or {run, argv, port: true, ready}.
+const runField = raw => {
+  if (!plain(raw)) return null;
+  if (raw.static === true) return {static: true};
+  return typeof raw.run === 'string' && Array.isArray(raw.argv) && raw.argv.every(a => typeof a === 'string') ? {run: raw.run.slice(0, 300), argv: raw.argv.slice(0, 40), port: true, ready: typeof raw.ready === 'string' ? raw.ready.slice(0, 200) : '/'} : null;
+};
 // Inputs: [{name, is}] or names; params, the v7 spelling, an array or "a, b".
 function inputsOf(o) {
   const list = Array.isArray(o.inputs) && o.inputs.length ? o.inputs : Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [];
@@ -137,18 +140,18 @@ function contractItem(o, keepServes) {
   if (!name) return null;
   inputs = inputs.slice(0, MAX_INPUTS);
   const operation = kind === 'function' ? text(o.operation, 80) : '';
-  const effects = stop(text(o.effects, 120)), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [], facts = keepServes ? interfaceOf(o.interface) : [];
+  const effects = stop(text(o.effects, 120)), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [], run = runField(o.run);
   return {
     name, ...(kind === 'function' ? {} : {kind}), does: stop(does), params: inputs.map(x => x.name),
     ...(operation ? {operation} : {}),
     ...(out ? kind === 'function' ? {returns: out} : {outputs: out} : {}),
     ...(inputs.some(x => x.is) ? {inputs} : {}),
-    ...(effects ? {effects} : {}), ...(examples.length ? {examples} : {}), ...(path ? {path} : {}), ...(serves.length ? {serves} : {}), ...(facts.length ? {interface: facts} : {})
+    ...(effects ? {effects} : {}), ...(examples.length ? {examples} : {}), ...(path ? {path} : {}), ...(serves.length ? {serves} : {}), ...(run ? {run} : {})
   };
 }
 // One item. opts.v8: read the v8 contract fields; without it, v7's promise
 // item exactly. opts.serves: keep serves, only for rows the runtime built
-// (stored rows, the card's deliverables); a model's serves is never kept.
+// (stored rows, a level's contracts); a model's serves is never kept.
 export function normalizeContract(raw, {v8 = false, serves = false} = {}) {
   const o = typeof raw === 'string' ? {name: raw} : plain(raw) ? raw : null;
   if (!o || typeof o.name !== 'string') return null;
@@ -171,7 +174,7 @@ export function normalizeContracts(raw, opts = {}) {
     if (!opts.v8) continue;
     for (const k of ['outputs', 'effects', 'examples', 'path']) if (prior[k] === undefined && x[k] !== undefined) prior[k] = x[k];
     if (x.serves) prior.serves = [...new Set([...prior.serves || [], ...x.serves])].slice(0, MAX_SERVES);
-    if (x.interface) prior.interface = [...new Set([...prior.interface || [], ...x.interface])].slice(0, MAX_INTERFACE);
+    if (x.run && !prior.run) prior.run = x.run;
   }
   return out;
 }
@@ -221,8 +224,6 @@ const OUTPUT_VERB = {function: 'returns', command: 'prints', route: 'responds wi
 //   doc README.md: how to install and run
 //   route GET /items: lists the items; responds with a JSON array
 //   command convert (value, unit) in convert.py: prints the converted value
-// v8 live 2: a contract the card's checks exercise ends with that interface:
-//   page index.html: the to-do list; its checks use: page / has the field labelled "Task", the button "Add"
 export function contractLine(c) {
   if (!c || typeof c.name !== 'string') return '';
   const kind = kindOf(c), inputs = contractInputs(c), out = contractOutputs(c);
@@ -230,7 +231,6 @@ export function contractLine(c) {
   if (inputs.some(x => x.is) || kind === 'route' && inputs.length) parts.push(`takes ${inputs.map(x => x.is ? `${x.name} (${x.is})` : x.name).join(', ')}`);
   if (c.effects && !/^none$/i.test(c.effects)) parts.push(`changes ${c.effects}`);
   if (c.examples?.length) parts.push(`e.g. ${c.examples.map(e => exampleText(c, e)).join('; ')}`);
-  if (Array.isArray(c.interface) && c.interface.length) parts.push(`its checks use: ${c.interface.join('; ')}`);
   const body = parts.filter(Boolean).join('; ');
   return `${kind === 'function' ? 'function ' : ''}${contractHead(c)}${body ? ': ' + body : ''}`;
 }
@@ -253,18 +253,18 @@ export function gateLine(c, served = null) {
 // import_line of the toolchain row it is written in (its path's row, else the
 // project's code languages; one line per row when several could be meant);
 // a route by its method and path; a file, page, doc, data file or command by
-// its project path. Nothing here names a language: the rows do. At most 8,
-// as usesText. facts: {rows, languages}, as contractErrors reads them.
+// its project path. Nothing here names a language: the rows do. One
+// reference for each contract given. facts: {rows, languages}, as
+// contractErrors reads them.
 // v8 S6 review: one reference per contract, from that contract's own row:
 // its path's row, else the reader's language (facts.reader, the ids of the
 // rows its own contracts and files are written in) when the project could
 // mean several, else the project's first. In a browser project (facts.browser)
 // a function is an ES module import of its file, and a script file a page
 // loads (facts.page_reader) is a module script tag.
-export const USES_SHOWN = 8;
 export function useReferences(items, facts = null) {
   const browser = !!facts?.browser, reader = Array.isArray(facts?.reader) ? facts.reader : [];
-  return (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').slice(0, USES_SHOWN).map(f => {
+  return (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').map(f => {
     const kind = kindOf(f);
     let reference;
     if (kind === 'function') {

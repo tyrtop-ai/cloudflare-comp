@@ -3,7 +3,7 @@
 // branch from api.github.com, the files from a codeload tarball, streamed
 // through the reader-driven inflater (./inflate.js) and a minimal tar
 // reader that skips without copying. repoDigest turns the files into a
-// compact text the card writer can read. Pure: `fetch` is
+// compact text the room's manager's splitter reads. Pure: `fetch` is
 // injected, no secret is ever reachable from here, and no request carries
 // Authorization or Cookie.
 import {FetchRefused, concatBytes, fetchPolicy, guardedFetch, inputCapFor, plainBody, plainChunks, readCapped, redactText, sanitizeText} from './fetcher.js';

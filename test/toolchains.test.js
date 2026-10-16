@@ -1,7 +1,7 @@
 // v8 §4.5: the toolchain table is data, and its helpers are pure.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TOOLCHAINS,STACKS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,renderImport,projectFacts,extractSurface,stackFrames,unresolvedNames,validIdentifier,manifestOf} from '../src/toolchains.js';
+import {TOOLCHAINS,STACKS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,renderImport,extractSurface,stackFrames,unresolvedNames,validIdentifier,manifestOf} from '../src/toolchains.js';
 
 test('the phase-1 rows: javascript, python and text, frozen, each extension in one row',()=>{
   assert.deepEqual(TOOLCHAINS.map(t=>t.id),['javascript','python','text']);
@@ -38,16 +38,6 @@ test('renderImport and identifiers come from the row',()=>{
   assert.equal(validIdentifier(js,'lambda'),true);
   assert.equal(validIdentifier(js,'delete'),false);
   assert.equal(validIdentifier(py,'$x'),false);
-});
-
-test('projectFacts: data for a prompt, with an example name from the agent\'s uses, else NAME',()=>{
-  const card={languages:['python','text','cobol'],run:[{id:'site',static:true}],decisions:['Words are split on whitespace.']};
-  const facts=projectFacts(card,{uses:[{name:'top_words'}]});
-  assert.deepEqual(facts.languages,['python','text']);
-  assert.deepEqual(facts.conventions[0],{language:'python',names_look_like:'snake_case',reference_another_part:'from top_words import top_words',files:'.py'});
-  assert.equal(facts.conventions[1].reference_another_part,undefined);
-  assert.deepEqual([facts.run,facts.decisions],[card.run,card.decisions]);
-  assert.equal(projectFacts({languages:['javascript']}).conventions[0].reference_another_part,"const { NAME } = require('./NAME');");
 });
 
 test('extractSurface: Acorn for JavaScript, the line regexes for Python (private names left out), nothing for text',()=>{

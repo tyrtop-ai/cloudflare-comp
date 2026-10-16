@@ -40,44 +40,44 @@ test('file-generation prompt independently authorizes local implementation decis
   assert.match(system,/comes back to you/i);
 });
 
-// v8 (S6): under v8 the worker's prompt is PRINCIPLES + ROLE.worker +
-// FORMAT.worker (§6.3): ownership of its own choices, references by contract
-// name, asks in its control block, files as raw blocks (§3.2). The leaf's v7
-// text above stays v7's until S7.
-test('v8: the worker prompt is ROLE.worker with the file-block format, and its answer is read as blocks',async()=>{
-  const {systemPrompt,PRINCIPLES,ROLE,FORMAT}=await import('../src/prompts.js');
+// v8: a worker answers under ROLE.worker + FORMAT.worker: its request is its
+// prompt, its files, its complaints and its world; files as raw blocks (§3.2).
+test('v8: the worker prompt is ROLE.worker with the file-block format, its request is the user JSON, and its answer is read as blocks',async()=>{
+  const {systemPrompt,ROLE,FORMAT}=await import('../src/prompts.js');
   let system='',user=null;
   const env={PIPELINE:'v8',AI:{run:async(_model,args)=>{system=args.messages[0].content;user=JSON.parse(args.messages[1].content);
     return {response:'=== FILE: format.py ===\ndef format_title(item):\n    return str(item["title"])\n=== END FILE ===\n=== CONTROL ===\n{"summary":"Formats titles","done":true}'};}}};
-  const result=await decide(env,{...context,your_responsibility:'Format items for presentation'});
+  const view={prompt:{task:'Format items for presentation',deliver:[{name:'format_title',kind:'function',path:'format.py',examples:['format_title({"title": "a"}) returns "a"']}]},files:[],complaints:[],world:{}};
+  const result=await decide(env,view,{v8:true});
   assert.equal(system,systemPrompt('worker'));
-  assert.equal(system,`${PRINCIPLES}\n\n${ROLE.worker}\n\n${FORMAT.worker}`);
-  assert.match(system,/write the files that fulfil your contracts/i);
-  assert.match(system,/the simplest one that works and say so in your summary/,'it owns the choices its contract leaves open');
-  assert.match(system,/Refer to another part only by its contract name, written as its reference shows/);
-  assert.match(system,/ask for it in your control block, and write meanwhile the files that do not depend on it/);
-  // v8 live 3: one short worked answer of the exact shape, its control object on one line.
+  assert.equal(system,`${ROLE.worker}\n\n${FORMAT.worker}`);
+  assert.match(system,/write the files that deliver what your prompt asks/i);
+  assert.match(system,/Refer to a name you may call exactly as its reference shows/);
+  assert.match(system,/A complaint says what was observed when your files ran: fix its cause in your files/);
+  assert.match(system,/ask for it in your control block and write meanwhile the files that are independent of it/);
   assert.match(system,/^=== FILE: notes\/overview ===\n.+\n=== END FILE ===\n=== CONTROL ===\n\{"summary": "[^"]+", "done": true\}$/m);
   assert.doesNotMatch(system,/LEAF CODE WRITER|Node\.js|require\(|JavaScript/);
-  assert.equal(user.your_responsibility,'Format items for presentation');
+  assert.deepEqual(user,view);
   assert.deepEqual(result.files,[{path:'format.py',content:'def format_title(item):\n    return str(item["title"])'}]);
   assert.equal(result.done,true);
   assert.equal(result.format_fallback,undefined);
 });
 
-test('v8: the single-file call is ROLE.file, with the problem and the project facts as data',async()=>{
+test('v8: the single-file call is ROLE.file, with the worker\'s prompt, its files and its complaints as data',async()=>{
   const {systemPrompt}=await import('../src/prompts.js');
+  const {rewriteFile}=await import('../src/model.js');
   let system='',user=null;
   const env={PIPELINE:'v8',AI:{run:async(_model,args)=>{system=args.messages[0].content;user=JSON.parse(args.messages[1].content);return {response:'```\nbody { margin: 0; }\n```'};}}};
-  const project={languages:['text'],conventions:[{language:'text',files:'.css .html'}],run:[],decisions:[]};
-  const file=await generateFile(env,{node:{id:'root.1'},path:'styles.css',intent:'Complete the file styles.css; the previous answer was cut off before its end',
-    task:'Write the page styles',files:[{path:'styles.css',content:'body {'}],inbox:[],children:[],correction:'cut off',project,uses:[{contract:'page index.html',reference:'index.html'}]});
+  const prompt={task:'Write the page styles',deliver:[{name:'styles.css',kind:'file',path:'styles.css',examples:['styles.css contains "margin"']}]};
+  const file=await rewriteFile(env,{path:'styles.css',intent:'the complete file; the previous answer was cut off before its end',prompt,
+    files:[{path:'styles.css',content:'body {'},{path:'notes.md',content:'n'}],complaints:['styles.css: unexpected end of input'],correction:'cut off'});
   assert.equal(file,'body { margin: 0; }');
   assert.equal(system,systemPrompt('file'));
+  assert.deepEqual(user.prompt,prompt);
   assert.equal(user.file,'styles.css');
   assert.equal(user.existing_file,'body {');
   assert.equal(user.previous_rejection,'cut off');
-  assert.deepEqual(user.project,project);
-  assert.deepEqual(user.contracts_you_may_use,[{contract:'page index.html',reference:'index.html'}]);
+  assert.deepEqual(user.complaints,['styles.css: unexpected end of input']);
+  assert.deepEqual(user.your_other_files.map(f=>f.path),['notes.md']);
   assert.doesNotMatch(system,/Cloudflare Artifacts|builder renames|third-party packages/);
 });

@@ -14,10 +14,10 @@ export const INACTIVITY_TIMEOUT_MS=120_000;
 export const WARM_GRACE_MS=60_000;
 // The two options the build runner reads (container/build-runner.mjs buildOptions); anything else is dropped.
 export const buildRequestOptions=o=>o&&typeof o==='object'?{...(o.describe_api===true?{describe_api:true}:{}),...(o.prechecked===true?{prechecked:true}:{})}:{};
-// v8 S4a: a card verification (container/build-runner.mjs verifyCard) adds
-// mode 'card', the toolchain rows it uses, its plan and its limits to the
+// v8 S4a: a verification of a level's validations (container/build-runner.mjs
+// verifyChecks) adds mode 'checks', the toolchain rows it uses, its plan and its limits to the
 // same one exec; any other request is the v7 build, unchanged.
-export const cardRequestFields=({mode,plan,toolchains,limits}={})=>mode==='card'?{mode:'card',plan:plan&&typeof plan==='object'?plan:{},toolchains:Array.isArray(toolchains)?toolchains:[],...(limits&&typeof limits==='object'?{limits}:{})}:{};
+export const checksRequestFields=({mode,plan,toolchains,limits}={})=>mode==='checks'?{mode:'checks',plan:plan&&typeof plan==='object'?plan:{},toolchains:Array.isArray(toolchains)?toolchains:[],...(limits&&typeof limits==='object'?{limits}:{})}:{};
 
 function isTransientStartupFailure(error) {
   return /starting|startup|not running|not ready|not started|stopped|unavailable|not available|connecting|connection refused|try again|temporarily/i.test(String(error?.message||error));
@@ -111,7 +111,7 @@ export class BuildExecutor extends DurableObject {
       return await this.runBuild({fingerprint,files,options,mode,plan,toolchains,limits});
     } finally {this.building--;}
   }
-  async runBuild({fingerprint,files,options,...card}) {
+  async runBuild({fingerprint,files,options,...checks}) {
     if(typeof fingerprint!=='string'||fingerprint.length>240)throw new Error('Invalid build fingerprint');
     const entries=validateBuildFiles(files);
     const snapshot_hash=await snapshotHash(entries);
@@ -125,7 +125,7 @@ export class BuildExecutor extends DurableObject {
     if(cold)await container.start();
     const started=Date.now();
     await this.keepWarm(container);
-    const input=JSON.stringify({fingerprint,snapshot_hash,files:Object.fromEntries(entries),options:buildRequestOptions(options),...cardRequestFields(card)});
+    const input=JSON.stringify({fingerprint,snapshot_hash,files:Object.fromEntries(entries),options:buildRequestOptions(options),...checksRequestFields(checks)});
     let retries=0;
     const process=await execAfterStartup(container,BUILD_COMMAND,{stdin:'pipe',stdout:'pipe',stderr:'pipe'},{onRetry:()=>{retries++;}});
     const output=await waitForBuildOutput(process,(async()=>{

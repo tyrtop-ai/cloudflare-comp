@@ -20,7 +20,7 @@
 //   ctx.container.snapshotContainer({name}) -> {id, size, name}
 //   ctx.container.destroy(), ctx.container.running
 import {DurableObject} from 'cloudflare:workers';
-import {execAfterStartup, waitForBuildOutput, buildRequestOptions, cardRequestFields} from './build-executor.js';
+import {execAfterStartup, waitForBuildOutput, buildRequestOptions, checksRequestFields} from './build-executor.js';
 import {snapshotHash, validateBuildFiles} from './build-verification.js';
 
 export const BOX_IMAGES = Object.freeze(['check', 'browser', 'fetch']);
@@ -94,7 +94,7 @@ export function environmentFaults(inventory) {
   if (!inventory || typeof inventory !== 'object') return [];
   return ENVIRONMENT_FACTS.filter(f => { try { return f.shows(inventory); } catch { return false; } }).map(f => ({fact: f.fact, box_wide: f.box_wide, signature: f.signature, text: f.text(inventory)}));
 }
-// A card report with its failures classified by the box's inventory: a
+// A report of the validations with its failures classified by the box's inventory: a
 // failed check a fact explains is infrastructure (with environment: fact),
 // an issue it explains moves to infrastructure_issue, and the report says
 // what of the box's environment it was. A report no fact explains is
@@ -277,13 +277,13 @@ export class Box extends DurableObject {
   }
   // Level A (S1): open a box, run today's build runner on the request inside
   // it, close it. The request has the shape BuildExecutor.build takes.
-  async compile(raw, {fingerprint, files, options, ...card} = {}) {
+  async compile(raw, {fingerprint, files, options, ...checks} = {}) {
     try {
       const opened = await this.compileBox(raw);
       if (typeof fingerprint !== 'string' || fingerprint.length > 240) throw new BoxError('bad_request', 'Invalid build fingerprint');
       const entries = validateBuildFiles(files);
       const snapshot_hash = await snapshotHash(entries);
-      const input = JSON.stringify({fingerprint, snapshot_hash, files: Object.fromEntries(entries), options: buildRequestOptions(options), ...cardRequestFields(card)});
+      const input = JSON.stringify({fingerprint, snapshot_hash, files: Object.fromEntries(entries), options: buildRequestOptions(options), ...checksRequestFields(checks)});
       const c = this.container(), began = Date.now();
       const process = await c.exec([...boxBuildCommand(opened.name)], boxExecOptions({stdin: true}));
       const output = await waitForBuildOutput(process, (async () => { await writeAll(process, input); return process.output(); })());

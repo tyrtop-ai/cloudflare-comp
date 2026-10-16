@@ -33,7 +33,7 @@ export const TOOLCHAINS = Object.freeze([
     run_file:['node','{path}'], test:['npm','test'], project_test_markers:['package.json#scripts.test'],
     identifier:'^[A-Za-z_$][A-Za-z0-9_$]{0,63}$', reserved:'await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield',
     names_look_like:'camelCase',
-    // v8 S3 review: the names a card writer may give this toolchain, and the
+    // v8 S3 review: the names a splitter may give this toolchain, and the
     // commands that fetch packages (refused while packages is 'none').
     aliases:['js','node','nodejs','javascript','ecmascript','mjs','cjs'],
     package_runners:[['npx'],['npm','exec'],['npm','x'],['npm','install'],['npm','i'],['npm','ci'],['npm','add']],
@@ -148,7 +148,7 @@ export const TOOLCHAINS = Object.freeze([
 export const OTHER_MANIFESTS = Object.freeze(['go.mod','go.sum','Cargo.toml','Cargo.lock','Gemfile','Gemfile.lock','composer.json','composer.lock','pom.xml','build.gradle','build.gradle.kts','settings.gradle','Package.swift','mix.exs','deno.json','deno.jsonc']);
 // v8 ship-verified (L1): rows for code a project may hold (the base's, most
 // often) in a language no row above writes: only what compiles it, so no
-// card names one and no worker writes one. requires: the inventory's tools
+// contract names one and no worker writes one. requires: the inventory's tools
 // it needs, each at least the version given ('' for any); syntax: the box's
 // command, as a row above has it; shebang: as a row above has it. The
 // TypeScript row compiles each file as the box's Node loads it (type
@@ -326,36 +326,13 @@ export function renderImport(row, name, esm = false, {browser = false, path = ''
   const line = esm && row?.import_line_esm || row?.import_line;
   return line ? line.replaceAll('{name}', String(name)) : null;
 }
-// v8 S6 review: whether the card's code runs in a browser: it delivers a page
-// (or serves its files as they are) and no command or route, which would
-// run on a server or the command line.
-export function browserProject(card) {
-  const ds = Array.isArray(card?.deliverables) ? card.deliverables : [];
-  const served = ds.some(d => d?.kind === 'page') || (Array.isArray(card?.run) ? card.run : []).some(r => r?.static === true);
+// v8 S6 review: whether the project's code runs in a browser: its contracts
+// deliver a page (or serve their files as they are) and no command or
+// route, which would run on a server or the command line.
+export function browserProject(contracts) {
+  const ds = Array.isArray(contracts) ? contracts : [];
+  const served = ds.some(d => d?.kind === 'page' || d?.run?.static === true);
   return served && !ds.some(d => d?.kind === 'command' || d?.kind === 'route');
-}
-
-// The project facts block a prompt receives as data (§6.2): the card's
-// languages and how names and references look in each, with an example name
-// from the agent's own uses, or the word NAME when it has none, so no example
-// name can be copied into the work.
-export function projectFacts(card, {uses = []} = {}) {
-  const languages = (Array.isArray(card?.languages) ? card.languages : []).filter(id => toolchainById(id));
-  const example = uses.map(u => typeof u === 'string' ? u : u?.name).find(n => typeof n === 'string' && n) || 'NAME';
-  const browser = browserProject(card);
-  return {
-    languages,
-    ...(browser ? {runs_in: 'a browser'} : {}),
-    conventions: languages.map(toolchainById).map(t => ({
-      language: t.id,
-      ...(t.names_look_like ? {names_look_like: t.names_look_like} : {}),
-      ...(t.import_line ? {reference_another_part: renderImport(t, example, false, {browser})} : {}),
-      ...(browser && t.browser_script ? {page_loads_a_script: t.browser_script.replaceAll('{path}', `NAME${t.extensions[0]}`)} : {}),
-      files: t.extensions.join(' ')
-    })),
-    run: Array.isArray(card?.run) ? card.run : [],
-    decisions: Array.isArray(card?.decisions) ? card.decisions : []
-  };
 }
 
 const lineRegexes = list => (list || []).map(s => new RegExp(s, 'gm'));

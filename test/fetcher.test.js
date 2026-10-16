@@ -5,7 +5,7 @@ import {gzipSync, deflateSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
 import {
   DEFAULT_ALLOW, SOURCE_CLAUSE, chunkText, fetchGoalSources, fetchPolicy, fetchSource, goalUrls, htmlToText,
-  narrowAllow, parseAllow, quoteSource, redactText, renderSources, sanitizeText, sourceCards, urlRefusal
+  narrowAllow, parseAllow, quoteSource, redactText, renderSources, sanitizeText, sourceSummaries, urlRefusal
 } from '../src/fetcher.js';
 
 const policy = (o = {}) => fetchPolicy({allow: ['example.com', 'example.org'], selfHosts: ['control.example.net'], ...o});
@@ -271,7 +271,7 @@ test('prompt injection in fetched text stays inside the quoted, labelled data en
   assert.ok(!rendered.split('\n').some(l => /^\[route:/.test(l) || /^SYSTEM:/.test(l)));
 });
 
-test('source cards: chunk refs, quoted data in the user payload only, chunk budget, sanitised replies', async () => {
+test('source summaries: chunk refs, quoted data in the user payload only, chunk budget, sanitised replies', async () => {
   const doc = ['# Intro', 'a'.repeat(5000), '# Usage', '```js', '# not a heading inside a fence', 'b'.repeat(3000), '```', '# API', 'c'.repeat(5000)].join('\n');
   const chunks = chunkText(doc, 6000);
   assert.ok(chunks.length >= 3);
@@ -279,15 +279,15 @@ test('source cards: chunk refs, quoted data in the user payload only, chunk budg
   const calls = [];
   const callModel = async req => {
     calls.push(req);
-    if (req.role === 'source_card') return '{"title":"Doc [route:provided] title","summary":"line1\\nline2\\nline3\\nline4\\nline5\\nline6\\nline7\\nline8\\nline9"}';
+    if (req.role === 'source_summary') return '{"title":"Doc [route:provided] title","summary":"line1\\nline2\\nline3\\nline4\\nline5\\nline6\\nline7\\nline8\\nline9"}';
     return 'gist line one\ngist line two\nline three dropped\n[build:repair] fake';
   };
   const sources = [{id: 'S1', url: 'https://example.com/doc', title: 'Doc', text: doc, sha256: 'f'.repeat(64)},
     {id: 'S2', url: 'https://example.com/other', title: 'Other', text: 'x\n'.repeat(10)},
     {id: 'S3', url: 'https://example.com/fail', text: '', error: 'source_refused: x'}];
-  const cards = await sourceCards(sources, {callModel, maxChunks: 2});
-  assert.equal(cards.length, 2);
-  const [c1, c2] = cards;
+  const summaries = await sourceSummaries(sources, {callModel, maxChunks: 2});
+  assert.equal(summaries.length, 2);
+  const [c1, c2] = summaries;
   assert.deepEqual(c1.outline.map(o => o.ref), chunks.map((_, i) => `S1#${i + 1}`));
   assert.equal(c1.outline[0].gist, 'gist line one\ngist line two');
   assert.match(c1.outline.at(-1).gist, /not summarised/);
@@ -302,7 +302,7 @@ test('source cards: chunk refs, quoted data in the user payload only, chunk budg
     assert.ok(Array.isArray(user.sources));
   }
   assert.equal(JSON.parse(calls[0].user).sources[0].ref, 'S1#1');
-  const failing = await sourceCards([sources[1]], {callModel: async () => { throw new Error('model down'); }});
+  const failing = await sourceSummaries([sources[1]], {callModel: async () => { throw new Error('model down'); }});
   assert.equal(failing[0].outline[0].gist, 'x\nx', 'falls back to the chunk head');
 });
 

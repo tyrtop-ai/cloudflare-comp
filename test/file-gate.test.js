@@ -80,20 +80,12 @@ test('the runtime\'s paths, memory and what the bundle never carries are refused
   assert.equal(runtimeOwned('docs/glue/x.md'),false);
 });
 
-test('toolchain manifests and package configuration are the runtime\'s at any depth, from every row, unless a contract places that path',()=>{
+test('toolchain manifests and package configuration are the runtime\'s at any depth, from every row',()=>{
   for(const path of ['package.json','web/package.json','Package.json','package-lock.json','yarn.lock','pnpm-lock.yaml','node_modules/x/index.js','a/node_modules/b.js',
     'pyproject.toml','requirements.txt','setup.py','setup.cfg','Pipfile','Pipfile.lock','go.mod','Cargo.toml','Gemfile'])
     assert.match(fileGateError(path,path.endsWith('.json')?'{"type":"module"}':'x = 1\n'),/the runtime owns the project manifest/,path);
-  assert.equal(fileGateError('web/package.json','{"name":"web"}',{owned:['web/package.json']}),null,'placed by a contract');
   assert.equal(fileGateError('package.json','{"name":"x"}',{runtime:true}),null,'the runtime\'s own');
   assert.equal(fileGateError('docs/package-notes.md','# about package.json'),null);
-});
-
-test('a base file is written only by a piece whose contract names its path',()=>{
-  const base=new Set(['src/app.py','README.md']);
-  assert.match(fileGateError('src/app.py','print(1)\n',{base}),/existing project file that none of your contracts names/);
-  assert.equal(fileGateError('src/app.py','print(1)\n',{base,owned:['src/app.py']}),null);
-  assert.equal(fileGateError('src/new.py','print(1)\n',{base:[...base]}),null,'a new path is anyone\'s');
 });
 
 test('JavaScript is still parsed by Acorn, with the stdlib rule and the scaffold check; .json must parse',()=>{

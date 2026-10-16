@@ -1,6 +1,6 @@
 // v8 S8b: what a room starts from beside its goal (v8 spec §7.1,
 // polyglot-bench §2a): the links written in the goal, fetched once, cut into
-// chunks and summarised into source cards; and an existing project (a public
+// chunks and summarised; and an existing project (a public
 // GitHub repo, or a room's previous result) whose files are the base the
 // pieces build on. The room (src/index.js) stores both and decides who sees
 // what; this module holds the pure parts. Fetched text and base text are
@@ -8,7 +8,7 @@
 // BASE_LABEL) beside a fixed clause, never in a system prompt. Nothing here
 // reads the Worker's bindings: `fetch` is passed in, and no request carries a
 // credential (src/fetcher.js, src/base.js).
-import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sanitizeText, sourceCards, goalUrls, SOURCE_CLAUSE, LIMITS} from './fetcher.js';
+import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sanitizeText, sourceSummaries, goalUrls, SOURCE_CLAUSE, LIMITS} from './fetcher.js';
 import {fetchGithubRepo, parseRepoUrl, repoDigest, REPO_LIMITS, byteLength} from './base.js';
 import {runtimeOwned} from './code-work.js';
 import {isAssemblyMetadata} from './assembly.js';
@@ -17,8 +17,8 @@ import {fromBase64} from './zip.js';
 
 export {SOURCE_CLAUSE};
 // The room's tables. sources: one row per URL of the goal, fetched or not
-// (error says why not); source_chunks: the stored text, cut as the source
-// cards cut it, so a ref S1#3 is the third chunk of S1; base_files: the
+// (error says why not), with its summary; source_chunks: the stored text,
+// cut as its summary cut it, so a ref S1#3 is the third chunk of S1; base_files: the
 // project the room starts from (§7.1), with each file's mode (an executable
 // keeps its bit); base_passthrough: the files of that project the room does
 // not build (a hidden directory such as .github/, a binary, a file over the
@@ -26,13 +26,13 @@ export {SOURCE_CLAUSE};
 // export and never seen by the gate, the bundle, the checks or a model.
 export const INPUT_TABLES = Object.freeze(['sources', 'source_chunks', 'base_files', 'base_passthrough']);
 export const INPUT_SCHEMA = Object.freeze([
-  "CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, url TEXT NOT NULL, final_url TEXT, title TEXT NOT NULL DEFAULT '', sha256 TEXT, bytes INTEGER NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0, error TEXT, status INTEGER, content_type TEXT, card TEXT, fetched_at INTEGER NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, url TEXT NOT NULL, final_url TEXT, title TEXT NOT NULL DEFAULT '', sha256 TEXT, bytes INTEGER NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0, error TEXT, status INTEGER, content_type TEXT, summary TEXT, fetched_at INTEGER NOT NULL)",
   'CREATE TABLE IF NOT EXISTS source_chunks (ref TEXT PRIMARY KEY, source TEXT NOT NULL, n INTEGER NOT NULL, text TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS base_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, sha256 TEXT NOT NULL, mode INTEGER NOT NULL DEFAULT 420)',
   "CREATE TABLE IF NOT EXISTS base_passthrough (path TEXT PRIMARY KEY, bytes BLOB NOT NULL, mode INTEGER NOT NULL DEFAULT 420, sha256 TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '')"
 ]);
 // Stored text: every source of one room together (the fetcher's own room
-// budget, counted again on what is kept), cut as sourceCards cuts it.
+// budget, counted again on what is kept), cut as sourceSummaries cuts it.
 export const SOURCE_STORE_BYTES = LIMITS.roomBytes;
 export const CHUNK_CHARS = 6000;
 export const MAX_SOURCE_CHUNKS = 40;
@@ -40,7 +40,7 @@ export const MAX_SOURCE_CHUNKS = 40;
 // first; the rest of its refs come as their gists.
 export const SOURCE_BUDGET = 8000;
 export const MAX_REFS = 16;
-// The outline entry sourceCards writes for a chunk past its gist budget: never shown to a model.
+// The outline entry sourceSummaries writes for a chunk past its gist budget: never shown to a model.
 export const UNSUMMARISED = /^\(not summarised/;
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
@@ -131,29 +131,24 @@ export function keepBaseFiles(entries, limits = {}) {
   return {files: new Map([...files].sort(order)), modes, passthrough: passthrough.sort((a, b) => order([a.path], [b.path])), not_carried, skipped, skipped_count, bytes, pass_bytes: passBytes};
 }
 
-// A room's result (appFiles) as base entries and its card. Only a v8 result
-// (kind 'card') is read: its .recursive/ notes are the runtime's (not
-// carried), a file it carried untouched comes as base64, and its card is
-// the prior card.
+// A room's result (appFiles) as base entries: its .recursive/ notes are the
+// runtime's (not carried), and a file it carried untouched comes as base64.
 export function baseFromApp(app) {
   const list = Array.isArray(app?.files) ? app.files : [];
-  let prior_card = null;
-  const card = list.find(f => f?.path === '.recursive/card.json');
-  if (app?.kind === 'card' && card) { try { const c = JSON.parse(card.content); if (c && typeof c === 'object' && Array.isArray(c.deliverables)) prior_card = c; } catch {} }
   const entries = list.filter(f => f && typeof f.path === 'string').map(f => typeof f.content_base64 === 'string'
     ? {path: f.path, bytes: fromBase64(f.content_base64), mode: f.mode, reason: f.reason || 'carried untouched'}
     : {path: f.path, text: f.content, mode: f.mode});
-  return {entries, prior_card};
+  return {entries};
 }
 
 // Load the base. fetch: injected (a repo is read with no token); readApp(id):
 // that room's appFiles(). Never throws: {error} says why there is no base.
 // Result: {meta: {kind, source, ref, resolved_sha, dir, room, passed,
 // unverified, digest, files, bytes, passthrough, pass_bytes, not_carried,
-// skipped, skipped_count, truncated}, files: Map, modes: Map, passthrough,
-// prior_card}. meta.digest is repoDigest's text for the card writer.
+// skipped, skipped_count, truncated}, files: Map, modes: Map, passthrough}.
+// meta.digest is repoDigest's text, which the room's manager reads.
 export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
-  let entries, meta, prior_card = null;
+  let entries, meta;
   if (base.repo) {
     const r = await fetchGithubRepo({repo: base.repo, ref: base.ref ?? null, dir: base.dir ?? null}, {fetch, ...limits});
     if (r.error) return {error: `The repo could not be read: ${r.error}`};
@@ -165,15 +160,15 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
     try { app = await readApp(base.room); } catch (e) { return {error: `The room ${base.room} could not be read: ${clip(e?.message || e, 200)}`}; }
     if (!app || app.error) return {error: `The room ${base.room} has no result to start from: ${clip(app?.error || 'no answer', 300)}`};
     // v8 S8b review: a v7 result's code sits under its builders' folders beside a loader the v8 room never writes.
-    if (app.kind !== 'card') return {error: `The room ${base.room} holds a result of the v7 pipeline, which cannot be a v8 base; download its files and start from a repo that holds them instead.`};
+    if (app.kind !== 'levels') return {error: `The room ${base.room} holds a result of the v7 pipeline, which cannot be a v8 base; download its files and start from a repo that holds them instead.`};
     if (app.room_status === 'running') return {error: `The room ${base.room} is still running, so its files can change while this run reads them; stop it, or wait until it ends.`};
-    ({entries, prior_card} = baseFromApp(app));
+    ({entries} = baseFromApp(app));
     meta = {kind: 'room', source: `room ${base.room}`, room: base.room, ref: null, resolved_sha: null, passed: !!app.passed, unverified: !app.passed, app_digest: app.digest || null, truncated: false};
   }
   const kept = keepBaseFiles(entries, limits);
   if (!kept.files.size) return {error: `${meta.source} has no text file the room can start from${kept.skipped_count ? ` (${kept.skipped_count} skipped: ${kept.skipped.slice(0, 3).map(s => `${s.path}: ${s.reason}`).join('; ')})` : ''}`};
   const digest = repoDigest(kept.files);
-  return {files: kept.files, modes: kept.modes, passthrough: kept.passthrough, prior_card,
+  return {files: kept.files, modes: kept.modes, passthrough: kept.passthrough,
     meta: {...meta, digest: digest.text, languages: digest.languages, files: kept.files.size, bytes: kept.bytes,
       passthrough: kept.passthrough.length, pass_bytes: kept.pass_bytes, not_carried: kept.not_carried.slice(0, 50),
       skipped: kept.skipped.slice(0, 50), skipped_count: kept.skipped_count}};
@@ -181,12 +176,12 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
 
 // --- sources ----------------------------------------------------------------
 
-// Fetch every URL of the goal and write its source card. A failure never
-// throws: its row carries the error. callModel({role, system, user}) is the
-// room's model call (role 'card'). allow: the owner's FETCH_ALLOW value;
+// Fetch every URL of the goal and summarise it. A failure never throws: its
+// row carries the error. callModel({role, system, user}) is the room's model
+// call (role 'source'). allow: the owner's FETCH_ALLOW value;
 // selfHosts: the deployment's own host(s), never fetched.
 // Result: {rows: [{id, url, final_url, title, sha256, bytes, truncated,
-// error, status, content_type, card}], chunks: [{ref, source, n, text}]}.
+// error, status, content_type, summary}], chunks: [{ref, source, n, text}]}.
 export async function loadSources(goal, {fetch, allow, selfHosts = [], callModel, maxChunks = MAX_SOURCE_CHUNKS} = {}) {
   const urls = goalUrls(goal, LIMITS.maxUrls);
   if (!urls.length) return {rows: [], chunks: []};
@@ -205,13 +200,13 @@ export async function loadSources(goal, {fetch, allow, selfHosts = [], callModel
     if (byteLength(s.text) > left) { s.text = cutBytes(s.text, left); s.truncated = true; }
     left -= byteLength(s.text);
   }
-  let cards = [];
-  try { cards = await sourceCards(fetched, {callModel, maxChunks, chunkChars: CHUNK_CHARS}); } catch {}
+  let summaries = [];
+  try { summaries = await sourceSummaries(fetched, {callModel, maxChunks, chunkChars: CHUNK_CHARS}); } catch {}
   const chunks = [];
   for (const s of fetched) if (!s.error && s.text) for (const [i, text] of chunkText(s.text, CHUNK_CHARS).entries()) chunks.push({ref: `${s.id}#${i + 1}`, source: s.id, n: i + 1, text});
   const rows = fetched.map(s => ({id: s.id, url: clip(s.url, 2000), final_url: s.final_url ? clip(s.final_url, 2000) : null, title: clip(s.title, 200),
     sha256: s.sha256 ?? null, bytes: s.bytes || 0, truncated: !!s.truncated, error: s.error ? clip(s.error, 300) : (s.text ? null : 'no text'),
-    status: s.status ?? null, content_type: s.content_type ?? null, card: cards.find(c => c.id === s.id) || null}));
+    status: s.status ?? null, content_type: s.content_type ?? null, summary: summaries.find(c => c.id === s.id) || null}));
   return {rows, chunks};
 }
 function cutBytes(text, n) {
@@ -232,8 +227,8 @@ export function narrowRefs(raw, held) {
   }
   return {kept, dropped};
 }
-// v8 S8b review: the refs Root holds, at most MAX_REFS like any piece: the
-// ones the card cites, else the first chunks of each source in turn.
+// v8 S8b review: the refs the room's manager holds, at most MAX_REFS like
+// any piece: the ones cited, else the first chunks of each source in turn.
 export function rootRefs(cited, all) {
   const have = [...all];
   const {kept} = narrowRefs(cited || [], new Set(have));
@@ -245,15 +240,34 @@ export function rootRefs(cited, all) {
   return out;
 }
 
-// The source cards as a splitter or the card writer reads them: each card
-// quoted, its outline cut to the refs held and to the entries with a gist (a
-// chunk past the gist budget is never listed); a card with none is left out.
-export function cardsFor(rows, held) {
+// The source summaries as a splitter reads them: each quoted, its outline
+// cut to the refs held and to the entries with a gist (a chunk past the gist
+// budget is never listed); a summary with none is left out.
+export function summariesFor(rows, held) {
   const have = held instanceof Set ? held : new Set(held || []);
-  return rows.filter(r => r.card).map(r => {
-    const outline = (r.card.outline || []).filter(o => have.has(o.ref) && o.gist && !UNSUMMARISED.test(o.gist)).map(o => ({ref: o.ref, gist: sanitizeText(o.gist).slice(0, 300)}));
-    return outline.length ? {...quoteSource({id: r.id, url: r.final_url || r.url, title: r.card.title || r.title, text: r.card.summary}, {maxChars: 1200}), outline} : null;
+  return rows.filter(r => r.summary).map(r => {
+    const outline = (r.summary.outline || []).filter(o => have.has(o.ref) && o.gist && !UNSUMMARISED.test(o.gist)).map(o => ({ref: o.ref, gist: sanitizeText(o.gist).slice(0, 300)}));
+    return outline.length ? {...quoteSource({id: r.id, url: r.final_url || r.url, title: r.summary.title || r.title, text: r.summary.summary}, {maxChars: 1200}), outline} : null;
   }).filter(Boolean);
+}
+
+// Whether the prompt names an existing file, for display only (the
+// dashboard shows such a path pre-selected; only the person grants). The
+// exact path, in its own case, as a word of its own; an occurrence the
+// prompt asks to leave alone ("do not touch X", "keep X as it is", "without
+// changing X") does not count.
+export function namedIn(path, text) {
+  const t = String(text ?? ''), esc = String(path).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), re = new RegExp(`(?<![\\w./-])${esc}(?![\\w/-])`, 'g');
+  for (const m of t.matchAll(re)) {
+    const before = t.slice(Math.max(0, m.index - 60), m.index).toLowerCase(), after = t.slice(m.index + m[0].length, m.index + m[0].length + 40).toLowerCase();
+    const sentence = before.split(/[.!?\n]/).pop();
+    if (/\b(?:do not|don't|never|without|no need to|not)\s+(?:\w+\s+){0,2}?(?:touch|touching|change|changing|modify|modifying|edit|editing|alter|altering|rewrite|rewriting)\b/.test(sentence)) continue;
+    if (/\b(?:keep|leave)\s*$/.test(sentence) && /^\s*(?:as it is|as is|unchanged|alone|intact)/.test(after)) continue;
+    if (/^\s*(?:stays|remains|must stay|should stay)\s+(?:as it is|unchanged|the same)/.test(after)) continue;
+    if (/^\s*,?\s*(?:without (?:changing|touching|modifying|editing|altering) it|but (?:do not|don't|never) (?:change|touch|modify|edit) it|untouched|as it is)\b/.test(after)) continue;
+    return true;
+  }
+  return false;
 }
 
 // The chunks a worker cites, quoted, whole while they fit in the budget;
@@ -263,13 +277,13 @@ export function cardsFor(rows, held) {
 export function chunksFor(rows, chunk, refs, budget = SOURCE_BUDGET) {
   const get = typeof chunk === 'function' ? chunk : (m => ref => m.get(ref) ?? null)(chunk instanceof Map ? chunk : new Map((chunk || []).map(c => [c.ref, c])));
   const bySource = new Map(rows.map(r => [r.id, r]));
-  const gist = (src, ref) => { const g = src.card?.outline?.find(o => o.ref === ref)?.gist || ''; return UNSUMMARISED.test(g) ? '' : g; };
+  const gist = (src, ref) => { const g = src.summary?.outline?.find(o => o.ref === ref)?.gist || ''; return UNSUMMARISED.test(g) ? '' : g; };
   let left = budget;
   const out = [];
   for (const ref of refs.slice(0, MAX_REFS)) {
     const src = bySource.get(String(ref).split('#')[0]);
     if (!src) continue;
-    const at = {id: src.id, ref, url: src.final_url || src.url, title: src.card?.title || src.title};
+    const at = {id: src.id, ref, url: src.final_url || src.url, title: src.summary?.title || src.title};
     const c = left > 0 ? get(ref) : null;
     if (c && c.text.length <= left) { left -= c.text.length; out.push(quoteSource({...at, text: c.text}, {maxChars: budget})); continue; }
     const g = gist(src, ref);

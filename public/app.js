@@ -88,39 +88,26 @@ function treeMarkup(n,index,top=false) {
   const dot=`<button type="button" class="dot role-${role} ${esc(status)}${building?' split':''}${state==='linked'?' linked':''}${n.parent?'':' root'}${selected?' selected':''}" data-node="${esc(n.id)}"${builder?` data-builder="${esc(builder.id)}"`:''} title="${esc(tip)}" aria-label="${esc(tip)}"></button>`;
   return `<div class="obranch ${state}">${top?compilerMarkup(n,index):''}${dot}${children.length?`<div class="ochildren">${children.map(c=>`<div class="ochild">${treeMarkup(c,index)}</div>`).join('')}</div>`:''}</div>`;
 }
-// v8 S3: the project card (§1.3): its deliverables, its requirements, each
-// with a pass, fail or untested chip (requirement_status, which the card's
-// checks fill from S4b on), and its decisions. Root's detail shows it in
-// place of Root's task, which under v8 is the goal as the user wrote it.
+// A contract by its kind and name; a v7 function by its signature.
 const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.name}(${(i.params||[]).join(', ')})`;
-// v8 S4b: passed null is a check that could not run (infrastructure): untested.
-// S4b review: a result from before the delivered files last changed is stale (the snapshot marks it).
-const requirementState=(r,status)=>{const st=status?.[r.id];return typeof st?.passed!=='boolean'?'untested':st.stale?'stale':st.passed?'pass':'fail';};
-// v8 S9: the card's revisions; each item an amendment added or changed says which change it came from.
-function amendedBy(history=[]) {
-  const by={deliverables:new Map(),requirements:new Map()};
-  for(const h of history.filter(h=>h.rev>1))for(const k of ['deliverables','requirements'])for(const x of [...(h.delta?.[k]?.added||[]),...(h.delta?.[k]?.changed||[])])by[k].set(x,h);
-  return by;
-}
-const amendedMark=h=>h?` <span class="card-amended" title="${esc(h.reason)}">rev ${esc(h.rev)} · ${esc(String(h.reason||'').slice(0,60))}</span>`:'';
-function historyMarkup(history=[]) {
-  const change=h=>{const d=h.delta||{},parts=[d.deliverables?.added?.length&&`adds ${d.deliverables.added.join(', ')}`,d.deliverables?.changed?.length&&`changes ${d.deliverables.changed.join(', ')}`,
-    d.requirements?.added?.length&&`new ${d.requirements.added.join(', ')}`,d.requirements?.changed?.length&&`changed ${d.requirements.changed.join(', ')}`,
-    d.doubtful_changes?.length&&`doubtful: ${d.doubtful_changes.map(x=>`${x.name} p=${Number(x.p).toFixed(2)}`).join(', ')}`].filter(Boolean);
-    return `<li><b class="mono">rev ${esc(h.rev)}</b> <span class="faint">goal rev ${esc(h.goal_rev)}</span> ${h.rev>1?`“${esc(h.reason)}”`:'the goal'}${parts.length?` <span class="faint">· ${esc(parts.join('; '))}</span>`:''}</li>`;};
-  return history.length>1?`<div class="card-section"><div class="eyebrow">REVISIONS</div><ul class="card-list">${history.map(change).join('')}</ul></div>`:'';
-}
-function cardMarkup(card,status={},history=[]) {
-  if(!card)return '<p class="empty">A v8 room writes its project card first: the deliverables, the requirements with their checks, and the decisions.</p>';
-  const by=amendedBy(history||[]);
-  // v8 card repair: Clef's review shows as marks; nothing it doubts is removed.
-  const pMark=(label,x,title)=>x?` <span class="req-chip doubtful"${title?` title="${esc(title)}"`:''}>${label}${typeof x.p==='number'?` p=${esc(x.p.toFixed(2))}`:''}</span>`:'';
-  const deliverable=d=>`<li><span class="event-type">${esc(d.kind||'function')}</span> <b class="mono">${esc(d.name)}</b>${d.path&&d.path!==d.name?` <span class="faint mono">${esc(d.path)}</span>`:''}${d.does?` · ${esc(d.does)}`:''}${pMark('needs confirmation',d.needs_confirmation,'an existing file the goal does not name; Continue confirms it')}${pMark('change doubtful',d.change_doubtful,'Clef doubted the change is about it')}${amendedMark(by.deliverables.get(d.name))}</li>`;
-  const requirement=r=>{const state=requirementState(r,status),detail=status?.[r.id]?.detail;
-    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(r.id)}</b> ${esc(r.says)} <span class="faint">· ${esc(r.check?.kind||'')} check · ${esc((r.serves||[]).join(', '))}${r.implicit?' · implicit':''}${r.source_inferred?' · source inferred':''}${r.serves_inferred?' · serves inferred':''}${r.unvetted?' · unvetted':''}</span>${r.doubtful?pMark('doubtful',{p:/internal detail/.test(r.doubt_reason||'')&&typeof r.vet_internal_p==='number'?r.vet_internal_p:r.vet_p},r.doubt_reason?`Clef doubted it: ${r.doubt_reason}`:'Clef doubted the goal asks for it'):''}${r.unattached?' <span class="req-chip doubtful" title="no deliverable matched what it serves">unattached</span>':''}${r.untested?` <span class="req-chip doubtful" title="${esc(`its check is never run: ${r.check_error||'it could not be read as written'}`)}">check not runnable</span>`:''}${amendedMark(by.requirements.get(r.id))}</li>`;};
-  const section=(title,items)=>items.length?`<div class="card-section"><div class="eyebrow">${title}</div><ul class="card-list">${items.join('')}</ul></div>`:'';
-  return `${card.summary?`<p class="card-summary">${esc(card.summary)}</p>`:''}${card.languages?.length?`<p class="faint">languages: ${esc(card.languages.join(', '))}</p>`:''}`+
-    section('DELIVERABLES',(card.deliverables||[]).map(deliverable))+section('REQUIREMENTS',(card.requirements||[]).map(requirement))+section('DECISIONS',(card.decisions||[]).map(d=>`<li>${esc(d)}</li>`))+section('REVIEW NOTES',(card.review_notes||[]).map(n=>`<li class="faint">${esc(n)}</li>`))+historyMarkup(history||[]);
+// v8: a validation's last result: passed null is a check that could not run
+// (infrastructure), untested; a result from before the delivered files last
+// changed is stale (the room marks it).
+const validationState=(v,status)=>{const st=status?.[v.id];return typeof st?.passed!=='boolean'?'untested':st.stale?'stale':st.passed?'pass':'fail';};
+// Clef's marks below this read as a doubt, shown beside the validation; nothing it doubts is removed.
+const DOUBT_BAR=0.5;
+// v8: the levels: each validation with its last result, its check in a few
+// words, the contracts it serves, the manager that holds it and Clef's
+// marks; then each splitter step with its manager, attempt and outcome.
+function levelsMarkup(s) {
+  const list=s.validations||[];
+  if(!list.length)return '<p class="empty">A v8 room\'s manager states its level first: its contracts, and the validations that check each.</p>';
+  const marks=v=>Object.entries(v.notes||{}).filter(([,p])=>typeof p==='number'&&p<DOUBT_BAR).map(([k,p])=>` <span class="req-chip doubtful" title="Clef doubted it (${esc(k)})">${esc(k)} p=${esc(p.toFixed(2))}</span>`).join('');
+  const row=v=>{const state=validationState(v,s.validation_status),detail=s.validation_status?.[v.id]?.detail;
+    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(v.id)}</b> ${esc(v.check)} <span class="faint">· serves ${esc((v.serves||[]).join(', '))}${v.held?` · held by ${esc(v.held)}`:''}</span>${marks(v)}</li>`;};
+  const step=x=>`<li><span class="mono">${esc(x.id)}</span> <span class="faint">· ${esc(x.manager)} · ${esc(x.kind)} attempt ${esc(x.attempt)} · ${esc(x.ended_at?x.outcome||'ended':'running')}</span></li>`;
+  const section=(title,items)=>items.length?`<div class="panel-section"><div class="eyebrow">${title}</div><ul class="panel-list">${items.join('')}</ul></div>`:'';
+  return section('VALIDATIONS',list.map(row))+section('SPLITTER STEPS',(s.splitters||[]).map(step));
 }
 // v8 S9: the Prompts panel. Each prompt with its state (queued, running,
 // done, failed, skipped); a queued one can be edited, removed, skipped and
@@ -163,9 +150,9 @@ function movePrompt(id,to) {
 const hostOf=u=>{try{return new URL(u).host;}catch{return '';}};
 function sourcesMarkup(s) {
   const base=s.base,list=s.sources||[];
-  const baseLine=base?`<p class="card-summary">Starts from <b class="mono">${esc(base.source)}</b>${base.ref?` at <span class="mono">${esc(base.ref)}</span>`:''}${base.resolved_sha?` <span class="faint mono">${esc(String(base.resolved_sha).slice(0,12))}</span>`:''} · ${Number(base.files)||0} files · ${Number(base.bytes)||0} bytes${base.skipped_count?` · ${Number(base.skipped_count)} skipped`:''}${base.passthrough?` · ${Number(base.passthrough)} carried untouched`:''}${base.truncated?' · <span class="req-chip fail">truncated</span>':''}${base.unverified?' · <span class="req-chip fail" title="base_unverified: that result had not passed its checks">unverified</span>':''}</p>`:'';
+  const baseLine=base?`<p class="panel-summary">Starts from <b class="mono">${esc(base.source)}</b>${base.ref?` at <span class="mono">${esc(base.ref)}</span>`:''}${base.resolved_sha?` <span class="faint mono">${esc(String(base.resolved_sha).slice(0,12))}</span>`:''} · ${Number(base.files)||0} files · ${Number(base.bytes)||0} bytes${base.skipped_count?` · ${Number(base.skipped_count)} skipped`:''}${base.passthrough?` · ${Number(base.passthrough)} carried untouched`:''}${base.truncated?' · <span class="req-chip fail">truncated</span>':''}${base.unverified?' · <span class="req-chip fail" title="base_unverified: that result had not passed its checks">unverified</span>':''}</p>`:'';
   const source=x=>`<li><span class="req-chip ${x.error?'fail':x.truncated?'stale':'pass'}">${x.error?'not read':x.truncated?'truncated':'read'}</span> <b class="mono">${esc(x.id)}</b> ${esc(x.title||x.url)} <span class="faint">· ${esc(hostOf(x.final_url||x.url))} · ${Number(x.bytes)||0} bytes${x.parts?` · ${Number(x.parts)} parts`:''}${x.error?` · ${esc(x.error)}`:''}</span></li>`;
-  const items=list.length?`<div class="card-section"><div class="eyebrow">SOURCES</div><ul class="card-list">${list.map(source).join('')}</ul></div>`:'';
+  const items=list.length?`<div class="panel-section"><div class="eyebrow">SOURCES</div><ul class="panel-list">${list.map(source).join('')}</ul></div>`:'';
   return baseLine+items||'<p class="empty">No links in the goal, and the run starts from nothing.</p>';
 }
 function renderSources(s) {
@@ -174,26 +161,22 @@ function renderSources(s) {
   const list=s.sources||[],bad=list.filter(x=>x.error).length;
   if($('sources-verdict'))$('sources-verdict').textContent=[list.length?`${list.length} source${list.length>1?'s':''}${bad?` · ${bad} not read`:''}`:'',s.base?'base loaded':''].filter(Boolean).join(' · ')||'None';
 }
-// v8 card repair: at base_confirm, each existing file waiting for the person's grant, with Clef's p and
-// whether the goal names it (then pre-selected); Continue grants the selected ones.
+// v8: at base_confirm, each existing file waiting for the person's grant,
+// with Clef's p and whether the prompt names it (then pre-selected);
+// Continue grants the selected ones.
 function baseConfirmMarkup(s) {
   const list=s.pause?.kind==='base_confirm'&&Array.isArray(s.base_pending)?s.base_pending:[];
   if(!list.length)return '';
-  return `<ul class="card-list base-grants">${list.map(x=>`<li><label><input type="checkbox" data-grant="${esc(x.path)}"${x.named?' checked':''}> <b class="mono">${esc(x.path)}</b> <span class="faint">· ${x.named?'named in the goal':'not named in the goal'}${typeof x.p==='number'?` · Clef p=${esc(x.p.toFixed(2))}`:''}</span></label></li>`).join('')}</ul>`;
+  return `<ul class="panel-list base-grants">${list.map(x=>`<li><label><input type="checkbox" data-grant="${esc(x.path)}"${x.named?' checked':''}> <b class="mono">${esc(x.path)}</b> <span class="faint">· ${x.named?'named in the prompt':'not named in the prompt'}${typeof x.p==='number'?` · Clef p=${esc(x.p.toFixed(2))}`:''}</span></label></li>`).join('')}</ul>`;
 }
 const selectedGrants=()=>current?.pause?.kind==='base_confirm'&&typeof document!=='undefined'&&document.querySelectorAll?[...document.querySelectorAll('input[data-grant]')].filter(x=>x.checked).map(x=>x.dataset.grant):undefined;
-// v8 card repair: while the room is held at card_failed, the card writer's answers as written (first, and the retry).
-function cardRawMarkup(s) {
-  const answers=s.pause?.kind==='card_failed'&&Array.isArray(s.card_raw?.answers)?s.card_raw.answers:[];
-  if(!answers.length)return '';
-  return `<details class="card-raw"><summary>what the card writer said</summary>${answers.map((a,i)=>`<div class="eyebrow">${i?'RETRY':'FIRST ANSWER'}</div><pre class="card-raw-text">${esc(a||'(empty)')}</pre>`).join('')}</details>`;
-}
-function renderCard(s) {
-  if(!$('card'))return;
-  const reqs=s.card?.requirements||[],count=state=>reqs.filter(r=>requirementState(r,s.requirement_status)===state).length;
-  const held=s.pause&&s.status!=='running'?`<p class="card-hold"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>${baseConfirmMarkup(s)}${cardRawMarkup(s)}`:'';
-  $('card').innerHTML=held+cardMarkup(s.card,s.requirement_status,s.card_history);
-  if($('card-verdict'))$('card-verdict').textContent=s.card?`${(s.card_rev||1)>1?`rev ${s.card_rev} · `:''}${reqs.length} requirements · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:s.settings?.pipeline==='v8'?'Not written yet':'No card (v7 pipeline)';
+// The room's hold, if any, then the levels.
+function renderLevels(s) {
+  if(!$('levels'))return;
+  const v8=s.settings?.pipeline==='v8',list=s.validations||[],count=state=>list.filter(v=>validationState(v,s.validation_status)===state).length;
+  const held=s.pause&&s.status!=='running'?`<p class="hold-note"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>${baseConfirmMarkup(s)}`:'';
+  $('levels').innerHTML=held+(v8?levelsMarkup(s):'<p class="empty">No levels (v7 pipeline).</p>');
+  if($('levels-verdict'))$('levels-verdict').textContent=!v8?'No levels (v7 pipeline)':list.length?`${list.length} validations · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:'Not stated yet';
 }
 function nodeDetail(n,index) {
   const role=index.role(n),builder=role==='manager'?index.builderOf(n.id):null;
@@ -206,7 +189,7 @@ function nodeDetail(n,index) {
     const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
     compile=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
   }
-  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}${current?.pause?.agent===n.id?` · waits on the room's hold: ${esc(current.pause.kind)}`:''}</div>${!n.parent&&current?.card?`<div class="onode-card">${cardMarkup(current.card,current.requirement_status,current.card_history)}</div>`:`<p>${esc(n.task)}</p>`}${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}${current?.pause?.agent===n.id?` · waits on the room's hold: ${esc(current.pause.kind)}`:''}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
 }
 // The selected node's edges ride on the overlay as data-edges ("from:to ...");
 // drawPath measures the dots after layout and draws them.
@@ -277,15 +260,12 @@ function treeSvg(agents) {
   const w=Math.max(1,leaf)*X-X+2*P,h=deepest*Y-top+P+30;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"><rect width="100%" height="100%" fill="${C.bg}"/><g fill="none" stroke="${C.line}" stroke-width="1.5">${lines}</g><g font-size="10" fill="${C.muted}" text-anchor="middle">${nodes}</g></svg>`;
 }
-// v8 M2 review: the short-lived steps above the top: each prompt's handler
-// and the card writer steps it spawned, each open (writing, or held: the
-// room's hold names it) or ended with its outcome. A step the room's hold
-// names says so.
+// v7: the prompt handlers above the top, each open or ended (a v8 room has
+// none: the room creates its manager, whose splitter steps the levels panel lists).
 function stepsMarkup(s) {
-  const hs=s?.prompt_handlers||[],ws=s?.card_writers||[],held=s?.pause;
+  const hs=s?.prompt_handlers||[];
   if(!hs.length)return '';
-  const writer=w=>`<span class="ostep-writer"><span class="mono">${esc(w.id)}</span> · card writer${w.kind==='amend'?' (change)':''} · ${esc(w.ended_at?w.outcome||'ended':w.outcome?.startsWith('held:')?w.outcome.replace(':',' at '):'writing')}${held?.step===w.id?` · holds the room: ${esc(held.kind)}`:''}</span>`;
-  return `<div class="osteps">${hs.map(h=>`<div class="ostep"><span class="mono">${esc(h.id)}</span> · ${esc(h.kind)} handler · ${h.ended_at?`ended${h.root?` · handed to ${esc(h.root)}`:''}`:'open'}${ws.filter(w=>w.handler===h.id).map(writer).join('')}</div>`).join('')}</div>`;
+  return `<div class="osteps">${hs.map(h=>`<div class="ostep"><span class="mono">${esc(h.id)}</span> · ${esc(h.kind)} handler · ${h.ended_at?`ended${h.root?` · handed to ${esc(h.root)}`:''}`:'open'}</div>`).join('')}</div>`;
 }
 function showTree(agents) {
   $('hierarchy').innerHTML=stepsMarkup(current)+renderTree(agents);
@@ -331,7 +311,7 @@ function render(s) {
   const fileRows=[...(s.files||[]),...(s.exports||[]).map(f=>({...f,virtual:true,revision:1}))];
   $('file-count').textContent=fileRows.length;
   showTree(s.agents);
-  renderCard(s);
+  renderLevels(s);
   renderSources(s);
   renderPrompts(s);
   // Newest first: the latest traffic is at the top; scroll down for older events.
@@ -371,7 +351,7 @@ async function refresh() {
   inflight=true;
   try {
     const delta=cursor&&current&&(++polls%FULL_EVERY!==0);
-    const s=delta?await call('/api/delta?'+new URLSearchParams({since:cursor.events,agents_since:cursor.agents,files_since:cursor.files,exports:cursor.exports,run:cursor.run,card_rev:current.card_rev??''})):await call('/api/state');
+    const s=delta?await call('/api/delta?'+new URLSearchParams({since:cursor.events,agents_since:cursor.agents,files_since:cursor.files,exports:cursor.exports,run:cursor.run})):await call('/api/state');
     cursor=s.cursor||null;
     render(s.full===false?mergeDelta(current,s):s); $('error').textContent='';
   }
@@ -548,10 +528,13 @@ const count=n=>n==null?'–':Number(n).toLocaleString('en-US');
 const shortModel=m=>String(m||'').split('/').pop();
 let benchRun='',benchData=null,benchList=[],benchCompare=null,benchFileName='',benchSlots=0;
 const benchOutcome=t=>t.outcome||(t.status==='running'?'running':'queued');
-// pass@1 is over the scored tasks only: pass ÷ (pass + fail + timeout).
-// Errors (the platform's or the card's) and unverified rooms are left out.
-const SCORED_NOTE='pass@1 = pass ÷ scored tasks (pass + fail + timeout); errors (platform or card) and unverified rooms are not scored';
-const benchRate=a=>a&&a.unverified>a.scored?'–':pct(a?.pass_at_1);
+// pass@1 is each task's first grading, over the scored tasks only: pass ÷
+// (pass + fail + timeout). Errors (the platform's) are left out. A run with
+// feedback until_done also shows the pass rate once the grader's failures
+// went back to the rooms, and the mean gradings it took.
+const SCORED_NOTE='pass@1 = first gradings passed ÷ scored tasks (pass + fail + timeout); errors (the platform\'s) are not scored';
+const benchRate=a=>pct(a?.pass_at_1);
+const untilDoneNote=a=>a?.until_done?`<span title="with feedback until_done: the grader's failures go back to each room as complaints">until done <b>${pct(a.until_done.pass_rate)}</b> <span class="faint">(${count(a.until_done.pass)} of ${count(a.until_done.scored)}; mean ${a.until_done.mean_rounds_to_done??'–'} gradings)</span></span>`:'';
 function benchRunsMarkup(runs,picked='') {
   if(!runs?.length)return '<p class="empty">No benchmark runs yet.</p>';
   const row=r=>{const a=r.aggregate||{};
@@ -564,11 +547,11 @@ const roomLink=(room,deleted=false)=>deleted?'<span class="faint">room deleted</
 function benchResultsMarkup(run) {
   if(!run)return '';
   const a=run.aggregate||{},s=run.settings||{},d=run.dataset||{};
-  const warn=a.unverified>a.scored?`<p class="card-hold">${count(a.unverified)} unverified tasks outnumber the ${count(a.scored)} scored ones: pass@1 is not shown.</p>`:'';
-  const summary=`<div class="bench-summary"><span title="${esc(SCORED_NOTE)}">pass@1 <b>${benchRate(a)}</b> <span class="faint">(${count(a.pass)} passed of ${count(a.scored)} scored: pass + fail + timeout; ${count(a.error)} errors and ${count(a.unverified)} unverified not scored)</span></span><span>mean time <b>${secs(a.mean_ms)}</b></span><span>tokens <b>${count(a.tokens)}</b></span><span>Container <b>${a.container_s??0} s</b></span>`+
-    `${a.timeout?`<span>timeouts <b>${a.timeout}</b></span>`:''}</div>`+warn+
-    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once${run.concurrency_asked?` (asked ${count(run.concurrency_asked)}; ${count(run.executors)} Container slots)`:''} · keeps ${esc(run.keep_rooms||'failed')} rooms · budget ${count(run.budget)} turns · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}${d.partial?` · partial: ${esc(d.partial)}`:''}</p>`;
-  const row=t=>{const o=benchOutcome(t);return `<tr><td class="mono">${esc(t.task_id)}</td><td><span class="req-chip ${esc(o)}"${t.detail?` title="${esc(t.detail)}"`:''}>${esc(o)}</span></td><td class="num">${secs(t.wall_ms)}</td><td class="num">${count(t.tokens)}</td><td class="num">${t.container_ms?secs(t.container_ms):'–'}</td><td>${roomLink(t.room,t.room_deleted)}</td></tr>`;};
+  const summary=`<div class="bench-summary"><span title="${esc(SCORED_NOTE)}">pass@1 <b>${benchRate(a)}</b> <span class="faint">(${count(a.pass)} passed of ${count(a.scored)} scored: pass + fail + timeout; ${count(a.error)} errors not scored)</span></span>${untilDoneNote(a)}<span>mean time <b>${secs(a.mean_ms)}</b></span><span>tokens <b>${count(a.tokens)}</b></span><span>Container <b>${a.container_s??0} s</b></span>`+
+    `${a.timeout?`<span>timeouts <b>${a.timeout}</b></span>`:''}</div>`+
+    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once${run.concurrency_asked?` (asked ${count(run.concurrency_asked)}; ${count(run.executors)} Container slots)`:''} · feedback ${esc(run.feedback||'once')} · keeps ${esc(run.keep_rooms||'failed')} rooms · budget ${count(run.budget)} turns · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}${d.partial?` · partial: ${esc(d.partial)}`:''}</p>`;
+  const row=t=>{const o=benchOutcome(t),first=t.once&&t.once!==o?` <span class="faint" title="its first grading (pass@1)">first ${esc(t.once)}</span>`:'',rounds=t.rounds>1?` <span class="faint">· ${count(t.rounds)} gradings</span>`:'';
+    return `<tr><td class="mono">${esc(t.task_id)}</td><td><span class="req-chip ${esc(o)}"${t.detail?` title="${esc(t.detail)}"`:''}>${esc(o)}</span>${first}${rounds}</td><td class="num">${secs(t.wall_ms)}</td><td class="num">${count(t.tokens)}</td><td class="num">${t.container_ms?secs(t.container_ms):'–'}</td><td>${roomLink(t.room,t.room_deleted)}</td></tr>`;};
   return summary+`<table class="bench-table"><thead><tr><th>TASK</th><th>RESULT</th><th class="num">TIME</th><th class="num">TOKENS</th><th class="num">CONTAINER</th><th>ROOM</th></tr></thead><tbody>${(run.tasks||[]).map(row).join('')}</tbody></table>`;
 }
 function benchCompareMarkup(c) {
@@ -614,7 +597,7 @@ async function benchDelete(id) {
 function benchRequest() {
   const url=$('bench-url')?.value.trim()||'',text=$('bench-text')?.value||'';
   return {dataset:url?{url}:{text,...(benchFileName?{name:benchFileName}:{})},limit:Number($('bench-limit')?.value)||20,concurrency:Number($('bench-concurrency')?.value)||2,
-    label:$('bench-label')?.value.trim()||'',budget:countSetting('budget'),keep_rooms:$('bench-keep')?.value||'failed',settings:settings()};
+    label:$('bench-label')?.value.trim()||'',budget:countSetting('budget'),keep_rooms:$('bench-keep')?.value||'failed',feedback:$('bench-feedback')?.value||'once',settings:settings()};
 }
 $('bench-start')?.addEventListener('click',async()=>{
   const body=benchRequest();

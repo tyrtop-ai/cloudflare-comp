@@ -1,23 +1,19 @@
 // Benchmark mode (B1, polyglot-bench Part 2b): loaders that turn benchmark
-// task formats into {id, prompt, language, entry, card}, and the pure parts
-// of a benchmark run (outcomes, aggregates, comparison).
+// task formats into {id, prompt, language, entry, grader}, and the pure parts
+// of a benchmark run (grading, outcomes, aggregates, comparison).
 //
 // Pure: `fetch` is injected and the module never sees the Worker's bindings
 // or secrets. Datasets are read through src/fetcher.js (guardedFetch: the
 // owner's allowlist narrowed to the dataset hosts, https only, manual and
 // rechecked redirects, no credentials, capped and decompressed bodies).
 //
-// The card a task room starts from is fixed by the benchmark: one function
-// deliverable (the entry point, at a fixed path) and one hidden requirement,
-// a command check that runs the benchmark's own tests against it. The tests,
-// the harness and the run's nonce live only in that check's input files:
-// the room never shows a requirement's check to an agent (S4a handoff), and
-// a benchmark card's requirements are marked hidden, so cardContracts never
-// turns them into contract examples either. Workers see the task's prompt
-// (for HumanEval and MultiPL-E, the signature and the docstring with its own
-// examples) and the function contract, nothing more.
+// A task room is an ordinary room started from the task's prompt: it
+// builds what the prompt asks, with its own validations, and completes on
+// them. The grader stays outside it: after the room completes, the run
+// grades the bundle the room ships, in a box of its own, with the
+// benchmark's tests (src/bench-run.js). The tests, the harness and the run's
+// nonce live only in the grader's input files.
 import { fetchPolicy, guardedFetch, plainBody, readCapped, inputCapFor, allowedType, redactText, FetchRefused } from './fetcher.js';
-import { CARD_LIMITS } from './card.js';
 import { GOAL_LIMIT } from './model.js';
 import { pythonHarness as pyHarness, javascriptHarness as jsHarness } from './bench-harness.js';
 
@@ -28,7 +24,7 @@ export const BENCH_LIMITS = Object.freeze({
   inlineBytes: 4 * 1024 * 1024,   // a pasted or uploaded dataset
   timeoutMs: 30_000,          // one dataset fetch, every page together
   pageRows: 100,              // the datasets-server rows API's page size
-  fixture: CARD_LIMITS.fixture, // one input file of the check (tests, prompt)
+  fixture: 20000,             // one input file of the grader (tests, prompt)
   goal: GOAL_LIMIT,
   concurrency: [1, 16], budget: [1, 100000], taskTimeoutMs: [60_000, 6 * 3600_000]
 });
@@ -43,8 +39,8 @@ const LANGS = Object.freeze({
   javascript: {path: 'solution.js', exe: 'node', name: 'JavaScript', fence: 'javascript'}
 });
 const LANG_ALIASES = {py: 'python', python: 'python', python3: 'python', js: 'javascript', javascript: 'javascript', node: 'javascript', nodejs: 'javascript'};
-// The check's input files. They are data files (.txt) by the card's rule:
-// the harness is run by its interpreter, never imported by the deliverable.
+// The grader's input files: data files (.txt), so the harness is run by its
+// interpreter and never imported by the solution.
 export const FIXTURE = Object.freeze({harness: 'bench_check.txt', tests: 'bench_tests.txt', prompt: 'bench_prompt.txt', nonce: 'bench_nonce.txt'});
 export const PASS_MARK = 'BENCH-PASS';
 
@@ -144,19 +140,10 @@ export function promptEntry(prompt, language) {
   const defs = defsOf(prompt, language === 'javascript' ? JS_FN : PY_DEF);
   return defs.at(-1) || null;
 }
-// The first line of a docstring or comment, as the contract's does.
-function firstSentence(prompt, entry) {
-  const s = String(prompt ?? '');
-  const at = entry ? Math.max(0, s.search(new RegExp(`(?:def|function)\\s+${entry.replace(/\$/g, '\\$')}\\s*\\(`))) : 0;
-  const doc = /(?:"""|''')\s*([\s\S]*?)(?:"""|'''|$)/.exec(s.slice(at))?.[1] || s.replace(/^\s*\/\/\s?/gm, '').replace(/function[\s\S]*$/, '');
-  const line = doc.split(/\n\s*\n|>>>|\bExample|\bFor example/)[0].replace(/\s+/g, ' ').trim();
-  return clip(line.replace(/[.\s]+$/, ''), 160);
-}
 
 // --- harnesses ------------------------------------------------------------------
-// The supervisors the check runs (src/bench-harness.js): static refusal, a
-// worker process without the nonce, pristine references, counted assertions
-// and a token-signed report.
+// The supervisors the grader runs (src/bench-harness.js): a worker process
+// without the nonce, counted assertions and a token-signed report.
 export { HARNESS_EXIT } from './bench-harness.js';
 export const pythonHarness = ({entry, path, callCheck = true}) => pyHarness({entry, path, callCheck, files: FIXTURE, passMark: PASS_MARK});
 export const javascriptHarness = ({entry, path}) => jsHarness({entry, path, files: FIXTURE, passMark: PASS_MARK});
@@ -182,23 +169,15 @@ function goalOf({prompt, language, entry, params, signature, format}) {
   return `Complete this ${L.name} function and deliver it. ${deliver} Keep the given signature, and define every other function the code below defines.\n\n\`\`\`${L.fence}\n${prompt.replace(/\s+$/, '')}\n\`\`\``;
 }
 
-// The card of one task (v8 §1.1). One function deliverable; one hidden
-// requirement, a command check running the harness against the bundle.
-export function benchCard({id, language, entry, params = [], does = '', tests, prompt = '', callCheck = true, nonce}) {
+// The grader of one task: a command check that runs the harness against the
+// bundle the room ships, with the benchmark's tests and the nonce as its
+// input files (validation-shaped, so src/checks.js checkPlan reads it).
+export function benchGrader({language, entry, tests, prompt = '', callCheck = true, nonce}) {
   const L = LANGS[language];
   const harness = language === 'python' ? pythonHarness({entry, path: L.path, callCheck}) : javascriptHarness({entry, path: L.path});
   const files = {[FIXTURE.harness]: harness, [FIXTURE.tests]: tests, [FIXTURE.nonce]: nonce};
   if (language === 'python' && prompt) files[FIXTURE.prompt] = prompt;
-  return {
-    card: 1, source: 'benchmark',
-    summary: clip(`Benchmark task ${id}: the ${L.name} function ${entry}`, CARD_LIMITS.summary),
-    languages: [language],
-    deliverables: [{name: entry, kind: 'function', does: does || `the function the task ${id} describes`, params, path: L.path}],
-    requirements: [{id: 'R1', says: clip(`${entry} passes the benchmark's hidden tests`, CARD_LIMITS.says), source: clip(`benchmark task ${id}`, CARD_LIMITS.source),
-      serves: [entry], hidden: true,
-      check: {kind: 'command', run: `${L.exe} ${FIXTURE.harness}`, files, expect: {exit: 0, stdout_has: [`${PASS_MARK} ${nonce}`]}}}],
-    decisions: []
-  };
+  return {id: 'grader', serves: [], check: {kind: 'command', run: `${L.exe} ${FIXTURE.harness}`, files, expect: {exit: 0, stdout_has: [`${PASS_MARK} ${nonce}`]}}};
 }
 
 // One row as a task, or {skip} with the reason. opts: format (forced),
@@ -244,8 +223,8 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
   const params = entry.params || [];
   const goal = goalOf({prompt, language, entry: entry.name, params, signature: entry.signature, format: f});
   if (goal.length > BENCH_LIMITS.goal) return {id, skip: `its prompt makes a goal of ${goal.length} characters (at most ${BENCH_LIMITS.goal})`};
-  const card = benchCard({id, language, entry: entry.name, params, does: firstSentence(prompt, entry.name), tests, prompt: promptFixture, callCheck, nonce: nonce || newNonce()});
-  return {id, format: f, language, entry: entry.name, prompt: goal, card};
+  const grader = benchGrader({language, entry: entry.name, tests, prompt: promptFixture, callCheck, nonce: nonce || newNonce()});
+  return {id, format: f, language, entry: entry.name, prompt: goal, grader};
 }
 
 // Rows → tasks, at most `limit`, with the skipped rows and why.
@@ -275,8 +254,8 @@ async function sha256(text) {
 // runs over the same tasks compare equal whatever page size or text fetched
 // them, and differ when a task's prompt or tests differ.
 // One task's digest (its goal and its tests), so runs compare task by task.
-export const taskDigest = async t => (await sha256(JSON.stringify([t.prompt, t.card?.requirements?.[0]?.check?.files?.[FIXTURE.tests] ?? '']))).slice(0, 16);
-export const tasksDigest = tasks => sha256(JSON.stringify(tasks.map(t => [t.id, t.prompt, t.card?.requirements?.[0]?.check?.files?.[FIXTURE.tests] ?? ''])));
+export const taskDigest = async t => (await sha256(JSON.stringify([t.prompt, t.grader?.check?.files?.[FIXTURE.tests] ?? '']))).slice(0, 16);
+export const tasksDigest = tasks => sha256(JSON.stringify(tasks.map(t => [t.id, t.prompt, t.grader?.check?.files?.[FIXTURE.tests] ?? ''])));
 // The policy for dataset fetches: the owner's allowlist (FETCH_ALLOW, or the
 // fetcher's default) narrowed to BENCH_HOSTS, the deployment's own hosts
 // refused, archives (a .jsonl.gz served as octet-stream) allowed.
@@ -387,55 +366,62 @@ export async function loadDataset(dataset, {fetch, policy, limit = BENCH_LIMITS.
 // rate limits, upstream and network failures, Artifacts and Container
 // outages. ControlRoom.benchSummary counts the room's error events that match.
 export const INFRA_ERROR = /AiError|InferenceUpstream|\b(?:3040|3043|429|500|502|503|504)\b|capacity|rate.?limit|overloaded|unavailable|temporarily|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|fetch failed|network|socket hang up|Artifacts \w+ failed|BUILD_EXECUTORS|Container|executor/i;
-const HOLD_ERROR = new Set(['card_failed', 'card_blocked', 'checks_blocked']);
-const HOLD_FAIL = new Set(['checks_failed', 'checks_exhausted', 'checks_doubtful', 'benchmark_failed']);
-// One task room's outcome from its summary (ControlRoom.benchSummary), or
+const HOLD_ERROR = new Set(['checks_blocked']);
+const HOLD_FAIL = new Set(['checks_failed', 'checks_exhausted', 'split_failed']);
+// One task room's state from its summary (ControlRoom.benchSummary), or
 // null while it is still going:
-//  - pass: every card requirement passed; fail: one failed (S4b records
-//    requirement_status, and ends a room whose hidden tests failed as
-//    failed / benchmark_failed);
-//  - error, never scored: checks that could not run (passed null,
-//    checks_blocked), a card that does not validate, the room's own error,
-//    an observer's stop, agents stalled by platform failures, and a turn
-//    budget spent mostly on them;
-//  - fail: an agent failed, or the room's own work used up the turn budget;
-//  - unverified: complete without requirement results.
-export function taskOutcome(s) {
+//  - complete: the room completed on its own validations, so the run
+//    grades what it ships (gradeOutcome);
+//  - error, never scored: validations that could not run (checks_blocked),
+//    the room's own error, an observer's stop, agents stalled by platform
+//    failures, and a turn budget spent mostly on them;
+//  - fail: an agent failed, the room held where only the person can go on,
+//    or its own work used up the turn budget.
+export function roomOutcome(s) {
   if (!s) return {outcome: 'error', detail: 'the room gave no summary'};
   const terminal = ['complete', 'failed', 'error'].includes(s.status) || (s.status === 'paused' && !s.busy);
   if (!terminal) return null;
-  const ids = s.requirements || [], st = s.requirement_status || {};
-  const requirements = ids.map(id => ({id, passed: st[id] && typeof st[id].passed === 'boolean' ? st[id].passed : null, detail: clip(st[id]?.detail, 300)}));
-  const failed = requirements.filter(r => r.passed === false), recorded = requirements.filter(r => st[r.id]);
-  const out = (outcome, detail) => ({outcome, requirements, detail: clip(detail, 300)});
-  if (ids.length && requirements.every(r => r.passed === true)) return out('pass', '');
-  if (failed.length) return out('fail', `${failed.map(r => r.id).join(', ')} failed`);
-  if (recorded.some(r => r.passed === null)) return out('error', `the checks could not run: ${recorded.find(r => r.passed === null).detail || 'infrastructure'}`);
-  const kind = s.pause?.kind;
+  const kind = s.pause?.kind, out = (outcome, detail) => ({outcome, detail: clip(detail, 300)});
+  if (s.status === 'complete') return out('complete', '');
   if (s.status === 'error') return out('error', s.failure || 'the room stopped with an error');
   if (HOLD_ERROR.has(kind)) return out('error', `${kind}: ${s.pause.text || ''}`);
   if (s.stopped) return out('error', 'the room was stopped by an observer');
   if (s.stalled_infra) return out('error', `agents stopped after repeated platform failures (${s.infra_errors} error events)`);
   if (s.status === 'failed') return out('fail', s.failure || 'the room failed');
   if (HOLD_FAIL.has(kind)) return out('fail', `${kind}: ${s.pause.text || ''}`);
-  if (s.status === 'complete' || kind === 'v8_checks_pending') return out('unverified', kind === 'v8_checks_pending' ? 'the card\'s checks did not run' : 'complete without requirement results');
   if (s.infra_errors >= 3 && s.infra_errors * 4 >= (s.turns || 0)) return out('error', `the turn budget went mostly on platform failures (${s.infra_errors} of ${s.turns} turns)`);
   return out('fail', s.pause?.text || 'the turn budget ended before the task was solved');
 }
+// The grader's result as an outcome: pass, fail (what it observed, the
+// complaint a run with feedback 'until_done' sends the room), or error when
+// it could not run.
+export function gradeOutcome(g) {
+  if (!g || g.infrastructure) return {outcome: 'error', detail: clip(`the grader could not run: ${g?.infrastructure || 'no answer'}`)};
+  return g.passed ? {outcome: 'pass', detail: ''} : {outcome: 'fail', detail: clip(g.detail || 'the benchmark\'s tests failed', 900)};
+}
 
 const SCORED = new Set(['pass', 'fail', 'timeout']);
-// Aggregates of a run's task rows: pass@1 over the scored tasks (pass, fail,
-// timeout; errors and unverified rooms are counted apart), mean wall time,
-// total tokens and Container seconds.
-export function aggregate(rows) {
+// Aggregates of a run's task rows: pass@1 (feedback 'once': each task's
+// first grading) over the scored tasks (pass, fail, timeout; errors are
+// counted apart), and, for a run with feedback 'until_done', the share that
+// passed once the grader's failures went back as complaints, with the mean
+// grading rounds it took; mean wall time, total tokens and Container seconds.
+export function aggregate(rows, {feedback = 'once'} = {}) {
   const done = rows.filter(r => r.outcome);
-  const by = Object.fromEntries(['pass', 'fail', 'timeout', 'error', 'unverified', 'stopped'].map(k => [k, done.filter(r => r.outcome === k).length]));
-  const scored = done.filter(r => SCORED.has(r.outcome)).length;
+  const first = r => r.once || r.outcome;
+  const by = Object.fromEntries(['pass', 'fail', 'timeout', 'error', 'stopped'].map(k => [k, done.filter(r => first(r) === k).length]));
+  const scored = done.filter(r => SCORED.has(first(r))).length;
+  const untilDone = feedback === 'until_done' ? (() => {
+    const scoredDone = done.filter(r => SCORED.has(r.outcome)), passed = scoredDone.filter(r => r.outcome === 'pass');
+    const rounds = passed.map(r => Number(r.rounds)).filter(n => n > 0);
+    return {until_done: {scored: scoredDone.length, pass: passed.length, pass_rate: scoredDone.length ? passed.length / scoredDone.length : null,
+      mean_rounds_to_done: rounds.length ? Math.round(rounds.reduce((a, n) => a + n, 0) / rounds.length * 100) / 100 : null}};
+  })() : {};
   const timed = done.filter(r => Number.isFinite(r.wall_ms) && r.wall_ms > 0);
   const sum = k => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
   return {
     tasks: rows.length, finished: done.length, running: rows.filter(r => r.status === 'running').length, queued: rows.filter(r => r.status === 'queued').length,
-    ...by, scored, pass_at_1: scored ? by.pass / scored : null,
+    feedback, ...by, scored, pass_at_1: scored ? by.pass / scored : null, ...untilDone,
     mean_ms: timed.length ? Math.round(timed.reduce((a, r) => a + r.wall_ms, 0) / timed.length) : null,
     tokens: sum('tokens'), prompt_tokens: sum('prompt_tokens'), completion_tokens: sum('completion_tokens'),
     container_s: Math.round(sum('container_ms') / 100) / 10
@@ -446,7 +432,7 @@ export function aggregate(rows) {
 export function compareRuns(a, b) {
   const rowsA = new Map((a?.tasks || []).map(t => [t.task_id, t])), rowsB = new Map((b?.tasks || []).map(t => [t.task_id, t]));
   const shared = [...rowsA.keys()].filter(id => rowsB.has(id));
-  const pick = t => ({outcome: t.outcome || null, wall_ms: t.wall_ms ?? null, tokens: t.tokens ?? 0, room: t.room || null});
+  const pick = t => ({outcome: t.once || t.outcome || null, wall_ms: t.wall_ms ?? null, tokens: t.tokens ?? 0, room: t.room || null});
   const tasks = shared.map(id => ({task_id: id, a: pick(rowsA.get(id)), b: pick(rowsB.get(id))}));
   const both = tasks.filter(t => SCORED.has(t.a.outcome) && SCORED.has(t.b.outcome));
   const rate = side => both.length ? both.filter(t => t[side].outcome === 'pass').length / both.length : null;

@@ -38,7 +38,7 @@ export function askName(v) {
 // The catalogue of one agent: {name, kind, is} per entry, each name once, in
 // this order: its own contracts, the contracts it may use, the existing
 // files granted to it, the chunks of linked pages it holds. own and uses are
-// contracts ({name, owner?}); base is paths; sources is [{ref, title}]. A
+// contracts ({name}); base is paths; sources is [{ref, title}]. A
 // granted file its own contract names is listed once, as a file, so asking
 // for it quotes its text.
 // v8 live 4: packages ({name, provides}), the installed modules its row
@@ -51,7 +51,7 @@ export function catalogue({own = [], uses = [], packages = [], base = [], source
     out.push({name, kind, is});
   };
   for (const c of own) if (!files.has(c?.name)) add(c?.name, 'contract', MESSAGES.available_own());
-  for (const c of uses) add(c?.name, 'contract', MESSAGES.available_use({owner: typeof c?.owner === 'string' ? c.owner : ''}));
+  for (const c of uses) add(c?.name, 'contract', MESSAGES.available_use());
   for (const p of packages) add(p?.name, 'package', MESSAGES.available_package({provides: typeof p?.provides === 'string' ? p.provides : ''}));
   for (const p of base) add(p, 'base', MESSAGES.available_base());
   for (const s of sources) {

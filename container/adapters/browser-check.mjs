@@ -174,7 +174,7 @@ async function offersOf(page, ms = 1500) {
 }
 const offersLine = o => !o ? '' : `; fields found: ${o.fields.length ? o.fields.map(f => [f.label && `label ${quote(f.label)}`, f.placeholder && `placeholder ${quote(f.placeholder)}`, f.name && `name ${quote(f.name)}`].filter(Boolean).join(' ') || 'an unlabelled field').join(', ') : 'none'}; buttons and links found: ${o.buttons.length ? o.buttons.map(b => quote(b.text)).join(', ') : 'none'}`;
 // v8 live 4: the elements of a page that a simple selector matches (the
-// card's SELECTOR: a tag, #id, .class, [attribute], [attribute=value]),
+// validations' SELECTOR (src/validations.js): a tag, #id, .class, [attribute], [attribute=value]),
 // each as {text, shown, said}: its visible text (innerText, as expect_text
 // reads the page), whether it shows, and how a report names it (with its
 // value, aria-label, alt or title when it has no text). v8 live 4 review:

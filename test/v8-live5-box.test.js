@@ -7,22 +7,24 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {liveRoom, events, fileBlocks, verifyCard, snapshotHash} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, snapshotHash, verifyChecks} from './helpers/room.js';
 import {fakeBoxes} from './helpers/boxes.js';
 const {freshBox, boxName, boxBuildCommand, BOX_HOSTNAME, BOX_NAME, BOX_LIFETIME_MS, classifyEnvironment, environmentFaults, hostnameOk} = await import('../src/box.js');
-const {BoxPrewarm, cardBoxSpec, PREWARM_IDLE_MS} = await import('../src/box-prewarm.js');
+const {BoxPrewarm, levelBoxSpec, PREWARM_IDLE_MS} = await import('../src/box-prewarm.js');
 const runner = await import('../container/build-runner.mjs');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const GOAL = 'A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
-const CARD = {card: 1, summary: 'A converter command and its usage guide', languages: ['javascript', 'text'],
-  deliverables: [
+// The level the room's manager states: a converter command and its usage guide, three examples each.
+const temp = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', run: `temp ${c}`, expect: {exit: 0, stdout_has: [f]}}});
+const judge = (id, question) => ({id, serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question}});
+const LEVEL = {
+  contracts: [
     {name: 'temp', kind: 'command', path: 'temp.js', does: 'prints the Fahrenheit value of a Celsius temperature', inputs: [{name: 'celsius', is: 'a number'}]},
     {name: 'USAGE.md', kind: 'doc', path: 'USAGE.md', does: 'how to use the converter'}],
-  requirements: [
-    {id: 'R1', says: 'Converting 100 degrees Celsius prints the Fahrenheit value', source: 'converts a temperature from Celsius to Fahrenheit', serves: ['temp'], check: {kind: 'command', run: 'temp 100', expect: {exit: 0, stdout_has: ['212']}}},
-    {id: 'R2', says: 'The guide explains how to run the converter', source: 'a short usage guide', serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question: 'Does it show how to run the converter?'}}],
-  decisions: []};
+  validations: [temp('a', '100', '212'), temp('b', '0', '32'), temp('c', '-40', '-40'),
+    judge('d', 'Does it show how to run the converter?'), judge('e', 'Does it say what the converter prints?'), judge('f', 'Does it say which number to give?')],
+  pieces: []};
 const RIGHT = 'function main() { console.log(String(Number(process.argv[2]) * 9 / 5 + 32)); }\nmain();\n';
 const WRONG = 'function main() { console.log(String(Number(process.argv[2]))); }\nmain();\n';
 const USAGE = {path: 'USAGE.md', content: '# Usage\n\nRun `node temp.js 100`.\n'};
@@ -32,10 +34,12 @@ const SPEC = {image: 'check', instance: 'standard-1', internet: false};
 const LONG = 'a'.repeat(64);
 const BAD_HOST = {hostname: LONG, hostname_ok: false, hostname_longest_label: 64, hostname_status: 'unshare: EPERM',
   getfqdn: {ok: false, error: "UnicodeError: encoding with 'idna' codec failed (UnicodeError: label too long)", ms: 30}};
-const room = ({answers = [RIGHT], leafMs = 0, readyMs = 0, run, card = () => CARD} = {}) => {
+// A room on levels: its manager is caught by the pre-grade, its splitter states LEVEL, one worker writes.
+const room = ({answers = [RIGHT], leafMs = 0, readyMs = 0, run, splitMs = 0} = {}) => {
   let n = 0;
-  const boxes = fakeBoxes({readyMs, run: run || (req => verifyCard({...req}, {isolation: []}))});
-  return liveRoom({boxes, card, clef, leaf: async () => { if (leafMs) await sleep(leafMs); return fileBlocks([{path: 'temp.js', content: answers[Math.min(n++, answers.length - 1)]}, USAGE], {summary: 'wrote the converter', done: true}); }});
+  const boxes = fakeBoxes({readyMs, run: run || (req => verifyChecks({...req}, {isolation: []}))});
+  return liveRoom({boxes, clef, split: async () => { if (splitMs) await sleep(splitMs); return LEVEL; },
+    leaf: async () => { if (leafMs) await sleep(leafMs); return fileBlocks([{path: 'temp.js', content: answers[Math.min(n++, answers.length - 1)]}, USAGE], {summary: 'wrote the converter', done: true}); }});
 };
 const spansOf = (r, kind, name) => r.spans().filter(s => s.kind === kind && s.name === name);
 
@@ -118,8 +122,8 @@ test('the runner inventory reports the host name, its longest label, how the box
   assert.equal(hung.getfqdn.ok, false);
   assert.match(hung.getfqdn.error, /no answer within 8 s/);
   assert.equal((await runner.hostnameInventory({python: false})).getfqdn, null, 'no Python, no getfqdn probe');
-  // verifyCard puts them in its inventory.
-  const files = {'a.txt': 'x'}, report = await verifyCard({fingerprint: 'f', snapshot_hash: await snapshotHash(new Map(Object.entries(files))), mode: 'card', files, plan: {checks: []}, toolchains: []}, {isolation: []});
+  // verifyChecks puts them in its inventory.
+  const files = {'a.txt': 'x'}, report = await verifyChecks({fingerprint: 'f', snapshot_hash: await snapshotHash(new Map(Object.entries(files))), mode: 'checks', files, plan: {checks: []}, toolchains: []}, {isolation: []});
   for (const k of ['hostname', 'hostname_ok', 'hostname_longest_label', 'hostname_status', 'getfqdn']) assert.ok(Object.hasOwn(report.inventory, k), k);
   assert.equal(typeof report.inventory.hostname, 'string');
 });
@@ -161,7 +165,7 @@ test('classifyEnvironment: a fact that is not box-wide explains only the failure
 
 test('a v8 room whose box has a bad host name holds at checks_blocked for the person, and routes nothing to the worker', async () => {
   // The real runner on the wrong answer, in a box whose inventory reports the issue tracker run's host name.
-  const r = room({answers: [WRONG], run: async req => { const out = await verifyCard({...req}, {isolation: []}); return {...out, inventory: {...out.inventory, ...BAD_HOST}}; }});
+  const r = room({answers: [WRONG], run: async req => { const out = await verifyChecks({...req}, {isolation: []}); return {...out, inventory: {...out.inventory, ...BAD_HOST}}; }});
   await r.room.start(GOAL, 10, {pipeline: 'v8'});
   await r.drain();
   const pause = r.room.snapshot().pause;
@@ -170,16 +174,16 @@ test('a v8 room whose box has a bad host name holds at checks_blocked for the pe
   assert.match(r.room.get('compile_infrastructure:root'), /host name is not one a check can run under/);
   assert.equal(r.room.problems('1=1').length, 0, 'nothing is routed');
   assert.equal(r.calls.leaf.length, 1, 'the worker was never asked to repair it');
-  assert.equal(r.room.read('requirement_status', {}).R1.passed, null, 'R1 untested, not failed');
+  assert.equal(r.room.read('validation_status', {}).V1.passed, null, 'V1 untested, not failed');
   assert.match(events(r.room, 'box_environment')[0].body, /host name/);
   assert.equal(r.room.read('toolchain_inventory', null).hostname, LONG, 'the inventory the export shows');
 });
 
 // ------------------------------------------------------------ the Box: prewarmed, then compiled once
 test('Box: a prewarmed box compiles once, only for the spec it was opened with; a compile arriving while it starts waits for it', async () => {
-  const ns = fakeBoxes({readyMs: 60, run: async req => ({fingerprint: req.fingerprint, snapshot_hash: req.snapshot_hash, mode: 'card', passed: true, checks: []})});
+  const ns = fakeBoxes({readyMs: 60, run: async req => ({fingerprint: req.fingerprint, snapshot_hash: req.snapshot_hash, mode: 'checks', passed: true, checks: []})});
   const box = freshBox(ns), opening = box.open(SPEC);
-  const req = {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'card', plan: {checks: []}};
+  const req = {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}};
   const r = await box.compile(SPEC, req);
   assert.equal(r.box.prewarmed, true);
   assert.equal((await opening).name, r.box.name);
@@ -198,15 +202,13 @@ test('Box: a prewarmed box compiles once, only for the spec it was opened with; 
 });
 
 // ------------------------------------------------------------ BoxPrewarm
-test('cardBoxSpec: the image the card\'s checks need, or no box for a card that runs nothing in one', () => {
-  assert.deepEqual(cardBoxSpec(CARD), SPEC);
-  const browser = {...CARD, requirements: [...CARD.requirements, {id: 'R3', says: 'page', serves: ['temp'], check: {kind: 'browser', serve: 'web', steps: []}}]};
-  assert.deepEqual(cardBoxSpec(browser), {...SPEC, image: 'browser'});
-  const untested = {...CARD, requirements: [...CARD.requirements, {id: 'R3', says: 'page', serves: ['temp'], untested: true, check: {kind: 'browser', serve: 'web', steps: []}}]};
-  assert.deepEqual(cardBoxSpec(untested), SPEC, 'a check that never runs needs no browser');
-  const docs = {card: 1, deliverables: [{name: 'README.md', kind: 'doc', path: 'README.md'}], requirements: [{id: 'R1', check: {kind: 'judge', path: 'README.md', question: 'q'}}]};
-  assert.equal(cardBoxSpec(docs), null);
-  assert.equal(cardBoxSpec(null), null);
+test('levelBoxSpec: the image a level\'s validations need, or no box for a level that runs nothing in one', () => {
+  assert.deepEqual(levelBoxSpec(LEVEL), SPEC);
+  const browser = {...LEVEL, validations: [...LEVEL.validations, {id: 'g', serves: ['temp'], check: {kind: 'browser', serve: 'web', steps: []}}]};
+  assert.deepEqual(levelBoxSpec(browser), {...SPEC, image: 'browser'});
+  const docs = {contracts: [{name: 'README.md', kind: 'doc', path: 'README.md'}], validations: [{id: 'a', check: {kind: 'judge', path: 'README.md', question: 'q'}}]};
+  assert.equal(levelBoxSpec(docs), null);
+  assert.equal(levelBoxSpec(null), null);
 });
 
 const prewarmer = (ns, cap = 4, opts = {}) => {
@@ -288,16 +290,17 @@ test('BoxPrewarm: a matching compile takes the box; another image discards it un
 });
 
 // ------------------------------------------------------------ the room
-test('a v8 room opens its first compile\'s box while the card is written and the worker writes; the compile takes it, warm', async () => {
+test('a v8 room opens its first compile\'s box when its first level is admitted, while the worker writes; the compile takes it, warm', async () => {
   const r = room({readyMs: 250, leafMs: 400});
   await r.room.start(GOAL, 10, {pipeline: 'v8'});
   await r.drain();
   assert.equal(r.room.get('status'), 'complete', events(r.room).slice(-6).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).join('\n'));
-  const [pre] = spansOf(r.room, 'box', 'prewarm'), [compile] = spansOf(r.room, 'container', 'card');
+  const [pre] = spansOf(r.room, 'box', 'prewarm'), [compile] = spansOf(r.room, 'container', 'checks');
   assert.ok(pre, 'a prewarm span');
-  const cardWritten = events(r.room, 'card_written')[0].ts, firstWorker = r.room.spans().filter(s => s.kind === 'model' && s.agent !== 'system').sort((a, b) => a.start_ms - b.start_ms)[0];
-  assert.ok(pre.start_ms <= cardWritten, 'opened from the card writer\'s first card, before the card was saved');
-  assert.ok(pre.start_ms <= firstWorker.start_ms, 'before the first worker turn');
+  const admitted = events(r.room, 'hand_down')[0].ts, worker = r.room.allNodes().find(n => n.role === 'worker').id;
+  const firstWrite = r.room.spans().filter(s => s.kind === 'model' && s.agent === worker).sort((a, b) => a.start_ms - b.start_ms)[0];
+  assert.ok(pre.start_ms <= admitted, 'opened as the level was admitted');
+  assert.ok(pre.start_ms <= firstWrite.start_ms, 'before the worker\'s first turn');
   assert.ok(pre.end_ms - pre.start_ms >= 240, 'its cold start');
   assert.ok(pre.end_ms <= compile.start_ms + 50, 'ready by the time the compile began');
   assert.equal(compile.attrs.box.prewarmed, true);
@@ -316,7 +319,7 @@ test('a repair round opens a fresh box (the prewarm serves the first compile onl
   await r.room.start(GOAL, 10, {pipeline: 'v8'});
   await r.drain();
   assert.equal(r.room.get('status'), 'complete');
-  const compiles = spansOf(r.room, 'container', 'card');
+  const compiles = spansOf(r.room, 'container', 'checks');
   assert.equal(compiles.length, 2);
   assert.deepEqual(compiles.map(s => !!s.attrs.box.prewarmed), [true, false]);
   assert.notEqual(compiles[0].attrs.box.name, compiles[1].attrs.box.name);
@@ -329,31 +332,18 @@ test('a repair round opens a fresh box (the prewarm serves the first compile onl
 test('a prewarmed box no compile takes is stopped when the run ends', async () => {
   // The worker's turn ends the run (a stop) before any compile.
   let r;
-  r = liveRoom({boxes: fakeBoxes({readyMs: 20, run: async () => { throw new Error('nothing compiles'); }}), card: () => CARD, clef,
+  r = liveRoom({boxes: fakeBoxes({readyMs: 20, run: async () => { throw new Error('nothing compiles'); }}), split: () => LEVEL, clef,
     leaf: async () => { await r.room.stop(); return fileBlocks([{path: 'temp.js', content: RIGHT}], {summary: 'part of it', done: false}); }});
   await r.room.start(GOAL, 10, {pipeline: 'v8'});
   await r.drain();
   assert.notEqual(r.room.get('status'), 'running');
-  assert.equal(spansOf(r.room, 'container', 'card').length, 0, 'no compile ran');
+  assert.equal(spansOf(r.room, 'container', 'checks').length, 0, 'no compile ran');
   assert.equal(r.boxes.boxes.length, 1, 'the prewarmed box');
   const [{container}] = r.boxes.boxes;
   assert.deepEqual([container.starts, container.running], [1, false], 'opened, then stopped');
   assert.deepEqual(container.log.filter(l => l[0] === 'exec').map(l => l[1][0]), ['true'], 'nothing ran in it');
   assert.match(spansOf(r.room, 'box', 'prewarm_unused')[0].attrs.reason, /the run ended/);
   assert.equal(r.room.boxesOpen, 0);
-});
-
-test('a bench task room (a provided card) prewarms at its start and compiles in that box', async () => {
-  const {taskFromRow} = await import('../src/bench.js');
-  const {MULTIPLE_JS} = await import('./helpers/bench-fixtures.js');
-  const task = taskFromRow(MULTIPLE_JS[0]);
-  const ns = fakeBoxes({readyMs: 20, run: req => verifyCard({...req}, {isolation: []})});
-  const r = liveRoom({room_id: 'bench-abcdef012345-0-0', boxes: ns, clef, card: () => { throw new Error('no card writer for a provided card'); },
-    leaf: () => fileBlocks([{path: 'solution.js', content: 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n'}], {summary: 'wrote solution.js', done: true})});
-  await r.room.start(task.prompt, 20, {pipeline: 'v8'}, r.room.get('room_id'), task.card);
-  await r.drain();
-  assert.equal(ns.boxes.length, 1);
-  assert.equal(spansOf(r.room, 'container', 'card')[0].attrs.box.prewarmed, true);
 });
 
 // ------------------------------------------------------------ the S0 probe

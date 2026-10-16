@@ -1,5 +1,5 @@
-// v8 S4a: the Container's card verification (container/build-runner.mjs
-// verifyCard), run directly in Node like the other Container tests: file,
+// v8 S4a: the Container's verification of a level's validations (container/build-runner.mjs
+// verifyChecks), run directly in Node like the other Container tests: file,
 // command, call, http and browser checks against small deliverables, each
 // failure short and naming the deliverable. The browser test needs Chromium
 // and Playwright (PLAYWRIGHT_BROWSERS_PATH, NODE_PATH) and is skipped
@@ -17,21 +17,21 @@ process.env.BUILD_RUNNER_WORKDIR=tmpdir();
 register('./cloudflare-loader.mjs',import.meta.url);
 if(!process.env.PLAYWRIGHT_BROWSERS_PATH&&existsSync('/opt/pw-browsers'))process.env.PLAYWRIGHT_BROWSERS_PATH='/opt/pw-browsers';
 if(!process.env.NODE_PATH&&existsSync('/opt/node-tools/node_modules/playwright'))process.env.NODE_PATH='/opt/node-tools/node_modules';
-const {verifyCard,verifyBuild,resolveCommand,splitWords,jsonHas,cardLimits,execCheck,networkIsolation}=await import('../container/build-runner.mjs');
+const {verifyChecks,verifyBuild,resolveCommand,splitWords,jsonHas,checkLimits,execCheck,networkIsolation}=await import('../container/build-runner.mjs');
 const {snapshotHash}=await import('../src/build-verification.js');
 const {TOOLCHAINS}=await import('../src/toolchains.js');
 const {BuildExecutor}=await import('../src/build-executor.js');
 
 const ROWS=JSON.parse(JSON.stringify(TOOLCHAINS));
 const hasPython=spawnSync('python3',['--version']).status===0;
-const card=async(files,plan,extra={})=>verifyCard({mode:'card',fingerprint:'f',snapshot_hash:await snapshotHash(files),files,toolchains:ROWS,plan,limits:{total_ms:120_000,check_ms:15_000,step_ms:4000},...extra});
+const run=async(files,plan,extra={})=>verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:await snapshotHash(files),files,toolchains:ROWS,plan,limits:{total_ms:120_000,check_ms:15_000,step_ms:4000},...extra});
 const byId=report=>Object.fromEntries(report.checks.map(c=>[c.id,c]));
 // A failure detail is one short line.
 const short=c=>{if(process.env.SHOW_DETAILS)console.log(`[${c.id}] ${c.detail}`);assert.ok(c.detail.length<=300,c.detail);assert.ok(!c.detail.includes('\n'),c.detail);};
 
 test('file checks: exists, non-empty, has each string, parses as JSON; failures name the file',async()=>{
   const files={'README.md':'# Word count\n\nUsage: python3 wc.py < file\n','data/config.json':'{"top": 3}','bad.json':'{"top": 3,}','empty.txt':' \n'};
-  const report=await card(files,{checks:[
+  const report=await run(files,{checks:[
     {id:'R1',kind:'file',path:'README.md',has:['Usage','wc.py']},
     {id:'R2',kind:'file',path:'data/config.json',json:true},
     {id:'R3',kind:'file',path:'bad.json',json:true},
@@ -47,7 +47,7 @@ test('file checks: exists, non-empty, has each string, parses as JSON; failures 
   assert.equal(c.R6.detail,'empty.txt is empty');
   assert.ok(!c.R7,'a judge check is the Worker\'s (Clef), never run here');
   assert.equal(report.passed,false);
-  assert.equal(report.mode,'card');assert.equal(report.snapshot_hash,await snapshotHash(files));
+  assert.equal(report.mode,'checks');assert.equal(report.snapshot_hash,await snapshotHash(files));
   assert.deepEqual(report.checks.map(x=>x.id),['R1','R2','R3','R4','R5','R6']);
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
@@ -81,7 +81,7 @@ print(ratio(sys.stdin.read()))
 
 test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside it; failures name the file and the line',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const files={'wc.py':WC_PY,'ratio.py':CRASH_PY,'notes.md':'# notes\n'};
-  const report=await card(files,{
+  const report=await run(files,{
     syntax:[{toolchain:'python',files:['wc.py','ratio.py']}],
     commands:{wordcount:['python3','wc.py']},
     checks:[
@@ -101,7 +101,7 @@ test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside i
   assert.equal(c.R4.detail,'python3 wc.py: printed "2", expected "3"');
   assert.match(c.R5.detail,/^ratio\.py: exit 1, expected 0; stderr: .*ZeroDivisionError: division by zero.* \(at ratio\.py:5\)$/);
   assert.deepEqual(c.R5.frames,[{path:'ratio.py',line:5,fn:'ratio'},{path:'ratio.py',line:7,fn:'<module>'}],'the raising frame first');
-  assert.ok(!c.R5.output.includes(tmpdir()+'/card-'),'the output names bundle paths, not the check folder');
+  assert.ok(!c.R5.output.includes(tmpdir()+'/checks-'),'the output names bundle paths, not the check folder');
   assert.match(c.R7.detail,/^rm is neither a command deliverable, a bundle file nor an installed executable$/);
   assert.match(c.R8.detail,/timed out after 2 s/);
   assert.equal(c.R9.detail,"fixture wc.py would replace the bundle's wc.py");
@@ -110,7 +110,7 @@ test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside i
 
 test('syntax: one process per row; a file that does not compile is an issue naming it, and the checks still run',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const files={'ok.py':'x = 1\n','broken.py':'def f(:\n    pass\n','also.py':'print(\n'};
-  const report=await card(files,{syntax:[{toolchain:'python',files:['ok.py','broken.py','also.py']}],checks:[{id:'R1',kind:'command',run:'ok.py',expect:{exit:0}}]},{isolation:[]});
+  const report=await run(files,{syntax:[{toolchain:'python',files:['ok.py','broken.py','also.py']}],checks:[{id:'R1',kind:'command',run:'ok.py',expect:{exit:0}}]},{isolation:[]});
   assert.equal(report.passed,false);
   const s=report.stages.find(x=>x.name==='syntax:python');
   assert.equal(s.passed,false);
@@ -174,7 +174,7 @@ def helper(x):
 
 test('call checks: JavaScript functions in one process, saved results read by later steps, expectations kept by the runner',async()=>{
   const files={'components/todos/todos.mjs':TODOS_MJS,'lib/slug.js':SLUG_CJS};
-  const report=await card(files,{checks:[
+  const report=await run(files,{checks:[
     {id:'R1',kind:'call',adapter:'javascript',module:'components/todos/todos.mjs',steps:[
       {call:'add',args:['Buy milk'],save:'t',expect:{id:1,title:'Buy milk',done:false}},
       {call:'toggle',args:['$t.id'],expect_has:'"done":true'},
@@ -196,7 +196,7 @@ test('call checks: JavaScript functions in one process, saved results read by la
 
 test('call checks: Python functions keep a saved object across steps, await coroutines, and name the raising line',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const files={'components/counter/count.py':COUNT_PY,'components/counter/broken.py':'def f(:\n'};
-  const report=await card(files,{checks:[
+  const report=await run(files,{checks:[
     {id:'R1',kind:'call',adapter:'python',module:'components/counter/count.py',steps:[
       {call:'make_counter',args:[],save:'c'},
       {call:'add_words',args:['$c','b a b'],expect:2},
@@ -226,7 +226,7 @@ test('nonce: a module that exits early, prints its own result lines, or exits in
     'prints.py':`print('${forged(0)}')\nprint('{"done": true}')\nimport os\nos._exit(0)\n\ndef answer():\n    return 42\n`,
     'exits.mjs':"export function answer() { process.stdout.write('" + forged(0) + "\\n'); process.exit(0); }\n",
     'honest.py':'def answer():\n    print("PASS")\n    return 42\n'};
-  const report=await card(files,{checks:[
+  const report=await run(files,{checks:[
     {id:'R1',kind:'call',adapter:'python',module:'exit_at_import.py',steps:[{call:'answer',args:[],expect:42}]},
     {id:'R2',kind:'call',adapter:'python',module:'prints.py',steps:[{call:'answer',args:[],expect:42}]},
     {id:'R3',kind:'call',adapter:'javascript',module:'exits.mjs',steps:[{call:'answer',args:[],expect:42}]},
@@ -266,7 +266,7 @@ createServer((req, res) => {
 
 test('http checks: a Node server deliverable started with PORT, polled until ready, steps reading saved JSON',async()=>{
   const files={'server.mjs':SERVER_MJS,'broken-server.mjs':"import './nowhere.mjs';\n"};
-  const report=await card(files,{
+  const report=await run(files,{
     runs:[{id:'api',run:'server.mjs',port:true,ready:'/health'},{id:'down',run:'node broken-server.mjs',port:true,ready:'/'}],
     checks:[
       {id:'R1',kind:'http',serve:'api',steps:[
@@ -332,7 +332,7 @@ test('browser checks: a static todo page served from the bundle, driven by label
   const files={'index.html':TODO_HTML,'app.js':TODO_JS,'style.css':'body{font-family:sans-serif}\n',
     'cdn.html':'<!doctype html><html><head><script src="https://cdn.example.com/lib.js"></script></head><body><p>Loading…</p><script>document.body.innerHTML += window.Lib ? "<p>ready</p>" : "";</script></body></html>',
     'oops.html':'<!doctype html><html><body><button onclick="explode()">Go</button><script src="oops.js"></script></body></html>','oops.js':'function explode() {\n  const x = null;\n  return x.boom;\n}\n'};
-  const report=await card(files,{runs:[{id:'web',static:true}],checks:[
+  const report=await run(files,{runs:[{id:'web',static:true}],checks:[
     {id:'R1',kind:'browser',serve:'web',steps:[
       {goto:'/'},{fill:{label:'New todo',text:'Buy milk'}},{click:{role:'button',name:'Add'}},
       {fill:{placeholder:'What needs doing?',text:'Walk dog'}},{press:'Enter'},
@@ -397,7 +397,7 @@ const PROBES={
 
 test('browser checks (live 2): fields by exact label or aria-label, placeholder, name or id words, or a unique whole-word part; buttons by their role; a miss or several partial matches list the page\'s fields and buttons',{skip:browserReady||false},async()=>{
   const files={'index.html':LIVE_TODO,'styles.css':'body{margin:0}\n','tracker.html':LIVE_TRACKER,'shapes.html':SHAPES,'one.html':ONE,'two.html':TWO,...PROBES};
-  const report=await card(files,{runs:[{id:'serve',static:true}],checks:[
+  const report=await run(files,{runs:[{id:'serve',static:true}],checks:[
     {id:'T1',kind:'browser',serve:'serve',steps:[{fill:{label:'Task',text:'Sample task'}},{click:{role:'button',name:'Add'}},{expect_text:'Sample task'}]},
     {id:'T2',kind:'browser',serve:'serve',steps:[{goto:'/tracker.html'},{fill:{label:'Title',text:'Test Ticket'}},{fill:{label:'Description',text:'Test description'}},{click:{role:'button',name:'create'}},{expect_text:'Test Ticket: Test description'}]},
     {id:'T3',kind:'browser',serve:'serve',steps:[{goto:'/shapes.html'},{fill:{label:'Task title',text:'Walk'}},{fill:{label:'due date',text:'Friday'}},{click:{text:'Save'}},{expect_text:'saved Walk by Friday'}]},
@@ -440,7 +440,7 @@ test('browser checks: a WebSocket or fetch to a host that is not served never co
     const port=other.address().port;
     const files={'index.html':`<!doctype html><p id=w>ws pending</p><p id=f>fetch pending</p><script>const ws=new WebSocket('ws://127.0.0.2:${port}/x');ws.onopen=()=>{w.textContent='WS OPEN'};ws.onerror=ws.onclose=()=>{if(w.textContent!=='WS OPEN')w.textContent='WS FAILED'};fetch('http://127.0.0.2:${port}/x').then(r=>r.text()).then(t=>{f.textContent=t}).catch(()=>{f.textContent='FETCH BLOCKED'});</script>`,
       'hang.html':'<!doctype html><body>hi<script>while(true){}</script></body>','ok.html':'<!doctype html><body>fine</body>'};
-    const report=await card(files,{runs:[{id:'web',static:true}],checks:[
+    const report=await run(files,{runs:[{id:'web',static:true}],checks:[
       {id:'W1',kind:'browser',serve:'web',steps:[{goto:'/'},{expect_text:'WS FAILED'},{expect_text:'FETCH BLOCKED'}]},
       {id:'G1',kind:'browser',serve:'web',steps:[{goto:'/hang.html'},{expect_text:'never'}]},
       {id:'G2',kind:'browser',serve:'web',steps:[{goto:'/ok.html'},{expect_text:'fine'}]}]},{limits:{total_ms:120_000,check_ms:8000,step_ms:2000},isolation:[]});
@@ -457,7 +457,7 @@ test('browser checks fail as an infrastructure issue, not the deliverable\'s, wh
   const saved=process.env.PLAYWRIGHT_BROWSERS_PATH;
   process.env.PLAYWRIGHT_BROWSERS_PATH=tmpdir()+'/no-browsers-here';
   try {
-    const report=await card({'index.html':'<p>hi</p>'},{runs:[{id:'web',static:true}],checks:[{id:'R1',kind:'browser',serve:'web',steps:[{goto:'/'},{expect_text:'hi'}]}]},{isolation:[]});
+    const report=await run({'index.html':'<p>hi</p>'},{runs:[{id:'web',static:true}],checks:[{id:'R1',kind:'browser',serve:'web',steps:[{goto:'/'},{expect_text:'hi'}]}]},{isolation:[]});
     assert.equal(report.passed,false);
     assert.match(report.infrastructure_issue,/^browser checks could not run: /);
     assert.equal(report.checks[0].infrastructure,true);
@@ -478,7 +478,7 @@ test('network: command and call checks run without a network where a namespace i
     const plan={runs:[{id:'api',run:'api.mjs',port:true,ready:'/'},{id:'web',static:true}],checks:[{id:'R1',kind:'command',run:'node probe.mjs',expect:{exit:0}},
       {id:'R2',kind:'http',serve:'api',steps:[{method:'GET',path:'/',expect:{body_has:['blocked']}}]},
       ...(browserReady?[]:[{id:'R3',kind:'browser',serve:'web',steps:[{goto:'/'},{expect_text:'served page'}]}])]};
-    const report=await card(files,plan);
+    const report=await run(files,plan);
     assert.equal(report.inventory.network,prefix.length?'off':'on');
     if(!prefix.length){t.diagnostic('no network namespace on this platform: checks keep the network');assert.equal(byId(report).R1.passed,true);return;}
     assert.equal(byId(report).R1.passed,false,'the check could reach a socket outside its namespace');
@@ -493,7 +493,7 @@ test('isolation: each check gets a fresh copy written from memory and its own TM
   // A rewrites every sibling folder it can find two levels up, its own copy and a temp file; B must see none of it.
   const files={'a.py':`import glob, os, tempfile\nopen(os.path.join(tempfile.gettempdir(), 'mark'), 'w').write('from A')\nfor d in glob.glob(os.path.join(os.getcwd(), '..', '..', '*')) + glob.glob(os.path.join(os.getcwd(), '..', '..', '*', '*')):\n    p = os.path.join(d, 'b.py')\n    if os.path.isdir(d) and os.access(d, os.W_OK):\n        open(p, 'w').write('print("B rewritten by A")')\nopen('b.py', 'w').write('print("B rewritten by A")')\nprint('ok')\n`,
     'b.py':`import os, tempfile\nprint('original b', os.path.exists(os.path.join(tempfile.gettempdir(), 'mark')))\n`};
-  const report=await card(files,{checks:[{id:'A',kind:'command',run:'a.py',expect:{exit:0}},{id:'B',kind:'command',run:'b.py',expect:{stdout:'original b False'}}]},{isolation:[]});
+  const report=await run(files,{checks:[{id:'A',kind:'command',run:'a.py',expect:{exit:0}},{id:'B',kind:'command',run:'b.py',expect:{stdout:'original b False'}}]},{isolation:[]});
   assert.deepEqual(report.checks.map(c=>[c.id,c.passed,c.detail]),[['A',true,''],['B',true,'']]);
 });
 
@@ -502,7 +502,7 @@ test('process trees: a setsid() daemon holding stdout neither stalls the check n
   const files={'d.py':`import os, sys, time\nif os.fork() == 0:\n    os.setsid()\n    open(${JSON.stringify(pidFile)}, 'w').write(str(os.getpid()))\n    time.sleep(30)\n    os._exit(0)\ntime.sleep(0.2)\nprint('parent done')\n`,
     'slow.py':'import time\ntime.sleep(30)\n'};
   const t=Date.now();
-  const report=await card(files,{checks:[{id:'R1',kind:'command',run:'d.py',expect:{stdout:'parent done'}},{id:'R2',kind:'command',run:'slow.py'}]},{limits:{total_ms:60_000,check_ms:1500,step_ms:1000},isolation:[]});
+  const report=await run(files,{checks:[{id:'R1',kind:'command',run:'d.py',expect:{stdout:'parent done'}},{id:'R2',kind:'command',run:'slow.py'}]},{limits:{total_ms:60_000,check_ms:1500,step_ms:1000},isolation:[]});
   assert.ok(Date.now()-t<8000,`took ${Date.now()-t} ms`);
   assert.equal(byId(report).R1.passed,true,byId(report).R1.detail);
   assert.ok(byId(report).R1.ms<1500,`R1 waited ${byId(report).R1.ms} ms on the daemon's pipe`);
@@ -519,7 +519,7 @@ test('forgery: a module that patches the adapter\'s globals or walks its frames,
     'walk.py':"import sys, json, os\nf = sys._getframe()\nwhile f and 'nonce' not in f.f_locals:\n    f = f.f_back\nn = f.f_locals['nonce']\nprint(json.dumps({'nonce': n, 'step': 0, 'ok': True, 'value': 5}))\nos._exit(0)\n",
     'early.mjs':"process.exit(0);\nexport const add = (a, b) => a + b;\n"};
   const steps=[{call:'add',args:[2,3],expect:5}];
-  const report=await card(files,{checks:[{id:'R1',kind:'call',module:'patch.js',steps},{id:'R2',kind:'call',module:'walk.py',steps},{id:'R3',kind:'call',module:'early.mjs',steps}]},{isolation:[]});
+  const report=await run(files,{checks:[{id:'R1',kind:'call',module:'patch.js',steps},{id:'R2',kind:'call',module:'walk.py',steps},{id:'R3',kind:'call',module:'early.mjs',steps}]},{isolation:[]});
   const c=byId(report);
   assert.equal(c.R1.detail,'add(2, 3) in patch.js raised Error: not implemented (at patch.js:3)');
   assert.match(c.R2.detail,/^walk\.py does not load: AttributeError: 'NoneType' object has no attribute 'f_locals'/);
@@ -529,20 +529,20 @@ test('forgery: a module that patches the adapter\'s globals or walks its frames,
 test('error cases and redaction: stderr_has without exit wants a failure exit; details and outputs carry no runner path or adapter frame',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const files={'cli.py':'import sys\nprint("usage: cli.py N", file=sys.stderr)\nsys.exit(0)\n','cwd.py':'import os, sys, tempfile\nprint(os.getcwd(), tempfile.gettempdir(), file=sys.stderr)\nraise SystemExit(3)\n',
     'm.py':'def f(x):\n    return 1 / x\n','bad.py':'import nosuchmod\n'};
-  const report=await card(files,{checks:[{id:'R1',kind:'command',run:'cli.py x',expect:{stderr_has:['usage']}},{id:'R2',kind:'command',run:'cwd.py'},
+  const report=await run(files,{checks:[{id:'R1',kind:'command',run:'cli.py x',expect:{stderr_has:['usage']}},{id:'R2',kind:'command',run:'cwd.py'},
     {id:'R3',kind:'call',module:'m.py',steps:[{call:'f',args:[0],expect:1}]},{id:'R4',kind:'call',module:'bad.py',steps:[{call:'f',args:[]}]}]},{isolation:[]});
   const c=byId(report);
   assert.equal(c.R1.detail,'cli.py x: exit 0, expected a failure exit (non-zero)');
   assert.equal(c.R2.detail,'cwd.py: exit 3, expected 0; stderr: . tmp');
   for(const x of report.checks) {
-    assert.ok(!(x.detail+x.output).includes(tmpdir()+'/card-'),`${x.id} names the runner's folder: ${x.detail} ${x.output}`);
+    assert.ok(!(x.detail+x.output).includes(tmpdir()+'/checks-'),`${x.id} names the runner's folder: ${x.detail} ${x.output}`);
     assert.ok(!/adapters\/call\.|importlib/.test(x.output),`${x.id} shows runner frames: ${x.output}`);
   }
   assert.match(c.R3.output,/File "m\.py", line 2, in f/);
 });
 
 test('resource limits: where prlimit runs, a check cannot write a file past 64 MB, and the report records the limits',{skip:!hasPython&&'python3 is not installed'},async t=>{
-  const report=await card({'big.py':'with open("big.bin", "wb") as f:\n    f.write(b"x" * (70 * 1024 * 1024))\n'},{checks:[{id:'R1',kind:'command',run:'big.py'}]},{isolation:[]});
+  const report=await run({'big.py':'with open("big.bin", "wb") as f:\n    f.write(b"x" * (70 * 1024 * 1024))\n'},{checks:[{id:'R1',kind:'command',run:'big.py'}]},{isolation:[]});
   if(!report.inventory.limits){t.diagnostic('prlimit is unavailable: no limits');return;}
   assert.deepEqual(report.inventory.limits,{nproc:64,fsize:64*1024*1024,data:1024*1024*1024});
   assert.equal(byId(report).R1.passed,false);
@@ -550,14 +550,14 @@ test('resource limits: where prlimit runs, a check cannot write a file past 64 M
 
 test('project checks run first as commands that must exit 0; the time budget marks unrun checks as not run',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const files={'test_math.py':'def test_add():\n    assert 1 + 1 == 2\n','check.py':'import sys\nsys.exit(0 if 2 + 2 == 4 else 1)\n','fail.py':'import sys\nprint("1 failed, 2 passed")\nsys.exit(1)\n'};
-  const report=await card(files,{project:[{id:'P1',run:['python3','check.py']},{id:'P2',run:'python3 fail.py'}],checks:[{id:'R1',kind:'file',path:'check.py'}]},{isolation:[]});
+  const report=await run(files,{project:[{id:'P1',run:['python3','check.py']},{id:'P2',run:'python3 fail.py'}],checks:[{id:'R1',kind:'file',path:'check.py'}]},{isolation:[]});
   const c=byId(report);
   assert.deepEqual(report.checks.map(x=>x.id),['P1','P2','R1']);
   assert.equal(c.P1.passed,true);
   assert.equal(c.P2.detail,'python3 fail.py: exit 1, expected 0');
   assert.match(c.P2.output,/1 failed, 2 passed/);
   assert.equal(report.stages.find(s=>s.name==='project').passed,false);
-  const late=await card({'a.py':'import time\ntime.sleep(5)\n'},{checks:[{id:'R1',kind:'command',run:'a.py'},{id:'R2',kind:'command',run:'a.py'}]},{limits:{total_ms:1000,check_ms:60_000},isolation:[]});
+  const late=await run({'a.py':'import time\ntime.sleep(5)\n'},{checks:[{id:'R1',kind:'command',run:'a.py'},{id:'R2',kind:'command',run:'a.py'}]},{limits:{total_ms:1000,check_ms:60_000},isolation:[]});
   assert.match(byId(late).R1.detail,/timed out/);
   assert.equal(byId(late).R2.detail,'not run: the verification\'s 1 s budget was spent');
 });
@@ -575,21 +575,21 @@ test('helpers: words, commands from the rows, json_has, limits',()=>{
   assert.equal(jsonHas([{id:1,t:'x'},{id:2,t:'y'}],{t:'y'}),true);
   assert.equal(jsonHas({tags:['a','b','c']},{tags:['c','a']}),true);
   assert.equal(jsonHas({a:1},{a:'1'}),false);
-  assert.deepEqual(cardLimits({total_ms:10_000_000,check_ms:'x'}),{total_ms:220_000,check_ms:20_000,step_ms:5000});
+  assert.deepEqual(checkLimits({total_ms:10_000_000,check_ms:'x'}),{total_ms:220_000,check_ms:20_000,step_ms:5000});
 });
 
-test('v7 is unchanged: a request without mode card is the existing build, and a card request is attested by its snapshot',async()=>{
+test('v7 is unchanged: a request without mode checks is the existing build, and a checks request is attested by its snapshot',async()=>{
   const files={'package.json':JSON.stringify({name:'a',scripts:{test:'node t.cjs'}}),'t.cjs':'process.exit(0);\n'};
   const v7=await verifyBuild({fingerprint:'f',snapshot_hash:await snapshotHash(files),files});
   assert.equal(v7.passed,true);assert.ok(!('mode' in v7));
-  await assert.rejects(verifyCard({mode:'card',fingerprint:'f',snapshot_hash:'0'.repeat(64),files,plan:{checks:[]}}),/Snapshot digest mismatch/);
+  await assert.rejects(verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:'0'.repeat(64),files,plan:{checks:[]}}),/Snapshot digest mismatch/);
   process.env.SECRET='s';
   const r=await execCheck(['node','-e','process.stdout.write(process.env.SECRET||"none")'],{cwd:tmpdir()});
   delete process.env.SECRET;
   assert.equal(r.stdout,'none','a check never sees the runner\'s environment');
 });
 
-test('BuildExecutor: a card request carries mode, plan, toolchains and limits in the same one exec; a v7 request carries none',async()=>{
+test('BuildExecutor: a checks request carries mode, plan, toolchains and limits in the same one exec; a v7 request carries none',async()=>{
   const payloads=[];
   const container={running:true,start(){},async setInactivityTimeout(){},
     async exec(_c,{stdin}){let text='';return {stdin:new WritableStream({write(chunk){text+=new TextDecoder().decode(chunk);}}),
@@ -597,8 +597,8 @@ test('BuildExecutor: a card request carries mode, plan, toolchains and limits in
   const storage={async put(){},async get(){},async delete(){}};
   const executor=new BuildExecutor({container,storage},{});
   const plan={checks:[{id:'R1',kind:'file',path:'a.md'}]};
-  await executor.build({fingerprint:'c',files:{'a.md':'# a'},mode:'card',plan,toolchains:ROWS.slice(2),limits:{total_ms:9000}});
+  await executor.build({fingerprint:'c',files:{'a.md':'# a'},mode:'checks',plan,toolchains:ROWS.slice(2),limits:{total_ms:9000}});
   await executor.build({fingerprint:'v',files:{'a.js':'1'},plan});
-  assert.deepEqual([payloads[0].mode,payloads[0].plan,payloads[0].toolchains.map(r=>r.id),payloads[0].limits],['card',plan,['text'],{total_ms:9000}]);
+  assert.deepEqual([payloads[0].mode,payloads[0].plan,payloads[0].toolchains.map(r=>r.id),payloads[0].limits],['checks',plan,['text'],{total_ms:9000}]);
   assert.ok(!('mode' in payloads[1])&&!('plan' in payloads[1]),'v7: the request is as before');
 });

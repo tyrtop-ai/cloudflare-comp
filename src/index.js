@@ -8,22 +8,21 @@ export { Box } from './box.js';
 export { BoxProbe, BoxProbePeer } from './box-probe.js';
 import { boxProbeRoute } from './box-probe.js';
 import { freshBox, compileBoxSpec, BOX_COLD_MS, classifyEnvironment } from './box.js';
-import { BoxPrewarm, cardBoxSpec } from './box-prewarm.js';
+import { BoxPrewarm, levelBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, reviewSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, writeCard, vetRequirements, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, vetAmendChanges, AMEND_CHANGE_BAR, pieceReach, PIECE_REACH_BAR } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, splitLevel, routeAmong, inScope, matchContracts, rewriteFile } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, projectFacts, browserProject, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
-import { cardContracts, cardUsable, vettedUsable, vettable, applyVetting, codeLanguages, cardLine, providedCard, namedInGoal } from './card.js';
+import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, browserProject, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, goalView, clipEnds, promptText, reorderError, mergeAmendment, cardDelta, deltaEmpty, revalidate, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
-import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS, routable } from './checks.js';
+import { effectiveGoal, goalView, clipEnds, promptText, reorderError, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
+import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
-import { triggerText, RETRY, MESSAGES, BASE_LABEL } from './prompts.js';
+import { RETRY, MESSAGES, BASE_LABEL } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, parseSource, parseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
@@ -37,21 +36,20 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
-import { inheritServes, otherName, kindOf as contractKind, kindCheck, contractLine, gateLine, useReferences, USES_SHOWN, PLACED_KINDS, functionRows } from './contracts.js';
+import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLine, useReferences, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 // v8 S5: the polyglot linker (bundle links, runtime glue, rename-only repair).
-import { linkBundle, renameFromRun, editChecks, textHash, stdlibNames, importClosure } from './glue.js';
+import { linkBundle, renameFromRun, editChecks, textHash, importClosure } from './glue.js';
 import { placeChecks, checkEntries, installedModule, outsideFailure, routeNames, moduleInPiece, checkUses } from './piece.js';
 import { applyTextEdits } from './linker.js';
 import { unresolvedNames } from './toolchains.js';
-import { checkSecrets, maskWith } from './checks.js';
-import { cardScope } from './affordances.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, cardsFor, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
-import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, missingModule, externalModule, readsModule, piecePackages, packageLine, needOf } from './packages.js';
-import { caseTwin } from '../container/build-path.mjs';
+import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, externalModule, readsModule, piecePackages, packageLine, needOf } from './packages.js';
+import { caseTwin, pathError } from '../container/build-path.mjs';
+import { readLevel, contractExamples, checkSummary } from './validations.js';
 import { toBase64 } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -62,7 +60,7 @@ const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
 export const JUDGE_RETRY_MS = [500, 2000], CHECK_RETRY_MS = [30_000, 120_000, 600_000];
 // v8 S9: the queue's next prompt is applied by the alarm this long after the room finished;
 // a room held at one of these ended where only the user can go on (the queue's failure).
-export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_exhausted', 'checks_failed', 'checks_doubtful', 'card_blocked', 'card_failed', 'benchmark_failed'];
+export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_exhausted', 'checks_failed', 'split_failed'];
 // U10: an anchored requirement's key: its id and a hash of what it says.
 export const anchorKey = (id, says) => {let h=2166136261;for(const c of String(says??'')){h^=c.charCodeAt(0);h=Math.imul(h,16777619)>>>0;}return `${id}#${h.toString(16).padStart(8,'0')}`;};
 // The agent whose turn is running, for the span record: every model and Clef
@@ -102,12 +100,7 @@ const ownerNotes = (rejected,outside=false) => clip([...new Set(rejected.filter(
 // higher up reaches the splitter, and every verdict reaches the splitter's
 // children, only as owned outside this branch: managers talk to children.
 const OUTSIDE = 'outside this branch';
-// v8 (S6 review): v8 words it as MESSAGES.owned_elsewhere, in contract terms.
-function ownerNote(label, piece, owner='', names=[], kept=false, v8=false) {
-  if(v8) {
-    const short=MESSAGES.owned_elsewhere({label:kept?`${label}: ${names.join(', ')}`:label,owner,names:names.join(', ')});
-    return {note:short,short,outside:owner?ownerNote(label,piece,'',names,kept,true).short:short};
-  }
+function ownerNote(label, piece, owner='', names=[], kept=false) {
   const head=`${kept?`${label}: ${names.join(', ')}`:label} is owned ${owner?`by ${owner}`:OUTSIDE}`;
   const how=names.length?`import ${names.join(', ')} ${owner?'from that strand ':''}by exactly those names`:`import it ${owner?'from that strand':'by name'}`;
   const short=`${head}; ${how} and write here only what it lacks.`;
@@ -117,9 +110,8 @@ function ownerNote(label, piece, owner='', names=[], kept=false, v8=false) {
 // v8 (S6 review): a worker's own files, sent whole while the total stays within
 // FILES_BUDGET characters; the next one that does not fit is sent clipped
 // (its start, marked clipped with its full length), and the rest by path
-// only, so no file is ever mistaken for whole. The goal reaches a worker
-// clipped to GOAL_FOR_WORKERS, as the limit of scope.
-const FILES_BUDGET = 24000, GOAL_FOR_WORKERS = 600, SCOPE_GOAL = 1800;
+// only, so no file is ever mistaken for whole.
+const FILES_BUDGET = 24000, SCOPE_GOAL = 1800;
 function sentFiles(files, {revision=false, budget=FILES_BUDGET}={}) {
   let left=budget;
   return files.map(f=>{
@@ -196,8 +188,6 @@ const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).m
 export const paramsIn = (s,name) => {const f=[...(s?.named||[]),...(s?.named||[]).filter(n=>n.type==='class').flatMap(n=>n.methods||[]),...(s?.default?.type==='function'?[s.default]:[]),...(s?.default?.members||[]),...(s?.default?.methods||[])].find(x=>x?.type!=='class'&&String(x?.name||'').replace(/^(?:static |get |set )/,'')===name&&Array.isArray(x.params));return f?f.params.map(String):null;};
 // One module's exports on one line, for the facts a worker hears.
 const exportsLine = (p,surfaces) => `${p.split('/').pop()} exports: ${surfaces.get(p)?surfaceText(surfaces.get(p)).split('\n').slice(1).map(x=>x.trim()).join('; ')||'nothing by name':'nothing by name'}`;
-// v8 (S4b review): the same fact in contract terms, with no language syntax: the names a file provides.
-const providesLine = (p,surfaces) => `${p.split('/').pop()} provides: ${surfaces.get(p)?[...providedNames(surfaces.get(p))].join(', ')||'nothing by name':'nothing by name'}`;
 // What start() returned, as the Container describes it, holds something the
 // runner can call. An unparsed or depth-limited description is given the doubt.
 const apiCallable = d => ['function','class','unparsed'].includes(d?.type) || !!d?.members_truncated || (d?.members ? Object.values(d.members).some(apiCallable) : ['object','array'].includes(d?.type));
@@ -218,11 +208,9 @@ async function assumptionTopic(slug, childKey) {
   return `${full.slice(0,87)}_${hash}`; // exactly 100 characters, 48-bit suffix
 }
 const nodeFields = 'id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role';
-// v8 live 4: the prompt handler. A short-lived step above Root: it takes the
-// person's prompt, creates Root's row as every parent creates a child's
-// (its packages the installed set), sets Root's parent to its own id, hands
-// the prompt over and ends. A queued prompt or an amendment gets a handler
-// of its own, which hands the change to the existing Root and ends. It
+// v7's prompt handler. A short-lived step above Root: it takes the
+// person's prompt, creates Root's row as every parent creates a child's,
+// sets Root's parent to its own id, hands the prompt over and ends. It
 // holds nothing afterwards and answers nothing; the rows live in
 // prompt_handlers, never among the agents. A handler id is 'prompt:<n>'.
 export const HANDLER_PREFIX = 'prompt:';
@@ -231,20 +219,12 @@ const isHandler = id => typeof id === 'string' && id.startsWith(HANDLER_PREFIX);
 // as none, so the top of the tree is Root as before (isTop); the handler
 // stays on the row as handed_by. The column itself holds the handler's id.
 const nodeSelect = nodeFields.replace(/(^|,)parent(?=,)/, `$1CASE WHEN parent LIKE '${HANDLER_PREFIX}%' THEN NULL ELSE parent END AS parent,CASE WHEN parent LIKE '${HANDLER_PREFIX}%' THEN parent ELSE '' END AS handed_by`);
-// The top of the agents' tree: a node whose parent is a prompt handler, or
-// none (a room from before handlers). v8 M2: only v7's own paths branch on
-// it; under v8 a node with no agent above hands up to the room (its parent
-// is a handler that has ended), as every node hands up to its parent.
+// v7's top of the agents' tree: a node whose parent is a prompt handler, or
+// none (a room from before handlers). Only v7's own paths branch on it.
 export const isTop = n => !!n && !n.parent;
-// v8 M2: the card writer, a short-lived step a goal's handler (or an
-// amendment's) spawns between itself and the top: writeCard, Clef's review
-// and validation. Its holds are the room's while it waits. An id is 'card:<n>'.
-export const CARD_WRITER_PREFIX = 'card:';
 // v7.15 slice B: what a function request asks for, as answers and events say it.
 const wanted = h => h.name ? `${h.name} (${clip(h.question,200)})` : `"${clip(h.question,200)}"`;
 const listed = xs => xs.length>1 ? `${xs.slice(0,-1).join(', ')} and ${xs.at(-1)}` : xs[0]||'';
-// v8 M2: what an ask the room holds for the person (room_asks) asks for, as the answers to it say it.
-const askWant = a => a.name || `"${clip(a.need,200)}"`;
 // v7.15.16 (run25): why a split that hands one piece the whole promise is none.
 const noProgress = d => `No progress: a piece would carry its parent's whole promise ("${clip(d.label,70)}" carries ${listed(d.names)}).`;
 // How many times, in words (split_oversize_admitted).
@@ -326,6 +306,16 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
 });
 // v8 live 5: the first proposal and two retries.
 export const SPLIT_ATTEMPTS = 3;
+// v8: a Clef mark below this reads as a doubt about a validation: shown
+// beside it, and first in a hold's text; the validation is never removed.
+export const VALIDATION_DOUBT_BAR = 0.5;
+// v8: the reports a level's compiler sends down before the level escalates,
+// and the rebuilds its splitter makes of what no live child delivers.
+export const MAX_LEVEL_ROUNDS = 6, MAX_REBUILDS = 3;
+// v8: a short-lived step's id suffix, 16 hex digits.
+const hex16 = () => [...crypto.getRandomValues(new Uint8Array(8))].map(b=>b.toString(16).padStart(2,'0')).join('');
+// v8: the code languages of contracts: the toolchain rows of the paths they place.
+const contractLanguages = contracts => [...new Set((contracts||[]).map(c=>c?.path?toolchainOf(c.path):null).filter(r=>r&&r.id!=='text'&&(r.executables||[]).length).map(r=>r.id))];
 // The agent models the dashboard offers: the Qwen3 hybrid (default), four
 // that answer without reasoning (Llama 4 Scout, Qwen2.5 Coder, DeepSeek V4
 // Flash with its reasoning off, Mistral Small 3.1), and two comparisons.
@@ -378,9 +368,9 @@ export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
     if (!['none','allowed'].includes(raw.packages)) throw new Error("Invalid packages: expected 'none' or 'allowed'");
     result.packages=raw.packages;
   }
-  // v8 S3: the pipeline, the switch during the migration (deleted in S7).
-  // 'v8': Root writes a project card first, its deliverables become Root's
-  // contracts and no start() requirement is appended; 'v7' is unchanged.
+  // The pipeline: 'v7' (the default) as it was; 'v8': the room creates one
+  // manager from the prompt, which states its level (contracts, validations,
+  // pieces) through its splitter, and no start() requirement is appended.
   if (raw.pipeline !== undefined) {
     if (!['v7','v8'].includes(raw.pipeline)) throw new Error("Invalid pipeline: expected 'v7' or 'v8'");
     result.pipeline=raw.pipeline;
@@ -509,8 +499,10 @@ export class ControlRoom extends DurableObject {
     }
     // v8 live 4: the prompt handlers (handPrompt), each spawned and ended at once.
     db.exec("CREATE TABLE IF NOT EXISTS prompt_handlers (id TEXT PRIMARY KEY, kind TEXT NOT NULL, prompt TEXT NOT NULL, prompt_id TEXT NOT NULL DEFAULT '', root TEXT NOT NULL, created_root INTEGER NOT NULL DEFAULT 0, spawned_at INTEGER NOT NULL, ended_at INTEGER)");
-    // v8 M2: the card writer steps (cardWriter), each under the handler that spawned it; outcome: written, held:<kind>, unchanged, folded, error.
-    db.exec("CREATE TABLE IF NOT EXISTS card_writers (id TEXT PRIMARY KEY, handler TEXT NOT NULL, kind TEXT NOT NULL, spawned_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT NOT NULL DEFAULT '')");
+    // v8: each level's validations (V<n>): the level that holds it, the contracts it serves, its check, what it says, and Clef's marks.
+    db.exec("CREATE TABLE IF NOT EXISTS validations (id TEXT PRIMARY KEY, level TEXT NOT NULL, serves TEXT NOT NULL, spec TEXT NOT NULL, says TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '{}', created INTEGER NOT NULL)");
+    // v8: the splitter steps (splitter-<hex16>), each under the manager that ran it; outcome: read, defects, unreadable.
+    db.exec("CREATE TABLE IF NOT EXISTS splitters (id TEXT PRIMARY KEY, manager TEXT NOT NULL, kind TEXT NOT NULL, attempt INTEGER NOT NULL, spawned_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '{}')");
     // Speed v1 review: a version per agent row (rev) and one for the alias
     // table, bumped by triggers on every write, so a dashboard delta selects
     // only the agents changed since its cursor and knows when the export list
@@ -564,10 +556,6 @@ export class ControlRoom extends DurableObject {
     db.exec("CREATE TABLE IF NOT EXISTS problems (id TEXT PRIMARY KEY, holder TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, stage TEXT NOT NULL, source TEXT NOT NULL, source_input TEXT NOT NULL, signature TEXT NOT NULL, parties TEXT NOT NULL, detail TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '{}', evidence TEXT NOT NULL DEFAULT '[]', directive TEXT NOT NULL DEFAULT '', flags TEXT NOT NULL DEFAULT '{}', assignee TEXT NOT NULL DEFAULT '', trail TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL)");
     db.exec('CREATE INDEX IF NOT EXISTS problems_holder ON problems(holder,status)');
     db.exec('CREATE TABLE IF NOT EXISTS repair_tickets (id TEXT PRIMARY KEY, manager TEXT NOT NULL, worker TEXT NOT NULL, problems TEXT NOT NULL, role TEXT NOT NULL, instructions TEXT NOT NULL, facts TEXT NOT NULL, created INTEGER NOT NULL)');
-    // v8 §1.3: every revision of the project card (meta card holds the current one).
-    db.exec('CREATE TABLE IF NOT EXISTS card_revisions (rev INTEGER PRIMARY KEY, goal_rev INTEGER, card TEXT, reason TEXT, ts INTEGER)');
-    // v8 S9: what an amendment changed on the card (added and changed names and ids, the change's text).
-    if (!query(db, "SELECT name FROM pragma_table_info('card_revisions')").some(c => c.name === 'delta')) db.exec("ALTER TABLE card_revisions ADD COLUMN delta TEXT NOT NULL DEFAULT '{}'");
     // v8 S9: the prompt queue (not 'queue', which is the agents' dispatch queue) and the goal's revisions.
     db.exec("CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, seq REAL NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'queued', budget INTEGER, goal_rev INTEGER, outcome TEXT NOT NULL DEFAULT '{}', created INTEGER NOT NULL, started INTEGER, finished INTEGER, edited INTEGER)");
     db.exec('CREATE TABLE IF NOT EXISTS goal_revisions (rev INTEGER PRIMARY KEY, prompt TEXT NOT NULL, text TEXT NOT NULL, effective TEXT NOT NULL, ts INTEGER NOT NULL)');
@@ -575,6 +563,8 @@ export class ControlRoom extends DurableObject {
     if (!query(db, "SELECT name FROM pragma_table_info('prompts')").some(c => c.name === 'version')) db.exec('ALTER TABLE prompts ADD COLUMN version INTEGER NOT NULL DEFAULT 0');
     // v8 S8b: the goal's links (sources, source_chunks) and the project the room starts from (base_files).
     for(const sql of INPUT_SCHEMA)db.exec(sql);
+    // v8: a source's summary (sourceModel), in a column of its own.
+    if (!query(db, "SELECT name FROM pragma_table_info('sources')").some(c => c.name === 'summary')) db.exec('ALTER TABLE sources ADD COLUMN summary TEXT');
     // In-memory busy is gone on DO eviction. Repair persisted 'running' state and
     // requeue interrupted turns instead of leaving the dashboard locked forever.
     if (this.get('status') === 'running') {
@@ -589,20 +579,6 @@ export class ControlRoom extends DurableObject {
       }
       this.save('queue', queue);
     }
-    // v8 S9: a change being applied when the object restarted is lost with
-    // its card writer's call: its prompt fails, and nothing waits on it.
-    // S9 review: the queue then goes on by its policy (stop: the banner and Go on; continue: the alarm).
-    const amending=this.get('amend_pending');
-    if (amending) {
-      this.set('amend_pending','');
-      const why='The Durable Object restarted while the change was being applied; apply it again.';
-      if (this.promptRows("id=? AND status='running'",amending).length) this.finishPrompt(amending,'failed',{error:why});
-      this.event('system','amend_failed',why);
-      if (this.promptRows("status='queued'").length) {
-        if (this.queueOnFail()==='stop'||Number(this.get('queue_failures','0'))>=2) this.stopQueue(`${why} The queue waits: Go on resumes it.`);
-        else this.save('prompts_due',{at:Date.now()+PROMPT_ALARM_MS,force:true});
-      }
-    }
     // A queue step due before the restart keeps its alarm.
     const due=this.read('prompts_due',null);
     if (due?.at) Promise.resolve(this.scheduleAlarm(due.at)).catch(()=>{});
@@ -614,65 +590,44 @@ export class ControlRoom extends DurableObject {
   v8() { return this.live() && this.settings().pipeline==='v8'; }
   // How a stored contract row is read: under v8 with its kind, path and serves.
   contractOpts() { return this.v8()?{v8:true,serves:true}:{}; }
-  // The facts contract name rules read under v8 (§2.2): the toolchain rows and the card's languages.
+  // The facts contract name rules read under v8 (§2.2): the toolchain rows and the languages the levels' contracts are written in.
   // v8 S8b: with a base, its paths (an existing file is named exactly) and the pieces' parts root.
-  contractFacts() { const base=this.v8()?this.basePaths():null; return {rows:this.installedToolchains(),languages:this.read('card',null)?.languages||[],...(base?.size?{base,parts:this.partsRoot()}:{})}; }
+  contractFacts() { const base=this.v8()?this.basePaths():null; return {rows:this.installedToolchains(),languages:this.v8()?contractLanguages(this.treeContracts()):[],...(base?.size?{base,parts:this.partsRoot()}:{})}; }
   // The languages a code piece delivers in: v7 links and runs JavaScript;
-  // under v8 the card's (its non-text languages; a card of documents only has none).
-  // v8 S3 review: never none while code is required: a card with no code
-  // language (validation and the writer's retry prevent it) reads as every
-  // installed code toolchain.
+  // under v8 those of the levels' contracts (their paths' code rows), or,
+  // with none stated yet, every installed code toolchain.
   languages() {
     if(!this.v8())return V7_LANGUAGES;
-    const own=codeLanguages(this.read('card',null));
+    const own=contractLanguages(this.treeContracts());
     return own.length?own:this.installedToolchains().filter(r=>r.id!=='text'&&(r.executables||[]).length).map(r=>r.id);
-  }
-  // v8 (S6): what a v8 prompt reads beside an agent's own contracts, as data
-  // (§6.2, ROLE.worker, ROLE.splitter): the contracts of other parts it may
-  // use, each with the exact reference to write (useReferences), and the
-  // project facts, whose example reference names one of its own function
-  // uses, or NAME (projectFacts).
-  v8Inputs(id) {
-    const uses=this.plannedUses(id);
-    return {uses:useReferences(uses,this.referenceFacts(id)),left_out:Math.max(0,uses.length-USES_SHOWN),project:projectFacts(this.read('card',null),{uses:uses.filter(f=>contractKind(f)==='function')}),goal:this.goalFor(GOAL_FOR_WORKERS)??clip(this.userGoal(),GOAL_FOR_WORKERS)};
   }
   // v8 S8b: the room's inputs beside its goal (src/room-inputs.js). The
   // fetch the goal's links and a base repo are read with: the runtime's own,
   // with no credential (a test injects TEST_FETCH).
   fetcher() { return this.env.TEST_FETCH || ((input,init)=>fetch(input,init)); }
   basePaths() { return new Set(query(this.db(),'SELECT path FROM base_files').map(r=>r.path)); }
-  // What the file gate knows of a writer under v8 (§3.3, §7.1): the base
-  // paths, and the paths its contracts name (only those base files are its
-  // to change, and a manifest only at such a path). S8b review: a base path
-  // counts only when Clef found that the goal asks to change it (the card's,
-  // or a split's, base_approved), so no text quoted from the base can hand a
-  // file to a writer.
-  gateFacts(id) {
-    if(!this.v8())return {};
-    const base=this.basePaths(),approved=new Set(this.read('base_approved',[]));
-    return {base,owned:new Set(this.promisedOf(id).map(c=>c.path).filter(p=>p&&(!base.has(p)||approved.has(p)))),pending:new Set(this.read('base_pending',[]).map(x=>x.path))};
-  }
   // v8 S8b: the folder of the pieces' unplaced files (partsRoot): components,
   // unless the base holds a components/ of its own. Fixed when the run starts.
   partsRoot() { return this.get('parts_root','')||PARTS_ROOT; }
-  // v8 card repair: only the person grants a change to an existing file. A
+  // Only the person grants a change to an existing file. A
   // path a contract names is changed only once the person confirmed it
   // (Continue at base_confirm, or the Start payload's grants). Clef's
-  // base_change p is shown beside it as a review, and so is whether the goal
-  // names it (namedInGoal; such a path is shown pre-selected). Nothing that
-  // names a waiting path is removed: the file gate keeps writers off it, and
-  // the pieces that carry it wait. {yes: approved paths, no: [{path, p, named}]}.
-  async approveBasePaths(id, paths, goal=this.userGoal()) {
+  // base_change p (whether the assignment of the level asks to change it) is
+  // shown beside it as a review, and so is whether the prompt names it
+  // (namedIn; such a path is shown pre-selected). Nothing that names a
+  // waiting path is removed: the pieces that carry it wait. {yes: approved
+  // paths, no: [{path, p, named}]}.
+  async approveBasePaths(id, paths, assignment=this.node(id)?.task||'') {
     const approved=new Set(this.read('base_approved',[])),pendingNow=new Map(this.read('base_pending',[]).map(x=>[x.path,x])),ask=[...new Set(paths)].filter(p=>!approved.has(p)&&!pendingNow.has(p));
     if(ask.length) {
-      const text=[goal,...this.goalChanges()].join('\n');
+      const text=[this.userGoal(),...this.goalChanges()].join('\n');
       let ps=[];
-      try {ps=await vetBaseChanges(this.inferenceEnv(),{goal,paths:ask});}
+      try {ps=await vetBaseChanges(this.inferenceEnv(),{assignment,paths:ask});}
       catch(e){this.event(id,'base_change_unvetted',clip(`Clef could not review ${ask.join(', ')} (${e?.message||e}); ${ask.length>1?'they wait':'it waits'} for the person all the same.`,400));}
       for(const path of ask) {
-        const p=ps.find(x=>x.path===path)?.p,x={path,p:typeof p==='number'?Math.round(p*1000)/1000:null,named:namedInGoal(path,text)};
+        const p=ps.find(x=>x.path===path)?.p,x={path,p:typeof p==='number'?Math.round(p*1000)/1000:null,named:namedIn(path,text)};
         pendingNow.set(path,x);
-        this.event(id,'base_change_pending',clip(`The plan changes the existing file ${path}; it waits for the person's grant (${x.named?'the goal names it':'the goal does not name it'}${x.p===null?'':`; Clef's review p=${x.p.toFixed(3)}`}).`,400));
+        this.event(id,'base_change_pending',clip(`The plan changes the existing file ${path}; it waits for the person's grant (${x.named?'the prompt names it':'the prompt does not name it'}${x.p===null?'':`; Clef's review p=${x.p.toFixed(3)}`}).`,400));
       }
       this.save('base_pending',[...pendingNow.values()]);
     }
@@ -687,32 +642,19 @@ export class ControlRoom extends DurableObject {
     const pending=this.read('base_pending',[]);
     if(!pending.length)return false;
     if(id)this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-    const line=x=>`${x.path} (${x.named?'named in the goal':'not named in the goal'}${typeof x.p==='number'?`; Clef p=${x.p.toFixed(3)}`:''})`;
+    const line=x=>`${x.path} (${x.named?'named in the prompt':'not named in the prompt'}${typeof x.p==='number'?`; Clef p=${x.p.toFixed(3)}`:''})`;
     this.holdRoom('base_confirm',`The plan changes existing file${pending.length>1?'s':''} that only you can grant: ${pending.map(line).join(', ')}. Continue grants ${pending.length>1?'them':'it'}; a follow-up prompt can leave ${pending.length>1?'them':'it'} out instead.`,{paths:pending.map(x=>x.path)});
     return false;
   }
-  sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,card,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,card:parse(r.card,null)})); }
-  // The chunk refs a node holds (polyglot-bench §2a.4): Root every stored
-  // chunk; a piece those its parent's split cited for it, never more than
-  // its parent holds (assignRefs), as with promises.
-  // v8 M2: every row reads the refs its parent gave it (source_refs: a
-  // split's, or the handler's for the top: the card's citations, else the
-  // first chunks of each source, at most MAX_REFS). A row from before
-  // handlers with no agent above reads them as it did (reading only).
-  sourceRefs(id) {
-    const n=this.node(id);
-    if(!n)return [];
-    const own=this.read(`source_refs:${id}`,null);
-    if(own)return own;
-    return n.parent?[]:this.read('root_refs',null)||rootRefs(this.read('card',null)?.refs,this.allRefs());
-  }
-  // v8 M2: whether a row holds the existing project (the handler gives the
-  // top the base and its digest, base_digest), and the digest it reads. A
-  // row from before handlers with no agent above holds the room's (reading only).
-  holdsBase(id) {
-    if(this.get(`base_digest:${id}`,null)!==null)return true;
-    const n=this.node(id);return !!n&&!n.parent&&!!this.read('base',null);
-  }
+  sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,summary:parse(r.summary,null)})); }
+  // The chunk refs a row holds (polyglot-bench §2a.4): the room's manager
+  // the first chunks of each source (at most MAX_REFS); a piece those its
+  // parent's split cited for it, never more than its parent holds
+  // (assignRefs), as with contracts. A row given none holds none.
+  sourceRefs(id) { return this.node(id)?this.read(`source_refs:${id}`,null)||[]:[]; }
+  // Whether a row holds the existing project (the room gives the manager it
+  // creates the base and its digest, base_digest), and the digest it reads.
+  holdsBase(id) { return this.get(`base_digest:${id}`,null)!==null; }
   heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
   assignRefs(child, parent, raw) {
@@ -722,19 +664,19 @@ export class ControlRoom extends DurableObject {
     if(kept.length||dropped.length)this.event(parent,'refs_assigned',clip(`"${this.node(child)?.label||child}" reads ${kept.length?kept.join(', '):'no source'}${dropped.length?`; not held here, so not given: ${dropped.join(', ')}`:''}.`,600),child);
   }
   // What a model reads of the sources, quoted beside SOURCE_CLAUSE: a
-  // splitter the cards of the refs it holds (summaries and outlines), a
+  // splitter the summaries of the refs it holds (and their outlines), a
   // worker the chunks it holds, whole within the budget, the rest as gists.
   sourceInputs(id, mode='chunks') {
     const held=this.sourceRefs(id);
     if(!held.length)return {};
     const rows=this.sourceRows();
-    const sources=mode==='cards'?cardsFor(rows,held):chunksFor(rows,ref=>query(this.db(),'SELECT ref,source,n,text FROM source_chunks WHERE ref=?',ref)[0]||null,held);
+    const sources=mode==='summaries'?summariesFor(rows,held):chunksFor(rows,ref=>query(this.db(),'SELECT ref,source,n,text FROM source_chunks WHERE ref=?',ref)[0]||null,held);
     return sources.length?{sources_note:SOURCE_CLAUSE,sources}:{};
   }
-  // §2a.1: the URLs written in the goal, fetched once per run under the
+  // §2a.1: the URLs written in the prompt, fetched once per run under the
   // owner's allowlist (FETCH_ALLOW), never this deployment's own host, and
-  // summarised into source cards by the card writer's model. A link that
-  // cannot be read is recorded with why, and the run goes on without it.
+  // summarised (each source a summary and an outline) by the compiler's
+  // model. A link that cannot be read is recorded with why, and the run goes on without it.
   async loadSources() {
     if(this.get('sources_loaded'))return;
     const goal=this.userGoal(),started=Date.now();
@@ -743,204 +685,69 @@ export class ControlRoom extends DurableObject {
     if(report&&!report.allow.length)this.event('room','fetch_allow_unreadable',clip(`FETCH_ALLOW has no usable host suffix (${report.dropped.join(', ')||String(given)}), so every link is refused; set it to host names such as docs.example.com.`,600));
     // Every host this deployment answers on (the request's and SELF_HOSTS) is refused.
     const selfHosts=[...this.read('fetch_self_hosts',[]),...selfHostsOf(this.env)];
-    // Each gist and card call counts against the run's budget, as a manager's model call does; a small budget reads fewer chunks.
+    // Each gist and summary call counts against the run's budget, as a manager's model call does; a small budget reads fewer chunks.
     const budget=Number(this.get('budget','0'))||20;let calls=0;
     const model=sourceModel(this.inferenceEnv('compiler')),callModel=args=>{calls++;return model(args);};
     const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,callModel,maxChunks:Math.min(MAX_SOURCE_CHUNKS,Math.max(2,Math.floor(budget/2)))});
     this.spentExtra=(this.spentExtra||0)+calls;
     if(report&&!report.allow.length)for(const r of rows)if(r.error&&/allowlist/.test(r.error))r.error=clip(`${r.error} (FETCH_ALLOW has no usable entry)`,300);
-    for(const r of rows)this.db().exec('INSERT INTO sources(id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,card,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
-      r.id,r.url,r.final_url,r.title,r.sha256,r.bytes,r.truncated?1:0,r.error,r.status,r.content_type,r.card?JSON.stringify(r.card):null,Date.now());
+    for(const r of rows)this.db().exec('INSERT INTO sources(id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
+      r.id,r.url,r.final_url,r.title,r.sha256,r.bytes,r.truncated?1:0,r.error,r.status,r.content_type,r.summary?JSON.stringify(r.summary):null,Date.now());
     for(const c of chunks)this.db().exec('INSERT INTO source_chunks(ref,source,n,text) VALUES (?,?,?,?) ON CONFLICT(ref) DO NOTHING',c.ref,c.source,c.n,c.text);
     this.set('sources_loaded','1');
-    if(rows.length)this.event('room','sources_read',clip(`The goal's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes${r.truncated?', cut at the cap':''}, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
+    if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes${r.truncated?', cut at the cap':''}, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
   }
   // v8 S6 review: what one reference is rendered from (useReferences): the
-  // rows, the card's languages, whether its code runs in a browser, and for a
-  // reader its own languages (its contracts' paths and its files) and whether
-  // it delivers a page.
+  // rows, the levels' languages, whether their code runs in a browser, and
+  // for a reader its own languages (its contracts' paths and its files) and
+  // whether it delivers a page.
   referenceFacts(id=null) {
-    const facts={...this.contractFacts(),browser:browserProject(this.read('card',null))},own=id?this.promisedOf(id):[];
+    const facts={...this.contractFacts(),browser:browserProject(this.treeContracts())},own=id?this.promisedOf(id):[];
     if(!id)return facts;
     const paths=[...own.map(c=>c.path).filter(Boolean),...deliveredFiles(this.files(id)).map(f=>f.path)];
     return {...facts,reader:[...new Set(paths.map(p=>toolchainOf(p)?.id).filter(Boolean))],page_reader:own.some(c=>contractKind(c)==='page')};
   }
-  // v8 (S6): a provided answer names the contract by its line and the
-  // reference its toolchain row renders (useReferences), never a JavaScript
-  // import line; v7 keeps providedText.
-  providedFor(f, owner, reader=null) {
-    if(!this.v8())return providedText(f,owner);
-    const [u]=useReferences([{...f,owner}],this.referenceFacts(reader));
-    return clip(`${u.contract}. It is delivered by "${owner}". Refer to it exactly as: ${u.reference}. Use it rather than writing your own.`,600);
-  }
-  // How a worker refers to a name: v7's import line, or under v8 its row's (a contract it names, else a function of the card's languages).
+  // v7: a provided answer, the function's promise and its import line.
+  providedFor(f, owner) { return providedText(f,owner); }
+  // How a worker refers to a name: v7's import line, or under v8 its row's (a contract it names, else a function of the levels' languages).
   referenceLine(name, c=null, reader=null) { return this.v8()?useReferences([c||{name}],this.referenceFacts(reader))[0]?.reference||name:`const { ${name} } = require('./${name}');`; }
-  // v8 (S6 review): what instructionsFor needs to word a problem in contract terms (MESSAGES), or nothing under v7.
-  msgOpts() { return this.v8()?{v8:true,reference:n=>this.referenceLine(n)}:{}; }
   // The path of an agent's one placed contract, for the single-fence fallback (§3.2), or null.
   placedPath(id) {const p=this.promisedOf(id).filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
   // The toolchain rows this deployment runs: the Container's last inventory
   // (meta toolchain_inventory, recorded by the verification step from S4),
   // else every row of the phase-1 image (src/toolchains.js).
   installedToolchains() { const inv=this.read('toolchain_inventory',null); return inv?installedRows(inv):[...TOOLCHAINS]; }
-  // v8 live 4: the installed set (the rows' curated packages, by the box's
-  // inventory), which Root's row is created with; and a node's packages, as
-  // its row lists them.
-  // v8 live 4: one prompt handler (see HANDLER_PREFIX), spawned for each
-  // prompt. v8 M2: it makes no model call. A goal's handler spawns the card
-  // writer (cardWriter) and, once the card is written and nothing of it
-  // waits for the person, creates the top's row as every parent creates a
-  // child's: its contracts the card's deliverables, its packages the
-  // installed set, the source chunks and the base digest it holds; then it
-  // ends (provisionTop). While its card writer waits, the handler waits with
-  // it, and the room's next run goes on with it (runHandlers). A change's
-  // handler spawns the card writer's amend path and hands the change to the
-  // top as a change on its row (applyAmendment, handRows); while what it
-  // hands the change to is not there, it waits with the change
-  // (amend_deferred) and hands it on then. Under v7 a goal's handler creates
-  // the top's row at once, with the promise it is given, and ends.
-  async handPrompt({kind='goal', prompt='', prompt_id='', task='', interfaces=[]}={}) {
+  // v7, live 4: one prompt handler (see HANDLER_PREFIX), spawned for the
+  // goal: it creates Root's row with the promise it is given and ends.
+  async handPrompt({prompt='', task='', interfaces=[]}={}) {
     const n=Number(query(this.db(),'SELECT COUNT(*) AS n FROM prompt_handlers')[0].n)+1,id=`${HANDLER_PREFIX}${n}`;
-    if(kind==='goal'&&!this.v8()) {
-      const create=!this.node('root');
-      this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,?,?,NULL)',id,kind,clip(prompt,EFFECTIVE_GOAL_LIMIT),prompt_id||'','root',create?1:0,Date.now());
-      try { if(create)await this.provision('root',id,'Root objective',task,interfaces,[],[]); }
-      finally {
-        this.db().exec('UPDATE prompt_handlers SET ended_at=? WHERE id=?',Date.now(),id);
-        this.event('system','prompt_handed',create?`${id} created Root's row (0 packages), handed it the prompt and ended.`:`${id} handed the prompt to Root and ended.`);
-      }
-      return id;
+    const create=!this.node('root');
+    this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,?,?,NULL)',id,'goal',clip(prompt,EFFECTIVE_GOAL_LIMIT),'','root',create?1:0,Date.now());
+    try { if(create)await this.provision('root',id,'Root objective',task,interfaces,[],[]); }
+    finally {
+      this.db().exec('UPDATE prompt_handlers SET ended_at=? WHERE id=?',Date.now(),id);
+      this.event('system','prompt_handed',create?`${id} created Root's row (0 packages), handed it the prompt and ended.`:`${id} handed the prompt to Root and ended.`);
     }
-    this.db().exec("INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,'',0,?,NULL)",id,kind,clip(prompt,EFFECTIVE_GOAL_LIMIT),prompt_id||'',Date.now());
     return id;
-  }
-  // v8 M2: the handler creates the top's row (its parent the handler's id),
-  // with what it holds for it, and ends. The row's inputs: the chunks of the
-  // goal's links it holds (source_refs, as a split gives each piece its own)
-  // and the existing project's digest (base_digest), read as any row's are.
-  // A room from before M2 whose top waits at its split for the card (a
-  // handler opened for it: openTopHandler) has the row already: the handler
-  // gives it the card's contracts and checks and wakes it, as it hands them
-  // to a row it creates.
-  async provisionTop(hid, {task='', interfaces=[], packages=[], refs=null, digest=null, checks=null}={}) {
-    const waiting=this.v8()?this.top():null;
-    // v8 live 4 review (L1): the handler says it created the row only once provision returned; a failed one stays open, and the next run tries again.
-    let top=waiting;
-    if(waiting)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(interfaces),waiting.id);
-    else try {top=await this.provision('root',hid,'Root objective',task,interfaces,[],packages,this.v8()?'manager':'');}
-    catch(e) {this.event(hid,'prompt_handed',clip(`${hid} could not create the top's row (${e?.message||e}); it stays open, and the next run creates it.`,600));throw e;}
-    if(refs)this.save(`source_refs:${top.id}`,refs);
-    if(digest!==null)this.save(`base_digest:${top.id}`,digest);
-    if(checks)this.save(`checks:${top.id}`,checks);
-    this.db().exec('UPDATE prompt_handlers SET root=?,created_root=? WHERE id=?',top.id,waiting?0:1,hid);
-    if(waiting){this.wake(top.id);this.endHandler(hid,`${hid} handed the card to the row of "${top.label}", which waited for it, and ended.`);}
-    else this.endHandler(hid,`${hid} created the row of "${top.label}" (${packages.length} packages), handed it the prompt and ended.`);
-    return top;
-  }
-  endHandler(hid, text) {
-    this.db().exec('UPDATE prompt_handlers SET ended_at=? WHERE id=? AND ended_at IS NULL',Date.now(),hid);
-    this.event(hid,'prompt_handed',clip(text,600));
-  }
-  // v8 M2: the goal's handler still open (its card writer waits, or has not run yet).
-  openGoalHandler() { return query(this.db(),"SELECT id FROM prompt_handlers WHERE kind='goal' AND ended_at IS NULL ORDER BY spawned_at DESC,id DESC LIMIT 1")[0]?.id||null; }
-  // v8 M2 review: a room from before M2 (live 4) whose top's row was created
-  // at once and waits at its split for a card no handler writes: no card
-  // writer step has run in it, and the card is missing or waits for the
-  // person's grant. The top, or null.
-  waitingTop() {
-    const top=this.v8()?this.top():null;
-    if(!top||top.phase!=='decompose'||top.status!=='waiting'||this.manager(top.id)||this.activeTurns.has(top.id))return null;
-    if(query(this.db(),"SELECT id FROM card_writers WHERE kind='card' LIMIT 1").length)return null;
-    return !this.read('card',null)||this.read('base_pending',[]).length?top:null;
-  }
-  // Continue, the person's grant or a change in such a room opens a goal
-  // handler for its top, so the same card writer step runs (drive's
-  // runHandlers) and the handler hands the card to the row. The handler, or null.
-  async openTopHandler() {
-    if(this.openGoalHandler()||!this.waitingTop())return null;
-    const hid=await this.handPrompt({kind:'goal',prompt:this.get('goal')});
-    this.event(hid,'handler_opened',`${hid} opened for "${this.top().label}", which waits at its split for the project card.`);
-    return hid;
-  }
-  // v8 M2: drive's first step: the open goal handler goes on. Its card
-  // writer runs (again); once the card is written and granted, the handler
-  // creates the top's row from it and ends. The handler is busy from the
-  // card writer's run through the creation of the row (handing): a change that comes
-  // meanwhile waits with its own handler (amend_deferred) and goes onto the
-  // new row; when the card writer holds instead, the change goes into the
-  // goal it writes the card from, and it writes the card from that goal now,
-  // as a change folded into a held writer's goal is written at once. True
-  // when the card writer ran.
-  async runHandlers() {
-    const hid=this.v8()?this.openGoalHandler():null;
-    if(!hid)return false;
-    for(let folded=false;;folded=true) {
-      let top=null;
-      this.handing=hid;
-      try {
-        if(await this.cardWriter(hid)) {
-          const card=this.read('card',null),all=this.allRefs();
-          top=await this.provisionTop(hid,{task:this.goalFor(GOAL_LIMIT)??this.get('goal'),interfaces:cardContracts(card,{goal:this.userGoal()}),packages:this.installedSet(),
-            refs:all.length?rootRefs(card?.refs,all):null,digest:this.read('base',null)?(this.read('base',null).digest||''):null,checks:(card?.requirements||[]).map(r=>r.id)});
-        }
-      } finally {this.handing=null;}
-      const d=this.read('amend_deferred',null);
-      if(!d||d.to||folded)return true;
-      if(top){this.save('amend_deferred',{...d,to:top.id,at:''});return true;}
-      try {await this.applyDeferred();} catch(e) {this.event('system','amend_failed',clip(`The change that waited for the card could not be applied: ${e?.message||e}`,600));return true;}
-      if(this.read('amend_deferred',null)||!this.openGoalHandler())return true;
-    }
-  }
-  // v8 M2: the card writer step under a handler: the open one, or a new one.
-  // A goal's handler whose writer ended with the card written, and whose row
-  // is not created (provisionTop failed), keeps that step.
-  cardWriterStep(hid, kind) {
-    const open=query(this.db(),'SELECT id FROM card_writers WHERE handler=? AND kind=? AND ended_at IS NULL LIMIT 1',hid,kind)[0]?.id;
-    if(open)return open;
-    const written=kind==='card'&&this.read('card',null)?query(this.db(),"SELECT id FROM card_writers WHERE handler=? AND kind='card' AND outcome='written' ORDER BY spawned_at DESC,id DESC LIMIT 1",hid)[0]?.id:null;
-    if(written)return written;
-    const id=`${CARD_WRITER_PREFIX}${Number(query(this.db(),'SELECT COUNT(*) AS n FROM card_writers')[0].n)+1}`;
-    this.db().exec("INSERT INTO card_writers(id,handler,kind,spawned_at,ended_at,outcome) VALUES (?,?,?,?,NULL,'')",id,hid,kind,Date.now());
-    this.event(hid,'card_writer_spawned',`${hid} spawned the card writer ${id}${kind==='amend'?' for the change':''}.`);
-    return id;
-  }
-  endCardWriter(id, outcome) { this.db().exec('UPDATE card_writers SET ended_at=?,outcome=? WHERE id=? AND ended_at IS NULL',Date.now(),outcome,id); }
-  cardWriters() { return query(this.db(),'SELECT id,handler,kind,spawned_at,ended_at,outcome FROM card_writers ORDER BY spawned_at,id'); }
-  // v8 M2: the card writer of a goal's handler: it writes the card (cardTurn,
-  // or a provided card), and ends once the card is saved and no file it
-  // changes waits for the person's grant. Held, it waits: the hold is the
-  // room's, and Continue runs it again. True when it ended.
-  async cardWriter(hid) {
-    const sid=this.cardWriterStep(hid,'card'),held=kind=>{this.db().exec('UPDATE card_writers SET outcome=? WHERE id=?',`held:${kind}`,sid);return false;};
-    if(!this.read('card',null)&&!await this.cardTurn(sid))return held(this.read('paused_state',null)?.kind||'card_failed');
-    if(this.read('card',null)?.deliverables?.some(d=>d.needs_confirmation)&&this.read('base_pending',[]).length){this.holdBaseConfirm();return held('base_confirm');}
-    this.endCardWriter(sid,'written');
-    return true;
   }
   promptHandlers() { return query(this.db(),'SELECT id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at FROM prompt_handlers ORDER BY spawned_at,id'); }
   installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
-  // v8 live 4 review (L3, L4): the top's row holds the installed set as the
-  // box reports it now (a room from before packages, or one whose box
-  // inventory came after Start), with what was added to it since.
-  packagesOf(id) {
-    if(!this.v8())return [];
-    const n=this.node(id),own=normalizePackages(parse(n?.packages,[]));
-    return n&&isTop(n)?normalizePackages([...this.installedSet(),...own]):own;
-  }
-  // v8 live 4 review (L6): a node's packages as a prompt shows them: those of the card's code languages, once the card names them.
+  // v8 live 4: a row's packages, as its row lists them (the room's manager is created with the installed set).
+  packagesOf(id) { return this.v8()?normalizePackages(parse(this.node(id)?.packages,[])):[]; }
+  // v8 live 4 review (L6): a row's packages as a prompt shows them: those of the levels' code languages, once a level names them.
   packageView(id) {
-    const langs=codeLanguages(this.read('card',null)),all=this.packagesOf(id);
+    const langs=contractLanguages(this.treeContracts()),all=this.packagesOf(id);
     return langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all;
   }
-  // v8 S3: a room held at a stop only Continue (or a later slice) moves on:
-  // card_blocked, card_failed; and (S4b) at the card's checks: checks_failed,
-  // checks_blocked, checks_exhausted. v8 M2: the hold is the room's, keyed on
-  // the room: extra names what waits on it (agent: the row whose turn it
-  // holds, step: a card writer), which Continue wakes; the run ends paused
+  // v8: a room held at a stop only Continue moves on: what an agent sent up
+  // its line reached the room (escalate: checks_failed, checks_exhausted,
+  // split_failed, agent_stuck, ...), or the checks could not run
+  // (checks_blocked). The hold is the room's: extra names what waits on it
+  // (agent: the row it came from), which Continue wakes; the run ends paused
   // with this text.
   holdRoom(kind, text, extra={}) {
     const prior=this.read('paused_state',null);
-    // v8 card repair: a pending grant (base_confirm) is never overwritten; a later hold waits behind it, and Continue restores it after the grant.
+    // A pending grant (base_confirm) is never overwritten; a later hold waits behind it, and Continue restores it after the grant.
     if(kind!=='base_confirm'&&prior?.kind==='base_confirm'&&this.read('base_pending',[]).length) {
       this.save('queued_hold',{kind,text:clip(text,1200),ts:Date.now(),...extra});
       this.event('room','hold_queued',clip(`${kind} waits behind the files waiting for the person's grant: ${text}`,600));
@@ -1014,35 +821,20 @@ export class ControlRoom extends DurableObject {
     return cfg;
   }
   allNodes() { return query(this.db(), `SELECT ${nodeSelect} FROM agents ORDER BY LENGTH(id),id`); }
-  // v8 M2: the room's lookup of the top of the agents' tree, for its status,
-  // export and dashboard and for the row a change's handler hands it to: the
-  // row whose parent is a handler, else (a room from before handlers) the
-  // one with no parent. Behaviour never branches on it.
+  // The room's lookup of the top of the agents' tree (v7's Root; under v8 the
+  // manager the room created), for its status, export and dashboard: the row
+  // whose parent is a handler, else the one with no parent. Behaviour never
+  // branches on it.
   topId() { return query(this.db(),`SELECT id FROM agents WHERE parent IS NULL OR parent LIKE '${HANDLER_PREFIX}%' ORDER BY LENGTH(id),id LIMIT 1`)[0]?.id||null; }
   top() { const id=this.topId(); return id?this.node(id):null; }
-  // v8 M2: a run exists in this room: a goal's handler was spawned (its card writer may still wait), or a row is there.
-  started() { return !!this.topId()||query(this.db(),"SELECT id FROM prompt_handlers WHERE kind='goal' LIMIT 1").length>0; }
-  // v8 M2: the card's checks a row holds, by requirement id (checks:<id>),
-  // as it holds its contracts: a goal's handler gives the top's row every
-  // check of the card, a change's handler the checks the change adds. Any
-  // row that holds checks runs them over its own bundle when its work is
-  // done (compileCard, one path by id), a worker as a manager. A row from
-  // before handlers with no agent above holds the card's (reading only).
-  checksOf(id, card=this.read('card',null)) {
-    if(!card||!id)return [];
-    const own=this.read(`checks:${id}`,null),n=own?null:this.node(id),ids=new Set(own??(n&&!n.parent?card.requirements.map(r=>r.id):[]));
-    return card.requirements.filter(r=>ids.has(r.id));
-  }
-  holdsChecks(n) { return this.v8()&&!!n&&this.checksOf(n.id).length>0; }
-  // The requirement ids some row holds.
-  heldChecks() { return new Set(query(this.db(),"SELECT value FROM meta WHERE key LIKE 'checks:%'").flatMap(r=>parse(r.value,[]))); }
-  // v8 M2: run finished: the top is done and every card check has a recorded
-  // pass (v7: every strand returned complete). v8 ship-verified: on the
-  // exact bundle that ships (allPassed).
+  // A run exists in this room: under v8 the room created its manager; under v7 a goal's handler was spawned, or a row is there.
+  started() { return this.v8()?!!this.roomManager():!!this.topId()||query(this.db(),"SELECT id FROM prompt_handlers WHERE kind='goal' LIMIT 1").length>0; }
+  // Run finished: under v8 the room observes the manager it created: done,
+  // with every validation of its subtree passing on the exact bundle it
+  // ships (levelPassed); under v7 every strand returned complete.
   runFinished(nodes=this.allNodes()) {
-    const top=this.top();
-    if(!top||!allFinished(nodes)||this.openGoalHandler())return false;
-    return !this.v8()||top.status==='done'&&this.allPassed();
+    if(this.v8()){const m=this.roomManager();return !!m&&this.node(m)?.status==='done'&&this.levelPassed(m);}
+    return !!this.top()&&allFinished(nodes);
   }
   node(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE id=?`, id)[0] ?? null; }
   children(id) { return query(this.db(), `SELECT ${nodeSelect} FROM agents WHERE parent=? ORDER BY id`, id); }
@@ -1099,14 +891,18 @@ export class ControlRoom extends DurableObject {
       return { path: f.path, revision: f.revision, content };
     }));
   }
-  // v8 S8b (§7.1, review): the existing files a writer's contracts name (and
-  // the card or a split was allowed to give it), which it has not written
+  // v8 S8b (§7.1, review): the existing files a worker's contracts place,
+  // which the person granted changing (base_approved) and it has not written
   // yet, as it reads them: quoted and labelled, apart from its own files.
+  grantedBase(id) {
+    const base=this.basePaths(),approved=new Set(this.read('base_approved',[]));
+    return [...new Set(this.promisedOf(id).map(c=>c.path).filter(p=>p&&base.has(p)&&approved.has(p)))].sort();
+  }
   baseFilesFor(id) {
     const n=this.node(id);
-    if(!n||!this.v8()||this.manager(id)||isRuntimeNode(n))return [];
-    const owned=this.gateFacts(id).owned||new Set(),written=new Set(this.files(id).map(f=>f.path));
-    return [...owned].filter(p=>!written.has(p)).flatMap(p=>query(this.db(),'SELECT path,content FROM base_files WHERE path=?',p)).map(r=>({path:r.path,label:BASE_LABEL,content:r.content}));
+    if(!this.v8()||!this.isWorker(n))return [];
+    const written=new Set(this.files(id).map(f=>f.path));
+    return this.grantedBase(id).filter(p=>!written.has(p)).flatMap(p=>query(this.db(),'SELECT path,content FROM base_files WHERE path=?',p)).map(r=>({path:r.path,label:BASE_LABEL,content:r.content}));
   }
   async fileContent(id, path) {
     if (!isId(id) || !isPath(path)) throw new Error('Invalid agent or file path');
@@ -1144,8 +940,8 @@ export class ControlRoom extends DurableObject {
     // v7.15.2: an atomic top's runtime glue took 3 of its 8 file slots, and a
     // 7-module Root could not see the view.js its repair named (review). The
     // glue is left out, and the files its open problems name come first.
-    const atomic=!this.v8()&&worker&&isTop(n)&&this.live(),mine=f=>!atomic||!RUNTIME_GLUE.includes(f.path);
-    const named=new Set(atomic||worker&&this.v8()?this.problems("assignee=? AND status='assigned'",id).flatMap(p=>p.parties.map(x=>x.owner_path||x.path)):[]);
+    const atomic=worker&&isTop(n)&&this.live(),mine=f=>!atomic||!RUNTIME_GLUE.includes(f.path);
+    const named=new Set(atomic?this.problems("assignee=? AND status='assigned'",id).flatMap(p=>p.parties.map(x=>x.owner_path||x.path)):[]);
     return {
       your_id: n.id, your_responsibility: worker ? this.withContract(n.task,n) : n.task, your_label: n.label, turn: n.turn,
       phase: this.manager(id) ? 'manager' : n.phase,
@@ -1155,19 +951,9 @@ export class ControlRoom extends DurableObject {
       your_private_children: this.children(id).map(c => ({ ...describe(c), progress: clip(c.summary, 500) })),
       your_progress: n.summary,
       your_exposed_files: builderMode ? this.files(id).filter(f=>isBuilderGluePath(f.path)).slice(0,18) : this.visibleManifest(id).filter(mine),
-      // v8 (S6 review): a worker's files whole within a budget (sentFiles), the ones its open problems name first; one clipped says so.
-      your_own_files: worker&&this.v8()?sentFiles(ownFiles.filter(f => !f.path.startsWith('memory/') && mine(f)).sort((a,b)=>named.has(b.path)-named.has(a.path)),{revision:true}):
-        ownFiles.filter(f => !f.path.startsWith('memory/') && mine(f) && (!builderMode || this.env.MOCK_AI==='true' || isBuilderGluePath(f.path))).sort((a,b)=>named.has(b.path)-named.has(a.path)).slice(0, 8).map(f => ({ path: f.path, revision: f.revision, content: f.content.slice(0, 3000) })),
+      your_own_files: ownFiles.filter(f => !f.path.startsWith('memory/') && mine(f) && (!builderMode || this.env.MOCK_AI==='true' || isBuilderGluePath(f.path))).sort((a,b)=>named.has(b.path)-named.has(a.path)).slice(0, 8).map(f => ({ path: f.path, revision: f.revision, content: f.content.slice(0, 3000) })),
       ...(answered.length ? {answered_requests: answered} : {}),
       ...(notes.length ? {last_turn_notes: notes} : {}),
-      // v8 (S6, ROLE.worker): the contracts of other parts it may use, each with its exact reference, and the project facts.
-      ...(worker && this.v8() ? (({uses, left_out, project, goal}) => ({...(uses.length ? {contracts_you_may_use: uses} : {}), ...(left_out ? {contracts_left_out: MESSAGES.left_out({count: String(left_out)})} : {}), project, goal}))(this.v8Inputs(id)) : {}),
-      // v8 S8b: the chunks of the goal's links cited for this writer, quoted; the top, whose part is the whole project, reads the existing project's digest.
-      ...(worker && this.v8() ? this.sourceInputs(id, 'chunks') : {}),
-      // v8 S8b review: base text only quoted, labelled, beside the base clause.
-      ...(worker && this.v8() ? (({digest, files}) => digest || files.length ? {base_note: MESSAGES.base_note(), ...(digest ? {existing_files: {label: BASE_LABEL, digest}} : {}), ...(files.length ? {base_files: files} : {})} : {})({digest: this.heldDigest(id), files: this.baseFilesFor(id)}) : {}),
-      // Capability boxes S5 (§5.2): the names this writer may ask the broker for, and how its labelled answers read.
-      ...(worker && this.v8() ? this.availableView(id, answered) : {}),
       new_messages: inbox
     };
   }
@@ -1278,12 +1064,12 @@ export class ControlRoom extends DurableObject {
   snapshot() {
     const cursor=this.stateCursor();
     return {
-      ...this.stateHead(), card: this.read('card',null),
+      ...this.stateHead(),
       agents: this.versioned?this.agentRows():this.stampAgents(cursor.agents).map(x=>x.row),
       files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
       exports: this.exportList(),
       // v8 live 4: the prompt handlers above the top, each spawned and ended, each prompt whole (v8 M2 review: under v8 a delta carries them too, stateHead).
-      prompt_handlers: this.promptHandlers(),
+      ...(this.v8()?{}:{prompt_handlers:this.promptHandlers()}),
       events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
       cursor
     };
@@ -1292,40 +1078,49 @@ export class ControlRoom extends DurableObject {
   stateHead() {
     return {
       goal: this.get('goal'), status: this.get('status','idle'), busy: this.busy, stopping: this.get('stop_requested')==='1', step: Number(this.get('step','0')),
-      build: this.read('last_build_report',null), build_infrastructure: this.v8()?this.get(`compile_infrastructure:${this.read('paused_state',null)?.agent||this.topId()}`,''):this.get('compile_infrastructure',''),
+      build: this.read('last_build_report',null), build_infrastructure: this.v8()?this.get(`compile_infrastructure:${this.read('paused_state',null)?.agent||this.roomManager()}`,''):this.get('compile_infrastructure',''),
       active_agents: [...this.activeTurns], max_parallel: this.settings().parallel, settings: this.settings(),
       budget: Number(this.get('budget','0')), queue: this.read('queue', []),
       problems: this.problems("status!='closed'").slice(0,80).map(p=>({id:p.id,holder:p.holder,kind:p.kind,status:p.status,assignee:p.assignee,
         path:String(p.parties[0]?.path||'').split('/').pop(),detail:clip(p.detail,300),trail:p.trail.map(t=>t.at)})),
       compiler: this.compilerSummary(),
-      // v8 §1.3: the project card's revision (the card itself rides on the snapshot, and on a delta
-      // whose card_rev differs), each requirement's last result (S4b fills it), and why a v8 room is held.
-      card_rev: this.cardRev(), requirement_status: this.requirementStatus(), pause: this.read('paused_state',null),
-      // v8 card repair: what the card writer said, only while the room is held at card_failed (the export always has it).
-      ...(this.read('paused_state',null)?.kind==='card_failed'?{card_raw:this.read('card_raw',null)}:{}),
-      // v8 card repair: the existing files waiting for the person's grant (Clef's p and whether the goal names each), for the hold panel.
+      // Why a room is held; under v8, each validation (what it serves, its check in a few words, Clef's
+      // marks, where it is held) with its last result, the manager the room created and the splitter steps.
+      pause: this.read('paused_state',null),
+      ...(this.v8()?this.levelsHead():{}),
+      // The existing files waiting for the person's grant (Clef's p and whether the prompt names each), for the hold panel.
       ...(this.read('base_pending',[]).length?{base_pending:this.read('base_pending',[])}:{}),
-      // v8 S8b: the goal's links (title, address, size, cut or why not read) and what the run starts from.
+      // v8 S8b: the prompt's links (title, address, size, cut or why not read) and what the run starts from.
       ...this.inputsHead(),
-      // v8 S9: the prompts (queued, running, done, failed, skipped), the queue's policy and the card's revisions.
-      ...this.promptsHead(),
-      // v8 M2 review: the short-lived steps above the top, the prompt handlers (each prompt's head; the snapshot and the
-      // export carry it whole) and the card writer steps they spawned, each spawned and ended: a delta carries them whole,
-      // and the dashboard lists them above the agents.
-      ...(this.v8()?{prompt_handlers:this.promptHandlers().map(h=>({...h,prompt:clip(h.prompt,300)})),card_writers:this.cardWriters()}:{})
+      // v8 S9: the prompts (queued, running, done, failed, skipped) and the queue's policy.
+      ...this.promptsHead()
     };
+  }
+  // v8: what the dashboard shows of the levels: each validation with what it
+  // serves, its check in a few words, Clef's marks, the row that holds it and
+  // its last result (a result older than the last change to a delivered file
+  // is marked stale); the manager the room created; each splitter step.
+  levelsHead() {
+    const status=this.validationStatus(),held=new Map(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'checks:%'").flatMap(r=>parse(r.value,[]).map(v=>[v,r.key.slice('checks:'.length)])));
+    return {room_manager:this.roomManager(),validation_status:status,
+      validations:this.validationRows().map(v=>({id:v.id,level:v.level,held:held.get(v.id)||'',serves:v.serves,kind:v.check?.kind||'',check:checkSummary(v.check),...(v.says?{says:v.says}:{}),notes:v.notes})),
+      splitters:this.splitterRows()};
+  }
+  // The validation status as the dashboard reads it: a result older than the
+  // last change to a delivered file is marked stale.
+  validationStatus() {
+    const st=this.read('validation_status',{});
+    if(!Object.keys(st).length)return st;
+    const last=query(this.db(),"SELECT COALESCE(MAX(updated_at),0) AS t FROM artifact_files WHERE path NOT LIKE 'memory/%'")[0].t;
+    return Object.fromEntries(Object.entries(st).map(([k,v])=>[k,v&&last>v.ts?{...v,stale:true}:v]));
   }
   inputsHead() {
     const base=this.read('base',null),sources=this.sourceRows();
     return {
-      sources: sources.map(({card,fetched_at:_,...r})=>({...r,summary:card?.summary?clip(card.summary,400):'',parts:card?.outline?.length||0})),
+      sources: sources.map(({summary,fetched_at:_,...r})=>({...r,summary:summary?.summary?clip(summary.summary,400):'',parts:summary?.outline?.length||0})),
       base: base?{kind:base.kind,source:base.source,ref:base.ref,resolved_sha:base.resolved_sha,room:base.room||null,files:base.files,bytes:base.bytes,skipped_count:base.skipped_count,truncated:!!base.truncated,
         passthrough:base.passthrough||0,not_carried:(base.not_carried||[]).length,...(base.kind==='room'?{passed:!!base.passed,unverified:!!base.unverified}:{})}:null
     };
-  }
-  cardRev() { return query(this.db(),'SELECT COALESCE(MAX(rev),0) AS rev FROM card_revisions')[0].rev; }
-  // The card for a dashboard whose copy is of revision rev: whole when it changed, else nothing.
-  cardFor(rev) { return String(rev??'')===String(this.cardRev())?{}:{card:this.read('card',null)};
   }
   // Export manifests contain only aliases, never hidden child routing IDs.
   exportList() {
@@ -1369,7 +1164,7 @@ export class ControlRoom extends DurableObject {
   // only when the alias table changed, and the small state whole. A cursor
   // from another run, or past the last event, gets the whole snapshot.
   // run7's dashboard pulled 1.1 MB every 3 s, rebuilt on this isolate.
-  stateDelta({since=0, agents_since=0, files_since=0, exports='', run='', card_rev=''}={}) {
+  stateDelta({since=0, agents_since=0, files_since=0, exports='', run=''}={}) {
     const cursor=this.stateCursor(),given=x=>x!==null&&x!==undefined&&String(x)!=='';
     const whole=String(run)!==cursor.run||!given(since)||!given(agents_since)||!given(files_since)||Number(since)>cursor.events||this.versioned&&Number(agents_since)>cursor.agents;
     since=Number(since)||0;agents_since=Number(agents_since)||0;files_since=Number(files_since)||0;
@@ -1378,7 +1173,7 @@ export class ControlRoom extends DurableObject {
     if(whole||files.length>1000)return {...this.snapshot(),full:true};
     const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events WHERE id>? ORDER BY id DESC LIMIT 300',since).reverse();
     return {
-      ...this.stateHead(),...this.cardFor(card_rev),full:false,
+      ...this.stateHead(),full:false,
       agents:this.versioned?this.agentRows(agents_since):this.stampAgents(cursor.agents).filter(x=>x.at>agents_since).map(x=>x.row),
       files,
       ...(String(exports)!==cursor.exports?{exports:this.exportList()}:{}),
@@ -1459,12 +1254,12 @@ export class ControlRoom extends DurableObject {
     const {events:_recent,cursor:_cursor,...rest}=snapshot;
     return {...rest,exports,exported_at:new Date().toISOString(),files,
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors,split_attempts,
-      // v8 card repair: the card writer's last answers as written, each clipped (diagnosis).
-      card_raw:this.read('card_raw',null),
-      card_revisions:query(this.db(),'SELECT rev,goal_rev,card,reason,ts,delta FROM card_revisions ORDER BY rev').map(r=>({...r,card:parse(r.card,null),delta:parse(r.delta||'{}',{})})),
-      // v8 S9: the goal's revisions and every prompt, with its outcome.
+      // v8: every level's design (its contracts, the ids of its validations, its pieces and its batches of children) and every splitter step with what it answered.
+      ...(this.v8()?{designs:Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'design:%'").map(r=>[r.key.slice('design:'.length),parse(r.value,null)])),
+        splitter_steps:query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome,output FROM splitters ORDER BY spawned_at,id').map(r=>({...r,output:parse(r.output,{})}))}:{}),
+      // v8 S9: the prompt's revisions and every prompt, with its outcome.
       goal_revisions:query(this.db(),'SELECT rev,prompt,text,effective,ts FROM goal_revisions ORDER BY rev'),prompt_history:this.promptRows(),
-      // v8 S8b: every source with its card and digest, the base as it was read, and each base file's digest (the files themselves are in /api/app).
+      // v8 S8b: every source with its summary and digest, the base as it was read, and each base file's digest (the files themselves are in /api/app).
       sources:this.sourceRows(),base_meta:this.read('base',null),base_files:query(this.db(),'SELECT path,sha256,LENGTH(content) AS chars FROM base_files ORDER BY path')};
   }
   // The goal as the user wrote it, without the requirement the runtime appends.
@@ -1479,7 +1274,7 @@ export class ControlRoom extends DurableObject {
   // passing Container run recorded (compile_passed) hashed exactly these
   // files (README aside).
   async appFiles() {
-    if(this.v8())return this.cardApp();
+    if(this.v8())return this.projectApp();
     const root=this.top(),top=root?.id;
     const builder=root&&this.builderOf(top),compiler=root&&this.compilerOf(top);
     const atomic=!builder&&!!root&&!this.manager(top),files=[];
@@ -1509,28 +1304,29 @@ export class ControlRoom extends DurableObject {
     const readme=files.some(f=>f.path==='README.md')?'README.control-plane.md':'README.md';
     return {...app,files:[{path:readme,content:appReadme(app,files)},...files]};
   }
-  // v8 S4b (§1.3, §4.8): the project under v8 is the bundle the card's
-  // checks run (bundleFiles), at its own paths, beside the runtime's notes:
-  // .recursive/RUN.md (how to run it and the requirement table, runNotes)
-  // and .recursive/card.json. The project's README is never written or
-  // moved. passed: the last passing check run hashed exactly these files.
-  async cardApp() {
-    const root=this.top();
-    const bundle=root?await this.bundleFiles(root.id):{files:new Map(),link:null},{files,link}=bundle;
+  // v8: the project is the bundle the compiler of the room's manager
+  // verifies (bundleFiles), at its own paths, beside the runtime's notes:
+  // .recursive/RUN.md (how to run it and the validation table, runNotes)
+  // and .recursive/validations.json (the levels' contracts and validations).
+  // The project's README is never written or moved. passed: the last run
+  // whose every validation passed hashed exactly these files.
+  async projectApp() {
+    const m=this.roomManager();
+    const bundle=m?await this.bundleFiles(m):{files:new Map(),link:null},{files,link}=bundle;
     if(!files.size) {
-      const status=this.get('status','idle'),why=!root?'no run has started in this room':'no piece has delivered a file yet';
+      const status=this.get('status','idle'),why=!m?'no run has started in this room':'no piece has delivered a file yet';
       return {status:409,error:['complete','failed'].includes(status)?`No application to export: this room ended (${status}) and ${why}. Start a new room to build one.`:
-        `No application yet: ${why}. ${root?'Continue the room until it has one, then export it.':'Start a run first.'}`};
+        `No application yet: ${why}. ${m?'Continue the room until it has one, then export it.':'Start a run first.'}`};
     }
-    const digest=await snapshotHash(files),card=this.read('card',null),status=this.read('requirement_status',{});
-    const last=this.read('compile_passed',null),hit=last?.digest===digest&&last.card_rev===this.cardRev()?last:null;
+    const digest=await snapshotHash(files),spec=this.specOf(this.validationRows()),status=this.read('validation_status',{});
+    const last=this.read('compile_passed',null),hit=last?.digest===digest?last:null;
     // v8 ship-verified: the files the person accepted shipping unchecked are named beside the pass.
     const owe=hit?this.uncheckedOf(bundle):null,unchecked=owe&&this.get('unchecked_accepted')===owe.key?owe.list.map(x=>x.path):[];
-    const note=hit?`Every requirement of the project card passed on exactly these files (snapshot ${digest.slice(0,16)})${unchecked.length?`, but for ${unchecked.length} the person accepted shipping unchecked: ${clip(unchecked.join(', '),300)}`:''}.`:
-      last?.digest?`These files differ from the last run that passed every check (snapshot ${last.digest.slice(0,16)}), so they have not passed as exported.`:
-      'The project card\'s checks have not all passed on these files yet.';
-    const app={room:this.get('room_id',''),goal:this.userGoal(),room_status:this.get('status','idle'),agents:this.allNodes().length,kind:'card',
-      entry:null,passed:!!hit,fingerprint:hit?.input??null,digest,note,card_rev:this.cardRev(),...(unchecked.length?{unchecked}:{}),...(link&&Object.keys(link.paths).length?{paths:link.paths}:{})};
+    const note=hit?`Every validation passed on exactly these files (snapshot ${digest.slice(0,16)})${unchecked.length?`, but for ${unchecked.length} the person accepted shipping unchecked: ${clip(unchecked.join(', '),300)}`:''}.`:
+      last?.digest?`These files differ from the last run that passed every validation (snapshot ${last.digest.slice(0,16)}), so they have not passed as exported.`:
+      'The validations have not all passed on these files yet.';
+    const app={room:this.get('room_id',''),goal:this.userGoal(),room_status:this.get('status','idle'),agents:this.allNodes().length,kind:'levels',
+      entry:null,passed:!!hit,fingerprint:hit?.input??null,digest,note,...(unchecked.length?{unchecked}:{}),...(link&&Object.keys(link.paths).length?{paths:link.paths}:{})};
     // v8 S8b review: the export is the base plus the changes. A base file keeps
     // its mode, and says whether the room changed it (from_base); the files the
     // room carried untouched follow the hashed ones, as bytes, and RUN.md lists
@@ -1545,7 +1341,7 @@ export class ControlRoom extends DurableObject {
       const b=baseRows.get(path);
       own.push({path,content,...(b?{from_base:b.sha256===await sha256(content)?'unchanged':'changed',...(gitMode(b.mode)==='100755'?{mode:'100755'}:{})}:{})});
     }
-    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,card,status)+baseNotes(meta,pass)},{path:'.recursive/card.json',content:JSON.stringify(card,null,2)+'\n'}];
+    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,spec,status)+baseNotes(meta,pass)},{path:'.recursive/validations.json',content:JSON.stringify({contracts:spec.contracts,validations:spec.validations.map(({notes:_,...v})=>v)},null,2)+'\n'}];
     const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
     return {...app,files:[...notes,...own,...carried]};
   }
@@ -1593,56 +1389,9 @@ export class ControlRoom extends DurableObject {
     return String(id).split('.').length+1 <= this.settings().max_depth &&
       this.productionNodeCount() + this.reservedSpawnSlots() + 2*count <= this.settings().max_agents;
   }
-  // v8 live 5: Clef reviews a proposed split in one call (reviewSplit): a
-  // valid division (split_valid, at the bar that rises with depth from
-  // split_valid_bar) whose pieces are each worth a writer (split_size, at
-  // split_size_bar), with each piece's scope. YES admits the pieces (their
-  // scope ps go to admission, which marks a doubted one and deletes none).
-  // A NO is retried with the parameter its objection calls for: too small,
-  // fewer and larger pieces (the count it had, less one, at least two); not a
-  // valid division, another division along the contracts, the pieces shown
-  // as rejected; both, too small. The third NO, or too small at two pieces,
-  // hands the assignment down to one worker ({down}). A retry waits for the
-  // row's next turn ({ok:false}).
-  async reviewProposal(id, n, proposed, feedback=null) {
-    const {spawn:pieces}=normalizeSpawn(proposed,this.promisedOf(id),{v8:true});
-    const cfg=this.splitConfig(),attempt=this.splitAttempts(id).filter(a=>a.attempt>0).length+1;
-    const retry=attempt>1&&['fewer','different'].includes(feedback?.retry)?feedback.retry:'';
-    const validBar=this.splitBar(id,cfg.valid_bar),sizeBar=cfg.size_bar,started=Date.now();
-    const r=await reviewSplit(this.inferenceEnv(),{goal:this.goalFor(SCOPE_GOAL)??(this.topTask()||n.task),assignment:clipEnds(n.task,2600),contracts:this.gateContracts(id),pieces,attempt,retry});
-    const ok=r.valid>=validBar&&r.size>=sizeBar,next=ok?'':r.size<sizeBar?'fewer':'different',bound=pieces.length-1;
-    const stop=ok?'':attempt>=SPLIT_ATTEMPTS?`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`:next==='fewer'&&bound<2?`with pieces too small at ${pieces.length}, and fewer than two is no division`:'';
-    const r3=x=>Math.round(x*1000)/1000;
-    this.recordAttempt(id,{attempt,pieces:pieces.length,valid_p:r3(r.valid),size_p:r3(r.size),scope_ps:r.scope.map(r3),valid_bar:validBar,size_bar:sizeBar,
-      ...(retry?{retry}:{}),outcome:ok?'admitted':stop?'handed down':`retry ${next}`,ms:Date.now()-started});
-    const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='fewer'?'fewer pieces':'a different division'}`:''}): split_valid p=${r.valid.toFixed(3)} (bar ${validBar}), split_size p=${r.size.toFixed(3)} (bar ${sizeBar})`;
-    if(ok){this.event(id,'split_review',`${said}: YES, the pieces go to admission.`);return {ok:true,scope:r.scope};}
-    if(stop)return {ok:false,down:`${said}: NO ${stop}, so it hands its whole assignment down to one worker.`};
-    const shown=pieces.map(c=>({label:c.label,task:clip(c.task,300),contracts:(c.interfaces||[]).map(f=>f.name)}));
-    this.save(`split_feedback:${id}`,next==='fewer'?{kind:'too_small',retry:'fewer',reason:RETRY.too_small(pieces.length,bound),count:pieces.length,bound,proposed:shown,accepted:[],rejected:[]}
-      :{kind:'invalid',retry:'different',reason:RETRY.different,accepted:[],rejected:shown});
-    this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='fewer'?`fewer, larger pieces (at most ${bound})`:'a different division along its contracts'}.`);
-    this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
-    this.save('queue',addLast(this.read('queue',[]),id));
-    return {ok:false};
-  }
-  // v8 live 5: a manager that does not split hands its whole assignment down
-  // to one worker, spawned as split pieces are (spawn, the plan's ops): its
-  // task, all its contracts (the manager keeps them, as it keeps a split's),
-  // its uses, its packages (planPackages) and its source refs. The worker
-  // never splits; the manager keeps its builder and its checks.
-  handDownPlan(id, n, inbox, why, assemblyFingerprint, rejected=[]) {
-    const uses=parse(n.uses,[]),refs=this.sourceRefs(id),digest=this.heldDigest(id);
-    const [spec]=this.planPackages(id,[{label:n.label,task:n.task,interfaces:this.promisedOf(id),role:'worker',...(uses.length?{uses}:{}),...(refs.length?{refs}:{}),...(typeof digest==='string'?{base_digest:digest}:{})}]);
-    this.set(`split_feedback:${id}`,'');this.set(`split_yes:${id}`,'');
-    this.event(id,'hand_down',why);
-    const owned=ownerNotes(rejected.filter(x=>x?.owner),true),action={...normalizeAction({summary:`Handed its whole assignment down to one worker: ${why}`},{v8:true}),spawn:[spec],wait:true};
-    if(owned)action.remember.push({visibility:'public',key:'owned_elsewhere',value:owned});
-    return {action,inbox,nextPhase:null,assemblyFingerprint,owned};
-  }
   // v8 live 5: what every manager's split gate reads beside its assignment:
   // its own row's contracts, one line each (gateLine), each with the ids of
-  // the requirements it serves, as the row holds them (no card field is read).
+  // the validations it serves, as the row holds them.
   gateContracts(id) {
     return this.promisedOf(id).map(c=>gateLine(c)).filter(Boolean).slice(0,16);
   }
@@ -1777,17 +1526,7 @@ export class ControlRoom extends DurableObject {
   // The top has no manager to ask: an atomic Root that followed the clause
   // asked anyway and wedged on 'Worker has no available manager'.
   // v7.15.5: then its uses, answered up front (none for the start carrier).
-  // v8 (S3): each contract on one line by its kind (contractLine), as the
-  // splitter and the checks read it; v7 keeps its function wording.
   withContract(task, n) {
-    if(this.v8()) {
-      // v8 (S6): the uses travel apart, with their references (view's contracts_you_may_use).
-      const items=this.promisedOf(n.id);
-      // v8 live 2: from the first turn, the statements of the requirements these contracts serve, masked with every check's values (live 2 review).
-      const card=this.read('card',null),ids=new Set(items.flatMap(c=>c.serves||[])),reqs=(card?.requirements||[]).filter(r=>ids.has(r.id)&&routable(r)).slice(0,16),scope=reqs.length?cardScope(card,{goal:this.userGoal()}):null;
-      const said=reqs.length?` ${MESSAGES.requirements_served({list:reqs.map(r=>`${r.id}: ${maskWith(String(r.says),scope).replace(/[.\s]+$/,'')}`).join('; ')})}`:'';
-      return items.length?`${task}\n\nYour contracts, delivered under exactly these names and paths: ${items.map(contractLine).join('; ')}.${said}`:task;
-    }
     const own=[contractText(this.promisedOf(n.id).map(f=>n.parent?f:{...f,does:String(f.does||'').replace(ASK_CLAUSE,'')})),usesText(this.plannedUses(n.id))].filter(Boolean).join(' ');return own?`${task}\n\n${own}`:task;}
   canSplit(parentId, count=2) {
     return parentId.split('.').length <= this.settings().max_depth &&
@@ -2134,7 +1873,7 @@ export class ControlRoom extends DurableObject {
     const below=[];
     const walk=parent=>{for(const c of this.children(parent)){if(isRuntimeNode(c))continue;below.push(c);walk(c.id);}};
     walk(id);
-    if(below.some(n=>!['done','retired'].includes(n.status)))return false;
+    if(below.some(n=>!['done','retired','archived'].includes(n.status)))return false;
     const ids=new Set(below.map(n=>n.id));
     if(query(this.db(),"SELECT DISTINCT holder FROM problems WHERE status='open'").some(r=>ids.has(r.holder)))return false;
     return !query(this.db(),"SELECT recipient FROM messages WHERE delivered=0 AND body LIKE '[build:repair]%'").some(m=>ids.has(m.recipient));
@@ -2275,7 +2014,7 @@ export class ControlRoom extends DurableObject {
     // v7.15.5 review: another piece's linked file is named with its label (run12's Entry Module and Update Ticket Operation each wrote module.js).
     const dirs=new Map(this.allNodes().flatMap(n=>[[branchDirectory(n.label,n.id),n],[packageDirectory(n.label,n.id),n]])),piece=d=>{const n=dirs.get(d);return !n?null:n.id===row.worker?'':n.label;};
     // v7.15.6 (R3): run requirements routed by the plan read as the requirement on the worker's own promise, nothing more.
-    return repairText({v8:this.v8(),role:row.role,piece,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),own:row.manager===row.worker,
+    return repairText({role:row.role,piece,instructions:row.instructions,facts:row.facts,kinds:problems.map(p=>p.kind),written:problems.every(p=>p.kind==='contract'&&!p.facts.names?.length),own:row.manager===row.worker,
       requirement:row.manager!==row.worker&&problems.every(p=>p.kind==='run'&&p.facts.requirement),operation:problems.every(p=>p.kind==='unresolved'&&!!p.facts.operation)&&{...problems[0].facts.operation,path:problems[0].source===row.worker?'placeholder':problems[0].facts.operation.gap?'gap':'import'},problems:problems.map(p=>({path:p.parties.find(x=>x.owner===row.worker)?.owner_path||p.parties[0]?.path,detail:p.detail}))});
   }
   async markBuilderComplete(builderId, fingerprint) {
@@ -2632,7 +2371,7 @@ export class ControlRoom extends DurableObject {
     return files;
   }
   // The run's build executor (one Container per run): v7 only. A v8
-  // compile runs in a fresh box (runCard); bench rooms are v8, so no room
+  // compile runs in a fresh box (runChecks); bench rooms are v8, so no room
   // shares an executor with another any more (capability boxes S1).
   buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
   // Speed v1: start the run's Container just before a compile the room has
@@ -2656,8 +2395,8 @@ export class ControlRoom extends DurableObject {
   // describes start() beside a runner test in the same exec; prechecked skips
   // the checks a run of the same files passed moments ago.
   async containerRun(nodeId, label, files, options = {}) {
-    // Capability boxes S1: v8 code runs only in a fresh box (runCard), never in the shared, internet-on v7 executor.
-    if(this.v8())return {infrastructure:'A v8 room runs code only in a fresh box with the internet off (runCard).'};
+    // Capability boxes S1: v8 code runs only in a fresh box (runChecks), never in the shared, internet-on v7 executor.
+    if(this.v8())return {infrastructure:'A v8 room runs code only in a fresh box with the internet off (runChecks).'};
     if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot build or run the application.'};
     const key=await sha256(label);
     let report,snapshot,digest;
@@ -3188,7 +2927,6 @@ export class ControlRoom extends DurableObject {
   // either finish (linked) or report what is left to the manager (reported).
   // It never decides who changes code.
   async builderTurn(id) {
-    if(this.v8())return this.pieceBuilderTurn(id);
     const n=this.node(id), manager=n.parent, top=!this.node(manager)?.parent;
     this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
     const inbox=this.receive(id);
@@ -3762,55 +3500,44 @@ export class ControlRoom extends DurableObject {
     this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
     this.event(id,'done','Completed owned strand without transferring ownership to children.');
   }
-  // A worker whose own checks failed (v8 M2: any worker that holds checks;
-  // v7: the atomic top) hears its problems as a repair ticket, with itself as
-  // the manager: each report is a round of the progress-aware budget a
-  // manager pays (countRound), so a run that fails as before ends after
-  // MANAGER_MAX_STALLED rounds, and it hands up (exhaustRounds).
+  // v7: the atomic top whose own checks failed hears its problems as a
+  // repair ticket, with itself as the manager: each report is a round of the
+  // progress-aware budget a manager pays (countRound), so a run that fails as
+  // before ends after MANAGER_MAX_STALLED rounds (exhaustRounds).
   ownRepair(id, input, stage, items) {
-    const reported=this.v8()?`compile_reported:${id}`:'compile_reported',wave=crypto.randomUUID(),now=Date.now(),unchanged=this.read(reported,null)?.input===input;
+    const reported='compile_reported',wave=crypto.randomUUID(),now=Date.now(),unchanged=this.read(reported,null)?.input===input;
     this.closeProblemsFrom(id,'superseded');
     const list=items.slice(0,MAX_PROBLEMS_PER_REPORT),ids=list.map(x=>this.insertProblem({holder:id,kind:x.kind,stage,source:id,input,
       parties:x.parties||this.partiesOf(id,{...x,owner:id}).map(p=>({...p,owner:id,owner_path:p.path})),detail:x.detail,facts:x.facts,evidence:x.evidence,flags:{wave}}));
     this.save(reported,{input,stage,problems:ids,ts:now});
-    this.set(this.v8()?`checks_due:${id}`:'atomic_compile','');
-    this.event(id,'problems_reported',clip(`${ids.length} problem(s) in ${this.v8()?`${this.node(id)?.label||id}'s`:'Root\'s'} own code, which it repairs itself: `+list.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; '),1000));
+    this.set('atomic_compile','');
+    this.event(id,'problems_reported',clip(`${ids.length} problem(s) in Root's own code, which it repairs itself: `+list.map(x=>`${x.path||'(application)'}: ${x.detail}`).join('; '),1000));
     const exhausted=this.countRound(id,wave);
     if(exhausted)return this.exhaustRounds(id,exhausted);
     const moved=ids.map(pid=>this.problems('id=?',pid)[0]).filter(p=>{
-      const side=DEFAULT_ROLE[p.kind],directive={by:id,origin:id,side,instructions:instructionsFor(p,side,true,this.msgOpts()),facts_text:p.facts.provider_text??''};
+      const side=DEFAULT_ROLE[p.kind],directive={by:id,origin:id,side,instructions:instructionsFor(p,side,true),facts_text:p.facts.provider_text??''};
       return this.moveProblem(p,{status:'assigned',assignee:id,directive,flags:{...p.flags,revs:this.revisionKey(id)},trail:[...p.trail,{at:id,action:'assign',to:id,rule:'atomic',ts:now}]});
     });
     const ticket=crypto.randomUUID(),instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
     const facts=clip([...new Set(moved.flatMap(p=>String(p.directive.facts_text||'').split(' | ')).filter(Boolean))].join(' | '),1400);
     this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,id,id,JSON.stringify(moved.map(p=>p.id)),'reader',instructions,facts,now);
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:compile',id,'[build:repair] '+ticket);
-    this.event(id,'problem_assigned',clip(`${moved.length} problem(s) back to ${this.v8()?`${this.node(id)?.label||id}, which wrote every file of its own`:'Root, which wrote every file'}${unchanged?' and changed none since they were reported':''}: ${instructions}`,800));
+    this.event(id,'problem_assigned',clip(`${moved.length} problem(s) back to Root, which wrote every file${unchanged?' and changed none since they were reported':''}: ${instructions}`,800));
     this.wake(id);
   }
 
-  // ---------- v8: the project card's checks (S4b, §4.1) ----------
-  // The project's files as the card's checks run them (§4.1 step 1). A
-  // worker's bundle is its own delivered files at their own paths; a
-  // manager's is its piece (v8 M3, joinPiece): its builder joins its
-  // children's assembled pieces. Either is then linked (linkBundle, S5 §5):
-  // the JavaScript links, a page's references, and for a row with glue the
-  // runtime's shims, package markers and module path, with the rename-only
-  // fixes kept for that bundle from a run's errors (link_fixes:<row>).
-  // origin: each bundle path's writer and its own path; placed: the placed
-  // paths; glue: the runtime-written files; link: linkBundle's report.
-  async bundleFiles(top) {
-    const n=this.node(top);
-    if(!n)return {files:new Map(),origin:new Map(),placed:new Set(),glue:new Map(),link:null,top};
-    if(this.manager(top))return this.joinPiece(top);
-    const files=new Map(),origin=new Map(),placed=new Set();
-    for(const f of deliveredFiles(this.files(top))) {
-      if(buildPathError(f.path)||RUNTIME_GLUE.includes(f.path)&&!this.promisedOf(top).some(c=>c.path===f.path))continue;
-      files.set(f.path,await this.indexedContent(top,f.path));origin.set(f.path,{owner:top,owner_path:f.path});placed.add(f.path);
-    }
-    this.addBase(top,files,origin,placed);
-    const contracts=this.promisedOf(top).filter(c=>contractKind(c)==='function').map(c=>({name:c.name,kind:'function',owner:top}));
-    return this.linkPiece(top,files,origin,placed,contracts,{fixes:this.read(`link_fixes:${top}`,{}),atomic:true});
+  // ---------- v8: a level's piece and its validations (S4b, §4.1) ----------
+  // A manager's piece, as its compiler runs the validations on it (§4.1 step
+  // 1; v8 M3, joinPiece): its builder joins its children's assembled pieces,
+  // then links them (linkBundle, S5 §5): the JavaScript links, a page's
+  // references, and for a row with glue the runtime's shims, package markers
+  // and module path, with the rename-only fixes kept for that bundle from a
+  // run's errors (link_fixes:<row>). origin: each bundle path's writer and
+  // its own path; placed: the placed paths; glue: the runtime-written files;
+  // link: linkBundle's report.
+  async bundleFiles(m) {
+    if(!this.node(m))return {files:new Map(),origin:new Map(),placed:new Set(),glue:new Map(),link:null,top:m};
+    return this.joinPiece(m);
   }
   // linkBundle over a bundle's files, sorted, with the fixes kept for it.
   linkPiece(top, files, origin, placed, contracts, {fixes={}, atomic=false}={}) {
@@ -3869,7 +3596,7 @@ export class ControlRoom extends DurableObject {
   // The working leaves in a row's subtree (the row itself when it is one).
   pieceLeaves(id) {
     if(!this.manager(id)){const n=this.node(id);return n?[n]:[];}
-    const gone=x=>{for(let y=x;y&&y.id!==id;y=y.parent?this.node(y.parent):null)if(['retired','failed'].includes(y.status))return true;return false;};
+    const gone=x=>{for(let y=x;y&&y.id!==id;y=y.parent?this.node(y.parent):null)if(['retired','failed','archived'].includes(y.status))return true;return false;};
     return this.subtree(id).slice(1).map(x=>this.node(x)).filter(x=>x&&!isRuntimeNode(x)&&!this.manager(x.id)&&!gone(x));
   }
   // A manager's piece: its builder joins its children's assembled pieces, a
@@ -3888,7 +3615,7 @@ export class ControlRoom extends DurableObject {
       if(files.has(at)){found.push(`${at} (${this.node(o?.owner)?.label||'the existing project'})`);return;}
       files.set(at,content);if(o)origin.set(at,o);if(isPlaced)placed.add(at);
     };
-    for(const c of this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status))) {
+    for(const c of this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed','archived'].includes(c.status))) {
       if(this.manager(c.id)) {
         const cb=this.builderOf(c.id),stored=cb&&this.read(`piece:${cb.id}`,null);
         if(stored) {
@@ -3939,7 +3666,7 @@ export class ControlRoom extends DurableObject {
   // links read, the builder's kept fixes and the base. v8 M3 review 2: a
   // worker's, the fixes kept for its own bundle (link_fixes:<worker>).
   pieceInput(m) {
-    const kids=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)),b=this.builderOf(m);
+    const kids=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed','archived'].includes(c.status)),b=this.builderOf(m);
     return textHash(JSON.stringify([kids.map(c=>this.manager(c.id)?[c.id,'piece',this.read(`piece:${this.builderOf(c.id)?.id}`,null)?.digest||'']:[c.id,'files',this.ownedDigest(c.id),this.promisedOf(c.id).map(x=>`${x.name}|${x.path||''}`)]),
       b?this.read(`link_fixes:${b.id}`,{}):this.manager(m)?{}:this.read(`link_fixes:${m}`,{}),this.heldDigest(m)]));
   }
@@ -4043,9 +3770,9 @@ export class ControlRoom extends DurableObject {
   // their contract names that no leaf inside also has, their route
   // contracts, the paths their contracts place, and their files' stems.
   outsideOf(m) {
-    const leaves=this.pieceLeaves(m),inside=new Set(leaves.map(l=>l.id)),mine=new Set(leaves.flatMap(l=>this.promisedOf(l.id).map(c=>c.name))),top=this.topId();
+    const leaves=this.pieceLeaves(m),inside=new Set(leaves.map(l=>l.id)),mine=new Set(leaves.flatMap(l=>this.promisedOf(l.id).map(c=>c.name)));
     const names=new Set(),routes=[],paths=new Set(),stems=new Set(),stem=p=>String(p).split('/').pop().replace(/\.[^.]+$/,'');
-    for(const l of top?this.pieceLeaves(top):[]) {
+    for(const l of this.treeLeaves()) {
       if(inside.has(l.id))continue;
       for(const c of this.promisedOf(l.id)){if(!mine.has(c.name))names.add(c.name);if(contractKind(c)==='route')routes.push(c.name);if(c.path){paths.add(c.path);stems.add(stem(c.path));}}
       for(const f of deliveredFiles(this.files(l.id)))stems.add(stem(f.path));
@@ -4060,12 +3787,14 @@ export class ControlRoom extends DurableObject {
     const here=x=>(piece.contracts||[]).some(c=>c.name===x)||moduleInPiece(x,piece.files,rows);
     return names.some(x=>(out.names.has(x)||out.stems.has(x))&&!here(x));
   }
-  // The files the checks a row holds reach in its piece (their entries and
-  // the import closure of those).
-  reachedPaths(id, piece, card=this.read('card',null)) {
+  // The working leaves of the whole tree (every row with no agent above, and below it).
+  treeLeaves() { return this.allNodes().filter(n=>!this.agentAbove(n.id)).flatMap(n=>this.pieceLeaves(n.id)); }
+  // The files the validations a row holds reach in its piece (their entries
+  // and the import closure of those).
+  reachedPaths(id, piece) {
     const out=new Set();
-    for(const r of this.checksOf(id,card||undefined)) {
-      const {entries}=checkEntries(r,card,piece.files,{placed:piece.placed});
+    for(const v of this.checksOf(id)) {
+      const {entries}=checkEntries(v,this.specOf([v]),piece.files,{placed:piece.placed});
       for(const p of this.closureOf(id,entries,piece).reached)out.add(p);
     }
     return out;
@@ -4075,40 +3804,38 @@ export class ControlRoom extends DurableObject {
     return importClosure(entries,piece.files,{rows,installed:(mod,row)=>installedModule(mod,row,{held,rows}),contracts:piece.contracts||[],
       pieces:new Map([...piece.origin].map(([p,o])=>[p,o.owner])),parts:this.partsRoot(),held:this.passthroughPaths()});
   }
-  // v8 M3, the hard fact for one check in a piece: what it exercises is
+  // v8 M3, the hard fact for one validation in a piece: what it exercises is
   // there, and the import closure of those files lies inside the piece, in
   // an installed package or in the language. '' when it holds, else why not.
-  reachFact(id, r, piece, card) {
-    const {entries,missing}=checkEntries(r,card,piece.files,{placed:piece.placed});
+  reachFact(id, v, piece) {
+    const {entries,missing}=checkEntries(v,this.specOf([v]),piece.files,{placed:piece.placed});
     if(missing)return missing==='its check never runs'?missing:'what its check exercises is not among the piece\'s files';
     const {outside}=this.closureOf(id,entries,piece);
     return outside.length?`${outside[0].path} refers to ${clip(outside[0].reference,120)}, which the piece, the installed packages and the language do not provide`:'';
   }
-  // v8 M3: every check of the card is held by exactly one row (checks:<id>):
-  // the lowest manager whose subtree serves everything its requirement
-  // serves, or the row above one it rolled up from (rolled:<id>); a check
-  // no row serves is held by the top. It runs again whenever a split admits
-  // pieces, a child is retasked or retired, and a change adds checks (a
-  // manager's turn and handRows), and a move is logged.
+  // v8 M3: every validation is held by exactly one row (checks:<id>): the
+  // lowest manager whose live subtree serves every contract it serves, or
+  // the row above one it rolled up from (rolled:<id>); a validation no live
+  // row serves is held by the level that wrote it. It runs again whenever a
+  // level is admitted or extended and a row is archived, and a move is logged.
   placeChecks() {
     if(!this.v8())return;
-    const card=this.read('card',null),top=this.topId();
-    if(!card||!top)return;
     // One read of the tree: a row is a manager as isManager reads it (its phase, or a child that is not retired).
-    const nodes=this.allNodes(),kids=new Map();
+    const nodes=this.allNodes(),kids=new Map(),gone=new Set();
     for(const n of nodes)if(n.parent)kids.set(n.parent,[...(kids.get(n.parent)||[]),n]);
-    const rows=nodes.filter(n=>!isRuntimeNode(n)&&n.status!=='retired').map(n=>({id:n.id,parent:n.parent,manager:isManager(n,kids.get(n.id)||[]),serves:[...new Set(parse(n.interfaces,[]).flatMap(c=>c.serves||[]))]}));
+    for(const n of nodes)if(['archived','retired'].includes(n.status))for(const x of this.subtree(n.id))gone.add(x);
+    const rows=nodes.filter(n=>!isRuntimeNode(n)&&!gone.has(n.id)).map(n=>({id:n.id,parent:n.parent,manager:n.role==='manager'||isManager(n,kids.get(n.id)||[]),serves:[...new Set(parse(n.interfaces,[]).flatMap(c=>c.serves||[]))]}));
     const rolled=Object.fromEntries(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'rolled:%'").map(r=>[r.key.slice('rolled:'.length),parse(r.value,[])]));
-    const place=placeChecks(card.requirements||[],rows,{top,rolled}),by=new Map();
-    for(const [rid,at] of place)by.set(at,[...(by.get(at)||[]),rid]);
+    const place=placeChecks(this.validationRows(),rows,{rolled}),by=new Map();
+    for(const [vid,at] of place)by.set(at,[...(by.get(at)||[]),vid]);
     const before=new Map(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'checks:%'").map(r=>[r.key.slice('checks:'.length),parse(r.value,[])]));
-    const was=rid=>[...before].find(([,list])=>list.includes(rid))?.[0]||null,moved=[];
+    const was=vid=>[...before].find(([,list])=>list.includes(vid))?.[0]||null,moved=[];
     for(const [id,list] of before)if(!by.has(id)&&list.length)this.save(`checks:${id}`,[]);
     for(const [id,list] of by) {
       if(JSON.stringify(before.get(id)||[])!==JSON.stringify(list))this.save(`checks:${id}`,list);
-      for(const rid of list){const from=was(rid);if(from&&from!==id)moved.push(`${rid} from ${this.node(from)?.label||from} to ${this.node(id)?.label||id}`);}
+      for(const vid of list){const from=was(vid);if(from&&from!==id)moved.push(`${vid} from ${this.node(from)?.label||from} to ${this.node(id)?.label||id}`);}
     }
-    if(moved.length)this.event('room','checks_placed',clip(`Each check is held by the lowest manager whose pieces serve all of it: ${moved.join('; ')}.`,900));
+    if(moved.length)this.event('room','checks_placed',clip(`Each validation is held by the lowest manager whose pieces serve all of it: ${moved.join('; ')}.`,900));
   }
   // v8 M3: checks held here roll up to the row above (their holder
   // changes): what they exercise reaches outside the piece.
@@ -4116,46 +3843,32 @@ export class ControlRoom extends DurableObject {
     const above=this.agentAbove(id),ids=[...new Set(list.map(x=>x.id))];
     if(!above||!ids.length)return [];
     this.save(`rolled:${id}`,[...new Set([...this.read(`rolled:${id}`,[]),...ids])]);
-    this.save(`checks:${id}`,this.read(`checks:${id}`,this.checksOf(id).map(r=>r.id)).filter(r=>!ids.includes(r)));
+    this.save(`checks:${id}`,this.read(`checks:${id}`,[]).filter(r=>!ids.includes(r)));
     this.save(`checks:${above}`,[...new Set([...this.read(`checks:${above}`,[]),...ids])]);
     this.event(id,'check_rolled_up',clip(`${list.map(x=>`${x.id}: ${x.why}`).join('; ')}. ${ids.length>1?'They are':'It is'} held by ${this.node(above)?.label||above} from now on.`,1200),above);
     return ids;
   }
-  // A requirement's check, as a pass record names it: its id, statement and
-  // check, and (v8 M3 review, L1) the card's definitions it runs by
-  // (checkUses: its run, its command deliverable, what it calls).
-  checkKey(r, card=this.read('card',null)) { return textHash(JSON.stringify([r.id,r.says,r.check,checkUses(r,card)])); }
-  // v8 ship-verified: a check's pass (piece_pass:<id>, the last run of it at
-  // each row) holds for the exact bundle it ran on (digest: every byte of
-  // it, the glue and the base's carried files included) and the check's key,
-  // nowhere else: a pass is never carried to another bundle by what the
-  // check is thought to reach.
-  passedOn(r, digest, card=this.anchoredCard()) {
-    const key=this.checkKey(r,card);
-    return !!digest&&Object.values(this.read(`piece_pass:${r.id}`,null)?.at||{}).some(e=>e.digest===digest&&e.check===key);
+  // A validation, as a pass record names it: its id and check, and (v8 M3
+  // review, L1) the contracts it runs by (checkUses: how the contract that
+  // serves it runs, its command contract, what it calls).
+  checkKey(v) { return textHash(JSON.stringify([v.id,v.check,checkUses(v,this.specOf([v]))])); }
+  // v8 ship-verified: a validation's pass (piece_pass:<id>, the last run of
+  // it at each row) holds for the exact bundle it ran on (digest: every byte
+  // of it, the glue and the base's carried files included) and the
+  // validation's key, nowhere else: a pass is never carried to another
+  // bundle by what the check is thought to reach.
+  passedOn(v, digest) {
+    const key=this.checkKey(v);
+    return !!digest&&Object.values(this.read(`piece_pass:${v.id}`,null)?.at||{}).some(e=>e.digest===digest&&e.check===key);
   }
-  // Run finished's other half: the top's record of its last finished compile
-  // (verified:<top>) is for the files its subtree owns now and what its piece
-  // joins now (pieceInput: the children's pieces, the kept link fixes, the
-  // base), so for the bundle that ships; and every check of the card last
-  // passed on exactly that bundle (a requirement kept untested has no check
-  // to run). A relink or any other change at the top moves the bundle, so
-  // every pass is for another one until the top runs the checks on it.
-  allPassed(card=this.anchoredCard()) {
-    const top=this.topId(),seen=top?this.read(`verified:${top}`,null):null;
-    if(!card||!seen||seen.owned!==this.ownedDigest(top)||seen.input!==this.pieceInput(top))return false;
-    return (card.requirements||[]).every(r=>r.untested||this.passedOn(r,seen.digest,card));
-  }
-  // The room's record of a run whose every check passed: the top's bundle
-  // digest, for the export (compile_passed).
+  // The room's record of a run whose every validation passed: the bundle
+  // digest of the manager it created, for the export (compile_passed).
   async recordRunPassed() {
-    if(!this.v8()||!this.allPassed())return;
-    const top=this.topId(),bundle=top?await this.bundleFiles(top):null;
-    if(!bundle)return;
-    const digest=await snapshotHash(bundle.files),rev=this.cardRev(),input=`${digest}:card${rev}`;
-    if(this.read('compile_passed',null)?.input===input)return;
-    const row=query(this.db(),'SELECT goal_rev FROM card_revisions WHERE rev=?',rev)[0];
-    this.save('compile_passed',{input,digest,goal_rev:row?.goal_rev??1,card_rev:rev,ts:Date.now()});
+    const m=this.v8()?this.roomManager():null;
+    if(!m||!this.levelPassed(m))return;
+    const digest=this.read(`verified:${m}`,null)?.digest;
+    if(!digest||this.read('compile_passed',null)?.digest===digest)return;
+    this.save('compile_passed',{input:digest,digest,goal_rev:this.goalRev(),ts:Date.now()});
   }
   // v8 M3: one setting bounds how many boxes this room has open at once
   // (BOX_CONCURRENCY, default 4): the top's checks and every piece's share it.
@@ -4172,38 +3885,39 @@ export class ControlRoom extends DurableObject {
     return ()=>{this.boxesOpen--;this.boxWaiters.shift()?.();};
   }
   // v8 live 5 (src/box-prewarm.js): the box the run's first compile will
-  // use, opened as soon as the card says which image its checks need; it
-  // counts against BOX_CONCURRENCY like any open box.
+  // use, opened as soon as the first level admitted says which image its
+  // validations need; it counts against BOX_CONCURRENCY like any open box.
   boxPrewarm() {
     if(!this.v8()||!this.env.BOXES)return null;
     this.prewarm??=new BoxPrewarm({namespace:this.env.BOXES,slot:()=>this.tryBoxSlot(),span:(k,n,a,b,attrs)=>this.span(k,n,a,b,attrs,'system'),waitUntil:p=>this.ctx.waitUntil?.(p)});
     this.prewarm.namespace=this.env.BOXES;
     return this.prewarm;
   }
-  prewarmBox(card) {
-    try {const p=this.boxPrewarm();if(p&&this.get('status')==='running')p.start(cardBoxSpec(card));}
+  prewarmLevel(spec) {
+    try {const p=this.boxPrewarm();if(p&&this.get('status')==='running'){this.set('prewarmed','1');p.start(levelBoxSpec(spec));}}
     catch(e) {console.warn('Box prewarm failed:',clip(e?.message||e,200));}
   }
-  // v8 M3: of the due checks a row holds, those it runs itself, the others
-  // rolled up to the row above: (a) the hard fact (reachFact), then (b)
-  // Clef's judgement of the reach the linker cannot see (CLEF.piece_reach),
-  // asked only for checks that pass (a). A row with no agent above runs
-  // every check it holds. v8 M3 review (L7): Clef's answer for a check is
-  // kept per check key and piece digest (piece_reach:<id>), so a repair
-  // round on the same piece asks again only for what changed; an answer
-  // that is not a probability rolls up its own check alone.
-  async pieceScope(id, due, piece, card, digest='') {
+  // v8 M3: of the due validations a row holds, those it runs itself, the
+  // others rolled up to the row above: (a) the hard fact (reachFact), then
+  // (b) Clef's judgement of the reach the linker cannot see
+  // (CLEF.piece_reach), asked only for those that pass (a). A row whose
+  // parent is the room has no row above to hand one to, and runs every one
+  // it holds. v8 M3 review (L7): Clef's answer is kept per validation key
+  // and piece digest (piece_reach:<id>), so a repair round on the same piece
+  // asks again only for what changed; an answer that is not a probability
+  // rolls up its own validation alone.
+  async pieceScope(id, due, piece, digest='') {
     if(!this.agentAbove(id)||!due.length)return due;
     const miss=[],fact=[];
-    for(const r of due){const why=this.reachFact(id,r,piece,card);if(why)miss.push({id:r.id,why});else fact.push(r);}
+    for(const v of due){const why=this.reachFact(id,v,piece);if(why)miss.push({id:v.id,why});else fact.push(v);}
     this.rollUp(id,miss);
     if(!fact.length)return [];
-    const kept=this.read(`piece_reach:${id}`,{}),keyOf=r=>`${this.checkKey(r,card)}|${digest}`,ask=fact.filter(r=>typeof kept[keyOf(r)]!=='number');
+    const kept=this.read(`piece_reach:${id}`,{}),keyOf=r=>`${this.checkKey(r)}|${digest}`,ask=fact.filter(r=>typeof kept[keyOf(r)]!=='number');
     const n=this.node(id),start=Date.now();
     let ps=[];
     if(ask.length) {
       ps=await pieceReach(this.inferenceEnv(),{name:n.label,contracts:this.promisedOf(id).map(contractLine),files:[...piece.files.keys()].filter(p=>!piece.glue.has(p)),
-        installed:[...this.packagesOf(id),...this.installedSet()].map(p=>p.name).filter((x,i,a)=>a.indexOf(x)===i),checks:ask,card}).catch(e=>ask.map(r=>({id:r.id,error:String(e?.message||e)})));
+        installed:[...this.packagesOf(id),...this.installedSet()].map(p=>p.name).filter((x,i,a)=>a.indexOf(x)===i),checks:ask}).catch(e=>ask.map(r=>({id:r.id,error:String(e?.message||e)})));
       const fresh=Object.fromEntries(ps.filter(x=>typeof x.p==='number').map(x=>[keyOf(fact.find(r=>r.id===x.id)),x.p]));
       if(Object.keys(fresh).length)this.save(`piece_reach:${id}`,Object.fromEntries(Object.entries({...kept,...fresh}).slice(-200)));
     }
@@ -4239,23 +3953,27 @@ export class ControlRoom extends DurableObject {
     const {stems,contracts}=this.projectNames(bundle),t=String(module).toLowerCase().replace(/[^a-z0-9]/g,'');
     return ![...stems,...contracts].some(x=>String(x).toLowerCase().replace(/[^a-z0-9]/g,'')===t);
   }
-  // v8 live 4: each failure that needed a package outside the project goes
-  // up its writer's line as that package's ask (packageAsk); the answer (what
-  // the line holds for the need) rides with the failure as the writer reads
-  // it (requirementText). The writer: the owner of a file the failure's
-  // frames name, else of a file that imports the package, else the node
-  // whose checks ran (an atomic Root).
-  answerMissingModules(id, items, bundle) {
+  // v8 live 4: a failure that needed a package outside the project is that
+  // package's ask, answered in the world of the worker responsible (its
+  // broker's answer: what its line holds for the need); the complaint itself
+  // goes down as the compiler observed it. The worker: the owner of a file
+  // the failure's frames name, else of a file that imports the package.
+  answerMissingModules(items, bundle, results, validations) {
+    const rows=this.installedToolchains().filter(r=>r.unresolved?.length),asked=new Set();
     for(const it of items) {
-      const req=it.facts?.requirement;
-      if(!req?.module)continue;
-      // v8 live 4 review (L7): the importer is read by its row's module_reference.
-      const importer=[...bundle.files].find(([p,t])=>bundle.origin.get(p)&&readsModule(p,t,req.module,this.installedToolchains()))?.[0];
-      const owner=it.parties.find(p=>p.owner&&this.node(p.owner))?.owner||(importer&&bundle.origin.get(importer)?.owner)||id;
-      const a=this.answerPackageAsk(owner,{name:req.module,key:requestKey({name:req.module}),wake:false,failure:true});
-      if(!a)continue;
-      req.answer=MESSAGES.missing_package({name:req.module,answer:a.text});
-      this.event(owner,'package_missing',clip(`${req.id}: the run looked for ${req.module}; ${a.how==='granted'?`granted ${a.names.join(', ')} for it`:a.how==='yours'?`its packages hold ${a.names.join(', ')} for it`:`its language provides ${a.names.join(', ')} for it`}.`,500));
+      const vid=it.facts?.validation?.id,res=vid?results.get(vid):null;
+      if(!res||!validations.some(v=>v.id===vid))continue;
+      const text=`${res.detail||''}\n${res.output||''}`;
+      for(const hit of rows.flatMap(row=>unresolvedNames(text,row))) {
+        if(!hit.module||hit.name||!this.missingPackage(hit.module,bundle))continue;
+        // v8 live 4 review (L7): the importer is read by its row's module_reference.
+        const importer=[...bundle.files].find(([p,t])=>bundle.origin.get(p)&&readsModule(p,t,hit.module,this.installedToolchains()))?.[0];
+        const owner=it.parties.find(p=>p.owner&&this.node(p.owner))?.owner||(importer&&bundle.origin.get(importer)?.owner);
+        if(!owner||asked.has(`${owner}:${hit.module}`))continue;
+        asked.add(`${owner}:${hit.module}`);
+        const a=this.answerPackageAsk(owner,{name:hit.module,key:requestKey({name:hit.module}),wake:false,failure:true});
+        if(a)this.event(owner,'package_missing',clip(`${vid}: the run looked for ${hit.module}; ${a.how==='granted'?`granted ${a.names.join(', ')} for it`:a.how==='yours'?`its packages hold ${a.names.join(', ')} for it`:`its language provides ${a.names.join(', ')} for it`}.`,500));
+      }
     }
   }
   // S5: the link of a bundle in the room's events (once per input), and the
@@ -4269,7 +3987,7 @@ export class ControlRoom extends DurableObject {
     if(glue?.size)this.event(id,'link_glue',clip(`The runtime wrote ${glue.size} glue file(s) so references resolve where the defining files sit: ${[...glue.keys()].join(', ')}.`,900));
     for(const r of link.rejected.slice(0,6))this.event(id,'link_edit_rejected',clip(`${r.path}: ${r.reason}`,500));
   }
-  // v8 S5 (§5.2 b): what a card run reported unresolved, as rename-only
+  // v8 S5 (§5.2 b): what a run of the validations reported unresolved, as rename-only
   // fixes of the readers' linked copies. hits: [{path, row, module?, name?,
   // specifier?}] (a run's errors read with the rows' unresolved patterns, or
   // a reference the bundle's link left unresolved). Deterministic first
@@ -4316,22 +4034,19 @@ export class ControlRoom extends DurableObject {
     if(fixed)this.save(`link_fixes:${id}`,fixes);
     return fixed;
   }
-  // The unresolved names a card run's failures report, per reader: each
-  // failed result's text read with every row's unresolved patterns; the
-  // reader is the innermost frame of that row in a piece's file, else the
-  // one piece file whose references name the module. A name or module that
-  // is one of the failed check's own values is left out: no check value
-  // reaches the linker model (S4a).
-  runUnresolved(results, bundle, card=null) {
+  // The unresolved names a run's failures report, per reader: each failed
+  // result's text read with every row's unresolved patterns; the reader is
+  // the innermost frame of that row in a piece's file, else the one piece
+  // file whose references name the module.
+  runUnresolved(results, bundle) {
     const out=[],seen=new Set(),pieces=bundle.origin;
-    for(const [rid,res] of results) {
+    for(const [,res] of results) {
       if(!res||res.passed||res.infrastructure)continue;
-      // v8 live 4: a package outside the project is the failure report's (missing_module), never a rename's.
-      const secrets=checkSecrets(card?.requirements?.find(r=>r.id===rid)?.check),hidden=v=>!!v&&secrets.some(x=>x===v||x.toLowerCase().split(/[^\p{L}\p{N}_]+/u).includes(v.toLowerCase()));
+      // v8 live 4: a package outside the project is the failure's package ask (answerMissingModules), never a rename's.
       const text=`${res.detail||''}\n${res.output||''}`;
       for(const row of this.installedToolchains().filter(r=>r.unresolved?.length)) {
         for(const hit of unresolvedNames(text,row)) {
-          if(hidden(hit.name)||hidden(hit.module)||this.externalHit(hit,bundle))continue;
+          if(this.externalHit(hit,bundle))continue;
           const frame=(res.frames||[]).find(f=>pieces.has(f.path)&&toolchainOf(f.path)?.id===row.id)?.path;
           const named=hit.module?[...bundle.files.keys()].filter(p=>pieces.has(p)&&toolchainOf(p)?.id===row.id&&new RegExp(`(?:^|\\n)\\s*(?:from|import)\\s+${hit.module.replace(/\./g,'\\.')}\\b`).test(bundle.files.get(p))):[];
           for(const path of frame?[frame]:named.length===1?named:[]) {
@@ -4343,94 +4058,28 @@ export class ControlRoom extends DurableObject {
     }
     return out;
   }
-  // U10: a check that has passed is never changed. An anchor is the
-  // requirement as it passed (id, says, serves, check), keyed by its id and
-  // a hash of what it says (anchorKey): the card's check of that requirement
-  // is the one that passed. A requirement with the same id that says
-  // something else is another requirement, and an anchored one a later card
-  // leaves out is logged once as requirement_dropped.
-  anchoredCard() {
-    const card=this.read('card',null),anchors=this.read('check_anchors',{});
-    if(!card)return null;
-    const list=Object.values(anchors).filter(a=>a&&typeof a==='object'&&a.check&&typeof a.says==='string');
-    const same=(r,a)=>r.id===a.id&&r.says===a.says;
-    const moved=list.filter(a=>card.requirements.some(r=>same(r,a)&&JSON.stringify(r.check)!==JSON.stringify(a.check)));
-    const told=new Set(this.read('requirements_dropped',[]));
-    const gone=list.filter(a=>!card.requirements.some(r=>same(r,a))&&!told.has(anchorKey(a.id,a.says)));
-    if(gone.length) {
-      this.save('requirements_dropped',[...told,...gone.map(a=>anchorKey(a.id,a.says))]);
-      for(const a of gone)this.event('room','requirement_dropped',clip(`${a.id} (${a.says}) passed before and the current card leaves it out, so it is no longer checked; its id is never given to another requirement.`,400));
-    }
-    if(!moved.length)return card;
-    const kept={...card,requirements:card.requirements.map(r=>{const a=list.find(x=>same(r,x));return a?{...r,check:a.check}:r;})};
-    this.save('card',kept);
-    this.event('room','check_anchored',clip(`A check that has passed is never changed; ${moved.map(a=>a.id).join(', ')} keep${moved.length>1?'':'s'} the check that passed.`,400));
-    return kept;
+  // The validation table in a sentence, for a hold's or an escalation's text (the dashboard's; no worker reads it).
+  checksSummary(head, list=this.validationRows()) {
+    const status=this.read('validation_status',{});
+    const pass=list.filter(v=>status[v.id]?.passed===true),fail=list.filter(v=>status[v.id]?.passed===false),untested=list.length-pass.length-fail.length;
+    return clip(`${head} ${pass.length} of ${list.length} validation${list.length===1?'':'s'} pass${fail.length?`; failing: ${fail.map(v=>`${v.id} (${clip(checkSummary(v.check),80)}): ${clip(status[v.id].detail,160)}`).join('; ')}`:''}${untested?`; ${untested} untested`:''}.`,1050);
   }
-  // The requirement status as the dashboard reads it: a result older than
-  // the last change to a delivered file is marked stale.
-  requirementStatus() {
-    const st=this.read('requirement_status',{});
-    if(!Object.keys(st).length)return st;
-    const last=query(this.db(),"SELECT COALESCE(MAX(updated_at),0) AS t FROM artifact_files WHERE path NOT LIKE 'memory/%'")[0].t;
-    return Object.fromEntries(Object.entries(st).map(([k,v])=>[k,v&&last>v.ts?{...v,stale:true}:v]));
-  }
-  // The requirement table in a sentence, for a hold's text (the dashboard's; no worker reads it).
-  checksSummary(head) {
-    const reqs=this.read('card',null)?.requirements||[],status=this.read('requirement_status',{});
-    const pass=reqs.filter(r=>status[r.id]?.passed===true),fail=reqs.filter(r=>status[r.id]?.passed===false),untested=reqs.length-pass.length-fail.length;
-    return clip(`${head} ${pass.length} of ${reqs.length} requirement${reqs.length===1?'':'s'} pass${fail.length?`; failing: ${fail.map(r=>`${r.id} (${clip(r.says,80)}): ${clip(status[r.id].detail,160)}`).join('; ')}`:''}${untested?`; ${untested} untested`:''}.`,1050);
-  }
-  // The room holds at the card's checks: the agent that ran them waits on
-  // the hold (v8 M2: the hold names it), and the run ends paused with the
-  // requirement table (Continue runs the checks again).
+  // The room holds at the validations: the agent that ran them waits on the
+  // hold (the hold names it), and the run ends paused with the validation
+  // table (Continue runs them again). When repairs ran out, the failing
+  // validations Clef marked doubtful come first; the person decides about them.
   holdChecks(id, kind, head, again='Continue runs the checks again.') {
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-    // v8 card repair: when the repair rounds ran out (or no piece could settle a failure), the failing requirements Clef doubted come first; the person decides about them.
-    const status=this.read('requirement_status',{}),doubted=['checks_exhausted','checks_failed'].includes(kind)?(this.read('card',null)?.requirements||[]).filter(r=>r.doubtful&&status[r.id]?.passed===false):[];
-    // v8 live 3: each with the reason Clef doubted it (doubt_reason): an internal detail of the code, or not expected from the goal.
-    const why=r=>/internal detail/.test(r.doubt_reason||'')?`${r.doubt_reason}, p=${Number(r.vet_internal_p??r.vet_p).toFixed(3)}`:`p=${Number(r.vet_p).toFixed(3)}`;
-    const internal=doubted.filter(r=>/internal detail/.test(r.doubt_reason||'')),goalOnly=doubted.filter(r=>!internal.includes(r));
-    const first=doubted.length?`These requirements keep failing and Clef doubted ${internal.length&&!goalOnly.length?'them':'the goal asks for them'}: ${doubted.map(r=>`${r.id} (${why(r)})`).join(', ')}. Change or drop them with a follow-up prompt, or Continue. `:'';
-    this.holdRoom(kind,`${first}${this.checksSummary(head)} ${again}`,{agent:id});
+    this.holdRoom(kind,`${head} ${again}`,{agent:id});
     return {held:true};
   }
-  // The repair rounds ran out under v8 (v8 M2: the run's, or those of an
-  // agent with no agent above it, handed up to the room): the room pauses
-  // with what passes and what fails, never fails (Continue: a fresh set of rounds).
-  checksExhausted(m, reason) {
-    for(const p of this.problemsHeld(m))this.moveProblem(p,{status:'closed',outcome:'exhausted'});
-    // Once, with one text: a later pass while it holds only keeps the agent waiting.
-    if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",m);return {held:true};}
-    this.set(`checks_due:${m}`,'');
-    this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
-    return this.holdChecks(m,'checks_exhausted',`Repair rounds ran out (${clip(reason,300)}).`,'Continue gives the repairs a fresh set of rounds.');
-  }
-  // Under v8, why a worker may not write a path: another piece's contract
-  // places it (the deepest such piece outside the writer's own line), and
-  // none of the writer's own contracts does. '' when it may.
-  placedElsewhere(id, path) {
-    if(!this.v8()||this.promisedOf(id).some(c=>c.path===path))return '';
-    const line=new Set();for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.add(x.id);
-    const owner=this.allNodes().filter(n=>!line.has(n.id)&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status)&&this.promisedOf(n.id).some(c=>c.path===path)).sort((a,b)=>b.id.length-a.id.length)[0];
-    return owner?`${path} is delivered by "${owner.label}", whose contract places it; refer to it there rather than writing a copy`:'';
-  }
-  // v8 S5 review: a file that would sit at the bundle root under the name of
-  // its language's standard library (or a start-up hook) would hide it from
-  // every part of the project, the runtime's adapters included: refused,
-  // naming why. v8 M2 review: where the file sits in the project
-  // (bundleFiles): at its own path when the writer's contract places it
-  // there, or when the writer is a worker with no agent above (the project
-  // is its own files); any other piece's file goes under its package folder
-  // (components/<label>/), where it hides nothing. '' when it may.
-  shadowsStandard(id, path) {
-    if(!this.v8()||String(path).includes('/'))return '';
-    const row=toolchainOf(path),stem=String(path).replace(/\.[^.]+$/,'');
-    // A base repo's own file at that path is carried as it is (S8b): only a writer's new file is refused.
-    if(!row?.stdlib_names||!stdlibNames(row).has(stem)||this.basePaths().has(path))return '';
-    const n=this.node(id),root=this.promisedOf(id).some(c=>c.path===path)||!!n&&!n.parent&&!this.manager(id);
-    if(!root)return '';
-    return `${path} would take the name of the standard library's ${stem} at the project root and hide it from the whole project; give the file another name, such as ${stem}_tools${path.slice(stem.length)}`;
+  // What a hold for failing validations tells the person first: those that
+  // keep failing which Clef doubted, with its marks (they stay; the person decides).
+  doubtNote(kind) {
+    if(!['checks_exhausted','checks_failed'].includes(kind))return '';
+    const status=this.read('validation_status',{}),marks=v=>Object.entries(v.notes||{}).filter(([,p])=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR);
+    const doubted=this.validationRows().filter(v=>marks(v).length&&status[v.id]?.passed===false);
+    return doubted.length?`These validations keep failing and Clef doubted them: ${doubted.map(v=>`${v.id} (${marks(v).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}. Change them with a follow-up prompt, or Continue. `:'';
   }
   // A hold at checks_blocked retries itself (S4b review): up to
   // CHECK_RETRY_MS.length times, by the Durable Object's alarm, before it
@@ -4461,53 +4110,53 @@ export class ControlRoom extends DurableObject {
       return;
     }
     this.save('checks_retry',null);
-    this.event('system','checks_retry',`Running the project card's checks again automatically (retry ${due.n} of ${CHECK_RETRY_MS.length}).`);
+    this.event('system','checks_retry',`Running the validations again automatically (retry ${due.n} of ${CHECK_RETRY_MS.length}).`);
     this.autoResume=true;
     try {const cap=Number(this.get('budget','0'));await this.resume(cap>=ROOM_LIMITS.budget[0]&&cap<=ROOM_LIMITS.budget[1]?cap:20);}
     finally {this.autoResume=false;}
   }
   // Capability boxes S1 (Level A): one fresh, single-use box per compile,
-  // with the internet off, runs today's build runner on the card (mode
-  // 'card', the request BuildExecutor took): {report} or {infrastructure}.
-  // The runner's own isolation still runs inside; the box adds the VM
-  // boundary. A box that cannot be opened, or that does not confirm it is
-  // fresh with the internet off, is infrastructure (checks_blocked and its
-  // retries): there is no fallback to a shared or internet-on Container.
-  // v8 M3: a box opens only while the room has a slot for it (boxSlot).
-  async runCard(id, input, files, plan, toolchains) {
-    if(!this.env.BOXES)return {infrastructure:'BOXES binding unavailable: the card\'s checks run only in a fresh box with the internet off.'};
+  // with the internet off, runs the build runner on the level's validations
+  // (mode 'checks', the request BuildExecutor took): {report} or
+  // {infrastructure}. The runner's own isolation still runs inside; the box
+  // adds the VM boundary. A box that cannot be opened, or that does not
+  // confirm it is fresh with the internet off, is infrastructure
+  // (checks_blocked and its retries): there is no fallback to a shared or
+  // internet-on Container. v8 M3: a box opens only while the room has a slot
+  // for it (boxSlot).
+  async runChecks(id, input, files, plan, toolchains) {
+    if(!this.env.BOXES)return {infrastructure:'BOXES binding unavailable: the validations run only in a fresh box with the internet off.'};
     // v8 live 5: the prewarmed box when it was opened for exactly this compile's spec.
     const warm=await this.boxPrewarm()?.take(compileBoxSpec(plan))??null;
     if(warm?.error) {
-      this.span('container','card',warm.began,Date.now(),{node:id,files:files.size,box:{fresh:true,internet:false,prewarmed:true},error:clip(warm.error,300)});
+      this.span('container','checks',warm.began,Date.now(),{node:id,files:files.size,box:{fresh:true,internet:false,prewarmed:true},error:clip(warm.error,300)});
       return {infrastructure:warm.error};
     }
     const release=warm?.release||await this.boxSlot();
-    try {return await this.runCardBox(id,input,files,plan,toolchains,warm);}
+    try {return await this.runChecksBox(id,input,files,plan,toolchains,warm);}
     finally {release();}
   }
-  async runCardBox(id, input, files, plan, toolchains, warm=null) {
-    if(!this.env.BOXES)return {infrastructure:'BOXES binding unavailable: the card\'s checks run only in a fresh box with the internet off.'};
+  async runChecksBox(id, input, files, plan, toolchains, warm=null) {
     let snapshot;
     try {snapshot=validateBuildFiles(files);}
     catch(error) {
       if(warm){const closing=Promise.resolve().then(()=>warm.box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
       if(!error?.path)return {infrastructure:String(error?.message||error)};
-      return {report:{mode:'card',passed:false,checks:[],issues:[{path:error.path,stage:'snapshot',detail:`${error.message}: the build cannot carry this file. Write it under a path of letters, digits, '_', '-' and '.', and keep each file small.`}],inventory:null}};
+      return {report:{mode:'checks',passed:false,checks:[],issues:[{path:error.path,stage:'snapshot',detail:`${error.message}: the build cannot carry this file. Write it under a path of letters, digits, '_', '-' and '.', and keep each file small.`}],inventory:null}};
     }
-    const key=await sha256(`card:${input}`),start=Date.now(),spec=compileBoxSpec(plan);
+    const key=await sha256(`checks:${input}`),start=Date.now(),spec=compileBoxSpec(plan);
     let box=null;
     try {
       box=warm?.box||freshBox(this.env.BOXES);
-      const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'card',plan,toolchains,limits:CHECK_LIMITS})||{};
+      const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'checks',plan,toolchains,limits:CHECK_LIMITS})||{};
       if(opened?.fresh!==true||opened?.internet!==false) {
-        this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,error:'box not confirmed fresh with the internet off'});
+        this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,error:'box not confirmed fresh with the internet off'});
         return {infrastructure:'The box did not confirm a fresh start with the internet off; the checks were not run in it.'};
       }
-      this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,
+      this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,
         box:{fresh:true,internet:false,start_ms:opened.start_ms,ready_ms:opened.ready_ms,cold:opened.cold===true||opened.ready_ms>BOX_COLD_MS,image:opened.image,instance:opened.instance,name:opened.name,
           ...(warm?{prewarmed:true,waited_ms:warm.waited_ms,prewarm_ms:Math.max(0,(warm.ready_at??start)-warm.began)}:{})},exec_ms:opened.exec_ms});
-      if(report.mode!=='card'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a card report: its image predates card verification.'};
+      if(report.mode!=='checks'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a report of the validations: its image predates them.'};
       // v8 live 5: a failure the box's inventory explains (its host name, a missing interpreter) is the box's, never the code's.
       const classified=classifyEnvironment(report);
       if(classified!==report)this.event(id,'box_environment',clip(classified.infrastructure_issue,900));
@@ -4515,17 +4164,17 @@ export class ControlRoom extends DurableObject {
     } catch(e) {
       // The box closes itself (compile's finally, and its alarm); this is the backstop for an RPC that broke first.
       if(box&&typeof box.close==='function'){const closing=Promise.resolve().then(()=>box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
-      this.span('container','card',start,Date.now(),{node:id,files:snapshot.size,box:{fresh:true,internet:false},error:clip(e?.message||e,300)});
+      this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,box:{fresh:true,internet:false},error:clip(e?.message||e,300)});
       return {infrastructure:String(e?.message||e)};
     }
   }
   // ---------- v8 M3 review: what a compile leaves ----------
-  // A check's passes (piece_pass:<id>): per row that ran it (at), the last
-  // run there when it passed: the check's key and the digest of the bundle it
-  // ran on (passedOn). A run that fails there leaves none for that row.
-  savePass(r, at, {card, digest, rev, passed}) {
-    const {[at]:last,...others}=this.read(`piece_pass:${r.id}`,null)?.at||{};
-    this.save(`piece_pass:${r.id}`,{at:passed?{...others,[at]:{check:this.checkKey(r,card),digest,card_rev:rev,ts:Date.now()}}:others});
+  // A validation's passes (piece_pass:<id>): per row that ran it (at), the
+  // last run there when it passed: its check's key and the digest of the
+  // bundle it ran on (passedOn). A run that fails there leaves none for that row.
+  savePass(v, at, {digest, passed}) {
+    const {[at]:last,...others}=this.read(`piece_pass:${v.id}`,null)?.at||{};
+    this.save(`piece_pass:${v.id}`,{at:passed?{...others,[at]:{check:this.checkKey(v),digest,ts:Date.now()}}:others});
   }
   // The rows that compile files here: the installed toolchain rows and the
   // compile rows the box's inventory confirms (none before it reported one).
@@ -4607,309 +4256,6 @@ export class ControlRoom extends DurableObject {
     }
     for(const k of keys)this.db().exec('INSERT OR IGNORE INTO syntax_clean(key) VALUES (?)',k);
   }
-  // v8 §4.1: compileCard replaces the compiler's run under v8. v8 M2: the
-  // agent that holds the card's checks (holdsChecks) calls it when its work
-  // is done, a manager when its whole branch finished and its builder joined
-  // it (managerTurn), a worker when it wrote its files: one path, by id. It
-  // takes the row's bundle (bundleFiles: a worker's own files, a manager's
-  // piece), runs the file checks here, has Clef judge the documents
-  // (judgeRequirement) while one box runs the rest (mode 'card': syntax, the
-  // project's own checks, the runs, command, call, http and browser checks,
-  // with plan.commands mapping each command deliverable to its argv), records
-  // the toolchain inventory, and stores each requirement's status. A failed
-  // requirement is a problem (checkProblems), routed by serves down the split
-  // as a repair, the way the split built it (requirementRoute 's'); a worker
-  // repairs its own (ownRepair). A check that could not run (infrastructure)
-  // is never routed: the room holds for Continue. Returns {passed} |
-  // {reported} | {held}.
-  // v8 M3: only the checks it holds that did not last pass on this exact
-  // bundle run (passedOn), and below the top only those its piece can run
-  // itself (pieceScope); a failure with evidence of a cause outside the piece
-  // rolls up (outsideFailure) instead of becoming a repair. Every check state
-  // is the row's: compile_reported:<id>, compile_blocked:<id>,
-  // checks_retries:<id>, compile_infrastructure:<id>.
-  // v8 ship-verified: the row with no agent above (the top) verifies what
-  // ships: in one box it runs every check of the card whose last pass was
-  // not on its exact bundle, wherever the check is held, so a pass below is
-  // never carried up. Its record of its last finished compile (verified:<id>,
-  // with the bundle's digest) ends the run (allPassed).
-  // v8 M3 review: the row's owned digest is taken before its bundle, and
-  // the row finishes only while it still owns those files, and otherwise
-  // runs again. Every row compiles its bundle (the rows' syntax step, in the
-  // modes its runtimes load each file in) whenever a file of it holds bytes
-  // no syntax step compiled in those modes (syntax_clean), in the box its
-  // checks run in, so the top's bundle (its glue and renames, the base and
-  // the files it carries, the files of the workers right under it) is
-  // compiled before the run ends (M4). The issues stand with the owned
-  // digest (compile_issues:<id>), and a row with standing issues does not
-  // finish: it repairs, or, with nothing changed, hands up or holds (H1).
-  // S5: relinks counts the runs this call already redid after the link
-  // fixed a reference (at most two: one before the box, one after it); a run
-  // done again works out its checks again on the relinked bundle; owned, the
-  // digest it took first.
-  async compileCard(id, {relinks=0, begun=Date.now(), owned:taken=null}={}) {
-    const whole=this.anchoredCard(),rev=this.cardRev(),atomic=!this.manager(id),above=this.agentAbove(id),depth=id.split('.').length-1;
-    if(!whole)return this.holdChecks(id,'checks_failed','The room has no project card to check.');
-    if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
-    // v8 M3 review 2 (L2): with it, what its piece joins (pieceInput), which a finished compile records.
-    const owned=taken??this.ownedDigest(id),joins=this.pieceInput(id);
-    const bundle=await this.bundleFiles(id),{files,origin,placed}=bundle;
-    const digest=await snapshotHash(files);
-    const span=(outcome,extra={})=>this.span('piece','piece_checks',begun,Date.now(),{manager:id,depth,held:this.checksOf(id,whole).length,outcome,...extra},id);
-    // The files it owns, or what its piece joins, changed after they were taken: it runs again on them as they are now.
-    const moved=extra=>{
-      if(this.ownedDigest(id)===owned&&this.pieceInput(id)===joins)return null;
-      this.event(id,'checks_moved',`${this.node(id)?.label||id}'s files changed while they were checked; the checks run again on the files as they are now.`);
-      this.wake(id);span('moved',extra);
-      return {moved:true};
-    };
-    const finish=async(extra={})=>{
-      const again=moved(extra);
-      if(again)return again;
-      // v8 ship-verified: the top ends the line only when every file that ships was compiled and was in its box, or the person accepted those that were not.
-      const owe=above?null:this.uncheckedOf(bundle);
-      if(owe&&this.get('unchecked_accepted')!==owe.key) {
-        this.save('unchecked_pending',owe.key);
-        span('held',extra);
-        return this.holdChecks(id,'checks_untested',`Every requirement passed on the files that ship, and ${owe.text}`,'Continue accepts the project with them unchecked; a follow-up prompt can change the project instead.');
-      }
-      this.set(`checks_due:${id}`,'');
-      this.save(`verified:${id}`,{digest,owned,input:joins,ts:Date.now()});
-      const hold=this.read('paused_state',null);
-      if(hold?.kind?.startsWith('checks_')&&(!hold.agent||hold.agent===id))this.save('paused_state',null);
-      if(atomic){this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);this.event(id,'done','Completed owned strand without transferring ownership to children.');}
-      await this.recordRunPassed();
-      span('passed',extra);
-      return {passed:true};
-    };
-    // The checks that did not last pass on this bundle: below the top, those it holds that its piece can run itself; at the top, every check of the card.
-    const held=this.checksOf(id,whole),due=r=>r.untested||!this.passedOn(r,digest,whole);
-    const runs=above?await this.pieceScope(id,held.filter(due),bundle,whole,digest):(whole.requirements||[]).filter(r=>held.includes(r)?due(r):!r.untested&&due(r));
-    const card={...whole,requirements:runs};
-    // M4: what of the piece no syntax step compiled, and the files whose issues stand; a link issue is found on every join.
-    const standing=this.read(`compile_issues:${id}`,null),fresh=this.uncompiled(files);
-    if(standing?.owned===owned)for(const p of standing.paths||[])if(files.has(p))fresh.add(p);
-    const linkIssues=bundle.link?.issues||[];
-    // v8 ship-verified (L1): at the top, code whose compile row the box's inventory has not confirmed yet: the box opens, and reports it.
-    const asks=!above&&this.uncompilable(files).some(x=>x.unconfirmed);
-    if(!runs.length&&!fresh.size&&!linkIssues.length&&!asks)return finish({ran:0});
-    // The run's input: the files and the checks this row holds (a pass recorded since leaves it the same).
-    const input=`${digest}:card${rev}:${held.map(r=>r.id).join(',')}`;
-    if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
-    const prior=this.read(`compile_reported:${id}`,null),open=prior?.input===input?(prior.problems||[]).map(pid=>this.problems('id=?',pid)[0]).filter(Boolean):[];
-    // v8 M3 review 2 (M1): a problem of its report that went up the line moves
-    // while it is open or relinking there, or assigned to a row that is not
-    // done; once every one of them sits with an assignee that is done, the
-    // checks run again (a new report supersedes them, and the routing goes
-    // on past the pieces that declined or tried it).
-    const up=above&&!atomic?open.filter(p=>p.status!=='closed'&&p.holder!==id):[],rerun=up.length>0&&!up.some(p=>this.problemMoves(p));
-    if(rerun)this.event(id,'checks_rerun',clip(`The pieces given ${up.length>1?'the problems':'the problem'} of ${this.node(id)?.label||id}'s report finished (${[...new Set(up.map(p=>this.node(p.assignee)?.label||p.assignee))].join(', ')}); its checks run again.`,600));
-    if(prior?.input===input&&!rerun) {
-      // Unchanged since its problems were reported: a worker hears them
-      // again (a round); a split's repairs left the files as they were, so
-      // the room holds with the table. v8 M3 review (one rule ends every
-      // line): a problem of its report that went up the line is the line's
-      // above while it moves there (M1), so a row below the top waits for it
-      // rather than hold the room before the line has ended.
-      if(atomic&&open.length) {
-        this.event(id,'compile_unchanged',`${this.node(id)?.label||id}'s files are unchanged since their problems were reported; they go back without another run.`);
-        this.ownRepair(id,input,'check',open.map(p=>({kind:p.kind,path:p.parties[0]?.path||'',parties:p.parties,detail:p.detail,facts:p.facts,evidence:p.evidence})));
-        return {reported:true};
-      }
-      if(up.length){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);span('waiting');return {held:true};}
-      const settled=open.filter(p=>p.status==='closed'&&p.outcome==='exhausted').map(p=>`${p.facts?.requirement?.id||p.parties[0]?.path||p.kind}: ${p.trail.at(-1)?.reason||'no piece could fix it'}`);
-      return this.holdChecks(id,'checks_failed',settled.length?clip(`No piece could settle what failed (${settled.join('; ')}).`,500):'The repairs left the project\'s files as they were when the checks last failed.');
-    }
-    if(!files.size)return this.holdChecks(id,'checks_failed','No piece delivered a file to check.');
-    // S5 (§5): a worker's own bundle is linked here, what the link renamed
-    // and the glue it wrote told once per input, and a reference it left
-    // unresolved goes to the linker model before the run (a manager's
-    // builder did this when it joined the piece).
-    if(atomic) {
-      this.linkNotes(id,input,bundle);
-      // v8 live 4: a module outside the project (a package) is no link's to join: the run's report names it (missing_module).
-      const linkable=(bundle.link?.unresolved||[]).filter(u=>!this.installedToolchains().some(r=>(r.executables||[]).includes(u.module))&&!this.externalHit(u,bundle));
-      if(relinks<2&&linkable.length&&await this.relinkBundle(id,bundle,linkable))return this.compileCard(id,{relinks:relinks+1,begun,owned});
-    }
-    this.set(`checks_due:${id}`,atomic?input:'');
-    if(runs.length)this.event(id,'checks_started',`Running the project card's ${card.requirements.length} requirement check(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
-    else this.event(id,'piece_compiling',`Compiling ${fresh.size} of the ${files.size} file(s) of ${this.node(id)?.label||id}'s piece (snapshot ${digest.slice(0,14)}); no check is due here.`);
-    // The Worker's own parser for a row that has one (native), the box's syntax step for the others: each only over the files it has not compiled.
-    const parsed=this.localSyntax(files,fresh);
-    const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
-    const {plan,toolchains,local,container}=checkPlan(card,files,{rows:this.installedToolchains(),placed,paths:bundle.link?.paths,compile,inventory:asks});
-    const results=new Map(local);
-    for(const r of card.requirements)if(r.check?.kind==='file')results.set(r.id,{id:r.id,kind:'file',frames:[],...fileResult(r.check,files)});
-    // §4.3: Clef judges each document, in parallel with the box.
-    const judging=Promise.all(card.requirements.filter(r=>r.check?.kind==='judge').map(async r=>{
-      const content=files.get(r.check.path);
-      if(typeof content!=='string'||!content.trim()){const note=`${r.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [r.id,{passed:false,detail:note,observed:{what:'local',note}}];}
-      // A Clef error is retried twice, with backoff, before it is infrastructure.
-      for(let k=0;;k++) {
-        try {
-          const j=await judgeRequirement(this.inferenceEnv(),{says:r.says,question:r.check.question,path:r.check.path,content});
-          return [r.id,{passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p,...(j.over_cap?{note:`only the first ${JUDGE_PARTS*JUDGE_CHARS} characters of it were read`}:{})}}];
-        } catch(e) {
-          if(k>=JUDGE_RETRY_MS.length)return [r.id,{passed:false,infrastructure:true,detail:`Clef could not judge ${r.check.path} after ${k+1} tries: ${clip(e?.message||e,200)}`}];
-          this.event(id,'judge_retry',clip(`Clef could not judge ${r.check.path} for ${r.id} (${clip(e?.message||e,160)}); asked again in ${JUDGE_RETRY_MS[k]} ms.`,400));
-          await new Promise(done=>setTimeout(done,JUDGE_RETRY_MS[k]));
-        }
-      }
-    }));
-    const boxStart=Date.now();
-    const [judged,run]=await Promise.all([judging,container?this.runCard(id,input,files,plan,toolchains):null]);
-    if(container)this.span('piece','piece_box',boxStart,Date.now(),{manager:id,depth,checks:plan.checks.length,files:files.size,compiled:plan.syntax.reduce((n,s)=>n+s.files.length,0),...(run?.infrastructure?{infrastructure:true}:{passed:!!run?.report?.passed})},id);
-    for(const [rid,x] of judged)results.set(rid,{id:rid,kind:'judge',frames:[],...x});
-    const report=run?.report||null;
-    if(report?.inventory)this.save('toolchain_inventory',report.inventory);
-    for(const c of report?.checks||[])results.set(c.id,c);
-    // What the syntax steps compiled cleanly is known by its bytes from now on.
-    if(!run?.infrastructure)this.markCompiled(files,plan.syntax,report?.stages,parsed.clean);
-    // v8 ship-verified: a file the run was to compile that is still not compiled, with no issue of its own, is no file
-    // this run compiled (unbuilt); one that only now has a row (the box's inventory came with this run) compiles in a run of its own.
-    const left=run?.infrastructure?new Set():this.uncompiled(files),named=new Set([...(report?.issues||[]),...parsed.issues].map(i=>i.path));
-    const unbuilt=[...left].filter(p=>fresh.has(p)&&!named.has(p)),newly=[...left].filter(p=>!fresh.has(p));
-    const notBuilt=unbuilt.length?`the syntax step left ${unbuilt.length} file(s) uncompiled with no issue of their own (${clip(unbuilt.join(', '),200)})`:'';
-    // S5 (§5.2 b): a name or module the run could not resolve is renamed in
-    // its reader's linked copy when a rename joins it (in the builder's piece,
-    // which it joins again), and the checks run again. v8 M3 review (M5):
-    // below the top, never one that names what another piece provides.
-    if(relinks<2&&report) {
-      const out=above?this.outsideOf(id):null,hits=this.runUnresolved(results,bundle,card).filter(h=>!(out&&this.namesOutside(h,out,bundle))),key=atomic?id:this.builderOf(id)?.id;
-      if(hits.length&&key&&await this.relinkBundle(key,bundle,hits,{scope:above?'branch':'application'})) {
-        if(!atomic)await this.assemblePiece(key);
-        this.event(id,'checks_relinked',`The run reported ${hits.length} unresolved reference(s) that a rename joins; the checks run again on the linked files.`);
-        return this.compileCard(id,{relinks:relinks+1,begun,owned});
-      }
-    }
-    if(run?.infrastructure)for(const c of plan.checks.concat(plan.project))if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});
-    // Each requirement's status (§1.3), with the anchor of one that ever passed.
-    // v8 M2: the other rows' requirements keep their status.
-    const old=this.read('requirement_status',{}),anchors=this.read('check_anchors',{}),ran=new Set(card.requirements.map(r=>r.id)),status=Object.fromEntries(Object.entries(old).filter(([k])=>!ran.has(k)&&whole.requirements.some(r=>r.id===k)));
-    // v8 live 2: a requirement kept untested (its check refused as written) is shown, never run, and holds nothing.
-    for(const r of card.requirements.filter(r=>r.untested))status[r.id]=statusEntry(null,digest,`its check is never run: ${r.check_error||'it could not be read as written'}`,{untested:true});
-    // S5: a link issue (a browser script that cannot load) goes to its file's owner like a file that does not compile.
-    const issues=[...(report?.issues||[]),...parsed.issues,...linkIssues],bad=new Set(issues.map(i=>i.path).filter(Boolean));
-    if(!run?.infrastructure)this.save(`compile_issues:${id}`,{owned,digest,paths:[...bad],ts:Date.now()});
-    const passes=[];
-    for(const r of card.requirements.filter(r=>!r.untested)) {
-      const res=results.get(r.id),passed=!res||res.infrastructure?null:!!res.passed;
-      status[r.id]=statusEntry(passed,digest,res?.detail||'not run',passed||old[r.id]?.anchor?{anchor:true}:{});
-      if(passed&&!anchors[anchorKey(r.id,r.says)])anchors[anchorKey(r.id,r.says)]={id:r.id,says:r.says,serves:r.serves,check:r.check};
-      // A pass is for the exact bundle it ran on (its digest); a failure leaves this row none.
-      if(passed!==null)this.savePass(r,id,{card:whole,digest,rev,passed});
-      if(!passed)continue;
-      passes.push(r.id);
-    }
-    this.save('requirement_status',status);this.save('check_anchors',anchors);
-    // The files changed while they were checked: what the run found is about files no longer there.
-    const stale=moved({ran:card.requirements.length,passed:passes.length});
-    if(stale)return stale;
-    // v8 M3: below the top, a failure with evidence of a cause outside the piece rolls up to the row above instead of becoming a
-    // repair; at the top, every failure is the line's to route.
-    const outside=[];
-    if(above) {
-      const contracts=this.pieceLeaves(id).flatMap(l=>this.promisedOf(l.id)),routes=routeNames(contracts),names=new Set(contracts.map(c=>c.name)),out=this.outsideOf(id),rows=this.installedToolchains();
-      for(const r of runs.filter(r=>status[r.id]?.passed===false)) {
-        const secrets=checkSecrets(r.check),hidden=v=>!!v&&secrets.some(x=>x===v||x.toLowerCase().split(/[^\p{L}\p{N}_]+/u).includes(String(v).toLowerCase()));
-        const why=outsideFailure(results.get(r.id),r.check,{routes,names,files,outside:out,rows,hidden});
-        if(why)outside.push({id:r.id,why:`it failed on something outside the piece: ${why}`});
-      }
-      this.rollUp(id,outside);
-    }
-    const rolled=new Set(outside.map(x=>x.id)),here=card.requirements.filter(r=>!rolled.has(r.id));
-    const failed=here.filter(r=>status[r.id].passed===false),untested=here.filter(r=>!r.untested&&status[r.id].passed===null),kept=here.filter(r=>r.untested);
-    const line=!card.requirements.length?`${issues.length} file(s) do not compile`:`${here.length-failed.length-untested.length-kept.length} of ${here.length} requirement(s) pass`+(failed.length?`; failing: ${failed.map(r=>r.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(r=>r.id).join(', ')}`:'')+(kept.length?`; untested, their checks never run: ${kept.map(r=>r.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'')+(rolled.size?`; rolled up: ${[...rolled].join(', ')}`:'');
-    const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure||!!notBuilt;
-    if(!blocked||failed.length||issues.length)this.set(`checks_retries:${id}`,'0');
-    if(!failed.length&&!untested.length&&!issues.length&&!report?.infrastructure_issue&&!run?.infrastructure&&!notBuilt) {
-      // Live 2 review: a requirement kept untested that serves a page, command, function or route was never shown met; the room holds at
-      // checks_untested for the person (Continue accepts the project as it is, logged; a follow-up prompt changes the card).
-      const behaviour=kept.filter(r=>(r.serves||[]).some(n=>['page','command','function','route'].includes(contractKind(card.deliverables.find(d=>d.name===n)||{kind:'doc'})))),accept=`${rev}:${behaviour.map(r=>r.id).join(',')}`;
-      if(behaviour.length&&this.get('untested_accepted')!==accept) {
-        this.save('untested_pending',accept);
-        // v8 ship-verified: at the top, with the files that ship unchecked (uncheckedOf), for one Continue.
-        const owe=!above&&!newly.length?this.uncheckedOf(bundle):null;
-        if(owe)this.save('unchecked_pending',owe.key);
-        span('held',{ran:passes.length});
-        return this.holdChecks(id,'checks_untested',clip(`Every requirement with a runnable check passed, and ${behaviour.map(r=>`${r.id} (${clip(r.says,80)}: ${clip(r.check_error,120)})`).join('; ')} ${behaviour.length>1?'have':'has'} no check that runs, so the project is not shown to meet ${behaviour.length>1?'them':'it'}.${owe?` And ${owe.text}`:''}`,owe?1100:700),'Continue accepts the project with them untested; a follow-up prompt can change the card instead.');
-      }
-      this.save(`compile_reported:${id}`,null);this.save(`compile_blocked:${id}`,null);this.set(`compile_infrastructure:${id}`,'');
-      this.closeProblemsFrom(id,'resolved');
-      if(!card.requirements.length)this.event(id,'piece_compiled',`Every file of ${this.node(id)?.label||id}'s piece compiles (${fresh.size} compiled now; snapshot ${digest.slice(0,14)}).`);
-      else this.event(id,'checks_passed',rolled.size?`${passes.length} of the requirement checks held here passed against snapshot ${digest.slice(0,14)}; ${[...rolled].join(', ')} rolled up.`:kept.length?`Every requirement of the project card that has a runnable check passed (${here.length-kept.length}) against snapshot ${digest.slice(0,14)}; ${kept.map(r=>r.id).join(', ')} stay${kept.length>1?'':'s'} untested.`:`Every requirement of the project card passed (${here.length}) against snapshot ${digest.slice(0,14)}.`);
-      if(newly.length)return this.compileCard(id,{relinks,begun,owned});
-      return finish({ran:card.requirements.length,passed:passes.length,rolled:rolled.size});
-    }
-    // v8 live 4: a run that needed a package outside the project is missing_module, answered from its writer's line.
-    // v8 M3 review 2 (L2): this run is not a verified compile.
-    this.save(`verified:${id}`,null);
-    const missing=(r,res)=>{if(!this.v8())return '';const m=missingModule(`${res?.detail||''}\n${res?.output||''}`,this.installedToolchains());return m&&(this.externalHit({module:m.module},bundle)||this.missingPackage(m.module,bundle))?m.module:'';};
-    const items=checkProblems({...card,requirements:here},results,issues,{origin:p=>origin.get(p)||null,contractNames:this.allNodes().flatMap(x=>this.promisedOf(x.id).map(c=>c.name)),goal:this.userGoal(),missing});
-    this.answerMissingModules(id,items,bundle);
-    this.event(id,'checks_reported',clip(card.requirements.length?`The project card's checks: ${line}.`:`Compiling ${this.node(id)?.label||id}'s piece: ${line}.`,900));
-    span('reported',{ran:card.requirements.length,passed:passes.length,failed:failed.length,rolled:rolled.size});
-    // Bench mode: a hidden requirement (the benchmark's own test) is never
-    // routed; when only hidden ones fail, the room ends benchmark_failed.
-    const hiddenFailed=failed.filter(r=>!routable(r));
-    if(!items.length&&hiddenFailed.length)return this.benchmarkFailed(id,hiddenFailed);
-    if(!items.length) {
-      // Only checks that could not run: nobody's work, the room waits for Continue.
-      const why=run?.infrastructure||report?.infrastructure_issue||notBuilt||untested.map(r=>`${r.id}: ${status[r.id].detail}`).join('; ');
-      this.set(`compile_infrastructure:${id}`,clip(why,950));
-      this.save(`compile_blocked:${id}`,{node:id,input});
-      this.event(id,'build_infrastructure',clip(why,950));
-      return this.holdChecks(id,'checks_blocked',`The checks could not all run: ${clip(why,300)}.`,await this.scheduleCheckRetry(id));
-    }
-    if(atomic){this.ownRepair(id,input,'check',items);return {reported:true};}
-    this.reportChecks(id,input,items);
-    return {reported:true};
-  }
-  // Bench mode: the benchmark's own tests failed and nothing visible is left
-  // to repair. Their details (test output, a nonce) reach no agent: the
-  // status keeps them, the room ends failed with benchmark_failed.
-  benchmarkFailed(id, reqs) {
-    this.set(`checks_due:${id}`,'');
-    const text=`The benchmark's own tests failed (${reqs.map(r=>r.id).join(', ')}) and no requirement an agent may repair is left failing; their details stay in the requirement status and reach no agent.`;
-    this.holdRoom('benchmark_failed',text);
-    this.failAgent(id,`benchmark_failed: ${text}`);
-    return {failed:true};
-  }
-  // A split's failed requirements open in its manager's own inbox as one
-  // report wave, replacing the last run's (a decline carries over by
-  // failure, as reportProblems does): it routes each by the plan, one level
-  // at a time.
-  reportChecks(m, input, items) {
-    // v8 live 5: a requirement Clef doubted (doubtful, with its reason) that fails again exactly as it did after a repair
-    // round was spent on it is the person's to keep or change: the room holds (checks_doubtful) with the reason, and no
-    // further round is spent on it until Continue keeps it. Nothing is deleted: it stays on the card, failing.
-    if(this.v8()) {
-      const card=this.read('card',null),kept=new Set(this.read('doubt_kept',[])),doubted=new Map((card?.requirements||[]).filter(r=>r.doubtful&&!kept.has(r.id)).map(r=>[r.id,r]));
-      const spent=doubted.size?this.problems("source=? AND stage='check'",m).filter(p=>p.trail.some(t=>t.action==='assign')):[];
-      const again=items.filter(x=>{const r=doubted.get(x.facts?.requirement?.id);return r&&spent.some(p=>p.facts?.requirement?.id===r.id&&failureKey(p)===failureKey({kind:x.kind,detail:x.detail,facts:x.facts||{}}));});
-      if(again.length) {
-        const why=r=>/internal detail/.test(r.doubt_reason||'')?`${r.doubt_reason}, p=${Number(r.vet_internal_p??r.vet_p).toFixed(3)}`:`${r.doubt_reason||'not expected from the goal'}, p=${Number(r.vet_p).toFixed(3)}`;
-        const reqs=[...new Set(again.map(x=>x.facts.requirement.id))].map(id=>doubted.get(id));
-        this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),m);
-        this.save('doubt_pending',reqs.map(r=>r.id));
-        this.event(m,'checks_doubtful',clip(`${reqs.map(r=>r.id).join(', ')} failed again as before a repair round, and Clef doubted ${reqs.length>1?'them':'it'}: the person decides.`,600));
-        return this.holdChecks(m,'checks_doubtful',`${reqs.map(r=>`${r.id} (${clip(r.says,80)})`).join('; ')} ${reqs.length>1?'keep':'keeps'} failing the same way after a repair round, and Clef doubted ${reqs.length>1?'them':'it'} (${reqs.map(r=>`${r.id}: ${why(r)}`).join('; ')}).`,
-          `Continue keeps ${reqs.length>1?'them':'it'} and runs the repairs again; a follow-up prompt can change or drop ${reqs.length>1?'them':'it'}.`);
-      }
-    }
-    const prior=this.problems("source=? AND status!='closed'",m),wave=crypto.randomUUID();
-    this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),m);
-    const list=items.slice(0,MAX_PROBLEMS_PER_REPORT);
-    const ids=list.map(x=>{
-      const row={holder:m,kind:x.kind,stage:'check',source:m,input,parties:x.parties||[],detail:x.detail,facts:x.facts||{},evidence:[]};
-      const declined=prior.find(p=>p.flags.declined?.length&&failureKey(p)===failureKey(row))?.flags.declined;
-      return this.insertProblem({...row,flags:{wave,...declined?{declined}:{}}});
-    });
-    this.save(`compile_reported:${m}`,{input,stage:'check',problems:ids,ts:Date.now()});
-    this.event(m,'problems_reported',clip(`${ids.length} requirement(s) of the project card failed; each goes to the piece that serves it: `+list.map(x=>x.detail).join('; '),1000));
-    this.wake(m);
-  }
-
   // ---------- managers solve problems ----------
   // Every open problem this manager holds is placed among its own direct
   // children and decided by the deterministic rules first (spec 3.4):
@@ -4925,8 +4271,7 @@ export class ControlRoom extends DurableObject {
     const n=this.node(m);
     if(!this.live()||!n||['failed','retired'].includes(n.status))return;
     // v8 S4b, v8 M2: the run's rounds ran out: the room holds with the requirement table, and every manager's problems wait with it.
-    if(this.v8()&&this.get('repair_exhausted'))return void this.checksExhausted(m,this.get('repair_exhausted'));
-    if(!this.v8()&&isTop(n)&&this.get('repair_exhausted')) {
+    if(isTop(n)&&this.get('repair_exhausted')) {
       this.failAgent(m,`Repair rounds exhausted: ${this.get('repair_exhausted')}; refusing an unbounded repair loop.`);
       this.event(m,'repair_exhausted',`No more repair rounds: ${this.get('repair_exhausted')}.`);
       return;
@@ -4934,7 +4279,6 @@ export class ControlRoom extends DurableObject {
     this.reopenStalled(m);
     this.routeExhausted(m);
     // v8 S9 review (A1): a change's row reaches every child that carries what it serves.
-    if(this.v8())this.fanOutAmendments(m);
     const rows=this.problemsHeld(m);
     if(!rows.length)return this.unfixable(m);
     const ctx=await this.decisionContext(m,rows),st={exhausted:''};
@@ -4962,8 +4306,6 @@ export class ControlRoom extends DurableObject {
       if(deferred.length&&(decided.error||!this.allowModel(m)))this.applyDecisions(m,deferred,ctx,st);
       else if(deferred.length){this.deferProblems(m,deferred,'another cluster is decided first');this.wake(m);}
     }
-    // v8 S9: an amendment nobody at Root took grows one new piece.
-    if(st.grow?.length)await this.amendGrow(m,st.grow);
     // A retask that changed a child's promise is mirrored, as a spawn's is.
     if(st.promised)await this.syncOwnership(m);
     if(st.exhausted)this.exhaustRounds(m,st.exhausted);
@@ -4997,8 +4339,8 @@ export class ControlRoom extends DurableObject {
     for(const p of rows)if(p.flags.escalated_from&&p.facts.names?.length)unique.set(p.id,await this.uniqueProvider(m,p));
     // v7.15.6 (R5): a promise grows only at the lowest common manager (or for names its parent relayed down), so the children above are asked once the walk reaches them.
     // v7.15.7 (T3): and, at the top, a run requirement naming a method of start()'s object (app.x is not a function), which may name one no piece promises.
-    const adds=await this.promiseAdds(m,rows.filter(p=>p.directive?.grow&&p.directive.by===n.parent||lowestCommon(placeParties(m,p.parties),kindOf,p.flags).lcm||!this.v8()&&isTop(n)&&p.kind==='run'&&p.facts?.requirement?.names?.includes('start')),kindOf),routes=await this.routeRequirements(m,rows,kindOf);
-    return {holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,taskOf:id=>children.get(id)?.task,labelOf:id=>children.get(id)?.label||this.node(id)?.label||id,grows:p=>this.amendItems(m,[p]).length>0,
+    const adds=await this.promiseAdds(m,rows.filter(p=>p.directive?.grow&&p.directive.by===n.parent||lowestCommon(placeParties(m,p.parties),kindOf,p.flags).lcm||isTop(n)&&p.kind==='run'&&p.facts?.requirement?.names?.includes('start')),kindOf),routes=await this.routeRequirements(m,rows,kindOf);
+    return {holder:m,parent:n.parent,kindOf,statusOf:id=>children.get(id)?.status,taskOf:id=>children.get(id)?.task,labelOf:id=>children.get(id)?.label||this.node(id)?.label||id,
       builder:builder?.id||null,maxHops:MAX_HOPS(depth),
       canRelink:p=>state?.fingerprint===fingerprint&&state.relinks<MAX_RELINKS&&!relinked.has(p.signature),causedHere:p=>caused.has(p.id),
       plainJsDone:id=>plain.has(id),uniqueProvider:p=>unique.get(p.id)||null,promiseAdd:p=>adds.get(p.id)||null,route:p=>routes.get(p.id)||null,
@@ -5010,8 +4352,6 @@ export class ControlRoom extends DurableObject {
         .filter(r=>r.assignee===child||r.assignee.startsWith(child+'.')).length,
       production:[...children.values()].filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status)).map(c=>c.id),
       leaks:(text,to)=>this.leaksHiddenAgentIds(text,[to]),busy:id=>[...this.activeTurns].some(a=>a===id||a.startsWith(id+'.')),
-      // v8: a retask's contracts read as contracts (validateManagerActions).
-      v8:this.v8(),
       // v7.15 §10.1: what this manager promised, and what each child carries;
       // none in a room without promises, whose retasks take no interfaces.
       promise:this.planned()?{own:this.promisedOf(m).map(f=>f.name),items:this.promisedOf(m),
@@ -5074,11 +4414,8 @@ export class ControlRoom extends DurableObject {
           this.event(m,'problem_closed',clip(`${p.kind} problem closed (${dec.reason}): ${p.detail}`,600));
           this.answerRequests((p.facts.requests||[]).map(r=>({...r,name:p.facts.names[0],need:p.facts.operation?.does||''})),dec.answered,m);
         }
-      } else if(dec.action==='grow') {
-        (st.grow??=[]).push(p);
       } else if(dec.action==='exhausted') {
         const why=dec.reason||'no direct child holds it';
-        if(p.stage==='amend')this.event(m,'amend_declined',clip(`No part takes the change's requirement (${why}); the card's checks decide: ${p.detail}`,600));
         if(this.moveProblem(p,{status:'closed',outcome:'exhausted',trail:[...p.trail,{at:m,action:'close',to:'',rule:dec.rule,reason:why,ts:now}]})) {
           this.event(m,dec.unroutable?'problem_unroutable':'problem_exhausted',clip(`${p.kind} problem closed (${why}): ${p.detail}`,600));
           this.wakeReporter(m,p);
@@ -5108,8 +4445,6 @@ export class ControlRoom extends DurableObject {
         const own=(dec.resubject||p.kind==='stuck'&&!p.flags.rounds_exhausted)&&!p.parties.some(x=>x.owner===m&&x.role==='subject')?{parties:[{path:'',owner:m,owner_path:'',digest:'',role:'subject'}],detail:clip(`${n.label} cannot finish its branch: ${p.detail}`,950)}:{};
         // v7.15.6 (R4): a branch with nobody left to take it declines it as a whole: the parent routes past it, and decides it anew (no directive travels up).
         const declined=dec.declined?{declined:[...new Set([...(p.flags.declined||[]),m])]}:{};
-        // v8 S9: a branch that declines a change gives back a new deliverable it took with it.
-        if(p.stage==='amend'&&dec.declined){p.flags=this.uncarryAmended(p,m);this.event(m,'amend_declined',clip(`${n.label} has nothing to change for it; it goes back up: ${p.detail}`,600),n.parent);}
         // v7.15.15 review 2 (#3): a branch that could not place a grown name refused the row: it is never ranked for it again.
         if(dec.rule==='D9'&&p.directive?.grow)declined.refused=[...new Set([...(p.flags.refused||[]),m])];
         if(this.moveProblem(p,{holder:n.parent,directive:null,...own,flags:{...p.flags,escalated_from:m,...declined},trail:trail(p,'escalate',n.parent,dec.rule)})) {
@@ -5127,16 +4462,12 @@ export class ControlRoom extends DurableObject {
         if(this.moveProblem(p,{flags:{...p.flags,route_deferred:(p.flags.route_deferred||0)+1}})){this.deferProblems(m,[{p}],dec.reason||'decided on the next turn');this.wake(m);}
       } else if(kind==='builder') {
         if(this.moveProblem(p,{status:'relinking',assignee:dec.child,flags:{...p.flags,fingerprint:this.assemblyFingerprint(m)},trail:trail(p,'relink',dec.child,dec.rule)}))relink.push(p);
-      } else if(kind==='manager'&&p.stage==='amend'&&this.node(dec.child)?.phase==='decompose'&&!this.manager(dec.child)) {
-        // v8 S9 review: a change for a child still at its split waits for the split (its inbox is read only then); the split landing wakes this manager (wakeGrowWaiter).
-        if(this.moveProblem(p,{flags:{...p.flags,grow_wait:{child:dec.child}}})){this.deferProblems(m,[{p}],'its child is still splitting');this.event(m,'amend_waiting',clip(`The change waits for ${label(dec.child)}'s split before it reaches it: ${p.detail}`,600),dec.child);}
-      } else if(kind==='manager') {
+            } else if(kind==='manager') {
         // relay: the decision travels as a side, never a node below the child.
         // v7.15.6 (R5): a promise grown by relay carries the names (grow) for the branch to place.
-        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:dec.instructions||instructionsFor(p,dec.side,false,this.msgOpts()),facts_text:factsOf(p,dec,p.facts.provider_text??''),...dec.grow?{grow:dec.grow}:{}};
+        const directive=dec.delegate?null:dec.relay?{...p.directive,by:m}:{by:m,origin:m,side:dec.side,instructions:dec.instructions||instructionsFor(p,dec.side,false),facts_text:factsOf(p,dec,p.facts.provider_text??''),...dec.grow?{grow:dec.grow}:{}};
         if(this.moveProblem(p,{holder:dec.child,directive,flags:{...p.flags,...placed(dec,trigger)},trail:trail(p,directive?'relay':'delegate',dec.child,dec.rule)})) {
           this.event(m,directive?'problem_relayed':'problem_delegated',clip(`${p.kind} problem (${dec.rule}) to ${label(dec.child)}${directive?`, ${directive.side} changes: ${directive.instructions}`:', whose branch holds every party'}`,700),dec.child);
-          if(p.stage==='amend'){this.carryAmended(m,dec.child,p);this.event(m,'amend_routed',clip(`The change reaches ${label(dec.child)} (${dec.rule}), whose branch routes it on: ${p.detail}`,600),dec.child);}
           this.wake(dec.child);
         }
       } else {
@@ -5155,13 +4486,10 @@ export class ControlRoom extends DurableObject {
         // A relayed decision stays the parent's, so a reopened problem is relayed again (D1).
         // v7.15.6 (R3): a requirement the model or a party rule placed still reads as the requirement, after the decision's words.
         const said=dec.instructions&&p.facts.requirement&&!dec.route?`${dec.instructions} ${requirementText(p.facts.requirement)}`:dec.instructions;
-        const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:said||instructionsFor(p,dec.side,false,this.msgOpts()),facts_text:factsOf(p,dec,p.directive?.facts_text??p.facts.provider_text??'')};
+        const directive=dec.relay&&p.directive?p.directive:{by:m,origin:p.directive?.origin||m,side:dec.side||DEFAULT_ROLE[p.kind],instructions:said||instructionsFor(p,dec.side,false),facts_text:factsOf(p,dec,p.directive?.facts_text??p.facts.provider_text??'')};
         // D9 owed: the facts the decision read again (no stale unpromised, review).
-        if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,...dec.facts?{facts:dec.facts}:{},flags:{...p.flags,revs,...placed(dec,trigger)},trail:trail(p,'assign',worker,dec.rule)})) {
+        if(this.moveProblem(p,{status:'assigned',assignee:worker,directive,...dec.facts?{facts:dec.facts}:{},flags:{...p.flags,revs,...placed(dec,trigger)},trail:trail(p,'assign',worker,dec.rule)}))
           moved.push(p);
-          // v8 S9: the change reaches this worker; a new deliverable it serves goes on its contracts (revs: as before it).
-          if(p.stage==='amend'){this.carryAmended(m,worker,p);this.event(m,'amend_routed',clip(`The change reaches ${label(worker)} (${dec.rule}): ${p.detail}`,600),worker);}
-        }
       }
       if(!moved.length)continue;
       // A stuck worker reads its manager's ticket on a fresh turn: its failed
@@ -5212,7 +4540,6 @@ export class ControlRoom extends DurableObject {
     const blocks=result.actions.some(a=>a?.action==='retire')?await this.retireBlocks(m):()=>'';
     const v=validateManagerActions(result.actions,call,{...ctx,scope:a=>scope.get(a),retireBlock:blocks});
     for(const r of v.rejected)this.event(m,'problem_decision_rejected',clip(`${r.action?.action||'?'} ${r.action?.child||''}: ${r.reason}`,600));
-    for(const r of v.retask.filter(r=>r.doubtful))this.event(m,'retask_doubtful',clip(`Clef doubted that the retask of ${ctx.labelOf(r.child)} is within the goal and this manager's responsibility (${r.doubtful.p===null?'Clef could not judge':`p=${r.doubtful.p.toFixed(3)}`}); it is applied, marked doubtful: ${r.task}`,600),r.child);
     const left=v.decisions.filter(d=>d.how==='default');
     if(left.length&&!result.error)this.event(m,'problem_default',clip(`${left.length} problem(s) the decision left out keep their default: ${left.map(d=>`${d.id} ${d.dec.action} ${d.dec.child?ctx.labelOf(d.dec.child):''}`).join(', ')}.`,600));
     // Facts per assignment: the listed children's modules that its problems name first.
@@ -5236,12 +4563,12 @@ export class ControlRoom extends DurableObject {
     // without changing a file, M4).
     const mine=this.problems('trail LIKE ?',`%"at":${JSON.stringify(m)}%`),declinedBy=(p,under)=>(p.flags.declined||[]).some(under);
     // v8 M3: the builder relinks when it joins the piece and after a run, never on a decision: the children here are the ones a problem goes to.
-    for(const c of this.children(m).filter(c=>c.status!=='retired'&&!(this.v8()&&isRuntimeNode(c)))) {
+    for(const c of this.children(m).filter(c=>c.status!=='retired')) {
       const kind=ctx.kindOf(c.id),view={id:c.id,label:c.label,kind,status:c.status,task:clip(c.task,400)},under=id=>id===c.id||String(id||'').startsWith(c.id+'.');
       // Its promise: what this manager answers requests from (decision 2).
       const functions=parse(c.interfaces,[]).map(f=>f.name);
       // v8 (S6): a child's contracts, of any kind, under "contracts".
-      if(functions.length&&['worker','manager'].includes(kind))view[this.v8()?'contracts':'functions']=functions;
+      if(functions.length&&['worker','manager'].includes(kind))view.functions=functions;
       if(kind==='worker'||kind==='manager') {
         const rows=mine.filter(p=>given(p).some(t=>under(t.to))),last=rows.at(-1);
         Object.assign(view,await this.boundaryView(c.id),{history:{assigned:rows.flatMap(given).filter(t=>under(t.to)).length,
@@ -5252,15 +4579,15 @@ export class ControlRoom extends DurableObject {
       children.push(view);
     }
     // v8 M2: every manager may escalate; one with no agent above hands it to the room (the checks' hold). v7 says whether it may.
-    const input={your_responsibility:clip(n.task,700),...this.v8()?{}:{can_escalate:!isTop(n)},children,
+    const input={your_responsibility:clip(n.task,700),can_escalate:!isTop(n),children,
       // proposed: decided by the rules, in this cluster because its child is a party here; the model may change it.
       // v8 (S6): the trigger says what it means (TRIGGERS), as the v7 system text listed it.
-      problems:call.map(({id,p,dec,trigger,placed})=>({id,kind:p.kind,stage:p.stage,trigger:this.v8()?triggerText(trigger||'proposed'):trigger||'proposed',detail:clip(p.detail,700),
+      problems:call.map(({id,p,dec,trigger,placed})=>({id,kind:p.kind,stage:p.stage,trigger:trigger||'proposed',detail:clip(p.detail,700),
         parties:placed.map(x=>({child:x.child||(x.place==='outside'?'(outside this branch)':'(unknown)'),file:base(x.owner_path||x.path),role:x.role})),
         evidence:(p.evidence||[]).map(e=>clip(e,300)),default:{action:dec.action==='exhausted'?'close':dec.action,...dec.child?{child:dec.child}:{}},
         // v7.15.13 (run20, R3): a fresh wave's row carries who declined or changed a file for its failure without progress; the model hears it.
         ...given(p).length||p.flags.declined?.length||p.flags.exhausted?.length?{history:{assigned_before:given(p).map(t=>t.to),...p.flags.declined?.length?{declined_by:p.flags.declined}:{},...p.flags.exhausted?.length?{changed_without_progress:p.flags.exhausted}:{}}}:{}})),
-      fixed_decisions:fixed.map(e=>({child:e.dec.child,instructions:clip(e.dec.instructions||instructionsFor(e.p,e.dec.side,false,this.msgOpts()),300)})),
+      fixed_decisions:fixed.map(e=>({child:e.dec.child,instructions:clip(e.dec.instructions||instructionsFor(e.p,e.dec.side,false),300)})),
       // Rounds without progress left for these problems, within the run's (v7.15.1).
       rounds_left:Math.max(0,Math.min(this.stalledLeft(m,call.map(e=>e.p)),this.roundCap()-Number(this.get('repair_rounds_total','0'))))};
     for(const cut of [c=>{if(c.exports)c.exports=clip(c.exports,200);},c=>{delete c.needs;c.task=clip(c.task,120);}])
@@ -5272,7 +4599,7 @@ export class ControlRoom extends DurableObject {
   async boundaryView(id) {
     if(!this.manager(id)) {
       const files=await this.childModules(id),surfaces=surfacesOf(files);
-      return {exports:clip([...surfaces.keys()].map(p=>this.v8()?providesLine(p,surfaces):exportsLine(p,surfaces)).join(' | '),600)};
+      return {exports:clip([...surfaces.keys()].map(p=>exportsLine(p,surfaces)).join(' | '),600)};
     }
     let boundary=null;
     const b=this.builderOf(id);
@@ -5352,7 +4679,7 @@ export class ControlRoom extends DurableObject {
       // is not a function: the start carrier its reader, the test line its call).
       // Both are operations: the carrier's name is kept, and a data name's
       // goal-operation bar does not apply.
-      const api=!grow&&!this.v8()&&isTop(n)&&p.kind==='run'&&f.requirement?.names?.includes('start')?f.requirement:null,carrier=api?this.carriersOf('start',m).find(c=>c.id!==m):null;
+      const api=!grow&&isTop(n)&&p.kind==='run'&&f.requirement?.names?.includes('start')?f.requirement:null,carrier=api?this.carriersOf('start',m).find(c=>c.id!==m):null;
       const operation=grow?grow.operation||null:api?{line:api.test_line?.text||'',does:`the application's test calls it: ${api.test_line?.text||api.text}`}:f.operation||null;
       const reader=grow?grow.reader:api?(carrier?{owner:carrier.id,owner_path:''}:null):p.parties.find(x=>x.role==='reader');
       if(!grow&&!api&&(!['mismatch','unresolved'].includes(p.kind)||f.split||f.elsewhere?.length||!f.names?.length||!reader?.owner||starts(reader.owner)&&!operation))continue;
@@ -5364,7 +4691,7 @@ export class ControlRoom extends DurableObject {
       const owed=grow?null:live.find(c=>!starts(c.id)&&names.every(x=>this.promisedOf(c.id).some(g=>g.name===x)&&askedOf(c.id).has(x)));
       if(owed) {
         const {unpromised,promised,...facts}=f;
-        out.set(p.id,{owed:true,child:owed.id,names,facts,instructions:this.v8()?MESSAGES.owed({names:names.join(', '),by:label(reader.owner),many:names.length>1}):`Your assignment promises ${names.join(', ')}, which ${label(reader.owner)} imports from your module, and your modules do not export ${them}. Export each as a named export with exactly that name; keep your other exports.`});
+        out.set(p.id,{owed:true,child:owed.id,names,facts,instructions:`Your assignment promises ${names.join(', ')}, which ${label(reader.owner)} imports from your module, and your modules do not export ${them}. Export each as a named export with exactly that name; keep your other exports.`});
         continue;
       }
       if(!grow&&p.kind==='mismatch'&&!f.unpromised)continue;
@@ -5432,8 +4759,8 @@ export class ControlRoom extends DurableObject {
         const a=await this.managerRouteOwner(m,question,rest.map(c=>({id:c.id,label:c.label,task:c.task,known_topics:this.promisedOf(c.id).map(g=>promiseText(g)),files:[],previews:[]})),true,false,true);
         const best=a?.ranks?.[0],id=a?.id||null;
         if(id){child=id;why=best?`Clef p=${best.p.toFixed(3)}: its assignment covers them`:'its assignment names them';}
-        else {for(const c of rest)this.asked(c.id,x.names);this.event(m,'promise_refused',clip(`${x.names.join(', ')}: no direct child's assignment covers ${them} (${rest.map(c=>`"${c.label}"`).join(', ')}${best?`, best p=${best.p.toFixed(3)}`:''})${n.parent?'; it goes up a level':x.request?this.v8()?'; it goes to the person':`; ${label(x.reader)} writes it`:'; the reader changes'}.`,500));}
-      } catch(e) {this.event(m,'promise_refused',clip(`${x.names.join(', ')}: Clef failed (${e?.message||e}) over the children${n.parent?'; it goes up a level':x.request?this.v8()?'; it goes to the person':`; ${label(x.reader)} writes it`:'; the reader changes'}.`,400));}
+        else {for(const c of rest)this.asked(c.id,x.names);this.event(m,'promise_refused',clip(`${x.names.join(', ')}: no direct child's assignment covers ${them} (${rest.map(c=>`"${c.label}"`).join(', ')}${best?`, best p=${best.p.toFixed(3)}`:''})${n.parent?'; it goes up a level':x.request?`; ${label(x.reader)} writes it`:'; the reader changes'}.`,500));}
+      } catch(e) {this.event(m,'promise_refused',clip(`${x.names.join(', ')}: Clef failed (${e?.message||e}) over the children${n.parent?'; it goes up a level':x.request?`; ${label(x.reader)} writes it`:'; the reader changes'}.`,400));}
       // v7.15.15 (G1): a request nobody up to Root covers is the requester's to write (its manager answers it so).
       if(!child){if(n.parent)out.set(x.p.id,{up:true,names:x.names,reason:`no piece under ${n.label} covers ${x.names.join(', ')}`});else if(x.request)out.set(x.p.id,{answered:{write:true},reason:`no piece's assignment covers ${x.names.join(', ')}`});continue;}
       if(unsettled(child)){out.set(x.p.id,{wait:{child,why},reason:`"${label(child)}" is still splitting`});continue;}
@@ -5461,7 +4788,7 @@ export class ControlRoom extends DurableObject {
       const add={child,names,path:(await exportsOf(child)).path,items:normalizeInterfaces(items,this.contractOpts()),interfaces:normalizeInterfaces([...own,...items],this.contractOpts()),readers:[...x.readers].map(([id,r])=>({id,names:r.names,esm:!!r.esm})),by:readers,why:x.why,operation:!!x.operation&&!x.request,api:!!x.api,gap:!!x.gap,request:!!x.request,
         // v7.15.15 review (#1): the requests the growth answers, the branches it was relayed through (each promises it too), and the key a gap's carrier returns it under.
         requests:x.rows.flatMap(p=>(p.facts.requests||[]).map(r=>({...r,name:p.facts.names[0]}))),relays:[...new Set(x.rows.flatMap(p=>(p.trail||[]).filter(t=>t.action==='relay').map(t=>t.to)))],ops:Object.fromEntries(x.rows.filter(p=>p.facts.operation?.op).map(p=>[p.facts.names[0],p.facts.operation.op])),
-        task:this.v8()?MESSAGES.grow_task({task:c.task,adds:items.map(f=>`${signature(f)} (${f.does})`).join(', '),readers,many:x.readers.size>1,data:dataPiece(c.label,own)}):x.operation?`${c.task} Keep what your module exports and add ${items.map(f=>`${signature(f)} (${f.does})`).join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.`:
+        task:x.operation?`${c.task} Keep what your module exports and add ${items.map(f=>`${signature(f)} (${f.does})`).join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.`:
           `${c.task} Keep what your module exports and add ${names.join(', ')}: ${readers} import${x.readers.size>1?'':'s'} ${names.length>1?'them':'it'} from your module.${dataPiece(c.label,own)?' Keep the data at module level, shared by all your functions.':''}`};
       for(const p of x.rows)out.set(p.id,add);
     }
@@ -5472,7 +4799,7 @@ export class ControlRoom extends DurableObject {
     const them=x.names.length>1?'them':'it';
     this.event(x.p.holder,'promise_relayed',clip(`${x.names.join(', ')} (${why}): "${label(child)}" places ${them} on one of its pieces' promise; ${label(x.reader)} ${x.operation?`imports ${them}`:'keeps its import'}.`,500),child);
     return {relay:true,child,names:x.names,grow:{names:x.names,reader:{owner:x.reader,owner_path:x.path},calls:x.calls.map(c=>({line:c.line,params:c.params,...c.does?{does:c.does}:{}})),...x.operation?{operation:true}:{},...x.api?{api:true}:{},...x.gap?{gap:true}:{},...x.request?{request:true}:{}},
-      instructions:this.v8()?MESSAGES.relay({names:x.names.join(', '),reader:label(x.reader),why,many:x.names.length>1}):`${x.names.join(', ')}, which ${label(x.reader)} imports, ${x.names.length>1?'are':'is'} this branch's to write (${why}): a piece of it promises and exports ${them}.`};
+      instructions:`${x.names.join(', ')}, which ${label(x.reader)} imports, ${x.names.length>1?'are':'is'} this branch's to write (${why}): a piece of it promises and exports ${them}.`};
   }
   // v7.15.5 review: a name performs a goal operation when its verb is one of
   // the goal's operation verbs (a goal word a promised function starts with:
@@ -5495,12 +4822,12 @@ export class ControlRoom extends DurableObject {
     // v7.15.15 (G1): a requester hears its answer through its request (answerRequests), never a second one here.
     for(const r of add.request?[]:add.readers)for(const f of add.items.filter(f=>r.names.includes(f.name))) {
       // v7.15.7 (T3): a start carrier hears where the operation now lives and the import line to return it by (it had none to keep).
-      const text=this.v8()?MESSAGES.now_delivered({contract:contractLine(f),owner:n.label,reference:this.referenceLine(f.name,f,r.id)}):`${signature(f)} is now promised by "${n.label}", which writes it. ${add.operation?`Import it on its own line, ${importLine(f.name,r.esm).replace(/;$/,'')}, and return it from start()${add.gap&&add.ops?.[f.name]&&add.ops[f.name]!==f.name?` as ${add.ops[f.name]}`:''}`:`Keep your import of ${f.name} as it is`}; the builder links it to the module that exports it. Do not write it yourself.`;
+      const text=`${signature(f)} is now promised by "${n.label}", which writes it. ${add.operation?`Import it on its own line, ${importLine(f.name,r.esm).replace(/;$/,'')}, and return it from start()${add.gap&&add.ops?.[f.name]&&add.ops[f.name]!==f.name?` as ${add.ops[f.name]}`:''}`:`Keep your import of ${f.name} as it is`}; the builder links it to the module that exports it. Do not write it yourself.`;
       this.recordAnswer(r.id,{key:requestKey({name:f.name}),kind:'provided',fn:{name:f.name,params:f.params,does:f.does,...(f.returns?{returns:f.returns}:{}),owner:n.label},text});
       // v7.15.7 review (T3(ii)): a method the fixed test calls is the carrier's to return now: it hears the line as a message and runs in this decision, as the gainer does, so the next bundle returns it (one Container run, no ticket to the carrier). A carrier whose contract was refused for the empty operation reruns by itself.
       // v7.15.15 (G2, run23): so does a carrier whose start() lacked an operation the plan grew (gap), from its own manager wherever the gainer lies: its ticket is only the line to import and return it.
       const up=this.node(r.id)?.parent;
-      if(add.api&&up===m||add.gap&&up)this.send(up,r.id,this.v8()?text:`${text} Publish the FULL updated file.`);
+      if(add.api&&up===m||add.gap&&up)this.send(up,r.id,`${text} Publish the FULL updated file.`);
     }
     this.event(m,'promise_added',clip(`"${n.label}" now promises ${add.items.map(signature).join(', ')} (${add.why}): ${add.by} ${add.operation?`return${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from start()`:`import${add.readers.length>1?'':'s'} ${add.names.length>1?'them':'it'} from its module`} and no piece promised ${add.names.length>1?'them':'it'}. It is retasked to write ${add.names.length>1?'them':'it'}; the reader ${add.operation?`imports ${add.names.length>1?'them':'it'}`:'keeps its import'}.`,700),add.child);
     // v7.15.15 review (#1): each branch the growth was relayed through promises it too, so a later request finds it by name on the way up (routeFunction) and a start carrier's walk names it.
@@ -5525,10 +4852,7 @@ export class ControlRoom extends DurableObject {
       const w=this.node(r.worker),up=w?.parent,name=r.name;
       if(!up||!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id).length)continue;
       const own=answered.items?.find(f=>f.name===name),offer=answered.provided||this.planIndex().has(name)?this.offerFor(r.worker,name)||(own?{item:own,owner:answered.owner}:null):null,line=this.referenceLine(name,null,r.worker);
-      if(this.v8()&&!offer&&!answered.exported&&at&&!this.node(at)?.parent){this.askRoom(r.worker,r.topic,r.need||r.want,name||'',r.request_id);continue;}
       const [kind,value,fn]=offer?['provided',this.providedFor(offer.item,offer.owner,r.worker),providedFn(offer.item,offer.owner)]:
-        answered.exported&&this.v8()?['unowned',MESSAGES.exported_elsewhere({want:r.want,owner:answered.exported,reference:line}),null]:
-        !answered.exported&&this.v8()?['unowned',MESSAGES.write_yourself({want:r.want}),null]:
         answered.exported?['unowned',`No piece of the application promises ${r.want}, but "${answered.exported}"'s module exports it: import it on its own line, with the name as the path: ${line} The builder links it to that module. Do not write it yourself.`,null]:
         ['unowned',`No piece of the application promises ${r.want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`,null];
       this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',r.worker,r.request_id);
@@ -5649,7 +4973,7 @@ export class ControlRoom extends DurableObject {
       if(!files.size)files=await this.childModules(id);
       const surfaces=surfacesOf(files),paths=[...new Set([...parties,...this.manager(id)?branchBoundary(files).exports:surfaces.keys()])].filter(p=>surfaces.has(p));
       seen.push(...surfaces.values());
-      lines.push(...paths.map(p=>this.v8()?providesLine(p,surfaces):exportsLine(p,surfaces)));
+      lines.push(...paths.map(p=>exportsLine(p,surfaces)));
     }
     lines.unshift(...fns.map(f=>promiseText(f,seen.find(s=>providedNames(s).has(f.name))||null)));
     const text=clip(lines.join(' | '),700);
@@ -5752,7 +5076,6 @@ export class ControlRoom extends DurableObject {
     if(!node||['retired','failed'].includes(node.status))return;
     if(interfaces)db.exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())),c);
     // v8 live 4 review (L9): its packages follow its new contracts' languages, as a piece's do at a split.
-    if(interfaces&&this.v8())db.exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(piecePackages({interfaces},this.packagesOf(m),this.installedToolchains()).packages),c);
     if(below.length) {
       this.retireNodes(m,below,'retasked');
       // What it held was about the branch that is gone; it starts with nothing.
@@ -5850,12 +5173,10 @@ export class ControlRoom extends DurableObject {
     if(total) {
       this.set('repair_exhausted',reason);
       for(const p of this.problemsHeld(m))this.moveProblem(p,{status:'closed',outcome:'exhausted'});
-      if(this.v8())return void this.checksExhausted(m,reason);
       const top=this.allNodes().find(x=>!x.parent);
       if(top&&top.id!==m)this.wake(top.id);
     }
-    if(this.v8()&&!n.parent)return void this.checksExhausted(m,reason);
-    if(!this.v8()&&isTop(n)) {
+    if(isTop(n)) {
       this.failAgent(m,`${head}: ${reason}; refusing an unbounded repair loop.`);
       this.event(m,'repair_exhausted',`No more repair rounds: ${reason}.`);
       return;
@@ -5885,11 +5206,8 @@ export class ControlRoom extends DurableObject {
       if(query(this.db(),"SELECT id FROM messages WHERE recipient=? AND delivered=0 AND body LIKE '[build:repair]%'",w.id).length)continue;
       // Only an answer to a ticket declines; a retask's rerun (D9, the model) never read one, so it is decided again as it was.
       const ticketed=p.trail.at(-1)?.action==='assign';
-      // v8 S9: a worker that declines a change gives back a new deliverable it took with it.
-      const flags=p.stage==='amend'&&ticketed?this.uncarryAmended(p,w.id):p.flags;
-      if(this.moveProblem(p,{status:'open',assignee:'',flags:{...flags,...ticketed?{declined:[...new Set([...(p.flags.declined||[]),w.id])]}:{}}})) {
+      if(this.moveProblem(p,{status:'open',assignee:'',flags:{...p.flags,...ticketed?{declined:[...new Set([...(p.flags.declined||[]),w.id])]}:{}}})) {
         this.event(m,ticketed?'route_declined':'problem_reopened',ticketed?`${w.label} answered the problem as done without changing a file: it declines it, and the manager routes it elsewhere.`:`${w.label} finished its new task without changing its files; the problem is open again.`,w.id);
-        if(p.stage==='amend'&&ticketed)this.event(m,'amend_declined',clip(`${w.label} has nothing to change for it: ${p.detail}`,600),w.id);
       }
     }
   }
@@ -5898,7 +5216,7 @@ export class ControlRoom extends DurableObject {
   problemMoves(p) { return p.status!=='closed'&&(p.status!=='assigned'||!['done','retired','failed'].includes(this.node(p.assignee)?.status||'retired')); }
   // A source below whose last report's problems held here no longer move
   // (each closed, or with an assignee that is done) is woken once for that
-  // state: it runs its checks again, or holds (compileCard).
+  // state: it runs its checks again, or holds (compileLevel).
   wakeSources(m) {
     for(const {source} of query(this.db(),'SELECT DISTINCT source FROM problems WHERE holder=? AND source!=?',m,m)) {
       const s=this.node(source),ids=s&&s.status==='waiting'&&this.manager(s.id)?this.read(`compile_reported:${s.id}`,null)?.problems||[]:[];
@@ -5927,7 +5245,6 @@ export class ControlRoom extends DurableObject {
   // has nowhere else to route: its worker is asked again, and the per-manager
   // limit of rounds without progress ends the repairs, as for any manager.
   routeExhausted(m) {
-    if(this.v8()&&this.children(m).filter(c=>!isRuntimeNode(c)&&c.status!=='retired').length===1)return;
     const waves=this.read(`repair_waves:${m}`,[]);
     for(const p of this.problemsHeld(m).filter(p=>p.facts?.requirement&&p.facts.failure)) {
       const prev=waves.filter(w=>w!==p.flags.wave).at(-1);
@@ -6004,7 +5321,7 @@ export class ControlRoom extends DurableObject {
     const shard=this.managerStub(id);
     if(!shard)return routeOwner(this.inferenceEnv(),question,candidates,{strict,keywords,ranked});
     const cfg=this.settings(),start=Date.now();
-    const got=await shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold,traced:true,...this.v8()?{pipeline:'v8'}:{}});
+    const got=await shard.selectOwner({question,candidates,strict,keywords,ranked,split_model:cfg.split_model,split_threshold:cfg.split_threshold,traced:true});
     // A shard that predates traced answers the owner itself.
     if(!got||typeof got!=='object'||!('spans' in got)||!('owner' in got))return got;
     for(const r of Array.isArray(got.spans)?got.spans:[])this.traceCall({...r,via:'shard'},'manager');
@@ -6019,16 +5336,14 @@ export class ControlRoom extends DurableObject {
   // piece adds, in the same step; a carrier is in scope by construction (run6
   // lost its entry module at p=0.448). Then the walk by name, and the Clef
   // walk for the non-carriers left.
-  // v8 (S2): v8 reads the pieces' contracts and uses of any kind (S3 passes it from the room's pipeline setting).
-  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[],place=false,v8=false,promise=null,scope:reviewed=null}={}) {
-    // v8 S9: Root's growth for an amendment admits one piece for the deliverables no part carries (promise), not Root's whole promise.
-    const promised=promise||this.promisedOf(id),own=new Set(promised.map(p=>p.name));
-    let {spawn:named,inferred}=normalizeSpawn(spawn,promised,{v8});
+  async admitChildren(id, n, spawn, {late=false,inferred:earlier=[],place=false}={}) {
+    const promised=this.promisedOf(id),own=new Set(promised.map(p=>p.name));
+    let {spawn:named,inferred}=normalizeSpawn(spawn,promised);
     // C0 already ran in decompose for a first split; it reports what it read.
     const read=[...(Array.isArray(earlier)?earlier:[]).filter(x=>typeof x?.label==='string'&&own.has(x?.name)),...inferred];
     for(const x of read)this.event(id,'interfaces_inferred',`"${clip(x.label,70)}" says it exports ${x.name}(); it carries ${x.name}.`);
     // v7.15.14 (run21): the goal's tests are the compiler's (its runner writes the one test against start()), so a test piece nothing uses is not spawned, before any Clef call: Root's split proposed 25, Clef vetted them and kept 17 nobody imports, each a repository to create.
-    const tests=v8?[]:testPieces(named,{promised,stated:goalMethods(this.userGoal()),goal:this.userGoal()});
+    const tests=testPieces(named,{promised,stated:goalMethods(this.userGoal()),goal:this.userGoal()});
     if(tests.length){named=named.filter(c=>!tests.includes(c));this.event(id,'test_pieces_dropped',testPiecesText(tests));}
     // v7.15.16 (run25): a split makes progress or it is not one. A piece
     // carrying its parent's whole promise beside pieces that add no name is
@@ -6047,10 +5362,8 @@ export class ControlRoom extends DurableObject {
     }
     // v7.15.5: in a room with promises a factory (C7, run12's createData) is
     // rejected with C5, but kept on the last attempt before a pause.
-    // v8 (S3): C7 and C8 are v7's (deleted in v8, §2.2), names follow the toolchain rows, and the goal-operation heuristics (test pieces, use pairs, stated methods) stay v7's.
-    const errors=interfaceErrors(named,promised,{goal:this.userGoal(),facts:v8?this.contractFacts():null}).filter(e=>!v8||!['C7','C8'].includes(e.check)),factories=this.planned()&&!v8?errors.filter(e=>e.check==='C7'):[];
+    const errors=interfaceErrors(named,promised,{goal:this.userGoal()}),factories=this.planned()?errors.filter(e=>e.check==='C7'):[];
     if(place)for(const e of factories)this.event(id,'interfaces_factory_kept',`Last attempt before a pause: ${e.name}() on "${clip(e.label,70)}" is a factory; admitted as it is.`);
-    // v8 (S2): two pieces placing one file (C4 by path) bounce the split as C5 does.
     const c5=[...errors.filter(e=>e.check==='C5'||e.check==='C4'&&e.path),...(place?[]:factories)];
     if(c5.length)return {spawn:named,c5,rejectedScope:0,rejectedChildren:[]};
     const elsewhere=new Set(named.flatMap(c=>(c?.interfaces||[]).map(f=>f.name)).filter(name=>!own.has(name)&&!GENERIC_NAMES.has(name)&&this.ownerBranch(name,id)));
@@ -6058,20 +5371,16 @@ export class ControlRoom extends DurableObject {
     // and deleteTicket from all, and nobody promised update or delete): the
     // plain pick, else Clef over those pieces, beside the scope call; a miss
     // or an error deletes it from all, as before.
-    // v8 S9 review: with changes, Clef reads the goal's head and its latest changes (goalView), Root's responsibility too.
-    // v8 M2: the parent's task is its row's (the handler keeps the top's as the goal's view).
-    const goal=this.goalFor(SCOPE_GOAL)??(this.topTask()||n.task),parentTask=this.v8()?clipEnds(n.task,SCOPE_GOAL):isTop(n)?this.goalFor(SCOPE_GOAL)??n.task:n.task,env=this.inferenceEnv(),dups=duplicateNames(named,promised,elsewhere),owners=new Map();
+    const goal=this.goalFor(SCOPE_GOAL)??(this.topTask()||n.task),parentTask=isTop(n)?this.goalFor(SCOPE_GOAL)??n.task:n.task,env=this.inferenceEnv(),dups=duplicateNames(named,promised,elsewhere),owners=new Map();
     for(const d of dups)if(d.pick!==null)owners.set(d.name,{index:d.pick,why:d.why});
-    // v8 live 5: a proposal Clef reviewed carries each piece's scope p from that one call (reviewSplit).
-    const scoped=Array.isArray(reviewed)&&reviewed.length===named.length?Promise.resolve(reviewed):scopeChildren(env,goal,parentTask,named);scoped.catch(()=>{});
+    const scoped=scopeChildren(env,goal,parentTask,named);scoped.catch(()=>{});
     await Promise.all(dups.filter(d=>d.pick===null).map(async d=>{
       try {
         const x=await pickPiece(env,d.item,d.holders.map(i=>named[i]));
         // A tie goes to the one tied piece named for the function, else is said.
         const tied=x?.index>=0?[x.index,...(x.tied||[])]:[],by=tied.filter(j=>labelNames(named[d.holders[j]].label,d.name)),j=tied.length>1&&by.length===1?by[0]:x?.index;
-        // v8 card repair: Clef chooses, it never deletes: with no choice the name stays on the first piece that lists it.
-        owners.set(d.name,x?.index>=0?{index:d.holders[j],why:tied.length<2?`Clef p=${x.p.toFixed(2)}`:by.length===1?`Clef tie, label matches`:`Clef p=${x.p.toFixed(2)}, tied with ${x.tied.map(k=>`"${clip(named[d.holders[k]].label,40)}"`).join(', ')}`}:v8?{index:d.holders[0],why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}, so the first piece that lists it keeps it`}:{index:-1,why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}`});
-      } catch {owners.set(d.name,v8?{index:d.holders[0],why:'Clef failed, so the first piece that lists it keeps it'}:{index:-1,why:'Clef failed'});}
+        owners.set(d.name,x?.index>=0?{index:d.holders[j],why:tied.length<2?`Clef p=${x.p.toFixed(2)}`:by.length===1?`Clef tie, label matches`:`Clef p=${x.p.toFixed(2)}, tied with ${x.tied.map(k=>`"${clip(named[d.holders[k]].label,40)}"`).join(', ')}`}:{index:-1,why:`Clef named none${x?` (best p=${x.p.toFixed(2)})`:''}`});
+      } catch {owners.set(d.name,{index:-1,why:'Clef failed'});}
     }));
     const {spawn:repaired,removed}=repairInterfaces(named,promised,elsewhere,owners);
     if(removed.length)this.event(id,'interfaces_repaired',`Deleted ${removed.map(r=>`${r.name} from "${clip(r.label,70)}" (${r.why})`).join('; ')}; the pieces are kept.`);
@@ -6084,8 +5393,8 @@ export class ControlRoom extends DurableObject {
     // offers this level from above (outer); before, root.3's operations lost
     // readTickets and saveTickets, which their uncle promised.
     const planned=this.planned(),isOp=f=>this.isGoalOp(f),outer=planned?[...this.promisedElsewhere(id).keys()]:[],inherited=planned&&n.parent?parse(n.uses,[]):[];
-    if(inherited.length)repaired.forEach((c,i)=>{if(c&&!normalizeUses(c.uses,{v8}).length&&(c.interfaces||[]).some(f=>own.has(f.name)&&isOp(f)))repaired[i]={...c,uses:inherited};});
-    const offered=planned?planUses(repaired,outer,{v8}).spawn:[],pairs=planned&&!v8?usePairs(offered,isOp,this.userGoal()):[];
+    if(inherited.length)repaired.forEach((c,i)=>{if(c&&!normalizeUses(c.uses).length&&(c.interfaces||[]).some(f=>own.has(f.name)&&isOp(f)))repaired[i]={...c,uses:inherited};});
+    const offered=planned?planUses(repaired,outer).spawn:[],pairs=planned?usePairs(offered,isOp,this.userGoal()):[];
     const usesAsked=pairs.length?scopeUses(env,goal,n.task,repaired,pairs).catch(e=>{this.event(id,'uses_uncertain',`Clef failed on the pieces' uses (${clip(e?.message||e,300)}); none added.`);return [];}):[];
     const [scope,names,asked]=await Promise.all([scoped,scopeInterfaces(env,goal,parentTask,repaired,promised),usesAsked]),clefP=new Map();
     for(const x of asked||[])if(x.p>=0.5) {
@@ -6104,7 +5413,7 @@ export class ControlRoom extends DurableObject {
     // a stated one) admits a piece, never one admitted itself by uses (two
     // out-of-scope pieces using each other admitted both); and a name such a
     // user uses is kept too, so the piece admitted for it keeps it.
-    const rejectedChildren=[],admitted=[],stated=new Set(v8?[]:goalMethods(this.userGoal()).map(s=>s.name)),usesOf=c=>c&&typeof c==='object'?normalizeUses(c.uses,{v8}):[];
+    const rejectedChildren=[],admitted=[],stated=new Set(goalMethods(this.userGoal()).map(s=>s.name)),usesOf=c=>c&&typeof c==='object'?normalizeUses(c.uses):[];
     const fnsOf=c=>(c?.interfaces||[]).map(f=>f.name),onOwn=repaired.map((c,i)=>scope[i]>=0.5||carried(c).length>0||fnsOf(c).some(n=>stated.has(n)));
     const usersOf=(i,name)=>repaired.filter((s,j)=>j!==i&&onOwn[j]&&usesOf(s).includes(name));
     repaired.forEach((child,i)=>{
@@ -6113,8 +5422,6 @@ export class ControlRoom extends DurableObject {
       if(scope[i]>=0.5)this.event(id,'scope_allowed',late?`Clef accepted late child "${label}" (p=${p}).`:`Clef accepted proposed child "${label}" (p=${p}); within Root and parent scope.`);
       else if(carries.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which carries ${carries.join(', ')} that this manager was promised; admitted (in scope by construction).`);
       else if(named.length||used.length)this.event(id,'scope_allowed',`Clef answered p=${p} for "${label}", which promises ${listed(named.length?named:used)}, which ${named.length?'the goal states start() returns':`${listed(users.map(s=>`"${clip(s.label,70)}"`))} uses`}; admitted (in scope by the plan).`);
-      // v8 card repair: Clef reviews, it never deletes: a piece it doubts is admitted, its doubt shown, and the checks and the person decide.
-      else if(v8)this.event(id,'scope_doubtful',`Clef doubted that proposed child "${label}" is within Root and parent scope (p=${p}); admitted, marked doubtful.`);
       else {
         this.event(id,'scope_rejected',late?`Clef rejected late child "${label}" (p=${p}).`:`Clef rejected proposed child "${label}" (p=${p}); outside Root and parent scope.`);
         rejectedScope++;rejectedChildren.push({label:child.label,task:clip(child.task,500),probability:scope[i]});
@@ -6123,10 +5430,8 @@ export class ControlRoom extends DurableObject {
       // A carried name takes the parent's item: the description travels down unchanged.
       let interfaces=(child.interfaces||[]).map(f=>own.has(f.name)?promised.find(p=>p.name===f.name):f);
       const no=(names[i]||[]).filter(x=>x.p<0.5),why=x=>stated.has(x.name)?'the goal states start() returns it':labelWrites(child.label,x.name)?`"${label}" names it`:usersOf(i,x.name).length?`${listed(usersOf(i,x.name).map(s=>`"${clip(s.label,70)}"`))} ${usersOf(i,x.name).length>1?'use':'uses'} it`:'';
-      const kept=no.filter(x=>why(x)),strip=v8?[]:no.filter(x=>!kept.includes(x));
+      const kept=no.filter(x=>why(x)),strip=no.filter(x=>!kept.includes(x));
       for(const x of kept)this.event(id,'interfaces_kept',`Clef doubted ${x.name} (p=${x.p.toFixed(3)}), but ${why(x)}; kept.`);
-      // v8 card repair: a contract Clef doubts stays on its piece, its doubt shown.
-      if(v8)for(const x of no.filter(x=>!kept.includes(x)))this.event(id,'interfaces_doubtful',`Clef doubted that "${label}" writes ${x.name} (p=${x.p.toFixed(3)}); kept on the piece, marked doubtful.`);
       for(const x of strip)this.event(id,'interfaces_stripped',`Clef judged ${x.name} (p=${x.p.toFixed(3)}) is not what "${label}" writes; the piece is kept without it.`);
       if(strip.length)interfaces=interfaces.filter(f=>!strip.some(x=>x.name===f.name));
       admitted.push({...child,interfaces});
@@ -6144,14 +5449,14 @@ export class ControlRoom extends DurableObject {
         const owner=owned[0].owner,list=owned.map(x=>x.name),name=owner.level===this.node(id)?.parent?owner.label:'';
         this.event(id,'scope_pruned',`Proposed child "${label}" exports ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; not spawned. Import them by those names.`);
         rejectedScope++;
-        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,names:list,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,list,false,this.v8())});
+        rejectedChildren.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,names:list,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,list,false)});
         continue;
       }
       const byOwner=new Map();
       for(const x of owned){if(!byOwner.has(x.owner.id))byOwner.set(x.owner.id,{owner:x.owner,names:[]});byOwner.get(x.owner.id).names.push(x.name);}
       for(const {owner,names:list} of byOwner.values()) {
         this.event(id,'interfaces_owned_elsewhere',`"${label}" lists ${list.join(', ')}, which "${clip(owner.label,70)}" already provides; kept without ${list.length>1?'them':'it'}.`);
-        const name=owner.level===this.node(id)?.parent?owner.label:'',{short,outside}=ownerNote(child.label,'',name,list,true,this.v8());
+        const name=owner.level===this.node(id)?.parent?owner.label:'',{short,outside}=ownerNote(child.label,'',name,list,true);
         rejectedChildren.push({label:child.label,owner:name||OUTSIDE,names:list,kept:true,short,outside});
       }
       const c=owned.length?{...child,interfaces:child.interfaces.filter(f=>!owned.some(x=>x.name===f.name))}:child;
@@ -6165,7 +5470,7 @@ export class ControlRoom extends DurableObject {
     rejectedScope+=walk.rejected.length;rejectedChildren.push(...walk.rejected);
     // Uses only name what a surviving sibling promises (planUses); a room
     // without promises keeps none.
-    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive,outer,{v8}):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]};
+    const alive=kept.filter(c=>carried(c).length||walk.kept.includes(c)),final=planned?planUses(alive,outer):{spawn:alive.map(({uses:_,...c})=>c),dropped:[]};
     // v8 (S2, §2.3): a contract this split adds serves what the pieces using it serve; carried ones keep the parent's serves.
     const served=inheritServes(final.spawn,promised),survivors=served.spawn;
     if(served.inherited.length)this.event(id,'serves_inherited',clip(`Serves inherited by use: ${served.inherited.map(x=>`${x.name} on "${clip(x.label,70)}" serves ${x.serves.join(', ')}`).join('; ')}.`,600));
@@ -6173,7 +5478,7 @@ export class ControlRoom extends DurableObject {
     const using=survivors.filter(c=>c.uses?.length);
     if(using.length)this.event(id,'uses_planned',using.map(c=>`"${clip(c.label,70)}" uses ${c.uses.map(u=>clefP.has(`${c.task}\n${u}`)?`${u} (Clef p=${clefP.get(`${c.task}\n${u}`).toFixed(3)})`:u).join(', ')}`).join('; ')+'.');
     if(interfaceErrors(survivors,promised).some(e=>e.check==='C5'))throw new Error(`Admission lost a function promised to ${id}; this is a runtime bug.`);
-    return {spawn:v8?this.planPackages(id,await this.baseContracts(id,survivors)):survivors,c5:[],rejectedScope,rejectedChildren};
+    return {spawn:survivors,c5:[],rejectedScope,rejectedChildren};
   }
   // v8 live 4: each piece's packages, as its contracts are given: the names
   // the splitter gave it that this node's row lists; the others become the
@@ -6190,7 +5495,7 @@ export class ControlRoom extends DurableObject {
     if(notes.length)this.event(id,'packages_planned',clip(`Packages from "${this.node(id)?.label||id}"'s: ${notes.join('; ')}.`,600));
     return out;
   }
-  // v8 S8b (v8 card repair): a split's contract that names an existing file
+  // v8 S8b: a level's contract that names an existing file
   // stays on its piece, and waits for the person's grant (approveBasePaths);
   // the hold is refreshed with every waiting path, and the pieces carrying
   // one wait (agentTurn) until it is granted.
@@ -6209,30 +5514,23 @@ export class ControlRoom extends DurableObject {
     return pending.size?this.promisedOf(id).map(c=>c.path).filter(p=>p&&pending.has(p)):[];
   }
   // The person's grant (Continue at base_confirm): the paths the hold listed,
-  // or those the person selected (grants), are approved; the card's marks
-  // are cleared; Root and the pieces that waited go on. Paths the person did
+  // or those the person selected (grants), are approved; the pieces that
+  // waited go on. Paths the person did
   // not grant keep waiting, and the hold is shown again for them. A hold
   // that waited behind the grant is restored once nothing waits. True when
   // something was granted.
   confirmBase(grants=null) {
     const hold=this.read('paused_state',null),pending=this.read('base_pending',[]);
     this.save('paused_state',null);
-    // A change folded the card away (applyAmendment): the open handler's card writer writes it again (drive runs it).
-    if(!pending.length){if(!this.read('card',null)&&this.openGoalHandler())this.event('room','card_continue','Continue runs the card writer again.');return false;}
+    if(!pending.length)return false;
     const listed=new Set(Array.isArray(hold?.paths)?hold.paths:pending.map(x=>x.path));
     const chosen=Array.isArray(grants)?new Set(grants.filter(p=>listed.has(p))):listed;
     const granted=pending.filter(x=>chosen.has(x.path)).map(x=>x.path),left=pending.filter(x=>!chosen.has(x.path));
     this.save('base_approved',[...new Set([...this.read('base_approved',[]),...granted])]);
     this.save('base_pending',left);
-    const card=this.read('card',null),done=new Set(granted);
-    if(card?.deliverables?.some(d=>d.needs_confirmation&&done.has(d.path))) {
-      const next={...card,deliverables:card.deliverables.map(d=>d.needs_confirmation&&done.has(d.path)?(({needs_confirmation:_,...x})=>x)(d):d)};
-      this.save('card',next);
-      this.db().exec('UPDATE card_revisions SET card=? WHERE rev=?',JSON.stringify(next),this.cardRev());
-    }
     if(granted.length)this.event('room','base_confirmed',clip(`The person granted changing ${granted.join(', ')}.`,500));
     if(left.length){this.holdBaseConfirm();return granted.length>0;}
-    // The pieces that waited for a grant go on (and the card writer, which drive runs).
+    // The pieces that waited for a grant go on.
     for(const n of this.allNodes())if(n.status==='waiting'&&this.read(`base_wait:${n.id}`,null)){this.save(`base_wait:${n.id}`,null);this.wake(n.id);}
     const queued=this.read('queued_hold',null);
     if(queued){this.save('queued_hold',null);this.save('paused_state',queued);}
@@ -6285,17 +5583,11 @@ export class ControlRoom extends DurableObject {
     const kept=[],rejected=[];
     children.forEach((child,i)=>{
       const {branch,level,owner,p,error}=walked[i],label=clip(child.label,70);
-      // v8 card repair: Clef ranks owners, it never deletes: a piece another strand may own is kept, the ranking shown.
-      if(owner&&this.v8()) {
-        this.event(id,'scope_owner_doubtful',`Clef ranks "${clip(owner.label,70)}" (${owner.id}) as the owner of proposed child "${label}"${p===undefined?'':` (p=${p.toFixed(3)})`}; kept in this strand, and the checks and the person decide.`);
-        kept.push(child);
-        return;
-      }
       if(owner) {
         // Decided above this strand's manager: the splitter is not told by whom.
         const near=level.id===this.node(id)?.parent,name=near?owner.label:'',why=p===undefined?'':`, Clef's best answer (p=${p.toFixed(3)}, below ${OWNER_BAR})`;
         this.event(id,'scope_pruned',`Proposed child "${label}" is owned by "${clip(owner.label,70)}" (${owner.id})${why}; not spawned. ${near?'Import it from that strand instead of rebuilding it.':`Decided at ${level.id}: this strand is told only that it is owned ${OUTSIDE}, and imports it by name.`}`);
-        rejected.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,[],false,this.v8())});
+        rejected.push({label:child.label,task:clip(child.task,500),owner:name||OUTSIDE,...ownerNote(child.label,clip(assignedPiece(child.task),160),name,[],false)});
         return;
       }
       // run11: a piece no other strand up to Root owns, at the bar or as Clef's best, stays where the scope check placed it.
@@ -6390,15 +5682,14 @@ export class ControlRoom extends DurableObject {
        !(runtimeGlue?RUNTIME_GLUE.includes(path):materialized?path===COMPILE_MANIFEST:path==='glue/smoke.js'))
       throw new Error('The compiler writes only glue/index.js, package.json, glue/smoke.js and '+COMPILE_MANIFEST+': '+path);
     // runtimeGlue: an atomic top's package.json, which its compile writes.
-    // v8 S1: a worker writes any text file, at a path the one path rule the
-    // build shares allows, never the runtime's own paths or the manifests;
-    // the runtime's own writes (memory aside) keep to the build's rule too.
+    // A v7 worker writes at a path its writer rule allows; a v8 worker's file
+    // and the runtime's own writes (memory aside) keep to the build's path
+    // rule, what the box can carry.
     if(this.env.MOCK_AI!=='true' && !path.startsWith('memory/')) {
       const worker=!materialized && !runtimeGlue && n.phase==='implement' && !isRuntimeNode(n);
       // A materialized copy carries a worker's file as it is: one that the
       // build cannot carry reaches the compile as its owner's problem.
-      // v8 S8b: a base file only by a writer whose contract names it (gateFacts).
-      const bad=worker?writerPathError(path,this.gateFacts(id)):materialized?null:buildPathError(path);
+      const bad=worker&&!this.v8()?writerPathError(path):materialized?null:buildPathError(path);
       if(bad)throw new Error((worker?'Workers cannot write this path: ':'Unsafe runtime path: ')+bad);
     }
     if(isBuilderNode(n) && this.env.MOCK_AI!=='true') {
@@ -6625,7 +5916,7 @@ export class ControlRoom extends DurableObject {
       if(!awaited.length)return checked;
       const fixes=awaitFixes(new Map([...checked.files].filter(([p])=>checked.found.some(x=>x.rule==='await'&&x.path===p))),awaited),made=[];
       for(const [path,r] of Object.entries(fixes)) {
-        if(fileGateError(path,r.content,{packages:this.settings().packages,...this.gateFacts(id)}))continue;
+        if(fileGateError(path,r.content,{packages:this.settings().packages}))continue;
         await this.putFile(id,path,r.content);
         made.push(`${path.split('/').pop()}: await ${r.fixed.map(f=>`${f.name}() (line ${f.line})`).join(', ')}`);
       }
@@ -6648,9 +5939,9 @@ export class ControlRoom extends DurableObject {
       try {
         content=await generateFile(this.inferenceEnv('worker'),{node:current,path,intent:`Correct ${path} so that your files meet your contract`,task:this.withContract(current.task,current),
           answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,files:await this.ownFiles(id),base_files:this.baseFilesFor(id),inbox:inbox.map(({from,body})=>({from,body})),
-          children:this.children(id),assemblyInputs:[],correction:clip(body,1800),...this.v8()?{v8:true,...this.v8Inputs(id)}:{}});
+          children:this.children(id),assemblyInputs:[],correction:clip(body,1800)});
       } catch(e) {this.event(id,'contract_precheck_failed',clip(`The correction of ${path} failed (${e?.message||e}); the check after the commit decides.`,600));return;}
-      if(fileGateError(path,content,{packages:this.settings().packages,...this.gateFacts(id)})) {
+      if(fileGateError(path,content,{packages:this.settings().packages})) {
         this.event(id,'contract_precheck_failed',clip(`The correction of ${path} was not source that parses; the check after the commit decides.`,600));return;
       }
       await this.putFile(id,path,content);
@@ -6686,16 +5977,10 @@ export class ControlRoom extends DurableObject {
     // command, a route or another row's function is read by kindCheck; a
     // JavaScript function keeps contractCheck's full rules below.
     const byKind=[],checked=[];
-    if(this.v8()) {
-      const delivered=new Map();
-      for(const f of deliveredFiles(this.files(id)))delivered.set(f.path,await this.indexedContent(id,f.path)??'');
-      for(const c of promised){const why=kindCheck(c,delivered);if(why===null)checked.push(c);else if(why)byKind.push({rule:'missing',name:c.name,path:c.path||'',text:`${why}.`,how:`${why}.`});}
-    } else checked.push(...promised);
-    const names=checked.map(f=>f.name),elsewhere=this.planned()?this.promisedElsewhere(id):new Map(),foreign=new Map([...elsewhere].filter(([n,f])=>!GENERIC_NAMES.has(n)&&(!this.v8()||contractKind(f)==='function')));
+    checked.push(...promised);
+    const names=checked.map(f=>f.name),elsewhere=this.planned()?this.promisedElsewhere(id):new Map(),foreign=new Map([...elsewhere].filter(([n])=>!GENERIC_NAMES.has(n)));
     // Integration: with the names its manager answered as provided (run12's deleteTicket keeps its import of getTickets, which R5 put on the data piece's promise, and is not sent back for the planned readTickets).
-    // v8 (S6): JavaScript's rules read only the uses that are JavaScript functions; a page's link to a stylesheet or a Python import is not an unused call.
-    const jsUse=f=>contractKind(f)==='function'&&functionRows(f,this.contractFacts()).some(r=>r.id==='javascript');
-    const uses=this.plannedUses(id,this.read(`fn_answers:${id}`,[]).filter(a=>a.kind==='provided'&&validName(a.fn?.name)).map(a=>a.fn.name)).filter(f=>!this.v8()||jsUse(f)),store=uses.filter(f=>f.storage);
+    const uses=this.plannedUses(id,this.read(`fn_answers:${id}`,[]).filter(a=>a.kind==='provided'&&validName(a.fn?.name)).map(a=>a.fn.name)),store=uses.filter(f=>f.storage);
     const keeper=!!store.length&&!top&&!this.opPieces(this.node(id).parent).has(id)&&(({isOp})=>promised.some(f=>storageFunction(f,isOp)))(this.levelOps(this.node(id).parent));
     const esm=[...files.values()].some(c=>esmSyntax(c));
     // v7.15.7 review: the await rule is gated on the room (shaped): where any promise of the plan states what it returns, every promised name a worker calls is read for await, one R5 grows or the splitter left without returns too; a room where none states it (v7.15.5's and v7.15.6's replays) is read as before.
@@ -6749,7 +6034,7 @@ export class ControlRoom extends DurableObject {
     const wave=crypto.randomUUID();
     for(const x of found)if(x.text===null)Object.assign(x,await this.placeholderAnswer(id,x,esm,wave));
     // v8 (S6 review): the contracts by their lines and what is missing, in MESSAGES' words.
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(this.v8()?'[contract] '+MESSAGES.contract_returned({contracts:promised.map(contractLine).join('; '),findings:found.map(x=>x.text).filter(Boolean).map(t=>/[.!?]$/.test(t)?t:t+'.').join(' ')}):contractBody(promised,found),1800));
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:contract',id,clip(contractBody(promised,found),1800));
     this.event(id,'contract_returned',`Done refused (${returns+1}/3): rules: [${[...new Set(found.map(x=>x.rule))].join(', ')}]; back to the worker. ${found.map(x=>x.how).filter(Boolean).join(' ')}`.trim());
     return true;
   }
@@ -6866,14 +6151,6 @@ export class ControlRoom extends DurableObject {
   fileContract(id, fns, written=[]) {
     const n=this.node(id);
     if(!this.live()||!n)return;
-    if(!n.parent&&this.v8()) {
-      const names=[...new Set(written.map(f=>f.name))],owners=[...new Set(written.map(f=>`"${f.owner}"`))],gap=[...fns.map(f=>f.name),...names].sort().join(',');
-      // The person let this same shortfall go to the checks (Continue): it is not held again.
-      if(this.get(`contract_accepted:${id}`)===gap)return;
-      this.event(id,'problems_reported',`1 problem goes to the room: ${n.label} ${[fns.length?`does not deliver ${fns.map(f=>f.name).join(', ')}, which its contracts name`:'',names.length?`writes ${names.join(', ')}, which other parts deliver`:''].filter(Boolean).join(', and ')}.`);
-      this.holdRoom('contract_unmet',clip(`"${n.label}" returned its files 3 times without ${[fns.length?`delivering ${fns.map(contractLine).join('; ')}, which its contracts name`:'',names.length?`using ${names.join(', ')} from ${owners.join(', ')} rather than writing ${names.length>1?'them':'it'} itself`:''].filter(Boolean).join(', or ')}. Continue runs the card's checks on its files as they are; a follow-up prompt can change the card.`,1100),{agent:id,gap});
-      return 'held';
-    }
     if(!n.parent)return;
     const prior=this.problems("source=? AND kind='contract' AND status!='closed'",id);
     if(prior.some(p=>p.status==='open'))return;
@@ -6882,7 +6159,7 @@ export class ControlRoom extends DurableObject {
     const path=productionFiles(this.files(id)).map(f=>f.path).find(p=>LINKABLE.test(p))||'',them=fns.length>1?'them':'it';
     const wrote=[...new Map(written.map(f=>[f.name,f])).values()],names=wrote.map(f=>f.name).join(', '),owners=[...new Set(wrote.map(f=>`"${f.owner}"`))];
     this.insertProblem({holder:n.parent,kind:'contract',stage:'work',source:id,input:`turn:${n.turn}`,
-      parties:[{path,owner:id,owner_path:path,digest:'',role:'subject'}],detail:this.v8()?MESSAGES.contract_problem({label:n.label,missing:fns.map(contractLine).join('; '),written:names,owners:owners.join(', ')}):[fns.length?`${n.label} was promised ${fns.map(signature).join(', ')} and its published modules do not export ${them}.`:'',
+      parties:[{path,owner:id,owner_path:path,digest:'',role:'subject'}],detail:[fns.length?`${n.label} was promised ${fns.map(signature).join(', ')} and its published modules do not export ${them}.`:'',
         wrote.length?`${n.label} writes ${names} itself, which ${owners.join(', ')} promise${owners.length>1?'':'s'}; its modules must import ${wrote.length>1?'them':'it'} by name instead.`:''].filter(Boolean).join(' '),
       facts:{names:fns.map(f=>f.name),declared_by:n.label,...(wrote.length?{written:wrote.map(f=>f.name)}:{})},flags:{wave:crypto.randomUUID()}});
     this.event(id,'problems_reported',`1 problem goes to the manager: ${n.label} ${[fns.length?`does not export ${fns.map(f=>f.name).join(', ')}, which its assignment promises`:'',wrote.length?`writes ${names}, which other pieces promise`:''].filter(Boolean).join(', and ')}.`,n.parent);
@@ -7000,21 +6277,18 @@ export class ControlRoom extends DurableObject {
   // v8 M2 review: at the end of the asker's line the answer is a promise (endOfLine judges it).
   askManager(worker,key,question,name='') {
     const n=this.node(worker);
-    if(!n || this.manager(worker) || n.status==='retired' || n.status==='failed' || !n.parent&&!this.v8()) return false;
+    if(!n || this.manager(worker) || n.status==='retired' || n.status==='failed' || !n.parent) return false;
     // v7.15 §5.12b: its own promised function is its own to write, with no
     // hop (run6's create worker imported its own createTicket). The trailing
     // check, or its last answer, wakes it.
     const own=name&&this.planned()?this.promisedOf(worker).find(f=>f.name===name):null;
     if(own) {
-      const value=this.v8()?MESSAGES.own_contract({contract:contractLine(own)}):`${signature(own)} is in your own contract: write it in your own module and export it by exactly this name.`;
+      const value=`${signature(own)} is in your own contract: write it in your own module and export it by exactly this name.`;
       this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',worker,'[route:unowned] '+JSON.stringify({id:crypto.randomUUID(),key,value}));
       this.recordAnswer(worker,{key,kind:'unowned',text:value});
       this.event(worker,'route_own',`${name} is in its own contract; answered without asking the manager.`);
       return true;
     }
-    // v8 M2 review: the asker's parent is a handler that has ended, so its own row is the end of its line, and the ask is
-    // judged there by the rule every line ends with (endOfLine).
-    if(!n.parent)return this.endOfLine(worker,{request_id:crypto.randomUUID(),requester:worker,topic:key,question,name});
     const existing=query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',worker,key)[0];
     if(existing) {
       this.event(worker,'route_pending',`Waiting for manager to resolve ${key}; no new request created.`);
@@ -7027,81 +6301,25 @@ export class ControlRoom extends DurableObject {
     else this.event(worker,'route_request',`Requested blocking external interface ${key} from manager; independently authored files are retained.`);
     return ok;
   }
-  // v8 M2 review: the end of every line, one rule for the top's own ask and
-  // for an ask relayed up to the top. The last manager on the line (m; for
-  // the top's own ask, the top's own row) asks Clef whether the need is
-  // inside the asker's assignment, and outside it grows a piece's contract
-  // with it where a piece's assignment covers it (needScope,
-  // requestGrowth). Inside, the asker hears what to do; covered by no part
-  // of the goal, it goes to the person (askRoom). True: the asker is answered or waits.
-  async endOfLine(m, hop) {
-    const worker=this.node(hop.requester);
-    if(!worker)return false;
-    const s=await this.needScope(m,worker,hop);
-    if(s?.wait)return true;
-    const {kind,value,fn}=typeof s==='string'?{kind:'unowned',value:s}:s;
-    // The top's own ask has no request on a line: it is answered as the room answers its own (answerRoomAsks).
-    this.recordAnswer(worker.id,{key:hop.topic,kind,text:clip(value,600),...(fn?{fn}:{})});
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',worker.id,'[route:'+kind+'] '+JSON.stringify({id:hop.request_id,key:hop.topic,value:clip(value,1400),...(fn?{fn}:{})}));
-    return true;
-  }
-  // v8 M2: an ask no part of the goal covers, at the end of the asker's line
-  // (endOfLine). What needs no other part the broker has answered already
-  // (brokerAnswer: a package by its name, or what the language's standard
-  // library provides; a chunk, a file, a name outside the catalogue). It goes
-  // to the person as a room hold (ask_unanswered): a follow-up prompt answers
-  // it (applyPrompt), Continue leaves it to the asker. The asker waits on it
-  // (room_asks), no longer on its line (route_workers).
-  askRoom(worker,key,question,name='',request_id='') {
-    if(request_id)this.db().exec('DELETE FROM route_workers WHERE worker=? AND request_id=?',worker,request_id);
-    const n=this.node(worker),asks=[...this.read('room_asks',[]).filter(a=>!(a.worker===worker&&a.key===key)),{worker,key,name,need:clip(question,300),ts:Date.now()}].slice(-8);
-    this.save('room_asks',asks);
-    const what=asks.filter(a=>a.worker===worker).map(a=>a.name?`${a.name} (${clip(a.need,120)})`:`"${clip(a.need,120)}"`),many=what.length>1;
-    this.event(worker,'ask_unanswered',clip(`${name||clip(question,200)}: no part of the project delivers it and no part's assignment covers it, so it goes to the person.`,500));
-    this.holdRoom('ask_unanswered',`"${n.label}" asks for ${listed(what)}, which nothing in the project delivers. A follow-up prompt can say what to use, or change the card; Continue lets it write ${many?'them':'it'} itself.`,{agent:worker,asks:what});
-    return true;
-  }
   // The requests a worker waits on: those on its line (route_workers), and those the room holds for the person (v8 M2).
   openAsks(id) { return [...new Set([...query(this.db(),'SELECT topic FROM route_workers WHERE worker=? ORDER BY topic',id).map(r=>r.topic),...this.read('room_asks',[]).filter(a=>a.worker===id).map(a=>a.key)])]; }
-  // The person's answer to the room's asks: each asker hears it, and goes on.
-  // An answer is final for its asker (answered_requests), so Continue never
-  // reaches an ask a follow-up prompt answered.
-  answerRoomAsks(text) {
-    const asks=this.read('room_asks',[]);
-    if(!asks.length)return false;
-    this.save('room_asks',[]);
-    for(const a of asks) {
-      const value=typeof text==='function'?text(a):text;
-      this.recordAnswer(a.worker,{key:a.key,kind:'unowned',text:clip(value,600)});
-      this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:room',a.worker,'[route:unowned] '+JSON.stringify({id:crypto.randomUUID(),key:a.key,value:clip(value,1400)}));
-      this.event('room','ask_answered',clip(`${a.name||a.need}: ${value}`,500),a.worker);
-      this.wake(a.worker);
-    }
-    return true;
-  }
-  // Capability boxes S5 (§5): the broker, the one path from a v8 writer to
-  // anything outside its part. Its catalogue (view's available): its own
-  // contracts, the contracts it may use, the existing files granted to it
-  // (the base paths its contracts name, once the goal is found to ask for
-  // them: gateFacts' owned), and the chunks of linked pages it holds.
-  grantedBase(id) {
-    if(!this.v8())return [];
-    const base=this.basePaths();
-    return [...(this.gateFacts(id).owned||[])].filter(p=>base.has(p)).sort();
-  }
+  // Capability boxes S5 (§5): the broker, the one path from a v8 worker to
+  // anything outside its own files. Its catalogue (the world's available):
+  // what it delivers, the names it may call, its packages, the existing
+  // files granted to it (grantedBase), and the chunks of linked pages it holds.
   catalogue(id) {
     const n=this.node(id);
     if(!n||!this.v8()||this.manager(id)||isRuntimeNode(n))return [];
-    const titles=new Map(this.sourceRows().map(r=>[r.id,r.card?.title||r.title||r.final_url||r.url]));
-    return brokerCatalogue({own:this.promisedOf(id),uses:this.plannedUses(id),packages:this.packageView(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
+    const titles=new Map(this.sourceRows().map(r=>[r.id,r.summary?.title||r.title||r.final_url||r.url]));
+    return brokerCatalogue({own:this.promisedOf(id),uses:this.callableOf(id),packages:this.packageView(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
   }
   availableView(id, answered=[]) {
     const cat=this.catalogue(id),labelled=answered.some(a=>a&&typeof a==='object');
     return {...(cat.length?{available:shownCatalogue(cat),available_note:MESSAGES.available_note()}:{}),...(labelled?{answers_note:MESSAGES.answers_note()}:{})};
   }
-  // The names and paths of every contract in the tree and on the card.
+  // The names and paths of every contract in the tree.
   contractNames() {
-    const items=[...(this.read('card',null)?.deliverables||[]),...this.allNodes().flatMap(n=>parse(n.interfaces,[]))];
+    const items=this.allNodes().flatMap(n=>parse(n.interfaces,[]));
     return new Set(items.flatMap(c=>[c?.name,c?.path]).filter(x=>typeof x==='string'&&x));
   }
   // What one ask is (broker.js classify): a contract goes on to today's
@@ -7157,8 +6375,8 @@ export class ControlRoom extends DurableObject {
     const rows=this.installedToolchains(),line=[],want={name,need};
     for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.push(x);
     if(!line.length||!name)return null;
-    // The language the name is in: the rows', else the asker's own packages' or the card's code languages, when one.
-    const own=[...new Set(this.packagesOf(id).map(p=>p.language).filter(Boolean))],code=codeLanguages(this.read('card',null));
+    // The language the name is in: the rows', else the asker's own packages' or the levels' code languages, when one.
+    const own=[...new Set(this.packagesOf(id).map(p=>p.language).filter(Boolean))],code=contractLanguages(this.treeContracts());
     const known=packageLanguage(name,rows),lang=known||(own.length===1?own[0]:code.length===1?code[0]:'');
     for(let i=0;i<line.length;i++) {
       const held=this.packagesOf(line[i].id).filter(p=>!lang||!p.language||p.language===lang);
@@ -7227,13 +6445,13 @@ export class ControlRoom extends DurableObject {
     const rest=all.slice(MAX_REQUESTS).filter(fresh).map(a=>a.name||a.question);
     if(rest.length) {
       this.event(id,'ask_clipped',clip(`Only ${MAX_REQUESTS} requests travel at once; not sent: ${rest.join('; ')}.`,600));
-      notes.push(clip(this.v8()?MESSAGES.ask_limit({count:String(MAX_REQUESTS),rest:rest.join('; ')}):`Only your first ${MAX_REQUESTS} requests were sent. Ask for these once they are answered: ${rest.join('; ')}.`,600));
+      notes.push(clip(`Only your first ${MAX_REQUESTS} requests were sent. Ask for these once they are answered: ${rest.join('; ')}.`,600));
     }
     const repeated=action.ask.filter(a=>!fresh(a)).map(a=>a.key.replace(/^fn /,''));
     if(repeated.length) {
       action.ask=action.ask.filter(fresh);
       this.event(id,'ask_repeated',clip(`${repeated.join(', ')} already answered; not asked again.`,600));
-      notes.push(clip(this.v8()?MESSAGES.asked_again({names:repeated.join(', ')}):`You asked again for ${repeated.join(', ')}, which your manager already answered (answered_requests). An answer is final: use it and do not ask again.`,600));
+      notes.push(clip(`You asked again for ${repeated.join(', ')}, which your manager already answered (answered_requests). An answer is final: use it and do not ask again.`,600));
     }
     if(action.ask.length) {
       action.wait=true;action.done=false;
@@ -7244,14 +6462,14 @@ export class ControlRoom extends DurableObject {
         const names=f.content===undefined?[]:[...new Set(importRefs(f.path,f.content).flatMap(r=>[...r.names,...r.members]).filter(x=>asked.has(x)))];
         if(!names.length)return true;
         this.event(id,'import_deferred',`${f.path} imports ${names.join(', ')} before the manager answered; write it after the answer.`);
-        notes.push(clip(this.v8()?MESSAGES.wrote_before_answer({path:f.path,names:names.join(', '),repair:repair.join(' ')}):`${f.path} was not written: it imported ${names.join(', ')} before your manager answered. Write it with the answers, importing exactly the names they give.${repair.length?` It was your fix for this repair request: ${repair.join(' ')}`:''}`,1500));
+        notes.push(clip(`${f.path} was not written: it imported ${names.join(', ')} before your manager answered. Write it with the answers, importing exactly the names they give.${repair.length?` It was your fix for this repair request: ${repair.join(' ')}`:''}`,1500));
         return false;
       });
     } else if(action.wait && !action.done && !this.openAsks(id).length) {
       const garbled=!repeated.length&&!all.length&&(Array.isArray(raw.ask)?raw.ask.length>0:raw.ask!=null&&raw.ask!=='');
       action.wait=false;action.unheard=true;
       this.event(id,'ask_unheard',garbled?'Its ask was not understood; nothing was sent, so it does not wait.':'It has no request open, so it does not wait.');
-      notes.push(this.v8()?(garbled?MESSAGES.ask_unclear():MESSAGES.no_request()):garbled?'Your ask was not understood, so nothing was sent and there is nothing to wait for. Ask in exactly this form: "ask":[{"need":"what the function does, in one line","name":"the name you expect"}] with "wait":true, or write your code and set done.':
+      notes.push(garbled?'Your ask was not understood, so nothing was sent and there is nothing to wait for. Ask in exactly this form: "ask":[{"need":"what the function does, in one line","name":"the name you expect"}] with "wait":true, or write your code and set done.':
         'You have no request open, so there is nothing to wait for: write your code and set done.');
     }
     return notes;
@@ -7445,7 +6663,7 @@ export class ControlRoom extends DurableObject {
     if(hit)how=`${hit.item.name} is in "${hit.child.label}"'s promise; matched by name.`;
     else if(placeholder) {
       this.event(m,'route_unowned',`No piece of the application promises ${want}; a placeholder from the start carrier, answered from the plan.`);
-      await this.routeReply(m,hop.request_id,'unowned',this.v8()?MESSAGES.unowned({want}):`No piece of the application promises ${want}.`);
+      await this.routeReply(m,hop.request_id,'unowned',`No piece of the application promises ${want}.`);
       return;
     }
     else if(offers.length) {
@@ -7475,7 +6693,7 @@ export class ControlRoom extends DurableObject {
       return;
     }
     this.event(m,'route_unowned',`No piece of the application promises ${want}.`);
-    await this.routeReply(m,hop.request_id,'unowned',this.v8()?MESSAGES.unowned({want}):`No piece of the application promises ${want}.`);
+    await this.routeReply(m,hop.request_id,'unowned',`No piece of the application promises ${want}.`);
   }
   // §5.12f: the worker writes a need inside its assignment; one outside it
   // is imported by the name it expects and reaches Root at link time as an
@@ -7501,7 +6719,6 @@ export class ControlRoom extends DurableObject {
     const like=this.requestPerformers(worker.id,hop);
     if(like.length) {
       this.event(m,'route_plan',`${want}: no piece promises it; ${listed(like.map(f=>`${f.name} from "${f.owner}"`))} performs it by its words.`);
-      if(this.v8())return MESSAGES.performed_by({want,name:hop.name||want,offers:listed(like.map(f=>`${contractLine(f)} from "${f.owner}"`)),reference:like.map(f=>this.referenceLine(f.name,f,worker.id)).join('; '),many:like.length>1});
       return `No piece of the application promises ${want}, but ${listed(like.map(f=>`${signature(f)}${f.does?` — "${String(f.does).replace(/[.\s]+$/,'')}" —`:''} from "${f.owner}"`))} ${like.length>1?'perform':'performs'} it: import ${like.length>1?'the one you need':'it'} on its own line, by exactly its name, with the name as the path (${this.referenceLine(like[0].name,like[0])}), and use it. No piece exports ${hop.name}: do not import it.`;
     }
     let inside=true;
@@ -7510,16 +6727,12 @@ export class ControlRoom extends DurableObject {
       inside=p>=0.5;
       this.event(m,'route_scope',`${want}: Clef p=${p.toFixed(3)}, ${inside?'inside':'outside'} "${worker.label}"'s assignment.`);
     } catch(e) {this.event(m,'route_scope',`${want}: Clef failed (${clip(e?.message||e,300)}); counted inside "${worker.label}"'s assignment.`);}
-    if(inside)return this.v8()?MESSAGES.in_assignment({want}):`No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`;
+    if(inside)return `No piece of the application promises ${want}. It is part of your assignment: write it in your own module.`;
     // v7.15.15 (G1, run23): outside it, the plan grows, as an operation no piece promises does (growOperation, R5): run23's entry heard "import viewTicket" for a function nobody would write, and five rounds followed.
-    // v8 M2 review: onto the pieces of the manager at the end of the line (a top that writes its files itself has none).
-    const grown=growable(hop.name)&&(!this.v8()||this.manager(m))?await this.requestGrowth(m,worker,hop):null;
+    const grown=growable(hop.name)?await this.requestGrowth(m,worker,hop):null;
     if(grown)return grown;
-    // v8 M2 review: at the end of the line, a need no part of the goal covers goes to the person (endOfLine).
-    if(this.v8()&&!this.node(m)?.parent){this.askRoom(worker.id,hop.topic,hop.question,hop.name||'',hop.request_id);return {wait:true};}
-    if(this.v8())return growable(hop.name)?MESSAGES.write_yourself({want}):MESSAGES.not_yours({want,reference:hop.name?this.referenceLine(hop.name,null,worker.id):''});
     return growable(hop.name)?`No piece of the application promises ${want}, and no other piece's assignment covers it (your manager asked each level): write it in your own module.`:
-      `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: ${this.referenceLine(hop.name)}`:this.v8()?'refer to it by a descriptive name the project facts allow,':'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
+      `No piece of the application promises ${want}, and it is not part of your assignment. Do not write it: ${hop.name?`import ${hop.name} on its own line, with the name as the path: ${this.referenceLine(hop.name)}`:'import it on its own line by a descriptive camelCase name, with that name as the path,'} and finish your code. The missing function reaches Root as a problem when the application is linked.`;
   }
   // v7.15.15 (G1, run23; review #1-#4, #11): a function no piece promises,
   // outside its requester's assignment, grows the plan as an operation no
@@ -7554,7 +6767,7 @@ export class ControlRoom extends DurableObject {
     for(const f of productionFiles(this.files(worker.id)).filter(f=>LINKABLE.test(f.path))){let t='';try{t=await this.indexedContent(worker.id,f.path)??'';}catch{}if(!path)path=f.path;if(esmSyntax(t))esm=true;const c=callOf(f.path,t,name);if(c){params=c.params;path=f.path;break;}}
     const does=clip(hop.question,200),sig=`${name}(${params.join(', ')})`;
     this.insertProblem({holder:m,kind:'unresolved',stage:'work',source:worker.id,input:`request:${hop.request_id}`,parties:[{path,owner:worker.id,owner_path:path,digest:'',role:'reader'}],
-      detail:this.v8()?MESSAGES.request_problem({label:worker.label,want}):`${worker.label} asks for ${want}, which no piece promises and its assignment does not cover.`,
+      detail:`${worker.label} asks for ${want}, which no piece promises and its assignment does not cover.`,
       facts:{names:[name],unpromised:true,specifier:`./${name}`,esm,operation:{op:name,name,params,line:`${worker.label} imports it: ${sig}`,does,request:true},requests:[r]},flags:{wave:crypto.randomUUID()}});
     this.event(m,'route_grow',`${want}: no piece promises it and it is outside "${worker.label}"'s assignment; its manager grows a piece's promise with ${sig}, and "${worker.label}" waits.`);
     this.wake(m);
@@ -7656,18 +6869,11 @@ export class ControlRoom extends DurableObject {
     const n=this.node(id), inbox=await this.managerInbox(id);
     const seenWake=this.wakeGeneration(id);
     // v7.14: every manager decides the problems in its inbox, one level at a
-    // time; at the top, after the compiler's static entry check. Under v8 the
-    // card's checks take the compiler's place (compileCard, at whichever
-    // manager holds them), and every manager's builder joins its children's
-    // pieces (schedulePiece); v7's compiler looks for a start() v8 never asks for.
-    const v8=this.v8();
-    // v8 M3: each check is held where its pieces meet; a split admitted, a retask or a retire moves it.
-    if(v8)this.placeChecks();
+    // time; at the top, after the compiler's static entry check.
     if(this.live()) {
-      if(!v8&&isTop(n))await this.compileStatic(id);
+      if(isTop(n))await this.compileStatic(id);
       await this.solveProblems(id);
       if(this.node(id)?.status==='failed')return;
-      if(v8)this.wakeSources(id);
     }
     const candidates=await this.childIndex(id);
     // Publish the most recent partial integration while children still work.
@@ -7743,11 +6949,10 @@ export class ControlRoom extends DurableObject {
     }
     // v7: offer the current revision to the subtree builder as soon as a
     // direct child publishes a useful artifact; the builder may be revised
-    // many times before finalization. v8 M3: the builder joins the children's
-    // pieces once they are all done (schedulePiece, below).
-    if(this.integrationEnabled(id)&&!v8)await this.scheduleAssembly(id);
+    // many times before finalization.
+    if(this.integrationEnabled(id))await this.scheduleAssembly(id);
     // The top's compiler runs once its builder linked the current source.
-    if(this.live()&&!v8&&isTop(n))await this.scheduleCompiler(id);
+    if(this.live()&&isTop(n))await this.scheduleCompiler(id);
     const children=this.children(id);
     const producers=children.filter(c=>!isRuntimeNode(c));
     const pending=query(this.db(),'SELECT manager FROM manager_routes WHERE manager=? LIMIT 1',id).length>0 ||
@@ -7755,29 +6960,12 @@ export class ControlRoom extends DurableObject {
     const allDone=producers.length>0&&producers.every(c=>c.status==='done'||c.status==='retired');
     // Not done while it holds an open problem, nor (at the top) before the
     // compiler passed on the current bundle.
-    const held=this.live()&&this.problemsHeld(id).length>0,compiled=v8||!isTop(n)||!this.live()||this.compilePassed(id);
-    // v8 M3: every manager hands its finished children to its builder, which
-    // joins their pieces into its own; it waits while that piece is not current.
-    const pieced=!v8||!this.live()||!allDone||pending||held||await this.schedulePiece(id);
-    const needsBuilder=(this.integrationEnabled(id) && !v8 && !await this.assemblyCurrent(id))||held||!compiled||!pieced;
-    // v8 S4b, v8 M2: its whole branch is done, so the checks it holds run
-    // (compileCard), as a worker's do when it is done: it finishes only when
-    // every requirement passes; a failed one comes back to it as a problem
-    // it routes by serves. v8 M3: over its piece, and only the checks it can
-    // run there; the others roll up to the row above. v8 M3 review (M4):
-    // every manager compiles its piece too, whether or not it holds a check
-    // (the compiler wherever possible), so none finishes on bytes no syntax
-    // step compiled.
-    const checksPending=v8&&allDone&&!pending&&!needsBuilder;
-    // v8 S9: no checks finish while a change is being applied (its rows are about to open).
-    const amending=v8&&!!this.get('amend_pending');
-    if(amending&&checksPending)this.set('amend_held',id);
-    const checked=checksPending&&!amending?await this.compileCard(id):null,unchecked=checksPending&&(amending||!checked?.passed);
-    if(checked?.failed)return;
-    const finished=allDone&&!pending&&!needsBuilder&&!unchecked;
+    const held=this.live()&&this.problemsHeld(id).length>0,compiled=!isTop(n)||!this.live()||this.compilePassed(id);
+    const needsBuilder=(this.integrationEnabled(id) && !await this.assemblyCurrent(id))||held||!compiled;
+    const finished=allDone&&!pending&&!needsBuilder;
     const staleTurn=this.wakeGeneration(id)!==seenWake;
     const shard=this.managerStub(id);
-    const disposition=shard ? await shard.decide({children:producers,pending,needsBuilder:needsBuilder||unchecked,hasNewWake:staleTurn}) :
+    const disposition=shard ? await shard.decide({children:producers,pending,needsBuilder,hasNewWake:staleTurn}) :
       {status:children.some(c=>c.status==='failed')?'failed':finished&&!staleTurn?'done':'waiting'};
     this.db().exec('UPDATE agents SET turn=turn+1,summary=? WHERE id=?',
       `Indexed ${candidates.length} direct child Artifacts repositories; ${candidates.filter(c=>c.status==='done').length} completed.`,id);
@@ -7787,7 +6975,6 @@ export class ControlRoom extends DurableObject {
     } else if(disposition.status==='done' && this.wakeGeneration(id)===seenWake) {
       this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
       this.event(id,'done','Manager returned completed child-owned behavior; no code generated.');
-      if(v8)await this.recordRunPassed();
       this.complete(id);
     } else {
       this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
@@ -7806,105 +6993,12 @@ export class ControlRoom extends DurableObject {
     // Review 3 (#6): a sweep that throws never masks the turn's own error, nor counts against this node.
     finally {if(this.planned())await this.settleRequests().catch(e=>this.event('system','settle_failed',clip(`Settling the requests growth rows hold failed: ${e?.message||e}`,300)));}
   }
-  // v8 card repair: the requirements Clef doubted and vetting kept, for the dashboard only (no agent reads them).
-  logDoubtful(id, doubtful=[]) {
-    // v8 live 3: a doubt names its reason: the goal (CLEF.requirement), or a check on an internal detail of the code (CLEF.internal).
-    for(const r of doubtful)this.event(id,'card_requirement_doubtful',clip(`${(r.reasons||[]).includes('internal detail')&&!(r.reasons||[]).includes('not expected from the goal')?`Clef found that ${r.id}'s check looks at an internal detail of the code (p=${r.p.toFixed(3)})`:`Clef doubted that the goal asks for ${r.id} (p=${r.p.toFixed(3)}${r.untraced?'; its source is not found in the goal':''}${(r.reasons||[]).includes('internal detail')?'; its check looks at an internal detail of the code':''})`}; it stays on the card, marked doubtful, for the person to keep or change: ${r.says}`,600));
-  }
-  // v8 §1.6, v8 M2: the card writer step's work (id: the step, cardWriter).
-  // The card writer turns the goal into the project card, Clef vets its
-  // requirements, and the card becomes revision 1; the handler gives the top
-  // its contracts from it. A blocked card or a language this deployment
-  // cannot run after the writer's retry holds the room at card_blocked; no
-  // usable card, a function with no code language, or a vetting or save that
-  // failed holds it at card_failed. The step waits. Continue runs the card
-  // writer again, or, when the written card is kept (card_draft: vetting or
-  // the save failed), vets and saves that card again without a new writer
-  // call. True when the card is saved.
-  async cardTurn(id) {
-    const given=this.read('card_provided',null);
-    if(given)return this.providedCardTurn(id,given);
-    const goal=this.userGoal(),rows=this.installedToolchains(),started=Date.now();
-    const hold=(kind,text,again='Continue runs the card writer again.')=>{this.holdRoom(kind,`${text} ${again}`,{step:id});return false;};
-    let card=this.read('card_draft',null),calls='the card written before';
-    if(card) this.event(id,'card_draft_reused','The card written before is vetted and saved again; the card writer is not called.');
-    else {
-      // v8 S8b: the card writer reads the goal's links as source cards (and
-      // which could not be read), the base's digest and paths, and the card
-      // of the previous result the room starts from.
-      await this.loadSources();
-      const base=this.read('base',null),srcs=this.sourceRows();
-      const written=await writeCard(this.inferenceEnv('compiler'),{goal,installed:rows,packages:this.settings().packages,held:this.installedSet(),
-        base_digest:base?.digest||null,base:[...this.basePaths()],prior_card:this.read('prior_card',null),
-        sources:cardsFor(srcs,this.allRefs()),sources_unavailable:srcs.filter(r=>r.error).map(r=>({source_id:r.id,url:r.url,reason:r.error})),
-        // v8 live 5: the writer's first card already says which box the first compile needs.
-        onDraft:draft=>this.prewarmBox(draft)});
-      const {errors,unsupported}=written;
-      card=written.card;calls=`${written.attempts} call${written.attempts===1?'':'s'}`;
-      // v8 card repair: the writer's answers as written (the export has them; the snapshot only while the room is held at card_failed), and one event for what the repair fixed.
-      this.save('card_raw',{call:'writeCard',answers:written.raw_answers||[],ts:Date.now()});
-      if(written.notes?.length)this.event(id,'card_repaired',clip(`The card writer's answer was repaired before validation (${written.notes.length}): ${written.notes.join(' ')}`,1500));
-      if(card?.blocked)return hold('card_blocked',`The goal cannot be started as given: ${card.blocked}`);
-      if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the card names after the writer's retry (installed: ${rows.map(t=>t.id).join(', ')}).`);
-      if(!cardUsable(card))return hold('card_failed',clip(`The card writer gave no usable card after ${calls}: ${errors.slice(0,8).join(' ')||'no deliverable, or no requirement of its own.'}`,1100));
-      if(written.language_error)return hold('card_failed',clip(`The card names no code language after ${calls}: ${written.language_error}`,1100));
-      if(written.inferred_language)this.event(id,'card_language_inferred',`The card named no code language for its functions or routes; ${written.inferred_language}, the one installed, is used.`);
-      // v8 live 2: nothing is dropped for a check error: a requirement whose check stays refused is kept, untested, and never run.
-      if(errors.length){const kept=(card.requirements||[]).filter(r=>r.untested).map(r=>r.id);this.event(id,'card_errors',clip(`The card's ${errors.length} remaining problem(s) after the writer's retry; every requirement is kept${kept.length?`, and ${kept.join(', ')} ${kept.length>1?'are':'is'} marked untested: ${kept.length>1?'their checks are':'its check is'} never run`:''}: ${errors.join(' ')}`,1500));}
-      this.save('card_draft',card);
-    }
-    try {
-      // §1.4 (v8 card repair): Clef reviews, it never deletes. It vets the writer's requirements, each keeps its p (vet_p),
-      // and one below VET_DOUBT_BAR is marked doubtful and shown; a batch Clef fails keeps its own, unvetted.
-      // v8 live 3: Clef reads the goal as goalView has it, and the card for the checks' scope.
-      const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,requirements:vettable(card).filter(routable),card});
-      let {card:vetted,doubtful}=applyVetting(card,ps);
-      if(failed.length)this.event(id,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
-      this.logDoubtful(id,doubtful);
-      // S8b (v8 card repair): a deliverable at an existing file the goal names, or Clef finds it asks to change, is approved; any
-      // other is kept, marked needs_confirmation, and the room holds at base_confirm for the person (a Clef failure throws: Continue asks again).
-      const basePaths=this.basePaths(),touched=vetted.deliverables.map(d=>d.path).filter(p=>p&&basePaths.has(p));
-      let pending=[];
-      if(touched.length) {
-        ({no:pending}=await this.approveBasePaths(id,touched,goal));
-        const p=new Map(pending.map(x=>[x.path,x]));
-        if(p.size)vetted={...vetted,deliverables:vetted.deliverables.map(d=>p.has(d.path)?{...d,needs_confirmation:{p:p.get(d.path).p,named:p.get(d.path).named}}:d)};
-      }
-      this.save('card',vetted);
-      this.prewarmBox(vetted);
-      this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,?,?,?,?) ON CONFLICT(rev) DO UPDATE SET goal_rev=excluded.goal_rev,card=excluded.card,reason=excluded.reason,ts=excluded.ts',this.goalRev(),JSON.stringify(vetted),'goal',Date.now());
-      this.save('card_draft',null);this.save('paused_state',null);
-      this.event(id,'card_written',clip(`Project card (${calls}, ${Date.now()-started} ms): ${vetted.summary||'(no summary)'}. ${cardLine(vetted)}.${vetted.decisions.length?` Decisions: ${vetted.decisions.join(' ')}`:''}`,1500));
-      if(vetted.review_notes?.length)this.event(id,'card_review_notes',clip(`Clef's review notes the card still draws (the writer revised it once): ${vetted.review_notes.join(' ')}`,1500));
-      return true;
-    } catch(e) {
-      // Nothing half-saved: the next attempt starts from the kept card.
-      this.db().exec('DELETE FROM card_revisions');this.save('card',null);
-      return hold('card_failed',clip(`Vetting or saving the card failed: ${e?.message||e}.`,900),'Continue vets and saves the written card again.');
-    }
-  }
-  // B1: a room started with a card (a benchmark task's) validates it and
-  // takes it as revision 1: no card writer, no Clef vetting (the benchmark's
-  // checks are authoritative). A card that does not validate whole holds the
-  // room at card_failed; a language this deployment cannot run, card_blocked.
-  providedCardTurn(id, given) {
-    const hold=(kind,text)=>{this.holdRoom(kind,text,{step:id});return false;};
-    const {card,errors,unsupported}=providedCard(given,{goal:this.userGoal(),installed:this.installedToolchains(),packages:this.settings().packages});
-    if(unsupported.length)return hold('card_blocked',`This deployment cannot run ${listed(unsupported)}, which the provided card names.`);
-    if(errors.length||!vettedUsable(card))return hold('card_failed',clip(`The provided card does not validate: ${errors.slice(0,8).join(' ')||'no deliverable or requirement.'}`,1100));
-    this.save('card',card);
-    this.prewarmBox(card);
-    this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts) VALUES (1,1,?,?,?) ON CONFLICT(rev) DO UPDATE SET card=excluded.card,reason=excluded.reason,ts=excluded.ts',JSON.stringify(card),card.source,Date.now());
-    this.save('paused_state',null);
-    this.event(id,'card_provided',clip(`Project card given by the ${card.source} (validated; not written or vetted by a model): ${card.summary||'(no summary)'}. ${cardLine(card)}.`,1500));
-    return true;
-  }
   // B1: one task room's result for the BenchRun DO: its status and hold, the
-  // card's requirement ids and results, when it started and last moved, the
-  // model tokens its spans record and its Container time. No file, prompt or
-  // check text.
+  // ids of its validations and their results, when it started and last
+  // moved, the model tokens its spans record and its Container time. No
+  // file, prompt or check text.
   benchSummary() {
-    const db=this.db(),card=this.read('card',null),status=this.get('status','idle');
+    const db=this.db(),status=this.get('status','idle');
     const t=query(db,"SELECT COUNT(*) AS calls,COALESCE(SUM(json_extract(attrs,'$.prompt_tokens')),0) AS prompt,COALESCE(SUM(json_extract(attrs,'$.completion_tokens')),0) AS completion FROM spans WHERE kind='model'")[0];
     const c=query(db,"SELECT COUNT(*) AS runs,COALESCE(SUM(end_ms-start_ms),0) AS ms FROM spans WHERE kind='container'")[0];
     const e=query(db,"SELECT MIN(CASE WHEN kind='start' THEN ts END) AS started,MAX(ts) AS last FROM events")[0];
@@ -7913,13 +7007,13 @@ export class ControlRoom extends DurableObject {
     const errors=query(db,"SELECT actor,body FROM events WHERE kind='error' ORDER BY id").map(r=>({actor:r.actor,infra:INFRA_ERROR.test(r.body||'')}));
     const stalled=Object.entries(this.read('failures',{})).filter(([,n])=>n>=3).map(([id])=>id);
     const last=query(db,"SELECT kind FROM events WHERE actor='system' AND kind IN ('stopped','paused','complete','failed','error','start','resume') ORDER BY id DESC LIMIT 1")[0]?.kind;
-    return {status,busy:!!this.busy,pause:this.read('paused_state',null),card_source:card?.source||null,
+    return {status,busy:!!this.busy,pause:this.read('paused_state',null),
       compile_passed:!!this.read('compile_passed',null),stopped:last==='stopped',turns:query(db,"SELECT COUNT(*) AS n FROM events WHERE kind='dispatch'")[0].n,
       infra_errors:errors.filter(x=>x.infra).length,stalled_infra:stalled.length>0&&stalled.every(id=>errors.filter(x=>x.actor===id).at(-1)?.infra),
-      requirements:(card?.requirements||[]).map(r=>r.id),requirement_status:this.read('requirement_status',{}),
+      validations:this.validationRows().map(v=>v.id),validation_status:this.read('validation_status',{}),
       started_at:e.started??null,last_event_at:e.last??null,
       tokens:{calls:t.calls,prompt:t.prompt,completion:t.completion,total:t.prompt+t.completion},container_ms:c.ms,container_runs:c.runs,
-      failure:status==='failed'?clip(this.failedDescendantReason(this.topId()),300):status==='error'?clip(query(db,"SELECT body FROM events WHERE kind='error' ORDER BY id DESC LIMIT 1")[0]?.body||'',300):''};
+      failure:status==='failed'?clip(this.failedDescendantReason(this.roomManager()||this.topId()),300):status==='error'?clip(query(db,"SELECT body FROM events WHERE kind='error' ORDER BY id DESC LIMIT 1")[0]?.body||'',300):''};
   }
   // B1: after a benchmark task is scored, its room's Artifacts repositories
   // and its storage are deleted (BenchRun, unless the run keeps the room).
@@ -7933,34 +7027,20 @@ export class ControlRoom extends DurableObject {
       catch {failed++;}
     }
     if(typeof this.ctx.storage.deleteAll==='function'){await this.ctx.storage.deleteAlarm?.();await this.ctx.storage.deleteAll();}
-    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','card_writers','piece_files','syntax_clean','problems','repair_tickets','card_revisions','goal_revisions','prompts','meta'])this.db().exec(`DELETE FROM ${table}`);
+    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','syntax_clean','problems','repair_tickets','goal_revisions','prompts','meta'])this.db().exec(`DELETE FROM ${table}`);
     return {repos_deleted:deleted,repos_failed:failed};
   }
   async agentTurn(id) {
+    if(this.v8())return this.levelTurn(id);
     const n = this.node(id);
     if (!n || n.status !== 'ready') return;
-    // v8 M2: the row a change was handed to (amend_wake), or that waited while one was applied (amend_held), takes it up on this turn.
-    if ([this.get('amend_wake'),this.get('amend_held')].includes(id)) {this.set('amend_wake','');this.set('amend_held','');}
-    // A piece whose contracts name a file waiting for the person's grant waits with it (it never finishes without it).
-    if(this.v8()&&!isRuntimeNode(n)&&this.waitingPaths(id).length) {
-      this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-      if(!this.read(`base_wait:${id}`,null))this.event(id,'base_waiting',clip(`${n.label} waits for the person's grant to change ${this.waitingPaths(id).join(', ')}.`,400));
-      this.save(`base_wait:${id}`,this.waitingPaths(id));
-      this.holdBaseConfirm();
-      return;
-    }
     const seenBuilderWake=isBuilderNode(n)?this.wakeGeneration(id):null;
     // Builders and the compiler run runtime turns, never a model action.
     if(isRuntimeNode(n) && this.live()) return isCompilerNode(n)?this.compilerTurn(id):this.builderTurn(id);
-    // v8 M2: so does a worker whose checks are due again (a run that stopped
-    // mid-way, Continue at a checks hold) with nothing to read and no action
-    // to finish; a manager's turn runs them when its work allows (managerTurn).
-    if(this.v8() && !this.manager(id) && this.get(`checks_due:${id}`) && !this.receive(id).length &&
-       !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) return void await this.compileCard(id);
     // v7: so does an atomic top whose run is due again (the runner's retry,
     // Continue, a source change after a pass) with nothing to read and no
     // action to finish: a done that failed mid-run replays and runs it.
-    if(!this.v8() && this.live() && isTop(n) && !this.manager(id) && this.get('atomic_compile') && !this.receive(id).length &&
+    if(this.live() && isTop(n) && !this.manager(id) && this.get('atomic_compile') && !this.receive(id).length &&
        !query(this.db(),'SELECT agent FROM pending_turns WHERE agent=?',id).length) return this.compileAtomic(id);
     // Managers are deterministic Artifacts-backed routers, never generative turns.
     // Preserve pending action replays from prior versions before entering this path.
@@ -7974,13 +7054,12 @@ export class ControlRoom extends DurableObject {
       plan = parse(saved.payload,null);
       if (!plan) throw new Error('Invalid persisted action for ' + id);
       this.event(id, 'retry', `Resuming an interrupted action at operation ${saved.cursor}.`);
-    // v8 live 5: a manager that hands its assignment down leaves this block with its plan (break compute).
-    } else compute: {
+    } else {
       // A repair ticket reads as its manager's decision and the problems in
       // the worker's own paths; one whose problems all closed since says so.
       const inbox = this.receive(id).map(message=>{
         const match=/^\[build:repair\] ([a-f0-9-]{36})$/.exec(message.body);
-        return match?{...message,body:this.buildRepairMessage(match[1])||(this.v8()?MESSAGES.repair_withdrawn():'An earlier repair request was withdrawn: its problems were resolved or replaced. It needs no change.'),repair:true}:message;
+        return match?{...message,body:this.buildRepairMessage(match[1])||'An earlier repair request was withdrawn: its problems were resolved or replaced. It needs no change.',repair:true}:message;
       });
       const ownFiles = await this.ownFiles(id);
       // A capacity ceiling is not proof the assigned code became atomic.
@@ -8004,23 +7083,8 @@ export class ControlRoom extends DurableObject {
         const promised=this.promisedOf(id);
         if(promised.length)before.your_promised_functions=promised;
         // Review (nested splits): a manager's splitter hears its uses too, so its pieces can name them.
-        // v8 (S6): as data: the contracts available to it, each with its reference, and the project facts.
-        if(this.v8()) {
-          const {uses:available,left_out,project}=this.v8Inputs(id);
-          if(available.length)before.contracts_available=available;
-          if(left_out)before.contracts_left_out=MESSAGES.left_out({count:String(left_out)});
-          before.project=project;
-          // v8 live 4: the packages its row lists, which its pieces get a part of.
-          const packages=this.packageView(id);
-          if(packages.length)before.your_packages=packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}));
-          // v8 S8b: the existing project's digest (its tree) and the source cards of the refs this node holds.
-          const digest=this.read('base',null)?.digest;
-          if(digest)before.existing_files={label:BASE_LABEL,digest};
-          Object.assign(before,this.sourceInputs(id,'cards'));
-        } else {
-          const uses=usesText(this.plannedUses(id));
-          if(uses)before.your_responsibility=`${before.your_responsibility}\n\n${uses}`;
-        }
+        const uses=usesText(this.plannedUses(id));
+        if(uses)before.your_responsibility=`${before.your_responsibility}\n\n${uses}`;
       }
       const observedAssembly=isBuilderNode(n)?this.assemblyFingerprint(n.parent):null;
       if(isBuilderNode(n)) {
@@ -8054,8 +7118,7 @@ export class ControlRoom extends DurableObject {
         // asked again with the feedback: a branch may implement its promise
         // itself (a splitter that kept naming createComment for addComment).
         const lastTry=(this.read('failures',{})[id]||0)>=2;
-        // v8 M2: every splitter keeps Clef's YES on a names-only failure until its last try.
-        const namesOnly=before.split_feedback?.kind==='interfaces'&&(!this.v8()&&isTop(n)||!lastTry);
+        const namesOnly=before.split_feedback?.kind==='interfaces'&&(isTop(n)||!lastTry);
         // run10: a malformed split answer was the splitter's error, so Clef's
         // YES stands too; asked again, Clef saw "no valid partition" and Root
         // wrote the whole application as one module.
@@ -8063,107 +7126,58 @@ export class ControlRoom extends DurableObject {
         const sized=!namesOnly&&before.split_feedback?.kind==='size'&&this.get(`split_yes:${id}`)==='1';
         const malformed=!namesOnly&&!sized&&this.get(`split_yes:${id}`)==='1';
         // v7.15.13 (run20): the gate hears what the piece calls; five workers whose uses named their siblings' checks were told to split and proposed those checks again.
-        const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:this.v8()?clipEnds(n.task,2600):isTop(n)?this.goalFor(2600)??n.task:n.task;
+        const calls=this.planned()?parse(n.uses,[]):[],gateTail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'',gateTask=gateTail?String(n.task).slice(0,2600-gateTail.length)+gateTail:isTop(n)?this.goalFor(2600)??n.task:n.task;
         // v7.15.16 (run25): the carrier of its parent's whole promise writes it with no Clef gate: its parent's split already gave its helpers away ("Subproblem" [extractLinkStatus] under "Extract link status" [extractLinkStatus] split again, into "Interface Status Analyzer" [extractLinkStatus]). So does a carrier promising only start, composed from the plan, never split. A fresh piece is gated, at a bar that rises with depth (splitBar).
         const own=this.planned()&&n.parent?this.promisedOf(id):[],above=parse(this.node(n.parent)?.interfaces,[]).map(f=>f.name).sort(),mine=own.map(f=>f.name).sort();
         const one=own.length&&(own.length===1&&own[0].name==='start'||mine.join()===above.join())?own:null,bar=this.splitBar(id);
-        // v8 live 5: every manager tries to split, the top included, and Clef
-        // reviews what its splitter proposes (reviewProposal). Before the
-        // splitter runs, Clef grades the assignment with its row's contracts
-        // once (CLEF.split, the pre-grade); a p at or below the room's
-        // split_floor means Clef is very certain no split is needed, and the
-        // runtime saves the splitter's turn. A manager never writes the code
-        // that fulfils its contracts: when nothing splits (that catch, the
-        // splitter proposing no pieces, Clef's last NO, no room for pieces, or
-        // a carrier of its parent's whole promise), it hands its whole
-        // assignment down to one worker (handDownPlan).
-        if(this.v8()) {
-          let down=one?`It carries its parent's whole promise (${listed(one.map(f=>f.name))}), so it hands it down to one worker with no Clef call.`:'';
-          const attempts=this.splitAttempts(id),floor=this.splitConfig().floor;
-          if(!down&&!this.canSplitPieces(id,2))down='There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.';
-          if(!down&&!attempts.some(a=>a.attempt===0)) {
-            const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:floor,SPLIT_FLOOR:floor},gateTask,before,this.gateContracts(id)),caught=pre.probability<=floor;
-            this.recordAttempt(id,{attempt:0,p:Math.round(pre.probability*1000)/1000,floor,caught,ms:Date.now()-started});
-            this.event(id,'split_gate',caught?`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${floor}: no split is needed, so no splitter runs (${Date.now()-started} ms).`:`Clef's pre-grade p=${pre.probability.toFixed(3)} is above the floor ${floor}: the splitter proposes pieces and Clef reviews them (${Date.now()-started} ms).`);
-            if(caught)down=`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${floor}, so it hands its whole assignment down to one worker.`;
-          }
-          if(!down) {
-            const feedback=before.split_feedback,fewer=feedback?.kind==='too_small'&&Number.isInteger(feedback.bound)?feedback.bound:null;
-            raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:fewer?Math.min(this.maxChildren(),fewer):this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry,v8:true,facts:this.contractFacts()});
-            if(!raw.parse_error) {
-              const proposed=normalizeAction(raw,{v8:true}).spawn;
-              if(proposed.length<2)down=`Its splitter proposed ${proposed.length?'one piece':'no pieces'}, so it hands its whole assignment down to one worker.`;
-              else {
-                const review=await this.reviewProposal(id,n,proposed,feedback);
-                if(review.down)down=review.down;
-                else if(!review.ok)return;
-                else raw.split_review=review.scope;
-              }
-            }
-          }
-          if(down) {
-            plan=this.handDownPlan(id,n,inbox,down,observedAssembly,before.split_feedback?.rejected||[]);
-            this.db().exec('INSERT INTO pending_turns(agent,payload,cursor) VALUES (?,?,0)',id,JSON.stringify(plan));
-            this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
-            saved={cursor:0};
-            break compute;
-          }
-        } else {
-          const gate=one?{split:false}:namesOnly||malformed||sized?{split:true}:await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},gateTask,before,this.v8()?this.gateContracts(id):[]);
-          // v7.15.16 (run25): an answer whose labels were still placeholders ("Subproblem") after the splitter's retry is answered again as a malformed one is.
-          const labels=before.split_feedback?.kind==='labels'?before.split_feedback.proposed||[]:[];
-          if(!one)this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed&&labels.length?`Clef's YES stands: the last split answer still had placeholder labels (${labels.map(l=>JSON.stringify(l)).join(', ')}), so the splitter answers again.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)}; ${Date.now()-started} ms).`);
-          if (gate.split && !this.canSplit(id,2)) {
-            // Clef chose to split but the room has no agent slots or depth left.
-            // Do not force a weak leaf to implement work Clef would divide.
-            this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-            this.set(`capacity_blocked:${id}`,'1');
-            this.event(id,'split_capacity_blocked','Clef chose to split, but there is no space or depth left. Raise the room agent/depth limit and Continue; no code was silently substituted.');
-            return;
-          }
-          if (gate.split) {
-            // run16: after a malformed turn the splitter answers without
-            // thinking, as its own retry does; a thinking answer costs minutes.
-            // v7.15.14: the pieces of one split are at most max_children; the slots left are a separate bound (review: an answer over them goes to admission's split_rejected, as before).
-            raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry,v8:this.v8(),facts:this.v8()?this.contractFacts():null});
-          } else {
-            // A genuine leaf can implement in the SAME turn; no extra Qwen
-            // decomposition request or artificial scheduler wave. It keeps the
-            // owners of the rejected split's pruned pieces.
-            owners=await this.rememberOwners(id,before.split_feedback?.rejected||[]);
-            if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
-            this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
-            n.phase='implement';splitting=false;
-            this.wakeGrowWaiter(id);
-            // From here it is an isolated worker, as on its later turns: its own
-            // contract, and no parent, sibling or neighbour memory (decision 2; a
-            // sibling's prune note named getTickets to the create worker).
-            // v8 S8b: a writer reads its cited chunks (the view), never the splitter's cards or digest.
-            delete before.sources;delete before.sources_note;delete before.existing_files;delete before.base_note;
-            Object.assign(before,this.view(id,before.new_messages,ownFiles),{turn:before.turn,adjacent_public_memory:[]});
-            const reclassified=Boolean(before.split_feedback);
-            this.event(id,'atomic',one?`It carries its parent's whole promise (${listed(one.map(f=>f.name))}): implemented directly, with no Clef gate.`:reclassified
-              ? 'Clef reviewed the rejected partition and routed this assignment to direct code implementation.'
-              : 'Clef classified this as an indivisible behavior; implementing directly.');
-            // An implementation leaf needs only its own code assignment. Root's
-            // global scope and the rejected split remain router-only context.
-            delete before.root_scope;
-            delete before.split_feedback;
-            delete before.your_promised_functions;
-            delete before.contracts_available;delete before.contracts_left_out;delete before.your_packages;
-            // v8 live 4: implementing directly, it reads its catalogue (its packages among it) as any writer does.
-            if(this.v8())Object.assign(before,this.availableView(id,this.read(`fn_answers:${id}`,[]).map(a=>a.text)));
-            raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
-            this.set(`split_feedback:${id}`,'');
-          }
+        const gate=one?{split:false}:namesOnly||malformed||sized?{split:true}:await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},gateTask,before,[]);
+        // v7.15.16 (run25): an answer whose labels were still placeholders ("Subproblem") after the splitter's retry is answered again as a malformed one is.
+        const labels=before.split_feedback?.kind==='labels'?before.split_feedback.proposed||[]:[];
+        if(!one)this.event(id,'split_gate',namesOnly?'Clef\'s YES stands: the last split failed only on function names.':sized?`Clef's YES stands: the last split answer had ${before.split_feedback.count} pieces against a bound of ${before.split_feedback.bound}, so the splitter groups them.`:malformed&&labels.length?`Clef's YES stands: the last split answer still had placeholder labels (${labels.map(l=>JSON.stringify(l)).join(', ')}), so the splitter answers again.`:malformed?'Clef\'s YES stands: the last split answer was malformed, so the splitter answers again.':`Clef decision ${gate.split?'YES':'NO'} (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)}; ${Date.now()-started} ms).`);
+        if (gate.split && !this.canSplit(id,2)) {
+          // Clef chose to split but the room has no agent slots or depth left.
+          // Do not force a weak leaf to implement work Clef would divide.
+          this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+          this.set(`capacity_blocked:${id}`,'1');
+          this.event(id,'split_capacity_blocked','Clef chose to split, but there is no space or depth left. Raise the room agent/depth limit and Continue; no code was silently substituted.');
+          return;
         }
-      } else raw=await decide(this.inferenceEnv(!this.manager(id)&&!isRuntimeNode(n)?'worker':'manager'),before,{planned:this.planned(),v8:this.v8(),placed:this.placedPath(id)});
+        if (gate.split) {
+          // run16: after a malformed turn the splitter answers without
+          // thinking, as its own retry does; a thinking answer costs minutes.
+          // v7.15.14: the pieces of one split are at most max_children; the slots left are a separate bound (review: an answer over them goes to admission's split_rejected, as before).
+          raw=await decompose(this.inferenceEnv(),{...before,max_child_writers:this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots(),max_children:this.maxChildren()},{planned:this.planned(),goal:this.userGoal(),noThink:malformed,lastTry});
+        } else {
+          // A genuine leaf can implement in the SAME turn; no extra Qwen
+          // decomposition request or artificial scheduler wave. It keeps the
+          // owners of the rejected split's pruned pieces.
+          owners=await this.rememberOwners(id,before.split_feedback?.rejected||[]);
+          if(owners)before.your_memory.private.owned_elsewhere=clip(owners,950);
+          this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
+          n.phase='implement';splitting=false;
+          this.wakeGrowWaiter(id);
+          // From here it is an isolated worker, as on its later turns: its own
+          // contract, and no parent, sibling or neighbour memory (decision 2; a
+          // sibling's prune note named getTickets to the create worker).
+          Object.assign(before,this.view(id,before.new_messages,ownFiles),{turn:before.turn,adjacent_public_memory:[]});
+          const reclassified=Boolean(before.split_feedback);
+          this.event(id,'atomic',one?`It carries its parent's whole promise (${listed(one.map(f=>f.name))}): implemented directly, with no Clef gate.`:reclassified
+            ? 'Clef reviewed the rejected partition and routed this assignment to direct code implementation.'
+            : 'Clef classified this as an indivisible behavior; implementing directly.');
+          // An implementation leaf needs only its own code assignment. Root's
+          // global scope and the rejected split remain router-only context.
+          delete before.root_scope;
+          delete before.split_feedback;
+          delete before.your_promised_functions;
+          raw=await decide(this.inferenceEnv('worker'),before,{planned:this.planned(),placed:this.placedPath(id)});
+          this.set(`split_feedback:${id}`,'');
+        }
+      } else raw=await decide(this.inferenceEnv(!this.manager(id)&&!isRuntimeNode(n)?'worker':'manager'),before,{planned:this.planned(),placed:this.placedPath(id)});
       // v7: at the top, a split answer with no pieces (none, or code in their
       // place) is malformed too: Root's goal is always divisible, and an
       // atomic Root wrote run10's application as one module. Below it, a
       // splitter may decline a small piece, and Clef reconsiders (review).
-      // v8 M2: every splitter may decline, the top's too; Clef reconsiders.
-      const noPieces=splitting && !raw.parse_error && !this.v8() && isTop(n) && this.env.MOCK_AI!=='true' && !normalizeAction(raw,{v8:this.v8()}).spawn.length;
+      const noPieces=splitting && !raw.parse_error && isTop(n) && this.env.MOCK_AI!=='true' && !normalizeAction(raw).spawn.length;
       if (raw.parse_error || noPieces) {
         this.event(id,'error',`Bad ${splitting ? 'decomposition' : 'action'} response: ${noPieces?`no pieces: ${clip(JSON.stringify(raw),1400)}`:raw.raw}`);
         // A malformed split (decompose returns it as a parse error) is retried
@@ -8175,24 +7189,23 @@ export class ControlRoom extends DurableObject {
         // v7.15.16 review: placeholder labels keep the YES one turn only, so the last turn before a pause asks Clef again with them, and Clef may route the piece to an implementation.
         if(splitting && this.env.MOCK_AI!=='true')this.set(`split_yes:${id}`,(this.read('failures',{})[id]||0)<(raw.vague?1:2)?'1':'');
         // v7.15.14 review: a split over max_children is feedback for the next turn's splitter (its count, the bound and its labels), never for Clef.
-        if(splitting && raw.oversize)this.save(`split_feedback:${id}`,{kind:'size',reason:(this.v8()?RETRY.too_many:tooMany)(raw.oversize.count,raw.oversize.bound),count:raw.oversize.count,bound:raw.oversize.bound,proposed:raw.oversize.labels});
+        if(splitting && raw.oversize)this.save(`split_feedback:${id}`,{kind:'size',reason:tooMany(raw.oversize.count,raw.oversize.bound),count:raw.oversize.count,bound:raw.oversize.bound,proposed:raw.oversize.labels});
         // v7.15.16 (run25): so is one whose labels stayed placeholders, with those labels.
-        if(splitting && raw.vague)this.save(`split_feedback:${id}`,{kind:'labels',reason:(this.v8()?RETRY.vague:vagueText)(raw.vague),proposed:raw.vague});
+        if(splitting && raw.vague)this.save(`split_feedback:${id}`,{kind:'labels',reason:vagueText(raw.vague),proposed:raw.vague});
         this.incrementFailures(id,'Bad action response');
         return;
       }
       if(splitting && this.get(`split_yes:${id}`))this.set(`split_yes:${id}`,'');
       // v7.15.14 review: the last attempt before a pause admits a split over max_children as answered (within the slots left): a room never pauses for size alone.
       if(splitting && raw.oversize)this.event(id,'split_oversize_admitted',`The splitter answered ${raw.oversize.count} pieces ${times((this.read('failures',{})[id]||0)+1)} against a bound of ${raw.oversize.bound} ("Pieces per split"); admitted as answered.`);
-      const action = normalizeAction(raw,{v8:this.v8()});
+      const action = normalizeAction(raw);
       // v7.15 §5.12a, before the code gates: the top has no manager to ask
       // (an atomic Root that asked with wait failed every replay of the ask
       // op); a node that splits leaves asking to its pieces; in a planned
       // room a worker's asks are checked against its answers and every new
       // one waits (plannedAsks).
       const writer=!splitting && !this.manager(id) && !isRuntimeNode(n);
-      // v8 M2: every writer's asks go up its line (plannedAsks, askManager); v7's top had none above it.
-      if(writer && !this.v8() && isTop(n)) {
+      if(writer && isTop(n)) {
         action.notes=[];
         if(action.ask.length) {
           this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
@@ -8206,7 +7219,7 @@ export class ControlRoom extends DurableObject {
           this.event(id,'ask_unheard','The top has no manager and nothing to wait for, so it does not wait.');
           action.notes.push(clip(`You have no manager, so nothing answers a wait: write your code and set done.${repair.length?` This repair request is still open: ${repair.join(' ')}`:''}`,1500));
         }
-      } else if(writer && (n.parent || this.v8()) && this.planned()) {
+      } else if(writer && n.parent && this.planned()) {
         if(action.spawn.length) {
           if(action.ask.length)this.event(id,'ask_dropped','A splitting node does not ask; its pieces will.');
           action.ask=[];
@@ -8214,47 +7227,39 @@ export class ControlRoom extends DurableObject {
       }
       // Written again with this turn's writes, which a failed commit rolls back.
       if(owners)action.remember.push({visibility:'private',key:'owned_elsewhere',value:owners});
-      // v8 S1: a split's tasks pass through as the splitter wrote them (no
-      // "Write executable source code" wrapper): a piece may deliver any file.
       // Leaves publish their own files; builders author only narrow wiring
       // and smoke tests. Runtime alone owns package/entrypoint generation.
       if(this.env.MOCK_AI!=='true' && !splitting && !this.manager(id) && !isBuilderNode(n)) {
-        // v8 §3.2: an answer in the file-block format; a file the token cap
-        // cut is written again alone (the code_retry path below).
+        // An answer in the file-block format; a file the token cap cut is
+        // written again alone (the code_retry path below).
         if(raw.format_fallback)this.event(id,'format_fallback',`The answer was read as ${raw.format_fallback==='json'?'a JSON action':'one fenced file'}, not file blocks.`);
         if(raw.truncated?.length)this.event(id,'code_retry',`Cut off before its end, written again alone: ${raw.truncated.join(', ')}`);
-        // v8 S6 review: a block closed by the next marker line, not its END line, is committed as written; said so.
+        // A block closed by the next marker line, not its END line, is committed as written; said so.
         if(raw.implicit_end?.length)this.event(id,'format_fallback',`No END line after ${raw.implicit_end.join(', ')}: closed by the next marker line, or where the answer ended, and written as it stands.`);
         if(raw.control_error)this.event(id,'format_fallback','The control block did not parse, after a retry: its complete files are written, and it is not done.');
         // v7.15.2: an atomic top's loader, package and runner's test are the
         // runtime's, written again for each run: an edit was undone and its
         // repair heard that nothing changed (review).
-        const glue=n.parent||this.v8()?[]:action.files.filter(f=>RUNTIME_GLUE.includes(f.path));
+        const glue=n.parent?[]:action.files.filter(f=>RUNTIME_GLUE.includes(f.path));
         if(glue.length) {
           this.event(id,'glue_rejected',`Not written: ${glue.map(f=>f.path).join(', ')}, which the runtime writes for each run.`);
           action.files=action.files.filter(f=>!RUNTIME_GLUE.includes(f.path));
-          (action.notes||=[]).push(this.v8()?MESSAGES.runtime_paths({paths:glue.map(f=>f.path).join(', '),many:glue.length>1}):`${glue.map(f=>f.path).join(', ')} ${glue.length>1?'were':'was'} not written: glue/index.js (the loader), package.json and glue/smoke.js (the runner's test, fixed for the whole run) are the runtime's and are written again for each run. Change your own modules so that the application passes.`);
+          (action.notes||=[]).push(`${glue.map(f=>f.path).join(', ')} ${glue.length>1?'were':'was'} not written: glue/index.js (the loader), package.json and glue/smoke.js (the runner's test, fixed for the whole run) are the runtime's and are written again for each run. Change your own modules so that the application passes.`);
         }
-        // v8 S1: any text file is kept (under v7 a non-JS file is carried to
-        // the export, never linked or run), at a path the build can carry:
-        // never the runtime's own paths, a hidden file or a project manifest
-        // (the review: a .gitignore paused the compile, a branch's
-        // package.json turned its CommonJS into ES modules). Memory is
-        // skipped below, as before.
-        // v8 S4b review: a path another piece's contract places is that piece's: a copy is refused here, naming its owner.
-        // v8 S8b review: a file at an existing file's path apart from case is that file, when the writer owns it exactly.
-        if(this.v8()){const {base,owned}=this.gateFacts(id);for(const f of action.files){const twin=caseTwin(f.path,base);if(twin&&twin!==f.path&&owned.has(twin)&&!action.files.some(g=>g.path===twin)){this.event(id,'path_case',`${f.path} is written to ${twin}, the existing file it names apart from letter case.`);f.path=twin;}}}
-        const refused=action.files.map(f=>({f,why:f.path.startsWith('memory/')?null:writerPathError(f.path,this.gateFacts(id))||this.placedElsewhere(id,f.path)||this.shadowsStandard(id,f.path)})).filter(x=>x.why);
+        // A non-JS file is carried to the export, never linked or run, at a
+        // path the build can carry: never the runtime's own paths, a hidden
+        // file or a project manifest. Memory is skipped below, as before.
+        const refused=action.files.map(f=>({f,why:f.path.startsWith('memory/')?null:writerPathError(f.path)})).filter(x=>x.why);
         if(refused.length) {
           this.event(id,'file_refused',`Not written: ${refused.map(x=>x.why).join('; ')}`);
           action.files=action.files.filter(f=>!refused.some(x=>x.f===f));
-          (action.notes||=[]).push(clip(this.v8()?MESSAGES.not_written({why:refused.map(x=>x.why).join('; ')}):`Not written: ${refused.map(x=>x.why).join('; ')}.`,1500));
+          (action.notes||=[]).push(clip(`Not written: ${refused.map(x=>x.why).join('; ')}.`,1500));
         }
         if(action.done && !action.spawn.length) {
           // A piece finishes on what it delivers: some file, and code in the
           // project's language unless its every contract is a document or
-          // file kind (v8 S1 review: a code piece with no promise finished
-          // on NOTES.md alone). v7 links and runs JavaScript only.
+          // file kind (a code piece with no promise finished on NOTES.md
+          // alone). v7 links and runs JavaScript only.
           const all=[...this.files(id),...action.files.map(f=>({...f,content:f.content??''}))];
           // The writer hears why, once per reason, on its next turn.
           const tell=body=>{if(!query(this.db(),'SELECT id FROM messages WHERE recipient=? AND sender=? AND body=? AND delivered=0',id,'runtime:gate',body).length)
@@ -8289,7 +7294,7 @@ export class ControlRoom extends DurableObject {
         let deferredAssembly=false;
         // v7.11: a child that composes the application is ordinary code (it
         // owns the entry module), so live splits keep it as a worker.
-        if(this.env.MOCK_AI==='true' && !this.v8() && isTop(n) && action.spawn.some(x=>this.isFinalAssemblySpec(x))) {
+        if(this.env.MOCK_AI==='true' && isTop(n) && action.spawn.some(x=>this.isFinalAssemblySpec(x))) {
           const rejected=action.spawn.filter(x=>this.isFinalAssemblySpec(x));
           action.spawn=action.spawn.filter(x=>!this.isFinalAssemblySpec(x));
           deferredAssembly=true;
@@ -8299,10 +7304,10 @@ export class ControlRoom extends DurableObject {
         // child repository is created. Keep Root's goal as an immutable scope
         // anchor so an ambiguous parent cannot drift over generations.
         if(action.spawn.length) {
-          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2,v8:this.v8(),scope:raw.split_review||null});
+          const admit=await this.admitChildren(id,n,action.spawn,{inferred:raw.interfaces_inferred,place:(this.read('failures',{})[id]||0)>=2});
           // v7.15.16 (run25): no progress is a partition's failure, so Clef reconsiders with it (it may implement the assignment directly).
           if(admit.degenerate) {
-            const reason=this.v8()?MESSAGES.split_no_progress({label:clip(admit.degenerate.label,70),names:listed(admit.degenerate.names)}):noProgress(admit.degenerate);
+            const reason=noProgress(admit.degenerate);
             this.save(`split_feedback:${id}`,{reason,accepted:[],rejected:[{label:admit.degenerate.label,task:clip(admit.spawn.find(c=>c?.label===admit.degenerate.label)?.task||'',500)}],root_goal:this.topTask()||n.task});
             this.event(id,'split_rejected',`${reason} Clef will reconsider routing with this feedback; it may implement the assignment directly.`);
             this.incrementFailures(id,'split_rejected');
@@ -8313,8 +7318,8 @@ export class ControlRoom extends DurableObject {
             // YES and the splitter gets this partition back to correct.
             const texts=admit.c5.map(e=>e.text);
             this.save(`split_feedback:${id}`,{kind:'interfaces',
-              reason:this.v8()?MESSAGES.split_contracts({checks:texts.join(' '),c5:admit.c5.some(e=>e.check==='C5'),c4:admit.c5.some(e=>e.check==='C4')}):`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and ${[admit.c5.some(e=>e.check==='C5')&&'give each promised function to exactly one of them',admit.c5.some(e=>e.check==='C4')&&'place each file in exactly one of them',admit.c5.some(e=>e.check==='C7')&&'promise plain functions in place of each factory'].filter(Boolean).join(', and ')}.`,
-              proposed:admit.spawn.map(c=>({label:c.label,task:clip(c.task,300),[this.v8()?'contracts':'functions']:(c.interfaces||[]).map(f=>f.name)})),accepted:[],rejected:[],
+              reason:`The partition was acceptable; only its function names failed: ${texts.join(' ')} Keep the pieces and ${[admit.c5.some(e=>e.check==='C5')&&'give each promised function to exactly one of them',admit.c5.some(e=>e.check==='C4')&&'place each file in exactly one of them',admit.c5.some(e=>e.check==='C7')&&'promise plain functions in place of each factory'].filter(Boolean).join(', and ')}.`,
+              proposed:admit.spawn.map(c=>({label:c.label,task:clip(c.task,300),functions:(c.interfaces||[]).map(f=>f.name)})),accepted:[],rejected:[],
               interfaces:texts,root_goal:this.topTask()||n.task});
             this.event(id,'split_rejected',`The proposed functions fail ${texts.length} check(s): ${texts.join(' ')}`);
             this.incrementFailures(id,'split_rejected');
@@ -8337,7 +7342,7 @@ export class ControlRoom extends DurableObject {
           // Semantic only: a parsed partition out of scope, too small (below
           // the top, none: the splitter declined), duplicated or over capacity
           // goes back to Clef with this feedback.
-          const reason=this.v8()?(rejectedScope?MESSAGES.split_out_of_scope({count:String(action.spawn.length),rejected:String(rejectedScope)}):MESSAGES.split_no_division({bound:String(Math.min(this.maxChildren(),this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()))})):rejectedScope
+          const reason=rejectedScope
             ? `Only ${action.spawn.length} in-scope child(ren) remained after Clef rejected ${rejectedScope}; not a viable code split.`
             : 'Qwen proposed no valid partition into distinct code-writing children within the available capacity.';
           // A piece kept with names moved elsewhere (kept:true) is accepted:
@@ -8385,14 +7390,8 @@ export class ControlRoom extends DurableObject {
       }
       // The implementation action protocol can also propose late children.
       // Apply the SAME scope gate: no Qwen-proposed child is admitted unchecked.
-      // v8 live 5: a worker writes; its manager's split flow already chose
-      // whether the work divides, and the format offers a worker no pieces.
-      if (this.v8() && !splitting && !this.manager(id) && !isRuntimeNode(n) && action.spawn.length) {
-        this.event(id,'pieces_ignored',`A worker's answer listed ${action.spawn.length} pieces; its files are written and the pieces are not created, as its manager's split flow decides divisions.`);
-        action.spawn=[];
-      }
       if (!splitting && !this.manager(id) && action.spawn.length) {
-        if(this.env.MOCK_AI==='true' && !this.v8() && isTop(n)) {
+        if(this.env.MOCK_AI==='true' && isTop(n)) {
           const assembly=action.spawn.filter(x=>this.isFinalAssemblySpec(x));
           if(assembly.length) {
             action.spawn=action.spawn.filter(x=>!this.isFinalAssemblySpec(x));
@@ -8407,7 +7406,7 @@ export class ControlRoom extends DurableObject {
         // v7.15.16 review (p6): a late split is gated as a first split is, at its depth's bar, and needs room below it: a carrier, never gated, late-split into a new carrier and one helper, eight times, to max_depth, and stuck there waiting.
         if(this.env.MOCK_AI!=='true') {
           const room=this.canSplit(id,Math.max(2,action.spawn.length)),bar=this.splitBar(id),calls=this.planned()?parse(n.uses,[]):[],tail=calls.length?` It calls ${listed(calls)}, which other pieces write.`:'';
-          const gate=room?await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},tail?String(n.task).slice(0,2600-tail.length)+tail:this.v8()?clipEnds(n.task,2600):n.task,{},this.v8()?this.gateContracts(id):[]):null;
+          const gate=room?await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:bar},tail?String(n.task).slice(0,2600-tail.length)+tail:n.task,{},[]):null;
           if(!gate?.split) {
             this.event(id,'split_rejected',`Late decomposition rejected: ${gate?`Clef decision NO (p=${gate.probability.toFixed(3)}; bar ${bar.toFixed(3)})`:'no space or depth left'}. The worker writes its assignment.`);
             await this.remember(id,[{visibility:'private',key:'late_split_rejected',value:`Your ${action.spawn.length} proposed pieces were not created: ${gate?'your assignment is one piece of code at this depth':'the room has no space or depth left for them'}. Write it yourself.`}]);
@@ -8416,7 +7415,7 @@ export class ControlRoom extends DurableObject {
           }
         }
         // A worker with a promise must give every promised name to one piece (C5).
-        const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2,v8:this.v8()});
+        const admit=await this.admitChildren(id,n,action.spawn,{late:true,place:(this.read('failures',{})[id]||0)>=2});
         // v7.15.16 (run25): a worker's split that hands its whole promise to one piece is no split: it writes the promise itself.
         if(admit.degenerate) {
           this.event(id,'split_rejected',`Late decomposition rejected. ${noProgress(admit.degenerate)}`);
@@ -8524,13 +7523,13 @@ export class ControlRoom extends DurableObject {
                 node:current,path:f.path,intent:f.intent||`Complete implementation of ${current.task}`,task:this.withContract(current.task,current),answers:this.read(`fn_answers:${id}`,[]).map(a=>a.text),asks:this.planned()&&!!current.parent,
                 files:await this.ownFiles(id),base_files:this.baseFilesFor(id),inbox:inbox.map(({from,body})=>({from,body})),
                 children:this.children(id),assemblyInputs:[],
-                correction:diagnostic,...this.v8()&&!isRuntimeNode(current)?{v8:true,...this.v8Inputs(id)}:{}
+                correction:diagnostic
               });
             if(this.env.MOCK_AI!=='true') {
               // The worker's own file must parse before it is committed. A
               // parse failure goes straight back to the same worker as a
               // targeted correction; it never reaches the builder.
-              const invalid=fileGateError(f.path,content,{packages:this.settings().packages,runtime:isRuntimeNode(current),...this.gateFacts(id)});
+              const invalid=fileGateError(f.path,content,{packages:this.settings().packages,runtime:isRuntimeNode(current)});
               if(invalid)throw new Error('Worker artifact rejected: '+invalid);
             }
             await this.putFile(id,f.path,content);
@@ -8560,7 +7559,7 @@ export class ControlRoom extends DurableObject {
         if(this.brokerAnswer(id,a))return;
         // v7.15.1: every ask goes to the worker's manager, whatever it names;
         // the manager answers from its children or asks up (MOCK too).
-        if(!this.v8()&&!this.node(id)?.parent) {
+        if(!this.node(id)?.parent) {
           // v7: a plan persisted before the guard above: drop it, never throw.
           action.wait=false;this.event(id,'ask_dropped','The top has no manager; it writes what it needs.');
         } else if(!await this.askManager(id,a.key,a.question,a.name||'')) throw new Error('Worker has no available manager');
@@ -8581,7 +7580,7 @@ export class ControlRoom extends DurableObject {
         const unfinished = this.children(id).some(x => x.status !== 'done' && x.status !== 'retired');
         // Root must not report a delegated software project complete before
         // its temporary builder returns a public assembly artifact.
-        const needsBuilder = !this.v8() && isTop(n) && this.manager(id) && !await this.assemblyCurrent(id);
+        const needsBuilder = isTop(n) && this.manager(id) && !await this.assemblyCurrent(id);
         const rejectedSplit=action.spawn.length && !this.manager(id);
         // action.wait from the discarded split must not strand the fallback leaf.
         if(rejectedSplit) {
@@ -8603,14 +7602,10 @@ export class ControlRoom extends DurableObject {
           // v7.15: the plan is checked on return, before linking. No throw:
           // a thrown op replays without asking the model (F4).
           if(!this.manager(id) && !isRuntimeNode(n) && await this.contractReturned(id))return;
-          // v8 M2: an agent that holds the card's checks runs them when its
-          // work is done, a worker as a manager (compileCard, one path); a
-          // failure in a worker's own files is its own repair.
-          if(this.v8()&&this.holdsChecks(n)){await this.compileCard(id);return;}
           // v7: the top can itself be a Clef-classified atomic implementation:
           // no builder and no compiler, so it runs the compiler's pipeline
           // on its own files, and finishes only when that passes (run10).
-          if(!this.v8()&&isTop(n)&&!this.manager(id)&&this.env.MOCK_AI!=='true')return this.compileAtomic(id);
+          if(isTop(n)&&!this.manager(id)&&this.env.MOCK_AI!=='true')return this.compileAtomic(id);
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Completed owned strand without transferring ownership to children.');
           if(isBuilderNode(this.node(id))) {
@@ -8685,9 +7680,8 @@ export class ControlRoom extends DurableObject {
   // last failures as its detail. One its manager already assigned it (what
   // it was told did not get it past the gate) is replaced, so the manager
   // hears it again and a stall is never silent.
-  // v8 M2 review: one with no agent above goes up its line as every one does,
-  // to the room: a hold naming it (agent_stuck), which Continue lifts with
-  // another turn.
+  // v8: a worker escalates it up its line to the room: a hold naming it
+  // (agent_stuck), which Continue lifts with another turn.
   fileStuck(id, gates) {
     const n=this.node(id);
     if(!this.live()||!n||!n.parent&&!this.v8()||isRuntimeNode(n)||this.manager(id)||gates.length<3||!gates.every(Boolean))return false;
@@ -8697,10 +7691,10 @@ export class ControlRoom extends DurableObject {
     const last=query(this.db(),`SELECT kind,body FROM events WHERE actor=? AND kind IN (${FAILURE_EVENTS.map(()=>'?').join(',')}) ORDER BY id DESC LIMIT 4`,id,...FAILURE_EVENTS).reverse();
     // v7.15.16 review: a splitter that kept answering placeholder labels is said so, not a code gate.
     const labels=/placeholder labels after a retry/.test(last.at(-1)?.body||''),why=labels?'turns whose splitter kept naming pieces with placeholder labels':'failed turns at the code gate';
-    const detail=this.v8()&&!labels?clip(MESSAGES.stuck_problem({label:n.label,last:last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | ')}),950):clip(`${n.label} stopped after three ${why}: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
-    if(!n.parent) {
-      this.event(id,'stuck',`Stopped after three ${why}; the room holds for the person: ${clip(detail,700)}`);
-      this.holdStuck(id,detail);
+    const detail=clip(`${n.label} stopped after three ${why}: `+last.map(e=>`${e.kind}: ${clip(e.body,260)}`).join(' | '),950);
+    if(this.v8()) {
+      this.event(id,'stuck',`Stopped after three ${why}; it goes up its line to the room: ${clip(detail,700)}`);
+      this.escalate(id,'agent_stuck',clip(`${detail}${/[.!?]$/.test(detail)?'':'.'} Continue gives "${n.label}" another turn.`,1100));
       return true;
     }
     this.insertProblem({holder:n.parent,kind:'stuck',stage:'work',source:id,input:`turn:${n.turn}`,
@@ -8723,18 +7717,10 @@ export class ControlRoom extends DurableObject {
   }
   // A stuck worker that no manager above could settle waits for Continue,
   // as before v7.14, and says so.
-  // v8 M2 review: at the end of the line that is the room's hold for the
-  // person, naming the agent, as a stuck agent with no agent above files it.
   pauseStuck(p) {
     const w=this.node(p.source);
-    if(w&&!this.manager(w.id)&&w.status==='waiting'&&(this.read('failures',{})[w.id]||0)>=3) {
+    if(w&&!this.manager(w.id)&&w.status==='waiting'&&(this.read('failures',{})[w.id]||0)>=3)
       this.event(w.id,'paused','Stopped automatic retries after 3 failures; no manager above could settle it. Continue to retry.');
-      if(this.v8())this.holdStuck(w.id,p.detail);
-    }
-  }
-  holdStuck(id, detail) {
-    const t=clip(String(detail||'').trim(),900);
-    this.holdRoom('agent_stuck',clip(`${t}${/[.!?]$/.test(t)?'':'.'} Continue gives "${this.node(id)?.label||id}" another turn; a follow-up prompt can change the card.`,1100),{agent:id});
   }
   // The work queue is only scheduling metadata. Each individual agent retains
   // exclusive control of its own turn, while unrelated strands can infer and
@@ -8805,9 +7791,9 @@ export class ControlRoom extends DurableObject {
   }
   runSelectedTurn(id, step) { return turnContext.run({agent:id,step},()=>this.runTurnTimed(id,step)); }
   async runTurnTimed(id, step) {
-    // Review (atomic Root): a worker that holds the card's checks (v7: the top) runs them right after a done.
+    // Review (atomic Root): v7's top that writes its own files runs the compiler right after a done.
     const top=this.node(id);
-    if(top&&top.phase==='implement'&&!this.manager(id)&&(this.v8()?this.holdsChecks(top):!top.parent))this.prewarmContainer();
+    if(top&&top.phase==='implement'&&!this.manager(id)&&!top.parent)this.prewarmContainer();
     this.activeTurns.add(id);
     const observedWake=this.wakeGeneration(id);
     this.turnSteps.set(id,step);
@@ -8827,10 +7813,6 @@ export class ControlRoom extends DurableObject {
       }
       this.event(id,'turn_end',`Completed turn after ${Date.now()-started} ms.`);
       this.activeTurns.delete(id); this.turnSteps.delete(id);
-      // v8 S9 review, v8 M2: a change that waited for its row's split (amend_deferred.to) is applied once the split is admitted
-      // (v8 live 5: a row with children has admitted its pieces or its worker, whatever its phase says).
-      if(this.deferredTo(this.read('amend_deferred',null))===id&&(this.node(id)?.phase!=='decompose'||this.manager(id)))
-        try {await this.applyDeferred();} catch(e) {this.event('system','amend_failed',clip(`The change that waited for a split could not be applied: ${e?.message||e}`,600));}
     }
   }
   async drive(budget) {
@@ -8850,8 +7832,6 @@ export class ControlRoom extends DurableObject {
       // waiting for slower inferences from the same dispatch wave.
       // A stop request dispatches nothing new; turns already running finish.
       const stopping=()=>this.get('stop_requested')==='1';
-      // v8 M2: a goal's handler still open goes on first: its card writer is the run's first step.
-      if(!stopping())await this.runHandlers();
       while (tally(), active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>(this.manager(id)||this.runtimeTurn(this.node(id)))&&this.node(id)?.status==='ready'))) {
         while (!stopping() && active.size<this.settings().parallel) {
           tally();
@@ -8886,10 +7866,10 @@ export class ControlRoom extends DurableObject {
       const finished=this.runFinished(nodes);
       const failed=nodes.some(n=>n.status==='failed');
       this.set('status',finished?'complete':failed?'failed':'paused');
-      // v8 S3: a room held at the card or at the checks says why.
+      // v8: a room held for the person says why.
       const held=!finished&&!failed?this.read('paused_state',null):null;
       this.event('system',finished?'complete':failed?'failed':'paused',finished ? 'All strands returned complete.' :
-        failed ? `Run failed: ${this.failedDescendantReason(this.topId())}` : held ? `Paused (${held.kind}): ${held.text}` : 'Inference budget ended or strands are waiting; continue to resume.');
+        failed ? `Run failed: ${this.failedDescendantReason(this.v8()?this.roomManager():this.topId())}` : held ? `Paused (${held.kind}): ${held.text}` : 'Inference budget ended or strands are waiting; continue to resume.');
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally {
       this.busy=false;this.budgetSpent=false;
@@ -8902,26 +7882,21 @@ export class ControlRoom extends DurableObject {
     // v8 S9: the running prompt's outcome and the queue's next step (nothing in a room without prompts).
     try { await this.promptsAfterRun(); } catch(e) { this.event('system','error',clip(`The prompt queue could not go on: ${e?.message||e}`,900)); }
   }
-  // provided: a card the runtime gives the room (a benchmark task's, B1),
-  // never one from a request body; /api/run passes none. A benchmark room
-  // has no executor of its own any more: each compile opens a fresh box
-  // (capability boxes S1), so no task shares a VM with another.
+  // A benchmark room has no executor of its own: each compile opens a fresh
+  // box (capability boxes S1), so no task shares a VM with another.
   // v8 S8b: base is what the run starts from (§7.1): {repo, ref?, dir?} or
   // {room} (a room's previous result, this room's own included); selfHosts
   // names this deployment's host(s), which the goal's links may never
   // reach. The base is read before the room is wiped, so a base that cannot
   // be read refuses the Start and leaves the previous run as it was; the
   // goal's links are read at Root's first turn (loadSources).
-  // grants (v8 card repair): the existing files the person grants a change to in advance.
-  async start(goal,budget,settings = {},roomId='',provided=null,{base=null,selfHosts=[],grants=[]}={}) {
+  // grants: the existing files the person grants a change to in advance.
+  async start(goal,budget,settings = {},roomId='',{base=null,selfHosts=[],grants=[]}={}) {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
-    // v8 S9 review: a change in flight would write the old project into the new run.
-    if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then Start.',status:409};
     // Refuse bad settings before the room is wiped: a refused Start must leave
     // the previous run intact (verification probe: parallel 999 erased it).
     let wanted;
     try { wanted=normalizeRoomSettings(settings, DEFAULT_ROOM_SETTINGS); } catch(e) { return {error:clip(e?.message||e,300)}; }
-    if (provided && (!this.live() || wanted.pipeline!=='v8')) return {error:'A provided card needs a live room on the v8 pipeline'};
     const given=normalizeBase(base);
     if(given.error)return {error:given.error};
     if(given.base&&(wanted.pipeline!=='v8'||!this.live()))return {error:'Start from (a repo or a previous result) needs the v8 pipeline.'};
@@ -8935,7 +7910,7 @@ export class ControlRoom extends DurableObject {
     }
     // v8 S9: a Start keeps the queued prompts (they apply once this run completes) and forgets the rest.
     const keep={queue_on_fail:this.get('queue_on_fail','')};
-    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','card_writers','piece_files','syntax_clean','problems','repair_tickets','card_revisions','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','syntax_clean','problems','repair_tickets','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
     this.db().exec("DELETE FROM prompts WHERE status!='queued'");
     if(keep.queue_on_fail)this.set('queue_on_fail',keep.queue_on_fail);
     // v8 S9 review: the queue's turn allowance, 4x the Start budget, for every change after this run.
@@ -8943,7 +7918,6 @@ export class ControlRoom extends DurableObject {
     this.queuedAt.clear();
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
-    if (provided) this.save('card_provided',provided);
     this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h).slice(0,8));
     if(Array.isArray(grants)&&grants.length){const given=[...new Set(grants.filter(p=>typeof p==='string'&&isPath(p)))].slice(0,64);this.save('base_approved',given);if(given.length)this.event('system','base_granted',clip(`The person granted changing ${given.join(', ')} at Start.`,500));}
     if(loaded) {
@@ -8951,7 +7925,6 @@ export class ControlRoom extends DurableObject {
       for(const p of loaded.passthrough||[])this.db().exec('INSERT INTO base_passthrough(path,bytes,mode,sha256,reason) VALUES (?,?,?,?,?)',p.path,p.bytes,p.mode??0o644,await sha256Bytes(p.bytes),p.reason||'');
       this.set('parts_root',partsRoot([...loaded.files.keys(),...(loaded.passthrough||[]).map(p=>p.path)]));
       this.save('base',loaded.meta);
-      if(loaded.prior_card)this.save('prior_card',loaded.prior_card);
     }
     this.set('schema',ROOM_SCHEMA);
     // A fresh experiment must never reuse manager DO state from an older run.
@@ -8960,8 +7933,7 @@ export class ControlRoom extends DurableObject {
     // the splitters assign it like any other requirement. (The MOCK_AI
     // legacy fixtures run without it.)
     // v7.15.13 (run18): the requirement and Root's promise name the methods the goal states start() returns.
-    // v8 S3: under v8 the goal is stored as the user wrote it: the card's
-    // deliverables give the shape and Root's promise (cardTurn), not start().
+    // Under v8 the goal is stored as the user wrote it.
     const v8=this.v8(),whole=clip(goal,GOAL_LIMIT),task=this.live()&&!v8?`${whole} ${goalStartRequirement(whole)}`:v8?whole:goal;
     this.set('goal',this.live()?task:clip(goal,GOAL_LIMIT));
     // v8 S9: the goal's first revision (each change applied later adds one).
@@ -8971,10 +7943,11 @@ export class ControlRoom extends DurableObject {
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
-    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}${loaded.meta.not_carried?.length?`; ${loaded.meta.not_carried.length} not carried (the runtime's own paths)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} Only a piece whose contract names a base file, and whose goal asks to change it, may change it.`,900));
+    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}${loaded.meta.not_carried?.length?`; ${loaded.meta.not_carried.length} not carried (the runtime's own paths)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} A worker changes an existing file its contracts place once the person grants it.`,900));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
-      try { await this.handPrompt({kind:'goal',prompt:goal,task,interfaces:this.live()&&!v8?rootPromise(whole):[]}); await this.drive(budget); }
+      // v8: the room creates the manager the prompt goes to.
+      try { if(v8)await this.openRoom(task);else await this.handPrompt({prompt:goal,task,interfaces:this.live()?rootPromise(whole):[]}); await this.drive(budget); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};
@@ -8987,14 +7960,13 @@ export class ControlRoom extends DurableObject {
     this.event('system','stop_requested','Stop requested: no new turns start; the running ones finish, then the run pauses.');
     return {status:'stopping'};
   }
-  // options.grants (v8 card repair): at base_confirm, the paths the person selected to grant.
+  // options.grants: at base_confirm, the paths the person selected to grant.
   async resume(budget,settings = {},options = {}) {
     if (this.busy) return {error:'Experiment running'};
-    if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then Continue.',status:409};
     this.set('stop_requested','');
     if (!['paused','complete','error','running','failed'].includes(this.get('status'))) return {error:'Start a session first'};
     if (this.get('status')==='complete') return {error:'All agents are done; start a new experiment'};
-    if (this.get('status')==='failed') return {error:`Run failed: ${this.failedDescendantReason(this.topId())}. Start a new room or inspect the recorded diagnostic.`};
+    if (this.get('status')==='failed') return {error:`Run failed: ${this.failedDescendantReason(this.v8()?this.roomManager():this.topId())}. Start a new room or inspect the recorded diagnostic.`};
     // Rooms from v7.13 and earlier keep Root-keyed build state: reset, not migrated.
     if (this.live() && this.get('run_nonce') && this.get('schema')!==ROOM_SCHEMA)
       return {error:'This room was started by a version before v7.14 and is not migrated; start a new experiment, which resets the room.'};
@@ -9010,59 +7982,9 @@ export class ControlRoom extends DurableObject {
     }
     this.save('failures',failures);
     for(const id of continued)this.clearFailures(id);
-    // v8 S3: Continue on a room held at the card runs the card writer again.
-    let hold=this.read('paused_state',null);
-    // v8 M2 review: a room from before M2 held at its card with the top's row there (live 4: the row waited at its split
-    // for the card) gets a goal handler for that top, so the same card writer step runs, the grant included.
-    if(this.v8()&&['card_blocked','card_failed','base_confirm'].includes(hold?.kind))await this.openTopHandler();
-    // v8 card repair: Continue at base_confirm is the person's grant of the files it lists (or of those selected).
-    if(this.v8()&&hold?.kind==='base_confirm'){this.confirmBase(options.grants??null);hold=this.read('paused_state',null);}
-    // v8 M2: Continue at ask_unanswered leaves each ask to its asker, which goes on.
-    if(this.v8()&&hold?.kind==='ask_unanswered'){this.save('paused_state',null);this.answerRoomAsks(a=>MESSAGES.ask_left({want:askWant(a)}));}
-    // v8 M2 review: a hold an agent with no agent above filed with the room: Continue gives a stuck one another turn (its
-    // failures were counted again above), and runs a contract-short one's checks on its files as they are.
-    if(this.v8()&&['agent_stuck','contract_unmet'].includes(hold?.kind)) {
-      this.save('paused_state',null);
-      const agent=this.node(hold.agent);
-      if(agent&&hold.kind==='contract_unmet'){this.set(`contract_accepted:${agent.id}`,hold.gap||'');this.set(`checks_due:${agent.id}`,'continue');}
-      if(agent&&agent.status==='waiting')this.wake(agent.id);
-    }
-    if(this.v8()&&['card_blocked','card_failed'].includes(hold?.kind)) {
-      this.save('paused_state',null);
-      // v8 M2: the open handler's card writer runs again, as drive's first step.
-      if(this.openGoalHandler()&&!this.read('card',null))this.event('room','card_continue','Continue runs the card writer again.');
-    }
-    // v8 S4b: Continue on a room held at the card's checks runs them again;
-    // after the repair rounds ran out, with a fresh set of rounds.
-    // A room saved under S3's v8_checks_pending hold runs the checks the same way.
-    // Live 2 review: Continue at checks_untested is the person accepting the project with those requirements untested (logged); the checks run again and complete.
-    if(this.v8()&&hold?.kind==='checks_untested') {
-      // v8 ship-verified: what the hold names (its untested requirements, the files that ship unchecked), each once.
-      const accept=this.read('untested_pending',''),files=this.read('unchecked_pending','');
-      if(accept){this.set('untested_accepted',accept);this.save('untested_pending','');this.event('room','untested_accepted',clip(`The person accepted the project with ${String(accept).split(':')[1]||'its untested requirements'} untested (card revision ${String(accept).split(':')[0]}).`,400));}
-      if(files){this.set('unchecked_accepted',files);this.save('unchecked_pending','');this.event('room','unchecked_accepted',clip(`The person accepted the project with the files that ship unchecked, as the hold listed them: ${hold.text||''}`,900));}
-    }
-    // v8 live 5: Continue at checks_doubtful is the person keeping the doubted requirements: they are repaired as any other from now on.
-    if(this.v8()&&hold?.kind==='checks_doubtful') {
-      const keep=this.read('doubt_pending',[]);
-      if(keep.length){this.save('doubt_kept',[...new Set([...this.read('doubt_kept',[]),...keep])]);this.save('doubt_pending',[]);this.event('room','doubt_kept',clip(`The person kept ${keep.join(', ')}, which Clef doubted; the repairs go on.`,400));}
-    }
-    if(this.v8()&&['checks_failed','checks_blocked','checks_exhausted','v8_checks_pending','checks_untested','checks_doubtful'].includes(hold?.kind)) {
-      // v8 M3: every row's check state is its own; Continue clears each row's.
-      this.save('paused_state',null);this.db().exec("DELETE FROM meta WHERE key LIKE 'compile_reported:%'");
-      if(!this.autoResume){this.db().exec("DELETE FROM meta WHERE key LIKE 'checks_retries:%'");this.save('checks_retry',null);}
-      if(hold.kind==='checks_exhausted') {
-        this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'rounds_exhausted:%'");
-        this.set('repair_exhausted','');
-      }
-      // v8 M2: the agent the hold names (a hold saved before M2: the top) runs them again; a worker with no model turn (checks_due).
-      const agent=this.node(hold.agent||this.topId());
-      if(agent&&!this.manager(agent.id))this.set(`checks_due:${agent.id}`,'continue');
-      if(agent&&agent.status==='waiting') {
-        this.event('room','checks_continue',`Continue runs the project card's checks again${hold.kind==='checks_exhausted'?', with a fresh set of repair rounds':''}.`,agent.id);
-        this.wake(agent.id);
-      }
-    }
+    // v8: Continue at a hold for the person (continueHold).
+    const hold=this.read('paused_state',null);
+    if(this.v8()&&hold)this.continueHold(hold,{grants:options.grants??null});
     // v7.15.15 review 2 (#1): Continue answers a request no row, hop or message holds any more.
     if(this.planned())await this.settleRequests(true);
     // A planned worker waiting with no request open, nothing unread and no
@@ -9085,7 +8007,8 @@ export class ControlRoom extends DurableObject {
     if(this.live()) {
       // The compiler runs again on the current bundle: a fresh set of runner
       // attempts, and its problems are reported again.
-      const top=this.top(),compiler=top&&this.compilerOf(top.id);
+      // v7's top and compiler; a v8 room has neither (its levels compile, continueHold).
+      const top=!this.v8()&&this.top(),compiler=top&&this.compilerOf(top.id);
       // Blocked by infrastructure, it is woken by retryBlockedCompile.
       if(compiler&&compiler.status==='waiting') {
         this.save('compile_reported',null);
@@ -9096,13 +8019,13 @@ export class ControlRoom extends DurableObject {
         }
       }
       // v7: an atomic top whose run waits (the runner failed twice) runs it again.
-      if(!this.v8()&&top&&!compiler&&top.status==='waiting'&&!this.manager(top.id)&&this.get('atomic_compile')&&!this.read('compile_blocked',null)) {
+      if(top&&!compiler&&top.status==='waiting'&&!this.manager(top.id)&&this.get('atomic_compile')&&!this.read('compile_blocked',null)) {
         this.save('compile_reported',null);
         this.event(top.id,'compile_continue','Continue runs Root\'s own files through the compiler\'s pipeline again.');
         this.wake(top.id);
       // One waiting with no run due has nothing else to wake it: a wait the
       // top answered before its waits were dropped (v7.15.2 review).
-      } else if(!this.v8()&&top&&!compiler&&top.status==='waiting'&&top.phase==='implement'&&!this.manager(top.id)&&!this.get('atomic_compile')&&!String(this.read('paused_state',null)?.kind||'').startsWith('checks_')) {
+      } else if(top&&!compiler&&top.status==='waiting'&&top.phase==='implement'&&!this.manager(top.id)&&!this.get('atomic_compile')&&!String(this.read('paused_state',null)?.kind||'').startsWith('checks_')) {
         this.event(top.id,'atomic_continue','Continue gives Root, which wrote the code itself, another turn.');
         this.wake(top.id);
       }
@@ -9151,14 +8074,13 @@ export class ControlRoom extends DurableObject {
   roomRoundCap() { return Math.min(80,2*this.roundCap()); }
   // The queue's turn allowance left (4x the Start budget, set at Start; a room without one reads it from its budget).
   turnsLeft() { const v=this.get('queue_turns_left',''); return v===''?4*(Number(this.get('start_budget',''))||Number(this.get('budget','0'))||20):Math.max(0,Number(v)||0); }
-  // What the dashboard shows of the prompts and the card's history, in the
-  // snapshot and every delta alike (small: the texts are clipped).
+  // What the dashboard shows of the prompts, in the snapshot and every delta
+  // alike (small: the texts are clipped).
   promptsHead() {
     const rows=this.promptRows().slice(-60);
     return {prompts:rows.map(r=>({id:r.id,text:clip(r.text,1200),status:r.status,kind:r.kind,budget:r.budget,goal_rev:r.goal_rev,outcome:r.outcome,created:r.created,started:r.started,finished:r.finished,edited:r.edited,version:r.version??0})),
-      queue_on_fail:this.queueOnFail(),queue_stopped:this.get('queue_stopped',''),goal_rev:this.goalRev(),amending:this.get('amend_pending','')||this.read('amend_deferred',null)?.id||'',
-      queue_turns_left:this.turnsLeft(),room_repair_rounds:Number(this.get('room_repair_rounds','0')),room_repair_cap:this.roomRoundCap(),
-      card_history:query(this.db(),'SELECT rev,goal_rev,reason,delta,ts FROM card_revisions ORDER BY rev').map(r=>({rev:r.rev,goal_rev:r.goal_rev,reason:clip(r.reason||'',600),delta:parse(r.delta||'{}',{}),ts:r.ts}))};
+      queue_on_fail:this.queueOnFail(),queue_stopped:this.get('queue_stopped',''),goal_rev:this.goalRev(),
+      queue_turns_left:this.turnsLeft(),room_repair_rounds:Number(this.get('room_repair_rounds','0')),room_repair_cap:this.roomRoundCap()};
   }
   // Where a new prompt goes: after the last one (queued), or, for one applied
   // now, after the finished ones and before the queued.
@@ -9171,13 +8093,6 @@ export class ControlRoom extends DurableObject {
   amendRefusal() {
     if(!this.v8())return 'Amendments and queued prompts need a room started on the v8 pipeline.';
     if(!this.started()||!['complete','failed','paused','running','error'].includes(this.get('status','idle')))return 'Start a run first: a change applies to a run that exists.';
-    if(this.read('card_provided',null))return 'A room started from a provided card (a benchmark task) takes no change.';
-    return '';
-  }
-  // A change is in flight (its card writer) or waits for a row's split: Start, Clear, Continue and another change wait for it.
-  changeBusy() {
-    if(this.get('amend_pending'))return 'A change is being applied to this room; wait until it is, then try again.';
-    if(this.read('amend_deferred',null))return 'A change waits to be handed on (for a split to be admitted, or for the card or the top\'s row); wait for it to be applied, then try again.';
     return '';
   }
   // The goal with these changes added, against EFFECTIVE_GOAL_LIMIT.
@@ -9263,7 +8178,7 @@ export class ControlRoom extends DurableObject {
   // The queue's next prompt is due: by the alarm, or now when the room has no
   // alarm. force: Go on, which applies it whatever the room's state.
   async kickQueue(force=false) {
-    if(!this.v8()||this.busy||this.get('status')==='running'||this.changeBusy())return;
+    if(!this.v8()||this.busy||this.get('status')==='running')return;
     if(!(this.get('status')==='complete'||force)||this.get('queue_stopped')||!this.promptRows("status='queued'").length)return;
     const at=Date.now()+PROMPT_ALARM_MS;
     this.save('prompts_due',{at,...force?{force:true}:{}});
@@ -9273,7 +8188,7 @@ export class ControlRoom extends DurableObject {
   finishPrompt(id, status, extra={}) {
     const row=this.promptRows('id=?',id)[0];
     if(!row)return;
-    const outcome={...row.outcome,room_status:this.get('status','idle'),goal_rev:row.goal_rev,card_rev:this.cardRev(),passed:status==='done'&&this.read('compile_passed',null)?.card_rev===this.cardRev(),...extra};
+    const outcome={...row.outcome,room_status:this.get('status','idle'),goal_rev:row.goal_rev,passed:status==='done'&&this.read('compile_passed',null)?.goal_rev===this.goalRev(),...extra};
     this.db().exec('UPDATE prompts SET status=?,finished=?,outcome=? WHERE id=?',status,Date.now(),JSON.stringify(outcome),id);
     this.set('queue_failures',status==='failed'?String(Number(this.get('queue_failures','0'))+1):'0');
     this.event('system',`prompt_${status}`,clip(`${status==='done'?'Done':'Failed'}: ${row.text}${extra.error?` (${extra.error})`:''}`,700));
@@ -9298,17 +8213,9 @@ export class ControlRoom extends DurableObject {
   async promptsAfterRun() {
     if(!query(this.db(),'SELECT id FROM prompts LIMIT 1').length)return;
     const status=this.get('status','idle');
-    // S9 review: a run that ended because a row waited on a change goes on for it, with the turns it had left; never with a fresh budget.
-    if((this.get('amend_held')||this.get('amend_wake'))&&status==='paused'&&this.get('stop_requested')!=='1'&&!this.runFailed()&&!this.changeBusy()) {
-      const left=Number(this.get('budget_left','0'))||0;
-      this.set('amend_held','');this.set('amend_wake','');
-      if(left>0)return this.runAgain(left,'The run goes on for the change with the turns it had left');
-    }
-    if(this.changeBusy())return;
-    this.set('amend_wake','');
     const failed=this.runFailed(),hold=this.read('paused_state',null);
     if(status!=='complete'&&!failed)return;
-    for(const p of this.promptRows("status='running'"))this.finishPrompt(p.id,failed?'failed':'done',failed?{error:clip(hold?.text||this.failedDescendantReason(this.topId())||status,400)}:{});
+    for(const p of this.promptRows("status='running'"))this.finishPrompt(p.id,failed?'failed':'done',failed?{error:clip(hold?.text||this.failedDescendantReason(this.roomManager()||this.topId())||status,400)}:{});
     if(status==='complete')this.set('queue_stopped','');
     if(!this.promptRows("status='queued'").length)return;
     if(failed)return this.afterFailure(`the last prompt failed (${hold?.kind||status})`);
@@ -9324,7 +8231,7 @@ export class ControlRoom extends DurableObject {
   async advancePrompts() {
     const due=this.read('prompts_due',null);
     this.save('prompts_due',null);
-    if(this.busy||this.get('status')==='running'||this.changeBusy()||this.get('queue_stopped'))return {skipped:true};
+    if(this.busy||this.get('status')==='running'||this.get('queue_stopped'))return {skipped:true};
     if(this.get('status')!=='complete'&&!due?.force&&!(this.runFailed()&&this.queueOnFail()==='continue'))return {skipped:true};
     const head=this.promptRows("status='queued'")[0];
     if(!head)return {skipped:true};
@@ -9338,72 +8245,38 @@ export class ControlRoom extends DurableObject {
     this.event('system','prompt_started',clip(`Next queued prompt: ${head.text}`,700));
     return this.applyPrompt(head.id,head.text);
   }
-  // POST /api/amend: a change applied now. A complete or failed room takes it
-  // as its next goal revision and runs again; a paused one takes it onto the
-  // card, and its rows wait for Continue; a running one takes it as an
-  // adjustment: the parts it reaches read it at their next turn. budget: turns
-  // the user adds, on top of what the run has left (recorded on the prompt).
+  // POST /api/amend: a change applied now, as the prompt's next revision: a
+  // change on the row of the manager the room created (applyChange). A
+  // complete or failed room runs again; a paused one keeps it on that row,
+  // which takes it up on Continue; a running one takes it up at that
+  // manager's next turn. budget: turns the user adds, on top of what the run
+  // has left (recorded on the prompt).
   async amend(raw, {budget=null}={}) {
     const t=promptText(raw);
     if(t.error)return {error:t.error};
-    const refused=this.amendRefusal()||this.changeBusy();
+    const refused=this.amendRefusal();
     if(refused)return {error:refused,status:409};
     const id=crypto.randomUUID();
     this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created,version) VALUES (?,?,?,'running','adjust',?,NULL,'{}',?,0)",id,this.promptSeq(false),t.text,budget,Date.now());
     return this.applyPrompt(id,t.text,budget,{explicit:budget!=null});
   }
-  // deferred: the change waited (amend_deferred) and is applied now, by the
-  // handler that waited with it (hid; a record from before M2 has none, and
-  // a handler is spawned for it).
-  async applyPrompt(id, text, budget=null, {explicit=false,deferred=false,hid:waited=''}={}) {
+  async applyPrompt(id, text, budget=null, {explicit=false}={}) {
     const status=this.get('status','idle'),running=this.busy||status==='running',failedRoom=!running&&this.runFailed();
     const row=this.promptRows('id=?',id)[0],base=Number(row?.budget??this.get('start_budget','0'))||20;
     // A run for a finished room is bounded by the queue's allowance (and grows by turns the user adds).
-    if(!running&&status!=='paused'&&!deferred&&this.turnsLeft()+(explicit?budget:0)<1) {
+    if(!running&&status!=='paused'&&this.turnsLeft()+(explicit?budget:0)<1) {
       const error=`The queue's turn allowance is spent (${this.get('queue_turns_allowance','0')} turns since Start); give this change a budget of its own.`;
       this.finishPrompt(id,'failed',{error});
       return {error,status:409};
     }
     this.db().exec("UPDATE prompts SET status='running',started=COALESCE(started,?) WHERE id=?",Date.now(),id);
-    this.set('amend_pending',id);
-    if(!deferred)this.event('system','amend_received',clip(`${running?'Adjustment while running':'Change'}: ${text}`,1300));
-    // v8 M2 review: a follow-up prompt while the room holds asks for the person (ask_unanswered) is the person's answer:
-    // each asker hears it whatever the card writer makes of it, and a room paused for it runs again with it.
-    const answers=!deferred&&this.answerRoomAsks(a=>MESSAGES.ask_answered({want:askWant(a),change:clip(text,600)}));
-    if(answers&&this.read('paused_state',null)?.kind==='ask_unanswered')this.save('paused_state',null);
-    const goesOn=answers&&!running&&!failedRoom;
-    // v8 live 4, v8 M2: the change's own prompt handler: its card writer writes the card delta, and it hands the change to the top as a change on its row, then ends.
-    const hid=waited&&this.promptHandlers().some(h=>h.id===waited&&h.ended_at==null)?waited:await this.handPrompt({kind:row?.kind==='adjust'?'amendment':'queued',prompt:text,prompt_id:id});
-    let applied;
-    try {applied=await this.applyAmendment(text,id,hid);}
-    catch(e) {applied={error:`Applying the change failed: ${clip(e?.message||e,400)}`};}
-    finally {
-      this.set('amend_pending','');
-      // The row that waited while the change was applied (managerTurn) decides again.
-      const held=this.get('amend_held');
-      if(held&&this.node(held)?.status==='waiting')this.wake(held);
-      // A change that waits keeps its handler open: the handler hands it on when what it goes to is there (applyDeferred).
-      const to=applied?.to?this.node(applied.to)?.label||applied.to:'';
-      if(!applied?.deferred)this.endHandler(hid,applied?.error?`${hid} could not hand the change on (${clip(applied.error,300)}) and ended.`:
-        applied?.folded?`${hid} added the change to the goal the card writer writes the card from and ended.`:applied?.unchanged?`${hid} found nothing on the card to change for it and ended.`:`${hid} handed the change to "${to}" and ended.`);
-    }
-    const idle=()=>!this.busy&&this.get('status')!=='running';
-    if(applied.stale)return {error:applied.error,status:409};
-    if(applied.deferred) {
-      this.save('amend_deferred',{id,text,budget,explicit,to:applied.to||'',at:applied.at||'',hid});
-      const waits=applied.to?`"${this.node(applied.to)?.label||applied.to}"'s split is not admitted, so the change waits for it with ${hid}, and its contracts stay as the split was written against`:
-        applied.writing?`The card is being written, so the change waits for it with ${hid}: it goes onto the top's row once the row is created from the card, or into the goal the card is written from again`:
-        `The top's row is being created from the card, so the change waits for it with ${hid}`;
-      this.event(hid,'amend_waiting',clip(`${waits}: ${text}`,900));
-      if(goesOn)this.runAgain(Math.max(1,Math.min(base,this.turnsLeft()-(explicit?budget:0))),'The person\'s answer runs');
-      return {status:this.get('status'),deferred:true};
-    }
+    this.event('system','amend_received',clip(`${running?'Adjustment while running':'Change'}: ${text}`,1300));
+    // A failed or finished room's parts get another chance with the change.
+    if(!running&&(status!=='paused'||failedRoom))this.resetForAmendment();
+    const applied=this.applyChange(id,text);
     if(applied.error) {
       this.event('system','amend_failed',clip(applied.error,900));
       this.finishPrompt(id,'failed',{error:applied.error});
-      if(idle())await this.promptsAfterRun();
-      if(idle()&&this.promptRows("status='queued'").length&&!this.get('queue_stopped'))await this.afterFailure(`a prompt could not be applied (${applied.error})`);
-      if(goesOn&&idle())this.runAgain(Math.max(1,Math.min(base,this.turnsLeft())),'The person\'s answer runs');
       return {error:applied.error,status:409};
     }
     this.db().exec('UPDATE prompts SET goal_rev=? WHERE id=?',applied.goal_rev,id);
@@ -9413,41 +8286,14 @@ export class ControlRoom extends DurableObject {
       this.set('queue_turns_left',String(this.turnsLeft()+budget));
       this.db().exec('UPDATE prompts SET outcome=? WHERE id=?',JSON.stringify({...this.promptRows('id=?',id)[0].outcome,budget_added:budget}),id);
     }
-    // Nothing on the card to change: the change is part of the goal (and the top's task); the room runs again only for an answer it gave.
-    if(applied.unchanged&&!goesOn) {
-      if(idle()){this.finishPrompt(id,'done',{note:applied.note});await this.kickQueue();}
-      return {status:this.get('status'),goal_rev:applied.goal_rev,unchanged:true};
+    if(running)return {status:'running',goal_rev:applied.goal_rev};
+    // A paused room stays paused: the change waits on the manager's row for Continue.
+    if(status==='paused'&&!failedRoom) {
+      this.event('system','amend_waiting',clip(`The room is paused, so the change waits for Continue: ${text}`,900));
+      return {status:'paused',goal_rev:applied.goal_rev,waiting:true};
     }
-    if(this.busy||this.get('status')==='running'){this.set('amend_wake',applied.to||'');return {status:'running',goal_rev:applied.goal_rev,card_rev:this.cardRev(),...applied.unchanged?{unchanged:true}:{}};}
-    // Folded: the card writer runs again with the change (Continue's path, which also lifts a card hold).
-    if(applied.folded&&(status!=='paused'||failedRoom)) {
-      const r=await this.resume(Math.max(1,Math.min(base,this.turnsLeft())));
-      return r.error?r:{status:'running',goal_rev:applied.goal_rev};
-    }
-    // A paused room stays paused: the change is on the card, and its rows wait for Continue.
-    if(status==='paused'&&!failedRoom&&!goesOn) {
-      this.event('system','amend_waiting',clip(`The room is paused, so the change waits on the card for Continue: ${text}`,900));
-      return {status:'paused',goal_rev:applied.goal_rev,card_rev:this.cardRev(),waiting:true};
-    }
-    this.runAgain(Math.max(1,Math.min(base,this.turnsLeft()-(explicit?budget:0))),goesOn?'The person\'s answer runs':'The change runs');
-    return {status:'running',goal_rev:applied.goal_rev,card_rev:this.cardRev(),...applied.unchanged?{unchanged:true}:{}};
-  }
-  // The row a waiting change goes to (amend_deferred.to); a record saved
-  // before M2 has none and waited for the top's split. '' while it waits for
-  // the goal's handler (at: the card is written, or the row created, now).
-  deferredTo(d) { return d?.to||(d?.at?'':this.topId()||''); }
-  // A change that waited, applied by the handler that waited with it: onto
-  // its row once that row's split is admitted (or the row writes its files
-  // itself), or, when the card writer it waited for is held, into the goal
-  // the card is written from again.
-  async applyDeferred() {
-    const d=this.read('amend_deferred',null);
-    if(!d)return;
-    this.save('amend_deferred',null);
-    if(!this.promptRows("id=? AND status='running'",d.id).length)return;
-    const to=this.deferredTo(d);
-    this.event(d.hid||'room','amend_resumed',clip(to?`"${this.node(to)?.label||to}"'s split is admitted; the change that waited for it is applied now: ${d.text}`:`The card writer is held, so the change that waited for it goes into the goal the card is written from: ${d.text}`,900));
-    await this.applyPrompt(d.id,d.text,d.budget,{explicit:!!d.explicit,deferred:true,hid:d.hid||''});
+    this.runAgain(Math.max(1,Math.min(base,this.turnsLeft()-(explicit?budget:0))),'The change runs');
+    return {status:'running',goal_rev:applied.goal_rev};
   }
   // The room runs again for a change (a finished room, or one whose run ended while a row waited on it).
   runAgain(cap, why='The change runs') {
@@ -9458,161 +8304,10 @@ export class ControlRoom extends DurableObject {
       catch(e) {this.set('status','error');this.busy=false;this.event('system','error',clip(e?.message||e,1300));}
     })());
   }
-  // v8 M2: the room's record of the goal; the row the change goes to gets its task from the handler (handRows).
+  // The room's record of the prompt's revisions.
   recordGoal(rev, prompt, text, goal) {
     this.db().exec('INSERT INTO goal_revisions(rev,prompt,text,effective,ts) VALUES (?,?,?,?,?) ON CONFLICT(rev) DO UPDATE SET prompt=excluded.prompt,text=excluded.text,effective=excluded.effective,ts=excluded.ts',rev,prompt||'',text,goal,Date.now());
     this.set('goal',goal);
-  }
-  // Every requirement id the room has used: the cards' and the anchors' (S9 review: an id is never given again).
-  usedRequirementIds() {
-    const ids=new Set(Object.values(this.read('check_anchors',{})).map(a=>a?.id).filter(Boolean));
-    for(const r of query(this.db(),'SELECT card FROM card_revisions'))for(const q of parse(r.card,{})?.requirements||[])ids.add(q.id);
-    for(const q of this.read('card',null)?.requirements||[])ids.add(q.id);
-    return [...ids];
-  }
-  // The change as a card delta (§7.2): the card writer gets the current card
-  // and the change; mergeAmendment keeps what it leaves alone and never
-  // weakens a check that has passed; Clef vets the new and changed
-  // requirements against the effective goal. The goal and the card each get
-  // a revision, the top's contracts follow the card (and so do the carriers
-  // of a changed deliverable), the repair counters start again, and every
-  // new or changed requirement (and a changed deliverable no such
-  // requirement serves) reaches the top as a change on its row (handRows),
-  // routed the way a failed check's is: by serves and contract name, then
-  // Clef's ranks. While the top's split is not admitted the change waits
-  // (deferred): a split written against the old contracts would fail them.
-  // v8 M2: hid, the change's handler; the card writer's amend path is a
-  // step of its own under it (card_writers, kind amend). to: the row the
-  // change was handed to (or waits for).
-  // {goal_rev, to} | {goal_rev, unchanged} | {goal_rev, folded} | {deferred, to} | {error[, stale]}.
-  async applyAmendment(text, promptId, hid='') {
-    const nonce=this.get('run_nonce'),gone=()=>this.get('run_nonce')!==nonce||!this.promptRows('id=?',promptId).length;
-    const stale={error:'The room was started again or cleared while the change was being applied; nothing of it was kept.',stale:true};
-    let card=this.read('card',null);
-    const goal=effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]),goal_rev=this.goalRev()+1;
-    if(goal.length>EFFECTIVE_GOAL_LIMIT)return {error:`The goal with its changes would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`};
-    // v8 M2: the goal's handler has not handed the card on. A room from
-    // before M2 whose top waits at its split for the card gets one first (openTopHandler).
-    await this.openTopHandler();
-    const top=this.top(),open=this.openGoalHandler();
-    if(open) {
-      // v8 M2 review: from its card writer's run through the creation of the top's row the handler is busy (runHandlers), and once its
-      // writer has written the card only the row is left to create: the change waits for that row (deferred, at the handler).
-      const writer=query(this.db(),"SELECT ended_at FROM card_writers WHERE handler=? AND kind='card' ORDER BY spawned_at DESC,id DESC LIMIT 1",open)[0];
-      if(this.handing===open||writer?.ended_at)return {deferred:true,at:'handler',writing:!this.read('card',null)};
-      // v8 card repair: its card writer is held (or has not run): a change while the card waits for the person at
-      // base_confirm is part of the goal the card is written again from, so the person can leave a waiting file out with a
-      // follow-up prompt; with no card written, it folds into the goal the card writer reads, which writes a new card (never a
-      // draft written before it).
-      if(card){this.db().exec('DELETE FROM card_revisions');this.save('card',null);this.save('base_pending',[]);}
-      this.recordGoal(goal_rev,promptId,text,goal);
-      this.save('card_draft',null);
-      this.event(open,'amend_folded',clip(`The card is not written yet, so the change is part of the goal it is written from: ${text}`,900));
-      return {goal_rev,folded:true};
-    }
-    if(!top)return {error:'Start a run first: a change applies to a run that exists.'};
-    if(!this.manager(top.id)&&(this.activeTurns.has(top.id)||top.phase==='decompose'))return {deferred:true,to:top.id};
-    // v8 M2: the card writer's amend path, a step of its own under the change's handler.
-    const sid=this.cardWriterStep(hid||open||'',`amend`),ended=(outcome,out)=>{this.endCardWriter(sid,outcome);return out;};
-    const rows=this.installedToolchains(),base=[...this.basePaths()],packages=this.settings().packages,started=Date.now(),reserved=this.usedRequirementIds();
-    const written=await writeCard(this.inferenceEnv('compiler'),{goal:this.goalFor(EFFECTIVE_GOAL_LIMIT)??goal,installed:rows,base,packages,held:this.packageView(top.id),prior_card:card,change:text,base_digest:this.heldDigest(top.id)||null});
-    if(gone())return ended('error',stale);
-    if(written.card?.blocked)return ended('error',{error:`The card writer could not apply the change: ${clip(written.card.blocked,400)}`});
-    if(written.unsupported?.length)return ended('error',{error:`The change needs ${listed(written.unsupported)}, which this deployment cannot run.`});
-    if(!written.card?.deliverables?.length)return ended('error',{error:clip(`The card writer gave no usable card for the change: ${(written.errors||[]).slice(0,6).join(' ')||'no deliverable.'}`,900)});
-    this.save('card_raw',{call:'amendCard',answers:written.raw_answers||[],ts:Date.now()});
-    if(written.notes?.length)this.event(sid,'card_repaired',clip(`The card writer's answer for the change was repaired before validation (${written.notes.length}): ${written.notes.join(' ')}`,1500));
-    const anchors=this.read('check_anchors',{}),anchored=r=>!!anchors[anchorKey(r.id,r.says)];
-    const merged=mergeAmendment(card,written.card,{change:text,anchored,reserved});
-    const opts={goal,installed:rows,base,packages,reserved};
-    let {card:next}=revalidate(merged.card,opts);
-    let delta=cardDelta(card,next);
-    // v8 card repair (§5): Clef reviews, it never deletes or reverts. For each existing deliverable the change rewrites, Clef
-    // answers whether the change is about it; a doubt is marked on the deliverable (change_doubtful) and in the revision's delta.
-    const doubtedChanges=[];
-    if(delta.deliverables.changed.length) {
-      let ps=null;
-      try {ps=await vetAmendChanges(this.inferenceEnv(),{change:text,deliverables:delta.deliverables.changed.map(n=>card.deliverables.find(d=>d.name===n)).filter(Boolean).map(d=>({name:d.name,kind:contractKind(d),path:d.path||'',does:d.does||''}))});}
-      catch(e) {this.event(sid,'amend_change_unvetted',clip(`Clef could not judge whether the change touches ${delta.deliverables.changed.join(', ')} (${e?.message||e}); the written changes are applied, unvetted.`,600));}
-      if(gone())return ended('error',stale);
-      for(const x of (ps||[]).filter(x=>x.p<AMEND_CHANGE_BAR)) {
-        doubtedChanges.push({name:x.name,p:Math.round(x.p*1000)/1000});
-        this.event(sid,'amend_change_doubtful',clip(`Clef doubted that the change is about ${x.name} (p=${x.p.toFixed(3)}); the change to it is applied and marked doubtful, for the person to keep or undo with a follow-up prompt: ${text}`,600));
-      }
-      if(doubtedChanges.length){const m=new Map(doubtedChanges.map(x=>[x.name,x.p]));next={...next,deliverables:next.deliverables.map(d=>m.has(d.name)?{...d,change_doubtful:{p:m.get(d.name)}}:d)};}
-    }
-    // §1.4 (v8 card repair): Clef vets the new and changed requirements and only annotates them (vet_p, doubtful); none is dropped or reverted.
-    const fresh=new Set([...delta.requirements.added,...delta.requirements.changed]);
-    const {ps,failed}=await vetRequirements(this.inferenceEnv(),{goal:goalView(this.baseGoal(),[...this.goalChanges(),text],EFFECTIVE_GOAL_LIMIT),requirements:vettable(next).filter(r=>fresh.has(r.id)&&routable(r)),card:next});
-    if(gone())return ended('error',stale);
-    if(failed.length)this.event(sid,'card_vetting_failed',clip(`Clef could not vet ${failed.join('; ')}; those requirements are kept, marked unvetted.`,900));
-    // The source a requirement carries now is the change's; whether the writer's own was in the goal is what the log says.
-    const said=x=>String(x??'').trim().replace(/\s+/g,' ').toLowerCase(),untracedSays=new Set((written.card.requirements||[]).filter(r=>r.untraced).map(r=>said(r.says)));
-    let doubtful;
-    ({card:next,doubtful}=applyVetting({...next,requirements:next.requirements.map(r=>untracedSays.has(said(r.says))?{...r,untraced:true}:r)},ps));
-    next={...next,requirements:next.requirements.map(({untraced:_,...r})=>r),...(written.card.review_notes?.length?{review_notes:written.card.review_notes}:{})};
-    if(!written.card.review_notes?.length)delete next.review_notes;
-    this.logDoubtful(sid,doubtful);
-    delta={...cardDelta(card,next),...(doubtedChanges.length?{doubtful_changes:doubtedChanges}:{})};
-    for(const n of merged.notes)this.event(sid,'amend_note',clip(n,500));
-    this.recordGoal(goal_rev,promptId,text,goal);
-    // The handler gives the top's row the goal with its changes as its task (a reader with a limit keeps both ends: clipEnds).
-    this.db().exec('UPDATE agents SET task=? WHERE id=?',goal,top.id);
-    if(deltaEmpty(delta)) {
-      const note='The card writer found nothing on the project card to add or change for it.';
-      this.event(sid,'amend_unchanged',clip(`${note} The change is part of the goal (revision ${goal_rev}): ${text}`,900));
-      return ended('unchanged',{goal_rev,unchanged:true,note,to:top.id});
-    }
-    // The revision: the card, the top's contracts and their carriers.
-    const rev=this.cardRev()+1,stored={...delta,amendment:clip(text,600),prompt:promptId||''};
-    this.db().exec('INSERT INTO card_revisions(rev,goal_rev,card,reason,ts,delta) VALUES (?,?,?,?,?,?)',rev,goal_rev,JSON.stringify(next),clip(text,1000),Date.now(),JSON.stringify(stored));
-    this.save('card',next);
-    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(cardContracts(next,{goal:this.userGoal()})),top.id);
-    this.syncAmendedContracts(next,top.id);
-    const status=this.read('requirement_status',{});
-    for(const rid of delta.requirements.changed)delete status[rid];
-    this.save('requirement_status',status);
-    this.resetForAmendment();
-    this.event(sid,'amend_card',clip(`Card revision ${rev} for goal revision ${goal_rev} (${Date.now()-started} ms): `+[
-      delta.deliverables.added.length&&`adds ${delta.deliverables.added.join(', ')}`,delta.deliverables.changed.length&&`changes ${delta.deliverables.changed.join(', ')}`,
-      delta.requirements.added.length&&`new requirements ${delta.requirements.added.join(', ')}`,delta.requirements.changed.length&&`changed requirements ${delta.requirements.changed.join(', ')}`].filter(Boolean).join('; ')+'.',1200));
-    this.endCardWriter(sid,'written');
-    // The rows: each new or changed requirement, on the top's row, routed as a failed check's is.
-    const routed=new Set([...delta.requirements.added,...delta.requirements.changed]),wave=`amend:${goal_rev}`,flags={wave,amendment:promptId||'',goal_rev};
-    const routedReqs=next.requirements.filter(r=>routed.has(r.id)&&routable(r)),served=new Set(routedReqs.flatMap(r=>r.serves||[]));
-    // Live 2 review: a statement reaches a worker masked with every check's values.
-    const scope=cardScope(next,{goal:this.userGoal()});
-    const ids=routedReqs.map(r=>{
-      const says=maskWith(String(r.says),scope).replace(/[.\s]+$/,'');
-      return this.insertProblem({holder:top.id,kind:'run',stage:'amend',source:top.id,input:wave,parties:[],
-        detail:clip(`${r.id} (${says}): the user's change "${text}"`,900),
-        facts:{requirement:{id:r.id,says:clip(says,200),text:clip(`${says} (${r.id}), from the user's change: ${text}`,600),source:r.source||'',names:[...(r.serves||[])],serves:[...(r.serves||[])],amendment:clip(text,600)}},flags});
-    });
-    // S9 review: a changed deliverable no routed requirement serves reaches its carrier too, as its new contract.
-    for(const name of delta.deliverables.changed.filter(n=>!served.has(n))) {
-      const d=next.deliverables.find(x=>x.name===name),does=String(d?.does||'').replace(/[.\s]+$/,'');
-      ids.push(this.insertProblem({holder:top.id,kind:'run',stage:'amend',source:top.id,input:wave,parties:[],
-        detail:clip(`${name} (${does}): the user's change "${text}"`,900),
-        facts:{requirement:{id:'',contract:name,says:clip(does,200),text:clip(`${name}: ${does}, from the user's change: ${text}`,600),source:clip(text,160),names:[name],serves:[name],amendment:clip(text,600)}},flags}));
-    }
-    this.handRows(hid,top.id,ids,wave);
-    return {goal_rev,card_rev:rev,rows:ids.length,to:top.id};
-  }
-  // A changed deliverable reaches the parts that carry it: each carried copy
-  // takes the card's fields, and its serves the new requirements' ids.
-  syncAmendedContracts(card, top) {
-    const items=new Map(cardContracts(card,{goal:this.userGoal()}).map(c=>[c.name,c]));
-    for(const n of this.allNodes().filter(x=>x.id!==top&&!isRuntimeNode(x)&&!['retired','failed'].includes(x.status))) {
-      const list=parse(n.interfaces,[]);let moved=false;
-      const out=list.map(f=>{
-        const c=items.get(f.name);
-        if(!c||contractKind(f)!==contractKind(c)||(f.path||'')!==(c.path||''))return f;
-        const nf={...c,serves:[...new Set([...(f.serves||[]),...(c.serves||[])])]};
-        if(JSON.stringify(nf)!==JSON.stringify(f))moved=true;
-        return nf;
-      });
-      if(moved)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(out),n.id);
-    }
   }
   // Each change starts with fresh repair rounds and checks (the room-wide
   // ceiling, room_repair_rounds, is never reset here), and a failed part (a
@@ -9621,7 +8316,7 @@ export class ControlRoom extends DurableObject {
   resetForAmendment() {
     this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'repair_waves:%' OR key LIKE 'rounds_exhausted:%' OR key LIKE 'manager_model_calls:%'");
     this.set('repair_exhausted','');this.save('checks_retry',null);this.save('paused_state',null);this.save('failures',{});
-    this.db().exec("DELETE FROM meta WHERE key LIKE 'checks_due:%' OR key LIKE 'compile_reported:%' OR key LIKE 'compile_blocked:%' OR key LIKE 'compile_infrastructure:%' OR key LIKE 'checks_retries:%'");
+    this.db().exec("DELETE FROM meta WHERE key LIKE 'level_rounds:%' OR key LIKE 'rebuilds:%' OR key LIKE 'compile_reported:%' OR key LIKE 'compile_blocked:%' OR key LIKE 'compile_infrastructure:%' OR key LIKE 'checks_retries:%'");
     for(const n of this.allNodes().filter(x=>x.status==='failed'&&!isRuntimeNode(x))) {
       this.set(`failure_reason:${n.id}`,'');
       const worker=!this.manager(n.id),files=worker&&deliveredFiles(this.files(n.id)).length>0;
@@ -9630,101 +8325,804 @@ export class ControlRoom extends DurableObject {
       if(!files)this.wake(n.id);
     }
   }
-  // v8 M2: the handler hands the change to the top as a parent hands a
-  // change to a child: a manager holds the rows and routes them on its next
-  // turn; a worker gets them as a ticket, its own repair (its round, as a
-  // repair of its own checks is).
-  handRows(hid, to, ids, wave) {
-    // The checks the change adds that no row holds yet are the receiving row's.
-    const held=this.heldChecks(),add=(this.read('card',null)?.requirements||[]).map(r=>r.id).filter(r=>!held.has(r));
-    // A room from before M2 has no checks:<id> key: its top reads the card's (checksOf), and each id is kept once.
-    if(add.length)this.save(`checks:${to}`,[...new Set([...this.checksOf(to).map(r=>r.id),...add])]);
-    this.placeChecks();
-    if(this.manager(to)){this.event(hid,'amend_handed',clip(`The change reaches "${this.node(to)?.label||to}", whose branch routes it on: ${ids.length} row(s).`,600),to);this.wake(to);return;}
-    const now=Date.now(),moved=ids.map(pid=>this.problems('id=?',pid)[0]).filter(p=>p&&this.moveProblem(p,{status:'assigned',assignee:to,
-      directive:{by:hid||to,origin:hid||to,side:'site',instructions:requirementText(p.facts.requirement),facts_text:''},flags:{...p.flags,revs:this.revisionKey(to)},trail:[...p.trail,{at:hid||to,action:'assign',to,rule:'handed',ts:now}]}));
-    if(!moved.length)return;
-    const exhausted=this.countRound(to,wave);
-    if(exhausted)return this.exhaustRounds(to,exhausted);
-    const ticket=crypto.randomUUID(),instructions=clip([...new Set(moved.map(p=>p.directive.instructions))].join(' '),900);
-    this.db().exec('INSERT INTO repair_tickets(id,manager,worker,problems,role,instructions,facts,created) VALUES (?,?,?,?,?,?,?,?)',ticket,to,to,JSON.stringify(moved.map(p=>p.id)),'reader',instructions,'',now);
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:amend',to,'[build:repair] '+ticket);
-    this.event(hid||to,'amend_routed',clip(`The change reaches "${this.node(to)?.label||to}", which writes its files itself: ${moved.map(p=>p.facts.requirement.id||p.facts.requirement.contract).join(', ')}.`,600),to);
-    this.wake(to);
+  // ======================== v8: levels ========================
+  // The room creates one manager from the person's prompt and observes it:
+  // it is done when the compiler of that manager has every validation of its
+  // subtree passing on its exact bundle (levelPassed). No agent knows it is
+  // that manager; anything an agent sends to its parent goes to the room when
+  // its parent is the room (escalate), where it is a hold for the person.
+  // Every manager is the same:
+  //  - its split step: Clef pre-grades the assignment (the runtime's catch at
+  //    split_floor); its splitter (a short-lived step, table splitters)
+  //    answers {contracts, validations, pieces}, held to the hard rules
+  //    (src/validations.js readLevel) and reviewed by Clef in one batched
+  //    call (reviewLevel), up to SPLIT_ATTEMPTS attempts; the manager admits
+  //    the result (admitLevel): its level's design (design:<id>), the
+  //    validations it holds, and its children, the pieces or one worker;
+  //  - it routes, with Clef: a complaint the compiler observed goes down to
+  //    the worker responsible for it, verbatim; a change to the child whose
+  //    contracts it concerns, or to its splitter when none covers it; an ask
+  //    a child's scope walk found inside its assignment to the contract that
+  //    gives it, or to its splitter;
+  //  - when every live child is done, its builder joins their pieces and its
+  //    compiler verifies every validation of its subtree not passed on its
+  //    exact bundle (compileLevel).
+  // A worker writes code: the only agent that does. Data never moves: a row,
+  // a contract, a file stays where it was made; an agent whose ask is in
+  // scope nowhere up to the room is archived with its subtree, and its
+  // manager's splitter rebuilds what it delivered (rebuildOrphans).
+  roomManager() { return this.get('room_manager','')||null; }
+  // The room starts: it creates the manager the prompt goes to, with the
+  // installed packages, the linked pages' chunks and the existing files it starts from.
+  async openRoom(prompt) {
+    await this.loadSources();
+    const all=this.allRefs(),base=this.read('base',null),label=clip(String(prompt).split(/(?<=[.!?])\s|\n/)[0],60)||'Prompt';
+    const m=await this.provision('root',null,label,prompt,[],[],this.installedSet(),'manager');
+    this.set('room_manager',m.id);
+    if(all.length)this.save(`source_refs:${m.id}`,rootRefs(null,all));
+    if(base)this.save(`base_digest:${m.id}`,base.digest||'');
+    this.event('room','room_opened',`The room created "${m.label}" from the prompt (${this.installedSet().length} packages); it is done when that manager's compiler has every validation of its subtree passing on its exact bundle.`,m.id);
+    return m;
   }
-  // §7.2 A1 (S9 review): a change's row that serves deliverables carried by
-  // two or more direct children goes to each of them, one row per carrier in
-  // the same wave, each naming only what that carrier holds and passing over
-  // the other carriers (they have their own rows). The row they came from closes.
-  fanOutAmendments(m) {
-    const kids=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed'].includes(c.status));
-    for(const p of this.problemsHeld(m).filter(p=>p.stage==='amend'&&!p.flags.of)) {
-      const serves=p.facts.requirement?.serves||[];
-      const carriers=kids.map(c=>({c,names:serves.filter(s=>parse(c.interfaces,[]).some(f=>f.name===s))})).filter(x=>x.names.length);
-      if(carriers.length<2)continue;
-      if(!this.moveProblem(p,{status:'closed',outcome:'fanned',trail:[...p.trail,{at:m,action:'fan',to:carriers.map(x=>x.c.id).join(','),rule:'A1',ts:Date.now()}]}))continue;
-      for(const {c,names} of carriers)this.insertProblem({holder:m,kind:'run',stage:'amend',source:p.source,input:p.source_input,parties:[],detail:clip(`${p.detail} (for ${c.label})`,900),
-        facts:{...p.facts,requirement:{...p.facts.requirement,names,serves:names}},flags:{...p.flags,of:p.id,others:carriers.filter(x=>x.c.id!==c.id).map(x=>x.c.id)}});
-      this.event(m,'amend_fanout',clip(`The change reaches each part that carries what it serves: ${carriers.map(x=>`${x.c.label} (${x.names.join(', ')})`).join(', ')}.`,600));
+  // ---------- the rows of a level ----------
+  levelDesign(id) { return this.read(`design:${id}`,null); }
+  liveChildren(id) { return this.children(id).filter(c=>!isRuntimeNode(c)&&!['archived','retired','failed'].includes(c.status)); }
+  // The live rows of a subtree (an archived row and what is below it are left out), the row itself first.
+  liveSubtree(id) {
+    const out=[id];
+    for(let i=0;i<out.length;i++)out.push(...this.liveChildren(out[i]).map(c=>c.id));
+    return out;
+  }
+  isWorker(n) { return !!n&&roleOf(n)==='worker'; }
+  validationRows(where='1=1', ...args) {
+    return query(this.db(),`SELECT id,level,serves,spec,says,notes FROM validations WHERE ${where} ORDER BY CAST(SUBSTR(id,2) AS INTEGER)`,...args)
+      .map(r=>({id:r.id,level:r.level,serves:parse(r.serves,[]),check:parse(r.spec,{}),...(r.says?{says:r.says}:{}),notes:parse(r.notes,{})}));
+  }
+  validationsById() { return new Map(this.validationRows().map(v=>[v.id,v])); }
+  nextValidationId() { return `V${Number(query(this.db(),'SELECT COALESCE(MAX(CAST(SUBSTR(id,2) AS INTEGER)),0) AS n FROM validations')[0].n)+1}`; }
+  // The validations a row holds (checks:<id>), and those held in its live subtree.
+  checksOf(id) { const ids=new Set(this.read(`checks:${id}`,[])); return ids.size?this.validationRows().filter(v=>ids.has(v.id)):[]; }
+  subtreeValidations(id) { const ids=new Set(this.liveSubtree(id).flatMap(x=>this.read(`checks:${x}`,[]))); return ids.size?this.validationRows().filter(v=>ids.has(v.id)):[]; }
+  // What validations run by: the contracts of each level that wrote one of them.
+  specOf(validations) {
+    const contracts=[],seen=new Set();
+    for(const level of [...new Set(validations.map(v=>v.level))])for(const c of this.levelDesign(level)?.contracts||[])if(!seen.has(c.name)){seen.add(c.name);contracts.push(c);}
+    return {contracts,validations};
+  }
+  // Every contract of the tree's levels, for the facts reading names and languages.
+  treeContracts() { return query(this.db(),"SELECT value FROM meta WHERE key LIKE 'design:%'").flatMap(r=>parse(r.value,{})?.contracts||[]); }
+  // The names a row may call (its uses), each as the nearest level above it defines it.
+  callableOf(id) {
+    const out=[];
+    for(const name of normalizeUses(parse(this.node(id)?.uses,[]),{v8:true}))
+      for(let x=this.agentAbove(id);x;x=this.agentAbove(x)){const c=this.levelDesign(x)?.contracts?.find(f=>f.name===name);if(c){out.push(c);break;}}
+    return out;
+  }
+  // ---------- the split step ----------
+  // One attempt per turn. A level with no design yet: Clef pre-grades it
+  // once; a pre-grade at or below split_floor (the runtime's catch), or no
+  // room for pieces, hands a level whose contracts were given to one worker
+  // with no splitter call, and asks the splitter of a level with none only
+  // for the level's contracts and validations. A pending job (level_job:<id>:
+  // a rebuild of what an archived child delivered, or an extension for a
+  // change or an ask none of its children covers) is an attempt of the same
+  // kind on a level that has its design.
+  async splitStep(id, job=null) {
+    const n=this.node(id),own=job?job.own||[]:this.promisedOf(id),cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
+    this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
+    if(!job&&!this.splitAttempts(id).some(a=>a.attempt===0)) {
+      const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:cfg.floor,SPLIT_FLOOR:cfg.floor},clipEnds(n.task,2600),null,this.gateContracts(id)),caught=pre.probability<=cfg.floor;
+      this.recordAttempt(id,{attempt:0,p:r3(pre.probability),floor:cfg.floor,caught,ms:Date.now()-started});
+      this.event(id,'split_gate',caught?`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${cfg.floor}: no division is tried (${Date.now()-started} ms).`:`Clef's pre-grade p=${pre.probability.toFixed(3)} is above the floor ${cfg.floor}: the splitter proposes and Clef reviews (${Date.now()-started} ms).`);
+    }
+    const caught=!job&&this.splitAttempts(id).find(a=>a.attempt===0)?.caught,room=this.canSplitPieces(id,2);
+    const kind=job?.kind||'split',key=`${kind}:${job?.key||''}`;
+    if(!job&&(caught||!room)&&own.length)
+      return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{why:caught?`Clef's pre-grade is at or below the floor ${cfg.floor}, so it hands its whole assignment down to one worker.`:'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.'});
+    const divide=room&&!caught,tried=this.splitAttempts(id).filter(a=>a.attempt>0&&a.job===key),attempt=tried.length+1,feedback=this.read(`split_feedback:${id}`,null);
+    const out=await this.runSplitter(id,{kind,assignment:job?.text||n.task,own,divide,attempt,feedback});
+    const level=out.level,why=out.error?`its answer held no level (${clip(out.error,200)})`:'';
+    if(why||level.defects.length) {
+      this.recordAttempt(id,{attempt,job:key,splitter:out.sid,defects:why?1:level.defects.length,outcome:attempt>=SPLIT_ATTEMPTS?'exhausted':'retry rules',ms:Date.now()-started});
+      const list=why?[RETRY.json]:level.defects.slice(0,12);
+      this.event(id,'split_defects',clip(`The splitter's attempt ${attempt} of ${SPLIT_ATTEMPTS} misses the runtime's rules: ${why||level.defects.join(' ')}`,1500));
+      if(attempt<SPLIT_ATTEMPTS){this.save(`split_feedback:${id}`,{kind:'rules',reason:RETRY.rules(list)});this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);this.save('queue',addLast(this.read('queue',[]),id));return;}
+      this.save(`split_feedback:${id}`,null);
+      // The last attempt missed too: given contracts go to one worker (their validations are held above); a level that has none is the parent's to settle.
+      if(own.length)return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{job,why:`Its splitter's ${SPLIT_ATTEMPTS} attempts missed the runtime's rules, so it hands its contracts down to one worker.`});
+      this.save(`level_job:${id}`,null);
+      return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's ${SPLIT_ATTEMPTS} attempts missed the runtime's rules (${level?.defects?.slice(0,4).join(' ')||why}).`,1100));
+    }
+    const pieces=divide?level.pieces:[],split=pieces.length>=2,retry=feedback?.retry||'';
+    const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||n.task,2600),contracts:level.contracts,pieces:split?pieces:[],validations:level.validations,attempt,retry});
+    level.validations=level.validations.map((v,j)=>({...v,notes:review.notes[j]||{}}));
+    const doubted=level.validations.filter(v=>Object.values(v.notes).some(p=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR));
+    if(doubted.length)this.event(id,'validations_doubtful',clip(`Clef doubts ${doubted.map(v=>`${v.id} (${Object.entries(v.notes).filter(([,p])=>p<VALIDATION_DOUBT_BAR).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}; each is kept, marked.`,900));
+    if(!split) {
+      this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,outcome:'admitted',ms:Date.now()-started});
+      return this.admitLevel(id,{...level,pieces:[]},{job,why:divide?`Its splitter proposed ${pieces.length?'one piece':'no pieces'}, so the level goes to one worker.`:'The level goes to one worker.'});
+    }
+    const validBar=this.splitBar(id,cfg.valid_bar),sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'fewer':'different',bound=pieces.length-1;
+    const stop=ok?'':attempt>=SPLIT_ATTEMPTS?`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`:next==='fewer'&&bound<2?`with pieces too small at ${pieces.length}, and fewer than two is no division`:'';
+    this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,valid_p:r3(review.valid),size_p:r3(review.size),scope_ps:review.scope.map(r3),valid_bar:validBar,size_bar:sizeBar,
+      ...(retry?{retry}:{}),outcome:ok?'admitted':stop?'handed down':`retry ${next}`,ms:Date.now()-started});
+    const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='fewer'?'fewer pieces':'a different division'}`:''}): split_valid p=${review.valid.toFixed(3)} (bar ${validBar}), split_size p=${review.size.toFixed(3)} (bar ${sizeBar})`;
+    if(ok){this.event(id,'split_review',`${said}: YES, the pieces are admitted.`);return this.admitLevel(id,level,{job,scope:review.scope});}
+    if(stop){this.event(id,'split_review',`${said}: NO ${stop}, so the level goes to one worker.`);return this.admitLevel(id,{...level,pieces:[]},{job,why:`${said}: NO ${stop}.`});}
+    const shown=pieces.map(c=>({label:c.label,task:clip(c.task,300),contracts:c.contracts}));
+    this.save(`split_feedback:${id}`,next==='fewer'?{kind:'too_small',retry:'fewer',reason:RETRY.too_small(pieces.length,bound),bound,rejected:shown}:{kind:'invalid',retry:'different',reason:RETRY.different,rejected:shown});
+    this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='fewer'?`fewer, larger pieces (at most ${bound})`:'a different division along its contracts'}.`);
+    this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+    this.save('queue',addLast(this.read('queue',[]),id));
+  }
+  // One splitter step (a row of splitters, splitter-<hex16>): the model's
+  // answer, read and held to the hard rules. {sid, level} or {sid, error}.
+  async runSplitter(id, {kind, assignment, own, divide, attempt, feedback}) {
+    const sid=`splitter-${hex16()}`,rows=this.installedToolchains(),packages=this.packageView(id),digest=this.heldDigest(id),held=this.validationRows().filter(v=>own.some(c=>(c.serves||[]).includes(v.id)));
+    // A job adds to a level that has its design: the contracts it has already, apart from those the job restates.
+    const have=kind==='split'?[]:(this.levelDesign(id)?.contracts||[]).filter(c=>!own.some(o=>o.name===c.name));
+    this.db().exec("INSERT INTO splitters(id,manager,kind,attempt,spawned_at,ended_at,outcome,output) VALUES (?,?,?,?,?,NULL,'','{}')",sid,id,kind,attempt,Date.now());
+    const request={assignment:clipEnds(assignment,4000),
+      ...(own.length?{contracts_you_deliver:own.map(({serves:_,...c})=>c)}:{}),
+      ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),
+      ...(have.length?{contracts_you_have:have.map(({serves:_,...c})=>c)}:{}),
+      box:{programs:[...new Set(rows.flatMap(r=>r.executables||[]))],toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]}))},
+      ...(packages.length?{your_packages:packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}))}:{}),
+      ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest}}:{}),
+      ...this.sourceInputs(id,'summaries'),
+      max_pieces:divide?feedback?.retry==='fewer'&&Number.isInteger(feedback.bound)?Math.min(feedback.bound,this.maxChildren()):this.maxChildren():0,
+      ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
+    const raw=await splitLevel(this.inferenceEnv('worker'),request);
+    if(raw.parse_error){this.db().exec("UPDATE splitters SET ended_at=?,outcome='unreadable',output=? WHERE id=?",Date.now(),JSON.stringify({raw:clip(raw.raw,1500)}),sid);return {sid,error:raw.raw||'no json object'};}
+    const level=readLevel(divide?raw:{...raw,pieces:[]},{own,held,have,rows,base:[...this.basePaths()],maxPieces:this.maxChildren()});
+    this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),level.defects.length?'defects':'read',clip(JSON.stringify({contracts:level.contracts,validations:level.validations,pieces:level.pieces,defects:level.defects}),20000),sid);
+    this.event(id,'splitter',clip(`${sid} answered: ${level.contracts.length} contract(s), ${level.validations.length} validation(s), ${level.pieces.length} piece(s)${level.defects.length?`; ${level.defects.length} miss(es) of the rules`:''}.`,600));
+    return {sid,level};
+  }
+  splitterRows() { return query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome FROM splitters ORDER BY spawned_at,id'); }
+  // The manager admits a level: its validations (each a row, V<n>, held where
+  // its contracts meet: placeChecks), its contracts with the ids of the
+  // validations serving each, its design (row data: the contracts, the
+  // validations' ids and the pieces), and its children: the pieces, each a
+  // manager, or one worker with the level's contracts. A job's level adds
+  // to the design, which stays as it was otherwise; a job for an ask
+  // answers its asker with the contract it named.
+  async admitLevel(id, level, {why='', scope=null, job=null}={}) {
+    const n=this.node(id),own=job?job.own||[]:this.promisedOf(id),ids=new Map();
+    for(const v of level.validations) {
+      const vid=this.nextValidationId();ids.set(v.id,vid);
+      this.db().exec('INSERT INTO validations(id,level,serves,spec,says,notes,created) VALUES (?,?,?,?,?,?,?)',vid,id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',JSON.stringify(v.notes||{}),Date.now());
+    }
+    const contracts=level.contracts.map(c=>({...c,serves:[...new Set([...(c.serves||[]),...level.validations.filter(v=>v.serves.includes(c.name)).map(v=>ids.get(v.id))])]}));
+    const pieces=(level.pieces||[]).length>=2?level.pieces:[];
+    const prior=this.levelDesign(id),stated=!job&&!own.length;
+    // The manager's own contracts take the level's refined form (by name); a level that stated its own contracts holds them all.
+    if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>contracts.find(x=>x.name===c.name)||c)),id);
+    const mine=name=>contracts.find(c=>c.name===name);
+    const worker={label:job?.label||n.label,task:job?.text||n.task,interfaces:job||stated?contracts:own.map(c=>mine(c.name)||c),uses:job?[]:normalizeUses(parse(n.uses,[]),{v8:true}),role:'worker',
+      ...(this.sourceRefs(id).length?{refs:this.sourceRefs(id)}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
+    const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(p.uses?.length?{uses:p.uses}:{}),role:'manager',...(p.refs?{refs:p.refs}:{}),...(p.packages?{packages:p.packages}:{})})):[worker]);
+    const batch=`level:${id}:${(prior?.batches||[]).length}`;
+    const design={contracts:[...(prior?.contracts||[]).filter(c=>!contracts.some(x=>x.name===c.name)),...contracts],validations:[...(prior?.validations||[]),...ids.values()],
+      pieces:[...(prior?.pieces||[]),...pieces.map(p=>({label:p.label,contracts:p.contracts,uses:p.uses||[]}))],batches:[...(prior?.batches||[]),{key:batch,specs,spawned:false,...(job?{job:job.kind}:{})}],ts:Date.now()};
+    this.save(`design:${id}`,design);
+    this.save(`split_feedback:${id}`,null);this.save(`level_job:${id}`,null);
+    if(scope)this.event(id,'scope_ps',`Clef's scope for each piece: ${pieces.map((p,i)=>`"${clip(p.label,60)}" p=${Number(scope[i]).toFixed(3)}`).join(', ')}; each is admitted, a doubt shown.`);
+    await this.baseContracts(id,[{interfaces:contracts}]);
+    this.event(id,pieces.length?'split_admitted':'hand_down',clip(pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`,1200));
+    // The first level a room admits says which box its first compile needs.
+    if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
+    await this.spawnLevel(id);
+    this.placeChecks();
+    if(job?.ask)this.answerAsk(job.ask,contracts.find(c=>c.name===job.ask.name)||contracts[0]);
+  }
+  // The children of a design's batches not yet spawned (a turn interrupted mid-spawn spawns the rest: spawn replays its batch).
+  async spawnLevel(id) {
+    const design=this.levelDesign(id);
+    if(!design)return;
+    for(const b of design.batches.filter(b=>!b.spawned)) {
+      const made=await this.spawn(id,b.specs,b.key);
+      if(made.length<b.specs.length){this.escalate(id,'split_capacity',`"${this.node(id)?.label||id}" could not create its ${b.specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);return;}
+      b.spawned=true;
+    }
+    this.save(`design:${id}`,design);
+    this.db().exec("UPDATE agents SET phase='manager',status='waiting' WHERE id=?",id);
+  }
+  // ---------- a turn ----------
+  // A row's turn by its role: a builder joins its manager's piece, a worker
+  // writes, a manager splits, routes and compiles. A row whose contracts
+  // place an existing file waiting for the person's grant waits with it.
+  async levelTurn(id) {
+    const n=this.node(id);
+    if(!n||n.status!=='ready')return;
+    if(!isRuntimeNode(n)&&this.waitingPaths(id).length) {
+      this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+      if(!this.read(`base_wait:${id}`,null))this.event(id,'base_waiting',clip(`${n.label} waits for the person's grant to change ${this.waitingPaths(id).join(', ')}.`,400));
+      this.save(`base_wait:${id}`,this.waitingPaths(id));
+      this.holdBaseConfirm();
+      return;
+    }
+    if(isRuntimeNode(n))return this.live()?this.pieceBuilderTurn(id):undefined;
+    return this.isWorker(n)?this.levelWorkerTurn(id):this.levelManagerTurn(id);
+  }
+  // Continue at a hold: base_confirm grants the files it lists (or those
+  // selected); checks_untested accepts the files that ship unchecked; any
+  // other hold (the validations, a split, an escalation) gives the agent it
+  // names a fresh set of repair rounds and of split attempts, and wakes it.
+  continueHold(hold, {grants=null}={}) {
+    if(hold.kind==='base_confirm')return void this.confirmBase(grants);
+    this.save('paused_state',null);
+    if(hold.kind==='checks_untested') {
+      const files=this.read('unchecked_pending','');
+      if(files){this.set('unchecked_accepted',files);this.save('unchecked_pending','');this.event('room','unchecked_accepted',clip(`The person accepted the project with the files that ship unchecked, as the hold listed them: ${hold.text||''}`,900));}
+    }
+    this.db().exec("DELETE FROM meta WHERE key LIKE 'compile_reported:%' OR key LIKE 'level_rounds:%' OR key LIKE 'rebuilds:%'");
+    if(!this.autoResume){this.db().exec("DELETE FROM meta WHERE key LIKE 'checks_retries:%'");this.save('checks_retry',null);}
+    const agent=this.node(hold.agent||this.roomManager()||'');
+    if(!agent)return;
+    if(hold.kind==='split_failed')this.save(`split_attempts:${agent.id}`,this.splitAttempts(agent.id).filter(a=>a.attempt===0));
+    if(['waiting','ready'].includes(agent.status)) {
+      this.event('room','hold_continue',`Continue: "${agent.label}" goes on after ${hold.kind}, with a fresh set of repair rounds.`,agent.id);
+      this.wake(agent.id);
     }
   }
-  // A new deliverable a route gives an existing part goes on that part's
-  // contracts (and its manager's, on the way down), so it places the file;
-  // a decline takes it off again. Only a name nobody below carries yet.
-  carryAmended(m, child, p) {
-    const names=p.facts?.requirement?.serves||[];
-    if(p.stage!=='amend'||!names.length)return;
-    const live=this.allNodes().filter(n=>n.id.startsWith(m+'.')&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status));
-    const mine=this.promisedOf(m),add=names.map(name=>mine.find(f=>f.name===name)).filter(f=>f&&!live.some(n=>this.promisedOf(n.id).some(x=>x.name===f.name)));
-    if(!add.length)return;
-    this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify([...this.promisedOf(child),...add]),child);
-    this.db().exec('UPDATE problems SET flags=? WHERE id=?',JSON.stringify({...p.flags,carried:[...(p.flags.carried||[]),{node:child,names:add.map(f=>f.name)}]}),p.id);
-    p.flags={...p.flags,carried:[...(p.flags.carried||[]),{node:child,names:add.map(f=>f.name)}]};
-    this.event(m,'amend_carried',clip(`${this.node(child)?.label||child} takes ${add.map(f=>f.name).join(', ')}, which the change adds, with it.`,500),child);
+  // Bench (feedback 'until_done'): what the grader observed on the bundle the
+  // room shipped is a complaint at the room's manager, verbatim, and the room
+  // runs again for it with up to budget turns.
+  graderComplaint(text, budget=20) {
+    const m=this.roomManager();
+    if(!m||!this.node(m))return {error:'Start a run first.'};
+    if(this.busy||this.get('status')==='running')return {error:'The room is running.',status:409};
+    this.resetForAmendment();
+    this.insertProblem({holder:m,kind:'run',stage:'complaint',source:'grader',input:'',parties:[],detail:clip(text,950),facts:{}});
+    this.event('room','grader_complaint',clip(`The grader's observation goes to "${this.node(m).label}" as a complaint: ${text}`,900),m);
+    this.wake(m);
+    let cap;
+    try {cap=normalizeTurnBudget(budget);} catch {cap=20;}
+    this.runAgain(cap,'The grader\'s complaint runs');
+    return {status:'running'};
   }
-  // The flags without the carried names of a part under `under` (that part
-  // declined the change): its contracts lose them again.
-  uncarryAmended(p, under) {
-    const keep=[],gone=[];
-    for(const c of p.flags?.carried||[])(c.node===under||c.node.startsWith(under+'.')?gone:keep).push(c);
-    for(const c of gone)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(this.promisedOf(c.node).filter(f=>!c.names.includes(f.name))),c.node);
-    return gone.length?{...p.flags,carried:keep}:p.flags;
+  // A change the person gives (a follow-up prompt, or the queue's next): a
+  // change on the row of the manager the room created, which routes it.
+  applyChange(id, text) {
+    const m=this.roomManager();
+    if(!m||!this.node(m))return {error:'Start a run first: a change applies to a run that exists.'};
+    const rev=this.goalRev()+1;
+    this.recordGoal(rev,id,text,effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]));
+    this.insertProblem({holder:m,kind:'change',stage:'change',source:'room',input:id,parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags:{change:id}});
+    this.event('room','change_given',clip(`The change goes to "${this.node(m).label}" as a change on its row: ${text}`,900),m);
+    this.wake(m);
+    return {goal_rev:rev,to:m};
   }
-  // v8 M2 review: what of m's own contracts a change's rows serve that no
-  // live piece under m carries.
-  amendItems(m, rows) {
-    const live=this.allNodes().filter(n=>n.id.startsWith(m+'.')&&!isRuntimeNode(n)&&!['retired','failed'].includes(n.status));
-    const carried=name=>live.some(n=>this.promisedOf(n.id).some(f=>f.name===name));
-    return this.promisedOf(m).filter(f=>rows.some(p=>(p.facts.requirement?.serves||[]).includes(f.name))&&!carried(f.name));
+  // ---------- the manager's turn ----------
+  async levelManagerTurn(id) {
+    const seen=this.wakeGeneration(id),job=this.read(`level_job:${id}`,null);
+    if(!this.levelDesign(id))return this.splitStep(id);
+    if(this.levelDesign(id).batches.some(b=>!b.spawned))return this.spawnLevel(id);
+    if(job)return this.splitStep(id,job);
+    this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
+    const inbox=this.receive(id);
+    if(inbox.length)this.acknowledge(id,inbox);
+    await this.routeHeld(id);
+    if(this.read(`level_job:${id}`,null)||await this.rebuildOrphans(id)){this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);this.save('queue',addLast(this.read('queue',[]),id));return;}
+    if(this.node(id)?.status==='waiting'&&this.read('paused_state',null)?.agent===id)return;
+    const kids=this.liveChildren(id),allDone=kids.length>0&&kids.every(c=>c.status==='done'),busy=this.problemsHeld(id).length>0;
+    let result=null;
+    if(allDone&&!busy&&this.live()&&await this.schedulePiece(id))result=await this.compileLevel(id);
+    const n=this.node(id);
+    if(result?.passed&&this.wakeGeneration(id)===seen) {
+      this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",`Its compiler verified ${this.subtreeValidations(id).length} validation(s) of its subtree on its exact bundle.`,id);
+      this.event(id,'done','Every validation of its subtree passed on its exact bundle; no code generated.');
+      this.complete(id);
+    } else if(n&&n.status==='ready'&&!result?.moved)this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+    if(this.receive(id).length||this.wakeGeneration(id)!==seen)this.wake(id);
   }
-  // §7.2: an amendment no child of the manager it reached takes grows the
-  // plan (v8 M2 review: at that manager, whoever it is, by the same rule at
-  // every level: A2). The deliverables it serves that no part carries go to
-  // one new piece, split off there (a late split, admitted as any is); with
-  // none left, no part had anything to change for it, and the card's checks
-  // decide.
-  async amendGrow(m, rows) {
-    const items=this.amendItems(m,rows);
-    const close=(list,outcome,kind,body)=>{for(const p of list)if(this.moveProblem(p,{status:'closed',outcome,trail:[...p.trail,{at:m,action:'close',to:'',rule:'A2',ts:Date.now()}]}))this.event(m,kind,clip(`${body}: ${p.detail}`,600));};
-    if(!items.length)return close(rows,'declined','amend_declined','No part had anything to change for it, so the card\'s checks decide');
-    const change=rows[0].facts.requirement.amendment||'';
-    const label=items.length===1?clip(items[0].name,60):clip(`Change ${Math.max(1,(rows[0].flags.goal_rev||2)-1)}`,60);
-    const spec={label,task:clip(`${change} Deliver ${items.map(f=>f.name).join(', ')}.`,900),contracts:items};
-    let admit;
-    try {admit=await this.admitChildren(m,this.node(m),[spec],{late:true,v8:true,promise:items});}
-    catch(e) {return close(rows,'declined','amend_declined',`No new piece could be admitted for it (${clip(e?.message||e,200)}); the card's checks decide`);}
-    if(admit.c5?.length||!admit.spawn?.length)return close(rows,'declined','amend_declined',`No new piece could be admitted for it${admit.c5?.length?` (${admit.c5.map(e=>e.text).join(' ')})`:''}; the card's checks decide`);
-    const made=await this.spawn(m,admit.spawn);
-    if(!made.length)return close(rows,'declined','amend_declined','The room has no space for a new piece; the card\'s checks decide');
-    // The new piece is built for these rows: they close, and the checks verify it.
-    const grown=rows.filter(p=>(p.facts.requirement.serves||[]).some(s=>items.some(f=>f.name===s)));
-    close(grown,'grown','amend_grown',`A new piece, "${made[0].label}", delivers ${items.map(f=>f.name).join(', ')} for the change`);
-    close(rows.filter(p=>!grown.includes(p)),'declined','amend_declined','No part had anything to change for it, so the card\'s checks decide');
+  // A manager settles what it holds: complaints (down to the responsible
+  // worker), changes (to the children they concern), asks (to the contract
+  // that gives them) and escalations (up its line).
+  async routeHeld(id) {
+    for(const p of this.problemsHeld(id)) {
+      if(!this.moveProblem(p,{status:'closed',outcome:'routed'}))continue;
+      if(p.kind==='escalation'){this.escalate(id,p.facts.kind||p.stage,p.detail,p.facts.origin||p.source);continue;}
+      if(p.kind==='change'){await this.routeChange(id,p.facts.text||p.detail,p.flags||{});continue;}
+      if(p.kind==='ask'){await this.resolveAsk(id,p.facts);continue;}
+      await this.routeComplaint(id,{kind:p.kind,parties:p.parties,detail:p.detail,facts:p.facts},p.flags||{});
+    }
+  }
+  // ---------- complaints ----------
+  // What a compiler observed (or the grader of a benchmark run), routed down
+  // to the worker responsible for it, as it was observed: to the child whose
+  // subtree wrote a file it names, else to the child whose contracts it
+  // validates, else to any live child; Clef chooses when several may
+  // (CLEF.owner). A complaint about contracts of m's level that no live
+  // child delivers is a split defect at m: its splitter rebuilds them.
+  async routeComplaint(m, item, flags={}) {
+    const kids=this.liveChildren(m),serves=item.facts?.validation?.serves||[];
+    const owners=[...new Set((item.parties||[]).map(x=>x.owner).filter(Boolean))];
+    let to=kids.filter(c=>owners.some(o=>o===c.id||o.startsWith(c.id+'.')));
+    if(!to.length)to=kids.filter(c=>this.promisedOf(c.id).some(f=>serves.includes(f.name)));
+    if(!to.length&&serves.length&&this.levelDesign(m)?.contracts?.some(c=>serves.includes(c.name))){this.set(`orphans:${m}`,JSON.stringify(serves));this.wake(m);return;}
+    if(!to.length)to=kids;
+    if(!to.length)return void this.escalate(m,'checks_failed',clip(`"${this.node(m)?.label||m}" has no live part for what was observed: ${item.detail}`,900));
+    if(to.length>1) {
+      let ps=[];
+      try {ps=await routeAmong(this.inferenceEnv(),{key:'owner',text:item.detail,children:to.map(c=>({task:c.task,contracts:this.promisedOf(c.id)}))});}
+      catch(e) {this.event(m,'route_uncertain',clip(`Clef could not choose among ${to.map(c=>c.label).join(', ')} (${e?.message||e}); the first takes it.`,400));}
+      const best=ps.length?ps.indexOf(Math.max(...ps)):0;
+      to=[to[best]];
+    }
+    this.deliverComplaint(m,to[0],item,flags);
+  }
+  deliverComplaint(from, child, item, flags={}) {
+    const source=flags.source||from;
+    if(this.isWorker(child)) {
+      // The worker's record of it (its files the complaint names come first in its request); the complaint itself is the message.
+      const pid=this.insertProblem({holder:from,kind:item.kind,stage:'complaint',source,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags});
+      this.db().exec("UPDATE problems SET status='assigned',assignee=? WHERE id=?",child.id,pid);
+      this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:complaint',child.id,`[complaint] ${clip(item.detail,1600)}`);
+      this.event(from,'complaint_routed',clip(`To "${child.label}": ${item.detail}`,900),child.id);
+      return void this.wake(child.id);
+    }
+    this.insertProblem({holder:child.id,kind:item.kind,stage:'complaint',source,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags});
+    this.event(from,'complaint_routed',clip(`Down to "${child.label}": ${item.detail}`,900),child.id);
+    this.wake(child.id);
+  }
+  // ---------- escalation ----------
+  // What an agent cannot settle goes to its parent; a parent that is the
+  // room holds it for the person, naming the agent it came from (Continue wakes that agent).
+  escalate(id, kind, text, origin=id) {
+    const up=this.agentAbove(id);
+    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+    if(up) {
+      this.insertProblem({holder:up,kind:'escalation',stage:kind,source:id,input:'',parties:[],detail:clip(text,950),facts:{kind,origin}});
+      this.event(id,'escalated',clip(`${kind}: ${text}`,900),up);
+      this.wake(up);
+      return {held:true};
+    }
+    this.holdRoom(kind,`${this.doubtNote(kind)}${text}`,{agent:origin});
+    return {held:true};
+  }
+  // ---------- asks ----------
+  // A worker's ask its world does not answer by name: Clef walks up its line
+  // and asks at each manager whether producing the need is part of that
+  // manager's assignment (CLEF.owns_need). The first that holds it settles
+  // it (resolveAsk). In scope nowhere up to the room: the asker is archived
+  // with its subtree, and its manager's splitter rebuilds what it delivered.
+  async askUp(worker, a) {
+    if(this.brokerAnswer(worker,a))return;
+    const own=a.name?this.promisedOf(worker).find(f=>f.name===a.name):null;
+    if(own)return void this.answerAsk({worker,key:a.key,request_id:''},own,MESSAGES.own_contract({contract:contractLine(own)}));
+    if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',worker,a.key).length)return;
+    const want=a.name?`${a.name} (${clip(a.question,200)})`:`"${clip(a.question,200)}"`,env=this.inferenceEnv();
+    for(let x=this.agentAbove(worker);x;x=this.agentAbove(x)) {
+      const m=this.node(x);
+      let p=0;
+      try {p=await inScope(env,{assignment:m.task,contracts:this.promisedOf(x),need:a.question,name:a.name||''});}
+      catch(e) {this.event(x,'scope_walk',clip(`${want}: Clef could not answer (${e?.message||e}); read as outside "${m.label}"'s assignment.`,500));}
+      this.event(x,'scope_walk',clip(`${want}: Clef p=${Number(p).toFixed(3)}, ${p>=0.5?'inside':'outside'} "${m.label}"'s assignment.`,500),worker);
+      if(p<0.5)continue;
+      const request_id=crypto.randomUUID();
+      this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?) ON CONFLICT(worker,topic) DO NOTHING',worker,a.key,request_id);
+      this.insertProblem({holder:x,kind:'ask',stage:'ask',source:worker,input:request_id,parties:[],detail:clip(`${this.node(worker)?.label||worker} asks for ${want}.`,900),facts:{worker,key:a.key,need:a.question,name:a.name||'',request_id}});
+      return void this.wake(x);
+    }
+    this.archive(worker,`${want} is in scope at no manager up to the room`);
+  }
+  // At the manager whose assignment holds the need: the contract of its
+  // level a live child other than the asker's line delivers (by name, else
+  // Clef's match), or its splitter extends the level with what gives it.
+  async resolveAsk(m, ask) {
+    const asker=this.node(ask.worker);
+    if(!asker||['archived','retired','failed'].includes(asker.status))return;
+    const kids=this.liveChildren(m),line=kids.find(k=>ask.worker===k.id||ask.worker.startsWith(k.id+'.'));
+    const offers=(this.levelDesign(m)?.contracts||[]).filter(c=>kids.some(k=>k!==line&&this.promisedOf(k.id).some(f=>f.name===c.name)));
+    let hit=ask.name?offers.find(c=>c.name===ask.name):null;
+    if(!hit&&offers.length) {
+      try {const r=await matchContracts(this.inferenceEnv(),{need:ask.need,name:ask.name},offers);if(r)hit=offers[r.index];}
+      catch(e) {this.event(m,'route_uncertain',clip(`Clef could not match ${ask.name||ask.need} (${e?.message||e}); its splitter extends the level.`,400));}
+    }
+    if(hit)return this.answerAsk(ask,hit);
+    this.save(`level_job:${m}`,{kind:'extend',key:ask.key,text:ask.need,label:clip(ask.name||ask.need,60),own:[],ask});
+    this.event(m,'level_extend',clip(`No contract of "${this.node(m)?.label||m}"'s level gives ${ask.name||ask.need}; its splitter extends the level.`,500),ask.worker);
+    this.wake(m);
+  }
+  // The asker hears the contract that gives what it asked for, and may call it by name from now on.
+  answerAsk(ask, c, text=null) {
+    const n=this.node(ask.worker);
+    if(!n||!c)return;
+    if(!text&&!this.promisedOf(n.id).some(f=>f.name===c.name)) {
+      const uses=normalizeUses(parse(n.uses,[]),{v8:true});
+      if(!uses.includes(c.name))this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...uses,c.name]),n.id);
+      // Its manager calls it too, so the levels between them link it.
+      for(let x=this.agentAbove(n.id);x&&!this.levelDesign(x)?.contracts?.some(f=>f.name===c.name);x=this.agentAbove(x)) {
+        const up=normalizeUses(parse(this.node(x)?.uses,[]),{v8:true});
+        if(!up.includes(c.name))this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...up,c.name]),x);
+      }
+    }
+    const value=text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)});
+    this.db().exec('DELETE FROM route_workers WHERE worker=? AND topic=?',n.id,ask.key);
+    this.recordAnswer(n.id,{key:ask.key,kind:'provided',text:clip(value,600)});
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',n.id,'[route:provided] '+JSON.stringify({id:ask.request_id||crypto.randomUUID(),key:ask.key,value:clip(value,1400)}));
+    this.event(n.id,'ask_answered',clip(`${c.name}: ${value}`,500));
+    if(!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=?',n.id).length)this.wake(n.id);
+  }
+  // ---------- archive, and the rebuild ----------
+  // An agent archived with its subtree: its row and its files stay as they
+  // are, and nothing it holds moves; the builder leaves it out of its join.
+  archive(id, why) {
+    const n=this.node(id);
+    if(!n)return;
+    for(const x of this.subtree(id)) {
+      this.db().exec("UPDATE agents SET status='archived' WHERE id=? AND status!='archived'",x);
+      this.db().exec('DELETE FROM route_workers WHERE worker=?',x);
+      this.db().exec("UPDATE problems SET status='closed',outcome='archived',updated=? WHERE (holder=? OR assignee=?) AND status!='closed'",Date.now(),x,x);
+    }
+    this.save('queue',this.read('queue',[]).filter(q=>!this.subtree(id).includes(q)));
+    this.event(id,'archived',clip(`"${n.label}" is archived with its subtree: ${why}. Its files stay as they are; its manager rebuilds what it delivered.`,700),n.parent||'');
+    this.placeChecks();
+    if(n.parent)this.wake(n.parent);
+  }
+  // The contracts of m's level that no live child delivers (an archived
+  // child's, or one a complaint named): m's splitter rebuilds them, a new
+  // piece and worker with the same contracts and validations. True when a
+  // rebuild is under way.
+  async rebuildOrphans(m) {
+    const design=this.levelDesign(m);
+    if(!design)return false;
+    const live=this.liveChildren(m),carried=name=>live.some(k=>this.promisedOf(k.id).some(f=>f.name===name));
+    const gone=this.children(m).filter(c=>c.status==='archived'&&!isRuntimeNode(c)),named=new Set(parse(this.get(`orphans:${m}`,'[]'),[]));
+    const orphans=[...new Map([...gone.flatMap(k=>this.promisedOf(k.id)),...design.contracts.filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()];
+    this.set(`orphans:${m}`,'[]');
+    if(!orphans.length)return false;
+    const n=Number(this.get(`rebuilds:${m}`,'0'));
+    if(n>=MAX_REBUILDS){this.escalate(m,'split_failed',clip(`"${this.node(m)?.label||m}" rebuilt ${orphans.map(c=>c.name).join(', ')} ${MAX_REBUILDS} times, and no live child delivers ${orphans.length>1?'them':'it'}.`,900));return true;}
+    this.set(`rebuilds:${m}`,String(n+1));
+    const tasks=gone.filter(k=>this.promisedOf(k.id).some(f=>orphans.some(o=>o.name===f.name)));
+    this.save(`level_job:${m}`,{kind:'rebuild',key:`${n+1}`,text:tasks.map(k=>k.task).join('\n\n')||this.node(m).task,label:tasks[0]?.label||this.node(m).label,own:orphans});
+    this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'} (rebuild ${n+1} of ${MAX_REBUILDS}).`,600));
+    return true;
+  }
+  // ---------- changes ----------
+  // A change on m's row: before m's split it is part of m's assignment; after
+  // it, Clef routes it to each live child whose contracts it concerns
+  // (CLEF.change), verbatim, and m's splitter extends the level when it concerns none.
+  async routeChange(m, text, flags={}) {
+    const n=this.node(m);
+    if(!this.levelDesign(m)){this.db().exec('UPDATE agents SET task=? WHERE id=?',clip(`${n.task}\n\n${text}`,8000),m);this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
+    const kids=this.liveChildren(m);
+    let ps=[];
+    try {ps=await routeAmong(this.inferenceEnv(),{key:'change',text,children:kids.map(c=>({task:c.task,contracts:this.promisedOf(c.id)}))});}
+    catch(e) {this.event(m,'route_uncertain',clip(`Clef could not route the change (${e?.message||e}); its splitter extends the level.`,400));}
+    const to=kids.filter((_,i)=>ps[i]>=0.5);
+    this.event(m,'change_routed',clip(to.length?`The change concerns ${to.map(c=>`"${c.label}"`).join(', ')}: ${text}`:`The change concerns no child's contracts; its splitter extends the level: ${text}`,900));
+    if(!to.length) {
+      this.save(`level_job:${m}`,{kind:'extend',key:flags.change||crypto.randomUUID(),text,label:clip(text,60),own:[]});
+      return void this.wake(m);
+    }
+    for(const c of to) {
+      if(this.isWorker(c)){this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:change',c.id,`[complaint] ${clip(text,1600)}`);this.wake(c.id);}
+      else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags});this.wake(c.id);}
+    }
+  }
+  // ---------- the worker ----------
+  // A worker's request: its prompt (its task, what it delivers under which
+  // names and paths, each with three examples rendered from the validations
+  // that serve it, and the names it may call with their references), its own
+  // files, the complaints routed to it and what its runtime notes say of its
+  // last answer, and its world: what it can ask for by name and the answers
+  // it has, the chunks of linked pages and the existing files it holds.
+  workerView(id, inbox=[], ownFiles=[]) {
+    const n=this.node(id),byId=this.validationsById(),facts=this.referenceFacts(id),callable=this.callableOf(id),refs=useReferences(callable,facts);
+    const runText=c=>!c.run?'':c.run.static?'its files are served as they are':`${c.run.run} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`;
+    const deliver=this.promisedOf(id).map(c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
+      ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{}),...(runText(c)?{runs:runText(c)}:{}),
+      examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
+    const prompt={task:n.task,deliver,...(callable.length?{call:callable.map((c,i)=>({name:c.name,contract:contractLine(c),reference:refs[i]?.reference||c.name}))}:{})};
+    const named=new Set(this.problems("assignee=? AND status!='closed'",id).flatMap(p=>p.parties.map(x=>x.owner_path||x.path)));
+    const files=sentFiles(ownFiles.filter(f=>!f.path.startsWith('memory/')).sort((a,b)=>named.has(b.path)-named.has(a.path)),{revision:true});
+    const complaints=[...inbox.filter(m=>/^\[complaint\] /.test(m.body)).map(m=>m.body.slice(12)),...this.read(`turn_notes:${id}`,[])];
+    const answers=this.read(`fn_answers:${id}`,[]).map(a=>a.text),digest=this.heldDigest(id),base=this.baseFilesFor(id);
+    const world={...this.availableView(id,answers),...(answers.length?{answers}:{}),...this.sourceInputs(id,'chunks'),
+      ...(digest||base.length?{base_note:MESSAGES.base_note(),...(digest?{existing_files:{label:BASE_LABEL,digest}}:{}),...(base.length?{base_files:base}:{})}:{})};
+    return {prompt,files,complaints,world};
+  }
+  async levelWorkerTurn(id) {
+    const n=this.node(id);
+    let saved=query(this.db(),'SELECT payload,cursor FROM pending_turns WHERE agent=?',id)[0],plan;
+    if(saved) {
+      plan=parse(saved.payload,null);
+      if(!plan)throw new Error('Invalid persisted action for '+id);
+      this.event(id,'retry',`Resuming an interrupted action at operation ${saved.cursor}.`);
+    } else {
+      const inbox=this.receive(id),ownFiles=await this.ownFiles(id),view=this.workerView(id,inbox,ownFiles);
+      this.event(id,'working',`Turn ${n.turn+1}; received ${inbox.length} messages.`);
+      const raw=await decide(this.inferenceEnv('worker'),view,{v8:true,placed:this.placedPath(id)});
+      if(raw.parse_error){this.event(id,'error',`Bad action response: ${raw.raw}`);this.incrementFailures(id,'Bad action response');return;}
+      const action=normalizeAction(raw,{v8:true}),notes=[];
+      if(raw.format_fallback)this.event(id,'format_fallback',`The answer was read as ${raw.format_fallback==='json'?'a JSON action':'one fenced file'}, not file blocks.`);
+      if(raw.truncated?.length)this.event(id,'code_retry',`Cut off before its end, written again alone: ${raw.truncated.join(', ')}`);
+      if(raw.implicit_end?.length)this.event(id,'format_fallback',`No END line after ${raw.implicit_end.join(', ')}: closed by the next marker line, or where the answer ended, and written as it stands.`);
+      if(raw.control_error)this.event(id,'format_fallback','The control block did not parse, after a retry: its complete files are written, and it is not done.');
+      // What the box's files can hold: the one path rule the build shares (the paths its contracts place may be dotfiles a contract names).
+      const placedPaths=new Set(this.promisedOf(id).map(c=>c.path).filter(Boolean));
+      action.files=action.files.filter(f=>{
+        if(f.path.startsWith('memory/'))return false;
+        const why=pathError(f.path,{placed:placedPaths.has(f.path)});
+        if(why){this.event(id,'file_refused',clip(`Not written: ${why}`,500));notes.push(clip(MESSAGES.not_written({why}),600));}
+        return !why;
+      });
+      notes.push(...this.workerAsks(id,raw,action));
+      if(action.done&&!deliveredFiles([...this.files(id),...action.files]).length) {
+        this.event(id,'missing_deliverable','The worker set done without delivering any file.');
+        notes.push(MESSAGES.delivered_nothing());
+        action.done=false;
+      }
+      action.spawn=[];action.retire=[];action.imports=[];action.exports=[];action.messages=[];action.answers=[];action.recall=[];action.remember=[];
+      action.notes=notes;
+      plan={action,inbox};
+      this.db().exec('INSERT INTO pending_turns(agent,payload,cursor) VALUES (?,?,0)',id,JSON.stringify(plan));
+      this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
+      saved={cursor:0};
+    }
+    const {action,inbox}=plan;
+    const before=[async () => {this.db().exec('UPDATE agents SET summary=? WHERE id=?',action.summary,id);this.event(id,'report',action.summary,n.parent||'');}];
+    const writes=action.files.map(f=>async () => {
+      const content=f.content!==undefined?f.content:await rewriteFile(this.inferenceEnv('worker'),{path:f.path,intent:f.intent||'the complete file',prompt:this.workerView(id,[],[]).prompt,files:await this.ownFiles(id),complaints:inbox.filter(m=>/^\[complaint\] /.test(m.body)).map(m=>m.body.slice(12))});
+      await this.putFile(id,f.path,content);
+    });
+    const firstWrite=before.length;
+    const after=[
+      ...action.ask.map(a=>async () => {await this.askUp(id,a);}),
+      async () => {this.save(`turn_notes:${id}`,action.notes||[]);},
+      async () => {this.acknowledge(id,inbox);},
+      async () => {
+        const node=this.node(id);
+        if(!node||['archived','failed','retired'].includes(node.status))return;
+        const open=query(this.db(),'SELECT topic FROM route_workers WHERE worker=?',id).map(r=>r.topic);
+        if(action.done&&!open.length) {
+          this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
+          this.event(id,'done','Delivered its files.');
+          this.complete(id);
+        } else if(action.done||action.wait) {
+          this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+          this.event(id,'waiting',open.length?`Waiting for answers to ${open.join(', ')}.`:'Waiting for its next message.');
+        } else {
+          this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+          this.save('queue',addLast(this.read('queue',[]),id));
+        }
+      }
+    ];
+    const operations=[...before,...writes,async () => {
+      try {await this.flushWrites(id);}
+      catch(e) {
+        this.rollbackStaged(id);
+        this.db().exec('UPDATE pending_turns SET cursor=? WHERE agent=?',firstWrite,id);
+        throw new Error('Artifacts commit failed; staged files rolled back and will be rewritten: '+(e?.message||e));
+      }
+    },...after];
+    for(let i=saved.cursor;i<operations.length;i++) {
+      try {await operations[i]();this.db().exec('UPDATE pending_turns SET cursor=? WHERE agent=?',i+1,id);}
+      catch(e) {this.event(id,'error',`Operation ${i+1}/${operations.length} failed: ${clip(String(e?.message||e),1100)}`);this.incrementFailures(id,String(e?.message||e));return;}
+    }
+    this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
+    if(action.unheard)this.incrementFailures(id,'ask_unheard');else this.clearFailures(id);
+    const unread=this.receive(id);
+    if(!['archived','retired'].includes(this.node(id)?.status)&&(unread.some(m=>!/^\[route:/.test(m.body))||unread.length&&!query(this.db(),'SELECT topic FROM route_workers WHERE worker=? LIMIT 1',id).length))this.wake(id);
+  }
+  // A worker's asks, before its files are written: each new one waits; one
+  // answered before is not asked again; a file that refers to a name it asks
+  // for waits for the answer. The notes go to its next turn's complaints.
+  workerAsks(id, raw, action) {
+    const notes=[],answers=this.read(`fn_answers:${id}`,[]),all=normalizeAsk(raw.ask,{v8:true});
+    const given=new Set(answers.map(a=>a.key)),fresh=a=>!given.has(a.key);
+    const rest=all.slice(MAX_REQUESTS).filter(fresh).map(a=>a.name||a.question);
+    if(rest.length)notes.push(clip(MESSAGES.ask_limit({count:String(MAX_REQUESTS),rest:rest.join('; ')}),600));
+    const repeated=action.ask.filter(a=>!fresh(a)).map(a=>a.name||a.question);
+    if(repeated.length){action.ask=action.ask.filter(fresh);notes.push(clip(MESSAGES.asked_again({names:repeated.join(', ')}),600));}
+    if(action.ask.length) {
+      action.wait=true;action.done=false;
+      const asked=new Set(action.ask.map(a=>a.name).filter(Boolean));
+      action.files=action.files.filter(f=>{
+        const names=f.content===undefined?[]:[...new Set(importRefs(f.path,f.content).flatMap(r=>[...r.names,...r.members]).filter(x=>asked.has(x)))];
+        if(!names.length)return true;
+        notes.push(clip(MESSAGES.wrote_before_answer({path:f.path,names:names.join(', ')}),600));
+        return false;
+      });
+    } else if(action.wait&&!action.done&&!query(this.db(),'SELECT topic FROM route_workers WHERE worker=? LIMIT 1',id).length) {
+      const garbled=!repeated.length&&!all.length&&(Array.isArray(raw.ask)?raw.ask.length>0:raw.ask!=null&&raw.ask!=='');
+      action.wait=false;action.unheard=true;
+      notes.push(garbled?MESSAGES.ask_unclear():MESSAGES.no_request());
+    }
+    return notes;
+  }
+  // ---------- the room's view ----------
+  // The room is done when the manager it created is done and its compiler's
+  // record of its last finished compile is for the bundle that ships, with
+  // every validation of its subtree passing on exactly that bundle.
+  levelPassed(m) {
+    const seen=m?this.read(`verified:${m}`,null):null;
+    if(!seen||seen.owned!==this.ownedDigest(m)||seen.input!==this.pieceInput(m))return false;
+    return this.subtreeValidations(m).every(v=>this.passedOn(v,seen.digest));
+  }
+  // v8: a level's compile, the same at every manager. Its builder joined
+  // the piece (bundleFiles: the children's assembled pieces, linked); its
+  // compiler verifies, in one fresh single-use box with the internet off,
+  // every validation held in its live subtree whose last pass was not on
+  // this exact bundle (passedOn), and compiles every file whose exact bytes
+  // no syntax step compiled in the modes its runtimes load it (syntax_clean).
+  // Of the validations it holds itself, one whose import closure reaches
+  // outside the piece, or that Clef finds reaches another piece (pieceScope),
+  // is held by the level above from then on (rollUp), as is one that failed
+  // on evidence of a cause outside the piece (outsideFailure). Every other
+  // failure is a complaint, routed down to the worker responsible for it as
+  // the compiler observed it (routeComplaint). A check that could not run
+  // (infrastructure) is nobody's work: the room holds and retries it. Its
+  // record of its last finished compile (verified:<id>, with the bundle's
+  // digest) says that every validation of its subtree passed on exactly the
+  // bundle it ships up. Returns {passed} | {reported} | {held} | {moved}.
+  // relinks counts the runs this call already redid after the link fixed a
+  // reference (at most two); owned, the digest it took first.
+  async compileLevel(id, {relinks=0, begun=Date.now(), owned:taken=null}={}) {
+    const above=this.agentAbove(id),depth=id.split('.').length-1;
+    if(this.read('paused_state',null)?.kind==='checks_exhausted'){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
+    const owned=taken??this.ownedDigest(id),joins=this.pieceInput(id);
+    const bundle=await this.bundleFiles(id),{files,origin,placed}=bundle;
+    const digest=await snapshotHash(files),all=this.subtreeValidations(id),here=new Set(this.read(`checks:${id}`,[]));
+    const span=(outcome,extra={})=>this.span('piece','piece_checks',begun,Date.now(),{manager:id,depth,held:here.size,subtree:all.length,outcome,...extra},id);
+    // The files it owns, or what its piece joins, changed after they were taken: it runs again on them as they are now.
+    const moved=extra=>{
+      if(this.ownedDigest(id)===owned&&this.pieceInput(id)===joins)return null;
+      this.event(id,'checks_moved',`${this.node(id)?.label||id}'s files changed while they were checked; the checks run again on the files as they are now.`);
+      this.wake(id);span('moved',extra);
+      return {moved:true};
+    };
+    const finish=async(extra={})=>{
+      const again=moved(extra);
+      if(again)return again;
+      // Every file that ships up was compiled and was in its box, or the person accepted those that were not.
+      const owe=this.uncheckedOf(bundle);
+      if(owe&&this.get('unchecked_accepted')!==owe.key) {
+        this.save('unchecked_pending',owe.key);
+        span('held',extra);
+        return this.holdChecks(id,'checks_untested',`Every validation passed on the files of "${this.node(id)?.label||id}", and ${owe.text}`,'Continue accepts them unchecked; a follow-up prompt can change the work instead.');
+      }
+      this.save(`verified:${id}`,{digest,owned,input:joins,ts:Date.now()});
+      const hold=this.read('paused_state',null);
+      if(hold?.kind?.startsWith('checks_')&&(!hold.agent||hold.agent===id))this.save('paused_state',null);
+      await this.recordRunPassed();
+      span('passed',extra);
+      return {passed:true};
+    };
+    const due=v=>!this.passedOn(v,digest);
+    const runs=[...await this.pieceScope(id,all.filter(v=>here.has(v.id)&&due(v)),bundle,digest),...all.filter(v=>!here.has(v.id)&&due(v))],spec=this.specOf(runs);
+    // What of the piece no syntax step compiled, and the files whose issues stand; a link issue is found on every join.
+    const standing=this.read(`compile_issues:${id}`,null),fresh=this.uncompiled(files);
+    if(standing?.owned===owned)for(const p of standing.paths||[])if(files.has(p))fresh.add(p);
+    const linkIssues=bundle.link?.issues||[];
+    // Code whose compile row the box's inventory has not confirmed yet: the box opens, and reports it.
+    const asks=this.uncompilable(files).some(x=>x.unconfirmed);
+    if(!runs.length&&!fresh.size&&!linkIssues.length&&!asks)return finish({ran:0});
+    const input=`${digest}:${all.map(v=>v.id).join(',')}`;
+    if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
+    // Unchanged since its complaints went down: the workers answered and left the files as they were.
+    if(this.read(`compile_reported:${id}`,null)?.input===input)return this.escalate(id,'checks_failed',clip(`The complaints the compiler of "${this.node(id)?.label||id}" sent down left its files as they were. ${this.checksSummary('Its validations:',all)}`,1100));
+    if(!files.size)return this.escalate(id,'checks_failed',`No part of "${this.node(id)?.label||id}" delivered a file to check.`);
+    if(runs.length)this.event(id,'checks_started',`Running ${runs.length} validation(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
+    else this.event(id,'piece_compiling',`Compiling ${fresh.size} of the ${files.size} file(s) of ${this.node(id)?.label||id}'s piece (snapshot ${digest.slice(0,14)}); no validation is due here.`);
+    // The Worker's own parser for a row that has one (native), the box's syntax step for the others: each only over the files it has not compiled.
+    const parsed=this.localSyntax(files,fresh);
+    const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
+    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),placed,paths:bundle.link?.paths,compile,inventory:asks});
+    const results=new Map(local);
+    for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{id:v.id,kind:'file',frames:[],...fileResult(v.check,files)});
+    // Clef judges each document, in parallel with the box.
+    const contractOf=new Map(spec.contracts.map(c=>[c.name,c]));
+    const judging=Promise.all(runs.filter(v=>v.check?.kind==='judge').map(async v=>{
+      const content=files.get(v.check.path);
+      if(typeof content!=='string'||!content.trim()){const note=`${v.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [v.id,{passed:false,detail:note,observed:{what:'local',note}}];}
+      const says=v.says||(v.serves||[]).map(n=>contractOf.get(n)?.does).filter(Boolean).join('; ');
+      // A Clef error is retried twice, with backoff, before it is infrastructure.
+      for(let k=0;;k++) {
+        try {
+          const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
+          return [v.id,{passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p,...(j.over_cap?{note:`only the first ${JUDGE_PARTS*JUDGE_CHARS} characters of it were read`}:{})}}];
+        } catch(e) {
+          if(k>=JUDGE_RETRY_MS.length)return [v.id,{passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path} after ${k+1} tries: ${clip(e?.message||e,200)}`}];
+          this.event(id,'judge_retry',clip(`Clef could not judge ${v.check.path} for ${v.id} (${clip(e?.message||e,160)}); asked again in ${JUDGE_RETRY_MS[k]} ms.`,400));
+          await new Promise(done=>setTimeout(done,JUDGE_RETRY_MS[k]));
+        }
+      }
+    }));
+    const boxStart=Date.now();
+    const [judged,run]=await Promise.all([judging,container?this.runChecks(id,input,files,plan,toolchains):null]);
+    if(container)this.span('piece','piece_box',boxStart,Date.now(),{manager:id,depth,checks:plan.checks.length,files:files.size,compiled:plan.syntax.reduce((n,s)=>n+s.files.length,0),...(run?.infrastructure?{infrastructure:true}:{passed:!!run?.report?.passed})},id);
+    for(const [vid,x] of judged)results.set(vid,{id:vid,kind:'judge',frames:[],...x});
+    const report=run?.report||null;
+    if(report?.inventory)this.save('toolchain_inventory',report.inventory);
+    for(const c of report?.checks||[])results.set(c.id,c);
+    // What the syntax steps compiled cleanly is known by its bytes from now on.
+    if(!run?.infrastructure)this.markCompiled(files,plan.syntax,report?.stages,parsed.clean);
+    // A file the run was to compile that is still not compiled, with no issue of its own, is no file this run compiled (unbuilt);
+    // one that only now has a row (the box's inventory came with this run) compiles in a run of its own.
+    const left=run?.infrastructure?new Set():this.uncompiled(files),named=new Set([...(report?.issues||[]),...parsed.issues].map(i=>i.path));
+    const unbuilt=[...left].filter(p=>fresh.has(p)&&!named.has(p)),newly=[...left].filter(p=>!fresh.has(p));
+    const notBuilt=unbuilt.length?`the syntax step left ${unbuilt.length} file(s) uncompiled with no issue of their own (${clip(unbuilt.join(', '),200)})`:'';
+    // A name or module the run could not resolve is renamed in its reader's linked copy when a rename joins it (in the
+    // builder's piece, which it joins again), and the checks run again; below a level that sees more, never one that names
+    // what another piece provides.
+    if(relinks<2&&report) {
+      const out=above?this.outsideOf(id):null,hits=this.runUnresolved(results,bundle).filter(h=>!(out&&this.namesOutside(h,out,bundle))),key=this.builderOf(id)?.id;
+      if(hits.length&&key&&await this.relinkBundle(key,bundle,hits,{scope:above?'branch':'application'})) {
+        await this.assemblePiece(key);
+        this.event(id,'checks_relinked',`The run reported ${hits.length} unresolved reference(s) that a rename joins; the checks run again on the linked files.`);
+        return this.compileLevel(id,{relinks:relinks+1,begun,owned});
+      }
+    }
+    if(run?.infrastructure)for(const c of plan.checks)if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});
+    // Each validation's status; the other levels' keep theirs.
+    const status=this.read('validation_status',{}),issues=[...(report?.issues||[]),...parsed.issues,...linkIssues],bad=new Set(issues.map(i=>i.path).filter(Boolean));
+    if(!run?.infrastructure)this.save(`compile_issues:${id}`,{owned,digest,paths:[...bad],ts:Date.now()});
+    const passes=[];
+    for(const v of runs) {
+      const res=results.get(v.id),passed=!res||res.infrastructure?null:!!res.passed;
+      status[v.id]=statusEntry(passed,digest,res?.detail||'not run');
+      // A pass is for the exact bundle it ran on (its digest); a failure leaves this row none.
+      if(passed!==null)this.savePass(v,id,{digest,passed});
+      if(passed)passes.push(v.id);
+    }
+    this.save('validation_status',status);
+    const stale=moved({ran:runs.length,passed:passes.length});
+    if(stale)return stale;
+    // A failure of a validation held here with evidence of a cause outside the piece is held by the level above from now on.
+    const outside=[];
+    if(above) {
+      const contracts=this.pieceLeaves(id).flatMap(l=>this.promisedOf(l.id)),routes=routeNames(contracts),names=new Set(contracts.map(c=>c.name)),out=this.outsideOf(id),rows=this.installedToolchains();
+      for(const v of runs.filter(v=>here.has(v.id)&&status[v.id]?.passed===false)) {
+        const why=outsideFailure(results.get(v.id),v.check,{routes,names,files,outside:out,rows});
+        if(why)outside.push({id:v.id,why:`it failed on something outside the piece: ${why}`});
+      }
+      this.rollUp(id,outside);
+    }
+    const rolled=new Set(outside.map(x=>x.id)),kept=runs.filter(v=>!rolled.has(v.id));
+    const failed=kept.filter(v=>status[v.id].passed===false),untested=kept.filter(v=>status[v.id].passed===null);
+    const line=!runs.length?`${issues.length} file(s) do not compile`:`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'')+(rolled.size?`; rolled up: ${[...rolled].join(', ')}`:'');
+    const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure||!!notBuilt;
+    if(!blocked||failed.length||issues.length)this.set(`checks_retries:${id}`,'0');
+    if(!failed.length&&!untested.length&&!issues.length&&!blocked) {
+      this.save(`compile_reported:${id}`,null);this.save(`compile_blocked:${id}`,null);this.set(`compile_infrastructure:${id}`,'');
+      this.closeProblemsFrom(id,'resolved');
+      if(!runs.length)this.event(id,'piece_compiled',`Every file of ${this.node(id)?.label||id}'s piece compiles (${fresh.size} compiled now; snapshot ${digest.slice(0,14)}).`);
+      else this.event(id,'checks_passed',rolled.size?`${passes.length} of the validations held here passed against snapshot ${digest.slice(0,14)}; ${[...rolled].join(', ')} rolled up.`:`Every validation due here passed (${kept.length}) against snapshot ${digest.slice(0,14)}.`);
+      if(newly.length)return this.compileLevel(id,{relinks,begun,owned});
+      return finish({ran:runs.length,passed:passes.length,rolled:rolled.size});
+    }
+    // This run is not a verified compile.
+    this.save(`verified:${id}`,null);
+    const items=checkProblems({...spec,validations:kept},results,issues,{origin:p=>origin.get(p)||null});
+    this.answerMissingModules(items,bundle,results,kept);
+    this.event(id,'checks_reported',clip(`The compiler of ${this.node(id)?.label||id}: ${line}.`,900));
+    span('reported',{ran:runs.length,passed:passes.length,failed:failed.length,rolled:rolled.size});
+    if(!items.length) {
+      // Only checks that could not run: nobody's work, the room waits for Continue.
+      const why=run?.infrastructure||report?.infrastructure_issue||notBuilt||untested.map(v=>`${v.id}: ${status[v.id].detail}`).join('; ');
+      this.set(`compile_infrastructure:${id}`,clip(why,950));
+      this.save(`compile_blocked:${id}`,{node:id,input});
+      this.event(id,'build_infrastructure',clip(why,950));
+      return this.holdChecks(id,'checks_blocked',`The checks could not all run: ${clip(why,300)}.`,await this.scheduleCheckRetry(id));
+    }
+    // Repair rounds: each report of this level is one; past the bound, the level escalates.
+    const rounds=Number(this.get(`level_rounds:${id}`,'0'))+1;
+    this.set(`level_rounds:${id}`,String(rounds));
+    if(rounds>MAX_LEVEL_ROUNDS)return this.escalate(id,'checks_exhausted',clip(`Repair rounds ran out at "${this.node(id)?.label||id}" (${MAX_LEVEL_ROUNDS}). ${this.checksSummary('Its validations:',all)}`,1100));
+    const wave=crypto.randomUUID();
+    this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),id);
+    this.save(`compile_reported:${id}`,{input,wave,ts:Date.now()});
+    for(const item of items.slice(0,MAX_PROBLEMS_PER_REPORT))await this.routeComplaint(id,item,{wave,input,source:id});
+    return {reported:true};
   }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
-    if (this.get('amend_pending')) return {error:'A change is being applied to this room; wait until it is, then clear it.',status:409};
-    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','card_writers','piece_files','syntax_clean','problems','repair_tickets','card_revisions','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','syntax_clean','problems','repair_tickets','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
     this.queuedAt.clear();
     return this.snapshot();
   }
@@ -9786,7 +9184,7 @@ export default {
       // Speed v1: what changed since the dashboard's cursor; the full snapshot stays /api/state (and /api/export).
       if (url.pathname==='/api/delta' && request.method==='GET') {
         const q=url.searchParams;
-        return json(await stub.stateDelta({since:q.get('since'),agents_since:q.get('agents_since'),files_since:q.get('files_since'),exports:q.get('exports')||'',run:q.get('run')||'',card_rev:q.get('card_rev')??''}));
+        return json(await stub.stateDelta({since:q.get('since'),agents_since:q.get('agents_since'),files_since:q.get('files_since'),exports:q.get('exports')||'',run:q.get('run')||''}));
       }
       if (url.pathname==='/api/export' && request.method==='GET') return exportResponse(stub);
       if (url.pathname==='/api/file' && request.method==='GET') return json(await stub.fileContent(url.searchParams.get('agent'),url.searchParams.get('path')));
@@ -9794,7 +9192,7 @@ export default {
         const goal=String(payload.goal||'').trim();
         if (goal.length<8 || goal.length>GOAL_LIMIT) return json({error:`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
-        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,null,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)],...(Array.isArray(payload.grants)?{grants:payload.grants}:{})});
+        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)],...(Array.isArray(payload.grants)?{grants:payload.grants}:{})});
         return json(started,started.error?started.status||400:200);
       }
       if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{},{grants:Array.isArray(payload.grants)?payload.grants.filter(p=>typeof p==='string').slice(0,64):null}));

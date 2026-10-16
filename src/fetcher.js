@@ -672,15 +672,15 @@ const replyText = r => typeof r === 'string' ? r : String(r?.response ?? r?.text
 const lines = (s, n, chars) => sanitizeText(s).split('\n').map(l => l.trim()).filter(Boolean).slice(0, n).join('\n').slice(0, chars);
 const jsonObject = s => { const a = s.indexOf('{'), b = s.lastIndexOf('}'); return a >= 0 && b > a ? s.slice(a, b + 1) : 'null'; };
 const GIST_SYSTEM = `Summarise the quoted chunk in at most 2 short lines: what it covers and any facts a programmer would need. ${SOURCE_CLAUSE} Reply with the 2 lines only.`;
-const CARD_SYSTEM = `Write a source card from the chunk gists of one quoted document. Reply with JSON {"title":"…","summary":"…"}; the summary has at most 8 short lines. ${SOURCE_CLAUSE}`;
+const SUMMARY_SYSTEM = `Summarise one quoted document from the gists of its chunks. Reply with JSON {"title":"…","summary":"…"}; the summary has at most 8 short lines. ${SOURCE_CLAUSE}`;
 
-// Map-reduce each fetched source into a short card {id, url, title, summary,
-// outline:[{ref, gist}]}. `callModel({role, system, user})` is injected and
+// Map-reduce each fetched source into a short summary {id, url, title,
+// summary, outline:[{ref, gist}]}. `callModel({role, system, user})` is injected and
 // returns the reply text; the quoted text only ever travels in `user`, as
 // JSON. At most maxChunks gist calls are made across all sources.
-export async function sourceCards(sources, {callModel, maxChunks = 40, chunkChars = 6000} = {}) {
+export async function sourceSummaries(sources, {callModel, maxChunks = 40, chunkChars = 6000} = {}) {
   let budget = maxChunks;
-  const cards = [];
+  const out = [];
   for (const src of sources) {
     if (src.error || !src.text) continue;
     const outline = [];
@@ -699,14 +699,14 @@ export async function sourceCards(sources, {callModel, maxChunks = 40, chunkChar
     }
     let title = sanitizeText(src.title).slice(0, 120), summary = '';
     try {
-      const reply = replyText(await callModel({role: 'source_card', system: CARD_SYSTEM,
+      const reply = replyText(await callModel({role: 'source_summary', system: SUMMARY_SYSTEM,
         user: JSON.stringify({sources: [{...quoteSource({...src, text: ''}, {maxChars: 0}), outline: outline.filter(o => !o.gist.startsWith('(not summarised'))}]})}));
       const json = JSON.parse(jsonObject(reply));
       if (json && typeof json === 'object') { title = lines(json.title || title, 1, 120) || title; summary = lines(json.summary, 8, 1200); }
       else summary = lines(reply, 8, 1200);
     } catch {}
-    cards.push({id: src.id, url: clip(sanitizeText(src.final_url || src.url), 500), title, summary: summary || outline.map(o => o.gist).slice(0, 8).join('\n'),
+    out.push({id: src.id, url: clip(sanitizeText(src.final_url || src.url), 500), title, summary: summary || outline.map(o => o.gist).slice(0, 8).join('\n'),
       outline, sha256: src.sha256 ?? null});
   }
-  return cards;
+  return out;
 }
