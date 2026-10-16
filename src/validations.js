@@ -423,17 +423,47 @@ export function renderExample(check) {
   if (c.kind === 'browser') return browserExample(c.steps);
   return '';
 }
+// Whether a check exercises the contract itself, by its own name, path,
+// command, route or page: a call of the function, a command that runs the
+// command (or its file), an http or browser check that serves it (or, for a
+// route, requests it; for a page, opens it), a file or judge check of its
+// path. A check that serves a contract only through another one (loud's
+// call, which serves shout) exercises that other one.
+export function exercises(check, contract) {
+  const c = check || {}, name = contract?.name, path = contract?.path, kind = kindOf(contract || {});
+  if (!name) return false;
+  if (c.kind === 'call') return (c.steps || []).some(s => s?.call === name);
+  if (c.kind === 'command') { const argv = Array.isArray(c.argv) ? c.argv : commandArgv(c.run).argv || []; return argv[0] === name || !!path && argv.some(a => cleanPath(a) === path); }
+  if (c.kind === 'file' || c.kind === 'judge') return !!path && c.path === path;
+  if (c.kind === 'http' || c.kind === 'browser') {
+    if (c.serve === name) return true;
+    if (kind === 'route') { const [method, at] = String(name).split(/\s+/); return (c.steps || []).some(s => s?.path && String(s.path).split('?')[0] === at && (s.method || 'GET') === method.toUpperCase()); }
+    if (kind === 'page' && path) return (c.steps || []).some(s => typeof s?.goto === 'string' && s.goto.split(/[?#]/)[0] === `/${path}`);
+  }
+  return false;
+}
 // A contract's examples: the distinct renderings of the validations that
-// serve it, in order, the first EXAMPLES_PER_CONTRACT of them.
+// serve it and exercise it itself, in order, the first EXAMPLES_PER_CONTRACT of them.
 export function contractExamples(contract, validations) {
   const out = [];
   for (const v of validations || []) {
     if (!(v?.serves || []).includes(contract?.name) && !(contract?.serves || []).includes(v?.id)) continue;
+    if (!exercises(v.check, contract)) continue;
     const e = renderExample(v.check);
     if (e && !out.includes(e)) out.push(e);
     if (out.length >= EXAMPLES_PER_CONTRACT) break;
   }
   return out;
+}
+
+// How a contract is exercised itself, in words a splitter reads.
+function exerciseWords(c) {
+  const kind = kindOf(c);
+  if (kind === 'function') return `a call check that calls ${c.name}`;
+  if (kind === 'command') return `a command check that runs ${c.name}${c.path ? ` or ${c.path}` : ''}`;
+  if (kind === 'route') return `an http check that serves or requests ${c.name}`;
+  if (kind === 'page') return `a browser check that serves or opens ${c.name}`;
+  return c.path ? `a file or judge check of ${c.path}` : `a check of ${c.name}`;
 }
 
 // ------------------------------------------------------------ reading a level
@@ -445,7 +475,7 @@ export function contractExamples(contract, validations) {
 // the existing project's paths. maxPieces: the room's bound. Returns
 // {contracts, validations, pieces, defects}: the cleaned level and each rule
 // it misses, in words its next attempt reads.
-export function readLevel(raw, {own = [], held = [], have = [], rows = TOOLCHAINS, base = [], maxPieces = 7} = {}) {
+export function readLevel(raw, {own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7} = {}) {
   const o = plain(raw) ? raw : {}, defects = [];
   if (!plain(raw)) defects.push('The answer is not a json object with "contracts", "validations" and "pieces".');
   const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
@@ -511,16 +541,16 @@ export function readLevel(raw, {own = [], held = [], have = [], rows = TOOLCHAIN
   // Three different examples per contract, from its validations here and those that already serve it.
   for (const c of contracts) {
     const mine = [...held.filter(h => (c.serves || []).includes(h.id)), ...validations.filter(v => v.serves.includes(c.name))];
-    const n = contractExamples({name: c.name, serves: c.serves}, mine).length;
-    if (n < EXAMPLES_PER_CONTRACT) defects.push(`Contract ${c.name} has ${n} different example${n === 1 ? '' : 's'}: give it validations that show ${EXAMPLES_PER_CONTRACT} different examples (different inputs or steps).`);
+    const n = contractExamples(c, mine).length;
+    if (n < EXAMPLES_PER_CONTRACT) defects.push(`Contract ${c.name} has ${n} different example${n === 1 ? '' : 's'}: give it validations that exercise ${c.name} itself (${exerciseWords(c)}) and show ${EXAMPLES_PER_CONTRACT} different examples (different inputs or steps).`);
   }
   // Pieces: each delivers contracts of this level; together, every one exactly once.
-  const pieces = [];
+  const pieces = [], callable = new Set([...names, ...had, ...calls.map(c => c?.name)].filter(Boolean));
   for (const [i, p] of (Array.isArray(o.pieces) ? o.pieces : []).entries()) {
     if (!plain(p) || !str(p.label, 70) || !str(p.task, 2000)) { defects.push(`Piece ${i + 1} needs a "label" and a "task".`); continue; }
     const delivers = [...new Set(strings(p.contracts, 32, 200))], unknown = delivers.filter(n => !names.has(n));
     if (unknown.length) defects.push(`Piece "${str(p.label, 70)}" delivers ${unknown.join(', ')}, which ${unknown.length > 1 ? 'are' : 'is'} not in contracts.`);
-    pieces.push({label: str(p.label, 70), task: str(p.task, 2000), contracts: delivers.filter(n => names.has(n)), uses: [...new Set(strings(p.uses, 16, 200))].filter(n => names.has(n) && !delivers.includes(n)),
+    pieces.push({label: str(p.label, 70), task: str(p.task, 2000), contracts: delivers.filter(n => names.has(n)), uses: [...new Set(strings(p.uses, 16, 200))].filter(n => callable.has(n) && !delivers.includes(n)),
       ...(Array.isArray(p.refs) ? {refs: strings(p.refs, 16, 40)} : {}), ...(p.packages !== undefined ? {packages: strings(p.packages, 16, 80)} : {})});
   }
   if (pieces.length > maxPieces) defects.push(`The answer has ${pieces.length} pieces; use at most ${maxPieces}, grouping related pieces into one piece whose task covers them.`);
@@ -528,6 +558,13 @@ export function readLevel(raw, {own = [], held = [], have = [], rows = TOOLCHAIN
     const by = pieces.filter(p => p.contracts.includes(c.name));
     if (by.length !== 1) defects.push(`Contract ${c.name} is delivered by ${by.length ? by.map(p => `"${p.label}"`).join(' and ') : 'no piece'}: give it to exactly one piece.`);
   }
+  // One path, one owner: a file is written by one piece, so the contracts of
+  // two pieces never name one path, nor one a contract the level has names.
+  const byPath = new Map();
+  for (const p of pieces) for (const n of p.contracts) { const at = contracts.find(c => c.name === n)?.path; if (at) byPath.set(at, [...new Set([...(byPath.get(at) || []), p.label])]); }
+  for (const [at, owners] of byPath) if (owners.length > 1) defects.push(`Two pieces place ${at} (${owners.map(l => `"${l}"`).join(' and ')}): a file has one owner, so give the contracts of each piece paths of their own, or give the contracts at ${at} to one piece.`);
+  const hadAt = new Map(have.filter(c => c?.path).map(c => [c.path, c.name]));
+  for (const c of contracts) if (c.path && !own.some(o => o.name === c.name) && hadAt.has(c.path)) defects.push(`Contract ${c.name} places ${c.path}, which ${hadAt.get(c.path)} of contracts_you_have places: a file has one owner, so give ${c.name} a path of its own.`);
   return {contracts, validations, pieces, defects};
 }
 

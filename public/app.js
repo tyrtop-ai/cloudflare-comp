@@ -170,11 +170,12 @@ function baseConfirmMarkup(s) {
   return `<ul class="panel-list base-grants">${list.map(x=>`<li><label><input type="checkbox" data-grant="${esc(x.path)}"${x.named?' checked':''}> <b class="mono">${esc(x.path)}</b> <span class="faint">· ${x.named?'named in the prompt':'not named in the prompt'}${typeof x.p==='number'?` · Clef p=${esc(x.p.toFixed(2))}`:''}</span></label></li>`).join('')}</ul>`;
 }
 const selectedGrants=()=>current?.pause?.kind==='base_confirm'&&typeof document!=='undefined'&&document.querySelectorAll?[...document.querySelectorAll('input[data-grant]')].filter(x=>x.checked).map(x=>x.dataset.grant):undefined;
-// The room's hold, if any, then the levels.
+// The room's holds, if any (every one that reached it; Continue answers them all), then the levels.
+const holdsOf=pause=>pause?(Array.isArray(pause.holds)&&pause.holds.length?pause.holds:[pause]):[];
 function renderLevels(s) {
   if(!$('levels'))return;
   const v8=s.settings?.pipeline==='v8',list=s.validations||[],count=state=>list.filter(v=>validationState(v,s.validation_status)===state).length;
-  const held=s.pause&&s.status!=='running'?`<p class="hold-note"><span class="event-type">${esc(s.pause.kind)}</span> ${esc(s.pause.text)}</p>${baseConfirmMarkup(s)}`:'';
+  const held=s.pause&&s.status!=='running'?`${holdsOf(s.pause).map(h=>`<p class="hold-note"><span class="event-type">${esc(h.kind)}</span> ${esc(h.text)}</p>`).join('')}${baseConfirmMarkup(s)}`:'';
   $('levels').innerHTML=held+(v8?levelsMarkup(s):'<p class="empty">No levels (v7 pipeline).</p>');
   if($('levels-verdict'))$('levels-verdict').textContent=!v8?'No levels (v7 pipeline)':list.length?`${list.length} validations · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:'Not stated yet';
 }
@@ -189,7 +190,7 @@ function nodeDetail(n,index) {
     const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
     compile=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
   }
-  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}${current?.pause?.agent===n.id?` · waits on the room's hold: ${esc(current.pause.kind)}`:''}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
+  return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(role==='compiler'?compilerState(n):statusOf(n))}${holdsOf(current?.pause).filter(h=>h.agent===n.id).map(h=>` · waits on the room's hold: ${esc(h.kind)}`).join('')}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${compile}${line(n)}${builder?`<div class="onode-builder role-builder"><span class="onode-role">builder</span> ${pick(builder)} · ${esc(statusOf(builder))}${line(builder)}</div>`:''}</div>`;
 }
 // The selected node's edges ride on the overlay as data-edges ("from:to ...");
 // drawPath measures the dots after layout and draws them.

@@ -16,11 +16,14 @@
 // runtime: the writer is the runtime (allows .recursive/); placed: the path
 // is one a contract names (allows .gitignore). The build snapshot is checked
 // with both, since it carries the runtime's files and placed files alike.
+// own: a file a v8 worker writes in its own repository, where a name may
+// start with a dot (.git aside); what the box holds of it is the build's
+// rule above, applied where the bundle reaches the box.
 export const RUNTIME_DOT_DIRS = Object.freeze(['.recursive']);
 export const PLACEABLE_DOTFILES = Object.freeze(['.gitignore']);
 const SEGMENT = /^[A-Za-z0-9_.-]+$/;
 
-export function pathError(path, {runtime = false, placed = false} = {}) {
+export function pathError(path, {runtime = false, placed = false, own = false} = {}) {
   if (typeof path !== 'string' || !path.length) return 'an empty path';
   if (path.length > 512) return `${path.slice(0, 60)}…: a path longer than 512 characters`;
   if (path.startsWith('/') || path.includes('\\')) return `${path}: not a relative project path`;
@@ -30,7 +33,7 @@ export function pathError(path, {runtime = false, placed = false} = {}) {
     if (part.length > 255) return `${path}: a name longer than 255 characters`;
     if (part.toLowerCase() === '.git') return `${path}: .git is never a project path`;
     if (!SEGMENT.test(part)) return `${path}: use only letters, digits, '_', '-' and '.' in file and directory names (no spaces or other characters); rename the file`;
-    if (part.startsWith('.')) {
+    if (part.startsWith('.') && !own) {
       const last = i === parts.length - 1;
       if (i === 0 && !last && runtime && RUNTIME_DOT_DIRS.includes(part)) continue;
       if (last && placed && PLACEABLE_DOTFILES.includes(part)) continue;

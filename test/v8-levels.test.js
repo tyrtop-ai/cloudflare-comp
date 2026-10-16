@@ -129,7 +129,7 @@ test('a contract with fewer than three distinct examples is the splitter\'s defe
   assert.equal(room.get('status'), 'complete', trail(room));
   assert.equal(calls.split.length, 2);
   assert.ok(!calls.split[0].previous_answer_problems);
-  assert.match(calls.split[1].previous_answer_problems.join(' '), /Contract convert has 1 different example: give it validations that show 3 different examples/);
+  assert.match(calls.split[1].previous_answer_problems.join(' '), /Contract convert has 1 different example: give it validations that exercise convert itself \(a command check that runs convert or convert\.js\) and show 3 different examples/);
   assert.deepEqual(room.splitterRows().map(r => r.outcome), ['defects', 'read']);
   assert.equal(room.validationRows().length, 3, 'only the admitted attempt\'s validations are rows');
 });

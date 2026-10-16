@@ -105,7 +105,8 @@ test('renderExample and contractExamples: a validation as the example a worker r
   const list = [run('a', '100 C', '212'), run('b', '100 C', '212'), run('c', '0 C', '32'), run('d', '-40 C', '-40'), run('e', '37 C', '98.6'), run('f', '1 C', '33.8', ['other'])];
   assert.equal(EXAMPLES_PER_CONTRACT, 3);
   assert.deepEqual(contractExamples({name: 'convert'}, list), ['convert 100 C → its output contains "212"', 'convert 0 C → its output contains "32"', 'convert -40 C → its output contains "-40"'], 'the same rendering counts once');
-  assert.deepEqual(contractExamples({name: 'x', serves: ['f']}, list), ['convert 1 C → its output contains "33.8"'], 'by the ids a contract carries too');
+  assert.deepEqual(contractExamples({name: 'convert', serves: ['f']}, list.slice(5)), ['convert 1 C → its output contains "33.8"'], 'by the ids a contract carries too');
+  assert.deepEqual(contractExamples({name: 'x', serves: ['f']}, list), [], 'a validation that exercises another contract is that contract\'s example');
   assert.equal(checkSummary({kind: 'judge', path: 'README.md', question: 'Q?'}), 'judge README.md: Q?');
   assert.equal(checkSummary({kind: 'command', run: 'convert 1 C', expect: {exit: 0}}), 'command: convert 1 C → it exits 0');
   assert.equal(internalCandidate({kind: 'file', path: 'app.js', has: ['function add']}), true, 'a text looked for inside code');
@@ -119,7 +120,7 @@ test('readLevel: contracts, validations and pieces read and held to the hard rul
   assert.deepEqual(good.defects, []);
   assert.deepEqual(good.validations.map(v => [v.id, v.serves, v.check.argv]), [['a', ['convert'], ['convert', '100', 'C']], ['b', ['convert'], ['convert', '0', 'C']], ['c', ['convert'], ['convert', '-40', 'C']]]);
   // Two examples are one short.
-  assert.match(readLevel({contracts: [convert], validations: [run('a', '100 C', '212'), run('b', '100 C', '212'), run('c', '0 C', '32')]}).defects.join(' '), /Contract convert has 2 different examples: give it validations that show 3 different examples/);
+  assert.match(readLevel({contracts: [convert], validations: [run('a', '100 C', '212'), run('b', '100 C', '212'), run('c', '0 C', '32')]}).defects.join(' '), /Contract convert has 2 different examples: give it validations that exercise convert itself \(a command check that runs convert or convert\.py\) and show 3 different examples/);
   // A validation that serves nothing of the level, one that cannot run, and a contract twice.
   const bad = readLevel({contracts: [convert, convert, {name: 'notes', kind: 'doc'}], validations: [{id: 'x', serves: ['nope'], check: {kind: 'command', run: 'convert'}}, {id: 'y', serves: ['convert'], check: {kind: 'command', run: 'ruby a.rb'}}]});
   const said = bad.defects.join('\n');

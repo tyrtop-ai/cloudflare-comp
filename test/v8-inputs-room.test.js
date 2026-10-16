@@ -466,8 +466,8 @@ test('S8b review M1: base text reaches every model quoted and labelled; a level 
   // A later hold waits behind the grant, and is never written over it.
   room.holdRoom('checks_failed', 'a later hold');
   assert.equal(room.snapshot().pause.kind, 'base_confirm');
-  assert.equal(room.read('queued_hold', null).kind, 'checks_failed');
-  room.save('queued_hold', null);
+  assert.deepEqual(room.roomHolds().map(h => h.kind), ['base_confirm', 'checks_failed'], 'it waits behind the grant, kept');
+  room.releaseHolds(h => h.kind === 'checks_failed');
   // The person grants only src/shout.js; bin/widget.js keeps waiting, and the room does not complete.
   await room.resume(60, {}, {grants: ['src/shout.js']});
   await drain();

@@ -376,7 +376,7 @@ test('room: the run6 retrieval branch applies the colliding rename as an alias, 
 // (binding_rules) for that row's files only. LINKER_SYSTEM above stays v7's.
 test('prompt, v8: the linker is ROLE.linker with no example names, and the binding rules are data for the files of their row',async()=>{
   const {linkComponents}=await import('../src/model.js');
-  const {systemPrompt}=await import('../src/prompts.js');
+  const {systemPrompt,LINK_SCOPE}=await import('../src/prompts.js');
   const {toolchainById}=await import('../src/toolchains.js');
   const seen=[];
   const env={PIPELINE:'v8',AI:{run:async(_m,args)=>{seen.push(args.messages);return {response:seen.length===1?'nope':JSON.stringify({edits:[{file:'app.js',find:"require('./addItem')",replace:"require('./add-item')"}],issues:[]})};}}};
@@ -386,7 +386,8 @@ test('prompt, v8: the linker is ROLE.linker with no example names, and the bindi
   assert.doesNotMatch(seen[0][0].content,/createTicket|saveTickets|inmemoryti|require\(/);
   const user=JSON.parse(seen[0][1].content);
   assert.deepEqual(user.binding_rules,[toolchainById('javascript').binding_rules]);
-  assert.match(user.scope_means,/joined again later with more files/);
+  assert.equal(user.scope_means,LINK_SCOPE.piece,'every level reads the same words');
+  assert.ok(!('scope' in user),'no level is told whether another joins its files later');
   assert.ok(!('application_goal' in user),'the linker reads its files, not a goal');
   assert.deepEqual(JSON.parse(seen[1][1].content).previous_answer_problems.length,1,'the retry hears why in its user JSON');
   // A file of a row with no binding rules gets none.

@@ -83,3 +83,31 @@ test('grep gate: the strip keeps code and drops comments and string text', () =>
   assert.equal(strip("const a = 'card'; // card\nconst b = `x ${card} y`; /* card */"), 'const a = ""; \nconst b = `${card}`; ');
   assert.equal(strip('const r = /card/g, d = a / b;'), 'const r = /r/, d = a / b;');
 });
+
+// v7's request machinery (no-card review F1): the methods that answer a v7
+// worker's function requests, and the texts they answer with, are reached
+// only from v7's own methods or from a line that planned() gates, and
+// planned() is v7's alone; so a v8 worker can never receive a v7 answer (the
+// behaviour itself: test/v8-review.test.js, F1).
+// The machinery, and the v7 methods that call it (applyDecisions, from solveProblems; requestGrowth and needScope, from routeFunction and routeReply; providedFor and providedText, v7's provided text; composeStart and composeStated, from agentTurn): each is called only from these, from V7_ONLY, or on a line planned() gates.
+const V7_REQUEST_METHODS = new Set(['settleRequests', 'answerRequests', 'routeFunction', 'routeRequest', 'routeReply', 'askManager', 'plannedAsks', 'promiseAdded', 'refreshRoutes', 'requestInFlight', 'openRequestRow', 'applyDecisions', 'requestGrowth', 'needScope', 'providedText', 'providedFor', 'composeStart', 'composeStated']);
+const V7_REQUESTS = new RegExp(`\\b(?:${[...V7_REQUEST_METHODS].join('|')})\\(`);
+const V7_ANSWER_TEXT = /No piece of the application promises|write it in your own module|Do not write it yourself/;
+// Each line of a file with its enclosing method: its code (comments and string text left out) and its text.
+function methodLines(file) {
+  const raw = readFileSync(new URL(file, root), 'utf8').split('\n'), code = strip(raw.join('\n')).split('\n');
+  let method = '(top)';
+  return code.map((line, i) => {
+    const m = /^  (?:async |static |get |set )?\*?(?!(?:if|for|while|switch|catch)\b)([A-Za-z_$][\w$]*)\s*\(.*\)\s*\{/.exec(line) || /^(?:export )?(?:async )?function\*? ?([A-Za-z_$][\w$]*)/.exec(line) || /^(?:export )?const ([A-Za-z_$][\w$]*)\s*=/.exec(line);
+    if (m) method = m[1];
+    return {line: i + 1, method, code: line, text: raw[i], defines: !!m};
+  });
+}
+test('grep gate: v7\'s request machinery and its answer texts are reached only from v7\'s methods or a line planned() gates, and planned() is v7\'s alone', () => {
+  const lines = methodLines('src/index.js'), v7 = l => V7_REQUEST_METHODS.has(l.method) || V7_ONLY.has(l.method);
+  const outside = lines.filter(l => !l.defines && V7_REQUESTS.test(l.code) && !v7(l) && !/this\.planned\(\)/.test(l.code));
+  assert.deepEqual(outside.map(l => `src/index.js:${l.line} ${l.method}: ${l.code.trim().slice(0, 120)}`), []);
+  const texts = lines.filter(l => V7_ANSWER_TEXT.test(l.text) && !v7(l) && !/^\s*\/\//.test(l.text));
+  assert.deepEqual(texts.map(l => `src/index.js:${l.line} ${l.method}`), []);
+  assert.match(lines.find(l => /^  planned\(\)/.test(l.code)).code, /!this\.v8\(\)&&/, 'planned() is false under v8');
+});

@@ -792,9 +792,9 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
   // the files' own toolchain rows travel as data (binding_rules), never in
   // the system text.
   const linkV8=pipelineV8(env,{v8}),rules=linkV8?[...new Set(files.map(f=>toolchainOf(f.path)?.binding_rules).filter(Boolean))]:[];
+  // v8: one text at every level (LINK_SCOPE.piece); v7 keeps its scope.
   const request=JSON.stringify({
-    scope,
-    ...(linkV8?{scope_means:LINK_SCOPE[scope]||LINK_SCOPE.application}:{}),
+    ...(linkV8?{scope_means:LINK_SCOPE.piece}:{scope}),
     ...(rules.length?{binding_rules:rules}:{}),
     ...(linkV8?{}:{application_goal:String(goal||'').slice(0,1200)}),
     known_mismatches:known_mismatches.length?known_mismatches:undefined,

@@ -26,7 +26,7 @@ const SPLITTER_FIELDS = [
   CONTRACT_FIELDS,
   '- "validations": each {"id", "serves": [the names of the contracts it checks], "check"}. A check is one of: {"kind": "file", "path", "has": [texts the file contains], "json": true when it must parse}; {"kind": "judge", "path", "question": a yes/no question a reader answers from the file alone}; {"kind": "command", "run": a command contract or a program the box has, with its arguments, "stdin", "files": {path: content of an input file}, "expect": {"exit", "stdout", "stdout_has", "stderr_has", "stderr": true}}; {"kind": "call", "steps": [{"call": a function contract, "args": [...], "save": a name later arguments read as "$name", "expect", "expect_has", "throws": true}]}; {"kind": "http", "serve": a contract with a run, "steps": [{"method", "path", "body", "save", "expect": {"status", "body_has", "json_has"}}]}; {"kind": "browser", "serve": a contract with a run, "steps": [each one of {"goto"}, {"reload": true}, {"press"}, {"fill": {"label" or "placeholder" or "role" and "name", "text"}}, {"click": {"role" and "name", or "text", or "label"}}, {"expect_text"}, {"expect_no_text"}, {"expect_count": {"role" or "text", "n"}}, {"expect_element": {"selector", "text"}}]}.',
   '- Check a page by browser steps, a command by running it, a function by calling it, a route by requesting it, a document by a reader\'s question; each validation of a contract uses different inputs or steps.',
-  '- "pieces": each {"label": a few words naming what it produces, "task": what it must produce, in full sentences, "contracts": the names it delivers, "uses": the names of contracts of this level it relies on, "refs": outline refs of the linked pages it must read, "packages": names from your_packages it needs}, or an empty list.',
+  '- "pieces": each {"label": a few words naming what it produces, "task": what it must produce, in full sentences, "contracts": the names it delivers, "uses": the names of the contracts it relies on, of this level or ones you may call, "refs": outline refs of the linked pages it must read, "packages": names from your_packages it needs}, or an empty list.',
   'Examples of single validations:',
   '<example>{"id":"a","serves":["convert"],"check":{"kind":"command","run":"convert 100 C","expect":{"exit":0,"stdout_has":["212"]}}}</example>',
   '<example>{"id":"b","serves":["index.html"],"check":{"kind":"browser","serve":"index.html","steps":[{"fill":{"label":"Servings","text":"4"}},{"click":{"role":"button","name":"Scale"}},{"expect_text":"400 g"}]}}</example>',
@@ -91,10 +91,11 @@ export const RETRY = Object.freeze({
   different: 'Your previous division, listed in rejected, was not one whose pieces could be made at the same time. Divide the assignment another way, along its contracts, so that each piece delivers contracts of its own and together the pieces deliver all of them.'
 });
 
-// What the linker's scope field means (user JSON).
+// What every v8 linker request says of the references it may change (user
+// JSON, scope_means): the same at every level, since no level knows whether
+// another joins its files later.
 export const LINK_SCOPE = Object.freeze({
-  branch: 'These files are joined again later with more files: change a reference only when a file listed here clearly provides what it expects, and leave it as it is otherwise.',
-  application: 'Nothing joins these files again later: a reference you leave unresolved is reported against its file.'
+  piece: 'Change a reference only when a file listed here clearly provides what it expects, and leave it as it is otherwise: a reference no rename joins is reported against its file.'
 });
 
 // The texts the room itself composes for a v8 agent, as data. Each is a
