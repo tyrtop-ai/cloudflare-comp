@@ -96,3 +96,17 @@ test('replay, issue tracker: each attempt is short only of your three examples f
   // Labels are long enough to tell the validations apart.
   assert.ok(two.validations.some(v => v.id === 'api-endpoint-validation-post') && two.validations.some(v => v.id === 'api-endpoint-validation-delete'));
 });
+
+// Three examples is the least a splitter writes for what is called or run, never the most a worker reads: the to-do
+// page's index.html was checked for four texts and two judge questions, and its worker was shown three of them.
+test('a worker reads every example its compiler checks, not the first three', () => {
+  const page = {name: 'index.html', kind: 'page', path: 'index.html', serves: ['V4', 'V5', 'V6']};
+  const validations = [
+    {id: 'V4', serves: ['index.html'], check: {kind: 'file', path: 'index.html', has: ['<form>', '<input', '<button', '<ul>']}},
+    {id: 'V5', serves: ['index.html'], check: {kind: 'judge', path: 'index.html', question: 'Does the file contain a <form> element with an input and submit button?'}},
+    {id: 'V6', serves: ['index.html'], check: {kind: 'judge', path: 'index.html', question: 'Does the file contain a <ul> element for rendering list items?'}}];
+  const shown = contractExamples(page, validations);
+  assert.equal(shown.length, 6);
+  assert.ok(shown.some(e => e.includes('<ul>')), 'the fourth text');
+  assert.ok(shown.some(e => /<ul> element for rendering list items/.test(e)), 'and each judge question');
+});

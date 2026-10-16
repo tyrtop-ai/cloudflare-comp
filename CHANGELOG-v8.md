@@ -346,3 +346,4 @@ Replay of the nine steps: the CLI's attempt 2 now reaches Clef's review. Every o
   - A call step whose expect is just `{"throws": true}` now means the call throws, as the splitter meant.
   - A prewarmed box whose Container the platform stopped before its compile took it now says so; the room runs those checks in a fresh box instead of leaving six validations untested.
   - Its other hold is by design: Clef doubted the test-runner validations (they want pytest's output to contain `pytest test_converter.py`), and they stay, held for the person.
+- **A worker reads every example its compiler checks.** The worker's prompt showed only the first three distinct examples per contract, because the function that counts the splitter's three also built the worker's list. Three is the least a splitter writes, never the most a worker reads; the to-do page's `index.html` was checked for six things, and its worker was shown three.

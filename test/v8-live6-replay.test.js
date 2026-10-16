@@ -21,7 +21,7 @@ const FILE = p => `file or judge checks of ${p}, each text it holds and each que
 const CODE = p => `${FILE(p)}, or command checks that run ${p}, each one example`;
 const CALLS = n => `calls of ${n}, each call one example`;
 const PAGE = p => `browser checks that serve or open ${p}, each scenario one example`;
-const examplesOf = (level, name) => contractExamples(level.contracts.find(c => c.name === name), level.validations, {all: true});
+const examplesOf = (level, name) => contractExamples(level.contracts.find(c => c.name === name), level.validations);
 // The old reader's defects of a kind the reader no longer has: invented runs, structure rules, serves and piece names read exactly.
 const GONE = /its run (?:starts|says neither)|is listed twice|is not in contracts|is delivered by|Two (?:pieces|contracts) place|contracts_you_have|serves names the contracts|ready path/;
 

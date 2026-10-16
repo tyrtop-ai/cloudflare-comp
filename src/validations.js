@@ -508,16 +508,14 @@ export function checkExamples(check, contract) {
   return one ? [one] : [];
 }
 // A contract's examples: the distinct examples of the validations that
-// serve it and exercise it itself, in order, the first EXAMPLES_PER_CONTRACT
-// of them (all of them with all = true).
-export function contractExamples(contract, validations, {all = false} = {}) {
+// serve it and exercise it itself, in order, every one of them. Three is the
+// least a splitter writes (the reader counts it); a worker reads them all,
+// since its compiler checks them all.
+export function contractExamples(contract, validations) {
   const out = [];
   for (const v of validations || []) {
     if (!(v?.serves || []).includes(contract?.name) && !(contract?.serves || []).includes(v?.id)) continue;
-    for (const e of checkExamples(v.check, contract)) {
-      if (!out.includes(e)) out.push(e);
-      if (!all && out.length >= EXAMPLES_PER_CONTRACT) return out;
-    }
+    for (const e of checkExamples(v.check, contract)) if (!out.includes(e)) out.push(e);
   }
   return out;
 }

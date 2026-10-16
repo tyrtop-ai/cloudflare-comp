@@ -116,7 +116,7 @@ test('inferKind: a contract with no kind is read by its shape: what it returns o
   assert.equal(inferKind({name: 'x.py', kind: 'script'}), 'file', 'a kind that is none of the seven reads by shape');
 });
 
-test('renderExample and contractExamples: a validation as the example a worker reads, its input and what follows, never the check itself; three distinct ones per contract', () => {
+test('renderExample and contractExamples: a validation as the example a worker reads, its input and what follows, never the check itself; every distinct one, three at least per contract', () => {
   assert.equal(renderExample({kind: 'command', run: 'convert 100 C', expect: {exit: 0, stdout_has: ['212']}}), 'convert 100 C → it exits 0 and its output contains "212"');
   assert.equal(renderExample({kind: 'command', run: 'wc words.txt', files: {'words.txt': 'a b'}, stdin: 'x', expect: {stdout: '2'}}), 'wc words.txt with the input "x" and the file words.txt holding "a b" → its output is exactly "2"');
   assert.equal(renderExample({kind: 'call', steps: [{call: 'add', args: [1, 2], expect: 3}, {call: 'f', args: [], save: 'r'}, {call: 'g', args: ['x'], throws: true}]}), 'add(1, 2) → 3; $r = f() → it returns; g("x") → it raises an error');
@@ -128,7 +128,7 @@ test('renderExample and contractExamples: a validation as the example a worker r
   const run = (id, c, f, serves = ['convert']) => ({id, serves, check: {kind: 'command', run: `convert ${c}`, expect: {stdout_has: [f]}}});
   const list = [run('a', '100 C', '212'), run('b', '100 C', '212'), run('c', '0 C', '32'), run('d', '-40 C', '-40'), run('e', '37 C', '98.6'), run('f', '1 C', '33.8', ['other'])];
   assert.equal(EXAMPLES_PER_CONTRACT, 3);
-  assert.deepEqual(contractExamples({name: 'convert'}, list), ['convert 100 C → its output contains "212"', 'convert 0 C → its output contains "32"', 'convert -40 C → its output contains "-40"'], 'the same rendering counts once');
+  assert.deepEqual(contractExamples({name: 'convert'}, list), ['convert 100 C → its output contains "212"', 'convert 0 C → its output contains "32"', 'convert -40 C → its output contains "-40"', 'convert 37 C → its output contains "98.6"'], 'the same rendering counts once, and every distinct one is kept: three is the least, never the most');
   assert.deepEqual(contractExamples({name: 'convert', serves: ['f']}, list.slice(5)), ['convert 1 C → its output contains "33.8"'], 'by the ids a contract carries too');
   assert.deepEqual(contractExamples({name: 'x', serves: ['f']}, list), [], 'a validation that exercises another contract is that contract\'s example');
   // One example per exercised step: each call (after the steps before it), each request, each text a file holds; a scenario, a command, a question is one.
