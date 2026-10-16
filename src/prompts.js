@@ -45,6 +45,48 @@ export const FORMAT = Object.freeze({
 // runs them (src/splitter.js); a result is all the feedback there is.
 const KIND_LIST = ['function', 'file', 'page', 'route', 'command', 'doc', 'data'];
 const names = desc => ({type: 'array', items: {type: 'string'}, description: desc});
+// The splitter's validations: one function per check kind, each typed in
+// full, so the platform shows the model every field's shape. Each call is one
+// validation of the contracts it serves; the result gives its id, the
+// examples it renders and how many different examples each contract it serves
+// has so far, or why it cannot run.
+const SERVES = names('The declared contracts it checks, by their names exactly as declared.');
+const text = desc => ({type: 'string', description: desc});
+const texts = desc => ({type: 'array', items: {type: 'string'}, description: desc});
+const ANY = ['string', 'number', 'integer', 'boolean', 'object', 'array', 'null'];
+const CHECK_RESULT = ' The result gives the validation\'s id, the examples it renders and how many different examples each contract it serves has so far, or why it cannot run.';
+const CHECK_TOOLS = [
+  {name: 'file_check', description: 'Declares a validation that reads a file and looks for texts in it, each exactly as written. Each text is one example.' + CHECK_RESULT,
+    parameters: {type: 'object', properties: {serves: SERVES, path: text('The path of the file, as a declared contract places it.'), has: texts('Texts the file contains, each exactly as written.'), json: {type: 'boolean', description: 'True when the file must parse as JSON.'}}, required: ['serves', 'path']}},
+  {name: 'judge_check', description: 'Declares a validation a reader answers from one file alone: a yes or no question. One question is one example.' + CHECK_RESULT,
+    parameters: {type: 'object', properties: {serves: SERVES, path: text('The path of the file the reader reads.'), question: text('A question answered yes or no from the file alone.')}, required: ['serves', 'path', 'question']}},
+  {name: 'command_check', description: 'Declares a validation that runs a command line in a fresh box and observes its exit and output. Each run is one example.' + CHECK_RESULT,
+    parameters: {type: 'object', properties: {serves: SERVES,
+      run: text('The command line: a declared command contract or a program the box has, then its arguments. A command contract runs by its own file.'),
+      stdin: text('What the command reads on its standard input.'),
+      files: {type: 'object', additionalProperties: {type: 'string'}, description: 'Input files the command finds beside it: each relative path mapped to its text.'},
+      expect: {type: 'object', properties: {exit: {type: 'integer', description: 'Its exit code.'}, stdout: text('Its whole standard output, exactly.'), stdout_has: texts('Texts its standard output contains.'), stderr_has: texts('Texts its error output contains.'), stderr: {type: 'boolean', description: 'True when it writes to its error output.'}},
+        description: 'What it observes. With none, it observes an exit of 0.'}},
+      required: ['serves', 'run']}},
+  {name: 'call_check', description: 'Declares a validation that calls declared function contracts of one file, in order, in one process: a JavaScript file is loaded by Node.js and a function is reached by the name the file exports; a Python file is imported and a function is reached by its name. Each call is one example.' + CHECK_RESULT,
+    parameters: {type: 'object', properties: {serves: SERVES, steps: {type: 'array', description: 'The calls, in order.', items: {type: 'object', properties: {
+      call: text('A declared function contract.'), args: {type: 'array', items: {type: ANY}, description: 'Its arguments, as JSON values.'}, save: text('A name later arguments read as $name for what this call returns.'),
+      expect: {type: ANY, description: 'The value it returns, as a JSON value.'}, expect_has: text('A text the value it returns contains.'), throws: {type: 'boolean', description: 'True when the call throws.'}}, required: ['call']}}}, required: ['serves', 'steps']}},
+  {name: 'http_check', description: 'Declares a validation that starts a declared contract that states how it runs and sends it HTTP requests, in order. Each request is one example.' + CHECK_RESULT,
+    parameters: {type: 'object', properties: {serves: SERVES, serve: text('The declared contract to start: one that states its run.'), steps: {type: 'array', description: 'The requests, in order.', items: {type: 'object', properties: {
+      method: {type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], description: 'GET when not given.'}, path: text('The path requested, starting with a single /.'), body: {type: ANY, description: 'The JSON body sent.'}, save: text('A name later paths and bodies read as $name for the JSON this request answers.'),
+      expect: {type: 'object', properties: {status: {type: 'integer'}, body_has: texts('Texts the answer contains.'), json_has: {type: ANY, description: 'A JSON value the answer\'s JSON contains.'}}}}, required: ['path']}}}, required: ['serves', 'serve', 'steps']}},
+  {name: 'browser_check', description: 'Declares a validation that starts a declared contract that states how it runs and drives it in a browser: one scenario of steps, in order. One scenario is one example.' + CHECK_RESULT,
+    parameters: {type: 'object', properties: {serves: SERVES, serve: text('The declared contract to start: one that states its run.'), steps: {type: 'array', description: 'The steps, in order; each holds exactly one of its fields.', items: {type: 'object', properties: {
+      goto: text('A path to open, starting with a single /.'), reload: {type: 'boolean'}, press: text('A key to press.'),
+      fill: {type: 'object', properties: {label: {type: 'string'}, placeholder: {type: 'string'}, role: {type: 'string'}, name: {type: 'string'}, text: {type: 'string'}}, description: 'The field (by label, placeholder, role and name, or name) and the text to enter.'},
+      click: {type: 'object', properties: {role: {type: 'string'}, name: {type: 'string'}, text: {type: 'string'}, label: {type: 'string'}}, description: 'What to click.'},
+      expect_text: text('A text that appears.'), expect_no_text: text('A text that does not appear.'),
+      expect_count: {type: 'object', properties: {role: {type: 'string'}, text: {type: 'string'}, n: {type: 'integer'}}, description: 'How many elements of a role, or holding a text, there are.'},
+      expect_element: {type: 'object', properties: {selector: {type: 'string'}, text: {type: 'string'}}, required: ['selector'], description: 'An element by a simple selector (a tag, then any of #id, .class, [attribute] and [attribute=value]), holding a text if given.'},
+      expect_no_element: {type: 'object', properties: {selector: {type: 'string'}, text: {type: 'string'}}, required: ['selector'], description: 'An element that is not there.'}}}}}, required: ['serves', 'serve', 'steps']}}
+];
+export const CHECK_TOOL_KINDS = Object.freeze(Object.fromEntries(CHECK_TOOLS.map(t => [t.name, t.name.replace(/_check$/, '')])));
 export const TOOLS = Object.freeze({
   splitter: Object.freeze([
     {name: 'contract', description: 'Declares one contract of this level, stored exactly as given. The result says it is stored, or why it is not: a kind outside the seven, a path outside the files\' root, a language the box does not run, or a name already declared.',
@@ -58,11 +100,7 @@ export const TOOLS = Object.freeze({
         effects: {type: 'string', description: 'What it changes, or none.'},
         run: {type: 'object', properties: {static: {type: 'boolean'}, run: {type: 'string'}, ready: {type: 'string'}}, description: 'Only for a page, route or command: how it is started. static true serves its files as they are. run is a command line that starts with a command contract or a program the box has, and ready a path that answers once it is up; it serves on the port its environment gives. A contract that states no run is not started.'}
       }, required: ['name', 'kind', 'does']}},
-    {name: 'validation', description: 'Declares one validation: a check that runs as written against the contracts it serves. Check a page by browser steps, a command by running it, a function by calling it, a route by requesting it, and a document by a reader\'s question; each call, each request and each run of a command is one example. The result gives the validation\'s id, the examples it renders and how many different examples each contract it serves has so far, or why it cannot run.',
-      parameters: {type: 'object', properties: {
-        serves: names('The declared contracts it checks, by their names exactly as declared.'),
-        check: {type: 'object', description: 'One of these forms, by its kind. file: path, has (texts the file contains), json (true when it must parse). judge: path, question (a yes or no question a reader answers from the file alone). command: run (a command contract or a program the box has, with its arguments), stdin, files (each input file\'s path and text), expect (exit, stdout, stdout_has, stderr_has, stderr true); with no expect it observes an exit of 0. call: steps, each with call (a declared function contract), args (a list), save (a name later arguments read as $name), expect, expect_has, throws (true). http: serve (a declared contract with a run), steps, each with method, path, body, save, expect (status, body_has, json_has). browser: serve (a declared contract with a run), steps, each exactly one of goto, reload (true), press, fill (label, placeholder, role and name, or name, with text), click (role and name, text, or label), expect_text, expect_no_text, expect_count (role or text, with n), expect_element and expect_no_element (selector, with text).'}
-      }, required: ['serves', 'check']}},
+    ...CHECK_TOOLS,
     {name: 'piece', description: 'Declares one piece of the division: a task that can be made from its own words alone, and the declared contracts it delivers.',
       parameters: {type: 'object', properties: {
         label: {type: 'string', description: 'A few words naming what it produces.'},

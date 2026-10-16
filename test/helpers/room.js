@@ -83,10 +83,12 @@ const { start } = require('./index.js');
 // order, ending with done: each contract not among those its request gives
 // (contracts_you_deliver), each validation's serves and check, and each
 // piece when piece is offered.
-export function levelCalls(level,{user={},tools=['contract','validation','piece','level','done']}={}) {
+// A validation as the call of its kind's function: {serves, ...the check's fields}.
+export const checkCall=v=>{const {kind,argv,...fields}=v.check;return {name:`${kind}_check`,arguments:{serves:v.serves,...fields}};};
+export function levelCalls(level,{user={},tools=['contract','piece','level','done']}={}) {
   const given=new Set((user.contracts_you_deliver||[]).map(c=>c.name)),out=[];
   for(const c of level.contracts||[])if(!given.has(c.name))out.push({name:'contract',arguments:c});
-  for(const v of level.validations||[])out.push({name:'validation',arguments:{serves:v.serves,check:v.check}});
+  for(const v of level.validations||[])out.push(checkCall(v));
   if(tools.includes('piece'))for(const p of level.pieces||[])out.push({name:'piece',arguments:p});
   out.push({name:'done',arguments:{}});
   return out;

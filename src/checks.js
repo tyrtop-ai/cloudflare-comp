@@ -55,6 +55,15 @@ export function callModule(check, files, placed = new Set()) {
 // with the row that compiles it (a Map), when not every file of each row (a
 // file whose exact bytes compiled before is not compiled again). inventory:
 // the room needs the box's inventory, so the box opens.
+// What a call check observed when no file gives the function it calls: the
+// function contract's file is missing, or it holds no function a call reaches
+// by that name (a JavaScript file exports it; a Python file defines it).
+function unreachable(c, contracts, files) {
+  const name = c.steps?.[0]?.call || 'the function', path = contracts.find(d => d.name === name && kindOf(d) === 'function')?.path;
+  if (!path) return `no file gives ${name} to a call`;
+  if (!files.has(path)) return `${path}, the file of ${name}, is missing`;
+  return toolchainOf(path)?.extractor === 'acorn' ? `${path} does not export ${name}: a call reaches a function by the name its file exports` : `${path} defines no ${name} a call reaches`;
+}
 export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), paths: glue = {}, compile = null, inventory = false} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], list = spec?.validations || [], contracts = spec?.contracts || [];
   const commandsOf = new Map(contracts.filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
@@ -89,7 +98,7 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), p
       checks.push({id: v.id, kind: 'command', ...(c.argv ? {argv: c.argv} : {}), run: c.run, ...(c.stdin ? {stdin: c.stdin} : {}), ...(c.files ? {files: c.files} : {}), expect: c.expect || {}});
     } else if (c.kind === 'call') {
       const at = callModule(c, files, placed);
-      if (!at) { const note = `no file defines ${c.steps?.[0]?.call || 'the function'}`; local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: note, frames: [], observed: {what: 'local', note}}); continue; }
+      if (!at) { const note = unreachable(c, contracts, files); local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: note, frames: [], observed: {what: 'local', note}}); continue; }
       checks.push({id: v.id, kind: 'call', ...at, steps: c.steps});
     } else checks.push({id: v.id, kind: c.kind, serve: c.serve, steps: c.steps});
   }

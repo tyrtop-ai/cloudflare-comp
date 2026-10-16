@@ -9,9 +9,9 @@
 // division is sound is Clef's review (src/model.js reviewLevel), as before.
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, PLACED_KINDS, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, runOf, servedRun, runsOf, bundlePath, contractExamples, checkExamples, exerciseWords, divisionOf, LEVEL_LIMITS, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, bundlePath, contractExamples, checkExamples, exerciseWords, divisionOf, LEVEL_LIMITS, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { session } from './session.js';
-import { systemPrompt, TOOLS } from './prompts.js';
+import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 const listed = xs => xs.length ? xs.join(', ') : 'none';
@@ -97,6 +97,13 @@ function validation(s, a) {
   const counts = Object.fromEntries(names.list.map(n => [n, examplesOf(s, all.find(c => c.name === n)).length]));
   return {id, examples, examples_so_far: counts};
 }
+// One check function's call: a validation of its kind, with the fields its function takes.
+function checkCall(s, kind, a) {
+  const fields = ['serves', ...CHECK_FIELDS[kind].filter(k => k !== 'kind')], unknown = Object.keys(a).filter(k => !fields.includes(k));
+  if (unknown.length) return {error: `${kind}_check has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are ${fields.join(', ')}`};
+  const {serves, ...check} = a;
+  return validation(s, {serves, check: {kind, ...check}});
+}
 const PIECE_FIELDS = ['label', 'task', 'contracts', 'uses', 'packages', 'refs'];
 function piece(s, a) {
   const unknown = Object.keys(a).filter(k => !PIECE_FIELDS.includes(k));
@@ -151,7 +158,7 @@ export function levelOf(s) {
 // One call: {result, end?}.
 export function splitterCall(s, name, args) {
   if (name === 'contract') return {result: contract(s, args)};
-  if (name === 'validation') return {result: validation(s, args)};
+  if (CHECK_TOOL_KINDS[name]) return {result: checkCall(s, CHECK_TOOL_KINDS[name], args)};
   if (name === 'piece' && s.divide) return {result: piece(s, args)};
   if (name === 'level') return {result: levelView(s)};
   if (name === 'done') {
