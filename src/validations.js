@@ -106,7 +106,7 @@ export function readCheck(c, ctx) {
   if (bad) return {error: bad};
   if (kind === 'file' || kind === 'judge') {
     const path = typeof c.path === 'string' ? c.path : '';
-    if (!path || !ctx.paths.has(path)) return {error: `the ${kind} check reads ${path ? `"${path.slice(0, 200)}", which no declared contract places and the project does not hold` : 'no path'}`};
+    if (!path || !ctx.paths.has(path)) return {error: `the ${kind} check reads ${path ? `"${path.slice(0, 200)}", which no declared contract places and the existing files do not hold` : 'no path'}`};
     if (kind === 'judge') {
       const q = text(c.question, LEVEL_LIMITS.question, 'its question');
       return q.error ? {error: `the judge check: ${q.error}`} : {check: {kind, path, question: q.text}};
@@ -129,7 +129,7 @@ export function readCheck(c, ctx) {
       if (!plain(c.files)) return {error: 'the command check: files maps each input file\'s path to its text'};
       const entries = Object.entries(c.files);
       if (entries.length > LEVEL_LIMITS.fixtures) return {error: `the command check has ${entries.length} input files; at most ${LEVEL_LIMITS.fixtures}`};
-      for (const [p, t] of entries) if (!bundlePath(p) || typeof t !== 'string' || t.length > LEVEL_LIMITS.fixture) return {error: `the command check has an input file "${String(p).slice(0, 80)}" that is not a path inside the project with a text of at most ${LEVEL_LIMITS.fixture} characters`};
+      for (const [p, t] of entries) if (!bundlePath(p) || typeof t !== 'string' || t.length > LEVEL_LIMITS.fixture) return {error: `the command check has an input file "${String(p).slice(0, 80)}" that is not a relative path with a text of at most ${LEVEL_LIMITS.fixture} characters`};
       files = c.files;
     }
     const expect = {};

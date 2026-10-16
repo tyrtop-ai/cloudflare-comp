@@ -10,8 +10,12 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, at, tail, statusOf, exported, call, CONTRACTS, VALIDATIONS, PARTS, FILES, GOAL, skip} from './helpers/toolkit.js';
-import {Sql, Store, ControlRoom} from './helpers/room.js';
-import {readLevel, contractExamples, exercises} from '../src/validations.js';
+import {Sql, Store, ControlRoom, levelCalls} from './helpers/room.js';
+import {contractExamples, exercises} from '../src/validations.js';
+import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
+// A level stated through the splitter's functions (each call's result, then the level): every call must store.
+const stated = (level, world = {}) => { const s = splitterState(world), results = levelCalls(level).filter(c => c.name !== 'done').map(c => splitterCall(s, c.name, c.arguments).result);
+  assert.deepEqual(results.filter(r => r.error), []); return {s, done: splitterCall(s, 'done', {}).result, level: levelOf(s)}; };
 import {LINK_SCOPE, MESSAGES} from '../src/prompts.js';
 const {EARLIER_ROOM} = await import('../src/index.js');
 const {linkComponents} = await import('../src/model.js');
@@ -124,19 +128,23 @@ test('F5: a finished v8 room made before levels exports its top row\'s bundle, p
 // ------------------------------------------------------------------ F7
 test('F7 (v8 live 6): two pieces placing one path, and a contract a job adds at a path its level has, are no miss of the runtime: they are facts for Clef\'s review; functions of one piece share a file', () => {
   const C = CONTRACTS.map(c => ['shout', 'loud'].includes(c.name) ? {...c, path: 'words.py'} : c);
-  const two = readLevel({contracts: C, validations: VALIDATIONS, pieces: [{label: 'Shouter', task: 'Write shout', contracts: ['shout']}, {label: 'Louder', task: 'Write loud', contracts: ['loud']}, {label: 'Rest', task: 'the rest', contracts: ['whisper', 'soft', 'NOTES.md']}]});
-  assert.deepEqual(two.defects, []);
-  assert.deepEqual(two.division.placed_by_several, [{path: 'words.py', pieces: ['Shouter', 'Louder']}]);
-  const one = readLevel({contracts: C, validations: VALIDATIONS, pieces: [{label: 'Loud', task: 'Write shout and loud', contracts: ['shout', 'loud']}, {label: 'Rest', task: 'the rest', contracts: ['whisper', 'soft', 'NOTES.md']}]});
-  assert.deepEqual([one.defects, one.division.placed_by_several], [[], undefined], 'one piece may define two functions in one file');
-  const job = readLevel({contracts: [{name: 'reverse', kind: 'function', path: 'shout.py', does: 'reverses a word'}], validations: [call('r1', ['reverse'], 'reverse', 'ab', 'ba'), call('r2', ['reverse'], 'reverse', 'a', 'a'), call('r3', ['reverse'], 'reverse', 'xyz', 'zyx')], pieces: []}, {have: [CONTRACTS[0]]});
-  assert.deepEqual([job.defects, job.division.placed_already], [[], [{contract: 'reverse', path: 'shout.py', has: 'shout'}]]);
+  const two = stated({contracts: C, validations: VALIDATIONS, pieces: [{label: 'Shouter', task: 'Write shout', contracts: ['shout']}, {label: 'Louder', task: 'Write loud', contracts: ['loud']}, {label: 'Rest', task: 'the rest', contracts: ['whisper', 'soft', 'NOTES.md']}]});
+  assert.deepEqual(two.done, {complete: true});
+  assert.deepEqual(two.level.division.placed_by_several, [{path: 'words.py', pieces: ['Shouter', 'Louder']}]);
+  const one = stated({contracts: C, validations: VALIDATIONS, pieces: [{label: 'Loud', task: 'Write shout and loud', contracts: ['shout', 'loud']}, {label: 'Rest', task: 'the rest', contracts: ['whisper', 'soft', 'NOTES.md']}]});
+  assert.deepEqual([one.done, one.level.division.placed_by_several], [{complete: true}, undefined], 'one piece may define two functions in one file');
+  const job = stated({contracts: [{name: 'reverse', kind: 'function', path: 'shout.py', does: 'reverses a word'}], validations: [call('r1', ['reverse'], 'reverse', 'ab', 'ba'), call('r2', ['reverse'], 'reverse', 'a', 'a'), call('r3', ['reverse'], 'reverse', 'xyz', 'zyx')], pieces: []}, {have: [CONTRACTS[0]]});
+  assert.deepEqual([job.done, job.level.division.placed_already], [{complete: true}, [{contract: 'reverse', path: 'shout.py', has: 'shout'}]]);
 });
 test('F7 (v8 live 6): Clef reads which files each piece places; a division that places one file from two pieces is its to judge, and when it says NO the splitter divides again and the next division is admitted', {skip}, async () => {
   const C = CONTRACTS.map(c => ['shout', 'loud'].includes(c.name) ? {...c, path: 'words.py'} : c);
   const flat = [{label: 'Shouter', task: 'Write shout', contracts: ['shout']}, {label: 'Louder', task: 'Write loud, which uses shout', contracts: ['loud'], uses: ['shout']}, {label: 'Quiet', task: 'Write whisper and soft', contracts: ['whisper', 'soft']}, {label: 'Notes', task: 'Write NOTES.md', contracts: ['NOTES.md']}];
   let n = 0;
-  const split = user => user.contracts_you_deliver ? splitFor({parts: flat})(user) : ++n === 1 ? {contracts: C, validations: VALIDATIONS, pieces: flat} : {contracts: CONTRACTS, validations: VALIDATIONS, pieces: flat};
+  const split = (user, _n, _system, {round}) => {
+    if (user.contracts_you_deliver) return splitFor({parts: flat})(user);
+    if (round === 1) n++;
+    return n === 1 ? {contracts: C, validations: VALIDATIONS, pieces: flat} : {contracts: CONTRACTS, validations: VALIDATIONS, pieces: flat};
+  };
   const shared = (key, state) => state.division?.files_placed_by_several_pieces ? 0.1 : 0.9;
   const r = await toolkit({split, clef: clefFor([], {'^split_valid$': shared})});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
@@ -164,16 +172,20 @@ test('F8: a contract\'s examples come only from validations that exercise it its
   assert.equal(exercises({kind: 'browser', serve: 'index.html', steps: [{goto: '/'}]}, {name: 'new.html', kind: 'page', path: 'new.html'}), false);
   const two = VALIDATIONS.filter(v => v.id !== 's3');
   assert.deepEqual(contractExamples(shout, two.filter(v => v.serves.includes('shout'))), ['shout("hi") → "HI!"', 'shout("a") → "A!"']);
-  const level = readLevel({contracts: CONTRACTS, validations: two, pieces: []});
-  assert.deepEqual(level.defects, ['Contract shout has 2 different examples: give it validations that show 3 different examples of shout itself (calls of shout, each call one example).']);
+  assert.deepEqual(stated({contracts: CONTRACTS, validations: two, pieces: []}).done, {complete: false, missing: ['shout has 2 different examples of 3: calls of shout, each call one example.']});
 });
 test('F8: the worker of shout reads only shout\'s own examples, never a sibling\'s call', {skip}, async () => {
-  let n = 0;
-  const two = VALIDATIONS.filter(v => v.id !== 's3');
-  const split = user => user.contracts_you_deliver ? splitFor()(user) : splitFor({validations: ++n === 1 ? two : VALIDATIONS})(user);
+  const two = VALIDATIONS.filter(v => v.id !== 's3'), s3 = VALIDATIONS.find(v => v.id === 's3'), heard = [];
+  // One session: done says shout is short, and the splitter adds the third call of shout.
+  const split = (user, _n, _system, {round, results, tools}) => {
+    if (user.contracts_you_deliver) return splitFor()(user);
+    if (round === 1) return levelCalls(splitFor({validations: two})(user), {user, tools});
+    heard.push(results);
+    return [{name: 'validation', arguments: {serves: s3.serves, check: s3.check}}, {name: 'done', arguments: {}}];
+  };
   const r = await toolkit({split});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  assert.match(events(r.room, 'split_defects')[0].body, /Contract shout has 2 different examples/);
+  assert.deepEqual(heard[0].at(-1).result, {complete: false, missing: ['shout has 2 different examples of 3: calls of shout, each call one example.']});
   for (const u of workerRequests(r.calls, 'shout')) assert.deepEqual(u.prompt.deliver[0].examples, ['shout("hi") → "HI!"', 'shout("a") → "A!"', 'shout("Yo") → "YO!"']);
 });
 
