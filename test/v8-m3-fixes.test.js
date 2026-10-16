@@ -519,3 +519,22 @@ for (const variant of ['live3', 'm2', 'm3']) test(`composition: an old room (${v
   assert.deepEqual(room.read('checks:root.2', []), ['R3', 'R4']);
   assert.deepEqual(boxes.slice(before).map(b => b.ids.sort().join(',')).sort(), ['R1,R2', 'R3,R4']);
 });
+
+test('L4: the dashboard tells a builder by its role: a v8 "Builder" is its manager\'s builder, a part a split named "Builder" is a worker', async () => {
+  const {readFileSync} = await import('node:fs'), {runInNewContext} = await import('node:vm');
+  const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'), html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const ids = [...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m => m[1]);
+  const elements = new Map(ids.map(id => [id, {id, value: '', textContent: '', className: '', innerHTML: '', title: '', disabled: false, addEventListener() {}, querySelectorAll() { return []; }}]));
+  const context = {document: {getElementById(id) { return elements.get(id) || null; }, querySelectorAll() { return []; }}, crypto: {randomUUID() { return 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'; }}, location: {href: 'https://example.com/'}, history: {replaceState() {}}, URL, setInterval() {}};
+  runInNewContext(script, context, {filename: 'public/app.js'});
+  const agents = [
+    {id: 'root', parent: null, label: 'Root objective', role: '', phase: 'manager', status: 'waiting', task: 'goal'},
+    {id: 'root.1', parent: 'root', label: 'Shouter', role: '', phase: 'implement', status: 'done', task: 'Write shout'},
+    {id: 'root.2', parent: 'root', label: 'Builder', role: '', phase: 'implement', status: 'done', task: 'Write the building helpers'},
+    {id: 'root.3', parent: 'root', label: 'Builder', role: 'builder', phase: 'implement', status: 'running', task: 'Join the work'}];
+  context.render({status: 'running', busy: false, step: 3, max_parallel: 4, active_agents: [], files: [], events: [], agents});
+  const tree = elements.get('hierarchy').innerHTML;
+  assert.match(tree, /data-node="root" data-builder="root\.3"/, 'the v8 builder is Root\'s builder');
+  assert.match(tree, /class="dot role-worker[^"]*" data-node="root\.2"/, 'the part named Builder is a worker');
+  assert.doesNotMatch(tree, /data-node="root\.3"/, 'the builder is drawn as its manager\'s half, not as a child');
+});
