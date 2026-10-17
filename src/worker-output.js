@@ -298,30 +298,6 @@ function legacyAction(output, text) {
   return null;
 }
 
-// v8 (S6 review): the single-file call's answer as the file's text, read
-// through the same block parser: a block for the path (or the one block)
-// first; else a document's answer wrapped whole in one fence is unwrapped,
-// and any other file's answer is its fenced code with the prose around it
-// dropped; else the answer as it stands, reasoning removed.
-export function singleFileText(output, path) {
-  const text = stripReasoning(contentOf(output)).trim();
-  const r = parseWorkerAnswer(text);
-  if (!r.parse_error && r.files.length) return (r.files.find(f => f.path === path) || r.files[0]).content;
-  if (!r.parse_error && r.truncated.length) {
-    const lines = text.split('\n'), at = lines.findIndex(l => markerOf(l)?.kind === 'file');
-    const rest = lines.slice(at + 1);
-    return (rest.length && isLeftover(rest[0]) ? rest.slice(1) : rest).join('\n');
-  }
-  const lines = text.split('\n');
-  if (DOCUMENT.test(path)) {
-    if (lines.length > 1 && FENCE.test(lines[0]) && /^[ \t]*```[ \t]*$/.test(lines.at(-1))) return lines.slice(1, -1).join('\n');
-    return text;
-  }
-  const fences = [...text.matchAll(/^```[^\n]*\n([\s\S]*?)\n```[ \t]*$/gm)].map(m => m[1]);
-  if (fences.length) return fences.reduce((a, b) => b.length > a.length ? b : a);
-  return text;
-}
-
 // The raw action decide() hands the room: the control fields, the complete
 // files with their content, and each truncated file as a path with no
 // content, which the room writes again with one single-file call (the

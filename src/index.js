@@ -13,7 +13,7 @@ export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isRowId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, routeAmong, inScope, matchContracts, rewriteFile } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
@@ -22,7 +22,7 @@ import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as inst
 import { effectiveGoal, goalView, clipEnds, promptText, reorderError, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
-import { RETRY, MESSAGES, BASE_LABEL } from './prompts.js';
+import { RETRY, MESSAGES, BASE_LABEL, CLEF, clefText } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, parseSource, parseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
@@ -49,8 +49,9 @@ import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
 import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, externalModule, readsModule, piecePackages, packageLine, needOf } from './packages.js';
 import { caseTwin, pathError } from '../container/build-path.mjs';
-import { contractExamples, checkSummary } from './validations.js';
+import { contractExamples, checkSummary, checkExamples, renderExample } from './validations.js';
 import { splitLevel } from './splitter.js';
+import { workerWorld, workerSession } from './worker.js';
 import { toBase64 } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -1521,7 +1522,7 @@ export class ControlRoom extends DurableObject {
   }
   // A room whose Root promises start (live, started under v7.15) answers
   // function requests from promises; MOCK and v7.14 rooms route as v7.14.
-  // v7's request machinery only: a v8 room answers asks by its levels (askUp).
+  // v7's request machinery only: a v8 room answers asks by its levels (routeAsk).
   planned() {return !this.v8()&&this.promisedOf(this.topId()).length>0;}
   // v7.15.7 integration: a room whose plan states what a call returns (the splitter is asked for it on every function since v7.15.7): the await rule reads every promised name there, and a promise the plan grows states its shape too.
   shaped() {return this.allNodes().some(n=>parse(n.interfaces,[]).some(f=>f?.returns));}
@@ -6485,11 +6486,12 @@ export class ControlRoom extends DurableObject {
   // Answers one ask that needs no other part, with no manager hop (§5.3): a
   // [route:broker] message wakes the writer, whose next turn reads the answer
   // in answered_requests. false: a contract, for askManager.
-  brokerAnswer(id, ask) {
+  // message false: the answer is the ask function's result, so no message wakes the asker.
+  brokerAnswer(id, ask, {message=true}={}) {
     if(!this.v8())return false;
     const cat=this.catalogue(id),c=this.askKind(id,ask.name,ask.question);
     if(c.kind==='contract')return false;
-    if(c.kind==='package')return !!this.answerPackageAsk(id,{name:ask.name||'',need:ask.question||'',key:ask.key});
+    if(c.kind==='package')return !!this.answerPackageAsk(id,{name:ask.name||'',need:ask.question||'',key:ask.key,wake:message});
     const req=brokerRequest({from:id,kind:c.kind,name:c.name,need:ask.question});
     let answer=null;
     if(c.kind==='source') {
@@ -6500,7 +6502,7 @@ export class ControlRoom extends DurableObject {
       if(row)answer=baseAnswer({id:req.id,path:row.path,content:row.content,own:this.designOf(id).contracts.some(x=>x?.path===row.path)});
     }
     answer||=noneAnswer({id:req.id,name:ask.name||c.name,catalogue:cat});
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:ask.key,kind:answer.kind,status:answer.status}));
+    if(message)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:ask.key,kind:answer.kind,status:answer.status}));
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
     this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters${answer.facts?.clipped?` of ${answer.facts.chars}`:''}, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
     return true;
@@ -8981,44 +8983,105 @@ export class ControlRoom extends DurableObject {
     } else if(n&&n.status==='ready'&&!result?.moved)this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
     if(this.receive(id).length||this.wakeGeneration(id)!==seen)this.wake(id);
   }
-  // A manager settles what it holds: complaints (down to the responsible
-  // worker), changes (to the children they concern), asks (to the contract
-  // that gives them) and escalations (up its line).
+  // A manager settles what it holds: each complaint, change and ask is one
+  // choice among its functions (managerChoice); an escalation goes up its line.
   async routeHeld(id) {
     for(const p of this.problemsHeld(id)) {
       if(!this.moveProblem(p,{status:'closed',outcome:'routed'}))continue;
       if(p.kind==='escalation'){this.escalate(id,p.facts.kind||p.stage,p.detail,p.facts.origin||p.source);continue;}
       if(p.kind==='change'){await this.routeChange(id,p.facts.text||p.detail,p.flags||{});continue;}
-      if(p.kind==='ask'){await this.resolveAsk(id,p.facts);continue;}
-      // A scope walk Clef could not finish here goes on from here.
-      if(p.kind==='walk'){await this.askUp(p.facts.worker,p.facts.ask,id);continue;}
+      if(p.kind==='ask'){await this.routeAsk(id,p.facts);continue;}
       await this.routeComplaint(id,{kind:p.kind,parties:p.parties,detail:p.detail,facts:p.facts},p.flags||{});
     }
   }
-  // ---------- complaints ----------
-  // The contracts m's children deliver (an archived child's too), as their rows hold them: what m routes by.
-  levelContracts(m) { return [...new Map(this.children(m).filter(c=>!isRuntimeNode(c)).flatMap(c=>this.promisedOf(c.id)).map(c=>[c.name,c])).values()]; }
-  // What a compiler observed (or the grader of a benchmark run), routed down
-  // to the worker responsible for it, as it was observed: to the child whose
-  // subtree wrote a file it names, else to the child whose contracts it
-  // validates, else to any live child; Clef chooses when several may
-  // (CLEF.owner). A complaint about contracts of m's level that no live
-  // child delivers is a split defect at m: its splitter rebuilds them.
-  async routeComplaint(m, item, flags={}) {
-    const kids=this.liveChildren(m),serves=item.facts?.validation?.serves||[];
-    const owners=[...new Set((item.parties||[]).map(x=>x.owner).filter(Boolean))];
-    let to=kids.filter(c=>owners.some(o=>this.within(o,c.id)));
-    if(!to.length)to=kids.filter(c=>this.promisedOf(c.id).some(f=>serves.includes(f.name)));
-    if(!to.length&&serves.length&&this.levelContracts(m).some(c=>serves.includes(c.name))){this.set(`orphans:${m}`,JSON.stringify(serves));this.wake(m);return;}
-    if(!to.length)to=kids;
-    if(!to.length)return void this.escalate(m,'checks_failed',clip(`"${this.node(m)?.label||m}" has no live part for what was observed: ${item.detail}`,900));
-    if(to.length>1) {
-      const r=await this.askClef(m,`which of ${to.map(c=>`"${c.label}"`).join(', ')} the complaint concerns`,()=>routeAmong(this.inferenceEnv(),{key:'owner',text:item.detail,children:to.map(c=>({task:c.task,contracts:this.promisedOf(c.id)}))}));
-      if(r.error)return void this.clefBlocked(m,`which child the complaint concerns`,r.error,{kind:item.kind,stage:'complaint',source:flags.source||m,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags});
-      const ps=r.value;
-      to=[to[ps.indexOf(Math.max(...ps))]];
+  // ---------- the manager's functions ----------
+  // A manager works through functions, as every model does: on an ask, a
+  // complaint or a change it holds, each function call it may make is one
+  // typed option, Clef scores each (one noul question per option, over the
+  // manager's own files), and the runtime calls the highest. Its functions:
+  //   children()       its level file: each live child's label, task and the contracts it delivers;
+  //   my_contracts()   its entry in its parent's level file: its assignment and contracts;
+  //   answer(contract) to an asker: a contract its children deliver (none of the asker's own line);
+  //   route_to(child)  hands a complaint or a change to a child;
+  //   ask_parent(need) the same ask one level up; at the room, the asker is archived;
+  //   extend(need)     hands the need to its splitter as a level job.
+  // A walk up the tree is a chain of ask_parent calls, each one manager's
+  // choice. What the manager reads is its files only (levelDesign, designOf).
+  managerView(m) {
+    const level=this.levelDesign(m),mine=this.designOf(m),live=new Set(this.liveChildren(m).map(c=>c.id)),byName=new Map((level?.contracts||[]).map(c=>[c.name,c]));
+    const children=(level?.children||[]).filter(c=>live.has(c.id)).map(c=>({id:c.id,role:c.role,label:c.label,task:c.prompt,contracts:c.delivers.map(n=>byName.get(n)).filter(Boolean)}));
+    return {assignment:mine.prompt,mine:mine.contracts,children,contracts:level?.contracts||[]};
+  }
+  // The contracts m's level file says its children deliver (an archived child's too).
+  levelContracts(m) {
+    const level=this.levelDesign(m);
+    if(!level)return [];
+    const byName=new Map(level.contracts.map(c=>[c.name,c]));
+    return [...new Map([...level.children,...level.archived].flatMap(c=>c.delivers).map(n=>byName.get(n)).filter(Boolean).map(c=>[c.name,c])).values()];
+  }
+  // The function calls a manager may make on an item, each one option:
+  // {fn, key, question, call, contract?, child?}. item: {kind: 'ask', worker,
+  // need, name} | {kind: 'complaint', text, serves, parties} | {kind: 'change', text}.
+  // A complaint's extend rebuilds what it names of the level that no live
+  // child delivers, so it is offered only when there is such a contract.
+  managerOptions(m, item, view) {
+    const out=[];
+    if(item.kind==='ask') {
+      const line=view.children.find(c=>this.within(item.worker,c.id)),seen=new Set();
+      for(const c of view.children)if(c!==line)for(const k of c.contracts)if(!seen.has(k.name)){const j=seen.size;seen.add(k.name);out.push({fn:'answer',contract:k,key:`answer_${j}`,question:clefText('answer',{j}),call:`answer(${k.name})`});}
+      out.push({fn:'extend',key:'extend',question:CLEF.extend_ask,call:'extend(need)'},{fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
+      return out;
     }
-    this.deliverComplaint(m,to[0],item,flags);
+    view.children.forEach((c,i)=>out.push({fn:'route_to',child:c,key:`route_to_${i}`,question:clefText(item.kind==='change'?'route_change':'route_complaint',{i}),call:`route_to("${c.label}")`}));
+    if(item.kind==='change')out.push({fn:'extend',key:'extend',question:CLEF.extend_change,call:'extend(change)'});
+    else if(this.unheld(view,item.serves).length)out.push({fn:'extend',key:'extend',question:CLEF.extend_complaint,call:'extend(complaint)'});
+    return out;
+  }
+  // The contracts among names that the level holds and no live child delivers.
+  unheld(view, names=[]) { return (names||[]).filter(n=>view.contracts.some(c=>c.name===n)&&!view.children.some(k=>k.contracts.some(c=>c.name===n))); }
+  // One manager choice: Clef scores every option, and the highest is the
+  // call (the first of equals, in the order managerOptions gives); a single
+  // option is the call without a question. held: the item as a problem m
+  // holds again when Clef cannot answer (Continue asks again). The pick
+  // ({...option, p}), or null when there is nothing to call or Clef could not answer.
+  async managerChoice(m, item, held) {
+    const view=this.managerView(m),options=this.managerOptions(m,item,view);
+    if(!options.length)return null;
+    const lines=cs=>cs.map(contractLine).slice(0,24),named=n=>{const c=view.contracts.find(x=>x.name===n);return c?contractLine(c):n;};
+    const wrote=c=>[...new Set((item.parties||[]).filter(x=>x.owner&&this.within(x.owner,c.id)).map(x=>x.owner_path||x.path).filter(Boolean))];
+    const offered=options.filter(o=>o.fn==='answer');
+    const state={item:item.kind==='ask'?{kind:'ask',need:clip(item.need,300),expected_name:item.name||''}:{kind:item.kind,text:clip(item.text,1800),
+        ...(item.kind==='complaint'?{concerns:{contracts:(item.serves||[]).map(named),files:[...new Set((item.parties||[]).map(x=>x.owner_path||x.path).filter(Boolean))]}}:{})},
+      assignment:clip(view.assignment,1800),my_contracts:lines(view.mine),
+      children:view.children.map((c,i)=>({slot:i,label:c.label,task:clip(c.task,700),contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
+      ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
+      options:options.map(o=>o.call)};
+    const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
+    let ps=[null];
+    if(options.length>1) {
+      const r=await this.askClef(m,`which function answers ${what}`,()=>chooseCall(this.inferenceEnv(),{state,options}));
+      if(r.error){this.clefBlocked(m,`which function answers ${what}`,r.error,held);return null;}
+      ps=r.value;
+    }
+    const best=ps.reduce((b,v,i)=>v!==null&&v>ps[b]?i:b,0),pick=options[best],p=v=>v===null?'':` p=${Number(v).toFixed(3)}`;
+    this.event(m,'manager_choice',clip(`On ${what}: ${pick.call}${options.length>1?`${p(ps[best])}; the others: ${options.map((o,i)=>i===best?'':`${o.call}${p(ps[i])}`).filter(Boolean).join(', ')}`:' (the only function it may call)'}.`,900),pick.child?.id||(item.kind==='ask'?item.worker:''));
+    return {...pick,p:ps[best]};
+  }
+  // ---------- complaints ----------
+  // What a compiler observed (or the grader of a benchmark run), as it was
+  // observed: the manager's choice hands it to a child (route_to), down to
+  // the worker responsible for it, or, when it names contracts of the level
+  // that no live child delivers (a split defect), its splitter rebuilds them
+  // (extend). A manager with no function to call on it escalates.
+  async routeComplaint(m, item, flags={}) {
+    const held={kind:item.kind,stage:'complaint',source:flags.source||m,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags};
+    const serves=item.facts?.validation?.serves||[],options=this.managerOptions(m,{kind:'complaint',serves},this.managerView(m));
+    if(!options.length)return void this.escalate(m,'checks_failed',clip(`"${this.node(m)?.label||m}" has no live part for what was observed: ${item.detail}`,900));
+    const pick=await this.managerChoice(m,{kind:'complaint',text:item.detail,serves,parties:item.parties||[]},held);
+    if(!pick)return;
+    if(pick.fn==='route_to')return this.deliverComplaint(m,this.node(pick.child.id),item,flags);
+    this.set(`orphans:${m}`,JSON.stringify(this.unheld(this.managerView(m),serves)));
+    this.wake(m);
   }
   deliverComplaint(from, child, item, flags={}) {
     const source=flags.source||from;
@@ -9076,57 +9139,32 @@ export class ControlRoom extends DurableObject {
     this.holdRoom('clef_blocked',clip(`Clef could not answer ${what} at "${this.node(m)?.label||m}": ${why}. Nothing was decided on it; Continue asks again.`,900),{agent:m});
   }
   // ---------- asks ----------
-  // A worker's ask its world does not answer by name: Clef walks up its line
-  // and asks at each manager whether producing the need is part of that
-  // manager's assignment (CLEF.owns_need). The first that holds it settles
-  // it (resolveAsk). In scope nowhere up to the room: the asker is archived
-  // with its subtree, and its manager's splitter rebuilds what it delivered.
-  // from: the manager a walk Clef could not finish goes on from (Continue).
-  async askUp(worker, a, from=null) {
-    if(['archived','retired','failed',undefined].includes(this.node(worker)?.status))return;
-    // A walk that goes on (Continue) holds the asker's place while it was held.
-    if(from)this.db().exec('DELETE FROM route_workers WHERE worker=? AND topic=?',worker,a.key);
-    if(!from&&this.brokerAnswer(worker,a))return;
-    const own=a.name?this.promisedOf(worker).find(f=>f.name===a.name):null;
-    if(own)return void await this.answerAsk({worker,key:a.key,request_id:''},own,MESSAGES.own_contract({contract:contractLine(own)}));
-    if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',worker,a.key).length)return;
-    const want=a.name?`${a.name} (${clip(a.question,200)})`:`"${clip(a.question,200)}"`,env=this.inferenceEnv();
-    for(let x=from||this.agentAbove(worker);x;x=this.agentAbove(x)) {
-      const m=this.node(x);
-      const r=await this.askClef(x,`whether ${want} is in "${m.label}"'s assignment`,()=>inScope(env,{assignment:m.task,contracts:this.promisedOf(x),need:a.question,name:a.name||''}));
-      if(r.error) {
-        // The asker waits for the walk's answer, as for any ask in flight.
-        this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?) ON CONFLICT(worker,topic) DO NOTHING',worker,a.key,crypto.randomUUID());
-        return void this.clefBlocked(x,`whether ${want} is in its assignment`,r.error,{kind:'walk',stage:'ask',source:worker,input:'',parties:[],detail:clip(`${this.node(worker)?.label||worker} asks for ${want}.`,900),facts:{worker,ask:a}});
-      }
-      const p=r.value;
-      this.event(x,'scope_walk',clip(`${want}: Clef p=${Number(p).toFixed(3)}, ${p>=0.5?'inside':'outside'} "${m.label}"'s assignment.`,500),worker);
-      if(p<0.5)continue;
-      const request_id=crypto.randomUUID();
-      this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?) ON CONFLICT(worker,topic) DO NOTHING',worker,a.key,request_id);
-      this.insertProblem({holder:x,kind:'ask',stage:'ask',source:worker,input:request_id,parties:[],detail:clip(`${this.node(worker)?.label||worker} asks for ${want}.`,900),facts:{worker,key:a.key,need:a.question,name:a.name||'',request_id}});
-      return void this.wake(x);
-    }
-    await this.archive(worker,`${want} is in scope at no manager up to the room`);
-  }
-  // At the manager whose assignment holds the need: the contract of its
-  // level a live child other than the asker's line delivers (by name, else
-  // Clef's match), or its splitter extends the level with what gives it.
-  async resolveAsk(m, ask) {
+  // An ask a worker sent (workerAsk), held by manager m: m's choice answers
+  // it with a contract its children deliver, extends its level with what
+  // gives it (its splitter; finishLevel answers the asker), or asks its own
+  // parent the same. At the room (the parent of the manager it created), an
+  // ask no manager up to it holds archives the asker with its subtree, and
+  // its manager's splitter rebuilds what it delivered (rebuildOrphans).
+  async routeAsk(m, ask) {
     const asker=this.node(ask.worker);
     if(!asker||['archived','retired','failed'].includes(asker.status))return;
-    const kids=this.liveChildren(m),line=kids.find(k=>this.within(ask.worker,k.id));
-    const offers=[...new Map(kids.filter(k=>k!==line).flatMap(k=>this.promisedOf(k.id)).map(c=>[c.name,c])).values()];
-    let hit=ask.name?offers.find(c=>c.name===ask.name):null;
-    if(!hit&&offers.length) {
-      const r=await this.askClef(m,`which contract gives ${ask.name||ask.need}`,()=>matchContracts(this.inferenceEnv(),{need:ask.need,name:ask.name},offers));
-      if(r.error)return void this.clefBlocked(m,`which contract of its level gives ${ask.name||ask.need}`,r.error,{kind:'ask',stage:'ask',source:ask.worker,input:ask.request_id||'',parties:[],detail:clip(`${asker.label} asks for ${ask.name||ask.need}.`,900),facts:ask});
-      if(r.value)hit=offers[r.value.index];
+    const want=ask.name?`${ask.name} (${clip(ask.need,200)})`:`"${clip(ask.need,200)}"`;
+    const held={kind:'ask',stage:'ask',source:ask.worker,input:ask.request_id||'',parties:[],detail:clip(`${asker.label} asks for ${want}.`,900),facts:ask};
+    const pick=await this.managerChoice(m,{kind:'ask',worker:ask.worker,need:ask.need,name:ask.name||''},held);
+    if(!pick)return;
+    if(pick.fn==='answer')return this.answerAsk(ask,pick.contract);
+    if(pick.fn==='extend') {
+      this.save(`level_job:${m}`,{kind:'extend',key:ask.key,text:ask.need,label:clip(ask.name||ask.need,60),own:[],ask});
+      this.event(m,'level_extend',clip(`"${this.node(m)?.label||m}" hands ${want} to its splitter, which extends the level.`,500),ask.worker);
+      return void this.wake(m);
     }
-    if(hit)return await this.answerAsk(ask,hit);
-    this.save(`level_job:${m}`,{kind:'extend',key:ask.key,text:ask.need,label:clip(ask.name||ask.need,60),own:[],ask});
-    this.event(m,'level_extend',clip(`No contract of "${this.node(m)?.label||m}"'s level gives ${ask.name||ask.need}; its splitter extends the level.`,500),ask.worker);
-    this.wake(m);
+    const up=this.agentAbove(m);
+    if(up) {
+      this.insertProblem({...held,holder:up});
+      this.event(m,'ask_parent',clip(`"${this.node(m)?.label||m}" asks "${this.node(up)?.label||up}" for ${want}.`,500),up);
+      return void this.wake(up);
+    }
+    await this.archive(ask.worker,`${want} is held by no manager up to the room`);
   }
   // The asker hears the contract that gives what it asked for, and may call
   // it by name from now on: its entry in its manager's level file, and those
@@ -9135,7 +9173,7 @@ export class ControlRoom extends DurableObject {
   async answerAsk(ask, c, text=null) {
     const n=this.node(ask.worker);
     if(!n||!c)return;
-    if(!text&&!this.promisedOf(n.id).some(f=>f.name===c.name)) {
+    if(!text&&!this.designOf(n.id).contracts.some(f=>f.name===c.name)) {
       const callers=[n.id];
       // Its manager calls it too, so the levels between them link it.
       for(let x=this.agentAbove(n.id);x&&!this.levelContracts(x).some(f=>f.name===c.name);x=this.agentAbove(x))callers.push(x);
@@ -9181,9 +9219,10 @@ export class ControlRoom extends DurableObject {
   // (false: nothing is under way, and nothing queues it again).
   async rebuildOrphans(m) {
     if(!this.levelIndex(m))return false;
-    const live=this.liveChildren(m),carried=name=>live.some(k=>this.promisedOf(k.id).some(f=>f.name===name));
+    // What its level file says each child delivers.
+    const delivers=k=>this.designOf(k.id).contracts,live=this.liveChildren(m),carried=name=>live.some(k=>delivers(k).some(f=>f.name===name));
     const gone=this.children(m).filter(c=>c.status==='archived'&&!isRuntimeNode(c)),named=new Set(parse(this.get(`orphans:${m}`,'[]'),[]));
-    const orphans=[...new Map([...gone.flatMap(k=>this.promisedOf(k.id)),...this.levelContracts(m).filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()];
+    const orphans=[...new Map([...gone.flatMap(delivers),...this.levelContracts(m).filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()];
     this.set(`orphans:${m}`,'[]');
     if(!orphans.length)return false;
     const n=Number(this.get(`rebuilds:${m}`,'0'));
@@ -9194,10 +9233,10 @@ export class ControlRoom extends DurableObject {
       return false;
     }
     this.set(`rebuilds:${m}`,String(n+1));
-    const tasks=gone.filter(k=>this.promisedOf(k.id).some(f=>orphans.some(o=>o.name===f.name)));
-    // What the rows it replaces were handed (their uses, packages and refs) is handed to what rebuilds them.
+    const tasks=gone.filter(k=>delivers(k).some(f=>orphans.some(o=>o.name===f.name)));
+    // What the rows it replaces were handed (the names their entries call, their packages and refs) is handed to what rebuilds them.
     const from=tasks.length?tasks:[this.node(m)],names=new Set(orphans.map(c=>c.name));
-    const uses=[...new Set(from.flatMap(k=>normalizeUses(parse(k.uses,[]),{v8:true})))].filter(x=>!names.has(x));
+    const uses=[...new Set(from.flatMap(k=>this.designOf(k.id).calls))].filter(x=>!names.has(x));
     const packages=[...new Set(from.flatMap(k=>this.packagesOf(k.id).map(p=>p.name)))],refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
     this.save(`level_job:${m}`,{kind:'rebuild',key:`${n+1}`,text:tasks.map(k=>this.designOf(k.id).prompt).join('\n\n')||this.designOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
     this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'} (rebuild ${n+1} of ${MAX_REBUILDS}).`,600));
@@ -9205,34 +9244,33 @@ export class ControlRoom extends DurableObject {
   }
   // ---------- changes ----------
   // A change on m's row: before m's split it is part of m's assignment; after
-  // it, Clef routes it to each live child whose contracts it concerns
-  // (CLEF.change), verbatim, and m's splitter extends the level when it concerns none.
+  // it, m's choice hands it to a child (route_to), verbatim, or to its
+  // splitter, which extends the level (extend).
   async routeChange(m, text, flags={}) {
     const n=this.node(m);
     // Before its level: the change joins its assignment, on its row and in its entry of its manager's level file.
     if(!this.levelIndex(m)){const task=clip(`${n.task}\n\n${text}`,8000);this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,()=>({prompt:this.node(m).task}));this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
-    const kids=this.liveChildren(m);
-    const r=await this.askClef(m,'which children the change concerns',()=>routeAmong(this.inferenceEnv(),{key:'change',text,children:kids.map(c=>({task:c.task,contracts:this.promisedOf(c.id)}))}));
-    if(r.error)return void this.clefBlocked(m,'which of its children the change concerns',r.error,{kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags});
-    const ps=r.value,to=kids.filter((_,i)=>ps[i]>=0.5);
-    this.event(m,'change_routed',clip(to.length?`The change concerns ${to.map(c=>`"${c.label}"`).join(', ')}: ${text}`:`The change concerns no child's contracts; its splitter extends the level: ${text}`,900));
-    if(!to.length) {
+    const held={kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags};
+    const pick=await this.managerChoice(m,{kind:'change',text},held);
+    if(!pick)return;
+    if(pick.fn==='extend') {
+      this.event(m,'change_routed',clip(`The change concerns no child's contracts; its splitter extends the level: ${text}`,900));
       this.save(`level_job:${m}`,{kind:'extend',key:flags.change||crypto.randomUUID(),text,label:clip(text,60),own:[]});
       return void this.wake(m);
     }
-    for(const c of to) {
-      if(this.isWorker(c)){this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:change',c.id,`[complaint] ${clip(text,1600)}`);this.wake(c.id);}
-      else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags});this.wake(c.id);}
-    }
+    const c=this.node(pick.child.id);
+    this.event(m,'change_routed',clip(`The change concerns "${c.label}": ${text}`,900),c.id);
+    if(this.isWorker(c)){this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:change',c.id,`[complaint] ${clip(text,1600)}`);this.wake(c.id);}
+    else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags});this.wake(c.id);}
   }
   // ---------- the worker ----------
   // A worker's request: its prompt (its task, what it delivers under which
-  // names and paths, each with three examples rendered from the validations
-  // that serve it, and the names it may call with their references), its own
-  // files, the complaints routed to it and what its runtime notes say of its
-  // last answer, and its world: what it can ask for by name and the answers
-  // it has, the chunks of linked pages and the existing files it holds.
-  // The prompt is the one its manager's level file holds for it (designOf).
+  // names and paths, each with every example rendered from the validations
+  // that serve it, and the names it may call with their references), the
+  // paths of its own files (it reads them with read_file), the complaints
+  // routed to it, verbatim, and its world: what it can ask for by name and
+  // the answers it has, the chunks of linked pages and the existing files it
+  // holds. The prompt is the one its manager's level file holds for it (designOf).
   workerView(id, inbox=[], ownFiles=[]) {
     const design=this.designOf(id),byId=this.validationsById(),facts=this.referenceFacts(id),callable=this.callableOf(id),refs=useReferences(callable,facts);
     // How it is reached when something serves it: its files as they are, or its command listening on the port in PORT. A command's own command line, which nothing serves, is its file's.
@@ -9241,123 +9279,147 @@ export class ControlRoom extends DurableObject {
       ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{}),...(runText(c)?{runs:runText(c)}:{}),
       examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
     const prompt={task:design.prompt,deliver,...(callable.length?{call:callable.map((c,i)=>({name:c.name,contract:contractLine(c),reference:refs[i]?.reference||c.name}))}:{})};
-    const named=new Set(this.problems("assignee=? AND status!='closed'",id).flatMap(p=>p.parties.map(x=>x.owner_path||x.path)));
-    const files=sentFiles(ownFiles.filter(f=>!f.path.startsWith('memory/')).sort((a,b)=>named.has(b.path)-named.has(a.path)),{revision:true});
-    const complaints=[...inbox.filter(m=>/^\[complaint\] /.test(m.body)).map(m=>m.body.slice(12)),...this.read(`turn_notes:${id}`,[])];
+    const files=ownFiles.map(f=>f.path).filter(p=>!p.startsWith('memory/')).sort();
+    const complaints=inbox.filter(m=>/^\[complaint\] /.test(m.body)).map(m=>m.body.slice(12));
     const answers=this.read(`fn_answers:${id}`,[]).map(a=>a.text),digest=this.heldDigest(id),base=this.baseFilesFor(id);
     const world={...this.availableView(id,answers),...(answers.length?{answers}:{}),...this.sourceInputs(id,'chunks'),
       ...(digest||base.length?{base_note:MESSAGES.base_note(),...(digest?{existing_files:{label:BASE_LABEL,digest}}:{}),...(base.length?{base_files:base}:{})}:{})};
     return {prompt,files,complaints,world};
   }
+  // A worker's turn is one session of its functions (src/worker.js): it
+  // reads and writes its own files (staged for the turn's one commit), runs
+  // its examples, asks by name, and ends with done or wait. What the turn
+  // still owes once the session ended (its commit, its messages read, its
+  // status as done or wait said) is a plan kept with a cursor, so a restart
+  // finishes it. A session that ended with neither (its context window was
+  // full) is a failed turn.
   async levelWorkerTurn(id) {
     const n=this.node(id);
     let saved=query(this.db(),'SELECT payload,cursor FROM pending_turns WHERE agent=?',id)[0],plan;
     if(saved) {
       plan=parse(saved.payload,null);
       if(!plan)throw new Error('Invalid persisted action for '+id);
-      this.event(id,'retry',`Resuming an interrupted action at operation ${saved.cursor}.`);
+      this.event(id,'retry',`Resuming an interrupted turn at operation ${saved.cursor}.`);
     } else {
       const inbox=this.receive(id),ownFiles=await this.ownFiles(id),view=this.workerView(id,inbox,ownFiles);
       this.event(id,'working',`Turn ${n.turn+1}; received ${inbox.length} messages.`);
-      const raw=await decide(this.inferenceEnv('worker'),view,{v8:true,placed:this.placedPath(id)});
-      if(raw.parse_error){this.event(id,'error',`Bad action response: ${raw.raw}`);this.incrementFailures(id,'Bad action response');return;}
-      const action=normalizeAction(raw,{v8:true}),notes=[];
-      if(raw.format_fallback)this.event(id,'format_fallback',`The answer was read as ${raw.format_fallback==='json'?'a JSON action':'one fenced file'}, not file blocks.`);
-      if(raw.truncated?.length)this.event(id,'code_retry',`Cut off before its end, written again alone: ${raw.truncated.join(', ')}`);
-      if(raw.implicit_end?.length)this.event(id,'format_fallback',`No END line after ${raw.implicit_end.join(', ')}: closed by the next marker line, or where the answer ended, and written as it stands.`);
-      if(raw.control_error)this.event(id,'format_fallback','The control block did not parse, after a retry: its complete files are written, and it is not done.');
-      // A worker's file is written to its own repository: whether it ships is
-      // the design's (the paths its manager places) and what the box can carry;
-      // only a name that is no path in a repository is not written.
-      action.files=action.files.filter(f=>{
-        if(f.path.startsWith('memory/'))return false;
-        const why=pathError(f.path,{own:true});
-        if(why){this.event(id,'file_refused',clip(`Not written: ${why}`,500));notes.push(clip(MESSAGES.not_written({why}),600));}
-        return !why;
-      });
-      notes.push(...this.workerAsks(id,raw,action));
-      if(action.done&&!deliveredFiles([...this.files(id),...action.files]).length) {
-        this.event(id,'missing_deliverable','The worker set done without delivering any file.');
-        notes.push(MESSAGES.delivered_nothing());
-        action.done=false;
-      }
-      action.spawn=[];action.retire=[];action.imports=[];action.exports=[];action.messages=[];action.answers=[];action.recall=[];action.remember=[];
-      action.notes=notes;
-      plan={action,inbox};
+      const world=workerWorld({files:new Map(ownFiles.filter(f=>!f.path.startsWith('memory/')).map(f=>[f.path,f.content])),
+        write:(path,content)=>this.putFile(id,path,content),runExamples:()=>this.runExamples(id),ask:a=>this.workerAsk(id,a)});
+      const out=await workerSession(this.inferenceEnv('worker'),view,world);
+      const said=[out.transcript.length?`${out.transcript.length} call(s) in ${out.rounds} round(s)`:'no call',world.written.length?`wrote ${world.written.join(', ')}`:'',
+        world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:'',world.examples?`ran its examples ${world.examples} time(s)`:'',world.asked.length?`asked ${world.asked.length}`:''].filter(Boolean).join('; ');
+      this.event(id,'session',clip(out.end?`${said}; ended with ${out.end.done?'done':'wait'}.`:`${said}; ended without done or wait (${out.reason==='context'?'its context window was full':out.reason}).`,700));
+      plan={end:out.end,reason:out.reason,inbox};
       this.db().exec('INSERT INTO pending_turns(agent,payload,cursor) VALUES (?,?,0)',id,JSON.stringify(plan));
       this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
       saved={cursor:0};
     }
-    const {action,inbox}=plan;
-    const before=[async () => {this.db().exec('UPDATE agents SET summary=? WHERE id=?',action.summary,id);this.event(id,'report',action.summary,n.parent||'');}];
-    const writes=action.files.map(f=>async () => {
-      const content=f.content!==undefined?f.content:await rewriteFile(this.inferenceEnv('worker'),{path:f.path,intent:f.intent||'the complete file',prompt:this.workerView(id,[],[]).prompt,files:await this.ownFiles(id),complaints:inbox.filter(m=>/^\[complaint\] /.test(m.body)).map(m=>m.body.slice(12))});
-      await this.putFile(id,f.path,content);
-    });
-    const firstWrite=before.length;
-    const after=[
-      ...action.ask.map(a=>async () => {await this.askUp(id,a);}),
-      async () => {this.save(`turn_notes:${id}`,action.notes||[]);},
+    const {end,inbox}=plan;
+    const operations=[
+      async () => {if(end){this.db().exec('UPDATE agents SET summary=? WHERE id=?',clip(end.summary,1100),id);this.event(id,'report',clip(end.summary,1100),n.parent||'');}},
+      async () => {await this.flushWrites(id);},
       async () => {this.acknowledge(id,inbox);},
       async () => {
         const node=this.node(id);
-        if(!node||['archived','failed','retired'].includes(node.status))return;
+        if(!node||['archived','failed','retired'].includes(node.status)||!end)return;
         const open=query(this.db(),'SELECT topic FROM route_workers WHERE worker=?',id).map(r=>r.topic);
-        if(action.done&&!open.length) {
+        if(end.done) {
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Delivered its files.');
           this.complete(id);
-        } else if(action.done||action.wait) {
+        } else {
           this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
           this.event(id,'waiting',open.length?`Waiting for answers to ${open.join(', ')}.`:'Waiting for its next message.');
-        } else {
-          this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
-          this.save('queue',addLast(this.read('queue',[]),id));
         }
       }
     ];
-    const operations=[...before,...writes,async () => {
-      try {await this.flushWrites(id);}
-      catch(e) {
-        this.rollbackStaged(id);
-        this.db().exec('UPDATE pending_turns SET cursor=? WHERE agent=?',firstWrite,id);
-        throw new Error('Artifacts commit failed; staged files rolled back and will be rewritten: '+(e?.message||e));
-      }
-    },...after];
     for(let i=saved.cursor;i<operations.length;i++) {
       try {await operations[i]();this.db().exec('UPDATE pending_turns SET cursor=? WHERE agent=?',i+1,id);}
       catch(e) {this.event(id,'error',`Operation ${i+1}/${operations.length} failed: ${clip(String(e?.message||e),1100)}`);this.incrementFailures(id,String(e?.message||e));return;}
     }
     this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
-    if(action.unheard)this.incrementFailures(id,'ask_unheard');else this.clearFailures(id);
+    if(!end){this.event(id,'session_unfinished',`Its session ended without done or wait (${plan.reason}).`);this.incrementFailures(id,'session_unfinished');}
+    else this.clearFailures(id);
     const unread=this.receive(id);
     if(!['archived','retired'].includes(this.node(id)?.status)&&(unread.some(m=>!/^\[route:/.test(m.body))||unread.length&&!query(this.db(),'SELECT topic FROM route_workers WHERE worker=? LIMIT 1',id).length))this.wake(id);
   }
-  // A worker's asks, before its files are written: each new one waits; one
-  // answered before is not asked again; a file that refers to a name it asks
-  // for waits for the answer. The notes go to its next turn's complaints.
-  workerAsks(id, raw, action) {
-    const notes=[],answers=this.read(`fn_answers:${id}`,[]),all=normalizeAsk(raw.ask,{v8:true});
-    const given=new Set(answers.map(a=>a.key)),fresh=a=>!given.has(a.key);
-    const rest=all.slice(MAX_REQUESTS).filter(fresh).map(a=>a.name||a.question);
-    if(rest.length)notes.push(clip(MESSAGES.ask_limit({count:String(MAX_REQUESTS),rest:rest.join('; ')}),600));
-    const repeated=action.ask.filter(a=>!fresh(a)).map(a=>a.name||a.question);
-    if(repeated.length){action.ask=action.ask.filter(fresh);notes.push(clip(MESSAGES.asked_again({names:repeated.join(', ')}),600));}
-    if(action.ask.length) {
-      action.wait=true;action.done=false;
-      const asked=new Set(action.ask.map(a=>a.name).filter(Boolean));
-      action.files=action.files.filter(f=>{
-        const names=f.content===undefined?[]:[...new Set(importRefs(f.path,f.content).flatMap(r=>[...r.names,...r.members]).filter(x=>asked.has(x)))];
-        if(!names.length)return true;
-        notes.push(clip(MESSAGES.wrote_before_answer({path:f.path,names:names.join(', ')}),600));
-        return false;
-      });
-    } else if(action.wait&&!action.done&&!query(this.db(),'SELECT topic FROM route_workers WHERE worker=? LIMIT 1',id).length) {
-      const garbled=!repeated.length&&!all.length&&(Array.isArray(raw.ask)?raw.ask.length>0:raw.ask!=null&&raw.ask!=='');
-      action.wait=false;action.unheard=true;
-      notes.push(garbled?MESSAGES.ask_unclear():MESSAGES.no_request());
+  // A worker's ask (its ask function), by what it needs and the name it
+  // expects: one asked and answered before is answered with that answer;
+  // one in flight says so; what its world holds by name (the broker), or a
+  // name it delivers itself, is answered at once; anything else goes to its
+  // manager, whose choice answers it later (the answer starts its next turn).
+  async workerAsk(id, {need, name=''}) {
+    const key=requestKey({need,name}),answers=this.read(`fn_answers:${id}`,[]),known=answers.find(a=>a.key===key);
+    if(known)return {answered:known.text,says:MESSAGES.answered_before()};
+    if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',id,key).length)return {sent:true,says:MESSAGES.ask_pending()};
+    const a={key,question:clip(need,300),...(name?{name}:{})};
+    if(this.brokerAnswer(id,a,{message:false}))return {answered:this.read(`fn_answers:${id}`,[]).find(x=>x.key===key)?.text??null};
+    const own=name?this.designOf(id).contracts.find(f=>f.name===name):null;
+    if(own) {
+      const text=MESSAGES.own_contract({contract:contractLine(own)});
+      this.recordAnswer(id,{key,kind:'own',text});
+      return {answered:text};
     }
-    return notes;
+    const up=this.agentAbove(id),request_id=crypto.randomUUID(),want=name?`${name} (${clip(need,200)})`:`"${clip(need,200)}"`;
+    if(!up)return {error:'There is nowhere to send it.'};
+    this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?) ON CONFLICT(worker,topic) DO NOTHING',id,key,request_id);
+    this.insertProblem({holder:up,kind:'ask',stage:'ask',source:id,input:request_id,parties:[],detail:clip(`${this.node(id)?.label||id} asks for ${want}.`,900),facts:{worker:id,key,need:clip(need,300),name,request_id}});
+    this.event(id,'ask_sent',clip(`Asked for ${want}.`,500),up);
+    this.wake(up);
+    return {sent:true,says:MESSAGES.ask_sent()};
+  }
+  // A worker's examples (its run_examples function), run on its own files as
+  // they stand (its staged writes included), the way its compiler runs them:
+  // the validations that serve the contracts it delivers, in one fresh box
+  // with the internet off (file checks here, documents judged by Clef), and
+  // each file's syntax step. Each comes back as the examples it renders and
+  // what was observed: pass, or the observation in the compiler's words. The
+  // worker reads no validation: no id, kind or steps as data. Nothing here
+  // changes a validation's status or passes.
+  async runExamples(id) {
+    const design=this.designOf(id),byId=this.validationsById(),contracts=design.contracts;
+    const runs=[...new Set(contracts.flatMap(c=>c.serves||[]))].map(v=>byId.get(v)).filter(Boolean);
+    const own=await this.ownFiles(id),files=this.boxHeld(new Map(own.filter(f=>!f.path.startsWith('memory/')).map(f=>[f.path,f.content])));
+    const digest=await snapshotHash(files),started=Date.now(),fresh=this.uncompiled(files),parsed=this.localSyntax(files,fresh);
+    const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
+    const spec={contracts,validations:runs};
+    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),placed:new Set(contracts.map(c=>c.path).filter(Boolean)),compile});
+    const results=new Map(local);
+    for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{passed:false,...fileResult(v.check,files)});
+    const [judged,run]=await Promise.all([this.judgeRuns(id,runs,files,contracts),container?this.runChecks(id,`examples:${id}:${digest}`,files,plan,toolchains):null]);
+    for(const [vid,x] of judged)results.set(vid,x);
+    for(const c of run?.report?.checks||[])results.set(c.id,c);
+    if(run?.report?.inventory)this.save('toolchain_inventory',run.report.inventory);
+    if(run&&!run.infrastructure)this.markCompiled(files,plan.syntax,run.report?.stages,parsed.clean);
+    const shown=v=>{const out=[...new Set(contracts.flatMap(c=>checkExamples(v.check,c)))];return out.length?out:[renderExample(v.check)].filter(Boolean);};
+    const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${clip(run.infrastructure,300)}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${clip(r.detail,300)}`;return r.passed?'pass':clip(String(r.detail||'it did not hold'),900);};
+    const examples=runs.map(v=>({examples:shown(v),observed:observed(v)}));
+    const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path).map(x=>({file:x.path,observed:clip(x.detail,900)}));
+    const passed=examples.filter(e=>e.observed==='pass').length;
+    this.span('worker','run_examples',started,Date.now(),{worker:id,validations:runs.length,passed,files:files.size,...(run?.infrastructure?{infrastructure:true}:{})},id);
+    this.event(id,'examples_run',clip(`Ran its examples on its ${files.size} file(s): ${passed} of ${examples.length} pass${issues.length?`; ${issues.length} file(s) do not compile`:''}${run?.infrastructure?`; the box: ${clip(run.infrastructure,200)}`:''}.`,600));
+    if(!examples.length&&!issues.length)return {examples:[],says:MESSAGES.no_examples()};
+    return {examples,...(issues.length?{files_that_do_not_compile:issues}:{}),passed,of:examples.length};
+  }
+  // Clef judges each document check among runs, as a compile does: [[id, result]].
+  judgeRuns(id, runs, files, contracts) {
+    const contractOf=new Map(contracts.map(c=>[c.name,c]));
+    return Promise.all(runs.filter(v=>v.check?.kind==='judge').map(async v=>{
+      const content=files.get(v.check.path);
+      if(typeof content!=='string'||!content.trim()){const note=`${v.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,detail:note,observed:{what:'local',note}}];}
+      const says=v.says||(v.serves||[]).map(n=>contractOf.get(n)?.does).filter(Boolean).join('; ');
+      // A Clef error is retried twice, with backoff, before it is infrastructure.
+      for(let k=0;;k++) {
+        try {
+          const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
+          return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p,...(j.over_cap?{note:`only the first ${JUDGE_PARTS*JUDGE_CHARS} characters of it were read`}:{})}}];
+        } catch(e) {
+          if(k>=JUDGE_RETRY_MS.length)return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path} after ${k+1} tries: ${clip(e?.message||e,200)}`}];
+          this.event(id,'judge_retry',clip(`Clef could not judge ${v.check.path} for ${v.id} (${clip(e?.message||e,160)}); asked again in ${JUDGE_RETRY_MS[k]} ms.`,400));
+          await new Promise(done=>setTimeout(done,JUDGE_RETRY_MS[k]));
+        }
+      }
+    }));
   }
   // ---------- the room's view ----------
   // The room is done when the manager it created is done and its compiler's
@@ -9440,27 +9502,11 @@ export class ControlRoom extends DurableObject {
     const results=new Map(local);
     for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{id:v.id,kind:'file',frames:[],...fileResult(v.check,files)});
     // Clef judges each document, in parallel with the box.
-    const contractOf=new Map(spec.contracts.map(c=>[c.name,c]));
-    const judging=Promise.all(runs.filter(v=>v.check?.kind==='judge').map(async v=>{
-      const content=files.get(v.check.path);
-      if(typeof content!=='string'||!content.trim()){const note=`${v.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [v.id,{passed:false,detail:note,observed:{what:'local',note}}];}
-      const says=v.says||(v.serves||[]).map(n=>contractOf.get(n)?.does).filter(Boolean).join('; ');
-      // A Clef error is retried twice, with backoff, before it is infrastructure.
-      for(let k=0;;k++) {
-        try {
-          const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
-          return [v.id,{passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p,...(j.over_cap?{note:`only the first ${JUDGE_PARTS*JUDGE_CHARS} characters of it were read`}:{})}}];
-        } catch(e) {
-          if(k>=JUDGE_RETRY_MS.length)return [v.id,{passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path} after ${k+1} tries: ${clip(e?.message||e,200)}`}];
-          this.event(id,'judge_retry',clip(`Clef could not judge ${v.check.path} for ${v.id} (${clip(e?.message||e,160)}); asked again in ${JUDGE_RETRY_MS[k]} ms.`,400));
-          await new Promise(done=>setTimeout(done,JUDGE_RETRY_MS[k]));
-        }
-      }
-    }));
+    const judging=this.judgeRuns(id,runs,files,spec.contracts);
     const boxStart=Date.now();
     const [judged,run]=await Promise.all([judging,container?this.runChecks(id,input,box,plan,toolchains):null]);
     if(container)this.span('piece','piece_box',boxStart,Date.now(),{manager:id,depth,checks:plan.checks.length,files:files.size,compiled:plan.syntax.reduce((n,s)=>n+s.files.length,0),...(run?.infrastructure?{infrastructure:true}:{passed:!!run?.report?.passed})},id);
-    for(const [vid,x] of judged)results.set(vid,{id:vid,kind:'judge',frames:[],...x});
+    for(const [vid,x] of judged)results.set(vid,x);
     const report=run?.report||null;
     if(report?.inventory)this.save('toolchain_inventory',report.inventory);
     for(const c of report?.checks||[])results.set(c.id,c);

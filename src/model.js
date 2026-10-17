@@ -2,7 +2,7 @@ import { parseObject, contentOf, stripReasoning, jsonObjects, clip, spawnObjects
 import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
-import { workerAction, singleFileText } from './worker-output.js';
+import { workerAction } from './worker-output.js';
 import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE } from './prompts.js';
 import { contractLine } from './contracts.js';
 import { checkSummary, internalCandidate } from './validations.js';
@@ -190,52 +190,32 @@ export async function reviewLevel(env, {assignment, contracts = [], pieces = [],
   return {valid:split?answers.split_valid:1,size:split?answers.split_size:1,scope:split?pieces.map((_,i)=>answers[`within_${i}`]):[],
     notes:validations.map((v,j)=>({exercises:answers[`exercises_${j}`],implementable:answers[`implementable_${j}`],...(answers[`internal_${j}`]!=null?{internal:answers[`internal_${j}`]}:{})}))};
 }
-// v8: Clef's routing among a manager's live children, for a complaint
-// (CLEF.owner) or a change (CLEF.change): one question per child, over the
-// child's contracts one line each. [p per child].
-export async function routeAmong(env, {key='owner', text='', children=[]}) {
-  if (!children.length) return [];
-  if (env.MOCK_AI === 'true') return children.map(() => 1);
+// v8: a manager's choice. A manager works through functions too: on an ask,
+// a complaint or a change, each function call it may make (answer with a
+// contract, route_to a child, extend its level, ask_parent) is one typed
+// option, and Clef scores each one with one noul question over the
+// manager's own files (its contracts, its children's labels, tasks and
+// contracts, and the item). options: [{key, question}], the key Clef's
+// question key (e.g. route_to_1) and the question its instructions.
+// [p per option], in order; the caller calls the highest.
+export const CHOICE_QUESTIONS = 96;
+export async function chooseCall(env, {state = {}, options = []}) {
+  if (!options.length) return [];
+  if (env.MOCK_AI === 'true') return options.map(() => 1);
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef routing decision model');
-  const state={[key==='change'?'change':'question']:String(text).slice(0,1800),children:children.map((c,i)=>({slot:i,responsibility:String(c.task||'').slice(0,700),contracts:(c.contracts||[]).map(contractLine).slice(0,16)}))};
-  const output=await clefRun(env,'routeAmong',selector,{model:clef,state,questions:Object.fromEntries(children.map((_,i)=>[`${key}_${i}`,{type:'noul',instructions:clefText(key,{i})}]))});
-  return children.map((_,i)=>{
-    const v=output?.answers?.[`${key}_${i}`]?.noul;
-    if(typeof v!=='number'||!Number.isFinite(v)||v<0||v>1)throw new Error(`Clef returned no valid probability for child ${i}`);
-    return v;
-  });
-}
-// v8: the scope walk's question at one manager: is producing the need part
-// of its assignment (CLEF.owns_need), read with the manager's contracts.
-export async function inScope(env, {assignment='', contracts=[], need='', name=''}) {
-  if (env.MOCK_AI === 'true') return 1;
-  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
-  if (!clef) throw new Error('Unsupported Clef routing decision model');
-  const output=await clefRun(env,'inScope',selector,{model:clef,state:{assigned_work:String(assignment).slice(0,1800),contracts:contracts.map(contractLine).slice(0,16),needed:{need:String(need).slice(0,300),expected_name:name||''}},
-    questions:{inside:{type:'noul',instructions:CLEF.owns_need}}});
-  const v=output?.answers?.inside?.noul;
-  if(typeof v!=='number'||!Number.isFinite(v)||v<0||v>1)throw new Error('Clef returned no valid probability for the scope question');
-  return v;
-}
-// v8: which contract of a manager's level gives what an ask needs
-// (CLEF.match), each contract by its line. {index, p} of the best at or
-// above FUNCTION_MATCH_THRESHOLD, or null.
-export async function matchContracts(env, {need='', name=''}, contracts=[]) {
-  if (!contracts.length) return null;
-  if (env.MOCK_AI === 'true') return null;
-  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
-  if (!clef) throw new Error('Unsupported Clef routing decision model');
-  const list=contracts.slice(0,24);
-  const output=await clefRun(env,'matchContracts',selector,{model:clef,state:{request:{need:String(need).slice(0,300),expected_name:name||''},contracts:list.map((c,j)=>({slot:j,contract:contractLine(c)}))},
-    questions:Object.fromEntries(list.map((_,j)=>[`match_${j}`,{type:'noul',instructions:clefText('match',{j})}]))});
-  let best=null;
-  list.forEach((_,j)=>{
-    const v=output?.answers?.[`match_${j}`]?.noul;
-    if(typeof v!=='number'||!Number.isFinite(v)||v<0||v>1)throw new Error(`Clef returned no valid probability for contract ${j}`);
-    if(v>=FUNCTION_MATCH_THRESHOLD&&(!best||v>best.p))best={index:j,p:v};
-  });
-  return best;
+  const ps=new Map();
+  for(let start=0;start<options.length;start+=CHOICE_QUESTIONS) {
+    const group=options.slice(start,start+CHOICE_QUESTIONS);
+    const output=await clefRun(env,'chooseCall',selector,{model:clef,state,questions:Object.fromEntries(group.map(o=>[o.key,{type:'noul',instructions:o.question}]))},
+      o=>({kind:state?.item?.kind||'',options:options.length,ps:group.map(g=>o?.answers?.[g.key]?.noul)}));
+    for(const o of group) {
+      const v=output?.answers?.[o.key]?.noul;
+      if(typeof v!=='number'||!Number.isFinite(v)||v<0||v>1)throw new Error(`Clef returned no valid probability for ${o.key}`);
+      ps.set(o.key,v);
+    }
+  }
+  return options.map(o=>ps.get(o.key));
 }
 
 // After Qwen proposes children, ONE Clef request vets the whole proposed
@@ -683,9 +663,8 @@ const TOP_WRITES = 'You have no manager to ask: write every function your code n
 // A room without Root's promise (MOCK, or a v7.14 room) keeps v7.14 routing,
 // which can park a request: its workers keep v7.14's advice (slice B review).
 const ASSUME = 'You can request externally owned facts through your parent, but you should normally continue using an explicit assumption rather than wait.';
-export async function decide(env, context, {planned = false, v8 = false, placed = null} = {}) {
+export async function decide(env, context, {planned = false} = {}) {
   if (env.MOCK_AI === 'true') return mockDecision(context);
-  if (pipelineV8(env, {v8})) return decideV8(env, context, {placed});
   const asks = planned && !!context.parent;
   const shared = `You own exactly ONE strand in a recursive agent hierarchy. Once a worker is spawned, that worker owns the entire assigned behavior and all design and implementation decisions inside it. A worker is never shown sibling ownership or the wider tree; it only asks its manager for interfaces or facts owned outside its assigned responsibility. Managers retain their direct-child ownership without exposing private descendants. Artifacts repositories persist source files for implementers and public/private knowledge for all agents. Workers ask only their parent manager with a stable topic key. The runtime routes upward and across manager-owned branches and reads public Artifacts before asking a worker to do anything. Never expose hidden child IDs in public memory, messages, or interfaces. Return only a compact JSON action; empty arrays may be omitted. You cannot run code or claim tests passed.`;
   const manager = `You are PERMANENTLY a MANAGER because you delegated implementation. YOU DO NOT CODE, copy/import files, or compose source. Children own ALL implementation. Your entire job is to remember ownership, route questions and answers to the appropriate direct child, publish discovered interfaces in public Artifacts knowledge, and track progress. If public memory cannot answer, ask the responsible child; no direct access to grandchildren. You may publish child source under YOUR public interface WITHOUT COPYING using \"exports\": [{"from":"DIRECT CHILD ID","path":"child-public-file.js","as":"owner-public-file.js"}]. This writes a PRIVATE routing notebook in your Artifacts repo and exposes ONLY owner-public-file.js in the public manifest. Export files only after children publish them. A requester contacts you, never the hidden child. Code glue and assembly are exclusively the runtime-scheduled builder's work; never delegate glue to an implementation child. Managers may NEVER submit files or imports. They may not retire unfinished children, and should never retire production children. The runtime schedules on-demand builders, including early provisional integration. Managers never request or manage builder lifecycle through Qwen actions. Set done:true only when every delegated responsibility has been completed through your children and published as needed; if children are working, wait:true. Format: {"summary":"...","wait":true,"done":false,"spawn":[{"label":"...","task":"..."}],"exports":[{"from":"...","path":"...","as":"..."}],"remember":[{"visibility":"public|private","key":"...","value":"..."}],"ask":[{"to":"DIRECT CHILD OR NEIGHBOR","key":"...","question":"..."}],"answers":[{"to":"...","key":"...","value":"..."}],"messages":[{"to":"...","body":"..."}],"retire":["COMPLETED BUILDER ID"]}.`;
@@ -710,47 +689,6 @@ export async function decide(env, context, {planned = false, v8 = false, placed 
   if (first.control_error && (parsed.parse_error || parsed.control_error)) return first;
   // v7.15.13 (run18): an empty answer says what its envelope held ("Bad action response: " said nothing).
   return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
-}
-
-// v8 (S6, §3.2): a worker answers under ROLE.worker + FORMAT.worker, in the
-// raw file-block format (workerAction, expect 'blocks'); its prompt, files,
-// complaints and world come in the user JSON the room built. placed: the
-// path of its one placed contract, for the single-fence fallback. A retry
-// keeps the system text and hears what could not be read in the user JSON;
-// if it is no better, the first answer's complete files stand, not done.
-export const WORKER_TOKENS = 6500;
-async function decideV8(env, context, {placed = null} = {}) {
-  const system = systemPrompt('worker'), tokens = Math.min(8192, Math.max(1500, Number(env.DECISION_MAX_TOKENS) || WORKER_TOKENS));
-  const read = out => workerAction(out, {expect: 'blocks', placed});
-  let output = await run(env, system, JSON.stringify(context), tokens, {call: 'decide', role: 'worker'});
-  let parsed = read(output);
-  if (!parsed.parse_error && !parsed.control_error) return parsed;
-  const first = parsed, head = clip(stripReasoning(contentOf(output)).trim(), 300);
-  const why = first.control_error ? 'its control block was not one json object' : head ? 'it held no file block and no control block' : `it was empty: ${emptyAnswer(output)}`;
-  output = await run(env, system, JSON.stringify({...context, previous_answer_problems: [RETRY.worker(why)], ...(head ? {previous_answer_head: head} : {})}),
-    Math.min(8192, tokens + 1024), {call: 'decide', role: 'worker', retry: true});
-  parsed = read(output);
-  if (first.control_error && (parsed.parse_error || parsed.control_error)) return first;
-  return parsed.parse_error && !String(parsed.raw || '').trim() ? {...parsed, raw: emptyAnswer(output)} : parsed;
-}
-
-// v8 (S6): one file written again, under ROLE.file + FORMAT.file: a file
-// the token cap cut, or one an answer listed by intent alone. The worker's
-// prompt, the file as it stands, its other files and its complaints are the
-// user JSON, as its own turn reads them.
-// The other files ride within a budget, whole first; one that does not fit is marked clipped (index.js sentFiles' rule).
-const otherFiles = (files, budget = 20000) => { let left = budget; return files.map(f => { const t = String(f.content ?? ''); if (t.length <= left) { left -= t.length; return {path: f.path, content: t}; } const n = Math.max(0, Math.min(3000, left)); left -= n; return {path: f.path, content: t.slice(0, n), clipped: true, length: t.length}; }); };
-export async function rewriteFile(env, {path, intent, prompt, files, complaints = [], correction = ''}) {
-  const output = await run(env, systemPrompt('file'), JSON.stringify({
-    prompt, file: path, what_to_fix: intent, previous_rejection: correction || undefined,
-    existing_file: files.find(f => f.path === path)?.content ?? null,
-    your_other_files: otherFiles(files.filter(f => f.path !== path && !f.path.startsWith('memory/')).slice(0, 12)),
-    complaints: complaints.length ? complaints : undefined
-  }), WORKER_TOKENS, {call: 'generateFile', role: 'worker', retry: !!correction});
-  // v8 S6 review: read through the block parser, fences and prose around them dropped (singleFileText).
-  const content = singleFileText(output, path);
-  if (!content || content.trim().length < 2) throw new Error(`Empty generated text for ${path}`);
-  return content;
 }
 
 export async function generateFile(env, { node, path, intent, task, files, inbox, children, assemblyInputs=[], correction="", answers=[], asks=false }) {
