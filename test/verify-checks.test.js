@@ -515,7 +515,8 @@ test('browser checks: a static todo page served from the bundle, driven by label
       {reload:true},{expect_text:'Walk dog'},{expect_count:{role:'listitem',text:'Buy milk',n:1}},
       {click:{role:'button',name:'Delete'}},{expect_no_text:'Buy milk'},{expect_count:{role:'listitem',n:1}}]},
     {id:'R2',kind:'browser',serve:'web',steps:[{goto:'/'},{fill:{label:'New todo',text:'Read'}},{click:{text:'Add'}},{expect_text:'Read'},{expect_count:{role:'listitem',n:1}}]},
-    {id:'R5',kind:'browser',serve:'web',steps:[{goto:'/missing.html'}]}]},{isolation:[]});
+    {id:'R5',kind:'browser',serve:'web',steps:[{goto:'/missing.html'}]},
+    {id:'R7',kind:'browser',serve:'web',steps:[{goto:'/missing.html'},{expect_no_text:'Buy milk'}]}]},{isolation:[]});
   const c={...byId(report),...await alone(files,[
     {id:'R3',kind:'browser',serve:'web',steps:[{goto:'/cdn.html'},{expect_text:'ready'}]},
     {id:'R4',kind:'browser',serve:'web',steps:[{goto:'/oops.html'},{click:{role:'button',name:'Go'}},{expect_text:'done'}]},
@@ -531,7 +532,9 @@ test('browser checks: a static todo page served from the bundle, driven by label
   assert.match(c.R3.detail,/^step 2 \(expect_text "ready"\): the page had not shown "ready", when the verification's time ran out; blocked non-served request https:\/\/cdn\.example\.com\/lib\.js\n--- page text\nLoading…\n--- console errors\n[\s\S]*blocked: https:\/\/cdn\.example\.com\/lib\.js$/);
   assert.match(c.R4.detail,/^step 3 \(expect_text "done"\): the page had not shown "done", when the verification's time ran out; page error: TypeError: Cannot read properties of null[^\n]*\n--- page text\nGo\n--- console errors\nTypeError: Cannot read properties of null/);
   assert.deepEqual(c.R4.frames[0],{path:'oops.js',line:3,fn:'explode'});
-  assert.match(c.R5.detail,/^step 1 \(goto "\/missing\.html"\): \/missing\.html answered HTTP 404\n--- page text\n/);
+  // A goto states no status: the page answering 404 is observed, never asserted (owner, 2026-10-16 05:49: the check is the validation).
+  assert.equal(c.R5.passed,true,c.R5.detail);
+  assert.equal(c.R7.passed,true,'the steps after a goto to a 404 page run as written');
   assert.ok(report.inventory.chromium,'the Chromium version is recorded');
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
@@ -705,13 +708,14 @@ test('forgery: a module that patches the adapter\'s globals or walks its frames,
   assert.match(c.R3.detail,/^the process ended before add\(2, 3\) in early\.mjs returned \(exit 0\)/);
 });
 
-test('error cases and redaction: stderr_has without exit wants a failure exit; details carry no runner folder, and a stack is whole (the adapter\'s frames too)',{skip:!hasPython&&'python3 is not installed'},async()=>{
+test('error cases and redaction: stderr_has without exit asserts no exit; details carry no runner folder, and a stack is whole (the adapter\'s frames too)',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const files={'cli.py':'import sys\nprint("usage: cli.py N", file=sys.stderr)\nsys.exit(0)\n','cwd.py':'import os, sys, tempfile\nprint(os.getcwd(), tempfile.gettempdir(), file=sys.stderr)\nraise SystemExit(3)\n',
     'm.py':'def f(x):\n    return 1 / x\n','bad.py':'import nosuchmod\n'};
-  const report=await run(files,{checks:[{id:'R1',kind:'command',run:'cli.py x',expect:{stderr_has:['usage']}},{id:'R2',kind:'command',run:'cwd.py'},
+  const report=await run(files,{checks:[{id:'R1',kind:'command',run:'cli.py x',expect:{stderr_has:['usage']}},{id:'R2',kind:'command',run:'cwd.py',expect:{exit:0}},
     {id:'R3',kind:'call',module:'m.py',steps:[{call:'f',args:[0],expect:1}]},{id:'R4',kind:'call',module:'bad.py',steps:[{call:'f',args:[]}]}]},{isolation:[]});
   const c=byId(report);
-  assert.equal(c.R1.detail,'cli.py x: exit 0, expected a failure exit (non-zero)\n--- stderr\nusage: cli.py N');
+  // The check states only what stderr holds: the exit is observed, not asserted (owner, 2026-10-16 05:49).
+  assert.equal(c.R1.passed,true,c.R1.detail);
   assert.equal(c.R2.detail,'cwd.py: exit 3, expected 0\n--- stderr\n. tmp');
   for(const x of report.checks)assert.ok(!x.detail.includes(tmpdir()+'/checks-'),`${x.id} names the runner's folder: ${x.detail}`);
   // Owner 2026-10-16 19:41: the observation whole, as Python printed it: no frame line is taken out.
@@ -720,7 +724,7 @@ test('error cases and redaction: stderr_has without exit wants a failure exit; d
 });
 
 test('resource limits: where prlimit runs, a check cannot write a file past 64 MB, and the report records the limits',{skip:!hasPython&&'python3 is not installed'},async t=>{
-  const report=await run({'big.py':'with open("big.bin", "wb") as f:\n    f.write(b"x" * (70 * 1024 * 1024))\n'},{checks:[{id:'R1',kind:'command',run:'big.py'}]},{isolation:[]});
+  const report=await run({'big.py':'with open("big.bin", "wb") as f:\n    f.write(b"x" * (70 * 1024 * 1024))\n'},{checks:[{id:'R1',kind:'command',run:'big.py',expect:{exit:0}}]},{isolation:[]});
   if(!report.inventory.limits){t.diagnostic('prlimit is unavailable: no limits');return;}
   assert.deepEqual(report.inventory.limits,{nproc:64,fsize:64*1024*1024,data:1024*1024*1024});
   assert.equal(byId(report).R1.passed,false);

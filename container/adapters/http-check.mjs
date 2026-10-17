@@ -97,7 +97,6 @@ export async function runHttpSteps({base_url, steps, deadline_ms}) {
     let json; try { json = JSON.parse(res.text); } catch {}
     if (typeof s.save === 'string' && s.save) saved.set(s.save, json === undefined ? res.text : json);
     if (Number.isInteger(e.status) && res.status !== e.status) return fail(`status ${res.status}, expected ${e.status}`, res.text);
-    if (!Number.isInteger(e.status) && res.status >= 500) return fail(`status ${res.status}`, res.text);
     for (const x of Array.isArray(e.body_has) ? e.body_has : []) if (!res.text.includes(String(x))) return fail(`the body lacks ${show(String(x))}`, res.text);
     if (e.json_has !== undefined) {
       if (json === undefined) return fail('the body is not JSON', res.text);
