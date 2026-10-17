@@ -14,7 +14,7 @@
 // Pure: no room, no model.
 import { PROTECTED_NAMES, noValue } from './linker.js';
 import { isPath } from './protocol.js';
-import { toolchainOf, extractSurface, renderImport } from './toolchains.js';
+import { toolchainOf, extractSurface } from './toolchains.js';
 
 export const CONTRACT_KINDS = Object.freeze(['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
 const KINDS = new Set(CONTRACT_KINDS);
@@ -242,39 +242,6 @@ export function gateLine(c, served = null) {
   const ids = (Array.isArray(c.serves) ? c.serves : []).filter(s => !served || served.has(s));
   const does = c.does ? stop(String(c.does)) : '';
   return `${kindOf(c)} ${c.name}${c.path ? ` (${c.path})` : ''}${does ? ': ' + does : ''}${ids.length ? `; serves ${ids.join(', ')}` : ''}`;
-}
-
-// v8 (S6, ROLE.worker): the contracts of other parts a piece may use, as
-// data, each with the exact reference its writer writes: a function by the
-// import_line of the toolchain row it is written in (its path's row, else the
-// project's code languages; one line per row when several could be meant);
-// a route by its method and path; a file, page, doc, data file or command by
-// its project path. Nothing here names a language: the rows do. One
-// reference for each contract given. facts: {rows, languages}, as
-// contractErrors reads them.
-// v8 S6 review: one reference per contract, from that contract's own row:
-// its path's row, else the reader's language (facts.reader, the ids of the
-// rows its own contracts and files are written in) when the project could
-// mean several, else the project's first. In a browser project (facts.browser)
-// a function is an ES module import of its file, and a script file a page
-// loads (facts.page_reader) is a module script tag.
-export function useReferences(items, facts = null) {
-  const browser = !!facts?.browser, reader = Array.isArray(facts?.reader) ? facts.reader : [];
-  return (Array.isArray(items) ? items : []).filter(f => f && typeof f.name === 'string').map(f => {
-    const kind = kindOf(f);
-    let reference;
-    if (kind === 'function') {
-      const order = Array.isArray(facts?.languages) ? facts.languages : [], at = r => order.includes(r.id) ? order.indexOf(r.id) : order.length;
-      const rows = [...functionRows(f, facts)].sort((a, b) => at(a) - at(b)), row = rows.length > 1 && rows.find(r => reader.includes(r.id)) || rows[0];
-      reference = renderImport(row, f.name, false, {browser, path: f.path}) || f.name;
-    } else if (kind === 'route') reference = f.name;
-    else {
-      const row = f.path ? rowOfPath(f.path, facts) : null;
-      reference = browser && facts?.page_reader && row?.browser_script ? row.browser_script.replaceAll('{path}', f.path)
-        : browser && row?.browser_reference && !facts?.page_reader ? `import './${f.path}';` : f.path || f.name;
-    }
-    return {contract: contractLine(f), ...(typeof f.owner === 'string' && f.owner ? {from: f.owner} : {}), reference};
-  });
 }
 
 // ------------------------------------------------------------ name rules (§2.2)

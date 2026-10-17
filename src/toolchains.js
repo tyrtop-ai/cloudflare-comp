@@ -38,9 +38,6 @@ export const TOOLCHAINS = Object.freeze([
     // packages are allowed, and the box installs them by the row's install).
     aliases:['js','node','nodejs','javascript','ecmascript','mjs','cjs'],
     package_runners:[['npx'],['npm','exec'],['npm','x'],['npm','install'],['npm','i'],['npm','ci'],['npm','add']],
-    import_line:"const { {name} } = require('./{name}');", import_line_esm:"import { {name} } from './{name}';",
-    // v8 S6 review: code that runs in a browser (a page project, browserProject) refers to another part as an ES module by its file, and a page loads a script as a module.
-    browser_reference:"import { {name} } from './{path}';", browser_script:'<script type="module" src="{path}"></script>',
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
     stack:'v8', stdlib:'node-builtins',
     // v8 live 4 (review): packages, what the image installs beyond the
@@ -73,7 +70,6 @@ export const TOOLCHAINS = Object.freeze([
     names_look_like:'snake_case',
     aliases:['py','python','python3','cpython'],
     package_runners:[['pip'],['pip3'],['pipx'],['uv'],['uvx'],['python3','-m','pip'],['python3','-m','pipx'],['python3','-m','ensurepip']],
-    import_line:'from {name} import {name}',
     extractor:'line', defs:['^(?:async\\s+)?def\\s+([A-Za-z_]\\w*)\\s*\\(','^class\\s+([A-Za-z_]\\w*)','^([A-Za-z_]\\w*)\\s*='],
     imports:['^from\\s+([\\w.]+)\\s+import\\s+(.+)$','^import\\s+([\\w., ]+)$'], private_prefix:'_',
     line_comment:'#', strings:['"""',"'''",'"',"'"],
@@ -366,27 +362,6 @@ export function pageModes(files, row) {
   for (const [p, t] of files) for (const s of pageScripts(p, t, row)) if (s.src) { if (!out.has(s.src)) out.set(s.src, new Set()); out.get(s.src).add(s.mode); }
   return out;
 }
-// How one part references another part's function, rendered for a name.
-// opts.browser: the project's code runs in a browser (browserProject), so a
-// row with a browser_reference uses it, with the function's file (path, else
-// {name} and the row's first extension).
-export function renderImport(row, name, esm = false, {browser = false, path = ''} = {}) {
-  if (browser && row?.browser_reference) {
-    const file = String(path || `${name}${row.extensions?.[0] || ''}`).replace(/^\.\//, '');
-    return row.browser_reference.replaceAll('{name}', String(name)).replaceAll('{path}', file);
-  }
-  const line = esm && row?.import_line_esm || row?.import_line;
-  return line ? line.replaceAll('{name}', String(name)) : null;
-}
-// v8 S6 review: whether the project's code runs in a browser: its contracts
-// deliver a page (or serve their files as they are) and no command or
-// route, which would run on a server or the command line.
-export function browserProject(contracts) {
-  const ds = Array.isArray(contracts) ? contracts : [];
-  const served = ds.some(d => d?.kind === 'page' || d?.run?.static === true);
-  return served && !ds.some(d => d?.kind === 'command' || d?.kind === 'route');
-}
-
 const lineRegexes = list => (list || []).map(s => new RegExp(s, 'gm'));
 // The names a file offers other parts: Acorn's export surface for a row read
 // natively, the row's line regexes for a 'line' extractor (names under the

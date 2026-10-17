@@ -5,8 +5,8 @@
 // it and the chunks it holds. It asks by name with its ask function, and
 // the function's result answers at once: a granted file comes back as its
 // text, labelled as the base repository's; a chunk it holds comes back
-// whole, labelled with the page it was fetched from; a name outside its
-// world hears the one wording for absence, which names only its world.
+// whole, labelled with the page it was fetched from; anything else, a part
+// or an existing file it does not hold among them, goes to its manager.
 // Every request the room composed passes the prompt lint.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,8 +14,7 @@ import {gzipSync} from 'node:zlib';
 import {liveRoom, events} from './helpers/room.js';
 import {lintRequests} from './helpers/levels.js';
 import {chunkText} from '../src/fetcher.js';
-import {BASE_LABEL, BROKER_LABEL, MESSAGES, systemPrompt} from '../src/prompts.js';
-import {noneText} from '../src/broker.js';
+import {BASE_LABEL, MESSAGES, systemPrompt} from '../src/prompts.js';
 
 // ------------------------------------------------------------ fixtures
 const enc = new TextEncoder();
@@ -74,8 +73,6 @@ const scripted = answers => (user, _n, _system, {round}) => {
   return [...a.files.map(([path, content]) => ({name: 'write_file', arguments: {path, content}})), {name: 'done', arguments: {summary: 'wrote the files'}}];
 };
 const trace = room => events(room).slice(-20).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 240)}`).join('\n');
-// Refusal wording the broker never uses: it says what is there.
-const REFUSAL = /\b(?:refus\w*|not allowed|forbidden|denied|permission|may not|cannot|can't|must not|never|do not|don't|granted|blocked|restricted|unauthori[sz]ed)\b/i;
 const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path, has: [text]}});
 function brokerRoom({goal, level, answers}) {
   const r = liveRoom({split: user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : level, clef: clefFor(goal), leaf: scripted(answers), source: sourceModel, room_id: 'room-brkr-0001'});
@@ -102,7 +99,7 @@ const LEVEL = {contracts: [D.notes, D.faq, D.shout],
     {label: 'Notes writer', task: 'Write NOTES.md, notes on using the widget, from the guide', contracts: ['NOTES.md'], refs: ['S2#1', 'S2#2', 'S2#3']},
     {label: 'Questions writer', task: 'Write FAQ.md, common questions about the widget', contracts: ['FAQ.md'], refs: ['S1#1']}]};
 
-test('broker: a worker reads its granted file, a chunk it holds, and the neutral answer for anything else; its own contract is answered in contract terms', async () => {
+test('broker: a worker reads its granted file and a chunk it holds at once; a part or an existing file it does not hold goes to its manager; its own contract is answered in contract terms', async () => {
   const {room, calls, drain, fetch} = brokerRoom({goal: GOAL, level: LEVEL, answers: {
     'src/shout.js': {asks: [['src/shout.js', 'the shout as the project has it'], ['bin/widget.js', 'the command that calls the shout']], files: [['src/shout.js', LOUDER]]},
     'NOTES.md': {asks: [['S2#3', 'the third part of the guide'], ['package.json', 'the project manifest'], ['S1#2', 'the fields of the format']],
@@ -134,10 +131,10 @@ test('broker: a worker reads its granted file, a chunk it holds, and the neutral
   assert.deepEqual(room.grantedBase(shout.id), ['src/shout.js']);
   const [own, other] = answered('src/shout.js');
   assert.deepEqual(own, {name: 'src/shout.js', label: BASE_LABEL, value: BASE_FILES['src/shout.js'], facts: {placed_when: 'now'}});
-  // ---- an existing file outside its world: the neutral answer, naming only its world
-  assert.deepEqual(other, {name: 'bin/widget.js', label: BROKER_LABEL.none, value: 'Nothing is available under the name bin/widget.js. Available: src/shout.js.'});
-  assert.doesNotMatch(other.value, REFUSAL);
-  assert.equal(turns('src/shout.js').length, 1, 'answered in the session that asked: no second turn');
+  // ---- an existing file outside its world: its manager is asked (owner 2026-10-16 20:43: the worker asks its manager, which walks up the tree)
+  assert.equal(other, undefined, 'sent, not answered by the room');
+  const sent = actor => events(room, 'ask_sent').filter(e => e.actor === actor).map(e => e.body);
+  assert.equal(sent(shout.id)[0], 'Asked for bin/widget.js (the command that calls the shout).');
   assert.equal((await room.bundleFiles(room.roomManager())).files.get('src/shout.js'), LOUDER, 'its version is placed at the path');
 
   // ---- a held chunk: whole, labelled with the page it was fetched from; another page's chunk is none
@@ -145,17 +142,14 @@ test('broker: a worker reads its granted file, a chunk it holds, and the neutral
   assert.equal(held[0].sources.find(s => s.ref === 'S2#3').excerpt, chunks[2], 'the world carries every chunk it holds, whole');
   const after = answered('NOTES.md'), byName = name => after.find(a => a && typeof a === 'object' && a.name === name);
   assert.deepEqual(byName('S2#3'), {name: 'S2#3', label: `untrusted: fetched from ${GUIDE_URL}`, value: chunks[2]});
-  assert.deepEqual(byName('package.json'), {name: 'package.json', label: BROKER_LABEL.none, value: noneText('package.json', room.catalogue(notes.id))});
-  assert.equal(byName('package.json').value, 'Nothing is available under the name package.json. Available: NOTES.md, S2#1, S2#2, S2#3.');
-  assert.equal(byName('S1#2').value, 'Nothing is available under the name S1#2. Available: S2#1, S2#2, S2#3, NOTES.md.');
-  for (const a of [byName('package.json'), byName('S1#2')]) {
-    assert.doesNotMatch(a.value, REFUSAL);
-    for (const p of ['src/shout.js', 'bin/widget.js', 'S1#1', 'FAQ.md']) assert.ok(!a.value.includes(p), `${p} is no entry of its world`);
-  }
-  // The broker's answers took no hop up the line.
-  assert.equal(events(room, 'broker_answer').length, 5);
-  assert.deepEqual(events(room, 'broker_answer').map(e => e.actor).sort(), [notes.id, notes.id, notes.id, shout.id, shout.id].sort());
-  assert.equal(events(room, 'manager_choice').length, 0, 'answered by the broker: no manager chose anything');
+  // A file and another page's part it does not hold go to its manager like any other ask.
+  assert.equal(byName('package.json'), undefined);
+  assert.equal(byName('S1#2'), undefined);
+  assert.deepEqual(sent(notes.id).slice(0, 2), ['Asked for package.json (the project manifest).', 'Asked for S1#2 (the fields of the format).']);
+  // The broker answered what each world holds, with no hop up the line.
+  assert.deepEqual([...new Set(events(room, 'broker_answer').map(e => e.actor))].sort(), [notes.id, shout.id].sort());
+  // Each went to the asker's manager, whose choice answers it.
+  assert.deepEqual(['bin/widget.js', 'package.json', 'S1#2'].map(n => events(room, 'manager_choice').some(e => e.body.startsWith(`On the ask for ${n}:`))), [true, true, true]);
 
   // ---- nothing outside its world reached a worker, and every answer stayed in the user JSON
   assert.ok(!JSON.stringify(turns('FAQ.md')[0]).includes(chunks[2]), 'a chunk it does not hold never reaches it');

@@ -1,10 +1,13 @@
 // v8: the builder works through functions, as the worker does. One session
-// (src/session.js) per turn offers read_file, write_file, rename and done.
+// (src/session.js) per turn offers read_file, write_file, delete_file, rename
+// and done.
 // Its world is the files its manager's children delivered, each where the
 // design artifact (its manager's level file) places it, and its own files:
 // it reads them, writes the glue between their interfaces as files of its
-// own, and renames interface names in its copies of their files (a child's
-// own file never changes). Each call does exactly what it is given, or says
+// own (at any path: one of its own at a delivered file's path is the file
+// the piece holds there, and read_file shows both), removes one of its own,
+// and renames interface names in its copies of their files (a child's own
+// file never changes). Each call does exactly what it is given, or says
 // exactly why it cannot, and nothing reads what the model writes besides its
 // calls. done ends the session with the summary given. The room keeps what
 // the session did (builderWork): each renamed file's text, for the exact text
@@ -29,16 +32,16 @@ const wholeName = from => new RegExp(`(?<![A-Za-z0-9_$])${escape(from)}(?![A-Za-
 
 // The world one session acts on. files: Map path -> text (the delivered
 // files as joined, its earlier renames in them); from: Map path -> the label
-// of the piece that delivered it; glue: Map path -> text (its own files);
-// held: the paths that hold a file outside its world (the existing files).
-export function builderWorld({files = new Map(), from = new Map(), glue = new Map(), held = new Set()} = {}) {
-  return {files: new Map(files), from: new Map(from), glue: new Map(glue), held: new Set(held), renamed: new Map(), written: [], unchanged: []};
+// of the piece that delivered it; glue: Map path -> text (its own files).
+export function builderWorld({files = new Map(), from = new Map(), glue = new Map()} = {}) {
+  return {files: new Map(files), from: new Map(from), glue: new Map(glue), renamed: new Map(), written: [], unchanged: [], removed: []};
 }
 export const builderTools = () => TOOLS.builder;
 
 // ------------------------------------------------------------ the functions
 const paths = w => [...new Set([...w.files.keys(), ...w.glue.keys()])].sort();
-const textOf = (w, p) => w.files.has(p) ? w.files.get(p) : w.glue.get(p);
+// Its own file where it has one at the path (the file the piece holds there), else the delivered one.
+const textOf = (w, p) => w.glue.has(p) ? w.glue.get(p) : w.files.get(p);
 // The place a path names in its world: '' when it names none (the top itself).
 const placeOf = a => isText(a.path) ? rootedPath(a.path) : '';
 function readFile(w, a) {
@@ -57,12 +60,22 @@ function writeFile(w, a) {
   const path = placeOf(a);
   if (!path) return {error: 'path is the text of a relative path'};
   if (!isText(a.content)) return {error: 'content is the complete text of the file'};
-  if (w.files.has(path) && !w.glue.has(path)) return {error: MESSAGES.builder_delivered({path, piece: w.from.get(path) || ''})};
-  if (w.held.has(path)) return {error: MESSAGES.builder_held({path})};
   if (w.glue.get(path) === a.content) { w.unchanged.push(path); return {unchanged: path, says: MESSAGES.unchanged({path})}; }
   w.glue.set(path, a.content);
   if (!w.written.includes(path)) w.written.push(path);
+  w.removed = w.removed.filter(p => p !== path);
   return {written: path, characters: a.content.length};
+}
+function deleteFile(w, a) {
+  const bad = fieldsOf('delete_file', a, ['path']);
+  if (bad) return {error: bad};
+  const path = placeOf(a);
+  if (!path) return {error: 'path is the text of a relative path'};
+  if (!w.glue.has(path)) return {error: MESSAGES.builder_not_yours({path, paths: [...w.glue.keys()].sort().join(', ')})};
+  w.glue.delete(path);
+  w.written = w.written.filter(p => p !== path);
+  if (!w.removed.includes(path)) w.removed.push(path);
+  return {removed: path};
 }
 function rename(w, a) {
   const bad = fieldsOf('rename', a, ['path', 'from', 'to']);
@@ -76,7 +89,7 @@ function rename(w, a) {
   if (after === before) return {error: MESSAGES.builder_no_name({name: a.from, path})};
   const was = before.split('\n'), now = after.split('\n'), lines = [];
   for (let i = 0; i < was.length; i++) if (was[i] !== now[i]) lines.push({line: i + 1, before: was[i], after: now[i]});
-  if (w.files.has(path)) {
+  if (!w.glue.has(path)) {
     w.files.set(path, after);
     w.renamed.set(path, [...(w.renamed.get(path) || []), {from: a.from, to: a.to}]);
   } else w.glue.set(path, after);
@@ -87,6 +100,7 @@ export function builderCall(w, name, args) {
   const a = plain(args) ? args : {};
   if (name === 'read_file') return {result: readFile(w, a)};
   if (name === 'write_file') return {result: writeFile(w, a)};
+  if (name === 'delete_file') return {result: deleteFile(w, a)};
   if (name === 'rename') return {result: rename(w, a)};
   if (name === 'done') {
     const bad = fieldsOf('done', a, ['summary']);

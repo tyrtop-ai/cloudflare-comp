@@ -16,7 +16,7 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, browserProject, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
+import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
@@ -35,15 +35,15 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
-import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLine, useReferences, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
+import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLine, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
-import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
+import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
-import { caseTwin, boxPathError } from '../container/build-path.mjs';
+import { boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples } from './validations.js';
 import { splitLevel } from './splitter.js';
 import { workerWorld, workerSession } from './worker.js';
@@ -705,20 +705,10 @@ export class ControlRoom extends DurableObject {
     if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
     return calls;
   }
-  // v8 S6 review: what one reference is rendered from (useReferences): the
-  // rows, the levels' languages, whether their code runs in a browser, and
-  // for a reader its own languages (its contracts' paths and its files) and
-  // whether it delivers a page.
-  referenceFacts(id=null) {
-    const facts={...this.contractFacts(),browser:browserProject(this.treeContracts())},own=id?this.promisedOf(id):[];
-    if(!id)return facts;
-    const paths=[...own.map(c=>c.path).filter(Boolean),...this.deliveredOf(id).map(f=>f.path)];
-    return {...facts,reader:[...new Set(paths.map(p=>toolchainOf(p)?.id).filter(Boolean))],page_reader:own.some(c=>contractKind(c)==='page')};
-  }
   // v7: a provided answer, the function's promise and its import line.
   providedFor(f, owner) { return providedText(f,owner); }
-  // How a worker refers to a name: v7's import line, or under v8 its row's (a contract it names, else a function of the levels' languages).
-  referenceLine(name, c=null, reader=null) { return this.v8()?useReferences([c||{name}],this.referenceFacts(reader))[0]?.reference||name:`const { ${name} } = require('./${name}');`; }
+  // v7: how a worker refers to a name, its import line. A v8 worker is given each contract it may call as declared and writes its own reference.
+  referenceLine(name) { return `const { ${name} } = require('./${name}');`; }
   // The path of an agent's one placed contract, for the single-fence fallback (§3.2), or null.
   placedPath(id) {const p=this.designOf(id).contracts.filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
   // The toolchain rows this deployment runs: the Container's last inventory
@@ -1457,7 +1447,7 @@ export class ControlRoom extends DurableObject {
     // them and what was not carried.
     const meta=this.read('base',null),baseRows=new Map(query(this.db(),'SELECT path,sha256,mode FROM base_files').map(r=>[r.path,r]));
     // v8 ship-verified (M1): a carried file the bundle holds (carried) ships with it, at its mode; the others as bytes.
-    const passRows=query(this.db(),'SELECT path,bytes,mode,reason FROM base_passthrough ORDER BY path'),pass=passRows.filter(r=>!files.has(r.path)&&!caseTwin(r.path,new Set(files.keys())));
+    const passRows=query(this.db(),'SELECT path,bytes,mode,reason FROM base_passthrough ORDER BY path'),pass=passRows.filter(r=>!files.has(r.path));
     for(const r of passRows)if(bundle.carried?.has(r.path))baseRows.set(r.path,{path:r.path,sha256:await sha256(files.get(r.path)),mode:r.mode});
     if(meta)app.base={kind:meta.kind,source:meta.source,ref:meta.ref,resolved_sha:meta.resolved_sha,room:meta.room||null,unverified:!!meta.unverified,passthrough:pass.length};
     const own=[];
@@ -1488,7 +1478,7 @@ export class ControlRoom extends DurableObject {
     const v8=this.v8(),name = v8?await this.repoName(id):`rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role,depth,seq) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?,?,?,?)',
-      id, parent, v8?String(label??''):clip(label,70), v8?String(task??''):clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8})),
+      id, parent, v8?String(label??''):clip(label,70), v8?String(task??''):clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(v8?uses:normalizeUses(uses)),
       JSON.stringify(v8?normalizePackages(packages):[]),role,v8?(parent?this.depthOf(parent)+1:0):null,v8?seq:null);
     if (role && role!=='manager') this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
@@ -3725,13 +3715,12 @@ export class ControlRoom extends DurableObject {
   // base, so its checks run with them and its syntax step compiles them: each
   // that is text at a path the box holds joins the files after the
   // builder's (carried); the others are listed with why the box cannot hold
-  // them (unsent). A piece's file at the same path (or one apart from case)
-  // ships instead.
+  // them (unsent). A piece's file at exactly the same path ships instead.
   addCarried(bundle) {
     const files=bundle.files,taken=new Set(files.keys()),decode=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
     bundle.carried=new Set();bundle.unsent=[];
     for(const r of query(this.db(),'SELECT path,bytes,sha256,reason FROM base_passthrough ORDER BY path')) {
-      if(caseTwin(r.path,taken))continue;
+      if(taken.has(r.path))continue;
       const data=new Uint8Array(r.bytes);
       let text=null;
       try {text=decode.decode(data);} catch {}
@@ -3804,8 +3793,10 @@ export class ControlRoom extends DurableObject {
       }
     }
     // The texts placed at each path, the builder's own files among them: copies with one text are one file.
+    // An existing file's path stays the existing file's (only the person's grant changes one): the builder's own file there is in its world only.
     const work=bid?this.builtWork(bid):null,own=new Map(Object.entries(work?.glue||{})),texts=new Map();
-    for(const [p,t] of own)texts.set(p,new Set([t]));
+    const existing=this.holdsBase(m)?new Set([...this.basePaths(),...this.passthroughPaths()]):new Set();
+    for(const [p,t] of own)if(!existing.has(p))texts.set(p,new Set([t]));
     for(const x of copies)texts.set(x.at,(texts.get(x.at)||new Set()).add(x.content));
     const twice=[];
     for(const x of copies) {
@@ -3818,15 +3809,16 @@ export class ControlRoom extends DurableObject {
     this.addBase(m,files);
     const raw=new Map(files),glue=new Map(),beside=[];
     for(const [p,r] of Object.entries(work?.renamed||{}))if(by.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
-    // The builder's own files stay its own (built:<builder>, its world), each in the bundle at its path (glue).
-    // One at a path where an existing file stands, or a delivered file with no folder of its own to stand in, is beside it in the builder's world.
-    const existing=this.holdsBase(m)?this.passthroughPaths():new Set();
+    // The delivered files as the builder's world holds them (its renames in them), each with the child it came from.
+    const delivered=new Map([...files].filter(([p])=>by.has(p))),deliveredBy=new Map(by);
+    // The builder's own files stay its own (built:<builder>, its world), each the file the piece holds at its path (glue),
+    // a delivered file there included (the builder wrote it there, and its world shows both).
     for(const [p,t] of own) {
-      if(!files.has(p)&&!existing.has(p))files.set(p,t);
-      if(files.get(p)===t)glue.set(p,t);else beside.push(p);
+      if(existing.has(p)){beside.push(p);continue;}
+      files.set(p,t);glue.set(p,t);by.delete(p);origin.delete(p);placed.delete(p);
     }
-    if(beside.length)this.noteOnce(actor,'bundle_conflict',`The builder's own file stands beside an existing or delivered file at the same path, both in its world: ${beside.join(', ')}.`);
-    return this.pieceBundle(m,files,origin,placed,by,glue,raw);
+    if(beside.length)this.noteOnce(actor,'bundle_conflict',`The builder's own file is at the path of an existing file, which stays as it is; the builder's file is in its world: ${beside.join(', ')}.`);
+    return {...this.pieceBundle(m,files,origin,placed,by,glue,raw),delivered,deliveredBy};
   }
   // What a builder made of its children's files: {renamed: {path: {base,
   // text, renames}}, glue: {path: text}} (src/builder.js builderWork).
@@ -3900,17 +3892,15 @@ export class ControlRoom extends DurableObject {
     }
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const seen=this.joinedInput(m),piece=await this.joinPiece(m,id),labels=new Map(this.children(m).map(c=>[c.id,c.label]));
-    const from=new Map([...piece.by].map(([p,c])=>[p,labels.get(c)||c]));
-    // Its world: the delivered files, its own files as it kept them, and the paths existing files hold.
-    const own=new Map(Object.entries(this.builtWork(id)?.glue||{}));
-    const world=builderWorld({files:new Map([...piece.files].filter(([p])=>piece.by.has(p))),from,glue:own,
-      held:new Set([...[...piece.files.keys()].filter(p=>!piece.by.has(p)),...(this.holdsBase(m)?this.passthroughPaths():[])].filter(p=>!own.has(p)))});
+    const from=new Map([...piece.deliveredBy].map(([p,c])=>[p,labels.get(c)||c]));
+    // Its world: the delivered files and its own files as it kept them.
+    const world=builderWorld({files:piece.delivered,from,glue:new Map(Object.entries(this.builtWork(id)?.glue||{}))});
     this.event(id,'working',`Turn ${n.turn+1}; joining ${world.files.size} file(s) of ${this.node(m)?.label||m}'s children.`);
     const out=await builderSession(this.inferenceEnv('builder'),this.builderView(m,world),world);
     this.save(`built:${id}`,builderWork(world,this.builtWork(id)||{},p=>textHash(piece.raw.get(p))));
     const renames=[...world.renamed].flatMap(([p,list])=>list.map(r=>`${p}: ${r.from} → ${r.to}`));
     const said=[out.transcript.length?`${out.transcript.length} call(s) in ${out.rounds} round(s)`:'no call',world.written.length?`wrote ${world.written.join(', ')}`:'',
-      renames.length?`renamed ${renames.join('; ')}`:'',world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:''].filter(Boolean).join('; ');
+      renames.length?`renamed ${renames.join('; ')}`:'',world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:'',world.removed.length?`removed ${world.removed.join(', ')}`:''].filter(Boolean).join('; ');
     this.event(id,'session',clip(out.end?`${said}; ended with done.`:`${said}; ended without done (${out.reason==='context'?'its context window was full':out.reason}).`,900));
     // Its session ended without done, or the children's work changed while it worked: it goes on next turn, its work kept.
     if(!out.end||this.joinedInput(m)!==seen) {
@@ -6299,17 +6289,12 @@ export class ControlRoom extends DurableObject {
     const cat=this.catalogue(id),labelled=answered.some(a=>a&&typeof a==='object');
     return {...(cat.length?{available:shownCatalogue(cat),available_note:MESSAGES.available_note()}:{}),...(labelled?{answers_note:MESSAGES.answers_note()}:{})};
   }
-  // The names and paths of every contract in the tree.
-  contractNames() {
-    const items=this.allNodes().flatMap(n=>parse(n.interfaces,[]));
-    return new Set(items.flatMap(c=>[c?.name,c?.path]).filter(x=>typeof x==='string'&&x));
-  }
   // What one ask is (broker.js classify): a chunk or an existing file its
-  // world holds, or a name outside its catalogue, is answered here; anything
-  // else (a contract, a package, a need with no name) goes to its manager.
+  // world holds is answered here; anything else (a contract, a package, a
+  // part or a file it does not hold, a need with no name) goes to its manager.
   askKind(id, name) {
     if(!this.v8())return {kind:'contract',name:name||''};
-    return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts:this.contractNames()});
+    return classifyAsk(name||'',{catalogue:this.catalogue(id)});
   }
   // Answers one ask that its own world answers, with no manager hop (§5.3):
   // the answer is the ask function's result, and is recorded among its
@@ -6327,9 +6312,10 @@ export class ControlRoom extends DurableObject {
       const row=query(this.db(),'SELECT path,content FROM base_files WHERE path=?',c.name)[0];
       if(row)answer=baseAnswer({id:req.id,path:row.path,content:row.content,own:this.designOf(id).contracts.some(x=>x?.path===row.path)});
     }
-    answer||=noneAnswer({id:req.id,name:ask.name||c.name,catalogue:cat});
+    // What its world lists and the room no longer holds goes to its manager like any other ask.
+    if(!answer)return false;
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
-    this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
+    this.event(id,'broker_answer',clip(`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`,400));
     return true;
   }
   // The answers a worker got to its asks, one per topic: a v8 worker's view
@@ -8320,7 +8306,7 @@ export class ControlRoom extends DurableObject {
       return {label:entry.label,prompt:entry.prompt,contracts:entry.delivers.map(name=>level.contracts.find(c=>c.name===name)).filter(Boolean),calls:entry.calls};
     }
     const n=this.node(id);
-    return n?{label:n.label,prompt:n.task,contracts:this.promisedOf(id),calls:normalizeUses(parse(n.uses,[]),{v8:this.v8()})}:{label:'',prompt:'',contracts:[],calls:[]};
+    return n?{label:n.label,prompt:n.task,contracts:this.promisedOf(id),calls:this.v8()?parse(n.uses,[]):normalizeUses(parse(n.uses,[]))}:{label:'',prompt:'',contracts:[],calls:[]};
   }
   // A change to one child's entry in its manager's level file (its prompt,
   // the names it may call): change(entry) gives the fields that change, read
@@ -8513,7 +8499,7 @@ export class ControlRoom extends DurableObject {
     if(!batch){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
     // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, added to the file as it stands when it is written.
     const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
-    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
+    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:s.uses||[]});
     const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{})}));
     // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
     let landed=false;
@@ -8868,13 +8854,13 @@ export class ControlRoom extends DurableObject {
       // Its manager calls it too, so the levels between them link it.
       for(let x=this.agentAbove(n.id);x&&!this.levelContracts(x).some(f=>f.name===c.name);x=this.agentAbove(x))callers.push(x);
       for(const x of callers) {
-        const uses=normalizeUses(parse(this.node(x)?.uses,[]),{v8:true});
+        const uses=parse(this.node(x)?.uses,[]);
         if(uses.includes(c.name))continue;
         this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...uses,c.name]),x);
         await this.amendEntry(x,e=>({calls:[...new Set([...e.calls,c.name])]}));
       }
     }
-    this.answerAsker(n.id,ask,text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)}),c.name);
+    this.answerAsker(n.id,ask,text||MESSAGES.provided({contract:contractLine(c)}),c.name);
   }
   // The package p manager m granted the asker: it is listed on every row of
   // the asker's line that does not list it (m's and those above it too, for
@@ -8968,20 +8954,21 @@ export class ControlRoom extends DurableObject {
   // ---------- the worker ----------
   // A worker's request: its prompt (its task, what it delivers under which
   // names and paths, each with every example rendered from the validations
-  // that serve it, and the names it may call with their references), the
+  // that serve it, and the contracts it may call, each as declared), the
   // paths of its own files (it reads them with read_file), the complaints
   // routed to it that it has not answered with done (heldComplaints),
   // verbatim, and its world: what it can ask for by name and
   // the answers it has, the chunks of linked pages and the existing files it
   // holds. The prompt is the one its manager's level file holds for it (designOf).
   workerView(id, inbox=[], ownFiles=[]) {
-    const design=this.designOf(id),byId=this.validationsById(),facts=this.referenceFacts(id),callable=this.callableOf(id),refs=useReferences(callable,facts);
+    const design=this.designOf(id),byId=this.validationsById(),callable=this.callableOf(id);
     // How it is reached when something serves it: its files as they are, or its command listening on the port in PORT. A command's own command line, which nothing serves, is its file's.
     const runText=c=>!c.run?'':c.run.static?'its files are served as they are':c.run.port?`${c.run.run} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`:'';
-    const deliver=design.contracts.map(c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
-      ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{}),...(runText(c)?{runs:runText(c)}:{}),
-      examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
-    const prompt={task:design.prompt,deliver,...(callable.length?{call:callable.map((c,i)=>({name:c.name,contract:contractLine(c),reference:refs[i]?.reference||c.name}))}:{})};
+    // A contract as declared: its name, kind, path, what it does, takes and gives.
+    const declared=c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
+      ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{})});
+    const deliver=design.contracts.map(c=>({...declared(c),...(runText(c)?{runs:runText(c)}:{}),examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
+    const prompt={task:design.prompt,deliver,...(callable.length?{call:callable.map(declared)}:{})};
     const files=ownFiles.map(f=>f.path).sort();
     const complaints=this.heldComplaints(id,inbox).map(c=>c.text);
     const answers=this.read(`fn_answers:${id}`,[]).map(a=>a.text),digest=this.heldDigest(id),base=this.baseFilesFor(id);

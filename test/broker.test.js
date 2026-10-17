@@ -1,13 +1,13 @@
 // Capability boxes S5: the broker's pure parts (src/broker.js). A writer's
 // catalogue lists its contracts, the contracts it may use, the existing
 // files granted to it and the chunks it holds; classify sends a chunk, an
-// existing file or a name outside the catalogue to the broker and every
-// other name to today's contract routing; the answers are shaped, whole,
-// and labelled; and the one wording for absence names only catalogue
-// entries, in positive terms.
+// existing file its world holds to the broker and every other name, a part
+// or a file it does not hold among them, to its manager (owner 2026-10-16
+// 20:43: the worker asks its manager, which walks up the tree); the answers
+// are shaped, whole, and labelled.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {catalogue, shown, classify, askName, brokerRequest, shapeAnswer, sourceAnswer, baseAnswer, noneAnswer, noneText, nextHeld, viewAnswer,
+import {catalogue, shown, classify, askName, brokerRequest, shapeAnswer, sourceAnswer, baseAnswer, nextHeld, viewAnswer,
   LIVE_KINDS, REQUEST_KINDS} from '../src/broker.js';
 import {MESSAGES, BASE_LABEL, BROKER_LABEL, promptTexts} from '../src/prompts.js';
 import {normalizeAsk} from '../src/protocol.js';
@@ -22,10 +22,7 @@ const CAT = catalogue({
   base: ['src/shout.js'],
   sources: [{ref: 'S2#1', title: 'Widget guide'}, {ref: 'S2#2', title: 'Widget guide'}, {ref: 'S2#3', title: 'Widget guide'}, {ref: 'S1#2', title: 'Widget format'}, {ref: 'S9', title: 'no part'}]
 });
-// The project's existing files, and every contract in the tree (a sibling delivers bin/widget.js).
-const BASE = new Set(['src/shout.js', 'bin/widget.js', 'package.json', 'docs/secret-plan.md']);
-const CONTRACTS = new Set(['NOTES.md', 'src/shout.js', 'FAQ.md', 'bin/widget.js', 'to_celsius']);
-const kindOf = name => classify(name, {catalogue: CAT, base: BASE, contracts: CONTRACTS});
+const kindOf = name => classify(name, {catalogue: CAT});
 // Refusal wording the broker never uses: it says what is there.
 // A text with its data (names, paths, labels) taken out, as the composed-text lint reads it.
 const bare = (t, data = []) => [...data].sort((a, b) => b.length - a.length).reduce((s, d) => s.split(d).join('«data»'), t);
@@ -44,18 +41,14 @@ test('the catalogue: own contracts, uses, granted files and held chunks, each na
   assert.ok(REQUEST_KINDS.includes('run') && !CAT.some(e => ['url', 'run', 'package'].includes(e.kind)));
 });
 
-test('classify: a held chunk is a source, a granted file is a base read, a file a contract names is routed, any other file or chunk is none, every other name is routed', () => {
+test('classify: a held chunk is a source, a granted file is a base read, every other name goes to the asker\'s manager, a part or an existing file it does not hold included', () => {
   assert.deepEqual(kindOf('S2#3'), {kind: 'source', name: 'S2#3'});
   assert.deepEqual(kindOf('S2'), {kind: 'source', name: 'S2#1'}, 'a bare source id is its first held chunk');
-  assert.deepEqual(kindOf('S1#1'), {kind: 'none', name: 'S1#1'}, 'a chunk it does not hold');
-  assert.deepEqual(kindOf('S7'), {kind: 'none', name: 'S7'});
   assert.deepEqual(kindOf('src/shout.js'), {kind: 'base', name: 'src/shout.js'}, 'granted, and its own contract: the text');
-  assert.deepEqual(kindOf('bin/widget.js'), {kind: 'contract', name: 'bin/widget.js'}, 'another part delivers it: routed as today');
-  assert.deepEqual(kindOf('package.json'), {kind: 'none', name: 'package.json'});
-  assert.deepEqual(kindOf('docs/secret-plan.md'), {kind: 'none', name: 'docs/secret-plan.md'});
-  for (const name of ['FAQ.md', 'to_celsius', 'parse_args', 'GET /items', 'docs/new-page.md', '', null])
-    assert.equal(kindOf(name).kind, 'contract', String(name));
-  assert.equal(classify('S2#3').kind, 'none', 'with no catalogue nothing is held');
+  for (const name of ['S1#1', 'S7', 'package.json', 'docs/secret-plan.md', 'bin/widget.js', 'FAQ.md', 'to_celsius', 'parse_args', 'GET /items', 'docs/new-page.md'])
+    assert.deepEqual(kindOf(name), {kind: 'contract', name}, name);
+  for (const name of ['', null]) assert.equal(kindOf(name).kind, 'contract', String(name));
+  assert.equal(classify('S2#3').kind, 'contract', 'with no catalogue nothing is held: its manager is asked');
 });
 
 test('ask names: under v8 an ask keeps a chunk ref or a path as its name; v7 asks are as before', () => {
@@ -86,32 +79,8 @@ test('answer shaping: a chunk and a file carry their labels, a long value is giv
   assert.deepEqual({...req, id: 'x'}, {id: 'x', from: 'root.2', kind: 'source', name: 'S2#3', need: 'the third part', ts: 5});
 });
 
-test('none: one wording for absence, which names only catalogue entries, the asked kind first, and refuses nothing', () => {
-  const others = [...BASE].filter(p => !CAT.some(e => e.name === p));
-  for (const name of ['package.json', 'docs/secret-plan.md', 'docs/old-plan.md', 'S1#1', 'S7']) {
-    const a = noneAnswer({id: 'n', name, catalogue: CAT});
-    assert.equal(a.status, 'none');
-    assert.equal(a.label, BROKER_LABEL.none);
-    assert.match(a.value, new RegExp(`^Nothing is available under the name ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. Available: `));
-    // Apart from the name asked, every name it gives is a catalogue entry, and it gives every one but the packages.
-    const listed = a.value.split('Available: ')[1].replace(/\.$/, '').split(', ');
-    assert.ok(listed.every(n => CAT.some(e => e.name === n)), a.value);
-    assert.deepEqual([...listed].sort(), CAT.filter(e => e.kind !== 'package').map(e => e.name).sort(), a.value);
-    for (const p of others.filter(p => p !== name)) assert.ok(!a.value.includes(p), `${p} is no catalogue entry: ${a.value}`);
-    assert.doesNotMatch(a.value, REFUSAL);
-    assert.deepEqual(lintText('none', bare(a.value, [name, ...CAT.map(e => e.name)])), []);
-  }
-  // A path-shaped ask hears the files first; a chunk-shaped one the chunks first.
-  assert.equal(noneText('package.json', CAT), 'Nothing is available under the name package.json. Available: src/shout.js, NOTES.md, FAQ.md, S2#1, S2#2, S2#3, S1#2.');
-  assert.equal(noneText('S1#1', CAT), 'Nothing is available under the name S1#1. Available: S2#1, S2#2, S2#3, S1#2, NOTES.md, FAQ.md, src/shout.js.');
-  // An existing file outside the catalogue and a path that never existed read the same.
-  assert.equal(noneText('docs/secret-plan.md', CAT).replace('docs/secret-plan.md', 'X'), noneText('docs/old-plan.md', CAT).replace('docs/old-plan.md', 'X'));
-  // With an empty catalogue, it says only that.
-  assert.equal(noneText('package.json', []), 'Nothing is available under the name package.json.');
-});
-
 test('every broker text lints clean and states a path, with no prohibition', () => {
-  const keys = ['available_note', 'available_own', 'available_use', 'available_base', 'available_source', 'answers_note', 'broker_none', 'own_contract'];
+  const keys = ['available_note', 'available_own', 'available_use', 'available_base', 'available_source', 'answers_note', 'own_contract'];
   const texts = promptTexts();
   for (const k of keys) {
     const t = texts[`MESSAGES.${k}`];
@@ -119,7 +88,7 @@ test('every broker text lints clean and states a path, with no prohibition', () 
     assert.deepEqual(lintText(k, t), [], t);
     assert.doesNotMatch(t, REFUSAL, k);
   }
-  for (const t of [...CAT.map(e => e.is), MESSAGES.broker_none({name: 'x', names: ''}), MESSAGES.available_use(), MESSAGES.own_contract({contract: 'NOTES.md (doc): notes'})]) {
+  for (const t of [...CAT.map(e => e.is), MESSAGES.available_use(), MESSAGES.own_contract({contract: 'NOTES.md (doc): notes'})]) {
     assert.deepEqual(lintText('broker', bare(t, ['NOTES.md', 'Widget guide', 'Widget format', 'Questions writer'])), [], t);
     assert.doesNotMatch(t, REFUSAL, t);
   }

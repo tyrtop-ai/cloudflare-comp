@@ -24,6 +24,8 @@ const report = reference => `${reference}
 const t = createTicket(process.argv.slice(2).join(' '));
 console.log('#' + t.id + ' ' + t.title + ' [' + t.status + ']');
 `;
+// The worker writes its own reference to a contract it may call, from the contract as declared (its name and path).
+const referTo = c => `const { ${c.name} } = require('./${c.path}');`;
 const contracts = [
   {name: 'createTicket', kind: 'function', does: 'creates an open ticket with a title', inputs: [{name: 'title', is: 'text'}], outputs: 'the ticket {id, title, status}', path: 'store.js'},
   {name: 'getTicket', kind: 'function', does: 'reads one ticket by its id', inputs: [{name: 'id', is: 'a number'}], outputs: 'the ticket, or null', path: 'store.js'},
@@ -47,7 +49,7 @@ const pieces = [
   {label: 'Ticket report', task: 'The report command: file a ticket with the title given and print it as one line.', contracts: ['report'], uses: ['createTicket']}
 ];
 const trackerSplit = user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : {contracts, validations, pieces};
-const trackerLeaf = user => user.prompt.deliver.some(c => c.name === 'report') ? deliver({'report.js': report(user.prompt.call.find(c => c.name === 'createTicket').reference)}) : deliver({'store.js': STORE});
+const trackerLeaf = user => user.prompt.deliver.some(c => c.name === 'report') ? deliver({'report.js': report(referTo(user.prompt.call.find(c => c.name === 'createTicket')))}) : deliver({'store.js': STORE});
 
 const CLI = 'Write a command-line temperature converter: `convert 100 C` prints the Fahrenheit value.';
 const convertCheck = (id, args, out) => ({id, serves: ['convert'], check: {kind: 'command', run: `convert ${args}`, expect: {exit: 0, stdout_has: [out]}}});
@@ -609,4 +611,31 @@ test('a v8 room made before hex row ids (root, root.1; no depth or sequence): th
   const w = now.allNodes().find(n => n.role === 'worker');
   assert.equal((await now.fileContent(w.id, 'convert.js')).content, CONVERT_JS);
   await assert.rejects(now.fileContent('root.1', 'convert.js'), /Invalid agent or file path/);
+});
+
+// ------------------------------------------------------------ a piece's uses, as declared
+test('a piece\'s uses are kept exactly as declared: every name, however many and whatever its shape, is the worker\'s to call', async () => {
+  const {room} = liveRoom({room_id: 'uses-room'});
+  room.configure({pipeline: 'v8'});
+  room.set('run_nonce', 'n1');
+  const top = await room.provision(await rowId('uses-room', 1, 'manager'), null, 'Top', 'the whole', [], [], [], 'manager', {seq: 1});
+  const uses = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'Geometry::area', 'parse_line(text)', 'GET /items'];
+  const [w] = await room.spawn(top.id, [{label: 'W', task: 'write it', role: 'worker', uses}], 'k0');
+  assert.deepEqual(JSON.parse(room.node(w.id).uses), uses);
+  assert.deepEqual(room.designOf(w.id).calls, uses);
+});
+
+// ------------------------------------------------------------ the join and the project's existing files
+test('the existing files carried untouched ship beside a piece\'s files: one is left out only where a piece\'s file holds exactly its path, never by letter case', async () => {
+  const {room} = liveRoom({room_id: 'carried-room'});
+  room.configure({pipeline: 'v8'});
+  const row = (path, text) => room.db().exec('INSERT INTO base_passthrough(path,bytes,mode,sha256,reason) VALUES (?,?,?,?,?)', path, new TextEncoder().encode(text), 420, 'h', 'not built');
+  row('README.md', '# Base\n'); row('notes.txt', 'base notes\n');
+  const bundle = {files: new Map([['readme.md', '# a piece\'s\n'], ['notes.txt', 'the piece\'s notes\n']])};
+  room.addCarried(bundle);
+  assert.equal(bundle.files.get('README.md'), '# Base\n', 'a path apart from case is another file');
+  assert.equal(bundle.files.get('readme.md'), '# a piece\'s\n');
+  assert.equal(bundle.files.get('notes.txt'), 'the piece\'s notes\n', 'the piece\'s file at exactly the path ships');
+  assert.deepEqual([...bundle.carried], ['README.md']);
+  assert.deepEqual(bundle.unsent, []);
 });

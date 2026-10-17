@@ -70,14 +70,3 @@ export function boxPathError(path) {
   return null;
 }
 
-// v8 S8b: the path among `paths` (a Set or an array) that equals `path`
-// apart from letter case, or null. A case-insensitive file system reads the
-// two as one file, so the project's files are compared this way.
-export function caseTwin(path, paths) {
-  if (!paths) return null;
-  const list = paths instanceof Set ? paths : new Set(paths);
-  if (list.has(path)) return path;
-  const low = String(path).toLowerCase();
-  for (const p of list) if (String(p).toLowerCase() === low) return p;
-  return null;
-}

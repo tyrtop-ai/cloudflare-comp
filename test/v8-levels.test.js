@@ -21,6 +21,8 @@ const report = reference => `${reference}
 const t = createTicket(process.argv.slice(2).join(' '));
 console.log('#' + t.id + ' ' + t.title + ' [' + t.status + ']');
 `;
+// The worker writes its own reference to a contract it may call, from the contract as declared (its name and path).
+const referTo = c => `const { ${c.name} } = require('./${c.path}');`;
 const contracts = [
   {name: 'createTicket', kind: 'function', does: 'creates an open ticket with a title', inputs: [{name: 'title', is: 'text'}], outputs: 'the ticket {id, title, status}', path: 'store.js'},
   {name: 'getTicket', kind: 'function', does: 'reads one ticket by its id', inputs: [{name: 'id', is: 'a number'}], outputs: 'the ticket, or null', path: 'store.js'},
@@ -45,7 +47,7 @@ const pieces = [
   {label: 'Ticket report', task: 'The report command: file a ticket with the title given and print it as one line.', contracts: ['report'], uses: ['createTicket']}
 ];
 const trackerSplit = user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : {contracts, validations, pieces};
-const trackerLeaf = user => user.prompt.deliver.some(c => c.name === 'report') ? deliver({'report.js': report(user.prompt.call.find(c => c.name === 'createTicket').reference)}) : deliver({'store.js': STORE});
+const trackerLeaf = user => user.prompt.deliver.some(c => c.name === 'report') ? deliver({'report.js': report(referTo(user.prompt.call.find(c => c.name === 'createTicket')))}) : deliver({'store.js': STORE});
 
 test('an issue tracker splits: room → manager → splitter → pieces → workers → builders → compilers, the validations placed where their contracts meet and passing, and the room complete at its manager\'s compiler', async () => {
   const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf});
@@ -226,7 +228,7 @@ test('a follow-up prompt is a change on the room\'s manager\'s row: Clef routes 
   const CHANGE = 'The report command also prints the word filed on a second line.';
   const leaf = user => {
     if (!user.prompt.deliver.some(c => c.name === 'report')) return deliver({'store.js': STORE});
-    const body = report(user.prompt.call.find(c => c.name === 'createTicket').reference);
+    const body = report(referTo(user.prompt.call.find(c => c.name === 'createTicket')));
     return deliver({'report.js': user.complaints.includes(CHANGE) ? body + "console.log('filed');\n" : body});
   };
   // The change concerns the report piece, not the store.

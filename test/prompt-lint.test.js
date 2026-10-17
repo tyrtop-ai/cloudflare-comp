@@ -129,14 +129,14 @@ test('the worker\'s functions are prompt texts too: each description and each pa
 
 test('the builder\'s functions are prompt texts too: each description and each parameter\'s is linted, names no structure around it, and holds no filled-in value to copy; its format says to call them, and no answer is parsed', () => {
   const texts = Object.entries(promptTexts()).filter(([k]) => k.startsWith('TOOLS.builder.'));
-  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['read_file', 'write_file', 'rename', 'done']);
-  assert.deepEqual(TOOLS.builder.map(t => t.name), ['read_file', 'write_file', 'rename', 'done']);
+  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['read_file', 'write_file', 'delete_file', 'rename', 'done']);
+  assert.deepEqual(TOOLS.builder.map(t => t.name), ['read_file', 'write_file', 'delete_file', 'rename', 'done']);
   for (const [name, text] of texts) {
     assert.deepEqual(lintText(name, text, {generative: true}), [], name);
     assert.doesNotMatch(text, /"\w+"\s*:\s*["\[{]/, `${name} holds a filled-in field`);
   }
   assert.ok(TOOLS.builder.every(t => t.parameters.type === 'object'));
-  assert.deepEqual(Object.fromEntries(TOOLS.builder.map(t => [t.name, t.parameters.required])), {read_file: ['path'], write_file: ['path', 'content'], rename: ['path', 'from', 'to'], done: ['summary']});
+  assert.deepEqual(Object.fromEntries(TOOLS.builder.map(t => [t.name, t.parameters.required])), {read_file: ['path'], write_file: ['path', 'content'], delete_file: ['path'], rename: ['path', 'from', 'to'], done: ['summary']});
   assert.match(FORMAT.builder, /^Answer by calling your functions/);
   assert.doesNotMatch(FORMAT.builder + ROLE.builder, /json|edits|issues|find|replace/i, 'no answer format to write');
   assert.ok(!('linker' in ROLE) && !('linker' in FORMAT) && !('json' in RETRY), 'no linker prompt and no answer to retry');

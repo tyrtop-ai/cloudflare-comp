@@ -5,9 +5,8 @@
 // view's `available`), the names it is shown, and calls ask with one. The
 // room classifies the name and answers it from what the room holds, in the
 // ask's result and among the worker's answers from then on, labelled with
-// where it comes from. A name outside the catalogue hears the one wording
-// for absence, which names only what the catalogue holds; anything else
-// goes to the asker's manager.
+// where it comes from. Anything else, a part of a page or an existing file
+// it does not hold among them, goes to the asker's manager.
 //
 // The room (src/index.js) holds the state and the methods; this file holds
 // the shapes, the classification and the answer shaping. No kind here runs
@@ -62,28 +61,21 @@ export function catalogue({own = [], uses = [], packages = [], base = [], source
 // The catalogue as the view shows it: each name with what it is.
 export const shown = cat => cat.map(({name, is}) => ({name, is}));
 
-// Which kind of request a name is (§5.2), against the asker's catalogue, the
-// project's existing paths (base) and the names and paths of every contract
-// in the tree (contracts):
-// 1. a chunk ref: a source when the asker holds it, otherwise none;
-// 2. an existing file granted to the asker: base;
-// 3. any other existing file: a contract when a part's contract names it,
-//    otherwise none;
-// 4. any other name, or no name: a contract, routed as before (§5.3).
-// → {kind: 'contract'|'source'|'base'|'none', name}, name the one answered.
-export function classify(name, {catalogue: cat = [], base = new Set(), contracts = new Set()} = {}) {
+// Which kind of request a name is (§5.2), against the asker's catalogue:
+// a chunk of a linked page it holds (S2 names the first it holds of S2):
+// source; an existing file granted to it: base; any other name, or no name:
+// a contract, for its manager (§5.3).
+// → {kind: 'contract'|'source'|'base', name}, name the one answered.
+export function classify(name, {catalogue: cat = []} = {}) {
   const n = String(name ?? '').trim(), entry = new Map(cat.map(e => [e.name, e]));
-  if (!n) return {kind: 'contract', name: n};
   const m = SOURCE_REF.exec(n);
   if (m) {
     const ref = m[2] ? n : cat.find(e => e.kind === 'source' && e.name.startsWith(`S${m[1]}#`))?.name;
-    return ref && entry.get(ref)?.kind === 'source' ? {kind: 'source', name: ref} : {kind: 'none', name: n};
+    if (ref && entry.get(ref)?.kind === 'source') return {kind: 'source', name: ref};
   }
   if (entry.get(n)?.kind === 'base') return {kind: 'base', name: n};
-  if (has(base, n)) return has(contracts, n) || entry.get(n)?.kind === 'contract' ? {kind: 'contract', name: n} : {kind: 'none', name: n};
   return {kind: 'contract', name: n};
 }
-const has = (set, v) => set instanceof Set ? set.has(v) : Array.isArray(set) && set.includes(v);
 
 // A request as the broker keeps it (§5.2).
 export const brokerRequest = ({id = crypto.randomUUID(), from, kind, name, need = '', ts = Date.now()}) =>
@@ -108,15 +100,5 @@ export const sourceAnswer = ({id, ref, url, text, next = null}) =>
 // own: a contract of the asker names its path, so its version is placed now.
 export const baseAnswer = ({id, path, content, own = false}) =>
   shapeAnswer({id, name: path, kind: 'base', label: BROKER_LABEL.base, value: sanitizeText(content), facts: own ? {placed_when: 'now'} : null});
-// The answer for a name outside the catalogue: the one wording for absence,
-// listing every catalogue name, those of the kind the name has first.
-export function noneText(name, cat = []) {
-  const want = SOURCE_REF.test(String(name)) ? 'source' : 'base', rank = e => e.kind === want ? 0 : 1;
-  // v8 live 4: packages are named by the asker's manager, never here.
-  const names = [...cat].filter(e => e.kind !== 'package').sort((a, b) => rank(a) - rank(b)).map(e => e.name);
-  return MESSAGES.broker_none({name: String(name), names: names.join(', ')});
-}
-export const noneAnswer = ({id, name, catalogue: cat = []}) =>
-  shapeAnswer({id, name, kind: 'none', status: 'none', label: BROKER_LABEL.none, value: noneText(name, cat)});
 // An answer as the worker's answers carry it: {name, label, value, next?, facts?}.
 export const viewAnswer = a => ({name: a.name, label: a.label, value: a.value, ...(a.next ? {next: a.next} : {}), ...(a.facts ? {facts: a.facts} : {})});

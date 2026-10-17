@@ -57,7 +57,8 @@ test('v8: the worker\'s session is ROLE.worker with its functions, its request t
   assert.equal(system,systemPrompt('worker'));
   assert.equal(system,`${ROLE.worker}\n\n${FORMAT.worker}`);
   assert.match(system,/write the files that deliver what your prompt asks/i);
-  assert.match(system,/Refer to a name you may call exactly as its reference shows/);
+  assert.match(system,/A contract you may call is delivered under its name at its path\./);
+  assert.doesNotMatch(system,/reference shows/,'the worker writes its own reference');
   assert.match(system,/A complaint says what was observed when your files ran: fix its cause in your files, and run your examples/);
   assert.match(system,/^Answer by calling your functions/m);
   assert.doesNotMatch(system,/LEAF CODE WRITER|Node\.js|require\(|JavaScript|=== FILE|control block/);

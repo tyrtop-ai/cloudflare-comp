@@ -1,39 +1,48 @@
-// v8 S6 review: how a part is told to refer to another part. One reference
-// per contract, from that contract's own toolchain row, never "A or B"; code
-// that runs in a browser refers by ES module files and a page loads a module
-// script; every contract given has its reference.
+// v8 (R5-worker/code-1): how a part learns of another part's contract. The
+// worker is given each contract it may call as declared (its name, kind,
+// path, what it does, takes and gives) and writes its own reference; the
+// builder joins the references. The runtime renders no import line, guesses
+// no reader language or browser project, and tells no worker to copy one.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TOOLCHAINS, renderImport, browserProject, toolchainById} from '../src/toolchains.js';
-import { useReferences } from '../src/contracts.js';
+import {liveRoom, rowId} from './helpers/room.js';
+import * as toolchains from '../src/toolchains.js';
+import * as contracts from '../src/contracts.js';
+import {ROLE, MESSAGES} from '../src/prompts.js';
 
-const facts = (languages, extra = {}) => ({rows: TOOLCHAINS, languages, ...extra});
+const CALLS = [
+  {name: 'parse_line', kind: 'function', does: 'parses a line', inputs: [{name: 'line', is: 'text'}], outputs: 'the fields', path: 'lib/parse.py'},
+  {name: 'addItem', kind: 'function', does: 'adds an item', path: 'src/list.js'},
+  {name: 'app.js', kind: 'file', does: 'the page script', path: 'app.js'},
+  {name: 'GET /items', kind: 'route', does: 'lists the items'}
+];
 
-test('a reference is one line, from the contract\'s own row: its path, else the reader\'s language, else the project\'s first', () => {
-  const fn = {name: 'parse_line', does: 'parses a line'};
-  const both = facts(['python', 'javascript', 'text']);
-  assert.equal(useReferences([fn], both)[0].reference, 'from parse_line import parse_line');
-  assert.equal(useReferences([fn], {...both, reader: ['javascript']})[0].reference, "const { parse_line } = require('./parse_line');");
-  assert.equal(useReferences([{...fn, path: 'lib/parse.py'}], {...both, reader: ['javascript']})[0].reference, 'from parse_line import parse_line');
-  for (const u of useReferences([fn, {...fn, name: 'parseLine'}], both)) assert.doesNotMatch(u.reference, / or /);
+test('a worker is given each contract it may call as declared, however many, with no reference rendered for it', async () => {
+  const {room} = liveRoom({room_id: 'refs-room-0001'});
+  room.configure({pipeline: 'v8'});
+  room.set('run_nonce', 'n1');
+  const top = await room.provision(await rowId('refs-room-0001', 1, 'manager'), null, 'Top', 'the whole', [], [], [], 'manager', {seq: 1});
+  const many = Array.from({length: 11}, (_, i) => ({name: `part_${i}`, kind: 'function', does: 'does a part', path: `parts/p${i}.py`}));
+  const page = {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'};
+  const uses = [...CALLS, ...many].map(c => c.name);
+  const [w] = await room.spawn(top.id, [{label: 'Page', task: 'write the page', role: 'worker', uses}], 'k0');
+  await room.updateLevel(top.id, () => ({format: 'level/1', manager: top.id, contracts: [page, ...CALLS, ...many], validations: [], archived: [],
+    children: [{id: w.id, role: 'worker', label: 'Page', prompt: 'write the page', delivers: ['index.html'], calls: uses}]}));
+  const {prompt} = room.workerView(w.id);
+  assert.deepEqual(prompt.call.slice(0, 4), [
+    {name: 'parse_line', kind: 'function', path: 'lib/parse.py', does: 'parses a line', inputs: [{name: 'line', is: 'text'}], outputs: 'the fields'},
+    {name: 'addItem', kind: 'function', path: 'src/list.js', does: 'adds an item'},
+    {name: 'app.js', kind: 'file', path: 'app.js', does: 'the page script'},
+    {name: 'GET /items', kind: 'route', does: 'lists the items'}]);
+  assert.deepEqual(prompt.call.map(c => c.name), uses, 'every one, in the order declared');
+  assert.ok(prompt.call.every(c => !('reference' in c)), 'the worker writes its own reference');
+  assert.doesNotMatch(JSON.stringify(prompt.call), /require\(|import \{|<script/);
 });
 
-test('a browser project refers to a function by its ES module file, and a page loads a script as a module; never require', () => {
-  const contracts = [{name: 'index.html', kind: 'page', path: 'index.html'}, {name: 'app.js', kind: 'file', path: 'app.js'}];
-  assert.equal(browserProject(contracts), true);
-  assert.equal(browserProject([...contracts, {name: 'GET /items', kind: 'route'}]), false, 'a route runs on a server');
-  assert.equal(browserProject([{name: 'convert', kind: 'command', path: 'convert.js'}]), false);
-  const js = toolchainById('javascript');
-  assert.equal(renderImport(js, 'addItem', false, {browser: true}), "import { addItem } from './addItem.js';");
-  assert.equal(renderImport(js, 'addItem', false, {browser: true, path: 'src/list.js'}), "import { addItem } from './src/list.js';");
-  const f = facts(['javascript', 'text'], {browser: true});
-  assert.equal(useReferences([{name: 'addItem', does: 'adds'}], f)[0].reference, "import { addItem } from './addItem.js';");
-  assert.equal(useReferences([{name: 'app.js', kind: 'file', path: 'app.js'}], {...f, page_reader: true})[0].reference, '<script type="module" src="app.js"></script>');
-  // A command-line project keeps the row's own line.
-  assert.equal(useReferences([{name: 'addItem', does: 'adds'}], facts(['javascript']))[0].reference, "const { addItem } = require('./addItem');");
-});
-
-test('every contract given has its reference, however many', () => {
-  const many = Array.from({length: 11}, (_, i) => ({name: `part_${i}`, does: 'does a part'}));
-  assert.deepEqual(useReferences(many, facts(['python'])).map(u => u.reference), many.map(f => `from ${f.name} import ${f.name}`));
+test('the runtime holds no reference form: no row has an import line, and the worker\'s texts never say to copy a reference', () => {
+  for (const row of toolchains.TOOLCHAINS) for (const k of ['import_line', 'import_line_esm', 'browser_reference', 'browser_script']) assert.ok(!(k in row), `${row.id}.${k}`);
+  for (const name of ['renderImport', 'browserProject']) assert.equal(toolchains[name], undefined, name);
+  assert.equal(contracts.useReferences, undefined);
+  assert.doesNotMatch(ROLE.worker, /reference shows|exactly as its reference/);
+  assert.equal(MESSAGES.provided({contract: 'function addItem(item) in src/list.js: adds an item'}), 'function addItem(item) in src/list.js: adds an item. Use it rather than writing your own.');
 });
