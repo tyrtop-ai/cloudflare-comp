@@ -99,7 +99,8 @@ pre { font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:10p
 
 /* Ownership graph: observer-only, never model input. Colour is the role;
    managers and workers are circles, splitters, builders and compilers
-   squares; solid means done, a pulse means running. */
+   squares; solid means done, a pulse means running, and a band scrolls
+   left to right across a builder that is linking. */
 .tree-panel { min-height:260px; }
 .hierarchy { position:relative; height:520px; overflow:hidden; border:thin solid var(--border); background:var(--bg); }
 .hierarchy > .empty { padding:25px 12px; }
@@ -136,7 +137,14 @@ pre { font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:10p
 .gnode text { font-size:9px; fill:var(--muted); text-anchor:middle; pointer-events:none; opacity:0; transition:opacity .15s; }
 .gnode.role-manager text,.gnode:hover text,.gnode:focus-visible text,.gnode.selected text { opacity:1; }
 @keyframes node-pulse { 50% { stroke-width:5; stroke-opacity:.45; } }
-@media (prefers-reduced-motion: reduce) { .gnode.running > circle,.gnode.running > rect { animation:none; } }
+/* A builder linking its manager's children: a thin band scrolls left to right across its square, clipped to it
+   (app.js sweepMarkup: the band starts 4px left of the 10px square, so it travels 14px). The legend's sample stays still. */
+.ograph #link-band stop { stop-color:var(--builder); }
+.gnode .sweep { pointer-events:none; }
+.gnode .sweep rect { animation:link-sweep 1.6s linear infinite; }
+@keyframes link-sweep { to { transform:translateX(14px); } }
+.dot.linking { background:linear-gradient(90deg,transparent 20%,var(--role) 50%,transparent 80%),color-mix(in srgb,var(--role) 14%,var(--bg)); }
+@media (prefers-reduced-motion: reduce) { .gnode.running > circle,.gnode.running > rect { animation:none; } .gnode .sweep { display:none; } }
 .onode-detail .onode-path:not(.none)::before { content:""; display:inline-block; width:14px; margin-right:6px; vertical-align:3px; border-top:2px solid var(--path); }
 .peer { background:none; border:0; padding:0; color:inherit; font-size:inherit; text-decoration:underline dotted; text-underline-offset:2px; }
 .peer:hover { text-decoration-style:solid; }

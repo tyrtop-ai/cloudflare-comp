@@ -24,7 +24,8 @@ function eventMarkup(e) {
 // laid out by forces (a settled cloud, round as it grows) and dragged, panned
 // and zoomed by hand. Colour is the role; managers and workers are circles,
 // splitters, builders and compilers squares; solid means done, a pulse
-// means running. A branch's lines turn green once every producer under it is done.
+// means running, and a band scrolls left to right across a builder that is
+// linking. A branch's lines turn green once every producer under it is done.
 let selectedNode='';
 // By role (v8 M3 review: a v8 builder is "Builder"); a server from before the role column sends v7's labels.
 const isBuilder=n=>n.role?n.role==='builder':n.label==='Temporary builder';
@@ -261,11 +262,18 @@ function settle(model,pos,alpha=1) {
 const fmt=v=>String(Math.round(v*10)/10);
 const clipLabel=(s,n=18)=>{s=String(s??'');return s.length>n?s.slice(0,n-1)+'…':s;};
 const nodeSize=(role,top)=>SQUARE.has(role)?5:role==='manager'?(top?11:8):6;
+// A builder linking its manager's children (from its start until it is done):
+// a thin band scrolls left to right across its square, clipped to it.
+const LINKING=new Set(['ready','running','waiting']);
+const SWEEP_R=nodeSize('builder'),SWEEP_W=4;
+const sweepDefs=`<defs><clipPath id="link-clip"><rect x="${-SWEEP_R}" y="${-SWEEP_R}" width="${2*SWEEP_R}" height="${2*SWEEP_R}" rx="1.5"/></clipPath><linearGradient id="link-band"><stop offset="0" stop-opacity="0"/><stop offset="0.5" stop-opacity="0.9"/><stop offset="1" stop-opacity="0"/></linearGradient></defs>`;
+const sweepMarkup=`<g class="sweep" clip-path="url(#link-clip)"><rect x="${-SWEEP_R-SWEEP_W}" y="${-SWEEP_R}" width="${SWEEP_W}" height="${2*SWEEP_R}" fill="url(#link-band)"/></g>`;
 function nodeMarkup(n,index,p) {
   const role=index.role(n),state=nodeState(n,role),top=!n.parent,r=nodeSize(role,top),linked=branchState(n,index)==='linked';
   const tip=`${n.label} · ${role} · ${state}`;
   const shape=SQUARE.has(role)?`<rect x="${-r}" y="${-r}" width="${2*r}" height="${2*r}" rx="1.5"/>`:`<circle r="${r}"/>`;
-  return `<g class="gnode role-${role} ${esc(state)}${linked?' linked':''}${top?' root':''}${selectedNode===n.id?' selected':''}" data-node="${esc(n.id)}" transform="translate(${fmt(p.x)} ${fmt(p.y)})" tabindex="0" role="button" aria-label="${esc(tip)}"><title>${esc(tip)}</title>${linked?`<circle class="ring" r="${r+3}"/>`:''}${shape}<text y="${r+11}">${esc(clipLabel(n.label))}</text></g>`;
+  const sweep=role==='builder'&&LINKING.has(state)?sweepMarkup:'';
+  return `<g class="gnode role-${role} ${esc(state)}${linked?' linked':''}${top?' root':''}${selectedNode===n.id?' selected':''}" data-node="${esc(n.id)}" transform="translate(${fmt(p.x)} ${fmt(p.y)})" tabindex="0" role="button" aria-label="${esc(tip)}"><title>${esc(tip)}</title>${linked?`<circle class="ring" r="${r+3}"/>`:''}${shape}${sweep}<text y="${r+11}">${esc(clipLabel(n.label))}</text></g>`;
 }
 function edgeMarkup([s,t],pos,cls) {
   const a=pos.get(s),b=pos.get(t);
@@ -282,7 +290,7 @@ function renderTree(agents) {
   const ready=new Set(nodes.filter(n=>['ready','linked'].includes(branchState(n,index))).map(n=>n.id));
   const lines=edges.filter(e=>!path.has(e.join(':'))).map(e=>edgeMarkup(e,pos,ready.has(e[0])&&stage(index.byId.get(e[1]))===1?'ready':'')).join('');
   const lit=edges.filter(e=>path.has(e.join(':'))).map(e=>edgeMarkup(e,pos,'path')).join('');
-  return `<svg class="ograph" role="group" aria-label="Agent graph: drag a node, drag the background to pan, scroll to zoom, double-click to fit" data-edges="${esc([...path].filter((_,i)=>i%2===0).join(' '))}"><g class="oview" transform="${viewTransform()}"><g class="oedges">${lines}</g><g class="oedges">${lit}</g><g class="onodes">${nodes.map(n=>nodeMarkup(n,index,pos.get(n.id))).join('')}</g></g></svg>`;
+  return `<svg class="ograph" role="group" aria-label="Agent graph: drag a node, drag the background to pan, scroll to zoom, double-click to fit" data-edges="${esc([...path].filter((_,i)=>i%2===0).join(' '))}">${sweepDefs}<g class="oview" transform="${viewTransform()}"><g class="oedges">${lines}</g><g class="oedges">${lit}</g><g class="onodes">${nodes.map(n=>nodeMarkup(n,index,pos.get(n.id))).join('')}</g></g></svg>`;
 }
 function renderDetail(agents) {
   const picked=agents?.find(n=>n.id===selectedNode);

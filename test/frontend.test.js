@@ -155,6 +155,33 @@ test('the graph: every agent is a node; managers and workers are circles, splitt
   assert.match(renderWithPage(true,{agents:[]}).get('hierarchy').innerHTML,/No agents yet/);
 });
 
+// The owner (2026-10-13): "in the tree - give the builder linking node a tiny
+// scrolling animation left to right". A builder from its start until it is
+// done carries a thin band, clipped to its square, that scrolls left to right.
+test('the graph: a builder that is linking shows a tiny band scrolling left to right across its square',()=>{
+  const m='manager-0123456789abcdef',w='worker-1111111111111111',b='builder-2222222222222222';
+  const tree=status=>renderWithPage(true,{settings:{pipeline:'v8'},active_agents:status==='running'?[b]:[],agents:[
+    {id:m,parent:null,role:'manager',label:'A to-do page',phase:'manager',status:'waiting',task:'goal',depth:0,seq:1},
+    {id:w,parent:m,role:'',label:'A to-do page',phase:'implement',status:'done',task:'goal',depth:1,seq:1},
+    {id:b,parent:m,role:'builder',label:'Builder',phase:'implement',status:status==='running'?'ready':status,task:'Join',depth:1,seq:2}]}).get('hierarchy').innerHTML;
+  const sweep=/<g class="sweep" clip-path="url\(#link-clip\)"><rect x="-9" y="-5" width="4" height="10" fill="url\(#link-band\)"\/><\/g>/;
+  for(const status of ['running','ready','waiting']) {
+    const svg=tree(status);
+    assert.match(svg,new RegExp(`<g class="gnode role-builder ${status}" data-node="${b}"[^>]*><title>[^<]*</title><rect x="-5" y="-5" width="10" height="10" rx="1.5"/>${sweep.source}<text `),`a ${status} builder is linking`);
+    assert.match(svg,/<defs><clipPath id="link-clip"><rect x="-5" y="-5" width="10" height="10" rx="1.5"\/><\/clipPath><linearGradient id="link-band">/,'the band is clipped to the builder\'s square');
+    assert.equal((svg.match(/class="sweep"/g)||[]).length,1,'only the builder sweeps');
+  }
+  for(const status of ['done','retired','failed'])assert.doesNotMatch(tree(status),/class="sweep"/,`a ${status} builder is not linking`);
+  const v7=renderWithPage(true,{active_agents:[],agents:[
+    {id:'root',parent:null,label:'Root objective',phase:'manager',status:'waiting',task:'goal'},
+    {id:'root.1',parent:'root',label:'Ticket store',phase:'implement',status:'done',task:'Write ticketStore.js'},
+    {id:'root.2',parent:'root',label:'Temporary builder',phase:'implement',status:'waiting',task:'Link the application'}]}).get('hierarchy').innerHTML;
+  assert.match(v7,new RegExp(`data-node="root\\.2"[^>]*><title>[^<]*</title><rect [^>]*/>${sweep.source}`),'a v7 builder linking its branch sweeps too');
+  assert.match(css,/\.gnode \.sweep rect \{ animation:link-sweep 1\.6s linear infinite; \}\n@keyframes link-sweep \{ to \{ transform:translateX\(14px\); \} \}/,'left to right: from 4px left of the square to past its right edge');
+  assert.match(css,/@media \(prefers-reduced-motion: reduce\) \{[^\n]*\.gnode \.sweep \{ display:none; \}/);
+  assert.match(html,/<i class="dot square role-builder linking"><\/i>builder linking<\/span>/,'the legend\'s sample, still');
+});
+
 // Root, a sub-manager with two workers and its builder, two more workers,
 // Root's builder and the compiler.
 const team=[
