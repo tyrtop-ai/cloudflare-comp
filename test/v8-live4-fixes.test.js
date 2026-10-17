@@ -152,10 +152,11 @@ test('L7: the module prefix is row data; each code row says how its box installs
   for (const row of TOOLCHAINS.filter(r => r.id !== 'text')) assert.ok(Array.isArray(row.install?.argv) && row.install.argv.includes('{packages}') && row.install.tree, row.id);
 });
 
-test('L10: a splitter\'s named packages its parent\'s row lists are added to the piece\'s default set (its languages\'), by name; any other is asked', () => {
+test('L10: a piece holds the packages its splitter named that its parent\'s row lists, by name, nothing more; any other is asked', () => {
   const parent = [PYTEST, {name: 'requests', language: 'python', provides: 'HTTP client'}, {name: 'express', language: 'javascript', provides: 'HTTP server'}];
   const piece = {interfaces: [{name: 'app.py', kind: 'file', path: 'app.py'}]};
-  assert.deepEqual(piecePackages({...piece, packages: ['express']}, parent), {packages: [PYTEST, parent[1], parent[2]], asks: [], given: true}, 'the splitter named it and the parent lists it: the piece has it');
-  assert.deepEqual(piecePackages({...piece, packages: ['pytest']}, parent).packages.map(p => p.name), ['pytest', 'requests'], 'named, and the default set too');
+  assert.deepEqual(piecePackages({...piece, packages: ['express']}, parent), {packages: [parent[2]], asks: [], given: true}, 'the splitter named it and the parent lists it: the piece has it, and no package of a guessed language');
+  assert.deepEqual(piecePackages({...piece, packages: ['pytest']}, parent).packages.map(p => p.name), ['pytest'], 'only what was named');
+  assert.deepEqual(piecePackages(piece, parent), {packages: [], asks: [], given: false}, 'named none: holds none, and asks for what it needs');
   assert.deepEqual(piecePackages({...piece, packages: ['json', 'http.server']}, parent).asks, ['json', 'http.server'], 'a name its parent\'s row does not list is asked of its manager: no word list of the runtime\'s answers it');
 });

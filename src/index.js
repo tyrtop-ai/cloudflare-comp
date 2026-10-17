@@ -5478,8 +5478,8 @@ export class ControlRoom extends DurableObject {
   }
   // v8 live 4: each piece's packages, as its contracts are given: the names
   // the splitter gave it that this node's row lists; the others become the
-  // piece's asks once it exists (spawn); a piece given none gets this node's
-  // packages of its languages (src/packages.js piecePackages).
+  // piece's asks once it exists (spawn); a piece given none has none
+  // (src/packages.js piecePackages).
   planPackages(id, spawn) {
     const held=this.packagesOf(id),notes=[];
     const out=spawn.map(c=>{
@@ -8512,9 +8512,10 @@ export class ControlRoom extends DurableObject {
     const mine=name=>contracts.find(c=>c.name===name);
     // A rebuild hands down what the rows it replaces were handed: their uses, packages and refs.
     const handed=job?.kind==='rebuild'?{uses:job.uses||[],packages:job.packages||[],refs:job.refs||[]}:null,refs=handed?handed.refs:this.sourceRefs(id);
-    // A level handed down whole goes to its worker whole: every contract it holds, so every validation of it serves what the worker delivers and reaches it as examples.
+    // A level handed down whole goes to its worker whole: every contract it holds, so every validation of it serves what the worker delivers and reaches it as examples, and every package its row lists.
+    const whole=[...new Set([...this.packagesOf(id).map(p=>p.name),...(handed?.packages||[])])];
     const worker={label:job?.label||given.label,task:job?.text||given.prompt,interfaces:contracts,uses:handed?handed.uses:job?[]:given.calls,role:'worker',
-      ...(refs.length?{refs}:{}),...(handed?.packages.length?{packages:handed.packages}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
+      ...(refs.length?{refs}:{}),...(whole.length?{packages:whole}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
     const pieceUses=p=>[...new Set([...(p.uses||[]),...(handed?.uses||[])])].filter(x=>!p.contracts.includes(x));
     const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(pieceUses(p).length?{uses:pieceUses(p)}:{}),role:'manager',...(p.refs?{refs:p.refs}:handed?.refs.length?{refs:handed.refs}:{}),...(p.packages||handed?.packages.length?{packages:[...new Set([...(p.packages||[]),...(handed?.packages||[])])]}:{})})):[worker]);
     const key=`level:${id}:${this.levelBatches(id).length}`,batch=this.reserveSpawn(id,specs,key);

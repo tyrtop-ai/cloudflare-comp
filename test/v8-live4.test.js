@@ -94,10 +94,10 @@ test('2: the installed set: what the rows install beyond their standard librarie
   assert.equal(stdlibRow('flask'), null);
   // Owner 2026-10-16 20:38/20:43: no word lists of third-party names: which package a need takes is the managers' choice.
   for (const row of TOOLCHAINS) assert.ok(!('stands_for' in row) && !('third_party' in row), row.id);
-  // A piece's packages: its parent's of its language, with the names it was given that its parent lists; any other name is an ask (no word list answers one).
+  // A piece's packages: the names it was given that its parent lists, nothing more; any other name is an ask (no word list answers one).
   const parent = [...held, {name: 'requests', language: 'python', provides: 'HTTP client'}, {name: 'express', language: 'javascript', provides: 'HTTP server'}];
   const server = piecePackages({interfaces: [{name: 'app.py', kind: 'file', path: 'app.py'}], packages: ['pytest', 'json', 'flask']}, parent);
-  assert.deepEqual(server.packages.map(p => p.name), ['pytest', 'requests']);
+  assert.deepEqual(server.packages.map(p => p.name), ['pytest']);
   assert.deepEqual(server.asks, ['json', 'flask']);
   assert.deepEqual(piecePackages({interfaces: [{name: 'README.md', kind: 'doc', path: 'README.md'}]}, parent).packages, []);
   // The catalogue lists a writer's packages after its contracts.

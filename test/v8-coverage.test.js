@@ -166,8 +166,9 @@ test('the base\'s files the box cannot hold (a binary) ship, with no hold, and t
   assert.equal(app.files.find(f => f.path === 'logo.bin').content_base64, bytes);
 });
 
-test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, whose choice grants it (new, as any manager may) down the line', {skip}, async () => {
-  const split = user => { const a = splitFor()(user); return {...a, pieces: a.pieces.map(p => p.label === 'Shouter' ? {...p, packages: ['pytest', 'numpy']} : p)}; };
+test('packages across pieces: each piece holds the packages its splitter named that its parent\'s row lists, nothing more; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, whose choice grants it (new, as any manager may) down the line', {skip}, async () => {
+  // Each splitter names pytest for its code pieces (and numpy for Shouter); Notes is named none.
+  const split = user => { const a = splitFor()(user); return {...a, pieces: a.pieces.map(p => p.label === 'Shouter' ? {...p, packages: ['pytest', 'numpy']} : p.label === 'Notes' ? p : {...p, packages: ['pytest']})}; };
   const asks = {loud: [{need: 'run tests', name: 'pytest'}], 'NOTES.md': [{need: 'run tests', name: 'pytest'}]};
   // Louder's ask is answered from its row within its session, so it goes on to done; Notes' ask goes to its manager, so it waits for the answer.
   // (R4-room/chrono-3: a worker's wait is its own call, and nothing wakes it but a message.)

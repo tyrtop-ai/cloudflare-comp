@@ -10,7 +10,7 @@
 // (packages are allowed, 22:12); the compiler's box installs what a row
 // lists. A package's name is whatever the agent gave: no list or name shape
 // decides what is one. Pure: no room, no model.
-import {TOOLCHAINS, toolchainById, toolchainOf} from './toolchains.js';
+import {TOOLCHAINS, toolchainById} from './toolchains.js';
 
 // A package as a row lists it: {name, language, provides}.
 export function normalizePackages(raw) {
@@ -67,21 +67,13 @@ export const stdlibRow = (name, rows = TOOLCHAINS) => rows.find(r => inStdlib(na
 // One package as an answer names it: "http.server (HTTP server)".
 export const packageLine = p => `${p.name}${p.provides ? ` (${p.provides})` : ''}`;
 // ------------------------------------------------------------ pieces
-// The code languages a piece works in, by its contracts' paths: [row ids];
-// null when its contracts name no path a row reads (it may work in any).
-export const pieceLanguages = contracts => {
-  const rows = (contracts || []).map(c => toolchainOf(c?.path || '')?.id).filter(Boolean);
-  return rows.length ? [...new Set(rows.filter(id => id !== 'text'))] : null;
-};
-// A split's piece's packages (v8 live 4, as its contracts): its parent's
-// packages of the piece's languages (all of them when its contracts name
-// none), and the names it was given that its parent's row lists (v8 live 4
-// review: added to that set, never replacing it); a given name its parent's
-// row does not list is an ask, which goes up as a worker's does, to its
-// manager, whose choice answers it.
+// A split's piece's packages (v8 live 4, as its contracts): the names the
+// splitter gave it that its parent's row lists, by name, nothing more (owner,
+// 2026-10-15 22:11: "same way as interfaces"); a given name its parent's row
+// does not list is an ask, which goes up as a worker's does, to its manager,
+// whose choice answers it.
 export function piecePackages(piece, parentHeld = []) {
-  const langs = pieceLanguages(piece?.interfaces), fits = p => !langs || !p.language || langs.includes(p.language);
-  const given = packageNames(piece?.packages), packages = parentHeld.filter(fits), asks = [];
+  const given = packageNames(piece?.packages), packages = [], asks = [];
   for (const n of given) { const hit = parentHeld.filter(p => p.name === n); if (hit.length) packages.push(...hit); else asks.push(n); }
   return {packages: normalizePackages(packages), asks, given: given.length > 0};
 }
