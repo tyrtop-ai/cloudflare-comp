@@ -215,7 +215,7 @@ test('F9: Clef failing on a manager\'s choice on an ask is asked again, then the
 });
 test('F9: Clef failing on a change\'s routing holds the room as infrastructure: no splitter extends the level; Continue routes it to the child it concerns, and the change lands', {skip}, async () => {
   let bad = false;
-  const pick = (key, state) => { const t = state.children?.[Number(key.split('_').pop())]?.task || ''; return bad ? 7 : /loud part/.test(t) || t === 'Write shout' ? 0.9 : 0.1; };
+  const pick = (key, state) => { const t = state.children?.[Number(key.split('_').pop())]?.label || ''; return bad ? 7 : t === 'Loud part' || t === 'Shouter' ? 0.9 : 0.1; };
   const r = await toolkit({clef: clefFor(undefined, {'^route_to_\\d+$': pick})});
   assert.equal(r.room.get('status'), 'complete');
   bad = true;

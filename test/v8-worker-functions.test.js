@@ -285,7 +285,7 @@ test('a complaint is routed by the manager\'s choice: Clef scores route_to for e
   assert.match(events(room, 'manager_choice').at(-1).body, /^On the complaint: route_to\("Styles"\) \(the only function it may call\)\.$/);
 });
 
-test('what a manager\'s choice reads and what reaches the worker are whole: the complaint, its assignment, each child\'s task and every contract, unclipped; the worker reads every message it has, and keeps every answer', async () => {
+test('what a manager\'s choice reads and what reaches the worker are whole: the complaint, its assignment and every contract, unclipped, and no child\'s piece prompt (the design is the builder\'s); the worker reads every message it has, and keeps every answer', async () => {
   const {asked, clef} = recorded({'^route_to_\\d+$': (k, state) => state.children[Number(k.split('_').pop())].label === 'Styles' ? 0.8 : 0.4});
   const {room, top, b, wa, wb, PAGE, CSS} = await tree(clef);
   const task = 'Style every element of the page, '.repeat(120).trim(), assignment = 'A page and its styles, described at length. '.repeat(120).trim();
@@ -297,7 +297,7 @@ test('what a manager\'s choice reads and what reaches the worker are whole: the 
   const st = asked[0].state;
   assert.equal(st.item.text, detail);
   assert.equal(st.assignment, assignment);
-  assert.equal(st.children[1].task, task);
+  assert.ok(st.children.every(c => !('task' in c)) && !JSON.stringify(st).includes('Style every element'), 'the piece prompt its splitter wrote is not the manager\'s to read');
   assert.equal(st.children[1].contracts.length, 31, 'every contract the child delivers');
   // The complaint reaches the worker whole.
   await room.routeHeld(b.id);
@@ -319,7 +319,7 @@ test('a manager reads its children and contracts from its level files only, neve
   // The rows' copies say something else entirely.
   for (const x of [a, b, wa]) room.db().exec('UPDATE agents SET interfaces=?,task=? WHERE id=?', JSON.stringify([{name: 'decoy', kind: 'function', does: 'a decoy'}]), 'a decoy assignment', x.id);
   const view = room.managerView(top.id);
-  assert.deepEqual(view.children.map(c => [c.label, c.task, c.contracts.map(x => x.name)]), [['Page', 'the page', ['index.html']], ['Styles', 'the styles', ['styles.css']]]);
+  assert.deepEqual(view.children.map(c => [c.label, c.contracts.map(x => x.name)]), [['Page', ['index.html']], ['Styles', ['styles.css']]]);
   assert.deepEqual(room.levelContracts(top.id).map(c => c.name), ['index.html', 'styles.css']);
   // An ask from the page's worker at Top: the answers offered are the level file's contracts of the other child.
   room.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?)', wa.id, 'fn styles.css', 'r1');

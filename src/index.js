@@ -8876,7 +8876,8 @@ export class ControlRoom extends DurableObject {
   // complaint or a change it holds, each function call it may make is one
   // typed option, Clef scores each (one noul question per option, over the
   // manager's own files), and the runtime calls the highest. Its functions:
-  //   children()       its level file: each live child's label, task and the contracts it delivers;
+  //   children()       its level file: each live child's label and the contracts it delivers (the
+  //                    piece prompts its splitter wrote are the builder's and the workers', not its);
   //   my_contracts()   its entry in its parent's level file: its assignment and contracts;
   //   answer(contract) to an asker: a contract its children deliver (none of the asker's own line);
   //   route_to(child)  hands a complaint or a change to a child;
@@ -8886,7 +8887,7 @@ export class ControlRoom extends DurableObject {
   // choice. What the manager reads is its files only (levelDesign, designOf).
   managerView(m) {
     const level=this.levelDesign(m),mine=this.designOf(m),live=new Set(this.liveChildren(m).map(c=>c.id)),byName=new Map((level?.contracts||[]).map(c=>[c.name,c]));
-    const children=(level?.children||[]).filter(c=>live.has(c.id)).map(c=>({id:c.id,role:c.role,label:c.label,task:c.prompt,contracts:c.delivers.map(n=>byName.get(n)).filter(Boolean)}));
+    const children=(level?.children||[]).filter(c=>live.has(c.id)).map(c=>({id:c.id,role:c.role,label:c.label,contracts:c.delivers.map(n=>byName.get(n)).filter(Boolean)}));
     return {assignment:mine.prompt,mine:mine.contracts,children,contracts:level?.contracts||[]};
   }
   // The contracts m's level file says its children deliver (an archived child's too).
@@ -8930,7 +8931,7 @@ export class ControlRoom extends DurableObject {
     const state={item:item.kind==='ask'?{kind:'ask',need:item.need,expected_name:item.name||''}:{kind:item.kind,text:item.text,
         ...(item.kind==='complaint'?{concerns:{contracts:(item.serves||[]).map(named),files:[...new Set((item.parties||[]).map(x=>x.owner_path||x.path).filter(Boolean))]}}:{})},
       assignment:view.assignment,my_contracts:lines(view.mine),
-      children:view.children.map((c,i)=>({slot:i,label:c.label,task:c.task,contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
+      children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
       options:options.map(o=>o.call)};
     const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
