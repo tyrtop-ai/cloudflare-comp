@@ -66,6 +66,8 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   // A function's name is judged by its own language alone, with no length bound and no list of built-in names; a language with no name rule, or no path, stores it as written.
   assert.equal(why({name: 'add one', kind: 'function', path: 'calc.py', does: 'x'}), '"add one" is not a valid python function name');
   assert.equal(why({name: 'lambda', kind: 'function', path: 'calc.py', does: 'x'}), '"lambda" is not a valid python function name (a reserved word)');
+  // Each language's own identifier rule, Unicode as the language has it.
+  for (const [name, path] of [['größe', 'calc.py'], ['maß', 'calc.js']]) assert.equal(why({name, kind: 'function', path, does: 'x'}), undefined, path);
   assert.equal(why({name: 'class', kind: 'function', path: 'src/k.js', does: 'x'}), '"class" is not a valid javascript function name (a reserved word)');
   for (const [name, path] of [['from', 'src/a.ts'], ['delete', 'src/a.go'], ['valid?', 'lib/a.rb'], ['from_js', 'src/from.js'], ['fetch', 'src/afetch.js'], ['process', 'src/proc.js'], ['f'.repeat(70), 'src/long.js'], ['g'.repeat(70), 'long.py'], ['add one', undefined]])
     assert.equal(splitterCall(s, 'contract', {name, kind: 'function', ...(path ? {path} : {}), does: 'x'}).result.stored, name, `${name.slice(0, 20)} at ${path}`);

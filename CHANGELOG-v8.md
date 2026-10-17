@@ -467,3 +467,13 @@ Round 6 rechecked round 5's 41 fixes (33 closed, 8 reopened) and confirmed 26 ne
 - **Edges.** Linked pages are read whole with no deadline. A bench row's entry is used as written. Every path the person grants at Start or Continue is kept.
 - **Records.** The dashboard shows a v8 room's whole event and file history, and each link reader as an agent in the graph. INSTALL, how-it-works and trying-v8 match the code on goal length, declared contracts, prewarm life and split_capacity.
 - **Waiting on the owner** (refused by the session's permission check as weakening security): removing the box's prlimit caps, and letting a check's input file replace a bundle file in the check's own copy.
+
+## Round 7 of the owner's red team
+
+Round 7 rechecked round 6's 31 fixes (25 closed, 6 reopened) and confirmed 14 new findings; five fixers took them.
+
+- **Room.** A level file stays as its splitter wrote it. A change routed to a worker, or to a manager before its split, is recorded on the row (`revisions:<id>`) and appears in its prompt after the entry's (`assignmentOf`), never as a complaint. An answered ask is recorded in the asker's answers with the contract's name, and the asker may call it from then on; no entry or `uses` is rewritten (`amendEntry` is gone).
+- **Splitter and builder.** A piece holds only the packages its splitter named that its parent's row lists (no language guess). A validation a job writes for a contract the level already has joins that contract's serves wherever it is carried. The builder's compare-and-store joins until its children's work reads the same, with no count.
+- **Call checks.** No name pattern decides that a function is missing; the compiler's answer does, and JavaScript and Python names follow their languages' Unicode rules. The Go, Rust, C, C++ and Java adapters build the file's own types from JSON (C via gcc's debug information, Rust via rustc's, interfaces as their single implementation).
+- **Edges.** A linked page's title and URL reach every agent whole. Bench datasets come from any host `FETCH_ALLOW` allows; task ids are used as written; every skipped row is listed; bench.js clips nothing.
+- **Waiting on the owner:** the runner's ready poll without a network namespace and the browser check's own network blocking (both refused by the session's permission check as weakening security); where an adapter's real limit goes (today a worker complaint); languages outside the box image.
