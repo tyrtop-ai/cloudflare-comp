@@ -32,8 +32,8 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 ## What goes
 
 - **card.js as a module:** writeCard, repairCard, validateCard, prepareCard, settleCard, reviewCard, vetRequirements, rankReferences, applyVetting, providedCard, cardContracts, CARD_SCHEMA and CARD_LIMITS, card revisions and history, card_raw, card_draft, card_writers, `card:<n>` ids, the card holds (card_failed, card_blocked), and "card_rev" keys.
-  - The pure check helpers move to `src/validations.js`: commandArgv, urlPathError, SELECTOR, markupElement, checkSummary, testable, plus the executability and safety rules.
-- **The card's amendment path:** cardDelta, goalView card parts and the card amend writer. A change goes to the top manager as a change on its row. The manager routes it to the child whose contracts it touches (Clef routes; owner: "managers are clef models for routing"). When no child covers it, that manager's splitter adds pieces, contracts and validations. Every level behaves the same.
+  - The pure check helpers move to `src/validations.js`: commandArgv, urlPathError, SELECTOR, checkSummary, testable, plus the executability rules.
+- **The card's amendment path:** cardDelta, goalView card parts and the card amend writer. A change goes to the top manager as a change on its row. The manager routes it to the child whose contracts it touches (Clef routes; owner: "managers are clef models (for routing purposes)"). When no child covers it, that manager's splitter adds pieces, contracts and validations. Every level behaves the same.
 - **FORMAT.card and ROLE.card / card_review** in prompts.js. The splitter's FORMAT includes `contracts` and `validations`, phrased positively and with no pinning.
 - **prompt_handlers, handPrompt, handRows' handler step, `handed_by`.** The top's parent is the room; old rooms with handler rows stay readable.
 - **v8 tests built on the card.** They are rewritten against the splitter's output. v7 is untouched.
@@ -58,7 +58,7 @@ Owner: "the top manager shouldn't even know it's a top manager. The room should 
 
 - **No top-specific behaviour in any agent or compiler.** There is no `isTop` and no `topId()` in agent logic.
   - The manager the room created is an ordinary manager whose parent is the room.
-  - Anything an agent sends to its parent goes to the room when the parent is the room: asks, stuck reports, escalations, failures nothing below could settle. The room handles them (holds for the person). The agent can't tell the difference.
+  - Anything an agent sends to its parent goes to the room when the parent is the room, and the agent can't tell the difference. An ask no manager up to the room holds archives the asker, and the compensating controls rebuild what it delivered (owner: "if it works up to root without finding it, it kills the work"; "more specifically, archived"). Stuck reports, escalations and failures nothing below could settle are the room's to hold for the person.
 - **Every compiler follows the same rule.** At its level, it verifies every validation held in its subtree whose last pass is not on its level's exact bundle, in one box. So a validation runs at its holder (early) and again at each level whose bundle differs from the one it passed on. The ship-verified invariant then holds at every level, with no level knowing it is last.
 - **The room observes and doesn't steer.** It is done when the compiler of the manager it created has every validation of its subtree passing on that level's current exact bundle, with nothing pending below. The export ships that bundle. That is the room's only completion rule.
 - **The room's own record** of which manager it created is the room's state, not something an agent reads.
@@ -122,8 +122,8 @@ Owner: "the workers shouldn't know about their siblings. Or about the overall pr
   - The worker never receives the validation itself: not its kind, its steps as data, its id, its expect object, or that it exists.
   - There is one source of examples, the validations. Splitter-written free-text examples and a contract's own `examples` field are not used for workers.
 - **Three different examples per contract** (owner: "there must 3 different examples for each contract").
-  - The splitter writes, for every contract, validations that render to exactly 3 examples, each distinct: different inputs or steps. Rendered examples that come out identical don't count twice.
-  - This is a hard rule on the splitter's output (the runtime counts it). A contract with fewer than 3 distinct examples is the splitter's defect and goes back in that attempt's retry with the count. It is never padded by the runtime and never sent to a worker short.
+  - The splitter writes, for every contract that is called or run (functions, commands, routes), validations that render to at least 3 different examples: different inputs or steps. Rendered examples that come out identical don't count twice.
+  - A contract with fewer than 3 different examples is what the splitter's `done` returns inside its own session, so the splitter adds them there. It is never padded by the runtime and never sent to a worker short.
   - Benchmark: the 3 come from the splitter's own validations of the task's prompt, as in any room.
 - **There are no "hidden tests" inside a room.** The benchmark's own tests are the grader, and the grader sits outside the system.
   - **Today** (src/bench.js): a bench room starts from a fixed card with one deliverable and one "hidden requirement", whose check runs the benchmark's tests inside the room's compiler. A failure ends the room `benchmark_failed` without repair, and the room has no validations of its own.
