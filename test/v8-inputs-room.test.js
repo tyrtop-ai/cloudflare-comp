@@ -75,11 +75,10 @@ const repoRoutes = (files = BASE_FILES, sha = SHA) => ({
   'https://codeload.github.com/acme-example/widget/tar.gz/main': () => new Response(tarGz(files, undefined, sha), {headers: {'content-type': 'application/x-gzip'}})
 });
 
-// Clef: should_split by the assigned text (a level not divided is caught, and goes to one worker), judge by the file,
-// base(path) whether the prompt asks to change an existing file; everything else passes.
-const clefFor = ({split = () => false, judge = () => 0.9, base = () => 0.9} = {}) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (split(String(input.state.assignment)) ? 0.9 : 0.05) : k === 'judge' ? judge(input.state.file, input.questions.judge.instructions) :
-  k.startsWith('base_change_') ? base(input.state.files[Number(k.split('_').pop())].path) : 0.9}]))});
+// Clef: should_split by the assigned text (a level not divided is caught, and goes to one worker), judge by the file;
+// everything else passes.
+const clefFor = ({split = () => false, judge = () => 0.9} = {}) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
+  k === 'should_split' ? (split(String(input.state.assignment)) ? 0.9 : 0.05) : k === 'judge' ? judge(input.state.file, input.questions.judge.instructions) : 0.9}]))});
 // Workers by the contracts they deliver: the n-th turn gets the n-th answer (the last one repeats).
 const scripted = answers => {
   const seen = new Map();
@@ -97,8 +96,8 @@ const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path
 const judged = (id, path, question) => ({id, serves: [path], check: {kind: 'judge', path, question}});
 // A level's splitter: the room's manager states `level`; a piece restates its given contracts.
 const levelSplit = level => user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : typeof level === 'function' ? level(user) : level;
-function inputsRoom({level, splitWhen, judge, base, answers, source = null, fetch, allow = null, room_id}) {
-  const r = liveRoom({split: levelSplit(level), clef: clefFor({split: splitWhen, judge, base}), leaf: scripted(answers), source, ...(room_id ? {room_id} : {})});
+function inputsRoom({level, splitWhen, judge, answers, source = null, fetch, allow = null, room_id}) {
+  const r = liveRoom({split: levelSplit(level), clef: clefFor({split: splitWhen, judge}), leaf: scripted(answers), source, ...(room_id ? {room_id} : {})});
   Object.assign(r.env, {TEST_FETCH: fetch, GITHUB_TOKEN: SECRET, ...(allow ? {FETCH_ALLOW: allow} : {})});
   return r;
 }
@@ -388,24 +387,23 @@ test('previous result: a new run in the same room starts from what the last one 
   const previous = (await room.appFiles()).files.filter(f => !f.path.startsWith('.recursive/'));
   const second = liveRoom({split: () => SECOND_LEVEL, clef: clefFor({judge: readmeJudge}), leaf: scripted({'README.md': [wrote([['README.md', SECOND_README]])]})});
   room.env.AI = second.env.AI;
-  // Only the person grants a change to an existing file; here at Start.
-  const started = await room.start(TEST_GOAL, 20, {pipeline: 'v8'}, 'room-one-0001', {base: {room: 'room-one-0001'}, selfHosts: ['control.example.com'], grants: ['README.md']});
+  // The room changes its own copy of the base: nothing waits for a grant.
+  const started = await room.start(TEST_GOAL, 20, {pipeline: 'v8'}, 'room-one-0001', {base: {room: 'room-one-0001'}, selfHosts: ['control.example.com']});
   assert.deepEqual(started, {status: 'running'});
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
-  assert.match(events(room, 'base_granted')[0].body, /granted changing README\.md at Start/);
+  assert.equal(room.snapshot().pause, null, 'nothing held for the person');
   // The base is the previous result's project files (its .recursive/ notes are the runtime's).
   assert.deepEqual(room.db().exec('SELECT path FROM base_files ORDER BY path').toArray().map(r => r.path).filter(p => !p.startsWith('components/')), previous.map(f => f.path).filter(p => !p.startsWith('components/')).sort());
   assert.equal(room.read('base', null).kind, 'room');
   assert.equal(room.read('base', null).passed, true);
   assert.equal(second.calls.split[0].existing_files.files.find(f => f.path === 'README.md').bytes, Buffer.byteLength(GOOD_README));
-  // The worker's contract names README.md, a base file the person granted: it read it quoted (base_files, never as its own) and replaced it.
+  // The worker's contract names README.md, a base file: it read it quoted (base_files, never as its own) and replaced it.
   const view = second.calls.leaf[0];
   assert.deepEqual(view.world.base_files, [{path: 'README.md', label: BASE_LABEL, content: GOOD_README}]);
   assert.deepEqual(view.files, []);
   assert.equal(view.world.base_note, MESSAGES.base_note());
-  assert.equal(second.calls.clef.filter(c => c.questions.base_change_0).length, 0, 'granted at Start: nothing to ask');
-  assert.deepEqual(room.read('base_approved', []), ['README.md']);
+  assert.ok(!second.calls.clef.some(c => Object.keys(c.questions).some(k => k.startsWith('base_change_'))), 'no Clef question vets the change');
   const app = await room.appFiles();
   assert.equal(app.passed, true);
   assert.equal(app.files.find(f => f.path === 'README.md').content, SECOND_README);
@@ -426,27 +424,16 @@ test('previous result of another room: read through ROOMS, and the base meta nam
   assert.equal(room.snapshot().base.room, 'room-one-0001');
 });
 
-test('a worker reads a base file its contract names, quoted in base_files, once the person grants it; then its file at that path is the one that ships', async () => {
+test('a worker reads a base file its contract names, quoted in base_files; then its file at that path is the one that ships', async () => {
   const {room} = await readmeOnBase();
   const w = theWorker(room).id;
-  // A contract naming a base path gives nothing until the path is granted, and the worker waits for it. Its manager's level file is what places it.
+  // A contract naming a base path gives the worker that file to read, at once: the room changes its own copy. Its manager's level file is what places it.
   const m = room.agentAbove(w);
   await room.updateLevel(m, level => ({...level, contracts: [...level.contracts, {name: 'widget', kind: 'command', path: 'bin/widget.js', does: 'shouts what it is given', serves: []}],
     children: level.children.map(c => c.id === w ? {...c, delivers: [...c.delivers, 'widget']} : c)}));
-  assert.deepEqual(room.baseFilesFor(w), []);
-  // Clef's yes is a review; the path waits for the person.
-  assert.deepEqual(await room.approveBasePaths(w, ['bin/widget.js']), {yes: [], no: [{path: 'bin/widget.js', p: 0.9, named: false}]});
-  assert.deepEqual(room.baseFilesFor(w), []);
-  assert.deepEqual(room.waitingPaths(w), ['bin/widget.js']);
-  room.holdBaseConfirm();
-  assert.equal(room.snapshot().pause.kind, 'base_confirm');
-  assert.deepEqual(room.snapshot().base_pending, [{path: 'bin/widget.js', p: 0.9, named: false}]);
-  assert.equal(room.confirmBase(), true, 'Continue grants it');
-  assert.deepEqual(room.read('base_approved', []), ['bin/widget.js']);
   assert.deepEqual(room.baseFilesFor(w), [{path: 'bin/widget.js', label: BASE_LABEL, content: BASE_FILES['bin/widget.js']}]);
-  assert.deepEqual(room.waitingPaths(w), []);
   assert.ok(!(await room.ownFiles(w)).some(f => f.path === 'bin/widget.js'), 'never among its own files');
-  // Its file at the granted path ships there; one at a path no contract of its places stays in its own folder.
+  // Its file at the contract's path ships there; one at a path no contract of its places stays in its own folder.
   await room.putFile(w, 'bin/widget.js', 'console.log("widget");\n');
   assert.deepEqual(room.baseFilesFor(w), []);
   await room.putFile(w, 'src/shout.js', 'module.exports = {shout: s => s};\n');
@@ -484,19 +471,6 @@ test('start() keeps every self host it is given, however many', async () => {
   assert.deepEqual(room.read('fetch_self_hosts', []), hosts);
 });
 
-// R6-room/record-2: every path the person grants is kept, at Start and at Continue, however many.
-test('every path the person grants is kept, at Start and through /api/continue', async () => {
-  const paths = Array.from({length: 70}, (_, i) => `src/file${i}.js`);
-  const {room} = liveRoom({room_id: 'room-grants-0001'});
-  await room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-grants-0001', {selfHosts: ['control.example.com'], grants: paths});
-  assert.deepEqual(room.read('base_approved', []), paths);
-  const seen = [];
-  const env = {APP_TOKEN: 'fixture-token', ROOMS: {getByName: () => ({resume: async (...args) => { seen.push(args); return {status: 'running'}; }})}};
-  await worker.fetch(new Request('https://control.example.com/api/continue', {method: 'POST', headers: {authorization: 'Bearer fixture-token', 'content-type': 'application/json'},
-    body: JSON.stringify({room: 'room-grants-0001', budget: 20, grants: paths})}), env);
-  assert.deepEqual(seen[0][2].grants, paths);
-});
-
 // ============================================================ S8b review
 const {contractErrors} = await import('../src/contracts.js');
 const {packagePath, partsRoot} = await import('../src/assembly.js');
@@ -506,7 +480,7 @@ const {snapshotHash} = await import('../src/build-verification.js');
 const {default: git} = await import('isomorphic-git');
 const {MemoryFS} = await import('../src/memory-fs.js');
 
-// ------------------------------------------------------------ M1: base text is quoted, and only the person grants a base file
+// ------------------------------------------------------------ M1: base text is quoted, and the room changes its own copy of a base file
 const SPLIT_GOAL = 'Add NOTES.md and HELP.md to this project, and make the shout louder.';
 const NOTES = {name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'notes on the project'}, SHOUT = {name: 'src/shout.js', kind: 'file', path: 'src/shout.js', does: 'the shout, louder'};
 const HELP = {name: 'HELP.md', kind: 'doc', path: 'HELP.md', does: 'how to get help'}, WIDGET = {name: 'bin/widget.js', kind: 'file', path: 'bin/widget.js', does: 'the command, changed'};
@@ -519,43 +493,22 @@ const SPLIT_LEVEL = {contracts: [NOTES, SHOUT, HELP, WIDGET],
     {label: 'Shout writer', task: 'Make the shout in src/shout.js louder', contracts: ['src/shout.js']},
     {label: 'Help writer', task: 'Write HELP.md, and change the command file', contracts: ['HELP.md', 'bin/widget.js']}]};
 
-test('S8b review M1: base text reaches every model quoted and labelled; a level whose contracts place base files waits for the person\'s grant of each, and a granted file is written', async () => {
+test('S8b review M1: base text reaches every model quoted and labelled; a level whose contracts place base files changes them in the room\'s own copy, with nothing held for the person', async () => {
   const fetch = fakeFetch(repoRoutes());
-  const {room, calls, drain} = inputsRoom({level: SPLIT_LEVEL, splitWhen: t => t.startsWith(SPLIT_GOAL), base: () => 0.1, fetch,
+  const {room, calls, drain} = inputsRoom({level: SPLIT_LEVEL, splitWhen: t => t.startsWith(SPLIT_GOAL), fetch,
     answers: {'NOTES.md': [wrote([['NOTES.md', '# Notes\n\nAbout the widget.\n'], ['extra.txt', 'a note of the worker\'s own\n']])],
       'src/shout.js': [wrote([['src/shout.js', BASE_FILES['src/shout.js'].replace('!', '!!!')]])],
       'HELP.md,bin/widget.js': [wrote([['HELP.md', '# Help\n\nAsk the widget for help.\n'], ['bin/widget.js', 'const message = "changed";\nconsole.log(message);\n']])]}});
   await room.start(SPLIT_GOAL, 60, {pipeline: 'v8'}, 'room-m1m1-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
   await drain();
-  // The level is admitted with both base files on it, marked; the pieces placing them wait, and the room waits for the person. Clef's p is a review beside each.
-  assert.equal(room.snapshot().pause?.kind, 'base_confirm', trace(room));
-  assert.deepEqual(room.snapshot().base_pending, [{path: 'src/shout.js', p: 0.1, named: false}, {path: 'bin/widget.js', p: 0.1, named: false}]);
+  assert.equal(room.get('status'), 'complete', trace(room));
   assert.deepEqual(calls.split[0].existing_files, {label: BASE_LABEL, files: Object.keys(BASE_FILES).sort().map(path => ({path, bytes: Buffer.byteLength(BASE_FILES[path])}))});
   assert.equal(calls.split[0].base_note, MESSAGES.base_note());
   const m = room.roomManager(), [notesPart, shoutPart, helpPart] = kids(room, m);
   assert.deepEqual(room.promisedOf(helpPart.id).map(c => c.path), ['HELP.md', 'bin/widget.js'], 'nothing is taken off the piece');
-  assert.equal(room.node(helpPart.id).status, 'waiting');
-  assert.match(events(room, 'base_waiting').map(e => e.body).join('\n'), /Help writer waits for the person's grant to change bin\/widget\.js/);
-  // Every question Clef got about a base file named the assignment and the path only.
-  for (const c of calls.clef.filter(c => Object.keys(c.questions).some(k => k.startsWith('base_change_')))) assert.deepEqual(Object.keys(c.state), ['assignment', 'files']);
-  // A later hold waits behind the grant, and is never written over it.
-  room.holdRoom('checks_failed', 'a later hold');
-  assert.equal(room.snapshot().pause.kind, 'base_confirm');
-  assert.deepEqual(room.roomHolds().map(h => h.kind), ['base_confirm', 'checks_failed'], 'it waits behind the grant, kept');
-  room.releaseHolds(h => h.kind === 'checks_failed');
-  // The person grants only src/shout.js; bin/widget.js keeps waiting, and the room does not complete.
-  await room.resume(60, {}, {grants: ['src/shout.js']});
-  await drain();
-  assert.deepEqual(room.read('base_approved', []), ['src/shout.js']);
-  assert.notEqual(room.get('status'), 'complete', trace(room));
-  assert.equal(room.snapshot().pause?.kind, 'base_confirm', trace(room));
-  assert.deepEqual(room.snapshot().pause.paths, ['bin/widget.js'], 'the hold lists exactly what waits');
-  // Continue grants it: the piece goes on, writes the file, and the room completes with both base files changed.
-  await room.resume(60);
-  await drain();
-  assert.equal(room.get('status'), 'complete', trace(room));
-  assert.deepEqual(room.read('base_approved', []), ['src/shout.js', 'bin/widget.js']);
-  assert.deepEqual(room.read('base_pending', []), []);
+  // No Clef question and no hold vet a change to an existing file (owner, 2026-10-17: the agents change only their own repo).
+  assert.ok(!calls.clef.some(c => Object.keys(c.questions).some(k => k.startsWith('base_change_'))));
+  assert.ok(!events(room).some(e => /^base_(?:waiting|change_pending|confirmed)$/.test(e.kind)));
   const app = await room.appFiles();
   assert.equal(app.files.find(f => f.path === 'bin/widget.js').content, 'const message = "changed";\nconsole.log(message);\n');
   assert.match(app.files.find(f => f.path === 'src/shout.js').content, /!!!/);
@@ -565,42 +518,6 @@ test('S8b review M1: base text reaches every model quoted and labelled; a level 
   assert.ok(app.files.some(f => f.path === packagePath('Notes writer', 'extra.txt', notesWorker.id)), app.files.map(f => f.path).join(', '));
   assert.ok(shoutPart);
   assert.deepEqual(lintRequests(room, calls, ['bin/widget.js', 'shout.js']), []);
-});
-
-test('a base file the prompt names still waits for the person, shown as named; grants select what Continue grants', async () => {
-  const goal = 'Make the shout in src/shout.js louder, and do not touch bin/widget.js.';
-  const level = {contracts: [SHOUT, {...WIDGET, does: 'the command'}], validations: [...SPLIT_LEVEL.validations.slice(3, 6), has('w1', 'bin/widget.js', 'console'), has('w2', 'bin/widget.js', 'shout'), has('w3', 'bin/widget.js', 'require')], pieces: []};
-  const {room, drain} = inputsRoom({level, base: () => 0.9, fetch: fakeFetch(repoRoutes()), answers: {'src/shout.js,bin/widget.js': [wrote([['src/shout.js', BASE_FILES['src/shout.js'].replace('!', '!!!')]])]}});
-  await room.start(goal, 20, {pipeline: 'v8'}, 'room-m1m2-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
-  await drain();
-  assert.equal(room.snapshot().pause?.kind, 'base_confirm', 'Clef\'s yes grants nothing');
-  assert.deepEqual(room.snapshot().base_pending, [{path: 'src/shout.js', p: 0.9, named: true}, {path: 'bin/widget.js', p: 0.9, named: false}], 'named, except where the prompt says to leave it alone');
-  assert.deepEqual(room.read('base_approved', []), []);
-  await room.resume(20, {}, {grants: ['src/shout.js']});
-  assert.deepEqual(room.read('base_approved', []), ['src/shout.js']);
-  assert.deepEqual(room.snapshot().pause.paths, ['bin/widget.js']);
-});
-
-test('a restart after the level file is committed and before the base-file confirmation: the turn after it asks the person all the same, and the worker waits for the grant', async () => {
-  const goal = 'Make the shout in src/shout.js louder, and do not touch bin/widget.js.';
-  const level = {contracts: [SHOUT, {...WIDGET, does: 'the command'}], validations: [...SPLIT_LEVEL.validations.slice(3, 6), has('w1', 'bin/widget.js', 'console'), has('w2', 'bin/widget.js', 'shout'), has('w3', 'bin/widget.js', 'require')], pieces: []};
-  const r = inputsRoom({level, base: () => 0.9, fetch: fakeFetch(repoRoutes()), answers: {'src/shout.js,bin/widget.js': [wrote([['src/shout.js', BASE_FILES['src/shout.js'].replace('!', '!!!')]])]}});
-  const gone = crashAt(r.room, 'baseContracts');
-  await r.room.start(goal, 20, {pipeline: 'v8'}, 'room-m1m2-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
-  assert.equal(await Promise.race([r.drain().then(() => false), gone]), true, 'the restart came');
-  const s = reopen(r), room = s.room;
-  assert.deepEqual(room.read('base_pending', []), [], 'the person was not asked before the restart');
-  await room.resume(20);
-  await s.drain();
-  assert.equal(room.snapshot().pause?.kind, 'base_confirm', trace(room));
-  assert.deepEqual(room.snapshot().base_pending, [{path: 'src/shout.js', p: 0.9, named: true}, {path: 'bin/widget.js', p: 0.9, named: false}]);
-  assert.deepEqual(room.read('base_approved', []), []);
-  assert.equal(room.node(theWorker(room).id).status, 'waiting');
-  assert.equal(room.read(`level_job:${room.roomManager()}`, null), null, 'the admission is finished');
-  await room.resume(20, {}, {grants: ['src/shout.js']});
-  await s.drain();
-  assert.deepEqual(room.read('base_approved', []), ['src/shout.js']);
-  assert.deepEqual(room.snapshot().pause.paths, ['bin/widget.js']);
 });
 
 // ------------------------------------------------------------ M2: a base with components/ of its own

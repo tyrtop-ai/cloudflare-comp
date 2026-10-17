@@ -608,10 +608,6 @@ test('v8: the Levels panel lists each validation with its result, its check, wha
   assert.match(v7.get('levels').innerHTML,/class="empty"/);
   assert.equal(renderWithPage(true,{settings:{pipeline:'v8'}}).get('levels-verdict').textContent,'Not stated yet');
 });
-test('v8: at base_confirm the hold panel lists each existing file with Clef\'s p and whether the prompt names it',()=>{
-  const held=renderWithPage(true,{settings:{pipeline:'v8'},status:'paused',pause:{kind:'base_confirm',text:'Grant changing README.md?'},base_pending:[{path:'README.md',named:true,p:0.81}]});
-  assert.match(held.get('levels').innerHTML,/<input type="checkbox" data-grant="README\.md" checked> <b class="mono">README\.md<\/b> <span class="faint">· named in the prompt · Clef p=0\.81<\/span>/);
-});
 test('v8: a manager\'s detail shows its task; contracts read by kind',()=>{
   const ids=[...html.matchAll(/\bid="([a-z0-9-]+)"/gi)].map(m=>m[1]),listeners=new Map();
   const elements=new Map(ids.map(id=>[id,{id,value:'',textContent:'',className:'',innerHTML:'',title:'',disabled:false,

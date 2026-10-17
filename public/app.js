@@ -166,21 +166,12 @@ function renderSources(s) {
   const list=s.sources||[],bad=list.filter(x=>x.error).length;
   if($('sources-verdict'))$('sources-verdict').textContent=[list.length?`${list.length} source${list.length>1?'s':''}${bad?` · ${bad} not read`:''}`:'',s.base?'base loaded':''].filter(Boolean).join(' · ')||'None';
 }
-// v8: at base_confirm, each existing file waiting for the person's grant,
-// with Clef's p and whether the prompt names it (then pre-selected);
-// Continue grants the selected ones.
-function baseConfirmMarkup(s) {
-  const list=s.pause?.kind==='base_confirm'&&Array.isArray(s.base_pending)?s.base_pending:[];
-  if(!list.length)return '';
-  return `<ul class="panel-list base-grants">${list.map(x=>`<li><label><input type="checkbox" data-grant="${esc(x.path)}"${x.named?' checked':''}> <b class="mono">${esc(x.path)}</b> <span class="faint">· ${x.named?'named in the prompt':'not named in the prompt'}${typeof x.p==='number'?` · Clef p=${esc(x.p.toFixed(2))}`:''}</span></label></li>`).join('')}</ul>`;
-}
-const selectedGrants=()=>current?.pause?.kind==='base_confirm'&&typeof document!=='undefined'&&document.querySelectorAll?[...document.querySelectorAll('input[data-grant]')].filter(x=>x.checked).map(x=>x.dataset.grant):undefined;
 // The room's holds, if any (every one that reached it; Continue answers them all), then the levels.
 const holdsOf=pause=>pause?(Array.isArray(pause.holds)&&pause.holds.length?pause.holds:[pause]):[];
 function renderLevels(s) {
   if(!$('levels'))return;
   const v8=s.settings?.pipeline==='v8',list=s.validations||[],count=state=>list.filter(v=>validationState(v,s.validation_status)===state).length;
-  const held=s.pause&&s.status!=='running'?`${holdsOf(s.pause).map(h=>`<p class="hold-note"><span class="event-type">${esc(h.kind)}</span> ${esc(h.text)}</p>`).join('')}${baseConfirmMarkup(s)}`:'';
+  const held=s.pause&&s.status!=='running'?`${holdsOf(s.pause).map(h=>`<p class="hold-note"><span class="event-type">${esc(h.kind)}</span> ${esc(h.text)}</p>`).join('')}`:'';
   $('levels').innerHTML=held+(v8?levelsMarkup(s):'<p class="empty">No levels (v7 pipeline).</p>');
   $('levels').querySelectorAll('button[data-agent]').forEach(btn=>btn.addEventListener('click',()=>openFile(btn.dataset.agent,btn.dataset.path)));
   if($('levels-verdict'))$('levels-verdict').textContent=!v8?'No levels (v7 pipeline)':list.length?`${list.length} validations · ${count('pass')} pass · ${count('fail')} fail · ${count('untested')} untested${count('stale')?` · ${count('stale')} stale`:''}`:'Not stated yet';
@@ -557,7 +548,7 @@ $('start').addEventListener('click',()=>{
   if($('start-from')?.value==='repo'&&!base)return showError('Enter the GitHub repository to start from as owner/name.');
   return action('/api/run',{goal:$('goal').value,budget:countSetting('budget'),settings:settings(),...(base?{base}:{})});
 });
-$('continue').addEventListener('click',()=>{const grants=selectedGrants();action('/api/continue',{budget:countSetting('budget'),settings:settings(),...(grants?{grants}:{})});});
+$('continue').addEventListener('click',()=>action('/api/continue',{budget:countSetting('budget'),settings:settings()}));
 // v8 S9: queue a prompt, or apply it now (an adjustment while running).
 const promptInput=()=>$('prompt-text')?.value.trim()||'';
 $('prompt-queue')?.addEventListener('click',async()=>{const text=promptInput();if(!text)return showError('Write the prompt to queue.');if(await promptAction('/api/prompts',{text,budget:countSetting('budget')}))$('prompt-text').value='';});
