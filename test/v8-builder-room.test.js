@@ -49,7 +49,7 @@ const turnsOf = (calls, name) => calls.leaf.filter(u => u.prompt.deliver.some(c 
 const writers = room => room.children(room.roomManager()).filter(c => c.role === 'manager').map(c => room.children(c.id).find(k => k.role === 'worker'));
 // The bundle that ships: the last box opened (each piece's compiler runs in its own box first).
 const topBuild = builds => builds.at(-1);
-const cmd = (id, serves, run, files, stdout) => ({id, serves, check: {kind: 'command', run, files, expect: {exit: 0, stdout}}});
+const cmd = (id, serves, argv, files, stdout) => ({id, serves, check: {kind: 'command', argv, files, expect: {exit: 0, stdout}}});
 // What the room's manager's builder made: its renames and its own files (built:<builder>).
 const topWork = room => room.builtWork(room.builderOf(room.roomManager()).id) || {renamed: {}, glue: {}};
 // Runtime events of the old linker that no v8 room writes any more.
@@ -62,9 +62,9 @@ const COUNT_C = {name: 'count_words', kind: 'function', does: 'counts each word 
 const TOP_C = {name: 'top_words', kind: 'function', does: 'the n most frequent words of a text, most frequent first', inputs: [{name: 'text', is: 'a text'}, {name: 'n', is: 'how many'}], outputs: 'a list of word and count pairs'};
 const WF_LEVEL = {contracts: [WORDFREQ_C, COUNT_C, TOP_C],
   validations: [
-    cmd('c1', ['wordfreq'], 'wordfreq sample.txt 2', {'sample.txt': 'the cat and the hat and the bat\n'}, 'the 3\nand 2'),
-    cmd('c2', ['wordfreq'], 'wordfreq a.txt 1', {'a.txt': 'b a b\n'}, 'b 2'),
-    cmd('c3', ['wordfreq'], 'wordfreq t.txt 3', {'t.txt': 'x y z x\n'}, 'x 2\ny 1\nz 1'),
+    cmd('c1', ['wordfreq'], ['wordfreq', 'sample.txt', '2'], {'sample.txt': 'the cat and the hat and the bat\n'}, 'the 3\nand 2'),
+    cmd('c2', ['wordfreq'], ['wordfreq', 'a.txt', '1'], {'a.txt': 'b a b\n'}, 'b 2'),
+    cmd('c3', ['wordfreq'], ['wordfreq', 't.txt', '3'], {'t.txt': 'x y z x\n'}, 'x 2\ny 1\nz 1'),
     callCheck('w1', ['count_words'], [['count_words', ['b a b'], {a: 1, b: 2}]]),
     callCheck('w2', ['count_words'], [['count_words', ['x'], {x: 1}]]),
     callCheck('w3', ['count_words'], [['count_words', ['A a'], {a: 2}]]),
@@ -197,7 +197,7 @@ const TEMP_C = {name: 'temp', kind: 'command', path: 'temp.py', does: 'prints th
 const TO_F = {name: 'to_fahrenheit', kind: 'function', does: 'converts degrees Celsius to degrees Fahrenheit', inputs: [{name: 'celsius', is: 'a number'}], outputs: 'a number'};
 const USAGE_C = {name: 'USAGE.md', kind: 'doc', path: 'USAGE.md', does: 'how to use the converter'};
 const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path, has: [text]}});
-const tempRun = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', run: `temp ${c}`, expect: {exit: 0, stdout_has: [f]}}});
+const tempRun = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', argv: ['temp', ...String(c).split(' ')], expect: {exit: 0, stdout_has: [f]}}});
 const TEMP_LEVEL = {contracts: [TEMP_C, TO_F, USAGE_C],
   validations: [tempRun('a', '100', '212'), tempRun('b', '0', '32'), tempRun('c', '-40', '-40'),
     callCheck('d', ['to_fahrenheit'], [['to_fahrenheit', [0], 32]]), callCheck('e', ['to_fahrenheit'], [['to_fahrenheit', [100], 212]]), callCheck('f', ['to_fahrenheit'], [['to_fahrenheit', [-40], -40]]),
@@ -315,7 +315,7 @@ test('a browser page with two scripts importing each other: the builders rename 
 
 // A worker's file that no contract places sits under its piece's folder: there json.py hides no standard module.
 test('a Python file under a standard name (json.py) that no contract places sits under its piece\'s folder, where it hides no standard module; the project completes', {skip: !hasPython && 'python3 is not installed'}, async () => {
-  const greet = (id, who) => ({id, serves: ['greet'], check: {kind: 'command', run: `greet ${who}`, expect: {exit: 0, stdout_has: [`hello ${who}`]}}});
+  const greet = (id, who) => ({id, serves: ['greet'], check: {kind: 'command', argv: ['greet', ...String(who).split(' ')], expect: {exit: 0, stdout_has: [`hello ${who}`]}}});
   const level = {contracts: [{name: 'greet', kind: 'command', path: 'greet.py', does: 'prints a greeting for the name given'}], validations: [greet('a', 'ada'), greet('b', 'bo'), greet('c', 'cy')], pieces: []};
   const {room, calls, drain} = levelRoom({level, goal: 'never divided', answers: {greet: [blocks([{path: 'greet.py', content: 'import sys\nimport json\nprint("hello " + sys.argv[1])\n'}, {path: 'json.py', content: 'def dumps(x):\n    return str(x)\n'}])]}});
   await room.start('A command that greets.', 10, {pipeline: 'v8'});

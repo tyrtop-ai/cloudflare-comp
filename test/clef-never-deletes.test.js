@@ -11,7 +11,7 @@ import {levelRoom, usualClef, deliver, events} from './helpers/levels.js';
 const {SPLIT_ATTEMPTS} = await import('../src/index.js');
 
 const PROMPT = 'Add a usage guide and a greeting command: `hello Ada` prints a greeting for Ada.';
-const command = (id, who) => ({id, serves: ['hello'], check: {kind: 'command', run: `hello ${who}`, expect: {exit: 0, stdout_has: [`Hello, ${who}!`]}}});
+const command = (id, who) => ({id, serves: ['hello'], check: {kind: 'command', argv: ['hello', ...String(who).split(' ')], expect: {exit: 0, stdout_has: [`Hello, ${who}!`]}}});
 const judge = (id, question) => ({id, serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question}});
 const LEVEL = {
   contracts: [

@@ -44,7 +44,7 @@ import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
 import { boxPathError } from '../container/build-path.mjs';
-import { contractExamples, checkSummary, checkExamples } from './validations.js';
+import { contractExamples, checkSummary, checkExamples, commandLine } from './validations.js';
 import { splitLevel } from './splitter.js';
 import { workerWorld, workerSession } from './worker.js';
 import { builderWorld, builderSession, builderWork } from './builder.js';
@@ -755,10 +755,9 @@ export class ControlRoom extends DurableObject {
   }
   // v8 live 4: a row's packages, as its row lists them (the room's manager is created with the installed set).
   packagesOf(id) { return this.v8()?normalizePackages(parse(this.node(id)?.packages,[])):[]; }
-  // v8 live 4 review (L6): a row's packages as a prompt shows them: those of the levels' code languages, once a level names them.
+  // A row's packages as a prompt shows them: every one its row lists, as it lists it (owner, 2026-10-15 22:11: "same way as interfaces"), with what the box observed when it could not install one.
   packageView(id) {
-    const langs=contractLanguages(this.treeContracts()),all=this.packagesOf(id);
-    return (langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all).map(p=>{const seen=this.installSeen(p);return seen&&!seen.passed?{...p,not_installed:seen.detail}:p;});
+    return this.packagesOf(id).map(p=>{const seen=this.installSeen(p);return seen&&!seen.passed?{...p,not_installed:seen.detail}:p;});
   }
   // v8 (owner, 2026-10-15 22:12, "why are packages not allowed now?"): what
   // the box last observed installing package p, in its language: {passed,
@@ -8512,14 +8511,13 @@ export class ControlRoom extends DurableObject {
     const contracts=level.contracts.map(c=>({...c,serves:[...new Set([...(c.serves||[]),...level.validations.filter(v=>v.serves.includes(c.name)).map(v=>ids.get(v.id))])]}));
     const pieces=(level.pieces||[]).length>=2?level.pieces:[],stated=!job&&!own.length;
     const mine=name=>contracts.find(c=>c.name===name);
-    // A rebuild hands down what the rows it replaces were handed: their uses, packages and refs.
-    const handed=job?.kind==='rebuild'?{uses:job.uses||[],packages:job.packages||[],refs:job.refs||[]}:null,refs=handed?handed.refs:this.sourceRefs(id);
+    // A rebuild hands its level's worker what the rows it replaces were handed: their uses and refs. A piece gets what the splitter named for it through piece(), as its contracts.
+    const handed=job?.kind==='rebuild'?{uses:job.uses||[],refs:job.refs||[]}:null,refs=handed?handed.refs:this.sourceRefs(id);
     // A level handed down whole goes to its worker whole: every contract it holds, so every validation of it serves what the worker delivers and reaches it as examples, and every package its row lists.
-    const whole=[...new Set([...this.packagesOf(id).map(p=>p.name),...(handed?.packages||[])])];
+    const whole=this.packagesOf(id).map(p=>p.name);
     const worker={label:job?.label||given.label,task:job?.text||given.prompt,interfaces:contracts,uses:handed?handed.uses:job?[]:given.calls,role:'worker',
       ...(refs.length?{refs}:{}),...(whole.length?{packages:whole}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
-    const pieceUses=p=>[...new Set([...(p.uses||[]),...(handed?.uses||[])])].filter(x=>!p.contracts.includes(x));
-    const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(pieceUses(p).length?{uses:pieceUses(p)}:{}),role:'manager',...(p.refs?{refs:p.refs}:handed?.refs.length?{refs:handed.refs}:{}),...(p.packages||handed?.packages.length?{packages:[...new Set([...(p.packages||[]),...(handed?.packages||[])])]}:{})})):[worker]);
+    const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(p.uses?.length?{uses:p.uses}:{}),role:'manager',...(p.refs?{refs:p.refs}:{}),...(p.packages?{packages:p.packages}:{})})):[worker]);
     const key=`level:${id}:${this.levelBatches(id).length}`,batch=this.reserveSpawn(id,specs,key);
     this.releasePieces(id);
     // No room for its children: the room's agent or depth limit is below what it already holds (the person lowered it, or an extension adds a worker to a room already at its agent limit); nothing is admitted, and Continue tries the level again.
@@ -8959,11 +8957,11 @@ export class ControlRoom extends DurableObject {
     const last=new Map();
     for(const k of gone)for(const f of delivers(k))if(orphans.some(o=>o.name===f.name))last.set(f.name,k);
     const tasks=[...new Set(last.values())];
-    // What the rows it replaces were handed (the names their entries call, their packages and refs) is handed to what rebuilds them.
+    // What the rows it replaces were handed (the names their entries call and their refs) is handed to what rebuilds them: the splitter may name them, and a level handed down whole gives them to its worker.
     const from=tasks.length?tasks:[this.node(m)],names=new Set(orphans.map(c=>c.name));
     const uses=[...new Set(from.flatMap(k=>this.assignmentOf(k.id).calls))].filter(x=>!names.has(x));
-    const packages=[...new Set(from.flatMap(k=>this.packagesOf(k.id).map(p=>p.name)))],refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
-    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.assignmentOf(k.id).prompt).join('\n\n')||this.assignmentOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
+    const refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
+    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.assignmentOf(k.id).prompt).join('\n\n')||this.assignmentOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,refs});
     this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'}.`,600));
     return true;
   }
@@ -9004,7 +9002,7 @@ export class ControlRoom extends DurableObject {
   workerView(id, inbox=[], ownFiles=[]) {
     const design=this.assignmentOf(id),byId=this.validationsById(),callable=this.callableOf(id);
     // How it is reached when something serves it: its files as they are, or its command listening on the port in PORT. A command's own command line, which nothing serves, is its file's.
-    const runText=c=>!c.run?'':c.run.static?'its files are served as they are':c.run.port?`${c.run.run} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`:'';
+    const runText=c=>!c.run?'':c.run.static?'its files are served as they are':c.run.port?`${commandLine(c.run.argv)} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`:'';
     // A contract as declared: its name, kind, path, what it does, takes and gives.
     const declared=c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
       ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{})});

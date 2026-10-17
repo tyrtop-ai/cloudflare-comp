@@ -16,10 +16,10 @@ import {splitterState, splitterCall} from '../src/splitter.js';
 import {checkCall} from './helpers/room.js';
 
 const FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/v8-live6-splitters.json', import.meta.url), 'utf8'));
-// A recorded contract as the contract function's arguments: its stored fields under the function's names.
+// A recorded contract as the contract function's arguments: its stored fields under the function's names (a run's argv as its run, the argument list).
 const contractArgs = c => ({name: c.name, kind: c.kind || 'function', ...(c.path ? {path: c.path} : {}), does: c.does || '',
   ...(c.inputs ? {inputs: c.inputs} : c.params?.length ? {inputs: c.params.map(name => ({name}))} : {}), ...(c.outputs || c.returns ? {outputs: c.outputs || c.returns} : {}),
-  ...(c.effects ? {effects: c.effects} : {}), ...(c.run ? {run: c.run.static ? {static: true} : {run: c.run.run, ...(c.run.ready ? {ready: c.run.ready} : {})}} : {})});
+  ...(c.effects ? {effects: c.effects} : {}), ...(c.run ? {run: c.run.static ? {static: true} : {run: c.run.argv, ...(c.run.ready ? {ready: c.run.ready} : {})}} : {})});
 // Each attempt replayed: [{call, name, result}] in order, done last.
 const replay = name => FIXTURE.exports[name].attempts.map(a => {
   const s = splitterState({maxPieces: FIXTURE.exports[name].max_children}), out = [];

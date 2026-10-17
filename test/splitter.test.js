@@ -15,7 +15,7 @@ import {TOOLCHAINS, CALL_EXTENSIONS} from '../src/toolchains.js';
 const CONVERT = {name: 'convert', kind: 'command', path: 'convert.py', does: 'converts a Celsius temperature', inputs: [{name: 'celsius', is: 'a number'}], outputs: 'the Fahrenheit value'};
 const TO_F = {name: 'to_f', kind: 'function', path: 'conv.py', does: 'converts Celsius to Fahrenheit', inputs: [{name: 'c', is: 'degrees'}], outputs: 'degrees F'};
 // A validation as the call of its kind's function: [name, arguments].
-const run = (c, f) => ['command_check', {serves: ['convert'], run: `convert ${c}`, expect: {stdout_has: [f]}}];
+const run = (c, f) => ['command_check', {serves: ['convert'], run: ['convert', ...c.split(' ')], expect: {stdout_has: [f]}}];
 const callOf = (n, out) => ['call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [n], expect: out}]}];
 const CHECKS = ['file_check', 'judge_check', 'command_check', 'call_check', 'http_check', 'browser_check'];
 // Calls in order; the results.
@@ -62,7 +62,7 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   assert.equal(why({name: 'had', kind: 'function', does: 'x'}), '"had" is already declared: it is a contract your level already has');
   assert.equal(why({name: 'add', kind: 'function', does: 'x', params: ['a']}), 'contract has no field "params"; its fields are name, kind, path, does, inputs, outputs, effects, run');
   assert.equal(why({name: 'add', kind: 'function', does: 'x', run: {static: true}}), 'a function contract is not started, so it states no run');
-  assert.equal(why({name: 'GET /items', kind: 'route', does: 'x', run: {run: 'serve-items'}}), 'its run starts "serve-items", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
+  assert.equal(why({name: 'GET /items', kind: 'route', does: 'x', run: {run: ['serve-items']}}), 'its run starts "serve-items", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
   // A function's name is judged by its own language alone, with no length bound and no list of built-in names; a language with no name rule, or no path, stores it as written.
   assert.equal(why({name: 'add one', kind: 'function', path: 'calc.py', does: 'x'}), '"add one" is not a valid python function name');
   assert.equal(why({name: 'lambda', kind: 'function', path: 'calc.py', does: 'x'}), '"lambda" is not a valid python function name (a reserved word)');
@@ -82,10 +82,10 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   // A file of such a language is still any other contract's file.
   assert.equal(splitterCall(s, 'contract', {name: 'ui/App.tsx', kind: 'file', path: 'ui/App.tsx', does: 'x'}).result.stored, 'ui/App.tsx');
   // A route states its run as given; with none it is stored without one.
-  assert.deepEqual(calls(s, [['contract', {name: 'GET /items', kind: 'route', path: 'server.py', does: 'lists items', run: {run: 'python3 server.py', ready: '/health'}}], ['contract', {name: 'GET /other', kind: 'route', path: 'server.py', does: 'x'}], ['contract', {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}]]),
+  assert.deepEqual(calls(s, [['contract', {name: 'GET /items', kind: 'route', path: 'server.py', does: 'lists items', run: {run: ['python3', 'server.py'], ready: '/health'}}], ['contract', {name: 'GET /other', kind: 'route', path: 'server.py', does: 'x'}], ['contract', {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}]]),
     [{stored: 'GET /items', kind: 'route', examples_needed: 3}, {stored: 'GET /other', kind: 'route', examples_needed: 3}, {stored: 'index.html', kind: 'page'}]);
   const runs = Object.fromEntries(levelOf(s).contracts.map(c => [c.name, c.run ?? null]));
-  assert.deepEqual([runs['GET /items'], runs['GET /other'], runs['index.html']], [{run: 'python3 server.py', argv: ['python3', 'server.py'], port: true, ready: '/health'}, null, null]);
+  assert.deepEqual([runs['GET /items'], runs['GET /other'], runs['index.html']], [{argv: ['python3', 'server.py'], port: true, ready: '/health'}, null, null]);
 });
 
 test('a check function: serves names declared contracts exactly (the error lists them verbatim) and the check runs as written; the result is its id, the examples it renders and each served contract\'s count so far', () => {
@@ -98,7 +98,7 @@ test('a check function: serves names declared contracts exactly (the error lists
   assert.equal(why('command_check', {...one, serves: ['./convert.py']}), 'serves names "./convert.py", which is not declared. Declared: convert, to_f, had', 'no path or alias resolution');
   assert.equal(why('command_check', {...one, serves: []}), 'serves names no contract');
   assert.equal(why('command_check', {...one, serves: 'convert'}), 'serves is a list of names');
-  assert.equal(why('command_check', {serves: ['convert'], run: 'ruby x.rb'}), 'the command check runs "ruby", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
+  assert.equal(why('command_check', {serves: ['convert'], run: ['ruby', 'x.rb']}), 'the command check runs "ruby", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
   assert.equal(why('call_check', {serves: ['to_f'], steps: [{call: 'to_c', args: [1]}]}), 'step 1 of the call check calls "to_c", which is not a function contract declared so far (to_f, had)');
   assert.equal(why('command_check', {...one, id: 'mine'}), 'command_check has no field "id"; its fields are serves, run, stdin, files, expect');
   // A function the level already has in a file the box has no call adapter for (one stored before contract refused it): no call check of it is stored, and the result says why.
@@ -121,7 +121,7 @@ test('a check function: serves names declared contracts exactly (the error lists
   assert.ok(missingOf({...add, divide: false}).includes('reset has 0 different examples of 3 from the validations that serve it: steps that call it.'), 'reset serves nothing');
   // A request is an example of the route it requests, not of every route its check serves.
   const http = splitterState({divide: false});
-  calls(http, [...['GET /items', 'POST /items', 'DELETE /items/:id'].map(name => ['contract', {name, kind: 'route', run: {run: 'node app.js'}}])]);
+  calls(http, [...['GET /items', 'POST /items', 'DELETE /items/:id'].map(name => ['contract', {name, kind: 'route', run: {run: ['node', 'app.js']}}])]);
   assert.deepEqual(splitterCall(http, 'http_check', {serves: ['GET /items', 'POST /items', 'DELETE /items/:id'], serve: 'GET /items', steps: [{method: 'POST', path: '/items', body: {name: 'a'}, save: 't'}, {path: '/items'}, {method: 'DELETE', path: '/items/$t.id'}]}).result.examples_so_far,
     {'GET /items': 1, 'POST /items': 1, 'DELETE /items/:id': 1});
   assert.equal(splitterCall(http, 'done', {}).result.complete, false);
@@ -130,12 +130,12 @@ test('a check function: serves names declared contracts exactly (the error lists
 test('each check function stores a validation of its own kind from its fields at the top level; a field it does not take (a kind, a check wrapper) is refused with its own fields, and there is no validation function', () => {
   const s = splitterState({});
   calls(s, [['contract', {name: 'data.json', kind: 'data', path: 'data.json', does: 'the data'}], ['contract', {name: 'README.md', kind: 'doc', path: 'README.md', does: 'how to run it'}],
-    ['contract', CONVERT], ['contract', TO_F], ['contract', {name: 'GET /items', kind: 'route', path: 'server.py', does: 'lists items', run: {run: 'python3 server.py', ready: '/health'}}],
+    ['contract', CONVERT], ['contract', TO_F], ['contract', {name: 'GET /items', kind: 'route', path: 'server.py', does: 'lists items', run: {run: ['python3', 'server.py'], ready: '/health'}}],
     ['contract', {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page', run: {static: true}}]]);
   const given = [
     ['file_check', {serves: ['data.json'], path: 'data.json', has: ['"items"'], json: true}],
     ['judge_check', {serves: ['README.md'], path: 'README.md', question: 'Does it say how to run convert?'}],
-    ['command_check', {serves: ['convert'], run: 'convert 100 C', expect: {stdout_has: ['212']}}],
+    ['command_check', {serves: ['convert'], run: ['convert', '100', 'C'], expect: {stdout_has: ['212']}}],
     ['call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [0], expect: 32}]}],
     ['http_check', {serves: ['GET /items'], serve: 'GET /items', steps: [{path: '/items', expect: {status: 200}}]}],
     ['browser_check', {serves: ['index.html'], serve: 'index.html', steps: [{goto: '/'}, {expect_text: 'Items'}]}]];
@@ -144,7 +144,7 @@ test('each check function stores a validation of its own kind from its fields at
   assert.deepEqual(levelView(s).validations, [
     {id: 'v1', serves: ['data.json'], check: {kind: 'file', path: 'data.json', has: ['"items"'], json: true}},
     {id: 'v2', serves: ['README.md'], check: {kind: 'judge', path: 'README.md', question: 'Does it say how to run convert?'}},
-    {id: 'v3', serves: ['convert'], check: {kind: 'command', run: 'convert 100 C', argv: ['convert', '100', 'C'], expect: {stdout_has: ['212']}}},
+    {id: 'v3', serves: ['convert'], check: {kind: 'command', argv: ['convert', '100', 'C'], expect: {stdout_has: ['212']}}},
     {id: 'v4', serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [0], expect: 32}]}},
     {id: 'v5', serves: ['GET /items'], check: {kind: 'http', serve: 'GET /items', steps: [{method: 'GET', path: '/items', expect: {status: 200}}]}},
     {id: 'v6', serves: ['index.html'], check: {kind: 'browser', serve: 'index.html', steps: [{goto: '/'}, {expect_text: 'Items'}]}}]);
@@ -202,8 +202,8 @@ test('level shows everything declared so far; done reports what the level still 
   const view = levelView(s);
   assert.deepEqual(view.contracts.map(c => [c.name, c.kind || 'function', c.path]), [['to_f', 'function', 'conv.py'], ['convert', 'command', 'convert.py'], ['NOTES.md', 'doc', 'NOTES.md']]);
   assert.ok(view.contracts.every(c => !('serves' in c)), 'level shows contracts, not the ids of validations held above');
-  assert.deepEqual(view.validations, [{id: 'v1', serves: ['convert'], check: {kind: 'command', run: 'convert 100 C', argv: ['convert', '100', 'C'], expect: {stdout_has: ['212']}}},
-    {id: 'v2', serves: ['convert'], check: {kind: 'command', run: 'convert 0 C', argv: ['convert', '0', 'C'], expect: {stdout_has: ['32']}}}]);
+  assert.deepEqual(view.validations, [{id: 'v1', serves: ['convert'], check: {kind: 'command', argv: ['convert', '100', 'C'], expect: {stdout_has: ['212']}}},
+    {id: 'v2', serves: ['convert'], check: {kind: 'command', argv: ['convert', '0', 'C'], expect: {stdout_has: ['32']}}}]);
   assert.deepEqual(view.pieces, []);
   // A held validation counts for the given contract; a doc owes none. Piece is offered here, and no piece is declared yet.
   assert.deepEqual(splitterCall(s, 'done', {}), {result: {complete: false, missing: [
@@ -311,9 +311,9 @@ test('a splitter session that never completes ends when its context window is fu
 
 test('a command check may run any program the box has: the rows\' executables and every executable its inventory lists', () => {
   const s = splitterState({programs: ['ruby', 'go']});
-  assert.equal(splitterCall(s, 'contract', {name: 'greet', kind: 'command', path: 'greet.rb', does: 'greets', run: {run: 'ruby greet.rb'}}).result.stored, 'greet');
-  assert.ok(splitterCall(s, 'command_check', {serves: ['greet'], run: 'ruby greet.rb Ann', expect: {exit: 0, stdout_has: ['Ann']}}).result.id, 'ruby is a program the box has');
+  assert.equal(splitterCall(s, 'contract', {name: 'greet', kind: 'command', path: 'greet.rb', does: 'greets', run: {run: ['ruby', 'greet.rb']}}).result.stored, 'greet');
+  assert.ok(splitterCall(s, 'command_check', {serves: ['greet'], run: ['ruby', 'greet.rb', 'Ann'], expect: {exit: 0, stdout_has: ['Ann']}}).result.id, 'ruby is a program the box has');
   const none = splitterState();
   splitterCall(none, 'contract', {name: 'x.md', kind: 'doc', path: 'x.md', does: 'notes'});
-  assert.match(splitterCall(none, 'command_check', {serves: ['x.md'], run: 'ruby x.rb', expect: {exit: 0}}).result.error, /neither a command contract declared so far nor a program the box has/);
+  assert.match(splitterCall(none, 'command_check', {serves: ['x.md'], run: ['ruby', 'x.rb'], expect: {exit: 0}}).result.error, /neither a command contract declared so far nor a program the box has/);
 });

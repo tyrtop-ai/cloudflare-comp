@@ -35,7 +35,7 @@ const GOAL = 'a Python CLI that converts temperatures';
 const TEMP = {name: 'temp', kind: 'command', path: 'temp.py', does: 'prints the Fahrenheit value of a Celsius temperature', inputs: [{name: 'celsius', is: 'a number'}]};
 const USAGE = {name: 'USAGE.md', kind: 'doc', path: 'USAGE.md', does: 'how to use the converter'};
 const README = {name: 'README.md', kind: 'doc', path: 'README.md', does: 'explains how to run the converter'};
-const temp = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', run: `temp ${c}`, expect: {exit: 0, stdout_has: [f]}}});
+const temp = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', argv: ['temp', ...String(c).split(' ')], expect: {exit: 0, stdout_has: [f]}}});
 const judge = (id, path, question) => ({id, serves: [path], check: {kind: 'judge', path, question}});
 const LEVEL = {contracts: [TEMP, USAGE],
   validations: [temp('a', '100', '212'), temp('b', '0', '32'), temp('c', '-40', '-40'),

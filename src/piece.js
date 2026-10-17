@@ -12,7 +12,7 @@
 //   its requests, its command contract, the contract it calls), which name a
 //   pass with the validation.
 import { kindOf } from './contracts.js';
-import { commandArgv, runsOf } from './validations.js';
+import { runsOf } from './validations.js';
 
 // ------------------------------------------------------------ scope
 // validations: [{id, level}] (level: the manager whose splitter wrote it);
@@ -48,7 +48,7 @@ export function textHash(text) {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
-const argvOf = c => Array.isArray(c?.argv) && c.argv.length ? c.argv : typeof c?.run === 'string' ? commandArgv(c.run).argv || [] : [];
+const argvOf = c => Array.isArray(c?.argv) ? c.argv : [];
 // v8 M3 review (L1): the contracts a validation runs by: how the contract
 // that serves its requests runs (and the command contract that run starts),
 // the command contract its command line names, the contract it calls.

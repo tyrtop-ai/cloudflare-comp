@@ -28,9 +28,9 @@
 // exact); role, an ARIA role, with name its accessible name (getByRole,
 // exact); name without role, the element's name attribute; text, its text
 // (getByText, exact). Of the shown elements matching all of them, a step
-// acts on the first. expect_element reads its selector as written (a CSS
-// selector, querySelectorAll's), and its text, as written, held by the
-// element's text; expect_count counts the shown elements of its role, or
+// acts on the first. expect_element reads its selector as written (the
+// page's locator reads it, and says why when it cannot), and its text, as
+// written, held by the element's text; expect_count counts the shown elements of its role, or
 // holding its text as written (case and all). The browser starts on a blank
 // page: a check opens a page with goto. When nothing has matched by the
 // verification's end, the record says so and lists what the page offers:
@@ -133,15 +133,14 @@ async function offersOf(page, ms) {
   } catch { return null; }
 }
 const offersLine = o => !o ? '' : `; fields found: ${o.fields.length ? o.fields.map(f => [f.label && `label ${quote(f.label)}`, f.placeholder && `placeholder ${quote(f.placeholder)}`, f.name && `name ${quote(f.name)}`].filter(Boolean).join(' ') || 'an unlabelled field').join(', ') : 'none'}; buttons and links found: ${o.buttons.length ? o.buttons.map(b => quote(b.text)).join(', ') : 'none'}`;
-// v8 live 4: the elements of a page that a simple selector matches (the
-// validations' SELECTOR (src/validations.js): a tag, #id, .class, [attribute], [attribute=value]),
-// each as {text, shown, said}: its visible text (innerText, as expect_text
-// reads the page), whether it shows, and how a report names it (with its
+// v8 live 4: the elements of a page that a selector matches, as the page's
+// locator reads it (page.locator; what it cannot read, it says why), each
+// as {text, shown, said}: its visible text (innerText, as expect_text reads
+// the page), whether it shows, and how a report names it (with its
 // value, aria-label, alt or title when it has no text). v8 live 4 review:
 // a step matches shown elements only, and its text as expect_text does
 // (the element's text holds it, in the same case).
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const ELEMENT_SELECTOR = /^[a-z][a-z0-9-]*(?:#[A-Za-z_][\w-]*|\.[A-Za-z_][\w-]*|\[[A-Za-z_][\w-]*(?:=(?:[\w-]+|"[^"\\]*"))?\])*$/;
 const ELEMENT_INFO = els => els.map(el => {
   const t = s => String(s || '').replace(/\s+/g, ' ').trim();
   const text = t(el.innerText), shown = typeof el.checkVisibility === 'function' ? el.checkVisibility({visibilityProperty: true, checkVisibilityCSS: true}) : el.getClientRects().length > 0;
@@ -152,9 +151,7 @@ const ELEMENT_INFO = els => els.map(el => {
 // The shown elements the selector matches, as written, holding the text as
 // written when one is given (the element's innerText contains it).
 async function elementMatches(page, arg, ms) {
-  const sel = String(arg?.selector ?? '');
-  if (!ELEMENT_SELECTOR.test(sel)) throw new Error(`the selector ${quote(sel)} is not a simple one (a tag, #id, .class, [attribute])`);
-  const infos = (await within(page.locator(sel).evaluateAll(ELEMENT_INFO), ms, 'reading the page')).filter(x => x.shown);
+  const infos = (await within(page.locator(String(arg?.selector ?? '')).evaluateAll(ELEMENT_INFO), ms, 'reading the page')).filter(x => x.shown);
   const want = typeof arg?.text === 'string' ? arg.text : '';
   return want ? infos.filter(x => x.raw.includes(want)) : infos;
 }
