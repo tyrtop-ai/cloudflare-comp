@@ -7,18 +7,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, at, tail, runOn, exported, call, CONTRACTS, VALIDATIONS, PARTS, FILES, GOAL, skip} from './helpers/toolkit.js';
-import {verifyChecks, snapshotHash, usualBuilder} from './helpers/room.js';
+import {snapshotHash, usualBuilder} from './helpers/room.js';
+import {logged} from './helpers/compiler.js';
 import {MESSAGES} from '../src/prompts.js';
 
-// An executor whose boxes are logged with their start and end, and held at gate(box) before they run.
-const gated = (boxes, gate = async () => {}) => ({build: async req => {
-  const box = {ids: (req.plan?.checks || []).map(c => c.id), files: {...req.files}, start: Date.now()};
-  boxes.push(box);
-  await gate(box);
-  try { return await verifyChecks({...req, snapshot_hash: await snapshotHash(req.files)}, {isolation: []}); } finally { box.end = Date.now(); }
-}});
 async function room({leaf = leafOf(), split = splitFor(), clef = clefFor(), gate, budget = 120} = {}) {
-  const boxes = [], r = liveRoom({split, leaf, clef, executor: gated(boxes, gate), room_id: 'coverage'});
+  const boxes = [], r = liveRoom({split, leaf, clef, compile: logged(boxes, {gate}), room_id: 'coverage'});
   return {...r, boxes, run: async () => { const s = await r.room.start(GOAL, budget, {pipeline: 'v8'}, 'coverage'); assert.deepEqual(s, {status: 'running'}); await r.drain(); }};
 }
 const shipped = async (room, name) => [...(await room.bundleFiles(room.roomManager())).files].find(([p]) => p === name || p.endsWith(`/${name}`))?.[1];
@@ -40,7 +34,7 @@ test('two parts compile in parallel, each in its own box, before their sibling f
   await r.run();
   clearInterval(watch);
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  const m = at(r.room), [a, b] = ['Shouter', 'Whisperer'].map(l => r.boxes.find(x => x.ids.includes(held(r.room, l)[0])));
+  const m = at(r.room), [a, b] = ['Shouter', 'Whisperer'].map(l => r.boxes.find(x => x.end && x.ids.includes(held(r.room, l)[0])));
   assert.ok(a.start < b.end && b.start < a.end, 'the two pieces\' boxes overlap');
   const notesDone = events(r.room, 'done').find(e => e.actor === r.room.children(m.Notes).find(c => c.role === 'worker').id);
   assert.ok(notesDone.ts >= Math.max(a.end, b.end), 'their sibling finished after both');
@@ -197,7 +191,7 @@ test('packages across pieces: each piece holds the packages its splitter named t
   // (R4-room/chrono-3: a worker's wait is its own call, and nothing wakes it but a message.)
   const leaf = leafOf({control: (user, n) => { const c = user.prompt.deliver.find(d => asks[d.name]); return c && n === 0 ? {summary: 'need', ...(c.name === 'loud' ? {done: true} : {wait: true}), ask: asks[c.name]} : null; }});
   // Clef: a package a row holds gives the need, and so does a name granted new as a Python package; as another language's it does not.
-  const grantP = (k, state) => { const o = state.packages_offered?.[Number(k.split('_')[1])]?.package || ''; return !/not yet installed/.test(o) || /a Python package/.test(o) ? 0.95 : 0.1; };
+  const grantP = (k, state) => { const o = state.packages_offered?.[Number(k.split('_')[1])]?.package || ''; return !/ package\)$/.test(o) || /a Python package/.test(o) ? 0.95 : 0.1; };
   const clef = clefFor(undefined, {'^grant_\\d+$': grantP, '^ask_parent$': (_k, state) => state.packages_offered ? 0.1 : 0.95});
   const r = await toolkit({split, leaf, clef});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));

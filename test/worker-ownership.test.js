@@ -51,7 +51,7 @@ test('v8: the worker\'s session is ROLE.worker with its functions, its request t
     {tool_calls:[{name:'write_file',arguments:{path:'format.py',content:'def format_title(item):\n    return str(item["title"])\n'}},{name:'done',arguments:{summary:'Formats titles'}}]}];
   const env={PIPELINE:'v8',MODEL_NAME:'@cf/qwen/qwen3-30b-a3b-fp8',AI:{run:async(_model,args)=>{requests.push(JSON.parse(JSON.stringify(args)));return answers[requests.length-1];}}};
   const view={prompt:{task:'Format items for presentation',deliver:[{name:'format_title',kind:'function',path:'format.py',examples:['format_title({"title": "a"}) returns "a"']}]},files:[],complaints:[],world:{}};
-  const written=new Map(),world=workerWorld({files:new Map(),write:async(p,c)=>{written.set(p,c);},runExamples:async()=>({examples:[]}),ask:async()=>({sent:true})});
+  const written=new Map(),world=workerWorld({files:new Map(),write:async(p,c)=>{written.set(p,c);},ask:async()=>({sent:true})});
   const out=await workerSession(env,view,world);
   const system=requests[0].messages[0].content;
   assert.equal(system,systemPrompt('worker'));
@@ -59,14 +59,14 @@ test('v8: the worker\'s session is ROLE.worker with its functions, its request t
   assert.match(system,/write the files that deliver what your prompt asks/i);
   assert.match(system,/A contract you may call is delivered under its name at its path\./);
   assert.doesNotMatch(system,/reference shows/,'the worker writes its own reference');
-  assert.match(system,/A complaint says what was observed when your files ran: fix its cause in your files, and run your examples/);
+  assert.match(system,/A complaint says what was observed when your files ran: fix its cause in your files, and try your examples in your box/);
   assert.match(system,/^Answer by calling your functions/m);
   assert.doesNotMatch(system,/LEAF CODE WRITER|Node\.js|require\(|JavaScript|=== FILE|control block/);
   assert.deepEqual(JSON.parse(requests[0].messages[1].content),view);
   // Nothing it asked for is open, so wait is not among its functions: a turn it ends waits for an answer that comes.
   for(const r of requests)assert.deepEqual(r.tools,TOOLS.worker.filter(t=>t.name!=='wait'));
   // The file blocks written as prose in the first reply are never read: nothing is written until write_file.
-  assert.deepEqual(requests[1].messages.slice(2),[{role:'assistant',content:''},{role:'user',content:'No function was called. The functions are: read_file, write_file, run_examples, ask, done.'}]);
+  assert.deepEqual(requests[1].messages.slice(2),[{role:'assistant',content:''},{role:'user',content:'No function was called. The functions are: read_file, write_file, run, ask, done.'}]);
   assert.deepEqual([...written],[['format.py','def format_title(item):\n    return str(item["title"])\n']]);
   assert.deepEqual(out.end,{done:true,wait:false,summary:'Formats titles'});
 });

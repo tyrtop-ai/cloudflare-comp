@@ -1,5 +1,5 @@
 // v8: every model works through functions. A worker's turn is one session
-// of read_file, write_file, run_examples, ask, done and wait (src/worker.js);
+// of read_file, write_file, run (a command in its own box), ask, done and wait (src/worker.js);
 // each result is all the feedback there is, and nothing reads its prose. A
 // manager's turn on an ask, a complaint or a change is Clef scoring each
 // function call it may make (answer, route_to, extend, ask_parent) as one
@@ -14,14 +14,14 @@ import {liveRoom} from './helpers/room.js';
 import {workerWorld, workerCall, workerTools} from '../src/worker.js';
 import {MESSAGES, TOOLS, CLEF, clefText} from '../src/prompts.js';
 import {packagePath} from '../src/assembly.js';
-import {checkProblems} from '../src/checks.js';
 
 const trail = room => events(room).slice(-16).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 
 // ------------------------------------------------------------ each function's results
 test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; a path names a place among its files, and one a repository holds no file at (its records folder, a name too long) is refused with why; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
   const stored = [], world = workerWorld({files: new Map([['convert.js', 'old\n']]), write: async (path, content) => { stored.push([path, content]); },
-    runExamples: async () => ({examples: [{examples: ['convert 1 → 2'], observed: 'pass'}], passed: 1, of: 1}), ask: async a => ({sent: true, says: MESSAGES.ask_sent(), seen: a})});
+    box: {run: async (argv, stdin) => ({exit: 0, stdout: `ran ${argv.join(' ')} on ${JSON.stringify(stdin)}`, stderr: '', timed_out: false}), write: async () => ''},
+    ask: async a => ({sent: true, says: MESSAGES.ask_sent(), seen: a})});
   const call = async (name, args) => (await workerCall(world, name, args));
   // read_file: the file's text, or that there is no such file and which there are.
   assert.deepEqual((await call('read_file', {path: 'convert.js'})).result, {path: 'convert.js', content: 'old\n'});
@@ -45,8 +45,12 @@ test('the worker\'s functions: each stores exactly what it is given or says exac
   assert.deepEqual((await call('write_file', {path: 'a.js'})).result, {error: 'content is the complete text of the file'});
   assert.deepEqual(stored.map(([p]) => p), ['convert.js', 'up.js', 'abs.js', 'lib/x.js', 'a b.js', 'caf\u00e9+@x.md', '.env', 'memory/notes.md', 'components/Button.js', 'glue/index.js', '.recursive/RUN.md'], 'each write that changed something was stored, at the place it names');
   assert.deepEqual([world.written[0], world.unchanged], ['convert.js', ['convert.js']]);
-  // run_examples and ask: what the room answers, as it answers it.
-  assert.deepEqual((await call('run_examples', {})).result, {examples: [{examples: ['convert 1 → 2'], observed: 'pass'}], passed: 1, of: 1});
+  // run and ask: what the box and the room answer, as they answer it.
+  assert.deepEqual((await call('run', {argv: ['node', 'convert.js', '1'], stdin: 'x'})).result, {exit: 0, stdout: 'ran node convert.js 1 on "x"', stderr: '', timed_out: false});
+  assert.deepEqual((await call('run', {argv: ['ls']})).result.stdout, 'ran ls on ""');
+  assert.deepEqual((await call('run', {argv: 'node convert.js'})).result, {error: 'argv is the command\'s argument list: the program, then each argument, each a text'});
+  assert.deepEqual((await call('run', {argv: ['ls'], cwd: '/'})).result, {error: 'run has no field "cwd"; its fields are argv, stdin'});
+  assert.equal(world.runs, 2);
   assert.deepEqual((await call('ask', {need: 'a table of factors', name: 'factors'})).result, {sent: true, says: MESSAGES.ask_sent(), seen: {need: 'a table of factors', name: 'factors'}});
   assert.deepEqual((await call('ask', {name: 'factors'})).result, {error: 'need says what you need, in one line'});
   // done and wait: the turn's end, as the function says it.
@@ -54,31 +58,31 @@ test('the worker\'s functions: each stores exactly what it is given or says exac
   assert.deepEqual(await call('done', {summary: 'wrote it'}), {result: {ended: 'done'}, end: {done: true, wait: false, summary: 'wrote it'}});
   assert.deepEqual(await call('wait', {summary: 'waiting for factors'}), {result: {ended: 'wait'}, end: {done: false, wait: true, summary: 'waiting for factors'}});
   assert.deepEqual((await call('spawn', {})).result, {error: 'There is no function "spawn".'});
-  assert.deepEqual(TOOLS.worker.map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
+  assert.deepEqual(TOOLS.worker.map(t => t.name), ['read_file', 'write_file', 'run', 'ask', 'done', 'wait']);
 });
 
 test('the functions a worker is offered are what it can do now: wait only while something it asked for is open, so no turn of it ends waiting on nothing', () => {
   let open = false;
-  const world = workerWorld({files: new Map(), write: async () => {}, runExamples: async () => ({}), ask: async () => ({}), outstanding: () => open});
-  assert.deepEqual(workerTools(world).map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done']);
+  const world = workerWorld({files: new Map(), write: async () => {}, ask: async () => ({}), outstanding: () => open});
+  assert.deepEqual(workerTools(world).map(t => t.name), ['read_file', 'write_file', 'run', 'ask', 'done']);
   open = true;
-  assert.deepEqual(workerTools(world).map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
-  assert.deepEqual(workerTools(workerWorld({})).map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done'], 'a world that says nothing is open offers no wait');
+  assert.deepEqual(workerTools(world).map(t => t.name), ['read_file', 'write_file', 'run', 'ask', 'done', 'wait']);
+  assert.deepEqual(workerTools(workerWorld({})).map(t => t.name), ['read_file', 'write_file', 'run', 'ask', 'done'], 'a world that says nothing is open offers no wait');
 });
 
 test('read_file of a worker that holds the project the work starts from: a path it has no file at shows that project\'s file whole; its own file at a path comes first; a path neither holds says it has no file there', async () => {
   const base = new Map([['src/shout.js', 'export const shout = s => s.toUpperCase();\n'], ['convert.js', 'base\n']]);
-  const world = workerWorld({files: new Map([['convert.js', 'mine\n']]), write: async () => {}, runExamples: async () => ({}), ask: async () => ({}),
+  const world = workerWorld({files: new Map([['convert.js', 'mine\n']]), write: async () => {}, ask: async () => ({}),
     readBase: path => base.has(path) ? {path, label: 'base', content: base.get(path)} : {error: `no ${path}`}});
   const read = async path => (await workerCall(world, 'read_file', {path})).result;
   assert.deepEqual(await read('./src/shout.js'), {path: 'src/shout.js', label: 'base', content: base.get('src/shout.js')});
   assert.deepEqual(await read('convert.js'), {path: 'convert.js', content: 'mine\n'});
   assert.deepEqual(await read('other.js'), {error: 'You have no file other.js. Your files: convert.js.'});
-  const without = workerWorld({files: new Map(), write: async () => {}, runExamples: async () => ({}), ask: async () => ({})});
+  const without = workerWorld({files: new Map(), write: async () => {}, ask: async () => ({})});
   assert.deepEqual((await workerCall(without, 'read_file', {path: 'src/shout.js'})).result, {error: 'You have no file src/shout.js, and no files yet.'}, 'a worker that does not hold the project reads none of it');
 });
 
-// ------------------------------------------------------------ run_examples in a room
+// ------------------------------------------------------------ run in a room
 const CLI = 'Write a command-line temperature converter: `convert 100 C` prints the Fahrenheit value.';
 const convertCheck = (id, args, out) => ({id, serves: ['convert'], check: {kind: 'command', argv: ['convert', ...String(args).split(' ')], expect: {exit: 0, stdout_has: [out]}}});
 const CONVERT = {name: 'convert', kind: 'command', does: 'converts a Celsius temperature to Fahrenheit', path: 'convert.js', outputs: 'the Fahrenheit value'};
@@ -87,33 +91,24 @@ const CONVERT_JS = "const c = Number(process.argv[2]);\nconsole.log(String(c * 9
 const WRONG = "const c = Number(process.argv[2]);\nconsole.log(String(c * 2));\n";
 const caught = (more = {}) => usualClef({'^should_split$': 0.02, ...more});
 
-test('run_examples runs the worker\'s examples on its own files as they stand, in a fresh box as the compiler would, and says what each observed; it reads no validation, and changes no validation\'s status', async () => {
-  const leaf = (_u, _n, _s, {round}) => round === 1 ? [{name: 'write_file', arguments: {path: 'convert.js', content: WRONG}}, {name: 'run_examples', arguments: {}}]
-    : round === 2 ? [{name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS}}, {name: 'run_examples', arguments: {}}]
+test('run runs one command in the worker\'s own box, which holds its files as they stand (its writes of this session too), with the internet on, and says what the process did; the box closes when the session ends; nothing it runs is a validation\'s status', async () => {
+  const convert = ['node', 'convert.js', '100', 'C'];
+  const leaf = (_u, _n, _s, {round}) => round === 1 ? [{name: 'write_file', arguments: {path: 'convert.js', content: WRONG}}, {name: 'run', arguments: {argv: convert}}]
+    : round === 2 ? [{name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS}}, {name: 'run', arguments: {argv: convert}}]
     : [{name: 'done', arguments: {summary: 'the converter'}}];
-  const {room, calls, builds} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught()});
+  const {room, calls, boxes} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught()});
   assert.equal(room.get('status'), 'complete', trail(room));
-  assert.equal(calls.leaf.length, 1, 'one turn: the worker saw its own examples fail and fixed them in the same session');
-  const runs = calls.leafRounds.filter(r => r.round > 1).map(r => r.results.find(x => x.name === 'run_examples')?.result).filter(Boolean);
-  assert.equal(runs.length, 2);
-  // The first run, on its staged write: each example with the compiler's own observation, verbatim.
-  assert.deepEqual(runs[0].examples.map(e => e.examples), [['convert 100 C → it exits 0 and its output contains "212"'], ['convert 0 C → it exits 0 and its output contains "32"'], ['convert -40 C → it exits 0 and its output contains "-40"']]);
-  assert.deepEqual([runs[0].passed, runs[0].of], [0, 3]);
-  assert.ok(runs[0].examples.every(e => e.observed !== 'pass' && /200|0|-80/.test(e.observed)), JSON.stringify(runs[0]));
-  assert.match(runs[0].examples[0].observed, /212/);
-  // The second run, after the fix: every example passes.
-  assert.deepEqual(runs[1].examples.map(e => e.observed), ['pass', 'pass', 'pass']);
-  assert.deepEqual([runs[1].passed, runs[1].of], [3, 3]);
-  // The worker reads examples and observations only: no validation id, kind, check or steps as data.
-  for (const r of runs) assert.doesNotMatch(JSON.stringify(r), /"(?:id|kind|check|steps|serves|expect)"|\bV\d+\b/);
-  // Its box held its own files only, and nothing it observed is a validation's status.
+  assert.equal(calls.leaf.length, 1, 'one turn: the worker saw what its file printed and fixed it in the same session');
+  const runs = calls.leafRounds.filter(r => r.round > 1).map(r => r.results.find(x => x.name === 'run')?.result).filter(Boolean);
+  assert.deepEqual(runs, [{exit: 0, stdout: '200\n', stderr: '', timed_out: false}, {exit: 0, stdout: '212\n', stderr: '', timed_out: false}]);
+  // One box for the session: opened on its first command with the internet on, its writes put in it, destroyed at the session's end.
   const w = room.allNodes().find(n => n.role === 'worker');
-  assert.deepEqual(Object.keys(builds[0]), ['convert.js']);
-  assert.equal(builds[0]['convert.js'], WRONG);
-  assert.equal(events(room, 'examples_run').length, 2);
-  assert.ok(events(room, 'examples_run').every(e => e.actor === w.id));
-  assert.match(events(room, 'examples_run')[0].body, /^Ran its examples on its 1 file\(s\): 0 of 3 pass\.$/);
-  assert.ok(Object.values(room.read('validation_status', {})).every(s => s.passed === true), 'the compiler\'s runs alone set the status');
+  const mine = boxes.boxes.filter(b => b.container.log.some(x => x[0] === 'exec' && x[1].includes('convert.js')));
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].container.options.enableInternet, true);
+  assert.ok(mine[0].container.destroyed >= 1, 'closed at the session\'s end');
+  assert.match(events(room, 'session').find(e => e.actor === w.id).body, /ran 2 command\(s\) in its box/);
+  assert.ok(Object.values(room.read('validation_status', {})).every(s => s.passed === true), 'the compiler\'s results alone set the status');
 });
 
 // ------------------------------------------------------------ a worker's world is its own files
@@ -123,16 +118,15 @@ test('a worker\'s files are its own repository, every path in it: a folder the r
   const leaf = (_u, _n, _s, {round}) => round === 1 ? [
     {name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS}}, {name: 'write_file', arguments: {path: './memory/NOTES.md', content: '# Units\n'}},
     {name: 'write_file', arguments: {path: 'glue/units table.txt', content: 'C F\n'}}, {name: 'write_file', arguments: {path: '../components/.helper.js', content: 'module.exports = 1;\n'}},
-    {name: 'run_examples', arguments: {}}] : [{name: 'done', arguments: {summary: 'the converter and its notes'}}];
-  const {room, calls, builds} = await levelRoom({prompt: CLI, split: () => level, leaf, clef: caught()});
+    {name: 'run', arguments: {argv: ['node', '-e', "console.log(require('fs').readdirSync('.', {recursive: true}).filter(p => require('fs').statSync(p).isFile()).sort().join(','))"]}}] : [{name: 'done', arguments: {summary: 'the converter and its notes'}}];
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => level, leaf, clef: caught()});
   assert.equal(room.get('status'), 'complete', trail(room));
   const w = room.allNodes().find(n => n.role === 'worker'), own = ['components/.helper.js', 'convert.js', 'glue/units table.txt', 'memory/NOTES.md'];
   const results = calls.leafRounds.find(r => r.round === 2).results;
   assert.deepEqual(results.filter(x => x.name === 'write_file').map(x => x.result.written), ['convert.js', 'memory/NOTES.md', 'glue/units table.txt', 'components/.helper.js']);
   assert.deepEqual(room.files(w.id).map(f => f.path), own);
-  // Its examples ran on every file it has, in a box that held them all.
-  assert.deepEqual(Object.keys(builds[0]).sort(), own);
-  assert.deepEqual(results.find(x => x.name === 'run_examples').result.examples.map(e => e.observed), ['pass', 'pass', 'pass', 'pass']);
+  // Its box held every file it has.
+  assert.equal(results.find(x => x.name === 'run').result.stdout.trim(), own.join(','));
   // The bundle: each placed file at its contract's path, the others under the piece's folder.
   const {files} = await room.bundleFiles(room.roomManager()), at = p => packagePath(w.label, p, w.id, room.partsRoot());
   assert.deepEqual([...files.keys()].sort(), ['convert.js', 'memory/NOTES.md', at('components/.helper.js'), at('glue/units table.txt')].sort());
@@ -171,16 +165,14 @@ const trackerSplit = user => user.contracts_you_deliver ? {contracts: user.contr
 const isReport = user => user.prompt.deliver.some(c => c.name === 'report');
 const reportFile = user => report(referTo(user.prompt.call.find(c => c.name === 'createTicket')));
 
-test('run_examples on a piece that calls another\'s function runs on the worker\'s own files only: the call it makes is observed as missing there, as its own box shows it', async () => {
+test('a worker\'s box holds its own files only: a piece that calls another\'s function finds the other\'s file missing there', async () => {
   const leaf = (user, _n, _s, {round}) => !isReport(user) ? deliver({'store.js': STORE})
-    : round === 1 ? [{name: 'write_file', arguments: {path: 'report.js', content: reportFile(user)}}, {name: 'run_examples', arguments: {}}] : [{name: 'done', arguments: {summary: 'the report command'}}];
-  const {room, calls, builds} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf});
+    : round === 1 ? [{name: 'write_file', arguments: {path: 'report.js', content: reportFile(user)}}, {name: 'run', arguments: {argv: ['node', 'report.js', 'Printer', 'jam']}}] : [{name: 'done', arguments: {summary: 'the report command'}}];
+  const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf});
   assert.equal(room.get('status'), 'complete', trail(room));
-  const run = calls.leafRounds.find(r => r.round === 2 && isReport(calls.leaf[r.session - 1])).results.find(x => x.name === 'run_examples').result;
-  assert.equal(run.of, 3);
-  assert.ok(run.examples.every(e => e.observed !== 'pass'), 'store.js is not among its files');
-  const own = builds.find(b => 'report.js' in b && Object.keys(b).length === 1);
-  assert.ok(own, 'a box held the report worker\'s file alone');
+  const run = calls.leafRounds.find(r => r.round === 2 && isReport(calls.leaf[r.session - 1])).results.find(x => x.name === 'run').result;
+  assert.notEqual(run.exit, 0);
+  assert.match(run.stderr, /store\.js/, 'store.js is not among its files');
 });
 
 // ------------------------------------------------------------ asks: answer, ask_parent, archive
@@ -219,7 +211,7 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   // A name no row holds may be granted new, as a package in each code language the box compiles: Clef's choice, as every option is.
   // Every package the room's manager's row lists that the asker's does not is a grant, as the row lists it: pytest too, though the tree's contracts are .js (no filter by a guessed language).
   assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'grant_0', 'grant_1', 'grant_2', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, its row\'s package, the new grants, and no extend');
-  assert.deepEqual(asks[0].state.packages_offered.map(p => p.package), ['pytest (tests)', 'getTicket (a JavaScript package, not yet installed: the box installs it)', 'getTicket (a Python package, not yet installed: the box installs it)']);
+  assert.deepEqual(asks[0].state.packages_offered.map(p => p.package), ['pytest (tests)', 'getTicket (a JavaScript package)', 'getTicket (a Python package)']);
   assert.equal(asks[0].questions.ask_parent.instructions, CLEF.ask_parent);
   assert.equal(asks[0].questions.answer_1.instructions, clefText('answer', {j: 1}));
   assert.deepEqual(asks[0].state.item, {kind: 'ask', need: 'read one ticket back by its id', expected_name: 'getTicket'});
@@ -399,9 +391,6 @@ test('the join keeps the worker\'s delivery at its contract\'s path: a builder\'
   assert.deepEqual([...piece.glue.keys()].sort(), [atB, 'wire.js'].sort(), 'no file of the builder\'s is left out');
   assert.deepEqual([...piece.ownAt], [['index.html', atB]]);
   assert.match(events(room, 'bundle_conflict').at(-1).body, /builder's file stands in its own folder: index\.html/);
-  // A failing check's frame at the contract's path names the worker that delivered it.
-  const [problem] = checkProblems({validations: [{id: 'v1', check: {kind: 'file'}}]}, new Map([['v1', {id: 'v1', passed: false, detail: 'no title', frames: [{path: 'index.html', line: 1}]}]]), [], {origin: p => piece.origin.get(p) || null});
-  assert.ok(problem.parties.some(x => x.path === 'index.html' && x.owner === wa.id), 'the complaint reaches the worker');
 });
 
 test('a delivered file at a builder\'s own file\'s path stays the delivered one, unplaced files too; at an existing file\'s path the existing file stays (only the person grants a change to one), and the builder\'s file stays in its world', async () => {

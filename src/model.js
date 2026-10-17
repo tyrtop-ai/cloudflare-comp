@@ -786,25 +786,6 @@ export const sourceModel = env => async ({call, system, user, tool}) => {
     }});
   return {noted: r.ended ? r.end : null, rounds: r.rounds};
 };
-// v8 §4.3 (S4b): Clef judges a document requirement, yes or no, from the
-// file alone: state {requirement, file:{path, text}}, the question CLEF.judge
-// with the check's own question appended. Clef reads the whole document as
-// written, in one question; the requirement passes at p >= JUDGE_BAR
-// (decision U11). Returns {passed, p, detail}; a Clef that gives no
-// probability throws (the room reads that as infrastructure, never as the
-// document's failure). MOCK passes.
-export const JUDGE_BAR = 0.6;
-export async function judgeRequirement(env, {says='', question='', path='', content=''}) {
-  if (env.MOCK_AI === 'true') return {passed:true,p:1,detail:''};
-  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
-  const clef=DECISION_MODELS[selector];
-  if (!clef) throw new Error('unsupported Clef decision model');
-  const instructions=`${CLEF.judge}${question?` Specifically: ${question}`:''}`;
-  const output=await clefRun(env,'judgeRequirement',selector,{model:clef,state:{requirement:String(says),file:{path:String(path),text:String(content)}},questions:{judge:{type:'noul',instructions}}});
-  const p=output?.answers?.judge?.noul;
-  if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability judging ${path}`);
-  return {passed:p>=JUDGE_BAR,p,detail:p>=JUDGE_BAR?'':`Clef judged p=${p.toFixed(2)}: ${question||says}`};
-}
 // v7.15.6 (run13): no triage. A failed run with no frame in a component is
 // a requirement the manager routes by the plan (readRequirement in
 // src/problems.js), not a module for a model to guess from the source.

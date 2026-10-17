@@ -1,25 +1,21 @@
-// v8 ship-verified, on levels: a run never ends "complete" with a shipped
-// byte that no syntax step compiled in the mode its runtime loads it, or a
+// v8 ship-verified, on levels: a run never ends "complete" with a
 // validation whose last pass was not on the exact shipped bundle. Every
 // manager has its own builder, which joins its piece, and its own compiler,
-// which verifies in a fresh box every validation of its subtree not passed
-// on its exact bundle; a validation is held by the lowest manager whose
+// an agent which verifies in its own box every validation of its subtree not
+// passed on its exact bundle; a validation is held by the lowest manager whose
 // pieces serve all it serves, and rolls up when what it exercises reaches
 // outside the piece. A pass is for the bundle it ran on, never carried up.
 // The scripted tree: the room's manager divides a text toolkit into Loud
 // part {Shouter, Louder}, Quiet part {Whisperer, Softener} and Notes; the
 // pieces below the parts are caught by their pre-grade and hand their level
-// to one worker each. The validations run in the real build runner behind
-// fake boxes.
+// to one worker each. The usual scripted compiler runs the validations in
+// its box (test/helpers/compiler.js).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync, writeFileSync, mkdirSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join, dirname} from 'node:path';
-import {liveRoom, events, snapshotHash, settle, verifyChecks} from './helpers/room.js';
+import {events, snapshotHash, settle} from './helpers/room.js';
 import {levelRoom, clefBy, choiceP, deliver} from './helpers/levels.js';
-import {checkPlan, fileResult} from '../src/checks.js';
+import {logged, checkOn} from './helpers/compiler.js';
 
 const hasPython = spawnSync('python3', ['--version']).status === 0;
 const skip = !hasPython && 'python3 is not installed';
@@ -77,13 +73,8 @@ const leafOf = ({answers = {}, extra = {}} = {}) => {
     return deliver(files);
   };
 };
-// Each box run: the validations it ran, the files it held and those it compiled.
-const logged = boxes => ({build: async req => {
-  boxes.push({ids: (req.plan?.checks || []).map(c => c.id), files: {...req.files}, syntax: (req.plan?.syntax || []).flatMap(s => s.files)});
-  return verifyChecks({...req, snapshot_hash: await snapshotHash(req.files)}, {isolation: []});
-}});
 async function toolkit({split = splitFor(), leaf = leafOf(), clef = clefFor(), budget = 120} = {}) {
-  const boxes = [], r = await levelRoom({prompt: GOAL, split, leaf, clef, budget, executor: logged(boxes)});
+  const boxes = [], r = await levelRoom({prompt: GOAL, split, leaf, clef, budget, compile: logged(boxes)});
   return {...r, boxes};
 }
 const at = room => Object.fromEntries(room.allNodes().filter(n => n.role === 'manager').map(n => [n.id === room.roomManager() ? 'Root' : n.label, n.id]));
@@ -91,34 +82,13 @@ const tail = room => events(room).filter(e => !['dispatch', 'turn_start', 'turn_
 const statusOf = room => Object.fromEntries(Object.entries(room.read('validation_status', {})).map(([id, s]) => [id, s.passed]));
 const ALL_PASS = Object.fromEntries(VALIDATIONS.map(v => [V[v.id], true]));
 const ran = (boxes, id) => boxes.filter(b => b.ids.includes(id)).length;
-// The validations, run directly on a bundle in the real build runner (file checks as the Worker runs them).
-async function runOn(room, list, bundle) {
-  const files = bundle.files, ship = Object.fromEntries(files), out = [];
-  for (const v of list.filter(v => v.check.kind === 'file')) out.push({id: v.id, passed: !!fileResult(v.check, files).passed});
-  const box = list.filter(v => v.check.kind !== 'file' && v.check.kind !== 'judge');
-  if (!box.length) return out;
-  const {plan, toolchains, local} = checkPlan(room.specOf(box), files, {rows: room.installedToolchains(), placed: bundle.placed, paths: bundle.link?.paths});
-  for (const [id, x] of local) out.push({id, passed: !!x.passed, detail: x.detail});
-  if (plan.checks.length) {
-    const rep = await verifyChecks({mode: 'checks', fingerprint: 'x', snapshot_hash: await snapshotHash(ship), files: ship, plan: {...plan, syntax: []}, toolchains, limits: {total_ms: 60000}}, {isolation: []});
-    for (const c of rep.checks) out.push({id: c.id, passed: !!c.passed, detail: c.detail});
-  }
-  return out;
-}
-// Where a run is finished: every validation passes on the bundle that ships, and every shipped code byte compiled in its mode.
+// The validations, run directly on a bundle as the usual compiler runs them.
+const runOn = (room, list, bundle) => checkOn(bundle.files, list, room.specOf(list).contracts);
+// Where a run is finished: every validation passes on the bundle that ships.
 async function shipsVerified(room, label) {
   if (!room.runFinished()) return false;
   const top = await room.bundleFiles(room.roomManager());
   for (const c of await runOn(room, room.validationRows(), top)) assert.equal(c.passed, true, `${label}: ${c.id} fails on the shipped bundle (${c.detail}) though the run finished\n${tail(room)}`);
-  const dir = mkdtempSync(join(tmpdir(), 'v8-ship-')), py = [];
-  for (const [p, t] of top.files) {
-    const s = room.syntaxOf(p, top.files);
-    if (!s) continue;
-    assert.ok(s.row, `${label}: ${p} is code no row compiles`);
-    assert.equal(room.db().exec('SELECT key FROM syntax_clean WHERE key=?', room.syntaxKey(s.row, t, s.mode)).toArray().length, 1, `${label}: ${p} has no clean compile in ${s.mode || 'its mode'}`);
-    if (s.row.id === 'python') { mkdirSync(dirname(join(dir, p)), {recursive: true}); writeFileSync(join(dir, p), t); py.push(p); }
-  }
-  if (py.length) assert.equal(spawnSync('python3', ['-m', 'py_compile', ...py], {cwd: dir, env: {...process.env, PYTHONPYCACHEPREFIX: join(dir, '.pyc')}}).status, 0, `${label}: a shipped .py does not compile`);
   return true;
 }
 
@@ -174,7 +144,7 @@ test('a pass holds for its exact bundle: waking every row of a finished run on t
   assert.equal(room.get('status'), 'complete', tail(room));
   const m = at(room), before = boxes.length;
   // Each compile ran in its own box; the parts' compiles ran the validations their pieces passed again, on their own bundles.
-  assert.equal(new Set(room.spans(0, 100000).filter(s => s.kind === 'container' && s.name === 'checks').map(s => s.attrs.box?.name)).size, boxes.length);
+  assert.equal(new Set(room.spans(0, 100000).filter(s => s.kind === 'container' && s.name === 'compiler').map(s => s.attrs.box?.name)).size, boxes.length);
   assert.ok(ran(boxes, V.s1) >= 2, 'at Shouter, and again at a level above whose bundle holds more');
   for (const n of room.allNodes().filter(n => !['builder', 'compiler'].includes(n.role))) room.wake(n.id);
   await settle(room, 40);
@@ -194,35 +164,32 @@ test('a pass holds for its exact bundle: waking every row of a finished run on t
   assert.equal(await shipsVerified(room, 'after the edit'), true);
 });
 
-// ------------------------------------------------------------------ every shipped code byte compiled
-test('a file that does not compile holds the run though every validation passes and none reaches it; once it compiles the run completes, and what ships is the compiled file', {skip}, async () => {
-  const bad = {'tools/count.py': 'def count(s)\n    return len(s)\n'}, good = {'tools/count.py': 'def count(s):\n    return len(s)\n'};
-  const {room, calls} = await toolkit({leaf: leafOf({extra: {'NOTES.md': [bad, good]}})});
+// ------------------------------------------------------------------ what the room is done by
+// Owner 2026-10-16 05:30: "the room should be able to tell when its done by observing the final compiler". The runtime compiles nothing itself.
+test('a file no validation reaches is the compiler\'s to judge, not the runtime\'s: no syntax step holds the run, and it completes on its compilers\' results', {skip}, async () => {
+  const bad = {'tools/count.py': 'def count(s)\n    return len(s)\n'};
+  const {room, calls} = await toolkit({leaf: leafOf({extra: {'NOTES.md': bad}})});
   assert.equal(room.get('status'), 'complete', tail(room));
   const m = at(room);
-  assert.ok(events(room, 'checks_reported').some(e => e.actor === m.Notes && /1 file\(s\) do not compile/.test(e.body)), tail(room));
-  const notesTurns = calls.leaf.filter(u => u.prompt.deliver.some(c => c.name === 'NOTES.md'));
-  assert.equal(notesTurns.length, 2, 'its worker repaired it');
-  assert.match(notesTurns[1].complaints.join('\n'), /tools\/count\.py/);
-  // A file no contract places ships in its piece's own package directory.
+  assert.equal(calls.leaf.filter(u => u.prompt.deliver.some(c => c.name === 'NOTES.md')).length, 1, 'no complaint went to its worker');
   const shipped = await room.bundleFiles(m.Root), path = [...shipped.files.keys()].find(p => p.endsWith('/tools/count.py'));
   assert.match(path, /^components\/p_notes_[0-9a-f]{8}\/tools\/count\.py$/);
-  assert.equal(shipped.files.get(path), good['tools/count.py']);
+  assert.ok(calls.compile.some(u => u.files.includes(path)), 'the compiler had it in its box');
   assert.deepEqual(statusOf(room), ALL_PASS);
-  assert.equal(await shipsVerified(room, 'the compiled helper'), true);
 });
 
 // ------------------------------------------------------------------ the bundle that ships
 test('reach: a validation that passed in its piece fails on the bundle that ships (shout reads NOTES.md, which another piece places); the run does not complete', {skip}, async () => {
   const reads = 'import os\n\n\ndef shout(s):\n    return str(s).upper() + ("?" if os.path.exists("NOTES.md") else "!")\n';
-  const {room} = await toolkit({leaf: leafOf({answers: {shout: reads}}), budget: 30});
+  const {room} = await toolkit({leaf: leafOf({answers: {shout: reads}}), budget: 80});
   const m = at(room), top = await room.bundleFiles(m.Root), digest = await snapshotHash(top.files);
   assert.notEqual(room.get('status'), 'complete', tail(room));
   assert.equal(room.runFinished(), false);
   // Its pass at Shouter is for Shouter's bundle; at the room's manager it fails, as it fails on the files that ship.
   assert.ok(room.read(`piece_pass:${V.s1}`, null)?.at?.[m.Shouter], 'passed in its piece');
-  assert.equal(room.read('validation_status', {})[V.s1].passed, false);
-  assert.match(room.read('validation_status', {})[V.s1].detail, /HI\?/);
+  assert.notEqual(room.read('validation_status', {})[V.s1].passed, true);
+  assert.ok(events(room, 'checks_reported').some(e => e.actor === m.Root && new RegExp(`failing: [^;]*\\b${V.s1}\\b`).test(e.body)), tail(room));
+  assert.ok(room.problems("kind='run'").some(p => /HI\?/.test(p.detail)), 'what the compiler observed went down');
   const s1 = room.validationRows().find(v => v.id === V.s1);
   assert.equal(room.passedOn(s1, digest), false);
   const [shipped] = await runOn(room, [s1], top);
@@ -233,7 +200,7 @@ test('reach: a validation that passed in its piece fails on the bundle that ship
 });
 
 // ------------------------------------------------------------------ the property
-test('property: whenever a run is finished, every validation passes on the shipped bundle and every shipped code byte compiled, over random trees and random edits at random times', {skip}, async t => {
+test('property: whenever a run is finished, every validation passes on the shipped bundle, over random trees and random edits at random times', {skip}, async t => {
   let seed = 20261016;
   const rand = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
   const VARIANTS = {
@@ -288,85 +255,3 @@ test('property: whenever a run is finished, every validation passes on the shipp
   assert.ok(finished >= 3, `the property was checked on finished runs (${finished})`);
 });
 
-// ------------------------------------------------------------------ a page's scripts compile in the modes the page loads them
-const PAGE_C = [{name: 'index.html', kind: 'page', path: 'index.html', does: 'the to-do page'}, {name: 'script.js', kind: 'file', path: 'script.js', does: 'adds tasks to the list'}];
-const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path, has: [text]}});
-const PAGE_LEVEL = {contracts: PAGE_C, validations: [has('a', 'index.html', '<ul'), has('b', 'index.html', 'New task'), has('c', 'index.html', 'script.js'),
-  has('d', 'script.js', 'addEventListener'), has('e', 'script.js', 'createElement'), has('f', 'script.js', 'appendChild')], pieces: []};
-const PAGE = (tag = '<script src="script.js"></script>') => `<!doctype html>\n<html><body>\n<input id="task" placeholder="New task">\n<ul id="list"></ul>\n${tag}\n</body></html>\n`;
-const SCRIPT = 'export function add(text) {\n  const li = document.createElement("li");\n  li.textContent = text;\n  document.getElementById("list").appendChild(li);\n}\ndocument.getElementById("task").addEventListener("change", e => add(e.target.value));\n';
-const pageRoom = async (files, start = {}) => {
-  const boxes = [], r = liveRoom({split: () => PAGE_LEVEL, clef: clefBy(key => key === 'should_split' ? 0.05 : 0.9), leaf: () => deliver(files), executor: logged(boxes)});
-  if (start.base) r.env.ROOMS = {getByName: () => ({appFiles: async () => ({kind: 'levels', passed: true, room_status: 'complete', files: Object.entries(start.base).map(([path, content]) => ({path, content}))})})};
-  await r.room.start('A static web page with a to-do list.', 40, {pipeline: 'v8'}, '', start.base ? {base: {room: 'base-room-0002'}} : {});
-  await r.drain();
-  return {...r, boxes};
-};
-
-test('pagescript: a page\'s classic script is compiled as a browser reads it: export syntax there does not compile, and the run does not complete', async () => {
-  const {room} = await pageRoom({'index.html': PAGE(), 'script.js': SCRIPT});
-  const top = await room.bundleFiles(room.roomManager());
-  assert.equal(room.syntaxOf('script.js', top.files).mode, 'classic+either');
-  assert.deepEqual([...room.uncompiled(top.files)], ['script.js']);
-  assert.match(events(room, 'checks_reported').at(-1)?.body || '', /1 file\(s\) do not compile/, tail(room));
-  assert.match(JSON.stringify(room.problems('1=1').map(p => p.detail)), /script\.js: does not parse as JavaScript read as a classic script, as a page loads it/);
-  assert.notEqual(room.get('status'), 'complete', tail(room));
-  assert.equal(room.runFinished(), false);
-});
-
-test('pagescript: the same script loaded as a module compiles, and the run completes with every shipped byte compiled in its modes', async () => {
-  const {room} = await pageRoom({'index.html': PAGE('<script type="module" src="script.js"></script>'), 'script.js': SCRIPT});
-  assert.equal(room.get('status'), 'complete', tail(room));
-  const top = await room.bundleFiles(room.roomManager());
-  assert.equal(room.syntaxOf('script.js', top.files).mode, 'either+module');
-  assert.deepEqual([...room.uncompiled(top.files)], []);
-});
-
-// ------------------------------------------------------------------ a base's own code is compiled by its rows
-const baseToolkit = async base => {
-  const boxes = [], r = liveRoom({split: splitFor(), leaf: leafOf(), clef: clefFor(), executor: logged(boxes)});
-  r.env.ROOMS = {getByName: () => ({appFiles: async () => ({kind: 'levels', passed: true, room_status: 'complete', files: Object.entries(base).map(([path, content]) => ({path, content}))})})};
-  await r.room.start(GOAL, 160, {pipeline: 'v8'}, '', {base: {room: 'base-room-0001'}});
-  await r.drain();
-  return {...r, boxes};
-};
-
-test('norow: the base\'s TypeScript and shell scripts are compiled by their rows in the box, in the modes their runtimes load them; ones that do not compile hold the run', {skip}, async () => {
-  const {room, boxes} = await baseToolkit({'tools/fix.ts': 'const x: number = ;\nconsole.log(x);\n', 'tools/run.sh': '#!/bin/sh\nif then fi\n'});
-  const m = room.roomManager(), top = await room.bundleFiles(m);
-  assert.deepEqual(['tools/fix.ts', 'tools/run.sh'].map(p => room.syntaxOf(p, top.files)?.row?.id), ['typescript', 'shell']);
-  assert.ok(boxes.some(b => b.syntax.includes('tools/fix.ts') && b.syntax.includes('tools/run.sh')));
-  const issues = JSON.stringify(room.problems('1=1').map(p => p.detail));
-  // Each row's syntax step: what it printed, whole (owner 2026-10-16 05:39, 19:44: no file is read out of the compiler's words).
-  assert.match(issues, /typescript syntax: exit 1\\n--- stdout\\ntools\/fix\.ts: Expression expected/);
-  assert.match(issues, /shell syntax: exit 1\\n--- stderr\\n\.\/tools\/run\.sh: 2: Syntax error/);
-  assert.deepEqual(room.read(`compile_issues:${m}`, null).paths.sort(), ['tools/fix.ts', 'tools/run.sh']);
-  assert.notEqual(room.get('status'), 'complete', tail(room));
-  assert.equal(room.runFinished(), false);
-});
-
-// Owner 2026-10-16 05:30: "the room should be able to tell when its done by observing the final compiler. That's it": no hold for the person.
-test('norow: TypeScript and shell that compile complete the run, each compiled in its mode; a file no row describes ships as a file like any other', {skip}, async () => {
-  const base = {'tools/fix.ts': 'const x: number = 1;\nexport function f(a: string): string { return a; }\nconsole.log(x);\n', 'tools/run.sh': '#!/bin/bash\na=(1 2)\necho "${a[0]}"\n', 'bin/tool': '#!/usr/bin/env python3\nprint(1)\n', 'tools/old.hs': 'main = putStrLn "1"\n'};
-  const {room, boxes} = await baseToolkit(base);
-  const m = room.roomManager(), top = await room.bundleFiles(m);
-  assert.deepEqual(['tools/fix.ts', 'tools/run.sh', 'bin/tool', 'tools/old.hs'].map(p => room.syntaxOf(p, top.files)?.row?.id ?? null), ['typescript', 'shell', 'python', null]);
-  assert.deepEqual(room.syntaxOf('tools/fix.ts', top.files).mode, 'either');
-  assert.ok(boxes.some(b => ['tools/fix.ts', 'tools/run.sh', 'bin/tool'].every(p => b.syntax.includes(p))));
-  assert.equal(room.snapshot().pause, null, 'nothing holds for the person');
-  assert.equal(room.get('status'), 'complete', tail(room));
-  assert.deepEqual([...room.uncompiled(top.files)], []);
-  // Owner 2026-10-15 05:16/05:17 (no code type pinning): a file no row describes is a file like any other, never marked as code nothing compiled.
-  const app = await room.appFiles();
-  assert.ok(!app.unchecked?.length, JSON.stringify(app.unchecked));
-  assert.ok(app.files.some(f => f.path === 'tools/old.hs'), 'it ships');
-});
-
-test('norow: with no box inventory yet, a run whose code waits for a compile row opens the box, which reports one; the files compile in a run of their own', async () => {
-  const {room, boxes} = await pageRoom({'index.html': PAGE('<script src="script.js"></script>'), 'script.js': 'document.getElementById("task").addEventListener("change", () => { const li = document.createElement("li"); document.body.appendChild(li); });\n'},
-    {base: {'tools/fix.ts': 'const x: number = 1;\nconsole.log(x);\n'}});
-  assert.equal(room.get('status'), 'complete', tail(room));
-  assert.ok(boxes.length >= 2 && boxes[0].syntax.length === 0, 'the first box answered the inventory only');
-  assert.ok(boxes.some(b => b.syntax.includes('tools/fix.ts')));
-  assert.deepEqual([...room.uncompiled((await room.bundleFiles(room.roomManager())).files)], []);
-});
