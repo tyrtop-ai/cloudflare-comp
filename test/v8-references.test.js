@@ -44,5 +44,5 @@ test('the runtime holds no reference form: no row has an import line, and the wo
   for (const name of ['renderImport', 'browserProject']) assert.equal(toolchains[name], undefined, name);
   assert.equal(contracts.useReferences, undefined);
   assert.doesNotMatch(ROLE.worker, /reference shows|exactly as its reference/);
-  assert.equal(MESSAGES.provided({contract: 'function addItem(item) in src/list.js: adds an item'}), 'function addItem(item) in src/list.js: adds an item. Use it rather than writing your own.');
+  assert.equal(MESSAGES.provided({contract: 'function addItem(item) in src/list.js: adds an item'}), 'function addItem(item) in src/list.js: adds an item.', 'the contract as it is, with no word on what not to write');
 });

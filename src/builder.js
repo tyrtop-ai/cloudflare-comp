@@ -24,11 +24,14 @@ const fieldsOf = (name, a, fields) => {
   const unknown = Object.keys(a).filter(k => !fields.includes(k));
   return unknown.length ? `${name} has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are ${fields.join(', ')}` : '';
 };
-// A name or a reference path: letters, digits and _ $ . / @ : - only.
-const NAME = /^[A-Za-z0-9_$.\/@:-]+$/;
-const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// Every place a name stands whole: no letter, digit, _ or $ right before or after it.
-const wholeName = from => new RegExp(`(?<![A-Za-z0-9_$])${escape(from)}(?![A-Za-z0-9_$])`, 'g');
+const escape = s => s.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&'), escapeIn = s => s.replace(/[\]\\^\-[]/g, '\\$&');
+// Every place a name stands whole, as the file's language delimits its
+// names: no letter, digit, or character that language allows in a name
+// (inside, as the builder gives them) right before or after it.
+const wholeName = (from, inside) => {
+  const part = `[\\p{L}\\p{N}\\p{M}${escapeIn(inside)}]`;
+  return new RegExp(`(?<!${part})${escape(from)}(?!${part})`, 'gu');
+};
 
 // The world one session acts on. files: Map path -> text (the delivered
 // files as joined, its earlier renames in them); from: Map path -> the label
@@ -78,15 +81,16 @@ function deleteFile(w, a) {
   return {removed: path};
 }
 function rename(w, a) {
-  const bad = fieldsOf('rename', a, ['path', 'from', 'to']);
+  const bad = fieldsOf('rename', a, ['path', 'from', 'to', 'name_characters']);
   if (bad) return {error: bad};
   const path = placeOf(a);
   if (!path) return {error: 'path is the text of a relative path'};
   if (!w.files.has(path) && !w.glue.has(path)) return {error: MESSAGES.builder_no_file({path, paths: paths(w).join(', ')})};
-  for (const k of ['from', 'to']) if (!isText(a[k]) || !NAME.test(a[k])) return {error: `${k} is one name or reference path: letters, digits and _ $ . / @ : - only`};
+  for (const k of ['from', 'to']) if (!isText(a[k]) || !a[k]) return {error: `${k} is the text of one name or reference path`};
+  if (!isText(a.name_characters)) return {error: 'name_characters is the text of the characters besides letters and digits that the file\'s language allows in a name, empty for none'};
   if (a.from === a.to) return {error: 'from and to are the same'};
-  const before = textOf(w, path), after = before.replace(wholeName(a.from), () => a.to);
-  if (after === before) return {error: MESSAGES.builder_no_name({name: a.from, path})};
+  const before = textOf(w, path), after = before.replace(wholeName(a.from, a.name_characters), () => a.to);
+  if (after === before) return {error: MESSAGES.builder_no_name({name: a.from, path, inside: a.name_characters})};
   const was = before.split('\n'), now = after.split('\n'), lines = [];
   for (let i = 0; i < was.length; i++) if (was[i] !== now[i]) lines.push({line: i + 1, before: was[i], after: now[i]});
   if (!w.glue.has(path)) {

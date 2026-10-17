@@ -161,7 +161,8 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
     // stands for its calls (blockCalls): a write_file per file, an ask per
     // ask, then done or wait, all in the first round. leaf(user, n, system,
     // {round, results, tools}): n counts sessions; results are the previous
-    // round's results (parsed). A text in a later round ends the session with wait.
+    // round's results (parsed). A text in a later round ends the session with
+    // wait, offered while something the worker asked for is open.
     if(v8role==='worker'&&leaf&&input.tools){
       const round=messages.filter(m=>m.role==='assistant').length+1,last=messages.map(m=>m.role).lastIndexOf('assistant');
       const results=round>1?messages.slice(last+1).filter(m=>m.role==='tool').map(m=>({name:m.name,result:JSON.parse(m.content)})):[],tools=input.tools.map(t=>t.name);
@@ -170,6 +171,7 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
       const a=await leaf(user,calls.leaf.length,system,{round,results,tools});
       if(Array.isArray(a))return {tool_calls:a.map(c=>({name:c.name,arguments:c.arguments??{}}))};
       if(typeof a!=='string')return {response:JSON.stringify(a)};
+      if(round>1&&!tools.includes('wait'))throw new Error('a scripted worker ends its session with wait while nothing it asked for is open, and wait is not offered then');
       return {tool_calls:round===1?blockCalls(a):[{name:'wait',arguments:{summary:'no more calls'}}]};
     }
     // v8: the builder works through functions (src/builder.js). Its fake
@@ -261,13 +263,13 @@ export function joinCalls(design, texts) {
         seen.add(spec);
         // An ES module path names its file; any other names what the design or a file delivers.
         const to = named || target(stemOf(spec)) || jsDefiner(stemOf(spec), p) || paths.find(x => x.endsWith('/' + spec.split('/').pop()));
-        if (to && to !== p) calls.push({name: 'rename', arguments: {path: p, from: spec, to: /\.html?$/.test(p) && !/^\.{1,2}\//.test(spec) ? relative(p, to).replace(/^\.\//, '') : relative(p, to)}});
+        if (to && to !== p) calls.push({name: 'rename', arguments: {path: p, from: spec, to: /\.html?$/.test(p) && !/^\.{1,2}\//.test(spec) ? relative(p, to).replace(/^\.\//, '') : relative(p, to), name_characters: '_$'}});
       }
     } else if (p.endsWith('.py')) {
       for (const m of text.matchAll(/^from\s+([A-Za-z_][\w.]*)\s+import\s+/gm)) {
         const top = m[1].split('.')[0];
         if (has(`${top}.py`) || paths.some(x => x.startsWith(`${top}/`))) continue;
-        if (dirOf(p) && texts.has(`${dirOf(p)}/${top}.py`)) { calls.push({name: 'rename', arguments: {path: p, from: top, to: `.${top}`}}); continue; }
+        if (dirOf(p) && texts.has(`${dirOf(p)}/${top}.py`)) { calls.push({name: 'rename', arguments: {path: p, from: top, to: `.${top}`, name_characters: '_'}}); continue; }
         const at = contracts.some(c => c.name === top) ? definer(top, '.py') : null;
         if (!at || wrote.has(`${top}.py`)) continue;
         const folders = dirOf(at).split('/').filter(Boolean);

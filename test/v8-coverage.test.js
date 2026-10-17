@@ -115,7 +115,7 @@ const SHOUTY = 'from shout import shout\n\n\ndef loudsoft(s):\n    return Shout(
 // The room's manager's builder renames Shout in loudsoft.py; every other builder is the usual one.
 const renamer = (user, n, system, ctx) => {
   if (user.design?.children?.length !== 3) return usualBuilder(user, n, system, ctx);
-  return ctx.round === 1 ? [{name: 'rename', arguments: {path: 'loudsoft.py', from: 'Shout', to: 'shout'}}] : [{name: 'done', arguments: {summary: 'loudsoft calls shout by its name'}}];
+  return ctx.round === 1 ? [{name: 'rename', arguments: {path: 'loudsoft.py', from: 'Shout', to: 'shout', name_characters: '_'}}] : [{name: 'done', arguments: {summary: 'loudsoft calls shout by its name'}}];
 };
 test('a rename the room\'s manager\'s builder makes in its copy of a worker\'s file: its compiler runs every validation of its subtree on that bundle, the worker\'s file stays as written, and the run completes with every pass on it', {skip}, async () => {
   const r = await toolkit({split: splitFor({parts: RPARTS, contracts: [...CONTRACTS, loudsoft], validations: RVAL}), clef: clefFor(RPARTS.filter(p => p.kids).map(p => p.task)),

@@ -54,7 +54,7 @@ export function catalogue({own = [], uses = [], packages = [], base = [], source
   for (const p of base) add(p, 'base', MESSAGES.available_base());
   for (const s of sources) {
     const m = SOURCE_REF.exec(String(s?.ref ?? ''));
-    if (m?.[2]) add(s.ref, 'source', MESSAGES.available_source({part: m[2], title: sanitizeText(s.title || `S${m[1]}`).slice(0, 120)}));
+    if (m?.[2]) add(s.ref, 'source', MESSAGES.available_source({part: m[2], title: sanitizeText(s.title || `S${m[1]}`)}));
   }
   return out;
 }
@@ -95,7 +95,7 @@ export function nextHeld(cat, ref) {
 }
 // A chunk of a linked page: its text, labelled with where it was fetched from.
 export const sourceAnswer = ({id, ref, url, text, next = null}) =>
-  shapeAnswer({id, name: ref, kind: 'source', label: BROKER_LABEL.source(sanitizeText(url).slice(0, 500)), value: sanitizeText(text), next});
+  shapeAnswer({id, name: ref, kind: 'source', label: BROKER_LABEL.source(sanitizeText(url)), value: sanitizeText(text), next});
 // An existing file of the project: its text, labelled as the base repository's.
 // own: a contract of the asker names its path, so its version is placed now.
 export const baseAnswer = ({id, path, content, own = false}) =>

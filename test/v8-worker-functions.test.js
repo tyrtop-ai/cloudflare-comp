@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {levelRoom, usualClef, deliver, writeCalls, events, rowId} from './helpers/levels.js';
 import {liveRoom} from './helpers/room.js';
-import {workerWorld, workerCall} from '../src/worker.js';
+import {workerWorld, workerCall, workerTools} from '../src/worker.js';
 import {MESSAGES, TOOLS, CLEF, clefText} from '../src/prompts.js';
 import {packagePath} from '../src/assembly.js';
 
@@ -54,6 +54,15 @@ test('the worker\'s functions: each stores exactly what it is given or says exac
   assert.deepEqual(await call('wait', {summary: 'waiting for factors'}), {result: {ended: 'wait'}, end: {done: false, wait: true, summary: 'waiting for factors'}});
   assert.deepEqual((await call('spawn', {})).result, {error: 'There is no function "spawn".'});
   assert.deepEqual(TOOLS.worker.map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
+});
+
+test('the functions a worker is offered are what it can do now: wait only while something it asked for is open, so no turn of it ends waiting on nothing', () => {
+  let open = false;
+  const world = workerWorld({files: new Map(), write: async () => {}, runExamples: async () => ({}), ask: async () => ({}), outstanding: () => open});
+  assert.deepEqual(workerTools(world).map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done']);
+  open = true;
+  assert.deepEqual(workerTools(world).map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
+  assert.deepEqual(workerTools(workerWorld({})).map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done'], 'a world that says nothing is open offers no wait');
 });
 
 test('read_file of a worker that holds the project the work starts from: a path it has no file at shows that project\'s file whole; its own file at a path comes first; a path neither holds says it has no file there', async () => {
@@ -224,7 +233,7 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   const answers = room.read(`fn_answers:${w.id}`, []);
   assert.equal(answers.length, 2, 'each ask its own answer');
   for (const a of answers) assert.ok(/^fn getTicket \([0-9a-f]{8}\)$/.test(a.key) && a.kind === 'provided', a.key);
-  assert.match(answers[0].text, /^function getTicket\(id\) in store\.js: .*\. Use it rather than writing your own\.$/);
+  assert.match(answers[0].text, /^function getTicket\(id\) in store\.js: [^]*\.$/);
   assert.deepEqual(room.levelDesign(rp.id).children.find(c => c.id === w.id).calls, ['createTicket', 'getTicket']);
   assert.ok(calls.leaf.filter(isReport).at(-1).world.answers.includes(answers[0].text), 'its next turn starts with the answer');
 });
@@ -338,7 +347,8 @@ test('a complaint the worker was handed stays in its view until a session of it 
     if (round === 1) seen.push(user.complaints);
     // Session 2 never ends its turn: it reads its file until its context window is full.
     if (n === 2) return round === 1 ? [{name: 'write_file', arguments: {path: 'index.html', content: `<p>${'x'.repeat(9000)}</p>\n`}}] : [{name: 'read_file', arguments: {path: 'index.html'}}];
-    return [{name: n === 3 ? 'done' : 'wait', arguments: {summary: `session ${n}`}}];
+    // Session 1 asks, so wait is among its functions while the ask is open.
+    return [...(n === 1 ? [{name: 'ask', arguments: {need: 'the list items', name: 'listItems'}}] : []), {name: n === 3 ? 'done' : 'wait', arguments: {summary: `session ${n}`}}];
   };
   const {room, wa} = await tree(recorded().clef, leaf);
   const complain = text => room.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)', 'runtime:complaint', wa.id, `[complaint] ${text}`);
@@ -421,7 +431,7 @@ test('a manager reads its children and contracts from its level files only, neve
   assert.deepEqual(asked[0].state.contracts_offered, [{slot: 0, contract: 'file styles.css: the page styles'}]);
   assert.ok(!JSON.stringify(asked[0].state).includes('decoy'), 'nothing from the rows\' copies');
   assert.deepEqual(room.read(`fn_answers:${wa.id}`, []).map(x => x.key), ['fn styles.css']);
-  assert.match(room.read(`fn_answers:${wa.id}`, [])[0].text, /^file styles\.css: the page styles\. Use it rather than writing your own\.$/);
+  assert.match(room.read(`fn_answers:${wa.id}`, [])[0].text, /^file styles\.css: the page styles\.$/);
   assert.deepEqual(room.levelDesign(a.id).children[0].calls, ['styles.css'], 'its entry in its manager\'s level file calls it');
   assert.ok(PAGE);
 });
