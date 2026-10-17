@@ -1,6 +1,6 @@
 // v8 live 4 review: the findings on element steps and packages, each
 // reproduced as the review's probe found it.
-//  M4  input[type=text] matches HTML's default.
+//  M4  a selector runs as written (owner 2026-10-16 20:38: no widening to HTML's default).
 //  M5  an element step reads shown elements and their text as expect_text does.
 //  H2  an ask is a package's by its name, never by its need's words.
 //  M1  the language's standard library is the language's: never listed, asked for or granted.
@@ -26,7 +26,8 @@ const browserReady = (() => {
   const r = spawnSync('node', [ADAPTER], {input: JSON.stringify({checks: []}), encoding: 'utf8', timeout: 60_000, env: process.env});
   return r.status === 0 && /"inventory"/.test(r.stdout) ? '' : `Chromium or Playwright is unavailable: ${(r.stdout + r.stderr).trim().slice(0, 160)}`;
 })();
-async function runAdapter(html, checks) {
+// deadline_ms: the verification's time the adapter has (no step has a time of its own).
+async function runAdapter(html, checks, deadline_ms = 30_000) {
   const server = createServer((q, s) => { s.writeHead(200, {'content-type': 'text/html'}); s.end(html); });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -37,29 +38,34 @@ async function runAdapter(html, checks) {
       p.stdout.on('data', d => text += d);
       p.on('error', reject);
       p.on('close', () => resolve(text));
-      p.stdin.end(JSON.stringify({step_ms: 1500, check_ms: 10_000, origins: [base], checks: checks.map(c => ({...c, base_url: base}))}));
+      p.stdin.end(JSON.stringify({deadline_ms, origins: [base], checks: checks.map(c => ({...c, base_url: base}))}));
     });
     return Object.fromEntries(out.trim().split('\n').map(l => JSON.parse(l)).filter(x => 'passed' in x).map(x => [x.id, x]));
   } finally { server.close(); }
 }
 
 // ------------------------------------------------------------ M4 and M5, in Chromium
-test('M4 + M5: in Chromium, input[type=text] matches an input with no type; hidden elements are not matched; text is matched as expect_text matches it', {skip: browserReady || false}, async () => {
+// Owner 2026-10-16 20:38 (no "runtime fixing it via matching"): a selector
+// runs as written, so input[type=text] is not widened to an input with no
+// type. A step that waits for what never comes waits out the verification's
+// time (infrastructure), so each runs alone with a short one.
+test('M4 + M5: in Chromium, a selector runs as written (input[type=text] does not match an input with no type); hidden elements are not matched; text is matched as written', {skip: browserReady || false}, async () => {
   const html = '<!doctype html><html><head><style>.done{display:none}</style></head><body><h1>Todos archive</h1><input placeholder="Task"><button>Add</button>'
     + '<ul id="list"><li class="done">Buy milk</li><li>Feed cat</li></ul><div hidden><input type="text" id="tmpl"></div><svg viewBox="0 0 10 10" width="10" height="10"></svg></body></html>';
   const r = await runAdapter(html, [
-    {id: 'default', steps: [{goto: '/'}, {expect_element: {selector: 'input[type=text]'}}]},
-    {id: 'hiddenInput', steps: [{goto: '/'}, {expect_element: {selector: 'input#tmpl'}}]},
+    {id: 'asWritten', steps: [{goto: '/'}, {expect_no_element: {selector: 'input[type=text]'}}, {expect_element: {selector: 'input'}}]},
     {id: 'hiddenItem', steps: [{goto: '/'}, {expect_no_element: {selector: 'li', text: 'Buy milk'}}]},
     {id: 'shownItem', steps: [{goto: '/'}, {expect_element: {selector: 'li', text: 'Feed cat'}}]},
-    {id: 'case', steps: [{goto: '/'}, {expect_element: {selector: 'h1', text: 'TODOS'}}]},
     {id: 'svg', steps: [{goto: '/'}, {expect_element: {selector: 'svg[viewBox="0 0 10 10"]'}}]}]);
-  assert.equal(r.default.passed, true, JSON.stringify(r.default));
-  assert.equal(r.hiddenInput.passed, false);
-  assert.match(r.hiddenInput.detail, /input\[type=text\]#tmpl \(hidden\)/);
+  const [hidden, cased] = await Promise.all([
+    runAdapter(html, [{id: 'hiddenInput', steps: [{goto: '/'}, {expect_element: {selector: 'input#tmpl'}}]}], 10_000),
+    runAdapter(html, [{id: 'case', steps: [{goto: '/'}, {expect_element: {selector: 'h1', text: 'TODOS'}}]}], 10_000)]);
+  assert.equal(r.asWritten.passed, true, JSON.stringify(r.asWritten));
+  assert.deepEqual([hidden.hiddenInput.passed, hidden.hiddenInput.infrastructure], [false, true]);
+  assert.match(hidden.hiddenInput.detail, /input\[type=text\]#tmpl \(hidden\)/);
   assert.equal(r.hiddenItem.passed, true, JSON.stringify(r.hiddenItem));
   assert.equal(r.shownItem.passed, true);
-  assert.equal(r.case.passed, false, 'the same case rule as expect_text');
+  assert.deepEqual([cased.case.passed, cased.case.infrastructure], [false, true], 'the text as written, its case too');
   assert.equal(r.svg.passed, true, JSON.stringify(r.svg));
 });
 
