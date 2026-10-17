@@ -26,12 +26,10 @@ export const PATH_NAMED = new Set(['file', 'page', 'doc', 'data']);
 export const MAX_CONTRACTS = 5;
 const KEEP = 8, MAX_SERVES = 32;
 export const ROUTE_NAME = /^(?:GET|POST|PUT|PATCH|DELETE) \/\S*$/;
-// Underscores too (a script's stem, such as convert_temp, is a fine command name).
+// v7's command-name convention. Underscores too (a script's stem, such as
+// convert_temp, is a fine command name). A v8 command (facts.v8) is named as
+// written: its name is only the key its run is looked up by.
 export const COMMAND_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
-// What a v8 command name must be to run as argv[0]: one word, no whitespace
-// or shell metacharacter, not an option. A level holds commands to this only
-// (facts.argvCommands); the convention above is v7's.
-export const COMMAND_WORD = /^[A-Za-z0-9_][A-Za-z0-9_.+@%-]*$/;
 // The JavaScript row's identifier rule (C1 under v7). Under v8 the caller
 // passes the toolchain rows (facts.rows); without them a function name is
 // read as JavaScript, as v7 always did.
@@ -294,8 +292,7 @@ export function nameError(c, facts = null) {
     return '';
   }
   if (kind === 'route') return ROUTE_NAME.test(name) ? '' : `"${name}" is not a route; name it as a method and a path, such as "GET /path"`;
-  if (kind === 'command' && facts?.argvCommands && !COMMAND_WORD.test(name)) return `command "${name}": name it with one word of letters, digits and _.+@%-, starting with a letter or digit, so it runs as typed`;
-  if (kind === 'command' && !facts?.argvCommands && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter`;
+  if (kind === 'command' && !facts?.v8 && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter`;
   if (!c.path) return `${kind} "${name}" needs the path of ${kind === 'command' ? 'the file that implements it' : 'its file'}`;
   if (PATH_NAMED.has(kind) && name !== c.path) return `${kind} "${name}" must be named by its path ${c.path}`;
   return '';

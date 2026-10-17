@@ -57,7 +57,7 @@ function checkWorld(s) {
   return {paths: new Set([...all.map(c => c.path).filter(Boolean), ...s.base]), functions: new Set(all.filter(c => kindOf(c) === 'function').map(c => c.name)),
     functionPaths: new Map(all.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served, commands, executables: s.executables};
 }
-// A contract's different examples, from the validations that serve it (those held above it, and this session's): the ones that call, request or run it.
+// A contract's different examples, from the validations that serve it (those held above it, and this session's): a function's, the steps that call it.
 const examplesOf = (s, c) => ownExamples(c, [...s.held.filter(h => (c.serves || []).includes(h.id)), ...s.validations.filter(v => v.serves.includes(c.name))]);
 
 // ------------------------------------------------------------ the functions
@@ -81,7 +81,7 @@ function contract(s, a) {
   const unheld = path ? unheldPath(path) : '';
   if (unheld) return {error: unheld};
   // A function's name is its own language's (ownNameError); the other kinds' names are their kind's.
-  const bad = kind === 'function' ? ownNameError({name, path}, s.rows) : nameError({name, kind, ...(path ? {path} : {})}, {argvCommands: true});
+  const bad = kind === 'function' ? ownNameError({name, path}, s.rows) : nameError({name, kind, ...(path ? {path} : {})}, {v8: true});
   if (bad) return {error: bad};
   const row = path ? toolchainOf(path) : null;
   if (row && row.id !== 'text' && !s.ids.has(row.id)) return {error: `${path} is written in ${row.id}, which the box does not run (it runs ${listed([...s.ids])})`};
@@ -128,7 +128,7 @@ function piece(s, a) {
   const unknown = Object.keys(a).filter(k => !PIECE_FIELDS.includes(k));
   if (unknown.length) return {error: `piece has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are ${PIECE_FIELDS.join(', ')}`};
   const room = s.room();
-  if (s.pieces.length >= (room >= 2 ? room : 0)) return {error: `${roomNow(room)}, and the division has ${s.pieces.length}${room < 2 ? '; with fewer than 2 the level is not divided and goes to one worker' : ''}`};
+  if (s.pieces.length >= (room >= 2 ? room : 0)) return {error: `${roomNow(room)}, and the division has ${s.pieces.length}${room < 2 ? '; with fewer than 2 the level holds no division' : ''}`};
   if (typeof a.label !== 'string' || !a.label.trim()) return {error: 'label is a text'};
   if (s.pieces.some(p => p.label === a.label)) return {error: `a piece labelled "${a.label}" is already declared`};
   if (typeof a.task !== 'string' || !a.task.trim()) return {error: 'task is a text'};
@@ -167,23 +167,22 @@ export function levelView(s) {
 }
 // What the level still lacks: [] when nothing. Every contract that is
 // called or run (function, command, route) has three different examples
-// that call, request or run it.
+// from the validations that serve it (a function's, steps that call it).
 // When piece is offered (the level may divide), the level is a division the
 // room can create now: every manager tries to split and Clef's review judges
 // the division, so a session with fewer than two pieces hears that its
 // division is not there yet, and one with more than the room can create now
 // hears what it can (with room for fewer than two, no division: the level
 // goes to one worker once its pieces are dropped).
-const EXAMPLE_OF = {function: 'steps that call it', route: 'requests of it', command: 'checks that run it'};
 export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const n = examplesOf(s, c).length;
-    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it: ${EXAMPLE_OF[kindOf(c)]}.`);
+    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it${kindOf(c) === 'function' ? ': steps that call it' : ''}.`);
   }
   const n = s.pieces.length, room = s.divide ? s.room() : 0;
   if (s.divide && room >= 2 && n < 2) out.push(`the division has ${n} piece${n === 1 ? '' : 's'} of at least 2, each declared with piece.`);
-  if (s.divide && n && n > (room >= 2 ? room : 0)) out.push(`${roomNow(room)}, and the division has ${n}${room < 2 ? '; with fewer than 2 the level is not divided and goes to one worker' : ''}: drop_piece takes a piece out.`);
+  if (s.divide && n && n > (room >= 2 ? room : 0)) out.push(`${roomNow(room)}, and the division has ${n}${room < 2 ? '; with fewer than 2 the level holds no division' : ''}: drop_piece takes a piece out.`);
   return out;
 }
 // The level the session declared, as the room admits it: each run a check

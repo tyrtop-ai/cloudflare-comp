@@ -147,8 +147,9 @@ test('Clef questions are filled by key, and run data never enters a system promp
   assert.ok(!['scope', 'exercises', 'implementable', 'internal'].some(k => k in CLEF), 'the split review asks only split_valid and split_size');
   assert.equal(clefText('answer', {j: 1}), CLEF.answer.replace('{j}', '1'));
   for (const role of ROLES) assert.doesNotMatch(systemPrompt(role), /\$\{|\{i\}|\{j\}|\{contract\}/);
-  // A retry says only what the review judged, and asks for another division: no rule of how to divide.
-  assert.equal(RETRY.too_small(9), 'Your previous division, listed in rejected, had 9 pieces, and the review judged some too small to be worth a task of their own. Divide the assignment into larger pieces this time.');
-  assert.equal(RETRY.different, 'Your previous division, listed in rejected, was judged by the review not to be a valid division of the assignment. Divide it differently this time.');
+  // A retry says only what was wrong with the splitter's own division, and asks for another: no rule of how to divide, and no other agent named.
+  assert.equal(RETRY.too_small(9), 'Your previous division, listed in rejected, had 9 pieces, some too small to be worth a task of their own. Divide the assignment into larger pieces this time.');
+  assert.equal(RETRY.different, 'Your previous division, listed in rejected, was not a valid division of the assignment. Divide it differently this time.');
+  for (const t of [RETRY.too_small(9), RETRY.different]) assert.doesNotMatch(t, /\b(?:review|reviewer|worker|judged)\b/i);
   assert.equal(MESSAGES.unchanged({path: 'a/b'}), 'unchanged: a/b is already exactly this text.');
 });

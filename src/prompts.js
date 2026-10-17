@@ -75,7 +75,7 @@ export const TOOLS = Object.freeze({
   splitter: Object.freeze([
     {name: 'contract', description: 'Declares one contract of this level, stored exactly as given. The result says it is stored, or why it is not: a kind outside the seven, a language the box does not run, a function in a language the box has no call adapter for, or a name already declared.',
       parameters: {type: 'object', properties: {
-        name: {type: 'string', description: 'A function by a name its language accepts; a command by the one word that runs it; a route as a request method in capitals, a space and a path; a file, page, doc or data contract by its path.'},
+        name: {type: 'string', description: 'A function by a name its language accepts; a command by any name; a run that starts with that name runs its file; a route as a request method in capitals, a space and a path; a file, page, doc or data contract by its path.'},
         kind: {type: 'string', enum: KIND_LIST, description: 'What the contract is.'},
         path: {type: 'string', description: 'The relative path of its file. A file, page, doc, data or command contract has one; a function may.'},
         does: {type: 'string', description: 'What it does, in one line.'},
@@ -164,9 +164,9 @@ export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, 
 // What a retry hears about its previous answer, in the user JSON
 // (previous_answer_problems), never in the system text.
 export const RETRY = Object.freeze({
-  // A splitter's new session after Clef's review objected to its division.
-  too_small: count => `Your previous division, listed in rejected, had ${count} pieces, and the review judged some too small to be worth a task of their own. Divide the assignment into larger pieces this time.`,
-  different: 'Your previous division, listed in rejected, was judged by the review not to be a valid division of the assignment. Divide it differently this time.'
+  // A splitter's new session after its division was not admitted.
+  too_small: count => `Your previous division, listed in rejected, had ${count} pieces, some too small to be worth a task of their own. Divide the assignment into larger pieces this time.`,
+  different: 'Your previous division, listed in rejected, was not a valid division of the assignment. Divide it differently this time.'
 });
 
 // The texts the room itself composes for a v8 agent, as data. Each is a
