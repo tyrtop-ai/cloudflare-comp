@@ -169,7 +169,9 @@ test('the base\'s files the box cannot hold (a binary) ship, with no hold, and t
 test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, granted by the manager whose row holds it', {skip}, async () => {
   const split = user => { const a = splitFor()(user); return {...a, pieces: a.pieces.map(p => p.label === 'Shouter' ? {...p, packages: ['pytest', 'numpy']} : p)}; };
   const asks = {loud: [{need: 'run tests', name: 'pytest'}], 'NOTES.md': [{need: 'run tests', name: 'pytest'}]};
-  const leaf = leafOf({control: (user, n) => { const c = user.prompt.deliver.find(d => asks[d.name]); return c && n === 0 ? {summary: 'need', wait: true, ask: asks[c.name]} : null; }});
+  // Louder's ask is answered from its row within its session, so it goes on to done; Notes' ask goes to its manager, so it waits for the answer.
+  // (R4-room/chrono-3: a worker's wait is its own call, and nothing wakes it but a message.)
+  const leaf = leafOf({control: (user, n) => { const c = user.prompt.deliver.find(d => asks[d.name]); return c && n === 0 ? {summary: 'need', ...(c.name === 'loud' ? {done: true} : {wait: true}), ask: asks[c.name]} : null; }});
   // A manager whose row holds the package grants it; one without it hands the ask up.
   const clef = clefFor(undefined, {'^grant_\\d+$': 0.95, '^ask_parent$': (_k, state) => state.packages_offered ? 0.1 : 0.95});
   const r = await toolkit({split, leaf, clef});
