@@ -359,7 +359,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
    - `contract` declares one contract: a name, a kind (function, file, page, route, command, doc or data), what it does, its inputs, outputs and effects, a path, and for a page, route or command how it runs.
    - `file_check`, `judge_check`, `command_check`, `call_check`, `http_check` and `browser_check` each declare one validation of the contracts it `serves`. Each is typed in full, and its result shows the examples it renders.
    - `piece` declares one piece: a label, a task that can be made from its own words alone, and the declared contracts it delivers. It can also cite the linked-page chunks the piece needs.
-   - `level` shows everything declared so far. `done` completes the level, or says what the owner's rule still needs and the session goes on. The rule: every contract that is called or run (a function, a command or a route) has three different examples, rendered from its validations. Pages, files, documents and data owe none.
+   - `level` shows everything declared so far. `done` completes the level, or says what the owner's rule still needs and the session goes on. The rule: every contract that is called or run (a function, a command or a route) has three different examples, each a call, request or run of that contract, counted by what it does (not by the name its result is saved under). The worker still sees every example of the validations that serve its contracts. Pages, files, documents and data owe none.
 
    Each call stores exactly what it was given, or says exactly why it can't. Nothing else the model writes is read. The session has no cap on its calls. When its context window fills before `done`, the next turn starts a new session with the same functions, handed what it has declared so far; the room's turn budget bounds it.
 
@@ -417,7 +417,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
 
 The export of a v8 room is the project at its own paths, plus `.recursive/RUN.md` (how to run it, and the validation table), `.recursive/validations.json` (the levels' contracts and validations) and each manager's level file at `.recursive/levels/<manager>.json`. The runtime never writes the project's own `README.md`.
 
-**Holds.** A v8 room holds for the person: an escalation that reached the room, a grant to change an existing file (`base_confirm`), or the room's agent or depth limit (`split_capacity`: only when the limit is below what the room already holds, or a rebuild or extension adds a worker to a full room; a division or hand-down within the limits is always created). **Continue** answers the hold and wakes the row it names. The room has no other completion step: it is done when its manager's compiler observes every validation passing (step 1).
+**Holds.** A v8 room holds for the person: an escalation that reached the room, a grant to change an existing file (`base_confirm`), or the room's agent or depth limit (`split_capacity`: only when the limit is below what the room already holds, or an extension adds a worker to a room at its limit; an archived row frees its slot and a rebuild is owed its worker, so a division, hand-down or rebuild within the limits is always created). **Continue** answers the hold and wakes the row it names. The room has no other completion step: it is done when its manager's compiler observes every validation passing (step 1).
 
 ### Starting from a repo, and links in the prompt
 

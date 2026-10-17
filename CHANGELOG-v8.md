@@ -455,3 +455,15 @@ Round 5 rechecked round 4's 43 fixes (32 closed, 11 reopened) and confirmed 31 n
 - **Edges.** A base repo and a bench dataset are read whole with no deadline; a repo's own `glue/` and `.recursive/` files are its files, and the runtime's export notes are marked `runtime: true`. A grading that could not run is no round: the room is graded again until a grading observes it. Purges retry until done; no error-text match decides a retry.
 - **Records.** `rulings.md` says the manager never writes code, with the owner's quotes verbatim on their dates. The dashboard's model labels follow the pipeline. INSTALL and how-it-works lose the vendored-directory rule and the bench limit's ceiling.
 - **For the owner:** the Verification time setting, its default and its range; `drop_piece` and the short take at `done`; whether a builder file at an existing file's path goes through the grant; what a manager does with a package the box cannot install; a stalled download or a grader that never runs now waits with no bound.
+
+## Round 6 of the owner's red team
+
+Round 6 rechecked round 5's 41 fixes (33 closed, 8 reopened) and confirmed 26 new findings; six fixers took them.
+
+- **Splitter and levels.** An archived row frees its agent slot, and a manager owing a rebuild is owed its worker, so a rebuild never ends in `split_capacity`. A level handed down to one worker gives it every contract the level holds. A function name is stored as written (no v7 signature parsing). A contract's three examples are calls, requests or runs of that contract, keyed without save names. Every `piece_reach` answer is kept.
+- **Worker and builder.** `wait` is offered only while something the worker asked for is unanswered, so a room can't stall on a worker waiting for nothing. The builder's `rename` works in any language: it is given the characters its language allows in names. Linked-page titles and URLs reach the worker whole. An answer to an ask is the contract line alone.
+- **Call checks.** A function contract or call check in a language the box has no call adapter for is refused at declaration, with the reason and the extensions the box calls; a step an adapter can't build from JSON is an observed failure, not infrastructure.
+- **Box.** A box's start runs its readiness command once. A check asserts only what its validation states: no exit code inferred from output expectations, no implicit HTTP 5xx or page 4xx failure, a run ready once its ready path answers at all.
+- **Edges.** Linked pages are read whole with no deadline. A bench row's entry is used as written. Every path the person grants at Start or Continue is kept.
+- **Records.** The dashboard shows a v8 room's whole event and file history, and each link reader as an agent in the graph. INSTALL, how-it-works and trying-v8 match the code on goal length, declared contracts, prewarm life and split_capacity.
+- **Waiting on the owner** (refused by the session's permission check as weakening security): removing the box's prlimit caps, and letting a check's input file replace a bundle file in the check's own copy.

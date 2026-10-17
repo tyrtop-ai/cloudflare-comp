@@ -24,7 +24,7 @@ The room creates one manager from your prompt, and the manager's splitter states
 | Hold | Meaning | What to do |
 |---|---|---|
 | `base_confirm` | A contract would change a file of the repo the room started from, and only you can grant that | Select the files to grant and press Continue, or send a follow-up prompt that leaves the file out |
-| `split_capacity` | A rebuild or extension added a worker to a room already at its agent limit, or the limit is below what the room holds (a division or hand-down within the limits is always created) | Raise the limit and press Continue |
+| `split_capacity` | An extension added a worker to a room already at its agent limit, or the limit is below what the room holds (a division, hand-down or rebuild within the limits is always created) | Raise the limit and press Continue |
 | any other | Something nothing below could settle reached the room; its text says what | Read the text. Continue wakes the row it names, or send a follow-up prompt |
 
 ## 3. Try these goals
