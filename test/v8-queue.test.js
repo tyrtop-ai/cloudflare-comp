@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {liveRoom, events, fileBlocks, levelCalls} from './helpers/room.js';
-import {usualClef, deliver} from './helpers/levels.js';
+import {usualClef, choiceP, deliver} from './helpers/levels.js';
 import {effectiveGoal, goalView, reorderError, promptText} from '../src/amend.js';
 // After the room helper registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
@@ -57,7 +57,7 @@ const tempLeaf = user => {
   return deliver({'USAGE.md': USAGE_MD});
 };
 // Clef: a change concerns the child whose contracts name temp when it is about kelvin, and nobody when it is about a README.
-const tempClef = usualClef({'^change_\\d+$': (k, state) => /kelvin/.test(state.change) && (state.children?.[Number(k.split('_')[1])]?.contracts || []).some(l => /^command temp\b/.test(l)) ? 0.9 : 0.1});
+const tempClef = usualClef({'^route_to_\\d+$': (k, state) => state.item?.kind !== 'change' ? choiceP(k, state) : /kelvin/.test(state.item.text) && (state.children?.[Number(k.split('_').pop())]?.contracts || []).some(l => /^command temp\b/.test(l)) ? 0.9 : 0.1});
 
 test('queue: prompts queued while the first run goes wait for it; then the alarm applies each: a README no child covers is the room\'s manager\'s splitter\'s extension, a new piece with its own validations; kelvin reaches the converter\'s worker only, verbatim', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const {room, calls, drain, alarms, fire} = queueRoom({split: tempSplit, leaf: tempLeaf, clef: tempClef});

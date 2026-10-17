@@ -109,7 +109,7 @@ export const {verifyChecks}=await import('../../container/build-runner.mjs');
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
 export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test',store:given=null}={}) {
-  const calls={link:[],runner:[],leaf:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],clef:[],source:[],raw:[]};
+  const calls={link:[],runner:[],leaf:[],leafRounds:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],clef:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
@@ -144,8 +144,23 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
       if(round>2||refused.length)throw new Error('the scripted splitter\'s level was not accepted: '+JSON.stringify(refused.length?refused:results).slice(0,1500));
       return {tool_calls:round===1?levelCalls(a,{user,tools}).filter(c=>c.name!=='done'):[{name:'done',arguments:{}}]};
     }
-    if(v8role==='worker'&&leaf){calls.leaf.push(user);return send(await leaf(user,calls.leaf.length,system));}
-    if(v8role==='file'&&file){calls.file.push(user);return send(await file(user,calls.file.length,system));}
+    // v8: the worker works through functions (src/worker.js). Its fake
+    // answers each round of its session: a list of calls [{name,
+    // arguments}], or a text in today's file-block form (fileBlocks), which
+    // stands for its calls (blockCalls): a write_file per file, an ask per
+    // ask, then done or wait, all in the first round. leaf(user, n, system,
+    // {round, results, tools}): n counts sessions; results are the previous
+    // round's results (parsed). A text in a later round ends the session with wait.
+    if(v8role==='worker'&&leaf&&input.tools){
+      const round=messages.filter(m=>m.role==='assistant').length+1,last=messages.map(m=>m.role).lastIndexOf('assistant');
+      const results=round>1?messages.slice(last+1).filter(m=>m.role==='tool').map(m=>({name:m.name,result:JSON.parse(m.content)})):[],tools=input.tools.map(t=>t.name);
+      if(round===1)calls.leaf.push(user);
+      calls.leafRounds.push({session:calls.leaf.length,round,results});
+      const a=await leaf(user,calls.leaf.length,system,{round,results,tools});
+      if(Array.isArray(a))return {tool_calls:a.map(c=>({name:c.name,arguments:c.arguments??{}}))};
+      if(typeof a!=='string')return {response:JSON.stringify(a)};
+      return {tool_calls:round===1?blockCalls(a):[{name:'wait',arguments:{summary:'no more calls'}}]};
+    }
     if(v8role==='linker'){calls.link.push(user);return send(await link(user,calls.link.length,system));}
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push(user);const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
@@ -181,6 +196,21 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
 // workers. The newline before the END line is the format's, so each file's
 // text comes back exactly, its last newline included.
 export const fileBlocks=(files,control={done:true})=>[...files.map(f=>`=== FILE: ${f.path} ===\n${f.content}\n=== END FILE ===`),'=== CONTROL ===',JSON.stringify(control)].join('\n');
+// v8: a worker's file-block answer as the calls of its functions, in order:
+// write_file for each file, ask for each ask, then done (done true), wait
+// (wait true, or an answer with neither). The scripted workers of the room
+// tests keep their scenarios in this form.
+const {workerAction}=await import('../../src/worker-output.js');
+export function blockCalls(text) {
+  const raw=workerAction(text,{expect:'blocks'});
+  if(raw.parse_error)throw new Error('a scripted worker answer that is not file blocks: '+String(text).slice(0,200));
+  const summary=typeof raw.summary==='string'&&raw.summary?raw.summary:'wrote the files';
+  const asks=(Array.isArray(raw.ask)?raw.ask:raw.ask?[raw.ask]:[]).map(a=>({name:'ask',arguments:{need:a.need,...(a.name?{name:a.name}:{})}}));
+  return [...(raw.files||[]).filter(f=>typeof f.content==='string').map(f=>({name:'write_file',arguments:{path:f.path,content:f.content}})),...asks,
+    raw.done===true?{name:'done',arguments:{summary}}:{name:'wait',arguments:{summary}}];
+}
+// v8: a worker's calls that write these files ({path: text}) and end with done.
+export const writeCalls=(files,summary='wrote the files')=>[...Object.entries(files).map(([path,content])=>({name:'write_file',arguments:{path,content}})),{name:'done',arguments:{summary}}];
 export const GOAL='Build a small issue tracker that lets someone create, view, update, and delete tickets.';
 // Workers under `parent` (a manager), each done with one file. A spec with
 // no file is a sub-manager to fill in with another call.

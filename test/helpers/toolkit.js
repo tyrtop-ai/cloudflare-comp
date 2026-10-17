@@ -5,7 +5,7 @@
 // validations run in the real build runner behind fake boxes (logged).
 import {spawnSync} from 'node:child_process';
 import {liveRoom, events, snapshotHash, verifyChecks, fileBlocks} from './room.js';
-import {levelRoom, clefBy, deliver, again} from './levels.js';
+import {levelRoom, clefBy, choiceP, deliver, again} from './levels.js';
 import {checkPlan, fileResult} from '../../src/checks.js';
 export {liveRoom, events, again, deliver, fileBlocks};
 
@@ -44,7 +44,7 @@ const splits = tasks => state => [GOAL, ...tasks].some(t => String(state.assignm
 // Clef: the room's manager and the parts split; every other question says yes, unless over names it (a key pattern).
 export const clefFor = (tasks = PARTS.filter(p => p.kids).map(p => p.task), over = {}) => clefBy((key, state, input) => {
   for (const [re, v] of Object.entries(over)) if (new RegExp(re).test(key)) return typeof v === 'function' ? v(key, state, input) : v;
-  return key === 'should_split' ? splits(tasks)(state) : 0.9;
+  return key === 'should_split' ? splits(tasks)(state) : choiceP(key, state) ?? 0.9;
 });
 export const FILES = {
   shout: 'def shout(s):\n    return str(s).upper() + "!"\n',

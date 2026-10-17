@@ -151,8 +151,8 @@ test('the same tree twice gives the same ids: a second run of the room, and a sp
 });
 
 // ------------------------------------------------------------ hierarchy by parent walks
-test('a tree four deep: depth, descent, subtrees, leaves, the split bar, the depth limit, a failure\'s reason and a complaint\'s route are all read through the parent column', async () => {
-  const r = liveRoom({room_id: 'deep-room-0001'}), room = r.room;
+test('a tree four deep: depth, descent, subtrees, leaves, the split bar, the depth limit and a failure\'s reason are read through the parent column; a complaint\'s route through each manager\'s level file and its choice', async () => {
+  const r = liveRoom({room_id: 'deep-room-0001', clef: usualClef()}), room = r.room;
   room.configure({pipeline: 'v8'});
   room.set('run_nonce', 'run-1');
   const top = await room.provision(await rowId('deep-room-0001', 1, 'manager'), null, 'Top', 'the whole', [], [], [], 'manager', {seq: 1});
@@ -193,7 +193,10 @@ test('a tree four deep: depth, descent, subtrees, leaves, the split bar, the dep
   assert.match(room.failedDescendantReason(top.id), new RegExp(`^${w.id} \\(W\\): the worker broke`));
   assert.equal(room.failedDescendantReason(b.id), 'Unspecified failure');
   room.db().exec("UPDATE agents SET status='waiting' WHERE id IN (?,?)", a1.id, w.id);
-  // A complaint whose file the deep worker wrote goes down the line that holds it, one level at a time, to that worker.
+  // A complaint whose file the deep worker wrote goes down the line that holds it, one level at a time, to that worker:
+  // each manager reads its children from its own level file, and its choice (route_to) hands it on.
+  for (const [m, kids] of [[top, [a, b]], [a, [a1]], [a1, [a11]], [a11, [w]], [b, [bw]]])
+    await room.updateLevel(m.id, () => ({format: 'level/1', manager: m.id, contracts: [], children: kids.map(k => ({id: k.id, role: k.role, label: k.label, prompt: k.task, delivers: [], calls: []})), validations: [], archived: []}));
   const item = {kind: 'run', parties: [{path: 'w.js', owner: w.id, owner_path: 'w.js'}], detail: 'w.js prints the wrong value', facts: {}};
   for (const [m, next] of [[top, a], [a, a1], [a1, a11]]) {
     await room.routeComplaint(m.id, item);
@@ -212,7 +215,7 @@ test('a manager commits its level file when it admits its level and on every cha
   const store = new CommitStore();
   const ask = fileBlocks([], {summary: 'needs a database', wait: true, ask: [{need: 'a database server to keep the readings', name: 'readingsDatabase'}]});
   const split = user => user.validations_you_have ? {contracts: [CONVERT], validations: [], pieces: []} : CLI_LEVEL;
-  const {room} = await levelRoom({prompt: CLI, split, leaf: (_u, n) => n === 1 ? ask : deliver({'convert.js': CONVERT_JS}), clef: caught({'^inside$': 0.1}), store});
+  const {room} = await levelRoom({prompt: CLI, split, leaf: (_u, n) => n === 1 ? ask : deliver({'convert.js': CONVERT_JS}), clef: caught({'^ask_parent$': 0.95}), store});
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), repo = room.node(m).repo_name, writes = store.log.filter(x => x.name === repo && x.path === LEVEL_FILE);
   const [first, second] = room.allNodes().filter(n => n.role === 'worker');
@@ -229,7 +232,7 @@ test('a manager commits its level file when it admits its level and on every cha
   // The archive moves the child's entry, as it stood, to archived; the rebuild adds the new worker and keeps the rest.
   assert.deepEqual(archived.children, []);
   assert.deepEqual(archived.archived.map(({why: _, ...e}) => e), admitted.children);
-  assert.match(archived.archived[0].why, /in scope at no manager up to the room/);
+  assert.match(archived.archived[0].why, /held by no manager up to the room/);
   assert.deepEqual(rebuilt.archived, archived.archived);
   assert.deepEqual(rebuilt.children.map(c => [c.id, c.role, c.delivers]), [[second.id, 'worker', ['convert']]]);
   assert.equal(second.id, await rowId(m, 2, 'worker'), 'the rebuilt worker is its manager\'s second spawn');
@@ -256,7 +259,7 @@ test('an answered ask changes the entries that call it: the asker\'s in its mana
     return trackerLeaf(user);
   };
   // The report piece's manager does not give tickets back; the room's manager's assignment does.
-  const clef = usualClef({'^inside$': (_k, state) => state.assigned_work === TRACKER ? 0.9 : 0.1});
+  const clef = usualClef({'^ask_parent$': (_k, state) => state.assignment === TRACKER ? 0.1 : 0.95});
   const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf, clef, store});
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), rp = room.children(m).find(c => c.label === 'Ticket report'), w = room.liveChildren(rp.id)[0];
@@ -530,7 +533,7 @@ test('a rebuilt worker\'s contracts keep the validations that serve them: its pr
   const split = user => user.validations_you_have ? {contracts: [CONVERT], validations: [], pieces: []} : CLI_LEVEL;
   const prompts = [];
   const leaf = (u, n) => { prompts.push(u.prompt); return n === 1 ? ask : deliver({'convert.js': CONVERT_JS}); };
-  const {room} = await levelRoom({prompt: CLI, split, leaf, clef: caught({'^inside$': 0.1})});
+  const {room} = await levelRoom({prompt: CLI, split, leaf, clef: caught({'^ask_parent$': 0.95})});
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), [first, rebuilt] = room.allNodes().filter(n => n.role === 'worker');
   assert.equal(room.node(first.id).status, 'archived');

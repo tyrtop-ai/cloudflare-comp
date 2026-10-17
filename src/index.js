@@ -9357,7 +9357,7 @@ export class ControlRoom extends DurableObject {
     const own=name?this.designOf(id).contracts.find(f=>f.name===name):null;
     if(own) {
       const text=MESSAGES.own_contract({contract:contractLine(own)});
-      this.recordAnswer(id,{key,kind:'own',text});
+      this.recordAnswer(id,{key,kind:'provided',text});
       return {answered:text};
     }
     const up=this.agentAbove(id),request_id=crypto.randomUUID(),want=name?`${name} (${clip(need,200)})`:`"${clip(need,200)}"`;

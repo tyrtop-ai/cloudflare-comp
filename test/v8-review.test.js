@@ -37,8 +37,8 @@ test('F1: a v8 room\'s manager with contracts is never planned; an ask answered 
     asked = true;
     return {summary: 'need shout', wait: true, ask: [{need: 'upper-cases a word and adds an exclamation mark', name: 'shout'}, {need: 'shouts a word twice', name: 'loud'}]};
   }});
-  // Producing shout is the loud part's work, not Louder's: the walk stops at the loud part, whose level has it.
-  const r = await toolkit({leaf, clef: clefFor(undefined, {'^inside$': (k, state) => /loud part/.test(state.assigned_work || '') ? 0.9 : 0.1})});
+  // Producing shout is the loud part's work, not Louder's: Louder asks its parent, and the loud part, whose level has it, answers.
+  const r = await toolkit({leaf, clef: clefFor(undefined, {'^ask_parent$': (k, state) => /loud part/.test(state.assignment || '') ? 0.1 : 0.95})});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   assert.ok(r.room.promisedOf(r.room.roomManager()).length > 0, 'the room\'s manager holds contracts');
   assert.equal(r.room.planned(), false);
@@ -57,7 +57,7 @@ test('F4: a rebuilt worker is handed what the archived one was: its uses (the ca
     asked = true;
     return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]};
   }});
-  const r = await toolkit({leaf, clef: clefFor(undefined, {'^inside$': 0.1})});
+  const r = await toolkit({leaf, clef: clefFor(undefined, {'^ask_parent$': 0.95})});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const m = at(r.room), [gone, rebuilt] = r.room.children(m.Louder).filter(c => c.role === 'worker');
   assert.equal(gone.status, 'archived');
@@ -190,31 +190,32 @@ test('F8: the worker of shout reads only shout\'s own examples, never a sibling\
 });
 
 // ------------------------------------------------------------------ F9
-test('F9: Clef failing on a scope walk is asked again, then the room holds as infrastructure: nobody is archived; Continue goes on with the walk where it stopped', {skip}, async () => {
+test('F9: Clef failing on a manager\'s choice on an ask is asked again, then the room holds as infrastructure: nobody is archived; Continue goes on with the walk where it stopped', {skip}, async () => {
   let asked = false, bad = true;
   const leaf = leafOf({control: user => {
     if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
     asked = true;
     return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]};
   }});
-  const r = await toolkit({leaf, clef: clefFor(undefined, {'^inside$': () => bad ? 7 : 0.1})});
+  const r = await toolkit({leaf, clef: clefFor(undefined, {'^ask_parent$': () => bad ? 7 : 0.95})});
   const m = at(r.room);
   assert.equal(r.room.get('status'), 'paused', tail(r.room));
   assert.deepEqual(r.room.roomHolds().map(h => [h.kind, h.agent]), [['clef_blocked', m.Louder]]);
-  assert.match(r.room.roomHolds()[0].text, /Clef could not answer whether synonyms .* is in its assignment at "Louder": .*Nothing was decided on it; Continue asks again\./s);
+  assert.match(r.room.roomHolds()[0].text, /Clef could not answer which function answers the ask for synonyms at "Louder": .*Nothing was decided on it; Continue asks again\./s);
   assert.equal(events(r.room, 'clef_retry').length, 2, 'asked again twice first');
   assert.deepEqual(r.room.allNodes().filter(n => n.status === 'archived'), [], 'a failure is never read as out of scope');
-  assert.ok(!events(r.room, 'scope_walk').length);
+  assert.ok(!events(r.room, 'manager_choice').length);
   bad = false;
   await again(r, 60);
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  assert.deepEqual(events(r.room, 'scope_walk').map(e => e.actor), [m.Louder, m['Loud part'], m.Root], 'the walk went on from Louder, where it stopped');
+  assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder, m['Loud part'], m.Root], 'the walk went on from Louder, where it stopped: a chain of ask_parent calls');
+  assert.ok(events(r.room, 'manager_choice').every(e => /: ask_parent\(need\) p=0\.950;/.test(e.body)));
   assert.equal(r.room.allNodes().filter(n => n.status === 'archived').length, 1, 'archived on answers below the bar at every level');
 });
 test('F9: Clef failing on a change\'s routing holds the room as infrastructure: no splitter extends the level; Continue routes it to the child it concerns, and the change lands', {skip}, async () => {
   let bad = false;
-  const pick = (key, state) => { const t = state.children?.[Number(key.split('_')[1])]?.responsibility || ''; return bad ? 7 : /loud part/.test(t) || t === 'Write shout' ? 0.9 : 0.1; };
-  const r = await toolkit({clef: clefFor(undefined, {'^change_\\d+$': pick})});
+  const pick = (key, state) => { const t = state.children?.[Number(key.split('_').pop())]?.task || ''; return bad ? 7 : /loud part/.test(t) || t === 'Write shout' ? 0.9 : 0.1; };
+  const r = await toolkit({clef: clefFor(undefined, {'^route_to_\\d+$': pick})});
   assert.equal(r.room.get('status'), 'complete');
   bad = true;
   const splits = r.calls.split.length;

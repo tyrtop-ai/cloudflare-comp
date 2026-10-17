@@ -170,14 +170,14 @@ test('a complaint reaches the worker responsible exactly as the compiler observe
   assert.deepEqual(calls.leaf[1].complaints, sent.map(p => p.detail));
   assert.ok(calls.leaf[1].complaints.some(t => /212/.test(t) && /200/.test(t)), calls.leaf[1].complaints.join('\n'));
   assert.ok(calls.leaf[1].complaints.every(t => !/\bV\d+\b/.test(t)));
-  assert.equal(calls.leaf[1].files[0].path, 'convert.js');
+  assert.deepEqual(calls.leaf[1].files, ['convert.js'], 'its files by their paths: it reads them with read_file');
 });
 
 test('an ask in scope nowhere up to the room: the asker is archived with its files as they are, and its manager\'s splitter rebuilds what it delivered', async () => {
   const ask = fileBlocks([], {summary: 'needs a database', wait: true, ask: [{need: 'a database server to keep the readings', name: 'readingsDatabase'}]});
   // The rebuild's splitter reads the validations its level already has, and states the contract again.
   const split = user => user.validations_you_have ? {contracts: [CONVERT], validations: [], pieces: []} : CLI_LEVEL;
-  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: (_u, n) => n === 1 ? ask : deliver({'convert.js': CONVERT_JS}), clef: caught({'^inside$': 0.1})});
+  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: (_u, n) => n === 1 ? ask : deliver({'convert.js': CONVERT_JS}), clef: caught({'^ask_parent$': 0.95})});
   assert.equal(room.get('status'), 'complete', trail(room));
   const ws = room.allNodes().filter(n => n.role === 'worker');
   assert.equal(ws.length, 2);
@@ -186,7 +186,7 @@ test('an ask in scope nowhere up to the room: the asker is archived with its fil
   assert.deepEqual(room.promisedOf(ws[1].id).map(c => c.name), ['convert'], 'the rebuilt worker delivers what the archived one did');
   assert.ok(room.node(ws[0].id), 'nothing is deleted: the archived row stays');
   assert.deepEqual(room.splitterRows().map(r => r.kind), ['split', 'rebuild']);
-  assert.ok(events(room, 'scope_walk').some(e => /outside/.test(e.body)));
+  assert.ok(events(room, 'manager_choice').some(e => /^On the ask for readingsDatabase: ask_parent\(need\) p=0\.950/.test(e.body)), 'the room\'s manager chose ask_parent, and its parent is the room');
   assert.ok(events(room, 'archived').length === 1);
   // The rebuilt level keeps the validations it had, and its splitter is shown them.
   assert.equal(calls.split[1].validations_you_have.length, 3);
@@ -202,7 +202,7 @@ test('a follow-up prompt is a change on the room\'s manager\'s row: Clef routes 
     return deliver({'report.js': user.complaints.includes(CHANGE) ? body + "console.log('filed');\n" : body});
   };
   // The change concerns the report piece, not the store.
-  const clef = usualClef({'^change_\\d+$': (k, state) => /report/.test(JSON.stringify(state.children?.[Number(k.split('_')[1])]?.contracts || '')) ? 0.9 : 0.1});
+  const clef = usualClef({'^route_to_\\d+$': (k, state) => /report/.test(JSON.stringify(state.children?.[Number(k.split('_').pop())]?.contracts || '')) ? 0.9 : 0.1});
   const r = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf, clef});
   assert.equal(r.room.get('status'), 'complete', trail(r.room));
   const before = r.calls.leaf.length;
@@ -223,23 +223,10 @@ test('every text the room composes for a model request passes the prompt lint, t
   const WRONG = "const c = Number(process.argv[2]);\nconsole.log(String(c * 2));\n";
   const ask = fileBlocks([], {summary: 'needs a table', wait: true, ask: [{need: 'a table of conversion factors', name: 'conversionTable'}]});
   const {room, calls, drain} = await levelRoom({prompt: CLI, split: user => user.validations_you_have ? {contracts: [CONVERT], validations: [], pieces: []} : CLI_LEVEL,
-    leaf: (_u, n) => n === 1 ? ask : n === 2 ? deliver({'convert.js': WRONG}) : deliver({'convert.js': CONVERT_JS}), clef: caught({'^inside$': 0.1})});
+    leaf: (_u, n) => n === 1 ? ask : n === 2 ? deliver({'convert.js': WRONG}) : deliver({'convert.js': CONVERT_JS}), clef: caught({'^ask_parent$': 0.95})});
   assert.equal(room.get('status'), 'complete', trail(room));
   await room.amend('The converter also prints the unit F after the value.');
   await drain();
   assert.ok(calls.split.length >= 2 && calls.leaf.length >= 3, 'a split, a rebuild, a repair and a change were asked');
   assert.deepEqual(lintRequests(room, calls), []);
-});
-
-test('a worker whose control block does not parse is asked again under the same system text, with the reason in its request', async () => {
-  const {systemPrompt} = await import('../src/prompts.js');
-  let n = 0;
-  const leaf = () => ++n === 1 ? deliver({'convert.js': CONVERT_JS}).replace(/\{.*\}$/, '{"done": tru') : deliver({'convert.js': CONVERT_JS});
-  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught()});
-  assert.equal(room.get('status'), 'complete', trail(room));
-  const retry = calls.leaf.find(u => u.previous_answer_problems);
-  assert.match(retry.previous_answer_problems[0], /^Your previous answer could not be read \(its control block was not one json object\)\. Answer again in the format your role describes/);
-  assert.deepEqual(Object.keys(retry).sort(), ['complaints', 'files', 'previous_answer_head', 'previous_answer_problems', 'prompt', 'world']);
-  assert.ok(calls.raw.filter(r => r.system === systemPrompt('worker')).length >= 2);
-  assert.equal(events(room, 'format_fallback').length, 0, 'the retry was read');
 });

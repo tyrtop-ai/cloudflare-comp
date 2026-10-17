@@ -2,15 +2,16 @@
 // starts from a base repo (a fake tarball) and two linked pages (a fake
 // fetch; the network is never reached). Each worker's world lists what
 // exists for it (`available`): what it delivers, the base files granted to
-// it and the chunks it holds. It asks by name in its control block: a
-// granted file comes back as its text, labelled as the base repository's;
-// a chunk it holds comes back whole, labelled with the page it was fetched
-// from; a name outside its world hears the one wording for absence, which
-// names only its world. Every request the room composed passes the prompt lint.
+// it and the chunks it holds. It asks by name with its ask function, and
+// the function's result answers at once: a granted file comes back as its
+// text, labelled as the base repository's; a chunk it holds comes back
+// whole, labelled with the page it was fetched from; a name outside its
+// world hears the one wording for absence, which names only its world.
+// Every request the room composed passes the prompt lint.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events} from './helpers/room.js';
 import {lintRequests} from './helpers/levels.js';
 import {chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, BROKER_LABEL, MESSAGES, systemPrompt} from '../src/prompts.js';
@@ -64,18 +65,14 @@ const sourceModel = (user, system) => system.startsWith('Summarise') ? `Gist of 
 // Clef: the room's manager divides and nothing else does; every other question passes.
 const clefFor = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
   k === 'should_split' ? (String(input.state.assignment).startsWith(goal) ? 0.9 : 0.05) : 0.9}]))});
-// Workers by the contracts they deliver: their answers in order, the last repeated.
-const scripted = answers => {
-  const seen = new Map();
-  return user => {
-    const key = user.prompt.deliver.map(c => c.name).join(','), list = answers[key];
-    if (!list) return fileBlocks([], {summary: 'nothing to do', done: true});
-    const n = seen.get(key) || 0; seen.set(key, n + 1);
-    return list[Math.min(n, list.length - 1)];
-  };
+// Workers by the contracts they deliver: in the first round of their session they ask by name ([name, need] pairs),
+// and in the next, having read the answers, they write their files and are done.
+const scripted = answers => (user, _n, _system, {round}) => {
+  const a = answers[user.prompt.deliver.map(c => c.name).join(',')];
+  if (!a) return [{name: 'done', arguments: {summary: 'nothing to do'}}];
+  if (round === 1) return a.asks.map(([name, need]) => ({name: 'ask', arguments: {need, name}}));
+  return [...a.files.map(([path, content]) => ({name: 'write_file', arguments: {path, content}})), {name: 'done', arguments: {summary: 'wrote the files'}}];
 };
-const asks = list => '=== CONTROL ===\n' + JSON.stringify({summary: 'asking', wait: true, ask: list.map(([name, need]) => ({need, name}))});
-const wrote = (files, summary = 'wrote the files') => fileBlocks(files.map(([path, content]) => ({path, content})), {summary, done: true});
 const trace = room => events(room).slice(-20).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 240)}`).join('\n');
 // Refusal wording the broker never uses: it says what is there.
 const REFUSAL = /\b(?:refus\w*|not allowed|forbidden|denied|permission|may not|cannot|can't|must not|never|do not|don't|granted|blocked|restricted|unauthori[sz]ed)\b/i;
@@ -107,16 +104,18 @@ const LEVEL = {contracts: [D.notes, D.faq, D.shout],
 
 test('broker: a worker reads its granted file, a chunk it holds, and the neutral answer for anything else; its own contract is answered in contract terms', async () => {
   const {room, calls, drain, fetch} = brokerRoom({goal: GOAL, level: LEVEL, answers: {
-    'src/shout.js': [asks([['src/shout.js', 'the shout as the project has it'], ['bin/widget.js', 'the command that calls the shout']]), wrote([['src/shout.js', LOUDER]])],
-    'NOTES.md': [asks([['S2#3', 'the third part of the guide'], ['package.json', 'the project manifest'], ['S1#2', 'the fields of the format']]),
-      wrote([['NOTES.md', '# Notes\n\nRepair the widget as the guide says.\n']])],
-    'FAQ.md': [asks([['FAQ.md', 'the questions file']]), wrote([['FAQ.md', '# FAQ\n\nWhat is a record? One line.\n']])]}});
+    'src/shout.js': {asks: [['src/shout.js', 'the shout as the project has it'], ['bin/widget.js', 'the command that calls the shout']], files: [['src/shout.js', LOUDER]]},
+    'NOTES.md': {asks: [['S2#3', 'the third part of the guide'], ['package.json', 'the project manifest'], ['S1#2', 'the fields of the format']],
+      files: [['NOTES.md', '# Notes\n\nRepair the widget as the guide says.\n']]},
+    'FAQ.md': {asks: [['FAQ.md', 'the questions file']], files: [['FAQ.md', '# FAQ\n\nWhat is a record? One line.\n']]}}});
   assert.deepEqual(await start(room, GOAL), {status: 'running'});
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
   assert.ok(fetch.calls.includes(GUIDE_URL) && fetch.calls.includes(FORMAT_URL));
   const [shout, notes, faq] = room.children(room.roomManager()).filter(c => c.role === 'manager').map(c => room.children(c.id).find(k => k.role === 'worker'));
   const turns = name => calls.leaf.filter(u => u.prompt.deliver.some(c => c.name === name)).map(u => u.world);
+  // What each ask of a worker's session answered, in order: its function's results, read in the session's next round.
+  const answered = name => calls.leafRounds.filter(r => r.round === 2 && calls.leaf[r.session - 1].prompt.deliver.some(c => c.name === name)).flatMap(r => r.results.filter(x => x.name === 'ask').map(x => x.result.answered));
 
   // ---- the world: only what exists for each worker
   const mine = list => (list || []).filter(e => !e.is.startsWith('an installed package'));
@@ -133,19 +132,18 @@ test('broker: a worker reads its granted file, a chunk it holds, and the neutral
 
   // ---- a granted file: its text, labelled as the base repository's
   assert.deepEqual(room.grantedBase(shout.id), ['src/shout.js']);
-  const keeper = turns('src/shout.js')[1];
-  const [own, other] = keeper.answers;
+  const [own, other] = answered('src/shout.js');
   assert.deepEqual(own, {name: 'src/shout.js', label: BASE_LABEL, value: BASE_FILES['src/shout.js'], facts: {placed_when: 'now'}});
   // ---- an existing file outside its world: the neutral answer, naming only its world
   assert.deepEqual(other, {name: 'bin/widget.js', label: BROKER_LABEL.none, value: 'Nothing is available under the name bin/widget.js. Available: src/shout.js.'});
   assert.doesNotMatch(other.value, REFUSAL);
-  assert.equal(keeper.answers_note, MESSAGES.answers_note());
+  assert.equal(turns('src/shout.js').length, 1, 'answered in the session that asked: no second turn');
   assert.equal((await room.bundleFiles(room.roomManager())).files.get('src/shout.js'), LOUDER, 'its version is placed at the path');
 
   // ---- a held chunk: whole, labelled with the page it was fetched from; another page's chunk is none
   const chunks = chunkText(GUIDE_PAGE, 6000), held = turns('NOTES.md');
   assert.ok(held[0].sources.find(s => s.ref === 'S2#3').gist_only, 'the world carried only its gist');
-  const after = held.at(-1).answers, byName = name => after.find(a => a && typeof a === 'object' && a.name === name);
+  const after = answered('NOTES.md'), byName = name => after.find(a => a && typeof a === 'object' && a.name === name);
   assert.deepEqual(byName('S2#3'), {name: 'S2#3', label: `untrusted: fetched from ${GUIDE_URL}`, value: chunks[2]});
   assert.deepEqual(byName('package.json'), {name: 'package.json', label: BROKER_LABEL.none, value: noneText('package.json', room.catalogue(notes.id))});
   assert.equal(byName('package.json').value, 'Nothing is available under the name package.json. Available: NOTES.md, S2#1, S2#2, S2#3.');
@@ -157,14 +155,13 @@ test('broker: a worker reads its granted file, a chunk it holds, and the neutral
   // The broker's answers took no hop up the line.
   assert.equal(events(room, 'broker_answer').length, 5);
   assert.deepEqual(events(room, 'broker_answer').map(e => e.actor).sort(), [notes.id, notes.id, notes.id, shout.id, shout.id].sort());
-  assert.equal(events(room, 'scope_walk').length, 0);
+  assert.equal(events(room, 'manager_choice').length, 0, 'answered by the broker: no manager chose anything');
 
   // ---- nothing outside its world reached a worker, and every answer stayed in the user JSON
   assert.ok(!JSON.stringify(turns('FAQ.md')[0]).includes(chunks[2]), 'a chunk it does not hold never reaches it');
   for (const r of calls.raw.filter(r => r.system === systemPrompt('worker'))) assert.ok(!r.system.includes(BASE_FILES['src/shout.js']));
   assert.equal(room.node(faq.id).status, 'done');
   // Its own contract, asked for: answered at once in contract terms.
-  assert.equal(turns('FAQ.md')[1].answers.length, 1);
-  assert.equal(turns('FAQ.md')[1].answers[0], MESSAGES.own_contract({contract: 'doc FAQ.md: common questions about the widget'}));
+  assert.deepEqual(answered('FAQ.md'), [MESSAGES.own_contract({contract: 'doc FAQ.md: common questions about the widget'})]);
   assert.deepEqual(lintRequests(room, calls), []);
 });

@@ -171,5 +171,5 @@ test('packages across pieces: each piece holds its parent\'s packages of its lan
   assert.deepEqual(names(worker('Notes')), ['pytest']);
   assert.deepEqual(names(m.Notes), ['pytest'], 'every row between holds it too');
   assert.match(events(r.room, 'package_granted').find(e => e.actor === m.Root).body, /granted pytest to "Notes"/);
-  assert.ok(!events(r.room, 'scope_walk').length && !events(r.room, 'level_extend').length, 'a package ask never walks the levels as a contract ask');
+  assert.ok(!events(r.room, 'manager_choice').length && !events(r.room, 'level_extend').length, 'a package ask never reaches a manager as a contract ask');
 });

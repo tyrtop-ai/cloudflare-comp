@@ -3,21 +3,46 @@
 // whose models are scripted by role. The splitter answers levels, workers
 // answer file blocks, and Clef answers every question by its key (p(key,
 // state) → a probability), so a test states only what it decides.
-import {liveRoom, fileBlocks, events, rowId, LEVEL_FILE, LEVELS_DIR, ControlRoom} from './room.js';
+import {liveRoom, fileBlocks, blockCalls, writeCalls, events, rowId, LEVEL_FILE, LEVELS_DIR, ControlRoom} from './room.js';
 import {lintText, composedTexts} from './prompt-lint.js';
 import {contractLine} from '../../src/contracts.js';
 import {contractExamples, checkSummary} from '../../src/validations.js';
-export {fileBlocks, events, rowId, LEVEL_FILE, LEVELS_DIR};
+export {fileBlocks, blockCalls, writeCalls, events, rowId, LEVEL_FILE, LEVELS_DIR};
 
 // Clef's answer to a request: every question asked, each with p(key, state).
 export const clefBy = p => input => ({answers: Object.fromEntries(Object.keys(input.questions || {}).map(k => [k, {noul: p(k, input.state || {}, input)}]))});
+// A manager's choice (src/index.js managerChoice), as a sensible Clef
+// scores it from the state it reads: a complaint goes to the child that
+// wrote a file it names or delivers a contract it concerns (else its
+// splitter rebuilds what no child delivers); an ask is answered by the
+// contract it names, else the first offered, else the level is extended,
+// and asked one level up last; a change goes to the first child. null: the
+// key is no choice's.
+export function choiceP(key, state = {}) {
+  const item = state.item || {}, kid = state.children?.[Number(key.split('_').pop())];
+  if (item.kind === 'complaint') {
+    if (/^route_to_\d+$/.test(key)) return (kid?.wrote || []).length || (kid?.contracts || []).some(l => (item.concerns?.contracts || []).includes(l)) ? 0.9 : 0.3;
+    if (key === 'extend') return 0.5;
+  }
+  if (item.kind === 'ask') {
+    if (/^answer_\d+$/.test(key)) { const c = state.contracts_offered?.[Number(key.split('_').pop())]?.contract || ''; return item.expected_name && new RegExp(`(^|\\s)${item.expected_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(c) ? 0.95 : 0.9; }
+    if (key === 'extend') return 0.85;
+    if (key === 'ask_parent') return 0.1;
+  }
+  if (item.kind === 'change') {
+    if (/^route_to_\d+$/.test(key)) return 0.9;
+    if (key === 'extend') return 0.5;
+  }
+  return null;
+}
 // The usual Clef: the room's manager divides (its pre-grade is above the
-// floor), any level whose contracts were given is caught (one worker), and
-// every review, scope and routing question says yes.
+// floor), any level whose contracts were given is caught (one worker), a
+// manager chooses as choiceP says, and every review, scope and judging
+// question says yes.
 export const usualClef = (overrides = {}) => clefBy((key, state, input) => {
   for (const [re, v] of Object.entries(overrides)) if (new RegExp(re).test(key)) return typeof v === 'function' ? v(key, state, input) : v;
   if (key === 'should_split') return state.contracts?.length ? 0.05 : 0.9;
-  return 0.9;
+  return choiceP(key, state) ?? 0.9;
 });
 
 // A room started from the prompt on the v8 pipeline, run until it settles.

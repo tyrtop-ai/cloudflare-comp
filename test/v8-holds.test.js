@@ -8,6 +8,7 @@
 // Continue runs the held parts again, and the boxes stay bounded.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {choiceP} from './helpers/levels.js';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, logged, at, tail, runsBy, live, exported, call, FILES, GOAL, skip} from './helpers/toolkit.js';
 const {MAX_REBUILDS, FREE_TURNS_BASE, FREE_TURNS_PER_ROW} = await import('../src/index.js');
 
@@ -46,8 +47,8 @@ test('two holds (selfwait): two branches whose workers change nothing each escal
 const X = [call('x1', ['shout', 'whisper'], 'shout', 'hey', 'HEY!!'), call('x2', ['shout', 'whisper'], 'shout', 'b', 'B!!'), call('x3', ['shout', 'whisper'], 'shout', 'Oh', 'OH!!')];
 const withX = split => user => { const a = split(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...X]}; };
 for (const [name, other] of [['crosswait: Clef gives the room\'s complaint to the other part', true], ['selfwait: Clef gives it to the part that writes shout', false]]) test(`held (${name}); its worker changes nothing, the room holds with a reason, and each Continue runs the room's validations again`, {skip}, async () => {
-  const pick = (key, state) => { const kids = (state.children || []).map(c => c.responsibility); const quiet = kids.findIndex(t => /quiet/.test(t)), i = Number(key.split('_')[1]); return (i === quiet) === other ? 0.9 : 0.1; };
-  const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^owner_\\d+$': pick}), budget: 80});
+  const pick = (key, state) => { const kids = (state.children || []).map(c => c.task); const quiet = kids.findIndex(t => /quiet/.test(t)), i = Number(key.split('_').pop()); return (i === quiet) === other ? 0.9 : 0.1; };
+  const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.item?.kind === 'complaint' && state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), budget: 80});
   const m = at(r.room), routed = events(r.room, 'complaint_routed').filter(e => e.actor === m.Root);
   assert.ok(routed.length > 0 && routed.every(e => e.recipient === (other ? m['Quiet part'] : m['Loud part'])), tail(r.room));
   assertHeld(r.room, 'end');
@@ -66,8 +67,8 @@ test('held (waitprobe2): the room\'s complaint goes to Notes, whose worker rewri
   const XN = X.map(v => ({...v, serves: ['shout', 'NOTES.md']}));
   let notes = 0;
   const split = user => { const a = splitFor()(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...XN]}; };
-  const pick = (key, state) => { const i = Number(key.split('_')[1]); return /NOTES/.test(state.children?.[i]?.responsibility || '') ? 0.9 : 0.1; };
-  const r = await toolkit({split, clef: clefFor(undefined, {'^owner_\\d+$': pick}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 80});
+  const pick = (key, state) => { const i = Number(key.split('_').pop()); return /NOTES/.test(state.children?.[i]?.task || '') ? 0.9 : 0.1; };
+  const r = await toolkit({split, clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 80});
   const m = at(r.room);
   assert.ok(notes >= 3, 'Notes was given the complaints');
   assertHeld(r.room, 'end', ['checks_exhausted']);
@@ -85,7 +86,7 @@ test('held (waitprobe2): the room\'s complaint goes to Notes, whose worker rewri
 // ------------------------------------------------------------------ F3
 const asker = () => leafOf({control: user => user.prompt.deliver.some(c => c.name === 'loud') ? {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]} : null});
 test('a stuck rebuild cycle (every rebuilt worker asks again for what no manager covers) ends at a room hold within a bounded number of turns and events; Continue gives it one more bounded cycle', {skip}, async () => {
-  const r = await toolkit({leaf: asker(), clef: clefFor(undefined, {'^inside$': 0.1}), budget: 60});
+  const r = await toolkit({leaf: asker(), clef: clefFor(undefined, {'^ask_parent$': 0.95}), budget: 60});
   const m = at(r.room), archived = () => r.room.allNodes().filter(n => n.status === 'archived').length;
   assertHeld(r.room, 'end', ['split_failed']);
   assert.deepEqual(holds(r.room), [['split_failed', m.Louder]]);
@@ -134,7 +135,7 @@ test('a change whose extension cannot be stated holds the room, which never says
   let fail = true;
   const base = splitFor();
   const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [REVERSE], validations: REVERSED, pieces: []}) : base(user);
-  const r = await toolkit({split, leaf: leafOf({answers: {reverse: REVERSE_PY}}), clef: clefFor(undefined, {'^change_': 0.1})});
+  const r = await toolkit({split, leaf: leafOf({answers: {reverse: REVERSE_PY}}), clef: clefFor(undefined, {'^route_to_': 0.1})});
   assert.equal(r.room.get('status'), 'complete');
   assert.equal((await r.room.appFiles()).passed, true);
   const out = await r.room.amend('Also add a function that reverses a word.');
@@ -164,7 +165,7 @@ test('an ask in scope at a manager whose splitter cannot extend its level: the r
   const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [{...REVERSE}], validations: REVERSED, pieces: []}) : base(user);
   const leaf = leafOf({answers: {reverse: REVERSE_PY, loud: user => (user.world.answers || []).length ? 'from shout import shout\nfrom reverse import reverse\n\n\ndef loud(s):\n    return shout(s) + shout(s)\n' : FILES.loud},
     control: (user, n) => user.prompt.deliver.some(c => c.name === 'loud') && !(user.world.answers || []).length ? {summary: 'need reverse', wait: true, ask: [{need: 'reverses a word', name: 'reverse'}]} : null});
-  const r = await toolkit({split, leaf, clef: clefFor(undefined, {'^match_': 0.1})});
+  const r = await toolkit({split, leaf, clef: clefFor(undefined, {'^answer_': 0.1})});
   const m = at(r.room), worker = r.room.children(m.Louder).find(c => c.role === 'worker');
   assertHeld(r.room, 'end', ['split_failed']);
   assert.deepEqual(holds(r.room), [['split_failed', m.Louder]]);
