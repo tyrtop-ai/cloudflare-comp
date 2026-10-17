@@ -6,7 +6,7 @@
 // themselves are test/splitter.test.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {commandArgv, readCheck, runOf, runsOf, servedRun, renderExample, checkExamples, contractExamples, checkSummary, internalCandidate,
+import {commandArgv, readCheck, runOf, runsOf, servedRun, renderExample, checkExamples, contractExamples, checkSummary,
   EXAMPLES_PER_CONTRACT} from '../src/validations.js';
 
 const ctx = (extra = {}) => ({paths: new Set(['README.md', 'convert.py', 'conv.py', 'index.html']), functions: new Set(['to_f', 'to_c', 'other']),
@@ -144,6 +144,4 @@ test('renderExample and contractExamples: a validation as the example a worker r
   assert.deepEqual(checkExamples({kind: 'file', path: 'a.css'}), ['a.css exists']);
   assert.equal(checkSummary({kind: 'judge', path: 'README.md', question: 'Q?'}), 'judge README.md: Q?');
   assert.equal(checkSummary({kind: 'command', run: 'convert 1 C', expect: {exit: 0}}), 'command: convert 1 C → it exits 0');
-  assert.equal(internalCandidate({kind: 'file', path: 'app.js', has: ['function add']}), true, 'a text looked for inside code');
-  assert.equal(internalCandidate({kind: 'file', path: 'README.md', has: ['## Run']}), false);
 });

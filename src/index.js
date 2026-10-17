@@ -298,9 +298,6 @@ export const SPLIT_ATTEMPTS = 3;
 // A splitter row's output: what its session called, with each result, and the level it declared (null when it ended without done).
 export const SPLIT_CALLS_KEPT = 200;
 export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds: out.rounds, calls: out.transcript.slice(-SPLIT_CALLS_KEPT), level: out.level});
-// v8: a Clef mark below this reads as a doubt about a validation: shown
-// beside it, and first in a hold's text; the validation is never removed.
-export const VALIDATION_DOUBT_BAR = 0.5;
 // One room hold per row it names (a grant has one of its own).
 const holdKey = h => h.kind === 'base_confirm' ? 'base_confirm' : h.agent ? `agent:${h.agent}` : `kind:${h.kind}`;
 // v8: every row's id is <role>-<hex16>: the first 16 hex digits of the
@@ -1174,7 +1171,7 @@ export class ControlRoom extends DurableObject {
   levelsHead() {
     const status=this.validationStatus(),held=new Map(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'checks:%'").flatMap(r=>parse(r.value,[]).map(v=>[v,r.key.slice('checks:'.length)])));
     return {room_manager:this.roomManager(),validation_status:status,
-      validations:this.validationRows().map(v=>({id:v.id,level:v.level,held:held.get(v.id)||'',serves:v.serves,kind:v.check?.kind||'',check:checkSummary(v.check),...(v.says?{says:v.says}:{}),notes:v.notes})),
+      validations:this.validationRows().map(v=>({id:v.id,level:v.level,held:held.get(v.id)||'',serves:v.serves,kind:v.check?.kind||'',check:checkSummary(v.check),...(v.says?{says:v.says}:{})})),
       levels:this.levelFiles().map(f=>{const l=this.levelDesign(f.manager);return {...f,label:this.node(f.manager)?.label||'',children:l?.children.length||0,archived:l?.archived.length||0,contracts:l?.contracts.length||0,validations:l?.validations.length||0};}),
       splitters:this.splitterRows().map(x=>({...x,verdict:this.read(`split_attempts:${x.manager}`,[]).findLast(a=>a.splitter===x.id)?.outcome||''})),
       compilers:this.levelCompilers()};
@@ -1449,7 +1446,7 @@ export class ControlRoom extends DurableObject {
     for(const f of this.levelFiles())levels.push({...f,content:await this.indexedContent(f.manager,LEVEL_FILE)});
     app.levels=levels.map(({content:_,...f})=>f);
     // The runtime's notes go where the project holds no file: a file the agents placed there is the one that ships.
-    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,spec,status)+baseNotes(meta,pass)},{path:'.recursive/validations.json',content:JSON.stringify({contracts:spec.contracts,validations:spec.validations.map(({notes:_,...v})=>v)},null,2)+'\n'},
+    const notes=[{path:'.recursive/RUN.md',content:runNotes(app,spec,status)+baseNotes(meta,pass)},{path:'.recursive/validations.json',content:JSON.stringify({contracts:spec.contracts,validations:spec.validations},null,2)+'\n'},
       ...levels.map(f=>({path:f.export_path,content:f.content}))].filter(f=>!files.has(f.path));
     const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
     return {...app,files:[...notes,...own,...carried]};
@@ -1497,16 +1494,29 @@ export class ControlRoom extends DurableObject {
   splitConfig() {const s=this.settings(),d=DEFAULT_ROOM_SETTINGS;return {floor:s.split_floor??d.split_floor,valid_bar:s.split_valid_bar??d.split_valid_bar,size_bar:s.split_size_bar??d.split_size_bar};}
   // v8 live 5: what Clef graded of a manager's splits, in order (split_attempts:<id>):
   // attempt 0, the pre-grade (p, the floor, whether the catch fired); attempt n,
-  // the nth proposal's review (its piece count, the valid, size and scope ps,
+  // the nth proposal's review (its piece count, the valid and size ps,
   // the bars, the retry parameter it was made with, and its outcome). Only
   // the attempts made for the row's current task count.
   splitAttempts(id) {const key=taskKey(this.node(id)?.task);return this.read(`split_attempts:${id}`,[]).filter(a=>a.task===key);}
-  recordAttempt(id, entry) {this.save(`split_attempts:${id}`,[...this.read(`split_attempts:${id}`,[]),{...entry,task:taskKey(this.node(id)?.task)}].slice(-24));}
+  recordAttempt(id, entry) {this.save(`split_attempts:${id}`,[...this.read(`split_attempts:${id}`,[]),{...entry,task:taskKey(this.node(id)?.task)}]);}
   // v8 live 5: room for count pieces, each a manager that hands down to at least one worker of its own.
-  canSplitPieces(id, count=2) {
-    return this.depthOf(id)+2 <= this.settings().max_depth &&
-      this.productionNodeCount() + this.reservedSpawnSlots() + 2*count <= this.settings().max_agents;
+  canSplitPieces(id, count=2) { return this.piecesRoom(id) >= count; }
+  // v8: how many such pieces the room can create under row id: none past the
+  // depth limit, else what the agent limit leaves after the room's rows, its
+  // reserved children and the slots offered to the other managers' splitter
+  // sessions (offeredSlots), so a division within the bound its splitter is
+  // told (max_pieces) is created.
+  piecesRoom(id) {
+    if(this.depthOf(id)+2 > this.settings().max_depth)return 0;
+    return Math.max(0,Math.floor((this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()-this.offeredSlots(id))/2));
   }
+  // v8: the agent slots held for the splitter sessions of managers other than
+  // except, two for each piece each was offered (split_offers: {id: slots}),
+  // from the session's start until its manager's level is admitted.
+  offeredSlots(except=null) {
+    return Object.entries(this.read('split_offers',{})).filter(([m])=>m!==except&&this.node(m)&&this.node(m).status!=='retired').reduce((n,[,k])=>n+k,0);
+  }
+  offerPieces(id, count) { const o={...this.read('split_offers',{})};if(count)o[id]=2*count;else delete o[id];this.save('split_offers',o); }
   // v8 live 5: what every manager's split gate reads beside its assignment:
   // its own row's contracts, one line each (gateLine), each with the ids of
   // the validations it serves, as the row holds them.
@@ -1699,7 +1709,7 @@ export class ControlRoom extends DurableObject {
     }
     // Do not create one child out of three. Inference turns overlap, so
     // reservations must be synchronous and include other pending batches.
-    if (this.productionNodeCount() + this.reservedSpawnSlots() + specs.filter(s=>!isRuntimeNode(s)).length > this.settings().max_agents) {
+    if (this.productionNodeCount() + this.reservedSpawnSlots() + (this.v8()?this.offeredSlots(parentId):0) + specs.filter(s=>!isRuntimeNode(s)).length > this.settings().max_agents) {
       this.event(parentId,'limit',`Agent cap: cannot reserve all ${specs.length} children; split rejected in full.`);
       return null;
     }
@@ -4038,14 +4048,6 @@ export class ControlRoom extends DurableObject {
     const status=this.read('validation_status',{});
     const pass=list.filter(v=>status[v.id]?.passed===true),fail=list.filter(v=>status[v.id]?.passed===false),untested=list.length-pass.length-fail.length;
     return clip(`${head} ${pass.length} of ${list.length} validation${list.length===1?'':'s'} pass${fail.length?`; failing: ${fail.map(v=>`${v.id} (${clip(checkSummary(v.check),80)}): ${clip(status[v.id].detail,160)}`).join('; ')}`:''}${untested?`; ${untested} untested`:''}.`,1050);
-  }
-  // What a hold for failing validations tells the person first: those that
-  // keep failing which Clef doubted, with its marks (they stay; the person decides).
-  doubtNote(kind) {
-    if(kind!=='checks_failed')return '';
-    const status=this.read('validation_status',{}),marks=v=>Object.entries(v.notes||{}).filter(([,p])=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR);
-    const doubted=this.validationRows().filter(v=>marks(v).length&&status[v.id]?.passed===false);
-    return doubted.length?`These validations keep failing and Clef doubted them: ${doubted.map(v=>`${v.id} (${marks(v).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}. Change them with a follow-up prompt, or Continue. `:'';
   }
   // The alarm: the queue's next prompt, when due.
   async alarm() {
@@ -8307,7 +8309,7 @@ export class ControlRoom extends DurableObject {
   isWorker(n) { return !!n&&roleOf(n)==='worker'; }
   validationRows(where='1=1', ...args) {
     return query(this.db(),`SELECT id,level,serves,spec,says,notes FROM validations WHERE ${where} ORDER BY CAST(SUBSTR(id,2) AS INTEGER)`,...args)
-      .map(r=>({id:r.id,level:r.level,serves:parse(r.serves,[]),check:parse(r.spec,{}),...(r.says?{says:r.says}:{}),notes:parse(r.notes,{})}));
+      .map(r=>({id:r.id,level:r.level,serves:parse(r.serves,[]),check:parse(r.spec,{}),...(r.says?{says:r.says}:{})}));
   }
   validationsById() { return new Map(this.validationRows().map(v=>[v.id,v])); }
   // The next validation id after every row and every reservation an admission holds until its level file lands (validations_reserved: {manager: [first, last]}).
@@ -8383,20 +8385,17 @@ export class ControlRoom extends DurableObject {
     this.save(`split_carry:${id}`,null);
     // With piece offered, done completes only a division (two or more pieces), and Clef's review alone admits it, retries it or hands the level down.
     const pieces=level.pieces,retry=feedback?.retry||'';
-    const review=await reviewLevel(this.inferenceEnv(),{assignment:job?.text||given.prompt,contracts:level.contracts,pieces,validations:level.validations,attempt,retry});
-    level.validations=level.validations.map((v,j)=>({...v,notes:review.notes[j]||{}}));
-    const doubted=level.validations.filter(v=>Object.values(v.notes).some(p=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR));
-    if(doubted.length)this.event(id,'validations_doubtful',clip(`Clef doubts ${doubted.map(v=>`${v.id} (${Object.entries(v.notes).filter(([,p])=>p<VALIDATION_DOUBT_BAR).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}; each is kept, marked.`,900));
     if(!divide) {
       this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:0,outcome:'admitted',ms:Date.now()-started});
       return this.admitLevel(id,{...level,pieces:[]},{job,why:'The level goes to one worker.'});
     }
+    const review=await reviewLevel(this.inferenceEnv(),{assignment:job?.text||given.prompt,contracts:level.contracts,pieces,attempt,retry});
     const validBar=cfg.valid_bar,sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'larger':'different';
     const stop=ok||attempt<SPLIT_ATTEMPTS?'':`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`;
-    this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,valid_p:r3(review.valid),size_p:r3(review.size),scope_ps:review.scope.map(r3),valid_bar:validBar,size_bar:sizeBar,
+    this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,valid_p:r3(review.valid),size_p:r3(review.size),valid_bar:validBar,size_bar:sizeBar,
       ...(retry?{retry}:{}),outcome:ok?'admitted':stop?'handed down':`retry ${next}`,ms:Date.now()-started});
     const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='different'?'a different division':'larger pieces'}`:''}): split_valid p=${review.valid.toFixed(3)} (bar ${validBar}), split_size p=${review.size.toFixed(3)} (bar ${sizeBar})`;
-    if(ok){this.event(id,'split_review',`${said}: YES, the pieces are admitted.`);return this.admitLevel(id,level,{job,scope:review.scope});}
+    if(ok){this.event(id,'split_review',`${said}: YES, the pieces are admitted.`);return this.admitLevel(id,level,{job});}
     if(stop){this.event(id,'split_review',`${said}: NO ${stop}, so the level goes to one worker.`);return this.admitLevel(id,{...level,pieces:[]},{job,why:`${said}: NO ${stop}.`});}
     const shown=pieces.map(c=>({label:c.label,task:c.task,contracts:c.contracts}));
     this.save(`split_feedback:${id}`,next==='larger'?{kind:'too_small',retry:'larger',reason:RETRY.too_small(pieces.length),rejected:shown}:{kind:'invalid',retry:'different',reason:RETRY.different,rejected:shown});
@@ -8416,7 +8415,9 @@ export class ControlRoom extends DurableObject {
     // The names the level may call: its row's uses, and for a rebuild those the rows it replaces were handed.
     const job=kind==='split'?null:this.read(`level_job:${id}`,null),calls=[...this.callableOf(id),...this.namedContracts(id,job?.uses||[])].filter((c,i,a)=>a.findIndex(x=>x.name===c.name)===i&&!own.some(o=>o.name===c.name)&&!have.some(o=>o.name===c.name));
     this.db().exec("INSERT INTO splitters(id,manager,kind,attempt,spawned_at,ended_at,outcome,output) VALUES (?,?,?,?,?,NULL,'','{}')",sid,id,kind,attempt,Date.now());
-    const max=divide?this.maxChildren():0;
+    // The bound it is told is what the room can create (piecesRoom), held for it until its level is admitted.
+    const max=divide?Math.min(this.maxChildren(),this.piecesRoom(id)):0;
+    this.offerPieces(id,max);
     const request={assignment,
       ...(own.length?{contracts_you_deliver:own.map(({serves:_,...c})=>c)}:{}),
       ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),
@@ -8448,7 +8449,7 @@ export class ControlRoom extends DurableObject {
   // (level_job:<id>.admitted) for finishLevel. A failed commit leaves the
   // level as it was. A job's level adds to the file, which stays as it was
   // otherwise; a job for an ask answers its asker with the contract it named.
-  async admitLevel(id, level, {why='', scope=null, job=null}={}) {
+  async admitLevel(id, level, {why='', job=null}={}) {
     const n=this.node(id),given=this.designOf(id),own=job?job.own||[]:given.contracts,prior=this.levelDesign(id);
     // What its level file does not list never landed: a reservation of children, validations and their ids are released, and this admission takes their place.
     const listed=new Set([...(prior?.children||[]),...(prior?.archived||[])].map(c=>c.id)),held=new Set((prior?.validations||[]).map(v=>v.id));
@@ -8468,12 +8469,13 @@ export class ControlRoom extends DurableObject {
     const pieceUses=p=>[...new Set([...(p.uses||[]),...(handed?.uses||[])])].filter(x=>!p.contracts.includes(x));
     const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(pieceUses(p).length?{uses:pieceUses(p)}:{}),role:'manager',...(p.refs?{refs:p.refs}:handed?.refs.length?{refs:handed.refs}:{}),...(p.packages||handed?.packages.length?{packages:[...new Set([...(p.packages||[]),...(handed?.packages||[])])]}:{})})):[worker]);
     const key=`level:${id}:${this.levelBatches(id).length}`,batch=this.reserveSpawn(id,specs,key);
+    this.offerPieces(id,0);
     // No room for its children (the room's agent or depth limit): nothing is admitted, and Continue tries the level again.
     if(!batch){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
     // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, added to the file as it stands when it is written.
     const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
     const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
-    const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{}),notes:v.notes||{}}));
+    const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{})}));
     // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
     let landed=false;
     const release=e=>{if(!landed){this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',key);this.reserveValidations(id,0);}throw e;};
@@ -8481,7 +8483,7 @@ export class ControlRoom extends DurableObject {
       validations:[...(cur?.validations||[]),...written],archived:cur?.archived||[]}),()=>{
       landed=true;
       for(const v of written)
-        this.db().exec('INSERT INTO validations(id,level,serves,spec,says,notes,created) VALUES (?,?,?,?,?,?,?)',v.id,id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',JSON.stringify(v.notes),Date.now());
+        this.db().exec('INSERT INTO validations(id,level,serves,spec,says,created) VALUES (?,?,?,?,?,?)',v.id,id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',Date.now());
       this.reserveValidations(id,0);
       // The manager's own contracts take the level's refined form (by name); a level that stated its own contracts holds them all.
       if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>mine(c.name)||c)),id);
@@ -8489,7 +8491,6 @@ export class ControlRoom extends DurableObject {
       this.save(`level_job:${id}`,{...(job||{kind:'split'}),admitted:{contracts}});
       // The first level a room admits says which box its first compile needs.
       if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
-      if(scope)this.event(id,'scope_ps',`Clef's scope for each piece: ${pieces.map((p,i)=>`"${clip(p.label,60)}" p=${Number(scope[i]).toFixed(3)}`).join(', ')}; each is admitted, a doubt shown.`);
       this.event(id,pieces.length?'split_admitted':'hand_down',clip(pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`,1200));
     }).catch(release);
     await this.finishLevel(id);
@@ -8786,7 +8787,7 @@ export class ControlRoom extends DurableObject {
       this.wake(up);
       return {held:true};
     }
-    this.holdRoom(kind,`${this.doubtNote(kind)}${text}`,{agent:origin});
+    this.holdRoom(kind,text,{agent:origin});
     return {held:true};
   }
   // ---------- asks ----------

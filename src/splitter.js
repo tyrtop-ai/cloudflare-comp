@@ -183,11 +183,11 @@ export function splitterCall(s, name, args) {
 // and world); world is splitterState's input; spend counts each model call
 // after the first against the room's turn budget (session). {level, state,
 // ended, reason, rounds, transcript}: level is null when the session ended
-// without done.
-export const SPLITTER_TOKENS = 8192;
+// without done. Each answer may take what the model's context window leaves
+// (maxTokens Infinity: modelRequest's room).
 export async function splitLevel(env, request, world = {}, {spend = null} = {}) {
   const s = splitterState(world), tools = splitterTools(s.divide);
-  const out = await session(env, {system: systemPrompt('splitter'), user: JSON.stringify(request), tools, role: 'splitter', call: 'splitLevel', maxTokens: SPLITTER_TOKENS,
+  const out = await session(env, {system: systemPrompt('splitter'), user: JSON.stringify(request), tools, role: 'splitter', call: 'splitLevel', maxTokens: Infinity,
     handle: (name, args) => splitterCall(s, name, args), spend});
   return {level: out.ended ? out.end : null, state: s, ended: out.ended, reason: out.reason, rounds: out.rounds, transcript: out.transcript};
 }

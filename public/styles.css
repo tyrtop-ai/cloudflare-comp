@@ -182,7 +182,6 @@ input[type=range]:focus {box-shadow:none;}
 .req-chip.fail { color:var(--bad); border-color:var(--bad); }
 .req-chip.stale { opacity:.6; border-style:dashed; }
 .hold-note { padding:8px 10px; border:thin solid var(--code-bd); border-radius:4px; background:var(--code-bg); }
-.req-chip.doubtful { color:var(--bad); border-color:var(--bad); }
 .start-from-repo[hidden] { display:none; }
 .start-from-repo input { margin-top:6px; }
 

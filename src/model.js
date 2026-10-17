@@ -5,7 +5,7 @@ import { goalMethods } from './api-coverage.js';
 import { workerAction } from './worker-output.js';
 import { CLEF, clefText } from './prompts.js';
 import { contractLine } from './contracts.js';
-import { checkSummary, internalCandidate } from './validations.js';
+import { checkSummary } from './validations.js';
 import { session } from './session.js';
 export { NO_ANSWER };
 // v8 (S6): a call runs v8's prompts when the room's pipeline is v8. The room
@@ -138,46 +138,27 @@ export async function shouldSplit(env, task, mockContext, contracts = []) {
   return {split:probability >= (Number(env.SPLIT_THRESHOLD)||0.7),probability};
 }
 
-// v8: each attempt of a manager's splitter is reviewed by Clef in one
-// batched call. With two or more pieces: whether it is a valid division of
-// the assignment (CLEF.split_valid), whether every piece is worth a maker of
-// its own (CLEF.split_size), and each piece's scope (CLEF.scope). For every
-// validation: whether it exercises what its contracts state (CLEF.exercises),
-// whether it is implementable from those contracts alone
-// (CLEF.implementable), and, for a file check that looks for texts, whether
-// it tests what a user meets rather than an internal detail (CLEF.internal).
-// Clef annotates: nothing here removes a piece or a validation. The state is
-// the assignment as written, the level's contracts (one line each), the
-// pieces as the splitter declared them (label, task, the contracts each
-// delivers), and the validations, each with the contracts it serves and its
-// check in a few words. Whether the division is valid is Clef's to judge
-// (split_valid): the runtime works out nothing about it. {valid, size,
-// scope: [p per piece], notes: [{exercises, implementable, internal?} per
-// validation]}.
-export const REVIEW_QUESTIONS = 96;
-export async function reviewLevel(env, {assignment, contracts = [], pieces = [], validations = [], attempt = 1, retry = ''}) {
-  const split = pieces.length >= 2;
-  if (env.MOCK_AI === 'true') return {valid:1, size:1, scope:pieces.map(() => 1), notes:validations.map(() => ({exercises:1, implementable:1}))};
+// v8: each division a manager's splitter proposes is reviewed by Clef in one
+// call: given the original assignment and the pieces, whether it is a valid
+// division (CLEF.split_valid) and whether every piece is worth a maker of
+// its own, not too small (CLEF.split_size). The state is the assignment as
+// written, the level's contracts (one line each) and the pieces as the
+// splitter declared them (label, task, the contracts each delivers). Whether
+// the division is valid is Clef's to judge: the runtime works out nothing
+// about it. {valid, size}.
+export async function reviewLevel(env, {assignment, contracts = [], pieces = [], attempt = 1, retry = ''}) {
+  if (env.MOCK_AI === 'true') return {valid:1, size:1};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef split review model');
-  const lines=new Map(contracts.map(c=>[c.name,contractLine(c)]));
-  const state={assignment:String(assignment||''),contracts:contracts.map(c=>lines.get(c.name)).filter(Boolean),
-    ...(split?{pieces:pieces.map((c,i)=>({slot:i,label:String(c.label),task:String(c.task),contracts:c.contracts||[]}))}:{}),
-    validations:validations.map((v,j)=>({slot:j,serves:(v.serves||[]).map(n=>lines.get(n)||n),check:checkSummary(v.check),...(v.says?{says:String(v.says)}:{})}))};
-  const keys=[...(split?[['split_valid',CLEF.split_valid],['split_size',CLEF.split_size],...pieces.map((_,i)=>[`within_${i}`,clefText('scope',{i})])]:[]),
-    ...validations.flatMap((v,j)=>[[`exercises_${j}`,clefText('exercises',{i:j})],[`implementable_${j}`,clefText('implementable',{i:j})],...(internalCandidate(v.check)?[[`internal_${j}`,clefText('internal',{i:j})]]:[])])];
+  const state={assignment:String(assignment||''),contracts:contracts.map(c=>contractLine(c)).filter(Boolean),
+    pieces:pieces.map((c,i)=>({slot:i,label:String(c.label),task:String(c.task),contracts:c.contracts||[]}))};
   const p=(o,k)=>{const v=o?.answers?.[k]?.noul;return typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1?v:null;};
-  const answers={};
-  for(let start=0;start<keys.length;start+=REVIEW_QUESTIONS) {
-    const group=keys.slice(start,start+REVIEW_QUESTIONS);
-    const output=await clefRun(env,'reviewLevel',selector,{model:clef,state,questions:Object.fromEntries(group.map(([k,t])=>[k,{type:'noul',instructions:t}]))},
-      o=>({attempt,pieces:pieces.length,validations:validations.length,...(retry?{retry}:{}),...(split&&!start?{valid_p:p(o,'split_valid'),size_p:p(o,'split_size'),scope_ps:pieces.map((_,i)=>p(o,`within_${i}`))}:{})}));
-    for(const [k] of group)answers[k]=p(output,k);
-  }
-  if (Object.values(answers).some(x=>x===null)) throw new Error('Clef returned no valid review probabilities');
-  return {valid:split?answers.split_valid:1,size:split?answers.split_size:1,scope:split?pieces.map((_,i)=>answers[`within_${i}`]):[],
-    notes:validations.map((v,j)=>({exercises:answers[`exercises_${j}`],implementable:answers[`implementable_${j}`],...(answers[`internal_${j}`]!=null?{internal:answers[`internal_${j}`]}:{})}))};
+  const output=await clefRun(env,'reviewLevel',selector,{model:clef,state,questions:{split_valid:{type:'noul',instructions:CLEF.split_valid},split_size:{type:'noul',instructions:CLEF.split_size}}},
+    o=>({attempt,pieces:pieces.length,...(retry?{retry}:{}),valid_p:p(o,'split_valid'),size_p:p(o,'split_size')}));
+  const valid=p(output,'split_valid'),size=p(output,'split_size');
+  if (valid===null||size===null) throw new Error('Clef returned no valid review probabilities');
+  return {valid,size};
 }
 // v8: a manager's choice. A manager works through functions too: on an ask,
 // a complaint or a change, each function call it may make (on an ask:

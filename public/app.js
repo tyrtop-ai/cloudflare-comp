@@ -99,18 +99,14 @@ const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.nam
 // (infrastructure), untested; a result from before the delivered files last
 // changed is stale (the room marks it).
 const validationState=(v,status)=>{const st=status?.[v.id];return typeof st?.passed!=='boolean'?'untested':st.stale?'stale':st.passed?'pass':'fail';};
-// Clef's marks below this read as a doubt, shown beside the validation; nothing it doubts is removed.
-const DOUBT_BAR=0.5;
 // v8: the levels: each validation with its last result, its check in a few
-// words, the contracts it serves, the manager that holds it and Clef's
-// marks; each manager's level file (open it to read it); then each splitter
+// words, the contracts it serves and the manager that holds it; each manager's level file (open it to read it); then each splitter
 // step with its manager, attempt and outcome.
 function levelsMarkup(s) {
   const list=s.validations||[];
   if(!list.length)return '<p class="empty">A v8 room\'s manager states its level first: its contracts, and the validations that check each.</p>';
-  const marks=v=>Object.entries(v.notes||{}).filter(([,p])=>typeof p==='number'&&p<DOUBT_BAR).map(([k,p])=>` <span class="req-chip doubtful" title="Clef doubted it (${esc(k)})">${esc(k)} p=${esc(p.toFixed(2))}</span>`).join('');
   const row=v=>{const state=validationState(v,s.validation_status),detail=s.validation_status?.[v.id]?.detail;
-    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(v.id)}</b> ${esc(v.check)} <span class="faint">· serves ${esc((v.serves||[]).join(', '))}${v.held?` · held by ${esc(v.held)}`:''}</span>${marks(v)}</li>`;};
+    return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(v.id)}</b> ${esc(v.check)} <span class="faint">· serves ${esc((v.serves||[]).join(', '))}${v.held?` · held by ${esc(v.held)}`:''}</span></li>`;};
   const step=x=>`<li><span class="mono">${esc(x.id)}</span> <span class="faint">· ${esc(x.manager)} · ${esc(x.kind)} attempt ${esc(x.attempt)} · ${esc(x.ended_at?x.outcome||'ended':'running')}</span></li>`;
   const level=f=>`<li><button type="button" class="file-row" data-agent="${esc(f.manager)}" data-path="${esc(f.path)}"><span class="mono">${esc(f.manager)}/${esc(f.path)}</span><small>r${esc(f.revision)} · ${esc(String(f.commit||'').slice(0,12))}</small></button> <span class="faint">${esc(f.label||'')} · ${esc(f.children)} children${f.archived?` · ${esc(f.archived)} archived`:''} · ${esc(f.contracts)} contracts · ${esc(f.validations)} validations</span></li>`;
   const section=(title,items)=>items.length?`<div class="panel-section"><div class="eyebrow">${title}</div><ul class="panel-list">${items.join('')}</ul></div>`:'';
