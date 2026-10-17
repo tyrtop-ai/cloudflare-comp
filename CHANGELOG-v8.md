@@ -281,7 +281,7 @@ Cost, on the scripted trees: a leaf is now a manager, its builder and its worker
 
 ## Phase B: every row has a hex name; a manager's level is a file it owns
 
-The owner: "everything gets a base16 name… manager-hex16… root is deprecated by design", and "the manager owns the interfaces for its children… which is a file". v7 is unchanged: its rows keep `root` and dotted ids.
+The owner: "can everything here just get a base16 name?", "actually root is deprecated by design", "it should be manager-hex16" and "give boxes a hex16 name as well"; and "manager (router of the system) - owns the interfaces of its children" and "managers have to write files". v7 is unchanged: its rows keep `root` and dotted ids.
 
 - **Names.** Under v8 every row is `<role>-<hex16>` (`manager-`, `worker-`, `builder-`, `splitter-`; boxes stay `box-`): the first 16 hex digits of the SHA-256 of `JSON.stringify([parent, sequence, role])` (`rowId`). The sequence is the spawn's within its parent (`agents.seq`, taken after every batch reserved under that parent); the room's manager has the room's id as its parent and sequence 1; a splitter step's sequence is its manager's count of splitter steps. A replay of a spawn gives the id it gave before. There is no `root` and no dotted id under v8.
 - **Where a row stands is its parent column.** `agents.depth` is set from the parent's when the row is created; `depthOf`, `within` (a parent walk), `subtree` and `liveSubtree` replace every v8 reading of an id's dots: the split bar, the depth limit (`canSplit`, `canSplitPieces`, `reserveSpawn`), a failure's reason, a complaint's route, an ask's line, the spans' depth. Rows are ordered by depth and sequence; the dashboard draws siblings by sequence and the depth from the column.
@@ -376,7 +376,7 @@ The first live runs on function calling worked end to end: each splitter declare
 
 ## The worker and the managers work through functions
 
-Owner, binding: "every model should work that way … not parsing the models output, but functions exposed to the models. for every model. For every interaction." This slice does it for the worker and for the managers (Clef).
+Owner, binding: "every model should work that way, where the runtime should only be interfaces exposed to the models. not parsing the models output, but functions exposed to the models. for every model. For every interaction." This slice does it for the worker and for the managers (Clef).
 
 - **The worker's turn is one session of functions** (`src/worker.js`, `TOOLS.worker`):
   - `read_file({path})`: a file's text, or that there is no such file, with the paths there are;
