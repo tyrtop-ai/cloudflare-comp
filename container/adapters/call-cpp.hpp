@@ -146,6 +146,48 @@ template <class T> struct optional_of<std::optional<T>> : std::true_type { using
 template <class T> constexpr bool buildable = std::conjunction_v<std::is_object<T>, complete<T>, std::negation<std::is_abstract<T>>, std::is_move_constructible<T>>;
 
 template <class T> T from(const J& j);
+// A class from its JSON, by what its own initialisation takes (call-native.mjs
+// writes these two for the objects and arrays the steps' arguments hold):
+// by_keys sets, in a value made by its constructor without arguments, the
+// member each key of the object names (0 when the keys are not all members
+// it can set); by_position makes it from the array's values as T{a, b, ...}
+// (an aggregate's members in order, or the constructor the compiler picks),
+// each value converted to the type the compiler deduces (Any).
+template <class T> int by_keys(const J& j, T& v);
+template <class T> bool by_position(const J& j, std::optional<T>& out);
+template <class T> struct Any {
+  const J* j;
+  template <class U, class = std::enable_if_t<!std::is_same_v<std::decay_t<U>, T>>> operator U() const { return from<U>(*j); }
+};
+template <class T, class Seq, class = void> struct braced_ : std::false_type {};
+template <class T, size_t... I> struct braced_<T, std::index_sequence<I...>, std::void_t<decltype(T{(void(I), std::declval<Any<T>>())...})>> : std::true_type {};
+template <class T, size_t N> constexpr bool braced = braced_<T, std::make_index_sequence<N>>::value;
+template <class M> constexpr bool settable = std::is_array_v<std::remove_reference_t<M>> || std::is_assignable_v<M, std::remove_cv_t<std::remove_reference_t<M>>>;
+inline bool same_keys(const J& j, std::initializer_list<const char*> keys) {
+  if (j.o.size() != keys.size()) return false;
+  for (const char* k : keys) if (!j.get(k)) return false;
+  return true;
+}
+// A member from its JSON: an array member element by element (a char array from a string).
+template <class D> void put(D& d, const J& j) {
+  if constexpr (std::is_array_v<D>) {
+    using E = std::remove_extent_t<D>; constexpr size_t n = std::extent_v<D>;
+    if constexpr (std::is_same_v<std::remove_cv_t<E>, char>) if (j.k == J::Str) { if (j.s.size() >= n) mismatch<D>(j); std::memcpy(d, j.s.c_str(), j.s.size() + 1); return; }
+    if (j.k != J::Arr || j.a.size() > n) mismatch<D>(j);
+    for (size_t i = 0; i < j.a.size(); i++) put(d[i], j.a[i]);
+  } else d = from<std::remove_cv_t<D>>(j);
+}
+#define __CALL_PUT(v, m, j) do { using __D = std::remove_reference_t<decltype((v).m)>; if constexpr (std::is_array_v<__D>) ::__call::put((v).m, j); else (v).m = ::__call::from<std::remove_cv_t<__D>>(j); } while (0)
+template <class T> T object(const J& j) {
+  std::optional<T> made;
+  if (j.k == J::Obj) {
+    if constexpr (std::is_default_constructible_v<T>) { T v{}; if (by_keys(j, v)) return v; mismatch<T>(j); }
+    else throw Unsupported("the call adapter cannot build a " + type_name<T>() + " from a JSON object: it has no constructor without arguments, and the language gives a constructor's parameters no names to read");
+  }
+  // Another value: the constructor that takes it (an aggregate's members are an array).
+  if (j.k == J::Arr ? by_position(j, made) : [&] { if constexpr (!std::is_aggregate_v<T> && braced<T, 1>) { made.emplace(T{Any<T>{&j}}); return true; } else return false; }()) return std::move(*made);
+  mismatch<T>(j);
+}
 template <class T, size_t... I> T tuple_from(const J& j, std::index_sequence<I...>) {
   if (j.k != J::Arr || j.a.size() != sizeof...(I)) mismatch<T>(j);
   return T(from<std::tuple_element_t<I, T>>(j.a[I])...);
@@ -198,6 +240,7 @@ template <class T> T from(const J& j) {
   }
   else if constexpr (tuple_of<T>::value) return tuple_from<T>(j, std::make_index_sequence<std::tuple_size_v<T>>{});
   else if constexpr (optional_of<T>::value) { if (j.k == J::Null) return std::nullopt; return from<typename optional_of<T>::E>(j); }
+  else if constexpr (std::is_class_v<T> || std::is_union_v<T>) return object<T>(j);
   else unsupported<T>();
 }
 

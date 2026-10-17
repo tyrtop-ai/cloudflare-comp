@@ -314,31 +314,38 @@ test('call checks: TypeScript, Ruby and PHP functions run through their own call
 });
 
 // Owner 2026-10-15 05:16 ("Any code type"): Go, Rust, C, C++, Java and shell functions are called in their own language,
-// each argument built as the function's parameter type by the language's own compiler or reflection; a type the
-// language gives no way to build from JSON is what the check observed, in the compiler's words, as a failed step is (never
-// infrastructure, which the compiler would run again unchanged every turn).
+// each argument built as the function's parameter type by the language's own compiler or reflection: the file's own
+// structs, classes, enums and interfaces included (C's types as gcc's debug information gives them, Rust's as rustc's, an
+// interface as the one type of the file that implements it), and a name as the step gives it (whether the file defines
+// it is the compiler's answer). What JSON cannot give (a function) is what the check observed, in the compiler's words,
+// as a failed step is (never infrastructure, which the compiler would run again unchanged every turn).
 // The tool, as a check's environment runs it (rustup's rustc needs a default toolchain under the box's HOME).
 const has=cmd=>spawnSync(cmd,[cmd==='go'?'version':'--version'],{env:{PATH:process.env.PATH,HOME:'/home/builder'}}).status===0;
 const NATIVE={
   go:{skip:!has('go'),module:'calc/fib.go',
-    source:'package main\n\nimport "errors"\n\ntype Point struct{ X, Y int }\n\nfunc fib(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\treturn fib(n-1) + fib(n-2)\n}\nfunc Div(a, b int) (int, error) {\n\tif b == 0 {\n\t\treturn 0, errors.New("divide by zero")\n\t}\n\treturn a / b, nil\n}\nfunc Mk(x, y int) *Point { return &Point{x, y} }\nfunc Norm(p *Point) int { return p.X*p.X + p.Y*p.Y }\nfunc boom(n int) int {\n\tvar m map[string]int\n\tm["x"] = n\n\treturn n\n}\nfunc Apply(f func(int) int) int { return f(1) }\nfunc main() {}\n',
-    ok:[{call:'fib',args:[10],expect:55},{call:'Mk',args:[3,4],save:'p',expect:{X:3,Y:4}},{call:'Norm',args:['$p'],expect:25},{call:'Div',args:[1,0],throws:true}],
+    source:'package main\n\nimport "errors"\n\ntype Point struct{ X, Y int }\n\nfunc fib(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\treturn fib(n-1) + fib(n-2)\n}\nfunc Div(a, b int) (int, error) {\n\tif b == 0 {\n\t\treturn 0, errors.New("divide by zero")\n\t}\n\treturn a / b, nil\n}\nfunc Mk(x, y int) *Point { return &Point{x, y} }\nfunc Norm(p *Point) int { return p.X*p.X + p.Y*p.Y }\nfunc boom(n int) int {\n\tvar m map[string]int\n\tm["x"] = n\n\treturn n\n}\nfunc Apply(f func(int) int) int { return f(1) }\ntype Shape interface{ Area() int }\ntype Sq struct{ S int }\n\nfunc (q Sq) Area() int { return q.S * q.S }\nfunc Measure(s Shape) int { return s.Area() }\nfunc Größe(n int) int { return n * 2 }\nfunc main() {}\n',
+    ok:[{call:'fib',args:[10],expect:55},{call:'Mk',args:[3,4],save:'p',expect:{X:3,Y:4}},{call:'Norm',args:['$p'],expect:25},{call:'Div',args:[1,0],throws:true},
+      {call:'Norm',args:[{X:1,Y:2}],expect:5},{call:'Measure',args:[{S:3}],expect:9},{call:'Größe',args:[21],expect:42}],
     raises:{call:'boom',args:[1]},frame:{path:'calc/fib.go',line:23,fn:'boom'},unsupported:{call:'Apply',args:[1]}},
   rust:{skip:!has('rustc'),module:'src/main.rs',
-    source:'#[derive(Debug)]\nstruct Point { x: i32 }\nfn fib(n: u64) -> u64 { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\nfn total(xs: &[i64]) -> i64 { xs.iter().sum() }\nfn shout(s: &str) -> String { s.to_uppercase() }\nfn boom(v: Vec<i32>) -> i32 {\n    v[10]\n}\nfn norm(p: &Point) -> i32 { p.x }\nfn main() {}\n',
-    ok:[{call:'fib',args:[10],expect:55},{call:'total',args:[[1,2,3]],expect:6},{call:'shout',args:['hi'],save:'s',expect:'HI'},{call:'shout',args:['$s'],expect:'HI'}],
-    raises:{call:'boom',args:[[1]]},frame:{path:'src/main.rs',line:7,fn:'boom'},unsupported:{call:'norm',args:[{x:1}]}},
+    source:'#[derive(Debug)]\nstruct Point { x: i32 }\nfn fib(n: u64) -> u64 { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\nfn total(xs: &[i64]) -> i64 { xs.iter().sum() }\nfn shout(s: &str) -> String { s.to_uppercase() }\nfn boom(v: Vec<i32>) -> i32 {\n    v[10]\n}\nfn norm(p: &Point) -> i32 { p.x }\nenum Op { Neg, Add(i32), Mul { by: i32 } }\nfn op(o: Op, n: i32) -> i32 { match o { Op::Neg => -n, Op::Add(k) => n + k, Op::Mul { by } => n * by } }\nfn apply(f: fn(i32) -> i32) -> i32 { f(1) }\nfn größe(n: i32) -> i32 { n * 2 }\nfn main() {}\n',
+    ok:[{call:'fib',args:[10],expect:55},{call:'total',args:[[1,2,3]],expect:6},{call:'shout',args:['hi'],save:'s',expect:'HI'},{call:'shout',args:['$s'],expect:'HI'},
+      {call:'norm',args:[{x:1}],expect:1},{call:'op',args:['Neg',2],expect:-2},{call:'op',args:[{Add:3},2],expect:5},{call:'op',args:[{Mul:{by:4}},2],expect:8},{call:'größe',args:[21],expect:42}],
+    raises:{call:'boom',args:[[1]]},frame:{path:'src/main.rs',line:7,fn:'boom'},unsupported:{call:'apply',args:[1]}},
   c:{skip:!has('gcc')||!has('g++'),module:'lib/calc.c',
-    source:'#include <stdlib.h>\nstruct point { int x, y; };\nint add(int a, int b) { return a + b; }\nstatic double half(double x) { return x / 2; }\nint total(const int *xs, int n) { int s = 0; for (int i = 0; i < n; i++) s += xs[i]; return s; }\nstruct point *mk(int x, int y) { struct point *p = malloc(sizeof *p); p->x = x; p->y = y; return p; }\nint norm(const struct point *p) { return p->x * p->x + p->y * p->y; }\nint main(void) { return add(1, 2); }\n',
-    ok:[{call:'add',args:[2,3],expect:5},{call:'half',args:[3],expect:1.5},{call:'total',args:[[1,2,3],3],expect:6},{call:'mk',args:[3,4],save:'p'},{call:'norm',args:['$p'],expect:25}],
-    unsupported:{call:'norm',args:[{x:1,y:2}]}},
+    source:'#include <stdlib.h>\nstruct point { int x, y; };\nint add(int a, int b) { return a + b; }\nstatic double half(double x) { return x / 2; }\nint total(const int *xs, int n) { int s = 0; for (int i = 0; i < n; i++) s += xs[i]; return s; }\nstruct point *mk(int x, int y) { struct point *p = malloc(sizeof *p); p->x = x; p->y = y; return p; }\nint norm(const struct point *p) { return p->x * p->x + p->y * p->y; }\ntypedef unsigned int uint;\ntypedef struct { char name[8]; uint age; } person;\nuint older(person p, uint by) { return p.age + by; }\nint apply(int (*f)(int), int x) { return f(x); }\nint größe(int n) { return n * 2; }\nint main(void) { return add(1, 2); }\n',
+    ok:[{call:'add',args:[2,3],expect:5},{call:'half',args:[3],expect:1.5},{call:'total',args:[[1,2,3],3],expect:6},{call:'mk',args:[3,4],save:'p'},{call:'norm',args:['$p'],expect:25},
+      {call:'norm',args:[{x:1,y:2}],expect:5},{call:'norm',args:[[[3,4]]],expect:25},{call:'older',args:[{name:'al',age:40},2],expect:42},{call:'größe',args:[21],expect:42}],
+    unsupported:{call:'apply',args:[1,2]}},
   cpp:{skip:!has('g++'),module:'lib/calc.cpp',
-    source:'#include <map>\n#include <stdexcept>\n#include <string>\n#include <vector>\nusing namespace std;\nint fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }\nmap<string, int> count(const vector<string>& ws) { map<string, int> m; for (auto& w : ws) m[w]++; return m; }\ndouble divide(double a, double b) { if (b == 0) throw invalid_argument("divide by zero"); return a / b; }\nnamespace geo { double area(double w, double h) { return w * h; } }\nstruct Shape { virtual double size() const = 0; };\ndouble measure(const Shape& s) { return s.size(); }\nint main() { return fib(3); }\n',
-    ok:[{call:'fib',args:[10],expect:55},{call:'count',args:[['a','b','a']],expect:{a:2,b:1}},{call:'geo::area',args:[2,3.5],expect:7}],
+    source:'#include <map>\n#include <stdexcept>\n#include <string>\n#include <vector>\nusing namespace std;\nint fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }\nmap<string, int> count(const vector<string>& ws) { map<string, int> m; for (auto& w : ws) m[w]++; return m; }\ndouble divide(double a, double b) { if (b == 0) throw invalid_argument("divide by zero"); return a / b; }\nnamespace geo { double area(double w, double h) { return w * h; } }\nstruct Shape { virtual double size() const = 0; };\ndouble measure(const Shape& s) { return s.size(); }\nstruct Item { string name; int qty; };\nint total(const vector<Item>& xs) { int s = 0; for (auto& x : xs) s += x.qty; return s; }\nclass Box { public: Box(double w, double h) : w(w), h(h) {} double w, h; };\ndouble boxArea(Box b) { return b.w * b.h; }\nint main() { return fib(3); }\n',
+    ok:[{call:'fib',args:[10],expect:55},{call:'count',args:[['a','b','a']],expect:{a:2,b:1}},{call:'geo::area',args:[2,3.5],expect:7},
+      {call:'total',args:[[{name:'a',qty:2},{name:'b',qty:3}]],expect:5},{call:'boxArea',args:[[2,3]],expect:6}],
     raises:{call:'divide',args:[1,0]},unsupported:{call:'measure',args:[{}]}},
   java:{skip:!has('javac'),module:'src/com/acme/Calc.java',
-    source:'package com.acme;\n\nimport java.util.*;\n\npublic class Calc {\n    record Point(int x, int y) {}\n    static int fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }\n    static long total(List<Long> xs) { long s = 0; for (long x : xs) s += x; return s; }\n    static Point mk(int x, int y) { return new Point(x, y); }\n    static int norm(Point p) { return p.x() * p.x() + p.y() * p.y(); }\n    static int div(int a, int b) {\n        return a / b;\n    }\n    static int apply(Runnable r) { r.run(); return 1; }\n    public static void main(String[] a) {}\n}\n',
-    ok:[{call:'fib',args:[10],expect:55},{call:'total',args:[[1,2,3]],expect:6},{call:'mk',args:[3,4],save:'p',expect:{x:3,y:4}},{call:'norm',args:['$p'],expect:25},{call:'norm',args:[{x:1,y:2}],expect:5}],
+    source:'package com.acme;\n\nimport java.util.*;\n\npublic class Calc {\n    record Point(int x, int y) {}\n    static int fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }\n    static long total(List<Long> xs) { long s = 0; for (long x : xs) s += x; return s; }\n    static Point mk(int x, int y) { return new Point(x, y); }\n    static int norm(Point p) { return p.x() * p.x() + p.y() * p.y(); }\n    static int div(int a, int b) {\n        return a / b;\n    }\n    static int apply(Runnable r) { r.run(); return 1; }\n    interface Shape { int area(); }\n    static final class Sq implements Shape { final int side; Sq(int side) { this.side = side; } public int area() { return side * side; } }\n    static int measure(Shape s) { return s.area(); }\n    public static void main(String[] a) {}\n}\n',
+    ok:[{call:'fib',args:[10],expect:55},{call:'total',args:[[1,2,3]],expect:6},{call:'mk',args:[3,4],save:'p',expect:{x:3,y:4}},{call:'norm',args:['$p'],expect:25},{call:'norm',args:[{x:1,y:2}],expect:5},
+      {call:'measure',args:[{side:3}],expect:9},{call:'measure',args:[[4]],expect:16}],
     raises:{call:'div',args:[1,0]},frame:{path:'src/com/acme/Calc.java',line:12,fn:'com.acme.Calc.div'},unsupported:{call:'apply',args:[{}]}},
   shell:{skip:!has('bash'),module:'bin/lib.sh',
     source:'#!/bin/sh\ncount=0\ngreet() { echo "hello $1"; }\nbump() { count=$((count + 1)); echo "$count"; }\nfail() { echo "bad thing" >&2; return 3; }\n',
@@ -364,7 +371,7 @@ for(const [id,x] of Object.entries(NATIVE))test(`call checks: a ${id} function i
   }
   if(x.unsupported) {
     const u=c[`${id}-unsupported`];
-    // What the check observed (the compiler's words on the parameter type), as a failed step is: never infrastructure, which the compiler would run again unchanged.
+    // What the check observed (the compiler's words on the parameter type, which JSON cannot give), as a failed step is: never infrastructure, which the compiler would run again unchanged.
     assert.equal(u.passed,false);assert.notEqual(u.infrastructure,true,u.detail);
     assert.match(u.detail,/the call adapter cannot/);
   }
