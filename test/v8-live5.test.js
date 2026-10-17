@@ -240,12 +240,12 @@ test('live 5: the floor and both bars come from the room\'s settings; every mana
   assert.equal(passed(deep.room), 12);
 });
 
-// ------------------------------------------------------------ a file check matches modulo whitespace runs
-test('live 5: a file check matches modulo whitespace runs on both sides; a run is one space, never none', async () => {
+// ------------------------------------------------------------ a file check runs as written
+test('a file check runs as the splitter wrote it: its text across lines is not the text on one line', async () => {
   const {fileResult} = await import('../src/checks.js');
   const files = new Map([['styles.css', '#todo-list {\n  list-style: none;\n}\n']]);
-  assert.equal(fileResult({path: 'styles.css', has: ['#todo-list { list-style: none; }']}, files).passed, true);
-  assert.equal(fileResult({path: 'styles.css', has: ['#todo-list {list-style: none;}']}, files).passed, false, 'a run is one space, never none');
+  assert.equal(fileResult({path: 'styles.css', has: ['#todo-list { list-style: none; }']}, files).passed, false);
+  assert.equal(fileResult({path: 'styles.css', has: ['#todo-list {\n  list-style: none;\n}']}, files).passed, true);
 });
 
 // ------------------------------------------------------------ a doubted validation that keeps failing

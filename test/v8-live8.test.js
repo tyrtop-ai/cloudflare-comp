@@ -21,14 +21,12 @@ const FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/v8-live8-splitter
 // Calls in order through one splitter's functions: their results, and the state.
 const calls = (list, world = {}) => { const s = splitterState(world); return {s, results: list.map(([fn, args]) => splitterCall(s, fn, args).result)}; };
 
-test('a file check that fails names the nearest line the file holds: the worker sees "<form id=…>" is not "<form>"', () => {
+test('a file check runs as the splitter wrote it: "<form>" is not in a page that holds <form id="todo-form">, and the complaint is the observation alone', () => {
   const page = '<!DOCTYPE html>\n<html>\n<body>\n  <form id="todo-form">\n    <input id="task">\n  </form>\n  <ul id="list"></ul>\n</body>\n</html>\n';
   const r = fileResult({kind: 'file', path: 'index.html', has: ['<form>', '<ul>']}, new Map([['index.html', page]]));
   assert.equal(r.passed, false);
-  assert.equal(r.detail, 'index.html does not contain "<form>" as exact text; the nearest it holds is line 4: "<form id=\\"todo-form\\">"');
-  assert.deepEqual(r.observed.near, {line: 4, text: '<form id="todo-form">'});
-  // Nothing close: the plain observation.
-  assert.equal(fileResult({kind: 'file', path: 'a.css', has: ['body {']}, new Map([['a.css', 'li { color: red; }\n']])).detail, 'a.css does not contain "body {"');
+  assert.equal(r.detail, 'index.html does not contain "<form>"');
+  assert.equal(r.observed.near, undefined, 'the runtime adds no hint of its own');
   assert.equal(fileResult({kind: 'file', path: 'index.html', has: ['<form id="todo-form">', '<ul']}, new Map([['index.html', page]])).passed, true);
 });
 

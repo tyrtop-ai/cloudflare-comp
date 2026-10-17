@@ -150,6 +150,9 @@ def load(module_path):
     extra = [root]
     if not module_path.startswith("components/") and directory != root:
         extra.append(directory)
+    # The packages the box installed for the project (PYTHONPATH, which -I
+    # does not read by itself), as a script run with it would see them.
+    extra += [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
     for p in extra:
         if p not in sys.path:
             sys.path.append(p)

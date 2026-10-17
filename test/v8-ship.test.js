@@ -325,22 +325,20 @@ test('norow: the base\'s TypeScript and shell scripts are compiled by their rows
   assert.equal(room.runFinished(), false);
 });
 
-test('norow: TypeScript and shell that compile complete the run, each compiled in its mode; code no row compiles holds it for the person, and Continue accepts it', {skip}, async () => {
-  const base = {'tools/fix.ts': 'const x: number = 1;\nexport function f(a: string): string { return a; }\nconsole.log(x);\n', 'tools/run.sh': '#!/bin/bash\na=(1 2)\necho "${a[0]}"\n', 'bin/tool': '#!/usr/bin/env python3\nprint(1)\n', 'tools/old.rb': 'puts 1\n'};
-  const {room, boxes, drain} = await baseToolkit(base);
+// Owner 2026-10-16 05:30: "the room should be able to tell when its done by observing the final compiler. That's it": no hold for the person.
+test('norow: TypeScript and shell that compile complete the run, each compiled in its mode; code no row compiles holds nothing, and the export names it as observed', {skip}, async () => {
+  const base = {'tools/fix.ts': 'const x: number = 1;\nexport function f(a: string): string { return a; }\nconsole.log(x);\n', 'tools/run.sh': '#!/bin/bash\na=(1 2)\necho "${a[0]}"\n', 'bin/tool': '#!/usr/bin/env python3\nprint(1)\n', 'tools/old.hs': 'main = putStrLn "1"\n'};
+  const {room, boxes} = await baseToolkit(base);
   const m = room.roomManager(), top = await room.bundleFiles(m);
-  assert.deepEqual(['tools/fix.ts', 'tools/run.sh', 'bin/tool', 'tools/old.rb'].map(p => room.syntaxOf(p, top.files)?.row?.id ?? null), ['typescript', 'shell', 'python', null]);
+  assert.deepEqual(['tools/fix.ts', 'tools/run.sh', 'bin/tool', 'tools/old.hs'].map(p => room.syntaxOf(p, top.files)?.row?.id ?? null), ['typescript', 'shell', 'python', null]);
   assert.deepEqual(room.syntaxOf('tools/fix.ts', top.files).mode, 'either');
   assert.ok(boxes.some(b => ['tools/fix.ts', 'tools/run.sh', 'bin/tool'].every(p => b.syntax.includes(p))));
-  assert.equal(room.snapshot().pause?.kind, 'checks_untested', tail(room));
-  assert.match(room.snapshot().pause.text, /1 file\(s\) that ship were never compiled or never in the box the checks ran in: tools\/old\.rb \(no toolchain row compiles \.rb files\)/);
-  assert.deepEqual([...room.uncompiled(top.files)], []);
-  await room.resume(30);
-  await drain();
+  assert.equal(room.snapshot().pause, null, 'nothing holds for the person');
   assert.equal(room.get('status'), 'complete', tail(room));
-  assert.deepEqual((await room.appFiles()).unchecked, ['tools/old.rb']);
-  // A change to that file is not what the person accepted: the run is held again.
-  assert.notEqual(room.uncheckedOf(await room.bundleFiles(m)).key, room.uncheckedOf({...top, files: new Map([...top.files, ['tools/old.rb', 'puts 2\n']])}).key);
+  assert.deepEqual([...room.uncompiled(top.files)], []);
+  const app = await room.appFiles();
+  assert.deepEqual(app.unchecked, ['tools/old.hs']);
+  assert.match(app.note, /; 1 of them no syntax step compiled or no box held: tools\/old\.hs\.$/);
 });
 
 test('norow: with no box inventory yet, a run whose code waits for a compile row opens the box, which reports one; the files compile in a run of their own', async () => {

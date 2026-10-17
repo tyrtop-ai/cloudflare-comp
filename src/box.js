@@ -64,62 +64,11 @@ export async function boxName(id) {
   return 'box-' + [...digest.slice(0, 8)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 // What one compile opens (S1): the check image, or the browser image when
-// the plan has browser checks; standard-1 as BuildExecutor; internet off.
-export const compileBoxSpec = plan => ({image: (plan?.checks || []).some(c => c?.kind === 'browser') ? 'browser' : 'check', instance: 'standard-1', internet: false});
-
-// ---------------------------------------------------------------------------
-// v8 live 5: what the box's inventory says about its environment classifies
-// the results it ran. A failure an environment fact the inventory reports
-// explains is the box's (infrastructure: compile_infrastructure, shown to
-// the person, retried in a new box), never a problem routed to the code's
-// writer. In the issue tracker run every box had a host name with a label
-// over 63 characters, Python's http.server failed to bind on it, and the
-// worker was told to fix its server for five rounds.
-//
-// Each fact: when the inventory shows it (shows), and which failures it
-// explains (explains: every failure in the box when it is box-wide, or the
-// failures whose text carries its signature).
-const HOST_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
-export const hostnameOk = name => { const t = String(name ?? ''); return t.length > 0 && t.length <= 253 && t.split('.').every(l => HOST_LABEL.test(l)); };
-export const ENVIRONMENT_FACTS = Object.freeze([
-  {fact: 'hostname', box_wide: true, signature: /'idna' codec|label too long|getfqdn/i,
-    shows: inv => (typeof inv.hostname === 'string' && inv.hostname_ok !== true && !hostnameOk(inv.hostname)) || inv.hostname_ok === false || inv.getfqdn?.ok === false,
-    text: inv => `the box's host name is not one a check can run under (${inv.getfqdn?.ok === false ? `Python's socket.getfqdn failed on it: ${clip(inv.getfqdn.error, 160)}` : `a label of ${inv.hostname_longest_label ?? Math.max(...String(inv.hostname).split('.').map(l => l.length))} characters, over the 63 a host name label may have`}${inv.hostname_status && inv.hostname_status !== 'set' ? `; the box could not set its own name: ${clip(inv.hostname_status, 120)}` : ''}), so a server built on Python's http.server cannot start in it`},
-  {fact: 'python', box_wide: false, signature: /\bpython3?\b[^\n]{0,80}(?:not found|No such file or directory|ENOENT)|spawn python3? ENOENT/i,
-    shows: inv => Object.hasOwn(inv, 'python') && inv.python === null,
-    text: () => 'the box reports no Python, and the check needed it'}
-]);
-// The facts an inventory shows: [{fact, box_wide, signature, text}].
-export function environmentFaults(inventory) {
-  if (!inventory || typeof inventory !== 'object') return [];
-  return ENVIRONMENT_FACTS.filter(f => { try { return f.shows(inventory); } catch { return false; } }).map(f => ({fact: f.fact, box_wide: f.box_wide, signature: f.signature, text: f.text(inventory)}));
-}
-// A report of the validations with its failures classified by the box's inventory: a
-// failed check a fact explains is infrastructure (with environment: fact),
-// an issue it explains moves to infrastructure_issue, and the report says
-// what of the box's environment it was. A report no fact explains is
-// returned as it is.
-export function classifyEnvironment(report) {
-  const faults = environmentFaults(report?.inventory);
-  if (!faults.length || !report || typeof report !== 'object') return report;
-  const explained = text => faults.find(f => f.signature.test(text)) || null;
-  const used = new Set();
-  const checks = (Array.isArray(report.checks) ? report.checks : []).map(c => {
-    if (!c || c.passed || c.infrastructure) return c;
-    const f = faults.find(x => x.box_wide) || explained(`${c.detail || ''}\n${c.output || ''}`);
-    if (!f) return c;
-    used.add(f);
-    return {...c, infrastructure: true, environment: f.fact, detail: clip(`not run in a working box: ${f.text}. What the check saw: ${c.detail || 'it failed'}`, 600)};
-  });
-  const issues = [];
-  for (const i of Array.isArray(report.issues) ? report.issues : []) {
-    const f = explained(String(i?.detail || ''));
-    if (f) used.add(f); else issues.push(i);
-  }
-  if (!used.size) return report;
-  const why = `The box's environment, not the code: ${[...used].map(f => f.text).join('; ')}.`;
-  return {...report, passed: false, checks, issues, environment: [...used].map(f => f.fact), infrastructure_issue: report.infrastructure_issue ? `${report.infrastructure_issue}; ${why}` : why};
-}
+// the plan has browser checks; standard-1 as BuildExecutor; internet off,
+// unless the plan installs packages: then the box has the internet for its
+// install stage, and its checks run without it where the platform allows a
+// network namespace (container/build-runner.mjs).
+export const compileBoxSpec = plan => ({image: (plan?.checks || []).some(c => c?.kind === 'browser') ? 'browser' : 'check', instance: 'standard-1', internet: (plan?.install || []).some(x => x?.packages?.length)});
 
 const decode = bytes => new TextDecoder().decode(bytes || new Uint8Array());
 const clip = (v, n) => String(v ?? '').slice(0, n);

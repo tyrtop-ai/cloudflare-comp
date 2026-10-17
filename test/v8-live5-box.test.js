@@ -1,5 +1,5 @@
-// v8 live 5: the box's host name, the environment facts of a box's
-// inventory in how results are classified, and the prewarmed box of a run's
+// v8 live 5: the box's host name, what a compile reports whatever the
+// box's inventory says, and the prewarmed box of a run's
 // first compile. Offline: the real Box class over the fake Container
 // (test/helpers/boxes.js), the real build runner in Node behind it.
 import test from 'node:test';
@@ -9,7 +9,7 @@ import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {liveRoom, events, fileBlocks, snapshotHash, verifyChecks} from './helpers/room.js';
 import {fakeBoxes} from './helpers/boxes.js';
-const {freshBox, boxName, boxBuildCommand, BOX_HOSTNAME, BOX_NAME, BOX_LIFETIME_MS, classifyEnvironment, environmentFaults, hostnameOk} = await import('../src/box.js');
+const {freshBox, boxName, boxBuildCommand, BOX_HOSTNAME, BOX_NAME, BOX_LIFETIME_MS} = await import('../src/box.js');
 const {BoxPrewarm, levelBoxSpec, PREWARM_IDLE_MS} = await import('../src/box-prewarm.js');
 const runner = await import('../container/build-runner.mjs');
 
@@ -115,7 +115,6 @@ test('the runner inventory reports the host name, its longest label, how the box
   assert.equal(runner.hostnameOk(LONG), false);
   assert.equal(runner.hostnameOk('a.b-c'), true);
   assert.equal(runner.hostnameOk('-a'), false);
-  assert.equal(hostnameOk(LONG), false, 'the Worker reads it the same way');
   const failed = await runner.hostnameInventory({name: LONG, probe: async () => ({code: 0, stdout: JSON.stringify({ok: false, error: BAD_HOST.getfqdn.error}) + '\n', stderr: '', ms: 31})});
   assert.deepEqual(failed, {hostname: LONG, hostname_ok: false, hostname_longest_label: 64, hostname_status: null, getfqdn: {ok: false, error: BAD_HOST.getfqdn.error, ms: 31}});
   const hung = await runner.hostnameInventory({name: 'box-0123456789abcdef', probe: async () => ({code: -1, stdout: '', stderr: '', timedOut: true, ms: 8000})});
@@ -128,54 +127,15 @@ test('the runner inventory reports the host name, its longest label, how the box
   assert.equal(typeof report.inventory.hostname, 'string');
 });
 
-// ------------------------------------------------------------ environment facts classify results
-const failing = (id, detail, extra = {}) => ({id, kind: 'http', passed: false, ms: 5, detail, output: '', frames: [], observed: {what: 'run'}, ...extra});
-test('classifyEnvironment: in a box with a bad host name every failed check is the box\'s; passes stay; no fact, nothing changes', () => {
-  const report = {mode: 'card', passed: false, infrastructure_issue: '', issues: [{path: 'app.py', kind: 'source', stage: 'syntax', detail: 'python syntax: app.py line 3'}],
-    checks: [failing('R1', "run server: python3 app.py exited (code 1) before it answered GET /tickets (at app.py:123): UnicodeError: encoding with 'idna' codec failed (UnicodeError: label too long)"),
-      failing('R2', 'step 1 GET /x: answered HTTP 404'), {id: 'R3', kind: 'file', passed: true, ms: 0, detail: ''}],
-    inventory: {python: '3.11.2', ...BAD_HOST}};
-  assert.deepEqual(environmentFaults(report.inventory).map(f => f.fact), ['hostname']);
-  const c = classifyEnvironment(report);
-  assert.notEqual(c, report);
-  assert.deepEqual(c.checks.map(x => [x.id, x.passed, !!x.infrastructure, x.environment || null]), [['R1', false, true, 'hostname'], ['R2', false, true, 'hostname'], ['R3', true, false, null]]);
-  assert.match(c.checks[0].detail, /^not run in a working box: the box's host name/);
-  assert.match(c.infrastructure_issue, /^The box's environment, not the code: the box's host name is not one a check can run under \(Python's socket.getfqdn failed on it: UnicodeError/);
-  assert.match(c.infrastructure_issue, /could not set its own name: unshare: EPERM/);
-  assert.deepEqual(c.issues, report.issues, 'a syntax issue no fact explains stays the code\'s');
-  assert.equal(c.passed, false);
-  assert.deepEqual(c.environment, ['hostname']);
-  // A host name that only looks long to an old image, a good name, or no inventory at all: unchanged.
-  for (const inventory of [null, {python: '3.11.2'}, {python: '3.11.2', hostname: 'box-0123456789abcdef', hostname_ok: true, getfqdn: {ok: true, value: 'box-0123456789abcdef'}}])
-  { const given = {...report, inventory}; assert.equal(classifyEnvironment(given), given, JSON.stringify(inventory)); }
-  const good = {...report, inventory: {python: '3.11.2', hostname: 'box-0123456789abcdef', hostname_ok: true, getfqdn: {ok: true, value: 'box-0123456789abcdef'}}};
-  assert.equal(classifyEnvironment(good), good);
-  // getfqdn failing alone (the name looks fine) is the same fact.
-  assert.deepEqual(environmentFaults({hostname: 'box-0123456789abcdef', hostname_ok: true, getfqdn: {ok: false, error: 'gaierror'}}).map(f => f.fact), ['hostname']);
-});
-
-test('classifyEnvironment: a fact that is not box-wide explains only the failures carrying its signature', () => {
-  const report = {mode: 'card', passed: false, infrastructure_issue: '', issues: [],
-    checks: [failing('R1', 'temp 100: could not start: spawn python3 ENOENT', {kind: 'command'}), failing('R2', 'temp 100: exit 1, expected 0; stderr: ValueError', {kind: 'command'})],
-    inventory: {python: null, hostname: 'box-0123456789abcdef', hostname_ok: true, getfqdn: null}};
-  const c = classifyEnvironment(report);
-  assert.deepEqual(c.checks.map(x => [x.id, !!x.infrastructure, x.environment || null]), [['R1', true, 'python'], ['R2', false, null]]);
-  assert.match(c.infrastructure_issue, /the box reports no Python/);
-});
-
-test('a v8 room whose box has a bad host name holds at checks_blocked for the person, and routes nothing to the worker', async () => {
-  // The real runner on the wrong answer, in a box whose inventory reports the issue tracker run's host name.
+// ------------------------------------------------------------ the compiler reports what it observed
+// Owner 2026-10-16 05:08 / 05:39: the box is named validly by construction (box-<16 hex>); no runtime classifier reads
+// failure text to relabel it as the box's.
+test('a v8 room reports a failure as the box observed it, whatever its inventory says: the complaint goes down, nothing is relabelled', async () => {
   const r = room({answers: [WRONG], run: async req => { const out = await verifyChecks({...req}, {isolation: []}); return {...out, inventory: {...out.inventory, ...BAD_HOST}}; }});
   await r.room.start(GOAL, 10, {pipeline: 'v8'});
   await r.drain();
-  const pause = r.room.snapshot().pause;
-  assert.equal(pause?.kind, 'checks_blocked', JSON.stringify(pause));
-  assert.match(pause.text, /The box's environment, not the code: the box's host name/);
-  assert.match(r.room.get(`compile_infrastructure:${r.room.roomManager()}`), /host name is not one a check can run under/);
-  assert.equal(r.room.problems('1=1').length, 0, 'nothing is routed');
-  assert.equal(r.calls.leaf.length, 1, 'the worker was never asked to repair it');
-  assert.equal(r.room.read('validation_status', {}).V1.passed, null, 'V1 untested, not failed');
-  assert.match(events(r.room, 'box_environment')[0].body, /host name/);
+  assert.equal(events(r.room, 'box_environment').length, 0);
+  assert.ok(r.calls.leaf.length > 1, 'the worker was given the complaint');
   assert.equal(r.room.read('toolchain_inventory', null).hostname, LONG, 'the inventory the export shows');
 });
 

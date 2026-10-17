@@ -7,7 +7,7 @@ export { BuildExecutor } from './build-executor.js';
 export { Box } from './box.js';
 export { BoxProbe, BoxProbePeer } from './box-probe.js';
 import { boxProbeRoute } from './box-probe.js';
-import { freshBox, compileBoxSpec, BOX_COLD_MS, classifyEnvironment } from './box.js';
+import { freshBox, compileBoxSpec, BOX_COLD_MS } from './box.js';
 import { BoxPrewarm, levelBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
@@ -38,13 +38,12 @@ import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLine, useReferences, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
-import { placeChecks, checkEntries, installedModule, outsideFailure, routeNames, checkUses, importClosure, textHash } from './piece.js';
-import { unresolvedNames } from './toolchains.js';
+import { placeChecks, checkEntries, installedModule, checkUses, importClosure, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
-import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, readsModule, piecePackages, packageLine, needOf } from './packages.js';
+import { normalizePackages, installedPackages, heldByName, packageLanguage, stdlibRow, piecePackages, packageLine } from './packages.js';
 import { caseTwin, boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples, renderExample } from './validations.js';
 import { splitLevel } from './splitter.js';
@@ -741,6 +740,16 @@ export class ControlRoom extends DurableObject {
   }
   promptHandlers() { return query(this.db(),'SELECT id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at FROM prompt_handlers ORDER BY spawned_at,id'); }
   installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
+  // What a row's box installs before its checks: the packages its row lists
+  // beyond the image's and the language's standard library, per language.
+  packageInstalls(id) {
+    const rows=this.installedToolchains(),image=new Set(this.installedSet().map(p=>p.name)),by=new Map();
+    for(const p of this.packagesOf(id)) {
+      if(image.has(p.name)||!p.language||stdlibRow(p.name,rows.filter(r=>r.id===p.language)))continue;
+      by.set(p.language,[...(by.get(p.language)||[]),p.name]);
+    }
+    return [...by].map(([toolchain,packages])=>({toolchain,packages}));
+  }
   // v8 live 4: a row's packages, as its row lists them (the room's manager is created with the installed set).
   packagesOf(id) { return this.v8()?normalizePackages(parse(this.node(id)?.packages,[])):[]; }
   // v8 live 4 review (L6): a row's packages as a prompt shows them: those of the levels' code languages, once a level names them.
@@ -1406,9 +1415,9 @@ export class ControlRoom extends DurableObject {
     const digest=await snapshotHash(files),spec=this.specOf(this.validationRows()),status=this.read('validation_status',{});
     // A pass is for the prompt as it stands: a change given since that has not passed is not in it.
     const last=this.read('compile_passed',null),hit=last?.digest===digest&&(last.goal_rev??1)===this.goalRev()?last:null;
-    // v8 ship-verified: the files the person accepted shipping unchecked are named beside the pass.
-    const owe=hit?this.uncheckedOf(bundle):null,unchecked=owe&&this.get('unchecked_accepted')===owe.key?owe.list.map(x=>x.path):[];
-    const note=hit?`Every validation passed on exactly these files (snapshot ${digest.slice(0,16)})${unchecked.length?`, but for ${unchecked.length} the person accepted shipping unchecked: ${clip(unchecked.join(', '),300)}`:''}.`:
+    // v8 ship-verified: the files that ship though no syntax step compiled them or no box held them, as the compiler observed, beside the pass.
+    const unchecked=hit?(this.uncheckedOf(bundle)?.list||[]).map(x=>x.path):[];
+    const note=hit?`Every validation passed on exactly these files (snapshot ${digest.slice(0,16)})${unchecked.length?`; ${unchecked.length} of them no syntax step compiled or no box held: ${unchecked.join(', ')}`:''}.`:
       last?.digest===digest?`These files passed every validation before the prompt's latest change (revision ${this.goalRev()}), which has not passed on them yet.`:
       last?.digest?`These files differ from the last run that passed every validation (snapshot ${last.digest.slice(0,16)}), so they have not passed as exported.`:
       'The validations have not all passed on these files yet.';
@@ -3652,7 +3661,7 @@ export class ControlRoom extends DurableObject {
   pieceBundle(top, files, origin, placed, by, glue, raw) {
     const bundle={files:new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),origin,placed,by,glue,top,raw};
     if(this.holdsBase(top))this.addCarried(bundle);
-    // A file at a path outside the box's folder (the box's own safety, boxPathError) ships, never in the box: what the person accepts unchecked.
+    // A file at a path outside the box's folder (the box's own safety, boxPathError) ships, never in the box (uncheckedOf).
     const hidden=[...bundle.files.keys()].filter(p=>boxPathError(p));
     if(hidden.length)bundle.unsent=[...(bundle.unsent||[]),...hidden.map(p=>({path:p,why:'its path is outside the box\'s folder',sha256:textHash(String(bundle.files.get(p)??''))}))];
     return bundle;
@@ -3905,21 +3914,6 @@ export class ControlRoom extends DurableObject {
     }
     this.save(`piece:${bid}`,{input,digest,owned,files:piece.files.size,glue:[...piece.glue.keys()],ts:Date.now()});
   }
-  // v8 M3 review (M3, M5): what the pieces outside a row's subtree provide:
-  // their contract names that no leaf inside also has, their route
-  // contracts, the paths their contracts place, and their files' stems.
-  outsideOf(m) {
-    const leaves=this.pieceLeaves(m),inside=new Set(leaves.map(l=>l.id)),mine=new Set(leaves.flatMap(l=>this.designOf(l.id).contracts.map(c=>c.name)));
-    const names=new Set(),routes=[],paths=new Set(),stems=new Set(),stem=p=>String(p).split('/').pop().replace(/\.[^.]+$/,'');
-    for(const l of this.treeLeaves()) {
-      if(inside.has(l.id))continue;
-      for(const c of this.designOf(l.id).contracts){if(!mine.has(c.name))names.add(c.name);if(contractKind(c)==='route')routes.push(c.name);if(c.path){paths.add(c.path);stems.add(stem(c.path));}}
-      for(const f of this.files(l.id))stems.add(stem(f.path));
-    }
-    return {names,routes,paths,stems};
-  }
-  // The working leaves of the whole tree (every row with no agent above, and below it).
-  treeLeaves() { return this.allNodes().filter(n=>!this.agentAbove(n.id)).flatMap(n=>this.pieceLeaves(n.id)); }
   closureOf(id, entries, piece) {
     const rows=this.installedToolchains(),held=[...this.packagesOf(id),...this.installedSet()];
     return importClosure(entries,piece.files,{rows,installed:(mod,row)=>installedModule(mod,row,{held,rows}),parts:this.partsRoot(),held:this.passthroughPaths()});
@@ -4048,44 +4042,6 @@ export class ControlRoom extends DurableObject {
     this.rollUp(id,no.map(r=>({id:r.id,why:errors.has(r.id)?'Clef could not judge what it reaches':`Clef found that it reaches something another piece provides (p=${Number(p.get(r.id)??0).toFixed(3)})`})));
     return fact.filter(r=>!no.includes(r));
   }
-  // The project's names a module may be taken for (its files' stems and folders, its contracts).
-  projectNames(bundle) {
-    return bundle.external??=(()=>{
-      const paths=[...bundle.files.keys()].filter(p=>!(bundle.glue||new Map()).has(p));
-      return {stems:[...new Set(paths.flatMap(p=>p.split('/').map(s=>s.replace(/\.[^.]+$/,''))))],contracts:[...this.contractNames()]};
-    })();
-  }
-  // Whether a module a run could not find is a package rather than a part
-  // of the project (missing_module): the rows know its name as a package's,
-  // and no file, folder or contract of the project is named like it.
-  missingPackage(module, bundle) {
-    if(!packageLanguage(module,this.installedToolchains()))return false;
-    const {stems,contracts}=this.projectNames(bundle),t=String(module).toLowerCase().replace(/[^a-z0-9]/g,'');
-    return ![...stems,...contracts].some(x=>String(x).toLowerCase().replace(/[^a-z0-9]/g,'')===t);
-  }
-  // v8 live 4: a failure that needed a package outside the project is that
-  // package's ask, answered in the world of the worker responsible (its
-  // broker's answer: what its line holds for the need); the complaint itself
-  // goes down as the compiler observed it. The worker: the owner of a file
-  // the failure's frames name, else of a file that imports the package.
-  answerMissingModules(items, bundle, results, validations) {
-    const rows=this.installedToolchains().filter(r=>r.unresolved?.length),asked=new Set();
-    for(const it of items) {
-      const vid=it.facts?.validation?.id,res=vid?results.get(vid):null;
-      if(!res||!validations.some(v=>v.id===vid))continue;
-      const text=`${res.detail||''}\n${res.output||''}`;
-      for(const hit of rows.flatMap(row=>unresolvedNames(text,row))) {
-        if(!hit.module||hit.name||!this.missingPackage(hit.module,bundle))continue;
-        // v8 live 4 review (L7): the importer is read by its row's module_reference.
-        const importer=[...bundle.files].find(([p,t])=>bundle.origin.get(p)&&readsModule(p,t,hit.module,this.installedToolchains()))?.[0];
-        const owner=it.parties.find(p=>p.owner&&this.node(p.owner))?.owner||(importer&&bundle.origin.get(importer)?.owner);
-        if(!owner||asked.has(`${owner}:${hit.module}`))continue;
-        asked.add(`${owner}:${hit.module}`);
-        const a=this.answerPackageAsk(owner,{name:hit.module,key:requestKey({name:hit.module}),wake:false,failure:true});
-        if(a)this.event(owner,'package_missing',clip(`${vid}: the run looked for ${hit.module}; ${a.how==='granted'?`granted ${a.names.join(', ')} for it`:a.how==='yours'?`its packages hold ${a.names.join(', ')} for it`:`its language provides ${a.names.join(', ')} for it`}.`,500));
-      }
-    }
-  }
   // The validation table in a sentence, for a hold's or an escalation's text (the dashboard's; no worker reads it).
   checksSummary(head, list=this.validationRows()) {
     const status=this.read('validation_status',{});
@@ -4143,11 +4099,12 @@ export class ControlRoom extends DurableObject {
     finally {this.autoResume=false;}
   }
   // Capability boxes S1 (Level A): one fresh, single-use box per compile,
-  // with the internet off, runs the build runner on the level's validations
+  // with the internet off (on for its install stage when the plan installs
+  // the packages the rows list: compileBoxSpec), runs the build runner on the level's validations
   // (mode 'checks', the request BuildExecutor took): {report} or
   // {infrastructure}. The runner's own isolation still runs inside; the box
   // adds the VM boundary. A box that cannot be opened, or that does not
-  // confirm it is fresh with the internet off, is infrastructure
+  // confirm it is fresh with the internet as asked, is infrastructure
   // (checks_blocked and its retries): there is no fallback to a shared or
   // internet-on Container. v8 M3: a box opens only while the room has a slot
   // for it (boxSlot).
@@ -4183,25 +4140,22 @@ export class ControlRoom extends DurableObject {
         box=null;
         return this.runChecksBox(id,input,files,plan,toolchains,null);
       }
-      if(opened?.fresh!==true||opened?.internet!==false) {
-        this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,error:'box not confirmed fresh with the internet off'});
-        return {infrastructure:'The box did not confirm a fresh start with the internet off; the checks were not run in it.'};
+      if(opened?.fresh!==true||opened?.internet!==spec.internet) {
+        this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,error:`box not confirmed fresh with the internet ${spec.internet?'on for its install':'off'}`});
+        return {infrastructure:`The box did not confirm a fresh start with the internet ${spec.internet?'on for its install':'off'}; the checks were not run in it.`};
       }
       this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,
-        box:{fresh:true,internet:false,start_ms:opened.start_ms,ready_ms:opened.ready_ms,cold:opened.cold===true||opened.ready_ms>BOX_COLD_MS,image:opened.image,instance:opened.instance,name:opened.name,
+        box:{fresh:true,internet:spec.internet,start_ms:opened.start_ms,ready_ms:opened.ready_ms,cold:opened.cold===true||opened.ready_ms>BOX_COLD_MS,image:opened.image,instance:opened.instance,name:opened.name,
           ...(warm?{prewarmed:true,waited_ms:warm.waited_ms,prewarm_ms:Math.max(0,(warm.ready_at??start)-warm.began)}:{})},exec_ms:opened.exec_ms});
       // The level's compiler names the box its run opened.
       const named=this.read(`level_compiler:${id}`,null);
       if(named&&opened.name)this.save(`level_compiler:${id}`,{...named,box:opened.name});
       if(report.mode!=='checks'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a report of the validations: its image predates them.'};
-      // v8 live 5: a failure the box's inventory explains (its host name, a missing interpreter) is the box's, never the code's.
-      const classified=classifyEnvironment(report);
-      if(classified!==report)this.event(id,'box_environment',clip(classified.infrastructure_issue,900));
-      return {report:classified};
+      return {report};
     } catch(e) {
       // The box closes itself (compile's finally, and its alarm); this is the backstop for an RPC that broke first.
       if(box&&typeof box.close==='function'){const closing=Promise.resolve().then(()=>box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
-      this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,box:{fresh:true,internet:false},error:clip(e?.message||e,300)});
+      this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,box:{fresh:true,internet:spec.internet},error:clip(e?.message||e,300)});
       return {infrastructure:String(e?.message||e)};
     }
   }
@@ -4260,14 +4214,12 @@ export class ControlRoom extends DurableObject {
     for(const p of files.keys()){const s=this.syntaxOf(p,files);if(s&&!s.row)out.push({path:p,why:s.why,unconfirmed:s.unconfirmed});}
     return out;
   }
-  // v8 ship-verified (L1, M1): what of a bundle ships unchecked: code no
-  // installed row compiles (uncompilable) and the carried files its box does
-  // not hold (unsent). {list, key, text} (key: the list with each file's
-  // digest, which the person's acceptance names), or null when there is none.
+  // v8 ship-verified (L1, M1): what of a bundle ships with no syntax step
+  // over it: code no installed row compiles (uncompilable) and the carried
+  // files its box does not hold (unsent), as observed. {list} or null.
   uncheckedOf(bundle) {
-    const list=[...this.uncompilable(this.boxHeld(bundle.files)).map(x=>({path:x.path,why:x.why,sha:textHash(String(bundle.files.get(x.path)??''))})),...(bundle.unsent||[]).map(x=>({path:x.path,why:x.why,sha:x.sha256}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
-    if(!list.length)return null;
-    return {list,key:textHash(JSON.stringify(list.map(x=>[x.path,x.sha]))),text:clip(`${list.length} file(s) that ship were never compiled or never in the box the checks ran in: ${list.map(x=>`${x.path} (${x.why})`).join('; ')}.`,800)};
+    const list=[...this.uncompilable(this.boxHeld(bundle.files)).map(x=>({path:x.path,why:x.why})),...(bundle.unsent||[]).map(x=>({path:x.path,why:x.why}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+    return list.length?{list}:null;
   }
   // The Worker's own parser over the files it has not compiled: {issues, clean: [keys]}.
   // v8 M3 review 2 (M2): in the modes its runtimes read each in; a file
@@ -6386,71 +6338,63 @@ export class ControlRoom extends DurableObject {
     return true;
   }
   // v8 live 4 (review): a package ask by name, resolved against what
-  // exists, with no side effect (applied by answerPackageAsk). The ask goes
-  // up the asker's line (its own row, its manager's, and up): the first row
-  // holding a package by the name, or one whose provides fits what the name
-  // stands for and the need (the rows know the name as a package's), answers.
-  // A row above the asker grants it. A name no row holds is answered by the
-  // language itself: a module of its standard library is named as part of
-  // it, and a third party's name by the standard library modules that
-  // provide what it stands for (stdlib_provides). Under packages 'allowed',
-  // a third party's name is the person's to allow and is not redirected,
-  // as before live 4. null: no row and no language answers it. Its callers
-  // are a split's package names and a run's missing module (a worker's ask
-  // goes to its manager, whose grant gives a package). failure: a run that
-  // could not find the module (missing_module), so a row holding it by name
-  // does not answer. {how: 'yours'|'granted'|'language', at, line, hits,
-  // names, need}.
-  resolvePackage(id, {name='', need='', failure=false}={}) {
-    const rows=this.installedToolchains(),line=[],want={name,need};
+  // exists, with no side effect (applied by packageAsk). The ask goes up the
+  // asker's line (its own row, its manager's, and up): the first row holding
+  // a package by that name answers, and a row above the asker grants it. A
+  // module of the language's standard library is named as part of it.
+  // Packages are allowed (owner, 2026-10-15 22:12): a third party's name no
+  // row holds is granted from the top of the line, listed on every row down
+  // to the asker as interfaces are (22:11), and the compiler's box installs
+  // it (packageInstalls). null: the name is no package's. Its callers are a split's package names
+  // (a worker's ask goes to its manager, whose grant gives a package). {how: 'yours'|'granted'|'language', at,
+  // line, hits, names, fresh}.
+  resolvePackage(id, {name=''}={}) {
+    const rows=this.installedToolchains(),line=[];
     for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.push(x);
     if(!line.length||!name)return null;
     // The language the name is in: the rows', else the asker's own packages' or the levels' code languages, when one.
     const own=[...new Set(this.packagesOf(id).map(p=>p.language).filter(Boolean))],code=contractLanguages(this.treeContracts());
     const known=packageLanguage(name,rows),lang=known||(own.length===1?own[0]:code.length===1?code[0]:'');
     for(let i=0;i<line.length;i++) {
-      const held=this.packagesOf(line[i].id).filter(p=>!lang||!p.language||p.language===lang);
-      let hits=failure?[]:heldByName(held,name,rows);
-      if(!hits.length&&known)hits=heldForNeed(held.filter(p=>!failure||!heldByName([p],name,rows).length),want,rows);
-      if(hits.length)return {how:i===0?'yours':'granted',at:i,line,hits,names:hits.map(p=>p.name),need:needOf(want,hits,rows)};
+      const hits=heldByName(this.packagesOf(line[i].id).filter(p=>!lang||!p.language||p.language===lang),name,rows);
+      if(hits.length)return {how:i===0?'yours':'granted',at:i,line,hits,names:hits.map(p=>p.name)};
     }
     if(!known)return null;
-    const allowed=this.settings().packages==='allowed';
-    const said=languageAnswer(want,{rows,inventory:this.read('toolchain_inventory',null),language:lang});
-    if(!said||allowed&&!said.stdlib)return null;
-    return {how:'language',at:-1,line,hits:[],names:said.names,need:said.need,stdlib:said.stdlib,language:said.language};
+    if(stdlibRow(name,rows.filter(r=>r.id===lang)))return {how:'language',at:-1,line,hits:[],names:[name]};
+    return {how:'granted',at:line.length-1,line,hits:[{name,language:lang}],names:[name],fresh:true};
   }
   // A package ask resolved (resolvePackage) and applied: a grant is added to
-  // every row between the holder and the asker, so a piece's packages stay a
-  // part of its parent's; each hop logs package_relayed. The answer names
-  // what exists for it. Returns {how, text, names} or null.
-  packageAsk(id, {name='', need='', failure=false}={}) {
-    const r=this.resolvePackage(id,{name,need,failure});
+  // every row between the holder and the asker (and to the holder, for a
+  // name granted fresh from the top), so a piece's packages stay a part of
+  // its parent's; each hop logs package_relayed. The answer names what
+  // exists for it. Returns {how, text, names} or null.
+  packageAsk(id, {name=''}={}) {
+    const r=this.resolvePackage(id,{name});
     if(!r)return null;
-    const {line,at,hits}=r,asker=line[0],many=r.names.length>1;
+    const {line,at,hits}=r,asker=line[0],many=r.names.length>1,names=hits.map(packageLine).join(', ');
     for(let i=0;i+1<line.length&&(at<0||i<at);i++)this.event(line[i+1].id,'package_relayed',clip(`"${line[i].label}" asked for ${name}, beyond its own packages; asked "${line[i+1].label}".`,400),line[i].id);
-    if(r.how==='yours')return {how:'yours',names:r.names,text:MESSAGES.package_yours({need:r.need,names:hits.map(packageLine).join(', '),many})};
+    if(r.how==='yours')return {how:'yours',names:r.names,text:MESSAGES.package_yours({names,many})};
     if(r.how==='granted') {
-      for(let j=at-1;j>=0;j--) {
+      for(let j=r.fresh?at:at-1;j>=0;j--) {
         const own=normalizePackages(parse(this.node(line[j].id)?.packages,[])),add=hits.filter(p=>!own.some(q=>q.name===p.name));
         if(add.length)this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,...add])),line[j].id);
       }
       this.event(line[at].id,'package_granted',clip(`"${line[at].label}" granted ${r.names.join(', ')} to "${asker.label}" for ${name}.`,400),asker.id);
-      return {how:'granted',names:r.names,text:MESSAGES.package_granted({need:r.need,names:hits.map(packageLine).join(', '),many})};
+      return {how:'granted',names:r.names,text:MESSAGES.package_granted({names,many})};
     }
-    return {how:'language',names:r.names,text:r.stdlib?MESSAGES.package_stdlib({name}):MESSAGES.package_language({need:r.need,names:r.names.join(', '),many})};
+    return {how:'language',names:r.names,text:MESSAGES.package_stdlib({name})};
   }
-  // A package name a split gives that its parent's row does not list, or a
-  // run's missing module: answered like a broker answer, labelled, among the
-  // worker's answers, with a message that wakes it.
-  answerPackageAsk(id, {name='', need='', key='', wake=true, failure=false}={}) {
-    const a=this.packageAsk(id,{name,need,failure});
+  // A package name a split gives that its parent's row does not list:
+  // answered like a broker answer, labelled, among the worker's answers,
+  // with a message that wakes it.
+  answerPackageAsk(id, {name='', need='', key='', wake=true}={}) {
+    const a=this.packageAsk(id,{name});
     if(!a)return null;
     const req=brokerRequest({from:id,kind:'package',name,need});
     const answer=packageAnswer({id:req.id,name,text:a.text});
     if(wake)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:key||requestKey({need,name}),kind:'package',status:answer.status}));
     this.recordAnswer(id,{key:key||requestKey({need,name}),kind:'broker',text:viewAnswer(answer)});
-    this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:`its language provides ${a.names.join(', ')}`}.`,400));
+    this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:'part of its language'}.`,400));
     return a;
   }
   // The answers a worker got to its asks, one per topic: a v8 worker's view
@@ -8752,8 +8696,7 @@ export class ControlRoom extends DurableObject {
   // Continue at the room's holds: a pending grant (base_confirm) first,
   // which grants the files it lists (or those selected), and the other holds
   // wait for the next Continue; otherwise Continue answers every hold that
-  // reached the room: checks_untested accepts the files that ship unchecked,
-  // and each other hold (the validations, a split, an escalation, Clef) gives
+  // reached the room: each hold (the validations, a split, an escalation, Clef) gives
   // the row it names a fresh set of split attempts, and wakes it. The alarm's retry (autoResume) answers only the
   // checks_blocked holds.
   continueHold({grants=null}={}) {
@@ -8762,11 +8705,6 @@ export class ControlRoom extends DurableObject {
     const list=this.autoResume?all.filter(h=>h.kind==='checks_blocked'):all.filter(h=>h.kind!=='base_confirm');
     if(!list.length)return;
     this.saveHolds(all.filter(h=>!list.includes(h)&&h.kind!=='base_confirm'));
-    const accept=list.find(h=>h.kind==='checks_untested');
-    if(accept) {
-      const files=this.read('unchecked_pending','');
-      if(files){this.set('unchecked_accepted',files);this.save('unchecked_pending','');this.event('room','unchecked_accepted',clip(`The person accepted the project with the files that ship unchecked, as the hold listed them: ${accept.text||''}`,900));}
-    }
     const rows=[...new Set(list.map(h=>h.agent||this.roomManager()||'').filter(Boolean))];
     if(this.autoResume)for(const id of rows)this.db().exec("DELETE FROM meta WHERE key IN (?,?)",`compile_reported:${id}`,`escalated:${id}`);
     else {
@@ -9287,7 +9225,7 @@ export class ControlRoom extends DurableObject {
     const digest=await snapshotHash(files),started=Date.now(),fresh=this.uncompiled(files),parsed=this.localSyntax(files,fresh);
     const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
     const spec={contracts,validations:runs};
-    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),placed:new Set(contracts.map(c=>c.path).filter(Boolean)),compile});
+    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),placed:new Set(contracts.map(c=>c.path).filter(Boolean)),compile,install:this.packageInstalls(id)});
     const results=new Map(local);
     for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{passed:false,...fileResult(v.check,files)});
     const [judged,run]=await Promise.all([this.judgeRuns(id,runs,files,contracts),container?this.runChecks(id,`examples:${id}:${digest}`,files,plan,toolchains):null]);
@@ -9312,16 +9250,12 @@ export class ControlRoom extends DurableObject {
       const content=files.get(v.check.path);
       if(typeof content!=='string'||!content.trim()){const note=`${v.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,detail:note,observed:{what:'local',note}}];}
       const says=v.says||(v.serves||[]).map(n=>contractOf.get(n)?.does).filter(Boolean).join('; ');
-      // A Clef error is retried twice, with backoff, before it is infrastructure.
-      for(let k=0;;k++) {
-        try {
-          const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
-          return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p}}];
-        } catch(e) {
-          if(k>=JUDGE_RETRY_MS.length)return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path} after ${k+1} tries: ${clip(e?.message||e,200)}`}];
-          this.event(id,'judge_retry',clip(`Clef could not judge ${v.check.path} for ${v.id} (${clip(e?.message||e,160)}); asked again in ${JUDGE_RETRY_MS[k]} ms.`,400));
-          await new Promise(done=>setTimeout(done,JUDGE_RETRY_MS[k]));
-        }
+      // A Clef error is infrastructure: the room holds and Continue compiles again.
+      try {
+        const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
+        return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p}}];
+      } catch(e) {
+        return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path}: ${e?.message||e}`}];
       }
     }));
   }
@@ -9342,9 +9276,8 @@ export class ControlRoom extends DurableObject {
   // no syntax step compiled in the modes its runtimes load it (syntax_clean).
   // Of the validations it holds itself, one whose import closure reaches
   // outside the piece, or that Clef finds reaches another piece (pieceScope),
-  // is held by the level above from then on (rollUp), as is one that failed
-  // on evidence of a cause outside the piece (outsideFailure). Every other
-  // failure is a complaint, routed down to the worker responsible for it as
+  // is held by the level above from then on (rollUp). Every failure is a
+  // complaint, routed down to the worker responsible for it as
   // the compiler observed it (routeComplaint). A check that could not run
   // (infrastructure) is nobody's work: the room holds and retries it. Its
   // record of its last finished compile (verified:<id>, with the bundle's
@@ -9352,7 +9285,7 @@ export class ControlRoom extends DurableObject {
   // bundle it ships up. Returns {passed} | {reported} | {held} | {moved}.
   // owned: the digest it took first.
   async compileLevel(id, {begun=Date.now(), owned:taken=null}={}) {
-    const above=this.agentAbove(id),depth=this.depthOf(id);
+    const depth=this.depthOf(id);
     // A level with an escalation outstanding in its subtree waits for Continue.
     if(this.escalatedBelow(id).length){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     const owned=taken??this.ownedDigest(id),joins=this.pieceInput(id);
@@ -9369,13 +9302,6 @@ export class ControlRoom extends DurableObject {
     const finish=async(extra={})=>{
       const again=moved(extra);
       if(again)return again;
-      // Every file that ships up was compiled and was in its box, or the person accepted those that were not.
-      const owe=this.uncheckedOf(bundle);
-      if(owe&&this.get('unchecked_accepted')!==owe.key) {
-        this.save('unchecked_pending',owe.key);
-        span('held',extra);
-        return this.holdChecks(id,'checks_untested',`Every validation passed on the files of "${this.node(id)?.label||id}", and ${owe.text}`,'Continue accepts them unchecked; a follow-up prompt can change the work instead.');
-      }
       this.save(`verified:${id}`,{digest,owned,input:joins,ts:Date.now()});
       this.releaseHolds(h=>h.kind.startsWith('checks_')&&(!h.agent||h.agent===id));
       await this.recordRunPassed();
@@ -9398,7 +9324,7 @@ export class ControlRoom extends DurableObject {
     // The Worker's own parser for a row that has one (native), the box's syntax step for the others: each only over the files it has not compiled.
     const parsed=this.localSyntax(box,fresh);
     const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
-    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),placed,compile,inventory:asks});
+    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),placed,compile,inventory:asks,install:this.packageInstalls(id)});
     const results=new Map(local);
     for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{id:v.id,kind:'file',frames:[],...fileResult(v.check,files)});
     // Clef judges each document, in parallel with the box.
@@ -9432,35 +9358,24 @@ export class ControlRoom extends DurableObject {
     this.save('validation_status',status);
     const stale=moved({ran:runs.length,passed:passes.length});
     if(stale)return stale;
-    // A failure of a validation held here with evidence of a cause outside the piece is held by the level above from now on.
-    const outside=[];
-    if(above) {
-      const contracts=this.pieceLeaves(id).flatMap(l=>this.designOf(l.id).contracts),routes=routeNames(contracts),names=new Set(contracts.map(c=>c.name)),out=this.outsideOf(id),rows=this.installedToolchains();
-      for(const v of runs.filter(v=>here.has(v.id)&&status[v.id]?.passed===false)) {
-        const why=outsideFailure(results.get(v.id),v.check,{routes,names,files,outside:out,rows});
-        if(why)outside.push({id:v.id,why:`it failed on something outside the piece: ${why}`});
-      }
-      this.rollUp(id,outside);
-    }
-    const rolled=new Set(outside.map(x=>x.id)),kept=runs.filter(v=>!rolled.has(v.id));
+    const kept=runs;
     const failed=kept.filter(v=>status[v.id].passed===false),untested=kept.filter(v=>status[v.id].passed===null);
-    const line=!runs.length?`${issues.length} file(s) do not compile`:`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'')+(rolled.size?`; rolled up: ${[...rolled].join(', ')}`:'');
+    const line=!runs.length?`${issues.length} file(s) do not compile`:`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
     const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure||!!notBuilt;
     if(!blocked||failed.length||issues.length)this.set(`checks_retries:${id}`,'0');
     if(!failed.length&&!untested.length&&!issues.length&&!blocked) {
       this.save(`compile_reported:${id}`,null);this.save(`compile_blocked:${id}`,null);this.set(`compile_infrastructure:${id}`,'');
       this.closeProblemsFrom(id,'resolved');
       if(!runs.length)this.event(id,'piece_compiled',`Every file of ${this.node(id)?.label||id}'s piece compiles (${fresh.size} compiled now; snapshot ${digest.slice(0,14)}).`);
-      else this.event(id,'checks_passed',rolled.size?`${passes.length} of the validations held here passed against snapshot ${digest.slice(0,14)}; ${[...rolled].join(', ')} rolled up.`:`Every validation due here passed (${kept.length}) against snapshot ${digest.slice(0,14)}.`);
+      else this.event(id,'checks_passed',`Every validation due here passed (${kept.length}) against snapshot ${digest.slice(0,14)}.`);
       if(newly.length)return this.compileLevel(id,{begun,owned});
-      return finish({ran:runs.length,passed:passes.length,rolled:rolled.size});
+      return finish({ran:runs.length,passed:passes.length});
     }
     // This run is not a verified compile.
     this.save(`verified:${id}`,null);
     const items=checkProblems({...spec,validations:kept},results,issues,{origin:p=>origin.get(p)||null});
-    this.answerMissingModules(items,bundle,results,kept);
     this.event(id,'checks_reported',clip(`The compiler of ${this.node(id)?.label||id}: ${line}.`,900));
-    span('reported',{ran:runs.length,passed:passes.length,failed:failed.length,rolled:rolled.size});
+    span('reported',{ran:runs.length,passed:passes.length,failed:failed.length});
     if(!items.length) {
       // Only checks that could not run: nobody's work, the room waits for Continue.
       const why=run?.infrastructure||report?.infrastructure_issue||notBuilt||untested.map(v=>`${v.id}: ${status[v.id].detail}`).join('; ');

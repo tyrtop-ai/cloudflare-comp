@@ -613,17 +613,13 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   await drain();
   // Text at any path inside the box's folder (a dotfile path, a path with a space) is a base file; a carried file that is text
   // (dist/bundle.js) ships in the bundle, so its box held it and its syntax step compiled it; a binary the box cannot hold, so the
-  // room holds for the person with it listed, and Continue accepts it.
-  assert.equal(room.snapshot().pause?.kind, 'checks_untested', trace(room));
-  assert.match(room.snapshot().pause.text, /1 file\(s\) that ship were never compiled or never in the box[\s\S]*logo\.png \(carried untouched \(binary\), and it is not UTF-8 text\)/);
-  assert.equal(room.runFinished(), false);
-  await room.resume(20);
-  await drain();
+  // room completes on what its final compiler observed (no hold), and the export names it as never in a box.
+  assert.equal(room.snapshot().pause, null, trace(room));
   assert.equal(room.get('status'), 'complete', trace(room));
   const app = await room.appFiles();
   assert.equal(app.passed, true);
   assert.deepEqual(app.unchecked, ['logo.png']);
-  assert.match(app.note, /but for 1 the person accepted shipping unchecked/);
+  assert.match(app.note, /; 1 of them no syntax step compiled or no box held: logo\.png\.$/);
   const at = p => app.files.find(f => f.path === p);
   assert.deepEqual(app.files.filter(f => !f.path.startsWith('.recursive/')).map(f => f.path).sort(), ['.github/workflows/ci.yml', 'README.md', 'bin/widget.js', 'dist/bundle.js', 'docs/my notes.md', 'logo.png', 'package.json', 'src/shout.js']);
   assert.equal(at('dist/bundle.js').from_base, 'unchanged');

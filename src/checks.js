@@ -4,7 +4,7 @@
 // (fileResult), has Clef judge the documents, and turns every failed
 // validation into an item (checkProblems) whose detail is what the compiler
 // observed, as it observed it: the complaint a worker reads.
-import { TOOLCHAINS, toolchainOf, extractSurface } from './toolchains.js';
+import { TOOLCHAINS, toolchainOf, runRowOf, extractSurface } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
@@ -52,7 +52,9 @@ export function callModule(check, files, placed = new Set()) {
 // placed: the bundle's placed paths. compile: the files the syntax step compiles, each
 // with the row that compiles it (a Map), when not every file of each row (a
 // file whose exact bytes compiled before is not compiled again). inventory:
-// the room needs the box's inventory, so the box opens.
+// the room needs the box's inventory, so the box opens. install: the
+// packages the box installs before the checks, per row ([{toolchain,
+// packages: [names]}]: the packages the agents' rows list beyond the image's).
 // What a call check observed when no file gives the function it calls: the
 // function contract's file is missing, or it holds no function a call reaches
 // by that name (a JavaScript file exports it; a Python file defines it).
@@ -62,7 +64,7 @@ function unreachable(c, contracts, files) {
   if (!files.has(path)) return `${path}, the file of ${name}, is missing`;
   return toolchainOf(path)?.extractor === 'acorn' ? `${path} does not export ${name}: a call reaches a function by the name its file exports` : `${path} defines no ${name} a call reaches`;
 }
-export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), compile = null, inventory = false} = {}) {
+export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), compile = null, inventory = false, install = []} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], list = spec?.validations || [], contracts = spec?.contracts || [];
   const commandsOf = new Map(contracts.filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
   const served = new Set(list.map(v => v.check?.serve).filter(Boolean)), runs = runsOf(contracts).filter(r => served.has(r.id));
@@ -78,12 +80,16 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
     // A compile row (one no contract names) goes to the box with the files it compiles.
     for (const {row} of steps.values()) if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
   } else for (const r of toolchains) if (Array.isArray(r.syntax) && r.syntax.length) steps.set(r.id, {row: r, files: paths.filter(p => toolchainOf(p)?.id === r.id)});
+  const installs = (install || []).filter(x => x?.packages?.length && all.some(r => r.id === x.toolchain && r.install));
+  for (const x of installs) if (!toolchains.some(r => r.id === x.toolchain)) toolchains.push(all.find(r => r.id === x.toolchain));
   const syntax = [...steps.values()].filter(s => s.files.length).map(s => ({toolchain: s.row.id, files: s.files}));
   // A command contract runs by its own path, through its row's run_file (never a PATH lookup).
   const commands = {};
   for (const [name, d] of commandsOf) {
-    const row = toolchainOf(d.path);
-    if (files.has(d.path) && row?.run_file) commands[name] = row.run_file.map(x => x === '{path}' ? d.path : x);
+    const row = runRowOf(d.path);
+    if (!files.has(d.path) || !row) continue;
+    commands[name] = row.run_file.map(x => x === '{path}' ? d.path : x);
+    if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
   }
   const local = new Map(), checks = [];
   const missingCommand = c => { const d = commandsOf.get(firstWord(c)); return d && !files.has(d.path) ? `${d.path}, the file of the command ${d.name}, is missing` : ''; };
@@ -100,103 +106,24 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
       checks.push({id: v.id, kind: 'call', ...at, steps: c.steps});
     } else checks.push({id: v.id, kind: c.kind, serve: c.serve, steps: c.steps});
   }
-  return {plan: {syntax, project: [], runs, commands, checks}, toolchains, local,
+  return {plan: {syntax, install: installs.map(x => ({toolchain: x.toolchain, packages: [...x.packages]})), project: [], runs, commands, checks}, toolchains, local,
     container: inventory || syntax.length > 0 || checks.length > 0};
 }
 
-// A file check, in the Worker (§4.1 step 2): exists, non-empty, has each
-// text, parses as json. detail: what it observed, the complaint's words.
-// v8 live 2: has ['<link rel="stylesheet" href="styles.css">'] failed on
-// <link rel="stylesheet" href="styles.css" />. A has text matches exactly,
-// or, by the file's kind (review: never across what differs in meaning):
-//  - markup (.html, .htm, .xml, .svg, .vue), a text with a tag in it: each
-//    tag read as its name and attributes, so the whitespace between tags and
-//    attributes, the quotes around an attribute value and a void element's
-//    self-closing "/" do not count; attribute values and text stay exact;
-//  - any text (v8 live 5): modulo whitespace runs, on both sides: each run
-//    of spaces, tabs and line breaks reads as one space.
-const MARKUP_FILE = /\.(?:html?|xml|svg|vue)$/i;
-const TAG_START = /<[A-Za-z!/?]/;
-const VOID = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '));
-// One tag at s[at] ('<'), canonical, or null when it does not close.
-function readTag(s, at) {
-  if (s[at + 1] === '!' || s[at + 1] === '?') { const end = s.indexOf('>', at); return end < 0 ? null : {text: s.slice(at, end + 1), end: end + 1}; }
-  const close = /^<\/[ \t\r\n]*([A-Za-z][\w:.-]*)[ \t\r\n]*>/.exec(s.slice(at, at + 200));
-  if (close) return {text: `</${close[1]}>`, end: at + close[0].length};
-  const head = /^<([A-Za-z][\w:.-]*)/.exec(s.slice(at, at + 200));
-  if (!head) return null;
-  let i = at + head[0].length, self = false;
-  const attrs = [];
-  for (;;) {
-    while (i < s.length && /\s/.test(s[i])) i++;
-    if (i >= s.length) return null;
-    if (s[i] === '>') { i++; break; }
-    if (s[i] === '/') { let j = i + 1; while (j < s.length && /\s/.test(s[j])) j++; if (s[j] === '>') { self = true; i = j + 1; break; } i++; continue; }
-    const name = /^[^\s=/>]+/.exec(s.slice(i, i + 200))?.[0];
-    if (!name) return null;
-    i += name.length;
-    let j = i;
-    while (j < s.length && /\s/.test(s[j])) j++;
-    if (s[j] !== '=') { attrs.push(` ${name}`); continue; }
-    j++;
-    while (j < s.length && /\s/.test(s[j])) j++;
-    let value;
-    if (s[j] === '"' || s[j] === "'") { const end = s.indexOf(s[j], j + 1); if (end < 0) return null; value = s.slice(j + 1, end); i = end + 1; }
-    else { const v = /^[^\s>]*/.exec(s.slice(j))[0]; value = v; i = j + v.length; }
-    attrs.push(` ${name}="${value}"`);
-  }
-  return {text: `<${head[1]}${attrs.join('')}${self && !VOID.has(head[1].toLowerCase()) ? '/' : ''}>`, end: i};
-}
-// A markup text with each tag canonical and the whitespace between tags dropped; text exact.
-function canonicalMarkup(t) {
-  const s = String(t);
-  let out = '', i = 0;
-  while (i < s.length) {
-    const lt = s.indexOf('<', i), text = s.slice(i, lt < 0 ? s.length : lt);
-    out += /^\s*$/.test(text) ? '' : text;
-    if (lt < 0) break;
-    const tag = readTag(s, lt);
-    if (!tag) { out += '<'; i = lt + 1; continue; }
-    out += tag.text;
-    i = tag.end;
-  }
-  return out;
-}
-// v8 live 5: a file check's text matches modulo whitespace runs, on both sides: every run of spaces, tabs and line
-// breaks reads as one space (a to-do page's "#todo-list { list-style: none; }" is the same rule written across lines).
-// The check's interface says so (WHITESPACE_NOTE).
-const runs = t => String(t).replace(/\s+/g, ' ');
-export function hasText(text, wanted, path = '') {
-  const w = String(wanted), t = String(text);
-  if (t.includes(w)) return true;
-  if (MARKUP_FILE.test(path) && TAG_START.test(w) && canonicalMarkup(t).includes(canonicalMarkup(w.trim()))) return true;
-  return runs(t).includes(runs(w).trim());
-}
-// v8 live 8: what a file holds nearest a text it lacks, as the compiler saw it:
-// the line holding the longest start of that text (at least 4 characters, or
-// all but its last). A to-do page's "<form id=\"todo-form\">" for "<form>".
-function nearest(text, wanted) {
-  const w = wanted.trim(), least = Math.min(4, w.length - 1);
-  for (let n = w.length - 1; n >= least && n > 0; n--) {
-    const at = text.indexOf(w.slice(0, n));
-    if (at < 0) continue;
-    const start = text.lastIndexOf('\n', at) + 1, end = text.indexOf('\n', at);
-    return {line: text.slice(0, at).split('\n').length, text: text.slice(start, end < 0 ? undefined : end).trim()};
-  }
-  return null;
-}
+// A file check, in the Worker (§4.1 step 2), run exactly as the splitter
+// wrote it: exists, non-empty, holds each text as written, parses as json.
+// detail: what it observed, the complaint's words.
 export function fileResult(check, files) {
   const p = String(check?.path || ''), text = files.get(p);
   if (typeof text !== 'string') return {passed: false, detail: `${p} is missing`, observed: {what: 'missing'}};
   if (!text.trim()) return {passed: false, detail: `${p} is empty`, observed: {what: 'empty'}};
   // Live 3 review: how many of the texts it holds (met), so a file that holds one more each round makes progress.
-  const lacking = (check.has || []).map((s, index) => ({s, index})).filter(({s}) => !hasText(text, s, p));
-  if (lacking.length) { const near = nearest(text, String(lacking[0].s)); return {passed: false, detail: `${p} does not contain ${show(String(lacking[0].s))}${near ? ` as exact text; the nearest it holds is line ${near.line}: ${show(near.text)}` : ''}`, observed: {what: 'lacks', index: lacking[0].index, met: (check.has || []).length - lacking.length, ...(near ? {near} : {})}}; }
+  const lacking = (check.has || []).map((s, index) => ({s, index})).filter(({s}) => !text.includes(String(s)));
+  if (lacking.length) return {passed: false, detail: `${p} does not contain ${show(String(lacking[0].s))}`, observed: {what: 'lacks', index: lacking[0].index, met: (check.has || []).length - lacking.length}};
   if (check.json === true) { try { JSON.parse(text); } catch (e) { return {passed: false, detail: `${p} is not valid JSON: ${e.message}`, observed: {what: 'json', error: e.message}}; } }
   return {passed: true, detail: ''};
 }
 
-// What a worker must never read (live 2 review): every expected value and
 
 // The items a run files: each failed validation, its detail what the check
 // observed (the complaint as the compiler states it), its parties the frames
@@ -232,7 +159,7 @@ export function runNotes(app, spec, status = {}) {
   const run = [], contracts = spec?.contracts || [];
   for (const r of runsOf(contracts)) run.push(r.static ? `- \`${r.id}\`: serve this folder with any static file server and open \`/\` in a browser.` : `- \`${r.id}\`: \`${r.run}\` (it reads the port from \`PORT\`; ready at \`${r.ready || '/'}\`).`);
   for (const d of contracts.filter(d => kindOf(d) === 'command' && d.path)) {
-    const row = toolchainOf(d.path);
+    const row = runRowOf(d.path);
     if (row?.run_file) run.push(`- \`${d.name}\`: \`${row.run_file.map(x => x === '{path}' ? d.path : x).join(' ')}\`${d.does ? `: ${d.does}` : ''}`);
   }
   for (const d of contracts.filter(d => ['doc', 'page', 'file', 'data'].includes(kindOf(d)) && d.path)) run.push(`- \`${d.path}\` (${kindOf(d)})${d.does ? `: ${d.does}` : ''}`);

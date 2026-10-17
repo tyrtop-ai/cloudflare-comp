@@ -11,7 +11,14 @@
 # socket.getfqdn (http.server) fails. See box/hostname.py.
 FROM node:lts-bookworm-slim
 ARG BOX_BROWSER=0
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest ca-certificates iputils-ping \
+# Owner 2026-10-15 05:16 ("Any code type") and 22:12 ("why are packages not
+# allowed now?"): the languages beyond Node and Python that the compile rows
+# read (src/toolchains.js COMPILE_ROWS: Go, Rust, C, C++, Java, Ruby, PHP),
+# each with what runs it, and pip, by which the box installs the Python
+# packages the agents' rows list (npm comes with the Node base). Channels
+# only, no versions pinned: the inventory records what each box had.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest python3-pip ca-certificates iputils-ping \
+    golang-go gcc g++ libc6-dev default-jdk-headless ruby php-cli rustc cargo rustfmt \
  && rm -rf /var/lib/apt/lists/*
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright NODE_PATH=/usr/local/lib/node_modules
 RUN if [ "$BOX_BROWSER" = "1" ]; then npm install -g playwright && playwright install --with-deps --only-shell chromium \
