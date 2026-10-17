@@ -41,7 +41,6 @@ export const PASS_MARK = 'BENCH-PASS';
 // tests after the solution, preloaded by node.
 const RUN = Object.freeze({python: `python3 -I ${FIXTURE.harness}`, node: `node -r ./${FIXTURE.harness} -e 0`});
 
-const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 const str = v => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
 
@@ -265,7 +264,7 @@ export async function fetchDataset(url, {fetch, policy, want = null, redact = t 
       page.searchParams.set('length', String(Math.min(BENCH_LIMITS.pageRows, total - lines.length)));
       let v;
       try { v = JSON.parse(await getText(page.href)); } catch (e) { if (e instanceof FetchRefused) throw e; throw new FetchRefused(`the rows from offset ${offset} are not JSON`); }
-      if (!plain(v) || !Array.isArray(v.rows)) throw new FetchRefused(`the rows from offset ${offset} could not be read${plain(v) && typeof v.error === 'string' ? ` (${clip(v.error, 120)})` : ''}`);
+      if (!plain(v) || !Array.isArray(v.rows)) throw new FetchRefused(`the rows from offset ${offset} could not be read${plain(v) && typeof v.error === 'string' ? ` (${v.error})` : ''}`);
       const rows = v.rows.map(r => plain(r?.row) ? r.row : r).filter(plain), all = Number.isInteger(v.num_rows_total) ? v.num_rows_total : undefined;
       lines.push(...rows.map(r => JSON.stringify(r)));
       offset += rows.length;
@@ -274,7 +273,7 @@ export async function fetchDataset(url, {fetch, policy, want = null, redact = t 
     return {text: lines.join('\n'), final_url, bytes, error: null};
   } catch (e) {
     const message = e instanceof FetchRefused ? `source_refused: ${e.message}` : `fetch failed: ${e?.message || e}`;
-    return {text: '', final_url, bytes, error: clip(redact(redactText(message)))};
+    return {text: '', final_url, bytes, error: redact(redactText(message))};
   }
 }
 
@@ -285,12 +284,12 @@ export async function loadDataset(dataset, {fetch, policy, limit = null, format 
   const d = typeof dataset === 'string' ? (/^https?:\/\/\S+$/i.test(dataset.trim()) ? {url: dataset.trim()} : {text: dataset}) : plain(dataset) ? dataset : {};
   let text, source;
   if (typeof d.url === 'string' && d.url.trim()) {
-    if (!policy) return {error: 'source_refused: no fetch policy (the deployment\'s own host is not known)', source: clip(d.url, 300)};
+    if (!policy) return {error: 'source_refused: no fetch policy (the deployment\'s own host is not known)', source: d.url};
     const got = await fetchDataset(d.url.trim(), {fetch, policy, want: limit, redact});
-    if (got.error) return {error: got.error, source: clip(d.url, 300)};
-    text = got.text; source = clip(got.final_url || d.url, 300);
+    if (got.error) return {error: got.error, source: d.url};
+    text = got.text; source = got.final_url || d.url;
   } else if (typeof d.text === 'string' && d.text.trim()) {
-    text = d.text; source = clip(d.name ? `inline: ${d.name}` : 'inline', 120);
+    text = d.text; source = d.name ? `inline: ${d.name}` : 'inline';
   } else return {error: 'dataset: give a URL or the JSON lines themselves', source: ''};
   const {rows, bad} = parseRows(text);
   const out = loadTasks(rows, {limit, format, nonce});
@@ -311,7 +310,7 @@ export function roomOutcome(s) {
   if (!s) return {outcome: 'error', detail: 'the room gave no summary'};
   const terminal = ['complete', 'failed', 'error'].includes(s.status) || (s.status === 'paused' && !s.busy);
   if (!terminal) return null;
-  const kind = s.pause?.kind, out = (outcome, detail) => ({outcome, detail: clip(detail, 300)});
+  const kind = s.pause?.kind, out = (outcome, detail) => ({outcome, detail});
   if (s.status === 'complete') return out('complete', '');
   if (s.status === 'error') return out('error', s.failure || 'the room stopped with an error');
   if (s.stopped) return out('error', 'the room was stopped by an observer');
@@ -323,7 +322,7 @@ export function roomOutcome(s) {
 // the complaint the run sends the room), or error when it could not run:
 // it observed nothing, so the run grades the room again (BenchRun.graded).
 export function gradeOutcome(g) {
-  if (!g || g.infrastructure) return {outcome: 'error', detail: clip(`the grader could not run: ${g?.infrastructure || 'no answer'}`)};
+  if (!g || g.infrastructure) return {outcome: 'error', detail: `the grader could not run: ${g?.infrastructure || 'no answer'}`};
   return g.passed ? {outcome: 'pass', detail: ''} : {outcome: 'fail', detail: g.detail || 'the benchmark\'s tests failed'};
 }
 
