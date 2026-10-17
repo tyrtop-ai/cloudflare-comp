@@ -58,8 +58,9 @@ const RUNTIME_LINK = ['link_glue', 'link_auto', 'link_renamed', 'checks_relinked
 // ------------------------------------------------------------ A4: a split Python project whose pieces import each other
 const WF_GOAL = 'A command-line tool that prints the N most frequent words in a text file.';
 const WORDFREQ_C = {name: 'wordfreq', kind: 'command', path: 'wordfreq.py', does: 'prints the N most frequent words of a text file, one word and its count per line', inputs: [{name: 'path', is: 'a text file'}, {name: 'n', is: 'how many words'}]};
-const COUNT_C = {name: 'count_words', kind: 'function', does: 'counts each word of a text', inputs: [{name: 'text', is: 'a text'}], outputs: 'a dict of word to count'};
-const TOP_C = {name: 'top_words', kind: 'function', does: 'the n most frequent words of a text, most frequent first', inputs: [{name: 'text', is: 'a text'}, {name: 'n', is: 'how many'}], outputs: 'a list of word and count pairs'};
+// Owner 2026-10-16 20:38: each function contract names its file through the splitter's contract function, as a command does.
+const COUNT_C = {name: 'count_words', kind: 'function', path: 'counter.py', does: 'counts each word of a text', inputs: [{name: 'text', is: 'a text'}], outputs: 'a dict of word to count'};
+const TOP_C = {name: 'top_words', kind: 'function', path: 'ranking.py', does: 'the n most frequent words of a text, most frequent first', inputs: [{name: 'text', is: 'a text'}, {name: 'n', is: 'how many'}], outputs: 'a list of word and count pairs'};
 const WF_LEVEL = {contracts: [WORDFREQ_C, COUNT_C, TOP_C],
   validations: [
     cmd('c1', ['wordfreq'], ['wordfreq', 'sample.txt', '2'], {'sample.txt': 'the cat and the hat and the bat\n'}, 'the 3\nand 2'),
@@ -75,8 +76,9 @@ const WF_LEVEL = {contracts: [WORDFREQ_C, COUNT_C, TOP_C],
     {label: 'Counter', task: 'Write the word counting function count_words', contracts: ['count_words']},
     {label: 'Ranker', task: 'Write top_words, which ranks the counted words', contracts: ['top_words'], uses: ['count_words']},
     {label: 'Command', task: 'Write wordfreq.py, the command that prints the ranked words', contracts: ['wordfreq'], uses: ['top_words']}]};
-// Each piece writes its own files as if they sat at the project root, and
-// refers to another piece's function exactly as its reference shows.
+// Each piece writes its own files as if they sat at the project root (its
+// contract's file stays there; any other goes into its folder), and refers
+// to another piece's function exactly as its reference shows.
 const COUNTER = {path: 'counter.py', content: 'from textutil import words\n\n\ndef count_words(text):\n    counts = {}\n    for w in words(text):\n        counts[w] = counts.get(w, 0) + 1\n    return counts\n'};
 const TEXTUTIL = {path: 'textutil.py', content: 'import re\n\n\ndef words(text):\n    return re.findall(r"[a-z]+", text.lower())\n'};
 const RANKING = 'from count_words import count_words\n\n\ndef top_words(text, n):\n    counts = count_words(text)\n    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]\n';
@@ -87,9 +89,9 @@ const wfAnswers = ({ranking = RANKING, wordfreq = WORDFREQ, wordfreqFixed = null
   wordfreq: [blocks([{path: 'wordfreq.py', content: wordfreq}]), ...(wordfreqFixed ? [blocks([{path: 'wordfreq.py', content: wordfreqFixed}])] : [])]});
 // The room's manager's builder for the word tool: a file of its own at the
 // root for each function a file reads from there, taking it from the file
-// that defines it, and a package marker in each folder on the way; renames
-// as given ([file, from, to]). Every other builder is the usual one (the
-// Counter's reads its helper beside it relatively). A refused call fails the test.
+// that defines it; renames as given ([file, from, to]). Every other builder
+// is the usual one (the Counter's reads its helper in its folder by the
+// helper's module path). A refused call fails the test.
 const wfBuilder = ({renames = []} = {}) => (user, n, system, ctx) => {
   if (!(user.design?.children?.length > 1)) return usualBuilder(user, n, system, ctx);
   if (ctx.round > 1) {
@@ -98,14 +100,13 @@ const wfBuilder = ({renames = []} = {}) => (user, n, system, ctx) => {
     return [{name: 'done', arguments: {summary: 'the root files take each function from where it is defined'}}];
   }
   const at = name => user.files.find(f => f.path.split('/').pop() === name)?.path, mod = p => p.replace(/\.py$/, '').replaceAll('/', '.');
-  const counter = at('counter.py'), ranking = at('ranking.py'), dirs = [...new Set([counter, ranking].map(p => p.split('/').slice(0, 2).join('/')))];
-  return [{name: 'write_file', arguments: {path: 'components/__init__.py', content: ''}}, ...dirs.map(d => ({name: 'write_file', arguments: {path: `${d}/__init__.py`, content: ''}})),
-    {name: 'write_file', arguments: {path: 'count_words.py', content: `from ${mod(counter)} import count_words  # noqa: F401\n`}},
+  const counter = at('counter.py'), ranking = at('ranking.py');
+  return [{name: 'write_file', arguments: {path: 'count_words.py', content: `from ${mod(counter)} import count_words  # noqa: F401\n`}},
     {name: 'write_file', arguments: {path: 'top_words.py', content: `from ${mod(ranking)} import top_words  # noqa: F401\n`}},
     ...renames.map(([file, from, to]) => ({name: 'rename', arguments: {path: at(file), from, to, name_characters: '_'}}))];
 };
 
-test('A4: a split Python project whose pieces import each other completes: the builders write the glue as files of their own and rename a read of a file beside; the export carries what they wrote', {skip: !hasPython && 'python3 is not installed'}, async () => {
+test('A4: a split Python project whose pieces import each other completes: each function\'s file stands where its contract names it, the builders write the glue as files of their own and rename a read of a helper to where it sits; the export carries what they wrote', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers(), build: wfBuilder()});
   await room.start(WF_GOAL, 40, {pipeline: 'v8'});
   await drain();
@@ -115,14 +116,15 @@ test('A4: a split Python project whose pieces import each other completes: the b
   const [counter, ranker] = writers(room);
   const D1 = packageDirectory('Counter', counter.id), D2 = packageDirectory('Ranker', ranker.id);
   const bundle = topBuild(builds);
-  assert.deepEqual(Object.keys(bundle).sort(), [`components/${D1}/__init__.py`, `components/${D1}/counter.py`, `components/${D1}/textutil.py`, `components/${D2}/__init__.py`, `components/${D2}/ranking.py`,
-    'components/__init__.py', 'count_words.py', 'top_words.py', 'wordfreq.py'].sort());
+  assert.deepEqual(Object.keys(bundle).sort(), ['counter.py', `components/${D1}/textutil.py`, 'ranking.py', 'count_words.py', 'top_words.py', 'wordfreq.py'].sort());
+  assert.ok(!Object.keys(bundle).some(p => p.startsWith(`components/${D2}/`)), 'the Ranker\'s only file is its contract\'s');
   assert.equal(bundle['wordfreq.py'], WORDFREQ, 'a worker file ships as written');
-  assert.equal(bundle[`components/${D1}/counter.py`], COUNTER.content.replace('from textutil import words', 'from .textutil import words'), 'the Counter\'s builder renamed its read of the file beside it');
+  assert.equal(bundle['ranking.py'], RANKING, 'at the path its contract names');
+  assert.equal(bundle['counter.py'], COUNTER.content.replace('from textutil import words', `from components.${D1}.textutil import words`), 'the Counter\'s builder renamed its read of its helper to where the helper sits');
   assert.equal(room.files(counter.id).find(f => f.path === 'counter.py').revision, 1, 'the worker\'s own file is unchanged');
-  assert.equal(bundle['top_words.py'], `from components.${D2}.ranking import top_words  # noqa: F401\n`, 'the file the builder wrote, as it wrote it');
+  assert.equal(bundle['top_words.py'], 'from ranking import top_words  # noqa: F401\n', 'the file the builder wrote, as it wrote it');
   // What the room's manager's builder wrote is its own, kept on its row; the runtime wrote nothing.
-  assert.deepEqual(Object.keys(topWork(room).glue).sort(), ['components/__init__.py', `components/${D1}/__init__.py`, `components/${D2}/__init__.py`, 'count_words.py', 'top_words.py'].sort());
+  assert.deepEqual(Object.keys(topWork(room).glue).sort(), ['count_words.py', 'top_words.py']);
   assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
   // Its request: the design artifact (its manager's level file as the repository holds it) and the paths of the files, each with its piece; nothing else of the tree.
   const top = calls.build.find(u => u.design?.children?.length > 1);
@@ -159,7 +161,7 @@ test('A4 renames: a read of count_word and a call of topWords are renamed by the
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.ok(allPass(room));
-  const ranker = writers(room)[1], at = `components/${packageDirectory('Ranker', ranker.id)}/ranking.py`;
+  const ranker = writers(room)[1], at = 'ranking.py';
   assert.equal(topBuild(builds)[at], RANKING, 'the builder\'s copy reads the contract by its name');
   assert.equal(topBuild(builds)['wordfreq.py'], WORDFREQ);
   assert.equal(room.files(ranker.id).find(f => f.path === 'ranking.py').revision, 1);
@@ -194,7 +196,7 @@ test('a reference no builder joins fails the run: the complaint goes down to the
 // ------------------------------------------------------------ the S4b Python CLI room: no more ModuleNotFoundError
 const TEMP_GOAL = 'A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
 const TEMP_C = {name: 'temp', kind: 'command', path: 'temp.py', does: 'prints the Fahrenheit value of a Celsius temperature', inputs: [{name: 'celsius', is: 'a number'}]};
-const TO_F = {name: 'to_fahrenheit', kind: 'function', does: 'converts degrees Celsius to degrees Fahrenheit', inputs: [{name: 'celsius', is: 'a number'}], outputs: 'a number'};
+const TO_F = {name: 'to_fahrenheit', kind: 'function', path: 'formula.py', does: 'converts degrees Celsius to degrees Fahrenheit', inputs: [{name: 'celsius', is: 'a number'}], outputs: 'a number'};
 const USAGE_C = {name: 'USAGE.md', kind: 'doc', path: 'USAGE.md', does: 'how to use the converter'};
 const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path, has: [text]}});
 const tempRun = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', argv: ['temp', ...String(c).split(' ')], expect: {exit: 0, stdout_has: [f]}}});
@@ -218,8 +220,9 @@ test('S4b\'s Python CLI room: a command that imports another piece\'s function r
   assert.ok(allPass(room));
   assert.equal(Object.keys(room.read('validation_status', {})).length, 9);
   assert.ok(!JSON.stringify(events(room)).includes('ModuleNotFoundError'));
-  const formula = writers(room)[1];
-  assert.match(topBuild(builds)['to_fahrenheit.py'], new RegExp(`from components\\.${packageDirectory('Formula', formula.id)}\\.formula import to_fahrenheit`));
+  // The formula's file stands where its contract names it; the builder's file at the root takes the name from there.
+  assert.equal(topBuild(builds)['formula.py'], FORMULA);
+  assert.equal(topBuild(builds)['to_fahrenheit.py'], 'from formula import to_fahrenheit  # noqa: F401\n');
   assert.equal(topWork(room).glue['to_fahrenheit.py'], topBuild(builds)['to_fahrenheit.py'], 'the builder\'s own file');
   for (const name of ['temp', 'to_fahrenheit', 'USAGE.md']) assert.equal(turnsOf(calls, name), 1);
   assert.deepEqual(lintRequests(room, calls), []);
@@ -228,8 +231,8 @@ test('S4b\'s Python CLI room: a command that imports another piece\'s function r
 // ------------------------------------------------------------ A3 (JavaScript): a library the builder joins by renaming its paths
 const ROMAN_GOAL = 'A small library that converts between Roman numerals and integers.';
 const ENTRY_C = {name: 'index.js', kind: 'file', path: 'index.js', does: 'the library entry, exporting toRoman and fromRoman'};
-const TO_ROMAN_C = {name: 'toRoman', kind: 'function', does: 'the Roman numeral of a positive integer', inputs: [{name: 'n', is: 'a positive integer'}], outputs: 'a string'};
-const FROM_ROMAN_C = {name: 'fromRoman', kind: 'function', does: 'the integer a Roman numeral stands for', inputs: [{name: 's', is: 'a Roman numeral'}], outputs: 'a number'};
+const TO_ROMAN_C = {name: 'toRoman', kind: 'function', path: 'roman-out.js', does: 'the Roman numeral of a positive integer', inputs: [{name: 'n', is: 'a positive integer'}], outputs: 'a string'};
+const FROM_ROMAN_C = {name: 'fromRoman', kind: 'function', path: 'roman-in.js', does: 'the integer a Roman numeral stands for', inputs: [{name: 's', is: 'a Roman numeral'}], outputs: 'a number'};
 const ROMAN_LEVEL = {contracts: [ENTRY_C, TO_ROMAN_C, FROM_ROMAN_C],
   validations: [
     callCheck('a', ['toRoman'], [['toRoman', [1994], 'MCMXCIV']]), callCheck('b', ['toRoman'], [['toRoman', [4], 'IV']]), callCheck('c', ['toRoman'], [['toRoman', [3999], 'MMMCMXCIX']]),
@@ -244,23 +247,26 @@ const TO_ROMAN = `${PAIRS}function toRoman(n) {\n  let out = '';\n  for (const [
 const FROM_ROMAN = "const VALUES = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };\nfunction fromRoman(s) {\n  let total = 0;\n  for (let i = 0; i < s.length; i++) { const v = VALUES[s[i]], next = VALUES[s[i + 1]] || 0; total += v < next ? -v : v; }\n  return total;\n}\nmodule.exports = { fromRoman };\n";
 const ENTRY = "const { toRoman } = require('./toRoman');\nconst { fromRoman } = require('./fromRoman');\nmodule.exports = { toRoman, fromRoman };\n";
 
-test('A3 (JavaScript): a library whose entry requires the other pieces\' functions is joined by the builder renaming each path to the file that defines it, from the placed entry', async () => {
+test('A3 (JavaScript): a library whose entry requires the other pieces\' functions is joined by the builder renaming each path to the file each function\'s contract names, from the placed entry', async () => {
   const {room, calls, builds, drain} = levelRoom({level: ROMAN_LEVEL, goal: ROMAN_GOAL,
     answers: {'index.js': [blocks([{path: 'index.js', content: ENTRY}])], toRoman: [blocks([{path: 'roman-out.js', content: TO_ROMAN}])], fromRoman: [blocks([{path: 'roman-in.js', content: FROM_ROMAN}])]}});
   await room.start(ROMAN_GOAL, 30, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.ok(allPass(room));
-  const [entry, to, from] = writers(room);
+  const [entry] = writers(room);
   const linked = topBuild(builds)['index.js'];
-  assert.equal(linked, `const { toRoman } = require('./components/${packageDirectory('To roman', to.id)}/roman-out.js');\nconst { fromRoman } = require('./components/${packageDirectory('From roman', from.id)}/roman-in.js');\nmodule.exports = { toRoman, fromRoman };\n`);
+  // Each function's file stands where its contract names it.
+  assert.equal(topBuild(builds)['roman-out.js'], TO_ROMAN);
+  assert.equal(topBuild(builds)['roman-in.js'], FROM_ROMAN);
+  assert.equal(linked, "const { toRoman } = require('./roman-out.js');\nconst { fromRoman } = require('./roman-in.js');\nmodule.exports = { toRoman, fromRoman };\n");
   // Only the reference paths changed (string tokens on reference lines).
   const js = toolchainById('javascript'), a = textTokens(ENTRY, js), b = textTokens(linked, js);
   assert.equal(a.length, b.length);
   assert.deepEqual(a.map((t, i) => t.value === b[i].value ? null : t.type).filter(Boolean), ['string', 'string']);
   assert.ok(!Object.keys(topBuild(builds)).some(p => p.startsWith('glue/')), 'JavaScript needs no glue');
   assert.equal(room.files(entry.id)[0].revision, 1, 'the entry\'s own file is unchanged');
-  assert.deepEqual(topWork(room).renamed['index.js'].renames, [{from: './toRoman', to: `./components/${packageDirectory('To roman', to.id)}/roman-out.js`}, {from: './fromRoman', to: `./components/${packageDirectory('From roman', from.id)}/roman-in.js`}]);
+  assert.deepEqual(topWork(room).renamed['index.js'].renames, [{from: './toRoman', to: './roman-out.js'}, {from: './fromRoman', to: './roman-in.js'}]);
   assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
   assert.deepEqual(lintRequests(room, calls), []);
 });
@@ -269,8 +275,8 @@ test('A3 (JavaScript): a library whose entry requires the other pieces\' functio
 const TODO_GOAL = 'A to-do list web page where someone can add tasks.';
 const PAGE_C = {name: 'index.html', kind: 'page', path: 'index.html', does: 'the to-do page', run: {static: true}};
 const APP_C = {name: 'app.js', kind: 'file', path: 'app.js', does: 'the page script that shows the list and adds what is typed'};
-const ADD_C = {name: 'addTodo', kind: 'function', does: 'adds a task to the list and returns it', inputs: [{name: 'text', is: 'the task'}], outputs: 'the task'};
-const LIST_C = {name: 'listTodos', kind: 'function', does: 'the tasks in the order they were added', outputs: 'a list of tasks'};
+const ADD_C = {name: 'addTodo', kind: 'function', path: 'store.js', does: 'adds a task to the list and returns it', inputs: [{name: 'text', is: 'the task'}], outputs: 'the task'};
+const LIST_C = {name: 'listTodos', kind: 'function', path: 'store.js', does: 'the tasks in the order they were added', outputs: 'a list of tasks'};
 const added = (id, text) => ({id, serves: ['index.html', 'app.js'], check: {kind: 'browser', serve: 'index.html', steps: [{goto: '/'}, {fill: {label: 'New task', text}}, {click: {role: 'button', name: 'Add'}}, {expect_text: text}, {expect_count: {role: 'listitem', n: 1}}]}});
 const TODO_LEVEL = {contracts: [PAGE_C, APP_C, ADD_C, LIST_C],
   validations: [added('a', 'Water the plants'), added('b', 'Feed the cat'), added('c', 'Call home'),
@@ -301,14 +307,16 @@ test('a browser page with two scripts importing each other: the builders rename 
   if (!browserReady) { assert.ok(allPass(room), tail(room)); assert.equal(room.get('status'), 'complete', tail(room)); }
   const store = writers(room)[1], D = packageDirectory('Store', store.id), bundle = topBuild(builds);
   assert.equal(bundle['index.html'], TODO_HTML.replace('src="scripts/app.js"', 'src="app.js"'));
-  assert.equal(bundle['app.js'], APP_JS.replace("'./addTodo.js'", `'./components/${D}/store.js'`));
-  assert.equal(bundle[`components/${D}/store.js`], STORE_JS.replace("'./ids'", "'./ids.js'"), 'an ES module path names its file');
+  // The store stands where its contracts name it; its helper, which no contract places, in its folder.
+  assert.equal(bundle['app.js'], APP_JS.replace("'./addTodo.js'", "'./store.js'"));
+  assert.equal(bundle['store.js'], STORE_JS.replace("'./ids'", `'./components/${D}/ids.js'`), 'an ES module path names its file');
+  assert.equal(bundle[`components/${D}/ids.js`], IDS_JS);
   assert.equal(room.files(writers(room)[0].id).find(f => f.path === 'index.html').revision, 1);
   // Each builder joined its own level: the store's named the helper's file, the page's pointed the page at its script, and the room's manager's pointed the script at the store.
   const workOf = label => room.builtWork(room.builderOf(room.children(room.roomManager()).find(c => c.label === label).id).id);
-  assert.deepEqual(workOf('Store').renamed[`components/${D}/store.js`].renames, [{from: './ids', to: './ids.js'}]);
+  assert.deepEqual(workOf('Store').renamed['store.js'].renames, [{from: './ids', to: `./components/${D}/ids.js`}]);
   assert.deepEqual(workOf('Page').renamed['index.html'].renames, [{from: 'scripts/app.js', to: 'app.js'}]);
-  assert.deepEqual(topWork(room).renamed['app.js'].renames, [{from: './addTodo.js', to: `./components/${D}/store.js`}]);
+  assert.deepEqual(topWork(room).renamed['app.js'].renames, [{from: './addTodo.js', to: './store.js'}]);
   assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
   assert.deepEqual(lintRequests(room, calls), []);
 });

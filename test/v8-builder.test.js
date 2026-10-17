@@ -205,9 +205,10 @@ test('no bundle file stands in for a standard module in the call adapter: a root
   assert.ok(c.records.every(x => x.nonce === 'n0nce-s5'));
 });
 
-test('checkPlan: a call loads the file that defines the function, never the builder\'s file at the root; no module path; RUN.md runs a command as its row runs a file', () => {
+// Owner 2026-10-16 20:38 ("The splitter should be given interfaces and then write via those interfaces"): the file is the one the function contract names, never one found by the name.
+test('checkPlan: a call loads the file its function contract names, never the builder\'s file at the root that also gives the name; no module path; RUN.md runs a command as its row runs a file', () => {
   const files = joined();
-  const spec = {contracts: [{name: 'wordfreq', kind: 'command', path: 'wordfreq.py', does: 'prints the most frequent words'}, {name: 'count_words', kind: 'function'}],
+  const spec = {contracts: [{name: 'wordfreq', kind: 'command', path: 'wordfreq.py', does: 'prints the most frequent words'}, {name: 'count_words', kind: 'function', path: COUNTER}],
     validations: [{id: 'V1', serves: ['count_words'], check: {kind: 'call', steps: [{call: 'count_words', args: ['a a'], expect: {a: 2}}]}}]};
   const {plan} = checkPlan(spec, files);
   assert.equal(plan.paths, undefined);

@@ -4,7 +4,7 @@
 // (fileResult), has Clef judge the documents, and turns every failed
 // validation into an item (checkProblems) whose detail is what the compiler
 // observed, as it observed it: the complaint a worker reads.
-import { TOOLCHAINS, COMPILE_ROWS, toolchainOf, runRowOf, callRowOf, extractSurface } from './toolchains.js';
+import { TOOLCHAINS, COMPILE_ROWS, toolchainOf, runRowOf, callRowOf } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
@@ -35,42 +35,29 @@ const firstWord = c => (Array.isArray(c?.argv) && c.argv.length ? c.argv[0] : St
 // The module a call check loads: the file the splitter declared for the
 // function contract its first step calls (that contract's path, as written;
 // one call check calls the functions of one file, src/validations.js), and
-// the name it calls. With a declared path nothing in the bundle is searched
-// for the name: the call adapter observes whether the file gives it.
-// PENDING THE OWNER: a function contract may declare no path (the
-// splitter's interface, src/prompts.js), and then nothing names its file;
-// only for such a contract the file is still found as before, among the
-// bundle's files that define the name (extractSurface: a placed file
-// first, then the one that defines most of the names the check calls).
-export function callModule(check, contracts = [], files = new Map(), placed = new Set()) {
-  const names = [...new Set((check?.steps || []).map(s => s.call))], name = names[0] || '';
+// the name it calls. Nothing in the bundle is searched for the name: the
+// call adapter observes whether the file gives it.
+export function callModule(check, contracts = []) {
+  const name = (check?.steps || []).map(s => s.call)[0] || '';
   const declared = (contracts || []).find(d => d?.name === name && kindOf(d) === 'function');
-  if (!declared || declared.path) return {name, path: declared?.path || ''};
-  const hits = [];
-  for (const [path, content] of files) {
-    if (!callRowOf(path)) continue;
-    const have = new Set(extractSurface(path, content).names);
-    if (have.has(name)) hits.push({path, placed: placed.has(path), n: names.filter(n => have.has(n)).length});
-  }
-  hits.sort((a, b) => (b.placed - a.placed) || (b.n - a.n) || a.path.localeCompare(b.path));
-  return {name, path: hits[0]?.path || '', undeclared: true};
+  return {name, path: declared?.path || '', ...(declared ? {declared: true} : {})};
 }
 
 // What the box is asked to run for these validations on these files, and
 // the results the Worker already knows (local: a command or function
-// contract whose file is missing; a call, stored before the splitter's
-// functions refused one, in a language the box has no call adapter for,
-// which is infrastructure). spec: {contracts (what the
+// contract whose file is missing, or a function contract stored before the
+// splitter's contract function asked every one for its file; a call, stored
+// before the splitter's functions refused one, in a language the box has no
+// call adapter for, which is infrastructure). spec: {contracts (what the
 // validations run by: the command and function contracts' files, how a page
 // or route runs), validations: [{id, check}]}. rows: the installed toolchain
-// rows. placed: the bundle's placed paths (callModule, for a function
-// contract with no path). compile: the files the syntax step compiles, each
+// rows. compile: the files the syntax step compiles, each
 // with the row that compiles it (a Map), when not every file of each row (a
 // file whose exact bytes compiled before is not compiled again). inventory:
 // the room needs the box's inventory, so the box opens. install: the
 // packages the box installs before the checks, per row ([{toolchain,
 // packages: [names]}]: the packages the agents' rows list beyond the image's).
-export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), compile = null, inventory = false, install = []} = {}) {
+export function checkPlan(spec, files, {rows = TOOLCHAINS, compile = null, inventory = false, install = []} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], list = spec?.validations || [], contracts = spec?.contracts || [];
   const commandsOf = new Map(contracts.filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
   const served = new Set(list.map(v => v.check?.serve).filter(Boolean)), runs = runsOf(contracts).filter(r => served.has(r.id));
@@ -109,8 +96,8 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
       if (missing) { local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: missing, frames: [], observed: {what: 'local', note: missing}}); continue; }
       checks.push({id: v.id, kind: 'command', ...(Array.isArray(c.argv) ? {argv: c.argv} : {run: c.run}), ...(c.stdin ? {stdin: c.stdin} : {}), ...(c.files ? {files: c.files} : {}), expect: c.expect || {}});
     } else if (c.kind === 'call') {
-      const {name, path, undeclared} = callModule(c, contracts, files, placed), row = path ? callRowOf(path) : null;
-      const note = !path ? (undeclared ? `no file gives ${name} to a call` : `no function contract declares ${name || 'the function'}`) : !files.has(path) ? `${path}, the file of ${name}, is missing` : '';
+      const {name, path, declared} = callModule(c, contracts), row = path ? callRowOf(path) : null;
+      const note = !path ? (declared ? `the function contract ${name} names no file` : `no function contract declares ${name || 'the function'}`) : !files.has(path) ? `${path}, the file of ${name}, is missing` : '';
       if (note) { local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: note, frames: [], observed: {what: 'local', note}}); continue; }
       // A language the box has no call adapter for: the splitter's contract
       // and call_check refuse such a function (src/validations.js uncallable),

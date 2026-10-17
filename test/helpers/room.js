@@ -226,7 +226,9 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
 // that no file at the root is gets a file of its own at the root that
 // takes the name from the file defining it (and a package marker in each
 // folder on the way); a bare reference from a file in a folder to a file
-// beside it becomes relative. Then it calls done.
+// beside it becomes relative, and one from a file at the root to the one
+// file of that name in a folder becomes that file's module path. Then it
+// calls done.
 export function usualBuilder(user, _n, _system, {round, results}) {
   const done = summary => [{name: 'done', arguments: {summary}}];
   if (round === 1) return user.files.length ? user.files.map(f => ({name: 'read_file', arguments: {path: f.path}})) : done('nothing to join');
@@ -270,6 +272,9 @@ export function joinCalls(design, texts) {
         const top = m[1].split('.')[0];
         if (has(`${top}.py`) || paths.some(x => x.startsWith(`${top}/`))) continue;
         if (dirOf(p) && texts.has(`${dirOf(p)}/${top}.py`)) { calls.push({name: 'rename', arguments: {path: p, from: top, to: `.${top}`, name_characters: '_'}}); continue; }
+        // A file at the root (where its contract placed it) reading the module of its piece's own file in a folder: the module's path from the root.
+        const away = !dirOf(p) ? paths.filter(x => x.endsWith(`/${top}.py`)) : [];
+        if (away.length === 1) { calls.push({name: 'rename', arguments: {path: p, from: top, to: away[0].replace(/\.py$/, '').replace(/\//g, '.'), name_characters: '_'}}); continue; }
         const at = contracts.some(c => c.name === top) ? definer(top, '.py') : null;
         if (!at || wrote.has(`${top}.py`)) continue;
         const folders = dirOf(at).split('/').filter(Boolean);

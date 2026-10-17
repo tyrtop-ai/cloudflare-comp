@@ -9146,7 +9146,7 @@ export class ControlRoom extends DurableObject {
     const digest=await snapshotHash(files),started=Date.now(),fresh=this.uncompiled(files),parsed=this.localSyntax(files,fresh);
     const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
     const spec={contracts,validations:runs};
-    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),placed:new Set(contracts.map(c=>c.path).filter(Boolean)),compile,install:this.packageInstalls(id)});
+    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),compile,install:this.packageInstalls(id)});
     const results=new Map(local);
     for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{passed:false,...fileResult(v.check,files)});
     const [judged,run]=await Promise.all([this.judgeRuns(id,runs,files,contracts),container?this.runChecks(id,`examples:${id}:${digest}`,files,plan,toolchains):null]);
@@ -9212,7 +9212,7 @@ export class ControlRoom extends DurableObject {
     // A level with an escalation outstanding in its subtree waits for Continue.
     if(this.escalatedBelow(id).length){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     const owned=taken??this.ownedDigest(id),joins=this.pieceInput(id);
-    const bundle=await this.bundleFiles(id),{files,origin,placed}=bundle;
+    const bundle=await this.bundleFiles(id),{files,origin}=bundle;
     const digest=await snapshotHash(files),all=this.subtreeValidations(id),here=new Set(this.read(`checks:${id}`,[])),box=this.boxHeld(files);
     const span=(outcome,extra={})=>this.span('piece','piece_checks',begun,Date.now(),{manager:id,depth,held:here.size,subtree:all.length,outcome,...extra},id);
     // The files it owns, or what its piece joins, changed after they were taken: it runs again on them as they are now.
@@ -9247,7 +9247,7 @@ export class ControlRoom extends DurableObject {
     // The Worker's own parser for a row that has one (native), the box's syntax step for the others: each only over the files it has not compiled.
     const parsed=this.localSyntax(box,fresh);
     const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
-    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),placed,compile,inventory:asks,install:this.packageInstalls(id)});
+    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),compile,inventory:asks,install:this.packageInstalls(id)});
     const results=new Map(local);
     for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{id:v.id,kind:'file',frames:[],...fileResult(v.check,files)});
     // Clef judges each document, in parallel with the box.
