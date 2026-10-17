@@ -75,7 +75,7 @@ test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its
   let notes = 0;
   const split = user => { const a = splitFor()(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...XN]}; };
   const pick = (key, state) => { const i = Number(key.split('_').pop()); return (state.children?.[i]?.contracts || []).some(c => /NOTES/.test(c)) ? 0.9 : 0.1; };
-  const r = await toolkit({split, clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 40});
+  const r = await toolkit({split, clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 46}); // 46: each splitter call after a session's first counts against the budget too
   assert.ok(notes > 7, `Notes was given the complaint round after round (${notes} writes), past the six rounds the room used to stop at`);
   assertBudget(r.room, 'end');
   const before = notes, runs = runsBy(r.room).Root;
@@ -133,7 +133,7 @@ const REVERSED = [call('r1', ['reverse'], 'reverse', 'abc', 'cba'), call('r2', [
 const REVERSE_PY = 'def reverse(s):\n    return str(s)[::-1]\n';
 // The room's manager divides, so the extension's splitter proposes a division: two pieces of reverse, which Clef's review finds too small.
 const REVERSE_PIECES = [{label: 'Reverser', task: 'Write reverse', contracts: ['reverse']}, {label: 'Reverser of one letter', task: 'Write reverse for a word of one letter', contracts: ['reverse']}];
-test('a change whose extension cannot be stated: its splitter goes on in a new session each turn until the room\'s budget ends, nothing is held, the room never says complete and the export never says passed for it; Continue gives it a fresh budget, the change lands, and its prompt is done', {skip}, async () => {
+test('a change whose extension cannot be stated: its splitter goes on, each call counted against the room\'s turn budget, until the budget ends; nothing is held, the room never says complete and the export never says passed for it; Continue gives it a fresh budget, the change lands, and its prompt is done', {skip}, async () => {
   let fail = true;
   const base = splitFor();
   const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [REVERSE], validations: REVERSED, pieces: REVERSE_PIECES}) : base(user);
@@ -146,7 +146,7 @@ test('a change whose extension cannot be stated: its splitter goes on in a new s
   const m = at(r.room);
   assert.equal(r.room.get('status'), 'paused', tail(r.room));
   assert.deepEqual(holds(r.room), [], 'nothing is held: the splitter goes on');
-  assert.ok(r.room.splitterRows().filter(x => x.outcome === 'context').length > 1, 'a new session each turn, from what it declared');
+  assert.equal(r.room.splitterRows().at(-1).outcome, 'budget', 'each of its calls counts against the room\'s turn budget, and its session ends when the budget is spent, to go on from what it declared');
   assert.ok(!events(r.room, 'complete').some(e => e.id > events(r.room, 'amend_received').at(-1).id), 'never complete after the change');
   assert.notEqual(r.room.node(m.Root).status, 'done');
   const {app} = await exported(r.room);

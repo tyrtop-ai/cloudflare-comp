@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {readCheck, contractExamples, exercises, routeMatches} from '../src/validations.js';
+import {readCheck, contractExamples} from '../src/validations.js';
 import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 import {fileResult} from '../src/checks.js';
 import {checkCall} from './helpers/room.js';
@@ -30,15 +30,8 @@ test('a file check runs as the splitter wrote it: "<form>" is not in a page that
   assert.equal(fileResult({kind: 'file', path: 'index.html', has: ['<form id="todo-form">', '<ul']}, new Map([['index.html', page]])).passed, true);
 });
 
-test('a route\'s path is a pattern for its examples: requests to /tickets/1, /2 and /3 are three examples of PUT /tickets/:id; a validation that serves "PUT /tickets/1" is refused, since that is not a declared name', () => {
-  assert.equal(routeMatches('PUT /tickets/:id', 'PUT', '/tickets/1'), true);
-  assert.equal(routeMatches('PUT /tickets/{id}', 'put', '/tickets/7?x=1'), true);
-  assert.equal(routeMatches('PUT /tickets/:id', 'GET', '/tickets/1'), false);
-  assert.equal(routeMatches('PUT /tickets/:id', 'PUT', '/tickets'), false);
-  assert.equal(routeMatches('PUT /tickets/:id', 'PUT', '/tickets/'), false, 'a parameter is one segment, never empty');
-  assert.equal(routeMatches('GET /tickets', 'GET', '/tickets'), true);
+test('requests to /tickets/1, /2 and /3 by validations serving PUT /tickets/:id are three examples of it; a validation that serves "PUT /tickets/1" is refused, since that is not a declared name', () => {
   const route = {name: 'PUT /tickets/:id', kind: 'route', path: 'src/server.js'};
-  assert.equal(exercises({kind: 'http', serve: 'server', steps: [{method: 'PUT', path: '/tickets/2', expect: {status: 200}}]}, route), true);
   const put = (i, serves) => ['http_check', {serves, serve: 'PUT /tickets/:id', steps: [{method: 'PUT', path: `/tickets/${i}`, body: {status: 'closed'}, expect: {status: 200}}]}];
   // A level that may not divide: done asks for no division.
   const {s, results} = calls([['contract', {...route, does: 'closes a ticket', run: {run: 'node src/server.js'}}], put(1, ['PUT /tickets/1']), put(1, [route.name]), put(2, [route.name]), put(3, [route.name]), ['done', {}]], {divide: false});
@@ -90,7 +83,7 @@ test('replay, issue tracker: its answers as calls, in order; each mistake is a r
   assert.equal(two['validation start-server-validation-1'].error, 'the command check: stdout_has is a list of texts');
   assert.equal(two['validation start-server-validation-3'].error, 'the http check serves "start-server", which is not a declared contract that states how it runs (none states one yet)');
   assert.deepEqual(['get-tickets', 'update-ticket', 'delete-ticket'].map(id => two[`validation ${id}-validation-3`].examples_so_far), [{getTickets: 3}, {updateTicket: 3}, {deleteTicket: 3}]);
-  assert.deepEqual(two.done, {complete: false, missing: ['start-server has 0 different examples of 3: command checks that run start-server or src/server.js, each one example.']});
+  assert.deepEqual(two.done, {complete: false, missing: ['start-server has 0 different examples of 3 from the validations that serve it.']});
   assert.equal(three['validation create-ticket-validation-3'].examples_so_far.createTicket, 3);
   assert.equal(three.done.missing.length, 4, three.done.missing.join('\n'));
 });

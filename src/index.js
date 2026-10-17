@@ -45,7 +45,7 @@ import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
 import { normalizePackages, installedPackages, heldByName, packageLanguage, stdlibRow, piecePackages, packageLine } from './packages.js';
 import { caseTwin, boxPathError } from '../container/build-path.mjs';
-import { contractExamples, checkSummary, checkExamples, renderExample } from './validations.js';
+import { contractExamples, checkSummary, checkExamples } from './validations.js';
 import { splitLevel } from './splitter.js';
 import { workerWorld, workerSession } from './worker.js';
 import { builderWorld, builderSession, builderWork } from './builder.js';
@@ -59,7 +59,7 @@ const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
 export const CHECK_RETRY_MS = [30_000, 120_000, 600_000];
 // v8 S9: the queue's next prompt is applied by the alarm this long after the room finished;
 // a room held at one of these ended where only the user can go on (the queue's failure).
-export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_failed', 'split_failed'];
+export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_failed'];
 // What a v8 room made before levels says to Continue, a change and a queued prompt.
 export const EARLIER_ROOM = 'This room was made by an earlier version, before level files, and does not run under this one. Its result can still be exported: start a new room, from this room\'s result if you like.';
 // U10: an anchored requirement's key: its id and a hash of what it says.
@@ -761,7 +761,7 @@ export class ControlRoom extends DurableObject {
     return langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all;
   }
   // v8: a room held at a stop only Continue moves on: what an agent sent up
-  // its line reached the room (escalate: checks_failed, split_failed,
+  // its line reached the room (escalate: checks_failed,
   // ...), or the checks could not run (checks_blocked). The room records every hold that
   // reached it (room_holds), one per row it names (extra.agent: the row it
   // came from, which Continue wakes), and Continue answers them all; the
@@ -842,10 +842,11 @@ export class ControlRoom extends DurableObject {
   // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95: threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10) (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10, 0.95 below). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
   // v7.15.16 review: over a fixed horizon, min(max_depth, 10) levels, so raising max_depth (what split_capacity_blocked advises) never flattens it.
   splitBar(id, t=this.settings().split_threshold) {const {max_depth:m}=this.settings(),d=this.depthOf(id),h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
-  // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
-  // leaf writing code) or 'compiler' (the API coverage mapping and the
-  // runner's test). A room saved before v7.15.10 has no worker or compiler
-  // model and keeps its one model for all three.
+  // role: 'manager' (the default; splits, decisions, linking; under v8 the
+  // splitter and the builder run on it too, under their own role in traces),
+  // 'worker' (a leaf writing code) or 'compiler' (the API coverage mapping
+  // and the runner's test). A room saved before v7.15.10 has no worker or
+  // compiler model and keeps its one model for all three.
   inferenceEnv(role='manager') {
     const cfg=this.settings(),model=role==='worker'?cfg.worker_model:role==='compiler'?cfg.compiler_model:cfg.model;
     // v8 (S6): PIPELINE tells src/model.js to use the v8 prompts (pipelineV8).
@@ -7708,8 +7709,10 @@ export class ControlRoom extends DurableObject {
   // a generative model writes. v7: every row but a manager. v8: a worker, a
   // builder (a session of its functions), a manager's split step (its
   // splitter answers: before its level is admitted, or for a job not
-  // admitted yet), and any row's turn that runs again after a failed one or
-  // a Clef call that gave no answer (retry_turn); a manager's routing spends none.
+  // admitted yet; each model call of its splitter's session after the first
+  // spends one more, spendCall in drive), and any row's turn that runs again
+  // after a failed one or a Clef call that gave no answer (retry_turn); a
+  // manager's routing spends none.
   spendsTurn(id) {
     const n=this.node(id);
     if(!n)return false;
@@ -7819,6 +7822,8 @@ export class ControlRoom extends DurableObject {
     // the budget is spent, managers still run but ask no model (budgetSpent).
     const tally=()=>{added();spent+=this.spentExtra||0;this.spentExtra=0;this.budgetSpent=spent>=cap;};
     this.spentExtra=0;this.budgetSpent=false;
+    // A splitter's session counts each model call after the first (its turn) against the budget, while it runs: none once the budget is spent.
+    this.spendCall=()=>{added();if(spent+(this.spentExtra||0)>=cap)return false;this.spentExtra=(this.spentExtra||0)+1;return true;};
     try {
       // Work-conserving: replace each completed slot immediately, without
       // waiting for slower inferences from the same dispatch wave.
@@ -7864,7 +7869,7 @@ export class ControlRoom extends DurableObject {
         failed ? `Run failed: ${this.failedDescendantReason(this.v8()?this.roomManager():this.topId())}` : held ? `Paused (${held.kind}${more?` and ${more} more`:''}): ${held.text}` : 'Inference budget ended or strands are waiting; continue to resume.');
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally {
-      this.busy=false;this.budgetSpent=false;
+      this.busy=false;this.budgetSpent=false;this.spendCall=null;
       // v8 live 5: a prewarmed box no compile of this run took is stopped.
       this.prewarm?.discard('the run ended before a compile took it');
       // v8 S9 review: what this run left of its budget.
@@ -8494,13 +8499,15 @@ export class ControlRoom extends DurableObject {
   // the splitter proposes a division (its done completes two or more
   // pieces), and Clef's review alone decides whether that division is
   // valid: each NO is a new session with its objection (larger pieces, or a
-  // different division), up to SPLIT_ATTEMPTS attempts. A pending job (level_job:<id>:
+  // different division), up to SPLIT_ATTEMPTS attempts. A session that ends
+  // without done (its context window full, or the room's turn budget spent)
+  // goes on in a new session from what it declared. A pending job (level_job:<id>:
   // a rebuild of what an archived child delivered, or an extension for a
   // change none of its children covers) is an attempt of the same
   // kind on a level that has its design, under the same pre-grade: Clef
   // grades a manager once, and a caught manager's jobs are not divided either.
   async splitStep(id, job=null) {
-    const n=this.node(id),given=this.designOf(id),own=job?job.own||[]:given.contracts,cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
+    const given=this.designOf(id),own=job?job.own||[]:given.contracts,cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     if(!job&&!this.splitAttempts(id).some(a=>a.attempt===0)) {
       const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:cfg.floor,SPLIT_FLOOR:cfg.floor},given.prompt,null,this.gateContracts(id)),caught=pre.probability<=cfg.floor;
@@ -8513,20 +8520,14 @@ export class ControlRoom extends DurableObject {
       return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{why:caught?`Clef's pre-grade is at or below the floor ${cfg.floor}, so it hands its whole assignment down to one worker.`:'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.'});
     const divide=room&&!caught,tried=this.splitAttempts(id).filter(a=>a.attempt>0&&a.job===key),attempt=tried.length+1,feedback=this.read(`split_feedback:${id}`,null);
     const out=await this.runSplitter(id,{kind,assignment:job?.text||given.prompt,own,divide,attempt,feedback}),level=out.level;
-    // A session its context window ended goes on in a new session next turn, from what it declared, as a worker's does; the room's turn budget bounds it.
-    if(!level&&out.reason==='context') {
+    // A session that ended without done (its context window full, or the room's turn budget spent) goes on in a new session next turn, from what it declared, as a worker's does: nothing is held or handed down.
+    if(!level) {
       this.save(`split_carry:${id}`,{key,attempt,...out.carry});
-      this.event(id,'splitter',`${out.sid}'s context window was full after ${out.rounds} rounds; a new session goes on next turn from what it declared.`);
+      this.event(id,'splitter',`${out.sid}'s session ended without done after ${out.rounds} rounds (${out.reason==='context'?'its context window was full':out.reason==='budget'?'the room\'s turn budget is spent':out.reason}); a new session goes on ${out.reason==='budget'?'when the room has turns again':'next turn'}, from what it declared.`);
       this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
       return void this.save('queue',addLast(this.read('queue',[]),id));
     }
     this.save(`split_carry:${id}`,null);
-    // A session that ended without done for another reason states no level: the row's parent hears it, verbatim.
-    if(!level) {
-      this.recordAttempt(id,{attempt,job:key,splitter:out.sid,outcome:`ended: ${out.reason}`,ms:Date.now()-started});
-      this.save(`split_feedback:${id}`,null);
-      return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's session ended without done (${out.reason==='context'?`its context window was full after ${out.rounds} rounds`:out.reason}).`,1100));
-    }
     // With piece offered, done completes only a division (two or more pieces), and Clef's review alone admits it, retries it or hands the level down.
     const pieces=level.pieces,retry=feedback?.retry||'';
     const review=await reviewLevel(this.inferenceEnv(),{assignment:job?.text||given.prompt,contracts:level.contracts,pieces,validations:level.validations,attempt,retry});
@@ -8546,7 +8547,7 @@ export class ControlRoom extends DurableObject {
     if(stop){this.event(id,'split_review',`${said}: NO ${stop}, so the level goes to one worker.`);return this.admitLevel(id,{...level,pieces:[]},{job,why:`${said}: NO ${stop}.`});}
     const shown=pieces.map(c=>({label:c.label,task:c.task,contracts:c.contracts}));
     this.save(`split_feedback:${id}`,next==='larger'?{kind:'too_small',retry:'larger',reason:RETRY.too_small(pieces.length),rejected:shown}:{kind:'invalid',retry:'different',reason:RETRY.different,rejected:shown});
-    this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='larger'?'larger pieces':'a different division along its contracts'}.`);
+    this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='larger'?'larger pieces':'a different division'}.`);
     this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
     this.save('queue',addLast(this.read('queue',[]),id));
   }
@@ -8576,7 +8577,7 @@ export class ControlRoom extends DurableObject {
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
     const carried=this.read(`split_carry:${id}`,null),carry=carried&&carried.key===`${kind}:${job?.key||''}`&&carried.attempt===attempt?carried:null;
     if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces};
-    const out=await splitLevel(this.inferenceEnv('worker'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry,programs:this.boxPrograms()});
+    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry,programs:this.boxPrograms()},{spend:()=>this.spendCall?this.spendCall():true});
     this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
     const l=out.level;
     this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));
@@ -8708,7 +8709,6 @@ export class ControlRoom extends DurableObject {
     for(const hold of list) {
       const agent=this.node(hold.agent||this.roomManager()||'');
       if(!agent)continue;
-      if(hold.kind==='split_failed')this.save(`split_attempts:${agent.id}`,this.splitAttempts(agent.id).filter(a=>a.attempt===0));
       if(['waiting','ready'].includes(agent.status)) {
         this.event('room','hold_continue',`Continue: "${agent.label}" goes on after ${hold.kind}.`,agent.id);
         this.wake(agent.id);
@@ -9208,7 +9208,7 @@ export class ControlRoom extends DurableObject {
     for(const c of run?.report?.checks||[])results.set(c.id,c);
     if(run?.report?.inventory)this.save('toolchain_inventory',run.report.inventory);
     if(run&&!run.infrastructure)this.markCompiled(files,plan.syntax,run.report?.stages,parsed.clean);
-    const shown=v=>{const out=[...new Set(contracts.flatMap(c=>checkExamples(v.check,c)))];return out.length?out:[renderExample(v.check)].filter(Boolean);};
+    const shown=v=>[...new Set(checkExamples(v.check))];
     const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${run.infrastructure}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${r.detail}`;return r.passed?'pass':String(r.detail||'it did not hold');};
     const examples=runs.map(v=>({examples:shown(v),observed:observed(v)}));
     const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path).map(x=>({file:x.path,observed:x.detail}));

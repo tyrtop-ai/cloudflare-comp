@@ -166,8 +166,8 @@ test('level shows everything declared so far; done reports what the level still 
   assert.deepEqual(view.pieces, []);
   // A held validation counts for the given contract; a doc owes none. Piece is offered here, and no piece is declared yet.
   assert.deepEqual(splitterCall(s, 'done', {}), {result: {complete: false, missing: [
-    'to_f has 1 different example of 3: calls of to_f, each call one example.',
-    'convert has 2 different examples of 3: command checks that run convert or convert.py, each one example.',
+    'to_f has 1 different example of 3 from the validations that serve it.',
+    'convert has 2 different examples of 3 from the validations that serve it.',
     'the division has 0 pieces of at least 2, each declared with piece.']}});
   calls(s, [run('-40 C', '-40'), callOf(0, 32), callOf(100, 212),
     ['piece', {label: 'A', task: 'Write to_f.', contracts: ['to_f', 'convert']}], ['piece', {label: 'B', task: 'Write convert.', contracts: ['convert', 'NOTES.md']}]]);

@@ -46,18 +46,17 @@ test('replay, to-do page: a level with a page, files and a document stores whole
   assert.deepEqual(result(two, 'browser_check', 'index_add_task').examples_so_far, {'index.html': 2});
 });
 
-test('replay, issue tracker: done lists each function short of three different examples, with how its examples count; a piece that names nothing it delivers is refused; a run on a function is refused', () => {
+test('replay, issue tracker: each call of a validation declared as serving a function is one of its examples; a piece that names nothing it delivers is refused; a run on a function is refused; done lists what is short', () => {
   const [one, two, three] = replay('tracker');
-  assert.deepEqual(result(one, 'done', 'done'), {complete: false, missing: [
-    'view_tickets has 2 different examples of 3: calls of view_tickets, each call one example.',
-    'update_ticket has 1 different example of 3: calls of update_ticket, each call one example.',
-    'delete_ticket has 1 different example of 3: calls of delete_ticket, each call one example.']});
+  // Each function's check makes three calls (create_ticket first, then the one it serves, then view_tickets): three examples each, as the splitter declared.
+  assert.deepEqual(result(one, 'call_check', 'update_ticket_validation').examples_so_far, {update_ticket: 3});
+  assert.deepEqual(result(one, 'done', 'done'), {complete: true});
   assert.deepEqual(['Main Page', 'Client-Side Logic', 'API Endpoint'].map(l => result(one, 'piece', l).error), Array(3).fill('contracts names nothing the piece delivers'));
   assert.equal(result(two, 'done', 'done').missing.length, 4, 'four functions, each with one example (server.js is a file and owes none)');
   for (const n of ['create_ticket', 'view_tickets', 'update_ticket', 'delete_ticket'])
     assert.equal(result(three, 'contract', n).error, 'a function contract is not started, so it states no run', n);
   assert.equal(result(three, 'piece', 'Ticket Functions').error, 'contracts names "create_ticket", "view_tickets", "update_ticket", "delete_ticket", which are not declared at this level. Declared: server.js, public/index.html');
-  assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['server.js has 1 different example of 3: command checks that run server.js, each one example.']});
+  assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['server.js has 1 different example of 3 from the validations that serve it.']});
 });
 
 test('replay, temperature CLI: a use that names nothing declared or callable is refused with what is; three different runs complete a command; done names the one command still short', () => {
@@ -67,5 +66,5 @@ test('replay, temperature CLI: a use that names nothing declared or callable is 
   assert.deepEqual(result(two, 'call_check', 'convert_k_to_c'), {id: 'v3', examples: ['convert_temperature(273.15, "K", "C") → {"value":0}'], examples_so_far: {convert_temperature: 3}});
   assert.deepEqual(result(two, 'done', 'done'), {complete: true});
   assert.deepEqual(refused(three), []);
-  assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['test_conversions has 1 different example of 3: command checks that run test_conversions or test_conversions.py, each one example.']});
+  assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['test_conversions has 1 different example of 3 from the validations that serve it.']});
 });

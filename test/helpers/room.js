@@ -86,10 +86,12 @@ const { start } = require('./index.js');
 // A validation as the call of its kind's function: {serves, ...the check's fields}.
 export const checkCall=v=>{const {kind,argv,...fields}=v.check;return {name:`${kind}_check`,arguments:{serves:v.serves,...fields}};};
 export function levelCalls(level,{user={},tools=['contract','piece','level','done']}={}) {
-  const given=new Set((user.contracts_you_deliver||[]).map(c=>c.name)),out=[];
+  // A session that goes on from an earlier one (declared_so_far) calls only for what is not declared yet.
+  const so=user.declared_so_far||{},given=new Set([...(user.contracts_you_deliver||[]),...(so.contracts||[])].map(c=>c.name)),out=[];
+  const stated=new Set((so.validations||[]).map(v=>JSON.stringify(checkCall(v)))),labels=new Set((so.pieces||[]).map(p=>p.label));
   for(const c of level.contracts||[])if(!given.has(c.name))out.push({name:'contract',arguments:c});
-  for(const v of level.validations||[])out.push(checkCall(v));
-  if(tools.includes('piece'))for(const p of level.pieces||[])out.push({name:'piece',arguments:p});
+  for(const v of level.validations||[]){const c=checkCall(v);if(!stated.has(JSON.stringify(c)))out.push(c);}
+  if(tools.includes('piece'))for(const p of level.pieces||[])if(!labels.has(p.label))out.push({name:'piece',arguments:p});
   out.push({name:'done',arguments:{}});
   return out;
 }
@@ -150,7 +152,8 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
       // A level's calls go in the first round; done in the second, once every one of them was stored.
       const refused=results.filter(r=>r.result?.error||r.result?.complete===false);
       if(round>2||refused.length)throw new Error('the scripted splitter\'s level was not accepted: '+JSON.stringify(refused.length?refused:results).slice(0,1500));
-      return {tool_calls:round===1?levelCalls(a,{user,tools}).filter(c=>c.name!=='done'):[{name:'done',arguments:{}}]};
+      const first=round===1?levelCalls(a,{user,tools}).filter(c=>c.name!=='done'):[];
+      return {tool_calls:first.length?first:[{name:'done',arguments:{}}]};
     }
     // v8: the worker works through functions (src/worker.js). Its fake
     // answers each round of its session: a list of calls [{name,

@@ -39,10 +39,18 @@ test('S2: old {params, returns, operation} rows normalize to function contracts 
     {name:'readTickets',does:'',params:[],returns:'nothing'},
     {name:'getTickets',does:'returns all tickets',params:[]},
     {name:'deleteTicket',does:'',params:['id']}]);
-  assert.deepEqual(normalizeContracts(rows,V8),once,'a v7 row is the same function contract in v8 mode');
+  // v8 keeps each text as written: no filler dropped, no final stop, no leading "returns" cut, no no-value phrasing turned into "nothing".
+  assert.deepEqual(normalizeContracts(rows,V8),[
+    {name:'createTicket',does:'creates a ticket and returns it.',params:['title','description'],returns:'The created ticket.',operation:'create a ticket'},
+    {name:'saveTickets',does:'',params:['tickets'],returns:'nothing'},
+    {name:'readTickets',does:'',params:[],returns:'returns a promise that resolves when done'},
+    {name:'getTickets',does:'returns all tickets',params:[]},
+    {name:'deleteTicket',does:'',params:['id']}],'a v8 row keeps its texts as written');
+  assert.deepEqual(N1({name:'list_items',does:'What it does.',inputs:[{name:'argument',is:'argument'}],outputs:'the list of items, or an empty list if none exist'}),
+    {name:'list_items',does:'What it does.',params:['argument'],inputs:[{name:'argument',is:'argument'}],returns:'the list of items, or an empty list if none exist'},'v8 matches no filler and rewrites no output');
   assert.ok(once.every(f=>!('kind' in f)&&kindOf(f)==='function'),'a function contract carries no kind field: kind defaults to function');
   assert.deepEqual(normalizeContracts(once),once,'lossless: a stored row reads back as itself');
-  assert.deepEqual(normalizeContracts(once,V8),once);
+  assert.deepEqual(normalizeContracts(normalizeContracts(rows,V8),V8),normalizeContracts(rows,V8));
   assert.equal(I.normalizeInterfaces,normalizeContracts,'normalizeInterfaces is the alias until S7');
   assert.deepEqual(contractInputs(once[0]),[{name:'title',is:''},{name:'description',is:''}]);
   assert.equal(contractOutputs(once[0]),'The created ticket');
@@ -54,7 +62,7 @@ test('S2: without v8 every v8 field is ignored as ef7eebf did; with v8 they are 
   assert.deepEqual(normalizeContract(raw),{name:'count_words',does:'counts the words in a text',params:[],operation:'count words'},'v7: inputs, outputs, effects, examples, path and serves are not read');
   assert.deepEqual(normalizeContract({name:'parse',params:[{name:'text'}],kind:'route'}),{name:'parse',does:'',params:[]},'v7: object params dropped, kind ignored');
   const f=N1(raw);
-  assert.deepEqual(f,{name:'count_words',does:'counts the words in a text',params:['text'],inputs:[{name:'text',is:'the text to count'}],returns:'the number of words',effects:'none',
+  assert.deepEqual(f,{name:'count_words',does:'counts the words in a text.',params:['text'],inputs:[{name:'text',is:'the text to count'}],returns:'the number of words.',effects:'none',
     examples:[{given:['a b'],expect:2},{given:['x'],expect:1},{given:[''],expect:0},{given:['a  b'],expect:2},{given:['c'],expect:1}],path:'counter.py',serves:['R1','R2'],operation:'count words'});
   assert.deepEqual(N([f]),[f]);
   assert.equal(normalizeContract(raw,{v8:true}).serves,undefined,'a model\'s serves is dropped unless the runtime asks to keep it');
@@ -84,7 +92,7 @@ test('S2: other kinds (v8): a file, page, doc or data contract is named by its p
     {name:'convert',kind:'command',does:'converts a temperature',params:['value','unit'],outputs:'the converted value',path:'convert.py',examples:[{given:'convert 100 C',expect:'212'}]},
     {name:'data/units.json',kind:'data',path:'data/units.json',serves:['R3']},
     {name:'docs/../x.md',kind:'doc'}]),[
-    {name:'README.md',kind:'doc',does:'how to install and run the converter',params:[],path:'README.md'},
+    {name:'README.md',kind:'doc',does:'how to install and run the converter.',params:[],path:'README.md'},
     {name:'index.html',kind:'page',does:'the recipe scaler page',params:[],outputs:'a form and the scaled list',path:'index.html'},
     {name:'GET /items',kind:'route',does:'lists the items',params:['page','size'],outputs:'nothing'},
     {name:'convert',kind:'command',does:'converts a temperature',params:['value','unit'],outputs:'the converted value',path:'convert.py',examples:[{given:'convert 100 C',expect:'212'}]},

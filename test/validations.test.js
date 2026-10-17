@@ -130,19 +130,18 @@ test('renderExample and contractExamples: a validation as the example a worker r
   assert.equal(EXAMPLES_PER_CONTRACT, 3);
   assert.deepEqual(contractExamples({name: 'convert'}, list), ['convert 100 C → its output contains "212"', 'convert 0 C → its output contains "32"', 'convert -40 C → its output contains "-40"', 'convert 37 C → its output contains "98.6"'], 'the same rendering counts once, and every distinct one is kept: three is the least, never the most');
   assert.deepEqual(contractExamples({name: 'convert', serves: ['f']}, list.slice(5)), ['convert 1 C → its output contains "33.8"'], 'by the ids a contract carries too');
-  assert.deepEqual(contractExamples({name: 'x', serves: ['f']}, list), [], 'a validation that exercises another contract is that contract\'s example');
-  // One example per exercised step: each call (after the steps before it), each request, each text a file holds; a scenario, a command, a question is one.
+  // Every validation declared as serving a contract gives it its examples: the runtime matches no name, path or route to decide which count.
+  assert.deepEqual(contractExamples({name: 'x', serves: ['f']}, list), ['convert 1 C → its output contains "33.8"'], 'a validation serving x is x\'s example, whatever it runs');
+  assert.deepEqual(contractExamples({name: 'public/index.html', kind: 'page', path: 'public/index.html'}, [{id: 'h', serves: ['public/index.html'], check: {kind: 'http', serve: 'server', steps: [{method: 'GET', path: '/', expect: {status: 200}}]}}]), ['GET / → status 200']);
+  assert.deepEqual(contractExamples({name: 'config.json', kind: 'data', path: 'config.json'}, [{id: 'm', serves: ['config.json'], check: {kind: 'command', run: 'node main.js', expect: {exit: 0}}}]), ['node main.js → it exits 0']);
+  // One example per step: each call (after the steps before it), each request, each text a file holds; a scenario, a command, a question is one.
   const calls = {kind: 'call', steps: [{call: 'add', args: [1, 2], expect: 3}, {call: 'reset', args: []}, {call: 'add', args: [2, 2], expect: 4}, {call: 'add', args: ['', 1], throws: true}]};
-  assert.deepEqual(checkExamples(calls, {name: 'add'}), ['add(1, 2) → 3', 'add(1, 2) → 3; reset() → it returns; add(2, 2) → 4', 'add(1, 2) → 3; reset() → it returns; add(2, 2) → 4; add("", 1) → it raises an error']);
-  assert.deepEqual(checkExamples(calls, {name: 'reset'}), ['add(1, 2) → 3; reset() → it returns']);
-  assert.deepEqual(contractExamples({name: 'add'}, [{id: 'x', serves: ['add'], check: calls}]).length, 3, 'a call check with three calls of add is three examples');
-  assert.deepEqual(checkExamples({kind: 'http', serve: 'api', steps: [{method: 'POST', path: '/t', body: {a: 1}, expect: {status: 201}}, {method: 'GET', path: '/t', expect: {body_has: ['a']}}]}, {name: 'api', kind: 'command'}),
+  assert.deepEqual(checkExamples(calls), ['add(1, 2) → 3', 'add(1, 2) → 3; reset() → it returns', 'add(1, 2) → 3; reset() → it returns; add(2, 2) → 4', 'add(1, 2) → 3; reset() → it returns; add(2, 2) → 4; add("", 1) → it raises an error']);
+  assert.deepEqual(contractExamples({name: 'add'}, [{id: 'x', serves: ['add'], check: calls}]).length, 4, 'a call check of four calls is four examples');
+  assert.deepEqual(checkExamples({kind: 'http', serve: 'api', steps: [{method: 'POST', path: '/t', body: {a: 1}, expect: {status: 201}}, {method: 'GET', path: '/t', expect: {body_has: ['a']}}]}),
     ['POST /t with {"a":1} → status 201', 'POST /t with {"a":1} → status 201; GET /t → the body contains "a"']);
-  assert.deepEqual(checkExamples({kind: 'http', serve: 'api', steps: [{method: 'POST', path: '/t', expect: {status: 201}}, {method: 'GET', path: '/t', expect: {status: 200}}]}, {name: 'GET /t', kind: 'route'}),
-    ['POST /t → status 201; GET /t → status 200'], 'a route: the request it names');
-  assert.deepEqual(checkExamples({kind: 'file', path: 'a.css', has: ['body', '.x']}, {name: 'a.css', kind: 'file', path: 'a.css'}), ['a.css contains "body"', 'a.css contains ".x"']);
-  assert.deepEqual(checkExamples({kind: 'file', path: 'a.css'}, {name: 'a.css', kind: 'file', path: 'a.css'}), ['a.css exists']);
-  assert.deepEqual(checkExamples({kind: 'file', path: 'b.css', has: ['x']}, {name: 'a.css', kind: 'file', path: 'a.css'}), [], 'a check of another file');
+  assert.deepEqual(checkExamples({kind: 'file', path: 'a.css', has: ['body', '.x']}), ['a.css contains "body"', 'a.css contains ".x"']);
+  assert.deepEqual(checkExamples({kind: 'file', path: 'a.css'}), ['a.css exists']);
   assert.equal(checkSummary({kind: 'judge', path: 'README.md', question: 'Q?'}), 'judge README.md: Q?');
   assert.equal(checkSummary({kind: 'command', run: 'convert 1 C', expect: {exit: 0}}), 'command: convert 1 C → it exits 0');
   assert.equal(internalCandidate({kind: 'file', path: 'app.js', has: ['function add']}), true, 'a text looked for inside code');

@@ -10,7 +10,7 @@
 // assignment and the pieces as written.
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, exerciseWords, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
@@ -75,8 +75,8 @@ function contract(s, a) {
   const row = path ? toolchainOf(path) : null;
   if (row && row.id !== 'text' && !s.ids.has(row.id)) return {error: `${path} is written in ${row.id}, which the box does not run (it runs ${listed([...s.ids])})`};
   for (const k of ['does', 'outputs', 'effects']) if (a[k] !== undefined && typeof a[k] !== 'string') return {error: `${k} is a text`};
-  if (a.inputs !== undefined && (!Array.isArray(a.inputs) || !a.inputs.every(x => plain(x) && typeof x.name === 'string' && x.name && (x.is === undefined || typeof x.is === 'string'))))
-    return {error: 'inputs is a list of inputs, each with a name and what it is'};
+  if (a.inputs !== undefined && (!Array.isArray(a.inputs) || !a.inputs.every(x => plain(x) && typeof x.name === 'string' && x.name && (x.is === undefined || typeof x.is === 'string') && Object.keys(x).every(k => k === 'name' || k === 'is'))))
+    return {error: 'inputs is a list of inputs, each with a name and what it is (is), and no other field'};
   let run = null;
   if (a.run !== undefined) {
     const r = runOf(a.run, {kind}, {commands: new Set(present(s).filter(c => kindOf(c) === 'command').map(c => c.name)), executables: s.executables});
@@ -100,7 +100,7 @@ function validation(s, a) {
   if (r.error) return {error: r.error};
   const id = `v${s.validations.length + 1}`, v = {id, serves: names.list, check: r.check};
   s.validations.push(v);
-  const all = present(s), examples = [...new Set(names.list.flatMap(n => checkExamples(r.check, all.find(c => c.name === n))))];
+  const all = present(s), examples = [...new Set(checkExamples(r.check))];
   const counts = Object.fromEntries(names.list.map(n => [n, examplesOf(s, all.find(c => c.name === n)).length]));
   return {id, examples, examples_so_far: counts};
 }
@@ -150,7 +150,7 @@ export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const n = examplesOf(s, c).length;
-    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT}: ${exerciseWords(c)}.`);
+    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it.`);
   }
   const n = s.pieces.length;
   if (s.divide && n < 2) out.push(`the division has ${n} piece${n === 1 ? '' : 's'} of at least 2, each declared with piece.`);
@@ -180,12 +180,14 @@ export function splitterCall(s, name, args) {
 }
 
 // The splitter's session: request is the user JSON it reads (its assignment
-// and world); world is splitterState's input. {level, state, ended, reason,
-// rounds, transcript}: level is null when the session ended without done.
+// and world); world is splitterState's input; spend counts each model call
+// after the first against the room's turn budget (session). {level, state,
+// ended, reason, rounds, transcript}: level is null when the session ended
+// without done.
 export const SPLITTER_TOKENS = 8192;
-export async function splitLevel(env, request, world = {}) {
+export async function splitLevel(env, request, world = {}, {spend = null} = {}) {
   const s = splitterState(world), tools = splitterTools(s.divide);
   const out = await session(env, {system: systemPrompt('splitter'), user: JSON.stringify(request), tools, role: 'splitter', call: 'splitLevel', maxTokens: SPLITTER_TOKENS,
-    handle: (name, args) => splitterCall(s, name, args)});
+    handle: (name, args) => splitterCall(s, name, args), spend});
   return {level: out.ended ? out.end : null, state: s, ended: out.ended, reason: out.reason, rounds: out.rounds, transcript: out.transcript};
 }
