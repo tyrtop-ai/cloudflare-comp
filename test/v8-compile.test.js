@@ -10,8 +10,7 @@ import {mkdtempSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {liveRoom} from './helpers/room.js';
-import {outsideFailure, installedModule, routeServes} from '../src/piece.js';
-import {importClosure} from '../src/glue.js';
+import {outsideFailure, installedModule, routeServes, importClosure} from '../src/piece.js';
 import {sourceParseError} from '../src/linker.js';
 import {TOOLCHAINS, COMPILE_ROWS, installed, codeRowOf, shebangOf, pageScripts, parseModeOf} from '../src/toolchains.js';
 
@@ -65,10 +64,21 @@ test('L2: the import closure enters a package through its marker and takes a fol
   const dotted = close({'m.py': 'import pkg.mod\n', 'pkg/__init__.py': '', 'pkg/mod.py': ''});
   assert.deepEqual(dotted.reached.sort(), ['m.py', 'pkg/__init__.py', 'pkg/mod.py']);
   // The marker is the row's: a row with another marker reads that one.
-  const other = TOOLCHAINS.map(r => r.id === 'python' ? {...r, glue: {...r.glue, package_marker: 'PKG.py'}} : r);
+  const other = TOOLCHAINS.map(r => r.id === 'python' ? {...r, package_marker: 'PKG.py'} : r);
   const marked = importClosure(['m.py'], new Map(Object.entries({'m.py': 'from pkg import helper\n', 'pkg/PKG.py': '', 'pkg/helper.py': ''})), {rows: other, installed});
   assert.deepEqual(marked.reached.sort(), ['m.py', 'pkg/PKG.py', 'pkg/helper.py']);
-  assert.ok(py.glue.package_marker);
+  assert.equal(py.package_marker, '__init__.py');
+  // The closure reads the files as they are: a module no file at the root is reaches nothing, whatever contract it is named like.
+  const bare = close({'m.py': 'from count_words import count_words\n', 'components/p_a/counter.py': 'def count_words(t):\n    return {}\n'});
+  assert.deepEqual(bare.outside.map(o => [o.path, o.reference]), [['m.py', 'from count_words import count_words']]);
+  // A file the builder wrote at the root is a file like any other: the closure goes through it.
+  const glued = close({'m.py': 'from count_words import count_words\n', 'count_words.py': 'from components.p_a.counter import count_words\n',
+    'components/__init__.py': '', 'components/p_a/__init__.py': '', 'components/p_a/counter.py': 'def count_words(t):\n    return {}\n'});
+  assert.deepEqual(glued.reached.sort(), ['components/__init__.py', 'components/p_a/__init__.py', 'components/p_a/counter.py', 'count_words.py', 'm.py']);
+  assert.deepEqual(glued.outside, []);
+  // A piece's file that names a file beside it by its bare name reaches nothing: the box reads it from the root.
+  const beside = close({'components/p_a/counter.py': 'from textutil import words\n', 'components/p_a/textutil.py': ''}, 'components/p_a/counter.py');
+  assert.deepEqual(beside.outside.map(o => o.reference), ['from textutil import words']);
 });
 
 

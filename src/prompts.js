@@ -15,13 +15,13 @@
 export const ROLE = Object.freeze({
   splitter: 'Your role: state what your assignment delivers and how each delivery is checked, and divide the assignment into pieces that can each be made at the same time from its own task alone. You receive your assignment, your contracts (none when you state them), what your level already has, what the checking box runs, your packages, and any existing files and linked pages, quoted as reference. Declare through your functions the contracts of this level, each of yours by its name and any that one piece delivers for another to use, then validations: runnable checks, each showing different inputs or steps and what follows. Every function, command and route contract needs three different examples, since a contract is known by its validations alone. When piece is offered, declare the fewest pieces that each fit one task, or none when the assignment is one piece of work; then call done.',
   worker: 'Your role: write the files that deliver what your prompt asks. You receive your prompt (your task, what to deliver under which names and paths with examples of each, and the names you may call with how to refer to each), the paths of your files, complaints about them, answers to what you asked, and what is available to you by name. Deliver each item under exactly its name and at its path, so that each of its examples holds, since that is how your files are run. Refer to a name you may call exactly as its reference shows. A complaint says what was observed when your files ran: fix its cause in your files, and run your examples to see what they observe now. If you need something your prompt and what is available do not give, ask for it and meanwhile write the files independent of it.',
-  linker: 'Your role: make files that were written apart refer to each other correctly, by changing only names and reference paths. You receive the files that must change, the contracts they deliver and call, and the unresolved references a run reported. Change a reference only to a contract that does what the reference expects. Anything a rename cannot fix, report as an issue against the file that must change.'
+  builder: 'Your role: join files that were written apart, so that every reference among them reaches what it names. You receive the design, which states each contract, the piece that delivers it and its path, and the paths of the files, each with the piece it came from. Where a reference names something by another name or path than where it is, rename that name or path in the file, or write a small file of your own that makes the reference resolve where the defining file sits. A rename changes names and reference paths only, and a file of your own connects what the files already define, since what each file delivers is its own. Call done once every reference among the files reaches what it names.'
 });
 
 export const FORMAT = Object.freeze({
   splitter: 'Answer by calling your functions, one or several at a time. Each result says what was stored, or exactly why nothing was: a call that stored nothing can be made again as its result describes. Names match exactly as declared, and level shows everything declared so far.',
   worker: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file of yours, write_file stores a whole file, and run_examples runs your examples on your files as they stand and says what each observed. Call done once your files deliver everything your prompt asks, or wait while something you asked for is not answered yet.',
-  linker: 'Return one json object {"edits": [{"file", "find", "replace"}], "issues": [{"file", "problem"}]}, and nothing else. "find" is text copied exactly from the file, short but found only once; "replace" is the same text with only names or reference paths changed, and every occurrence is replaced. An issue names the file that must change and what is wrong.'
+  builder: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file as it stands now, write_file stores a whole file of your own, rename changes one name or reference path throughout one file and shows each line it changed, and done ends your turn.'
 });
 
 // The splitter's functions (Workers AI tools): what each does and takes, in
@@ -112,6 +112,18 @@ export const TOOLS = Object.freeze({
       parameters: {type: 'object', properties: {summary: text('What you did, in one line.')}, required: ['summary']}},
     {name: 'wait', description: 'Ends your turn before your files deliver everything, such as while something you asked for is not answered yet.',
       parameters: {type: 'object', properties: {summary: text('What you did and what you wait for, in one line.')}, required: ['summary']}}
+  ]),
+  // The builder's functions (src/builder.js): the files it joins, its own
+  // files (the glue), renames of names in its copies, and the end of its turn.
+  builder: Object.freeze([
+    {name: 'read_file', description: 'Shows one of the files as it stands now, your renames and your own files included. The result is its whole text, or that there is no file at that path, with the paths there are.',
+      parameters: {type: 'object', properties: {path: text('The relative path of the file, exactly as the files list it.')}, required: ['path']}},
+    {name: 'write_file', description: 'Stores a whole file of your own at a path no other file holds: a new file that connects names, or the complete new text of one of yours. The result says it is written, that the file already holds exactly this text, or why it is not written.',
+      parameters: {type: 'object', properties: {path: text('The relative path of the file.'), content: text('The complete text of the file.')}, required: ['path', 'content']}},
+    {name: 'rename', description: 'Renames one name or reference path throughout one file: every place where from stands whole, with no letter, digit, _ or $ right before or after it, becomes to. The result shows each line it changed, or why nothing changed.',
+      parameters: {type: 'object', properties: {path: text('The relative path of the file.'), from: text('The name or reference path as the file has it.'), to: text('The name or reference path it becomes.')}, required: ['path', 'from', 'to']}},
+    {name: 'done', description: 'Ends your turn with every reference among the files reaching what it names.',
+      parameters: {type: 'object', properties: {summary: text('What you did, in one line.')}, required: ['summary']}}
   ])
 });
 // The texts of a role's functions, by name, for the lint.
@@ -141,7 +153,7 @@ export const CLEF = Object.freeze({
   judge: 'Does this file meet the requirement? Answer NO if the file is missing, meets only part of it, or contradicts it.',
   // A contract may name an existing file only when the assignment asks to change it.
   base_change: 'Does the assignment ask to change existing file {i}, directly or by clear implication? Answer NO if it only needs it read, or asks only for new files beside it.',
-  // Whether a validation held at a piece reaches only what the piece holds, for the reach the linker cannot see.
+  // Whether a validation held at a piece reaches only what the piece holds, for the reach its import closure cannot show.
   piece_reach: 'Piece {name} delivers the contracts listed and is made of the files listed. When check {i} exercises it as described, does everything it reaches come from these files, the installed packages or the language? Answer NO if it reaches what another piece provides, such as a route a page requests, a file read while it runs, or another piece\'s function.'
 });
 export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, k) => k in vars ? String(vars[k]) : m);
@@ -149,17 +161,9 @@ export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, 
 // What a retry hears about its previous answer, in the user JSON
 // (previous_answer_problems), never in the system text.
 export const RETRY = Object.freeze({
-  json: 'Your previous answer was not one json object. Answer again with the json object alone.',
   // A splitter's new session after Clef's review objected to its division.
   too_small: (count, bound) => `Your previous answer, listed in rejected, had ${count} pieces, and some were too small to be worth a task of their own. Use fewer, larger pieces this time, at least 2 and at most ${bound}, each delivering whole contracts.`,
   different: 'Your previous division, listed in rejected, was not one whose pieces could be made at the same time. Divide the assignment another way, along its contracts, so that each piece delivers contracts of its own and together the pieces deliver all of them.'
-});
-
-// What every v8 linker request says of the references it may change (user
-// JSON, scope_means): the same at every level, since no level knows whether
-// another joins its files later.
-export const LINK_SCOPE = Object.freeze({
-  piece: 'Change a reference only when a file listed here clearly provides what it expects, and leave it as it is otherwise: a reference no rename joins is reported against its file.'
 });
 
 // The texts the room itself composes for a v8 agent, as data. Each is a
@@ -178,6 +182,13 @@ export const MESSAGES = Object.freeze({
   no_file: ({path, paths}) => paths ? `You have no file ${path}. Your files: ${paths}.` : `You have no file ${path}, and no files yet.`,
   not_inside: ({path, why}) => `${path} is not a relative path inside your files: ${why}.`,
   no_examples: () => 'Nothing you deliver has examples to run.',
+  // ------------------------------------------------- what the builder's functions say
+  builder_no_file: ({path, paths}) => paths ? `There is no file ${path}. The files: ${paths}.` : `There is no file ${path}, and no files yet.`,
+  builder_not_inside: ({path, why}) => `${path} is not a relative path for a file of yours: ${why}.`,
+  builder_delivered: ({path, piece}) => `${path} is a file the piece "${piece}" delivered: rename changes names in it, and a file of your own goes at a path no file holds.`,
+  builder_held: ({path}) => `${path} holds an existing file, which stays as it is: a file of your own goes at a path no file holds.`,
+  builder_case: ({path, twin}) => `${path} and your file ${twin} differ only in letter case, which some file systems read as one file.`,
+  builder_no_name: ({name, path}) => `${name} does not stand whole anywhere in ${path}: a rename finds it only where no letter, digit, _ or $ is right before or after it.`,
   // ------------------------------------------------------------ answers to asks
   provided: ({contract, reference}) => `${contract}. Refer to it exactly as: ${reference}, and use it rather than writing your own.`,
   own_contract: ({contract}) => `${contract} is in your own prompt: write it in your files under exactly that name.`,
@@ -210,7 +221,6 @@ export function promptTexts() {
   for (const [k, v] of Object.entries(ROLE)) out[`ROLE.${k}`] = v;
   for (const [k, v] of Object.entries(FORMAT)) out[`FORMAT.${k}`] = v;
   for (const [k, v] of Object.entries(CLEF)) out[`CLEF.${k}`] = v;
-  for (const [k, v] of Object.entries(LINK_SCOPE)) out[`LINK_SCOPE.${k}`] = v;
   for (const [role, list] of Object.entries(TOOLS)) Object.assign(out, toolTexts(role, list));
   // Each message with every field filled by a sample (a plural where it has one).
   const filled = new Proxy({}, {get: (_, k) => k === 'many' ? true : `sample ${String(k)}`});

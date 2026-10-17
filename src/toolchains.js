@@ -40,8 +40,6 @@ export const TOOLCHAINS = Object.freeze([
     import_line:"const { {name} } = require('./{name}');", import_line_esm:"import { {name} } from './{name}';",
     // v8 S6 review: code that runs in a browser (a page project, browserProject) refers to another part as an ES module by its file, and a page loads a script as a module.
     browser_reference:"import { {name} } from './{path}';", browser_script:'<script type="module" src="{path}"></script>',
-    // v8 S6: what a linker may rely on for this row's files, sent as data (the v7 linker prompt's paragraph).
-    binding_rules:"To change an imported name without touching its local uses, alias it: const { realName: localName } = require(...) or import { realName as localName } from '...'. Once an import's path is right, the runtime itself fixes four binding shapes, so for these fix only the path: one name destructured from a module whose module.exports is a function or class of that name, a module bound whole that the file only calls while it exports an object holding that name, a module bound whole whose only export is one function when the file only calls it, and a module bound whole that the file only passes on as a value while it exports an object holding that name.",
     extractor:'acorn', link:'js-path-rewrite', call_adapter:['node','/opt/adapters/call.mjs'],
     stack:'v8', stdlib:'node-builtins',
     // v8 live 4 (review): packages, what the image installs beyond the
@@ -72,8 +70,7 @@ export const TOOLCHAINS = Object.freeze([
     third_party:['react','react-dom','vue','angular','svelte','next','typescript','ts-node','nodemon','ws','socket.io','mongoose','mongodb','pg','mysql','mysql2','redis','sequelize','prisma','knex',
       'ejs','pug','handlebars','mustache','moment','dayjs','date-fns','chalk','inquirer','jsonwebtoken','bcrypt','bcryptjs','passport','multer','cheerio','puppeteer','playwright','sharp','winston','morgan','helmet','joi','zod','yup'],
     missing_package:["Cannot find (?:module|package) '(?<module>(?:@[\\w.-]+/)?[\\w.-]+)(?:/[^']*)?'"],
-    // v8 S5: a JavaScript reference is a relative path the linker rewrites (autoLink); no glue.
-    line_comment:'//', block_comment:['/*','*/'], strings:['"',"'",'`'], glue:null, image:'build' }),
+    line_comment:'//', block_comment:['/*','*/'], strings:['"',"'",'`'], image:'build' }),
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
     manifests:['pyproject.toml','requirements.txt','setup.cfg','setup.py','Pipfile','Pipfile.lock','poetry.lock','tox.ini','pip.conf','.python-version','__pycache__/','.venv/','venv/'],
     syntax:['python3','-m','py_compile','{files}'], executables:['python3','pytest'], shebang:['python'],
@@ -89,30 +86,14 @@ export const TOOLCHAINS = Object.freeze([
     // v8 S5 review: a string prefix (a word right before a quote) is part of
     // the string; a prefix with one of interpolation's letters marks a string
     // whose {...} fields are code (their names are names). import_syntax
-    // names the grammar the linker reads a reference statement with.
+    // names the grammar the import closure reads a reference statement with.
     string_prefixes:'[rRbBuUfF]{1,2}', interpolation:'fF', import_syntax:'python',
-    // v8 S5 (§5.2): the glue the runtime writes so a reference written as
-    // import_line resolves wherever the defining file sits in the bundle,
-    // all of it from this data: a shim at the bundle root per referenced
-    // function contract (shim: it re-exports the name from the file that
-    // defines it; module_shim when that file is named like the contract, so
-    // the module itself is the name), an empty package_marker in every
-    // components/ folder holding a file of this row (each piece is a
-    // package, so its own files refer to each other relatively: relative),
-    // and the module path (path_setup) only for a file of this row placed
-    // outside the bundle root, with a one-line script that sets it.
-    // {module}: a bundle path in module_of form; {path}: the bundle path;
-    // {name}: the referenced name.
-    glue:{ dir:'', module_of:'dotted', package_marker:'__init__.py', relative:'.',
-      shim:{path:'{name}.py', text:'# Runtime-owned: {name} is defined in {path}.\nfrom {module} import {name}  # noqa: F401\n'},
-      module_shim:{path:'{name}.py', text:'# Runtime-owned: the module {name} is {path}.\nimport importlib\nimport sys\nsys.modules[__name__] = importlib.import_module("{module}")\n'},
-      path_setup:{env:'PYTHONPATH', dirs:['.'], separator:':', script:{path:'glue/run.sh', text:'#!/bin/sh\n# Runtime-owned: runs a command with the project folder on the module path.\ncd "$(dirname "$0")/.." && PYTHONPATH=.${PYTHONPATH:+:$PYTHONPATH} exec "$@"\n'}} },
-    // Names a rename never touches (the language's built-in functions and errors).
-    builtin_names:'ArithmeticError AssertionError AttributeError BaseException BaseExceptionGroup BlockingIOError BrokenPipeError BufferError BytesWarning ChildProcessError ConnectionAbortedError ConnectionError ConnectionRefusedError ConnectionResetError DeprecationWarning EOFError Ellipsis EncodingWarning EnvironmentError Exception ExceptionGroup FileExistsError FileNotFoundError FloatingPointError FutureWarning GeneratorExit IOError ImportError ImportWarning IndentationError IndexError InterruptedError IsADirectoryError KeyError KeyboardInterrupt LookupError MemoryError ModuleNotFoundError NameError NotADirectoryError NotImplemented NotImplementedError OSError OverflowError PendingDeprecationWarning PermissionError ProcessLookupError PythonFinalizationError RecursionError ReferenceError ResourceWarning RuntimeError RuntimeWarning StopAsyncIteration StopIteration SyntaxError SyntaxWarning SystemError SystemExit TabError TimeoutError TypeError UnboundLocalError UnicodeDecodeError UnicodeEncodeError UnicodeError UnicodeTranslateError UnicodeWarning UserWarning ValueError Warning ZeroDivisionError abs aiter all anext any ascii bin bool breakpoint bytearray bytes callable chr classmethod compile complex copyright credits delattr dict dir divmod enumerate eval exec exit filter float format frozenset getattr globals hasattr hash help hex id input int isinstance issubclass iter len license list locals map max memoryview min next object oct open ord pow print property quit range repr reversed round set setattr slice sorted staticmethod str sum super tuple type vars zip',
-    // Modules a shim never shadows and a root file never takes (the standard
-    // library's top-level names, its private ones and the start-up hooks).
+    // A folder is a package of this row only with this file in it (the import closure reads it, src/piece.js).
+    package_marker:'__init__.py',
+    // The language's own modules: the standard library's top-level names,
+    // its private ones and the start-up hooks.
     stdlib_names:'__future__ _abc _aix_support _android_support _apple_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn _codecs_hk _codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _colorize _compat_pickle _compression _contextvars _csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib _frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _interpchannels _interpqueues _interpreters _io _ios_support _json _locale _lsprof _lzma _markupbase _md5 _multibytecodec _multiprocessing _opcode _opcode_metadata _operator _osx_support _overlapped _pickle _posixshmem _posixsubprocess _py_abc _pydatetime _pydecimal _pyio _pylong _pyrepl _queue _random _scproxy _sha1 _sha2 _sha3 _signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics _string _strptime _struct _suggestions _symtable _sysconfig _thread _threading_local _tkinter _tokenize _tracemalloc _typing _uuid _warnings _weakref _weakrefset _winapi _wmi _zoneinfo abc aifc antigravity argparse array ast asynchat asyncio asyncore atexit audioop base64 bdb binascii bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall concurrent configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal difflib dis distutils doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib imghdr imp importlib inspect io ipaddress itertools json keyword lib2to3 linecache locale logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt multiprocessing netrc nis nntplib nt ntpath nturl2path numbers opcode operator optparse os ossaudiodev pathlib pdb pickle pickletools pipes pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select selectors shelve shlex shutil signal site sitecustomize smtpd smtplib sndhdr socket socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat statistics string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny tarfile telnetlib tempfile termios test textwrap this threading time timeit tkinter token tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata unittest urllib usercustomize uu uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport zlib zoneinfo',
-    // Modules the image installs beside the standard library (never shimmed, renamed or unresolved).
+    // Modules the image installs beside the standard library.
     site_modules:'pytest _pytest pluggy iniconfig packaging py',
     unresolved:["cannot import name '(?<name>\\w+)' from '(?<module>[\\w.]+)'","No module named '(?<module>[\\w.]+)'","name '(?<name>\\w+)' is not defined"],
     // v8 live 4 (review): as the JavaScript row's. packages: what the image

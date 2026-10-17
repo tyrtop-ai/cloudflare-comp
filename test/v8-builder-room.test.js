@@ -1,12 +1,17 @@
-// v8 S5 (§5, §8.4 A3/A4) on levels: the polyglot linker in scripted rooms.
-// Clef, the splitters, the workers and the linker model are fakes; the
+// v8 on levels: the builder joins in scripted rooms. Each builder works
+// through its functions (src/builder.js): it reads its children's files and
+// the design artifact (its manager's level file), writes the glue between
+// their interfaces as files of its own, and renames interface names in its
+// copies. The runtime only copies the delivered files where the level file
+// places them: it writes no glue and renames nothing, before a run or after
+// one. Clef, the splitters, the workers and the builders are fakes; the
 // validations run in the real build runner behind fake boxes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, usualBuilder} from './helpers/room.js';
 import {lintRequests, callCheck, choiceP} from './helpers/levels.js';
 import {packageDirectory} from '../src/assembly.js';
 import {textTokens} from '../src/linker.js';
@@ -19,7 +24,6 @@ const browserReady=(()=>{
   const r=spawnSync('node',[fileURLToPath(new URL('../container/adapters/browser-check.mjs',import.meta.url))],{input:JSON.stringify({checks:[]}),encoding:'utf8',timeout:60_000,env:process.env});
   return r.status===0&&/"inventory"/.test(r.stdout)?'':`Chromium or Playwright is unavailable: ${(r.stdout+r.stderr).trim().slice(0,160)}`;
 })();
-const py=toolchainById('python');
 
 // Clef: a room's manager divides (its pre-grade is above the floor); every piece is caught and hands its level to one worker; a manager chooses as choiceP says; the rest pass.
 const clefFor = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (String(input.state.assignment).startsWith(goal) ? 0.9 : 0.05) : choiceP(k, input.state) ?? 0.9}]))});
@@ -35,9 +39,9 @@ const scripted = answers => {
   };
 };
 const blocks = (files, summary = 'wrote the files') => fileBlocks(files, {summary, done: true});
-// The room's manager states `level`; a piece restates its given contracts.
-const levelRoom = ({level, goal, answers, link}) => liveRoom({split: user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : level,
-  clef: clefFor(goal), leaf: scripted(answers), link});
+// The room's manager states `level`; a piece restates its given contracts. build: the builders (the usual one by default).
+const levelRoom = ({level, goal, answers, build}) => liveRoom({split: user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : level,
+  clef: clefFor(goal), leaf: scripted(answers), build});
 const allPass = room => Object.values(room.read('validation_status', {})).length > 0 && Object.values(room.read('validation_status', {})).every(s => s.passed === true);
 const tail = room => events(room).slice(-14).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 260)}`).join('\n');
 const turnsOf = (calls, name) => calls.leaf.filter(u => u.prompt.deliver.some(c => c.name === name)).length;
@@ -46,6 +50,10 @@ const writers = room => room.children(room.roomManager()).filter(c => c.role ===
 // The bundle that ships: the last box opened (each piece's compiler runs in its own box first).
 const topBuild = builds => builds.at(-1);
 const cmd = (id, serves, run, files, stdout) => ({id, serves, check: {kind: 'command', run, files, expect: {exit: 0, stdout}}});
+// What the room's manager's builder made: its renames and its own files (built:<builder>).
+const topWork = room => room.builtWork(room.builderOf(room.roomManager()).id) || {renamed: {}, glue: {}};
+// Runtime events of the old linker that no v8 room writes any more.
+const RUNTIME_LINK = ['link_glue', 'link_auto', 'link_renamed', 'checks_relinked', 'link_unresolved', 'link_edit_rejected', 'link_model_error'];
 
 // ------------------------------------------------------------ A4: a split Python project whose pieces import each other
 const WF_GOAL = 'A command-line tool that prints the N most frequent words in a text file.';
@@ -77,9 +85,28 @@ const wfAnswers = ({ranking = RANKING, wordfreq = WORDFREQ, wordfreqFixed = null
   count_words: [blocks([COUNTER, TEXTUTIL])],
   top_words: [blocks([{path: 'ranking.py', content: ranking}])],
   wordfreq: [blocks([{path: 'wordfreq.py', content: wordfreq}]), ...(wordfreqFixed ? [blocks([{path: 'wordfreq.py', content: wordfreqFixed}])] : [])]});
+// The room's manager's builder for the word tool: a file of its own at the
+// root for each function a file reads from there, taking it from the file
+// that defines it, and a package marker in each folder on the way; renames
+// as given ([file, from, to]). Every other builder is the usual one (the
+// Counter's reads its helper beside it relatively). A refused call fails the test.
+const wfBuilder = ({renames = []} = {}) => (user, n, system, ctx) => {
+  if (!(user.design?.children?.length > 1)) return usualBuilder(user, n, system, ctx);
+  if (ctx.round > 1) {
+    const refused = ctx.results.filter(r => r.result?.error);
+    if (refused.length) throw new Error('a scripted builder call was refused: ' + JSON.stringify(refused));
+    return [{name: 'done', arguments: {summary: 'the root files take each function from where it is defined'}}];
+  }
+  const at = name => user.files.find(f => f.path.split('/').pop() === name)?.path, mod = p => p.replace(/\.py$/, '').replaceAll('/', '.');
+  const counter = at('counter.py'), ranking = at('ranking.py'), dirs = [...new Set([counter, ranking].map(p => p.split('/').slice(0, 2).join('/')))];
+  return [{name: 'write_file', arguments: {path: 'components/__init__.py', content: ''}}, ...dirs.map(d => ({name: 'write_file', arguments: {path: `${d}/__init__.py`, content: ''}})),
+    {name: 'write_file', arguments: {path: 'count_words.py', content: `from ${mod(counter)} import count_words  # noqa: F401\n`}},
+    {name: 'write_file', arguments: {path: 'top_words.py', content: `from ${mod(ranking)} import top_words  # noqa: F401\n`}},
+    ...renames.map(([file, from, to]) => ({name: 'rename', arguments: {path: at(file), from, to}}))];
+};
 
-test('A4: a split Python project whose pieces import each other completes; the runtime writes the glue and the export carries it', {skip: !hasPython && 'python3 is not installed'}, async () => {
-  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers()});
+test('A4: a split Python project whose pieces import each other completes: the builders write the glue as files of their own and rename a read of a file beside; the export carries what they wrote', {skip: !hasPython && 'python3 is not installed'}, async () => {
+  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers(), build: wfBuilder()});
   await room.start(WF_GOAL, 40, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
@@ -91,84 +118,77 @@ test('A4: a split Python project whose pieces import each other completes; the r
   assert.deepEqual(Object.keys(bundle).sort(), [`components/${D1}/__init__.py`, `components/${D1}/counter.py`, `components/${D1}/textutil.py`, `components/${D2}/__init__.py`, `components/${D2}/ranking.py`,
     'components/__init__.py', 'count_words.py', 'top_words.py', 'wordfreq.py'].sort());
   assert.equal(bundle['wordfreq.py'], WORDFREQ, 'a worker file ships as written');
-  assert.equal(bundle[`components/${D1}/counter.py`], COUNTER.content.replace('from textutil import words', 'from .textutil import words'), 'the piece\'s own helper, relatively');
-  assert.equal(bundle['top_words.py'], `# Runtime-owned: top_words is defined in components/${D2}/ranking.py.\nfrom components.${D2}.ranking import top_words  # noqa: F401\n`);
-  // The glue is the room's manager's builder's, recorded on its row.
-  assert.deepEqual(room.read(`glue_files:${room.builderOf(room.roomManager()).id}`, []).sort(), ['count_words.py', 'top_words.py', ...Object.keys(bundle).filter(p => p.endsWith('__init__.py'))].sort());
-  assert.ok(events(room, 'link_glue').some(e => /The runtime wrote 5 glue file\(s\)/.test(e.body)), 'the top\'s builder wrote the project\'s glue');
-  // The export: the project, the glue where it is needed to run, and how to run it.
+  assert.equal(bundle[`components/${D1}/counter.py`], COUNTER.content.replace('from textutil import words', 'from .textutil import words'), 'the Counter\'s builder renamed its read of the file beside it');
+  assert.equal(room.files(counter.id).find(f => f.path === 'counter.py').revision, 1, 'the worker\'s own file is unchanged');
+  assert.equal(bundle['top_words.py'], `from components.${D2}.ranking import top_words  # noqa: F401\n`, 'the file the builder wrote, as it wrote it');
+  // What the room's manager's builder wrote is its own, kept on its row; the runtime wrote nothing.
+  assert.deepEqual(Object.keys(topWork(room).glue).sort(), ['components/__init__.py', `components/${D1}/__init__.py`, `components/${D2}/__init__.py`, 'count_words.py', 'top_words.py'].sort());
+  assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
+  // Its request: the design artifact (its manager's level file as the repository holds it) and the paths of the files, each with its piece; nothing else of the tree.
+  const top = calls.build.find(u => u.design?.children?.length > 1);
+  assert.deepEqual(Object.keys(top).sort(), ['design', 'files']);
+  assert.deepEqual(top.design, room.levelDesign(room.roomManager()));
+  assert.deepEqual(top.files.map(f => f.piece).filter(Boolean).sort(), ['Command', 'Counter', 'Counter', 'Ranker'].sort());
+  assert.ok(top.files.every(f => !f.yours), 'it has written nothing yet');
+  // The export: the project and the builders' files, and how to run it.
   const app = await room.appFiles();
   assert.equal(app.passed, true);
   assert.ok(app.files.some(f => f.path === 'count_words.py'));
-  assert.ok(!app.files.some(f => f.path.startsWith('glue/')), 'no module path for a project at the root');
+  assert.ok(!app.files.some(f => f.path.startsWith('glue/')), 'no runtime script');
   assert.match(app.files.find(f => f.path === '.recursive/RUN.md').content, /- `wordfreq`: `python3 wordfreq\.py`/);
   assert.deepEqual(lintRequests(room, calls), []);
 });
 
-test('A4 repair variant: a worker writes from count_word import count_words; the reference is renamed deterministically and nobody repairs', {skip: !hasPython && 'python3 is not installed'}, async () => {
-  const wrong = RANKING.replace('from count_words import count_words', 'from count_word import count_words');
-  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers({ranking: wrong})});
+test('A4 with builders that join nothing: the boxes get exactly the delivered files, and nothing the runtime wrote', {skip: !hasPython && 'python3 is not installed'}, async () => {
+  const {room, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers(), build: () => [{name: 'done', arguments: {summary: 'joined nothing'}}]});
+  await room.start(WF_GOAL, 12, {pipeline: 'v8'});
+  await drain();
+  assert.notEqual(room.get('status'), 'complete', tail(room));
+  const delivered = new Set(['counter.py', 'textutil.py', 'ranking.py', 'wordfreq.py']);
+  for (const b of builds) assert.deepEqual(Object.keys(b).filter(p => !delivered.has(p.split('/').pop()) && !Object.hasOwn({'a.txt': 1, 'sample.txt': 1, 't.txt': 1}, p)), [], 'no glue file in any box');
+  assert.ok(builds.some(b => 'wordfreq.py' in b && !('top_words.py' in b)));
+  assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
+  assert.match(JSON.stringify(room.read('validation_status', {})), /No module named/);
+});
+
+test('A4 renames: a read of count_word and a call of topWords are renamed by the room\'s manager\'s builder in its copies; the workers\' files stay as written and nobody repairs', {skip: !hasPython && 'python3 is not installed'}, async () => {
+  const ranking = RANKING.replace('from count_words import count_words', 'from count_word import count_words'), wordfreq = WORDFREQ.replace('in top_words(f.read()', 'in topWords(f.read()');
+  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers({ranking, wordfreq}),
+    build: wfBuilder({renames: [['ranking.py', 'count_word', 'count_words'], ['wordfreq.py', 'topWords', 'top_words']]})});
   await room.start(WF_GOAL, 40, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.ok(allPass(room));
   const ranker = writers(room)[1], at = `components/${packageDirectory('Ranker', ranker.id)}/ranking.py`;
-  assert.equal(topBuild(builds)[at], RANKING, 'the linked copy reads the contract by its reference');
+  assert.equal(topBuild(builds)[at], RANKING, 'the builder\'s copy reads the contract by its name');
+  assert.equal(topBuild(builds)['wordfreq.py'], WORDFREQ);
   assert.equal(room.files(ranker.id).find(f => f.path === 'ranking.py').revision, 1);
-  assert.equal(turnsOf(calls, 'top_words'), 1, 'no repair turn');
-  assert.ok(events(room, 'link_auto').some(e => new RegExp(`${at}: from count_word import count_words → from count_words import count_words`).test(e.body)));
-  assert.ok(calls.link.length <= 1, 'at most the piece\'s builder asks the link model once');
-});
-
-test('A4 from the run\'s errors: a name bound nowhere (NameError) is renamed in the reader\'s linked copy and the checks run again', {skip: !hasPython && 'python3 is not installed'}, async () => {
-  const wrong = WORDFREQ.replace('in top_words(f.read()', 'in topWords(f.read()');
-  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers({wordfreq: wrong})});
-  await room.start(WF_GOAL, 40, {pipeline: 'v8'});
-  await drain();
-  assert.equal(room.get('status'), 'complete', tail(room));
-  assert.equal(builds.at(-2)['wordfreq.py'], wrong);
-  assert.equal(builds.at(-1)['wordfreq.py'], WORDFREQ);
-  assert.match(events(room, 'link_renamed')[0].body, /^wordfreq\.py: topWords → top_words \(topWords is bound nowhere in the file\) \(renamed by the runtime; the piece's own file is unchanged\)\.$/);
-  assert.equal(events(room, 'checks_relinked').length, 1);
-  assert.equal(turnsOf(calls, 'wordfreq'), 1, 'no repair turn');
-  assert.equal(room.problems("stage='complaint'").length, 0, 'nothing was routed');
-  // The fix is kept for that exact text: the export ships the linked copy.
+  assert.equal(room.files(writers(room)[2].id).find(f => f.path === 'wordfreq.py').revision, 1);
+  for (const name of ['top_words', 'wordfreq']) assert.equal(turnsOf(calls, name), 1, `${name}: no repair turn`);
+  assert.deepEqual(Object.fromEntries(Object.entries(topWork(room).renamed).map(([p, r]) => [p, r.renames])), {[at]: [{from: 'count_word', to: 'count_words'}], 'wordfreq.py': [{from: 'topWords', to: 'top_words'}]});
+  assert.match(events(room, 'session').find(e => e.actor === room.builderOf(room.roomManager()).id).body, new RegExp(`renamed ${at.replace(/[.]/g, '\\.')}: count_word → count_words; wordfreq\\.py: topWords → top_words`));
+  // The export ships the builder's copies.
   const app = await room.appFiles();
   assert.equal(app.files.find(f => f.path === 'wordfreq.py').content, WORDFREQ);
   assert.equal(app.passed, true);
+  assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
 });
 
-test('A4 with the linker model: a reference no rename of the runtime\'s joins goes to the linker; a rename-only edit is kept, a logic edit refused', {skip: !hasPython && 'python3 is not installed'}, async () => {
+test('a reference no builder joins fails the run: the complaint goes down to the reader\'s worker as the compiler observed it, nothing relinks after the run, and the worker\'s fix is joined again', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const odd = WORDFREQ.replace('from top_words import top_words', 'from tally import most_common').replace('in top_words(f.read()', 'in most_common(f.read()');
-  // First room: the linker answers with renames only.
-  let seen = null;
-  const good = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers({wordfreq: odd}),
-    link: user => { seen = user; return {edits: [{file: 'wordfreq.py', find: 'from tally import most_common', replace: 'from top_words import top_words as most_common'}], issues: []}; }});
-  await good.room.start(WF_GOAL, 40, {pipeline: 'v8'});
-  await good.drain();
-  assert.equal(good.room.get('status'), 'complete', tail(good.room));
-  assert.ok(good.calls.link.length >= 1);
-  assert.deepEqual(seen.your_files, [{path: 'wordfreq.py', content: odd}]);
-  assert.match(seen.previous_attempt_error, /in wordfreq\.py: nothing in the project is named tally/);
-  assert.ok(seen.other_modules_exports.some(x => /top_words/.test(x) && /refer to it as: from top_words import top_words/.test(x)));
-  assert.equal(topBuild(good.builds)['wordfreq.py'], odd.replace('from tally import most_common', 'from top_words import top_words as most_common'), 'linked before the top\'s box ran');
-  assert.equal(turnsOf(good.calls, 'wordfreq'), 1);
-  assert.deepEqual(lintRequests(good.room, good.calls, [odd, ...good.builds.flatMap(b => Object.keys(b))]), []);
-  // Second room: the linker changes logic too; the edit is refused, the run
-  // fails, and the complaint goes to the reader's worker, which repairs it.
-  const bad = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers({wordfreq: odd, wordfreqFixed: WORDFREQ}),
-    link: () => ({edits: [{file: 'wordfreq.py', find: 'most_common(f.read(), int(sys.argv[2]))', replace: 'top_words(f.read(), 2)'}], issues: []})});
-  await bad.room.start(WF_GOAL, 40, {pipeline: 'v8'});
-  await bad.drain();
-  assert.equal(bad.room.get('status'), 'complete', tail(bad.room));
-  assert.match(events(bad.room, 'link_edit_rejected')[0].body, /edit changes more than names at line 6/);
-  const command = writers(bad.room)[2];
-  const sent = bad.room.problems("stage='complaint'").filter(p => p.assignee);
+  const {room, calls, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers({wordfreq: odd, wordfreqFixed: WORDFREQ}), build: wfBuilder()});
+  await room.start(WF_GOAL, 40, {pipeline: 'v8'});
+  await drain();
+  assert.equal(room.get('status'), 'complete', tail(room));
+  const command = writers(room)[2], sent = room.problems("stage='complaint'").filter(p => p.assignee);
   assert.ok(sent.length >= 1);
   assert.ok(sent.every(p => p.assignee === command.id), 'routed down to the reader\'s worker: ' + JSON.stringify(sent.map(p => p.assignee)));
-  assert.ok(turnsOf(bad.calls, 'wordfreq') >= 2, 'the Command worker repaired its reference');
-  assert.equal((await bad.room.appFiles()).files.find(f => f.path === 'wordfreq.py').content, WORDFREQ);
-  assert.equal(turnsOf(bad.calls, 'top_words'), 1); assert.equal(turnsOf(bad.calls, 'count_words'), 1);
+  assert.ok(sent.some(p => /No module named 'tally'/.test(p.detail)), 'as observed');
+  assert.ok(turnsOf(calls, 'wordfreq') >= 2, 'the Command worker repaired its reference');
+  assert.ok(calls.build.filter(u => u.design?.children?.length > 1).length >= 2, 'the room\'s manager\'s builder joined the fix');
+  assert.equal((await room.appFiles()).files.find(f => f.path === 'wordfreq.py').content, WORDFREQ);
+  assert.equal(turnsOf(calls, 'top_words'), 1); assert.equal(turnsOf(calls, 'count_words'), 1);
+  assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
 });
 
 // ------------------------------------------------------------ the S4b Python CLI room: no more ModuleNotFoundError
@@ -189,7 +209,7 @@ const TEMP_LEVEL = {contracts: [TEMP_C, TO_F, USAGE_C],
 const TEMP_PY = 'import sys\nfrom to_fahrenheit import to_fahrenheit\n\nprint(f"{to_fahrenheit(float(sys.argv[1])):g}")\n';
 const FORMULA = 'def to_fahrenheit(celsius):\n    return celsius * 9 / 5 + 32\n';
 
-test('S4b\'s Python CLI room: a command that imports another piece\'s function no longer hits ModuleNotFoundError', {skip: !hasPython && 'python3 is not installed'}, async () => {
+test('S4b\'s Python CLI room: a command that imports another piece\'s function runs once the builder\'s file at the root takes it from where it is defined', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const {room, calls, builds, drain} = levelRoom({level: TEMP_LEVEL, goal: TEMP_GOAL,
     answers: {temp: [blocks([{path: 'temp.py', content: TEMP_PY}])], to_fahrenheit: [blocks([{path: 'formula.py', content: FORMULA}])], 'USAGE.md': [blocks([{path: 'USAGE.md', content: '# Usage\n\nRun `python3 temp.py 100`.\n'}])]}});
   await room.start(TEMP_GOAL, 30, {pipeline: 'v8'});
@@ -200,11 +220,12 @@ test('S4b\'s Python CLI room: a command that imports another piece\'s function n
   assert.ok(!JSON.stringify(events(room)).includes('ModuleNotFoundError'));
   const formula = writers(room)[1];
   assert.match(topBuild(builds)['to_fahrenheit.py'], new RegExp(`from components\\.${packageDirectory('Formula', formula.id)}\\.formula import to_fahrenheit`));
+  assert.equal(topWork(room).glue['to_fahrenheit.py'], topBuild(builds)['to_fahrenheit.py'], 'the builder\'s own file');
   for (const name of ['temp', 'to_fahrenheit', 'USAGE.md']) assert.equal(turnsOf(calls, name), 1);
   assert.deepEqual(lintRequests(room, calls), []);
 });
 
-// ------------------------------------------------------------ A3 (JavaScript): a library still links as before
+// ------------------------------------------------------------ A3 (JavaScript): a library the builder joins by renaming its paths
 const ROMAN_GOAL = 'A small library that converts between Roman numerals and integers.';
 const ENTRY_C = {name: 'index.js', kind: 'file', path: 'index.js', does: 'the library entry, exporting toRoman and fromRoman'};
 const TO_ROMAN_C = {name: 'toRoman', kind: 'function', does: 'the Roman numeral of a positive integer', inputs: [{name: 'n', is: 'a positive integer'}], outputs: 'a string'};
@@ -223,7 +244,7 @@ const TO_ROMAN = `${PAIRS}function toRoman(n) {\n  let out = '';\n  for (const [
 const FROM_ROMAN = "const VALUES = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };\nfunction fromRoman(s) {\n  let total = 0;\n  for (let i = 0; i < s.length; i++) { const v = VALUES[s[i]], next = VALUES[s[i + 1]] || 0; total += v < next ? -v : v; }\n  return total;\n}\nmodule.exports = { fromRoman };\n";
 const ENTRY = "const { toRoman } = require('./toRoman');\nconst { fromRoman } = require('./fromRoman');\nmodule.exports = { toRoman, fromRoman };\n";
 
-test('A3 (JavaScript): a library whose entry requires the other pieces\' functions links by relative path from the placed entry', async () => {
+test('A3 (JavaScript): a library whose entry requires the other pieces\' functions is joined by the builder renaming each path to the file that defines it, from the placed entry', async () => {
   const {room, calls, builds, drain} = levelRoom({level: ROMAN_LEVEL, goal: ROMAN_GOAL,
     answers: {'index.js': [blocks([{path: 'index.js', content: ENTRY}])], toRoman: [blocks([{path: 'roman-out.js', content: TO_ROMAN}])], fromRoman: [blocks([{path: 'roman-in.js', content: FROM_ROMAN}])]}});
   await room.start(ROMAN_GOAL, 30, {pipeline: 'v8'});
@@ -239,7 +260,8 @@ test('A3 (JavaScript): a library whose entry requires the other pieces\' functio
   assert.deepEqual(a.map((t, i) => t.value === b[i].value ? null : t.type).filter(Boolean), ['string', 'string']);
   assert.ok(!Object.keys(topBuild(builds)).some(p => p.startsWith('glue/')), 'JavaScript needs no glue');
   assert.equal(room.files(entry.id)[0].revision, 1, 'the entry\'s own file is unchanged');
-  assert.ok(events(room, 'link_auto').some(e => /index\.js: '\.\/toRoman' → '\.\/components\/p_to_roman_[0-9a-f]{8}\/roman-out\.js'/.test(e.body)));
+  assert.deepEqual(topWork(room).renamed['index.js'].renames, [{from: './toRoman', to: `./components/${packageDirectory('To roman', to.id)}/roman-out.js`}, {from: './fromRoman', to: `./components/${packageDirectory('From roman', from.id)}/roman-in.js`}]);
+  assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
   assert.deepEqual(lintRequests(room, calls), []);
 });
 
@@ -269,7 +291,7 @@ const APP_JS = "import { addTodo, listTodos } from './addTodo.js';\nconst list =
 const STORE_JS = "import { nextId } from './ids';\nconst tasks = [];\nexport function addTodo(text) { const t = { id: nextId(), text }; tasks.push(t); return t; }\nexport function listTodos() { return tasks.map(t => ({ ...t })); }\n";
 const IDS_JS = 'let n = 0;\nexport function nextId() { n += 1; return n; }\n';
 
-test('a browser page with two scripts importing each other: the page\'s script path and the scripts\' references resolve by relative path', async () => {
+test('a browser page with two scripts importing each other: the builders rename the page\'s script path and the scripts\' references to where the files sit', async () => {
   const {room, calls, builds, drain} = levelRoom({level: TODO_LEVEL, goal: TODO_GOAL,
     answers: {'index.html,app.js': [blocks([{path: 'index.html', content: TODO_HTML}, {path: 'app.js', content: APP_JS}])], 'addTodo,listTodos': [blocks([{path: 'store.js', content: STORE_JS}, {path: 'ids.js', content: IDS_JS}])]}});
   await room.start(TODO_GOAL, 30, {pipeline: 'v8'});
@@ -282,18 +304,13 @@ test('a browser page with two scripts importing each other: the page\'s script p
   assert.equal(bundle['app.js'], APP_JS.replace("'./addTodo.js'", `'./components/${D}/store.js'`));
   assert.equal(bundle[`components/${D}/store.js`], STORE_JS.replace("'./ids'", "'./ids.js'"), 'an ES module path names its file');
   assert.equal(room.files(writers(room)[0].id).find(f => f.path === 'index.html').revision, 1);
+  // Each builder joined its own level: the store's named the helper's file, the page's pointed the page at its script, and the room's manager's pointed the script at the store.
+  const workOf = label => room.builtWork(room.builderOf(room.children(room.roomManager()).find(c => c.label === label).id).id);
+  assert.deepEqual(workOf('Store').renamed[`components/${D}/store.js`].renames, [{from: './ids', to: './ids.js'}]);
+  assert.deepEqual(workOf('Page').renamed['index.html'].renames, [{from: 'scripts/app.js', to: 'app.js'}]);
+  assert.deepEqual(topWork(room).renamed['app.js'].renames, [{from: './addTodo.js', to: `./components/${D}/store.js`}]);
+  assert.deepEqual(RUNTIME_LINK.flatMap(k => events(room, k)), []);
   assert.deepEqual(lintRequests(room, calls), []);
-});
-
-test('runUnresolved: a run\'s unresolved names per reader, by its frame or by the one file that imports the module', () => {
-  const {room} = liveRoom();
-  const files = new Map([['cli.py', 'from tally import x\nprint(zebraName)\n'], ['other.py', 'import os\n']]);
-  const bundle = {files, origin: new Map([['cli.py', {owner: 'worker-1111111111111111', owner_path: 'cli.py'}], ['other.py', {owner: 'worker-2222222222222222', owner_path: 'other.py'}]])};
-  const results = new Map([
-    ['V1', {passed: false, detail: 'exit 1', output: "NameError: name 'zebraName' is not defined", frames: [{path: 'cli.py', line: 2}]}],
-    ['V2', {passed: false, detail: 'exit 1', output: "ModuleNotFoundError: No module named 'tally'", frames: []}],
-    ['V3', {passed: false, infrastructure: true, output: "No module named 'other'"}]]);
-  assert.deepEqual(room.runUnresolved(results, bundle), [{path: 'cli.py', row: 'python', name: 'zebraName'}, {path: 'cli.py', row: 'python', module: 'tally'}]);
 });
 
 // A worker's file that no contract places sits under its piece's folder: there json.py hides no standard module.

@@ -6,8 +6,8 @@
 // shouts nothing, and is not a list of prohibitions. The splitter's
 // examples are the one place concrete data may appear (lintText strips
 // <example> blocks before every check but the goal words of the old default).
-// A generative role's text (ROLE, FORMAT, RETRY, the room's MESSAGES, the
-// linker's scope and the broker's labels) says only that role's own job and
+// A generative role's text (ROLE, FORMAT, RETRY, the room's MESSAGES and
+// the broker's labels) says only that role's own job and
 // world: it names no other agent, no part or piece beside its own, no
 // project, goal, sibling, parent or manager, no check someone else wrote and
 // no repair that reaches anyone else (STRUCTURE_WORDS). No v8 text says
@@ -93,7 +93,9 @@ const DATA_KEYS = new Set(['project', 'toolchains', 'contracts_you_may_use', 'co
   // v8 live 4: the installed packages a splitter reads ({name, language, provides}), data as a whole.
   'installed_packages', 'your_packages',
   // v8: a worker's prompt and world quote its task, contract data and examples; a complaint is what was observed, as data.
-  'task', 'deliver', 'call', 'examples', 'complaints', 'files', 'assignment', 'validations_you_have', 'box', 'rejected']);
+  'task', 'deliver', 'call', 'examples', 'complaints', 'files', 'assignment', 'validations_you_have', 'box', 'rejected',
+  // v8: the builder's design artifact (its manager's level file) is data as a whole.
+  'design']);
 // Capability boxes S5: answered_requests holds the room's own answers to
 // contract asks too, as strings composed from MESSAGES; those stay linted.
 // Its labelled objects are the broker's answers, data as a whole.

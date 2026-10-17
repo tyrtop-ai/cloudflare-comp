@@ -164,22 +164,6 @@ export function readsModule(path, text, module, rows = TOOLCHAINS) {
   const row = rows.find(r => r.id === toolchainOf(path)?.id), esc = String(module).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return (row?.module_reference || []).some(src => new RegExp(src.replaceAll('{module}', esc)).test(String(text ?? '')));
 }
-// Whether a reference a link or a run left unresolved names a module
-// outside the project, which no rename joins (M2): only a module-level
-// not-found ({module} with no name: "cannot import name X from Y" is never
-// one), for a module the project has installed (its language's standard
-// library, or a package a row holds: held), with no file, folder or
-// contract of the project named like it. Any other name may be a part of
-// the project under another name, which the linker reads. names: the
-// project's file stems and folder names and its contract names.
-const squash = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
-export function externalModule({module = '', name = ''} = {}, {stems = [], contracts = [], held = [], rows = TOOLCHAINS} = {}) {
-  const m = String(module ?? '').trim();
-  if (!m || name || m.startsWith('.')) return false;
-  if (!stdlibRow(m, rows) && !heldByName(held, m, rows).length && !heldByName(held, m.split(/[./]/)[0], rows).length) return false;
-  const row = stdlibRow(m, rows), t = squash(topOf(m, row));
-  return ![...stems, ...contracts].some(s => squash(s) === t);
-}
 
 // ------------------------------------------------------------ pieces
 // The code languages a piece works in, by its contracts' paths: [row ids];
