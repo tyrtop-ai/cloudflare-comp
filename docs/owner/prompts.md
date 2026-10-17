@@ -2156,3 +2156,11 @@ were you able to get user prompts from before compression?
 ````text
 now that you have all that, audit the code and find out where you'd drifted or made extra work
 ````
+
+## 2026-10-17 01:14
+
+````text
+i want you to actually build a 3 red team agents that quorum that are designed to read my prompt history and confirm that you are actually following the prompts. 
+
+when they find drift, they submit it to you, you fix it, they run again until fixed.
+````
