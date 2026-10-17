@@ -4000,10 +4000,12 @@ export class ControlRoom extends DurableObject {
   // parent is the room has no row above to hand one to, and runs every one
   // it holds. v8 M3 review (L7): Clef's answer is kept per validation key
   // and piece digest (piece_reach:<id>), so a repair round on the same piece
-  // asks again only for what changed; an answer that is not a probability
-  // rolls up its own validation alone.
+  // asks again only for what changed. A validation Clef gave no answer for
+  // stays where it is and is not run (unjudged): whether the piece runs it is
+  // Clef's call, which the compiler asks again, a turn of the room's budget
+  // each time (compileLevel). {runs, unjudged}.
   async pieceScope(id, due, piece, digest='') {
-    if(!this.agentAbove(id)||!due.length)return due;
+    if(!this.agentAbove(id)||!due.length)return {runs:due,unjudged:[]};
     const kept=this.read(`piece_reach:${id}`,{}),keyOf=r=>`${this.checkKey(r)}|${digest}`,ask=due.filter(r=>typeof kept[keyOf(r)]!=='number');
     const n=this.node(id),start=Date.now();
     let ps=[];
@@ -4014,11 +4016,11 @@ export class ControlRoom extends DurableObject {
       if(Object.keys(fresh).length)this.save(`piece_reach:${id}`,Object.fromEntries(Object.entries({...kept,...fresh}).slice(-200)));
     }
     const p=new Map(due.map(r=>[r.id,typeof kept[keyOf(r)]==='number'?kept[keyOf(r)]:ps.find(x=>x.id===r.id)?.p])),errors=new Map(ps.filter(x=>x.error).map(x=>[x.id,clip(x.error,200)]));
-    const no=due.filter(r=>!(p.get(r.id)>=PIECE_REACH_BAR));
-    if(ask.length)this.span('piece','piece_clef',start,Date.now(),{manager:id,checks:ask.length,kept:due.length-ask.length,yes:due.length-no.length,...(errors.size?{errors:errors.size}:{})},id);
-    if(errors.size)this.event(id,'piece_clef_error',clip(`Clef could not judge what ${[...errors.keys()].join(', ')} reach${errors.size>1?'':'es'} (${[...errors.values()][0]}); ${errors.size>1?'they roll':'it rolls'} up.`,600));
-    this.rollUp(id,no.map(r=>({id:r.id,why:errors.has(r.id)?'Clef could not judge what it reaches':`Clef found that it reaches something another piece provides (p=${Number(p.get(r.id)??0).toFixed(3)})`})));
-    return due.filter(r=>!no.includes(r));
+    const unjudged=due.filter(r=>typeof p.get(r.id)!=='number'),no=due.filter(r=>typeof p.get(r.id)==='number'&&p.get(r.id)<PIECE_REACH_BAR);
+    if(ask.length)this.span('piece','piece_clef',start,Date.now(),{manager:id,checks:ask.length,kept:due.length-ask.length,yes:due.length-no.length-unjudged.length,...(unjudged.length?{errors:unjudged.length}:{})},id);
+    if(unjudged.length)this.event(id,'piece_clef_error',clip(`Clef gave no answer on whether the piece runs ${unjudged.map(r=>r.id).join(', ')} (${errors.get(unjudged[0].id)||'no probability'}); the compiler asks again.`,600));
+    this.rollUp(id,no.map(r=>({id:r.id,why:`Clef found that it reaches something another piece provides (p=${Number(p.get(r.id)).toFixed(3)})`})));
+    return {runs:due.filter(r=>!no.includes(r)&&!unjudged.includes(r)),unjudged};
   }
   // The validation table in a sentence, for a hold's or an escalation's text (the dashboard's; no worker reads it).
   checksSummary(head, list=this.validationRows()) {
@@ -9109,7 +9111,7 @@ export class ControlRoom extends DurableObject {
       const content=files.get(v.check.path);
       if(typeof content!=='string'||!content.trim()){const note=`${v.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,detail:note,observed:{what:'local',note}}];}
       const says=v.says||(v.serves||[]).map(n=>contractOf.get(n)?.does).filter(Boolean).join('; ');
-      // A Clef error is infrastructure: the room holds and Continue compiles again.
+      // A judgement Clef could not give is infrastructure: the compiler runs it again, a turn of the room's budget each time.
       try {
         const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
         return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p}}];
@@ -9168,13 +9170,14 @@ export class ControlRoom extends DurableObject {
       return {passed:true};
     };
     const due=v=>!this.passedOn(v,digest);
-    const runs=[...await this.pieceScope(id,all.filter(v=>here.has(v.id)&&due(v)),bundle,digest),...all.filter(v=>!here.has(v.id)&&due(v))],spec=this.specOf(runs);
+    const scope=await this.pieceScope(id,all.filter(v=>here.has(v.id)&&due(v)),bundle,digest),unjudged=scope.unjudged;
+    const runs=[...scope.runs,...all.filter(v=>!here.has(v.id)&&due(v))],spec=this.specOf(runs);
     // What of the piece no syntax step compiled, and the files whose issues stand.
     const standing=this.read(`compile_issues:${id}`,null),fresh=this.uncompiled(box);
     if(standing?.owned===owned)for(const p of standing.paths||[])if(box.has(p))fresh.add(p);
     // Code whose compile row the box's inventory has not confirmed yet: the box opens, and reports it.
     const asks=this.uncompilable(box).some(x=>x.unconfirmed);
-    if(!runs.length&&!fresh.size&&!asks)return finish({ran:0});
+    if(!runs.length&&!unjudged.length&&!fresh.size&&!asks)return finish({ran:0});
     const input=`${digest}:${all.map(v=>v.id).join(',')}`;
     if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     if(runs.length)this.event(id,'checks_started',`Running ${runs.length} validation(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
@@ -9192,6 +9195,8 @@ export class ControlRoom extends DurableObject {
     if(container)this.span('piece','piece_box',boxStart,Date.now(),{manager:id,depth,checks:plan.checks.length,files:files.size,compiled:plan.syntax.reduce((n,s)=>n+s.files.length,0),...(run?.infrastructure?{infrastructure:true}:{passed:!!run?.report?.passed})},id);
     for(const [vid,x] of judged)results.set(vid,x);
     const report=run?.report||null;
+    // What Clef gave no answer for, whether the piece runs it: not run, as a check the box could not run is.
+    for(const v of unjudged)results.set(v.id,{id:v.id,passed:false,infrastructure:true,detail:'not run: Clef gave no answer on whether this piece runs it'});
     if(report?.inventory)this.save('toolchain_inventory',report.inventory);
     for(const c of report?.checks||[])results.set(c.id,c);
     // What the syntax steps compiled cleanly is known by its bytes from now on.
@@ -9205,8 +9210,8 @@ export class ControlRoom extends DurableObject {
     // Each validation's status; the other levels' keep theirs.
     const status=this.read('validation_status',{}),issues=[...(report?.issues||[]),...parsed.issues],bad=new Set(issues.map(i=>i.path).filter(Boolean));
     if(!run?.infrastructure)this.save(`compile_issues:${id}`,{owned,digest,paths:[...bad],ts:Date.now()});
-    const passes=[];
-    for(const v of runs) {
+    const passes=[],kept=[...runs,...unjudged];
+    for(const v of kept) {
       const res=results.get(v.id),passed=!res||res.infrastructure?null:!!res.passed;
       status[v.id]=statusEntry(passed,digest,res?.detail||'not run');
       // A pass is for the exact bundle it ran on (its digest); a failure leaves this row none.
@@ -9216,9 +9221,8 @@ export class ControlRoom extends DurableObject {
     this.save('validation_status',status);
     const stale=moved({ran:runs.length,passed:passes.length});
     if(stale)return stale;
-    const kept=runs;
     const failed=kept.filter(v=>status[v.id].passed===false),untested=kept.filter(v=>status[v.id].passed===null);
-    const line=!runs.length?`${issues.length} file(s) do not compile`:`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
+    const line=!kept.length?`${issues.length} file(s) do not compile`:`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
     const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure||!!notBuilt;
     if(!failed.length&&!untested.length&&!issues.length&&!blocked) {
       this.save(`compile_reported:${id}`,null);this.save(`compile_blocked:${id}`,null);this.set(`compile_infrastructure:${id}`,'');
