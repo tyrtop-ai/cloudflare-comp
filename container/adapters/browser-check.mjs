@@ -55,14 +55,14 @@ const served = url => {
   } catch { return false; }
 };
 const clip = (s, n) => { const t = String(s ?? ''); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
-const quote = s => JSON.stringify(clip(s, 60));
+const quote = s => JSON.stringify(String(s ?? ''));
 const describe = step => {
   const [op, arg] = Object.entries(step || {})[0] || ['?', ''];
   if (op === 'fill') return `fill ${target(arg)} with ${quote(arg?.text)}`;
   if (op === 'click') return `click ${target(arg)}`;
   if (op === 'expect_count') return `expect ${arg?.n} ${arg?.role || 'element'}${arg?.text ? ` with ${quote(arg.text)}` : ''}`;
   if (op === 'reload') return 'reload';
-  if (op === 'expect_element' || op === 'expect_no_element') return `${op === 'expect_element' ? 'expect' : 'expect no'} ${clip(arg?.selector, 80)}${arg?.text ? ` with ${quote(arg.text)}` : ''}`;
+  if (op === 'expect_element' || op === 'expect_no_element') return `${op === 'expect_element' ? 'expect' : 'expect no'} ${String(arg?.selector ?? '')}${arg?.text ? ` with ${quote(arg.text)}` : ''}`;
   return `${op} ${quote(arg)}`;
 };
 function target(t = {}) {
@@ -261,13 +261,13 @@ async function runStep(page, base, step) {
     case 'expect_element': {
       let hits = [];
       const found = await poll(async ms => { try { hits = await elementMatches(page, arg, ms); } catch (e) { if (!(e instanceof Timeout)) throw e; hits = []; } return hits.length > 0; }, stepMs);
-      if (!found) throw new Miss(`no ${clip(arg?.selector, 80)}${arg?.text ? ` with the text ${quote(arg.text)}` : ''} on the page`);
+      if (!found) throw new Miss(`no ${String(arg?.selector ?? '')}${arg?.text ? ` with the text ${quote(arg.text)}` : ''} on the page`);
       return;
     }
     case 'expect_no_element': {
       let hits = [];
       const gone = await poll(async ms => { try { hits = await elementMatches(page, arg, ms); } catch (e) { if (!(e instanceof Timeout)) throw e; } return hits.length === 0; }, stepMs);
-      if (!gone) throw new Error(`the page still has ${hits.length} ${clip(arg?.selector, 80)}${arg?.text ? ` with the text ${quote(arg.text)}` : ''} after ${stepMs} ms`);
+      if (!gone) throw new Error(`the page still has ${hits.length} ${String(arg?.selector ?? '')}${arg?.text ? ` with the text ${quote(arg.text)}` : ''} after ${stepMs} ms`);
       return;
     }
     case 'expect_count': {
@@ -318,9 +318,9 @@ async function runCheck(check) {
     // The detail names a blocked request or an uncaught page error; every
     // console error is in console_errors.
     const uncaught = errors.find(x => x.uncaught);
-    const note = blocked.length ? `; blocked non-served request ${clip(blocked[0], 80)}` : uncaught ? `; page error: ${clip(uncaught.text, 120)}` : '';
+    const note = blocked.length ? `; blocked non-served request ${blocked[0]}` : uncaught ? `; page error: ${uncaught.text}` : '';
     return {id: check.id, passed: false, ms: Date.now() - began, failed_step: i + 1, step,
-      detail: clip(`step ${i + 1} (${describe(step)}): ${clip(reason, 160)}${offersLine(extra.offers)}${note}`, 600),
+      detail: `step ${i + 1} (${describe(step)}): ${reason}${offersLine(extra.offers)}${note}`,
       body_text: state.page ? clip(await bodyText(state.page, 1000), BODY_CHARS) : '',
       console_errors: [...errors.map(x => x.text), ...blocked.map(u => `blocked: ${u}`)].slice(0, 10), frames, ...extra};
   };
@@ -338,8 +338,8 @@ async function runCheck(check) {
       return ws.close();
     });
     const page = state.page = await within(context.newPage(), 10_000, 'opening a page');
-    page.on('console', msg => { if (msg.type() === 'error' && errors.length < 10) errors.push({text: clip(msg.text(), 400), stack: ''}); });
-    page.on('pageerror', e => { if (errors.length < 10) errors.push({text: clip(`${e.name}: ${e.message}`, 400), stack: String(e.stack || ''), uncaught: true}); });
+    page.on('console', msg => { if (msg.type() === 'error' && errors.length < 10) errors.push({text: msg.text(), stack: ''}); });
+    page.on('pageerror', e => { if (errors.length < 10) errors.push({text: `${e.name}: ${e.message}`, stack: String(e.stack || ''), uncaught: true}); });
     // A check that does not open a page first starts on the served "/" (live 2: both browser checks began with fill, on a blank page).
     if (steps.length && Object.keys(steps[0] || {})[0] !== 'goto') {
       Object.assign(state, {index: 0, step: steps[0]});

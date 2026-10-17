@@ -2,13 +2,13 @@
 // catalogue lists its contracts, the contracts it may use, the existing
 // files granted to it and the chunks it holds; classify sends a chunk, an
 // existing file or a name outside the catalogue to the broker and every
-// other name to today's contract routing; the answers are shaped, clipped
+// other name to today's contract routing; the answers are shaped, whole,
 // and labelled; and the one wording for absence names only catalogue
 // entries, in positive terms.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {catalogue, shown, classify, askName, brokerRequest, shapeAnswer, sourceAnswer, baseAnswer, noneAnswer, noneText, nextHeld, viewAnswer,
-  ANSWER_CHARS, NONE_NAMES, LIVE_KINDS, REQUEST_KINDS} from '../src/broker.js';
+  LIVE_KINDS, REQUEST_KINDS} from '../src/broker.js';
 import {MESSAGES, BASE_LABEL, BROKER_LABEL, promptTexts} from '../src/prompts.js';
 import {normalizeAsk} from '../src/protocol.js';
 import {lintText, composedTexts} from './helpers/prompt-lint.js';
@@ -66,7 +66,7 @@ test('ask names: under v8 an ask keeps a chunk ref or a path as its name; v7 ask
   assert.deepEqual(normalizeAsk([{need: 'the third part', name: 'S2#3'}]).map(a => a.name), [undefined]);
 });
 
-test('answer shaping: a chunk and a file carry their labels, a long value is clipped with its length, next names the following held chunk', () => {
+test('answer shaping: a chunk and a file carry their labels, a long value is given whole, next names the following held chunk', () => {
   const src = sourceAnswer({id: 'a1', ref: 'S2#2', url: 'https://docs.example.com/widget-guide', text: 'Part two.\r\nIt continues.​', next: nextHeld(CAT, 'S2#2')});
   assert.deepEqual(src, {id: 'a1', name: 'S2#2', kind: 'source', status: 'answered', label: 'untrusted: fetched from https://docs.example.com/widget-guide', value: 'Part two.\nIt continues.', next: 'S2#3'});
   assert.equal(nextHeld(CAT, 'S2#3'), null);
@@ -75,9 +75,9 @@ test('answer shaping: a chunk and a file carry their labels, a long value is cli
   assert.deepEqual(base, {id: 'a2', name: 'src/shout.js', kind: 'base', status: 'answered', label: BASE_LABEL, value: 'function shout(s) {}\n', facts: {placed_when: 'now'}});
   assert.equal(BROKER_LABEL.base, 'untrusted: from the base repository');
   assert.equal(baseAnswer({id: 'a3', path: 'x.md', content: 'x'}).facts, undefined);
-  const long = shapeAnswer({id: 'a4', name: 'S1#1', kind: 'source', label: 'l', value: 'y'.repeat(ANSWER_CHARS + 5)});
-  assert.equal(long.value.length, ANSWER_CHARS);
-  assert.deepEqual(long.facts, {clipped: true, chars: ANSWER_CHARS + 5});
+  const long = shapeAnswer({id: 'a4', name: 'S1#1', kind: 'source', label: 'l', value: 'y'.repeat(20000)});
+  assert.equal(long.value, 'y'.repeat(20000));
+  assert.equal(long.facts, undefined);
   // As answered_requests carries it: name, label and value (and next, facts), never the id or the kind.
   assert.deepEqual(viewAnswer(src), {name: 'S2#2', label: src.label, value: src.value, next: 'S2#3'});
   assert.deepEqual(viewAnswer(base), {name: 'src/shout.js', label: BASE_LABEL, value: base.value, facts: {placed_when: 'now'}});
@@ -93,16 +93,17 @@ test('none: one wording for absence, which names only catalogue entries, the ask
     assert.equal(a.status, 'none');
     assert.equal(a.label, BROKER_LABEL.none);
     assert.match(a.value, new RegExp(`^Nothing is available under the name ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. Available: `));
-    // Apart from the name asked, every name it gives is a catalogue entry, at most NONE_NAMES of them.
+    // Apart from the name asked, every name it gives is a catalogue entry, and it gives every one but the packages.
     const listed = a.value.split('Available: ')[1].replace(/\.$/, '').split(', ');
-    assert.ok(listed.length <= NONE_NAMES && listed.every(n => CAT.some(e => e.name === n)), a.value);
+    assert.ok(listed.every(n => CAT.some(e => e.name === n)), a.value);
+    assert.deepEqual([...listed].sort(), CAT.filter(e => e.kind !== 'package').map(e => e.name).sort(), a.value);
     for (const p of others.filter(p => p !== name)) assert.ok(!a.value.includes(p), `${p} is no catalogue entry: ${a.value}`);
     assert.doesNotMatch(a.value, REFUSAL);
     assert.deepEqual(lintText('none', bare(a.value, [name, ...CAT.map(e => e.name)])), []);
   }
   // A path-shaped ask hears the files first; a chunk-shaped one the chunks first.
-  assert.equal(noneText('package.json', CAT), 'Nothing is available under the name package.json. Available: src/shout.js, NOTES.md, FAQ.md, S2#1, S2#2, S2#3.');
-  assert.equal(noneText('S1#1', CAT), 'Nothing is available under the name S1#1. Available: S2#1, S2#2, S2#3, S1#2, NOTES.md, FAQ.md.');
+  assert.equal(noneText('package.json', CAT), 'Nothing is available under the name package.json. Available: src/shout.js, NOTES.md, FAQ.md, S2#1, S2#2, S2#3, S1#2.');
+  assert.equal(noneText('S1#1', CAT), 'Nothing is available under the name S1#1. Available: S2#1, S2#2, S2#3, S1#2, NOTES.md, FAQ.md, src/shout.js.');
   // An existing file outside the catalogue and a path that never existed read the same.
   assert.equal(noneText('docs/secret-plan.md', CAT).replace('docs/secret-plan.md', 'X'), noneText('docs/old-plan.md', CAT).replace('docs/old-plan.md', 'X'));
   // With an empty catalogue, it says only that.

@@ -2797,7 +2797,7 @@ export class ControlRoom extends DurableObject {
   insertProblem(p) {
     const now=Date.now(),id=crypto.randomUUID();
     this.db().exec('INSERT INTO problems(id,holder,status,outcome,kind,stage,source,source_input,signature,parties,detail,facts,evidence,directive,flags,assignee,trail,created,updated) VALUES (?,?,\'open\',\'\',?,?,?,?,?,?,?,?,?,\'\',?,\'\',\'[]\',?,?)',
-      id,p.holder,p.kind,p.stage,p.source,String(p.input??''),problemSignature(p.kind,p.parties,p.detail),JSON.stringify(p.parties),clip(p.detail,950),
+      id,p.holder,p.kind,p.stage,p.source,String(p.input??''),problemSignature(p.kind,p.parties,p.detail),JSON.stringify(p.parties),this.v8()?String(p.detail??''):clip(p.detail,950),
       JSON.stringify(p.facts||{}),JSON.stringify(p.evidence||[]),JSON.stringify(p.flags||{}),now,now);
     return id;
   }
@@ -4368,9 +4368,9 @@ export class ControlRoom extends DurableObject {
     for(const p of fresh) {
       const s=this.syntaxOf(p,files);
       if(!s?.row||s.box)continue;
-      if(s.mode.split('+').includes('invalid')){const at=scopeManifestOf(p,files,s.row);issues.push({path:at,kind:'source',stage:'syntax',detail:clip(`${s.row.id} syntax: ${at} does not parse as JSON, so ${s.row.name} cannot tell how to read ${p}.`,400)});continue;}
+      if(s.mode.split('+').includes('invalid')){const at=scopeManifestOf(p,files,s.row);issues.push({path:at,kind:'source',stage:'syntax',detail:`${s.row.id} syntax: ${at} does not parse as JSON, so ${s.row.name} cannot tell how to read ${p}.`});continue;}
       const error=s.parse(p,files.get(p),s.mode,s.row);
-      if(error)issues.push({path:p,kind:'source',stage:'syntax',detail:clip(`${s.row.id} syntax: ${error}`,400)});
+      if(error)issues.push({path:p,kind:'source',stage:'syntax',detail:`${s.row.id} syntax: ${error}`});
       else clean.push(this.syntaxKey(s.row,files.get(p),s.mode));
     }
     return {issues,clean};
@@ -5778,7 +5778,7 @@ export class ControlRoom extends DurableObject {
   // Peek without acknowledging. A failed inference or failed Artifacts write must
   // not consume the messages that the agent needs on its next attempt.
   receive(id) {
-    return query(this.db(),'SELECT id,sender,body FROM messages WHERE recipient=? AND delivered=0 ORDER BY id LIMIT 12',id)
+    return query(this.db(),`SELECT id,sender,body FROM messages WHERE recipient=? AND delivered=0 ORDER BY id${this.v8()?'':' LIMIT 12'}`,id)
       .map(x => ({ id: x.id, from:x.sender, body:x.body }));
   }
   acknowledge(id, inbox) {
@@ -6480,7 +6480,7 @@ export class ControlRoom extends DurableObject {
     answer||=noneAnswer({id:req.id,name:ask.name||c.name,catalogue:cat});
     if(message)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:ask.key,kind:answer.kind,status:answer.status}));
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
-    this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters${answer.facts?.clipped?` of ${answer.facts.chars}`:''}, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
+    this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
     return true;
   }
   // v8 live 4 (review): a package ask by name, resolved against what
@@ -6550,11 +6550,11 @@ export class ControlRoom extends DurableObject {
     this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:`its language provides ${a.names.join(', ')}`}.`,400));
     return a;
   }
-  // The answers a worker got to its function requests, newest kept, one per
-  // topic; later turns read them as answered_requests.
+  // The answers a worker got to its function requests, one per topic;
+  // later turns read them as answered_requests (v7 keeps the newest 8).
   recordAnswer(worker, answer) {
-    const key=`fn_answers:${worker}`;
-    this.save(key,[...this.read(key,[]).filter(a=>a.key!==answer.key),answer].slice(-8));
+    const key=`fn_answers:${worker}`,all=[...this.read(key,[]).filter(a=>a.key!==answer.key),answer];
+    this.save(key,this.v8()?all:all.slice(-8));
   }
   // v7.15 §5.12a, a planned worker's fresh action before the code gates:
   // every new ask waits, and a file importing a name it asks for waits for
@@ -8909,7 +8909,7 @@ export class ControlRoom extends DurableObject {
     if(!m||!this.node(m))return {error:'Start a run first.'};
     if(this.busy||this.get('status')==='running')return {error:'The room is running.',status:409};
     this.resetForAmendment();
-    this.insertProblem({holder:m,kind:'run',stage:'complaint',source:'grader',input:'',parties:[],detail:clip(text,950),facts:{}});
+    this.insertProblem({holder:m,kind:'run',stage:'complaint',source:'grader',input:'',parties:[],detail:text,facts:{}});
     this.event('room','grader_complaint',clip(`The grader's observation goes to "${this.node(m).label}" as a complaint: ${text}`,900),m);
     this.wake(m);
     let cap;
@@ -8924,7 +8924,7 @@ export class ControlRoom extends DurableObject {
     if(!m||!this.node(m))return {error:'Start a run first: a change applies to a run that exists.'};
     const rev=this.goalRev()+1;
     this.recordGoal(rev,id,text,effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]));
-    this.insertProblem({holder:m,kind:'change',stage:'change',source:'room',input:id,parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags:{change:id}});
+    this.insertProblem({holder:m,kind:'change',stage:'change',source:'room',input:id,parties:[],detail:text,facts:{text},flags:{change:id}});
     this.event('room','change_given',clip(`The change goes to "${this.node(m).label}" as a change on its row: ${text}`,900),m);
     this.wake(m);
     return {goal_rev:rev,to:m};
@@ -9068,7 +9068,7 @@ export class ControlRoom extends DurableObject {
       // The worker's record of it (its files the complaint names come first in its request); the complaint itself is the message.
       const pid=this.insertProblem({holder:from,kind:item.kind,stage:'complaint',source,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags});
       this.db().exec("UPDATE problems SET status='assigned',assignee=? WHERE id=?",child.id,pid);
-      this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:complaint',child.id,`[complaint] ${clip(item.detail,1600)}`);
+      this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:complaint',child.id,`[complaint] ${item.detail}`);
       this.event(from,'complaint_routed',clip(`To "${child.label}": ${item.detail}`,900),child.id);
       return void this.wake(child.id);
     }
@@ -9165,8 +9165,8 @@ export class ControlRoom extends DurableObject {
     }
     const value=text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)});
     this.db().exec('DELETE FROM route_workers WHERE worker=? AND topic=?',n.id,ask.key);
-    this.recordAnswer(n.id,{key:ask.key,kind:'provided',text:clip(value,600)});
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',n.id,'[route:provided] '+JSON.stringify({id:ask.request_id||crypto.randomUUID(),key:ask.key,value:clip(value,1400)}));
+    this.recordAnswer(n.id,{key:ask.key,kind:'provided',text:value});
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',n.id,'[route:provided] '+JSON.stringify({id:ask.request_id||crypto.randomUUID(),key:ask.key,value}));
     this.event(n.id,'ask_answered',clip(`${c.name}: ${value}`,500));
     if(!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=?',n.id).length)this.wake(n.id);
   }
@@ -9223,8 +9223,8 @@ export class ControlRoom extends DurableObject {
   async routeChange(m, text, flags={}) {
     const n=this.node(m);
     // Before its level: the change joins its assignment, on its row and in its entry of its manager's level file.
-    if(!this.levelIndex(m)){const task=clip(`${n.task}\n\n${text}`,8000);this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,()=>({prompt:this.node(m).task}));this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
-    const held={kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags};
+    if(!this.levelIndex(m)){const task=`${n.task}\n\n${text}`;this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,()=>({prompt:this.node(m).task}));this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
+    const held={kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:text,facts:{text},flags};
     const pick=await this.managerChoice(m,{kind:'change',text},held);
     if(!pick)return;
     if(pick.fn==='extend') {
@@ -9234,8 +9234,8 @@ export class ControlRoom extends DurableObject {
     }
     const c=this.node(pick.child.id);
     this.event(m,'change_routed',clip(`The change concerns "${c.label}": ${text}`,900),c.id);
-    if(this.isWorker(c)){this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:change',c.id,`[complaint] ${clip(text,1600)}`);this.wake(c.id);}
-    else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags});this.wake(c.id);}
+    if(this.isWorker(c)){this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:change',c.id,`[complaint] ${text}`);this.wake(c.id);}
+    else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:text,facts:{text},flags});this.wake(c.id);}
   }
   // ---------- the worker ----------
   // A worker's request: its prompt (its task, what it delivers under which
@@ -9331,7 +9331,7 @@ export class ControlRoom extends DurableObject {
     const key=requestKey({need,name}),answers=this.read(`fn_answers:${id}`,[]),known=answers.find(a=>a.key===key);
     if(known)return {answered:known.text,says:MESSAGES.answered_before()};
     if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',id,key).length)return {sent:true,says:MESSAGES.ask_pending()};
-    const a={key,question:clip(need,300),...(name?{name}:{})};
+    const a={key,question:need,...(name?{name}:{})};
     if(this.brokerAnswer(id,a,{message:false}))return {answered:this.read(`fn_answers:${id}`,[]).find(x=>x.key===key)?.text??null};
     const own=name?this.designOf(id).contracts.find(f=>f.name===name):null;
     if(own) {
@@ -9342,7 +9342,7 @@ export class ControlRoom extends DurableObject {
     const up=this.agentAbove(id),request_id=crypto.randomUUID(),want=name?`${name} (${clip(need,200)})`:`"${clip(need,200)}"`;
     if(!up)return {error:'There is nowhere to send it.'};
     this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?) ON CONFLICT(worker,topic) DO NOTHING',id,key,request_id);
-    this.insertProblem({holder:up,kind:'ask',stage:'ask',source:id,input:request_id,parties:[],detail:clip(`${this.node(id)?.label||id} asks for ${want}.`,900),facts:{worker:id,key,need:clip(need,300),name,request_id}});
+    this.insertProblem({holder:up,kind:'ask',stage:'ask',source:id,input:request_id,parties:[],detail:clip(`${this.node(id)?.label||id} asks for ${want}.`,900),facts:{worker:id,key,need,name,request_id}});
     this.event(id,'ask_sent',clip(`Asked for ${want}.`,500),up);
     this.wake(up);
     return {sent:true,says:MESSAGES.ask_sent()};
@@ -9371,9 +9371,9 @@ export class ControlRoom extends DurableObject {
     if(run?.report?.inventory)this.save('toolchain_inventory',run.report.inventory);
     if(run&&!run.infrastructure)this.markCompiled(files,plan.syntax,run.report?.stages,parsed.clean);
     const shown=v=>{const out=[...new Set(contracts.flatMap(c=>checkExamples(v.check,c)))];return out.length?out:[renderExample(v.check)].filter(Boolean);};
-    const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${clip(run.infrastructure,300)}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${clip(r.detail,300)}`;return r.passed?'pass':clip(String(r.detail||'it did not hold'),900);};
+    const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${run.infrastructure}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${r.detail}`;return r.passed?'pass':String(r.detail||'it did not hold');};
     const examples=runs.map(v=>({examples:shown(v),observed:observed(v)}));
-    const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path).map(x=>({file:x.path,observed:clip(x.detail,900)}));
+    const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path).map(x=>({file:x.path,observed:x.detail}));
     const passed=examples.filter(e=>e.observed==='pass').length;
     this.span('worker','run_examples',started,Date.now(),{worker:id,validations:runs.length,passed,files:files.size,...(run?.infrastructure?{infrastructure:true}:{})},id);
     this.event(id,'examples_run',clip(`Ran its examples on its ${files.size} file(s): ${passed} of ${examples.length} pass${issues.length?`; ${issues.length} file(s) do not compile`:''}${run?.infrastructure?`; the box: ${clip(run.infrastructure,200)}`:''}.`,600));
@@ -9560,7 +9560,7 @@ export class ControlRoom extends DurableObject {
     const wave=crypto.randomUUID();
     this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),id);
     this.save(`compile_reported:${id}`,{input,wave,ts:Date.now()});
-    for(const item of items.slice(0,MAX_PROBLEMS_PER_REPORT))await this.routeComplaint(id,item,{wave,input,source:id});
+    for(const item of items)await this.routeComplaint(id,item,{wave,input,source:id});
     return {reported:true};
   }
   async clear() {

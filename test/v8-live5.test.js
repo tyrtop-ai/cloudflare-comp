@@ -251,3 +251,36 @@ test('live 5: a validation Clef doubted that keeps failing stays with its marks:
   assert.equal(room.validationRows().find(v => v.id === 'V1').notes.exercises, 0.143, 'its mark stays');
   assert.equal(passed(room), 3);
 });
+
+// ------------------------------------------------------------ a report routes every complaint, whole
+test('live 5: a level\'s report sends every complaint down, however many, each as the compiler observed it; the worker reads them all in one turn', async () => {
+  const lines = Array.from({length: 15}, (_, i) => `Step ${i + 1}: ${'pour the water slowly and wait '.repeat(12).trim()}.`);
+  const level = {contracts: [GUIDE], validations: lines.map((t, i) => has(`l${i}`, 'GUIDE.md', t)), pieces: []};
+  const turns = [];
+  const leaf = user => { turns.push(user.complaints); return deliver({'GUIDE.md': turns.length === 1 ? '# Brewing green tea\n' : `# Brewing green tea\n\n${lines.join('\n')}\n`}); };
+  const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.05 : 0.9}]))});
+  const {room} = await levelRoom({prompt: 'Write a step-by-step guide to brewing green tea.', split: () => level, leaf, clef});
+  assert.equal(room.get('status'), 'complete', tail(room));
+  assert.equal(turns.length, 2);
+  assert.equal(turns[1].length, 15, 'every complaint of the report, in one turn');
+  for (const [i, t] of lines.entries()) assert.ok(turns[1].some(c => c.includes(JSON.stringify(t))), `the complaint for step ${i + 1} quotes its whole text`);
+  assert.equal(passed(room), 15);
+});
+
+// ------------------------------------------------------------ a piece's label and task, as its splitter wrote them
+test('live 5: a piece\'s label and task reach its row, its level-file entry, its pre-grade and its worker as the splitter wrote them, however long', async () => {
+  const label = 'Questions and tips, a piece whose label runs past seventy characters on purpose';
+  const task = `Write FAQ.md and TIPS.md. ${'Answer each common question in a full sentence, and give each tip its reason. '.repeat(40).trim()}`;
+  const pieces = [piece('Guide', [GUIDE]), {label, task, contracts: [FAQ.name, TIPS.name]}];
+  const seen = [];
+  const leaf = user => { seen.push(user.prompt.task); return leafWith()(user); };
+  const c = clefFor({pre: topOnly(0.6)});
+  const {room} = await levelRoom({prompt: GOAL, split: splitWith(() => pieces), leaf, clef: c.answer});
+  assert.equal(room.get('status'), 'complete', tail(room));
+  const row = kids(room).find(k => k.label === label);
+  assert.ok(row, 'the row keeps the label whole');
+  assert.equal(row.task, task);
+  assert.equal(room.levelDesign(room.roomManager()).children.find(e => e.id === row.id).prompt, task);
+  assert.ok(c.seen.pre.some(x => x.state.assignment === task), 'its pre-grade reads the whole task');
+  assert.ok(seen.includes(task), 'its worker reads the whole task');
+});

@@ -183,7 +183,7 @@ function nearest(text, wanted) {
     const at = text.indexOf(w.slice(0, n));
     if (at < 0) continue;
     const start = text.lastIndexOf('\n', at) + 1, end = text.indexOf('\n', at);
-    return {line: text.slice(0, at).split('\n').length, text: clip(text.slice(start, end < 0 ? undefined : end).trim(), 160)};
+    return {line: text.slice(0, at).split('\n').length, text: text.slice(start, end < 0 ? undefined : end).trim()};
   }
   return null;
 }
@@ -194,7 +194,7 @@ export function fileResult(check, files) {
   // Live 3 review: how many of the texts it holds (met), so a file that holds one more each round makes progress.
   const lacking = (check.has || []).map((s, index) => ({s, index})).filter(({s}) => !hasText(text, s, p));
   if (lacking.length) { const near = nearest(text, String(lacking[0].s)); return {passed: false, detail: `${p} does not contain ${show(String(lacking[0].s))}${near ? ` as exact text; the nearest it holds is line ${near.line}: ${show(near.text)}` : ''}`, observed: {what: 'lacks', index: lacking[0].index, met: (check.has || []).length - lacking.length, ...(near ? {near} : {})}}; }
-  if (check.json === true) { try { JSON.parse(text); } catch (e) { return {passed: false, detail: `${p} is not valid JSON: ${clip(e.message, 120)}`, observed: {what: 'json', error: clip(e.message, 120)}}; } }
+  if (check.json === true) { try { JSON.parse(text); } catch (e) { return {passed: false, detail: `${p} is not valid JSON: ${e.message}`, observed: {what: 'json', error: e.message}}; } }
   return {passed: true, detail: ''};
 }
 
@@ -212,13 +212,13 @@ export function checkProblems(spec, results, issues = [], {origin = () => null} 
   for (const v of spec?.validations || []) {
     const res = results.get(v.id);
     if (!res || res.passed || res.infrastructure) continue;
-    const frames = (res.frames || []).filter(f => f?.path && origin(f.path)).slice(0, 8), paths = [...new Set(frames.map(f => f.path))];
-    items.push({kind: 'run', path: '', sites: paths, parties: paths.map(p => party(p, 'site')), detail: clip(String(res.detail || 'the check failed'), 900),
+    const frames = (res.frames || []).filter(f => f?.path && origin(f.path)), paths = [...new Set(frames.map(f => f.path))];
+    items.push({kind: 'run', path: '', sites: paths, parties: paths.map(p => party(p, 'site')), detail: String(res.detail || 'the check failed'),
       facts: {validation: {id: v.id, serves: v.serves || [], check_kind: v.check?.kind || '', frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0}))}, failure: failureHead(String(res.detail || ''))}});
   }
   for (const x of issues || []) {
     if (!x?.path) continue;
-    items.push({kind: 'load', path: x.path, sites: [], parties: [party(x.path, 'site')], detail: clip(x.detail, 900), facts: {failure: failureHead(x.detail), stage: x.stage || 'syntax'}});
+    items.push({kind: 'load', path: x.path, sites: [], parties: [party(x.path, 'site')], detail: String(x.detail ?? ''), facts: {failure: failureHead(x.detail), stage: x.stage || 'syntax'}});
   }
   return items;
 }

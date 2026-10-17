@@ -329,7 +329,7 @@ export function renderExample(check) {
   if (c.kind === 'file') return `${c.path} ${c.has?.length ? `contains ${list(c.has.map(q))}` : 'exists'}${c.json ? ' and parses as JSON' : ''}`;
   if (c.kind === 'judge') return `a reader of ${c.path} answers yes to: ${c.question}`;
   if (c.kind === 'command') {
-    const with_ = [c.stdin ? `the input ${q(c.stdin)}` : '', c.files ? `the file${Object.keys(c.files).length > 1 ? 's' : ''} ${list(Object.entries(c.files).map(([p, t]) => `${p} holding ${q(String(t).slice(0, 120))}`))}` : ''].filter(Boolean);
+    const with_ = [c.stdin ? `the input ${q(c.stdin)}` : '', c.files ? `the file${Object.keys(c.files).length > 1 ? 's' : ''} ${list(Object.entries(c.files).map(([p, t]) => `${p} holding ${q(t)}`))}` : ''].filter(Boolean);
     return `${c.run}${with_.length ? ` with ${list(with_)}` : ''} → ${commandOutcome(c.expect) || 'it runs'}`;
   }
   if (c.kind === 'call') return (c.steps || []).map(callStep).join('; ');
