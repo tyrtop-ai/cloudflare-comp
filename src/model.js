@@ -719,29 +719,6 @@ export async function linkComponents(env, {goal, files, interfaces, allPaths, di
   return {edits,issues};
 }
 
-// v8 S8b review: Clef asks whether an assignment asks to change each existing
-// file a contract names (CLEF.base_change), one batched call: state
-// {assignment, files: [{slot, path}]}. [{path, p}]; a Clef failure throws
-// (the caller holds the room rather than give a file away unvetted).
-export const BASE_CHANGE_BAR = 0.5;
-export async function vetBaseChanges(env, {assignment='', paths=[]}) {
-  if (!paths.length) return [];
-  if (env.MOCK_AI === 'true') return paths.map(path=>({path,p:1}));
-  const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
-  if (!clef) throw new Error('unsupported Clef decision model');
-  const out=[];
-  for(let start=0;start<paths.length;start+=CHOICE_QUESTIONS) {
-    const list=paths.slice(start,start+CHOICE_QUESTIONS);
-    const output=await clefRun(env,'vetBaseChanges',selector,{model:clef,state:{assignment:String(assignment),files:list.map((path,i)=>({slot:i,path}))},
-      questions:Object.fromEntries(list.map((_,i)=>[`base_change_${i}`,{type:'noul',instructions:clefText('base_change',{i})}]))});
-    out.push(...list.map((path,i)=>{
-      const p=output?.answers?.[`base_change_${i}`]?.noul;
-      if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${path}`);
-      return {path,p};
-    }));
-  }
-  return out;
-}
 // v8 M3: Clef judges, per check held at a piece, whether what the check
 // reaches comes from the piece's files, the installed packages or the
 // language (CLEF.piece_reach), so the piece can be compiled and its checks

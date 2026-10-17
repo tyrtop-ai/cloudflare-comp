@@ -12,7 +12,7 @@ import { BoxPrewarm, levelBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { clip, isId, isRowId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, sourceModel, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
@@ -39,7 +39,7 @@ import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLin
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead, selfHostsOf } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, existingFiles, baseFileRead, selfHostsOf } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
@@ -299,8 +299,8 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
 export const SPLIT_ATTEMPTS = 3;
 // A splitter row's output: what its session called, with each result, and the level it declared (null when it ended without done).
 export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds: out.rounds, calls: out.transcript, level: out.level});
-// One room hold per row it names (a grant has one of its own).
-const holdKey = h => h.kind === 'base_confirm' ? 'base_confirm' : h.agent ? `agent:${h.agent}` : `kind:${h.kind}`;
+// One room hold per row it names.
+const holdKey = h => h.agent ? `agent:${h.agent}` : `kind:${h.kind}`;
 // v8: every row's id is <role>-<hex16>: the first 16 hex digits of the
 // SHA-256 of [parent, the spawn's sequence within that parent, role] (the
 // room's manager has the room's id as its parent), so a replay of a spawn
@@ -612,43 +612,6 @@ export class ControlRoom extends DurableObject {
   // v8 S8b: the folder of the pieces' unplaced files (partsRoot): components,
   // unless the base holds a components/ of its own. Fixed when the run starts.
   partsRoot() { return this.get('parts_root','')||PARTS_ROOT; }
-  // Only the person grants a change to an existing file. A
-  // path a contract names is changed only once the person confirmed it
-  // (Continue at base_confirm, or the Start payload's grants). Clef's
-  // base_change p (whether the assignment of the level asks to change it) is
-  // shown beside it as a review, and so is whether the prompt names it
-  // (namedIn; such a path is shown pre-selected). Nothing that names a
-  // waiting path is removed: the pieces that carry it wait. {yes: approved
-  // paths, no: [{path, p, named}]}.
-  async approveBasePaths(id, paths, assignment=this.node(id)?.task||'') {
-    const approved=new Set(this.read('base_approved',[])),pendingNow=new Map(this.read('base_pending',[]).map(x=>[x.path,x])),ask=[...new Set(paths)].filter(p=>!approved.has(p)&&!pendingNow.has(p));
-    if(ask.length) {
-      const text=[this.userGoal(),...this.goalChanges()].join('\n');
-      let ps=[];
-      try {ps=await vetBaseChanges(this.inferenceEnv(),{assignment,paths:ask});}
-      catch(e){this.event(id,'base_change_unvetted',clip(`Clef could not review ${ask.join(', ')} (${e?.message||e}); ${ask.length>1?'they wait':'it waits'} for the person all the same.`,400));}
-      for(const path of ask) {
-        const p=ps.find(x=>x.path===path)?.p,x={path,p:typeof p==='number'?Math.round(p*1000)/1000:null,named:namedIn(path,text)};
-        pendingNow.set(path,x);
-        this.event(id,'base_change_pending',clip(`The plan changes the existing file ${path}; it waits for the person's grant (${x.named?'the prompt names it':'the prompt does not name it'}${x.p===null?'':`; Clef's review p=${x.p.toFixed(3)}`}).`,400));
-      }
-      this.save('base_pending',[...pendingNow.values()]);
-    }
-    const all=[...new Set(paths)];
-    return {yes:all.filter(p=>approved.has(p)),no:all.filter(p=>pendingNow.has(p)).map(p=>pendingNow.get(p))};
-  }
-  // The room holds for the person at base_confirm, listing every waiting
-  // path with Clef's p and whether the goal names it; the hold is refreshed
-  // whenever the waiting set changes, and Continue grants exactly the paths
-  // it listed (or those the person selected).
-  holdBaseConfirm(id=null) {
-    const pending=this.read('base_pending',[]);
-    if(!pending.length)return false;
-    if(id)this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-    const line=x=>`${x.path} (${x.named?'named in the prompt':'not named in the prompt'}${typeof x.p==='number'?`; Clef p=${x.p.toFixed(3)}`:''})`;
-    this.holdRoom('base_confirm',`The plan changes existing file${pending.length>1?'s':''} that only you can grant: ${pending.map(line).join(', ')}. Continue grants ${pending.length>1?'them':'it'}; a follow-up prompt can leave ${pending.length>1?'them':'it'} out instead.`,{paths:pending.map(x=>x.path)});
-    return false;
-  }
   sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,summary:parse(r.summary,null)})); }
   // The chunk refs a row holds (polyglot-bench §2a.4): the room's manager
   // every chunk of every source; a piece those its
@@ -792,13 +755,10 @@ export class ControlRoom extends DurableObject {
   // reached it (room_holds), one per row it names (extra.agent: the row it
   // came from, which Continue wakes), and Continue answers them all; the
   // run ends paused with them. paused_state is the room's view of the list:
-  // its head (a pending grant first, else the latest) with every hold beside it.
+  // its head (the latest) with every hold beside it.
   holdRoom(kind, text, extra={}) {
     const list=this.roomHolds(),entry={kind,text:clip(text,1200),ts:Date.now(),...extra},key=holdKey(entry);
     const prior=list.find(h=>holdKey(h)===key);
-    // A pending grant (base_confirm) stays the head; a later hold waits behind it, and the grant brings it to the head.
-    if(kind!=='base_confirm'&&list.some(h=>h.kind==='base_confirm')&&this.read('base_pending',[]).length&&!prior)
-      this.event('room','hold_queued',clip(`${kind} waits behind the files waiting for the person's grant: ${text}`,600));
     this.saveHolds([...list.filter(h=>holdKey(h)!==key),entry]);
     // v8 live 5: the same hold of the same row, its summary brought up to date (a sibling's checks passed since), is one hold: logged once.
     const same=prior?.kind===kind&&String(prior?.text||'').split('. ')[0]===entry.text.split('. ')[0];
@@ -813,7 +773,7 @@ export class ControlRoom extends DurableObject {
   }
   saveHolds(list) {
     this.save('room_holds',list);this.save('queued_hold',null);
-    const head=list.find(h=>h.kind==='base_confirm')||list.at(-1)||null;
+    const head=list.at(-1)||null;
     this.save('paused_state',head?{...head,...(list.length>1?{holds:list.map(h=>({kind:h.kind,text:h.text,...(h.agent?{agent:h.agent}:{})}))}:{})}:null);
   }
   // The holds that match, released (each answered by what it waited for).
@@ -823,7 +783,7 @@ export class ControlRoom extends DurableObject {
   }
   // A row whose own escalation, or a hold that names it, is outstanding: it
   // waits for Continue (escalated:<id>, set where it escalated; cleared by Continue).
-  escalatedRow(id) { return !!this.get(`escalated:${id}`,'')||this.roomHolds().some(h=>h.agent===id&&h.kind!=='base_confirm'); }
+  escalatedRow(id) { return !!this.get(`escalated:${id}`,'')||this.roomHolds().some(h=>h.agent===id); }
   // The rows of id's live subtree (itself included) with an outstanding escalation: while any is, id is not done.
   escalatedBelow(id) { return this.liveSubtree(id).filter(x=>this.escalatedRow(x)); }
   get(key, otherwise = '') { return query(this.db(), 'SELECT value FROM meta WHERE key=?', key)[0]?.value ?? otherwise; }
@@ -983,18 +943,19 @@ export class ControlRoom extends DurableObject {
       return { path: f.path, revision: f.revision, content };
     }));
   }
-  // v8 S8b (§7.1, review): the existing files a worker's contracts place,
-  // which the person granted changing (base_approved) and it has not written
-  // yet, as it reads them: quoted and labelled, apart from its own files.
-  grantedBase(id) {
-    const base=this.basePaths(),approved=new Set(this.read('base_approved',[]));
-    return [...new Set(this.designOf(id).contracts.map(c=>c.path).filter(p=>p&&base.has(p)&&approved.has(p)))].sort();
+  // v8 S8b (§7.1, review): the existing files a worker's contracts place
+  // and it has not written yet, as it reads them, apart from its own files.
+  // The room's files are its own copy of the base (the export is always a
+  // new branch), so a worker changes one as it changes any file it delivers.
+  placedBase(id) {
+    const base=this.basePaths();
+    return [...new Set(this.designOf(id).contracts.map(c=>c.path).filter(p=>p&&base.has(p)))].sort();
   }
   baseFilesFor(id) {
     const n=this.node(id);
     if(!this.v8()||!this.isWorker(n))return [];
     const written=new Set(this.files(id).map(f=>f.path));
-    return this.grantedBase(id).filter(p=>!written.has(p)).flatMap(p=>query(this.db(),'SELECT path,content FROM base_files WHERE path=?',p)).map(r=>({path:r.path,label:BASE_LABEL,content:r.content}));
+    return this.placedBase(id).filter(p=>!written.has(p)).flatMap(p=>query(this.db(),'SELECT path,content FROM base_files WHERE path=?',p)).map(r=>({path:r.path,label:BASE_LABEL,content:r.content}));
   }
   async fileContent(id, path) {
     // A v8 room made before hex row ids (earlierRoom) keeps its root and dotted ids; the row lookup decides.
@@ -1184,8 +1145,6 @@ export class ControlRoom extends DurableObject {
       // marks, where it is held) with its last result, the manager the room created and the splitter steps.
       pause: this.read('paused_state',null),
       ...(this.v8()?this.levelsHead():{}),
-      // The existing files waiting for the person's grant (Clef's p and whether the prompt names each), for the hold panel.
-      ...(this.read('base_pending',[]).length?{base_pending:this.read('base_pending',[])}:{}),
       // v8 S8b: the prompt's links (title, address, size, cut or why not read) and what the run starts from.
       ...this.inputsHead(),
       // v8 S9: the prompts (queued, running, done, failed, skipped), each whole.
@@ -5501,45 +5460,6 @@ export class ControlRoom extends DurableObject {
     if(notes.length)this.event(id,'packages_planned',clip(`Packages from "${this.node(id)?.label||id}"'s: ${notes.join('; ')}.`,600));
     return out;
   }
-  // v8 S8b: a level's contract that names an existing file
-  // stays on its piece, and waits for the person's grant (approveBasePaths);
-  // the hold is refreshed with every waiting path, and the pieces carrying
-  // one wait (agentTurn) until it is granted.
-  async baseContracts(id, spawn) {
-    const base=this.basePaths();
-    if(!base.size)return spawn;
-    const paths=spawn.flatMap(c=>(c?.interfaces||[]).map(f=>f.path).filter(p=>p&&base.has(p)));
-    if(!paths.length)return spawn;
-    const {no}=await this.approveBasePaths(id,paths);
-    if(no.length)this.holdBaseConfirm();
-    return spawn;
-  }
-  // The paths a row places, as its manager's level file says, that wait for the person's grant.
-  waitingPaths(id) {
-    const pending=new Set(this.read('base_pending',[]).map(x=>x.path));
-    return pending.size?this.designOf(id).contracts.map(c=>c.path).filter(p=>p&&pending.has(p)):[];
-  }
-  // The person's grant (Continue at base_confirm): the paths the hold listed,
-  // or those the person selected (grants), are approved; the pieces that
-  // waited go on. Paths the person did
-  // not grant keep waiting, and the hold is shown again for them. A hold
-  // that waited behind the grant is restored once nothing waits. True when
-  // something was granted.
-  confirmBase(grants=null) {
-    const hold=this.roomHolds().find(h=>h.kind==='base_confirm'),pending=this.read('base_pending',[]);
-    this.releaseHolds(h=>h.kind==='base_confirm');
-    if(!pending.length)return false;
-    const listed=new Set(Array.isArray(hold?.paths)?hold.paths:pending.map(x=>x.path));
-    const chosen=Array.isArray(grants)?new Set(grants.filter(p=>listed.has(p))):listed;
-    const granted=pending.filter(x=>chosen.has(x.path)).map(x=>x.path),left=pending.filter(x=>!chosen.has(x.path));
-    this.save('base_approved',[...new Set([...this.read('base_approved',[]),...granted])]);
-    this.save('base_pending',left);
-    if(granted.length)this.event('room','base_confirmed',clip(`The person granted changing ${granted.join(', ')}.`,500));
-    if(left.length){this.holdBaseConfirm();return granted.length>0;}
-    // The pieces that waited for a grant go on.
-    for(const n of this.allNodes())if(n.status==='waiting'&&this.read(`base_wait:${n.id}`,null)){this.save(`base_wait:${n.id}`,null);this.wake(n.id);}
-    return granted.length>0;
-  }
   // Prune on discovery: before a manager with a parent spawns an admitted
   // child, walk up from its parent. At each level Clef picks the direct child
   // that owns the child's topic: this branch keeps it, and another branch
@@ -6311,12 +6231,12 @@ export class ControlRoom extends DurableObject {
   // Capability boxes S5 (§5): the broker, the one path from a v8 worker to
   // anything outside its own files. Its catalogue (the world's available):
   // what it delivers, the names it may call, its packages, the existing
-  // files granted to it (grantedBase), and the chunks of linked pages it holds.
+  // files its contracts place (placedBase), and the chunks of linked pages it holds.
   catalogue(id) {
     const n=this.node(id);
     if(!n||!this.v8()||this.manager(id)||isRuntimeNode(n))return [];
     const titles=new Map(this.sourceRows().map(r=>[r.id,r.summary?.title||r.title||r.final_url||r.url]));
-    return brokerCatalogue({own:this.designOf(id).contracts,uses:this.callableOf(id),packages:this.packageView(id),base:this.grantedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
+    return brokerCatalogue({own:this.designOf(id).contracts,uses:this.callableOf(id),packages:this.packageView(id),base:this.placedBase(id),sources:this.sourceRefs(id).map(ref=>({ref,title:titles.get(ref.split('#')[0])||''}))});
   }
   availableView(id, answered=[]) {
     const cat=this.catalogue(id),labelled=answered.some(a=>a&&typeof a==='object');
@@ -7830,8 +7750,7 @@ export class ControlRoom extends DurableObject {
   // reach. The base is read before the room is wiped, so a base that cannot
   // be read refuses the Start and leaves the previous run as it was; the
   // goal's links are read at Root's first turn (loadSources).
-  // grants: the existing files the person grants a change to in advance.
-  async start(goal,budget,settings = {},roomId='',{base=null,selfHosts=[],grants=[]}={}) {
+  async start(goal,budget,settings = {},roomId='',{base=null,selfHosts=[]}={}) {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
     // Refuse bad settings before the room is wiped: a refused Start must leave
     // the previous run intact (verification probe: parallel 999 erased it).
@@ -7857,7 +7776,6 @@ export class ControlRoom extends DurableObject {
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
     this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h));
-    if(Array.isArray(grants)&&grants.length){const given=[...new Set(grants.filter(p=>typeof p==='string'&&isPath(p)))];this.save('base_approved',given);if(given.length)this.event('system','base_granted',clip(`The person granted changing ${given.join(', ')} at Start.`,500));}
     if(loaded) {
       for(const [path,content] of loaded.files)this.db().exec('INSERT INTO base_files(path,content,sha256,mode) VALUES (?,?,?,?)',path,content,await sha256(content),loaded.modes?.get(path)??0o644);
       for(const p of loaded.passthrough||[])this.db().exec('INSERT INTO base_passthrough(path,bytes,mode,sha256,reason) VALUES (?,?,?,?,?)',p.path,p.bytes,p.mode??0o644,await sha256Bytes(p.bytes),p.reason||'');
@@ -7881,7 +7799,7 @@ export class ControlRoom extends DurableObject {
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
-    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} A worker changes an existing file its contracts place once the person grants it.`,900));
+    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} A worker changes an existing file its contracts place; the export is a new branch.`,900));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
       // v8: the room creates the manager the prompt goes to.
@@ -7899,8 +7817,7 @@ export class ControlRoom extends DurableObject {
     this.event('system','stop_requested','Stop requested: no new turns start; the running ones finish, then the run pauses.');
     return {status:'stopping'};
   }
-  // options.grants: at base_confirm, the paths the person selected to grant.
-  async resume(budget,settings = {},options = {}) {
+  async resume(budget,settings = {}) {
     if (this.busy) return {error:'Experiment running'};
     if (this.earlierRoom()) { this.event('room','earlier_room',EARLIER_ROOM); return {error:EARLIER_ROOM,status:409}; }
     this.set('stop_requested','');
@@ -7923,7 +7840,7 @@ export class ControlRoom extends DurableObject {
     this.save('failures',failures);
     for(const id of continued)this.clearFailures(id);
     // v8: Continue answers the holds for the person (continueHold).
-    if(this.v8()&&this.roomHolds().length)this.continueHold({grants:options.grants??null});
+    if(this.v8()&&this.roomHolds().length)this.continueHold();
     // v7.15.15 review 2 (#1): Continue answers a request no row, hop or message holds any more.
     if(this.planned())await this.settleRequests(true);
     // A planned worker waiting with no request open, nothing unread and no
@@ -8206,8 +8123,8 @@ export class ControlRoom extends DurableObject {
     this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'repair_waves:%' OR key LIKE 'rounds_exhausted:%' OR key LIKE 'manager_model_calls:%'");
     this.set('repair_exhausted','');this.save('failures',{});
     // v8: the rows the room's holds named go on with the change, as Continue would wake them.
-    const held=this.v8()?this.roomHolds().filter(h=>h.kind!=='base_confirm'&&h.agent).map(h=>h.agent):[];
-    if(this.v8())this.saveHolds(this.roomHolds().filter(h=>h.kind==='base_confirm'&&this.read('base_pending',[]).length));else this.save('paused_state',null);
+    const held=this.v8()?this.roomHolds().filter(h=>h.agent).map(h=>h.agent):[];
+    if(this.v8())this.saveHolds([]);else this.save('paused_state',null);
     for(const id of held)if(this.node(id))this.wake(id);
     this.db().exec("DELETE FROM meta WHERE key LIKE 'escalated:%' OR key LIKE 'compile_reported:%' OR key LIKE 'compile_blocked:%' OR key LIKE 'compile_infrastructure:%'");
     for(const n of this.allNodes().filter(x=>x.status==='failed'&&!isRuntimeNode(x))) {
@@ -8573,15 +8490,14 @@ export class ControlRoom extends DurableObject {
     await this.finishLevel(id);
   }
   // What an admitted level still owes, each step safe to run again, so the
-  // turn after a restart runs what is left: the person's confirmation for
-  // the existing files its contracts change and its children's rows. Its
+  // turn after a restart runs what is left: its serves joins and its
+  // children's rows. Its
   // job is cleared, and the manager waits, when all of it is done.
   async finishLevel(id) {
     const job=this.read(`level_job:${id}`,null);
     if(!job?.admitted)return;
     const {contracts,joins={}}=job.admitted;
     await this.serveBelow(id,joins);
-    await this.baseContracts(id,[{interfaces:contracts}]);
     await this.spawnLevel(id);
     this.save(`level_job:${id}`,null);
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
@@ -8616,35 +8532,23 @@ export class ControlRoom extends DurableObject {
   }
   // ---------- a turn ----------
   // A row's turn by its role: a builder joins its manager's piece, a worker
-  // writes, a manager splits, routes and compiles. A row whose contracts
-  // place an existing file waiting for the person's grant waits with it.
+  // writes, a manager splits, routes and compiles.
   async levelTurn(id) {
     const n=this.node(id);
     if(!n||n.status!=='ready')return;
     this.set(`retry_turn:${id}`,'');
-    if(!isRuntimeNode(n)&&this.waitingPaths(id).length) {
-      this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
-      if(!this.read(`base_wait:${id}`,null))this.event(id,'base_waiting',clip(`${n.label} waits for the person's grant to change ${this.waitingPaths(id).join(', ')}.`,400));
-      this.save(`base_wait:${id}`,this.waitingPaths(id));
-      this.holdBaseConfirm();
-      return;
-    }
     if(isRuntimeNode(n))return this.live()?this.pieceBuilderTurn(id):undefined;
     return this.isWorker(n)?this.levelWorkerTurn(id):this.levelManagerTurn(id);
   }
-  // Continue at the room's holds: a pending grant (base_confirm) first,
-  // which grants the files it lists (or those selected), and the other holds
-  // wait for the next Continue; otherwise Continue clears every hold that
-  // reached the room (the validations, a split, an escalation) and wakes the
-  // row each one names (the room's manager when it names none) if that row is
-  // waiting or ready. It also forgets which compile reports and escalations
-  // were already sent, and runs again a prompt the hold failed.
-  continueHold({grants=null}={}) {
-    const all=this.roomHolds();
-    if(all.some(h=>h.kind==='base_confirm')&&this.read('base_pending',[]).length)return void this.confirmBase(grants);
-    const list=all.filter(h=>h.kind!=='base_confirm');
+  // Continue clears every hold that reached the room (the validations, a
+  // split, an escalation) and wakes the row each one names (the room's
+  // manager when it names none) if that row is waiting or ready. It also
+  // forgets which compile reports and escalations were already sent, and
+  // runs again a prompt the hold failed.
+  continueHold() {
+    const list=this.roomHolds();
     if(!list.length)return;
-    this.saveHolds(all.filter(h=>!list.includes(h)&&h.kind!=='base_confirm'));
+    this.saveHolds([]);
     this.db().exec("DELETE FROM meta WHERE key LIKE 'compile_reported:%' OR key LIKE 'escalated:%'");
     this.revivePrompt();
     for(const hold of list) {
@@ -9430,10 +9334,10 @@ export default {
         // A v8 goal is taken as the person writes it, however short or long (an empty one has nothing to build); v7's keeps its limits.
         if (payload.settings?.pipeline==='v8'?!goal:goal.length<8 || goal.length>GOAL_LIMIT) return json({error:payload.settings?.pipeline==='v8'?'An empty goal has nothing to build':`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
-        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)],...(Array.isArray(payload.grants)?{grants:payload.grants}:{})});
+        const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)]});
         return json(started,started.error?started.status||400:200);
       }
-      if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{},{grants:Array.isArray(payload.grants)?payload.grants.filter(p=>typeof p==='string'):null}));
+      if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{}));
       // v8 S9: a change applied now (an adjustment while running), and the prompt queue.
       // v8 S9 review: a budget that is no turn budget is the request's error (400), not the server's.
       const turnsOf=v=>{try{return {budget:v==null?null:normalizeTurnBudget(v)};}catch(e){return {error:String(e?.message||e)};}};

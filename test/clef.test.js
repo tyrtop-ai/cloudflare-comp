@@ -158,8 +158,8 @@ test('v8: Clef reviews a division in one call with only the owner\'s two questio
   await assert.rejects(reviewLevel({PIPELINE: 'v8', AI: {run: async () => ({answers: {split_valid: {noul: 0.5}}})}}, {pieces}), /no valid review/);
 });
 
-test('v8: Clef grades the original as written: the pre-grade, the review, the base-change and the reach questions carry the assignment, every piece\'s label and task and every contract, unclipped', async () => {
-  const {reviewLevel, vetBaseChanges, pieceReach} = await import('../src/model.js');
+test('v8: Clef grades the original as written: the pre-grade, the review and the reach questions carry the assignment, every piece\'s label and task and every contract, unclipped', async () => {
+  const {reviewLevel, pieceReach} = await import('../src/model.js');
   const asked = [], env = {PIPELINE: 'v8', AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.8}]))}; }}};
   const assignment = 'Build the whole tracker: '.repeat(400).trim();
   const contracts = Array.from({length: 30}, (_, i) => ({name: `f${i}`, kind: 'function', path: `f${i}.py`, does: `does step ${i} ${'in full detail '.repeat(20).trim()}`}));
@@ -177,12 +177,7 @@ test('v8: Clef grades the original as written: the pre-grade, the review, the ba
   // The original and the pieces: the runtime works out nothing about the division for Clef.
   assert.deepEqual(Object.keys(st), ['assignment', 'contracts', 'pieces']);
   assert.deepEqual(st.pieces.map(p => Object.keys(p)), pieces.map(() => ['slot', 'label', 'task', 'contracts']));
-  // Every existing file a contract names is asked about, with the whole assignment.
-  asked.length = 0;
   const paths = Array.from({length: 130}, (_, i) => `src/file${i}.py`);
-  assert.equal((await vetBaseChanges(env, {assignment, paths})).length, 130);
-  assert.deepEqual(asked.flatMap(a => a.state.files.map(f => f.path)), paths);
-  assert.ok(asked.every(a => a.state.assignment === assignment));
   // The reach question: the piece's name, every contract and file, every installed package and each check's own words.
   asked.length = 0;
   const name = 'A piece named at length '.repeat(10).trim();

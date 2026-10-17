@@ -80,8 +80,8 @@ function brokerRoom({goal, level, answers}) {
   Object.assign(r.env, {TEST_FETCH: fetch, FETCH_ALLOW: 'docs.example.com'});
   return {...r, fetch};
 }
-// Only the person grants a change to an existing file; these rooms grant src/shout.js at Start.
-const start = (room, goal) => room.start(goal, 60, {pipeline: 'v8'}, 'room-brkr-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com'], grants: ['src/shout.js']});
+// The room changes its own copy of the base (the export is a new branch): a worker changes src/shout.js because its contract places it.
+const start = (room, goal) => room.start(goal, 60, {pipeline: 'v8'}, 'room-brkr-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
 
 // ------------------------------------------------------------ a split room
 const GOAL = `Write NOTES.md and FAQ.md for the widget from the format at ${FORMAT_URL} and the guide at ${GUIDE_URL}, and make the shout in src/shout.js louder.`;
@@ -127,8 +127,8 @@ test('broker: a worker reads its granted file and a chunk it holds at once; a pa
     assert.equal(turns(name)[0].answers_note, undefined, 'nothing answered yet');
   }
 
-  // ---- a granted file: its text, labelled as the base repository's
-  assert.deepEqual(room.grantedBase(shout.id), ['src/shout.js']);
+  // ---- an existing file its contract places: its text, labelled as the base repository's
+  assert.deepEqual(room.placedBase(shout.id), ['src/shout.js']);
   const [own, other] = answered('src/shout.js');
   assert.deepEqual(own, {name: 'src/shout.js', label: BASE_LABEL, value: BASE_FILES['src/shout.js'], facts: {placed_when: 'now'}});
   // ---- an existing file outside its world: its manager is asked (owner 2026-10-16 20:43: the worker asks its manager, which walks up the tree)

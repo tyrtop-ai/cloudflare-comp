@@ -404,7 +404,7 @@ test('the join keeps the worker\'s delivery at its contract\'s path: a builder\'
   assert.ok(problem.parties.some(x => x.path === 'index.html' && x.owner === wa.id), 'the complaint reaches the worker');
 });
 
-test('a delivered file at a builder\'s own file\'s path stays the delivered one, unplaced files too; at an existing file\'s path the existing file stays (only the person grants a change to one), and the builder\'s file stays in its world', async () => {
+test('a delivered file at a builder\'s own file\'s path stays the delivered one, unplaced files too; at an existing file\'s path the existing file stays (a worker whose contract places it changes it), and the builder\'s file stays in its world', async () => {
   const {room, top, a, wa} = await tree(recorded().clef);
   const bid = 'builder-00000000000000ab', atN = packagePath('Page', 'notes.txt', wa.id), atB = packagePath('Builder', atN, bid);
   room.set(`base_digest:${top.id}`, 'd1');

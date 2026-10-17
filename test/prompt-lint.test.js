@@ -143,7 +143,7 @@ test('the builder\'s functions are prompt texts too: each description and each p
 });
 
 test('Clef questions are filled by key, and run data never enters a system prompt', () => {
-  assert.equal(clefText('base_change', {i: 3}), CLEF.base_change.replace('{i}', '3'));
+  assert.ok(!('base_change' in CLEF), 'no Clef question vets a change to an existing file: the room changes its own copy');
   assert.ok(!['scope', 'exercises', 'implementable', 'internal'].some(k => k in CLEF), 'the split review asks only split_valid and split_size');
   assert.equal(clefText('answer', {j: 1}), CLEF.answer.replace('{j}', '1'));
   for (const role of ROLES) assert.doesNotMatch(systemPrompt(role), /\$\{|\{i\}|\{j\}|\{contract\}/);

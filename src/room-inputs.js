@@ -218,24 +218,6 @@ export function summariesFor(rows, held) {
   }).filter(Boolean);
 }
 
-// Whether the prompt names an existing file, for display only (the
-// dashboard shows such a path pre-selected; only the person grants). The
-// exact path, in its own case, as a word of its own; an occurrence the
-// prompt asks to leave alone ("do not touch X", "keep X as it is", "without
-// changing X") does not count.
-export function namedIn(path, text) {
-  const t = String(text ?? ''), esc = String(path).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), re = new RegExp(`(?<![\\w./-])${esc}(?![\\w/-])`, 'g');
-  for (const m of t.matchAll(re)) {
-    const before = t.slice(Math.max(0, m.index - 60), m.index).toLowerCase(), after = t.slice(m.index + m[0].length, m.index + m[0].length + 40).toLowerCase();
-    const sentence = before.split(/[.!?\n]/).pop();
-    if (/\b(?:do not|don't|never|without|no need to|not)\s+(?:\w+\s+){0,2}?(?:touch|touching|change|changing|modify|modifying|edit|editing|alter|altering|rewrite|rewriting)\b/.test(sentence)) continue;
-    if (/\b(?:keep|leave)\s*$/.test(sentence) && /^\s*(?:as it is|as is|unchanged|alone|intact)/.test(after)) continue;
-    if (/^\s*(?:stays|remains|must stay|should stay)\s+(?:as it is|unchanged|the same)/.test(after)) continue;
-    if (/^\s*,?\s*(?:without (?:changing|touching|modifying|editing|altering) it|but (?:do not|don't|never) (?:change|touch|modify|edit) it|untouched|as it is)\b/.test(after)) continue;
-    return true;
-  }
-  return false;
-}
 
 // The chunks a worker cites, each quoted whole. chunk(ref) → {ref, source,
 // text} or null (the room reads one stored chunk at a time; a Map or an
