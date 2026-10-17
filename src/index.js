@@ -43,7 +43,7 @@ import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narro
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
-import { caseTwin, boxPathError } from '../container/build-path.mjs';
+import { boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples } from './validations.js';
 import { splitLevel } from './splitter.js';
 import { workerWorld, workerSession } from './worker.js';
@@ -1433,7 +1433,7 @@ export class ControlRoom extends DurableObject {
     // them and what was not carried.
     const meta=this.read('base',null),baseRows=new Map(query(this.db(),'SELECT path,sha256,mode FROM base_files').map(r=>[r.path,r]));
     // v8 ship-verified (M1): a carried file the bundle holds (carried) ships with it, at its mode; the others as bytes.
-    const passRows=query(this.db(),'SELECT path,bytes,mode,reason FROM base_passthrough ORDER BY path'),pass=passRows.filter(r=>!files.has(r.path)&&!caseTwin(r.path,new Set(files.keys())));
+    const passRows=query(this.db(),'SELECT path,bytes,mode,reason FROM base_passthrough ORDER BY path'),pass=passRows.filter(r=>!files.has(r.path));
     for(const r of passRows)if(bundle.carried?.has(r.path))baseRows.set(r.path,{path:r.path,sha256:await sha256(files.get(r.path)),mode:r.mode});
     if(meta)app.base={kind:meta.kind,source:meta.source,ref:meta.ref,resolved_sha:meta.resolved_sha,room:meta.room||null,unverified:!!meta.unverified,passthrough:pass.length};
     const own=[];
@@ -3691,13 +3691,12 @@ export class ControlRoom extends DurableObject {
   // base, so its checks run with them and its syntax step compiles them: each
   // that is text at a path the box holds joins the files after the
   // builder's (carried); the others are listed with why the box cannot hold
-  // them (unsent). A piece's file at the same path (or one apart from case)
-  // ships instead.
+  // them (unsent). A piece's file at exactly the same path ships instead.
   addCarried(bundle) {
     const files=bundle.files,taken=new Set(files.keys()),decode=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
     bundle.carried=new Set();bundle.unsent=[];
     for(const r of query(this.db(),'SELECT path,bytes,sha256,reason FROM base_passthrough ORDER BY path')) {
-      if(caseTwin(r.path,taken))continue;
+      if(taken.has(r.path))continue;
       const data=new Uint8Array(r.bytes);
       let text=null;
       try {text=decode.decode(data);} catch {}

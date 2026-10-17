@@ -622,3 +622,18 @@ test('a piece\'s uses are kept exactly as declared: every name, however many and
   assert.deepEqual(JSON.parse(room.node(w.id).uses), uses);
   assert.deepEqual(room.designOf(w.id).calls, uses);
 });
+
+// ------------------------------------------------------------ the join and the project's existing files
+test('the existing files carried untouched ship beside a piece\'s files: one is left out only where a piece\'s file holds exactly its path, never by letter case', async () => {
+  const {room} = liveRoom({room_id: 'carried-room'});
+  room.configure({pipeline: 'v8'});
+  const row = (path, text) => room.db().exec('INSERT INTO base_passthrough(path,bytes,mode,sha256,reason) VALUES (?,?,?,?,?)', path, new TextEncoder().encode(text), 420, 'h', 'not built');
+  row('README.md', '# Base\n'); row('notes.txt', 'base notes\n');
+  const bundle = {files: new Map([['readme.md', '# a piece\'s\n'], ['notes.txt', 'the piece\'s notes\n']])};
+  room.addCarried(bundle);
+  assert.equal(bundle.files.get('README.md'), '# Base\n', 'a path apart from case is another file');
+  assert.equal(bundle.files.get('readme.md'), '# a piece\'s\n');
+  assert.equal(bundle.files.get('notes.txt'), 'the piece\'s notes\n', 'the piece\'s file at exactly the path ships');
+  assert.deepEqual([...bundle.carried], ['README.md']);
+  assert.deepEqual(bundle.unsent, []);
+});
