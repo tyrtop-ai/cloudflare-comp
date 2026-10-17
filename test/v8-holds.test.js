@@ -4,13 +4,14 @@
 // subtree is outstanding, and the room never completes with a change that
 // has not landed (F2); the runtime holds no room for the turns that ask no
 // model (F3: the owner set no such bound). The stop probes of the card era (crosswait, selfwait,
-// waitprobe2) are ported to the levels: a complaint a worker leaves its
-// files as they were for stays its, and the repairs and rebuilds go on until
-// the room's turn budget ends, with nothing held; Continue goes on.
+// waitprobe2) are ported to the levels: a worker that answers a complaint
+// with its files as they were is archived and its level's splitter rebuilds
+// its contracts (owner, 2026-10-17), and the repairs and rebuilds go on
+// until the room's turn budget ends, with nothing held; Continue goes on.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {choiceP} from './helpers/levels.js';
-import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, logged, at, tail, runsBy, live, exported, call, FILES, GOAL, skip} from './helpers/toolkit.js';
+import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, logged, at, tail, runsBy, live, exported, call, FILES, GOAL, VALIDATIONS, skip} from './helpers/toolkit.js';
 
 const BAD = {shout: 'def shout(s):\n    return str(s).upper()\n', whisper: 'def whisper(s):\n    return str(s).lower()\n'};
 const holds = room => room.roomHolds().map(h => [h.kind, h.agent]);
@@ -34,49 +35,89 @@ const assertBudget = (room, label) => {
 const workerOf = (room, m) => room.children(m).find(c => c.role === 'worker')?.id;
 const sentTo = (room, id) => events(room, 'complaint_routed').filter(e => e.recipient === id).length;
 
-test('selfwait: two branches whose workers leave their files as they were: each complaint stays with its worker, and every round the level compiles again and sends it back, until the room\'s budget ends; nothing holds, and Continue goes on', {skip}, async () => {
+// Owner, 2026-10-17: "In what situation does a worker build the same solution? When the problem statement was incorrect or unfilled.
+// ergo problem statement failure, not worker or routing failure". A worker that answers a complaint with done, its files byte for byte as
+// they were when it was handed it, is archived, and its level's splitter rebuilds its contracts, reading the complaint and that the
+// delivery did not change; no worker is handed the complaint again, and the manager's routing is not asked about it again.
+const workers = room => room.allNodes().filter(n => n.role === 'worker');
+const handedOnce = room => { const to = events(room, 'complaint_routed').filter(e => room.node(e.recipient)?.role === 'worker').map(e => `${e.recipient} ${e.body}`); return to.length === new Set(to).size; };
+const rebuildsWith = (r, text) => r.calls.split.filter(u => u.complaints?.some(c => text.test(c.observed) && c.delivered_files === 'unchanged since it was observed'));
+
+test('selfwait: two branches whose workers answer their complaints with their files unchanged: each is archived and its level\'s splitter rebuilds its contract, reading the complaint; no worker is handed a complaint twice, the rebuilds go on until the room\'s budget ends, nothing holds, and Continue goes on', {skip}, async () => {
   const r = await toolkit({leaf: leafOf({answers: BAD}), budget: 24});
-  const m = at(r.room), shouter = workerOf(r.room, m.Shouter), whisperer = workerOf(r.room, m.Whisperer);
+  const m = at(r.room);
   assertBudget(r.room, 'end');
   // The worker's write_file says the file already holds exactly that text; no level escalates for it.
-  assert.ok(events(r.room, 'session').some(e => e.actor === shouter && /unchanged shout\.py/.test(e.body)), tail(r.room));
+  assert.ok(events(r.room, 'session').some(e => /unchanged (?:shout|whisper)\.py/.test(e.body)), tail(r.room));
   assert.equal(events(r.room, 'escalated').length, 0);
-  const sent = [sentTo(r.room, shouter), sentTo(r.room, whisperer)];
-  assert.ok(sent.every(n => n >= 3), `each worker was sent its complaint round after round: ${sent}`);
-  let runs = runsBy(r.room);
+  assert.ok(handedOnce(r.room), 'no worker is handed a complaint twice');
+  // Each worker archived is one that answered its complaint with its files unchanged, under Shouter or Whisperer.
+  const gone = workers(r.room).filter(c => c.status === 'archived'), said = new Set(events(r.room, 'complaint_unchanged').map(e => e.actor));
+  assert.ok(gone.length >= 1 && gone.every(g => said.has(g.id) && [m.Shouter, m.Whisperer].includes(g.parent)), tail(r.room));
+  const rebuilt = rebuildsWith(r, /shout|whisper/);
+  assert.ok(rebuilt.length >= 1, `its level's splitter reads the complaint: ${rebuilt.length}`);
+  assert.ok(rebuilt.every(u => u.contracts_you_deliver.length === 1), 'each rebuild restates the archived worker\'s contract');
+  const before = workers(r.room).length;
   await again(r, 6);
   assertBudget(r.room, 'after continue');
-  const now = runsBy(r.room);
-  assert.ok(now.Shouter > runs.Shouter && now.Whisperer > runs.Whisperer, `Continue: both levels compiled again (${JSON.stringify(now)})`);
-  assert.ok(sentTo(r.room, shouter) > sent[0] && sentTo(r.room, whisperer) > sent[1], 'and their complaints went back to their workers');
+  assert.ok(workers(r.room).length > before, 'Continue: the rebuilds go on');
+  assert.ok(handedOnce(r.room), 'and no worker is handed a complaint twice');
   assert.ok(r.boxes.length <= 40, `bounded: ${r.boxes.length} boxes`);
 });
 
 // A validation held at the room's manager (it serves shout and whisper) that shout fails there only; Clef routes its complaint.
 const X = [call('x1', ['shout', 'whisper'], 'shout', 'hey', 'HEY!!'), call('x2', ['shout', 'whisper'], 'shout', 'b', 'B!!'), call('x3', ['shout', 'whisper'], 'shout', 'Oh', 'OH!!')];
 const withX = split => user => { const a = split(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...X]}; };
-for (const [name, other] of [['crosswait: Clef gives the room\'s complaint to the other part', true], ['selfwait: Clef gives it to the part that writes shout', false]]) test(`${name}; its worker changes nothing, so the room's manager compiles again and the complaint goes to the same part every round, until the budget ends; nothing holds, and Continue runs the room's validations again`, {skip}, async () => {
+for (const [name, other] of [['crosswait: Clef gives the room\'s complaint to the other part', true], ['selfwait: Clef gives it to the part that writes shout', false]]) test(`${name}; the worker it reaches answers it with its files unchanged, so that worker is archived and its level's splitter rebuilds its contract, reading the complaint; no worker is handed it twice, until the budget ends; nothing holds, and Continue runs the room's validations again`, {skip}, async () => {
   const pick = (key, state) => { const kids = (state.children || []).map(c => c.label); const quiet = kids.findIndex(t => /Quiet/.test(t)), i = Number(key.split('_').pop()); return (i === quiet) === other ? 0.9 : 0.1; };
   const seen = [];
   const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => { if (state.item?.kind === 'complaint' && state.children.length === 3) { seen.push(state); return pick(k, state); } return choiceP(k, state); }}), budget: 36});
   const m = at(r.room), routed = events(r.room, 'complaint_routed').filter(e => e.actor === m.Root);
   assert.ok(routed.length > 0 && routed.every(e => e.recipient === (other ? m['Quiet part'] : m['Loud part'])), tail(r.room));
-  // The routing shows the manager what came of it (owner, 2026-10-16 19:44: "3 & 4 are issues with the runtime / routing"): from the second
-  // round on, the part it handed the complaint to on these same files is shown with that complaint, its files left as they were.
-  const part = other ? 'Quiet part' : 'Loud part';
-  assert.ok(!seen[0].children.some(c => c.handed_before_and_unchanged), 'nothing before the first round');
-  const later = seen.filter(s => s.children.some(c => c.handed_before_and_unchanged));
-  assert.ok(later.length > 0, 'later rounds show it');
-  for (const s of later) assert.deepEqual(s.children.filter(c => c.handed_before_and_unchanged).map(c => c.label), [part]);
-  assert.ok(later[0].children.find(c => c.label === part).handed_before_and_unchanged.every(d => typeof d === 'string' && d.length > 0));
+  // The routing reads no record of earlier answers: an unchanged answer is the statement's, not the routing's.
+  assert.ok(seen.length > 0 && seen.every(s => s.children.every(c => Object.keys(c).every(k => ['slot', 'label', 'contracts', 'wrote'].includes(k)))), JSON.stringify(seen[0]?.children));
+  assert.ok(handedOnce(r.room), 'no worker is handed the complaint twice');
+  assert.ok(events(r.room, 'complaint_unchanged').length > 0, tail(r.room));
+  assert.ok(rebuildsWith(r, /HEY!!|B!!|OH!!/).length > 0, 'its level\'s splitter reads the complaint');
   assertBudget(r.room, 'end');
-  assert.ok(runsBy(r.room).Root >= 2, `the room's manager compiled again after its complaint came back unchanged (${runsBy(r.room).Root})`);
+  assert.ok(runsBy(r.room).Root >= 2, `the room's manager compiled again after the rebuild (${runsBy(r.room).Root})`);
   assert.equal(events(r.room, 'escalated').length, 0);
   const runs = runsBy(r.room).Root;
   await again(r, 6);
   assertBudget(r.room, 'after continue');
   assert.ok(runsBy(r.room).Root > runs, 'Continue: the room\'s manager ran its checks again');
   assert.ok(r.boxes.length <= 40, `bounded: ${r.boxes.length} boxes`);
+});
+
+// A wrong expected value is a wrong problem statement too: the rebuild's splitter takes the validation out (drop_validation) and states
+// one in its place; the level file that held it no longer lists it, and the room completes with the worker's files as they were.
+test('a validation that expects a wrong value: the worker answers its complaint with its files unchanged, its level\'s splitter reads the complaint, takes that validation out of the room\'s level and states a right one, and the room completes', {skip}, async () => {
+  const WRONG = call('s3', ['shout'], 'shout', 'Yo', 'YO!!');
+  const base = splitFor({validations: VALIDATIONS.map(v => v.id === 's3' ? WRONG : v)});
+  const asked = [];
+  const split = (user, _n, _s, {round}) => {
+    if (!user.complaints) return base(user);
+    if (round === 1) asked.push(user);
+    const wrong = user.validations_you_have.find(v => v.check.steps?.[0]?.expect === 'YO!!');
+    return round === 1 ? [{name: 'drop_validation', arguments: {id: wrong.id}}, {name: 'call_check', arguments: {serves: ['shout'], steps: [{call: 'shout', args: ['Yo'], expect: 'YO!'}]}}] : [{name: 'done', arguments: {}}];
+  };
+  const r = await toolkit({split});
+  assert.equal(r.room.get('status'), 'complete', tail(r.room));
+  const m = at(r.room);
+  assert.equal(asked.length, 1, 'one rebuild');
+  assert.match(asked[0].complaints[0].observed, /YO!!/);
+  assert.equal(asked[0].complaints[0].delivered_files, 'unchanged since it was observed');
+  assert.deepEqual(asked[0].contracts_you_deliver.map(c => c.name), ['shout']);
+  // Each validation that serves only shout carries the id drop_validation takes; one that serves loud too does not.
+  assert.ok(asked[0].validations_you_have.filter(v => v.serves.join() === 'shout').every(v => v.id));
+  const old = r.room.levelDesign(m.Root).validations.map(v => v.id);
+  assert.ok(!r.room.validationRows().some(v => v.check.steps?.[0]?.expect === 'YO!!'), 'the wrong validation is gone');
+  assert.ok(!r.room.levelDesign(m.Root).contracts.find(c => c.name === 'shout').serves.some(id => !old.includes(id) && !r.room.validationRows().some(v => v.id === id)));
+  const gone = r.room.children(m.Shouter).filter(c => c.role === 'worker' && c.status === 'archived');
+  assert.equal(gone.length, 1, 'the worker that changed nothing is archived');
+  assert.equal(events(r.room, 'complaint_routed').filter(e => e.recipient === gone[0].id).length, 1, 'it was handed the complaint once');
+  const now = r.room.children(m.Shouter).find(c => c.role === 'worker' && c.status !== 'archived');
+  assert.ok(JSON.stringify(r.room.workerView(now.id).prompt.deliver[0].examples).includes('YO!') && !JSON.stringify(r.room.workerView(now.id).prompt.deliver[0].examples).includes('YO!!'), 'the new worker\'s examples say the right value');
 });
 
 test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its file every time; there is no round cap: the repairs go on past six rounds until the budget ends, nothing holds, and Continue goes on', {skip}, async () => {

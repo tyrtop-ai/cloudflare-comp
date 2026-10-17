@@ -229,7 +229,7 @@ test('v8: the splitter is ROLE.splitter + FORMAT.splitter with its functions, it
   assert.deepEqual(out.level.contracts.map(c => c.name), ['index.html', 'NOTES.md']);
   assert.deepEqual(out.level.pieces.map(p => p.label), ['Page', 'Notes']);
   assert.equal(calls.length, 2);
-  for (const c of calls) { assert.equal(c.messages[0].content, systemPrompt('splitter')); assert.deepEqual(c.tools, TOOLS.splitter.filter(t => t.name !== 'read_file'), 'read_file only for a level that holds the files the work starts from'); }
+  for (const c of calls) { assert.equal(c.messages[0].content, systemPrompt('splitter')); assert.deepEqual(c.tools, TOOLS.splitter.filter(t => !['read_file', 'drop_validation'].includes(t.name)), 'read_file only for a level that holds the files the work starts from, drop_validation for one that holds validations it may take out'); }
   assert.deepEqual(JSON.parse(calls[0].messages[1].content), request);
   assert.deepEqual(calls[1].messages.at(-1), {role: 'user', content: 'No function was called. The functions are: contract, file_check, judge_check, command_check, call_check, http_check, browser_check, piece, drop_piece, level, done.'});
 });

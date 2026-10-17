@@ -96,6 +96,8 @@ export const TOOLS = Object.freeze({
       }, required: ['label', 'task', 'contracts']}},
     {name: 'drop_piece', description: 'Takes one declared piece out of the division, by its label. The result says it is taken out, with the count of pieces left, or that no piece has that label.',
       parameters: {type: 'object', properties: {label: {type: 'string', description: 'The label of a declared piece, exactly as declared.'}}, required: ['label']}},
+    {name: 'drop_validation', description: 'Takes one validation listed with an id in validations_you_have out of what your contracts are known by, such as one whose expected value is not what they should hold; a check function states what replaces it. The result says it is taken out, or that no validation there has that id.',
+      parameters: {type: 'object', properties: {id: {type: 'string', description: 'The id of a validation in validations_you_have, exactly as listed.'}}, required: ['id']}},
     {name: 'level', description: 'Shows everything declared so far: the contracts, the validations with their examples, and the pieces.', parameters: {type: 'object', properties: {}, required: []}},
     {name: 'read_file', description: 'Shows one of the files the work starts from, whole: any path existing_files lists. The result is its text, or that there is no such file at that path.',
       parameters: {type: 'object', properties: {path: {type: 'string', description: 'The relative path of the file, exactly as existing_files lists it.'}}, required: ['path']}},

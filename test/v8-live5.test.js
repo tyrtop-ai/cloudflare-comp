@@ -342,16 +342,24 @@ test('a file check runs as the splitter wrote it: its text across lines is not t
 });
 
 // ------------------------------------------------------------ a validation that keeps failing
-test('live 5: a validation that keeps failing stays: the repairs go on until the room\'s budget ends, with no hold; Continue keeps it, nothing is deleted, and Clef is asked nothing about it', async () => {
+// Owner, 2026-10-17: a worker that answers a complaint with its files unchanged shows its problem statement was wrong or incomplete,
+// "problem statement failure, not worker or routing failure": the splitter that wrote it rebuilds it, reading the complaint.
+test('live 5: a validation that keeps failing stays: each worker that answers its complaint with its files unchanged is archived and the level\'s splitter rebuilds its contracts, reading the complaint, until the room\'s budget ends, with no hold; Continue keeps it, nothing is deleted, and Clef is asked nothing about it', async () => {
   const plain = deliver({'GUIDE.md': FILES['GUIDE.md'].replace('80 degrees', 'hot')});
   let kept = false;
   const leaf = () => kept ? deliver({'GUIDE.md': FILES['GUIDE.md']}) : plain;
   const level = {contracts: [GUIDE], validations: VALIDATIONS.slice(0, 3), pieces: []};
   const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.05 : k === 'exercises_0' ? 0.143 : 0.9}]))});
-  const r = await levelRoom({prompt: 'Write a short guide to brewing green tea.', split: () => level, leaf, clef, budget: 8}), {room} = r;
+  // The rebuild keeps the validations it has: it states nothing new.
+  const split = user => user.complaints ? {contracts: [], validations: [], pieces: []} : level;
+  const r = await levelRoom({prompt: 'Write a short guide to brewing green tea.', split, leaf, clef, budget: 12}), {room} = r;
   assert.equal(room.get('status'), 'paused', tail(room));
   assert.deepEqual(room.roomHolds(), [], 'nothing holds: the budget ended the run');
-  assert.ok(events(room, 'complaint_routed').length >= 3, 'its complaint went back to the worker round after round');
+  const routed = events(room, 'complaint_routed');
+  assert.ok(routed.length >= 2, 'each worker was handed the complaint once');
+  assert.equal(new Set(routed.map(e => e.recipient)).size, routed.length, 'no worker is handed a complaint again');
+  const rebuilds = r.calls.split.filter(u => u.complaints);
+  assert.ok(rebuilds.length >= 1 && rebuilds.every(u => u.complaints.every(c => c.observed && c.delivered_files === 'unchanged since it was observed')), JSON.stringify(rebuilds.map(u => u.complaints)));
   assert.equal(events(room, 'validations_doubtful').length, 0);
   assert.ok(!r.calls.clef.some(c => Object.keys(c.questions).some(k => /^(?:exercises|implementable|internal|within)_/.test(k))), 'no doubt question');
   assert.ok(!room.spans(0, 100000).some(s => s.name === 'reviewLevel'), 'a hand-down has no pieces to review');

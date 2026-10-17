@@ -242,7 +242,8 @@ test('a granted package the box did not install reaches the room and the worker 
     return {...r,passed:r.passed&&ok,installed:req.plan.install.map(x=>({...x,passed:ok,...(ok?{}:{detail:'exit 1: ERROR: No matching distribution found for flask'})}))};}};
   let granted=false;
   const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp'));if(!granted&&(granted=true))room.grantPackage(room.roomManager(),{worker:w.id,key:'fn flask',need:'a web framework',name:'flask'},{name:'flask',language:'python'});return wrote('temp.py',RIGHT_TEMP);};
-  const made=v8Room({level:TEMP_LEVEL,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,answers:{temp:[ask,wrote('temp.py',RIGHT_TEMP)],'USAGE.md':[wrote('USAGE.md',USAGE_MD)]}});
+  // Each turn after the ask writes its file anew (a worker that answers a complaint with its files unchanged has its problem statement rebuilt: v8-holds).
+  const made=v8Room({level:TEMP_LEVEL,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,answers:{temp:[ask,(_u,n)=>wrote('temp.py',`# turn ${n}\n${RIGHT_TEMP}`)],'USAGE.md':[wrote('USAGE.md',USAGE_MD)]}});
   room=made.room;
   await room.start(TEMP_GOAL,30,{pipeline:'v8'});
   await made.drain();
