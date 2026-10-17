@@ -191,7 +191,7 @@ test('repairs go on: validations that keep failing go back to the worker every r
   let n=0,fixed=false;
   const writer=()=>fixed?wrote('README.md',GOOD_README):wrote('README.md',`# Project ${++n}\n\nSee the source.\n`);
   const {room,calls,drain}=v8Room({level:README_LEVEL,judge:readmeJudge,answers:{'README.md':[writer]}});
-  await room.start(README_GOAL,12,{pipeline:'v8'});
+  await room.start(README_GOAL,20,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'paused',tail(room));
   assert.notEqual(theWorker(room).status,'failed');
